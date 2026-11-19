@@ -1565,6 +1565,13 @@ local function backendBytes(backend, versionId, relativePath)
   return physical
 end
 
+local function storedBytes(backend, fullPath)
+  local physical = backend.files[fullPath]
+  Assert.equal(type(physical), "string", "expected stored bytes at " .. fullPath)
+  assert(type(physical) == "string", "stored bytes must be a string")
+  return physical
+end
+
 -- Representative compressible payloads stay byte-identical through the
 -- logical API while landing physically smaller inside the envelope; tiny
 -- payloads and files that would not shrink stay raw.
@@ -1619,6 +1626,100 @@ function T.compressible_generated_families_store_smaller_but_read_exactly()
   Assert.equal(c:read("data/generated/tricky.lua"), tricky)
 end
 
+-- Generated script members and field message banks are human-editable Lua:
+-- the bytes that land on disk are the Lua source itself, in an artifact stage
+-- and in the live tree alike, and the logical readback is unchanged. Every
+-- other compressible generated family keeps its transparent envelope.
+function T.generated_script_and_message_lua_stay_readable_in_stage_and_live_tree()
+  local ScriptCache = require("libs.assets.src.ScriptCache")
+  local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+  local AudioCache = require("libs.assets.src.audio.AudioCache")
+  local MapAssetCache = require("libs.assets.src.MapAssetCache")
+  local c, backend = codecCache()
+  c:recoverPublication()
+  local generation = string.rep("a", 40)
+  local stage = CacheFs.forArtifactStage("heartgold", "readable-lua", backend)
+  local stageRoot = "staging/heartgold/readable-lua/"
+
+  local scriptPath = ScriptCache.scriptPath(generation, 149, "map-obj-0002")
+  local scriptSource = "--"
+    .. string.rep("script-padding;", 80)
+    .. "\nlocal S = require(\"gen4.script\")\nreturn { api = S.apiVersion, id = \"map-obj-0002\", steps = { 1, 2, 3 } }\n"
+  local bankPath = FieldMessageCache.bankPath(219)
+  local bankSource = "--"
+    .. string.rep("bank-padding;", 80)
+    .. "\nreturn { bankId = 219, messages = { \"first\", \"second\" } }\n"
+  Assert.isTrue(
+    #scriptSource >= 1024 and #bankSource >= 1024,
+    "both text fixtures must clear the wrap threshold"
+  )
+
+  stage:write(scriptPath, scriptSource)
+  stage:write(bankPath, bankSource)
+  Assert.equal(
+    storedBytes(backend, stageRoot .. scriptPath),
+    scriptSource,
+    "a staged script member is the Lua source itself: " .. scriptPath
+  )
+  Assert.equal(
+    storedBytes(backend, stageRoot .. bankPath),
+    bankSource,
+    "a staged message bank is the Lua source itself: " .. bankPath
+  )
+  Assert.deepEqual(
+    stage:loadModule(scriptPath),
+    { api = Schema.API_VERSION, id = "map-obj-0002", steps = { 1, 2, 3 } },
+    "a staged script member evaluates through the restricted module sandbox"
+  )
+  Assert.deepEqual(
+    stage:loadLua(bankPath),
+    { bankId = 219, messages = { "first", "second" } },
+    "a staged message bank loads as data"
+  )
+
+  c:publishStaged(stage, { scriptPath, bankPath }, function()
+    stage:removeTree("")
+  end)
+  local scriptPhysical = backendBytes(backend, "heartgold", scriptPath)
+  local bankPhysical = backendBytes(backend, "heartgold", bankPath)
+  Assert.equal(scriptPhysical, scriptSource, "a published script member stays the Lua source itself")
+  Assert.equal(bankPhysical, bankSource, "a published message bank stays the Lua source itself")
+  Assert.isFalse(CacheEnvelope.isWrapped(scriptPhysical), "a published script member carries no envelope tag")
+  Assert.isFalse(CacheEnvelope.isWrapped(bankPhysical), "a published message bank carries no envelope tag")
+  Assert.deepEqual(
+    c:loadModule(scriptPath),
+    { api = Schema.API_VERSION, id = "map-obj-0002", steps = { 1, 2, 3 } },
+    "the published script member evaluates identically"
+  )
+  Assert.deepEqual(
+    c:loadLua(bankPath),
+    { bankId = 219, messages = { "first", "second" } },
+    "the published message bank loads identically"
+  )
+
+  -- The families that keep their envelope still store the same logical bytes
+  -- in a smaller physical form.
+  local collisionPath = MapAssetCache.collisionPath(7)
+  local collisionLogical = string.rep("collision-cell-0123456789;", 300)
+  c:write(collisionPath, collisionLogical)
+  local collisionPhysical = backendBytes(backend, "heartgold", collisionPath)
+  Assert.isTrue(CacheEnvelope.isWrapped(collisionPhysical), "collision cells keep their envelope")
+  local collisionHeader = CacheEnvelope.parse(collisionPhysical)
+  assert(collisionHeader, "the collision envelope parses")
+  Assert.equal(collisionHeader.codec, CacheEnvelope.CODEC_LZ4, "collision cells keep their codec")
+  Assert.equal(c:read(collisionPath), collisionLogical, "collision cells read back exactly")
+
+  local samplePath = AudioCache.samplePath("bank003_kick")
+  local sampleLogical = string.rep("\0\1\2\3sample;", 512)
+  c:write(samplePath, sampleLogical)
+  local samplePhysical = backendBytes(backend, "heartgold", samplePath)
+  Assert.isTrue(CacheEnvelope.isWrapped(samplePhysical), "wave samples keep their envelope")
+  local sampleHeader = CacheEnvelope.parse(samplePhysical)
+  assert(sampleHeader, "the sample envelope parses")
+  Assert.equal(sampleHeader.codec, CacheEnvelope.CODEC_ZLIB, "wave samples keep their codec")
+  Assert.equal(c:read(samplePath), sampleLogical, "wave samples read back exactly")
+end
+
 -- A damaged envelope is a loud structured decode failure, never a silent
 -- raw passthrough and never a missing file.
 function T.damaged_envelopes_fail_as_decode_errors_not_absences()
@@ -1661,8 +1762,10 @@ function T.damaged_envelopes_fail_as_decode_errors_not_absences()
   Assert.equal(missingErr.code, StorageErrors.CACHE_FILE_MISSING)
 end
 
--- Portable image bytes are never wrapped, and generated script modules keep
--- their restricted require sandbox whether stored raw or wrapped.
+-- Portable image bytes are never wrapped, and generated Lua modules keep
+-- their restricted require sandbox whether stored raw or wrapped. The script
+-- family now stores plain source, so the wrapped case uses a generated family
+-- that still carries its transparent envelope.
 function T.png_bytes_stay_native_and_wrapped_modules_keep_the_require_allowlist()
   local c, backend = codecCache()
   local pixels = {}
@@ -1682,21 +1785,21 @@ function T.png_bytes_stay_native_and_wrapped_modules_keep_the_require_allowlist(
   local padding = "--" .. string.rep("padding;", 200) .. "\n"
   local allowedSource = padding .. 'local S = require("gen4.script")\nreturn { api = S.apiVersion, id = "a.b" }\n'
   Assert.isTrue(#allowedSource >= 1024, "the module fixture must clear the wrap threshold")
-  c:write("data/generated/script/a.b.lua", allowedSource)
-  local wrapped = backendBytes(backend, "heartgold", "data/generated/script/a.b.lua")
+  c:write("data/generated/audio/sample-metadata/allowed.lua", allowedSource)
+  local wrapped = backendBytes(backend, "heartgold", "data/generated/audio/sample-metadata/allowed.lua")
   Assert.isTrue(CacheEnvelope.isWrapped(wrapped), "a profitable module is wrapped")
   Assert.isTrue(#wrapped < #allowedSource, "the wrapped module saves space")
   Assert.deepEqual(
-    c:loadModule("data/generated/script/a.b.lua"),
+    c:loadModule("data/generated/audio/sample-metadata/allowed.lua"),
     { api = Schema.API_VERSION, id = "a.b" },
     "a wrapped allowlisted module evaluates identically"
   )
 
   local deniedSource = padding .. 'local X = require("libs.errors.src.Errors")\nreturn X\n'
-  c:write("data/generated/script/evil.lua", deniedSource)
-  local deniedPhysical = backendBytes(backend, "heartgold", "data/generated/script/evil.lua")
+  c:write("data/generated/audio/sample-metadata/evil.lua", deniedSource)
+  local deniedPhysical = backendBytes(backend, "heartgold", "data/generated/audio/sample-metadata/evil.lua")
   Assert.isTrue(CacheEnvelope.isWrapped(deniedPhysical), "a profitable denied module is still wrapped")
-  local denied, deniedErr = c:loadModule("data/generated/script/evil.lua")
+  local denied, deniedErr = c:loadModule("data/generated/audio/sample-metadata/evil.lua")
   Assert.isNil(denied, "a module reaching outside the allowlist must fail wrapped or not")
   Assert.isTrue(Errors.is(deniedErr), "the rejection must stay structured")
   Assert.isFalse(deniedErr.code == CacheEnvelope.DECODE_FAILED, "the rejection is sandbox policy, not a decode failure")

@@ -45,7 +45,7 @@ local function runVersion(scope, versionId)
     assets.effects[kind] = assert(cache:loadLua(index.effects[kind].path))
   end
 
-  Assert.equal(Contract.fieldEffects.cacheFormat, "field-effect-cache-v16")
+  Assert.equal(Contract.fieldEffects.cacheFormat, "field-effect-cache-v17")
   local imagePool = ImageAssetPool.new(cache)
   scope:own({
     release = function()

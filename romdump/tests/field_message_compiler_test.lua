@@ -199,7 +199,7 @@ function T.compiles_tokenized_lossless_banks()
   for _, bankId in ipairs(bundle.index.bankIds) do
     Assert.equal(bundle.dependencies["bank" .. bankId .. "MemberSha1"], "member-" .. bankId .. "-sha")
   end
-  Assert.equal(bundle.marker, "field-message-cache-v3:rom-sha:dependency-sha")
+  Assert.equal(bundle.marker, "field-message-cache-v4:rom-sha:dependency-sha")
 end
 
 function T.source_references_form_one_sorted_bank_set()

@@ -31,7 +31,7 @@ end
 function T.compiled_bag_layers_share_state_overlays_and_move_bases(romFs)
   local bundle = compile(romFs)
   local manifest = assert(bundle.manifest)
-  Assert.equal(manifest.schema, "g4-bag-assets-v20", "the compiled bundle carries the current contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v21", "the compiled bundle carries the current contract")
   local backgrounds = assert(manifest.interactive.backgrounds, "the bundle publishes backgrounds")
   local browse = assert(backgrounds.browse, "the bundle publishes the browse base and rows")
   local perPocket = assert(browse[POCKET], "browse covers the pocket")

@@ -195,7 +195,7 @@ end
 local function validV7Manifest()
   local ball = dynamicDescriptor({ "ball-rock", "ball-open" })
   return {
-    schema = "g4-starter-choice-v7",
+    schema = "g4-starter-choice-v8",
     reference = { width = 256, height = 192 },
     models = {
       tabletop = staticDescriptor(),
@@ -549,7 +549,7 @@ end
 
 function T.complete_normalized_manifest_is_accepted()
   local module = cache()
-  Assert.equal(module.SCHEMA, "g4-starter-choice-v7")
+  Assert.equal(module.SCHEMA, "g4-starter-choice-v8")
   Assert.equal(module.SCHEMA, DerivedAssetContract.starterChoice.schema)
   Assert.equal(module.FORMAT, DerivedAssetContract.starterChoice.cacheFormat)
   Assert.isTrue(module.validateManifest(validV7Manifest()))
@@ -808,8 +808,8 @@ function T.starter_contract_carries_the_inspect_pivot_and_rejects_the_previous_s
   local ok, err = module.validateManifest(withoutPivot)
   Assert.isFalse(ok, "a manifest without the inspect pivot must be rejected")
   Assert.equal(assert(err).code, "STARTER_CHOICE_MANIFEST_INVALID", "the missing pivot has a typed error")
-  Assert.equal(module.SCHEMA, "g4-starter-choice-v7", "the starter schema carries the current contract")
-  Assert.equal(module.FORMAT, "starter-choice-cache-v7", "the starter cache format carries the current contract")
+  Assert.equal(module.SCHEMA, "g4-starter-choice-v8", "the starter schema carries the current contract")
+  Assert.equal(module.FORMAT, "starter-choice-cache-v8", "the starter cache format carries the current contract")
   Assert.equal(module.SCHEMA, DerivedAssetContract.starterChoice.schema, "the cache schema follows the shared contract")
   Assert.equal(
     module.FORMAT,
@@ -817,7 +817,7 @@ function T.starter_contract_carries_the_inspect_pivot_and_rejects_the_previous_s
     "the cache format follows the shared contract"
   )
   local current = validV7Manifest()
-  current.schema = "g4-starter-choice-v7"
+  current.schema = "g4-starter-choice-v8"
   current.scene.ballLayout.inspectPivotYOffsetY = 13.453 / 16
   Assert.isTrue(module.validateManifest(current), "the current pivot shape validates")
   reject(function(manifest)

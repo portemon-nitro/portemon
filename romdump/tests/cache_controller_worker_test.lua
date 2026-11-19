@@ -1440,155 +1440,19 @@ function T.failed_completion_marker_write_releases_boot_source_and_keeps_assets(
   end)
 end
 
--- Composed boot-cleanup coverage: the two scenarios below drive the real
--- boot-source gate against a real versioned filesystem backed by FakeCache,
--- with synthetic roster plans standing in for the inventoried source
--- membership. They pin the ordinary-lifecycle cleanup contract: a clean
--- complete boot reclaims only proven orphans and memoizes the pass, while
--- uncertain proof deletes nothing and leaves no memo.
-
-local CLEANUP_MEMO_PATH = "data/generated/retention.lua"
-local CLEANUP_PRODUCER = "r5"
-local ACTIVE_SCRIPT_GENERATION = string.rep("a", 40)
-local OBSOLETE_SCRIPT_GENERATION = string.rep("b", 40)
-local ACTIVE_SCRIPT_MARKER = "script-format:marker-current"
-
-local function cleanupIdentity()
+-- The release selection identity the boot gate compares against.
+local function bootIdentity()
   local GameVersion = require("romdump.src.source.GameVersion")
   local DerivedCacheState = require("romdump.src.DerivedCacheState")
-  local info = GameVersion.info("heartgold")
   return DerivedCacheState.currentForSelection({
     versionId = "heartgold",
-    romSha1 = info.sha1,
-    producerId = CLEANUP_PRODUCER,
+    romSha1 = GameVersion.info("heartgold").sha1,
+    producerId = "r5",
   })
 end
 
-local function syntheticRosterPlans()
-  return {
-    messageBankIds = { 7 },
-    audioBankIds = { 3 },
-    scriptMemberIds = { 11 },
-    iconPageIds = { 1 },
-    portraitPageIds = { 1 },
-    mapDataIds = { 9 },
-    mapIds = { 3 },
-    indexBundle = { index = { matrices = { { cells = { { matrixMemberId = 5, index = 2 } } } } } },
-  }
-end
-
-local function publishSharedReceipt(cache, generation, kind, key)
-  local ArtifactState = require("romdump.src.build.ArtifactState")
-  cache:writeLua(ArtifactState.path(kind, key), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = generation,
-    kind = kind,
-    key = key,
-    marker = "complete",
-  })
-end
-
-local function sharedSidecarPath(kind, key)
-  return "data/generated/jobs-shared/" .. kind .. "/" .. key .. ".lua"
-end
-
-local function publishSharedSidecar(cache, generation, kind, key, paths)
-  local sorted = {}
-  for _, path in ipairs(paths or {}) do
-    sorted[#sorted + 1] = path
-  end
-  table.sort(sorted)
-  cache:writeLua(sharedSidecarPath(kind, key), {
-    schema = 1,
-    generationId = generation,
-    kind = kind,
-    key = key,
-    paths = sorted,
-  })
-end
-
-local function setupProvenSharedFiles(cache, generation, plans)
-  local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
-  local MapAssetCache = require("libs.assets.src.MapAssetCache")
-  local AudioCache = require("libs.assets.src.audio.AudioCache")
-  local roster = {}
-  local iterate = ArtifactJobs.completeIterator(plans)
-  while true do
-    local job = iterate()
-    if job == nil then
-      break
-    end
-    roster[#roster + 1] = job
-  end
-  Assert.isTrue(#roster > 10, "the synthetic roster must span several job families")
-  local meshRef = MapAssetCache.geometryPath(string.rep("a", 40))
-  local sampleRef = AudioCache.samplePath("bank003_kick")
-  local meshOrphan = MapAssetCache.geometryPath(string.rep("b", 40))
-  local metaOrphan = AudioCache.sampleMetadataPath("bank009_stale")
-  for _, job in ipairs(roster) do
-    publishSharedReceipt(cache, generation, job.kind, job.key)
-    publishSharedSidecar(cache, generation, job.kind, job.key, {})
-  end
-  publishSharedSidecar(cache, generation, "map", "3", { meshRef })
-  publishSharedSidecar(cache, generation, "map-data", "9", { meshRef })
-  publishSharedSidecar(cache, generation, "audio-bank", "3", { sampleRef })
-  cache:write(meshRef, string.rep("mesh-block;", 200))
-  cache:write(sampleRef, string.rep("pcm-frame;", 200))
-  cache:write(meshOrphan, string.rep("orphan-mesh;", 200))
-  cache:write(metaOrphan, "return { stale = true }\n")
-  return {
-    meshRef = meshRef,
-    sampleRef = sampleRef,
-    meshOrphan = meshOrphan,
-    metaOrphan = metaOrphan,
-  }
-end
-
-local function setupScriptGenerations(cache, generation)
-  local ScriptCache = require("libs.assets.src.ScriptCache")
-  local ArtifactState = require("romdump.src.build.ArtifactState")
-  cache:write(ScriptCache.markerPath(), ACTIVE_SCRIPT_MARKER)
-  cache:writeLua(ScriptCache.activeIndexPath(), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = ACTIVE_SCRIPT_GENERATION,
-    marker = ACTIVE_SCRIPT_MARKER,
-  })
-  cache:writeLua(ScriptCache.generationIndexPath(ACTIVE_SCRIPT_GENERATION), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = ACTIVE_SCRIPT_GENERATION,
-    marker = ACTIVE_SCRIPT_MARKER,
-  })
-  cache:write(ScriptCache.generationMarkerPath(ACTIVE_SCRIPT_GENERATION), ACTIVE_SCRIPT_MARKER)
-  cache:write(ScriptCache.generationDir(ACTIVE_SCRIPT_GENERATION) .. "/sentinel", "active payload")
-  cache:write(ScriptCache.generationDir(OBSOLETE_SCRIPT_GENERATION) .. "/stale", "superseded payload")
-  cache:write(ScriptCache.generationsDir() .. "/README.txt", "operator note")
-  cache:createDirectory(ScriptCache.generationsDir() .. "/Stray-Notes")
-  cache:write(ScriptCache.generationsDir() .. "/Stray-Notes/keep.txt", "operator note")
-  cache:write("mods/mymod/info.lua", "return { name = 'kept' }\n")
-  cache:writeLua(ArtifactState.path("script-summary", "global"), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = generation,
-    kind = "script-summary",
-    key = "global",
-    marker = "complete",
-  })
-end
-
-local function setupCompleteBootCache()
-  local DerivedCacheState = require("romdump.src.DerivedCacheState")
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
-  cache:recoverPublication()
-  local identity = cleanupIdentity()
-  DerivedCacheState.publish(cache, identity)
-  local plans = syntheticRosterPlans()
-  local shared = setupProvenSharedFiles(cache, identity.generationId, plans)
-  setupScriptGenerations(cache, identity.generationId)
-  return { backend = backend, cache = cache, identity = identity, plans = plans, shared = shared }
-end
-
--- One composed boot drive: a fresh controller with a stub source pool
--- answers exactly one boot-source check against the given version cache.
+-- A boot-source drive: a fresh controller with a live session and the given
+-- pool answers exactly one boot-source check against the given version cache.
 local function driveBootCheck(cache, identity, pool)
   local queued = {}
   local control = {}
@@ -1635,338 +1499,85 @@ local function sourcelessPool()
   return pool
 end
 
--- A terminal compiler pool: records its shutdown join and either proves
--- it or raises the injected join failure. The collector may run only
--- after a proved join.
-local function shutdownPoolStub(joinError)
-  local pool = { shutdownCalls = 0, joinError = joinError }
-  function pool:prepareBootSource(_, _)
-    return true
-  end
-  function pool:shutdown()
-    pool.shutdownCalls = pool.shutdownCalls + 1
-    if pool.joinError ~= nil then
-      error(pool.joinError, 0)
-    end
-    return true
-  end
-  return pool
-end
-
--- One terminal drive: a live selected controller receives its shutdown
--- command against the given version cache. A nil cache means the
--- controller holds no live session to clean.
-local function driveShutdown(cache, identity, pool)
-  local queued = {}
-  local control = {}
-  function control.pop()
-    if #queued == 0 then
-      return nil
-    end
-    return table.remove(queued, 1)
-  end
-  local reply = {}
-  function reply:push(_) end
-  local worker = CacheControllerWorker.Worker.new(control, reply)
-  if cache ~= nil then
-    local session = { cacheFs = cache }
-    function session:update() end
-    worker.session = session
-  else
-    worker.session = nil
-  end
-  worker.pool = pool
-  worker.selectedIdentity = identity
-  worker.selectedVersionId = "heartgold"
-  worker.liveEpoch = 7
-  worker.lifecycle = "active"
-  queued[#queued + 1] = { op = "shutdown" }
-  worker:step()
-end
-
--- The inventoried source membership is synthetic here: the roster owner
--- answers the fixed synthetic plans while the receipts, sidecars, and
--- every deleted byte stay on the real versioned filesystem.
-local function withSyntheticRoster(plans, fn)
-  local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
-  local real = ArtifactJobs.publishedPlans
-  ArtifactJobs.publishedPlans = function()
-    return plans
-  end
-  local ok, err = pcall(fn)
-  ArtifactJobs.publishedPlans = real
-  if not ok then
-    error(err, 0)
-  end
-end
-
--- A clean complete boot answers without touching generated files: one
--- ready reply, no directory scan, no deletion, and no cleanup memo;
--- orphans wait for the eligible terminal pass. A first-play-only
--- generation instead holds its source gate and deletes nothing.
+-- A clean complete boot answers without touching generated files: one ready
+-- reply, no directory scan, and no deletion, so published payloads, script
+-- generations, user mods, and unreferenced shared bytes all survive. A
+-- first-play-only generation instead holds its source gate and deletes
+-- nothing.
 function T.complete_boot_answers_ready_without_scanning_or_deleting()
-  local setup = setupCompleteBootCache()
+  local ScriptCache = require("libs.assets.src.ScriptCache")
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  cache:recoverPublication()
+  local identity = bootIdentity()
+  require("romdump.src.DerivedCacheState").publish(cache, identity)
+  local activeGeneration = string.rep("a", 40)
+  local obsoleteGeneration = string.rep("b", 40)
+  local activeMarker = "script-format:marker-current"
+  local activeSentinel = ScriptCache.generationDir(activeGeneration) .. "/sentinel"
+  local obsoleteSentinel = ScriptCache.generationDir(obsoleteGeneration) .. "/stale"
+  local meshRef = "assets/generated/maps/geometry/" .. string.rep("a", 40) .. ".g4mesh"
+  local meshOrphan = "assets/generated/maps/geometry/" .. string.rep("b", 40) .. ".g4mesh"
+  cache:write(meshRef, string.rep("mesh-block;", 200))
+  cache:write(meshOrphan, string.rep("orphan-mesh;", 200))
+  cache:write(ScriptCache.markerPath(), activeMarker)
+  cache:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = activeGeneration,
+    marker = activeMarker,
+  })
+  cache:writeLua(ScriptCache.generationIndexPath(activeGeneration), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = activeGeneration,
+    marker = activeMarker,
+  })
+  cache:write(ScriptCache.generationMarkerPath(activeGeneration), activeMarker)
+  cache:write(activeSentinel, "active payload")
+  cache:write(obsoleteSentinel, "superseded payload")
+  cache:write(ScriptCache.generationsDir() .. "/README.txt", "operator note")
+  cache:write("mods/mymod/info.lua", "return { name = 'kept' }\n")
+
   local calls = { listings = 0, removes = 0 }
-  local realItems = setup.backend.getDirectoryItems
-  local realRemove = setup.backend.remove
-  setup.backend.getDirectoryItems = function(self, path)
+  local realItems = backend.getDirectoryItems
+  local realRemove = backend.remove
+  backend.getDirectoryItems = function(self, path)
     calls.listings = calls.listings + 1
     return realItems(self, path)
   end
-  setup.backend.remove = function(self, path)
+  backend.remove = function(self, path)
     calls.removes = calls.removes + 1
     return realRemove(self, path)
   end
-  local pool = sourcelessPool()
-  local answer
-  withSyntheticRoster(setup.plans, function()
-    answer = driveBootCheck(setup.cache, setup.identity, pool)
-  end)
-  setup.backend.getDirectoryItems = realItems
-  setup.backend.remove = realRemove
+  local answer = driveBootCheck(cache, identity, sourcelessPool())
+  backend.getDirectoryItems = realItems
+  backend.remove = realRemove
   Assert.equal(answer.state, "ready", "a complete cache boots without its source")
   Assert.equal(calls.listings, 0, "a complete boot performs no directory scan")
   Assert.equal(calls.removes, 0, "a complete boot deletes nothing")
-  Assert.isTrue(setup.cache:exists(setup.shared.meshOrphan), "orphans wait for the eligible terminal pass")
-  Assert.isTrue(setup.cache:exists(setup.shared.metaOrphan), "orphans wait for the eligible terminal pass")
-  Assert.equal(setup.cache:read(setup.shared.meshRef), string.rep("mesh-block;", 200))
-  Assert.equal(setup.cache:read(setup.shared.sampleRef), string.rep("pcm-frame;", 200))
-  Assert.isNil(setup.cache:loadLua(CLEANUP_MEMO_PATH), "a boot writes no cleanup memo")
+  Assert.equal(cache:read(meshRef), string.rep("mesh-block;", 200))
+  Assert.equal(cache:read(meshOrphan), string.rep("orphan-mesh;", 200))
+  Assert.equal(cache:read(activeSentinel), "active payload", "the active script tree stays readable")
+  Assert.equal(cache:read(obsoleteSentinel), "superseded payload", "no script retirement runs during boot")
+  local active, activeErr = ScriptCache.loadActive(cache)
+  Assert.notNil(active, "the active script selection stays valid: " .. tostring(activeErr))
+  Assert.equal(active.generation, activeGeneration, "the active script selection still names its generation")
+  Assert.equal(
+    cache:read(ScriptCache.generationsDir() .. "/README.txt"),
+    "operator note",
+    "unknown names are preserved, not scavenged"
+  )
+  Assert.equal(cache:read("mods/mymod/info.lua"), "return { name = 'kept' }\n", "user mods stay byte-identical")
 
   local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
   local incomplete = CacheFs.forVersion("heartgold", FakeCache.new())
   incomplete:recoverPublication()
-  local identity = cleanupIdentity()
   FirstPlayCompletion.publish("heartgold", identity.generationId, incomplete)
-  local plans = syntheticRosterPlans()
-  local shared = setupProvenSharedFiles(incomplete, identity.generationId, plans)
   local scarce = sourcelessPool()
-  local blocked
-  withSyntheticRoster(plans, function()
-    blocked = driveBootCheck(incomplete, identity, scarce)
-  end)
+  local blocked = driveBootCheck(incomplete, identity, scarce)
   Assert.equal(blocked.state, "source-required", "a first-play-only cache still requires its source")
   Assert.equal(#scarce.calls, 1, "the incomplete boot consults the source exactly once")
   Assert.isTrue(scarce.calls[1], "the incomplete boot asks the pool to pin its source")
-  Assert.isTrue(incomplete:exists(shared.meshOrphan), "an incomplete boot deletes no shared file")
-  Assert.isTrue(incomplete:exists(shared.metaOrphan), "an incomplete boot deletes no shared file")
-  Assert.isNil(incomplete:loadLua(CLEANUP_MEMO_PATH), "an incomplete boot leaves no cleanup memo")
-end
-
--- The boot gate never retires script generations either: the obsolete
--- tree survives a complete boot beside every orphan while the active
--- selector stays valid, and unknown or user paths survive. The same
--- holds when either the shared or the script proof is missing: boot
--- still answers ready and deletes nothing.
-function T.complete_boot_leaves_script_generations_untouched()
-  local ScriptCache = require("libs.assets.src.ScriptCache")
-  local ArtifactState = require("romdump.src.build.ArtifactState")
-  local obsoleteSentinel = ScriptCache.generationDir(OBSOLETE_SCRIPT_GENERATION) .. "/stale"
-  local activeSentinel = ScriptCache.generationDir(ACTIVE_SCRIPT_GENERATION) .. "/sentinel"
-
-  local setup = setupCompleteBootCache()
-  local answer
-  withSyntheticRoster(setup.plans, function()
-    answer = driveBootCheck(setup.cache, setup.identity, sourcelessPool())
-  end)
-  Assert.equal(answer.state, "ready", "a complete cache boots without its source")
-  Assert.isTrue(setup.cache:exists(obsoleteSentinel), "no script retirement runs during boot")
-  Assert.isTrue(setup.cache:exists(setup.shared.meshOrphan), "no shared deletion runs during boot")
-  Assert.equal(setup.cache:read(activeSentinel), "active payload", "the active script tree stays readable")
-  local active, activeErr = ScriptCache.loadActive(setup.cache)
-  Assert.notNil(active, "the active script selection stays valid: " .. tostring(activeErr))
-  Assert.equal(active.generation, ACTIVE_SCRIPT_GENERATION, "the active script selection still names its generation")
-  Assert.equal(
-    setup.cache:read(ScriptCache.generationsDir() .. "/README.txt"),
-    "operator note",
-    "unknown names are preserved, not scavenged"
-  )
-  Assert.isTrue(
-    setup.cache:exists(ScriptCache.generationsDir() .. "/Stray-Notes/keep.txt"),
-    "unknown directories survive"
-  )
-  Assert.equal(setup.cache:read("mods/mymod/info.lua"), "return { name = 'kept' }\n", "user mods stay byte-identical")
-  Assert.isNil(setup.cache:loadLua(CLEANUP_MEMO_PATH), "a boot writes no cleanup memo")
-
-  local unstamped = setupCompleteBootCache()
-  unstamped.cache:remove(ArtifactState.path("script-summary", "global"))
-  local refused
-  withSyntheticRoster(unstamped.plans, function()
-    refused = driveBootCheck(unstamped.cache, unstamped.identity, sourcelessPool())
-  end)
-  Assert.equal(refused.state, "ready", "uncertain script proof never blocks a playable cache")
-  Assert.isTrue(
-    unstamped.cache:exists(ScriptCache.generationDir(OBSOLETE_SCRIPT_GENERATION) .. "/stale"),
-    "missing script proof retires no script tree"
-  )
-  Assert.isTrue(unstamped.cache:exists(unstamped.shared.meshOrphan), "missing script proof deletes no shared file")
-  Assert.isNil(unstamped.cache:loadLua(CLEANUP_MEMO_PATH), "missing script proof leaves no cleanup memo")
-
-  local unproven = setupCompleteBootCache()
-  unproven.cache:remove(sharedSidecarPath("map", "3"))
-  local partial
-  withSyntheticRoster(unproven.plans, function()
-    partial = driveBootCheck(unproven.cache, unproven.identity, sourcelessPool())
-  end)
-  Assert.equal(partial.state, "ready", "uncertain shared proof never blocks a playable cache")
-  Assert.isTrue(unproven.cache:exists(unproven.shared.meshOrphan), "missing shared proof deletes no shared file")
-  Assert.isTrue(unproven.cache:exists(unproven.shared.metaOrphan), "missing shared proof deletes no shared file")
-  Assert.isTrue(
-    unproven.cache:exists(ScriptCache.generationDir(OBSOLETE_SCRIPT_GENERATION) .. "/stale"),
-    "missing shared proof retires no script tree during boot"
-  )
-  Assert.isNil(unproven.cache:loadLua(CLEANUP_MEMO_PATH), "a partial pass leaves no cleanup memo")
-end
-
--- An eligible graceful shutdown reclaims only proved files: the compiler
--- pool joins before any delete, orphan shared files and the obsolete
--- script tree go, referenced outputs and every unowned path survive, and
--- the exact per-generation memo lets the next boot answer with no scan.
-function T.eligible_shutdown_reclaims_proven_orphans_and_memoizes_the_pass()
-  local ScriptCache = require("libs.assets.src.ScriptCache")
-  local setup = setupCompleteBootCache()
-  local obsoleteSentinel = ScriptCache.generationDir(OBSOLETE_SCRIPT_GENERATION) .. "/stale"
-  local activeSentinel = ScriptCache.generationDir(ACTIVE_SCRIPT_GENERATION) .. "/sentinel"
-  local sibling = CacheFs.forVersion("soulsilver", setup.backend)
-  sibling:write("data/generated/maps/61.lua", "sibling bytes")
-  setup.cache:write("staging/leftover/scratch.lua", "staged bytes")
-  local pool = shutdownPoolStub(nil)
-  withSyntheticRoster(setup.plans, function()
-    driveShutdown(setup.cache, setup.identity, pool)
-  end)
-  Assert.equal(pool.shutdownCalls, 1, "shutdown joins its compiler pool exactly once")
-  Assert.isFalse(setup.cache:exists(setup.shared.meshOrphan), "the terminal pass reclaims proven orphans")
-  Assert.isFalse(setup.cache:exists(setup.shared.metaOrphan), "the terminal pass reclaims every proven orphan")
-  Assert.equal(setup.cache:read(setup.shared.meshRef), string.rep("mesh-block;", 200))
-  Assert.equal(setup.cache:read(setup.shared.sampleRef), string.rep("pcm-frame;", 200))
-  Assert.isFalse(setup.cache:exists(obsoleteSentinel), "the terminal pass retires the obsolete script tree")
-  Assert.equal(setup.cache:read(activeSentinel), "active payload", "the active script tree stays readable")
-  local active, activeErr = ScriptCache.loadActive(setup.cache)
-  Assert.notNil(active, "the active script selection stays valid: " .. tostring(activeErr))
-  Assert.equal(
-    setup.cache:read(ScriptCache.generationsDir() .. "/README.txt"),
-    "operator note",
-    "unknown names are preserved, not scavenged"
-  )
-  Assert.equal(setup.cache:read("mods/mymod/info.lua"), "return { name = 'kept' }\n", "user mods stay byte-identical")
-  Assert.equal(setup.cache:read("staging/leftover/scratch.lua"), "staged bytes", "staging debris is never entered")
-  Assert.equal(sibling:read("data/generated/maps/61.lua"), "sibling bytes", "a sibling version is never entered")
-  Assert.deepEqual(setup.cache:loadLua(CLEANUP_MEMO_PATH), { schema = 1, generationId = setup.identity.generationId })
-
-  local listings = 0
-  local realItems = setup.backend.getDirectoryItems
-  setup.backend.getDirectoryItems = function(self, path)
-    listings = listings + 1
-    return realItems(self, path)
-  end
-  local second
-  withSyntheticRoster(setup.plans, function()
-    second = driveBootCheck(setup.cache, setup.identity, sourcelessPool())
-  end)
-  setup.backend.getDirectoryItems = realItems
-  Assert.equal(second.state, "ready", "the memoized generation still boots without its source")
-  Assert.equal(listings, 0, "a memoized pass performs no roster or directory scans")
-end
-
--- A reselected boot never deletes while the previous epoch still holds
--- its physical worker: ready still answers, and every orphan waits for
--- the joined terminal pass.
-function T.boot_with_an_occupied_prior_worker_never_deletes()
-  local setup = setupCompleteBootCache()
-  local calls = { listings = 0, removes = 0 }
-  local realItems = setup.backend.getDirectoryItems
-  local realRemove = setup.backend.remove
-  setup.backend.getDirectoryItems = function(self, path)
-    calls.listings = calls.listings + 1
-    return realItems(self, path)
-  end
-  setup.backend.remove = function(self, path)
-    calls.removes = calls.removes + 1
-    return realRemove(self, path)
-  end
-  local pool = sourcelessPool()
-  pool.occupiedPriorSlot = true
-  local realPrepare = pool.prepareBootSource
-  function pool:prepareBootSource(epoch, needsSource)
-    assert(pool.occupiedPriorSlot, "the old slot stays occupied while the new epoch boots")
-    return realPrepare(self, epoch, needsSource)
-  end
-  local answer
-  withSyntheticRoster(setup.plans, function()
-    answer = driveBootCheck(setup.cache, setup.identity, pool)
-  end)
-  setup.backend.getDirectoryItems = realItems
-  setup.backend.remove = realRemove
-  Assert.equal(answer.state, "ready", "a reselected complete cache still boots without its source")
-  Assert.equal(calls.listings, 0, "no boot deletion may race an occupied worker slot")
-  Assert.equal(calls.removes, 0, "no boot deletion may race an occupied worker slot")
-  Assert.isTrue(setup.cache:exists(setup.shared.meshOrphan), "orphans wait for the joined terminal pass")
-  Assert.isTrue(setup.cache:exists(setup.shared.metaOrphan), "orphans wait for the joined terminal pass")
-  Assert.isNil(setup.cache:loadLua(CLEANUP_MEMO_PATH), "a raced boot writes no cleanup memo")
-end
-
--- Terminal shutdown without proof deletes nothing: no live selection, no
--- full marker, a missing shared sidecar, or a missing script receipt
--- each leave the memo absent, while only an independently proved script
--- pass may still retire its obsolete tree.
-function T.shutdown_without_selection_or_proof_deletes_nothing()
-  local ScriptCache = require("libs.assets.src.ScriptCache")
-  local ArtifactState = require("romdump.src.build.ArtifactState")
-  local DerivedCacheState = require("romdump.src.DerivedCacheState")
-  local obsoleteDir = ScriptCache.generationDir(OBSOLETE_SCRIPT_GENERATION) .. "/stale"
-
-  local idle = setupCompleteBootCache()
-  local idlePool = shutdownPoolStub(nil)
-  withSyntheticRoster(idle.plans, function()
-    driveShutdown(nil, nil, idlePool)
-  end)
-  Assert.equal(idlePool.shutdownCalls, 1, "shutdown still joins its pool with no selection")
-  Assert.isTrue(idle.cache:exists(idle.shared.meshOrphan), "no selection deletes no shared file")
-  Assert.isTrue(idle.cache:exists(idle.shared.metaOrphan), "no selection deletes no shared file")
-  Assert.isTrue(idle.cache:exists(obsoleteDir), "no selection retires no script tree")
-  Assert.isNil(idle.cache:loadLua(CLEANUP_MEMO_PATH), "no selection leaves no cleanup memo")
-
-  local unmarked = setupCompleteBootCache()
-  unmarked.cache:remove(DerivedCacheState.path)
-  withSyntheticRoster(unmarked.plans, function()
-    driveShutdown(unmarked.cache, unmarked.identity, shutdownPoolStub(nil))
-  end)
-  Assert.isTrue(unmarked.cache:exists(unmarked.shared.meshOrphan), "a missing marker deletes no shared file")
-  Assert.isTrue(unmarked.cache:exists(unmarked.shared.metaOrphan), "a missing marker deletes no shared file")
-  Assert.isTrue(unmarked.cache:exists(obsoleteDir), "a missing marker retires no script tree")
-  Assert.isNil(unmarked.cache:loadLua(CLEANUP_MEMO_PATH), "a missing marker leaves no cleanup memo")
-
-  local unproven = setupCompleteBootCache()
-  unproven.cache:remove(sharedSidecarPath("map", "3"))
-  withSyntheticRoster(unproven.plans, function()
-    driveShutdown(unproven.cache, unproven.identity, shutdownPoolStub(nil))
-  end)
-  Assert.isTrue(unproven.cache:exists(unproven.shared.meshOrphan), "missing shared proof deletes no shared file")
-  Assert.isTrue(unproven.cache:exists(unproven.shared.metaOrphan), "missing shared proof deletes no shared file")
-  Assert.isFalse(unproven.cache:exists(obsoleteDir), "independent script proof still retires the obsolete tree")
-  Assert.isNil(unproven.cache:loadLua(CLEANUP_MEMO_PATH), "a partial pass leaves no cleanup memo")
-
-  local unstamped = setupCompleteBootCache()
-  unstamped.cache:remove(ArtifactState.path("script-summary", "global"))
-  withSyntheticRoster(unstamped.plans, function()
-    driveShutdown(unstamped.cache, unstamped.identity, shutdownPoolStub(nil))
-  end)
-  Assert.isTrue(unstamped.cache:exists(obsoleteDir), "missing script proof retires no script tree")
-  Assert.isNil(unstamped.cache:loadLua(CLEANUP_MEMO_PATH), "missing script proof leaves no cleanup memo")
-end
-
--- A shutdown that cannot prove its workers joined deletes nothing: the
--- cache waits for a later verified closure instead.
-function T.shutdown_with_unproven_worker_closure_deletes_nothing()
-  local setup = setupCompleteBootCache()
-  local pool = shutdownPoolStub("injected worker join failure")
-  withSyntheticRoster(setup.plans, function()
-    driveShutdown(setup.cache, setup.identity, pool)
-  end)
-  Assert.equal(pool.shutdownCalls, 1, "shutdown still attempts its pool join")
-  Assert.isTrue(setup.cache:exists(setup.shared.meshOrphan), "an unproven join deletes no shared file")
-  Assert.isTrue(setup.cache:exists(setup.shared.metaOrphan), "an unproven join deletes no shared file")
-  Assert.isNil(setup.cache:loadLua(CLEANUP_MEMO_PATH), "an unproven join leaves no cleanup memo")
+  Assert.isNil(incomplete:read(meshOrphan), "an incomplete boot never sees a shared file")
 end
 
 -- A failed marker write frees its source yet still blocks the next

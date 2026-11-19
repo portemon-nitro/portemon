@@ -1031,10 +1031,10 @@ end
 -- The strip contract is the current focus-manifest shape above.
 
 function T.pocket_strips_and_edge_colors_validate_as_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v20")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v20")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v20")
-  Assert.equal(BagCache.FORMAT, "bag-cache-v2")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v21")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v21")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v21")
+  Assert.equal(BagCache.FORMAT, "bag-cache-v3")
   local manifest = validStripManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-strip manifest must pass the schema")
   Assert.keySet(manifest.interactive.pocketTabs, "rects,strips", "pocket tabs carry only rects and strips")

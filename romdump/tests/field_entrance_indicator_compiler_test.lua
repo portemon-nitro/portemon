@@ -50,7 +50,7 @@ local function installCenterHealingMocks()
       Assert.equal(opts.requiredModelMembers[1], 107, "the ball model is compiled without a map placement")
       local function descriptor(key, name, memberId)
         return {
-          schema = "g4-model-v6",
+          schema = ModelAsset.SCHEMA,
           key = key,
           memberId = memberId,
           kind = "nitro-dynamic",

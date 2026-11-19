@@ -9,6 +9,7 @@
 -- helpers.
 
 local Assert = require("tests.support.Assert")
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local FakeGraphics = require("tests.support.FakeGraphics").new
 
 local HERO_MODULE = "libs.hgss.src.presentation.BagHeroRenderer"
@@ -26,7 +27,7 @@ end
 
 local function descriptor(gender)
   return {
-    schema = "g4-model-v6",
+    schema = ModelAsset.SCHEMA,
     kind = "nitro-dynamic",
     dynamic = { nodes = {}, transformProgram = {}, batches = {} },
     materials = {
@@ -46,7 +47,7 @@ end
 
 local function manifest(overrides)
   local record = {
-    schema = "g4-bag-assets-v20",
+    schema = "g4-bag-assets-v21",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {

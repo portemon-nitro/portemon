@@ -35,6 +35,7 @@ local SummaryCache = require("libs.assets.src.SummaryCache")
 local SummaryAssetSchema = require("libs.assets.src.SummaryAssetSchema")
 local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
 local FieldMoveCutInBannerAssetCache = require("libs.assets.src.field.FieldMoveCutInBannerAssetCache")
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = {}
 
@@ -42,6 +43,7 @@ function T.cache_modules_consume_the_contract_constants()
   Assert.equal(MapAssetCache.FORMAT, DerivedAssetContract.map.cacheFormat)
   Assert.equal(MapAssetCache.SCENE_SCHEMA, DerivedAssetContract.map.sceneSchema)
   Assert.equal(MapAssetCache.TERRAIN_SCHEMA, DerivedAssetContract.map.terrainSchema)
+  Assert.equal(ModelAsset.SCHEMA, DerivedAssetContract.model.schema)
   Assert.equal(CollisionGridAsset.VERSION, DerivedAssetContract.map.collisionVersion)
   Assert.equal(FieldActorCache.FORMAT, DerivedAssetContract.fieldActors.cacheFormat)
   Assert.equal(FieldActorCache.SCHEMA, DerivedAssetContract.fieldActors.schema)
@@ -54,12 +56,10 @@ function T.cache_modules_consume_the_contract_constants()
   Assert.equal(FieldMessageCache.FORMAT, DerivedAssetContract.messages.cacheFormat)
   Assert.equal(FieldMessageCache.SCHEMA, DerivedAssetContract.messages.schema)
   Assert.equal(FieldMessageCache.INDEX_SCHEMA, DerivedAssetContract.messages.indexSchema)
-  Assert.equal(FieldMessageCache.PROVENANCE_SCHEMA, DerivedAssetContract.messages.provenanceSchema)
   Assert.equal(FieldFontCache.FORMAT, DerivedAssetContract.font.cacheFormat)
   Assert.equal(FieldFontCache.SCHEMA, DerivedAssetContract.font.schema)
   Assert.equal(ScriptCache.FORMAT, DerivedAssetContract.scripts.cacheFormat)
   Assert.equal(ScriptCache.INDEX_SCHEMA, DerivedAssetContract.scripts.indexSchema)
-  Assert.equal(ScriptCache.PROVENANCE_SCHEMA, DerivedAssetContract.scripts.provenanceSchema)
   Assert.equal(FieldUiAssetCache.FORMAT, DerivedAssetContract.fieldUi.cacheFormat)
   Assert.equal(FieldUiAssetCache.SCHEMA, DerivedAssetContract.fieldUi.schema)
   Assert.equal(AudioCache.FORMAT, DerivedAssetContract.audio.cacheFormat)
@@ -67,7 +67,6 @@ function T.cache_modules_consume_the_contract_constants()
   Assert.equal(AudioCache.SEQUENCE_SCHEMA, DerivedAssetContract.audio.sequenceSchema)
   Assert.equal(AudioCache.BANK_SCHEMA, DerivedAssetContract.audio.bankSchema)
   Assert.equal(AudioCache.SAMPLE_SCHEMA, DerivedAssetContract.audio.sampleSchema)
-  Assert.equal(AudioCache.PROVENANCE_SCHEMA, DerivedAssetContract.audio.provenanceSchema)
   Assert.equal(AudioSequence.SCHEMA, DerivedAssetContract.audio.sequenceSchema)
   Assert.equal(AudioBank.SCHEMA, DerivedAssetContract.audio.bankSchema)
   Assert.equal(AudioSample.SCHEMA, DerivedAssetContract.audio.sampleSchema)
@@ -133,7 +132,7 @@ function T.summary_family_carries_the_v4_manifest_schema()
   )
   Assert.equal(
     DerivedAssetContract.bag.schema,
-    "g4-bag-assets-v20",
+    "g4-bag-assets-v21",
     "the bag sibling identity survives the summary schema change"
   )
 end
@@ -351,7 +350,7 @@ end
 function T.opening_scene_contract_carries_the_current_schema_identity()
   Assert.equal(
     DerivedAssetContract.startupOpeningScene.schema,
-    "g4-startup-opening-scene-v12",
+    "g4-startup-opening-scene-v13",
     "the opening scene contract carries the current native schema"
   )
   Assert.equal(DerivedAssetContract.startupOpeningScene.tickRate, 30, "the opening scenes run at the retail 30 Hz rate")

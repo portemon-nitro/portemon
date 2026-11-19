@@ -20,7 +20,6 @@ local FAKE_PATHS = {
   "romdump.src.build.ArtifactJobs",
   "romdump.src.build.InteractiveCacheBuild",
   "romdump.src.build.CompilerPool",
-  "romdump.src.build.CacheMaintenance",
 }
 
 local T = {}
@@ -60,8 +59,6 @@ local function newEnv()
     publishes = {},
     publishAttempts = 0,
     publishFailCalls = {},
-    maintenanceCalls = {},
-    maintenanceError = nil,
     updateRaise = nil,
     logLines = {},
   }
@@ -449,19 +446,6 @@ local function makeFakes()
       return pool
     end,
   }
-  fakes.CacheMaintenance = {
-    collectCurrentGeneration = function(cacheFs, identity, quiescent)
-      env.maintenanceCalls[#env.maintenanceCalls + 1] = {
-        versionId = cacheFs.versionId,
-        identity = identity,
-        quiescent = quiescent,
-      }
-      if env.maintenanceError ~= nil then
-        error(env.maintenanceError, 0)
-      end
-      return { status = "collected", removedCount = 0, reclaimedBytes = 0 }
-    end,
-  }
   fakes.InteractiveCacheBuild = {
     new = function(options)
       assert(type(options) == "table", "generation session options are required")
@@ -768,26 +752,9 @@ function T.log_defaults_to_print()
   Assert.deepEqual(lines, { "." }, "one dot per ten ready jobs through the default log")
 end
 
--- A strict complete batch runs one proven current-generation cleanup pass
--- after its jobs settle, reusing the single cleanup owner.
-function T.complete_batch_invokes_current_generation_cleanup_once()
-  env = newEnv()
-  env.auditAvailable = true
-  local report, err = CacheBuilder.buildVersions(
-    { "heartgold" },
-    { dev = true, developmentRepositoryRoot = "/checkout", log = testLog() }
-  )
-  Assert.isNil(err)
-  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  Assert.equal(#env.maintenanceCalls, 1, "a strict complete batch runs one proven cleanup pass")
-  Assert.equal(env.maintenanceCalls[1].versionId, "heartgold")
-  Assert.isTrue(env.maintenanceCalls[1].quiescent, "batch cleanup runs only drained")
-  Assert.equal(env.maintenanceCalls[1].identity.versionId, "heartgold")
-end
-
--- A targeted scope never attests completeness and runs no cleanup, while a
--- strict complete preparation attests and then runs the same proven pass.
-function T.targeted_prepare_skips_cleanup_while_complete_prepare_runs_it()
+-- A targeted scope never attests completeness, while a strict complete
+-- preparation publishes exactly one attestation and deletes nothing.
+function T.targeted_prepare_never_attests_while_complete_prepare_does()
   env = newEnv()
   local identity = {
     versionId = "heartgold",
@@ -801,7 +768,7 @@ function T.targeted_prepare_skips_cleanup_while_complete_prepare_runs_it()
   })
   Assert.isNil(targetedErr)
   Assert.isFalse(targeted.complete, "a targeted scope never attests completeness")
-  Assert.equal(#env.maintenanceCalls, 0, "a targeted build runs no cleanup")
+  Assert.equal(#env.publishes, 0, "a targeted scope publishes no attestation")
 
   local complete, completeErr = CacheBuilder.prepareVersion("heartgold", {
     identity = identity,
@@ -810,13 +777,12 @@ function T.targeted_prepare_skips_cleanup_while_complete_prepare_runs_it()
   })
   Assert.isNil(completeErr)
   Assert.isTrue(complete.complete, "a strict complete build attests completeness")
-  Assert.equal(#env.maintenanceCalls, 1, "a strict complete build runs one proven cleanup pass")
-  Assert.isTrue(env.maintenanceCalls[1].quiescent, "batch cleanup runs only drained")
+  Assert.equal(#env.publishes, 1, "a strict complete build publishes one attestation")
 end
 
 -- An unproved pool closure fails the build before attestation: no new
--- full marker is published and no cleanup runs from that run.
-function T.unproved_pool_closure_blocks_attestation_and_cleanup()
+-- full marker is published.
+function T.unproved_pool_closure_blocks_attestation()
   env = newEnv()
   env.shutdownError = "injected worker join failure"
   local identity = {
@@ -832,12 +798,10 @@ function T.unproved_pool_closure_blocks_attestation_and_cleanup()
   Assert.isNil(complete, "an unproved join never reports a successful build")
   Assert.notNil(completeErr, "an unproved join carries its failure")
   Assert.equal(#env.publishes, 0, "an unproved join publishes no attestation")
-  Assert.equal(#env.maintenanceCalls, 0, "an unproved join runs no cleanup")
 end
 
--- An exclusion-accepting partial batch runs no cleanup, and a cleanup fault
--- is logged as deferred without falsifying a successful build report.
-function T.partial_batch_skips_cleanup_and_fault_preserves_report()
+-- An exclusion-accepting partial batch publishes no completeness attestation.
+function T.accepted_partial_batch_publishes_no_attestation()
   env = newEnv()
   env.failKeys["map:7"] = "MAP_SCHEMA_INVALID: injected compile rejection"
   env.auditAvailable = true
@@ -847,25 +811,7 @@ function T.partial_batch_skips_cleanup_and_fault_preserves_report()
   )
   Assert.isNil(acceptedErr)
   Assert.deepEqual(accepted, { published = true, complete = false, exclusionCount = 1 })
-  Assert.equal(#env.maintenanceCalls, 0, "an exclusion-accepting partial batch runs no cleanup")
-
-  env = newEnv()
-  env.auditAvailable = true
-  env.maintenanceError = "injected maintenance fault"
-  local report, err = CacheBuilder.buildVersions(
-    { "heartgold" },
-    { dev = true, developmentRepositoryRoot = "/checkout", log = testLog() }
-  )
-  Assert.isNil(err)
-  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  Assert.equal(#env.maintenanceCalls, 1, "the complete batch still attempts its cleanup pass")
-  local deferred = false
-  for _, line in ipairs(env.logLines) do
-    if line:find("maintenance: heartgold deferred: ", 1, true) ~= nil then
-      deferred = true
-    end
-  end
-  Assert.isTrue(deferred, "a deferred cleanup is logged without falsifying the build")
+  Assert.equal(#env.publishes, 0, "an exclusion-accepting partial batch attests nothing")
 end
 
 return module

@@ -4,7 +4,9 @@
 -- performs no producer I/O. Old attestations go
 -- cold without touching raw dumps, saves, or artifact roots, and any
 -- enumeration/read/validation fault aborts selection instead of falling back
--- to another key.
+-- to another key. A job receipt is bound to the generation that wrote it, so a
+-- replacement publish either becomes current with its complete payload or
+-- leaves the previous complete publish selected.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -487,6 +489,113 @@ function T.production_release_selection_reads_no_producer_sources()
     error(err, 0)
   end
   Assert.equal(touches, 0, "release selection must perform zero producer-source reads")
+end
+
+-- A replacement publish never makes a generation look ready before its payload
+-- is complete: an interrupted replacement keeps the previous complete publish
+-- selected under its single receipt, recovery settles exactly one complete
+-- state, and the retried job publishes over it with one receipt of its own.
+function T.interrupted_replacement_keeps_the_previous_publish_and_one_receipt()
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  cache:recoverPublication()
+  local firstGeneration = devIdentity("d" .. Sha256.hex("first published generation")).generationId
+  local secondGeneration = devIdentity("d" .. Sha256.hex("replacement generation")).generationId
+  local receiptPath = ArtifactState.path("map", "7")
+
+  local function expectedOf(generation)
+    return {
+      generationId = generation,
+      epoch = 1,
+      kind = "map",
+      key = "7",
+      jobKey = "map:7",
+    }
+  end
+
+  local function stageReplacement(generation, stageName, payload, marker)
+    local artifact = PreparedArtifact.new({
+      cacheFs = cache,
+      generationId = generation,
+      epoch = 1,
+      kind = "map",
+      key = "7",
+      jobKey = "map:7",
+      stageName = stageName,
+    })
+    artifact:stageFs():write("maps/7/complete", payload)
+    artifact:addOwnedRoot("maps/7")
+    artifact:finishSuccess({ marker = marker })
+    return artifact
+  end
+
+  local published = stageReplacement(firstGeneration, "first-publish", "first-bytes", "round-a")
+  published:publish(expectedOf(firstGeneration))
+  Assert.equal(cache:read("maps/7/complete"), "first-bytes")
+  local firstReceipt = ArtifactState.read(cache, firstGeneration, "map", "7")
+  Assert.notNil(firstReceipt, "the published generation keeps its current receipt")
+  assert(firstReceipt, "a published receipt is a record")
+  Assert.equal(firstReceipt.marker, "round-a")
+  Assert.isNil(
+    ArtifactState.read(cache, secondGeneration, "map", "7"),
+    "a receipt from another generation is not current"
+  )
+
+  local replacement = stageReplacement(secondGeneration, "replacement-publish", "second-bytes", "round-b")
+  local originalReplace = backend.replace
+  backend.replace = function(self, sourcePath, destinationPath)
+    if destinationPath:find(".__g4next", 1, true) ~= nil then
+      return false, "injected publication failure"
+    end
+    return originalReplace(self, sourcePath, destinationPath)
+  end
+  Assert.throws(function()
+    replacement:publish(expectedOf(secondGeneration))
+  end)
+  backend.replace = originalReplace
+  cache:recoverPublication()
+
+  -- Recovery settles one complete state: either the replacement is fully live
+  -- with its current receipt, or the previous complete publish stays selected.
+  local currentReceipt = ArtifactState.read(cache, secondGeneration, "map", "7")
+  local livePayload = cache:read("maps/7/complete")
+  if currentReceipt ~= nil then
+    Assert.equal(livePayload, "second-bytes", "a current receipt implies its complete replacement payload is live")
+    Assert.equal(currentReceipt.marker, "round-b")
+  else
+    Assert.equal(livePayload, "first-bytes", "without a current receipt the previous complete payload stays selected")
+    local previousReceipt = ArtifactState.read(cache, firstGeneration, "map", "7")
+    Assert.notNil(previousReceipt, "the previous generation keeps its receipt after an interrupted replacement")
+  end
+  Assert.isFalse(
+    cache:exists("data/generated/jobs-shared"),
+    "an interrupted replacement leaves no sidecar proof behind"
+  )
+
+  local retried = stageReplacement(secondGeneration, "replacement-retry", "second-bytes", "round-b")
+  retried:publish(expectedOf(secondGeneration))
+  Assert.equal(cache:read("maps/7/complete"), "second-bytes", "the retried job publishes its complete payload")
+  local retriedReceipt = ArtifactState.read(cache, secondGeneration, "map", "7")
+  Assert.notNil(retriedReceipt, "the retried job publishes its current receipt")
+  assert(retriedReceipt, "a retried receipt is a record")
+  Assert.equal(retriedReceipt.marker, "round-b")
+  Assert.isNil(
+    ArtifactState.read(cache, firstGeneration, "map", "7"),
+    "the superseded generation no longer reads current"
+  )
+  local receiptFiles = {}
+  for path in pairs(backend.files) do
+    if path:sub(1, 10) == "heartgold/" and path:find("data/generated/jobs/", 1, true) ~= nil then
+      receiptFiles[#receiptFiles + 1] = path
+    end
+  end
+  Assert.deepEqual(receiptFiles, { "heartgold/" .. receiptPath }, "one receipt per job survives the retry")
+  Assert.isFalse(
+    cache:exists("data/generated/jobs-shared"),
+    "a retried replacement publishes no sidecar proof"
+  )
 end
 
 return { tests = T }

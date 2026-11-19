@@ -849,7 +849,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v20",
+    schema = "g4-bag-assets-v21",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -1280,7 +1280,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v20")
+  Assert.equal(loaded.schema, "g4-bag-assets-v21")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)

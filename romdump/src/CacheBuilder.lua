@@ -553,7 +553,7 @@ local function collectVersionFacts(
   end
   local needsAttestation = exhaustive and counts.failed == 0 and counts.cancelled == 0 and counts.excluded == 0
   -- An unproved pool closure fails the build before attestation: no new
-  -- full marker is published and no cleanup runs from this run.
+  -- full marker is published from this run.
   if shutdownError ~= nil then
     requestedReady = false
     needsAttestation = false
@@ -604,39 +604,6 @@ local function logRecordOutcomes(record, log)
   end
   for _, message in ipairs(record.failures) do
     log(string.format("build-cache: %s failed: %s", record.versionId, message))
-  end
-end
-
--- One post-complete collection pass for a settled version through the
--- single current-generation cleanup owner: both the shared orphan proof
--- and the independent active-script proof run under the drained batch, and
--- the per-generation memo suppresses repeat work. The maintenance owner
--- gates every destructive step on full proof; this caller only keeps the
--- diagnostic from falsifying the build outcome. Logs only real removals or
--- faults, so clean runs stay exactly as quiet as before.
----@param cacheFs table<string, unknown>
----@param identity table<string, unknown>
----@param log fun(line: string)
-local function runPostCompleteMaintenance(cacheFs, identity, log)
-  local CacheMaintenance = require("romdump.src.build.CacheMaintenance")
-  if type(identity) ~= "table" or type(identity.generationId) ~= "string" or type(identity.producerId) ~= "string" then
-    return
-  end
-  local versionId = cacheFs.versionId --[[@as string]]
-  local ok, outcome = pcall(CacheMaintenance.collectCurrentGeneration, cacheFs, identity, true)
-  if ok then
-    if type(outcome) == "table" and outcome.status == "collected" and (outcome.removedCount or 0) > 0 then
-      log(
-        string.format(
-          "maintenance: %s reclaimed %d unreferenced shared files (%d bytes)",
-          versionId,
-          outcome.removedCount,
-          outcome.reclaimedBytes or 0
-        )
-      )
-    end
-  else
-    log("maintenance: " .. versionId .. " deferred: " .. tostring(outcome))
   end
 end
 
@@ -754,9 +721,6 @@ function CacheBuilder.prepareVersion(versionId, options)
     )
   else
     log(string.format("build-cache: %s prepared (%d jobs)", versionId, record.counts.successful))
-  end
-  if outcome.complete then
-    runPostCompleteMaintenance(cacheFs, identity, log)
   end
   return report
 end
@@ -905,12 +869,6 @@ function CacheBuilder.buildVersions(versionIds, options)
     return nil, "cache preparation failed"
   end
   local complete = exclusionCount == 0
-  if complete then
-    for _, record in ipairs(records) do
-      local cacheFs = record.cacheFs or CacheFs.forVersion(record.versionId)
-      runPostCompleteMaintenance(cacheFs, record.identity, log)
-    end
-  end
   return { published = true, complete = complete, exclusionCount = exclusionCount }
 end
 

@@ -10,8 +10,8 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
 
-local FORMAT = "field-emotes-cache-v3"
-local SCHEMA = "g4-field-emote-v2"
+local FORMAT = "field-emotes-cache-v4"
+local SCHEMA = "g4-field-emote-v3"
 local MARKER = FORMAT .. ":rom:dep"
 
 local function model()

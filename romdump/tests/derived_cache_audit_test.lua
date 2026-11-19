@@ -323,4 +323,77 @@ function T.a_trusted_receipt_with_an_unusable_payload_still_fails_the_explicit_a
   Assert.deepEqual(snapshot(backend), before, "a read-only audit performs no writes")
 end
 
+-- The explicit audit validates real published payload semantics, not just
+-- receipts: a message bank that is missing or unreadable behind a current
+-- receipt fails the walk until its exact payload is restored.
+function T.a_corrupt_real_payload_fails_the_explicit_audit()
+  local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  local generationId = "real-payload-generation"
+  local identity = { versionId = "heartgold", generationId = generationId, producerId = "audit-producer" }
+  local plans = minimalPlans()
+  plans.messageBankIds = { 4 }
+  local jobs = assert(ArtifactJobs.completeJobs(plans))
+  local target
+  for _, job in ipairs(jobs) do
+    if job.kind == "message-bank" and job.key == "4" then
+      target = job
+    end
+  end
+  assert(target, "the canonical inventory carries the demanded bank")
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  local marker = "bank-marker"
+  for _, job in ipairs(jobs) do
+    cache:writeLua(ArtifactState.path(job.kind, job.key), {
+      schema = ArtifactState.RECEIPT_SCHEMA,
+      generationId = generationId,
+      kind = job.kind,
+      key = job.key,
+      marker = job.kind == target.kind and job.key == target.key and marker or "other-marker",
+    })
+  end
+  cache:write(FieldMessageCache.bankMarkerPath(4), marker)
+
+  local realValidate = ArtifactJobs.validate
+  local function withOnlyTheBankValidated()
+    ArtifactJobs.validate = function(cacheFs, expectedGeneration, kind, key, sessionPlans, expectedIdentity)
+      if kind == target.kind and key == target.key then
+        return realValidate(cacheFs, expectedGeneration, kind, key, sessionPlans, expectedIdentity)
+      end
+      return true
+    end
+  end
+  local function audit()
+    withOnlyTheBankValidated()
+    local ok, available, reason = pcall(DerivedCacheAudit.isAvailable, cache, identity, plans)
+    ArtifactJobs.validate = realValidate
+    Assert.isTrue(ok, "the explicit audit resolves: " .. tostring(available))
+    return available, reason
+  end
+
+  local available, reason = audit()
+  Assert.isFalse(available, "a missing real payload fails the audit")
+  Assert.isTrue(
+    reason ~= nil and reason:find(target.jobKey, 1, true) ~= nil,
+    "the refusal names the missing payload, got: " .. tostring(reason)
+  )
+
+  cache:write(FieldMessageCache.bankPath(4), "return {")
+  local corrupt, corruptReason = audit()
+  Assert.isFalse(corrupt, "a corrupt real payload fails the audit")
+  Assert.isTrue(
+    corruptReason ~= nil and corruptReason:find(target.jobKey, 1, true) ~= nil,
+    "the refusal names the corrupt payload, got: " .. tostring(corruptReason)
+  )
+
+  cache:writeLua(FieldMessageCache.bankPath(4), {
+    schema = FieldMessageCache.SCHEMA,
+    bankId = 4,
+    messages = { "first" },
+  })
+  local restored = audit()
+  Assert.isTrue(restored, "the restored real payload makes the job usable")
+end
+
 return { tests = T }

@@ -126,7 +126,6 @@ function Worker.new(control, reply)
     deferredSelect = nil,
     pendingQuiesce = nil,
     exiting = false,
-    maintenanceNote = nil,
     selectedIdentity = nil,
     offerError = nil,
     attestedFor = nil,
@@ -1302,47 +1301,18 @@ function Worker:_handle(command)
   end
 end
 
--- Terminal shutdown owns the one interactive cleanup window: it snapshots
--- the active version cache and identity, joins every compiler worker, and
--- only after a positively proved join runs the single proof-gated sweep
--- as a best-effort diagnostic. A retired or failed selection, a version
--- mismatch, or an unproved join skips deletion; no reply is emitted.
+-- Terminal shutdown joins every compiler worker and drops the session and
+-- pool. Superseded generated data is reclaimed only by an explicit cache
+-- clear or whole-generation replacement, so shutdown deletes nothing; no
+-- reply is emitted.
 function Worker:_shutdown()
-  local session = self.session
-  local identity = self.selectedIdentity
-  local cacheFs = type(session) == "table" and session.cacheFs or nil
-  local candidate = type(cacheFs) == "table"
-    and type(identity) == "table"
-    and self.lifecycle ~= "failed"
-    and type(identity.versionId) == "string"
-    and type(identity.generationId) == "string"
-    and identity.generationId ~= ""
-    and cacheFs.versionId == identity.versionId
-    and (self.selectedVersionId == nil or self.selectedVersionId == identity.versionId)
-    and (type(session.generationId) ~= "string" or session.generationId == identity.generationId)
   local pool = self.pool
   self.exiting = true
-  local joinOk, joinResult = true, true
   if pool ~= nil then
-    joinOk, joinResult = pcall(pool.shutdown, pool)
+    pcall(pool.shutdown, pool)
   end
   self.session = nil
   self.pool = nil
-  local proved = pool ~= nil and joinOk and joinResult == true
-  if not candidate or not proved then
-    return
-  end
-  assert(type(cacheFs) == "table", "terminal cleanup keeps its snapshotted version cache")
-  assert(type(identity) == "table", "terminal cleanup keeps its snapshotted identity")
-  local collected, outcome = pcall(function()
-    local CacheMaintenance = require("romdump.src.build.CacheMaintenance")
-    return CacheMaintenance.collectCurrentGeneration(cacheFs, identity, true)
-  end)
-  if collected then
-    self.maintenanceNote = { result = outcome }
-  else
-    self.maintenanceNote = { fault = tostring(outcome) }
-  end
 end
 
 -- Drain available commands (bounded), advance quiescence, then pump the
