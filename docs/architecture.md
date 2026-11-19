@@ -117,8 +117,9 @@ Import verifies the ROM before recording its binding. Derived builds stage,
 validate, and publish complete trees; markers are written last. A failed
 replacement leaves the last ready artifact usable. Generated cache data and
 persistent saves use separate namespaces. The full warmed corpus is kept
-indefinitely with no eviction; superseded outputs are retired only with
-proof, never by quota.
+indefinitely with no eviction; superseded outputs are retired only by
+whole-generation replacement or an explicit cache clear, never by a scan or
+quota.
 
 `game/hgss` owns retail application composition. Its `FieldRuntime` owns the
 non-rendering field session, maps, actors, scripts, input, transitions, saves,
