@@ -14,6 +14,11 @@ BattlePicturePass.__index = BattlePicturePass
 
 local WIDTH, HEIGHT = 256, 192
 local DEPTH_RANGE = 1024
+-- Homogeneous clip-space unit the shared 3D target consumes: native fixed
+-- point one. Every primitive component (x, y, z, w) arrives in this unit, so
+-- the target's identity matrices leave a single perspective divide to the
+-- host.
+local CLIP_ONE = 4096
 -- Shared native 3D target dimensions: the battle world raster is always
 -- the native 256x192 lattice; the layout scale/offset applies once at the
 -- final host presentation, never as a per-picture re-anchor.
@@ -230,6 +235,11 @@ local function vertices(item)
     )
     local screenX, screenY = centerX + pivotX + x, centerY + pivotY + y
     local depth = math.max(0, math.min(1, -((baseZ + z) / DEPTH_RANGE)))
+    -- Native z runs from the near plane at 0 to the far plane at
+    -- -DEPTH_RANGE, so the normalized device depth is 2 * -z / DEPTH_RANGE - 1.
+    -- The legacy quad path feeds this straight to its shader as clip z with
+    -- w = 1; the shared 3D target consumes homogeneous clip units instead, so
+    -- clipVertices scales it by CLIP_ONE.
     local clipZ = depth * 2 - 1
     result[#result + 1] = vertex(screenX, screenY, clipZ, point[3], point[4])
   end
@@ -237,14 +247,35 @@ local function vertices(item)
 end
 
 -- Screen-space quad behind one collected picture submission: four
--- corner points as {x, y, z, u, v} in native pixels with normalized UVs.
--- The battle renderer adapts these onto typed clip-space primitives for
--- the shared 3D target; the legacy pictures-array path consumes them
--- directly. Pure in the submission record.
+-- corner points as {x, y, z, u, v}: native pixel screen position, native
+-- depth as normalized device z, and normalized UVs. The legacy quad path
+-- consumes these directly (its shader takes z with w = 1), so depth leaves
+-- this boundary normalized. Pure in the submission record.
 ---@param item table<string, unknown> collected picture submission
 ---@return table<integer, table<integer, number>> four screen-space corner points
 function BattlePicturePass.screenVertices(item)
   return vertices(item)
+end
+
+-- Homogeneous clip-space quad for one picture submission: the shared 3D
+-- target's identity matrices pass these straight to the host, so every
+-- component is converted exactly once, here, in clip units. Converting the
+-- depth anywhere else is how a picture loses its native plane.
+---@param item table<string, unknown> collected picture submission
+---@return { clipX: number, clipY: number, clipZ: number, clipW: number, u: number, v: number }[] four clip corner points
+function BattlePicturePass.clipVertices(item)
+  local rows = {}
+  for _, point in ipairs(vertices(item)) do
+    rows[#rows + 1] = {
+      clipX = (point[1] / (WIDTH / 2) - 1) * CLIP_ONE,
+      clipY = (1 - point[2] / (HEIGHT / 2)) * CLIP_ONE,
+      clipZ = point[3] * CLIP_ONE,
+      clipW = CLIP_ONE,
+      u = point[4],
+      v = point[5],
+    }
+  end
+  return rows
 end
 
 function BattlePicturePass.new(graphics)

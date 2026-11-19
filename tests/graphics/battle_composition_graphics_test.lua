@@ -587,4 +587,71 @@ function T.scripted_background_grayscale_grays_the_battlefield_plane(scope)
   plain:release()
 end
 
+function T.picture_depth_keeps_its_native_plane_against_particles(scope)
+  -- Native Pokepic quads carry a world z: 0 at the near plane, -1024 at the
+  -- far plane, so a solo enemy picture sits a quarter of the way back and the
+  -- shadow plane sits just in front of the far plane. The shared target must
+  -- receive that depth in clip units; a bare normalized value divided by the
+  -- clip w collapses every picture onto the middle plane, which hides effect
+  -- polygons that belong in front of the mon.
+  local graphics = love.graphics
+  -- White texels keep the blue vertex tint exact, so the center pixel reports
+  -- which polygon the shared depth target kept.
+  local source = solidImage(graphics, scope, 1, 1, 1)
+  local function picture(zCenter)
+    return {
+      kind = "picture",
+      image = source,
+      centerX = 128,
+      centerY = 96,
+      width = 80,
+      height = 80,
+      zCenter = zCenter,
+      alpha = 1,
+    }
+  end
+  local function ndcDepth(zCenter)
+    local corner = assert(BattlePicturePass.clipVertices(picture(zCenter))[1])
+    Assert.equal(corner.clipW, 4096, "picture clip w stays fixed point one")
+    return corner.clipZ / corner.clipW
+  end
+  Assert.near(ndcDepth(0), -1, 1e-9, "native z 0 is the near plane")
+  Assert.near(ndcDepth(-512), 0, 1e-9, "the solo player plane sits mid depth")
+  Assert.near(ndcDepth(-640), 0.25, 1e-9, "the solo enemy plane sits a quarter back")
+  Assert.near(ndcDepth(-1000), 0.953125, 1e-9, "the shadow plane holds its fixed native z")
+
+  -- The visible consequence: an opaque effect polygon whose native depth lies
+  -- between the enemy plane and the camera paints over the enemy picture, and
+  -- one behind it does not.
+  local pass = scope:own(BattlePicturePass.new(graphics))
+  local greenImage = solidImage(graphics, scope, 0, 1, 0)
+  local function frameWith(effectDepth)
+    local picturePrimitive = {
+      kind = "picture",
+      vertices = BattlePicturePass.clipVertices(picture(-640)),
+      color5 = { r = 0, g = 0, b = 31 },
+      alpha5 = 31,
+      polygonId = 5,
+      image = source,
+      sampler = { minFilter = "nearest", magFilter = "nearest", wrapX = "clamp", wrapY = "clamp" },
+      submissionOrdinal = 0,
+      alphaUsage = { hasZero = false, hasOpaque = true },
+      flags = { cullMode = "none", fogEnabled = false, translucentDepthWrite = false, depthEqual = false },
+    }
+    local effectPrimitive = quad(greenImage, { r = 0, g = 31, b = 0 }, 31, effectDepth)
+    effectPrimitive.alphaUsage = { hasZero = false, hasOpaque = true }
+    local frame = compositionFrame()
+    frame.planes = {}
+    -- Source submission order: particle polygons first, pictures after.
+    frame.primitives = { effectPrimitive, picturePrimitive }
+    return frame
+  end
+  local inFront = snapshot(pass:render(graphics, frameWith(math.floor(0.1 * 4096))))
+  checkPixel(inFront, 128, 96, 0, 63, 0, "an opaque effect nearer than the enemy picture stays visible")
+  inFront:release()
+  local behind = snapshot(pass:render(graphics, frameWith(math.floor(0.5 * 4096))))
+  checkPixel(behind, 128, 96, 0, 0, 63, "an opaque effect farther than the enemy picture stays hidden")
+  behind:release()
+end
+
 return GraphicsSmoke.suite(T)

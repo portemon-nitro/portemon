@@ -1086,17 +1086,7 @@ local function pictureToPrimitive(picture, ordinal)
     end
     return channel
   end
-  local rows = {}
-  for _, point in ipairs(BattlePicturePass.screenVertices(picture)) do
-    rows[#rows + 1] = {
-      clipX = (point[1] / 128 - 1) * 4096,
-      clipY = (1 - point[2] / 96) * 4096,
-      clipZ = point[3],
-      clipW = 4096,
-      u = point[4],
-      v = point[5],
-    }
-  end
+  local rows = BattlePicturePass.clipVertices(picture)
   return {
     kind = picture.kind or "picture",
     vertices = rows,
