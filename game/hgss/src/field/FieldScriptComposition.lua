@@ -784,6 +784,7 @@ function FieldScriptComposition.compose(runtime, options)
     partySelection = options.partySelection,
     mart = options.mart,
     travel = options.travel,
+    gameStats = runtime.gameStats,
     fieldMoves = options.fieldMoves,
     fieldMoveAftermath = fieldMoveAftermathService(runtime),
     sweetScent = sweetScentHost(runtime),

@@ -23,7 +23,9 @@
 -- src/update_dex_received.c:13-21). The register event
 -- SCORE_EVENT_REGISTER_SPECIES_CAUGHT 21 carries 20 points via
 -- sScoreMods[21] (src/game_stats.c) and the total caps at 99999999 in
--- GameStats_AddScore (src/game_stats.c:371-379).
+-- GameStats_AddScore (src/game_stats.c:371-379). Scripted score events
+-- enter through ScrCmd_AddSpecialGameStat (src/scrcmd_c.c), whose operand
+-- selects a weight from that same sScoreMods table.
 
 local Errors = require("libs.errors.src.Errors")
 
@@ -56,6 +58,69 @@ GameStats.SCORE_POINTS = {
 -- 999999 (src/game_stats.c:276-287).
 GameStats.SCORE_CAP = 99999999
 GameStats.MAIL_WRITTEN_CAP = 999999
+
+-- The source's sScoreMods table (src/game_stats.c), indexed by the
+-- ScrCmd_AddSpecialGameStat operand. It stays private: the score an event
+-- awards is the owner's business, so no producer or script supplies points.
+local SCRIPT_SCORE_MODS = {
+  1,
+  1,
+  1,
+  1,
+  1,
+  1,
+  1,
+  2,
+  2,
+  2,
+  2,
+  3,
+  3,
+  7,
+  7,
+  7,
+  10,
+  10,
+  11,
+  11,
+  11,
+  20,
+  30,
+  35,
+  40,
+  500,
+  10000,
+  7,
+  7,
+  7,
+  7,
+  1000,
+  11,
+  20,
+  10,
+  15,
+  11,
+  11,
+  10,
+  10,
+}
+
+-- The table above is a 0-based copy of the source's 40 events; a drifted
+-- entry count would silently renumber every later weight.
+assert(#SCRIPT_SCORE_MODS == 40, "the source score table has 40 events")
+
+-- One source script score event index into the private weight table.
+---@param value unknown
+---@return integer|nil eventId
+local function checkScriptScoreEvent(value)
+  if type(value) ~= "number" or value % 1 ~= 0 then
+    return nil
+  end
+  if SCRIPT_SCORE_MODS[value + 1] == nil then
+    return nil
+  end
+  return value
+end
 
 ---@param message string
 ---@param context table<string, unknown>
@@ -122,6 +187,18 @@ local function copySet(set)
     copy[key] = true
   end
   return copy
+end
+
+-- Adds points to a score under the retail ceiling.
+---@param score integer
+---@param points integer
+---@return integer
+local function cappedScore(score, points)
+  local total = score + points
+  if total > GameStats.SCORE_CAP then
+    return GameStats.SCORE_CAP
+  end
+  return total
 end
 
 -- Builds fresh stats over the resolved species set with nothing counted
@@ -224,19 +301,21 @@ end
 -- for an already-registered species, mirroring the retail counter behind
 -- EVO_STATE_REGISTER and the shed side product. A score observation
 -- names its semantic event, its earning species, and its points; the
--- owner verifies the points against the authoritative table and caps
--- the total at the retail ceiling. Every applied observation marks its
--- species in the counted set. Validation completes before any field of
--- the live owner mutates; a later invalid observation cannot partially
--- add an earlier valid one. The one-use candidate publishes exactly
--- once and only while current, advancing the revision exactly when the
--- batch changed anything; a repeated or stale publication fails before
--- touching state.
+-- owner verifies the points against the authoritative table. A
+-- script_score_event observation names one source score event index and
+-- the owner resolves its weight from the private sScoreMods table. Every
+-- score change caps at the retail ceiling, and only the observations that
+-- earn a species mark it in the counted set. Validation completes before
+-- any field of the live owner mutates; a later invalid observation cannot
+-- partially add an earlier valid one. The one-use candidate publishes
+-- exactly once and only while current, advancing the revision exactly
+-- when the batch changed anything; a repeated or stale publication fails
+-- before touching state.
 ---@class StatsPreparation
 ---@field changed boolean
 ---@field isCurrent fun(): boolean
 ---@field publish fun()
----@param changes { observations: { kind: string, species: string, event: string?, points: integer? }[] }
+---@param changes { observations: { kind: string, species: string?, event: string|integer?, points: integer? }[] }
 ---@return StatsPreparation
 function GameStats:prepareChanges(changes)
   if type(changes) ~= "table" then
@@ -294,6 +373,21 @@ function GameStats:prepareChanges(changes)
         end
       end
       observations[index] = { kind = "mail_written" }
+    elseif staged.kind == "script_score_event" then
+      -- One source script score event (ScrCmd_AddSpecialGameStat): the
+      -- owner resolves the weight from its private table, so a producer
+      -- names the event only. Only the award operation below stages this
+      -- kind; it marks no species as counted and writes no Mail.
+      for key in pairs(staged) do
+        if key ~= "kind" and key ~= "event" then
+          fail("stats observations carry kind and payload records", { field = key })
+        end
+      end
+      local eventId = checkScriptScoreEvent(staged.event)
+      if eventId == nil then
+        fail("stats observation names a source score event outside the table", { event = staged.event })
+      end
+      observations[index] = { kind = "script_score_event", points = SCRIPT_SCORE_MODS[eventId + 1] }
     else
       fail("stats observation names an unknown kind", { kind = staged.kind })
     end
@@ -313,19 +407,19 @@ function GameStats:prepareChanges(changes)
         scratchMailWritten = scratchMailWritten + 1
         changed = true
       end
-      local total = scratchScore + 1
-      if total > GameStats.SCORE_CAP then
-        total = GameStats.SCORE_CAP
+      local total = cappedScore(scratchScore, 1)
+      if total ~= scratchScore then
+        scratchScore = total
+        changed = true
       end
+    elseif observation.kind == "script_score_event" then
+      local total = cappedScore(scratchScore, observation.points)
       if total ~= scratchScore then
         scratchScore = total
         changed = true
       end
     else
-      local total = scratchScore + observation.points
-      if total > GameStats.SCORE_CAP then
-        total = GameStats.SCORE_CAP
-      end
+      local total = cappedScore(scratchScore, observation.points)
       if total ~= scratchScore then
         scratchScore = total
         changed = true
@@ -355,6 +449,22 @@ function GameStats:prepareChanges(changes)
     end
   end
   return { changed = changed, isCurrent = isCurrent, publish = publish }
+end
+
+-- Applies one source script score event: ScrCmd_AddSpecialGameStat
+-- (src/scrcmd_c.c) names an index into sScoreMods and GameStats_AddScore
+-- adds that weight under the retail ceiling (src/game_stats.c). The award
+-- stages and publishes through the same revisioned preparation as every
+-- other score observation, so it never bypasses the cap or the saved
+-- bucket, and an index the source table does not have is invalid input
+-- rather than a zero-point event.
+---@param eventId integer
+function GameStats:awardScriptScoreEvent(eventId)
+  local event = checkScriptScoreEvent(eventId)
+  if event == nil then
+    fail("source score event is outside the source table", { event = eventId })
+  end
+  self:prepareChanges({ observations = { { kind = "script_score_event", event = event } } }):publish()
 end
 
 -- Reads the persistable bucket: the sorted registration set (freshness

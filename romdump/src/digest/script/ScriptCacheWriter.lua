@@ -432,7 +432,6 @@ local function aggregateCoverage(records, plan)
       reachableInstructions = 0,
       supportedInstructions = 0,
       unsupportedInstructions = 0,
-      malformedInstructions = 0,
     },
     opcodes = {},
     scripts = {},

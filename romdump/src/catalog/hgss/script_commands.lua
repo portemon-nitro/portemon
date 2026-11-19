@@ -3909,6 +3909,7 @@ return {
       },
     },
     [515] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_AddSpecialGameStat",
       widths = {
         [1] = 2,

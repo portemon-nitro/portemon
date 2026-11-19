@@ -45,7 +45,6 @@ local function member(memberId, id, generation)
         reachableInstructions = 1,
         supportedInstructions = 1,
         unsupportedInstructions = 0,
-        malformedInstructions = 0,
       },
       opcodes = {},
       scripts = {
@@ -338,7 +337,6 @@ function T.member_with_no_resources_stages_without_a_fake_job()
         reachableInstructions = 0,
         supportedInstructions = 0,
         unsupportedInstructions = 0,
-        malformedInstructions = 0,
       },
       opcodes = {},
       scripts = {},

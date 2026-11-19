@@ -337,4 +337,94 @@ function T.written_mail_joins_mixed_batches_atomically()
   Assert.equal(owner:mailWrittenCount(), 2, "only the current write lands")
 end
 
+-- Scripted score events come from the source's sScoreMods table
+-- (src/game_stats.c): ScrCmd_AddSpecialGameStat names the event only, and
+-- the owner applies that event's weight under the existing ceiling and
+-- revision rules. Event 1 (the Apricorn harvest) is one point, event 21 is
+-- the retail species-caught receipt weight, and 26/31/39 sit at the
+-- table's large end.
+function T.script_score_events_credit_their_source_weights()
+  local owner = newOwner()
+  local expected = 0
+  for _, case in ipairs({
+    { event = 0, points = 1 },
+    { event = 1, points = 1 },
+    { event = 21, points = 20 },
+    { event = 26, points = 10000 },
+    { event = 31, points = 1000 },
+    { event = 39, points = 10 },
+  }) do
+    local revision = owner:revision()
+    owner:awardScriptScoreEvent(case.event)
+    expected = expected + case.points
+    Assert.equal(owner:score(), expected, "event " .. case.event .. " credits its source weight")
+    Assert.equal(owner:revision(), revision + 1, "one award publishes exactly one change")
+  end
+  Assert.equal(owner:uniqueCount(), 0, "a scripted score registers no species")
+  Assert.equal(owner:mailWrittenCount(), 0, "a scripted score writes no Mail")
+  local bucket = owner:bucket()
+  Assert.equal(bucket.score, expected, "the awarded score is the persisted score")
+  Assert.equal(GameStats.restore(bucket, refs()):score(), expected, "the awarded score survives its saved bucket")
+end
+
+function T.script_score_event_rejects_events_outside_the_source_table()
+  local owner = newOwner()
+  owner:awardScriptScoreEvent(1)
+  local score = owner:score()
+  local revision = owner:revision()
+  for _, event in ipairs({ 40, 41, 1000, 65535, -1, 1.5, "1" }) do
+    assertInvalid(function()
+      owner:awardScriptScoreEvent(event)
+    end, "source event " .. tostring(event) .. " is outside the score table")
+    Assert.equal(owner:score(), score, "a rejected event awards nothing")
+    Assert.equal(owner:revision(), revision, "a rejected event publishes nothing")
+  end
+  assertInvalid(function()
+    owner:awardScriptScoreEvent(nil)
+  end, "an absent event is never scored")
+  Assert.equal(owner:score(), score, "an absent event leaves the score alone")
+end
+
+function T.script_score_event_saturates_at_the_retail_ceiling()
+  local nearCap = GameStats.restore({
+    schema = "hgss-stats-v2",
+    stateVersion = 2,
+    uniqueCaught = {},
+    uniqueTotal = 0,
+    score = GameStats.SCORE_CAP - 5,
+    mailWritten = 0,
+  }, refs())
+  local revision = nearCap:revision()
+  nearCap:awardScriptScoreEvent(21)
+  Assert.equal(nearCap:score(), GameStats.SCORE_CAP, "the total never exceeds the retail ceiling")
+  Assert.equal(nearCap:revision(), revision + 1, "a bounded award still publishes its change")
+  local capped = GameStats.restore({
+    schema = "hgss-stats-v2",
+    stateVersion = 2,
+    uniqueCaught = {},
+    uniqueTotal = 0,
+    score = GameStats.SCORE_CAP,
+    mailWritten = 0,
+  }, refs())
+  revision = capped:revision()
+  capped:awardScriptScoreEvent(21)
+  Assert.equal(capped:score(), GameStats.SCORE_CAP, "an award at the ceiling moves nothing")
+  Assert.equal(capped:revision(), revision, "an award that changes nothing publishes nothing")
+end
+
+function T.script_score_event_never_revives_a_stale_candidate()
+  local owner = newOwner()
+  owner:prepareChanges({ observations = { { kind = "mail_written" } } }):publish()
+  local stale = owner:prepareChanges({ observations = { { kind = "mail_written" } } })
+  local revision = owner:revision()
+  owner:awardScriptScoreEvent(21)
+  Assert.equal(owner:score(), 21, "the scripted event lands on the live score")
+  Assert.equal(owner:revision(), revision + 1, "the award publishes one change")
+  assertInvalid(function()
+    stale.publish()
+  end, "a candidate staged before the award is stale")
+  Assert.equal(owner:score(), 21, "the stale candidate never rewinds the awarded score")
+  Assert.equal(owner:revision(), revision + 1, "the stale publication moves no revision")
+end
+
 return { tests = T }

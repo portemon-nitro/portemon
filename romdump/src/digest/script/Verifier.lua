@@ -14,7 +14,7 @@
 -- 7. Call/return balance is preserved.
 -- 8. Movement sequence termination is preserved.
 -- 9. No command disappears except an explicitly documented erasure.
--- 10. Unsupported instructions prevent a `complete` result.
+-- 10. Reachable unsupported instructions prevent a `complete` result.
 --
 -- the caller signal is cleared before the common script's following command
 -- runs, matching the pinned `ScrCmd_RestartCurrentScript` bit protocol. Pure
@@ -957,7 +957,12 @@ local function verifyCoverage(context)
     local node = context.byOffset[ins.offset]
     if node ~= nil then
       context.covered = context.covered + 1
-      if node.op == "unsupported" then
+      -- Only a reachable unsupported command is support debt: an
+      -- unsupported instruction in a region this script's own entry never
+      -- reaches (a shared tail that another script calls) is translated but
+      -- not counted here, so the report's reachable accounting stays
+      -- self-consistent and `complete` states what the entry path covers.
+      if node.op == "unsupported" and isReachable then
         context.reachableUnsupported = context.reachableUnsupported + 1
         context.unsupportedNodes[#context.unsupportedNodes + 1] = node
       end

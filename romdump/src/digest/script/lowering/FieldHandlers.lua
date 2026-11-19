@@ -692,13 +692,15 @@ local function kurtApricornBoxSelect(_)
   return { op = "apricorn_box_select" }
 end
 
--- The Apricorn tree script passes SCORE_EVENT_APRICORN_HARVESTED (1) to
--- ScrCmd_AddSpecialGameStat. Score persistence has no runtime owner yet, so
--- preserve this one command position without claiming other stat events.
-local function addApricornHarvestScore(ins)
+-- ScrCmd_AddSpecialGameStat (515) names one score event from the source's
+-- 40-entry sScoreMods table (src/game_stats.c) and credits it in the same
+-- tick (GameStats_AddScore). The weight and the ceiling stay in the live
+-- GameStats owner, so the translator emits the source event index unchanged
+-- and never an amount; an index outside that table is not a source event.
+local function addSpecialGameStat(ins)
   local event = Operands.operandValue(ins.operands[1])
-  if event == 1 then
-    return { op = "noop" }
+  if type(event) == "number" and event >= 0 and event < 40 then
+    return { op = "game_score_event", event = event }
   end
   return {
     op = "unsupported",
@@ -706,7 +708,7 @@ local function addApricornHarvestScore(ins)
     originalName = "ScrCmd_AddSpecialGameStat",
     arguments = { event },
     sourceOffset = ins.offset,
-    reason = "special game-stat event has no runtime owner",
+    reason = "special game-stat event is outside the source score table",
   }
 end
 
@@ -1796,7 +1798,7 @@ local FieldHandlers = {
   [669] = getItemQuantity,
   [623] = apricornTreeAnim,
   [624] = apricornTreeColor,
-  [515] = addApricornHarvestScore,
+  [515] = addSpecialGameStat,
   [735] = kurtApricornQuantity,
   [736] = kurtApricornClear,
   [737] = kurtApricornBall,

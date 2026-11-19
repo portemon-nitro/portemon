@@ -1002,6 +1002,10 @@ Schema.OPERATIONS = {
   weekday = { fields = { result = { type = "id_or_var", required = true } } },
   discard_value = { fields = { value = { type = "scalar_or_value", required = true } } },
   trainer_card_stars = { fields = { result = { type = "id_or_var", required = true } } },
+  -- The source AddSpecialGameStat command (opcode 515): the node names one
+  -- score event from the game-stats owner's authoritative table and the
+  -- owner resolves its weight, so no script carries a score amount.
+  game_score_event = { fields = { event = { type = "integer", required = true } } },
   prop_animation_load = {
     fields = {
       fieldX = { type = "scalar_or_value", required = true },

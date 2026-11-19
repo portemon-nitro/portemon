@@ -44,6 +44,18 @@ local function verify(operands)
   return Verifier.verifyScript(steps, script, memberIr, lowered.omissions)
 end
 
+-- Translate and verify one script of a synthetic member.
+local function lowerScriptIndex(bytes, index)
+  local memberIr = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", {
+    msgBank = 543,
+    catalog = { sounds = {}, flags = {}, vars = {}, maps = {} },
+  }))
+  local script = assert(memberIr.scripts[index])
+  local lowered = SemanticLowering.lowerScript(script, memberIr, { stdCatalog = SourceCatalog.catalog() })
+  local steps = Structurer.structure(lowered, index)
+  return lowered, steps, Verifier.verifyScript(steps, script, memberIr, lowered.omissions)
+end
+
 local tests = {}
 
 function tests.ordinary_opcode_173_is_a_verified_native_wait()
@@ -103,6 +115,55 @@ function tests.literal_bug_contest_slot_is_explicitly_unsupported()
   Assert.deepEqual(lowered.unsupported, { node })
   local report = verify({ 255, 0x800C })
   Assert.isFalse(report.complete, "literal Bug Contest target must make the script incomplete")
+end
+
+-- The ordinary party slot keeps its blocking naming task while the literal
+-- Bug Contest target stays an explicit unsupported node: no synthetic party
+-- nickname screen can be reached for the contest caught mon, and the
+-- special case keeps its own source offset.
+function tests.bug_contest_slot_stays_deferred_while_party_slots_keep_naming()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          { op = 173, args = { { value = 0, width = 2 }, { value = 0x800C, width = 2 } } },
+          { op = 2, args = {} },
+        },
+      },
+      {
+        offset = 0x28,
+        instructions = {
+          { op = 173, args = { { value = 255, width = 2 }, { value = 0x800C, width = 2 } } },
+          { op = 2, args = {} },
+        },
+      },
+    },
+  })
+
+  local _, partySteps, partyReport = lowerScriptIndex(bytes, 0)
+  Assert.equal(partySteps[1].op, "pokemon_nickname_input", "an ordinary slot keeps the blocking naming task")
+  Assert.equal(partySteps[1].slot, 0)
+  Assert.equal(partySteps[1].result.value, "var")
+  Assert.isTrue(
+    partyReport.ok,
+    partyReport.problems[1] and partyReport.problems[1].message or "ordinary naming verifies"
+  )
+  Assert.isTrue(partyReport.complete)
+
+  local contestLowered, contestSteps, contestReport = lowerScriptIndex(bytes, 1)
+  for _, step in ipairs(contestSteps) do
+    Assert.isTrue(step.op ~= "pokemon_nickname_input", "the contest caught mon never reaches the party naming task")
+  end
+  local node = contestLowered.items[1]
+  Assert.equal(node.op, "unsupported")
+  Assert.equal(node.command, 173)
+  Assert.deepEqual(node.arguments, { 255, "VAR_0x800C" })
+  Assert.equal(node.sourceOffset, 0x28)
+  Assert.isTrue(node.reason:find("Bug Contest", 1, true) ~= nil, "the deferral names its missing owner")
+  Assert.deepEqual(contestLowered.unsupported, { node })
+  Assert.isFalse(contestReport.complete, "the deferred target keeps the script incomplete")
+  Assert.equal(contestReport.unsupportedCount, 1)
 end
 
 return { tests = tests }

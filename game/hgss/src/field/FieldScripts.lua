@@ -257,6 +257,7 @@ end
 ---@field partySelection table<string, unknown>|nil the modal script-party surface the blocking selection task opens and closes (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field mart table<string, unknown>|nil the script-owned mart child host (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field travel table<string, unknown>|nil the durable travel owner for spawn updates (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field gameStats table<string, unknown>|nil the live game-stats owner behind script score events (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field fieldMoves table<string, unknown>|nil the field-move runtime for task execution (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field fieldMoveAftermath table<string, unknown>|nil the Rock Smash / Headbutt aftermath service (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field sweetScent table<string, unknown>|nil the Sweet Scent host seam for the scent task (absent -> SCRIPT_SERVICE_MISSING on use)
@@ -568,6 +569,7 @@ function FieldScripts.new(opts)
       partySelection = opts.partySelection,
       mart = opts.mart,
       travel = opts.travel,
+      gameStats = opts.gameStats,
       fieldMoves = opts.fieldMoves,
       fieldMoveAftermath = opts.fieldMoveAftermath,
       sweetScent = opts.sweetScent,

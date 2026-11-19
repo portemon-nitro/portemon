@@ -281,16 +281,20 @@ function Cfg.build(script, memberIr)
   stronglyConnected()
 
   -- Call/return balance: propagate stack heights over (block, height)
-  -- states. Falls through and branches keep the height; call edges add one;
-  -- returns require a frame and terminate. A stop with open call frames is
-  -- a documented source idiom (subroutines that End instead of Return
+  -- states. Every instruction that is not a terminator keeps the height,
+  -- and so does a Call's fallthrough: the source interpreter pushes the
+  -- frame for the callee only and resumes the caller after its Return, so
+  -- the instruction after a Call (or the untaken path of a CallIf) is a
+  -- continuation at the caller's height. Only the taken call edge adds one
+  -- frame; returns require one and terminate. A stop with open call frames
+  -- is a documented source idiom (subroutines that End instead of Return
   -- unwind the whole context), so it is reported as a warning, not a
   -- violation.
   local balance = { ok = true, problems = {}, warnings = {} }
   local function blockDelta(block)
     -- The cumulative stack delta across the whole block (including its
     -- terminator), the minimum prefix sum, and the delta before the
-    -- terminator (a CallIf fallthrough skips the push).
+    -- terminator (the height the terminator itself sees).
     local delta = 0
     local min = 0
     local cum = 0
@@ -354,17 +358,12 @@ function Cfg.build(script, memberIr)
       for _, succ in ipairs(block.successors) do
         local nextHeight
         if succ.kind == "call" then
-          -- The pushed frame is visible on both the called side and (for a
-          -- plain Call) the fallthrough side.
-          nextHeight = state.height + post
+          -- The taken edge enters the callee with the pushed frame.
+          nextHeight = state.height + pre + 1
         elseif succ.kind == "fallthrough" or succ.kind == "branch" then
-          -- A CallIf fallthrough skips the push; every other terminator
-          -- keeps the full post-sum on its outgoing edges.
-          if terminator.kind == "call_if" then
-            nextHeight = state.height + pre
-          else
-            nextHeight = state.height + post
-          end
+          -- A continuation edge keeps the caller's height: the frame the
+          -- terminator pushed (if any) belongs to the callee, not here.
+          nextHeight = state.height + pre
         end
         if nextHeight ~= nil and succ.targetIndex ~= nil and nextHeight <= maxCalls then
           pending[#pending + 1] = { id = succ.targetIndex, height = nextHeight }

@@ -1,9 +1,10 @@
 -- Script service injection: the composed scheduler carries the travel
--- owner and the field-move runtime to the tasks that consume them. A
--- set_spawn slice updates the injected travel through the scheduler;
--- a pending field_move slice reaches the injected runtime. Override
--- slices install through the override layer like any source script.
--- No planning vocabulary here.
+-- owner, the field-move runtime, and the live game-stats owner to the
+-- tasks and operations that consume them. A set_spawn slice updates the
+-- injected travel through the scheduler; a pending field_move slice reaches
+-- the injected runtime; a source game-score slice credits the injected
+-- stats owner. Override slices install through the override layer like any
+-- source script. No planning vocabulary here.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -11,8 +12,10 @@ local FakeCache = require("tests.support.FakeCache")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScripts = require("game.hgss.src.field.FieldScripts")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
+local GameStats = require("libs.hgss.src.mons.GameStats")
 local HoOhAppearanceFixture = require("tests.support.HoOhAppearanceFixture")
 local ScriptCache = require("libs.assets.src.ScriptCache")
+local ScriptErrors = require("libs.script.src.errors")
 local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
 
 local T = { tests = {} }
@@ -120,13 +123,18 @@ local function sliceChunk(id, steps)
       )
     elseif step.op == "field_move" then
       lines[#lines + 1] = '    { op = "field_move", source = "pending" },'
+    elseif step.op == "game_score_event" then
+      lines[#lines + 1] = string.format('    { op = "game_score_event", event = %d },', step.event)
     elseif step.op == "battle_launch" then
       lines[#lines + 1] =
         '    { op = "battle_launch", kind = "wild", details = { species = "TOTODILE", level = 4 }, result = { value = "var", id = "VAR_TEMP_x4001" } },'
     elseif step.op == "battle_result" then
       lines[#lines + 1] = '    { op = "battle_result", result = { value = "var", id = "VAR_TEMP_x4002" } },'
     else
-      error("services harness covers set_spawn, set_special_spawn, pending field_move, and battle ops only", 0)
+      error(
+        "services harness covers set_spawn, set_special_spawn, pending field_move, game_score_event, and battle ops only",
+        0
+      )
     end
   end
   lines[#lines + 1] = "  },"
@@ -134,7 +142,7 @@ local function sliceChunk(id, steps)
   return table.concat(lines, "\n")
 end
 
-local function driveSlice(services, id, steps)
+local function composeSlice(services, id, steps)
   local function noop() end
   local args = {
     cacheFs = testCache(),
@@ -164,11 +172,16 @@ local function driveSlice(services, id, steps)
     travel = services.travel,
     fieldMoves = services.fieldMoves,
     battle = services.battle,
+    gameStats = services.gameStats,
   }
-  local platform = FieldScripts.new(args --[[@as FieldScriptsOptions]])
+  return FieldScripts.new(args --[[@as FieldScriptsOptions]])
+end
+
+local function driveSlice(services, id, steps, tick)
+  local platform = composeSlice(services, id, steps)
   local composed = assert(platform.composition:effective(id), "the slice must compose")
-  platform.scheduler:createForeground(composed, nil, 100)
-  platform.scheduler:step(100, nil)
+  platform.scheduler:createForeground(composed, nil, tick or 100)
+  platform.scheduler:step(tick or 100, nil)
   return platform
 end
 
@@ -199,6 +212,46 @@ function T.tests.set_special_spawn_writes_durable_copied_travel_state()
     warpId = -1,
     direction = "south",
   }, "the opcode-582 value survives travel capture")
+end
+
+-- A composed source score slice credits the live game-stats owner it was
+-- wired with: nothing at composition time, once per executed command, on the
+-- same saved score the trainer card reads.
+function T.tests.script_score_slice_credits_the_injected_stats_owner()
+  local stats = GameStats.new({ species = { CHIKORITA = true } })
+  local platform = composeSlice({ travel = nil, fieldMoves = nil, gameStats = stats }, "test.score_slice", {
+    { op = "game_score_event", event = 1 },
+    { op = "game_score_event", event = 21 },
+  })
+  Assert.equal(stats:score(), 0, "composing a script scores nothing before it runs")
+  local composed = assert(platform.composition:effective("test.score_slice"))
+  platform.scheduler:createForeground(composed, nil, 100)
+  platform.scheduler:step(100, nil)
+  Assert.equal(stats:score(), 21, "one execution credits each source event's weight once")
+  platform.scheduler:createForeground(composed, nil, 200)
+  platform.scheduler:step(200, nil)
+  Assert.equal(stats:score(), 42, "the next execution credits the events again")
+  Assert.equal(stats:bucket().score, 42, "the credited score is the persisted score")
+end
+
+-- A score slice composed without a game-stats owner faults at the command
+-- instead of succeeding through a scratch or per-script score. The scheduler
+-- contains a structured fault on the running context, so the fault is
+-- observed on the instance the foreground created: the slice ends there and
+-- no composable owner is left to credit the event.
+function T.tests.script_score_slice_faults_without_a_stats_owner()
+  local platform = composeSlice({ travel = nil, fieldMoves = nil, gameStats = nil }, "test.score_missing", {
+    { op = "game_score_event", event = 1 },
+  })
+  local composed = assert(platform.composition:effective("test.score_missing"))
+  local instanceId = platform.scheduler:createForeground(composed, nil, 100)
+  -- An ended root leaves the live set, so the test keeps the instance the
+  -- foreground created and reads its terminal state after the step.
+  local running = assert(platform.scheduler:instance(instanceId), "the score slice must start")
+  platform.scheduler:step(100, nil)
+  Assert.equal(running.status, "faulted", "a scripted score without a game-stats owner faults the script")
+  Assert.equal(running.endReason, ScriptErrors.SCRIPT_SERVICE_MISSING, "the fault names the missing service")
+  Assert.isNil(platform.scheduler:instance(instanceId), "the faulted score slice leaves no live script")
 end
 
 function T.tests.pending_field_move_reaches_the_injected_runtime()

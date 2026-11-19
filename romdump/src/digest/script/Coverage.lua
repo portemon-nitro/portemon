@@ -21,7 +21,6 @@ function Coverage.record(memberIr, results, source)
     reachableInstructions = 0,
     supportedInstructions = 0,
     unsupportedInstructions = 0,
-    malformedInstructions = 0,
   }
   local opcodes = {}
   local scripts = {}
@@ -30,6 +29,11 @@ function Coverage.record(memberIr, results, source)
   -- instructions that had to lower to an explicit unsupported node. The
   -- per-opcode status is derived from those counts, so an opcode that is
   -- translated in some scripts and rejected in others reports `mixed`.
+  -- Status therefore describes reachable support, not raw-byte support: the
+  -- unsupported counts come from the verifier, which attributes only
+  -- CFG-reachable nodes, so an opcode whose unsupported nodes all sit in
+  -- unreachable regions reports `supported` while its raw occurrences stay
+  -- counted in the totals.
   for _, script in pairs(memberIr.scripts) do
     local seenPerScript = {}
     for _, ins in ipairs(script.instructions) do
@@ -127,7 +131,6 @@ function Coverage.aggregate(records)
     reachableInstructions = 0,
     supportedInstructions = 0,
     unsupportedInstructions = 0,
-    malformedInstructions = 0,
   }
   local opcodes = {}
   local scripts = {}
@@ -146,7 +149,6 @@ function Coverage.aggregate(records)
     totals.reachableInstructions = totals.reachableInstructions + record.totals.reachableInstructions
     totals.supportedInstructions = totals.supportedInstructions + record.totals.supportedInstructions
     totals.unsupportedInstructions = totals.unsupportedInstructions + record.totals.unsupportedInstructions
-    totals.malformedInstructions = totals.malformedInstructions + record.totals.malformedInstructions
     for opcode, entry in pairs(record.opcodes) do
       local target = opcodes[opcode]
       if target == nil then
@@ -187,7 +189,6 @@ function Coverage.markdown(record)
   lines[#lines + 1] = "| Reachable instructions | " .. record.totals.reachableInstructions .. " |"
   lines[#lines + 1] = "| Supported instructions | " .. record.totals.supportedInstructions .. " |"
   lines[#lines + 1] = "| Unsupported instructions | " .. record.totals.unsupportedInstructions .. " |"
-  lines[#lines + 1] = "| Malformed instructions | " .. record.totals.malformedInstructions .. " |"
   lines[#lines + 1] = ""
   local complete = 0
   local partial = 0

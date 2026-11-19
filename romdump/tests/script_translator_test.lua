@@ -15,6 +15,7 @@ local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
 local Narc = require("libs.nds.src.nitro.Narc")
 local S = require("gen4.script")
+local ScriptIdentity = require("libs.assets.src.ScriptIdentity")
 local NarcBuilder = require("tests.support.NarcBuilder")
 
 local T = {}
@@ -1784,6 +1785,98 @@ T["unsupported and omitted instructions stay accounted beside folds"] = function
   Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "partial script must verify")
   Assert.isFalse(report.complete)
   Assert.equal(report.unsupportedCount, 1)
+end
+
+-- 50. Source Call keeps its resolved member target and timing: a call into
+-- another script's interior label is one cross-script call node naming that
+-- script and label, the caller's continuation stays balanced, and a target
+-- that no member instruction defines stays an attributed unsupported node
+-- instead of becoming a silent no-op.
+T["cross-script call resolves its target and a missing target stays unsupported"] = function()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          -- 0x20: Call (6) -> 0x26, target 0x2C in the other script
+          { op = 26, args = { { target = 0x2C, width = 4 } } },
+          -- 0x26: End (2) -> 0x28
+          { op = 2, args = {} },
+        },
+      },
+      {
+        offset = 0x28,
+        instructions = {
+          -- 0x28: WaitButton (2) -> 0x2A
+          { op = 50, args = {} },
+          -- 0x2A: Return (2) -> 0x2C
+          { op = 27, args = {} },
+          -- 0x2C: the called label, SetFlag (4) -> 0x30
+          { op = 30, args = { { value = 7, width = 2 } } },
+          -- 0x30: Return (2) -> 0x32
+          { op = 27, args = {} },
+        },
+      },
+    },
+  })
+  local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
+  local function translateIndex(index)
+    local lowered = SemanticLowering.lowerScript(ir.scripts[index], ir, { stdCatalog = SourceCatalog.catalog() })
+    local steps = Structurer.structure(lowered, index)
+    local report = Verifier.verifyScript(steps, ir.scripts[index], ir, lowered.omissions)
+    return lowered, steps, report
+  end
+
+  local lowered, steps, report = translateIndex(0)
+  Assert.equal(#lowered.unsupported, 0)
+  Assert.deepEqual(steps[1], {
+    op = "call",
+    target = ScriptIdentity.formatVanilla(5, 1),
+    label = "_002C",
+    provenance = { offsets = { 0x20 }, opcodes = { 26 } },
+  })
+  Assert.equal(steps[2].op, "stop")
+  Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "cross-script call must verify")
+  Assert.isTrue(report.complete)
+  local warnedOpenFrame = false
+  for _, warning in ipairs(report.warnings) do
+    if warning.message == "script ends with a non-empty call stack" then
+      warnedOpenFrame = true
+    end
+  end
+  Assert.isFalse(warnedOpenFrame, "the call's own continuation does not run with a pushed frame")
+
+  local missing = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          -- 0x20: Call (6) -> 0x26, target no instruction defines
+          { op = 26, args = { { target = 0x900, width = 4 } } },
+          -- 0x26: End (2) -> 0x28
+          { op = 2, args = {} },
+        },
+      },
+    },
+  })
+  local missingIr =
+    assert(ScriptBinaryDecoder.parseMember(missing, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
+  local missingLowered = SemanticLowering.lowerScript(missingIr.scripts[0], missingIr, {
+    stdCatalog = SourceCatalog.catalog(),
+  })
+  local missingSteps = Structurer.structure(missingLowered, 0)
+  local missingReport = Verifier.verifyScript(missingSteps, missingIr.scripts[0], missingIr, missingLowered.omissions)
+  Assert.equal(missingSteps[1].op, "unsupported", "a missing call target never becomes a call or a no-op")
+  Assert.equal(missingSteps[1].command, 26)
+  Assert.isTrue(
+    type(missingSteps[1].reason) == "string" and missingSteps[1].reason ~= "",
+    "the unresolved call stays attributed"
+  )
+  Assert.deepEqual(missingSteps[1].provenance, { offsets = { 0x20 }, opcodes = { 26 } })
+  Assert.equal(#missingLowered.unsupported, 1)
+  Assert.isTrue(missingReport.ok, missingReport.problems[1] and missingReport.problems[1].message or "reported")
+  Assert.isFalse(missingReport.complete)
+  Assert.equal(missingReport.unsupportedCount, 1)
 end
 
 return { tests = T }

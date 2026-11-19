@@ -3277,6 +3277,17 @@ HANDLERS.process_soundplate = handleProcessSoundplate
 HANDLERS.shake_camera = handleShakeCamera
 HANDLERS.set_spawn = handleSetSpawn
 HANDLERS.set_special_spawn = handleSetSpecialSpawn
+-- AddSpecialGameStat (515): the source command names one score event and
+-- returns in the same tick; the live game-stats owner resolves the event's
+-- weight and caps the total, so the node never carries an amount. The main
+-- chunk is at LuaJIT's local budget, so the handler lives in a block.
+do
+  local function handleGameScoreEvent(node, run)
+    requireService(run, "gameStats"):awardScriptScoreEvent(node.event)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.game_score_event = handleGameScoreEvent
+end
 HANDLERS.open_message = handleOpenMessage
 HANDLERS.signpost_direction = handleSignpostDirection
 HANDLERS.signpost_set = handleSignpostSet

@@ -102,7 +102,6 @@ local function scriptCoverage(memberId, id, scriptIndex)
       reachableInstructions = 1,
       supportedInstructions = 1,
       unsupportedInstructions = 0,
-      malformedInstructions = 0,
     },
     opcodes = {},
     scripts = {
