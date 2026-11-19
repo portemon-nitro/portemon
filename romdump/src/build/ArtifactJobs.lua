@@ -1102,13 +1102,16 @@ local function executeAudioSummary(artifact, context, job)
   local source = generationAudioSource(context, job, "audio summary jobs")
   local audioPlan = assert(source.audioPlan, "audio summary jobs require the published audio membership")
   ---@cast audioPlan table<string, unknown>
-  local audioIdentity = assert(source.audioIdentity, "audio summary jobs require the published sound identity")
   local cacheFs = assert(context.cacheFs, "audio summary jobs require a cache filesystem")
   local generationId = assert(job.generationId, "audio summary jobs require a generation")
   -- The current-generation receipt is the sole completion proof of each
   -- independent job, so the summary publishes only once the catalog and
-  -- every planned closure are current. No payload is read back here.
-  if ArtifactState.read(cacheFs, generationId, "audio-catalog", "global") == nil then
+  -- every planned closure are current. The catalog receipt marker already
+  -- binds the adopted source identity and runtime index, so the summary
+  -- hashes it instead of serializing the index again. No payload is read
+  -- back here.
+  local catalogReceipt = ArtifactState.read(cacheFs, generationId, "audio-catalog", "global")
+  if catalogReceipt == nil then
     error("audio summary is missing the current catalog receipt", 0)
   end
   for _, bankPlan in ipairs(assert(audioPlan.bankPlans, "audio summary jobs require the published bank closures")) do
@@ -1117,7 +1120,7 @@ local function executeAudioSummary(artifact, context, job)
       error("audio summary is missing the current receipt for bank " .. tostring(bankPlan.bankId), 0)
     end
   end
-  return AudioCacheWriter.stageSummary(artifact, audioPlan, audioIdentity)
+  return AudioCacheWriter.stageSummary(artifact, audioPlan, catalogReceipt.marker)
 end
 
 local function executeScriptMember(artifact, context, memberId, generationKey, producer)
@@ -1666,14 +1669,23 @@ local function executeAudioBankJob(artifact, context, job)
 end
 
 -- A current receipt is the whole warm proof for one audio closure: its
--- payload was validated once when the job staged it, and exhaustive payload
--- checking belongs to the explicit audit, never to a warm readiness walk.
+-- payload was validated once when the job staged it, so bank readiness never
+-- walks a sample or metadata file. The explicit audit's one family-level
+-- payload walk belongs to the catalog validator below.
 local function validateAudioBank(_)
   return true
 end
 
-local function validateAudioCatalog(_)
-  return true
+-- The explicit audit's single family-level audio walk: the catalog receipt
+-- proves the roster job published, then AudioCacheValidator proves every
+-- referenced sequence, bank, sample payload, and metadata record. Ordinary
+-- warm reuse never reaches a family validator: a current receipt reuses the
+-- job as published.
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validateAudioCatalog(check)
+  local AudioCacheValidator = require("libs.assets.src.audio.AudioCacheValidator")
+  return AudioCacheValidator.validate(check.cacheFs) == nil
 end
 
 ---@param plans ArtifactJobs.Plans

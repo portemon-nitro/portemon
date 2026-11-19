@@ -694,7 +694,7 @@ function T.prepare_repairs_only_the_damaged_bank_closure_and_summary()
       jobKey = "audio-bank:global",
       stageName = "audio-summary",
     })
-    local summaryMarker = AudioCacheWriter.stageSummary(summaryArtifact, plan, identity)
+    local summaryMarker = AudioCacheWriter.stageSummary(summaryArtifact, plan, catalogMarker)
     Assert.equal(type(summaryMarker), "string", "the summary stages its marker")
     summaryArtifact:finishSuccess({ marker = summaryMarker })
     summaryArtifact:publish({
@@ -739,7 +739,7 @@ function T.prepare_repairs_only_the_damaged_bank_closure_and_summary()
         jobKey = "audio-bank:global",
         stageName = "audio-summary-repair",
       })
-      local repairedMarker = AudioCacheWriter.stageSummary(repairSummary, plan, identity)
+      local repairedMarker = AudioCacheWriter.stageSummary(repairSummary, plan, catalogMarker)
       repairSummary:finishSuccess({ marker = repairedMarker })
       repairSummary:publish({
         generationId = GENERATION,
@@ -756,10 +756,7 @@ function T.prepare_repairs_only_the_damaged_bank_closure_and_summary()
     Assert.equal(cache:read(AudioCache.bankPath(4)), siblingBank, "the sibling bank is untouched")
     Assert.equal(cache:read(AudioCache.sequencePath(0)), siblingSequence, "sibling sequences are untouched")
     for _, path in ipairs(writes) do
-      Assert.isFalse(
-        path == AudioCache.bankPath(4),
-        "repair writes no sibling bank artifact: " .. tostring(path)
-      )
+      Assert.isFalse(path == AudioCache.bankPath(4), "repair writes no sibling bank artifact: " .. tostring(path))
     end
     Assert.isNil(AudioCacheValidator.validate(cache), "the repaired family validates again")
   end)
@@ -1042,8 +1039,12 @@ function T.batch_bank_and_summary_publication_matches_staged_closures()
       AudioCacheValidator.validateCatalog(cache:loadLua(AudioCache.indexPath())),
       "the batch catalog validates before the summary"
     )
-    local summaryMarker = AudioCacheWriter.summaryMarker(plan, identity)
-    Assert.equal(AudioCacheWriter.summaryMarker(plan, identity), summaryMarker, "the family marker is deterministic")
+    local summaryMarker = AudioCacheWriter.summaryMarker(plan, catalogMarker)
+    Assert.equal(
+      AudioCacheWriter.summaryMarker(plan, catalogMarker),
+      summaryMarker,
+      "the family marker is deterministic"
+    )
     Assert.isTrue(catalogMarker ~= summaryMarker, "the catalog and family markers name different selections")
     Assert.isNil(AudioCacheValidator.validate(cache), "the batch family validates")
     Assert.notNil(cache:read(AudioCache.bankPath(4)), "bank closures survive the family check")
