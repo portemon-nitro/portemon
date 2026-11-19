@@ -4135,6 +4135,56 @@ function T.session_passes_committed_step_speed_to_the_player_visual()
   Assert.equal(visual.poseTick, 16, "the locked run keeps the source gait cadence")
 end
 
+-- A field-locking input edge that arrives while the player's own step is in
+-- flight waits for the step to commit: the in-progress step owns the tile
+-- until then, so taking the field mid-walk would freeze a half-walked avatar.
+function T.menu_edge_mid_step_opens_after_the_step_commits()
+  local session, player = movementSession()
+  local host = session.applicationHost
+  session:updateFixed({ pressedDirection = "east" })
+  session:updateFixed({ heldDirection = "east" })
+  Assert.isTrue(player.motion ~= "idle", "setup starts an ordinary step")
+  local startX = player.fieldX
+
+  session:updateFixed({ heldDirection = "east", menuPressed = true })
+  Assert.isFalse(host:isActive(), "the mid-step menu edge does not take the field")
+
+  for _ = 1, 12 do
+    if host:isActive() then
+      break
+    end
+    session:updateFixed({ heldDirection = "east" })
+  end
+  Assert.equal(player.fieldX, startX + 1, "the in-progress step commits its whole tile first")
+  Assert.isTrue(host:isActive(), "the retained edge opens the menu on the settled boundary")
+end
+
+-- A script's Start Menu reopen request arrives at the post-scheduler
+-- arbitration point, which is also reachable while a step is in flight: the
+-- request stays queued instead of freezing the unfinished step.
+function T.script_reopen_mid_step_waits_for_the_step_to_commit()
+  local session, player = movementSession()
+  local host = session.applicationHost
+  session:updateFixed({ pressedDirection = "east" })
+  session:updateFixed({ heldDirection = "east" })
+  Assert.isTrue(player.motion ~= "idle", "setup starts an ordinary step")
+  local startX = player.fieldX
+
+  host:requestReopen()
+  session:updateFixed({ heldDirection = "east" })
+  Assert.isFalse(host:isActive(), "the mid-step reopen request does not take the field")
+  Assert.equal(host.reopenRequests, 1, "the request stays queued until the step settles")
+
+  for _ = 1, 12 do
+    if host:isActive() then
+      break
+    end
+    session:updateFixed({ heldDirection = "east" })
+  end
+  Assert.equal(player.fieldX, startX + 1, "the in-progress step commits its whole tile first")
+  Assert.isTrue(host:isActive(), "the queued request opens the menu on the settled boundary")
+end
+
 -- One foreground field script driving the real player through the real
 -- Scheduler + MovementTask stack. The player facade forwards the scripted
 -- action owners directly to the live FieldPlayer, so the session tick sees

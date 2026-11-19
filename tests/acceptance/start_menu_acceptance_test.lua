@@ -154,4 +154,55 @@ function T.tests.mom_grants_exactly_the_early_menu_actions()
   end)
 end
 
+-- A Start Menu press that arrives while an ordinary step is in flight opens
+-- the menu only after that step commits. Retail's avatar commits its tile
+-- when a step begins, so taking the field mid-walk is invisible there; this
+-- engine holds the tile until the step ends, so the press waits for it
+-- instead of freezing a half-walked avatar.
+function T.tests.start_menu_press_mid_step_opens_after_the_step_commits()
+  withEveryVersion(function(harness, versionId)
+    local options = { width = 256, height = 192, topology = topology(256, 192) }
+    withGame(harness, versionId, options, function(game)
+      StartMenuFacts.grantRightColumn(game)
+      local directions = { "north", "south", "east", "west" }
+      local direction = nil
+      for _, candidate in ipairs(directions) do
+        local before = game:snapshot()
+        game:face(candidate)
+        game:move(candidate)
+        local after = game:snapshot()
+        if after.player.motion ~= "idle" then
+          direction = candidate
+          break
+        end
+        Assert.equal(before.player.fieldX, after.player.fieldX, "a refused probe changes nothing")
+      end
+      local directionUnderTest = assert(direction, "the tower floor gives the scenario one walkable step")
+      local walking = game:snapshot()
+      Assert.isTrue(walking.player.motion ~= "idle", "the probe leaves an ordinary step in flight")
+      local vacated = { fieldX = walking.player.fieldX, fieldZ = walking.player.fieldZ }
+
+      game.runtime:pressMenu()
+      game:step()
+      game.runtime:releaseMenu()
+      Assert.equal(
+        game.runtime.applicationHost:status().phase,
+        FieldApplicationHost.PHASES.closed,
+        "the in-flight step keeps the field: the menu press does not freeze it mid-walk"
+      )
+
+      game:advanceUntil("the retained press opens the Start Menu", function()
+        return game.runtime.applicationHost:status().phase == FieldApplicationHost.PHASES.menu
+      end, 30)
+      local settled = game:snapshot()
+      Assert.equal(settled.player.motion, "idle", "the whole step commits before the field locks")
+      Assert.isFalse(
+        settled.player.fieldX == vacated.fieldX and settled.player.fieldZ == vacated.fieldZ,
+        "the step reaches its own destination tile before the menu owns the tick"
+      )
+      menuStatus(game)
+    end)
+  end)
+end
+
 return T

@@ -160,6 +160,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field accumulator number
 ---@field navigationBoundary table<string, unknown>?
 ---@field _boundaryMovementDirection FieldDirection?
+---@field _deferredFieldEdges { menu: boolean, action: boolean, registeredSlot: integer? } field-locking edges retained from an in-flight step
 ---@field _actorLocked fun(actorId: string): boolean
 ---@field _tickScratch FieldSession.TickScratch
 local FieldSession = {}
@@ -526,6 +527,7 @@ function FieldSession.new(options)
     tick = 0,
     accumulator = 0,
     _boundaryMovementDirection = nil,
+    _deferredFieldEdges = { menu = false, action = false, registeredSlot = nil },
   }, FieldSession)
   -- One lock predicate for the session lifetime: it consults the scheduler
   -- at invocation time and never caches a lock result.
@@ -1369,11 +1371,58 @@ local function runScriptPhase(self, inputSnapshot)
   return playerInputOwnedAtTickStart, modalInputOwnedAtTickStart
 end
 
+---@param self FieldSession
+local function clearDeferredFieldEdges(self)
+  local deferred = self._deferredFieldEdges
+  deferred.menu, deferred.action, deferred.registeredSlot = false, false, nil
+end
+
+-- Field-locking input edges (Start Menu, interaction, registered slot) that
+-- arrive while the player's own step is in flight are retained for the
+-- settle tick instead of dying with their tick: the in-progress step owns
+-- the player's tile until it commits, so taking the field first would freeze
+-- a half-walked avatar whose scripted walk can then never start. A settled
+-- tick offers them exactly once, and a tick a higher-priority owner holds
+-- discards them, so a press made inside a script, menu, or battle still dies
+-- with its own tick.
+---@param self FieldSession
+---@param inputSnapshot table<string, unknown>
+---@param claimed boolean whether a higher-priority owner holds this tick
+local function resolveDeferredFieldEdges(self, inputSnapshot, claimed)
+  local deferred = self._deferredFieldEdges
+  if claimed then
+    clearDeferredFieldEdges(self)
+    return
+  end
+  if self.player.motion ~= "idle" then
+    deferred.menu = deferred.menu or inputSnapshot.menuPressed == true
+    deferred.action = deferred.action or inputSnapshot.actionPressed == true
+    deferred.registeredSlot = deferred.registeredSlot or inputSnapshot.registeredSlotPressed
+    return
+  end
+  if deferred.menu then
+    inputSnapshot.menuPressed = true
+  end
+  if deferred.action then
+    inputSnapshot.actionPressed = true
+  end
+  if deferred.registeredSlot ~= nil then
+    inputSnapshot.registeredSlotPressed = deferred.registeredSlot
+  end
+  deferred.menu, deferred.action, deferred.registeredSlot = false, false, nil
+end
+
 function FieldSession:updateFixed(inputSnapshot)
   -- Ordinary field-audio policy runs for same-zone completed steps. Map-entry
   -- and changed-zone audio are owned by FieldAudioController:enterMap and
   -- FieldAudioController:enterZone respectively.
   inputSnapshot = inputSnapshot or self.input:snapshot()
+  if self.battleActive or self.foregroundHold or self.transition.locked or self.transition.completed then
+    -- A presented battle, held presentation, or transition owns the field: a
+    -- request retained from an unfinished step dies with that step instead of
+    -- outliving the owner that took the field.
+    clearDeferredFieldEdges(self)
+  end
   if self.overworld ~= nil then
     self.overworld:updateFixed()
   end
@@ -1584,20 +1633,26 @@ function FieldSession:updateFixed(inputSnapshot)
     or playerInputOwnedAfterScheduler
     or self.battleActive
     or modalInputOwnedAtTickStart
+  -- A field request made while the player's own step was in flight is
+  -- offered on the first tick the ordinary field owns from here on: the
+  -- step has committed by then, so menu/script arbitration cannot freeze a
+  -- half-walked avatar.
+  resolveDeferredFieldEdges(self, inputSnapshot, inputSuppressedThisTick or foregroundActive)
 
   -- Start Menu arbitration: a pending script reopen request (opcode 61's
-  -- startMenuReopen service) opens the menu unconditionally at this point,
-  -- then the menu edge is gated by the idle-boundary check (checked after
-  -- the single script-scheduler step established the field lock state,
-  -- before actor stepping, interaction resolution, warps, or player
-  -- movement). The host's boolean answers "did the open consume this tick?":
-  -- true for a successful open and for a fatal composition failure (the
-  -- host has entered its terminal failed state, which must freeze the rest
-  -- of this tick); false means the menu is unavailable and the field
-  -- continues stepping normally. This arbitration freezes world
-  -- presentation (actors, player, camera) on its tick, so it runs before
-  -- the actor step.
-  if self.applicationHost:takeReopen(self.tick + 1) then
+  -- startMenuReopen service) opens the menu at this point, then the menu
+  -- edge is gated by the idle-boundary check (checked after the single
+  -- script-scheduler step established the field lock state, before actor
+  -- stepping, interaction resolution, warps, or player movement). The host's
+  -- boolean answers "did the open consume this tick?": true for a successful
+  -- open and for a fatal composition failure (the host has entered its
+  -- terminal failed state, which must freeze the rest of this tick); false
+  -- means the menu is unavailable and the field continues stepping normally.
+  -- This arbitration freezes world presentation (actors, player, camera) on
+  -- its tick, so it runs before the actor step. A request that arrives while
+  -- the player's own step is in flight stays queued in the host: the step
+  -- owns the tile until it commits.
+  if self.player.motion == "idle" and self.applicationHost:takeReopen(self.tick + 1) then
     self:_advanceTick()
     return
   end
