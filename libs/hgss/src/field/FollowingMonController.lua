@@ -89,6 +89,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field _spec fun(self: FollowingMonController, mapId: integer, fieldX: integer, fieldZ: integer, facing: string, worldY: number?, initiallyVisible: boolean?): FieldActorManager.PartnerSpec
 ---@field _tryInstall fun(self: FollowingMonController, spec: FieldActorManager.PartnerSpec): string?
 ---@field _tryUpdate fun(self: FollowingMonController, spec: FieldActorManager.PartnerSpec): string?
+---@field _finishInFlightTrail fun(self: FollowingMonController, partnerId: string)
 ---@field _publish fun(self: FollowingMonController, mapId: integer)
 ---@field _suppress fun(self: FollowingMonController)
 ---@field _clearAll fun(self: FollowingMonController)
@@ -533,6 +534,19 @@ function FollowingMonController:_tryUpdate(spec)
   error(id)
 end
 
+-- Finish the follower's in-flight trail at the actor owner: the walk's
+-- destination becomes the committed tile exactly as its own commit tick
+-- would have published it. Idempotent when no trail is in flight.
+---@param self FollowingMonController
+---@param partnerId string
+function FollowingMonController:_finishInFlightTrail(partnerId)
+  if self._action == nil then
+    return
+  end
+  self._action = nil
+  self._actors:commitScriptedAction(partnerId)
+end
+
 -- Publish the desired lead: replace in place when an actor is live,
 -- otherwise install on the player's exact tile while a pending map entry
 -- is owed, or behind the player (falling back to the oldest yielded
@@ -544,17 +558,22 @@ end
 function FollowingMonController:_publish(mapId)
   local partnerId = self._actors:partnerId()
   if partnerId ~= nil then
+    -- The trail in flight belongs to the walk, not to the lead that started
+    -- it: a new lead is published on the tile that walk had already reached.
+    -- A held field returns that way, so dropping the walk here would install
+    -- the replacement a second tile behind and make it catch up by stepping
+    -- whole tiles.
+    self:_finishInFlightTrail(partnerId)
     local position = assert(self._actors:getPosition(partnerId), "partner position is required")
     local actor = assert(self._actors:getById(partnerId), "partner actor is required")
     local id = self:_tryUpdate(self:_spec(mapId, position.fieldX, position.fieldZ, actor.facing, position.worldY))
     if id ~= nil then
       self._published = self._lead
       self._queue = {}
-      -- A new lead swaps the published visual in place on the same tile:
-      -- the replacement actor is fresh with no in-flight walk, so stale
-      -- trail state from the previous lead must not resume on it. Clearing
-      -- mirrors the map-change reset; only a map switch cleared it before.
-      self._action = nil
+      -- A new lead swaps the published visual in place on the tile the trail
+      -- reached, and the replacement actor is fresh with no in-flight walk: no
+      -- trail state from the previous lead resumes on it. Clearing mirrors the
+      -- map-change reset; only a map switch cleared it before.
       self._consumedStep = nil
       self._ledgeLanding = nil
       self._lastFollowerCommand = nil
