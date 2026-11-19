@@ -129,19 +129,4 @@ function ScriptCacheFixture.writeSingleMember(cache, generation, marker, scripts
   ScriptCacheFixture.write(cache, generation, marker, { [0] = scripts }, opts)
 end
 
--- The active index entry of one logical script, for callers that must pass its
--- member and source slot to the loader.
----@param cache CacheFs
----@param id string
----@return { id: string, member: integer, scriptIndex: integer }
-function ScriptCacheFixture.entry(cache, id)
-  local index = assert(cache:loadLua(ScriptCache.activeIndexPath()), "the fixture cache has no active index")
-  for _, entry in ipairs(index.resources) do
-    if entry.id == id then
-      return entry
-    end
-  end
-  error("the fixture index has no resource " .. tostring(id), 2)
-end
-
 return ScriptCacheFixture

@@ -78,32 +78,36 @@ local function requireShim(name)
   error("unexpected require in script chunk: " .. name)
 end
 
--- A registry with two deferred generated layers over a fixture cache and a
--- recording loader.
-local function lazyRegistry(cache)
-  local calls = {}
-  local registry = Registry.new({
-    loadResource = function(id)
-      calls[#calls + 1] = id
-      local resource = assert(ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, 0, id, requireShim))
-      return resource
-    end,
-  })
-  registry:installBaseDeferred("new_bark.lab_sign", "generated")
-  registry:installBaseDeferred("vanilla.hgss.scr_seq.0842.script_001", "generated")
-  return registry, calls
+-- The real deferred generated layer over the fixture cache: the selected
+-- registry owns the single per-member memo, and a member-bundle read is the
+-- observable decode.
+local function lazyRegistry(cache, overrideFiles)
+  local reads = 0
+  local originalRead = cache.backend.read
+  cache.backend.read = function(self, path)
+    if path:find("/generations/", 1, true) then
+      reads = reads + 1
+    end
+    return originalRead(self, path)
+  end
+  local registry = ScriptLoader.buildRegistry(cache, overrideFs(overrideFiles), requireShim, { lazy = true })
+  return registry, function()
+    return reads
+  end
 end
 
--- 1. A deferred base decodes through the loader on first access and is
--- memoized: the loader runs once per id.
+-- 1. A deferred base decodes through the registry on first access and is
+-- memoized: both ids of the shared member decode from one bundle read.
 T["deferred base decodes through the loader once"] = function()
-  local registry, calls = lazyRegistry(scriptCache())
+  local registry, reads = lazyRegistry(scriptCache())
   Assert.isNil(registry:base("unknown.id"))
   local resource = assert(registry:base("new_bark.lab_sign"))
   Assert.equal(resource.id, "new_bark.lab_sign")
-  Assert.deepEqual(calls, { "new_bark.lab_sign" })
+  Assert.equal(reads(), 1, "first access reads the member bundle once")
   Assert.notNil(registry:base("new_bark.lab_sign"))
-  Assert.deepEqual(calls, { "new_bark.lab_sign" }, "the decoded base is memoized")
+  Assert.equal(reads(), 1, "the decoded base is memoized")
+  Assert.equal(assert(registry:base("vanilla.hgss.scr_seq.0842.script_001")).id, "vanilla.hgss.scr_seq.0842.script_001")
+  Assert.equal(reads(), 1, "two ids of one member share the registry's single memo")
 end
 
 T["builtin base is available without generated data"] = function()
@@ -113,12 +117,12 @@ T["builtin base is available without generated data"] = function()
   Assert.equal(registry:base(builtin.id), builtin)
 end
 
--- 2. Presence works without decoding: ids never touch the loader.
+-- 2. Presence works without decoding: ids never touch the member bundles.
 T["presence semantics never decode"] = function()
-  local registry, calls = lazyRegistry(scriptCache())
+  local registry, reads = lazyRegistry(scriptCache())
   Assert.deepEqual(registry:ids(), { "new_bark.lab_sign", "vanilla.hgss.scr_seq.0842.script_001" })
   Assert.isNil(registry:base("unknown.id"))
-  Assert.deepEqual(calls, {})
+  Assert.equal(reads(), 0)
 end
 
 -- 3. Deferred layers obey the same duplicate rules as installBase.
@@ -133,13 +137,15 @@ T["deferred layers detect duplicates"] = function()
   end)
 end
 
--- 4. A resolved layer beats a pending generated layer without decoding.
+-- 4. The override layer beats a deferred generated layer without reading
+-- the generated bundle.
 T["resolved layers beat a pending generated layer"] = function()
-  local registry, calls = lazyRegistry(scriptCache())
-  registry:installBase("new_bark.lab_sign", { id = "new_bark.lab_sign", override = true }, "override")
+  local registry, reads = lazyRegistry(scriptCache(), {
+    ["new_bark.lab_sign.lua"] = 'local S = require("gen4.script")\nreturn S.script { api = 1, id = "new_bark.lab_sign", steps = { S.noop(), S.stop() } }\n',
+  })
   local resource = assert(registry:base("new_bark.lab_sign"))
-  Assert.isTrue(resource.override == true)
-  Assert.deepEqual(calls, {}, "the override wins without touching the loader")
+  Assert.equal(resource.steps[1].op, "noop", "the override wins over the pending generated base")
+  Assert.equal(reads(), 0, "the override wins without reading the generated bundle")
 end
 
 -- 5. A failing loader surfaces as a load error at first access.
@@ -170,11 +176,11 @@ end
 -- 7. A sealed registry still decodes pending bases on demand: the seal
 -- gates installs, not first access.
 T["sealed registry decodes pending bases on demand"] = function()
-  local registry, calls = lazyRegistry(scriptCache())
+  local registry, reads = lazyRegistry(scriptCache())
   registry:seal()
-  Assert.deepEqual(calls, {}, "construction decodes nothing")
+  Assert.equal(reads(), 0, "construction decodes nothing")
   Assert.equal(assert(registry:base("new_bark.lab_sign")).id, "new_bark.lab_sign")
-  Assert.deepEqual(calls, { "new_bark.lab_sign" }, "first access decodes only its own resource")
+  Assert.equal(reads(), 1, "first access decodes only its own member")
   throwsCode("SCRIPT_REGISTRY_SEALED", function()
     registry:installBase("late.id", { id = "late.id" }, "generated")
   end)
