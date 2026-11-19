@@ -4080,6 +4080,7 @@ local function movementSession(options)
     scriptScheduler = options.scriptScheduler,
     scriptClient = options.scriptClient,
     eventResolver = options.eventResolver,
+    interactions = options.interactions,
   }))
   return session, player, map
 end
@@ -4135,28 +4136,55 @@ function T.session_passes_committed_step_speed_to_the_player_visual()
   Assert.equal(visual.poseTick, 16, "the locked run keeps the source gait cadence")
 end
 
--- A field-locking input edge that arrives while the player's own step is in
--- flight waits for the step to commit: the in-progress step owns the tile
--- until then, so taking the field mid-walk would freeze a half-walked avatar.
-function T.menu_edge_mid_step_opens_after_the_step_commits()
-  local session, player = movementSession()
+-- The source samples field-locking edges only on a settled avatar
+-- (FieldInput_Update admits PLAYER_MOVE_STATE_END/NONE), so a Start Menu or
+-- interaction edge read while the player's own step is in flight dies with
+-- its tick instead of taking the field later at the settle boundary.
+function T.field_locking_edges_read_mid_step_die_with_their_tick()
+  local interactionsResolved = 0
+  local session, player = movementSession({
+    interactions = {
+      resolve = function()
+        interactionsResolved = interactionsResolved + 1
+        return nil
+      end,
+    },
+  })
   local host = session.applicationHost
   session:updateFixed({ pressedDirection = "east" })
   session:updateFixed({ heldDirection = "east" })
   Assert.isTrue(player.motion ~= "idle", "setup starts an ordinary step")
   local startX = player.fieldX
 
-  session:updateFixed({ heldDirection = "east", menuPressed = true })
-  Assert.isFalse(host:isActive(), "the mid-step menu edge does not take the field")
+  session:updateFixed({ heldDirection = "east", menuPressed = true, actionPressed = true })
+  Assert.isFalse(host:isActive(), "a mid-step menu edge does not take the field")
+  Assert.equal(interactionsResolved, 0, "a mid-step interaction edge does not resolve")
 
-  for _ = 1, 12 do
-    if host:isActive() then
+  for _ = 1, 16 do
+    session:updateFixed({ heldDirection = "east" })
+    if player.motion == "idle" then
       break
     end
-    session:updateFixed({ heldDirection = "east" })
   end
-  Assert.equal(player.fieldX, startX + 1, "the in-progress step commits its whole tile first")
-  Assert.isTrue(host:isActive(), "the retained edge opens the menu on the settled boundary")
+  Assert.equal(player.motion, "idle", "the in-flight step commits its whole tile")
+  Assert.equal(player.fieldX, startX + 1, "the step reaches its own destination tile")
+
+  -- The first settled arbitration tick is where a retained edge would fire.
+  session:updateFixed({ heldDirection = "east" })
+  Assert.equal(player.motion, "walking", "the held direction keeps walking through the settle tick")
+  Assert.isFalse(host:isActive(), "the mid-step menu edge never opens the field")
+  Assert.equal(interactionsResolved, 0, "the mid-step interaction edge never resolves")
+
+  -- A fresh edge on a settled tick opens: the player presses again.
+  for _ = 1, 16 do
+    session:updateFixed({ heldDirection = "east" })
+    if player.motion == "idle" then
+      break
+    end
+  end
+  Assert.equal(player.motion, "idle", "the next step commits")
+  session:updateFixed({ menuPressed = true })
+  Assert.isTrue(host:isActive(), "a fresh edge on the settled boundary opens the menu")
 end
 
 -- A script's Start Menu reopen request arrives at the post-scheduler
