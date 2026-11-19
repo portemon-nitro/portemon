@@ -2043,6 +2043,17 @@ local FieldHandlers = {
   [782] = FieldServiceHandlers.martSell,
   [834] = FieldServiceHandlers.martAthleteAvailable,
   [835] = FieldServiceHandlers.martCardPrefix,
+  -- The source money family (110-115, 360, 368) rides the same field-service
+  -- leaf: this chunk sits at LuaJIT's 200-local budget, so the handlers stay
+  -- named there and are registered here by reference.
+  [110] = FieldServiceHandlers.addMoney,
+  [111] = FieldServiceHandlers.subtractMoneyImmediate,
+  [360] = FieldServiceHandlers.subtractMoneyVar,
+  [112] = FieldServiceHandlers.hasEnoughMoneyImmediate,
+  [368] = FieldServiceHandlers.hasEnoughMoneyVar,
+  [113] = FieldServiceHandlers.showMoneyBox,
+  [114] = FieldServiceHandlers.hideMoneyBox,
+  [115] = FieldServiceHandlers.updateMoneyBox,
 }
 
 -- NameRival (143), SetTrainerFlag/ClearTrainerFlag (36/37) and

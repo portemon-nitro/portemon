@@ -823,6 +823,7 @@ function FieldScriptComposition.compose(runtime, options)
     radioMusic = gearRadio,
   })
   runtime.blackoutFlow = assert(scripts.blackoutFlow)
+  runtime.moneyBox = assert(scripts.moneyBox)
   local function restore()
     if options.loadedGame then
       ScriptSave.restore(options.loadedGame.scripts, scripts.scheduler, 0)

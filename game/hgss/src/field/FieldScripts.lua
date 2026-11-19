@@ -25,6 +25,7 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local MapInitScriptController = require("libs.hgss.src.field.MapInitScriptController")
 local FollowerInteractionEngine = require("libs.hgss.src.field.FollowerInteractionEngine")
 local FieldMoveCue = require("game.hgss.src.field.FieldMoveCue")
+local FieldMoneyBox = require("game.hgss.src.field.FieldMoneyBox")
 
 -- The player facade the script services consume: position/facing/gender/name
 -- plus the mutation hooks the movement tasks use (the player can be a
@@ -237,6 +238,65 @@ function ScriptPlayerFacade:isScriptedMoving()
   return player:isScriptedMoving()
 end
 
+-- The script money operations: source arithmetic over the one borrowed live
+-- profile and window mutations delegated to the field money box. The facade
+-- never copies the balance, and the money box reads the same profile, so the
+-- mart, battle rewards, Trainer Card and the save all observe one wallet.
+---@class MoneyService
+---@field private _profile table<string, unknown>
+---@field private _box FieldMoneyBox
+local MoneyService = {}
+MoneyService.__index = MoneyService
+
+---@param amount unknown
+local function checkSourceAmount(amount)
+  assert(
+    type(amount) == "number" and amount % 1 == 0 and amount >= 0,
+    "a source money amount must be a non-negative integer"
+  )
+end
+
+---@param profile table<string, unknown>
+---@param box FieldMoneyBox
+---@return MoneyService
+function MoneyService.new(profile, box)
+  return setmetatable({ _profile = profile, _box = box }, MoneyService)
+end
+
+---@param amount integer
+function MoneyService:add(amount)
+  checkSourceAmount(amount)
+  self._profile.money = math.min(PlayerData.MAX_MONEY, self._profile.money + amount)
+end
+
+---@param amount integer
+function MoneyService:subtract(amount)
+  checkSourceAmount(amount)
+  self._profile.money = math.max(0, self._profile.money - amount)
+end
+
+---@param amount integer
+---@return boolean
+function MoneyService:hasEnough(amount)
+  checkSourceAmount(amount)
+  local money = self._profile.money --[[@as integer]]
+  return money >= amount
+end
+
+---@param tileX integer
+---@param tileY integer
+function MoneyService:showBox(tileX, tileY)
+  self._box:show(tileX, tileY)
+end
+
+function MoneyService:updateBox()
+  self._box:update()
+end
+
+function MoneyService:hideBox()
+  self._box:hide()
+end
+
 ---@class FieldScriptsOptions
 ---@field cacheFs CacheFs
 ---@field overrideFs table<string, unknown> read-shaped filesystem for data/scripts/overrides
@@ -338,6 +398,7 @@ end
 ---@field taskRegistry TaskRegistry the live registered-task registry
 ---@field initController MapInitScriptController
 ---@field blackoutFlow FieldBlackoutFlow?
+---@field moneyBox FieldMoneyBox the one transient source money window the field draw renders
 ---@field mapSource RuntimeFieldMap the active runtime map map-scoped script state is bound to
 ---@field propAnimations table<string, unknown>|nil
 local FieldScripts = {}
@@ -489,6 +550,19 @@ function FieldScripts.new(opts)
     resolveMessage = resolveMessage,
   })
 
+  -- The transient source money window and its script facade. The box borrows
+  -- the live profile for the displayed balance; the facade moves that same
+  -- profile. Without a profile no facade is synthesized, so money commands
+  -- keep their missing-service fault instead of writing a scratch wallet.
+  local moneyBox = FieldMoneyBox.new({
+    profile = opts.profile,
+    messages = opts.messageProvider,
+  })
+  local moneyService = nil
+  if opts.profile ~= nil then
+    moneyService = MoneyService.new(opts.profile, moneyBox)
+  end
+
   ---@class FieldScriptsPlatform: FieldScripts
   ---@field initController MapInitScriptController
   ---@field blackoutFlow FieldBlackoutFlow?
@@ -507,6 +581,7 @@ function FieldScripts.new(opts)
     player = player,
     mapSource = opts.sourceMap,
     propAnimations = opts.propAnimations,
+    moneyBox = moneyBox,
   }, FieldScripts)
   if opts.propAnimations ~= nil then
     opts.propAnimations:bindMap(opts.sourceMap)
@@ -590,6 +665,7 @@ function FieldScripts.new(opts)
       starterChoice = opts.starterChoice,
       partySelection = opts.partySelection,
       mart = opts.mart,
+      money = moneyService,
       travel = opts.travel,
       gameStats = opts.gameStats,
       fieldMoves = opts.fieldMoves,
@@ -670,11 +746,14 @@ local function rebindMapContext(self, sourceMap)
 end
 
 -- Rebind the facade and warp source after a map swap (the player and the
--- current map are replaced by the transition).
+-- current map are replaced by the transition). The transient source money
+-- window belongs to the map that opened it, so a swap closes it exactly once
+-- before the destination map publishes.
 ---@param player FieldPlayer
 ---@param sourceMap RuntimeFieldMap
 function FieldScripts:onMapSwap(player, sourceMap)
   self.player:setPlayer(player)
+  self.moneyBox:dispose()
   rebindMapContext(self, sourceMap)
 end
 

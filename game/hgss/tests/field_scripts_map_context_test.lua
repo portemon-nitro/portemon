@@ -1,8 +1,9 @@
 -- FieldScripts active-map entry points: onZoneChange and onMapSwap must both
 -- leave every map-scoped script collaborator (maps service, script-client
 -- bank id, init-controller rules/map id, mapSource) bound to the destination
--- map. Only onMapSwap additionally replaces the player facade, and it must do
--- so before the map-scoped collaborators are rebound.
+-- map. Only onMapSwap additionally replaces the player facade and closes the
+-- transient source money window, and it must do the player rebind before the
+-- map-scoped collaborators are rebound.
 
 local Assert = require("tests.support.Assert")
 local FieldScripts = require("game.hgss.src.field.FieldScripts")
@@ -43,6 +44,13 @@ local function fakeSelf()
         table.insert(self.calls, { initScripts = initScripts, mapId = mapId })
       end,
     },
+    moneyBox = {
+      disposes = 0,
+      dispose = function(self)
+        table.insert(log, "moneyBox.dispose")
+        self.disposes = self.disposes + 1
+      end,
+    },
   }
   return fake
 end
@@ -74,6 +82,7 @@ function T.tests.zone_change_establishes_complete_destination_map_context()
   })
   Assert.equal(fake.mapSource, destination)
   Assert.equal(#fake.player.calls, 0, "onZoneChange must never replace the player facade")
+  Assert.equal(fake.moneyBox.disposes, 0, "a zone change keeps the map's money window")
 end
 
 function T.tests.map_swap_retains_player_rebind_while_sharing_map_context()
@@ -96,6 +105,7 @@ function T.tests.map_swap_retains_player_rebind_while_sharing_map_context()
     mapId = destination.fieldData.mapId,
   })
   Assert.equal(fake.mapSource, destination)
+  Assert.equal(fake.moneyBox.disposes, 1, "the swapped-away map's money window closes exactly once")
 
   Assert.equal(fake.log[1], "player.setPlayer", "the player must be rebound before map-scoped collaborators")
   Assert.isTrue(#fake.log >= 2, "map-scoped collaborators must be invoked after the player rebind")

@@ -55,6 +55,9 @@ Schema.ENUMS = {
   signpost_command = { "nop", "show", "wipe_out", "wipe_in", "hide" },
   mart_kind = { "standard", "special", "seal", "decoration", "athlete", "data_cards", "custom", "sell" },
   mart_query = { "athlete_available", "card_prefix" },
+  -- The source money family's two mutations and three box commands.
+  money_action = { "add", "subtract" },
+  money_box_action = { "show", "update", "hide" },
   pc_application = { "storage", "mailbox", "photoAlbum" },
   -- The foreground phone call direction across the shared menu/script
   -- application lane; numeric source selectors never appear past the
@@ -1020,6 +1023,30 @@ Schema.OPERATIONS = {
   weekday = { fields = { result = { type = "id_or_var", required = true } } },
   discard_value = { fields = { value = { type = "scalar_or_value", required = true } } },
   trainer_card_stars = { fields = { result = { type = "id_or_var", required = true } } },
+  -- The source money family (scrcmd_money.c) moves the one live profile
+  -- wallet, reports affordability into a result variable, and drives the
+  -- transient source money window. Amounts and box coordinates are source
+  -- integers or value references; the money family validates the operand
+  -- shapes its actions allow (Validator).
+  money_change = {
+    fields = {
+      action = { type = "enum:money_action", required = true },
+      amount = { type = "scalar_or_value", required = true },
+    },
+  },
+  money_check = {
+    fields = {
+      amount = { type = "scalar_or_value", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  money_box = {
+    fields = {
+      action = { type = "enum:money_box_action", required = true },
+      tileX = { type = "scalar_or_value" },
+      tileY = { type = "scalar_or_value" },
+    },
+  },
   -- The source AddSpecialGameStat command (opcode 515): the node names one
   -- score event from the game-stats owner's authoritative table and the
   -- owner resolves its weight, so no script carries a score amount.

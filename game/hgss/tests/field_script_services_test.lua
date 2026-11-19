@@ -7,182 +7,27 @@
 -- source script. No planning vocabulary here.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local BagSave = require("libs.hgss.src.save.BagSave")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
-local FakeCache = require("tests.support.FakeCache")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
-local FieldScripts = require("game.hgss.src.field.FieldScripts")
+local FieldScriptSliceFixture = require("tests.support.FieldScriptSliceFixture")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 local GameStats = require("libs.hgss.src.mons.GameStats")
+local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local HoOhAppearanceFixture = require("tests.support.HoOhAppearanceFixture")
+local ItemCatalog = require("libs.items.src.ItemCatalog")
+local ItemFixture = require("libs.items.tests.item_fixture")
 local LuaWriter = require("libs.codec.src.LuaWriter")
+local MartSave = require("libs.hgss.src.save.MartSave")
+local MartService = require("libs.hgss.src.items.MartService")
 local MonNamingState = require("game.hgss.src.field.MonNamingState")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
-local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptErrors = require("libs.script.src.errors")
-local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
 
 local T = { tests = {} }
 
-local SCRIPT_GENERATION = string.rep("a", 40)
-local SCRIPT_MARKER = "scripts-test-marker"
-
-local function testCache()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:write(ScriptCache.markerPath(), SCRIPT_MARKER)
-  cache:write(ScriptCache.generationMarkerPath(SCRIPT_GENERATION), SCRIPT_MARKER)
-  cache:writeLua(ScriptCache.activeIndexPath(), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = SCRIPT_GENERATION,
-    marker = SCRIPT_MARKER,
-  })
-  cache:writeLua(ScriptCache.generationIndexPath(SCRIPT_GENERATION), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = SCRIPT_GENERATION,
-    marker = SCRIPT_MARKER,
-    resources = {},
-  })
-  return cache
-end
-
-local function overrideFs(files)
-  local ids = {}
-  for id in pairs(files) do
-    ids[#ids + 1] = id
-  end
-  table.sort(ids)
-  local manifest = "return {"
-  for index, id in ipairs(ids) do
-    manifest = manifest .. string.format("%q%s", id, index < #ids and ", " or "")
-  end
-  manifest = manifest .. "}\n"
-  return {
-    read = function(_, path)
-      if path == ScriptOverrides.MANIFEST then
-        return manifest
-      end
-      for id, content in pairs(files) do
-        if path == ScriptOverrides.DIR .. "/" .. id .. ".lua" then
-          return content
-        end
-      end
-      return nil
-    end,
-  }
-end
-
-local function stubActors()
-  local function noop() end
-  return {
-    getActor = function()
-      return nil
-    end,
-    show = noop,
-    hide = noop,
-    setPosition = noop,
-    setFacing = noop,
-    setMovementType = noop,
-    setAnimationPaused = noop,
-    getPosition = function()
-      return { fieldX = 0, fieldZ = 0, worldY = 0 }
-    end,
-    getFacing = function()
-      return "south"
-    end,
-    numericId = function()
-      return nil
-    end,
-    actorIdForMapIndex = function()
-      return nil
-    end,
-    cameraTargetId = function()
-      return nil
-    end,
-    partnerId = function()
-      return nil
-    end,
-    isVisible = function()
-      return true
-    end,
-    setPresentationOffset = noop,
-    clearPresentationOffset = noop,
-    removePresence = noop,
-    materializeObject = noop,
-  }
-end
-
-local function sliceChunk(id, steps)
-  local lines = { "return {", "  api = 1,", '  id = "' .. id .. '",', "  steps = {" }
-  for _, step in ipairs(steps) do
-    if step.op == "set_spawn" then
-      lines[#lines + 1] = '    { op = "set_spawn", spawn = "' .. step.spawn .. '" },'
-    elseif step.op == "set_special_spawn" then
-      lines[#lines + 1] = string.format(
-        '    { op = "set_special_spawn", map = %q, fieldX = %d, fieldZ = %d, warpId = %d, direction = %q },',
-        step.map,
-        step.fieldX,
-        step.fieldZ,
-        step.warpId,
-        step.direction
-      )
-    elseif step.op == "field_move" then
-      lines[#lines + 1] = '    { op = "field_move", source = "pending" },'
-    elseif step.op == "game_score_event" then
-      lines[#lines + 1] = string.format('    { op = "game_score_event", event = %d },', step.event)
-    elseif step.op == "battle_launch" then
-      lines[#lines + 1] =
-        '    { op = "battle_launch", kind = "wild", details = { species = "TOTODILE", level = 4 }, result = { value = "var", id = "VAR_TEMP_x4001" } },'
-    elseif step.op == "battle_result" then
-      lines[#lines + 1] = '    { op = "battle_result", result = { value = "var", id = "VAR_TEMP_x4002" } },'
-    else
-      error(
-        "services harness covers set_spawn, set_special_spawn, pending field_move, game_score_event, and battle ops only",
-        0
-      )
-    end
-  end
-  lines[#lines + 1] = "  },"
-  lines[#lines + 1] = "}"
-  return table.concat(lines, "\n")
-end
-
-local function composeSlice(services, id, steps)
-  local function noop() end
-  local chunk = services.encode or sliceChunk
-  local args = {
-    cacheFs = testCache(),
-    overrideFs = overrideFs({ [id] = chunk(id, steps) }),
-    eventState = FieldEventState.new(),
-    actors = stubActors(),
-    player = { fieldX = 1, fieldZ = 2, worldY = 0, facing = "south" },
-    profile = services.profile or { gender = 0, name = "Gold", badges = {} },
-    dialogue = { isModal = noop },
-    messageProvider = {},
-    layout = function()
-      return {}
-    end,
-    fontDef = services.fontDef or { charmap = {} },
-    signpost = { isModal = true, updateFixed = noop },
-    windowStyles = {
-      resolve = function()
-        return {}
-      end,
-    },
-    transition = {},
-    mapLoader = {},
-    sourceMap = { fieldData = { mapId = 7, scriptBankId = 3, initScripts = {} } },
-    auxiliaryUi = { advance = noop },
-    menu = {},
-    contextChoice = {},
-    travel = services.travel,
-    fieldMoves = services.fieldMoves,
-    battle = services.battle,
-    gameStats = services.gameStats,
-    monNaming = services.monNaming,
-  }
-  return FieldScripts.new(args --[[@as FieldScriptsOptions]])
-end
+local composeSlice = FieldScriptSliceFixture.compose
 
 -- A slice chunk serialized from a DSL step table: nested steps and value
 -- descriptors travel exactly as authored instead of through a hand emitter.
@@ -252,6 +97,7 @@ local function stepUntilNaming(platform, naming, firstTick)
   end
   return nil
 end
+
 
 local function driveSlice(services, id, steps, tick)
   local platform = composeSlice(services, id, steps)
@@ -393,7 +239,7 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
   local double = {
     new = function(opts)
       seen.opts = opts
-      return { scheduler = {}, worldState = {}, blackoutFlow = {} }
+      return { scheduler = {}, worldState = {}, blackoutFlow = {}, moneyBox = {} }
     end,
   }
   local savedTarget = package.loaded[targetModule]
@@ -522,6 +368,265 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
   if not ok then
     error(err, 0)
   end
+end
+
+local CHARMAP = { G = 305, O = 313, L = 310, D = 302 }
+local FRAME_INDEXES = { [0] = true }
+
+-- The captured player record is the authoritative saved wallet: the profile
+-- bucket GameSave persists, validated with the generated font metadata.
+local function capturePlayerRecord(profile)
+  return assert(PlayerData.validate({
+    profile = {
+      name = "GOLD",
+      rivalName = "GOLD",
+      gender = profile.gender,
+      trainerId = 0,
+      money = profile.money,
+      badges = {},
+      nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
+      unionAvatar = 0,
+    },
+    options = {
+      textFrame = 0,
+      textSpeed = "mid",
+      battleStyle = "shift",
+      battleScene = true,
+      soundMode = "stereo",
+      battleSpeed = 1,
+    },
+  }, { charmap = CHARMAP, frameIndexes = FRAME_INDEXES }))
+end
+
+-- A real mart over the same profile the scripts mutate: one affordable
+-- consumable, no mocks of the transaction owner.
+local function martOver(profile)
+  local root = ItemFixture.buildAssetRoot()
+  root.items.POTION.price = 30
+  local itemCatalog = ItemCatalog.new(root)
+  local bag = HgssBagService.new({ catalog = itemCatalog, bag = BagSave.empty() })
+  local service = MartService.new({
+    profile = profile,
+    bag = bag,
+    itemCatalog = itemCatalog,
+    catalog = { cards = {}, apricorns = {}, seals = {}, decorations = {} },
+    bucket = MartSave.empty(),
+  })
+  return service, bag
+end
+
+local function potionStock()
+  return {
+    key = "money-slice-stock",
+    currency = "money",
+    presentationKind = "items",
+    quantityMode = "multiple",
+    bonusPolicy = "none",
+    entries = {
+      {
+        key = "potion",
+        displayItemKey = "POTION",
+        description = { kind = "item" },
+        unitPrice = 30,
+        destination = { kind = "bag", key = "POTION" },
+        restriction = { kind = "none" },
+      },
+    },
+  }
+end
+
+-- The source money family moves the one live profile wallet: the immediate
+-- and variable forms saturate instead of underflowing, the money check reports
+-- affordability without touching the balance, and every other consumer of the
+-- wallet (the mart, the captured save) sees the same balance.
+function T.tests.script_money_slice_moves_the_one_live_wallet()
+  local profile = { gender = 0, name = "Gold", badges = {}, money = 100 }
+  local platform = composeSlice({ profile = profile }, "test.money_slice", {
+    { op = "money_change", action = "add", amount = 999999 },
+    { op = "money_change", action = "subtract", amount = 1000000 },
+    { op = "money_change", action = "add", amount = 100 },
+    { op = "set_var", variable = "VAR_TEMP_x4001", value = 40 },
+    { op = "money_change", action = "subtract", amount = "VAR_TEMP_x4001" },
+    { op = "money_check", amount = 1000, result = "VAR_TEMP_x4002" },
+    { op = "money_check", amount = 60, result = "VAR_TEMP_x4002" },
+    -- The source reads the amount before it writes the result pointer, so one
+    -- variable may hold both: the check answers the pre-write value.
+    { op = "set_var", variable = "VAR_TEMP_x4002", value = 70 },
+    { op = "money_check", amount = "VAR_TEMP_x4002", result = "VAR_TEMP_x4002" },
+    { op = "set_var", variable = "VAR_TEMP_x4002", value = 60 },
+    { op = "money_check", amount = "VAR_TEMP_x4002", result = "VAR_TEMP_x4002" },
+  })
+  local composed = assert(platform.composition:effective("test.money_slice"), "the money slice must compose")
+  local instanceId = platform.scheduler:createForeground(composed, nil, 100)
+  platform.scheduler:step(100, nil)
+  local variables = require("libs.assets.src.field.FieldScriptSymbols").variablesByName
+  Assert.equal(profile.money, 60, "the wallet ends where the source arithmetic puts it")
+  Assert.equal(
+    platform.worldState:getVar(variables.VAR_TEMP_x4002),
+    1,
+    "the aliased money check reports the balance it was asked about"
+  )
+  Assert.isNil(platform.scheduler:instance(instanceId), "every source money command ran in the one stepped tick")
+
+  -- Saturation is checked in both directions, separately from the journey
+  -- balance: adding far past the cap stops at 999999 and subtracting past the
+  -- balance stops at zero instead of failing.
+  local capProfile = { gender = 0, name = "Gold", badges = {}, money = 999999 }
+  local cap = composeSlice({ profile = capProfile }, "test.money_cap", {
+    { op = "money_change", action = "add", amount = 1 },
+  })
+  cap.scheduler:createForeground(assert(cap.composition:effective("test.money_cap")), nil, 100)
+  cap.scheduler:step(100, nil)
+  Assert.equal(capProfile.money, 999999, "the added money saturates at the source wallet cap")
+
+  local emptyProfile = { gender = 0, name = "Gold", badges = {}, money = 0 }
+  local empty = composeSlice({ profile = emptyProfile }, "test.money_empty", {
+    { op = "money_change", action = "subtract", amount = 500 },
+  })
+  empty.scheduler:createForeground(assert(empty.composition:effective("test.money_empty")), nil, 100)
+  empty.scheduler:step(100, nil)
+  Assert.equal(emptyProfile.money, 0, "an unaffordable source subtraction saturates at zero instead of failing")
+end
+
+-- The wallet the scripts moved is the wallet the mart transacts on and the
+-- wallet the save record carries; a restored profile answers the same money
+-- check the live one did.
+function T.tests.script_money_balance_is_the_mart_and_save_balance()
+  local profile = { gender = 0, name = "Gold", badges = {}, money = 100 }
+  driveSlice({ profile = profile }, "test.money_wallet", {
+    { op = "money_change", action = "add", amount = 60 },
+  })
+  Assert.equal(profile.money, 160, "the script credits the live profile")
+
+  local service, bag = martOver(profile)
+  local session = assert(service:openBuy(potionStock()))
+  local token = assert(session:quoteBuy("potion", 2))
+  Assert.notNil(session:commit(token))
+  Assert.equal(profile.money, 100, "the mart debits the same profile the script credited")
+  Assert.equal(bag:quantity("POTION"), 2, "the purchase lands in the live Bag")
+  Assert.equal(session:view().balance, 100, "the mart reads the post-purchase balance")
+  session:close()
+
+  local captured = capturePlayerRecord(profile)
+  Assert.equal(captured.profile.money, 100, "the captured player record carries the live balance")
+  profile.money = 55
+  Assert.equal(captured.profile.money, 100, "the captured record is a snapshot, not a live alias")
+  Assert.equal(profile.money, 55)
+
+  local restoredPlatform = composeSlice({ profile = captured.profile }, "test.money_restored", {
+    { op = "money_check", amount = 100, result = "VAR_TEMP_x4003" },
+    { op = "money_check", amount = 101, result = "VAR_TEMP_x4004" },
+  })
+  restoredPlatform.scheduler:createForeground(
+    assert(restoredPlatform.composition:effective("test.money_restored")),
+    nil,
+    100
+  )
+  restoredPlatform.scheduler:step(100, nil)
+  local variables = require("libs.assets.src.field.FieldScriptSymbols").variablesByName
+  Assert.equal(
+    restoredPlatform.worldState:getVar(variables.VAR_TEMP_x4003),
+    1,
+    "the restored wallet affords the saved balance"
+  )
+  Assert.equal(
+    restoredPlatform.worldState:getVar(variables.VAR_TEMP_x4004),
+    0,
+    "the restored wallet affords nothing beyond it"
+  )
+end
+
+-- The source money box draws a captured balance: opening pins the current
+-- money, wallet changes do not repaint it, an explicit update does, and hiding
+-- frees the window so a later show opens a fresh one.
+function T.tests.script_money_box_keeps_its_display_until_an_explicit_update()
+  local profile = { gender = 0, name = "Gold", badges = {}, money = 150 }
+  local platform = composeSlice(
+    { profile = profile, messageProvider = FieldScriptSliceFixture.moneyMessageProvider() },
+    "test.money_box",
+    {
+      { op = "money_box", action = "show", tileX = 3, tileY = 5 },
+      { op = "yield_tick" },
+      { op = "money_change", action = "subtract", amount = 40 },
+      { op = "yield_tick" },
+      { op = "money_box", action = "update" },
+      { op = "yield_tick" },
+      { op = "money_box", action = "hide" },
+      { op = "yield_tick" },
+      { op = "money_box", action = "show", tileX = 1, tileY = 2 },
+    }
+  )
+  local box = assert(platform.moneyBox, "the composed field owns one source money box host")
+  platform.scheduler:createForeground(assert(platform.composition:effective("test.money_box")), nil, 100)
+  local tick = 100
+  local function step()
+    platform.scheduler:step(tick, nil)
+    tick = tick + 1
+  end
+
+  step()
+  local shown = assert(box:snapshot(), "an open money box reports its presentation snapshot")
+  Assert.isTrue(shown.visible, "the opened window is visible")
+  Assert.equal(shown.tileX, 3, "the window opens at the source tile column")
+  Assert.equal(shown.tileY, 5, "the window opens at the source tile row")
+  Assert.equal(shown.label, "MONEY", "the first row is the source bank label")
+  Assert.equal(shown.displayedMoney, 150, "opening captures the live balance")
+
+  step()
+  Assert.equal(profile.money, 110, "the wallet moves while the box stays open")
+  Assert.equal(box:snapshot().displayedMoney, 150, "the drawn balance does not follow the wallet")
+
+  step()
+  Assert.equal(box:snapshot().displayedMoney, 110, "an explicit update repaints the current balance")
+
+  step()
+  Assert.isFalse(box:snapshot().visible, "hiding closes the window")
+
+  step()
+  local reopened = assert(box:snapshot())
+  Assert.isTrue(reopened.visible, "a later show opens the window again")
+  Assert.equal(reopened.tileX, 1, "the reopened window uses the new source column")
+  Assert.equal(reopened.tileY, 2, "the reopened window uses the new source row")
+  Assert.equal(reopened.displayedMoney, 110, "the reopened window captures the current balance")
+
+  -- Field teardown closes the transient window; it is presentation state and
+  -- never outlives the field that created it.
+  box:dispose()
+  Assert.isFalse(box:snapshot().visible, "field teardown closes the source window")
+end
+
+-- A money box command with no open window is a script-state fault, not a quiet
+-- success: the field never keeps a stale window alive across commands.
+function T.tests.script_money_box_faults_without_an_open_window()
+  local function faultedBy(steps, id)
+    local platform = composeSlice({}, id, steps)
+    local composed = assert(platform.composition:effective(id), "the box slice must compose")
+    local instanceId = platform.scheduler:createForeground(composed, nil, 100)
+    local running = assert(platform.scheduler:instance(instanceId), "the box slice must start")
+    platform.scheduler:step(100, nil)
+    platform.scheduler:step(101, nil)
+    return running
+  end
+
+  local missing = faultedBy({ { op = "money_box", action = "update" } }, "test.money_box_missing")
+  Assert.equal(missing.status, "faulted", "an update with no open window faults the script")
+  Assert.isTrue(type(missing.endReason) == "string", "the fault is attributed: " .. tostring(missing.endReason))
+
+  local twice = faultedBy({
+    { op = "money_box", action = "show", tileX = 0, tileY = 0 },
+    { op = "money_box", action = "show", tileX = 1, tileY = 1 },
+  }, "test.money_box_twice")
+  Assert.equal(twice.status, "faulted", "a second show cannot open a second window")
+
+  local ghost = faultedBy({
+    { op = "money_box", action = "show", tileX = 0, tileY = 0 },
+    { op = "money_box", action = "hide" },
+    { op = "yield_tick" },
+    { op = "money_box", action = "hide" },
+  }, "test.money_box_ghost")
+  Assert.equal(ghost.status, "faulted", "hiding an already closed window faults instead of keeping it alive")
 end
 
 -- Retail `include/constants/flags.h::TRAINER_FLAG_BASE`.

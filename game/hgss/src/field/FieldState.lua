@@ -19,6 +19,7 @@ local CelebiTimeTravelBlur = require("libs.hgss.src.presentation.CelebiTimeTrave
 local HoOhAppearanceRenderer = require("libs.hgss.src.presentation.HoOhAppearanceRenderer")
 local LugiaAppearanceRenderer = require("libs.hgss.src.presentation.LugiaAppearanceRenderer")
 local HoOhAssetPreparer = require("game.hgss.src.field.HoOhAssetPreparer")
+local FieldMoneyBox = require("game.hgss.src.field.FieldMoneyBox")
 
 local KEY_DIRECTIONS =
   { w = "north", up = "north", s = "south", down = "south", a = "west", left = "west", d = "east", right = "east" }
@@ -1127,7 +1128,9 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
       or blackoutStatus.phase == "message_wait"
       or blackoutStatus.phase == "message_out"
     )
-  if not (dialogueModal or yesNo or signpostModal or blackoutMessage) then
+  local moneyBox = self.runtime.moneyBox
+  local moneyBoxVisible = moneyBox ~= nil and moneyBox:snapshot().visible
+  if not (dialogueModal or yesNo or signpostModal or blackoutMessage or moneyBoxVisible) then
     return
   end
   local fieldScale = self.runtime.fieldPixelScale:resolvedScale()
@@ -1143,6 +1146,11 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
       height = assert(self.runtime.viewport.height),
     }
   end
+  if moneyBoxVisible then
+    -- The source money window is field-attached presentation beneath the
+    -- dialogue and choice layers; it never takes focus from them.
+    self:_drawMoneyBox(resources)
+  end
   if blackoutMessage and blackoutStatus ~= nil then
     FieldBlackoutRenderer.draw(blackoutStatus, assert(resources.windowRenderer), assert(resources.textRenderer), bounds)
   elseif dialogueModal then
@@ -1155,6 +1163,49 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
     local signpostScale = PixelScale.fitPreferred(bounds, NativeDisplay.WIDTH, NativeDisplay.HEIGHT, fieldScale)
     resources.signpostRenderer:draw(self.runtime.signpost, self.runtime.viewport, alpha, signpostScale)
   end
+end
+
+-- The source money box paints its own 10x4-tile window at the source tile
+-- position on the main display. The second row is the balance captured by the
+-- last show/update, so hiding the window clears it by itself without a
+-- retained graphics handle.
+---@param resources FieldPresentationResources
+function FieldState:_drawMoneyBox(resources)
+  local runtime = assert(self.runtime, "field presentation needs its runtime")
+  local moneyBox = runtime.moneyBox
+  if moneyBox == nil then
+    return
+  end
+  local snapshot = moneyBox:snapshot()
+  if not snapshot.visible then
+    return
+  end
+  local windowRenderer = resources.windowRenderer
+  local textRenderer = resources.textRenderer
+  if windowRenderer == nil or textRenderer == nil then
+    return
+  end
+  local tileX = assert(snapshot.tileX, "an open money box carries its source column")
+  local tileY = assert(snapshot.tileY, "an open money box carries its source row")
+  local label = assert(snapshot.label, "an open money box carries its label row")
+  local valueText = assert(snapshot.valueText, "an open money box carries its value row")
+  local viewport = assert(runtime.viewport, "field presentation needs its viewport")
+  -- The money box shares the floor window's main-display placement, so its
+  -- source tile coordinates land on the source field tiles at any scale.
+  local placement = FieldPresentationResources.mainDisplayPlacement(
+    assert(viewport.referenceFrame, "the money box draws in the canonical field frame"),
+    runtime.fieldPixelScale:resolvedScale()
+  )
+  local frameIndex = assert(resources.applicationFrameIndex, "field presentation owns no application frame index")
+  local box = { x = tileX * 8, y = tileY * 8, width = FieldMoneyBox.WIDTH, height = FieldMoneyBox.HEIGHT }
+  local valueWidth = textRenderer:textWidth(valueText) or 0
+  local background = textRenderer:windowBackgroundColor()
+  local lg = love.graphics
+  LogicalSurface.draw(lg, placement, function()
+    windowRenderer:drawWindow(box, frameIndex, background)
+    textRenderer:drawText(label, box.x, box.y)
+    textRenderer:drawText(valueText, box.x + FieldMoneyBox.WIDTH - valueWidth, box.y + FieldMoneyBox.MONEY_ROW_Y)
+  end)
 end
 
 -- Realizes companion plan images through the shared image owner: one

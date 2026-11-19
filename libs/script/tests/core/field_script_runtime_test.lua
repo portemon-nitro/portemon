@@ -1,5 +1,9 @@
 local Assert = require("tests.support.Assert")
+local Errors = require("libs.errors.src.Errors")
 local Runtime = require("libs.script.src.Runtime")
+local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
+local S = require("gen4.script")
+local ScriptErrors = require("libs.script.src.errors")
 
 local T = {}
 
@@ -207,6 +211,185 @@ function T.nonblocking_message_evaluates_variable_bank_reference_before_host_dis
   )
   Assert.equal(resolved, descriptor)
   Assert.deepEqual(printed, { message = "external", bank = 40, id = 83 })
+end
+
+-- A source money command operates the one live wallet through the injected
+-- `money` facade: every amount is evaluated before the facade sees it, a money
+-- check writes its boolean instead of moving the wallet, and the money box
+-- operations reach the field window in source order. All three return in the
+-- same tick.
+local function moneyRun(wallet, vars)
+  local values = vars or { VAR_TEMP_x4001 = 40, VAR_TEMP_x4002 = 3, VAR_TEMP_x4003 = 5 }
+  local run = {
+    instance = { scriptId = "test.money", locals = {}, textArgs = {} },
+    services = {
+      world = {
+        getVar = function(_, id)
+          return values[id]
+        end,
+        setVar = function(_, id, value)
+          values[id] = value
+        end,
+        isFlagSet = function(_, id)
+          return values[id] == true
+        end,
+      },
+      money = wallet,
+    },
+    semantics = RuntimeValues,
+  }
+  return run, values
+end
+
+-- One recording source wallet: the capability set the runtime may call, with
+-- the source arithmetic the facade owns kept out of the runtime.
+local function recordingWallet(money)
+  local wallet = { money = money, calls = {} }
+  function wallet:add(amount)
+    self.calls[#self.calls + 1] = { "add", amount }
+    self.money = math.min(999999, self.money + amount)
+  end
+  function wallet:subtract(amount)
+    self.calls[#self.calls + 1] = { "subtract", amount }
+    self.money = math.max(0, self.money - amount)
+  end
+  function wallet:hasEnough(amount)
+    self.calls[#self.calls + 1] = { "hasEnough", amount }
+    return self.money >= amount
+  end
+  function wallet:showBox(tileX, tileY)
+    self.calls[#self.calls + 1] = { "showBox", tileX, tileY }
+  end
+  function wallet:updateBox()
+    self.calls[#self.calls + 1] = { "updateBox" }
+  end
+  function wallet:hideBox()
+    self.calls[#self.calls + 1] = { "hideBox" }
+  end
+  return wallet
+end
+
+function T.money_change_evaluates_its_amount_before_the_live_wallet_sees_it()
+  local wallet = recordingWallet(100)
+  local run = moneyRun(wallet)
+  Assert.equal(
+    Runtime.executeNode({ op = "money_change", action = "add", amount = 150 }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "a source add returns in the same tick"
+  )
+  Assert.equal(
+    Runtime.executeNode({ op = "money_change", action = "add", amount = { value = "var", id = "VAR_TEMP_x4001" } }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(
+    Runtime.executeNode({ op = "money_change", action = "subtract", amount = 10 }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.isNil(run.blockTaskId, "money changes never block on a task")
+  Assert.deepEqual(wallet.calls, {
+    { "add", 150 },
+    { "add", 40 },
+    { "subtract", 10 },
+  }, "each command hands the live wallet its evaluated source amount exactly once")
+end
+
+function T.money_check_writes_the_source_boolean_and_never_moves_the_wallet()
+  local wallet = recordingWallet(60)
+  local run, values = moneyRun(wallet)
+  Assert.equal(
+    Runtime.executeNode({ op = "money_check", amount = 1000, result = { value = "var", id = "VAR_TEMP_x4002" } }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(values.VAR_TEMP_x4002, 0, "an unaffordable source amount writes 0")
+  Assert.equal(
+    Runtime.executeNode({ op = "money_check", amount = 60, result = { value = "var", id = "VAR_TEMP_x4002" } }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(values.VAR_TEMP_x4002, 1, "the exact affordable boundary writes 1")
+  Assert.equal(wallet.money, 60, "a money check never changes the balance")
+  Assert.deepEqual(wallet.calls, { { "hasEnough", 1000 }, { "hasEnough", 60 } }, "only the check is asked")
+end
+
+-- The source reads the amount operand before it writes the result pointer, so
+-- one variable may serve as both: the check answers the pre-write value.
+function T.money_check_evaluates_an_aliased_amount_before_it_writes_the_result()
+  local wallet = recordingWallet(100)
+  local run, values = moneyRun(wallet, { VAR_TEMP_x4001 = 40 })
+  Assert.equal(
+    Runtime.executeNode({
+      op = "money_check",
+      amount = { value = "var", id = "VAR_TEMP_x4001" },
+      result = { value = "var", id = "VAR_TEMP_x4001" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.deepEqual(wallet.calls, { { "hasEnough", 40 } }, "the amount is read before the result is written")
+  Assert.equal(values.VAR_TEMP_x4001, 1, "the aliased variable holds the answer afterwards")
+end
+
+function T.money_box_operations_reach_the_field_window_in_source_order()
+  local wallet = recordingWallet(100)
+  local run = moneyRun(wallet)
+  Assert.equal(
+    Runtime.executeNode({
+      op = "money_box",
+      action = "show",
+      tileX = { value = "var", id = "VAR_TEMP_x4002" },
+      tileY = { value = "var", id = "VAR_TEMP_x4003" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "the source money box opens in the same tick"
+  )
+  Assert.equal(Runtime.executeNode({ op = "money_box", action = "update" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(Runtime.executeNode({ op = "money_box", action = "hide" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.isNil(run.blockTaskId, "the money box never blocks on a task")
+  Assert.deepEqual(wallet.calls, {
+    { "showBox", 3, 5 },
+    { "updateBox" },
+    { "hideBox" },
+  }, "the box operations arrive in source order with the evaluated tile coordinates")
+end
+
+function T.money_commands_fault_without_a_wallet_owner()
+  for _, node in ipairs({
+    { op = "money_change", action = "add", amount = 1 },
+    { op = "money_check", amount = 1, result = { value = "var", id = "VAR_TEMP_x4002" } },
+    { op = "money_box", action = "hide" },
+  }) do
+    local run, _ = moneyRun(nil)
+    local ok, err = pcall(function()
+      Runtime.executeNode(node, run)
+    end)
+    Assert.isFalse(ok, "a scripted " .. node.op .. " never succeeds without the wallet owner")
+    Assert.isTrue(Errors.is(err), "the missing owner is an attributed fault: " .. tostring(err))
+    ---@cast err Errors.Error
+    Assert.equal(err.code, ScriptErrors.SCRIPT_SERVICE_MISSING, "the fault names the missing service")
+  end
+end
+
+function T.money_operations_carry_source_operands_only()
+  local function validate(step)
+    return S.validate({ api = 1, id = "test.money_schema", steps = { step } })
+  end
+  Assert.equal(validate({ op = "money_change", action = "add", amount = 999999 }), true)
+  Assert.equal(
+    validate({ op = "money_change", action = "subtract", amount = { value = "var", id = "VAR_TEMP_x4001" } }),
+    true
+  )
+  Assert.equal(validate({ op = "money_check", amount = 100, result = { value = "var", id = "VAR_TEMP_x4002" } }), true)
+  Assert.equal(validate({ op = "money_box", action = "show", tileX = 3, tileY = 5 }), true)
+  Assert.equal(validate({ op = "money_box", action = "update" }), true, "an update carries no operands")
+  Assert.equal(validate({ op = "money_box", action = "hide" }), true, "a hide carries no operands")
+
+  Assert.isNil(validate({ op = "money_change", action = "set", amount = 1 }), "money_change has two source actions")
+  Assert.isNil(validate({ op = "money_change", action = "add" }), "a money change requires its amount")
+  Assert.isNil(
+    validate({ op = "money_change", action = "add", amount = "999999" }),
+    "a source amount is a number or a value reference"
+  )
+  Assert.isNil(validate({ op = "money_check", amount = 1 }), "a money check requires its result variable")
+  Assert.isNil(validate({ op = "money_box", action = "show" }), "the source money box opens at two tile coordinates")
+  Assert.isNil(validate({ op = "money_box", action = "update", tileX = 3 }), "no box action carries a coordinate")
 end
 
 return { tests = T }

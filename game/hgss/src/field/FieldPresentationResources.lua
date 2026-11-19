@@ -1296,6 +1296,18 @@ function FieldPresentationResources:drawMapNameBanner(banner, bounds)
   assert(self.bannerRenderer, "field presentation owns no map-name banner renderer"):draw(status, bounds)
 end
 
+-- The one placement every source main-display window paints through: the
+-- canonical MAIN field reference frame at the resolved field pixel scale, so a
+-- source tile coordinate lands on the same host pixel for both the floor box
+-- and the money box whatever the viewport scale is.
+---@param referenceFrame LayoutGeometry.Rect canonical MAIN field screen
+---@param fieldScale integer the resolved field pixel scale
+---@return LayoutGeometry.Placement
+function FieldPresentationResources.mainDisplayPlacement(referenceFrame, fieldScale)
+  local scale = PixelScale.fitPreferred(referenceFrame, NativeDisplay.WIDTH, NativeDisplay.HEIGHT, fieldScale)
+  return PixelScale.cover(referenceFrame, scale).placement
+end
+
 -- Leases the one selected area-preview image the status names. A replacement
 -- materializes the new image before releasing the outgoing one, so a failed
 -- construction preserves the current selection and at most one preview image

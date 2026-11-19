@@ -2022,4 +2022,143 @@ T["name rival lowers to the blocking rival naming operation"] = function()
   Assert.isTrue(report.complete)
 end
 
+-- The source money family (scrcmd_money.c) reads its own operand shapes: the
+-- u32 immediates of AddMoney/SubMoneyImmediate are true 32-bit amounts, the
+-- result pointer of HasEnoughMoneyImmediate/Var is read before the amount, and
+-- the variable forms take their amount through ScriptGetVar. Every command
+-- returns in the same tick (ScrCmd_* all return FALSE), and the money box
+-- window commands carry either the two source tile coordinates or no operand.
+T["source money commands lower to the money operations"] = function()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          -- 0x20: AddMoney 999999 (6)
+          { op = 110, args = { { value = 999999, width = 4 } } },
+          -- 0x26: AddMoney 1000000 (6) -- over the wallet cap, still a valid source amount
+          { op = 110, args = { { value = 1000000, width = 4 } } },
+          -- 0x2C: SubMoneyImmediate 1000000 (6)
+          { op = 111, args = { { value = 1000000, width = 4 } } },
+          -- 0x32: HasEnoughMoneyImmediate(VAR_SPECIAL_x8008, 1000) (8)
+          { op = 112, args = { { value = 0x8008, width = 2 }, { value = 1000, width = 4 } } },
+          -- 0x3A: ShowMoneyBox(3, 5) (6)
+          { op = 113, args = { { value = 3, width = 2 }, { value = 5, width = 2 } } },
+          -- 0x40: HideMoneyBox (2)
+          { op = 114, args = {} },
+          -- 0x42: UpdateMoneyBox (2)
+          { op = 115, args = {} },
+          -- 0x44: SubMoneyVar(40) (4)
+          { op = 360, args = { { value = 40, width = 2 } } },
+          -- 0x48: SubMoneyVar(VAR_0x4000) (4)
+          { op = 360, args = { { value = 0x4000, width = 2 } } },
+          -- 0x4C: HasEnoughMoneyVar(VAR_SPECIAL_x8008, VAR_0x4000) (6)
+          { op = 368, args = { { value = 0x8008, width = 2 }, { value = 0x4000, width = 2 } } },
+          { op = 2, args = {} },
+        },
+      },
+    },
+  })
+  for _, opcode in ipairs({ 110, 111, 112, 113, 114, 115, 360, 368 }) do
+    Assert.equal(
+      CommandCatalog.classification(opcode),
+      CommandCatalog.CONTINUE,
+      "source money command " .. opcode .. " is a same-tick command"
+    )
+  end
+  local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 843, "synthetic", { msgBank = 543, catalog = CATALOG }))
+  local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
+  Assert.equal(#lowered.unsupported, 0, "no source money command stays unsupported")
+  Assert.deepEqual(lowered.items[1], {
+    op = "money_change",
+    action = "add",
+    amount = 999999,
+    provenance = { offsets = { 0x20 }, opcodes = { 110 } },
+  }, "AddMoney carries its u32 immediate as an amount, not as a currency id")
+  Assert.deepEqual(lowered.items[2], {
+    op = "money_change",
+    action = "add",
+    amount = 1000000,
+    provenance = { offsets = { 0x26 }, opcodes = { 110 } },
+  }, "an amount over the wallet cap stays the source amount; the wallet clamps at runtime")
+  Assert.deepEqual(lowered.items[3], {
+    op = "money_change",
+    action = "subtract",
+    amount = 1000000,
+    provenance = { offsets = { 0x2C }, opcodes = { 111 } },
+  })
+  Assert.deepEqual(lowered.items[4], {
+    op = "money_check",
+    amount = 1000,
+    result = { value = "var", id = "VAR_SPECIAL_x8008" },
+    provenance = { offsets = { 0x32 }, opcodes = { 112 } },
+  }, "the money check reads its result pointer first and its amount second")
+  Assert.deepEqual(lowered.items[5], {
+    op = "money_box",
+    action = "show",
+    tileX = 3,
+    tileY = 5,
+    provenance = { offsets = { 0x3A }, opcodes = { 113 } },
+  }, "the money box opens at its two source tile coordinates")
+  Assert.deepEqual(lowered.items[6], {
+    op = "money_box",
+    action = "hide",
+    provenance = { offsets = { 0x40 }, opcodes = { 114 } },
+  })
+  Assert.deepEqual(lowered.items[7], {
+    op = "money_box",
+    action = "update",
+    provenance = { offsets = { 0x42 }, opcodes = { 115 } },
+  })
+  Assert.deepEqual(lowered.items[8], {
+    op = "money_change",
+    action = "subtract",
+    amount = 40,
+    provenance = { offsets = { 0x44 }, opcodes = { 360 } },
+  }, "a small ScriptGetVar operand is the literal it encodes")
+  Assert.deepEqual(lowered.items[9], {
+    op = "money_change",
+    action = "subtract",
+    amount = { value = "var", id = "VAR_0x4000" },
+    provenance = { offsets = { 0x48 }, opcodes = { 360 } },
+  }, "a variable ScriptGetVar operand stays a value reference")
+  Assert.deepEqual(lowered.items[10], {
+    op = "money_check",
+    amount = { value = "var", id = "VAR_0x4000" },
+    result = { value = "var", id = "VAR_SPECIAL_x8008" },
+    provenance = { offsets = { 0x4C }, opcodes = { 368 } },
+  })
+  local steps = Structurer.structure(lowered, 0)
+  local report = Verifier.verifyScript(steps, ir.scripts[0], ir, lowered.omissions)
+  Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "reported")
+  Assert.isTrue(report.complete, "the whole money command slice is supported and verified")
+  Assert.equal(report.unsupportedCount, 0)
+
+  -- Both box coordinates come through ScriptGetVar, so each one may be a
+  -- variable instead of a tile literal.
+  local varBytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          { op = 113, args = { { value = 0x4000, width = 2 }, { value = 0x4001, width = 2 } } },
+          { op = 2, args = {} },
+        },
+      },
+    },
+  })
+  local varIr =
+    assert(ScriptBinaryDecoder.parseMember(varBytes, 843, "synthetic", { msgBank = 543, catalog = CATALOG }))
+  local varLowered = SemanticLowering.lowerScript(varIr.scripts[0], varIr, {
+    stdCatalog = SourceCatalog.catalog(),
+  })
+  Assert.deepEqual(varLowered.items[1], {
+    op = "money_box",
+    action = "show",
+    tileX = { value = "var", id = "VAR_0x4000" },
+    tileY = { value = "var", id = "VAR_0x4001" },
+    provenance = { offsets = { 0x20 }, opcodes = { 113 } },
+  }, "variable box coordinates stay value references")
+end
+
 return { tests = T }

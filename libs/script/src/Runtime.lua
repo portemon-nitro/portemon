@@ -3317,6 +3317,57 @@ do
   end
   HANDLERS.game_score_event = handleGameScoreEvent
 end
+-- The wallet capability the source money commands borrow from the composed
+-- field platform: the generic runtime knows only these operations, while the
+-- live wallet and its source arithmetic stay with the injected owner.
+---@class ScriptMoneyService
+---@field add fun(self: ScriptMoneyService, amount: integer)
+---@field subtract fun(self: ScriptMoneyService, amount: integer)
+---@field hasEnough fun(self: ScriptMoneyService, amount: integer): boolean
+---@field showBox fun(self: ScriptMoneyService, tileX: integer, tileY: integer)
+---@field updateBox fun(self: ScriptMoneyService)
+---@field hideBox fun(self: ScriptMoneyService)
+-- Source money commands (scrcmd_money.c): every amount and tile operand is
+-- evaluated before the injected wallet owner is called, a money check writes
+-- its 0/1 answer instead of moving the balance, and all three commands return
+-- in the same tick. A missing wallet owner is an attributed fault, never a
+-- silent no-op. The main chunk is at LuaJIT's local budget, so the handlers
+-- live in a block.
+do
+  local function handleMoneyChange(node, run)
+    local amount = semanticsFor(run).evaluateValue(node.amount, run)
+    local money = requireService(run, "money") --[[@as ScriptMoneyService]]
+    if node.action == "add" then
+      money:add(amount)
+    else
+      money:subtract(amount)
+    end
+    return Runtime.OUTCOME_CONTINUE
+  end
+  local function handleMoneyCheck(node, run)
+    local amount = semanticsFor(run).evaluateValue(node.amount, run)
+    local money = requireService(run, "money") --[[@as ScriptMoneyService]]
+    local affordable = money:hasEnough(amount)
+    semanticsFor(run).writeRef(node.result, affordable and 1 or 0, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  local function handleMoneyBox(node, run)
+    local money = requireService(run, "money") --[[@as ScriptMoneyService]]
+    if node.action == "show" then
+      local tileX = semanticsFor(run).evaluateValue(node.tileX, run)
+      local tileY = semanticsFor(run).evaluateValue(node.tileY, run)
+      money:showBox(tileX, tileY)
+    elseif node.action == "update" then
+      money:updateBox()
+    else
+      money:hideBox()
+    end
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.money_change = handleMoneyChange
+  HANDLERS.money_check = handleMoneyCheck
+  HANDLERS.money_box = handleMoneyBox
+end
 HANDLERS.open_message = handleOpenMessage
 HANDLERS.signpost_direction = handleSignpostDirection
 HANDLERS.signpost_set = handleSignpostSet

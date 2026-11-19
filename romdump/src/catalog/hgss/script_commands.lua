@@ -774,18 +774,21 @@ return {
       },
     },
     [110] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_AddMoney",
       widths = {
         [1] = 4,
       },
     },
     [111] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_SubMoneyImmediate",
       widths = {
         [1] = 4,
       },
     },
     [112] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_HasEnoughMoneyImmediate",
       widths = {
         [1] = 2,
@@ -793,6 +796,7 @@ return {
       },
     },
     [113] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_ShowMoneyBox",
       widths = {
         [1] = 2,
@@ -800,10 +804,12 @@ return {
       },
     },
     [114] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_HideMoneyBox",
       widths = {},
     },
     [115] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_UpdateMoneyBox",
       widths = {},
     },
@@ -2598,6 +2604,7 @@ return {
       },
     },
     [360] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_SubMoneyVar",
       widths = {
         [1] = 2,
@@ -2676,6 +2683,7 @@ return {
       },
     },
     [368] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_HasEnoughMoneyVar",
       widths = {
         [1] = 2,

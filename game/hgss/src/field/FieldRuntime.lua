@@ -587,6 +587,7 @@ end
 ---@field martService MartService the live mart inventory/session service
 ---@field martHost table<string, unknown> the one script-owned mart child host
 ---@field kurtBoxHost table<string, unknown> the one script-owned Kurt selector host
+---@field moneyBox FieldMoneyBox? the transient source money window the field draw renders
 ---@field apricornTreePresentation table<string, function>? presentation assets invalidation owner
 ---@field martStockResolver function the selected mart stock provider
 ---@field battleCoordinator FieldBattleCoordinator concrete owner of the battle lifetime
@@ -5118,6 +5119,11 @@ function FieldRuntime:_releaseAll()
   if self.kurtBoxHost then
     self.kurtBoxHost:dispose()
   end
+  if self.moneyBox then
+    -- The transient source money window is field presentation state: close
+    -- it so no window outlives the field that opened it.
+    self.moneyBox:dispose()
+  end
   if self.pcTerminal then
     self.pcTerminal:releaseEffect()
   end
@@ -5125,6 +5131,7 @@ function FieldRuntime:_releaseAll()
   self.easyChatScriptHost = nil
   self.martHost = nil
   self.kurtBoxHost = nil
+  self.moneyBox = nil
   self.applications = nil
   self.displayContext, self.presentationDisplay, self.presentationOverrides = nil, nil, nil
   self._displayTopology = nil

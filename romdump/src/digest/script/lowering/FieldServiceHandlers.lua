@@ -469,6 +469,57 @@ function FieldServiceHandlers.pokemonCenterHeal(ins)
   return { op = "pokemon_center_heal", count = Operands.varRef(ins.operands[1]) }
 end
 
+-- Source money commands (scrcmd_money.c) move the one live profile wallet:
+-- AddMoney and SubMoneyImmediate read a u32 amount, SubMoneyVar and
+-- HasEnoughMoneyVar read their amount through ScriptGetVar, and both money
+-- checks read their result pointer before the amount. ShowMoneyBox carries two
+-- source tile coordinates, while hide and update carry no operand. Every
+-- command returns in the same tick.
+function FieldServiceHandlers.addMoney(ins)
+  return { op = "money_change", action = "add", amount = Operands.operandValue(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.subtractMoneyImmediate(ins)
+  return { op = "money_change", action = "subtract", amount = Operands.operandValue(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.subtractMoneyVar(ins)
+  return { op = "money_change", action = "subtract", amount = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.hasEnoughMoneyImmediate(ins)
+  return {
+    op = "money_check",
+    amount = Operands.operandValue(ins.operands[2]),
+    result = Operands.varRef(ins.operands[1]),
+  }
+end
+
+function FieldServiceHandlers.hasEnoughMoneyVar(ins)
+  return {
+    op = "money_check",
+    amount = Operands.varRef(ins.operands[2]),
+    result = Operands.varRef(ins.operands[1]),
+  }
+end
+
+function FieldServiceHandlers.showMoneyBox(ins)
+  return {
+    op = "money_box",
+    action = "show",
+    tileX = Operands.varRef(ins.operands[1]),
+    tileY = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function FieldServiceHandlers.hideMoneyBox()
+  return { op = "money_box", action = "hide" }
+end
+
+function FieldServiceHandlers.updateMoneyBox()
+  return { op = "money_box", action = "update" }
+end
+
 function FieldServiceHandlers.martOpen(kind, selector)
   local step = { op = "mart_open", kind = kind }
   if selector ~= nil then

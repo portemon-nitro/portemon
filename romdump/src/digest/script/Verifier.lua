@@ -888,6 +888,52 @@ local function checkMultichoice(ins, step)
   return nil
 end
 
+-- Source money commands (scrcmd_money.c): the immediate forms carry a u32
+-- amount, the value forms carry a ScriptGetVar amount, and each check reads
+-- its result pointer before the amount. The money box commands carry the two
+-- source tile coordinates only on show.
+local function checkMoney(ins, step)
+  local opcode = ins.opcode
+  if opcode == 110 or opcode == 111 or opcode == 360 then
+    local action = opcode == 110 and "add" or "subtract"
+    if step.op ~= "money_change" or step.action ~= action then
+      return "source money change lost its action"
+    end
+    if not operandMatches(ins.operands[1].raw, step.amount) then
+      return "source money amount changed by translation"
+    end
+  elseif opcode == 112 or opcode == 368 then
+    if step.op ~= "money_check" then
+      return "source money check changed by translation"
+    end
+    if not operandMatches(ins.operands[1].raw, step.result) then
+      return "money check result variable changed by translation"
+    end
+    if not operandMatches(ins.operands[2].raw, step.amount) then
+      return "money check amount changed by translation"
+    end
+  elseif opcode == 113 then
+    if step.op ~= "money_box" or step.action ~= "show" then
+      return "money box show changed by translation"
+    end
+    if not operandMatches(ins.operands[1].raw, step.tileX) then
+      return "money box column changed by translation"
+    end
+    if not operandMatches(ins.operands[2].raw, step.tileY) then
+      return "money box row changed by translation"
+    end
+  elseif opcode == 114 then
+    if step.op ~= "money_box" or step.action ~= "hide" then
+      return "money box hide changed by translation"
+    end
+  elseif opcode == 115 then
+    if step.op ~= "money_box" or step.action ~= "update" then
+      return "money box update changed by translation"
+    end
+  end
+  return nil
+end
+
 local CHECKERS = {
   [3] = checkWaitFrames,
   [22] = checkGotoTarget,
@@ -956,6 +1002,14 @@ local CHECKERS = {
   [812] = checkMomGiftTake,
   [813] = checkMomGift,
   [821] = checkBuenasPassword,
+  [110] = checkMoney,
+  [111] = checkMoney,
+  [112] = checkMoney,
+  [113] = checkMoney,
+  [114] = checkMoney,
+  [115] = checkMoney,
+  [360] = checkMoney,
+  [368] = checkMoney,
   [256] = checkFashionTitleWord,
   [260] = checkUnionOwnChatMessage,
   [264] = checkUnionPartnerLanguage,
