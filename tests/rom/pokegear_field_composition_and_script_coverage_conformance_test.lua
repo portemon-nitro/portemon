@@ -6,8 +6,9 @@
 -- the independent verifier agrees on the decoded operands. The inventory
 -- itself is closed by a bounded census: every table name in the phone, gear,
 -- mom-gift, town-map, radio-music, and Buena families plus the one opaque
--- trigger-mutation row is listed, so an unlisted gear row cannot hide as an
--- unknown optional command. Member bytes are never committed to the
+-- trigger-mutation row is listed -- each either executable here or explicitly
+-- named as an unowned family row -- so an unlisted gear row cannot hide as
+-- an unknown optional command. Member bytes are never committed to the
 -- repository; a missing dump reports a skip, never a pass, through the
 -- declared dump capability.
 
@@ -36,7 +37,7 @@ local INVENTORY = {
     blocks = false,
     result = true,
   },
-  { opcode = 148, name = "ScrCmd_148", widths = { [1] = 1, [2] = 1 }, blocks = false, result = false },
+  { opcode = 148, name = "ScrCmd_SetPhoneCallTrigger", widths = { [1] = 1, [2] = 1 }, blocks = false, result = false },
   { opcode = 149, name = "UnsetPhoneCallTrigger", widths = { [1] = 1 }, blocks = false, result = false },
   { opcode = 157, name = "ScrCmd_TownMap", widths = {}, blocks = true, result = false },
   {
@@ -58,6 +59,8 @@ local INVENTORY = {
   { opcode = 613, name = "ScrCmd_GetPhoneContactRandomGiftBerry", widths = { [1] = 2 }, blocks = false, result = true },
   { opcode = 614, name = "ScrCmd_GetPhoneContactGiftItem", widths = { [1] = 2 }, blocks = false, result = true },
   { opcode = 779, name = "ScrCmd_RadioMusicIsPlaying", widths = { [1] = 2, [2] = 2 }, blocks = false, result = true },
+  { opcode = 811, name = "ScrCmd_PeekMomGift", widths = { [1] = 2, [2] = 2 }, blocks = false, result = true },
+  { opcode = 812, name = "ScrCmd_PopMomGift", widths = {}, blocks = false, result = false },
   { opcode = 813, name = "ScrCmd_MomGiftCheck", widths = { [1] = 2 }, blocks = false, result = true },
   { opcode = 821, name = "ScrCmd_GetBuenasPassword", widths = { [1] = 2, [2] = 2 }, blocks = false, result = true },
 }
@@ -67,6 +70,12 @@ local INVENTORY = {
 -- trivia, movement-save flags, fossil/item flows) rather than gear state.
 -- They are named here so the census closure below stays reviewable.
 local OUT_OF_FAMILY_SPOT_CHECKS = { 464, 489, 512, 649 }
+
+-- Gear-family rows that decode but have no owned semantics yet: the phone
+-- rematch seeking flag and the pokegear map unlock level both mutate save
+-- state this feature does not own. They stay named here so the census below
+-- accounts for them instead of dropping them silently.
+local UNADOPTED_FAMILY_ROWS = { 462, 804 }
 
 -- The bounded census predicate over the pinned table: names in the phone,
 -- gear, mom-gift, town-map, radio-music, and Buena families. The opaque
@@ -86,9 +95,13 @@ end
 
 ---@return integer[] sorted census opcodes
 local function censusOpcodes()
+  local unadopted = {}
+  for _, opcode in ipairs(UNADOPTED_FAMILY_ROWS) do
+    unadopted[opcode] = true
+  end
   local found = { [148] = true }
   for opcode, entry in pairs(ScriptCommands.byOpcode) do
-    if isGearFamilyName(entry.name or "") then
+    if isGearFamilyName(entry.name or "") and not unadopted[opcode] then
       found[opcode] = true
     end
   end
@@ -199,6 +212,13 @@ local function problemMentionsRow(text, opcode, name)
 end
 
 function T.every_source_gear_command_row_is_executable(romFs)
+  -- The unadopted rows are still family rows with no semantics; once one
+  -- gains a supported disposition it must join the executable inventory.
+  for _, opcode in ipairs(UNADOPTED_FAMILY_ROWS) do
+    local entry = assert(ScriptCommands.byOpcode[opcode], "opcode " .. opcode .. " stays in the pinned table")
+    Assert.isTrue(isGearFamilyName(entry.name or ""), "opcode " .. opcode .. " stays a gear-family name")
+    Assert.isNil(entry.disposition, "opcode " .. opcode .. " stays unowned until its semantics land")
+  end
   -- The census is exhaustive and bounded: exactly the inventoried rows,
   -- neither a silent deferral hiding inside the family nor the whole corpus.
   local census = censusOpcodes()

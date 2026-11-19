@@ -1,4 +1,4 @@
--- Actor oscillation source lowering: ScrCmd_523 operand normalization.
+-- Actor oscillation source lowering: ScrCmd_SpinObject operand normalization.
 -- Retail oracle: the retail ROM obtains its five operands then starts the
 -- oscillation task (presentation-vector motion).
 -- Raw source amplitudes are HGSS displacement units; the producer normalizes

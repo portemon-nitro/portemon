@@ -565,7 +565,7 @@ function Support.decode(kind, resourceKeys, staged, context)
   if type(palette.data) ~= "table" or type(palette.data.colors) ~= "table" then
     Support.malformed(kind, "stages decoded palette records for " .. resourceKeys.palette)
   end
-  local cellLease = stagedLease(resourceKeys.cell, "cells", staged, kind)
+  local cellLease = stagedLease(resourceKeys.cell, "cell", staged, kind)
   if type(cellLease.data) ~= "table" or type(cellLease.data.cells) ~= "table" then
     Support.malformed(kind, "stages decoded cell records for " .. resourceKeys.cell)
   end

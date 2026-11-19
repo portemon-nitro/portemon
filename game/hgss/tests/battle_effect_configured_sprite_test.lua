@@ -133,7 +133,7 @@ local function leaseStore(overrides)
     },
     [CELL_KEY] = {
       key = CELL_KEY,
-      kind = "cells",
+      kind = "cell",
       payloadPath = "probe/sprite-cell.lua",
       data = twoCellFixture(),
     },
@@ -428,7 +428,7 @@ function T.unsupported_cells_fail_closed_without_publishing()
         local store = leaseStore()
         local cells = twoCellFixture()
         cells.cells[1].objs[1].affine = true
-        store[CELL_KEY] = { key = CELL_KEY, kind = "cells", payloadPath = "probe/sprite-cell.lua", data = cells }
+        store[CELL_KEY] = { key = CELL_KEY, kind = "cell", payloadPath = "probe/sprite-cell.lua", data = cells }
         return store
       end,
     },

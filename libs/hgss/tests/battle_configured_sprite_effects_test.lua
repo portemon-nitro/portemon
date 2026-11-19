@@ -56,7 +56,7 @@ local function servicesWith(options)
   local leases = {
     [KEYS.character] = { key = KEYS.character, kind = "texture", width = 512 },
     [KEYS.palette] = { key = KEYS.palette, kind = "palette", data = palette },
-    [KEYS.cell] = { key = KEYS.cell, kind = "cells", data = { cells = cells } },
+    [KEYS.cell] = { key = KEYS.cell, kind = "cell", data = { cells = cells } },
     [KEYS.animation] = { key = KEYS.animation, kind = "animation", data = { anims = anims } },
   }
   local journal = { acquired = {}, released = {} }

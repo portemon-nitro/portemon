@@ -304,7 +304,7 @@ function FieldServiceHandlers.screenShake(ins)
         Operands.operandValue(ins.operands[4]),
       },
       sourceOffset = ins.offset,
-      reason = "ScrCmd_561 variable shake operands are unsupported",
+      reason = "ScrCmd_ScreenShake variable shake operands are unsupported",
     }
   end
   return {

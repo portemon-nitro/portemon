@@ -58,7 +58,7 @@ local function configuredLeases()
     },
     [CONFIGURED_SPRITE_KEYS.cell] = {
       key = CONFIGURED_SPRITE_KEYS.cell,
-      kind = "cells",
+      kind = "cell",
       data = { cells = { { objs = { { x = 0, y = 0, tile = 0, width = 8, height = 8, priority = 0 } } } } },
     },
     [CONFIGURED_SPRITE_KEYS.animation] = {

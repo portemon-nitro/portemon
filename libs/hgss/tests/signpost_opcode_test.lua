@@ -789,7 +789,7 @@ function T.compiled_copy_var_with_provenance_copies_the_operand_source()
   Assert.equal(#h.scheduler:tasks(), 0)
 end
 
--- ScrCmd_061: no operands, ends the script context and requests the Start
+-- ScrCmd_ReopenStartMenuOnEnd: no operands, ends the script context and requests the Start
 -- Menu reopen hook. The request must reach the startMenuReopen service
 -- exactly once and the run must stop (the compiled graph has no next edge);
 -- a missing service is an attributed fault, never a silent success.

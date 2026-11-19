@@ -673,12 +673,13 @@ local function newObjWindowBackgroundAppearance(kind, args, context, services)
   -- The native task owns the window until it destroys itself, so cancellation
   -- has to clear the silhouette the journaled restore cannot reach.
   local baseCancel = body.cancel
-  own.cancel = function(self, reason)
+  local function cancel(self, reason)
     if self._state ~= "complete" then
       releaseSilhouette(self)
     end
     return baseCancel(self, reason)
   end
+  own.cancel = cancel
   return body
 end
 

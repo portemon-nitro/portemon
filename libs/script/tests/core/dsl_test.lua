@@ -1077,7 +1077,7 @@ local CASES = {
     function()
       return S.unsupported({
         command = 0x017A,
-        originalName = "ScrCmd_378",
+        originalName = "ScrCmd_ViewRankings",
         arguments = { 4, 0x800C },
         sourceOffset = 0x92,
         reason = "no semantic adapter",
@@ -1086,7 +1086,7 @@ local CASES = {
     {
       op = "unsupported",
       command = 0x017A,
-      originalName = "ScrCmd_378",
+      originalName = "ScrCmd_ViewRankings",
       arguments = { 4, 0x800C },
       sourceOffset = 0x92,
       reason = "no semantic adapter",

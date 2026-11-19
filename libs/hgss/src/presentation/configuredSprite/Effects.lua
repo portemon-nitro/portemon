@@ -744,7 +744,7 @@ Effects["sprite-shrink-attacker-into"] = newShrinkAttacker
 -- BattleAnimUtil_UpdateSpriteSequence (battle_anim_util.c): one sprite is
 -- shown every interval, each carrying its own copy of the source motion.
 ---@param sequence table<string, unknown> sprite sequence under advancement
----@return boolean active true while any copy still runs
+---@return boolean active true while a copy still runs
 local function updateSequence(sequence)
   local active = { true, true, true, true }
   if sequence.interval <= sequence.timer then
@@ -940,12 +940,26 @@ local function newOrbitAttacker(kind, args, context, services, bobbing)
   return body
 end
 
-Effects["sprite-orbit-attacker-bobbing"] = function(kind, args, context, services)
+---@param kind string task kind under construction
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param context table<string, unknown> occurrence-bound playback context
+---@param services table<string, unknown> factory services record
+---@return ConfiguredSpriteBody runnable bobbing body
+local function newOrbitAttackerBobbing(kind, args, context, services)
   return newOrbitAttacker(kind, args, context, services, true)
 end
-Effects["sprite-orbit-attacker"] = function(kind, args, context, services)
+
+---@param kind string task kind under construction
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param context table<string, unknown> occurrence-bound playback context
+---@param services table<string, unknown> factory services record
+---@return ConfiguredSpriteBody runnable body
+local function newOrbitAttackerSteady(kind, args, context, services)
   return newOrbitAttacker(kind, args, context, services, false)
 end
+
+Effects["sprite-orbit-attacker-bobbing"] = newOrbitAttackerBobbing
+Effects["sprite-orbit-attacker"] = newOrbitAttackerSteady
 
 -- BattleAnimSpriteFunc_FloatingSpriteStream (battle_anim_effects.c): fifteen
 -- copies launch from the attacker picture every seven ticks, drift on a

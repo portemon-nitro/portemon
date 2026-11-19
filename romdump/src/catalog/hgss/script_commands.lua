@@ -349,7 +349,7 @@ return {
       },
     },
     [48] = {
-      name = "ScrCmd_048",
+      name = "ScrCmd_NPCMsgAutoScrollInLink",
       widths = {
         [1] = 1,
       },
@@ -431,11 +431,11 @@ return {
     },
     [61] = {
       classification = "stop",
-      name = "ScrCmd_061",
+      name = "ScrCmd_ReopenStartMenuOnEnd",
       widths = {},
     },
     [62] = {
-      name = "ScrCmd_062",
+      name = "ScrCmd_ScrollMsgBg",
       widths = {
         [1] = 1,
         [2] = 1,
@@ -453,7 +453,7 @@ return {
       },
     },
     [64] = {
-      name = "ScrCmd_064",
+      name = "ScrCmd_MultichoiceInitStdGmm",
       widths = {
         [1] = 1,
         [2] = 1,
@@ -463,7 +463,7 @@ return {
       },
     },
     [65] = {
-      name = "ScrCmd_065",
+      name = "ScrCmd_MultichoiceInit",
       widths = {
         [1] = 1,
         [2] = 1,
@@ -473,18 +473,18 @@ return {
       },
     },
     [66] = {
-      name = "ScrCmd_066",
+      name = "ScrCmd_MultichoiceItemAdd",
       widths = {
         [1] = 1,
         [2] = 1,
       },
     },
     [67] = {
-      name = "ScrCmd_067",
+      name = "ScrCmd_MultichoiceExec",
       widths = {},
     },
     [68] = {
-      name = "ScrCmd_068",
+      name = "ScrCmd_ScriptListMenuInitStdGmm",
       widths = {
         [1] = 1,
         [2] = 1,
@@ -494,7 +494,7 @@ return {
       },
     },
     [69] = {
-      name = "ScrCmd_069",
+      name = "ScrCmd_ScriptListMenuInit",
       widths = {
         [1] = 1,
         [2] = 1,
@@ -504,7 +504,7 @@ return {
       },
     },
     [70] = {
-      name = "ScrCmd_070",
+      name = "ScrCmd_ScriptListMenuItemAdd",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -512,11 +512,11 @@ return {
       },
     },
     [71] = {
-      name = "ScrCmd_071",
+      name = "ScrCmd_ScriptListMenuExec",
       widths = {},
     },
     [72] = {
-      name = "ScrCmd_072",
+      name = "ScrCmd_MultichoiceGridExec",
       widths = {
         [1] = 1,
       },
@@ -589,7 +589,7 @@ return {
       widths = {},
     },
     [83] = {
-      name = "ScrCmd_083",
+      name = "ScrCmd_SetBGMOverride",
       widths = {
         [1] = 2,
       },
@@ -610,7 +610,7 @@ return {
       },
     },
     [86] = {
-      name = "ScrCmd_086",
+      name = "ScrCmd_SetSoundPlayerPause",
       widths = {
         [1] = 1,
         [2] = 1,
@@ -624,7 +624,7 @@ return {
       },
     },
     [88] = {
-      name = "ScrCmd_088",
+      name = "ScrCmd_SetBGMDisabled",
       widths = {
         [1] = 1,
       },
@@ -662,7 +662,7 @@ return {
       widths = {},
     },
     [93] = {
-      name = "ScrCmd_093",
+      name = "ScrCmd_SetSoundScene63",
       widths = {},
     },
     [94] = {
@@ -754,7 +754,7 @@ return {
       },
     },
     [107] = {
-      name = "ScrCmd_107",
+      name = "ScrCmd_OffsetPlayerAndCamera",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -762,14 +762,14 @@ return {
       },
     },
     [108] = {
-      name = "ScrCmd_108",
+      name = "ScrCmd_SetObjectKeep",
       widths = {
         [1] = 2,
         [2] = 1,
       },
     },
     [109] = {
-      name = "ScrCmd_109",
+      name = "ScrCmd_ChangeObjectMovement",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -810,7 +810,7 @@ return {
       widths = {},
     },
     [116] = {
-      name = "ScrCmd_116",
+      name = "ScrCmd_ShowPointsBox",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -818,11 +818,11 @@ return {
       },
     },
     [117] = {
-      name = "ScrCmd_117",
+      name = "ScrCmd_HidePointsBox",
       widths = {},
     },
     [118] = {
-      name = "ScrCmd_118",
+      name = "ScrCmd_UpdatePointsBox",
       widths = {
         [1] = 1,
       },
@@ -977,7 +977,7 @@ return {
       },
     },
     [136] = {
-      name = "ScrCmd_136",
+      name = "ScrCmd_GetPartyMonUnownLetter",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1089,7 +1089,7 @@ return {
     [148] = {
       classification = "continue_same_tick",
       disposition = "supported",
-      name = "ScrCmd_148",
+      name = "ScrCmd_SetPhoneCallTrigger",
       widths = {
         [1] = 1,
         [2] = 1,
@@ -1111,21 +1111,21 @@ return {
       disposition = "supported",
     },
     [151] = {
-      name = "ScrCmd_151",
+      name = "ScrCmd_StartPalPadRegistration",
       widths = {},
     },
     [152] = {
-      name = "ScrCmd_152",
+      name = "ScrCmd_OpenWifiClub",
       widths = {},
     },
     [153] = {
-      name = "ScrCmd_153",
+      name = "ScrCmd_FashionAppGetEntryIndex",
       widths = {
         [1] = 2,
       },
     },
     [154] = {
-      name = "ScrCmd_154",
+      name = "ScrCmd_OpenDressUp",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1133,7 +1133,7 @@ return {
       },
     },
     [155] = {
-      name = "ScrCmd_155",
+      name = "ScrCmd_OpenAccessoryPortrait",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1143,7 +1143,7 @@ return {
       feature = "pc",
       disposition = "supported",
       classification = "continue_same_tick",
-      name = "ScrCmd_156",
+      name = "ScrCmd_OpenBallCapsuleEditor",
       widths = {},
     },
     [157] = {
@@ -1156,25 +1156,25 @@ return {
       feature = "pc",
       disposition = "supported",
       classification = "native_wait",
-      name = "ScrCmd_158",
+      name = "ScrCmd_OpenPCBox",
       widths = {
         [1] = 1,
       },
     },
     [159] = {
-      name = "ScrCmd_159",
+      name = "ScrCmd_OpenDrawingSession",
       widths = {},
     },
     [160] = {
-      name = "ScrCmd_160",
+      name = "ScrCmd_OpenLinkTrainerCard",
       widths = {},
     },
     [161] = {
-      name = "ScrCmd_161",
+      name = "ScrCmd_OpenWirelessTrade",
       widths = {},
     },
     [162] = {
-      name = "ScrCmd_162",
+      name = "ScrCmd_OpenRecordMixing",
       widths = {},
     },
     [163] = {
@@ -1187,18 +1187,18 @@ return {
       feature = "pc",
       disposition = "supported",
       classification = "native_wait",
-      name = "ScrCmd_164",
+      name = "ScrCmd_OpenHallOfFameShowcase",
       widths = {},
     },
     [165] = {
-      name = "ScrCmd_165",
+      name = "ScrCmd_OpenGts",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [166] = {
-      name = "ScrCmd_166",
+      name = "ScrCmd_OpenWifiClubWithResult",
       widths = {
         [1] = 2,
       },
@@ -1311,7 +1311,7 @@ return {
       },
     },
     [180] = {
-      name = "ScrCmd_180",
+      name = "ScrCmd_FlyWarp",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1329,7 +1329,7 @@ return {
       },
     },
     [183] = {
-      name = "ScrCmd_183",
+      name = "ScrCmd_PlayFieldMoveCutIn",
       widths = {
         [1] = 2,
       },
@@ -1531,14 +1531,14 @@ return {
       },
     },
     [208] = {
-      name = "ScrCmd_208",
+      name = "ScrCmd_Dummy208",
       widths = {
         [1] = 1,
         [2] = 2,
       },
     },
     [209] = {
-      name = "ScrCmd_209",
+      name = "ScrCmd_Dummy209",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -1553,7 +1553,7 @@ return {
       },
     },
     [211] = {
-      name = "ScrCmd_211",
+      name = "ScrCmd_GetSwarmMapAndSpecies",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1674,11 +1674,11 @@ return {
       },
     },
     [223] = {
-      name = "ScrCmd_223",
+      name = "ScrCmd_TrainerBattleWithTrainer1",
       widths = {},
     },
     [224] = {
-      name = "ScrCmd_224",
+      name = "ScrCmd_SetLastInteractedTrainerFlag",
       widths = {},
     },
     [225] = {
@@ -1692,7 +1692,7 @@ return {
       },
     },
     [226] = {
-      name = "ScrCmd_226",
+      name = "ScrCmd_CommClubJoin",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1701,7 +1701,7 @@ return {
       },
     },
     [227] = {
-      name = "ScrCmd_227",
+      name = "ScrCmd_CommClubHost",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1710,39 +1710,39 @@ return {
       },
     },
     [228] = {
-      name = "ScrCmd_228",
+      name = "ScrCmd_Dummy228",
       widths = {
         [1] = 2,
       },
     },
     [229] = {
-      name = "ScrCmd_229",
+      name = "ScrCmd_Dummy229",
       widths = {
         [1] = 2,
       },
     },
     [230] = {
-      name = "ScrCmd_230",
+      name = "ScrCmd_LinkBattle",
       widths = {},
     },
     [231] = {
-      name = "ScrCmd_231",
+      name = "ScrCmd_Dummy231",
       widths = {},
     },
     [232] = {
-      name = "ScrCmd_232",
+      name = "ScrCmd_ConditionalLinkSyncStart",
       widths = {
         [1] = 2,
       },
     },
     [233] = {
-      name = "ScrCmd_233",
+      name = "ScrCmd_ConditionalLinkSyncWait",
       widths = {
         [1] = 2,
       },
     },
     [234] = {
-      name = "ScrCmd_234",
+      name = "ScrCmd_ConditionalLinkSyncCreate",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1751,19 +1751,19 @@ return {
       },
     },
     [235] = {
-      name = "ScrCmd_235",
+      name = "ScrCmd_ConditionalLinkSyncDestroy",
       widths = {
         [1] = 2,
       },
     },
     [236] = {
-      name = "ScrCmd_236",
+      name = "ScrCmd_SetVarZero",
       widths = {
         [1] = 2,
       },
     },
     [237] = {
-      name = "ScrCmd_237",
+      name = "ScrCmd_BeginTextAutoScroll",
       widths = {},
     },
     [238] = {
@@ -1847,7 +1847,7 @@ return {
       },
     },
     [247] = {
-      name = "ScrCmd_247",
+      name = "ScrCmd_Dummy247",
       widths = {},
     },
     [248] = {
@@ -1873,7 +1873,7 @@ return {
       },
     },
     [250] = {
-      name = "ScrCmd_250",
+      name = "ScrCmd_StartFirstBattle",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1884,7 +1884,7 @@ return {
       widths = {},
     },
     [252] = {
-      name = "ScrCmd_252",
+      name = "ScrCmd_OpenTrainerCardSignature",
       widths = {},
     },
     [253] = {
@@ -1900,14 +1900,14 @@ return {
       },
     },
     [255] = {
-      name = "ScrCmd_255",
+      name = "ScrCmd_FashionEntryIsSaved",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [256] = {
-      name = "ScrCmd_256",
+      name = "ScrCmd_FashionEntrySetMailWord",
       disposition = "supported",
       classification = "yield_next_tick",
       widths = {
@@ -1915,23 +1915,23 @@ return {
       },
     },
     [257] = {
-      name = "ScrCmd_257",
+      name = "ScrCmd_LinkSyncAndWait",
       widths = {
         [1] = 2,
       },
     },
     [258] = {
-      name = "ScrCmd_258",
+      name = "ScrCmd_LinkSyncClearPackets",
       widths = {},
     },
     [259] = {
-      name = "ScrCmd_259",
+      name = "ScrCmd_GetUnionRoomPartnerHometownMsg",
       widths = {
         [1] = 2,
       },
     },
     [260] = {
-      name = "ScrCmd_260",
+      name = "ScrCmd_GetUnionRoomOwnChatMsg",
       disposition = "supported",
       classification = "continue_same_tick",
       widths = {
@@ -1939,21 +1939,21 @@ return {
       },
     },
     [261] = {
-      name = "ScrCmd_261",
+      name = "ScrCmd_UnionRoomSetActivity",
       widths = {
         [1] = 2,
       },
     },
     [262] = {
-      name = "ScrCmd_262",
+      name = "ScrCmd_UnionRoomRefuseJoins",
       widths = {},
     },
     [263] = {
-      name = "ScrCmd_263",
+      name = "ScrCmd_UnionRoomResumeSearch",
       widths = {},
     },
     [264] = {
-      name = "ScrCmd_264",
+      name = "ScrCmd_BufferUnionRoomPartnerLanguage",
       disposition = "supported",
       classification = "continue_same_tick",
       widths = {
@@ -1961,57 +1961,57 @@ return {
       },
     },
     [265] = {
-      name = "ScrCmd_265",
+      name = "ScrCmd_FieldCommRegisterCommands",
       widths = {},
     },
     [266] = {
-      name = "ScrCmd_266",
+      name = "ScrCmd_UnionRoomRequestLeaveAll",
       widths = {},
     },
     [267] = {
-      name = "ScrCmd_267",
+      name = "ScrCmd_GetUnionRoomTalkMsg",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [268] = {
-      name = "ScrCmd_268",
+      name = "ScrCmd_GetUnionRoomPlayerActivity",
       widths = {
         [1] = 2,
       },
     },
     [269] = {
-      name = "ScrCmd_269",
+      name = "ScrCmd_UnionRoomWaitJoinStatus",
       widths = {
         [1] = 2,
       },
     },
     [270] = {
-      name = "ScrCmd_270",
+      name = "ScrCmd_UnionRoomRestoreObjects",
       widths = {},
     },
     [271] = {
-      name = "ScrCmd_271",
+      name = "ScrCmd_UnionRoomSendTalkResponse",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [272] = {
-      name = "ScrCmd_272",
+      name = "ScrCmd_UnionRoomWaitTalkChoice",
       widths = {
         [1] = 2,
       },
     },
     [273] = {
-      name = "ScrCmd_273",
+      name = "ScrCmd_UnionRoomWaitTalkReply",
       widths = {
         [1] = 2,
       },
     },
     [274] = {
-      name = "ScrCmd_274",
+      name = "ScrCmd_UnionRoomRequestJoinPlayer",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2082,21 +2082,21 @@ return {
       widths = {},
     },
     [283] = {
-      name = "ScrCmd_283",
+      name = "ScrCmd_CommClubExit",
       widths = {},
     },
     [284] = {
-      name = "ScrCmd_284",
+      name = "ScrCmd_CommClubStartCardExchange",
       widths = {},
     },
     [285] = {
-      name = "ScrCmd_285",
+      name = "ScrCmd_SetCommPlayerFacing",
       widths = {
         [1] = 2,
       },
     },
     [286] = {
-      name = "ScrCmd_286",
+      name = "ScrCmd_EnterUnionRoom",
       widths = {},
     },
     [287] = {
@@ -2171,13 +2171,13 @@ return {
       },
     },
     [297] = {
-      name = "ScrCmd_297",
+      name = "ScrCmd_CheckFlagUnk960",
       widths = {
         [1] = 2,
       },
     },
     [298] = {
-      name = "ScrCmd_298",
+      name = "ScrCmd_SetFlagUnk960",
       widths = {},
     },
     [299] = {
@@ -2220,7 +2220,7 @@ return {
     },
     [307] = {
       classification = "continue_same_tick",
-      name = "ScrCmd_307",
+      name = "ScrCmd_DoorAnimationLoad",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2233,7 +2233,7 @@ return {
       feature = "pc",
       disposition = "supported",
       classification = "native_wait",
-      name = "ScrCmd_308",
+      name = "ScrCmd_DoorAnimationWait",
       widths = {
         [1] = 1,
       },
@@ -2242,21 +2242,21 @@ return {
       feature = "pc",
       disposition = "supported",
       classification = "continue_same_tick",
-      name = "ScrCmd_309",
+      name = "ScrCmd_DoorAnimationUnload",
       widths = {
         [1] = 1,
       },
     },
     [310] = {
       classification = "continue_same_tick",
-      name = "ScrCmd_310",
+      name = "ScrCmd_DoorAnimationOpen",
       widths = {
         [1] = 1,
       },
     },
     [311] = {
       classification = "continue_same_tick",
-      name = "ScrCmd_311",
+      name = "ScrCmd_DoorAnimationClose",
       widths = {
         [1] = 1,
       },
@@ -2284,15 +2284,15 @@ return {
       widths = {},
     },
     [315] = {
-      name = "ScrCmd_315",
+      name = "ScrCmd_EcruteakGymBindCandleToTrainer",
       widths = {},
     },
     [316] = {
-      name = "ScrCmd_316",
+      name = "ScrCmd_EcruteakGymUnbindCandleFromTrainer",
       widths = {},
     },
     [317] = {
-      name = "ScrCmd_317",
+      name = "ScrCmd_EcruteakGymExtinguishCandle",
       widths = {
         [1] = 1,
       },
@@ -2375,19 +2375,19 @@ return {
       },
     },
     [333] = {
-      name = "ScrCmd_333",
+      name = "ScrCmd_BagSelectItem",
       widths = {
         [1] = 1,
       },
     },
     [334] = {
-      name = "ScrCmd_334",
+      name = "ScrCmd_BagGetSelectedItem",
       widths = {
         [1] = 2,
       },
     },
     [335] = {
-      name = "ScrCmd_335",
+      name = "ScrCmd_BagPocketHasItems",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2467,7 +2467,7 @@ return {
       },
     },
     [344] = {
-      name = "ScrCmd_344",
+      name = "ScrCmd_SetObjectFacingAndUpdateDraw",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2484,7 +2484,7 @@ return {
       widths = {},
     },
     [347] = {
-      name = "ScrCmd_347",
+      name = "ScrCmd_WriteScriptEnvField34",
       widths = {
         [1] = 2,
       },
@@ -2504,7 +2504,7 @@ return {
       widths = {},
     },
     [350] = {
-      name = "ScrCmd_350",
+      name = "ScrCmd_UnionRoomBattlePartySelect",
       disposition = "deferred",
       deferredReason = "party_special_application",
       deferredNote = "party-selection application behavior is not implemented",
@@ -2692,7 +2692,7 @@ return {
       widths = {},
     },
     [370] = {
-      name = "ScrCmd_370",
+      name = "ScrCmd_BagSelectItemNoResult",
       widths = {
         [1] = 1,
       },
@@ -2729,14 +2729,14 @@ return {
     },
     [374] = {
       classification = "continue_same_tick",
-      name = "ScrCmd_MakeObjectInvisible",
+      name = "ScrCmd_MakeObjectVisible",
       widths = {
         [1] = 2,
       },
     },
     [375] = {
       classification = "continue_same_tick",
-      name = "ScrCmd_MakeObjectVisible",
+      name = "ScrCmd_MakeObjectInvisible",
       widths = {
         [1] = 2,
       },
@@ -2745,14 +2745,14 @@ return {
       feature = "pc",
       disposition = "supported",
       classification = "native_wait",
-      name = "ScrCmd_376",
+      name = "ScrCmd_OpenMailbox",
       widths = {},
     },
     [377] = {
       feature = "pc",
       disposition = "supported",
       classification = "continue_same_tick",
-      name = "ScrCmd_377",
+      name = "ScrCmd_CountMailboxMessages",
       widths = {
         [1] = 2,
       },
@@ -2766,7 +2766,7 @@ return {
     },
     [379] = {
       classification = "continue_same_tick",
-      name = "ScrCmd_379",
+      name = "ScrCmd_GetCurrentTimeOfDay",
       widths = {
         [1] = 2,
       },
@@ -2780,7 +2780,7 @@ return {
       },
     },
     [381] = {
-      name = "ScrCmd_381",
+      name = "ScrCmd_Random2",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2899,13 +2899,13 @@ return {
       },
     },
     [394] = {
-      name = "ScrCmd_394",
+      name = "ScrCmd_OpenLearnForgetMove",
       widths = {
         [1] = 2,
       },
     },
     [395] = {
-      name = "ScrCmd_395",
+      name = "ScrCmd_GetLearnForgetMoveResult",
       widths = {
         [1] = 2,
       },
@@ -3001,14 +3001,14 @@ return {
       },
     },
     [403] = {
-      name = "ScrCmd_403",
+      name = "ScrCmd_GiveAccessory",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [404] = {
-      name = "ScrCmd_404",
+      name = "ScrCmd_CanGiveAccessory",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3016,7 +3016,7 @@ return {
       },
     },
     [405] = {
-      name = "ScrCmd_405",
+      name = "ScrCmd_HasAccessoryCount",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3024,42 +3024,42 @@ return {
       },
     },
     [406] = {
-      name = "ScrCmd_406",
+      name = "ScrCmd_GiveContestBackground",
       widths = {
         [1] = 2,
       },
     },
     [407] = {
-      name = "ScrCmd_407",
+      name = "ScrCmd_HasWallpaper",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [408] = {
-      name = "ScrCmd_408",
+      name = "ScrCmd_OpenBattleRoomResults",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [409] = {
-      name = "ScrCmd_409",
+      name = "ScrCmd_FrontierAssertCleared",
       widths = {},
     },
     [410] = {
-      name = "ScrCmd_410",
+      name = "ScrCmd_FrontierFieldSystemInit",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [411] = {
-      name = "ScrCmd_411",
+      name = "ScrCmd_FrontierFieldSystemFree",
       widths = {},
     },
     [412] = {
-      name = "ScrCmd_412",
+      name = "ScrCmd_BattleTowerAction",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3067,7 +3067,7 @@ return {
       },
     },
     [413] = {
-      name = "ScrCmd_413",
+      name = "ScrCmd_BattleTowerGetAllyMonSpeciesAndMove",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3076,19 +3076,19 @@ return {
       },
     },
     [414] = {
-      name = "ScrCmd_414",
+      name = "ScrCmd_BattleTowerClaimRecordMilestone",
       widths = {
         [1] = 2,
       },
     },
     [415] = {
-      name = "ScrCmd_415",
+      name = "ScrCmd_BattleTowerGetRecordMilestone",
       widths = {
         [1] = 2,
       },
     },
     [416] = {
-      name = "ScrCmd_416",
+      name = "ScrCmd_BattleTowerSendLinkData",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3096,33 +3096,33 @@ return {
       },
     },
     [417] = {
-      name = "ScrCmd_417",
+      name = "ScrCmd_BattleTowerCheckLinkPartner",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [418] = {
-      name = "ScrCmd_418",
+      name = "ScrCmd_GetBattleRoomLeadersRoom",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [419] = {
-      name = "ScrCmd_419",
+      name = "ScrCmd_BattleRoomHasLeaders",
       widths = {
         [1] = 2,
       },
     },
     [420] = {
-      name = "ScrCmd_420",
+      name = "ScrCmd_IncGameStat",
       widths = {
         [1] = 2,
       },
     },
     [421] = {
-      name = "ScrCmd_421",
+      name = "ScrCmd_GetGameStatHiLo",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3130,7 +3130,7 @@ return {
       },
     },
     [422] = {
-      name = "ScrCmd_422",
+      name = "ScrCmd_ModifyGameStat",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3174,7 +3174,7 @@ return {
       },
     },
     [427] = {
-      name = "ScrCmd_427",
+      name = "ScrCmd_Dummy427",
       widths = {
         [1] = 2,
       },
@@ -3257,7 +3257,7 @@ return {
     },
     [436] = {
       classification = "native_wait",
-      name = "ScrCmd_436",
+      name = "ScrCmd_LeaveOverworld",
       widths = {},
     },
     [437] = {
@@ -3292,7 +3292,7 @@ return {
       },
     },
     [441] = {
-      name = "ScrCmd_441",
+      name = "ScrCmd_NonNPCMsgEasyChat",
       disposition = "supported",
       classification = "continue_same_tick",
       widths = {
@@ -3303,7 +3303,7 @@ return {
       },
     },
     [442] = {
-      name = "ScrCmd_442",
+      name = "ScrCmd_MsgBoxEasyChat",
       disposition = "supported",
       classification = "native_wait",
       widths = {
@@ -3314,7 +3314,7 @@ return {
       },
     },
     [443] = {
-      name = "ScrCmd_443",
+      name = "ScrCmd_MsgBoxFrontierOpponentIntro",
       disposition = "supported",
       classification = "native_wait",
       widths = {
@@ -3322,7 +3322,7 @@ return {
       },
     },
     [444] = {
-      name = "ScrCmd_444",
+      name = "ScrCmd_MsgBoxFrontierBannedSpecies",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -3331,14 +3331,14 @@ return {
       },
     },
     [445] = {
-      name = "ScrCmd_445",
+      name = "ScrCmd_GetPreviousMapId",
       widths = {
         [1] = 2,
       },
     },
     [446] = {
       classification = "continue_same_tick",
-      name = "ScrCmd_446",
+      name = "ScrCmd_GetCurrentMapId",
       widths = {
         [1] = 2,
       },
@@ -3351,7 +3351,7 @@ return {
       },
     },
     [448] = {
-      name = "ScrCmd_448",
+      name = "ScrCmd_WarpToColosseum",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3361,40 +3361,40 @@ return {
       },
     },
     [449] = {
-      name = "ScrCmd_449",
+      name = "ScrCmd_ReturnFromColosseum",
       widths = {},
     },
     [450] = {
-      name = "ScrCmd_450",
+      name = "ScrCmd_OpenGeonetGlobe",
       widths = {},
     },
     [451] = {
-      name = "ScrCmd_451",
+      name = "ScrCmd_GetLocalNetId",
       widths = {
         [1] = 2,
       },
     },
     [452] = {
-      name = "ScrCmd_452",
+      name = "ScrCmd_ShowPokemonPicWindow",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [453] = {
-      name = "ScrCmd_453",
+      name = "ScrCmd_ClosePokemonPicWindow",
       widths = {},
     },
     [454] = {
-      name = "ScrCmd_454",
+      name = "ScrCmd_SetLastTalkedTrainerMovement",
       widths = {},
     },
     [455] = {
-      name = "ScrCmd_455",
+      name = "ScrCmd_NPCMsgByObjectType",
       widths = {},
     },
     [456] = {
-      name = "ScrCmd_456",
+      name = "ScrCmd_TogglePlayerAutoHeightUpdate",
       widths = {
         [1] = 1,
       },
@@ -3420,7 +3420,7 @@ return {
       },
     },
     [459] = {
-      name = "ScrCmd_459",
+      name = "ScrCmd_LighthouseLightUp",
       widths = {},
     },
     [460] = {
@@ -3443,7 +3443,7 @@ return {
       },
     },
     [462] = {
-      name = "ScrCmd_462",
+      name = "ScrCmd_ClearPhoneRematchSeeking",
       widths = {
         [1] = 2,
       },
@@ -3459,7 +3459,7 @@ return {
       },
     },
     [465] = {
-      name = "ScrCmd_465",
+      name = "ScrCmd_FriendGroupAction",
       variants = {
         [1] = {
           extra = {
@@ -3484,7 +3484,7 @@ return {
       },
     },
     [466] = {
-      name = "ScrCmd_466",
+      name = "ScrCmd_MonHasRelearnableMoves",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3560,7 +3560,7 @@ return {
       widths = {},
     },
     [475] = {
-      name = "ScrCmd_475",
+      name = "ScrCmd_Dummy475",
       widths = {},
     },
     [476] = {
@@ -3718,13 +3718,13 @@ return {
       },
     },
     [491] = {
-      name = "ScrCmd_491",
+      name = "ScrCmd_Dummy491",
       widths = {
         [1] = 2,
       },
     },
     [492] = {
-      name = "ScrCmd_492",
+      name = "ScrCmd_PromptEasyChatOneWord",
       disposition = "supported",
       classification = "native_wait",
       widths = {
@@ -3744,7 +3744,7 @@ return {
       },
     },
     [494] = {
-      name = "ScrCmd_494",
+      name = "ScrCmd_BufferEasyChatWord",
       disposition = "supported",
       classification = "continue_same_tick",
       widths = {
@@ -3808,7 +3808,7 @@ return {
       feature = "pc",
       disposition = "supported",
       classification = "continue_same_tick",
-      name = "ScrCmd_500",
+      name = "ScrCmd_PCPropLoadAnimation",
       widths = {
         [1] = 1,
       },
@@ -3817,7 +3817,7 @@ return {
       feature = "pc",
       disposition = "supported",
       classification = "continue_same_tick",
-      name = "ScrCmd_501",
+      name = "ScrCmd_PCPropPowerOn",
       widths = {
         [1] = 1,
       },
@@ -3826,7 +3826,7 @@ return {
       feature = "pc",
       disposition = "supported",
       classification = "continue_same_tick",
-      name = "ScrCmd_502",
+      name = "ScrCmd_PCPropPowerOff",
       widths = {
         [1] = 1,
       },
@@ -3874,13 +3874,13 @@ return {
       },
     },
     [509] = {
-      name = "ScrCmd_509",
+      name = "ScrCmd_MigratedPokemonIsFull",
       widths = {
         [1] = 2,
       },
     },
     [510] = {
-      name = "ScrCmd_510",
+      name = "ScrCmd_MoveMigratedPokemonToPC",
       widths = {},
     },
     [511] = {
@@ -3918,7 +3918,7 @@ return {
       },
     },
     [517] = {
-      name = "ScrCmd_517",
+      name = "ScrCmd_PartyHasSpecies",
       disposition = "deferred",
       deferredReason = "party_special_application",
       deferredNote = "the retail mon command remains opaque and unimplemented",
@@ -3936,7 +3936,7 @@ return {
       },
     },
     [519] = {
-      name = "ScrCmd_519",
+      name = "ScrCmd_CountPartyBurmyForms",
       disposition = "deferred",
       deferredReason = "party_special_application",
       deferredNote = "the retail mon command remains opaque and unimplemented",
@@ -3945,21 +3945,21 @@ return {
       },
     },
     [520] = {
-      name = "ScrCmd_520",
+      name = "ScrCmd_SetFlagUnk975",
       widths = {},
     },
     [521] = {
-      name = "ScrCmd_521",
+      name = "ScrCmd_ClearFlagUnk975",
       widths = {},
     },
     [522] = {
-      name = "ScrCmd_522",
+      name = "ScrCmd_GetCurrentHour",
       widths = {
         [1] = 2,
       },
     },
     [523] = {
-      name = "ScrCmd_523",
+      name = "ScrCmd_SpinObject",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3969,7 +3969,7 @@ return {
       },
     },
     [524] = {
-      name = "ScrCmd_524",
+      name = "ScrCmd_BlinkObject",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3977,7 +3977,7 @@ return {
       },
     },
     [525] = {
-      name = "ScrCmd_525",
+      name = "ScrCmd_HasAllRegisInParty",
       disposition = "deferred",
       deferredReason = "party_special_application",
       deferredNote = "the retail mon command remains opaque and unimplemented",
@@ -3986,19 +3986,19 @@ return {
       },
     },
     [526] = {
-      name = "ScrCmd_526",
+      name = "ScrCmd_GetRandomGivableAccessory",
       widths = {
         [1] = 2,
       },
     },
     [527] = {
-      name = "ScrCmd_527",
+      name = "ScrCmd_MsgFont3",
       widths = {
         [1] = 2,
       },
     },
     [528] = {
-      name = "ScrCmd_528",
+      name = "ScrCmd_GetAgbCartridgeVersion",
       widths = {
         [1] = 2,
       },
@@ -4013,7 +4013,7 @@ return {
       },
     },
     [530] = {
-      name = "ScrCmd_530",
+      name = "ScrCmd_MapEventKeyAction",
       widths = {
         [1] = 2,
         [2] = 1,
@@ -4041,7 +4041,7 @@ return {
       },
     },
     [534] = {
-      name = "ScrCmd_534",
+      name = "ScrCmd_GetVar4041",
       widths = {
         [1] = 2,
       },
@@ -4057,18 +4057,18 @@ return {
       },
     },
     [536] = {
-      name = "ScrCmd_536",
+      name = "ScrCmd_TakeFashionAccessory",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [537] = {
-      name = "ScrCmd_537",
+      name = "ScrCmd_RandomizeVar4041",
       widths = {},
     },
     [538] = {
-      name = "ScrCmd_538",
+      name = "ScrCmd_UnlockRandomTrendySaying",
       disposition = "supported",
       classification = "continue_same_tick",
       widths = {
@@ -4077,13 +4077,13 @@ return {
       },
     },
     [539] = {
-      name = "ScrCmd_539",
+      name = "ScrCmd_CheckVar4042AtLeast5",
       widths = {
         [1] = 2,
       },
     },
     [540] = {
-      name = "ScrCmd_540",
+      name = "ScrCmd_CheckAllTrendySayingsUnlocked",
       disposition = "supported",
       classification = "continue_same_tick",
       widths = {
@@ -4111,13 +4111,13 @@ return {
       },
     },
     [543] = {
-      name = "ScrCmd_543",
+      name = "ScrCmd_CheckIsPlayerBirthday",
       widths = {
         [1] = 2,
       },
     },
     [544] = {
-      name = "ScrCmd_544",
+      name = "ScrCmd_SetSeqVolume",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4132,68 +4132,68 @@ return {
       },
     },
     [546] = {
-      name = "ScrCmd_546",
+      name = "ScrCmd_CheckEventKey",
       widths = {
         [1] = 1,
         [2] = 2,
       },
     },
     [547] = {
-      name = "ScrCmd_547",
+      name = "ScrCmd_ShowPartyMonPic",
       widths = {
         [1] = 2,
       },
     },
     [548] = {
-      name = "ScrCmd_548",
+      name = "ScrCmd_AnimateMonPic",
       widths = {},
     },
     [549] = {
-      name = "ScrCmd_549",
+      name = "ScrCmd_WaitMonPicAnim",
       widths = {
         [1] = 2,
       },
     },
     [550] = {
-      name = "ScrCmd_550",
+      name = "ScrCmd_GetHallOfFameEntryCount",
       widths = {
         [1] = 2,
       },
     },
     [551] = {
-      name = "ScrCmd_551",
+      name = "ScrCmd_ChoosePartyMonForDayCare",
       widths = {
         [1] = 2,
       },
     },
     [552] = {
-      name = "ScrCmd_552",
+      name = "ScrCmd_GetDayCarePartySelection",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [553] = {
-      name = "ScrCmd_553",
+      name = "ScrCmd_RandomChance",
       widths = {
         [1] = 1,
         [2] = 2,
       },
     },
     [554] = {
-      name = "ScrCmd_554",
+      name = "ScrCmd_GetBattlePoints",
       widths = {
         [1] = 2,
       },
     },
     [555] = {
-      name = "ScrCmd_555",
+      name = "ScrCmd_GiveBattlePoints",
       widths = {
         [1] = 2,
       },
     },
     [556] = {
-      name = "ScrCmd_556",
+      name = "ScrCmd_TakeBattlePoints",
       widths = {
         [1] = 2,
       },
@@ -4219,14 +4219,14 @@ return {
       },
     },
     [559] = {
-      name = "ScrCmd_559",
+      name = "ScrCmd_MultichoiceAddItemVar",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [560] = {
-      name = "ScrCmd_560",
+      name = "ScrCmd_StartFieldMoveEffect",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4256,7 +4256,7 @@ return {
       },
     },
     [563] = {
-      name = "ScrCmd_563",
+      name = "ScrCmd_WalkPersonToCoords",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4264,19 +4264,19 @@ return {
       },
     },
     [564] = {
-      name = "ScrCmd_564",
+      name = "ScrCmd_CheckHasWifiProfile",
       widths = {
         [1] = 2,
       },
     },
     [565] = {
-      name = "ScrCmd_565",
+      name = "ScrCmd_CountWifiFriends",
       widths = {
         [1] = 2,
       },
     },
     [566] = {
-      name = "ScrCmd_566",
+      name = "ScrCmd_ChoosePartyMonForTrade",
       widths = {},
     },
     [567] = {
@@ -4291,14 +4291,14 @@ return {
       },
     },
     [568] = {
-      name = "ScrCmd_568",
+      name = "ScrCmd_ItemIsPlate",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [569] = {
-      name = "ScrCmd_569",
+      name = "ScrCmd_TakeCoinsVar",
       widths = {
         [1] = 2,
       },
@@ -4311,7 +4311,7 @@ return {
       },
     },
     [571] = {
-      name = "ScrCmd_571",
+      name = "ScrCmd_CheckEasyChatWordsMatchFixedPhrase",
       disposition = "supported",
       classification = "continue_same_tick",
       widths = {
@@ -4338,35 +4338,35 @@ return {
       widths = {},
     },
     [574] = {
-      name = "ScrCmd_574",
+      name = "ScrCmd_GetObjectMovementType",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [575] = {
-      name = "ScrCmd_575",
+      name = "ScrCmd_CountPlayingSeq",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [576] = {
-      name = "ScrCmd_576",
+      name = "ScrCmd_GetUnionRoomPartnerHometownMsg2",
       widths = {
         [1] = 2,
       },
     },
     [577] = {
-      name = "ScrCmd_577",
+      name = "ScrCmd_CreateWirelessStatusIcon",
       widths = {},
     },
     [578] = {
-      name = "ScrCmd_578",
+      name = "ScrCmd_DestroyWirelessStatusIcon",
       widths = {},
     },
     [579] = {
-      name = "ScrCmd_579",
+      name = "ScrCmd_SyncMapObjectsToSave",
       widths = {},
     },
     [580] = {
@@ -4385,7 +4385,7 @@ return {
       widths = {},
     },
     [582] = {
-      name = "ScrCmd_582",
+      name = "ScrCmd_SetSpecialSpawnWarp",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4393,7 +4393,7 @@ return {
       },
     },
     [583] = {
-      name = "ScrCmd_583",
+      name = "ScrCmd_ClearObjectFlag18",
       widths = {
         [1] = 2,
         [2] = 1,
@@ -4409,17 +4409,17 @@ return {
       },
     },
     [585] = {
-      name = "ScrCmd_585",
+      name = "ScrCmd_MultichoiceShowUnionRoom",
       widths = {},
     },
     [586] = {
-      name = "ScrCmd_586",
+      name = "ScrCmd_GetUnionRoomBattleCancel",
       widths = {
         [1] = 2,
       },
     },
     [587] = {
-      name = "ScrCmd_587",
+      name = "ScrCmd_CommClubLinkExit",
       widths = {},
     },
     [588] = {
@@ -4447,11 +4447,11 @@ return {
       },
     },
     [591] = {
-      name = "ScrCmd_591",
+      name = "ScrCmd_SetBicycleBGMOverride",
       widths = {},
     },
     [592] = {
-      name = "ScrCmd_592",
+      name = "ScrCmd_NonNPCMsgVarAutoScroll",
       widths = {
         [1] = 2,
       },
@@ -4483,7 +4483,7 @@ return {
       },
     },
     [597] = {
-      name = "ScrCmd_597",
+      name = "ScrCmd_FollowMonShowEmoteBubble",
       feature = "following_mon",
       disposition = "deferred",
       deferredReason = "special_follower_event",
@@ -4491,7 +4491,7 @@ return {
       widths = {},
     },
     [598] = {
-      name = "ScrCmd_598",
+      name = "ScrCmd_SwapPlayerAndFollowMonPositions",
       feature = "following_mon",
       disposition = "deferred",
       deferredReason = "special_follower_event",
@@ -4547,7 +4547,7 @@ return {
       },
     },
     [605] = {
-      name = "ScrCmd_605",
+      name = "ScrCmd_FollowMonSetPositionNextToPlayer",
       feature = "following_mon",
       disposition = "supported",
       classification = "continue_same_tick",
@@ -4571,7 +4571,7 @@ return {
       widths = {},
     },
     [608] = {
-      name = "ScrCmd_608",
+      name = "ScrCmd_FollowMonSpawnReleaseBall",
       feature = "following_mon",
       disposition = "supported",
       classification = "continue_same_tick",
@@ -4585,7 +4585,7 @@ return {
       widths = {},
     },
     [610] = {
-      name = "ScrCmd_610",
+      name = "ScrCmd_StartCameraShift",
       widths = {
         [1] = 2,
       },
@@ -4672,7 +4672,7 @@ return {
       widths = {},
     },
     [622] = {
-      name = "ScrCmd_622",
+      name = "ScrCmd_GetObjectFacing",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4718,30 +4718,30 @@ return {
       },
     },
     [627] = {
-      name = "ScrCmd_627",
+      name = "ScrCmd_LaunchFrontier",
       widths = {
         [1] = 1,
       },
     },
     [628] = {
-      name = "ScrCmd_628",
+      name = "ScrCmd_BattleFactoryResetStreak",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [629] = {
-      name = "ScrCmd_629",
+      name = "ScrCmd_RunSpinTradeFlow",
       widths = {},
     },
     [630] = {
-      name = "ScrCmd_630",
+      name = "ScrCmd_CheckUnionRoomPartnerVersionNotDummy",
       widths = {
         [1] = 2,
       },
     },
     [631] = {
-      name = "ScrCmd_631",
+      name = "ScrCmd_OpenFrontierRecords",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4759,7 +4759,7 @@ return {
       },
     },
     [633] = {
-      name = "ScrCmd_633",
+      name = "ScrCmd_BattleHallAction",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4767,27 +4767,27 @@ return {
       },
     },
     [634] = {
-      name = "ScrCmd_634",
+      name = "ScrCmd_BattleHallCheckSpecies",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [635] = {
-      name = "ScrCmd_635",
+      name = "ScrCmd_BattleHallGetPartySelection",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [636] = {
-      name = "ScrCmd_636",
+      name = "ScrCmd_BattleHallResetStreak",
       widths = {
         [1] = 2,
       },
     },
     [637] = {
-      name = "ScrCmd_637",
+      name = "ScrCmd_BattleCastleAction",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4795,7 +4795,7 @@ return {
       },
     },
     [638] = {
-      name = "ScrCmd_638",
+      name = "ScrCmd_BattleCastleCheckTeam",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4803,7 +4803,7 @@ return {
       },
     },
     [639] = {
-      name = "ScrCmd_639",
+      name = "ScrCmd_BattleCastleGetPartySelection",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4811,7 +4811,7 @@ return {
       },
     },
     [640] = {
-      name = "ScrCmd_640",
+      name = "ScrCmd_BattleCastleResetStreak",
       widths = {
         [1] = 2,
       },
@@ -4821,13 +4821,13 @@ return {
       widths = {},
     },
     [642] = {
-      name = "ScrCmd_642",
+      name = "ScrCmd_CheckExtraSaveChunksExist",
       widths = {
         [1] = 2,
       },
     },
     [643] = {
-      name = "ScrCmd_643",
+      name = "ScrCmd_BattleArcadeAction",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4835,7 +4835,7 @@ return {
       },
     },
     [644] = {
-      name = "ScrCmd_644",
+      name = "ScrCmd_BattleArcadeCheckTeam",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4843,7 +4843,7 @@ return {
       },
     },
     [645] = {
-      name = "ScrCmd_645",
+      name = "ScrCmd_BattleArcadeGetPartySelection",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4851,7 +4851,7 @@ return {
       },
     },
     [646] = {
-      name = "ScrCmd_646",
+      name = "ScrCmd_BattleArcadeResetStreak",
       widths = {
         [1] = 2,
       },
@@ -4867,7 +4867,7 @@ return {
       },
     },
     [648] = {
-      name = "ScrCmd_648",
+      name = "ScrCmd_BattleHallRecordSpeciesListMenu",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4896,7 +4896,7 @@ return {
       },
     },
     [652] = {
-      name = "ScrCmd_652",
+      name = "ScrCmd_GetTutorMoveListPageCount",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4937,7 +4937,7 @@ return {
       },
     },
     [656] = {
-      name = "ScrCmd_656",
+      name = "ScrCmd_MonCanLearnHeadbuttFromTutor",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4987,7 +4987,7 @@ return {
       },
     },
     [661] = {
-      name = "ScrCmd_661",
+      name = "ScrCmd_BufferIntExWord",
       widths = {
         [1] = 1,
         [2] = 4,
@@ -4996,7 +4996,7 @@ return {
       },
     },
     [662] = {
-      name = "ScrCmd_662",
+      name = "ScrCmd_LaunchGlobalTerminal",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5004,29 +5004,29 @@ return {
       },
     },
     [663] = {
-      name = "ScrCmd_663",
+      name = "ScrCmd_LaunchWiFiPlaza",
       widths = {
         [1] = 2,
       },
     },
     [664] = {
-      name = "ScrCmd_664",
+      name = "ScrCmd_Dummy664",
       widths = {},
     },
     [665] = {
-      name = "ScrCmd_665",
+      name = "ScrCmd_FieldBGMPlay",
       widths = {
         [1] = 2,
       },
     },
     [666] = {
-      name = "ScrCmd_666",
+      name = "ScrCmd_GetCurrentBGM",
       widths = {
         [1] = 2,
       },
     },
     [667] = {
-      name = "ScrCmd_667",
+      name = "ScrCmd_CheckABHeld",
       widths = {
         [1] = 2,
       },
@@ -5126,21 +5126,21 @@ return {
       },
     },
     [677] = {
-      name = "ScrCmd_677",
+      name = "ScrCmd_MultichoiceShowListAtPosition",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [678] = {
-      name = "ScrCmd_678",
+      name = "ScrCmd_CreateCameraFocusObject",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [679] = {
-      name = "ScrCmd_679",
+      name = "ScrCmd_RemoveCameraFocusObject",
       widths = {},
     },
     [680] = {
@@ -5150,7 +5150,7 @@ return {
       },
     },
     [681] = {
-      name = "ScrCmd_681",
+      name = "ScrCmd_EditBattleGreeting",
       disposition = "supported",
       classification = "native_wait",
       widths = {
@@ -5158,7 +5158,7 @@ return {
       },
     },
     [682] = {
-      name = "ScrCmd_682",
+      name = "ScrCmd_CheckFieldHeapFreeSize",
       widths = {
         [1] = 2,
       },
@@ -5174,7 +5174,7 @@ return {
       },
     },
     [684] = {
-      name = "ScrCmd_684",
+      name = "ScrCmd_GetWeatherType",
       widths = {
         [1] = 2,
       },
@@ -5188,7 +5188,7 @@ return {
       },
     },
     [686] = {
-      name = "ScrCmd_686",
+      name = "ScrCmd_FatefulWildBattle",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5234,7 +5234,7 @@ return {
       },
     },
     [691] = {
-      name = "ScrCmd_691",
+      name = "ScrCmd_CheckPlazaLoginTimeElapsed",
       widths = {
         [1] = 2,
       },
@@ -5275,13 +5275,13 @@ return {
       },
     },
     [695] = {
-      name = "ScrCmd_695",
+      name = "ScrCmd_MultichoiceShowListWithWidth",
       widths = {
         [1] = 2,
       },
     },
     [696] = {
-      name = "ScrCmd_696",
+      name = "ScrCmd_UpdatePartyGiratinaFormsAndCaughtFlags",
       disposition = "deferred",
       deferredReason = "party_special_application",
       deferredNote = "the retail mon command remains opaque and unimplemented",
@@ -5290,7 +5290,7 @@ return {
       },
     },
     [697] = {
-      name = "ScrCmd_697",
+      name = "ScrCmd_CheckBattleHallStreakIs50",
       widths = {
         [1] = 2,
       },
@@ -5307,11 +5307,11 @@ return {
       },
     },
     [699] = {
-      name = "ScrCmd_699",
+      name = "ScrCmd_SetOtherObjectsFlag13",
       widths = {},
     },
     [700] = {
-      name = "ScrCmd_700",
+      name = "ScrCmd_ClearOtherObjectsFlag13",
       widths = {},
     },
     [701] = {
@@ -5339,14 +5339,14 @@ return {
       },
     },
     [704] = {
-      name = "ScrCmd_704",
+      name = "ScrCmd_AddGameStat",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [705] = {
-      name = "ScrCmd_705",
+      name = "ScrCmd_AddGameStatWord",
       widths = {
         [1] = 2,
         [2] = 4,
@@ -5356,7 +5356,7 @@ return {
       feature = "pc",
       disposition = "supported",
       classification = "continue_same_tick",
-      name = "ScrCmd_706",
+      name = "ScrCmd_CheckHallOfFameSaveInvalid",
       widths = {
         [1] = 2,
       },
@@ -5372,17 +5372,17 @@ return {
       },
     },
     [708] = {
-      name = "ScrCmd_708",
+      name = "ScrCmd_PlayTrapEffect",
       widths = {
         [1] = 2,
       },
     },
     [709] = {
-      name = "ScrCmd_709",
+      name = "ScrCmd_PlayHideoutAlarm",
       widths = {},
     },
     [710] = {
-      name = "ScrCmd_710",
+      name = "ScrCmd_UpdateMapPropAnimsFromFlag96B",
       widths = {},
     },
     [711] = {
@@ -5393,7 +5393,7 @@ return {
       widths = {},
     },
     [712] = {
-      name = "ScrCmd_712",
+      name = "ScrCmd_LaunchPokeathlonRecordsApp",
       widths = {
         [1] = 1,
       },
@@ -5419,43 +5419,43 @@ return {
       widths = {},
     },
     [716] = {
-      name = "ScrCmd_716",
+      name = "ScrCmd_LaunchSafariAreaCustomizer",
       widths = {},
     },
     [717] = {
-      name = "ScrCmd_717",
+      name = "ScrCmd_StartSafariDecoration",
       widths = {
         [1] = 2,
       },
     },
     [718] = {
-      name = "ScrCmd_718",
+      name = "ScrCmd_BufferSafariZoneObjectName",
       widths = {
         [1] = 1,
         [2] = 2,
       },
     },
     [719] = {
-      name = "ScrCmd_719",
+      name = "ScrCmd_GetFacingSafariObject",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [720] = {
-      name = "ScrCmd_720",
+      name = "ScrCmd_RemoveSafariObject",
       widths = {
         [1] = 2,
       },
     },
     [721] = {
-      name = "ScrCmd_721",
+      name = "ScrCmd_CheckSafariObjectPlacement",
       widths = {
         [1] = 2,
       },
     },
     [722] = {
-      name = "ScrCmd_722",
+      name = "ScrCmd_MagnetTrainRide",
       widths = {
         [1] = 1,
         [2] = 1,
@@ -5465,7 +5465,7 @@ return {
       },
     },
     [723] = {
-      name = "ScrCmd_723",
+      name = "ScrCmd_ShipVoyage",
       widths = {
         [1] = 1,
         [2] = 1,
@@ -5475,14 +5475,14 @@ return {
       },
     },
     [724] = {
-      name = "ScrCmd_724",
+      name = "ScrCmd_GetPokeathlonStat",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [725] = {
-      name = "ScrCmd_725",
+      name = "ScrCmd_AdjustPokeathlonStat11",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -5504,14 +5504,14 @@ return {
       },
     },
     [728] = {
-      name = "ScrCmd_728",
+      name = "ScrCmd_FollowMonFlash",
       widths = {
         [1] = 1,
         [2] = 1,
       },
     },
     [729] = {
-      name = "ScrCmd_729",
+      name = "ScrCmd_FollowMonIsActive",
       feature = "following_mon",
       disposition = "supported",
       classification = "continue_same_tick",
@@ -5520,30 +5520,30 @@ return {
       },
     },
     [730] = {
-      name = "ScrCmd_730",
+      name = "ScrCmd_FollowMonIsInactiveOrVisible",
       widths = {
         [1] = 2,
       },
     },
     [731] = {
-      name = "ScrCmd_731",
+      name = "ScrCmd_FollowMonGrowAndShrink",
       widths = {},
     },
     [732] = {
-      name = "ScrCmd_732",
+      name = "ScrCmd_FollowMonAddMood",
       widths = {
         [1] = 1,
       },
     },
     [733] = {
-      name = "ScrCmd_733",
+      name = "ScrCmd_FirstAliveMonHasType",
       widths = {
         [1] = 1,
         [2] = 2,
       },
     },
     [734] = {
-      name = "ScrCmd_734",
+      name = "ScrCmd_FollowMonJumpOnSpot",
       widths = {
         [1] = 1,
       },
@@ -5583,21 +5583,21 @@ return {
       },
     },
     [739] = {
-      name = "ScrCmd_KurtApricornBoxSelect",
+      name = "ScrCmd_LaunchApricornBoxForKurt",
       disposition = "supported",
       feature = "apricorn",
       classification = "native_wait",
       widths = {},
     },
     [740] = {
-      name = "ScrCmd_740",
+      name = "ScrCmd_LaunchApricornBoxForJuice",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [741] = {
-      name = "ScrCmd_741",
+      name = "ScrCmd_GetApricornJuiceOffer",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5606,7 +5606,7 @@ return {
       },
     },
     [742] = {
-      name = "ScrCmd_742",
+      name = "ScrCmd_MonLearnsetHasMove",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5614,7 +5614,7 @@ return {
       },
     },
     [743] = {
-      name = "ScrCmd_743",
+      name = "ScrCmd_ShowPokeathlonRecords",
       widths = {
         [1] = 2,
       },
@@ -5731,7 +5731,7 @@ return {
       widths = {},
     },
     [760] = {
-      name = "ScrCmd_760",
+      name = "ScrCmd_UnusedHoOhAnim",
       widths = {},
     },
     [761] = {
@@ -5792,14 +5792,14 @@ return {
       },
     },
     [771] = {
-      name = "ScrCmd_771",
+      name = "ScrCmd_PokeathlonDailyMart",
       feature = "mart",
       disposition = "supported",
       classification = "native_wait",
       widths = {},
     },
     [772] = {
-      name = "ScrCmd_772",
+      name = "ScrCmd_PokeathlonDataCardMart",
       feature = "mart",
       disposition = "supported",
       classification = "native_wait",
@@ -5819,7 +5819,7 @@ return {
       },
     },
     [775] = {
-      name = "ScrCmd_775",
+      name = "ScrCmd_LanceFlyAway",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5834,7 +5834,7 @@ return {
       widths = {},
     },
     [777] = {
-      name = "ScrCmd_777",
+      name = "ScrCmd_MonIsFromTogepiEgg",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5988,18 +5988,18 @@ return {
       },
     },
     [795] = {
-      name = "ScrCmd_795",
+      name = "ScrCmd_ShowSavingsBox",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [796] = {
-      name = "ScrCmd_796",
+      name = "ScrCmd_HideSavingsBox",
       widths = {},
     },
     [797] = {
-      name = "ScrCmd_797",
+      name = "ScrCmd_UpdateSavingsBox",
       widths = {},
     },
     [798] = {
@@ -6009,36 +6009,36 @@ return {
       },
     },
     [799] = {
-      name = "ScrCmd_799",
+      name = "ScrCmd_BufferBattleRegulationName",
       widths = {
         [1] = 2,
       },
     },
     [800] = {
-      name = "ScrCmd_800",
+      name = "ScrCmd_SetActiveBattleRegulation",
       widths = {
         [1] = 2,
       },
     },
     [801] = {
-      name = "ScrCmd_801",
+      name = "ScrCmd_ShowBattleRegulationWindow",
       widths = {
         [1] = 2,
       },
     },
     [802] = {
-      name = "ScrCmd_802",
+      name = "ScrCmd_HideBattleRegulationWindow",
       widths = {},
     },
     [803] = {
-      name = "ScrCmd_803",
+      name = "ScrCmd_CheckPartyBattleRegulation",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [804] = {
-      name = "ScrCmd_804",
+      name = "ScrCmd_SetPokegearMapUnlockLevel",
       widths = {
         [1] = 1,
       },
@@ -6050,7 +6050,7 @@ return {
       widths = {},
     },
     [806] = {
-      name = "ScrCmd_806",
+      name = "ScrCmd_ShayminRevertToLandForm",
       widths = {},
     },
     [807] = {
@@ -6065,7 +6065,7 @@ return {
       },
     },
     [808] = {
-      name = "ScrCmd_808",
+      name = "ScrCmd_TrainerHouseBattle",
       widths = {
         [1] = 2,
       },
@@ -6088,7 +6088,7 @@ return {
     [811] = {
       classification = "continue_same_tick",
       disposition = "supported",
-      name = "ScrCmd_811",
+      name = "ScrCmd_PeekMomGift",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -6097,7 +6097,7 @@ return {
     [812] = {
       classification = "continue_same_tick",
       disposition = "supported",
-      name = "ScrCmd_812",
+      name = "ScrCmd_PopMomGift",
       widths = {},
     },
     [813] = {
@@ -6109,11 +6109,11 @@ return {
       },
     },
     [814] = {
-      name = "ScrCmd_814",
+      name = "ScrCmd_SetFlag99A",
       widths = {},
     },
     [815] = {
-      name = "ScrCmd_815",
+      name = "ScrCmd_SetSavedBottomScreenApp",
       feature = "mart",
       disposition = "supported",
       classification = "continue_same_tick",
@@ -6126,7 +6126,7 @@ return {
       widths = {},
     },
     [817] = {
-      name = "ScrCmd_817",
+      name = "ScrCmd_SinjohGetEggCutscene",
       widths = {
         [1] = 1,
       },
@@ -6136,11 +6136,11 @@ return {
       widths = {},
     },
     [819] = {
-      name = "ScrCmd_819",
+      name = "ScrCmd_SinjohFreezeAllModels",
       widths = {},
     },
     [820] = {
-      name = "ScrCmd_820",
+      name = "ScrCmd_SinjohSetChosenLegend",
       widths = {
         [1] = 1,
       },
@@ -6155,17 +6155,17 @@ return {
       },
     },
     [822] = {
-      name = "ScrCmd_822",
+      name = "ScrCmd_CustomSafariLinkExchange",
       widths = {},
     },
     [823] = {
-      name = "ScrCmd_823",
+      name = "ScrCmd_BufferSafariLinkLeaderName",
       widths = {
         [1] = 2,
       },
     },
     [824] = {
-      name = "ScrCmd_824",
+      name = "ScrCmd_CheckSafariZoneLinked",
       widths = {
         [1] = 2,
       },
@@ -6211,37 +6211,37 @@ return {
       },
     },
     [829] = {
-      name = "ScrCmd_829",
+      name = "ScrCmd_FollowMonIsNextToPlayer",
       widths = {
         [1] = 2,
       },
     },
     [830] = {
-      name = "ScrCmd_830",
+      name = "ScrCmd_CheckGiftAccessoriesFull",
       widths = {
         [1] = 2,
       },
     },
     [831] = {
-      name = "ScrCmd_831",
+      name = "ScrCmd_GetRandomGiftAccessory",
       widths = {
         [1] = 2,
       },
     },
     [832] = {
-      name = "ScrCmd_832",
+      name = "ScrCmd_CheckHasAllBackdrops",
       widths = {
         [1] = 2,
       },
     },
     [833] = {
-      name = "ScrCmd_833",
+      name = "ScrCmd_GetRandomMissingBackdrop",
       widths = {
         [1] = 2,
       },
     },
     [834] = {
-      name = "ScrCmd_834",
+      name = "ScrCmd_CheckPokeathlonDailyMartHasStock",
       feature = "mart",
       disposition = "supported",
       classification = "continue_same_tick",
@@ -6250,7 +6250,7 @@ return {
       },
     },
     [835] = {
-      name = "ScrCmd_835",
+      name = "ScrCmd_CountPokeathlonDataCardsBought",
       feature = "mart",
       disposition = "supported",
       classification = "continue_same_tick",
@@ -6268,7 +6268,7 @@ return {
       },
     },
     [837] = {
-      name = "ScrCmd_837",
+      name = "ScrCmd_CheckHasLinkBattleRuleset",
       widths = {
         [1] = 2,
       },
@@ -6287,20 +6287,20 @@ return {
       },
     },
     [840] = {
-      name = "ScrCmd_840",
+      name = "ScrCmd_GetMapPokeCenterOrLeagueType",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [841] = {
-      name = "ScrCmd_841",
+      name = "ScrCmd_MultichoiceSetAnchorRight",
       widths = {
         [1] = 1,
       },
     },
     [842] = {
-      name = "ScrCmd_842",
+      name = "ScrCmd_MultichoiceSetAnchorBottom",
       widths = {
         [1] = 1,
       },

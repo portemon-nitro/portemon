@@ -181,7 +181,7 @@ local function allOpsScript()
     S.random({ maxExclusive = 10, result = S.local_("roll") }),
     S.unsupported({
       command = 0x017A,
-      originalName = "ScrCmd_378",
+      originalName = "ScrCmd_ViewRankings",
       arguments = { 4, 0x800C },
       sourceOffset = 0x92,
       reason = "no semantic adapter",
@@ -1070,7 +1070,7 @@ function T.reachable_unsupported_flags_the_graph()
     steps = {
       S.unsupported({
         command = 0x017A,
-        originalName = "ScrCmd_378",
+        originalName = "ScrCmd_ViewRankings",
         arguments = { 4, 0x800C },
         sourceOffset = 0x92,
         reason = "no semantic adapter",

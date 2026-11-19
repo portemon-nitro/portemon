@@ -169,7 +169,7 @@ T["operands resolve through the catalogs"] = function()
   Assert.equal(member2.scripts[0].instructions[1].operands[1].raw, "SEQ_0x270F")
 end
 
--- 5. Arg-dependent widths: MysteryGift (489) and ScrCmd_465 sizes follow the
+-- 5. Arg-dependent widths: MysteryGift (489) and ScrCmd_FriendGroupAction sizes follow the
 -- decoded base operand.
 T["arg-dependent widths"] = function()
   local bytes = ScriptFixture.member({
@@ -180,7 +180,7 @@ T["arg-dependent widths"] = function()
           -- MysteryGift 1, arg1 (6 bytes), then MysteryGift 5, arg1, arg2 (8).
           { op = 489, args = { { value = 1, width = 2 }, { value = 0x80, width = 2 } } },
           { op = 489, args = { { value = 5, width = 2 }, { value = 0x81, width = 2 }, { value = 0x82, width = 2 } } },
-          -- ScrCmd_465 6 (4 bytes), then 465 3 (8 bytes).
+          -- ScrCmd_FriendGroupAction 6 (4 bytes), then 465 3 (8 bytes).
           { op = 465, args = { { value = 6, width = 2 } } },
           { op = 465, args = { { value = 3, width = 2 }, { value = 1, width = 2 }, { value = 2, width = 2 } } },
           { op = 2, args = {} },

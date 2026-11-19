@@ -1,4 +1,4 @@
--- Blocking actor oscillation: reproduces ScrCmd_523 render-vector oscillation.
+-- Blocking actor oscillation: reproduces ScrCmd_SpinObject render-vector oscillation.
 -- The task owns serializable presentation math: cycles, angle, step, amplitudes.
 -- Each poll applies sin(angle)*amplitude to X/Z, then increments angle; when
 -- angle >=360 it resets to 0 and decrements remaining cycles; when cycles

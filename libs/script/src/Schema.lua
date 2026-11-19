@@ -744,7 +744,7 @@ Schema.OPERATIONS = {
       appearance = { type = "string", default = "trainer_tip" },
     },
   },
-  -- Opcode 61 (ScrCmd_061, std_signpost's hide-branch tail): no operands.
+  -- Opcode 61 (ScrCmd_ReopenStartMenuOnEnd, std_signpost's hide-branch tail): no operands.
   -- Ends the script context and requests the Start Menu reopen hook
   -- through the startMenuReopen service; a missing service is an
   -- attributed fault, never a silent close.

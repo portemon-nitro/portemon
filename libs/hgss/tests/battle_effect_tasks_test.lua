@@ -345,7 +345,7 @@ function T.configured_sprite_task_runs_from_typed_parameters()
     ["probe/palette"] = { key = "probe/palette", kind = "palette", data = { colors = { 0, 1, 2 } } },
     ["probe/cell"] = {
       key = "probe/cell",
-      kind = "cells",
+      kind = "cell",
       data = { cells = { { objs = { { x = 0, y = 0, tile = 0, width = 8, height = 8, priority = 0 } } } } },
     },
     ["probe/animation"] = {
@@ -2213,7 +2213,7 @@ local function zigzagBank()
     ["zigzag/palette"] = { key = "zigzag/palette", kind = "palette", data = { colors = { 0, 1, 2 } } },
     ["zigzag/cell"] = {
       key = "zigzag/cell",
-      kind = "cells",
+      kind = "cell",
       data = {
         cells = {
           {

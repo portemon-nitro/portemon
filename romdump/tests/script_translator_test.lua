@@ -728,7 +728,7 @@ T["unknown signpost action command is malformed source"] = function()
   end
 end
 
--- 17. Opcode 61 (ScrCmd_061, the std_signpost context end): no operands,
+-- 17. Opcode 61 (ScrCmd_ReopenStartMenuOnEnd, the std_signpost context end): no operands,
 -- ends the script context and requests the Start Menu reopen hook. It
 -- lowers to the canonical terminal request_start_menu node and verifies as
 -- a stop-classified supported translation, never an unsupported node.
@@ -1090,7 +1090,7 @@ T["unclassified sound commands stay attributed unsupported"] = function()
   local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
   Assert.equal(#lowered.unsupported, 1)
   Assert.equal(lowered.unsupported[1].command, 86)
-  Assert.equal(lowered.unsupported[1].originalName, "ScrCmd_086")
+  Assert.equal(lowered.unsupported[1].originalName, "ScrCmd_SetSoundPlayerPause")
   local report = Verifier.verifyScript(Structurer.structure(lowered, 0), ir.scripts[0], ir, lowered.omissions)
   Assert.isFalse(report.complete)
 end

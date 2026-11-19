@@ -229,7 +229,7 @@ local function waitSignpost(ins)
 end
 
 local function requestStartMenu()
-  -- ScrCmd_061 (std_signpost's hide-branch tail): no operands; installs
+  -- ScrCmd_ReopenStartMenuOnEnd (std_signpost's hide-branch tail): no operands; installs
   -- the Start Menu reopen end callback and returns FALSE, ending the
   -- script context. The runtime request_start_menu handler routes the
   -- reopen request through the startMenuReopen service and stops.
@@ -313,7 +313,7 @@ local function genderedMessage(ins)
 end
 
 local function yieldFollowerCheck()
-  -- ScrCmd_609 (FollowMonResetMovement) resets the follower trail state
+  -- ScrCmd_FollowMonResetMovement resets the follower trail state
   -- and yields one scheduler tick (the source TRUE return). The runtime
   -- owns both the reset and the yield so the verifier sees one
   -- yield-boundary node for the yield-classified instruction.
@@ -361,7 +361,7 @@ end
 -- Opcode 604 selects one of the three persistent follower map-object
 -- movement modes; raw selectors never reach the generated boundary.
 local function followerPartnerState(ins)
-  -- ScrCmd_596 writes the partner-state query into its result variable.
+  -- ScrCmd_FollowMonIsLarge writes the partner-state query into its result variable.
   return { op = "follower_partner_state", result = Operands.varRef(ins.operands[1]) }
 end
 
@@ -435,7 +435,7 @@ local function followerInteract(_)
 end
 
 local function followerIsActive(ins)
-  -- ScrCmd_729 writes the live active-state query into its result variable.
+  -- ScrCmd_FollowMonIsActive writes the live active-state query into its result variable.
   return { op = "follower_is_active", result = Operands.varRef(ins.operands[1]) }
 end
 
@@ -447,7 +447,7 @@ local function followerTransition()
 end
 
 local function followerRecall()
-  -- ScrCmd_600 (FollowMonRecall) starts the recall task and blocks until
+  -- ScrCmd_FollowMonRecall starts the recall task and blocks until
   -- it settles (the source TRUE return yields while the TaskManager child
   -- runs; FALSE continues when there is nothing to do). The blocking
   -- task owns the visible-follower choreography.
@@ -1343,7 +1343,7 @@ local function pcCapsules()
   return { op = "pc_capsules" }
 end
 
--- Source map-prop animation slot ScrCmd_500 binds to the PC terminal model.
+-- Source map-prop animation slot ScrCmd_PCPropLoadAnimation binds to the PC terminal model.
 -- Wait and release on that slot are the terminal effect; every other slot is
 -- a script-loaded map prop.
 local PC_TERMINAL_SLOT = 90
@@ -1386,16 +1386,16 @@ local function waitInputOrTicks(ins)
   return { op = "wait_input_or_ticks", ticks = Operands.operandValue(ins.operands[1]) }
 end
 
--- The retail draw flag is named for its setter: MakeObjectVisible sets the
--- hidden bit and MakeObjectInvisible clears it.
+-- ScrCmd_MakeObjectVisible clears the object's invisible flag and
+-- ScrCmd_MakeObjectInvisible sets it.
 local ObjectDrawFlag = {}
 
 function ObjectDrawFlag.makeVisible(ins)
-  return { op = "set_object_hidden", actor = actorRef(ins.operands[1]), hidden = true }
+  return { op = "set_object_hidden", actor = actorRef(ins.operands[1]), hidden = false }
 end
 
 function ObjectDrawFlag.makeInvisible(ins)
-  return { op = "set_object_hidden", actor = actorRef(ins.operands[1]), hidden = false }
+  return { op = "set_object_hidden", actor = actorRef(ins.operands[1]), hidden = true }
 end
 
 -- Retail ScrCmd_GetStdMsgNaix (opcode 438): the destination variable receives
@@ -1487,7 +1487,7 @@ local function contextChoice(ins)
   return { op = "context_choice", result = Operands.varRef(ins.operands[1]) }
 end
 
--- ScrCmd_815 reads an immediate selector and only sets the
+-- ScrCmd_SetSavedBottomScreenApp reads an immediate selector and only sets the
 -- field display-return target. The mart host always restores the default
 -- target, as the retail ROM does for selector zero. Other values
 -- are not equivalent and remain explicitly unsupported.
@@ -1500,7 +1500,7 @@ local function setDefaultFieldReturn(ins)
     command = 815,
     arguments = { Operands.operandValue(ins.operands[1]) },
     sourceOffset = ins.offset,
-    reason = "ScrCmd_815 supports only the immediate default field return selector zero",
+    reason = "ScrCmd_SetSavedBottomScreenApp supports only the immediate default field return selector zero",
   }
 end
 
@@ -1519,7 +1519,7 @@ local function actorOscillate(ins)
         Operands.operandValue(ins.operands[5]),
       },
       sourceOffset = ins.offset,
-      reason = "ScrCmd_523 variable amplitude operands are unsupported",
+      reason = "ScrCmd_SpinObject variable amplitude operands are unsupported",
     }
   end
   return {
@@ -1879,8 +1879,8 @@ local FieldHandlers = {
   [616] = countPcPhotos,
   [617] = openPcPhotoAlbum,
   [706] = pcHallOfFameStatus,
-  [374] = ObjectDrawFlag.makeInvisible,
-  [375] = ObjectDrawFlag.makeVisible,
+  [374] = ObjectDrawFlag.makeVisible,
+  [375] = ObjectDrawFlag.makeInvisible,
   [438] = getStdMsgNaix,
   [439] = externalMessage,
   [440] = externalMessageWait,

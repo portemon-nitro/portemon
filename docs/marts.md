@@ -109,6 +109,7 @@ source-facing display and price, but their unavailable destination does not
 grant an invented Decoration item. Competition explanations/statistics and
 competition gameplay remain unsupported.
 
-The source `ScrCmd_815 0` prelude is supported as a no-op because the mart host
-returns to the default field display on close. Other `ScrCmd_815` values remain
-unsupported; the operand is an immediate, not a variable reference.
+The source `ScrCmd_SetSavedBottomScreenApp 0` prelude is supported as a no-op
+because the mart host returns to the default field display on close. Other
+`ScrCmd_SetSavedBottomScreenApp` values remain unsupported; the operand is an
+immediate, not a variable reference.

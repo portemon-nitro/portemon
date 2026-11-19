@@ -244,7 +244,7 @@ local function handleStop(_, _)
   return Runtime.OUTCOME_STOP
 end
 
--- ScrCmd_061 (std_signpost's hide-branch tail): no operands. The source
+-- ScrCmd_ReopenStartMenuOnEnd (std_signpost's hide-branch tail): no operands. The source
 -- installs the Start Menu reopen end callback (sub_0204031C ->
 -- sub_0203BD64) and returns FALSE, ending the script context. The reopen
 -- request routes through the startMenuReopen service, which the Start Menu
