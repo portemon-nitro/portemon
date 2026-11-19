@@ -2,7 +2,11 @@
 -- generated transcript bases from the compiled script cache, then every
 -- checked-in override listed in the override manifest (a file named
 -- `<script-id>.lua` overrides the script with that id, or introduces the id
--- when no base exists, as with the curated Elm replacement). The manifest is
+-- when no base exists, as with the curated Elm replacement). Generated content
+-- is one readable Lua bundle per source script archive member: the active
+-- index maps a logical id to its member and source slot, and a member is
+-- evaluated once per selected registry the first time any of its scripts is
+-- requested. The manifest is
 -- the single source of override filenames: no directory enumeration at
 -- runtime. Override files are ordinary `return S.script { ... }` modules
 -- executed with normal Lua globals and the host require; the returned
@@ -91,56 +95,115 @@ local function loadOverrideChunk(content, chunkName, requireFn)
   return executeChunk(content, chunkName, env)
 end
 
--- Decode one generated script file from the compiled cache: read, parse, and
--- execute the restricted chunk, then check the resource id against the
--- entry. Generated resources are producer-validated before publication, so
--- runtime routes by pinned cache identity and script id without rerunning
--- the semantic validator. Returns the resource, or nil plus an Errors
--- object on any failure.
+-- One member bundle evaluator over a pinned generation: a member file is
+-- read and evaluated the first time one of its scripts is requested, and the
+-- evaluated bundle serves every later request for that member. The memo
+-- belongs to the returned closure, so the selected registry owns its lifetime
+-- and a new generation starts empty.
+---@param cacheFs table<string, unknown> CacheFs-shaped
+---@param generation string
+---@param requireFn fun(name: string): unknown|nil defaults to the restricted gen4.script-only require
+---@return fun(member: integer, scriptIndex: integer, id: string): table<string, unknown>|nil, Errors.Error?
+local function memberResources(cacheFs, generation, requireFn)
+  requireFn = requireFn or defaultRequire
+  local members = {}
+  ---@param member integer
+  ---@return table<string, unknown>|nil, Errors.Error?
+  local function bundleAt(member)
+    local bundle = members[member]
+    if bundle ~= nil then
+      return bundle
+    end
+    local path = ScriptCache.memberPath(generation, member)
+    local content = cacheFs:read(path)
+    if content == nil then
+      return nil,
+        Errors.new(
+          ScriptErrors.SCRIPT_LOAD_FAILED,
+          "script cache member is unavailable",
+          { member = member, path = path }
+        )
+    end
+    local ok, loaded = pcall(loadResourceChunk, content --[[@as string]], path, requireFn)
+    if not ok then
+      return nil, loaded --[[@as Errors.Error]]
+    end
+    bundle = loaded --[[@as table]]
+    if bundle.schema ~= ScriptCache.MEMBER_SCHEMA or not Validate.isArray(bundle.scripts) then
+      return nil,
+        Errors.new(
+          ScriptErrors.SCRIPT_LOAD_FAILED,
+          "script cache member bundle is malformed",
+          { member = member, path = path }
+        )
+    end
+    members[member] = bundle
+    return bundle
+  end
+  ---@param member integer
+  ---@param scriptIndex integer
+  ---@param id string
+  ---@return table<string, unknown>|nil, Errors.Error?
+  local function resourceAt(member, scriptIndex, id)
+    local bundle, err = bundleAt(member)
+    if bundle == nil then
+      return nil, err
+    end
+    local resource = bundle.scripts[scriptIndex + 1]
+    if type(resource) ~= "table" then
+      return nil,
+        Errors.new(
+          ScriptErrors.SCRIPT_LOAD_FAILED,
+          "script cache member has no resource at the indexed source slot",
+          { scriptId = id, member = member, scriptIndex = scriptIndex }
+        )
+    end
+    if resource.id ~= id or type(resource.metadata) ~= "table" or resource.metadata.generated ~= true then
+      return nil,
+        Errors.new(
+          ScriptErrors.SCRIPT_LOAD_FAILED,
+          "script cache resource does not match its index entry",
+          { scriptId = id, resourceId = resource.id }
+        )
+    end
+    -- Lowered steps carry source offsets, and the DSL compiler derives the
+    -- stable node identity of every generated step from the resource's source
+    -- member and script slot. The bundle path and this index entry already own
+    -- that identity, so it is attached here instead of being repeated for
+    -- every script on disk.
+    resource.metadata.source = { member = member, scriptIndex = scriptIndex }
+    return resource
+  end
+  return resourceAt
+end
+
+-- Resolve one generated script from the pinned generation: read and evaluate
+-- its member bundle, then take the script at its indexed source slot.
+-- Generated resources are producer-validated before publication, so runtime
+-- routes by pinned cache identity and script id without rerunning the
+-- semantic validator. Returns the resource, or nil plus an Errors object on
+-- any failure.
 ---@param cacheFs table<string, unknown> CacheFs-shaped
 ---@param generation string
 ---@param member integer
+---@param scriptIndex integer
 ---@param id string
 ---@param requireFn fun(name: string): unknown|nil defaults to the restricted gen4.script-only require
 ---@return table<string, unknown>|nil, Errors.Error?
-local function loadGeneratedAt(cacheFs, generation, member, id, requireFn)
-  requireFn = requireFn or defaultRequire
-  local path = ScriptCache.scriptPath(generation, member, id)
-  local content = cacheFs:read(path)
-  if content == nil then
-    return nil,
-      Errors.new(
-        ScriptErrors.SCRIPT_LOAD_FAILED,
-        "script cache resource is unavailable",
-        { scriptId = id, path = path }
-      )
-  end
-  local ok, resource = pcall(loadResourceChunk, content --[[@as string]], path, requireFn)
-  if not ok then
-    return nil, resource --[[@as Errors.Error]]
-  end
-  resource = resource --[[@as table]]
-  if resource.id ~= id then
-    return nil,
-      Errors.new(
-        ScriptErrors.SCRIPT_LOAD_FAILED,
-        "script cache resource does not match its index entry",
-        { scriptId = id, resourceId = resource.id }
-      )
-  end
-  return resource
+local function loadGeneratedAt(cacheFs, generation, member, scriptIndex, id, requireFn)
+  return memberResources(cacheFs, generation, requireFn)(member, scriptIndex, id)
 end
 
 function ScriptLoader.loadGenerated(cacheFs, id, requireFn, opts)
   assert(
-    opts and opts.generation ~= nil and opts.member ~= nil,
+    opts and opts.generation ~= nil and opts.member ~= nil and opts.scriptIndex ~= nil,
     "generated script loading requires a pinned generation"
   )
-  return loadGeneratedAt(cacheFs, opts.generation, opts.member, id, requireFn)
+  return loadGeneratedAt(cacheFs, opts.generation, opts.member, opts.scriptIndex, id, requireFn)
 end
 
-function ScriptLoader.loadGeneratedFrom(cacheFs, generation, member, id, requireFn)
-  return loadGeneratedAt(cacheFs, generation, member, id, requireFn)
+function ScriptLoader.loadGeneratedFrom(cacheFs, generation, member, scriptIndex, id, requireFn)
+  return loadGeneratedAt(cacheFs, generation, member, scriptIndex, id, requireFn)
 end
 
 ---@param cacheFs table<string, unknown> CacheFs-shaped
@@ -153,12 +216,13 @@ local function loadSelection(cacheFs)
   return assert(selection)
 end
 
--- Load every generated base from the compiled script cache: the index lists
--- the resources and each file is one `S.script` resource. A missing base or
+-- Load every generated base from the compiled script cache: the index maps
+-- each logical id to its member bundle and source slot. A missing member or
 -- an id mismatch is a hard load error (the cache readiness check already
 -- gates the build, so a mismatch here is a real fault). With `opts.lazy`,
--- only the layer presence is installed (installBaseDeferred): the resources
--- decode through the build's resource loader on first access.
+-- only the layer presence is installed (installBaseDeferred): the bundles
+-- decode through the build's resource loader on first access, and installing
+-- the index reads no payload.
 ---@param registry table<string, unknown> Registry
 ---@param cacheFs table<string, unknown> CacheFs-shaped
 ---@param requireFn? fun(name: string): unknown
@@ -172,29 +236,29 @@ function ScriptLoader.installGenerated(registry, cacheFs, requireFn, opts)
     Errors.raise(
       ScriptErrors.SCRIPT_LOAD_FAILED,
       "script cache index has an unknown schema",
-      { path = ScriptCache.indexPath(), schema = index and index.schema or nil }
+      { path = ScriptCache.activeIndexPath(), schema = index and index.schema or nil }
     )
   end
   -- resources is the current schema's required array; a missing or malformed
   -- index must fail before any install, never become an empty registry. The
   -- rule matches the build-path readiness validator (ScriptCache.isReady).
-  -- This checks only the index shape -- the per-resource files still decode
+  -- This checks only the index shape -- the member bundles still decode
   -- lazily on the deferred path.
   if not Validate.isArray(index.resources) then
     Errors.raise(
       ScriptErrors.SCRIPT_LOAD_FAILED,
       "script cache index resources are missing or malformed",
-      { path = ScriptCache.indexPath() }
+      { path = ScriptCache.activeIndexPath() }
     )
   end
+  local resourceAt = memberResources(cacheFs, selection.generation, requireFn)
   for _, entry in ipairs(index.resources) do
     assert(type(entry.id) == "string" and entry.id ~= "", "script cache index entry id required")
     if opts.lazy then
       registry:installBaseDeferred(entry.id, "generated")
     else
       local resource, err
-      resource, err =
-        ScriptLoader.loadGeneratedFrom(cacheFs, selection.generation, assert(entry.member), entry.id, requireFn)
+      resource, err = resourceAt(assert(entry.member), assert(entry.scriptIndex), entry.id)
       if resource == nil then
         local context = { scriptId = entry.id, cause = err and err.context or nil }
         ---@cast context Errors.Context
@@ -291,6 +355,10 @@ function ScriptLoader.buildRegistry(cacheFs, fs, requireFn, opts)
   local selection = loadSelection(cacheFs)
   local registry
   if opts.lazy then
+    -- One member memo per built registry: the deferred layer holds no decoded
+    -- payload, and the first request for any script of a member evaluates that
+    -- member once for the lifetime of this registry.
+    local resourceAt = memberResources(cacheFs, selection.generation, requireFn)
     local function loadResource(id, _)
       local entry
       for _, candidate in ipairs(selection.index.resources) do
@@ -301,7 +369,7 @@ function ScriptLoader.buildRegistry(cacheFs, fs, requireFn, opts)
       end
       assert(entry ~= nil, "generated script is not in the pinned index: " .. id)
       local resource, err
-      resource, err = ScriptLoader.loadGeneratedFrom(cacheFs, selection.generation, assert(entry.member), id, requireFn)
+      resource, err = resourceAt(assert(entry.member), assert(entry.scriptIndex), id)
       if resource == nil then
         local context = { scriptId = id, cause = err and err.context or nil }
         ---@cast context Errors.Context

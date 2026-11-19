@@ -100,7 +100,7 @@ end
 
 -- A published bank proves ready without touching source decoding: with member
 -- reads and tokenization trapped to fail, readiness still answers from the
--- staged files alone, while a stale marker does not read as ready.
+-- staged files alone.
 function T.published_bank_readiness_needs_no_source_decode()
   Assert.equal(type(FieldMessageCompiler.newSession), "function", "per-bank production reuses one source session")
   Assert.equal(type(FieldMessageCacheWriter.stageBank), "function", "banks stage one at a time")
@@ -124,7 +124,6 @@ function T.published_bank_readiness_needs_no_source_decode()
   FieldMessageCacheWriter.stageBank(artifact, one)
   local stage = artifact:stageFs()
   Assert.deepEqual(stage:loadLua(FieldMessageCache.bankPath(542)), one.bank, "the staged bank matches")
-  Assert.equal(stage:read(FieldMessageCache.bankMarkerPath(542)), one.marker, "the marker stages with the bank")
   Assert.isFalse(stage:exists(FieldMessageCache.bankPath(543)), "no sibling bank is staged")
   artifact:finishSuccess({ marker = one.marker })
   artifact:publish({
@@ -142,14 +141,11 @@ function T.published_bank_readiness_needs_no_source_decode()
   FieldMessageTokenizer.tokenize = function()
     error("warm readiness must not tokenize source members")
   end
-  local readyOk, ready = pcall(FieldMessageCache.isBankReady, cache, 542, one.marker)
-  local staleOk, stale = pcall(FieldMessageCache.isBankReady, cache, 542, one.marker .. "-stale")
+  local readyOk, ready = pcall(FieldMessageCache.isBankReady, cache, 542)
   FieldMessageBank.decode = decode
   FieldMessageTokenizer.tokenize = tokenize
   Assert.isTrue(readyOk, "readiness polling must not fail: " .. tostring(ready))
   Assert.isTrue(ready, "a published bank stays ready without source decoding")
-  Assert.isTrue(staleOk, "stale readiness polling must not fail: " .. tostring(stale))
-  Assert.isFalse(stale, "a stale marker does not read as ready")
 end
 
 -- The family summary attests coverage without touching bank children: it
@@ -184,10 +180,7 @@ function T.family_summary_attests_coverage_without_erasing_children()
   local ok, summaryErr = pcall(FieldMessageCacheWriter.stageSummary, partial, index, bankMarkers)
   Assert.isFalse(ok, "the summary must refuse incomplete coverage: " .. tostring(summaryErr))
   partial:abort()
-  Assert.isFalse(
-    FieldMessageCache.isReady(cache, "no-summary-published"),
-    "an unpublished summary leaves the family incomplete"
-  )
+  Assert.isFalse(FieldMessageCache.isReady(cache), "an unpublished summary leaves the family incomplete")
   publishBank(cache, generation, 543, second, "message-bank-543")
   local complete = PreparedArtifact.new({
     cacheFs = cache,
@@ -208,13 +201,13 @@ function T.family_summary_attests_coverage_without_erasing_children()
     key = "global",
     jobKey = "message-bank:global",
   })
-  Assert.isTrue(FieldMessageCache.isReady(cache, summaryMarker), "full coverage publishes a ready family")
+  Assert.isTrue(FieldMessageCache.isReady(cache), "full coverage publishes a ready family")
   for _, bankId in ipairs({ 542, 543 }) do
     local bank = cache:loadLua(FieldMessageCache.bankPath(bankId))
     Assert.equal(bank and bank.bankId, bankId, "bank " .. bankId .. " survives its summary")
   end
   cache:remove(FieldMessageCache.bankPath(543))
-  Assert.isFalse(FieldMessageCache.isReady(cache, summaryMarker), "a missing bank is never hidden by an old summary")
+  Assert.isFalse(FieldMessageCache.isReady(cache), "a missing bank is never hidden by an old summary")
 end
 
 -- The family marker is a deterministic function of its covered banks: the

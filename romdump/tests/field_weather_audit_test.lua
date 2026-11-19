@@ -20,17 +20,14 @@ local function publishedCache()
   local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
   local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
   local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
-  local ScriptCache = require("libs.assets.src.ScriptCache")
   local MapAssetCache = require("libs.assets.src.MapAssetCache")
   local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
   for _, path in ipairs({
     FieldActorCache.markerPath(),
     FieldCameraCache.markerPath(),
     FieldFontCache.markerPath(),
-    FieldMessageCache.markerPath(),
     FieldUiAssetCache.markerPath(),
     IntroAssetCache.markerPath(),
-    ScriptCache.markerPath(),
     MapAssetCache.mapDir(7) .. "/complete",
     FieldMapDataCache.markerPath(7),
   }) do

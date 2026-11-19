@@ -11,23 +11,16 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
 local LuaWriter = require("libs.codec.src.LuaWriter")
-local Sha256 = require("libs.script.src.Sha256")
 
 local T = {}
 local GENERATION_A = string.rep("a", 40)
 local GENERATION_B = string.rep("b", 40)
-local SOURCE_HASH = string.rep("c", 40)
 
-local function resource(id, generation)
+local function resource(id)
   return {
     api = 1,
     id = id,
-    metadata = {
-      generated = true,
-      generation = generation,
-      source = { sourceHash = SOURCE_HASH },
-      coverage = { complete = true, unsupportedCount = 0 },
-    },
+    metadata = { generated = true },
     steps = { { op = "stop" } },
   }
 end
@@ -36,7 +29,6 @@ local function member(memberId, id, generation)
   return {
     memberId = memberId,
     marker = generation .. ":member:" .. tostring(memberId),
-    sourceHash = SOURCE_HASH,
     coverage = {
       source = { repository = "portemon", romSha1 = generation },
       totals = {
@@ -62,8 +54,7 @@ local function member(memberId, id, generation)
         id = id,
         member = memberId,
         scriptIndex = 0,
-        sourceHash = SOURCE_HASH,
-        resource = resource(id, generation),
+        resource = resource(id),
         report = { complete = true, unsupportedCount = 0 },
         directDependencies = { audioSequences = {}, scriptTargets = {}, assetNeeds = {} },
       },
@@ -186,7 +177,11 @@ function T.failed_member_keeps_the_previous_active_generation_ready()
   summaryFailure = summaryFailure --[[@as { code: string }]]
   Assert.equal(summaryFailure.code, "SCRIPT_SUMMARY_INCOMPLETE")
   summary:abort()
-  Assert.equal(cache:read(ScriptCache.markerPath()), "marker-a", "member failure must not replace active selection")
+  Assert.equal(
+    assert(ScriptCache.loadActive(cache)).marker,
+    "marker-a",
+    "member failure must not replace active selection"
+  )
   Assert.isTrue(ScriptCache.isReady(cache, "marker-a"), "the previous generation remains complete and readable")
   Assert.isFalse(ScriptCache.isReady(cache, "marker-b"), "the failed generation is never active-ready")
 end
@@ -195,11 +190,11 @@ function T.failed_repair_stage_leaves_the_live_member_untouched()
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
   writeGeneration(cache, GENERATION_A, "marker-a", "initial", "outer-a")
-  local original = assert(cache:read(ScriptCache.scriptPath(GENERATION_A, 0, "stable.script")))
+  local original = assert(cache:read(ScriptCache.memberPath(GENERATION_A, 0)))
   local rebuild = member(0, "stable.script", GENERATION_A)
   local realWrite = backend.write
   backend.write = function(self, path, data)
-    if path:find("/scripts/", 1, true) then
+    if path:find("/generations/", 1, true) then
       error("injected repair failure")
     end
     return realWrite(self, path, data)
@@ -211,11 +206,11 @@ function T.failed_repair_stage_leaves_the_live_member_untouched()
   backend.write = realWrite
   artifact:abort()
   Assert.equal(
-    cache:read(ScriptCache.scriptPath(GENERATION_A, 0, "stable.script")),
+    cache:read(ScriptCache.memberPath(GENERATION_A, 0)),
     original,
-    "a failed repair stage must preserve the live resource"
+    "a failed repair stage must preserve the live member bundle"
   )
-  Assert.equal(cache:read(ScriptCache.markerPath()), "marker-a", "the active marker must remain selected")
+  Assert.equal(assert(ScriptCache.loadActive(cache)).marker, "marker-a", "the active selection must remain current")
   Assert.isTrue(ScriptCache.isReady(cache, "marker-a"), "the last-known-good generation remains ready")
 end
 
@@ -226,32 +221,30 @@ function T.member_completion_requires_resource_readback_before_marker()
   local originalWrite = backend.write
   backend.write = function(self, path, data)
     local result = originalWrite(self, path, data)
-    if path:find("/scripts/", 1, true) then
+    if path:find("/generations/", 1, true) then
       self.files[path] = "not a generated script"
     end
     return result
   end
 
   local artifact = preparation(cache, "0", "tampered-member", "outer-a")
-  local failure = Assert.throws(function()
+  Assert.throws(function()
     ScriptCacheWriter.stageMember(artifact, currentPlan, member(0, "stable.script", GENERATION_A))
-  end, "a member must not complete when an emitted resource fails readback")
-  failure = failure --[[@as { code: string }]]
-  Assert.equal(failure.code, "SCRIPT_MEMBER_READBACK_FAILED")
+  end, "a member must not complete when its emitted bundle fails readback")
   backend.write = originalWrite
-  Assert.isNil(artifact:stageFs():read(ScriptCache.memberMarkerPath(GENERATION_A, 0)))
   artifact:abort()
+  Assert.isNil(cache:read(ScriptCache.memberPath(GENERATION_A, 0)), "a failed readback publishes no member")
 end
 
-function T.member_readback_requires_the_planned_source_identity()
+function T.member_readback_requires_the_planned_resource_identity()
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
   local currentPlan = plan(GENERATION_A, "marker-a")
   local originalWrite = backend.write
   backend.write = function(self, path, data)
     local result = originalWrite(self, path, data)
-    if path:find("/scripts/", 1, true) then
-      self.files[path] = data:gsub("      member = 0,", "      member = 1,")
+    if path:find("/generations/", 1, true) then
+      self.files[path] = data:gsub('id = "stable.script"', 'id = "wrong.script"')
     end
     return result
   end
@@ -259,31 +252,28 @@ function T.member_readback_requires_the_planned_source_identity()
   local artifact = preparation(cache, "0", "mistaken-member", "outer-a")
   Assert.throws(function()
     ScriptCacheWriter.stageMember(artifact, currentPlan, member(0, "stable.script", GENERATION_A))
-  end, "a member must not complete when its serialized source identity is wrong")
+  end, "a member must not complete when its serialized resource identity is wrong")
   backend.write = originalWrite
-  Assert.isNil(artifact:stageFs():read(ScriptCache.memberMarkerPath(GENERATION_A, 0)))
   artifact:abort()
+  Assert.isNil(cache:read(ScriptCache.memberPath(GENERATION_A, 0)), "a mismatched readback publishes no member")
 end
 
 function T.repaired_member_stages_into_the_private_stage_without_touching_live()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local currentPlan = plan(GENERATION_A, "marker-a")
   writeGeneration(cache, GENERATION_A, "marker-a", "initial", "outer-a")
-  local liveBefore = assert(cache:read(ScriptCache.scriptPath(GENERATION_A, 0, "stable.script")))
+  local liveBefore = assert(cache:read(ScriptCache.memberPath(GENERATION_A, 0)))
 
   local artifact = preparation(cache, "0", "repair-private", "outer-a")
   local staged = ScriptCacheWriter.stageMember(artifact, currentPlan, member(0, "stable.script", GENERATION_A))
   Assert.equal(staged, GENERATION_A .. ":member:0", "repair staging returns the exact member marker")
   Assert.equal(
-    cache:read(ScriptCache.scriptPath(GENERATION_A, 0, "stable.script")),
+    cache:read(ScriptCache.memberPath(GENERATION_A, 0)),
     liveBefore,
     "repair staging must not rewrite the live member"
   )
-  Assert.equal(
-    artifact:stageFs():read(ScriptCache.memberMarkerPath(GENERATION_A, 0)),
-    GENERATION_A .. ":member:0",
-    "the repair lands in the private stage"
-  )
+  local stagedBundle = artifact:stageFs():loadModule(ScriptCache.memberPath(GENERATION_A, 0))
+  Assert.equal(stagedBundle.scripts[1].id, "stable.script", "the repair lands in the private stage")
   artifact:abort()
 end
 
@@ -293,20 +283,19 @@ function T.summary_attests_member_coverage_and_plan_identity()
   publishMember(cache, currentPlan, member(0, "stable.script", GENERATION_A), "coverage-member-0", "outer-a")
   publishMember(cache, currentPlan, member(1, "second.script", GENERATION_A), "coverage-member-1", "outer-a")
 
-  local coverage = assert(cache:loadLua(ScriptCache.memberCoveragePath(GENERATION_A, 0)))
-  coverage = coverage --[[@as { scripts: { [1]: { publicId: string } } }]]
-  coverage.scripts[1].publicId = "wrong.script"
-  cache:writeLua(ScriptCache.memberCoveragePath(GENERATION_A, 0), coverage)
+  local published = assert(cache:read(ScriptCache.memberPath(GENERATION_A, 0)))
+  local drifted, replacements = published:gsub('id = "stable.script"', 'id = "wrong.script"', 1)
+  Assert.equal(replacements, 1, "the drift edits the published resource identity")
+  cache:write(ScriptCache.memberPath(GENERATION_A, 0), drifted)
   local summary = preparation(cache, "global", "coverage-summary", "outer-a")
   local failure = Assert.throws(function()
     ScriptCacheWriter.stageSummary(summary, currentPlan)
-  end, "summary staging must attest member coverage against the plan")
+  end, "summary staging must attest the published member against the plan")
   failure = failure --[[@as { code: string }]]
   Assert.equal(failure.code, "SCRIPT_SUMMARY_INCOMPLETE")
   summary:abort()
 
-  coverage.scripts[1].publicId = "stable.script"
-  cache:writeLua(ScriptCache.memberCoveragePath(GENERATION_A, 0), coverage)
+  cache:write(ScriptCache.memberPath(GENERATION_A, 0), published)
   currentPlan.index.resources[1].id = "wrong.script"
   local mismatch = preparation(cache, "global", "identity-summary", "outer-a")
   Assert.throws(function()
@@ -329,7 +318,6 @@ function T.member_with_no_resources_stages_without_a_fake_job()
   local empty = {
     memberId = 7,
     marker = GENERATION_A .. ":member:7",
-    sourceHash = SOURCE_HASH,
     coverage = {
       source = { repository = "portemon", romSha1 = GENERATION_A },
       totals = {
@@ -371,7 +359,7 @@ function T.duplicate_resource_ids_fail_member_staging()
   failure = failure --[[@as { code: string }]]
   Assert.equal(failure.code, "SCRIPT_MEMBER_INVALID")
   artifact:abort()
-  Assert.isNil(cache:read(ScriptCache.memberMarkerPath(GENERATION_A, 0)))
+  Assert.isNil(cache:read(ScriptCache.memberPath(GENERATION_A, 0)))
 end
 
 function T.malformed_coverage_fails_member_staging()
@@ -386,7 +374,7 @@ function T.malformed_coverage_fails_member_staging()
   failure = failure --[[@as { code: string }]]
   Assert.equal(failure.code, "SCRIPT_MEMBER_COVERAGE_INVALID")
   artifact:abort()
-  Assert.isNil(cache:read(ScriptCache.memberMarkerPath(GENERATION_A, 0)))
+  Assert.isNil(cache:read(ScriptCache.memberPath(GENERATION_A, 0)))
 end
 
 function T.stale_summary_publication_is_rejected()
@@ -432,21 +420,14 @@ function T.stale_dependency_metadata_is_rejected()
   local currentPlan = plan(GENERATION_A, "marker-a")
   publishMember(cache, currentPlan, member(0, "stable.script", GENERATION_A), "stale-deps-member-0", "outer-a")
   publishMember(cache, currentPlan, member(1, "second.script", GENERATION_A), "stale-deps-member-1", "outer-a")
-  -- Rewind the member attestation to the previous schema shape without
-  -- dependency facts: its hashes still match the current bodies, so only
-  -- the missing metadata can refuse it.
-  local published = assert(cache:loadModule(ScriptCache.scriptPath(GENERATION_A, 0, "stable.script")))
-  cache:writeLua(ScriptCache.memberHashesPath(GENERATION_A, 0), {
-    schema = "g4-script-resource-hashes-v1",
-    generation = GENERATION_A,
-    memberId = 0,
-    marker = GENERATION_A .. ":member:0",
-    resources = {
-      { id = "stable.script", scriptIndex = 0, resourceHash = Sha256.hex(LuaWriter.encode(published)) },
-    },
-  })
+  -- Rewind the published bundle to a shape without usable dependency facts:
+  -- every script body still decodes, so only the missing facts can refuse it.
+  local published = assert(cache:read(ScriptCache.memberPath(GENERATION_A, 0)))
+  local drifted, replacements = published:gsub("assetNeeds = {},", 'assetNeeds = "not a need list",', 1)
+  Assert.equal(replacements, 1, "the drift edits the published dependency facts")
+  cache:write(ScriptCache.memberPath(GENERATION_A, 0), drifted)
   local ready, reason = ScriptCacheWriter.isMemberReady(cache, currentPlan, 0)
-  Assert.isFalse(ready, "a sidecar without dependency metadata must not attest its member")
+  Assert.isFalse(ready, "a bundle without usable dependency facts must not attest its member")
   Assert.isTrue(type(reason) == "string" and reason ~= "", "the refusal names its cause")
   local summary = preparation(cache, "global", "stale-deps-summary", "outer-a")
   local failure = Assert.throws(function()
@@ -468,8 +449,8 @@ function T.summary_publishes_explicit_empty_member_audio_closure_deterministical
   publishMember(second, secondPlan, member(0, "stable.script", GENERATION_A), "empty-member-0", "outer-a")
   publishMember(second, secondPlan, member(1, "second.script", GENERATION_A), "empty-member-1", "outer-a")
   publishSummary(second, secondPlan, "empty-summary", "outer-a")
-  local firstIndex = assert(first:loadLua(ScriptCache.generationIndexPath(GENERATION_A)))
-  local secondIndex = assert(second:loadLua(ScriptCache.generationIndexPath(GENERATION_A)))
+  local firstIndex = assert(first:loadLua(ScriptCache.activeIndexPath()))
+  local secondIndex = assert(second:loadLua(ScriptCache.activeIndexPath()))
   Assert.deepEqual(
     firstIndex.memberAudioSequences,
     { ["0"] = {}, ["1"] = {} },
@@ -482,22 +463,22 @@ function T.summary_publishes_explicit_empty_member_audio_closure_deterministical
   )
 end
 
-function T.summary_metadata_join_reads_each_member_sidecar_once()
+function T.summary_reads_each_member_bundle_once()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local currentPlan = plan(GENERATION_A, "marker-a")
   publishMember(cache, currentPlan, member(0, "stable.script", GENERATION_A), "counted-member-0", "outer-a")
   publishMember(cache, currentPlan, member(1, "second.script", GENERATION_A), "counted-member-1", "outer-a")
-  local rawLoad = cache.loadLua
-  local sidecarLoads = 0
-  cache.loadLua = function(self, path)
-    if type(path) == "string" and path:find("resource-hashes", 1, true) ~= nil then
-      sidecarLoads = sidecarLoads + 1
+  local rawLoad = cache.loadModule
+  local memberLoads = 0
+  cache.loadModule = function(self, path)
+    if type(path) == "string" and path:find("/generations/", 1, true) ~= nil then
+      memberLoads = memberLoads + 1
     end
     return rawLoad(self, path)
   end
   local summary = preparation(cache, "global", "counted-summary", "outer-a")
   Assert.isTrue(ScriptCacheWriter.stageSummary(summary, currentPlan) ~= nil)
-  cache.loadLua = rawLoad
+  cache.loadModule = rawLoad
   summary:finishSuccess({ marker = currentPlan.marker })
   Assert.isTrue(summary:publish({
     generationId = "outer-a",
@@ -506,18 +487,12 @@ function T.summary_metadata_join_reads_each_member_sidecar_once()
     key = "global",
     jobKey = "script-member:global",
   }))
-  -- Readiness proves each member through isMemberReady (one
-  -- resource-hashes load per member) before the metadata join runs,
-  -- so the prescribed single join contributes exactly one more load
-  -- per member: 2 members x (1 readiness + 1 join) == 4. The current
-  -- code performs two separate join scans, yielding 6.
-  Assert.equal(sidecarLoads, 4, "one readiness plus one metadata-join sidecar load per member")
-  local index = assert(cache:loadLua(ScriptCache.generationIndexPath(GENERATION_A)))
+  -- The summary proves and joins each member from one bundle read: 2 members,
+  -- one load each, no second scan of the published payloads.
+  Assert.equal(memberLoads, 2, "one bundle read per member for the whole summary")
+  local index = assert(cache:loadLua(ScriptCache.activeIndexPath()))
   for _, entry in ipairs(index.resources) do
-    Assert.isTrue(
-      type(entry.resourceHash) == "string" and entry.resourceHash ~= "",
-      "the joined index carries canonical hashes: " .. tostring(entry.id)
-    )
+    Assert.isNil(entry.resourceHash, "the active index stores no per-resource hash: " .. tostring(entry.id))
   end
   Assert.deepEqual(index.memberAudioSequences, { ["0"] = {}, ["1"] = {} })
 end

@@ -7,7 +7,7 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local LuaWriter = require("libs.codec.src.LuaWriter")
-local ScriptCache = require("libs.assets.src.ScriptCache")
+local ScriptCacheFixture = require("tests.support.ScriptCacheFixture")
 local ScriptLoader = require("libs.script.src.ScriptLoader")
 local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
 local Registry = require("libs.script.src.Registry")
@@ -22,41 +22,20 @@ local function throwsCode(code, fn)
   Assert.equal((err --[[@as Errors.Error]]).code, code)
 end
 
--- A cache whose script class is complete: marker, index, and script files.
+-- A cache whose script class is complete: one member bundle per member and
+-- the single active index over it.
 local function scriptCache(files)
   files = files
     or {
-      ["new_bark.lab_sign"] = 'local S = require("gen4.script")\nreturn S.script { api = 1, id = "new_bark.lab_sign", steps = { S.stop() } }\n',
-      ["vanilla.hgss.scr_seq.0842.script_001"] = 'local S = require("gen4.script")\nreturn S.script { api = 1, id = "vanilla.hgss.scr_seq.0842.script_001", steps = { S.stop() } }\n',
+      ["new_bark.lab_sign"] = "S.stop()",
+      ["vanilla.hgss.scr_seq.0842.script_001"] = "S.stop()",
     }
+  local scripts = {}
+  for id, steps in pairs(files) do
+    scripts[#scripts + 1] = { id = id, steps = steps }
+  end
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local resources = {}
-  for id in pairs(files) do
-    resources[#resources + 1] = { id = id }
-  end
-  table.sort(resources, function(a, b)
-    return a.id < b.id
-  end)
-  for index, entry in ipairs(resources) do
-    entry.member = 0
-    entry.scriptIndex = index - 1
-  end
-  cache:write(ScriptCache.markerPath(), MARKER)
-  cache:write(ScriptCache.generationMarkerPath(GENERATION), MARKER)
-  cache:writeLua(ScriptCache.activeIndexPath(), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = GENERATION,
-    marker = MARKER,
-  })
-  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = GENERATION,
-    marker = MARKER,
-    resources = resources,
-  })
-  for id, content in pairs(files) do
-    cache:write(ScriptCache.scriptPath(GENERATION, 0, id), content)
-  end
+  ScriptCacheFixture.writeSingleMember(cache, GENERATION, MARKER, scripts)
   return cache
 end
 
@@ -106,7 +85,7 @@ local function lazyRegistry(cache)
   local registry = Registry.new({
     loadResource = function(id)
       calls[#calls + 1] = id
-      local resource = assert(ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, id, requireShim))
+      local resource = assert(ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, 0, id, requireShim))
       return resource
     end,
   })

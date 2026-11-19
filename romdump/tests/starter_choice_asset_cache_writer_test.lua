@@ -27,7 +27,6 @@ local ItemCache = require("libs.assets.src.ItemCache")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MonCache = require("libs.assets.src.MonCache")
 local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
-local ScriptCache = require("libs.assets.src.ScriptCache")
 
 local T = {}
 
@@ -63,7 +62,6 @@ local function publishedCache(versionId)
     FieldActorCache.markerPath(),
     FieldCameraCache.markerPath(),
     FieldFontCache.markerPath(),
-    FieldMessageCache.markerPath(),
     FieldUiAssetCache.markerPath(),
     IntroAssetCache.markerPath(),
     FieldWeatherCache.markerPath(),
@@ -75,7 +73,6 @@ local function publishedCache(versionId)
     MonCache.markerPath(),
     ItemCache.markerPath(),
     BagCache.markerPath(),
-    ScriptCache.markerPath(),
     MapAssetCache.mapDir(7) .. "/complete",
     FieldMapDataCache.markerPath(7),
     FieldMapDataCache.spawnIndexMarkerPath(),

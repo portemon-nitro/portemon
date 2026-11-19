@@ -1249,29 +1249,49 @@ end
 local function assetNeedsRuntime(spec)
   local runtime = holdPredictionRuntime(false)
   local log = {}
-  -- The published layout: a small active selector names the generation whose
-  -- index carries the per-member closures.
+  -- The published layout: one active index names the generation and carries
+  -- the per-member closures.
   local generation, marker = string.rep("a", 40), "script-cache-v6:rom:dep"
+  local resources = {}
+  local emptyClosures = {}
+  for position, entry in ipairs(spec.resources or {}) do
+    resources[position] = { id = entry.id, member = entry.member, scriptIndex = entry.scriptIndex or 0 }
+    emptyClosures[tostring(entry.member)] = {}
+  end
+  local memberAudio = spec.memberAudioSequences or {}
+  for member, closure in pairs(emptyClosures) do
+    memberAudio[member] = memberAudio[member] or closure
+  end
+  local memberNeeds = spec.memberAssetNeeds or {}
+  for member, closure in pairs(emptyClosures) do
+    memberNeeds[member] = memberNeeds[member] or closure
+  end
   local index = {
     schema = ScriptCache.INDEX_SCHEMA,
+    version = "heartgold",
     generation = generation,
     marker = marker,
-    memberAssetNeeds = spec.memberAssetNeeds,
-    memberAudioSequences = spec.memberAudioSequences,
-    resources = spec.resources or {},
+    memberCount = 1,
+    scriptMemberCount = 1,
+    skippedMemberCount = 0,
+    scriptCount = #resources,
+    resourceCount = #resources,
+    memberAssetNeeds = memberNeeds,
+    memberAudioSequences = memberAudio,
+    resources = resources,
   }
   runtime.cacheFs = {
     read = function(_, path)
-      if path == ScriptCache.markerPath() or path == ScriptCache.generationMarkerPath(generation) then
-        return marker
+      if path == ScriptCache.memberPath(generation, 0) then
+        return "return {}\n"
       end
       return nil
     end,
+    exists = function(_, path)
+      return path == ScriptCache.memberPath(generation, 0)
+    end,
     loadLua = function(_, path)
       if path == ScriptCache.activeIndexPath() then
-        return { schema = ScriptCache.INDEX_SCHEMA, generation = generation, marker = marker }
-      end
-      if path == ScriptCache.generationIndexPath(generation) then
         return index
       end
       return nil
@@ -1335,7 +1355,10 @@ function T.tests.commit_unions_override_needs_for_member_resources()
   local runtime, log = assetNeedsRuntime({
     memberAssetNeeds = { ["5"] = { "probe:a" } },
     memberByMap = { [11] = 5 },
-    resources = { { id = "s.in", member = 5 }, { id = "s.out", member = 6 } },
+    resources = {
+      { id = "s.in", member = 5, scriptIndex = 0 },
+      { id = "s.out", member = 6, scriptIndex = 0 },
+    },
     overrideAssetNeeds = function(_, id)
       if id == "s.in" then
         return { "probe:override" }

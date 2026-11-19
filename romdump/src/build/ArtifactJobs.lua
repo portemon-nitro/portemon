@@ -988,18 +988,21 @@ local function executeMessageSummary(artifact, context)
   local FieldMessageCacheWriter = require("romdump.src.digest.ui.FieldMessageCacheWriter")
   local romFs = assert(context.romFs, "message summary jobs require a source reader")
   local cacheFs = assert(context.cacheFs, "message summary jobs require a cache filesystem")
+  local generationId = assert(context.generationId, "message summary jobs require a generation")
   local index = {
     schema = FieldMessageCache.INDEX_SCHEMA,
     version = romFs:version(),
     bankIds = FieldMessageCompiler.requiredBankIds(),
   }
+  -- Every bank's own receipt carries the marker binding its source identity;
+  -- the summary joins those proofs instead of a second payload-side marker.
   local bankMarkers = {}
   for _, bankId in ipairs(index.bankIds) do
-    local marker = cacheFs:read(FieldMessageCache.bankMarkerPath(bankId))
-    if type(marker) ~= "string" or marker == "" then
-      error("message summary misses the staged bank " .. tostring(bankId), 0)
+    local receipt = ArtifactState.read(cacheFs, generationId, "message-bank", tostring(bankId))
+    if receipt == nil then
+      error("message summary misses the published bank " .. tostring(bankId), 0)
     end
-    bankMarkers[bankId] = marker
+    bankMarkers[bankId] = receipt.marker
   end
   return FieldMessageCacheWriter.stageSummary(artifact, index, bankMarkers)
 end
@@ -1531,7 +1534,7 @@ end
 ---@return boolean
 local function validateMessageBank(check)
   local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
-  return FieldMessageCache.isBankReady(check.cacheFs, canonicalKeyId(check.key, "bank key"), check.marker)
+  return FieldMessageCache.isBankReady(check.cacheFs, canonicalKeyId(check.key, "bank key"))
 end
 
 ---@param plans ArtifactJobs.Plans
@@ -1548,14 +1551,14 @@ end
 ---@return boolean
 local function validateMessageSummary(check)
   local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
-  local cacheFs, generationId, plans, marker = check.cacheFs, check.generationId, check.plans, check.marker
-  if not FieldMessageCache.isReady(cacheFs, marker) then
+  local cacheFs, generationId, plans = check.cacheFs, check.generationId, check.plans
+  if not FieldMessageCache.isReady(cacheFs) then
     return false
   end
   for _, bankId in ipairs(assert(plans.messageBankIds, "message summary needs the required banks")) do
     if
-      not childReady(cacheFs, generationId, "message-bank", tostring(bankId), function(childMarker)
-        return FieldMessageCache.isBankReady(cacheFs, bankId, childMarker)
+      not childReady(cacheFs, generationId, "message-bank", tostring(bankId), function()
+        return FieldMessageCache.isBankReady(cacheFs, bankId)
       end)
     then
       return false

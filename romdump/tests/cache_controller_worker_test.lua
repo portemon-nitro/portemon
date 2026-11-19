@@ -1520,18 +1520,20 @@ function T.complete_boot_answers_ready_without_scanning_or_deleting()
   local meshOrphan = "assets/generated/maps/geometry/" .. string.rep("b", 40) .. ".g4mesh"
   cache:write(meshRef, string.rep("mesh-block;", 200))
   cache:write(meshOrphan, string.rep("orphan-mesh;", 200))
-  cache:write(ScriptCache.markerPath(), activeMarker)
   cache:writeLua(ScriptCache.activeIndexPath(), {
     schema = ScriptCache.INDEX_SCHEMA,
+    version = "heartgold",
     generation = activeGeneration,
     marker = activeMarker,
+    memberCount = 0,
+    scriptMemberCount = 0,
+    skippedMemberCount = 0,
+    scriptCount = 0,
+    resourceCount = 0,
+    resources = {},
+    memberAudioSequences = {},
+    memberAssetNeeds = {},
   })
-  cache:writeLua(ScriptCache.generationIndexPath(activeGeneration), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = activeGeneration,
-    marker = activeMarker,
-  })
-  cache:write(ScriptCache.generationMarkerPath(activeGeneration), activeMarker)
   cache:write(activeSentinel, "active payload")
   cache:write(obsoleteSentinel, "superseded payload")
   cache:write(ScriptCache.generationsDir() .. "/README.txt", "operator note")

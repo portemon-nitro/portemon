@@ -5,47 +5,30 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local ScriptCache = require("libs.assets.src.ScriptCache")
+local ScriptCacheFixture = require("tests.support.ScriptCacheFixture")
 local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
 local ScriptLoader = require("libs.script.src.ScriptLoader")
 
 local T = {}
 
 local SCRIPT_ID = "vanilla.test.generation_pin"
-local LEGACY_DIR = "data/generated/script"
-local ACTIVE_DIR = LEGACY_DIR .. "/active"
 local GENERATION_A = string.rep("a", 40)
 local GENERATION_B = string.rep("b", 40)
 
-local function scriptText(generation)
-  return string.format(
-    'local S = require("gen4.script")\nreturn S.script { api = 1, id = %q, metadata = { generation = %q }, steps = { S.stop() } }\n',
-    SCRIPT_ID,
-    generation
-  )
+-- Each generation compiles distinct step bodies for the same logical id, so
+-- the bytes a pinned registry serves identify its generation.
+local function scriptSteps(generation)
+  return 'S.playSound { sound = "SEQ_' .. generation .. '" }, S.stop()'
 end
 
 local function writeSelection(cache, generation, marker)
-  local index = {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = generation,
-    marker = marker,
-    resources = { { id = SCRIPT_ID, member = 0, scriptIndex = 0 } },
-  }
-  cache:writeLua(ACTIVE_DIR .. "/index.lua", {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = generation,
-    marker = marker,
+  ScriptCacheFixture.writeSingleMember(cache, generation, marker, {
+    { id = SCRIPT_ID, steps = scriptSteps(generation) },
   })
-  cache:write(ACTIVE_DIR .. "/complete", marker)
-  cache:writeLua(ScriptCache.generationIndexPath(generation), index)
-  cache:write(ScriptCache.generationMarkerPath(generation), marker)
-  cache:write(ScriptCache.scriptPath(generation, 0, SCRIPT_ID), scriptText(generation))
+end
 
-  -- Keep the old mutable paths populated only as a fixture for the pre-pin
-  -- behavior. A pinned loader must not consult them after construction.
-  cache:write(LEGACY_DIR .. "/complete", marker)
-  cache:writeLua(LEGACY_DIR .. "/index.lua", { schema = ScriptCache.INDEX_SCHEMA, resources = { { id = SCRIPT_ID } } })
-  cache:write(LEGACY_DIR .. "/scripts/" .. SCRIPT_ID .. ".lua", scriptText(generation))
+local function servedGeneration(resource)
+  return resource.steps[1].sound
 end
 
 local function overrideFs()
@@ -67,17 +50,33 @@ function T.registry_pins_the_generation_seen_before_activation()
   writeSelection(cache, GENERATION_B, "marker-b")
 
   local oldResource = assert(oldRegistry:base(SCRIPT_ID))
-  Assert.equal(oldResource.metadata.generation, GENERATION_A, "a running registry must remain pinned to generation A")
+  Assert.equal(
+    servedGeneration(oldResource),
+    "SEQ_" .. GENERATION_A,
+    "a running registry must remain pinned to generation A"
+  )
 
   local newRegistry = ScriptLoader.buildRegistry(cache, overrideFs(), nil, { lazy = true })
   local newResource = assert(newRegistry:base(SCRIPT_ID))
-  Assert.equal(newResource.metadata.generation, GENERATION_B, "a later registry observes generation B")
+  Assert.equal(servedGeneration(newResource), "SEQ_" .. GENERATION_B, "a later registry observes generation B")
   Assert.isTrue(
-    oldResource.metadata.generation ~= newResource.metadata.generation,
+    servedGeneration(oldResource) ~= servedGeneration(newResource),
     "generation activation changes the resolved resource generation"
   )
   local oldAgain = assert(oldRegistry:base(SCRIPT_ID))
-  Assert.equal(oldAgain.metadata.generation, GENERATION_A, "repeat access stays pinned to generation A")
+  Assert.equal(servedGeneration(oldAgain), "SEQ_" .. GENERATION_A, "repeat access stays pinned to generation A")
+end
+
+-- The pinned member lookup carries the indexed source identity, so a resolved
+-- generated resource keeps the identity its node ids are built from.
+function T.resolved_generated_resource_carries_its_indexed_source_identity()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  writeSelection(cache, GENERATION_A, "marker-a")
+  local registry = ScriptLoader.buildRegistry(cache, overrideFs(), nil, { lazy = true })
+  local resource = assert(registry:base(SCRIPT_ID))
+  Assert.equal(resource.metadata.generated, true)
+  Assert.equal(resource.metadata.source.member, 0)
+  Assert.equal(resource.metadata.source.scriptIndex, 0)
 end
 
 return { tests = T }

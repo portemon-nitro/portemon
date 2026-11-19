@@ -79,22 +79,29 @@ local function buildGeneration(romFs, plan, order, cache)
   )
 end
 
+-- One readable member bundle per nonempty member, the single active index, and
+-- one aggregate report: the whole published text corpus of a generation.
 local function publishedGeneration(cache, plan)
   local active = assert(cache:loadLua(ScriptCache.activeIndexPath()))
   local generation = assert(active.generation)
-  local generationIndex = assert(cache:loadLua(ScriptCache.generationIndexPath(generation)))
-  local resources = {}
-  for _, entry in ipairs(generationIndex.resources) do
-    resources[entry.id] = assert(cache:read(ScriptCache.scriptPath(generation, entry.member, entry.id)))
+  local bundles = {}
+  local members = {}
+  for _, entry in ipairs(active.resources) do
+    if not members[entry.member] then
+      members[entry.member] = true
+      bundles[entry.member] = assert(cache:read(ScriptCache.memberPath(generation, entry.member)))
+    end
   end
+  local generationFiles = {}
+  for _, path in ipairs(cache:getDirectoryItems(ScriptCache.generationDir(generation))) do
+    generationFiles[#generationFiles + 1] = path
+  end
+  table.sort(generationFiles)
   return {
     active = active,
-    marker = cache:read(ScriptCache.markerPath()),
-    generationIndex = generationIndex,
-    provenance = cache:read(ScriptCache.generationProvenancePath(generation)),
-    coverage = cache:read(ScriptCache.generationCoverageJsonPath(generation)),
-    coverageMarkdown = cache:read(ScriptCache.generationCoverageMdPath(generation)),
-    resources = resources,
+    report = cache:read(ScriptCache.coverageReportPath()),
+    generationFiles = generationFiles,
+    bundles = bundles,
     planMarker = plan.marker,
   }
 end
@@ -118,7 +125,7 @@ function T.member_completion_order_preserves_the_published_corpus(romFs, version
   Assert.deepEqual(
     publishedGeneration(firstCache, plan),
     publishedGeneration(secondCache, plan),
-    "member completion order must not change generation marker, index, coverage, or resource bytes"
+    "member completion order must not change the index, report, or member bundle bytes"
   )
 end
 

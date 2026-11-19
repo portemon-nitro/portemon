@@ -327,7 +327,6 @@ function T.check_rejects_a_foreign_generation_without_mutation()
     local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
     local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
     local MapAssetCache = require("libs.assets.src.MapAssetCache")
-    local ScriptCache = require("libs.assets.src.ScriptCache")
     local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
     local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
     local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
@@ -372,7 +371,6 @@ function T.check_rejects_a_foreign_generation_without_mutation()
         FieldActorCache.markerPath(),
         FieldCameraCache.markerPath(),
         FieldFontCache.markerPath(),
-        FieldMessageCache.markerPath(),
         FieldUiAssetCache.markerPath(),
         IntroAssetCache.markerPath(),
         StarterChoiceAssetCache.markerPath(),
@@ -384,7 +382,6 @@ function T.check_rejects_a_foreign_generation_without_mutation()
         MonCache.markerPath(),
         ItemCache.markerPath(),
         BagCache.markerPath(),
-        ScriptCache.markerPath(),
       }) do
         cache:write(path, "complete")
       end

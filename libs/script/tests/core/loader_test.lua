@@ -11,10 +11,10 @@ local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local ScriptCache = require("libs.assets.src.ScriptCache")
+local ScriptCacheFixture = require("tests.support.ScriptCacheFixture")
 local ScriptLoader = require("libs.script.src.ScriptLoader")
 local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
 local ScriptSave = require("libs.script.src.ScriptSave")
-local Sha256 = require("libs.script.src.Sha256")
 
 local T = {}
 local GENERATION = string.rep("a", 40)
@@ -27,39 +27,40 @@ local function throwsCode(code, fn)
   Assert.equal(errorObject.code, code)
 end
 
--- A fake cache carrying a two-resource script class (the index schema and
--- script file shapes match the compiled cache writer).
+-- A fake cache carrying a two-resource script class in one generated member
+-- bundle (the member is the physical unit; the index maps ids to its slots).
 local function scriptCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local resources = {
-    { id = "vanilla.hgss.scr_seq.0842.script_001", member = 0, scriptIndex = 0 },
-    { id = "new_bark.lab_sign", member = 0, scriptIndex = 1 },
-  }
-  cache:writeLua(ScriptCache.activeIndexPath(), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = GENERATION,
-    marker = MARKER,
-  })
-  cache:write(ScriptCache.markerPath(), MARKER)
-  cache:write(ScriptCache.generationMarkerPath(GENERATION), MARKER)
-  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = GENERATION,
-    marker = MARKER,
-    resources = {
-      resources[1],
-      resources[2],
+  ScriptCacheFixture.writeSingleMember(cache, GENERATION, MARKER, {
+    { id = "vanilla.hgss.scr_seq.0842.script_001", steps = "S.stop()" },
+    {
+      id = "new_bark.lab_sign",
+      steps = 'S.say { message = "msg.hgss.0543.00097" }, S.stop()',
     },
   })
-  cache:write(
-    ScriptCache.scriptPath(GENERATION, 0, resources[1].id),
-    'local S = require("gen4.script")\nreturn S.script { api = 1, id = "vanilla.hgss.scr_seq.0842.script_001", steps = { S.stop() } }\n'
-  )
-  cache:write(
-    ScriptCache.scriptPath(GENERATION, 0, resources[2].id),
-    'local S = require("gen4.script")\nreturn S.script { api = 1, id = "new_bark.lab_sign", steps = { S.say { message = "msg.hgss.0543.00097" }, S.stop() } }\n'
-  )
   return cache
+end
+
+-- Load one generated script the way a registry does: through its indexed
+-- member and source slot.
+local function loadFixture(cache, id, requireFn)
+  local entry = ScriptCacheFixture.entry(cache, id)
+  return ScriptLoader.loadGeneratedFrom(cache, GENERATION, entry.member, entry.scriptIndex, id, requireFn)
+end
+
+-- Count reads of generated member bundles through the cache backend.
+local function countMemberReads(cache)
+  local reads = 0
+  local originalRead = cache.backend.read
+  cache.backend.read = function(self, path)
+    if path:find("/generations/", 1, true) then
+      reads = reads + 1
+    end
+    return originalRead(self, path)
+  end
+  return function()
+    return reads
+  end
 end
 
 -- A read-shaped filesystem for the override tree: the manifest and the
@@ -217,46 +218,27 @@ T["buildRegistry injects require for generated files"] = function()
   Assert.isTrue(#calls > 0, "the injected require ran for the generated files")
 end
 
--- A cache whose generated script fails validation (the shape the compiled
--- cache writer can never emit, but a hand-tampered file could).
+-- A cache whose generated script fails authoring validation (the shape the
+-- compiled cache writer can never emit, but a hand-tampered bundle could).
 local function invalidScriptCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:writeLua(ScriptCache.activeIndexPath(), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = GENERATION,
-    marker = MARKER,
+  ScriptCacheFixture.writeSingleMember(cache, GENERATION, MARKER, {
+    { id = "invalid.script", steps = "S.setVar { }" },
   })
-  cache:write(ScriptCache.markerPath(), MARKER)
-  cache:write(ScriptCache.generationMarkerPath(GENERATION), MARKER)
-  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = GENERATION,
-    marker = MARKER,
-    resources = { { id = "invalid.script", member = 0, scriptIndex = 0 } },
-  })
-  cache:write(
-    ScriptCache.scriptPath(GENERATION, 0, "invalid.script"),
-    'local S = require("gen4.script")\nreturn S.script { api = 1, id = "invalid.script", steps = { S.setVar { } } }\n'
-  )
   return cache
 end
 
 -- 8. A lazy build decodes nothing until first use: no script file is read
 -- at build time, and base() reads exactly its own file.
-T["lazy build reads no script files until first use"] = function()
+T["lazy build reads no member bundle until first use"] = function()
   local cache = scriptCache()
-  local originalRead = cache.backend.read
-  local scriptReads = 0
-  cache.backend.read = function(self, path)
-    if path:find("/scripts/", 1, true) then
-      scriptReads = scriptReads + 1
-    end
-    return originalRead(self, path)
-  end
+  local memberReads = countMemberReads(cache)
   local registry = ScriptLoader.buildRegistry(cache, overrideFs({}), requireShim, { lazy = true })
-  Assert.equal(scriptReads, 0, "a lazy build must not read any script file")
+  Assert.equal(memberReads(), 0, "a lazy build must not read any member bundle")
   Assert.notNil(registry:base("new_bark.lab_sign"))
-  Assert.equal(scriptReads, 1, "base() reads exactly its own file")
+  Assert.equal(memberReads(), 1, "base() reads exactly its own member bundle")
+  Assert.notNil(registry:base("vanilla.hgss.scr_seq.0842.script_001"))
+  Assert.equal(memberReads(), 1, "a later script of the same member reuses the evaluated bundle")
 end
 
 -- 8b. The lazy trust policy: a generated script decodes on first use
@@ -317,9 +299,6 @@ T["index without resources fails before any install"] = function()
     generation = GENERATION,
     marker = MARKER,
   })
-  cache:write(ScriptCache.markerPath(), MARKER)
-  cache:write(ScriptCache.generationMarkerPath(GENERATION), MARKER)
-  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), { schema = ScriptCache.INDEX_SCHEMA })
   local registry = Registry.new()
   throwsCode("SCRIPT_LOAD_FAILED", function()
     ScriptLoader.installGenerated(registry, cache, requireShim)
@@ -335,24 +314,25 @@ T["lazy build rejects an index without resources"] = function()
     generation = GENERATION,
     marker = MARKER,
   })
-  cache:write(ScriptCache.markerPath(), MARKER)
-  cache:write(ScriptCache.generationMarkerPath(GENERATION), MARKER)
-  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), { schema = ScriptCache.INDEX_SCHEMA })
   throwsCode("SCRIPT_LOAD_FAILED", function()
     ScriptLoader.buildRegistry(cache, overrideFs({}), requireShim, { lazy = true })
   end)
 end
 
--- A generated cache whose index entries carry the published canonical hash
--- of each decoded resource. The hash stays generated-cache provenance
--- metadata: the loader installs membership from the index and decodes
--- bodies on demand.
-local HASHED_FILES = {
-  ["vanilla.hgss.scr_seq.0842.script_001"] = 'local S = require("gen4.script")\nreturn S.script { api = 1, id = "vanilla.hgss.scr_seq.0842.script_001", steps = { S.stop() } }\n',
-  ["new_bark.lab_sign"] = 'local S = require("gen4.script")\nreturn S.script { api = 1, id = "new_bark.lab_sign", steps = { S.say { message = "msg.hgss.0543.00097" }, S.stop() } }\n',
+-- A generated cache with two members: one bundle per member and the single
+-- active index over them. The bundled content stays a body the loader decodes
+-- only on demand.
+local MEMBER_FILES = {
+  [0] = {
+    { id = "vanilla.hgss.scr_seq.0842.script_001", steps = "S.stop()" },
+    { id = "new_bark.lab_sign", steps = 'S.say { message = "msg.hgss.0543.00097" }, S.stop()' },
+  },
+  [1] = {
+    { id = "second.member_script", steps = "S.stop()" },
+  },
 }
 
-local HASHED_OVERRIDE =
+local MEMBER_OVERRIDE =
   'local S = require("gen4.script")\nreturn S.script { api = 1, id = "new_bark.lab_sign", steps = { S.noop(), S.stop() } }\n'
 
 local function builtinScripts()
@@ -366,83 +346,35 @@ local function builtinScripts()
   }
 end
 
--- `order` optionally reorders the index entries to prove the registry
--- identity does not depend on index enumeration order.
-local function hashedCache(order)
+local function membersCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local ids = {}
-  for id in pairs(HASHED_FILES) do
-    ids[#ids + 1] = id
-  end
-  table.sort(ids)
-  for _, id in ipairs(ids) do
-    cache:write(ScriptCache.scriptPath(GENERATION, 0, id), HASHED_FILES[id])
-  end
-  local entries = {}
-  for index, id in ipairs(ids) do
-    local resource = assert(ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, id, requireShim))
-    entries[#entries + 1] = {
-      id = id,
-      member = 0,
-      scriptIndex = index - 1,
-      resourceHash = Sha256.hex(LuaWriter.encode(resource)),
-    }
-  end
-  if order == "reversed" then
-    local reversed = {}
-    for index = #entries, 1, -1 do
-      reversed[#reversed + 1] = entries[index]
-    end
-    entries = reversed
-  end
-  cache:writeLua(ScriptCache.activeIndexPath(), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = GENERATION,
-    marker = MARKER,
-  })
-  cache:write(ScriptCache.markerPath(), MARKER)
-  cache:write(ScriptCache.generationMarkerPath(GENERATION), MARKER)
-  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = GENERATION,
-    marker = MARKER,
-    resources = entries,
-  })
+  ScriptCacheFixture.write(cache, GENERATION, MARKER, MEMBER_FILES)
   return cache
 end
 
-local function hashedOverrideFs()
-  return overrideFs({ ["new_bark.lab_sign.lua"] = HASHED_OVERRIDE })
+local function memberOverrideFs()
+  return overrideFs({ ["new_bark.lab_sign.lua"] = MEMBER_OVERRIDE })
 end
 
--- Count generated body reads through the cache backend from here on.
+-- Count generated member-bundle reads through the cache backend from here on.
 local function countScriptReads(cache)
-  local reads = 0
-  local originalRead = cache.backend.read
-  cache.backend.read = function(self, path)
-    if path:find("/scripts/", 1, true) then
-      reads = reads + 1
-    end
-    return originalRead(self, path)
-  end
-  return function()
-    return reads
-  end
+  return countMemberReads(cache)
 end
 
--- 10. A lazy build from published index hashes reads no generated body:
--- membership comes from the index, content decodes on first access, and
--- the override layer still wins without touching the generated file.
+-- 10. A lazy build from the active index reads no member bundle: membership
+-- comes from the index, content decodes on first access, and the override
+-- layer still wins without touching the generated member.
 T["lazy build from published hashes decodes on demand"] = function()
-  local cache = hashedCache()
+  local cache = membersCache()
   local scriptReads = countScriptReads(cache)
-  local registry = ScriptLoader.buildRegistry(cache, hashedOverrideFs(), requireShim, {
+  local registry = ScriptLoader.buildRegistry(cache, memberOverrideFs(), requireShim, {
     lazy = true,
     builtins = builtinScripts(),
   })
-  Assert.equal(scriptReads(), 0, "building from published hashes must not read generated bodies")
+  Assert.equal(scriptReads(), 0, "building from the active index must not read member bundles")
   Assert.deepEqual(registry:ids(), {
     "new_bark.lab_sign",
+    "second.member_script",
     "test.builtin.ping",
     "vanilla.hgss.scr_seq.0842.script_001",
   })
@@ -452,17 +384,17 @@ T["lazy build from published hashes decodes on demand"] = function()
   local generated = assert(registry:base("vanilla.hgss.scr_seq.0842.script_001"))
   Assert.equal(generated.id, "vanilla.hgss.scr_seq.0842.script_001")
   Assert.equal(generated.steps[1].op, "stop")
-  Assert.equal(scriptReads(), 1, "first generated access reads exactly its own file")
+  Assert.equal(scriptReads(), 1, "first generated access reads exactly its own member")
 end
 
 -- 10b. Index enumeration order does not change resolved content: the same
 -- resources resolve identically from a reversed index.
 T["index order does not change resolved content"] = function()
-  local forward = ScriptLoader.buildRegistry(hashedCache(), hashedOverrideFs(), requireShim, {
+  local forward = ScriptLoader.buildRegistry(membersCache(), memberOverrideFs(), requireShim, {
     lazy = true,
     builtins = builtinScripts(),
   })
-  local reversed = ScriptLoader.buildRegistry(hashedCache("reversed"), hashedOverrideFs(), requireShim, {
+  local reversed = ScriptLoader.buildRegistry(membersCache("reversed"), memberOverrideFs(), requireShim, {
     lazy = true,
     builtins = builtinScripts(),
   })
@@ -487,12 +419,12 @@ T["saves validate without digests under either registry construction"] = functio
       tasks = {},
     }
   end
-  ScriptLoader.buildRegistry(hashedCache(), hashedOverrideFs(), requireShim, {
+  ScriptLoader.buildRegistry(membersCache(), memberOverrideFs(), requireShim, {
     lazy = true,
     builtins = builtinScripts(),
   })
   Assert.isNil(ScriptSave.validate(bucket(), {}), "a current bucket needs no digest context")
-  ScriptLoader.buildRegistry(hashedCache(), hashedOverrideFs(), requireShim, {
+  ScriptLoader.buildRegistry(membersCache(), memberOverrideFs(), requireShim, {
     builtins = builtinScripts(),
   })
   Assert.isNil(ScriptSave.validate(bucket(), {}), "a current bucket needs no digest context")
@@ -501,7 +433,7 @@ end
 -- 10d. A built registry exposes no aggregate digest surface: construction
 -- ends at install and seal, with nothing to seed or query.
 T["built registry exposes no digest surface"] = function()
-  local registry = ScriptLoader.buildRegistry(hashedCache(), hashedOverrideFs(), requireShim, {
+  local registry = ScriptLoader.buildRegistry(membersCache(), memberOverrideFs(), requireShim, {
     lazy = true,
     builtins = builtinScripts(),
   })
@@ -525,7 +457,7 @@ T["script_loader trusts published generated resources without semantic validatio
     return original(...)
   end)
   local ok, resource = pcall(function()
-    return ScriptLoader.loadGeneratedFrom(scriptCache(), GENERATION, 0, "new_bark.lab_sign", requireShim)
+    return loadFixture(scriptCache(), "new_bark.lab_sign", requireShim)
   end)
   local registry = nil
   local installErr = nil
@@ -592,14 +524,9 @@ T["empty resources array installs zero bases"] = function()
     schema = ScriptCache.INDEX_SCHEMA,
     generation = GENERATION,
     marker = MARKER,
-  })
-  cache:write(ScriptCache.markerPath(), MARKER)
-  cache:write(ScriptCache.generationMarkerPath(GENERATION), MARKER)
-  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = GENERATION,
-    marker = MARKER,
     resources = {},
+    memberAudioSequences = {},
+    memberAssetNeeds = {},
   })
   local registry = Registry.new()
   ScriptLoader.installGenerated(registry, cache, requireShim)
@@ -640,9 +567,19 @@ T["trusted override executes with standard libraries and a host-provided module"
   Assert.equal(resource.id, "trusted.demo")
   local graph = assert(Compiler.compile(resource, { allowNext = false }))
   Assert.equal(graph.scriptId, "trusted.demo")
-  local cache = scriptCache()
-  cache:write(ScriptCache.scriptPath(GENERATION, 0, "trusted.demo"), content)
-  local generated, loadErr = ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, "trusted.demo")
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  ScriptCacheFixture.writeSingleMember(
+    cache,
+    GENERATION,
+    MARKER,
+    { { id = "trusted.demo", steps = 'S.say { message = "msg.hgss.0543.00097" }, S.stop()' } },
+    { prelude = {
+      'local helper = require("trusted.helper")',
+      "local label = string.upper(helper.word) .. tostring(math.floor(2.7))",
+      'assert(label == "HELLO2")',
+    } }
+  )
+  local generated, loadErr = loadFixture(cache, "trusted.demo")
   Assert.isNil(generated, "the restricted generated load must reject host modules and standard libraries")
   Assert.notNil(loadErr)
 end

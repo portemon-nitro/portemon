@@ -14,7 +14,6 @@ local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
-local ScriptCache = require("libs.assets.src.ScriptCache")
 local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
@@ -55,7 +54,6 @@ local function publishedMarkers()
     FieldActorCache.markerPath(),
     FieldCameraCache.markerPath(),
     FieldFontCache.markerPath(),
-    FieldMessageCache.markerPath(),
     FieldUiAssetCache.markerPath(),
     IntroAssetCache.markerPath(),
     StarterChoiceAssetCache.markerPath(),
@@ -68,7 +66,6 @@ local function publishedMarkers()
     ItemCache.markerPath(),
     BagCache.markerPath(),
     PartyCache.markerPath(),
-    ScriptCache.markerPath(),
     MapAssetCache.mapDir(7) .. "/complete",
     FieldMapDataCache.markerPath(7),
     FieldMapDataCache.spawnIndexMarkerPath(),
@@ -155,10 +152,6 @@ function T.availability_ignores_producer_version_metadata()
   -- freshness is owned by the producer fingerprint, which forces a full
   -- rebuild whenever romdump/src changes.
   local cache = publishedMarkers()
-  cache:writeLua(ScriptCache.provenancePath(), {
-    schema = ScriptCache.PROVENANCE_SCHEMA,
-    dependencies = { compilerVersion = "script-compiler-v0" },
-  })
   local available, reason = DerivedCacheAudit.isAvailable(cache, IDENTITY, minimalPlans())
   Assert.isFalse(available)
   assert(reason, "a refused proof names its cause")
@@ -351,8 +344,6 @@ function T.a_corrupt_real_payload_fails_the_explicit_audit()
       marker = job.kind == target.kind and job.key == target.key and marker or "other-marker",
     })
   end
-  cache:write(FieldMessageCache.bankMarkerPath(4), marker)
-
   local realValidate = ArtifactJobs.validate
   local function withOnlyTheBankValidated()
     ArtifactJobs.validate = function(cacheFs, expectedGeneration, kind, key, sessionPlans, expectedIdentity)
@@ -388,7 +379,8 @@ function T.a_corrupt_real_payload_fails_the_explicit_audit()
   cache:writeLua(FieldMessageCache.bankPath(4), {
     schema = FieldMessageCache.SCHEMA,
     bankId = 4,
-    messages = { "first" },
+    messageCount = 1,
+    messages = { [0] = { text = "first", tokens = {} } },
   })
   local restored = audit()
   Assert.isTrue(restored, "the restored real payload makes the job usable")

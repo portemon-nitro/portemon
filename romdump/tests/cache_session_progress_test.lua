@@ -473,10 +473,11 @@ local function publishBank(env, bankId, marker)
     key = tostring(bankId),
     marker = marker,
   })
-  env.cacheFs:write(FieldMessageCache.bankMarkerPath(bankId), marker)
   env.cacheFs:writeLua(FieldMessageCache.bankPath(bankId), {
     schema = FieldMessageCache.SCHEMA,
     bankId = bankId,
+    messageCount = 0,
+    messages = {},
   })
 end
 

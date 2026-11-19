@@ -1641,7 +1641,7 @@ function T.generated_script_and_message_lua_stay_readable_in_stage_and_live_tree
   local stage = CacheFs.forArtifactStage("heartgold", "readable-lua", backend)
   local stageRoot = "staging/heartgold/readable-lua/"
 
-  local scriptPath = ScriptCache.scriptPath(generation, 149, "map-obj-0002")
+  local scriptPath = ScriptCache.memberPath(generation, 149)
   local scriptSource = "--"
     .. string.rep("script-padding;", 80)
     .. "\nlocal S = require(\"gen4.script\")\nreturn { api = S.apiVersion, id = \"map-obj-0002\", steps = { 1, 2, 3 } }\n"
