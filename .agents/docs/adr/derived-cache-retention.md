@@ -37,10 +37,12 @@ derived data belongs.
   without the file.
 - A matching completion receipt authorizes reuse of derived assets without
   revalidation, ROM access, or decompression of anything but the requested
-  payload. Superseded outputs are retired only with proof: owned roots move
-  atomically with receipt-last publication, and shared content-addressed
-  files are reclaimed only after a complete current generation proves every
-  reference while no reader or worker is active.
+  payload. Superseded outputs are retired only by replacement: owned roots
+  move atomically with receipt-last publication, and shared immutable
+  content-addressed bytes are never reclaimed by a scan. They survive until
+  an explicit cache clear or a whole-generation replacement; unreclaimed
+  growth between clears is the accepted trade-off for never scanning shared
+  content.
 
 ## Alternatives considered
 
@@ -67,9 +69,9 @@ derived data belongs.
   project: the developer removes old pre-release cache roots by hand once.
   Existing saves and mods are never deleted, and no legacy extracted tree
   is converted or retired automatically.
-- Jobs compiled before per-job shared proofs existed stay playable but
-  hold their orphaned shared files until a natural full rebuild proves
-  the references; no forced redigestion manufactures proofs.
+- No background collector, retention ledger, or per-job reference proof
+  exists: shared bytes left by interrupted or superseded builds accumulate
+  between explicit cache clears, which is accepted.
 
 ## Revisit when
 
