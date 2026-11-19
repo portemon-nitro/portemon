@@ -193,6 +193,9 @@ function T.tests.sparse_menus_keep_fixed_positions_with_holes_instead_of_compact
   Assert.equal(actionById(status, "vanilla.save").position, 5)
   Assert.equal(actionById(status, "vanilla.options").position, 6)
   Assert.equal(actionById(status, "vanilla.trainer_card").label, "PLAYER")
+  for _, action in ipairs(status.actions) do
+    Assert.isTrue(action.enabled, action.id .. " carries no unlock gate once its source gate is satisfied")
+  end
 end
 
 function T.tests.running_shoes_visibility_tracks_live_ownership_avatar_and_child_phase()
@@ -295,17 +298,15 @@ function T.tests.controller_accessible_shoes_survive_each_menu_layout()
   end
 end
 
-function T.tests.disabled_but_visible_actions_still_carry_their_labels()
-  local flags = {}
-  for _, name in ipairs(ALL_FLAGS) do
-    if name ~= "FLAG_GOT_TRAINER_CARD" then
-      flags[#flags + 1] = name
-    end
-  end
-  local status = composeStartMenu(composeSelf({ worldState = worldWith(flags) })):status()
-  local card = actionById(status, "vanilla.trainer_card")
-  Assert.equal(card.enabled, false, "an unlock-gated action stays visible but disabled")
-  Assert.equal(card.label, "PLAYER", "a disabled action still carries its label")
+-- The source draws a normal action only while its unlock gate is satisfied
+-- (FieldSystem_ShouldDrawStartMenuIcon): an unlock-gated action is not a
+-- hidden-but-present button, so a game granted no menu action composes no
+-- Start Menu at all.
+function T.tests.source_gated_actions_are_never_drawn()
+  Assert.isNil(
+    composeStartMenu(composeSelf({ worldState = worldWith({}) })),
+    "a game with no unlocked menu action has no Start Menu to open"
+  )
 end
 
 function T.tests.composition_without_the_source_label_bank_fails_instead_of_leaving_icons_unlabeled()

@@ -8,6 +8,7 @@ local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local StartMenuPolicy = require("libs.hgss.src.ui.StartMenuPolicy")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
+local StartMenuFacts = require("tests.acceptance.support.StartMenuFacts")
 
 local T = {
   metadata = {
@@ -181,14 +182,12 @@ function T.tests.runtime_disposal_in_every_application_phase_releases_once()
   end
 end
 
--- The zero-action production composition: with no unlock flag set the
--- runtime's start-menu composition returns no interactive actions, so the
--- Source-present entries appear in the menu even when no implementations are
--- registered. The menu opens with disabled entries. Confirming a disabled
--- entry is a no-op; unlocking a destination with an implementation makes it
--- enabled and interactive. This test proves the production flag -> policy ->
--- menu-with-disabled-entries composition path.
-function T.tests.zero_interactive_actions_make_the_menu_edge_a_noop_and_the_field_continues()
+-- The fresh production composition: with no unlock flag set the runtime's
+-- start-menu composition draws no action, so the menu edge is a no-op and the
+-- field keeps stepping. Unlocking the trainer card makes it the only drawn,
+-- enabled action, while Save stays a field action rather than a child
+-- application, and closing the menu restores the capturable boundary.
+function T.tests.fresh_field_draws_no_action_and_the_granted_menu_offers_production_destinations()
   local game = harness():boot({
     versionId = AcceptanceHarness.defaultVersion(),
     map = "MAP_BURNED_TOWER_1F",
@@ -205,99 +204,36 @@ function T.tests.zero_interactive_actions_make_the_menu_edge_a_noop_and_the_fiel
       Assert.equal(world:isFlagSet(flag), false, "the fresh boot must leave every menu unlock flag unset")
     end
 
-    -- With no implementations available, the menu opens with source-present
-    -- entries, all disabled. The host acquires the modal input lifetime and
-    -- the menu surface appears.
     pressMenuEdge(game)
     local status = runtime.applicationHost:status()
-    Assert.notNil(status.menu, "the menu must open with source-present entries")
-    Assert.equal(status.menu.open, true, "the menu must be in open state")
-    Assert.equal(runtime.input.uiActive, true, "opening the menu must acquire the modal input lifetime")
-
-    -- All menu entries are disabled, so confirming a selection is a no-op.
-    -- The menu stays open. Pressing the menu key again to close it.
-    runtime:pressAction()
+    Assert.equal(status.phase, "closed", "a field with no drawn action presents no Start Menu")
+    Assert.isNil(status.menu, "an unavailable Start Menu exposes no controller")
+    Assert.equal(runtime.input.uiActive, false, "an unavailable menu must not acquire the modal input lifetime")
     game:step()
-    runtime:releaseAction()
-    game:step()
-    Assert.equal(runtime.applicationHost:status().menu.open, true, "confirming a disabled entry keeps menu open")
+    Assert.equal(runtime.applicationHost:status().phase, "closed", "the field keeps stepping after the no-op edge")
 
-    -- Close the menu by pressing cancel.
-    runtime:pressCancel()
-    game:step()
-    runtime:releaseCancel()
-    advanceToPhase(game, "closed", 16)
-
-    -- Unlock the trainer card and open the menu again: now it has an enabled
-    -- action. The menu should reach the menu phase successfully.
-    game:setWorldState({ flag = FieldScriptSymbols.flagsByName.FLAG_GOT_TRAINER_CARD })
-    pressMenuEdge(game)
-    advanceToPhase(game, "menu", 16)
-    local actions = runtime.applicationHost:status().menu.actions
-    local enabledCount = 0
-    local trainerCardFound = false
-    for _, action in ipairs(actions) do
-      if action.enabled then
-        enabledCount = enabledCount + 1
-      end
-      if action.id == "vanilla.trainer_card" then
-        trainerCardFound = true
-        Assert.equal(action.enabled, true, "the trainer card action must be enabled")
-      end
-    end
-    Assert.equal(enabledCount, 1, "the unlocked trainer card must be the only enabled interactive destination")
-    Assert.equal(trainerCardFound, true, "the menu must include the trainer card action")
-    pressMenuEdge(game)
-    advanceToPhase(game, "closed", 16)
-    Assert.notNil(runtime:captureGameSave(), "closing the menu must restore the capturable boundary")
-  end, debug.traceback)
-  game:close()
-  if not ok then
-    error(err, 0)
-  end
-end
-
--- The production destination catalogue contains child applications only;
--- Save is dispatched separately as a field action.
-function T.tests.the_runtime_registers_production_destinations_only()
-  local game = harness():boot({
-    versionId = AcceptanceHarness.defaultVersion(),
-    map = "MAP_BURNED_TOWER_1F",
-    save = "fresh",
-    fieldOptions = { saveStore = false },
-  })
-  game:waitForFieldEntry()
-  local ok, err = xpcall(function()
-    local runtime = game.runtime
     Assert.equal(
       runtime.applications:has("trainer_card"),
       true,
       "the production runtime must register the trainer card itself"
     )
-    Assert.equal(runtime.applications:has("save"), false, "Save must not be a child application")
-    game:setWorldState({ flag = FieldScriptSymbols.flagsByName.FLAG_GOT_TRAINER_CARD })
+    Assert.equal(
+      runtime.applications:has("save"),
+      false,
+      "Save is dispatched as a field action, never a child application"
+    )
+    StartMenuFacts.grant(game, { "FLAG_GOT_TRAINER_CARD" })
     pressMenuEdge(game)
     advanceToPhase(game, "menu", 16)
-    local actions = game.runtime.applicationHost:status().menu.actions
-    local enabledActions = {}
-    for _, action in ipairs(actions) do
-      if action.enabled then
-        enabledActions[#enabledActions + 1] = action
-      end
+    local drawn = {}
+    for _, action in ipairs(runtime.applicationHost:status().menu.actions) do
+      drawn[action.id] = action
     end
-    local saveEnabled = false
-    for _, action in ipairs(enabledActions) do
-      saveEnabled = saveEnabled or action.id == "vanilla.save"
-    end
-    Assert.equal(saveEnabled, false, "Save must remain unavailable without its concrete handler")
-    Assert.equal(
-      enabledActions[1].id,
-      "vanilla.trainer_card",
-      "the trainer card stays the only enabled interactive action"
-    )
+    Assert.keySet(drawn, "vanilla.trainer_card", "the granted action is exactly what the menu draws")
+    Assert.isTrue(drawn["vanilla.trainer_card"].enabled, "the drawn production destination is usable")
     pressMenuEdge(game)
     advanceToPhase(game, "closed", 16)
-    Assert.equal(runtime:captureGameSave() ~= nil, true, "closing the menu must restore the capturable field boundary")
+    Assert.notNil(runtime:captureGameSave(), "closing the menu must restore the capturable boundary")
   end, debug.traceback)
   game:close()
   if not ok then
@@ -501,12 +437,14 @@ function T.tests.normal_menu_presents_only_icon_backed_visual_actions()
   end
 end
 
--- Presentation changes must not change application lifetime: one modal input
--- lifetime spans menu, child, and return; the modal never leaks ticks into
--- world simulation; the published plan owns drawing and input together,
--- with no transition coverage on either a native host or a static framed
--- host that leaves the paused world visible outside itself.
-function T.tests.menu_child_return_keeps_one_lifetime_and_refreshes_the_plan()
+-- One menu/child round trip: the launch tick layers the child over the still
+-- drawable retained menu, a resize re-resolves that retained plan while child
+-- input never reaches it, and the close publishes the refreshed menu on the
+-- same tick with its remembered selection. Across all of it the host keeps a
+-- single modal input lifetime, which never leaks ticks into world simulation,
+-- and the published plan owns drawing and input together with no transition
+-- coverage on either a native host or a static framed host.
+function T.tests.menu_child_roundtrip_keeps_one_lifetime_and_refreshes_the_plan()
   local game = bootGame()
   local ok, err = xpcall(function()
     local runtime = game.runtime
@@ -536,6 +474,7 @@ function T.tests.menu_child_return_keeps_one_lifetime_and_refreshes_the_plan()
     end
 
     ensureTouchPlacement(game, 640, 480)
+    StartMenuFacts.grantRightColumn(game)
     openMenu(game)
     Assert.equal(begun, 1, "opening the menu must begin the modal input lifetime once")
     local hostStatus = runtime.applicationHost:status()
@@ -562,8 +501,39 @@ function T.tests.menu_child_return_keeps_one_lifetime_and_refreshes_the_plan()
     game:step()
 
     activateActionById(game, "vanilla.trainer_card")
-    Assert.equal(phase(), "application", "launching a destination must layer the child on the launch tick")
+    local launched = runtime.applicationHost:status()
+    Assert.equal(launched.phase, "application", "launching a destination must layer the child on the launch tick")
+    Assert.notNil(launched.menu, "the retained menu stays published under the child")
+    Assert.notNil(launched.menu.presentation, "the retained menu stays drawable while the child owns input")
+    Assert.notNil(launched.application, "the child publishes on the launch tick")
     Assert.equal(begun, 1, "the child must not begin a second input lifetime")
+
+    -- The retained menu re-resolves against the new display measurement, and
+    -- the child's input never reaches it.
+    local beforeFrame = readablePlacement(game).frame
+    local retainedSelection = launched.menu.selectedPosition
+    runtime:resizePresentation(1280, 720, touchTopology(1280, 720))
+    game:step()
+    local resized = runtime.applicationHost:status()
+    Assert.equal(resized.phase, "application", "the child stays open across the resize")
+    Assert.notNil(resized.menu.presentation, "the retained menu must re-resolve its plan under the child")
+    local afterFrame = readablePlacement(game).frame
+    Assert.isTrue(
+      afterFrame.x ~= beforeFrame.x or afterFrame.y ~= beforeFrame.y,
+      "the retained menu plan must reflect the new display measurement"
+    )
+    edge = "retained-menu-isolation:south"
+    runtime.input:pressDirection("south", edge)
+    game:step()
+    runtime.input:releaseDirection(edge)
+    game:step()
+    Assert.equal(
+      runtime.applicationHost:status().menu.selectedPosition,
+      retainedSelection,
+      "child input must never move the retained menu"
+    )
+    Assert.equal(runtime.applicationHost:status().phase, "application", "child input must not disturb the child")
+
     game.runtime:pressCancel()
     game:step()
     game.runtime:releaseCancel()
@@ -579,7 +549,6 @@ function T.tests.menu_child_return_keeps_one_lifetime_and_refreshes_the_plan()
     stepTo("closed", 16, "the menu must close")
     Assert.equal(cleared, 1, "closing the menu must release the input lifetime once")
 
-    ensureTouchPlacement(game, 1280, 720)
     openMenu(game)
     local wide = runtime.applicationHost:status()
     local widePlan = assert(wide.menu.presentation, "the wide host must publish its presentation plan")
@@ -587,6 +556,7 @@ function T.tests.menu_child_return_keeps_one_lifetime_and_refreshes_the_plan()
     Assert.equal(#(widePlan.fadeCoverage or {}), 0, "a static frame owns no transition region")
     pressMenuEdge(game)
     stepTo("closed", 16, "the framed menu must close")
+    Assert.equal(cleared, 2, "each closed menu releases its own input lifetime exactly once")
   end, debug.traceback)
   game:close()
   if not ok then
@@ -712,104 +682,6 @@ function T.tests.trainer_card_follows_interface_policy_not_camera_zoom()
     closeCard()
     openCard()
     closeCard()
-  end, debug.traceback)
-  game:close()
-  if not ok then
-    error(err, 0)
-  end
-end
-
--- Launching a destination layers it directly over the still-open Start
--- Menu: the launch tick publishes both the retained menu and the child
--- with no fade state between them.
-function T.tests.launching_a_destination_layers_it_over_the_retained_menu_immediately()
-  local game = bootGame()
-  local ok, err = xpcall(function()
-    local runtime = game.runtime
-    ensureTouchPlacement(game, 640, 480)
-    openMenu(game)
-    activateActionById(game, "vanilla.trainer_card")
-    Assert.equal(
-      runtime.applicationHost:status().phase,
-      "application",
-      "launch must layer the child on the launch tick with no fade state"
-    )
-    local layered = runtime.applicationHost:status()
-    Assert.notNil(layered.menu, "the retained menu stays published under the child")
-    Assert.notNil(layered.menu.presentation, "the retained menu stays drawable while the child owns input")
-    Assert.notNil(layered.application, "the child publishes on the launch tick")
-  end, debug.traceback)
-  game:close()
-  if not ok then
-    error(err, 0)
-  end
-end
-
--- While the child owns input the retained menu stays live but covered: a
--- resize re-resolves its plan against the new display facts, and child
--- input never moves its selection.
-function T.tests.the_retained_menu_reflows_under_the_child_but_takes_no_child_input()
-  local game = bootGame()
-  local ok, err = xpcall(function()
-    local runtime = game.runtime
-    ensureTouchPlacement(game, 640, 480)
-    openMenu(game)
-    activateActionById(game, "vanilla.trainer_card")
-    Assert.equal(runtime.applicationHost:status().phase, "application", "the child must layer over the retained menu")
-    local beforeFrame = readablePlacement(game).frame
-    local selected = runtime.applicationHost:status().menu.selectedPosition
-    runtime:resizePresentation(1280, 720, touchTopology(1280, 720))
-    game:step()
-    local layered = runtime.applicationHost:status()
-    Assert.equal(layered.phase, "application", "the child stays open across the resize")
-    Assert.notNil(layered.menu.presentation, "the retained menu must re-resolve its plan under the child")
-    local afterFrame = readablePlacement(game).frame
-    Assert.isTrue(
-      afterFrame.x ~= beforeFrame.x or afterFrame.y ~= beforeFrame.y,
-      "the retained menu plan must reflect the new display measurement"
-    )
-    local edge = "retained-menu-isolation:south"
-    runtime.input:pressDirection("south", edge)
-    game:step()
-    runtime.input:releaseDirection(edge)
-    game:step()
-    Assert.equal(
-      runtime.applicationHost:status().menu.selectedPosition,
-      selected,
-      "child input must never move the retained menu"
-    )
-    Assert.equal(runtime.applicationHost:status().phase, "application", "child input must not disturb the child")
-  end, debug.traceback)
-  game:close()
-  if not ok then
-    error(err, 0)
-  end
-end
-
--- Closing the child publishes the refreshed menu on the same tick: no
--- blank interval, the remembered selection restored, the one modal input
--- lifetime unbroken.
-function T.tests.closing_the_child_returns_to_a_fresh_menu_on_the_same_tick()
-  local game = bootGame()
-  local ok, err = xpcall(function()
-    local runtime = game.runtime
-    ensureTouchPlacement(game, 640, 480)
-    openMenu(game)
-    activateActionById(game, "vanilla.trainer_card")
-    Assert.equal(runtime.applicationHost:status().phase, "application", "the child must layer over the retained menu")
-    game.runtime:pressCancel()
-    game:step()
-    game.runtime:releaseCancel()
-    Assert.equal(
-      runtime.applicationHost:status().phase,
-      "menu",
-      "the close must publish the refreshed menu on the close tick"
-    )
-    Assert.equal(
-      runtime.applicationHost:status().menu.selectedPosition,
-      4,
-      "the return must remember the launched selection"
-    )
   end, debug.traceback)
   game:close()
   if not ok then

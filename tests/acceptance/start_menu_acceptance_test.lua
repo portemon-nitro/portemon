@@ -5,7 +5,9 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
+local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local StartMenuFacts = require("tests.acceptance.support.StartMenuFacts")
 
 local T = {
   metadata = {
@@ -82,11 +84,11 @@ function T.tests.production_start_menu_follows_the_ordered_candidate_topology()
   withEveryVersion(function(harness, versionId)
     local options = { width = 256, height = 192, topology = topology(256, 192) }
     withGame(harness, versionId, options, function(game)
-      -- A fresh save owns no progression: only the unlock-gated trainer
-      -- card, save, and options rows are present, keeping their fixed
-      -- retail slots on the right column while the early slots stay holes.
+      -- Only the granted right-column actions are drawn; their fixed retail
+      -- slots leave the earlier positions as holes.
+      StartMenuFacts.grantRightColumn(game)
       local status = openMenu(game)
-      Assert.equal(status.selectedPosition, 4, "fresh field selection starts at the first present fixed slot")
+      Assert.equal(status.selectedPosition, 4, "field selection starts at the first drawn fixed slot")
       Assert.isNil(status.cursor, "no bouncing arrow marks focus: the selected outline is the marker")
       Assert.isNil(status.focusShake, "the freshly opened menu shakes no icon")
 
@@ -99,16 +101,11 @@ function T.tests.production_start_menu_follows_the_ordered_candidate_topology()
       Assert.isNil(byPosition[2], "the absent bag slot remains a hole")
       Assert.isNil(byPosition[3], "the absent pokegear slot remains a hole")
       Assert.notNil(byPosition[4], "the trainer card keeps its fixed slot")
-      Assert.isFalse(byPosition[4].enabled, "the trainer card is visible but disabled")
+      Assert.isTrue(byPosition[4].enabled, "the granted trainer card is usable")
       Assert.notNil(byPosition[5], "save keeps its fixed slot")
       Assert.notNil(byPosition[6], "options keeps its fixed slot")
       Assert.isNil(byPosition[7], "the special-9 bookkeeping entry is not a visual button")
       Assert.isNil(byPosition[8], "the special-10 bookkeeping entry is not a visual button")
-
-      game.runtime:pressAction()
-      game:step()
-      game.runtime:releaseAction()
-      Assert.equal(menuStatus(game).selectedPosition, 4, "a disabled visible action is not activated")
 
       Assert.equal(navigate(game, "east").selectedPosition, 4, "right stays on the first visible candidate")
       status = navigate(game, "south")
@@ -128,6 +125,31 @@ function T.tests.production_start_menu_follows_the_ordered_candidate_topology()
       game.runtime.input:pointerMove("acceptance:start-menu:pointer", hitRect.x + 1, hitRect.y + 1)
       game:step()
       Assert.equal(menuStatus(game).selectedPosition, 6, "pointer hover over a position hole changes nothing")
+    end)
+  end)
+end
+
+-- Mom's opening dialogue grants the Bag plus the three right-column actions;
+-- the later gates (Pokedex, starter, Pokegear) stay locked and are not drawn.
+function T.tests.mom_grants_exactly_the_early_menu_actions()
+  withEveryVersion(function(harness, versionId)
+    local options = { width = 256, height = 192, topology = topology(256, 192) }
+    withGame(harness, versionId, options, function(game)
+      StartMenuFacts.grant(game, OpeningLifecycle.MOM_GRANTED_FLAGS)
+      local status = openMenu(game)
+      local drawn = {}
+      for _, action in ipairs(status.actions) do
+        drawn[action.id] = action
+      end
+      Assert.keySet(
+        drawn,
+        "vanilla.bag,vanilla.options,vanilla.save,vanilla.trainer_card",
+        "the post-opening field draws exactly the Bag and the right column"
+      )
+      for id, action in pairs(drawn) do
+        Assert.isTrue(action.enabled, "the post-opening field must make " .. id .. " usable")
+      end
+      Assert.equal(drawn["vanilla.bag"].position, 2, "the Bag takes its source slot")
     end)
   end)
 end

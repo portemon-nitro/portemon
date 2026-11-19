@@ -13,7 +13,6 @@
 -- are read here and no gear implementation is faked.
 
 local Assert = require("tests.support.Assert")
-local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldMovement = require("tests.acceptance.support.FieldMovement")
 local Fixture = require("tests.support.PokegearJourneyFixture")
 
@@ -139,47 +138,6 @@ function T.tests.opening_play_holds_the_frontier_behind_the_sealed_lab_exit()
     Assert.equal(world:getVar(Fixture.VARS.VAR_SCENE_ELMS_LAB), 2, "the seal keeps the corridor gift")
     Assert.isFalse(world:isFlagSet(Fixture.FLAGS.FLAG_GOT_POKEGEAR), "the gear handoff waits past the sealed door")
     Assert.isTrue(Fixture.settleField(game), "the frontier must rest on an owned field")
-  end)
-end
-
--- A fresh arrival owns no gear and no tab: without the source flags the
--- menu offers no usable gear route, so every later tab effect proves its
--- own acquisition.
-function T.tests.fresh_arrival_offers_no_usable_gear_route()
-  Fixture.withGame(Fixture.TOWN, function(game)
-    Fixture.compositionGates(game)
-    local world = assert(game.runtime.scripts and game.runtime.scripts.worldState, "the arrival needs live world state")
-    Assert.isFalse(world:isFlagSet(Fixture.FLAGS.FLAG_GOT_POKEGEAR), "a fresh arrival owns no gear and no tab")
-    Assert.isFalse(
-      world:isFlagSet(Fixture.FLAGS.FLAG_GOT_RADIO_CARD),
-      "a fresh arrival owns no radio card and no station"
-    )
-    game.runtime:pressMenu()
-    game:step()
-    game.runtime:releaseMenu()
-    game:advanceUntil("the start menu becomes modal", function()
-      return game.runtime.applicationHost:status().phase == FieldApplicationHost.PHASES.menu
-    end, 120)
-    do
-      local status = game.runtime.applicationHost:status()
-      assert(status.menu, "the menu phase must expose its controller status")
-      local offered = false
-      local usable = false
-      for _, action in ipairs(assert(status.menu.actions, "the menu must list its actions")) do
-        if action.id == Fixture.POKEGEAR_ACTION then
-          offered = true
-          usable = usable or action.enabled == true
-        end
-      end
-      Assert.isFalse(offered and usable, "an unacquired gear must never offer a usable menu route")
-    end
-    game.runtime:pressMenu()
-    game:step()
-    game.runtime:releaseMenu()
-    game:advanceUntil("the start menu closes", function()
-      return game.runtime.applicationHost:status().phase == FieldApplicationHost.PHASES.closed
-    end, 120)
-    Assert.isTrue(Fixture.settleField(game), "the arrival must rest on an owned field")
   end)
 end
 

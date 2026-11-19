@@ -224,7 +224,7 @@ Read `tests/AGENTS.md` for the test contract and runner mechanics.
   production code, tests, comments, docs, changelogs, or commit messages.
 - Comments and normal docs state current contracts and facts, not reasoning transcripts or
   implementation history. Delete comments that merely justify accidental complexity.
-- Public documentation is intentionally minimal: `README.md` provides orientation and
+- Agents should NOT write or edit human-facing documentation (i.e. outside of `.agents`).
   routine commands, while `docs/` contains only principle-oriented public architecture.
 - Put durable rationale or policy requiring engineering judgment in `.agents/docs/`. Exact
   implementation facts, schemas, catalogs, and current state belong in code, tests, or
@@ -245,6 +245,7 @@ Read `tests/AGENTS.md` for the test contract and runner mechanics.
   under `.cache/love/portemon/{heartgold,soulsilver}`.
 - Prefer direct command syntax over shell indirection/variable substitution when invoking
   skills or repository scripts.
+- Prefer using `git grep` over plain `grep` when searching source code.
 - Use scoped single-line commit subjects: `<scope>: <description>`.
 - Do not add `Co-Authored-By` trailers or AI attribution. The human is solely responsible for
   repository commits.

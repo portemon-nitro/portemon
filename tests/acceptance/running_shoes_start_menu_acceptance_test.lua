@@ -9,6 +9,7 @@ local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local StartMenuFacts = require("tests.acceptance.support.StartMenuFacts")
 
 local T = {
   metadata = {
@@ -44,6 +45,10 @@ local function withGame(hasShoes, fn)
   })
   local ok, err = xpcall(function()
     game:waitForFieldEntry()
+    -- The toggle lives on the Start Menu, whose source draws only unlocked
+    -- actions; the right column gives this scenario a menu without replaying
+    -- the Player House opening.
+    StartMenuFacts.grantRightColumn(game)
     fn(game)
     Assert.equal(game:renderAttempts(), 0, "Running Shoes acceptance must stop before GPU rendering")
   end, debug.traceback)
@@ -86,10 +91,10 @@ local function navigate(game, direction)
 end
 
 local function focusShoes(game)
-  -- A fresh field profile exposes trainer card, save and options in their
-  -- source-backed positions 4..6. Follow that graph to its lower-right
-  -- action, then enter the separate control with the D-pad.
-  Assert.equal(menuStatus(game).selectedPosition, 4, "fresh field selection starts at the first present fixed slot")
+  -- The granted right-column actions expose trainer card, save and options
+  -- in their source-backed positions 4..6. Follow that graph to its
+  -- lower-right action, then enter the separate control with the D-pad.
+  Assert.equal(menuStatus(game).selectedPosition, 4, "the right-column selection starts at its first drawn slot")
   Assert.equal(navigate(game, "south").selectedPosition, 5, "down follows the source menu graph")
   Assert.equal(navigate(game, "south").selectedPosition, 6, "down reaches the lower-right source action")
   return navigate(game, "east")

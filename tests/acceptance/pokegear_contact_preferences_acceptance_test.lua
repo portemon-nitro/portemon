@@ -11,6 +11,7 @@ local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local PokegearCache = require("libs.assets.src.PokegearCache")
 local CacheFs = require("libs.storage.src.CacheFs")
 local PokegearSources = require("romdump.src.config.PokegearSources")
+local StartMenuFacts = require("tests.acceptance.support.StartMenuFacts")
 
 local DERIVED_ASSETS = {}
 for _, key in ipairs(Fixture.JOURNEY_ASSETS) do
@@ -90,6 +91,7 @@ function T.tests.field_phonebook_preferences_and_strip_focus_persist_through_sav
 
     game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_SAVE_BUTTON })
     game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_POKEGEAR })
+    StartMenuFacts.grantRightColumn(game)
     Fixture.saveAndReload(game)
     state = assert(game.runtime.pokegearState, "the loaded field runtime owns restored phonebook state")
     Assert.deepEqual(state:readPhone().contactOrder, { mom.key }, "the real save roundtrip retains exactly one Mom row")

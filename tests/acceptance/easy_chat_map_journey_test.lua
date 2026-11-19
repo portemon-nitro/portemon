@@ -13,6 +13,7 @@ local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local Fixture = require("tests.support.PokegearJourneyFixture")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+local StartMenuFacts = require("tests.acceptance.support.StartMenuFacts")
 
 local T = {
   metadata = {
@@ -505,6 +506,7 @@ local function prepareMapCard(game)
   state:setPreference("lastApp", "map")
   game:setWorldState({ flag = FieldScriptSymbols.flagsByName.FLAG_GOT_POKEGEAR })
   game:setWorldState({ flag = FieldScriptSymbols.flagsByName.FLAG_GOT_SAVE_BUTTON })
+  StartMenuFacts.grantRightColumn(game)
 end
 
 ---@param game table

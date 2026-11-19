@@ -1,6 +1,6 @@
 ---
 name: change-review
-description: Use for standalone/ad-hoc uncommitted work that is ready for a pre-commit cleanup, or when a human explicitly requests a change review - a fresh-context review that fixes the working diff directly, applies repository guidance and the simplification checklist, and selects the narrowest credible tests plus lint. Do not use as an automatic stage of spec-based-development; that workflow defers generic repository-quality review to the integrated branch review.
+description: Use for standalone/ad-hoc uncommitted work that is ready for a pre-commit cleanup, or when a human explicitly requests a change review - a fresh-context review that fixes the working diff directly, applies repository guidance and the simplification checklist, and selects the narrowest credible tests. Do not use as an automatic stage of spec-based-development; that workflow defers generic repository-quality review to the integrated branch review.
 ---
 
 # Change Review
@@ -21,13 +21,13 @@ Run one `general-purpose` subagent with empty context. The dispatch prompt conta
 2. The repository root/worktree as an absolute path.
 3. `Derive the uncommitted scope yourself from git. Fix directly.`
 4. `Return: files changed; net line delta; cuts/renames/structural fixes; findings deliberately
-   left and why; tests selected and why; final test/lint status.`
+   left and why; tests selected and why; final test status.`
 
 If a finalized spec governs the work, also pass `SPEC.md`, exactly the active deliverable, and
 applicable approved deviations. Do not pass implementation notes, author summaries, or failed
 approaches; fresh review is meant to remove that bias.
 
-The caller should inspect the return, run/confirm the selected verification and lint, and
+The caller should inspect the return, run/confirm the selected verification, and
 raise any unresolved behavior decision to the human.
 
 ---
@@ -69,10 +69,9 @@ owns repository-wide/subsystem conventions not overridden by the spec.
    behavior. Run full `scripts/test.sh` when the change affects broad composition, test
    discovery/runner infrastructure, shared architecture boundaries, or cannot be isolated
    credibly.
-6. **Run `scripts/lint.sh`.** Fix every finding at its source.
-7. **Re-run checks affected by lint/review edits.** Do not repeat an already-passing expensive
+6. **Re-run checks affected by review edits.** Do not repeat an already-passing expensive
    check merely because commit follows unless later edits could invalidate it.
-8. **Summarize** the concrete cleanup and evidence. State any unavailable required capability
+7. **Summarize** the concrete cleanup and evidence. State any unavailable required capability
    as blocked, not green.
 
 ## Verification selection

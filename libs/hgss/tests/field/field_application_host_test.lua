@@ -122,12 +122,14 @@ local function newWithPartialOptions(options)
 end
 
 -- The test fixture: a registry holding one destination and a menu factory
--- returning per-call controllers, plus the input. The factory body is
--- swappable so composition/rebuild failures can be injected. Controllers are
--- created lazily so each construction is observable.
+-- returning per-call controllers, plus the input and the recorded source
+-- effects. The factory body is swappable so composition/rebuild failures can
+-- be injected. Controllers are created lazily so each construction is
+-- observable.
 local function fixture()
   local registry = fakeRegistry()
   local input = fakeInput()
+  local effects = {}
   local factory = {
     fn = function(rememberedActionId)
       local controller = fakeController()
@@ -144,8 +146,11 @@ local function fixture()
     end,
     input = input --[[@as FieldInput]],
     fieldAction = function() end,
+    effect = function(sequence)
+      effects[#effects + 1] = sequence
+    end,
   })
-  return host, input, registry, factory
+  return host, input, registry, factory, effects
 end
 
 local function openMenu(host, input, registry)
@@ -441,6 +446,29 @@ function T.tests.menu_factory_returning_nil_is_a_noop_open()
   Assert.equal(host:error(), nil, "a no-op open must not record a failure")
   Assert.equal(input.beginUiTicks[1], nil, "a no-op open must not begin the modal input lifetime")
   Assert.equal(#(registry.menuControllers or {}), 0, "a no-op open must not construct a controller")
+end
+
+-- The source open effect belongs to an actual open: an unavailable menu and a
+-- failed composition open nothing and stay silent.
+function T.tests.open_effect_plays_only_for_an_open_that_actually_opens()
+  local host, _, _, factory, effects = fixture()
+  factory.fn = function()
+    return nil
+  end
+  Assert.equal(host:requestOpen(10), false, "an unavailable menu opens nothing")
+  Assert.deepEqual(effects, {}, "an unavailable menu must play no open effect")
+
+  local failingHost, _, _, failingFactory, failingEffects = fixture()
+  failingFactory.fn = function()
+    error("injected menu composition failure")
+  end
+  Assert.equal(failingHost:requestOpen(10), true, "a failed composition consumes the tick")
+  Assert.equal(failingHost:status().phase, "failed")
+  Assert.deepEqual(failingEffects, {}, "a failed composition must play no open effect")
+
+  local openedHost, openedInput, openedRegistry, _, openedEffects = fixture()
+  openMenu(openedHost, openedInput, openedRegistry)
+  Assert.deepEqual(openedEffects, { "SEQ_SE_DP_WIN_OPEN" }, "a real open plays the open effect exactly once")
 end
 
 function T.tests.menu_rebuild_failure_on_return_is_retained_after_the_destination_disposal()

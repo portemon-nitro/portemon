@@ -169,7 +169,7 @@ function T.menu_visibility_follows_the_owner_not_the_story_flag()
 
   local locked = openOwner()
   local flagged = FieldMenuCompositionCoordinator.new(menuSelf({
-    worldState = worldWith({ "FLAG_GOT_POKEDEX" }),
+    worldState = worldWith({ "FLAG_GOT_POKEDEX", "FLAG_GOT_TRAINER_CARD" }),
     dexKnowledge = locked,
   })):composeStartMenu()
   Assert.isFalse(

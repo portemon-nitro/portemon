@@ -7,6 +7,7 @@ local AcceptanceScripts = require("tests.acceptance.support.AcceptanceScripts")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+local StartMenuFacts = require("tests.acceptance.support.StartMenuFacts")
 
 local T = {
   metadata = {
@@ -189,6 +190,9 @@ function T.tests.field_script_blocks_on_custom_mart_until_purchase_and_close()
     Assert.equal(game.runtime.bagService:quantity("POTION"), 1, "closing the child does not replay the grant")
     Assert.notNil(game.runtime:captureGameSave(), "save capture resumes after the child closes")
 
+    -- The Start Menu draws only unlocked actions; the right column gives the
+    -- field input check below a menu to reach.
+    StartMenuFacts.grantRightColumn(game)
     pressMenu(game)
     Assert.equal(
       game.runtime.applicationHost:status().phase,

@@ -334,10 +334,6 @@ function FieldMenuCompositionCoordinator:composeStartMenu(rememberedActionId)
     optionsUnlocked = world:isFlagSet(flags.FLAG_GOT_OPTIONS_BUTTON),
   })
 
-  if #sourceEntries == 0 then
-    return nil
-  end
-
   local function playMenuSequence(sequence)
     if runtime.audio then
       runtime.audio:play(sequence)
@@ -350,17 +346,19 @@ function FieldMenuCompositionCoordinator:composeStartMenu(rememberedActionId)
   -- never offer a usable route into the party screen, even past the
   -- starter progression gate.
   --
-  -- The normal visual composition admits exactly the icon-backed entries:
-  -- the manifest's action-to-icon map for the normal context intersects the
-  -- source-present policy list. The cancel sentinel and the bookkeeping
-  -- specials carry no icon slot, so they stay source-policy facts but are
-  -- not visual buttons. Icon-backed entries keep their source and
-  -- implementation enabled state (a disabled visual entry renders and
-  -- confirms as a no-op). Labels resolve per icon-table row: the
-  -- player-name row carries the live player name, never baked text; static
-  -- rows resolve their label-bank message through the pinned source label
-  -- bank (a missing bank or message id is a composition failure, never an
-  -- unlabeled icon).
+  -- The normal visual composition admits exactly the source-drawn,
+  -- icon-backed entries: the manifest's action-to-icon map for the normal
+  -- context intersects the source-enabled policy list
+  -- (FieldSystem_ShouldDrawStartMenuIcon, start_menu.c:535-556). An action
+  -- whose unlock gate is still closed is not a hidden-but-present button;
+  -- it is absent, and a menu with no drawn action is unavailable. The
+  -- cancel sentinel and the bookkeeping specials carry no icon slot, so
+  -- they stay source-policy facts but are not visual buttons. A drawn entry
+  -- without an implementation renders and confirms as a disabled no-op.
+  -- Labels resolve per icon-table row: the player-name row carries the live
+  -- player name, never baked text; static rows resolve their label-bank
+  -- message through the pinned source label bank (a missing bank or message
+  -- id is a composition failure, never an unlabeled icon).
   local startMenuSection =
     assert(runtime.uiManifest.startMenu, "the field UI manifest must carry the start menu section")
   local actionIcons = assert(startMenuSection.actionIcons, "the field UI manifest must carry the start menu action map")
@@ -371,9 +369,9 @@ function FieldMenuCompositionCoordinator:composeStartMenu(rememberedActionId)
   local entries = {}
   for _, source in ipairs(sourceEntries) do
     local icon = actionIcons[source.id]
-    if icon ~= nil then
+    if icon ~= nil and source.sourceEnabled then
       local implemented = implementationAvailable(runtime, source)
-      local enabled = source.sourceEnabled and implemented
+      local enabled = implemented
       if enabled and source.id == "vanilla.pokemon" then
         enabled = runtime.monService:partyCount() > 0
       end

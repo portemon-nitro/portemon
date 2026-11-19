@@ -197,9 +197,6 @@ end
 ---@param rememberedActionId string?
 ---@return boolean consumed
 function FieldApplicationHost:_openMenu(tick, rememberedActionId)
-  if self._effect then
-    self._effect("SEQ_SE_DP_WIN_OPEN")
-  end
   local ok, controller = pcall(self._menuFactory, rememberedActionId)
   if not ok then
     self:_fail(controller)
@@ -207,6 +204,11 @@ function FieldApplicationHost:_openMenu(tick, rememberedActionId)
   end
   if controller == nil then
     return false
+  end
+  -- The source open effect belongs to an actual open: an unavailable menu
+  -- and a failed composition are silent.
+  if self._effect then
+    self._effect("SEQ_SE_DP_WIN_OPEN")
   end
   self._menuController = controller
   self._rememberedActionId = rememberedActionId

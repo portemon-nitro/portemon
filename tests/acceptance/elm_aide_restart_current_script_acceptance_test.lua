@@ -13,6 +13,7 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
+local StartMenuFacts = require("tests.acceptance.support.StartMenuFacts")
 
 local T = {
   metadata = {
@@ -309,10 +310,12 @@ function T.tests.elm_aide_obtain_item_hands_back_exactly_once()
     Assert.equal(world:getVar(VAR_SCENE_ELMS_LAB), 2, "the parent tail must set the lab scene exactly once")
 
     -- Cleanup: no modal or lock remains, and one normal Start Menu input
-    -- opens the menu, so no field-control/menu ownership leaked.
+    -- opens the menu, so no field-control/menu ownership leaked. The menu
+    -- needs one source-drawn action: grant it as a post-opening fact.
     local closing = game:snapshot()
     Assert.isFalse(closing.dialogue.modal, "no dialogue may remain modal after the aide script completes")
     Assert.isFalse(closing.fieldLocked, "the field must be free for ordinary input after the aide script completes")
+    StartMenuFacts.grantRightColumn(game)
     game.runtime:pressMenu()
     game:step()
     game.runtime:releaseMenu()

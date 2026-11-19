@@ -159,19 +159,18 @@ function T.tests.start_menu_offers_party_once_owned_and_returns_to_field()
   withGame(function(game)
     local before = game:snapshot()
 
+    -- The starter unlock draws the party action; the empty party keeps it
+    -- disabled until the first mon is owned.
+    grantStarter(game)
     openStartMenu(game)
-    local emptyAction = actionById(menuStatus(game), POKEMON_ACTION)
-    Assert.isTrue(
-      emptyAction == nil or emptyAction.enabled == false,
-      "an empty party must not offer a usable party route"
-    )
+    local emptyAction = assert(actionById(menuStatus(game), POKEMON_ACTION), "the starter unlock draws the party action")
+    Assert.isFalse(emptyAction.enabled, "an empty party must not offer a usable party route")
     closeStartMenu(game)
     local closed = game:snapshot()
     Assert.equal(closed.mapId, before.mapId, "closing the menu must keep the same map")
     Assert.equal(closed.player.fieldX, before.player.fieldX, "closing the menu must keep the player position")
     Assert.equal(closed.player.fieldZ, before.player.fieldZ, "closing the menu must keep the player position")
 
-    grantStarter(game)
     local service = assert(game.runtime.monService, "field runtime owns the live mon service")
     Assert.isTrue(service:giveMon({ species = "CHIKORITA", level = 5 }), "setup gift must enter the party")
     openStartMenu(game)
