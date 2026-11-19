@@ -4,6 +4,7 @@ local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local Matrix4 = require("libs.math.src.Matrix4")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local MonCache = require("libs.assets.src.MonCache")
 local FixedPoint = require("libs.math.src.FixedPoint")
 
@@ -146,8 +147,8 @@ end
 ---@field bounds table<string, unknown>
 
 ---@class StarterChoicePrepStep
----@field kind "mesh"|"image"|"models"|"finish"
----@field path string?
+---@field kind "mesh"|"g4gx"|"image"|"g4tx"|"models"|"finish"
+---@field path string|ModelAsset.GeometryReference|ModelAsset.TextureReference?
 ---@field wrapX string?
 ---@field wrapY string?
 ---@field width number?
@@ -162,13 +163,42 @@ end
 ---@field gxRenderer table<string, unknown> borrowed field graphics backend for the renderer wrapper
 ---@field derivedAssets table<string, function>? borrowed semantic host gating actual portrait pages
 
+-- One generated reference as the identity this preparation keys its realized
+-- entries by: a plain path, or a native bank selector expanded to the same
+-- stable string the pool uses.
+---@param reference string|ModelAsset.GeometryReference|ModelAsset.TextureReference
+---@return string
+local function referenceKey(reference)
+  if type(reference) == "string" then
+    return reference
+  end
+  if reference.drawIndex ~= nil then
+    return string.format("%s#draw%d", reference.file, reference.drawIndex)
+  end
+  return string.format("%s#%s#%s", reference.file, tostring(reference.textureName), tostring(reference.paletteName))
+end
+
+-- The preparation kind one reference needs: a plain procedural mesh or PNG, or
+-- the native bank selector that replaced the per-draw mesh / per-pair image.
+---@param reference string|ModelAsset.GeometryReference
+---@return string
+local function meshKind(reference)
+  return type(reference) == "table" and "g4gx" or "mesh"
+end
+
+---@param reference string|ModelAsset.TextureReference
+---@return string
+local function imageKind(reference)
+  return type(reference) == "table" and "g4tx" or "image"
+end
+
 -- One realized entry source over this preparation owner's entry tables.
 ---@param preparation StarterChoicePreparation
 ---@return StarterChoiceAcquisition
 local function realizedSource(preparation)
   local source = {}
   function source:meshFor(path)
-    local entry = preparation._resources.meshEntries[path]
+    local entry = preparation._resources.meshEntries[referenceKey(path)]
     assert(entry ~= nil, "starter model geometry is not prepared: " .. tostring(path))
     return entry
   end
@@ -176,7 +206,7 @@ local function realizedSource(preparation)
     if path == nil then
       return nil
     end
-    local key = path .. "|" .. wrapX .. "|" .. wrapY
+    local key = referenceKey(path) .. "|" .. wrapX .. "|" .. wrapY
     -- The stable sampling handle when the session owner backs this
     -- identity (built once beside its lease, shared by every material
     -- so per-frame resolution allocates nothing); the bare entry from
@@ -239,6 +269,22 @@ local function isImagePayload(payload)
   return type(payload) == "table" and payload.imageData ~= nil
 end
 
+-- A native texture bank's worker reply is the classified upload record of one
+-- named texture/palette pair (an indexed or reordered upload), not a decoded
+-- ImageData: the pair is compact texels, so the shared image owner uploads it
+-- from that description.
+---@param payload table<string, unknown>?
+---@return boolean
+local function isTextureBankPayload(payload)
+  return type(payload) == "table" and payload.kind ~= nil and payload.width ~= nil and payload.height ~= nil
+end
+
+-- One mesh the manifest needs, in first-use order, with the identity its
+-- realized pool entry is keyed by.
+---@class StarterChoiceMeshRequest
+---@field reference string|ModelAsset.GeometryReference
+---@field key string
+
 -- Every concrete mesh path and image (path plus sampler) the manifest
 -- needs, in first-use order with shared resources listed once. Mirrors the
 -- acquisition the first-draw path performed, so nothing drawable is missed.
@@ -246,25 +292,40 @@ end
 -- descriptors: the whole portrait atlas is never requested.
 ---@param manifest table<string, unknown>
 ---@param portraits table[] per-candidate portrait descriptors ({ selector: string, pageId: integer })
----@return string[] meshPaths, StarterChoicePrepStep[] imageSteps
+---@return StarterChoiceMeshRequest[] meshPaths, StarterChoicePrepStep[] imageSteps
 local function collectResources(manifest, portraits)
   local models = assert(manifest.models, "starter manifest is missing its models")
   local meshPaths, seenMesh = {}, {}
-  local function addMesh(path)
-    assert(type(path) == "string", "starter model batch references no geometry path")
-    if not seenMesh[path] then
-      seenMesh[path] = true
-      meshPaths[#meshPaths + 1] = path
+  local function addMesh(reference)
+    assert(
+      type(reference) == "string" or ModelAsset.isGeometrySelector(reference),
+      "starter model batch references no geometry"
+    )
+    local key = referenceKey(reference)
+    if not seenMesh[key] then
+      seenMesh[key] = true
+      meshPaths[#meshPaths + 1] = { reference = reference, key = key }
     end
   end
   local imageSteps, seenImage = {}, {}
-  local function addImage(path, wrapX, wrapY, width, height, pageId)
-    assert(type(path) == "string", "starter image reference carries no path")
-    local key = path .. "|" .. wrapX .. "|" .. wrapY
+  local function addImage(reference, wrapX, wrapY, width, height, pageId)
+    assert(
+      type(reference) == "string" or ModelAsset.isTextureSelector(reference),
+      "starter image reference carries no path"
+    )
+    local key = referenceKey(reference) .. "|" .. wrapX .. "|" .. wrapY
     if not seenImage[key] then
       seenImage[key] = true
-      imageSteps[#imageSteps + 1] =
-        { kind = "image", path = path, wrapX = wrapX, wrapY = wrapY, width = width, height = height, pageId = pageId }
+      imageSteps[#imageSteps + 1] = {
+        kind = imageKind(reference),
+        path = reference,
+        key = referenceKey(reference),
+        wrapX = wrapX,
+        wrapY = wrapY,
+        width = width,
+        height = height,
+        pageId = pageId,
+      }
     end
   end
   local function addMaterialImages(materials)
@@ -468,8 +529,8 @@ function StarterChoicePreparation:advance(context, maxWorkUnits)
     self.prepareQueue = context.assetPreparation
     self.pageHost = context.derivedAssets
     local plan = {}
-    for _, path in ipairs(meshPaths) do
-      plan[#plan + 1] = { kind = "mesh", path = path }
+    for _, mesh in ipairs(meshPaths) do
+      plan[#plan + 1] = { kind = meshKind(mesh.reference), path = mesh.reference, key = mesh.key }
     end
     for _, step in ipairs(imageSteps) do
       plan[#plan + 1] = step
@@ -518,7 +579,10 @@ function StarterChoicePreparation:_submitWindow()
     if outstanding >= PREPARATION_WINDOW then
       return
     end
-    if (step.kind == "mesh" or step.kind == "image") and not step.requested then
+    if
+      (step.kind == "mesh" or step.kind == "image" or step.kind == "g4gx" or step.kind == "g4tx")
+      and not step.requested
+    then
       if step.pageId ~= nil and self.pageHost ~= nil and not self.pageReady[step.pageId] then
         -- The page is not current yet: later ready steps may still fill the
         -- window, and this step submits once its receipt arrives.
@@ -603,12 +667,12 @@ end
 -- there is nothing to borrow and the function answers nil; texture
 -- acquisition itself then fails loudly instead of falling back to raw
 -- draws. Idempotent per path and sampler.
----@param path string generated image path behind the borrow
+---@param path string|ModelAsset.TextureReference generated image reference behind the borrow
 ---@param wrapX string
 ---@param wrapY string
 ---@return table<string, unknown>? session-pool lease behind the identity
 local function borrowImageLease(self, path, wrapX, wrapY)
-  local key = path .. "|" .. wrapX .. "|" .. wrapY
+  local key = referenceKey(path) .. "|" .. wrapX .. "|" .. wrapY
   local known = self._resources.imageLeases[key]
   if known ~= nil then
     return known
@@ -652,21 +716,28 @@ end
 function StarterChoicePreparation:_realizePrepared(step, payload)
   local pool = assert(self.pool, "starter preparation owns no pool")
   local path = assert(step.path, "starter preparation step carries no path")
-  if step.kind == "mesh" then
+  if step.kind == "mesh" or step.kind == "g4gx" then
+    ---@cast path string|ModelAsset.GeometryReference
     if not isMeshPayload(payload) then
       error("starter preparation produced no mesh upload buffers for " .. tostring(path), 0)
     end
-    self._resources.meshEntries[path] = pool:meshFromPrepared(path, payload --[[@as SceneMesh.PreparedMesh]])
+    self._resources.meshEntries[referenceKey(path)] =
+      pool:meshFromPrepared(path, payload --[[@as SceneMesh.PreparedMesh]])
     return
   end
-  assert(step.kind == "image", "starter preparation step carries an unknown kind " .. tostring(step.kind))
+  assert(
+    step.kind == "image" or step.kind == "g4tx",
+    "starter preparation step carries an unknown kind " .. tostring(step.kind)
+  )
   local wrapX, wrapY =
     assert(step.wrapX, "starter image step carries no wrap"), assert(step.wrapY, "starter image step carries no wrap")
-  if not isImagePayload(payload) then
+  ---@cast path string|ModelAsset.TextureReference
+  local uploadable = step.kind == "g4tx" and isTextureBankPayload(payload) or isImagePayload(payload)
+  if not uploadable then
     error("starter preparation produced no image upload buffers for " .. tostring(path), 0)
   end
-  self._resources.imageEntries[path .. "|" .. wrapX .. "|" .. wrapY] =
-    pool:imageFromPrepared(path, wrapX, wrapY, payload --[[@as { imageData: unknown }]])
+  self._resources.imageEntries[referenceKey(path) .. "|" .. wrapX .. "|" .. wrapY] =
+    pool:imageFromPrepared(path, wrapX, wrapY, payload)
   borrowImageLease(self, path, wrapX, wrapY)
 end
 
@@ -676,14 +747,19 @@ end
 function StarterChoicePreparation:_realizeSynchronous(step)
   local pool = assert(self.pool, "starter preparation owns no pool")
   local path = assert(step.path, "starter preparation step carries no path")
-  if step.kind == "mesh" then
-    self._resources.meshEntries[path] = pool:meshFor(path)
+  if step.kind == "mesh" or step.kind == "g4gx" then
+    ---@cast path string|ModelAsset.GeometryReference
+    self._resources.meshEntries[referenceKey(path)] = pool:meshFor(path)
     return
   end
-  assert(step.kind == "image", "starter preparation step carries an unknown kind " .. tostring(step.kind))
+  assert(
+    step.kind == "image" or step.kind == "g4tx",
+    "starter preparation step carries an unknown kind " .. tostring(step.kind)
+  )
   local wrapX, wrapY =
     assert(step.wrapX, "starter image step carries no wrap"), assert(step.wrapY, "starter image step carries no wrap")
-  self._resources.imageEntries[path .. "|" .. wrapX .. "|" .. wrapY] = pool:imageFor(path, wrapX, wrapY)
+  ---@cast path string|ModelAsset.TextureReference
+  self._resources.imageEntries[referenceKey(path) .. "|" .. wrapX .. "|" .. wrapY] = pool:imageFor(path, wrapX, wrapY)
   borrowImageLease(self, path, wrapX, wrapY)
 end
 

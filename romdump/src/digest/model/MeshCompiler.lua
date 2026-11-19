@@ -51,7 +51,7 @@ local UNSUPPORTED_DL_OPCODES = {
 -- Resolve a raw material to its effective field state plus the geometry-engine
 -- color seed a shape inherits when this material is (re)applied. Every field
 -- material sets vertex color, so the seed always resolves a color source.
-local function materialState(rawMaterial)
+function MeshCompiler.materialState(rawMaterial)
   local resolved = HgssFieldMaterial.resolve(rawMaterial)
   local seed
   if rawMaterial.setVertexColor then
@@ -71,7 +71,7 @@ end
 
 -- Reject any in-DL command the compiler cannot honor, and any in-DL POLYGON_ATTR
 -- override (the material owns polygon state for field models).
-local function assertSupportedShape(geom, context)
+function MeshCompiler.assertSupportedShape(geom, context)
   for opcode, info in pairs(UNSUPPORTED_DL_OPCODES) do
     if geom.opcodeCounts[opcode] then
       Errors.raise(info.code, "shape display list issues unsupported " .. info.name .. " command", context)
@@ -92,7 +92,7 @@ end
 -- contract cannot express; no billboard shape in the target world does.
 local MTX_RESTORE = 0x14
 
-local function assertWholeShapeBillboard(geom, context)
+function MeshCompiler.assertWholeShapeBillboard(geom, context)
   if geom.opcodeCounts[MTX_RESTORE] then
     Errors.raise(
       "MAP_COMPILE_BILLBOARD_MATRIX_RESTORE_UNSUPPORTED",
@@ -146,7 +146,7 @@ local function decodeDraws(model, draws, dynamic, arena, gxScratch)
 
   local stateByMaterial = {}
   for _, mat in ipairs(model.materials) do
-    stateByMaterial[mat.index] = materialState(mat)
+    stateByMaterial[mat.index] = MeshCompiler.materialState(mat)
   end
 
   local decoded = {}
@@ -189,9 +189,9 @@ local function decodeDraws(model, draws, dynamic, arena, gxScratch)
     if not geom then
       error(err)
     end
-    assertSupportedShape(geom, context)
+    MeshCompiler.assertSupportedShape(geom, context)
     if draw.transformMode == PoseContract.BILLBOARD then
-      assertWholeShapeBillboard(geom, context)
+      MeshCompiler.assertWholeShapeBillboard(geom, context)
     end
     carriedState = geom.finalState
 

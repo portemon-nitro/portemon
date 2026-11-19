@@ -1,13 +1,43 @@
 -- Minimal self-consistent compiled-map bundle for exercising MapCacheWriter and
--- MapAssetCache without the real ROM pipeline: one mesh batch, one 1x1 texture,
--- one model descriptor (the explicit static schema/kind), and a scene that
--- references all three by their cache paths, plus a normalized collision grid
--- and a marker.
+-- MapAssetCache without the real ROM pipeline: one native model bank with one
+-- draw, one native texture bank with one texture, one model descriptor (the
+-- explicit static schema/kind), and a scene that selects from both banks, plus
+-- a normalized collision grid and a marker.
 
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
-local PngWriter = require("tests.support.PngEncoder")
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
+local NativeGxFormat = require("libs.assets.src.model.NativeGxFormat")
+local NativeTextureBank = require("libs.assets.src.model.NativeTextureBank")
 
 local BundleFixture = {}
+
+local function u32(value)
+  return string.char(
+    value % 256,
+    math.floor(value / 256) % 256,
+    math.floor(value / 65536) % 256,
+    math.floor(value / 16777216) % 256
+  )
+end
+
+-- One VTX_16 parameter word pair for model-unit { x, y, z } at 1.3.12.
+local function vtx16(x, y, z)
+  local function fx(value)
+    return math.floor(value * 4096) % 0x10000
+  end
+  return u32(fx(x) + fx(y) * 0x10000) .. u32(fx(z))
+end
+
+-- BEGIN_VTXS(triangles), three positioned vertices, END_VTXS, packed in the
+-- DS geometry FIFO's four-opcode groups with their parameters following.
+local function triangleCommands(vertices)
+  return string.char(0x40, 0x23, 0x23, 0x23)
+    .. u32(0)
+    .. vtx16(vertices[1][1], vertices[1][2], vertices[1][3])
+    .. vtx16(vertices[2][1], vertices[2][2], vertices[2][3])
+    .. vtx16(vertices[3][1], vertices[3][2], vertices[3][3])
+    .. string.char(0x41, 0, 0, 0)
+end
 
 local function collisionGrid(width, height)
   local cells = {}
@@ -23,35 +53,19 @@ function BundleFixture.minimal(mapId)
   local texSha = "tex00000000000000000000000000000000000bb"
   local modelKey = "indoor:1:abc123abc123"
 
-  local function v(x, z)
-    return {
-      x = x,
-      y = 0,
-      z = z,
-      u = 0,
-      v = 0,
-      nx = 0,
-      ny = 1,
-      nz = 0,
-      r = 255,
-      g = 255,
-      b = 255,
-      a = 255,
-      colorSource = 0,
-    }
-  end
-
   local scene = {
     schema = MapAssetCache.SCENE_SCHEMA,
     mapId = mapId,
-    mapBatches = { { geometry = MapAssetCache.geometryPath(meshSha), material = 0, node = 0 } },
+    mapBatches = {
+      { geometry = { file = MapAssetCache.modelBankPath(meshSha), drawIndex = 0 }, material = 0, node = 0 },
+    },
     materials = {
       {
         id = 0,
         name = "m0",
-        texture = MapAssetCache.texturePath(texSha),
-        texWidth = 1,
-        texHeight = 1,
+        texture = { file = MapAssetCache.textureBankPath(texSha), textureName = "t0" },
+        texWidth = 8,
+        texHeight = 8,
         texMtxMode = 0,
       },
     },
@@ -76,13 +90,37 @@ function BundleFixture.minimal(mapId)
       strips = {},
       accessEntries = {},
     },
-    meshes = { [meshSha] = { vertices = { v(0, 0), v(1, 0), v(0, 1) }, indices = { 0, 1, 2 } } },
+    meshes = {
+      [meshSha] = NativeGxFormat.encode({
+        draws = {
+          {
+            commands = triangleCommands({ { 0, 0, 0 }, { 1, 0, 0 }, { 0, 0, 1 } }),
+            nodeIndex = 0,
+            materialIndex = 0,
+            shapeIndex = 0,
+            transformMode = "static",
+          },
+        },
+      }),
+    },
     textures = {
-      [texSha] = { data = PngWriter.encode(1, 1, string.char(10, 20, 30, 255)), width = 1, height = 1 },
+      [texSha] = NativeTextureBank.encode({
+        textures = {
+          {
+            name = "t0",
+            formatRaw = 7,
+            width = 8,
+            height = 8,
+            color0Transparent = false,
+            texels = string.rep(string.char(0x1F, 0x00), 64),
+          },
+        },
+        palettes = {},
+      }),
     },
     models = {
       [modelKey] = {
-        schema = "g4-model-v6",
+        schema = ModelAsset.SCHEMA,
         key = modelKey,
         memberId = 1,
         kind = "static",

@@ -709,7 +709,6 @@ end
 local function publishItemFamily(cache)
   local Writer = require("romdump.src.digest.items.ItemCacheWriter")
   local Hashing = require("romdump.src.digest.Hashing")
-  local PngWriter = require("tests.support.PngEncoder")
   local ItemFixture = require("libs.items.tests.item_fixture")
   local marker = ItemCache.marker("test-rom", "test-dep")
   local pixels = string.rep("\0", 32 * 32 * 4)
@@ -724,7 +723,7 @@ local function publishItemFamily(cache)
       schema = "g4-item-index-v1",
       version = { id = "heartgold", language = "en" },
       catalogHash = Hashing.hashLua(catalog),
-      iconHash = Hashing.sha1hex(PngWriter.encode(32, 32, pixels)),
+      iconHash = Hashing.sha1hex(pixels),
       catalog = ItemCache.catalogPath(),
       icons = ItemCache.iconImagePath(),
       iconManifest = ItemCache.iconManifestPath(),
@@ -755,7 +754,7 @@ local function publishEmoteFamily(cache)
     kind = "static",
     batches = {
       {
-        geometry = EmoteCache.geometryPath("mesh-key"),
+        geometry = { file = EmoteCache.geometryPath("mesh-key"), drawIndex = 0 },
         cullMode = "back",
         polygonMode = "modulation",
         polygonId = 0,
@@ -770,7 +769,7 @@ local function publishEmoteFamily(cache)
       {
         id = 0,
         name = "exclamation",
-        texture = EmoteCache.texturePath("texture-key"),
+        texture = { file = EmoteCache.texturePath("texture-key"), textureName = "exclamation" },
         textureFormat = 3,
         wrap = { x = "clamp", y = "clamp" },
         flip = { x = false, y = false },
@@ -778,24 +777,14 @@ local function publishEmoteFamily(cache)
       },
     },
   }
-  local PngWriter = require("tests.support.PngEncoder")
   local ok, err = pcall(Writer.write, cache, {
     marker = marker,
     model = {
       schema = "g4-field-emote-v3",
       model = modelAsset,
     },
-    meshes = {
-      ["mesh-key"] = {
-        getSize = function()
-          return 12
-        end,
-        getString = function()
-          return "encoded-mesh"
-        end,
-      },
-    },
-    textures = { ["texture-key"] = { width = 1, height = 1, data = PngWriter.encode(1, 1, "rgba") } },
+    meshes = { ["mesh-key"] = "G4GX-bank-bytes" },
+    textures = { ["texture-key"] = "G4TX-bank-bytes" },
   })
   Assert.isTrue(ok, tostring(err))
   Assert.isTrue(EmoteCache.isReady(cache, marker), "the synthetic emote class must read ready")
@@ -816,8 +805,6 @@ local function publishEffectFamily(cache)
   local EffectCache = require("libs.assets.src.field.FieldEffectAssetCache")
   local Writer = require("romdump.src.digest.field.FieldEntranceIndicatorCacheWriter")
   local ModelAsset = require("libs.assets.src.model.ModelAsset")
-  local MeshWriter = require("libs.assets.src.model.MeshWriter")
-  local PngWriter = require("tests.support.PngEncoder")
   local Contract = require("libs.assets.src.DerivedAssetContract")
   local function staticModel(key)
     return {
@@ -826,7 +813,7 @@ local function publishEffectFamily(cache)
       kind = "static",
       batches = {
         {
-          geometry = EffectCache.geometryPath("mesh-key"),
+          geometry = { file = EffectCache.geometryPath("mesh-key"), drawIndex = 0 },
           cullMode = "back",
           polygonMode = "modulation",
           polygonId = 0,
@@ -841,7 +828,7 @@ local function publishEffectFamily(cache)
         {
           id = 0,
           name = "effect",
-          texture = EffectCache.texturePath("texture-key"),
+          texture = { file = EffectCache.texturePath("texture-key"), textureName = "effect" },
           textureFormat = 3,
           wrap = { x = "clamp", y = "clamp" },
           flip = { x = false, y = false },
@@ -1125,8 +1112,8 @@ local function publishEffectFamily(cache)
       },
       celebi_time_travel = { model = celebiTimeTravelModel() },
     },
-    meshes = { ["mesh-key"] = {} },
-    textures = { ["texture-key"] = { width = 1, height = 1, data = PngWriter.encode(1, 1, "rgba") } },
+    meshes = { ["mesh-key"] = "G4GX-bank-bytes" },
+    textures = { ["texture-key"] = "G4TX-bank-bytes" },
   }
   for kind, definition in pairs(hoOhAppearance()) do
     bundle.effects[kind] = definition
@@ -1172,12 +1159,7 @@ local function publishEffectFamily(cache)
       lifecycle = { mode = "once", frameCount = 4 },
     }
   end
-  local oldEncode = MeshWriter.encode
-  MeshWriter.encode = function()
-    return "encoded-mesh"
-  end
   local ok, err = pcall(Writer.write, cache, bundle)
-  MeshWriter.encode = oldEncode
   Assert.isTrue(ok, tostring(err))
   local ready, readyErr = EffectCache.isReady(cache, marker)
   Assert.isTrue(ready, tostring(readyErr))

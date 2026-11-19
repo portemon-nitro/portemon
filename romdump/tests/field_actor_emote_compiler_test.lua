@@ -1,5 +1,7 @@
 local Assert = require("tests.support.Assert")
 local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache")
+local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
 
@@ -25,18 +27,25 @@ T.tests["rewrites compiled geometry and texture references into the emote root"]
   }
   package.loaded["romdump.src.digest.model.ModelAssetCompiler"] = {
     compileModel = function(_, _, meshes, textures)
-      meshes.mesh = {}
-      textures.texture = { width = 1, height = 1, pixels = "pixel" }
+      meshes.mesh = "G4GX-bank-bytes"
+      textures.texture = "G4TX-bank-bytes"
       return {
         unresolved = {},
-        batches = { { geometry = "assets/generated/maps/geometry/mesh.g4mesh" } },
-        materials = { { name = "exclamation", texture = "assets/generated/maps/textures/texture.png" } },
+        batches = { { geometry = { file = MapAssetCache.modelBankPath("mesh"), drawIndex = 0 } } },
+        materials = {
+          { name = "exclamation", texture = { file = MapAssetCache.textureBankPath("texture"), textureName = "exclamation" } },
+        },
       }
     end,
   }
-  package.loaded["libs.assets.src.model.ModelAsset"] = { SCHEMA = "g4-model-v1", validate = function() end }
+  package.loaded["libs.assets.src.model.ModelAsset"] = {
+    SCHEMA = "g4-model-v1",
+    validate = function() end,
+    retargetGeometry = ModelAsset.retargetGeometry,
+    retargetTexture = ModelAsset.retargetTexture,
+  }
   package.loaded["libs.assets.src.field.FieldEmoteAssetCache"] = {
-    SCHEMA = "g4-field-emote-v2",
+    SCHEMA = "g4-field-emote-v3",
     geometryPath = FieldEmoteAssetCache.geometryPath,
     texturePath = FieldEmoteAssetCache.texturePath,
     marker = FieldEmoteAssetCache.marker,
@@ -79,9 +88,15 @@ T.tests["rewrites compiled geometry and texture references into the emote root"]
   package.loaded["romdump.src.digest.actor.FieldActorEmoteCompiler"] = nil
   Assert.isTrue(ok, tostring(result))
   Assert.equal(seenMemberId, 118, "the exclamation billboard is sourced from field_static_models member 118")
-  Assert.equal(result.model.schema, "g4-field-emote-v2")
-  Assert.equal(result.model.model.batches[1].geometry, FieldEmoteAssetCache.geometryPath("mesh"))
-  Assert.equal(result.model.model.materials[1].texture, FieldEmoteAssetCache.texturePath("texture"))
+  Assert.equal(result.model.schema, "g4-field-emote-v3")
+  Assert.deepEqual(result.model.model.batches[1].geometry, {
+    file = FieldEmoteAssetCache.geometryPath("mesh"),
+    drawIndex = 0,
+  })
+  Assert.deepEqual(result.model.model.materials[1].texture, {
+    file = FieldEmoteAssetCache.texturePath("texture"),
+    textureName = "exclamation",
+  })
   Assert.equal(result.model.model.key, "field-emote:exclamation")
 end
 

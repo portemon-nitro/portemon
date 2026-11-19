@@ -23,7 +23,6 @@ local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokeniz
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local charmap = require("romdump.src.catalog.hgss.charmap")
 local Hashing = require("romdump.src.digest.Hashing")
-local PngWriter = require("romdump.src.digest.PngEncoder")
 local ItemPresentationCompiler = require("romdump.src.digest.items.ItemPresentationCompiler")
 
 ---@class ItemCatalogCompiler
@@ -807,8 +806,9 @@ function ItemCatalogCompiler.compileAll(romFs, opts)
     must(ItemAssetSchema.assertIconManifest(icons.manifest))
     must(ItemAssetSchema.assertCatalogIcons(catalog, icons.manifest))
     local catalogHash = Hashing.hashLua(catalog)
-    local iconPng = PngWriter.encode(icons.image.width, icons.image.height, icons.image.pixels)
-    local iconHash = Hashing.sha1hex(iconPng)
+    -- The icon identity hashes the atlas pixels, not an encoded PNG: the
+    -- writer encodes (or defers) the image after the source phase.
+    local iconHash = Hashing.sha1hex(icons.image.pixels)
     local index = {
       schema = ItemCache.INDEX_SCHEMA,
       version = catalog.version,
@@ -834,7 +834,6 @@ function ItemCatalogCompiler.compileAll(romFs, opts)
       catalog = catalog,
       icons = icons.image,
       iconManifest = icons.manifest,
-      iconPng = iconPng,
       provenance = {
         schema = "g4-item-provenance-v1",
         source = ItemSources.provenance,

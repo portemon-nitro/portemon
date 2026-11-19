@@ -6,7 +6,8 @@
 -- compact two-row choice prompt buttons, and the
 -- normal naming screen chrome (one opaque base, the three transparent page
 -- overlays, static controls/slots, full generated subject/cursor animations
--- with entry-29 pulse masks) — all as decoded PNG atlases and the strict manifest. Wayfinding members are precomposed
+-- with entry-29 pulse masks) — as PNG atlases or deferred RGBA image rows and
+-- the strict manifest. Wayfinding members are precomposed
 -- into final 48x32 surfaces (6 by 4 tiles) at build time so runtime draws
 -- a single rect. Source member selection lives in
 -- romdump/src/config/FieldUiAssets.lua; this module owns the HGSS decode

@@ -365,18 +365,60 @@ local function newSceneImage(graphics, bytes, path)
   return image
 end
 
+-- One generated material texture reference as a scene image. A PNG path uploads
+-- as bytes; a native texture bank selector decodes its named texels under the
+-- named palette first, exactly like the field worker does.
 ---@param slot OpeningMovieSlot scene slot collecting its GPU handles
 ---@param self HgssOpeningMovie
----@param path string staged asset path
+---@param reference string|ModelAsset.TextureReference material texture reference
 ---@return love.Image image handle
-local function acquireImage(slot, self, path)
-  local bytes = self.cacheFs:read(path)
-  if type(bytes) ~= "string" then
-    error(invalid("opening scene staged art is missing", { scene = slot.sceneNumber, path = path }), 0)
+local function acquireImage(slot, self, reference)
+  if type(reference) == "table" then
+    local NativeTextureBank = require("libs.assets.src.model.NativeTextureBank")
+    local TextureDecoder = require("libs.nds.src.gx.TextureDecoder")
+    local file = assert(reference.file)
+    local bankBytes = self.cacheFs:read(file)
+    if type(bankBytes) ~= "string" then
+      error(invalid("opening scene staged art is missing", { scene = slot.sceneNumber, path = file }), 0)
+    end
+    local bank = assert(NativeTextureBank.read(bankBytes))
+    local texture = assert(
+      bank:texture(assert(reference.textureName)),
+      "opening texture bank has no texture " .. tostring(reference.textureName)
+    )
+    local palette = reference.paletteName and assert(bank:palette(reference.paletteName)) or nil
+    local opts = {
+      format = texture.formatRaw,
+      width = texture.width,
+      height = texture.height,
+      color0Transparent = texture.color0Transparent,
+      texel = texture.texels,
+      palette = palette and palette.data or "",
+    }
+    if texture.indexData ~= nil then
+      opts.indexData = texture.indexData
+    end
+    local rgba = love.data.newByteData(texture.width * texture.height * 4)
+    local rgbaSize = rgba:getSize()
+    ---@cast rgbaSize integer
+    TextureDecoder.decodeInto(opts, rgba:getFFIPointer(), rgbaSize, TextureDecoder.newScratch(), {
+      name = texture.name,
+    })
+    local imageData = love.image.newImageData(texture.width, texture.height, "rgba8", rgba --[[@as string]])
+    local image = self.graphics.newImage(imageData)
+    image:setFilter("nearest", "nearest")
+    slot.images[#slot.images + 1] = image
+    slot.imageByPath[reference] = image
+    return image
   end
-  local image = newSceneImage(self.graphics, bytes, path)
+  ---@cast reference string
+  local bytes = self.cacheFs:read(reference)
+  if type(bytes) ~= "string" then
+    error(invalid("opening scene staged art is missing", { scene = slot.sceneNumber, path = reference }), 0)
+  end
+  local image = newSceneImage(self.graphics, bytes, reference)
   slot.images[#slot.images + 1] = image
-  slot.imageByPath[path] = image
+  slot.imageByPath[reference] = image
   return image
 end
 

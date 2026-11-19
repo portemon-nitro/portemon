@@ -22,10 +22,10 @@ function FieldEmoteAssetCache.markerPath()
   return MARKER
 end
 function FieldEmoteAssetCache.geometryPath(sha1)
-  return ASSET_DIR .. "/geometry/" .. sha1 .. ".g4mesh"
+  return ASSET_DIR .. "/geometry/" .. sha1 .. ".g4gx"
 end
 function FieldEmoteAssetCache.texturePath(sha1)
-  return ASSET_DIR .. "/textures/" .. sha1 .. ".png"
+  return ASSET_DIR .. "/textures/" .. sha1 .. ".g4tx"
 end
 function FieldEmoteAssetCache.marker(romSha1, depHash)
   return string.format("%s:%s:%s", FieldEmoteAssetCache.FORMAT, romSha1, depHash)

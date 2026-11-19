@@ -28,9 +28,20 @@ SharedImagePoolFake.__index = SharedImagePoolFake
 ---@param path string
 ---@param sampler table<string, string>
 ---@return string
+-- One generated texture reference as a stable identity: a PNG path or the
+-- named texture/palette pair a native texture-bank selector carries.
+---@param source string|table
+---@return string
+local function sourceIdentity(source)
+  if type(source) == "string" then
+    return source
+  end
+  return string.format("%s#%s#%s", source.file, tostring(source.textureName), tostring(source.paletteName))
+end
+
 local function keyFor(path, sampler)
   return table.concat({
-    path,
+    sourceIdentity(path),
     "|",
     sampler.wrapX,
     "|",
@@ -90,12 +101,15 @@ end
 
 -- Record logical interest in one texture under one immutable sampler state.
 -- Returns an opaque token; the fake stages synchronously, so poll is ready.
----@param logicalPath string
+---@param logicalPath string|table
 ---@param sampler table<string, string>
 ---@param _priority string?
 ---@return integer
 function SharedImagePoolFake:request(logicalPath, sampler, _priority)
-  assert(type(logicalPath) == "string", "shared image request path is required")
+  assert(
+    type(logicalPath) == "string" or type(logicalPath) == "table",
+    "shared image reference is required"
+  )
   assert(
     type(sampler) == "table" and type(sampler.wrapX) == "string" and type(sampler.wrapY) == "string",
     "shared image request needs an immutable sampler state"

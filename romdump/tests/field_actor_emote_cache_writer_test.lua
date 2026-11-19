@@ -7,6 +7,9 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
 
+local MESH_BANK = "G4GX-bank-bytes"
+local TEXTURE_BANK = "G4TX-bank-bytes"
+
 local function modelAsset()
   return {
     schema = ModelAsset.SCHEMA,
@@ -14,7 +17,7 @@ local function modelAsset()
     kind = "static",
     batches = {
       {
-        geometry = FieldEmoteAssetCache.geometryPath("mesh-key"),
+        geometry = { file = FieldEmoteAssetCache.geometryPath("mesh-key"), drawIndex = 0 },
         cullMode = "back",
         polygonMode = "modulation",
         polygonId = 0,
@@ -29,7 +32,7 @@ local function modelAsset()
       {
         id = 0,
         name = "exclamation",
-        texture = FieldEmoteAssetCache.texturePath("texture-key"),
+        texture = { file = FieldEmoteAssetCache.texturePath("texture-key"), textureName = "exclamation" },
         textureFormat = 3,
         wrap = { x = "clamp", y = "clamp" },
         flip = { x = false, y = false },
@@ -47,27 +50,21 @@ local function model()
 end
 
 T.tests["publishes field-emote descriptor and referenced assets under owned roots"] = function()
-  local data = {
-    getSize = function()
-      return #"encoded-mesh"
-    end,
-    getString = function()
-      return "encoded-mesh"
-    end,
-  }
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local meshPath = FieldEmoteAssetCache.geometryPath("mesh-key")
+  local texturePath = FieldEmoteAssetCache.texturePath("texture-key")
   local bundle = {
     marker = "field-emotes-cache-v4:rom:dep",
     model = model(),
-    meshes = { ["mesh-key"] = data },
-    textures = { ["texture-key"] = { width = 1, height = 1, data = "png" } },
+    meshes = { ["mesh-key"] = MESH_BANK },
+    textures = { ["texture-key"] = TEXTURE_BANK },
   }
   local ok, err = pcall(Writer.write, cache, bundle)
   Assert.isTrue(ok, tostring(err))
   Assert.isTrue(cache:exists(FieldEmoteAssetCache.exclamationDescriptorPath(), "file"))
   Assert.equal(cache:read(FieldEmoteAssetCache.markerPath()), bundle.marker)
-  Assert.equal(cache:read(meshPath), "encoded-mesh")
+  Assert.equal(cache:read(meshPath), MESH_BANK, "the model bank travels verbatim")
+  Assert.equal(cache:read(texturePath), TEXTURE_BANK, "the texture bank travels verbatim")
 end
 
 T.tests["aborts before publication when the canonical descriptor is invalid"] = function()

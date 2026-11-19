@@ -13,6 +13,7 @@ local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local TextureDecoder = require("libs.nds.src.gx.TextureDecoder")
 local MapAssetInspector = require("romdump.src.digest.map.MapAssetInspector")
 local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
+local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local InventoryAssert = require("tests.support.InventoryAssert")
 local CollisionGrid = require("libs.hgss.src.world.CollisionGrid")
 local CompiledAsset = require("tests.rom.support.CompiledAsset")
@@ -204,12 +205,21 @@ function T.material_and_vertex_validity(romFs)
   end
 
   local bundle = assert(MapAssetCompiler.compile(romFs, "MAP_NEW_BARK_ELMS_LAB_1F"))
-  for sha, batch in pairs(bundle.meshes) do
-    for _, v in ipairs(CompiledAsset.mesh(batch).vertices) do
-      Assert.notNil(v[13], "vertex has resolved color source in " .. sha)
-      Assert.isTrue(v[13] >= 0 and v[13] <= 2, "colorSource is valid in " .. sha)
+  local bankCount = 0
+  for sha in pairs(bundle.meshes) do
+    bankCount = bankCount + 1
+    local bank = CompiledAsset.bank(bundle, MapAssetCache.modelBankPath(sha))
+    for drawIndex = 0, bank.drawCount - 1 do
+      local source = MapAssetCache.modelBankPath(sha) .. " draw " .. drawIndex
+      local decoded = CompiledAsset.draw(bundle, { file = MapAssetCache.modelBankPath(sha), drawIndex = drawIndex })
+      Assert.isTrue(decoded.vertexCount > 0, "draw has vertices: " .. source)
+      for _, v in ipairs(decoded.vertices) do
+        Assert.notNil(v[13], "vertex has resolved color source in " .. source)
+        Assert.isTrue(v[13] >= 0 and v[13] <= 2, "colorSource is valid in " .. source)
+      end
     end
   end
+  Assert.isTrue(bankCount > 0, "the lab compiles at least one native model bank")
 end
 
 -- The spawn and the exit warp are passable tiles on the real

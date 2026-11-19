@@ -6,6 +6,7 @@
 --     meshes = <MeshCompiler.compileDynamic>,   -- per-draw-segment geometry
 --     materials = { { id, name, baseColor, colors, alphaMode, polygonMode,
 --       doubleSided, polygonAlpha, texMtxMode, srt, texWidth, texHeight } },
+--     textureSizes = { [materialIndex] = { width, height } }, -- the UV divisor
 --   }
 --
 -- The meshes carry their transform sources ("draw" or a matrix-stack slot)
@@ -103,12 +104,18 @@ function NsbmdDynamicModel.compile(model, context)
   for i = 0, #model.materials - 1 do
     materialList[#materialList + 1] = materials[i]
   end
+  -- A material with no bound texture authors zero dimensions: it reports no
+  -- UV divisor and its UVs stay as authored rather than dividing into NaN (the
+  -- static path guards the same way).
+  local textureSizes = {}
+  for index, size in pairs(texSize) do
+    if size.width and size.height and size.width > 0 and size.height > 0 then
+      textureSizes[index] = { width = size.width, height = size.height }
+    end
+  end
   for _, mesh in ipairs(meshes) do
-    local size = texSize[mesh.materialIndex]
-    -- A material with no bound texture authors zero dimensions; leave its UVs
-    -- as authored rather than dividing into NaN (the static path guards the
-    -- same way).
-    if size and size.width and size.height and size.width > 0 and size.height > 0 then
+    local size = textureSizes[mesh.materialIndex]
+    if size then
       local numeric = mesh.batch.arena.numeric
       for offset = 0, mesh.batch.vertexCount - 1 do
         local v = numeric[mesh.batch.vertexOffset + offset]
@@ -117,10 +124,14 @@ function NsbmdDynamicModel.compile(model, context)
       end
     end
   end
+  -- The same authored extent is the UV divisor a draw's command bytes need:
+  -- the bank keeps no expanded vertices, so the runtime replay divides the
+  -- texel-unit UVs by these dimensions exactly as this compile just did.
   return {
     program = program,
     meshes = meshes,
     materials = materialList,
+    textureSizes = textureSizes,
   }
 end
 

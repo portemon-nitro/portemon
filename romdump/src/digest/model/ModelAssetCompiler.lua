@@ -1,84 +1,47 @@
--- The one model-compilation core producing content-addressed batches, meshes,
--- and textures for one decoded model bound to one texture pack. MapAssetCompiler
+-- The one model-compilation core producing content-addressed model banks and
+-- texture banks for one decoded model bound to one texture pack. MapAssetCompiler
 -- (map and placed-building models) and NeighborChunkCompiler (terrain models)
 -- both call compileModel; each caller owns its bundle accumulators and
--- continues from the returned batches/materials/unresolved records. The batch
--- record's polygon draw state rides the shared PolygonState schema and the
+-- continues from the returned batches/materials/unresolved records. One source
+-- model persists one native model bank of ordered draw command spans, and each
+-- draw is selected from it by its zero-based draw index; the batch record's
+-- polygon draw state rides the shared PolygonState schema and the
 -- transform-mode vocabulary comes from PoseContract, so the serialized model
 -- descriptor has exactly one authority.
 
-local MeshCompiler = require("romdump.src.digest.model.MeshCompiler")
-local ffi = require("ffi")
-local TerrainBoundaryConformer = require("romdump.src.digest.map.TerrainBoundaryConformer")
-local MaterialCompiler = require("romdump.src.digest.model.MaterialCompiler")
-local AlphaClassifier = require("libs.nds.src.gx.AlphaClassifier")
 local DsPolygonAttr = require("libs.nds.src.gx.DsPolygonAttr")
 local Errors = require("libs.errors.src.Errors")
-local MeshWriter = require("libs.assets.src.model.MeshWriter")
+local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
 local Hashing = require("romdump.src.digest.Hashing")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local MapUnits = require("romdump.src.digest.map.MapUnits")
+local MaterialCompiler = require("romdump.src.digest.model.MaterialCompiler")
+local MeshCompiler = require("romdump.src.digest.model.MeshCompiler")
+local NativeGxFormat = require("libs.assets.src.model.NativeGxFormat")
+local NsbmdStaticTransforms = require("romdump.src.digest.model.NsbmdStaticTransforms")
 local PoseContract = require("libs.assets.src.model.PoseContract")
 local PolygonState = require("libs.assets.src.model.PolygonState")
+local AlphaClassifier = require("libs.nds.src.gx.AlphaClassifier")
 local TextureMatrixState = require("romdump.src.digest.model.TextureMatrixState")
 
 local ModelAssetCompiler = {}
 
----@param batch MeshWriter.Batch
----@return love.Data
-local function finalizeMesh(batch)
-  local vertexCount = assert(batch.vertexCount or (batch.vertices and #batch.vertices))
-  local indexCount = assert(batch.indexCount or (batch.indices and #batch.indices))
-  local size = MeshWriter.encodedSize(vertexCount, indexCount)
-  local data = love.data.newByteData(size)
-  local pointer = ffi.cast("uint8_t *", assert(data:getFFIPointer()))
-  assert(MeshWriter.encodeInto(batch, pointer, size) == size)
-  return data
+-- One model unit in runtime tiles: the draw commands stay in source model
+-- units, so the bank tells the runtime how to convert the positions it decodes.
+local POSITION_SCALE = 1 / MapUnits.MODEL_UNITS_PER_TILE
+
+-- A compiled draw takes part in terrain boundary conformance only when its
+-- role is terrain and it is drawn as a filled surface: culled draws render
+-- nothing and polygon-alpha-zero draws render as host wireframe, so neither can
+-- own the filled-surface sampling disagreement repair addresses, and non-terrain
+-- roles never repair at all.
+local function isTerrainEligible(poly, isTerrain)
+  return isTerrain and poly.cullMode ~= "all" and poly.polygonAlpha ~= 0
 end
 
--- A compiled batch takes part in terrain boundary conformance only when it
--- is drawn as a filled surface: culled batches render nothing and
--- polygon-alpha-zero batches render as host wireframe, so neither can own
--- the filled-surface sampling disagreement repair addresses.
-local function isConformable(poly)
-  return poly.cullMode ~= "all" and poly.polygonAlpha ~= 0
-end
-
--- Conform the eligible filled-surface batches of one terrain model in place,
--- leaving ineligible batches byte-identical. The conformer works on the same
--- batch tables in original order, so production batch positions and material
--- identity never shift; only a compacted error batch index is remapped to
--- its original position before the failure propagates.
-local function conformEligible(compiled, polyByBatch, context)
-  local eligible = {}
-  local originalIndex = {}
-  for i, batch in ipairs(compiled) do
-    if isConformable(polyByBatch[i]) then
-      eligible[#eligible + 1] = batch
-      originalIndex[#eligible] = i
-    end
-  end
-  if #eligible == 0 then
-    return
-  end
-  local ok, err = pcall(TerrainBoundaryConformer.conform, eligible, context)
-  if not ok then
-    if Errors.is(err) then
-      ---@cast err Errors.Error
-      local failed = err.context.batchIndex
-      if type(failed) == "number" then
-        local original = originalIndex[failed]
-        if original ~= nil then
-          err.context.batchIndex = original
-        end
-      end
-    end
-    error(err, 0)
-  end
-end
-
--- Convert MaterialCompiler records (texture = sha1 key) into scene material
--- records (texture = cache-relative PNG path). Polygon state (alpha class,
--- cull mode, polygon alpha/mode) lives on the batch, not the material.
+-- Convert MaterialCompiler records (texture = native bank selector) into
+-- scene material records. Polygon state (alpha class, cull mode, polygon
+-- alpha/mode) lives on the batch, not the material.
 -- `terrainStateById` supplies the shared decoded-material texture-matrix
 -- fields (texWidth/texHeight/texMtxMode and the normalized static srt) for
 -- terrain scene materials; building models compile without it.
@@ -88,8 +51,9 @@ local function sceneMaterials(records, terrainStateById)
     local record = {
       id = m.id,
       name = m.name,
-      texture = m.texture and MapAssetCache.texturePath(m.texture) or nil,
+      texture = m.texture,
       textureFormat = m.textureFormat,
+      alphaUsage = m.alphaUsage,
       wrap = m.wrap,
       flip = m.flip,
       diffuse = m.diffuse,
@@ -106,7 +70,124 @@ local function sceneMaterials(records, terrainStateById)
   return out
 end
 
--- Compile one model into batches; append meshes/textures to the shared bundle
+-- Replay one model's draw submissions into native bank draw records plus the
+-- per-draw scene batches that select them. The producer resolves only what the
+-- runtime cannot derive from source-independent bytes: the tile-space draw and
+-- restore matrices, the geometry-engine color state each draw starts under, and
+-- the UV normalization divisor. Geometry stays as source command bytes.
+---@class ModelAssetCompiler.BankDraw
+---@field commands string source display-list command bytes
+---@field nodeIndex integer
+---@field materialIndex integer
+---@field shapeIndex integer
+---@field transformMode "static"|"billboard"
+---@field terrainBoundaryEligible boolean
+---@field texWidth integer? UV divisor; absent when the material binds no texture
+---@field texHeight integer?
+---@field matrix number[]? tile-space draw matrix the producer resolved
+---@field restoreStack { [integer]: number[] }?
+---@field positionScale number
+---@field seedColorSource integer?
+---@field seedColor number[]?
+
+-- One selectable draw of the compiled bank: the bank record itself, the decoded
+-- polygon state that classifies it, and its zero-based index in the bank.
+---@class ModelAssetCompiler.Selectable
+---@field draw ModelAssetCompiler.BankDraw
+---@field poly { polygonMode: string, cullMode: string, polygonAlpha: integer, farClipEnabled: boolean, oneDotEnabled: boolean }
+---@field index integer
+---@field baseTransform number[]?
+
+---@param model table<string, unknown>
+---@param textureSizes table<integer, { width: number, height: number }>
+---@param isTerrain boolean whether the role repairs terrain boundaries at all
+---@return ModelAssetCompiler.BankDraw[] bankDraws
+---@return ModelAssetCompiler.Selectable[] selectable
+local function compileDraws(model, textureSizes, isTerrain)
+  local shapeByIndex = {}
+  for _, shp in
+    ipairs(model.shapes --[[@as table[] ]])
+  do
+    shapeByIndex[shp.index] = shp
+  end
+  local materialByIndex = {}
+  for _, mat in
+    ipairs(model.materials --[[@as table[] ]])
+  do
+    materialByIndex[mat.index] = mat
+  end
+
+  local draws = NsbmdStaticTransforms.evaluate(model)
+  local bankDraws, selectable = {}, {}
+  local carriedState
+  for _, draw in ipairs(draws) do
+    local shape = shapeByIndex[draw.shapeIndex]
+    if not shape then
+      Errors.raise(
+        "MAP_COMPILE_MISSING_SHAPE",
+        "SBC draw references shape index " .. tostring(draw.shapeIndex) .. " not in the model",
+        { shapeIndex = draw.shapeIndex, materialIndex = draw.materialIndex }
+      )
+    end
+    local rawMaterial = materialByIndex[draw.materialIndex]
+    assert(rawMaterial, "SBC draw references material " .. tostring(draw.materialIndex) .. " not in the model")
+    local matState = MeshCompiler.materialState(rawMaterial)
+    local poly = DsPolygonAttr.decode(matState.polygonAttrRaw)
+    local drawContext = { model = model.name, shape = shape.name, material = draw.materialIndex }
+    local scan = GxDisplayList.scanState(shape.displayListBytes, drawContext)
+    MeshCompiler.assertSupportedShape(scan, drawContext)
+    if draw.transformMode == PoseContract.BILLBOARD then
+      MeshCompiler.assertWholeShapeBillboard(scan, drawContext)
+    end
+    if poly.polygonMode ~= "modulation" and poly.polygonMode ~= "decal" then
+      Errors.raise("MAP_COMPILE_UNSUPPORTED_POLYGON_MODE", "polygon mode " .. poly.polygonMode .. " is not supported", {
+        model = model.name,
+        material = draw.materialIndex,
+        shape = shape.name,
+        polygonMode = poly.polygonMode,
+        polygonAttrRaw = matState.polygonAttrRaw,
+      })
+    end
+
+    -- The geometry engine keeps color/normal state across shape calls; a
+    -- reapplied material reseeds it. Recording the resolved seed per draw lets
+    -- the runtime replay the very same state without the source model.
+    local seed = carriedState or matState.seed
+    if draw.materialReapplied then
+      seed = matState.seed
+    end
+    carriedState = scan.finalState
+
+    if poly.cullMode ~= "all" then
+      local textureSize = textureSizes[draw.materialIndex]
+      local bankDraw = {
+        commands = shape.displayListBytes,
+        nodeIndex = draw.nodeIndex,
+        materialIndex = draw.materialIndex,
+        shapeIndex = draw.shapeIndex,
+        transformMode = draw.transformMode,
+        terrainBoundaryEligible = isTerrainEligible(poly, isTerrain),
+        texWidth = textureSize and textureSize.width or nil,
+        texHeight = textureSize and textureSize.height or nil,
+        matrix = draw.matrix,
+        restoreStack = draw.restoreStack and next(draw.restoreStack) and draw.restoreStack or nil,
+        positionScale = POSITION_SCALE,
+        seedColorSource = seed and seed.colorSource or nil,
+        seedColor = seed and seed.color or nil,
+      }
+      bankDraws[#bankDraws + 1] = bankDraw
+      selectable[#selectable + 1] = {
+        draw = bankDraw,
+        poly = poly,
+        index = #bankDraws - 1,
+        baseTransform = draw.baseTransform and MapUnits.matrixToTiles(draw.baseTransform) or nil,
+      }
+    end
+  end
+  return bankDraws, selectable
+end
+
+-- Compile one model into batches; append bank bytes to the shared bundle
 -- accumulators; return { batches (scene refs), materials, unresolved } -- the
 -- last being the materials whose names the bound pack does not define, tagged
 -- with the model they came from so a caller can report them. When the caller
@@ -118,13 +199,13 @@ end
 ---@param model table<string, unknown>
 ---@param texturePack table<string, unknown>
 ---@param meshes table<string, unknown>
----@param textures table<string, table<string, unknown>>
+---@param textures table<string, string> texture-bank accumulator: bank key to encoded bytes
 ---@param context table<string, unknown>
 ---@return { batches: table[], materials: table[], unresolved: table[] }
 local function compileModel(model, texturePack, meshes, textures, context)
   local mat = MaterialCompiler.compile(model.materials, texturePack, { context = context })
-  for sha1, tex in pairs(mat.textures) do
-    textures[sha1] = tex
+  for key, bank in pairs(mat.textures) do
+    textures[key] = bank
   end
 
   local unresolved = {}
@@ -141,7 +222,7 @@ local function compileModel(model, texturePack, meshes, textures, context)
     }
   end
 
-  -- Per-material texture info needed for batch classification and UV normalization.
+  -- Per-material texture info needed for draw classification and UV normalization.
   local matInfoById = {}
   local textureSizes = {}
   for _, m in ipairs(mat.materials) do
@@ -149,7 +230,7 @@ local function compileModel(model, texturePack, meshes, textures, context)
       texWidth = m.texWidth,
       texHeight = m.texHeight,
       textureFormat = m.textureFormat or 0,
-      alphaUsage = m.texture and textures[m.texture] and textures[m.texture].alphaUsage or nil,
+      alphaUsage = m.alphaUsage,
     }
     if m.texWidth then
       textureSizes[m.id] = { width = m.texWidth, height = m.texHeight }
@@ -164,7 +245,9 @@ local function compileModel(model, texturePack, meshes, textures, context)
   local terrainStateById
   if isTerrain then
     terrainStateById = {}
-    for _, material in ipairs(model.materials) do
+    for _, material in
+      ipairs(model.materials --[[@as table[] ]])
+    do
       terrainStateById[material.index] = TextureMatrixState.fromMaterial(material, model.info.texMtxMode)
     end
   end
@@ -181,63 +264,40 @@ local function compileModel(model, texturePack, meshes, textures, context)
     end
   end
 
-  -- Terrain roles share one compiled batch set whose material boundaries
-  -- must agree on segmentation before serialization; other roles bypass
-  -- boundary repair. Polygon state is decoded once per batch here and
-  -- reused for conformance eligibility, alpha classification, and
-  -- serialization below.
-  if context.finalizeMeshes and context.geometryArena then
-    context.geometryArena:reset()
-  end
-  local compiled = MeshCompiler.compile(model, {
-    geometryArena = context.geometryArena,
-    gxScratch = context.gxScratch,
-    textureSizes = textureSizes,
-  })
-  local polyByBatch = {}
-  for i, batch in ipairs(compiled) do
-    polyByBatch[i] = DsPolygonAttr.decode(batch.polygonAttrRaw)
-  end
-  if isTerrain then
-    conformEligible(compiled, polyByBatch, context)
-  end
+  local bankDraws, selectable = compileDraws(model, textureSizes, isTerrain)
+  local bankBytes = NativeGxFormat.encode({ draws = bankDraws })
+  local bankKey = Hashing.sha1hex(bankBytes)
+  meshes[bankKey] = bankBytes
+  local bankFile = MapAssetCache.modelBankPath(bankKey)
 
   local batches = {}
-  for index, batch in ipairs(compiled) do
-    assert(batch.arena ~= nil, "model asset compilation requires dense geometry slices")
-    local info = matInfoById[batch.materialIndex]
-
-    local poly = polyByBatch[index]
-    if poly.cullMode ~= "all" then
-      local fmt = info and info.textureFormat or 0
-      local alphaClass =
-        AlphaClassifier.classify(poly.polygonAlpha, poly.polygonMode, fmt, info and info.alphaUsage or nil)
-      local mesh = context.finalizeMeshes and finalizeMesh(batch --[[@as MeshWriter.Batch]]) or batch
-      local sha1 =
-        Hashing.sha1hex(context.finalizeMeshes and mesh or MeshWriter.encode(batch --[[@as MeshWriter.Batch]]))
-      meshes[sha1] = mesh
-      local record = {
-        geometry = MapAssetCache.geometryPath(sha1),
-        material = batch.materialIndex,
-        node = batch.nodeIndex,
-        -- A billboard batch's geometry is in billboard-local space and its
-        -- matrix is only resolvable against a live camera; the runtime rebuilds
-        -- it from baseTransform every frame. The static mode is the default and
-        -- is left off, so it does not repeat on every batch of every scene.
-        transformMode = batch.transformMode ~= PoseContract.STATIC and batch.transformMode or nil,
-        baseTransform = batch.baseTransform,
-        alphaClass = alphaClass,
-      }
-      -- The shared polygon draw-state field set (PolygonState.FIELDS).
-      for _, field in ipairs(PolygonState.FIELDS) do
-        record[field] = poly[field]
-      end
-      -- The static-only extras stay outside the shared draw-state schema:
-      -- they are authoring metadata the runtime does not consume.
-      record.farClipEnabled = poly.farClipEnabled
-      record.oneDotEnabled = poly.oneDotEnabled
-      batches[#batches + 1] = record
+  for _, entry in ipairs(selectable) do
+    local poly = entry.poly
+    local info = matInfoById[entry.draw.materialIndex]
+    local fmt = info and info.textureFormat or 0
+    local alphaClass =
+      AlphaClassifier.classify(poly.polygonAlpha, poly.polygonMode, fmt, info and info.alphaUsage or nil)
+    local record = {
+      geometry = { file = bankFile, drawIndex = entry.index },
+      material = entry.draw.materialIndex,
+      node = entry.draw.nodeIndex,
+      -- A billboard batch's geometry is in billboard-local space and its
+      -- matrix is only resolvable against a live camera; the runtime rebuilds
+      -- it from baseTransform every frame. The static mode is the default and
+      -- is left off, so it does not repeat on every batch of every scene.
+      transformMode = entry.draw.transformMode ~= PoseContract.STATIC and entry.draw.transformMode or nil,
+      baseTransform = entry.baseTransform,
+      alphaClass = alphaClass,
+    }
+    -- The shared polygon draw-state field set (PolygonState.FIELDS).
+    for _, field in ipairs(PolygonState.FIELDS) do
+      record[field] = poly[field]
     end
+    -- The static-only extras stay outside the shared draw-state schema:
+    -- they are authoring metadata the runtime does not consume.
+    record.farClipEnabled = poly.farClipEnabled
+    record.oneDotEnabled = poly.oneDotEnabled
+    batches[#batches + 1] = record
   end
   return { batches = batches, materials = materials, unresolved = unresolved }
 end

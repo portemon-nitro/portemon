@@ -212,6 +212,32 @@ function T.billboard_quad_model()
   Assert.notNil(draws[1].baseTransform)
 end
 
+-- A dynamic model bank keeps no expanded vertices, so the UV divisor the
+-- runtime replay divides the draw's texel-unit UVs by travels with the bank:
+-- it is the authored texture extent this compile normalizes against, and a
+-- material that authored none reports none.
+function T.dynamic_compile_reports_the_authored_uv_divisor()
+  local m = assert(Nsbmd.decode(NsbmdFixture.buildBillboardQuad({ origWidth = 8, origHeight = 4 }))).models[1]
+  local descriptor = NsbmdDynamicModel.compile(m)
+  local materialIndex = assert(descriptor.meshes[1].materialIndex)
+  Assert.deepEqual(
+    descriptor.textureSizes[materialIndex],
+    { width = 8, height = 4 },
+    "the compile reports the authored texture extent as the UV divisor"
+  )
+
+  -- A material that authored a zero width has no texture to normalize
+  -- against, so it reports no divisor and its UVs stay as authored.
+  local untextured =
+    assert(Nsbmd.decode(NsbmdFixture.buildBillboardQuad({ origWidth = 0, origHeight = 0 }))).models[1]
+  local untexturedDescriptor = NsbmdDynamicModel.compile(untextured)
+  local untexturedIndex = assert(untexturedDescriptor.meshes[1].materialIndex)
+  Assert.isNil(
+    untexturedDescriptor.textureSizes[untexturedIndex],
+    "a material with no authored texture extent reports no UV divisor"
+  )
+end
+
 -- The billboard bake is a per-segment loop invariant: the linear part of the
 -- draw matrix feeds the normal transform of every vertex in the segment, so
 -- it must be computed once per segment, not once per vertex. Observed through

@@ -309,27 +309,21 @@ end
 ---@param model table<string, unknown> compiled dynamic model
 ---@param root string scene asset root the model art stages under
 local function rewriteModelPaths(model, root)
-  local function rewrite(path)
-    assert(type(path) == "string", "compiled opening scene asset path is missing")
-    local geometry = path:match("^assets/generated/maps/geometry/(.+)$")
-    if geometry then
-      return root .. "/geometry/" .. geometry
-    end
-    local texture = path:match("^assets/generated/maps/textures/(.+)$")
-    if texture then
-      return root .. "/textures/" .. texture
-    end
-    return path
+  local function geometryPath(key)
+    return root .. "/geometry/" .. key .. ".g4gx"
+  end
+  local function texturePath(key)
+    return root .. "/textures/" .. key .. ".g4tx"
   end
   for _, batch in ipairs(model.dynamic.batches) do
-    batch.geometry = rewrite(batch.geometry)
+    batch.geometry = ModelAsset.retargetGeometry(batch.geometry, geometryPath)
   end
   for _, material in ipairs(model.materials) do
     if material.texture then
-      material.texture = rewrite(material.texture)
+      material.texture = ModelAsset.retargetTexture(material.texture, texturePath)
     end
     for _, variant in ipairs(material.variants or {}) do
-      variant.texture = rewrite(variant.texture)
+      variant.texture = ModelAsset.retargetTexture(variant.texture, texturePath)
     end
   end
 end
@@ -450,11 +444,11 @@ local function compileTowns(archive, versionId, sceneNumber, root, files, depend
     end
     sourceError("opening scene town asset is not finalized binary data", { scene = sceneNumber, role = role })
   end
-  for sha1, mesh in pairs(meshes) do
-    files[root .. "/geometry/" .. sha1 .. ".g4mesh"] = finalizedData(mesh, "geometry")
+  for key, bank in pairs(meshes) do
+    files[root .. "/geometry/" .. key .. ".g4gx"] = finalizedData(bank, "geometry")
   end
-  for sha1, texture in pairs(textures) do
-    files[root .. "/textures/" .. sha1 .. ".png"] = finalizedData(texture.data, "texture")
+  for key, bank in pairs(textures) do
+    files[root .. "/textures/" .. key .. ".g4tx"] = finalizedData(bank, "texture")
   end
   local _ = versionId
   return models

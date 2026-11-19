@@ -19,6 +19,7 @@
 -- nothing about maps, neighbors, materials, or transforms; those stay in
 -- the loaders.
 
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 local VertexFormat = require("libs.assets.src.model.VertexFormat")
@@ -59,6 +60,23 @@ GpuAssetPool.__index = GpuAssetPool
 -- mirrored-repeat mode (a repeated axis whose NSBTX material sets the flip
 -- bit).
 local WRAP_MODES = { clamp = true, ["repeat"] = true, [SceneDescriptor.MIRRORED_REPEAT] = true }
+
+-- The stable identity of one generated asset reference: a plain file path, or
+-- the bank selector a scene descriptor carries (one draw of a native model
+-- bank, or one named texture/palette pair of a native texture bank). The pool
+-- keys its retained resources by this identity so repeated demand of the same
+-- selected asset reuses exactly one resident object.
+---@param value string|ModelAsset.GeometryReference|ModelAsset.TextureReference
+---@return string
+local function assetKey(value)
+  if type(value) == "string" then
+    return value
+  end
+  if value.drawIndex ~= nil then
+    return string.format("%s#draw%d", value.file, value.drawIndex)
+  end
+  return string.format("%s#%s#%s", value.file, tostring(value.textureName), tostring(value.paletteName))
+end
 
 -- The one sampler validation for shared-owner texture acquisition: unknown
 -- wrap modes on a sampled material are malformed data and raise instead of
@@ -145,13 +163,21 @@ end
 -- rescan happens per draw/placement. The triangle count feeds loader stats
 -- exactly once per mesh. All four fields are stable references across
 -- repeated acquires of the same path.
----@param path string
+---@param reference string|ModelAsset.GeometryReference procedural mesh path or a native model-bank selector
 ---@return { mesh: GpuAssetPool.Mesh, triangles: integer, center: number[], bounds: { minX: number, maxX: number, minY: number, maxY: number, minZ: number, maxZ: number } }
-function GpuAssetPool:meshFor(path)
-  local entry = self._meshCache[path]
+function GpuAssetPool:meshFor(reference)
+  local key = assetKey(reference)
+  local entry = self._meshCache[key]
   if not entry then
     guarded(self, function()
-      local decoded = SceneMesh.decode(assert(self.cacheFs:read(path), "missing mesh " .. path), path)
+      local decoded
+      if type(reference) == "table" then
+        local file = ModelAsset.geometryFile(reference)
+        decoded =
+          SceneMesh.decodeNativeBank(assert(self.cacheFs:read(file), "missing model bank " .. file), reference, file)
+      else
+        decoded = SceneMesh.decode(assert(self.cacheFs:read(reference), "missing mesh " .. reference), reference)
+      end
       local mesh = self.meshBuilder(decoded)
       -- Record ownership before the failure-capable geometry step: a later
       -- failure (e.g. an empty mesh) pops and releases exactly this mesh
@@ -161,7 +187,7 @@ function GpuAssetPool:meshFor(path)
       local triangleCount = decoded.indexCount / 3
       ---@cast triangleCount integer
       entry = { mesh = mesh, triangles = triangleCount, center = geometry.center, bounds = geometry.bounds }
-      self._meshCache[path] = entry
+      self._meshCache[key] = entry
       self.triangles = self.triangles + entry.triangles
     end)
   end
@@ -182,12 +208,12 @@ end
 -- physical images by pixel content plus sampler, while the scene only
 -- needs per path/wrap dedup so repeated acquisitions within one scene
 -- share a single lease.
----@param path string
+---@param path string|ModelAsset.GeometryReference|ModelAsset.TextureReference
 ---@param wrapX string
 ---@param wrapY string
 ---@return string
 local function pooledKey(path, wrapX, wrapY)
-  return wrapX .. "|" .. wrapY .. "|" .. path
+  return wrapX .. "|" .. wrapY .. "|" .. assetKey(path)
 end
 
 -- Enroll one texture in the shared owner ahead of its first acquisition so
@@ -196,7 +222,7 @@ end
 -- image owner is a programming error and fails loudly, matching the
 -- acquisition contract. Unknown wrap modes raise here instead of degrading
 -- to clamp, matching the acquisition contract.
----@param path string?
+---@param path string|ModelAsset.TextureReference?
 ---@param wrapX string
 ---@param wrapY string
 function GpuAssetPool:prefetchShared(path, wrapX, wrapY)
@@ -204,7 +230,7 @@ function GpuAssetPool:prefetchShared(path, wrapX, wrapY)
     return
   end
   local images = assert(self._imageAssets, "GpuAssetPool requires a session image owner for textures")
-  checkWrap(path, wrapX, wrapY)
+  checkWrap(assetKey(path), wrapX, wrapY)
   local key = pooledKey(path, wrapX, wrapY)
   if self._pooledByKey[key] == nil and self._prefetchTokens[key] == nil then
     self._prefetchTokens[key] = images:request(path, sharedSampler(wrapX, wrapY), "prefetch")
@@ -221,7 +247,7 @@ end
 -- programming error and fails loudly. Unknown wrap modes raise; a missing
 -- texture fails without publishing. A failure here borrows nothing -- the
 -- shared owner keeps every live pair it already published.
----@param path string?
+---@param path string|ModelAsset.TextureReference?
 ---@param wrapX string
 ---@param wrapY string
 ---@param wait (fun())? invoked while the shared request is still pending
@@ -231,7 +257,7 @@ function GpuAssetPool:sharedImage(path, wrapX, wrapY, wait)
     return nil
   end
   local images = assert(self._imageAssets, "GpuAssetPool requires a session image owner for textures")
-  checkWrap(path, wrapX, wrapY)
+  checkWrap(assetKey(path), wrapX, wrapY)
   local key = pooledKey(path, wrapX, wrapY)
   local held = self._pooledByKey[key]
   if held ~= nil then
@@ -250,7 +276,7 @@ function GpuAssetPool:sharedImage(path, wrapX, wrapY, wait)
     status, failure = images:poll(token)
   end
   if status ~= "ready" then
-    error("shared image " .. path .. " is not ready: " .. tostring(failure), 0)
+    error("shared image " .. assetKey(path) .. " is not ready: " .. tostring(failure), 0)
   end
   local lease = images:acquire(token)
   -- The sampling handle mirrors the borrowed lease: the scene holds leases
@@ -274,7 +300,7 @@ end
 -- data and raise instead of degrading to clamp; a nil path (untextured
 -- material, no sampler state) yields no image. Acquisition without a
 -- session image owner is a programming error and fails loudly.
----@param path string?
+---@param path string|ModelAsset.TextureReference?
 ---@param wrapX string
 ---@param wrapY string
 ---@return GpuAssetPool.Image?
@@ -292,11 +318,12 @@ end
 -- path returns its entry without uploading a duplicate, and a failure
 -- between Mesh creation and publication releases the partial object and
 -- leaves the cache tables/counters unchanged.
----@param path string
+---@param path string|ModelAsset.GeometryReference procedural mesh path or a native model-bank selector
 ---@param prepared SceneMesh.PreparedMesh
 ---@return { mesh: GpuAssetPool.Mesh, triangles: integer, center: number[], bounds: { minX: number, maxX: number, minY: number, maxY: number, minZ: number, maxZ: number } }
 function GpuAssetPool:meshFromPrepared(path, prepared)
-  local entry = self._meshCache[path]
+  local key = assetKey(path)
+  local entry = self._meshCache[key]
   if not entry then
     guarded(self, function()
       assert(
@@ -314,7 +341,7 @@ function GpuAssetPool:meshFromPrepared(path, prepared)
       -- exactly this mesh instead of orphaning it.
       self.meshes[#self.meshes + 1] = mesh
       if prepared.vertexCount == 0 then
-        Errors.raise(ErrorCodes.SCENE_DESC_EMPTY_MESH, "a mesh must have at least one vertex", { path = path })
+        Errors.raise(ErrorCodes.SCENE_DESC_EMPTY_MESH, "a mesh must have at least one vertex", { path = key })
       end
       mesh:setVertices(prepared.vertexData)
       mesh:setVertexMap(prepared.indexData, prepared.indexType)
@@ -333,7 +360,7 @@ function GpuAssetPool:meshFromPrepared(path, prepared)
           maxZ = prepared.maxZ,
         },
       }
-      self._meshCache[path] = entry
+      self._meshCache[key] = entry
       self.triangles = self.triangles + entry.triangles
     end)
   end
@@ -345,10 +372,10 @@ end
 -- owner classifies the same effective texture through its own worker, so this
 -- delegates to the same borrow as imageFor and never builds a second Image.
 -- A nil path (untextured material) yields no handle.
----@param path string?
+---@param path string|ModelAsset.TextureReference?
 ---@param wrapX string
 ---@param wrapY string
----@param prepared { imageData: unknown } superseded staged payload; the shared owner classifies through its own worker
+---@param prepared table<string, unknown> superseded staged payload; the shared owner classifies through its own worker
 ---@return GpuAssetPool.Image?
 function GpuAssetPool:imageFromPrepared(path, wrapX, wrapY, prepared)
   if not path then

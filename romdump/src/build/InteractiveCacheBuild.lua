@@ -732,7 +732,7 @@ end
 ---@param details table<string, unknown>|nil
 function InteractiveCacheBuild:_observePoolState(entry, state, details)
   entry.poolState = state
-  if state == "queued" or state == "running" then
+  if state == "queued" or state == "running" or state == "images" then
     entry.await = "pool"
     entry.phase = "waitPool"
     self.submittedPending[entry.jobKey] = entry
@@ -2551,7 +2551,7 @@ function InteractiveCacheBuild:_awaitingPoolWork()
   for jobKey, entry in pairs(self.submittedPending) do
     if entry == self.byKey[jobKey] and not entry.ready and entry.failure == nil and entry.submitted then
       local state = self.pool:status(entry.jobKey)
-      if state == "queued" or state == "running" or state == "prepared" or state == "unknown" then
+      if state == "queued" or state == "running" or state == "images" or state == "prepared" or state == "unknown" then
         return true
       end
     end
@@ -3009,7 +3009,10 @@ local function collectInterestStatus(interest)
       if entry.direct then
         tally.directTerminal = false
       end
-      if entry.submitted and (entry.poolState == "running" or entry.poolState == "prepared") then
+      if
+        entry.submitted
+        and (entry.poolState == "running" or entry.poolState == "images" or entry.poolState == "prepared")
+      then
         tally.running = tally.running + 1
       else
         tally.queued = tally.queued + 1

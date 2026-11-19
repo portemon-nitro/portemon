@@ -1622,18 +1622,22 @@ end
 ---@param skipTown integer 1-based town whose textures stay readable
 ---@return table<string, boolean> texture paths owned only by the other towns
 local function laterTownTexturePaths(models, skipTown)
+  local ModelAsset = require("libs.assets.src.model.ModelAsset")
   local firstTownPaths = {}
   for _, material in ipairs(models[skipTown].descriptor.materials or {}) do
-    if type(material.texture) == "string" then
-      firstTownPaths[material.texture] = true
+    if material.texture ~= nil then
+      firstTownPaths[ModelAsset.textureFile(material.texture)] = true
     end
   end
   local poisoned = {}
   for index, model in ipairs(models) do
     if index ~= skipTown then
       for _, material in ipairs(model.descriptor.materials or {}) do
-        if type(material.texture) == "string" and firstTownPaths[material.texture] == nil then
-          poisoned[material.texture] = true
+        if material.texture ~= nil then
+          local file = ModelAsset.textureFile(material.texture)
+          if firstTownPaths[file] == nil then
+            poisoned[file] = true
+          end
         end
       end
     end

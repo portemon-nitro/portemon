@@ -1,6 +1,8 @@
--- Compiles the HGSS field fonts (font IDs 0 and 4) into private glyph atlas PNGs, a
--- semantic glyph mask atlas PNG, a focus-indicator mask PNG, and the
--- g4-field-font-v5 definition. The mask atlas repeats the composited atlas's
+-- Compiles the HGSS field fonts (font IDs 0 and 4) into a private glyph
+-- atlas, a semantic glyph mask atlas, a focus-indicator mask, and the
+-- g4-field-font-v5 definition. The three images leave the source phase as
+-- finished RGBA rows; the cache writer encodes their PNGs or defers them to the
+-- compiler pool. The mask atlas repeats the composited atlas's
 -- base-band glyph geometry once, encoding each glyph pixel's raw 0..3 class
 -- categorically (0 transparent, 1 red foreground, 2 green shadow, 3 blue
 -- background) instead of a baked color, so a palette-driven draw path can
@@ -17,7 +19,6 @@
 
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
-local PngWriter = require("romdump.src.digest.PngEncoder")
 local FieldFontDecoder = require("romdump.src.digest.ui.FieldFontDecoder")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
@@ -172,8 +173,8 @@ end
 
 ---@param font table<string, unknown>
 ---@param palette { r: integer, g: integer, b: integer }[]
----@return string atlasBytes
----@return string maskAtlasBytes
+---@return { width: integer, height: integer, pixels: string } atlas RGBA rows awaiting PNG encoding
+---@return { width: integer, height: integer, pixels: string } mask atlas RGBA rows awaiting PNG encoding
 ---@return integer width
 ---@return integer baseHeight
 local function buildGlyphAtlases(font, palette)
@@ -230,8 +231,8 @@ local function buildGlyphAtlases(font, palette)
       end
     end
   end
-  return PngWriter.encode(width, height, concatRgba(rgba)),
-    PngWriter.encode(width, baseHeight, concatRgba(maskRgba)),
+  return { width = width, height = height, pixels = concatRgba(rgba) },
+    { width = width, height = baseHeight, pixels = concatRgba(maskRgba) },
     width,
     baseHeight
 end
@@ -239,7 +240,7 @@ end
 ---@param focusChars { depth: integer, tiles: string }
 ---@param fontId integer
 ---@return table<string, unknown> indicators
----@return string imageBytes
+---@return { width: integer, height: integer, pixels: string } RGBA rows awaiting PNG encoding
 local function buildFocusIndicators(focusChars, fontId)
   local function focusPixel(field, x, y)
     local intraX = x % FOCUS_FRAME_WIDTH
@@ -313,7 +314,7 @@ local function buildFocusIndicators(focusChars, fontId)
     end
     indicators.frames[field] = { layers = layers }
   end
-  return indicators, PngWriter.encode(focusImageWidth, focusImageHeight, concatRgba(focusRgba))
+  return indicators, { width = focusImageWidth, height = focusImageHeight, pixels = concatRgba(focusRgba) }
 end
 
 ---@param font table<string, unknown>
@@ -372,8 +373,8 @@ end
 local function compileFont(source, fontId, glyphMemberId, sha1hex)
   local data = decodeFontSource(source, glyphMemberId, sha1hex)
   local font, palette = data.font, data.palette
-  local atlasBytes, maskAtlasBytes, width, baseHeight = buildGlyphAtlases(font, palette.colors)
-  local focusIndicators, focusIndicatorsBytes = buildFocusIndicators(data.focusChars, fontId)
+  local atlasImage, maskAtlasImage, width, baseHeight = buildGlyphAtlases(font, palette.colors)
+  local focusIndicators, focusIndicatorsImage = buildFocusIndicators(data.focusChars, fontId)
 
   local perRow = manifest.atlasGlyphsPerRow
   local glyphs = buildGlyphDefinitions(font, perRow)
@@ -413,9 +414,9 @@ local function compileFont(source, fontId, glyphMemberId, sha1hex)
   local bundle = {
     fontId = fontId,
     font = fontDef,
-    atlas = atlasBytes,
-    maskAtlas = maskAtlasBytes,
-    focusIndicators = focusIndicatorsBytes,
+    atlas = atlasImage,
+    maskAtlas = maskAtlasImage,
+    focusIndicators = focusIndicatorsImage,
   }
   return bundle,
     {
@@ -490,12 +491,18 @@ function FieldFontCompiler.compile(romFs, sha1hex, hashLua)
 end
 
 -- The compiled font class: the g4-field-font-v5 definition, the glyph atlas
--- PNG, the semantic glyph mask atlas PNG, the focus-indicator PNG, and the
--- cache marker derived from every source dependency.
+-- RGBA rows, the semantic glyph mask atlas rows, the focus-indicator rows, and
+-- the cache marker derived from every source dependency. The writer encodes
+-- these images or defers them to the compiler pool.
+
+---@class FieldFontCompiler.Image
+---@field width integer
+---@field height integer
+---@field pixels string
 
 ---@class FieldFontCompiler.Bundle
 ---@field marker string
----@field fonts table<integer, { fontId: integer, font: FieldFontDef, atlas: string, maskAtlas: string, focusIndicators: string }>
+---@field fonts table<integer, { fontId: integer, font: FieldFontDef, atlas: FieldFontCompiler.Image, maskAtlas: FieldFontCompiler.Image, focusIndicators: FieldFontCompiler.Image }>
 ---@field dependencies table<string, unknown>
 
 return FieldFontCompiler

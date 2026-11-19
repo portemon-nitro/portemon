@@ -40,15 +40,24 @@ function T.new_bark_physical_cell_is_complete_without_map_scene(_, versionId)
   Assert.deepEqual(cell.origin, { x = 672, y = 0, z = 384 })
 
   for _, batch in ipairs(cell.batches) do
-    Assert.isTrue(cache:exists(batch.geometry, "file"), "physical terrain geometry is published")
+    Assert.isTrue(
+      cache:exists(ModelAsset.geometryFile(batch.geometry), "file"),
+      "physical terrain geometry is published"
+    )
   end
   for _, material in ipairs(cell.materials) do
     if material.texture ~= nil then
-      Assert.isTrue(cache:exists(material.texture, "file"), "physical terrain texture is published")
+      Assert.isTrue(
+        cache:exists(ModelAsset.textureFile(material.texture), "file"),
+        "physical terrain texture is published"
+      )
     end
     if material.textureSwap ~= nil then
       for _, step in ipairs(material.textureSwap.steps) do
-        Assert.isTrue(cache:exists(step.texture, "file"), "terrain replacement texture is published")
+        Assert.isTrue(
+          cache:exists(ModelAsset.textureFile(step.texture), "file"),
+          "terrain replacement texture is published"
+        )
       end
     end
   end
@@ -80,7 +89,10 @@ function T.new_bark_physical_cell_carries_area_texture_animation(romFs, versionI
     local swap = material.textureSwap
     if swap ~= nil then
       for _, step in ipairs(swap.steps) do
-        Assert.isTrue(cache:exists(step.texture, "file"), "physical cell publishes texture-swap images")
+        Assert.isTrue(
+          cache:exists(ModelAsset.textureFile(step.texture), "file"),
+          "physical cell publishes texture-swap banks"
+        )
       end
     end
   end
@@ -114,7 +126,10 @@ function T.physical_cell_index_publishes_everywhere_neighbors(romFs, versionId)
     local cell = assert(cache:loadLua(descriptor.file), label .. " cell loads")
     Assert.isTrue(#cell.batches > 0, label .. " has terrain batches")
     for _, batch in ipairs(cell.batches) do
-      Assert.isTrue(cache:exists(batch.geometry, "file"), label .. " terrain geometry is published")
+      Assert.isTrue(
+        cache:exists(ModelAsset.geometryFile(batch.geometry), "file"),
+        label .. " terrain geometry is published"
+      )
     end
     Assert.isTrue(FieldCellCache.validateCell(cache, cell, descriptor), label .. " cell readback validates")
   end

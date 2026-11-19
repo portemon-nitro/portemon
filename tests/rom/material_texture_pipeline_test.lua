@@ -1,11 +1,12 @@
--- ROM-backed material compilation keeps content-addressed texture identities,
--- alpha classification, and final PNG bytes while handing cache writers a
--- completed LÖVE Data value.
+-- ROM-backed material compilation keeps native texture-bank identities and
+-- alpha classification: one source texture pack persists as one named bank of
+-- compact texels and palettes, and the bank decodes to the same pixels the
+-- source pack does.
 
 local Assert = require("tests.support.Assert")
 local ffi = require("ffi")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
-local PngWriter = require("tests.support.PngEncoder")
+local NativeTextureBank = require("libs.assets.src.model.NativeTextureBank")
 local AreaData = require("romdump.src.digest.map.AreaData")
 local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
 local MapResolver = require("romdump.src.digest.map.MapResolver")
@@ -38,32 +39,56 @@ local function sourceMaterial(romFs)
   error("New Bark Town has no indexed map material", 0)
 end
 
-local function textureKey(path)
-  local prefix = "assets/generated/maps/textures/"
-  local suffix = ".png"
-  Assert.isTrue(path:sub(1, #prefix) == prefix, "map material uses the generated texture root")
-  Assert.isTrue(path:sub(-#suffix) == suffix, "map material uses PNG texture output")
+local function bankKey(path)
+  local prefix = "assets/generated/maps/texture-banks/"
+  local suffix = ".g4tx"
+  Assert.isTrue(path:sub(1, #prefix) == prefix, "map material uses the generated texture-bank root")
+  Assert.isTrue(path:sub(-#suffix) == suffix, "map material selects a native texture bank")
   return path:sub(#prefix + 1, -#suffix - 1)
 end
 
-function T.map_material_bundle_carries_final_png_data(romFs)
+-- The RGBA pixels one named texel/palette pairing inside a bank decodes to.
+local function bankPixels(bytes, textureName, paletteName)
+  local bank = assert(NativeTextureBank.read(bytes))
+  local texture = assert(bank:texture(textureName), "the bank holds the bound texture")
+  local palette = assert(bank:palette(paletteName), "the bank holds the bound palette")
+  return TextureDecoder.decode({
+    format = texture.formatRaw,
+    width = texture.width,
+    height = texture.height,
+    color0Transparent = texture.color0Transparent,
+    texel = texture.texels,
+    indexData = texture.indexData,
+    palette = palette.data,
+  })
+end
+
+function T.map_material_bundle_carries_final_texture_bank(romFs)
   local bundle = assert(MapAssetCompiler.compile(romFs, "MAP_NEW_BARK"))
   local materialIndex, _, texture, palette, pack = sourceMaterial(romFs)
   local sceneMaterial = assert(bundle.scene.materials[materialIndex])
-  local key = textureKey(assert(sceneMaterial.texture))
-  Assert.equal(#key, 40, "texture identity remains a SHA-1 content key")
-  Assert.equal(sceneMaterial.texture, MapAssetCache.texturePath(key), "scene points at the content-addressed PNG")
+  Assert.equal(type(sceneMaterial.texture), "table", "the scene material binds a native texture bank selector")
+  local file = assert(sceneMaterial.texture.file, "the selector names the bank file")
+  local key = bankKey(file)
+  Assert.equal(#key, 40, "texture bank identity remains a content key")
+  Assert.equal(file, MapAssetCache.textureBankPath(key), "the scene points at the content-addressed bank")
+  Assert.equal(sceneMaterial.texture.textureName, texture.name, "the selector keeps the source texture name")
+  Assert.equal(sceneMaterial.texture.paletteName, palette.name, "the selector keeps the source palette name")
 
-  local asset = assert(bundle.textures[key], "the compiled map bundle carries the referenced texture")
-  Assert.isNil(asset.pixels, "the cache bundle no longer retains decoded RGBA pixels")
-  Assert.notNil(asset.data, "the cache bundle carries final PNG Data")
-  Assert.isTrue(type(asset.data.getFFIPointer) == "function", "the final texture is LÖVE Data")
+  local bytes = assert(bundle.textures[key], "the compiled map bundle carries the referenced texture bank")
+  Assert.equal(type(bytes), "string", "the cache bundle carries the bank bytes")
+  Assert.isTrue(bytes:sub(1, 4) == NativeTextureBank.MAGIC, "the bound texture is a native bank, not a PNG")
 
+  local actual = bankPixels(bytes, texture.name, palette.name)
   local reference = TextureDecoder.decode(Nsbtx.decoderOpts(pack, texture, palette))
-  local expectedPng = PngWriter.encode(reference.width, reference.height, reference.pixels)
-  local actualPng = ffi.string(asset.data:getFFIPointer(), asset.data:getSize())
-  Assert.equal(actualPng, expectedPng, "the staged PNG bytes remain deterministic")
-  Assert.deepEqual(asset.alphaUsage, reference.alphaUsage, "material alpha classification remains unchanged")
+  Assert.equal(actual.width, reference.width, "the bank keeps the source texture width")
+  Assert.equal(actual.height, reference.height, "the bank keeps the source texture height")
+  Assert.equal(
+    ffi.string(actual.pixels, #actual.pixels),
+    ffi.string(reference.pixels, #reference.pixels),
+    "the bank decodes to the same pixels the source pack does"
+  )
+  Assert.deepEqual(sceneMaterial.alphaUsage, reference.alphaUsage, "material alpha classification remains unchanged")
 end
 
 local suite = RomSuite.fromFacts(T)

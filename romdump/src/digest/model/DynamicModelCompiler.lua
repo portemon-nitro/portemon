@@ -1,27 +1,19 @@
--- Compiles animated model descriptors and their content-addressed geometry.
+-- Compiles animated model descriptors and their content-addressed model bank.
 
 local MaterialCompiler = require("romdump.src.digest.model.MaterialCompiler")
-local ffi = require("ffi")
 local DsPolygonAttr = require("libs.nds.src.gx.DsPolygonAttr")
-local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local Hashing = require("romdump.src.digest.Hashing")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local MapUnits = require("romdump.src.digest.map.MapUnits")
+local NativeGxFormat = require("libs.assets.src.model.NativeGxFormat")
+local PoseContract = require("libs.assets.src.model.PoseContract")
+local NsbmdStaticTransforms = require("romdump.src.digest.model.NsbmdStaticTransforms")
 local AnimationClip = require("libs.assets.src.model.AnimationClip")
 local NsbmdDynamicModel = require("romdump.src.digest.model.NsbmdDynamicModel")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local PolygonState = require("libs.assets.src.model.PolygonState")
 
 local DynamicModelCompiler = {}
-
-local function finalizeMesh(batch)
-  local vertexCount = assert(batch.vertexCount or (batch.vertices and #batch.vertices))
-  local indexCount = assert(batch.indexCount or (batch.indices and #batch.indices))
-  local size = MeshWriter.encodedSize(vertexCount, indexCount)
-  local data = love.data.newByteData(size)
-  local pointer = ffi.cast("uint8_t *", assert(data:getFFIPointer()))
-  assert(MeshWriter.encodeInto(batch, pointer, size) == size)
-  return data
-end
 
 local function patternVariants(clips, materials)
   local modelMaterials, byMaterial = {}, {}
@@ -66,11 +58,11 @@ local function resolvePatternVariants(embeddedTex, variantSets, textures, unreso
         MaterialCompiler.resolveTexture(fakeMat, embeddedTex, textures, unresolved, { context = context })
       local variant = { name = variantName }
       if resolved.texture then
-        variant.texture = MapAssetCache.texturePath(resolved.texture)
+        variant.texture = resolved.texture
         variant.width = resolved.texWidth
         variant.height = resolved.texHeight
         variant.textureFormat = resolved.textureFormat
-        variant.alphaUsage = textures[resolved.texture].alphaUsage
+        variant.alphaUsage = resolved.alphaUsage
       end
       variants[variantName] = variant
     end
@@ -79,7 +71,7 @@ local function resolvePatternVariants(embeddedTex, variantSets, textures, unreso
   return byMaterial
 end
 
-local function dynamicMaterials(dynamicModel, matCompiled, textures, variantsByName)
+local function dynamicMaterials(dynamicModel, matCompiled, variantsByName)
   local out = {}
   for _, base in ipairs(dynamicModel.materials) do
     local merged = {}
@@ -89,9 +81,9 @@ local function dynamicMaterials(dynamicModel, matCompiled, textures, variantsByN
     local m = matCompiled.materials[base.id + 1]
     if m then
       if m.texture then
-        merged.texture = MapAssetCache.texturePath(m.texture)
+        merged.texture = m.texture
         merged.textureFormat = m.textureFormat
-        merged.alphaUsage = textures[m.texture].alphaUsage
+        merged.alphaUsage = m.alphaUsage
       end
       merged.wrap = m.wrap
       merged.flip = m.flip
@@ -113,9 +105,28 @@ local function dynamicMaterials(dynamicModel, matCompiled, textures, variantsByN
   return out
 end
 
-local function dynamicBatches(dynamicModel, meshes, context)
-  local out = {}
-  for _, mesh in ipairs(dynamicModel.meshes) do
+-- One native bank draw per visible pose segment: the source display-list
+-- command bytes plus the segment position the transform-preserving replay keeps,
+-- so the runtime re-derives the same pose segments instead of loading expanded
+-- triangles. Command bytes are shared by the segments of one draw.
+---@param dynamicModel table<string, unknown>
+---@param model table<string, unknown>
+---@param meshes table<string, unknown>
+---@return table[] batches
+local function dynamicBatches(dynamicModel, model, meshes)
+  local draws = NsbmdStaticTransforms.evaluate(model)
+  -- The UV divisor the runtime replay divides the draw's texel-unit UVs by:
+  -- the material's authored texture extent, the same base the compile above
+  -- normalized against (a material with no bound texture authors none).
+  local textureSizes = dynamicModel.textureSizes
+  local shapeByIndex = {}
+  for _, shape in ipairs(model.shapes) do
+    shapeByIndex[shape.index] = shape
+  end
+  local out, bankDraws = {}, {}
+  for _, mesh in
+    ipairs(dynamicModel.meshes --[[@as table[] ]])
+  do
     local poly = DsPolygonAttr.decode(mesh.polygonAttrRaw)
     if poly.polygonMode ~= "modulation" and poly.polygonMode ~= "decal" then
       require("libs.errors.src.Errors").raise(
@@ -125,10 +136,20 @@ local function dynamicBatches(dynamicModel, meshes, context)
       )
     end
     if poly.cullMode ~= "all" then
-      local batch = mesh.batch --[[@as MeshWriter.Batch]]
-      local data = context.finalizeMeshes and finalizeMesh(batch) or nil
-      local sha1 = Hashing.sha1hex(data or MeshWriter.encode(batch))
-      meshes[sha1] = data or batch
+      local source = assert(draws[mesh.drawIndex + 1], "dynamic mesh references a draw that is not in the model")
+      local shape = assert(shapeByIndex[source.shapeIndex], "dynamic draw references a missing shape")
+      local textureSize = textureSizes[mesh.materialIndex]
+      bankDraws[#bankDraws + 1] = {
+        commands = shape.displayListBytes,
+        nodeIndex = mesh.nodeIndex,
+        materialIndex = mesh.materialIndex,
+        shapeIndex = source.shapeIndex,
+        transformMode = mesh.transformMode,
+        segmentIndex = mesh.segmentIndex,
+        texWidth = textureSize and textureSize.width or nil,
+        texHeight = textureSize and textureSize.height or nil,
+        positionScale = 1 / MapUnits.MODEL_UNITS_PER_TILE,
+      }
       local record = {
         id = mesh.id,
         drawIndex = mesh.drawIndex,
@@ -136,8 +157,10 @@ local function dynamicBatches(dynamicModel, meshes, context)
         nodeIndex = mesh.nodeIndex,
         materialIndex = mesh.materialIndex,
         transformMode = mesh.transformMode,
-        positionSource = mesh.positionSource,
-        geometry = MapAssetCache.geometryPath(sha1),
+        -- A billboard segment's own source resolves the live post-BB draw
+        -- matrix (the billboard base stays in the pose program), so the
+        -- runtime never needs a compile-time bake for it.
+        positionSource = mesh.positionSource or PoseContract.DRAW,
       }
       for _, field in ipairs(PolygonState.FIELDS) do
         record[field] = poly[field]
@@ -147,6 +170,13 @@ local function dynamicBatches(dynamicModel, meshes, context)
       end
       out[#out + 1] = record
     end
+  end
+  local bankBytes = NativeGxFormat.encode({ draws = bankDraws })
+  local bankKey = Hashing.sha1hex(bankBytes)
+  meshes[bankKey] = bankBytes
+  local bankFile = MapAssetCache.modelBankPath(bankKey)
+  for index, record in ipairs(out) do
+    record.geometry = { file = bankFile, drawIndex = index - 1 }
   end
   return out
 end
@@ -215,9 +245,9 @@ function DynamicModelCompiler.compile(
     dynamic = {
       nodes = dynamicModel.program.nodes,
       transformProgram = dynamicModel.program,
-      batches = dynamicBatches(dynamicModel, meshes, context),
+      batches = dynamicBatches(dynamicModel, buildingModel, meshes),
     },
-    materials = dynamicMaterials(dynamicModel, base, textures, variantsByName),
+    materials = dynamicMaterials(dynamicModel, base, variantsByName),
     animations = animResult.clips,
     doorSoundType = animResult.doorSoundType,
   },

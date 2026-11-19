@@ -4,6 +4,7 @@ local Assert = require("tests.support.Assert")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local FieldEntranceIndicatorCompiler = require("romdump.src.digest.field.FieldEntranceIndicatorCompiler")
+local CompiledAsset = require("tests.rom.support.CompiledAsset")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local MODEL_NAMES = {
@@ -65,13 +66,8 @@ local function testLugiaLegendModels(romFs, version)
         path:match("^assets/generated/field/effects/") ~= nil,
         version .. " " .. name .. " references only owned field-effect assets"
       )
-      local key = assert(path:match("/([^/]+)%.([^/]+)$"))
-      if path:match("%.g4mesh$") then
-        Assert.notNil(bundle.meshes[key], "compiled geometry exists for " .. path)
-      else
-        Assert.notNil(bundle.textures[key], "compiled texture exists for " .. path)
-      end
     end
+    CompiledAsset.assertReferences(bundle, descriptor, version .. " " .. name)
   end
   Assert.equal(
     FieldEffectAssetCache.definitionPath("lugia_appearance"),

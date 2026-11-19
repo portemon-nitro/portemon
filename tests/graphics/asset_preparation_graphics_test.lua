@@ -295,7 +295,7 @@ end
 -- the staged publication lifecycle is visible to the next request on the
 -- same live worker: the follow-up payloads bind the replacement bytes, and
 -- repeating the replacement reuses its stored derivative.
-function T.image_derivative_prepares_through_the_real_worker_with_private_reuse()
+function T.image_prepares_through_the_real_worker_from_the_png_alone()
   local AssetPreparationQueue = requireQueue()
   local cache = CacheFs.forVersion(VERSION_ID)
   local logicalPath = "assets/generated/textures/derivative.png"
@@ -303,16 +303,12 @@ function T.image_derivative_prepares_through_the_real_worker_with_private_reuse(
   local pngB = PngWriter.encode(2, 2, string.char(0, 64, 255, 255):rep(4))
   Assert.isTrue(pngA ~= pngB, "the replacement fixture must carry distinct source bytes")
   cache:write(logicalPath, pngA)
-  local expectedSourceA = love.data.hash("sha256", pngA)
-  local expectedSourceB = love.data.hash("sha256", pngB)
-  Assert.isTrue(expectedSourceA ~= expectedSourceB, "the replacement fixture must hash distinctly")
   local statsBefore = love.graphics.getStats()
 
   local runOk, runErr = pcall(function()
     local queue = AssetPreparationQueue.new(cache)
     local firstToken = queue:request("image-derivative", logicalPath, "demand")
     local first = queue:wait(firstToken)
-    Assert.equal(first.sourceHash, expectedSourceA, "the derivative binds the exact PNG bytes")
     Assert.equal(first.width, 2)
     Assert.equal(first.height, 2)
     Assert.isTrue(first.kind == "r8" or first.kind == "rgba8", "the derivative classifies to a known layout")
@@ -324,15 +320,6 @@ function T.image_derivative_prepares_through_the_real_worker_with_private_reuse(
 
     local secondToken = queue:request("image-derivative", logicalPath, "demand")
     local second = queue:wait(secondToken)
-    Assert.equal(
-      second.sourceHash,
-      expectedSourceB,
-      "the next request on the same worker binds the replacement bytes"
-    )
-    Assert.isTrue(
-      second.sourceHash ~= first.sourceHash,
-      "the replacement source hash must differ from the earlier payload"
-    )
     Assert.isTrue(
       second.pixelHash ~= first.pixelHash,
       "the replacement pixels must differ from the earlier payload"
@@ -347,8 +334,7 @@ function T.image_derivative_prepares_through_the_real_worker_with_private_reuse(
 
     local thirdToken = queue:request("image-derivative", logicalPath, "demand")
     local third = queue:wait(thirdToken)
-    Assert.equal(third.sourceHash, second.sourceHash, "the repeat preparation reuses the stored derivative")
-    Assert.equal(third.pixelHash, second.pixelHash, "the reused derivative carries identical pixels")
+    Assert.equal(third.pixelHash, second.pixelHash, "the repeat preparation reads the same PNG to the same pixels")
     Assert.equal(third.width, second.width)
     Assert.equal(third.height, second.height)
 
@@ -400,6 +386,134 @@ function T.audio_sample_prepares_through_the_real_worker_as_transferable_bytes()
     error(runErr, 0)
   end
   Assert.equal(statsAfter.images, statsBefore.images, "preparation alone creates no GPU Image")
+end
+
+
+-- The engine-owned model bank under test: two terrain-eligible draws of one
+-- source model that share the boundary x=0. The coarse draw carries the
+-- unbroken span z in [0,4]; the fine neighbour breaks the same span at
+-- z=2, which is the T-junction the producer repair splices into the coarse
+-- side before the surface ever reaches the GPU.
+local TERRAIN_BANK_PATH = "geometry/terrain-bank.g4gx"
+
+local function gxU32(value)
+  return string.char(
+    value % 256,
+    math.floor(value / 256) % 256,
+    math.floor(value / 65536) % 256,
+    math.floor(value / 16777216) % 256
+  )
+end
+
+local function gxVtx16(x, y, z)
+  local function fx(value)
+    return math.floor(value * 4096) % 0x10000
+  end
+  return gxU32(fx(x) + fx(y) * 0x10000) .. gxU32(fx(z))
+end
+
+-- BEGIN_VTXS(quads) with a normal and a positioned vertex per corner, then
+-- END_VTXS, packed in the DS geometry FIFO's four-opcode groups.
+local function gxQuad(vertices)
+  local ops = { 0x40 }
+  local params = { gxU32(1) } -- primitive type 1: quads
+  for _, vertex in ipairs(vertices) do
+    ops[#ops + 1], params[#params + 1] = 0x21, gxU32(0x00000FFF)
+    ops[#ops + 1], params[#params + 1] = 0x22, gxU32(0)
+    ops[#ops + 1], params[#params + 1] = 0x23, gxVtx16(vertex[1], vertex[2], vertex[3])
+  end
+  ops[#ops + 1], params[#params + 1] = 0x41, ""
+  while #ops % 4 ~= 0 do
+    ops[#ops + 1], params[#params + 1] = 0x00, ""
+  end
+  local out = {}
+  for group = 0, #ops / 4 - 1 do
+    local opcodeBytes = {}
+    for slot = 1, 4 do
+      opcodeBytes[slot] = string.char(ops[group * 4 + slot])
+    end
+    out[#out + 1] = table.concat(opcodeBytes)
+    for slot = 1, 4 do
+      out[#out + 1] = params[group * 4 + slot]
+    end
+  end
+  return table.concat(out)
+end
+
+---@param value unknown
+---@return string
+local function gxBankBytes(value)
+  if type(value) == "string" then
+    return value
+  end
+  if type(value) == "table" and value.data ~= nil then
+    return gxBankBytes(value.data)
+  end
+  assert(type(value) == "userdata" and type(value.getString) == "function", "the model bank travels as bytes")
+  return value:getString()
+end
+
+local function terrainBank()
+  local ok, NativeGxFormat = pcall(require, "libs.assets.src.model.NativeGxFormat")
+  Assert.isTrue(
+    ok and type(NativeGxFormat) == "table",
+    "the native model bank format is missing: terrain draws cannot be decoded and repaired as one grouped bank"
+  )
+  return gxBankBytes(NativeGxFormat.encode({
+    draws = {
+      {
+        commands = gxQuad({ { -4, 1, 0 }, { 0, 1, 0 }, { 0, 1, 4 }, { -4, 1, 4 } }),
+        nodeIndex = 0,
+        materialIndex = 0,
+        shapeIndex = 0,
+        transformMode = "static",
+        terrainBoundaryEligible = true,
+      },
+      {
+        commands = gxQuad({ { 0, 1, 0 }, { 4, 1, 0 }, { 4, 1, 2 }, { 0, 1, 2 } })
+          .. gxQuad({ { 0, 1, 2 }, { 4, 1, 2 }, { 4, 1, 4 }, { 0, 1, 4 } }),
+        nodeIndex = 0,
+        materialIndex = 1,
+        shapeIndex = 0,
+        transformMode = "static",
+        terrainBoundaryEligible = true,
+      },
+    },
+  }))
+end
+
+-- Terrain boundary repair runs over the whole eligible draw group of one
+-- source model bank when the first draw is decoded: the coarse side adopts the
+-- neighbour's breakpoint before any of the group reaches the GPU, and a later
+-- request for the sibling draw decodes the already-conformed group instead of
+-- repairing it again per draw.
+function T.terrain_bank_group_is_conformed_before_the_first_draw_is_used()
+  local AssetPreparationQueue = requireQueue()
+  local cache = CacheFs.forVersion(VERSION_ID)
+  local bank = terrainBank()
+  local runOk, runErr = pcall(function()
+    cache:write(TERRAIN_BANK_PATH, bank)
+    local queue = AssetPreparationQueue.new(cache)
+    local coarseToken = queue:request("g4gx", { file = TERRAIN_BANK_PATH, drawIndex = 0 }, "demand")
+    local coarse = queue:wait(coarseToken)
+    Assert.equal(coarse.indexCount, 9, "the coarse draw adopts the neighbour's boundary breakpoint")
+    Assert.equal(coarse.vertexCount, 5, "the repaired draw expresses the shared breakpoint once")
+    Assert.isNil(coarse.mesh, "the worker never realizes a love Mesh")
+
+    local fineToken = queue:request("g4gx", { file = TERRAIN_BANK_PATH, drawIndex = 1 }, "demand")
+    local fine = queue:wait(fineToken)
+    Assert.equal(fine.indexCount, 12, "the already-segmented neighbour keeps its four triangles")
+
+    local repeatToken = queue:request("g4gx", { file = TERRAIN_BANK_PATH, drawIndex = 0 }, "demand")
+    local repeated = queue:wait(repeatToken)
+    Assert.equal(repeated.indexCount, 9, "repeated demand never repairs the same group twice")
+    Assert.equal(repeated.vertexCount, 5, "repeated demand keeps the repaired topology stable")
+    queue:release()
+  end)
+  cache:removeTree("")
+  if not runOk then
+    error(runErr, 0)
+  end
 end
 
 return {

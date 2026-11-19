@@ -2,9 +2,11 @@
 -- publication primitive: atlases, visual definitions, provenance, and the
 -- index are written into a disposable staging root, read back and validated
 -- there, and only then is the completed stage published over the live actor
--- roots with the marker last. A failure at any point leaves the previous live
--- actor artifact untouched; the stage is discarded. The raw ROM dump and any
--- compiled map are never touched.
+-- roots with the marker last. A compiled atlas defers its PNG encode and write
+-- to the owning job's low-priority continuation in the same stage; a direct
+-- write encodes it here. A failure at any point leaves the previous live actor
+-- artifact untouched; the stage is discarded. The raw ROM dump and any compiled
+-- map are never touched.
 
 local Errors = require("libs.errors.src.Errors")
 local PngWriter = require("romdump.src.digest.PngEncoder")
@@ -17,7 +19,11 @@ function FieldActorCacheWriter.isReady(cacheFs, marker)
   return FieldActorCache.isReady(cacheFs, marker)
 end
 
-local function persist(stage, bundle)
+---@param stage table<string, unknown>
+---@param bundle table<string, unknown>
+---@param writeAtlas fun(path: string, atlas: { width: integer, height: integer, pixels: string })
+---@param present fun(path: string): boolean
+local function persist(stage, bundle, writeAtlas, present)
   for _, spriteId in ipairs(bundle.index.spriteIds) do
     local atlas = bundle.atlases[spriteId]
     local visual = bundle.visuals[spriteId]
@@ -28,7 +34,7 @@ local function persist(stage, bundle)
         { spriteId = spriteId }
       )
     end
-    stage:write(FieldActorCache.atlasPath(spriteId), PngWriter.encode(atlas.width, atlas.height, atlas.pixels))
+    writeAtlas(FieldActorCache.atlasPath(spriteId), atlas)
     stage:writeLua(FieldActorCache.visualPath(spriteId), visual)
   end
   stage:writeLua(FieldActorCache.provenancePath(), bundle.provenance)
@@ -51,7 +57,7 @@ local function persist(stage, bundle)
         { spriteId = spriteId }
       )
     end
-    if not stage:exists(FieldActorCache.atlasPath(spriteId), "file") then
+    if not present(FieldActorCache.atlasPath(spriteId)) then
       Errors.raise(
         "FIELD_ACTOR_CACHE_MISSING_ATLAS",
         "atlas missing after write for spriteId " .. spriteId,
@@ -72,7 +78,12 @@ function FieldActorCacheWriter.stage(artifact, bundle)
   assert(type(bundle) == "table" and bundle.marker, "invalid actor bundle")
   artifact:addOwnedRoot(FieldActorCache.assetDir())
   artifact:addOwnedRoot(FieldActorCache.dir())
-  return persist(artifact:stageFs(), bundle)
+  local stage = artifact:stageFs()
+  return persist(stage, bundle, function(path, atlas)
+    artifact:deferImage(path, atlas.width, atlas.height, atlas.pixels)
+  end, function(path)
+    return artifact:hasDeferredImage(path) or stage:exists(path, "file")
+  end)
 end
 
 function FieldActorCacheWriter.write(cacheFs, bundle)
@@ -81,7 +92,11 @@ function FieldActorCacheWriter.write(cacheFs, bundle)
     FieldActorCache.assetDir(),
     FieldActorCache.dir(),
   })
-  local ok, result = pcall(persist, tx.stage, bundle)
+  local ok, result = pcall(persist, tx.stage, bundle, function(path, atlas)
+    tx.stage:write(path, PngWriter.encode(atlas.width, atlas.height, atlas.pixels))
+  end, function(path)
+    return tx.stage:exists(path, "file")
+  end)
   if not ok then
     tx:abort()
     error(result, 0)

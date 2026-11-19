@@ -758,9 +758,14 @@ function FieldEffectAssetCache.modelDescriptors(kind, definition, definitionOf)
   return { HoOhCinematicParts.merge(definitionOf(FieldEffectAssetCache.hoOhCinematicKind(part.shot)), definition) }
 end
 function FieldEffectAssetCache.geometryPath(sha1)
-  return ASSET_DIR .. "/geometry/" .. sha1 .. ".g4mesh"
+  return ASSET_DIR .. "/geometry/" .. sha1 .. ".g4gx"
 end
 function FieldEffectAssetCache.texturePath(sha1)
+  return ASSET_DIR .. "/textures/" .. sha1 .. ".g4tx"
+end
+-- Retained 2D effect images (rasterized cinematic layers) keep the readable
+-- PNG contract beside the 3D texture banks.
+function FieldEffectAssetCache.imagePath(sha1)
   return ASSET_DIR .. "/textures/" .. sha1 .. ".png"
 end
 function FieldEffectAssetCache.marker(romSha1, depHash)

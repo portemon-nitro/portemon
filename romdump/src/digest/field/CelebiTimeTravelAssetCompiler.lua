@@ -109,18 +109,15 @@ end
 
 local function rewritePaths(descriptor)
   for _, batch in ipairs(descriptor.dynamic.batches) do
-    local sha1 = assert(batch.geometry:match("/([^/]+)%.g4mesh$"), "compiled field-effect geometry path is malformed")
-    batch.geometry = FieldEffectAssetCache.geometryPath(sha1)
+    batch.geometry = ModelAsset.retargetGeometry(batch.geometry, FieldEffectAssetCache.geometryPath)
   end
   for _, material in ipairs(descriptor.materials) do
     if material.texture then
-      local sha1 = assert(material.texture:match("/([^/]+)%.png$"), "compiled field-effect texture path is malformed")
-      material.texture = FieldEffectAssetCache.texturePath(sha1)
+      material.texture = ModelAsset.retargetTexture(material.texture, FieldEffectAssetCache.texturePath)
     end
     for _, variant in ipairs(material.variants or {}) do
       if variant.texture then
-        local sha1 = assert(variant.texture:match("/([^/]+)%.png$"), "compiled field-effect variant path is malformed")
-        variant.texture = FieldEffectAssetCache.texturePath(sha1)
+        variant.texture = ModelAsset.retargetTexture(variant.texture, FieldEffectAssetCache.texturePath)
       end
     end
   end

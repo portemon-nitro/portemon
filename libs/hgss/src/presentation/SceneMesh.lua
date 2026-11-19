@@ -12,6 +12,10 @@
 -- rebases them to love's 1-based vertex map.
 
 local Errors = require("libs.errors.src.Errors")
+local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
+local GxGeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
+local NativeGxFormat = require("libs.assets.src.model.NativeGxFormat")
+local TerrainBoundaryConformer = require("libs.hgss.src.presentation.TerrainBoundaryConformer")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local BinaryReader = require("libs.codec.src.BinaryReader")
 local G4MeshFormat = require("libs.assets.src.model.G4MeshFormat")
@@ -264,6 +268,302 @@ function SceneMesh.prepareUpload(bytes, context)
         )
       end
       indices[i] = value
+    end
+  end
+  return {
+    vertexData = vertexData,
+    indexData = indexData,
+    vertexCount = vertexCount,
+    indexCount = indexCount,
+    indexType = indexWidth == 2 and "uint16" or "uint32",
+    centerX = (minx + maxx) / 2,
+    centerY = (miny + maxy) / 2,
+    centerZ = (minz + maxz) / 2,
+    minX = minx,
+    maxX = maxx,
+    minY = miny,
+    maxY = maxy,
+    minZ = minz,
+    maxZ = maxz,
+  }
+end
+
+-- ---------------------------------------------------------------------------
+-- Native model banks
+--
+-- A G4GX draw keeps the source display-list command bytes, so the runtime
+-- replays them through the shared GX decoder instead of loading expanded
+-- triangles. Every draw of one bank that takes part in terrain boundary repair
+-- is decoded first, as one group, and conformed once before any of them is
+-- handed on: the set of geometry the repair sees is the source model's, exactly
+-- as the producer grouped it. Neutral geometry and the model-space matrices the
+-- producer already resolved travel in the bank, so no source model is needed.
+-- ---------------------------------------------------------------------------
+
+---@class SceneMesh.NativeDecoded
+---@field format "g4gx"
+---@field vertexCount integer
+---@field indexCount integer
+---@field vertices number[][]
+---@field indices integer[]
+
+---@class SceneMesh.NativeSlice
+---@field arena GxGeometryBuffer
+---@field vertexOffset integer
+---@field vertexCount integer
+---@field indexOffset integer
+---@field indexCount integer
+---@field materialIndex integer
+---@field preScaled boolean the decoded positions are already in runtime units
+
+-- The draw matrix pre-multiplied by the draw's source-to-runtime scale, so the
+-- replay lands directly in runtime units: conformance then repairs the same
+-- numeric domain the producer repaired, and packing needs no second scale.
+---@param matrix number[]
+---@param scale number
+---@return number[]
+local function scaledMatrix(matrix, scale)
+  local out = {}
+  for index = 1, 16 do
+    out[index] = matrix[index] * scale
+  end
+  return out
+end
+
+--- Replay one draw's command bytes into `arena`, static or transform-preserving.
+---@param draw NativeGxFormat.Draw
+---@param arena GxGeometryBuffer
+---@param context unknown?
+---@return SceneMesh.NativeSlice
+local function decodeNativeDraw(draw, arena, context)
+  local options = { arena = arena, collectCommands = false, context = context }
+  if draw.segmentIndex == nil then
+    local scale = draw.positionScale or 1
+    options.matrix = draw.matrix and scaledMatrix(draw.matrix, scale) or nil
+    options.restoreStack = draw.restoreStack
+    if draw.restoreStack ~= nil then
+      local scaled = {}
+      for slot, slotMatrix in pairs(draw.restoreStack) do
+        scaled[slot] = scaledMatrix(slotMatrix, scale)
+      end
+      options.restoreStack = scaled
+    end
+    if draw.seedColorSource ~= nil then
+      options.initialState = { color = draw.seedColor, colorSource = draw.seedColorSource }
+    end
+    local geom, err = GxDisplayList.decode(draw.commands, options)
+    if not geom then
+      error(err)
+    end
+    local slice = geom.slice
+    return {
+      arena = slice.arena,
+      vertexOffset = slice.vertexOffset,
+      vertexCount = slice.vertexCount,
+      indexOffset = slice.indexOffset,
+      indexCount = slice.indexCount,
+      materialIndex = draw.materialIndex,
+      preScaled = true,
+    }
+  end
+  options.dynamic = true
+  local geom, err = GxDisplayList.decode(draw.commands, options)
+  if not geom then
+    error(err)
+  end
+  local segment = geom.segments[
+    draw.segmentIndex --[[@as integer]] + 1
+  ]
+  if not segment then
+    Errors.raise(
+      "SCENE_MESH_NATIVE_SEGMENT_MISSING",
+      "native draw names pose segment " .. tostring(draw.segmentIndex) .. " that its commands do not produce",
+      { segmentIndex = draw.segmentIndex }
+    )
+  end
+  if segment.indexCount == 0 then
+    Errors.raise("SCENE_MESH_NATIVE_EMPTY_SEGMENT", "native draw names an empty pose segment", {
+      segmentIndex = draw.segmentIndex,
+    })
+  end
+  return {
+    arena = segment.arena,
+    vertexOffset = segment.vertexOffset,
+    vertexCount = segment.vertexCount,
+    indexOffset = segment.indexOffset,
+    indexCount = segment.indexCount,
+    materialIndex = draw.materialIndex,
+    preScaled = false,
+  }
+end
+
+-- Decode the requested draw together with every terrain-eligible draw of the
+-- same bank and conform the eligible group once. Returns the requested slice
+-- after repair plus the draw record that shapes its vertices.
+---@param bytes string|love.Data
+---@param selector { file: string, drawIndex: integer }
+---@param context unknown?
+---@return NativeGxFormat.Draw draw
+---@return SceneMesh.NativeSlice slice
+local function decodeNativeGroup(bytes, selector, context)
+  local bank = assert(NativeGxFormat.read(bytes))
+  local drawIndex = assert(selector.drawIndex)
+  local draw = bank.draws[drawIndex + 1]
+  if draw == nil then
+    Errors.raise("SCENE_MESH_NATIVE_DRAW_MISSING", "native model bank has no draw " .. tostring(drawIndex), {
+      file = selector.file,
+      drawIndex = drawIndex,
+    })
+  end
+  ---@cast draw NativeGxFormat.Draw
+  local arena = GxGeometryBuffer.new()
+  local slices = {}
+  local eligible = {}
+  for index, candidate in ipairs(bank.draws) do
+    if candidate.terrainBoundaryEligible then
+      local slice = decodeNativeDraw(candidate, arena, context)
+      slices[index] = slice
+      eligible[#eligible + 1] = slice
+    end
+  end
+  if #eligible > 1 then
+    TerrainBoundaryConformer.conform(eligible)
+  end
+  local slice = slices[drawIndex + 1]
+  if slice == nil then
+    slice = decodeNativeDraw(draw, arena, context)
+  end
+  return draw, slice
+end
+
+-- One decoded draw as render-layout vertex arrays, for the synchronous pool
+-- path: the same values the prepared upload buffers carry, in the same order.
+---@param bytes string|love.Data
+---@param selector { file: string, drawIndex: integer }
+---@param context unknown?
+---@return SceneMesh.NativeDecoded
+function SceneMesh.decodeNativeBank(bytes, selector, context)
+  local draw, slice = decodeNativeGroup(bytes, selector, context)
+  local arena = slice.arena
+  local numeric = assert(arena.numeric)
+  local attrib = assert(arena.attrib)
+  local indices = assert(arena.indices)
+  local vertexCount, indexCount = slice.vertexCount, slice.indexCount
+  if vertexCount == 0 then
+    SceneDescriptor.meshGeometry({})
+  end
+  local positionScale = slice.preScaled and 1 or (draw.positionScale or 1)
+  local uScale = draw.texWidth and draw.texWidth > 0 and (1 / draw.texWidth) or 1
+  local vScale = draw.texHeight and draw.texHeight > 0 and (1 / draw.texHeight) or 1
+  local vertices = {}
+  for offset = 0, vertexCount - 1 do
+    local v = numeric[slice.vertexOffset + offset]
+    local a = attrib[slice.vertexOffset + offset]
+    local source = a.colorSource
+    if source == nil then
+      Errors.raise(FieldErrors.MESH_BAD_COLOR_SOURCE, "native draw decoded a vertex without a colour source", {
+        source = context,
+      })
+    end
+    vertices[offset + 1] = {
+      v.x * positionScale,
+      v.y * positionScale,
+      v.z * positionScale,
+      v.u * uScale,
+      v.v * vScale,
+      v.nx,
+      v.ny,
+      v.nz,
+      a.r / 255,
+      a.g / 255,
+      a.b / 255,
+      a.a / 255,
+      source,
+    }
+  end
+  -- Decoded indices are already zero-based inside the slice (the decoder
+  -- stores each vertex's run-relative position), so nothing is rebased here.
+  local outIndices = {}
+  for offset = 0, indexCount - 1 do
+    outIndices[offset + 1] = indices[slice.indexOffset + offset]
+  end
+  return {
+    format = "g4gx",
+    vertexCount = vertexCount,
+    indexCount = indexCount,
+    vertices = vertices,
+    indices = outIndices,
+  }
+end
+
+-- One decoded draw packed straight into the GPU upload buffers, for the
+-- background preparation worker: no per-vertex Lua table is created.
+---@param bytes string|love.Data
+---@param selector { file: string, drawIndex: integer }
+---@param context unknown?
+---@return SceneMesh.PreparedMesh
+function SceneMesh.prepareNativeBank(bytes, selector, context)
+  local draw, slice = decodeNativeGroup(bytes, selector, context)
+  local components = layoutComponents()
+  local vertexCount, indexCount = slice.vertexCount, slice.indexCount
+  if vertexCount == 0 then
+    SceneDescriptor.meshGeometry({})
+  end
+  local arena = slice.arena
+  local numeric = assert(arena.numeric)
+  local attrib = assert(arena.attrib)
+  local indices = assert(arena.indices)
+  local positionScale = slice.preScaled and 1 or (draw.positionScale or 1)
+  local uScale = draw.texWidth and draw.texWidth > 0 and (1 / draw.texWidth) or 1
+  local vScale = draw.texHeight and draw.texHeight > 0 and (1 / draw.texHeight) or 1
+  local indexWidth = vertexCount <= 65535 and 2 or 4
+  local vertexData = love.data.newByteData(vertexCount * components * ffi.sizeof("float"))
+  local indexData = love.data.newByteData(indexCount * indexWidth)
+  local floats = ffi.cast("float *", vertexData:getFFIPointer())
+  local minx, miny, minz = math.huge, math.huge, math.huge
+  local maxx, maxy, maxz = -math.huge, -math.huge, -math.huge
+  for offset = 0, vertexCount - 1 do
+    local v = numeric[slice.vertexOffset + offset]
+    local a = attrib[slice.vertexOffset + offset]
+    local source = a.colorSource
+    if source == nil then
+      Errors.raise(FieldErrors.MESH_BAD_COLOR_SOURCE, "native draw decoded a vertex without a colour source", {
+        source = context,
+      })
+    end
+    local x, y, z = v.x * positionScale, v.y * positionScale, v.z * positionScale
+    local base = offset * components
+    floats[base] = x
+    floats[base + 1] = y
+    floats[base + 2] = z
+    floats[base + 3] = v.u * uScale
+    floats[base + 4] = v.v * vScale
+    floats[base + 5] = v.nx
+    floats[base + 6] = v.ny
+    floats[base + 7] = v.nz
+    floats[base + 8] = a.r / 255
+    floats[base + 9] = a.g / 255
+    floats[base + 10] = a.b / 255
+    floats[base + 11] = a.a / 255
+    floats[base + 12] = source
+    minx = math.min(minx, x)
+    maxx = math.max(maxx, x)
+    miny = math.min(miny, y)
+    maxy = math.max(maxy, y)
+    minz = math.min(minz, z)
+    maxz = math.max(maxz, z)
+  end
+  -- Decoded indices are already zero-based inside the slice (the decoder
+  -- stores each vertex's run-relative position), so nothing is rebased here.
+  if indexWidth == 2 then
+    local out = ffi.cast("uint16_t *", indexData:getFFIPointer())
+    for offset = 0, indexCount - 1 do
+      out[offset] = indices[slice.indexOffset + offset]
+    end
+  else
+    local out = ffi.cast("uint32_t *", indexData:getFFIPointer())
+    for offset = 0, indexCount - 1 do
+      out[offset] = indices[slice.indexOffset + offset]
     end
   end
   return {

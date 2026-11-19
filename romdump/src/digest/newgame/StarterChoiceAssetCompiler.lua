@@ -22,7 +22,6 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapUnits = require("romdump.src.digest.map.MapUnits")
 local DynamicModelCompiler = require("romdump.src.digest.model.DynamicModelCompiler")
 local MapPropAnimCompiler = require("romdump.src.digest.model.MapPropAnimCompiler")
-local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local ModelAssetCompiler = require("romdump.src.digest.model.ModelAssetCompiler")
 local PngWriter = require("romdump.src.digest.PngEncoder")
@@ -592,7 +591,6 @@ local function _compile(romFs)
     modelArchive = MAIN_ARCHIVE,
     modelMemberId = MODEL_MEMBERS.tabletop,
     modelName = tabletopModel.models[1].name,
-    finalizeMeshes = true,
   })
   for _, entry in ipairs(tabletopCompiled.unresolved) do
     sourceError("starter-choice tabletop texture binding has no source texture: " .. tostring(entry.name), {
@@ -617,7 +615,6 @@ local function _compile(romFs)
       modelArchive = MAIN_ARCHIVE,
       modelMemberId = memberId,
       modelName = model.name,
-      finalizeMeshes = true,
     }, memberId, textures, meshes)
     for _, entry in ipairs(unresolved) do
       unresolvedMaterials[#unresolvedMaterials + 1] = entry
@@ -761,15 +758,11 @@ local function _compile(romFs)
   }
 
   local assets = {}
-  for sha1, batch in pairs(meshes) do
-    if type(batch) ~= "table" or type(batch.getSize) == "function" then
-      assets[MapAssetCache.geometryPath(sha1)] = batch
-    else
-      assets[MapAssetCache.geometryPath(sha1)] = MeshWriter.encode(batch)
-    end
+  for key, bankBytes in pairs(meshes) do
+    assets[MapAssetCache.modelBankPath(key)] = bankBytes
   end
-  for sha1, tex in pairs(textures) do
-    assets[MapAssetCache.texturePath(sha1)] = assert(tex.data, "compiled texture is missing finalized PNG Data")
+  for key, bytes in pairs(textures) do
+    assets[MapAssetCache.textureBankPath(key)] = assert(bytes, "compiled texture bank is missing its bytes")
   end
   assets[infoBasePath] = PngWriter.encode(infoBase.width, infoBase.height, infoBase.rgba)
   assets[infoOverlayPath] = PngWriter.encode(infoOverlay.width, infoOverlay.height, infoOverlay.rgba)

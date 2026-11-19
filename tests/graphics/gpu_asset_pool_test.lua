@@ -440,6 +440,145 @@ function T.imageFromPrepared_still_requires_its_staged_payload()
   pool:release()
 end
 
+
+-- The engine-owned model bank under test: one draw list, two draws with
+-- distinct extents, so a selector's draw index is observable in the acquired
+-- mesh's cached bounds.
+local BANK_PATH = MapAssetCache.geometryPath("native-bank")
+
+local function bankCommands(vertices)
+  local function u32(value)
+    return string.char(
+      value % 256,
+      math.floor(value / 256) % 256,
+      math.floor(value / 65536) % 256,
+      math.floor(value / 16777216) % 256
+    )
+  end
+  local function vtx16(vertex)
+    local function fx(value)
+      return math.floor(value * 4096) % 0x10000
+    end
+    return u32(fx(vertex[1]) + fx(vertex[2]) * 0x10000) .. u32(fx(vertex[3]))
+  end
+  return string.char(0x40, 0x23, 0x23, 0x23)
+    .. u32(0)
+    .. vtx16(vertices[1])
+    .. vtx16(vertices[2])
+    .. vtx16(vertices[3])
+    .. string.char(0x41, 0, 0, 0)
+end
+
+---@param value unknown
+---@return string
+local function bankBytes(value)
+  if type(value) == "string" then
+    return value
+  end
+  if type(value) == "table" and value.data ~= nil then
+    return bankBytes(value.data)
+  end
+  assert(type(value) == "userdata" and type(value.getString) == "function", "the model bank travels as bytes")
+  return value:getString()
+end
+
+-- A model bank of two draws: draw 0 spans x[0,2] z[0,6], draw 1 spans
+-- x[-6,-4] z[0,3] (VTX_16 carries signed 1.3.12, so a negative span is how one
+-- draw is kept clearly apart from the other).
+local function twoDrawBank()
+  local ok, NativeGxFormat = pcall(require, "libs.assets.src.model.NativeGxFormat")
+  Assert.isTrue(
+    ok and type(NativeGxFormat) == "table",
+    "the native model bank format is missing: the GPU owner cannot acquire one draw out of a source model bank"
+  )
+  return bankBytes(NativeGxFormat.encode({
+    draws = {
+      {
+        commands = bankCommands({ { 0, 0, 0 }, { 2, 0, 0 }, { 0, 0, 6 } }),
+        nodeIndex = 0,
+        materialIndex = 0,
+        shapeIndex = 0,
+        transformMode = "static",
+      },
+      {
+        commands = bankCommands({ { -6, 0, 0 }, { -4, 0, 0 }, { -6, 0, 3 } }),
+        nodeIndex = 0,
+        materialIndex = 1,
+        shapeIndex = 0,
+        transformMode = "static",
+      },
+    },
+  }))
+end
+
+-- The pool decodes one selected draw out of a shared model bank: repeated
+-- acquisition of the same draw reuses the resident resource without decoding
+-- GX again, a different draw of the same bank is its own resource, and the
+-- pool disposes each once on release.
+function T.native_bank_selectors_decode_once_and_share_one_resident_mesh()
+  local bytes = twoDrawBank()
+  local created = {}
+  local cacheFs = {
+    read = function(_, path)
+      if path == BANK_PATH then
+        return bytes
+      end
+      return nil
+    end,
+  }
+  local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
+  local realDecode = GxDisplayList.decode
+  local decodes = 0
+  GxDisplayList.decode = function(...)
+    decodes = decodes + 1
+    return realDecode(...)
+  end
+  local ok, err = pcall(function()
+    local pool = GpuAssetPool.new(cacheFs, {
+      graphics = fakeGraphics(),
+      meshBuilder = function()
+        local mesh = { released = 0 }
+        function mesh:release()
+          self.released = self.released + 1
+        end
+        created[#created + 1] = mesh
+        return mesh --[[@as GpuAssetPool.Mesh]]
+      end,
+    })
+
+    local first = pool:meshFor({ file = BANK_PATH, drawIndex = 0 })
+    Assert.equal(decodes, 1, "first demand decodes the selected draw out of its bank")
+    Assert.equal(first.triangles, 1, "the selected draw reports its triangle count")
+    Assert.deepEqual(first.center, { 1, 0, 3 }, "the selected draw reports its own model-space center")
+    Assert.deepEqual(
+      first.bounds,
+      { minX = 0, maxX = 2, minY = 0, maxY = 0, minZ = 0, maxZ = 6 },
+      "the selected draw reports its own bounds"
+    )
+
+    local again = pool:meshFor({ file = BANK_PATH, drawIndex = 0 })
+    Assert.equal(again, first, "the same selected draw resolves the resident entry")
+    Assert.equal(again.mesh, first.mesh, "repeated demand reuses the resident GPU mesh")
+    Assert.equal(decodes, 1, "repeated demand performs no second GX decode")
+
+    local second = pool:meshFor({ file = BANK_PATH, drawIndex = 1 })
+    Assert.isTrue(second.mesh ~= first.mesh, "another draw of the same bank is its own GPU resource")
+    Assert.deepEqual(second.center, { -5, 0, 1.5 }, "the second draw reports its own center")
+    Assert.equal(decodes, 2, "the second selected draw is decoded once")
+    Assert.equal(#pool.meshes, 2, "the pool owns one mesh per selected draw")
+
+    pool:release()
+    pool:release()
+    Assert.equal(#pool.meshes, 0, "release disposes every resident mesh")
+    Assert.equal(created[1].released, 1, "the first resident mesh is disposed exactly once")
+    Assert.equal(created[2].released, 1, "the second resident mesh is disposed exactly once")
+  end)
+  GxDisplayList.decode = realDecode
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return {
   metadata = { capabilities = { "graphics" } },
   tests = T,

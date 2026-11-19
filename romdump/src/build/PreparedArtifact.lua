@@ -31,6 +31,11 @@ local CacheFs = require("libs.storage.src.CacheFs")
 ---@field sharedReused string[] worker-resolved shared paths already live and byte-identical
 ---@field result table<string, unknown>?
 ---@field error table<string, unknown>?
+---@class PreparedArtifact.DeferredImage
+---@field relativePath string stage-relative PNG destination
+---@field width integer
+---@field height integer
+---@field rgba love.Data RGBA rows owned until the continuation writes them
 ---@class PreparedArtifact
 ---@field private _cacheFs CacheFs
 ---@field private _stageFs CacheFs
@@ -44,6 +49,8 @@ local CacheFs = require("libs.storage.src.CacheFs")
 ---@field private _sharedFiles table<string, boolean>
 ---@field private _sharedInstall string[]
 ---@field private _sharedReused string[]
+---@field private _deferredImages table<string, PreparedArtifact.DeferredImage>
+---@field private _deferredOrder PreparedArtifact.DeferredImage[]
 ---@field private _status string
 ---@field private _manifest PreparedArtifact.Manifest?
 local PreparedArtifact = {}
@@ -176,6 +183,8 @@ local function newInstance(options)
     _sharedFiles = {},
     _sharedInstall = {},
     _sharedReused = {},
+    _deferredImages = {},
+    _deferredOrder = {},
     _status = "open",
   }, PreparedArtifact)
 end
@@ -256,6 +265,74 @@ function PreparedArtifact:addSharedFile(path)
     assert(not isPathUnder(path, root), "prepared artifact shared file is owned: " .. path)
   end
   self._sharedFiles[path] = true
+end
+
+-- A producer that already owns finished RGBA rows defers their PNG encode and
+-- write to the owning job's low-priority continuation instead of spending its
+-- source phase on compression. The stage stays open until every image is
+-- written into it; _finish then validates and seals once. The pixels travel as
+-- one immutable host buffer so the record crosses the worker round trip with
+-- no RGBA file and no second persistence step.
+---@param relativePath string stage-relative destination path
+---@param width integer
+---@param height integer
+---@param rgba string|love.Data RGBA rows, width*height*4 bytes
+function PreparedArtifact:deferImage(relativePath, width, height, rgba)
+  assert(self._status == "open", "prepared artifact is already finalized")
+  assertSafePath(self._cacheFs, relativePath, "deferred image")
+  assert(not self._deferredImages[relativePath], "deferred image is registered twice: " .. relativePath)
+  assert(type(width) == "number" and width % 1 == 0 and width > 0, "deferred image width must be positive")
+  assert(type(height) == "number" and height % 1 == 0 and height > 0, "deferred image height must be positive")
+  local bytes = rgba
+  if type(bytes) == "string" then
+    local host = rawget(_G, "love")
+    assert(
+      type(host) == "table" and type(host.data) == "table" and type(host.data.newByteData) == "function",
+      "deferred image encoding requires love.data"
+    )
+    bytes = host.data.newByteData(bytes)
+  end
+  assert(type(bytes) == "userdata" and type(bytes.getSize) == "function", "deferred image requires its RGBA buffer")
+  assert(bytes:getSize() == width * height * 4, "deferred image RGBA size does not match its dimensions")
+  local record = { relativePath = relativePath, width = width, height = height, rgba = bytes }
+  self._deferredImages[relativePath] = record
+  self._deferredOrder[#self._deferredOrder + 1] = record
+end
+
+---@return PreparedArtifact.DeferredImage[] images in the order they were deferred
+function PreparedArtifact:pendingImages()
+  local images = {}
+  for index, image in ipairs(self._deferredOrder) do
+    images[index] = image
+  end
+  return images
+end
+
+---@param relativePath string
+---@return boolean
+function PreparedArtifact:hasDeferredImage(relativePath)
+  return self._deferredImages[relativePath] ~= nil
+end
+
+-- Every deferred image must belong to the transaction that installs it and
+-- must already be written by its continuation: publication seals complete
+-- pixels only, and nothing may be staged outside the owned roots.
+function PreparedArtifact:_assertDeferredImagesStaged()
+  for _, image in ipairs(self._deferredOrder) do
+    local path = image.relativePath
+    assert(not self._sharedFiles[path], "prepared artifact deferred image is also shared: " .. path)
+    local owned = false
+    for root in pairs(self._ownedRoots) do
+      if path ~= root and isPathUnder(path, root) then
+        owned = true
+        break
+      end
+    end
+    assert(owned, "prepared artifact deferred image escapes its owned roots: " .. path)
+    assert(self._stageFs:exists(path, "file"), "prepared artifact deferred image was not staged: " .. path)
+  end
+  self._deferredImages = {}
+  self._deferredOrder = {}
 end
 
 -- Shared PNGs are addressed by source hash while their bytes embed the host
@@ -374,10 +451,13 @@ end
 function PreparedArtifact:_finish(status, result, failure)
   assert(self._status == "open", "prepared artifact is already finalized")
   if status == "success" then
+    self:_assertDeferredImagesStaged()
     self:_reconcileShared()
   else
     self._sharedInstall = {}
     self._sharedReused = {}
+    self._deferredImages = {}
+    self._deferredOrder = {}
   end
   local ownedRoots = sortedKeys(self._ownedRoots)
   if status == "success" then

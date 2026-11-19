@@ -46,7 +46,10 @@ local function assertBatchReferences(left, right, label)
   Assert.equal(#left, #right, label .. " batch count")
   for index, batch in ipairs(left) do
     local other = assert(right[index], label .. " batch " .. index)
-    Assert.equal(batch.geometry, other.geometry, label .. " batch " .. index .. " geometry")
+    -- A batch selects one draw out of a native model bank: both sides must name
+    -- the same bank file and the same stable draw index.
+    Assert.equal(batch.geometry.file, other.geometry.file, label .. " batch " .. index .. " geometry bank")
+    Assert.equal(batch.geometry.drawIndex, other.geometry.drawIndex, label .. " batch " .. index .. " draw index")
     Assert.equal(batch.material, other.material, label .. " batch " .. index .. " material")
   end
 end

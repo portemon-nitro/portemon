@@ -4,28 +4,19 @@
 
 local Assert = require("tests.support.Assert")
 local AlphaClassifier = require("libs.nds.src.gx.AlphaClassifier")
+local CompiledAsset = require("tests.rom.support.CompiledAsset")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local FieldEntranceIndicatorCompiler = require("romdump.src.digest.field.FieldEntranceIndicatorCompiler")
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local RomSuite = require("tests.rom.support.RomSuite")
 
-local function hasZeroAlpha(texture)
-  local image = love.image.newImageData(assert(texture.data))
-  local found = false
-  for y = 0, image:getHeight() - 1 do
-    for x = 0, image:getWidth() - 1 do
-      local _, _, _, alpha = image:getPixel(x, y)
-      if alpha == 0 then
-        found = true
-        break
-      end
-    end
-    if found then
-      break
+local function hasZeroAlpha(pixels)
+  for offset = 4, #pixels, 4 do
+    if string.byte(pixels, offset) == 0 then
+      return true
     end
   end
-  image:release()
-  return found
+  return false
 end
 
 local function testMember85Alpha(romFs)
@@ -84,37 +75,57 @@ local function testMember85Alpha(romFs)
       compiledByName[material.name] = material
     end
   end
-  -- The Ho-Oh leaf overlay frames are screen-space images no model material
-  -- samples, so they carry no material alpha classification.
-  local overlayFrames = {}
-  for _, layer in pairs(bundle.effects.ho_oh_appearance.leaves or {}) do
-    for _, frame in ipairs(layer.frames) do
-      overlayFrames[assert(frame.path:match("/([^/]+)%.png$"))] = true
+  -- Every textured material the bundle publishes names one texel/palette
+  -- pairing inside the bank it selects; the bank records must decode to the
+  -- same alpha classification the material carries, and a pair classified with
+  -- zero-alpha coverage must have alpha-zero pixels. The Ho-Oh leaf overlay
+  -- frames are screen-space images no model material samples, so they stay
+  -- outside this material-driven proof.
+  local descriptors = { bundle.model }
+  local function addDescriptor(candidate)
+    if type(candidate) == "table" and type(candidate.materials) == "table" then
+      descriptors[#descriptors + 1] = candidate
     end
   end
-  for textureKey, texture in pairs(bundle.textures) do
-    if not overlayFrames[textureKey] then
-      Assert.notNil(texture.alphaUsage, "compiled effect texture must classify decoded alpha")
-      if texture.alphaUsage.hasZero then
-        transparentOutput = true
-        Assert.isTrue(hasZeroAlpha(texture), "compiled zero-alpha usage must have alpha-zero pixels")
+  for _, effect in pairs(bundle.effects) do
+    addDescriptor(effect)
+    addDescriptor(type(effect) == "table" and effect.model or nil)
+  end
+  local texturedMaterials = 0
+  for _, descriptor in ipairs(descriptors) do
+    for _, material in ipairs(descriptor.materials) do
+      if material.texture then
+        local where = "compiled effect material " .. tostring(material.name)
+        Assert.notNil(material.alphaUsage, where .. " classifies its decoded alpha")
+        local compiled =
+          CompiledAsset.texturePixels(bundle.textures --[[@as table<string, unknown>]], material.texture, where)
+        texturedMaterials = texturedMaterials + 1
+        if material.alphaUsage.hasZero then
+          transparentOutput = true
+          Assert.isTrue(hasZeroAlpha(compiled.pixels), where .. " zero-alpha usage must have alpha-zero pixels")
+        end
       end
     end
   end
+  Assert.isTrue(texturedMaterials > 0, "member 85 must compile at least one textured material")
   Assert.isTrue(transparentOutput, "member 85 transparent coverage must survive compilation")
 
   for _, entry in ipairs(sourceMaterials) do
     if entry.texture.color0Transparent then
       local material = compiledByName[entry.material.name]
       Assert.notNil(material, "source material must survive normalized compilation: " .. entry.material.name)
-      local textureKey = assert(material.texture:match("/([^/]+)%.png$"))
-      local compiledTexture = assert(bundle.textures[textureKey])
+      Assert.notNil(material.texture, "source material binds its texture bank: " .. entry.material.name)
       Assert.isTrue(
-        compiledTexture.alphaUsage.hasZero,
+        material.alphaUsage.hasZero,
         "source color-zero transparency must survive for material " .. entry.material.name
       )
+      local compiled = CompiledAsset.texturePixels(
+        bundle.textures --[[@as table<string, unknown>]],
+        material.texture,
+        "material " .. entry.material.name
+      )
       Assert.isTrue(
-        hasZeroAlpha(compiledTexture),
+        hasZeroAlpha(compiled.pixels),
         "source color-zero transparency must produce alpha-zero pixels for material " .. entry.material.name
       )
     end

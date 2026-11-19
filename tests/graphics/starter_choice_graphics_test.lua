@@ -36,6 +36,33 @@ end
 local function preparationQueue(cacheFs)
   local SceneMesh =
     requireModule("libs.hgss.src.presentation.SceneMesh", "the mesh preparation packs upload buffers from cache bytes")
+  local ModelAsset = requireModule("libs.assets.src.model.ModelAsset", "generated references name their bank files")
+  local NativeTextureBank =
+    requireModule("libs.assets.src.model.NativeTextureBank", "a texture bank holds the named texels and palettes")
+  local TextureDecoder = requireModule("libs.nds.src.gx.TextureDecoder", "the DS texture decode")
+  -- The visible pixels one texture selector resolves to, exactly like the
+  -- production worker: named texels decoded under the named palette.
+  local function bankImage(selector)
+    local bank = assert(NativeTextureBank.read(assert(cacheFs:read(ModelAsset.textureFile(selector)))))
+    local texture = assert(bank:texture(assert(selector.textureName)))
+    local palette = selector.paletteName and assert(bank:palette(selector.paletteName)) or nil
+    local opts = {
+      format = texture.formatRaw,
+      width = texture.width,
+      height = texture.height,
+      color0Transparent = texture.color0Transparent,
+      texel = texture.texels,
+      palette = palette and palette.data or "",
+    }
+    if texture.indexData then
+      opts.indexData = texture.indexData
+    end
+    local rgba = love.data.newByteData(texture.width * texture.height * 4)
+    TextureDecoder.decodeInto(opts, rgba:getFFIPointer(), rgba:getSize(), TextureDecoder.newScratch(), {
+      name = texture.name,
+    })
+    return love.image.newImageData(texture.width, texture.height, "rgba8", rgba)
+  end
   local records = {}
   local nextToken = 0
   local queue = {}
@@ -48,7 +75,13 @@ local function preparationQueue(cacheFs)
   function queue:poll(token)
     local record = assert(records[token], "unknown preparation token")
     if record.payload == nil then
-      if record.kind == "mesh" then
+      if record.kind == "g4gx" then
+        local file = ModelAsset.geometryFile(record.path)
+        record.payload =
+          SceneMesh.prepareNativeBank(assert(cacheFs:read(file), "missing model bank " .. file), record.path)
+      elseif record.kind == "g4tx" then
+        record.payload = { imageData = bankImage(record.path) }
+      elseif record.kind == "mesh" then
         record.payload = SceneMesh.prepareUpload(assert(cacheFs:read(record.path), "missing mesh " .. record.path))
       else
         local bytes = assert(cacheFs:read(record.path), "missing texture " .. record.path)

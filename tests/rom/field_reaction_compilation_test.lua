@@ -26,7 +26,12 @@ function T.compiles_base_binding_and_selector_pattern_resources(romFs)
   local compiledBase = MaterialCompiler.compile(model.models[1].materials, basePack, {
     context = { textureArchive = FieldEffects.archive.alias, textureMemberId = 28 },
   })
-  local expectedBaseTexture = FieldEffectAssetCache.texturePath(compiledBase.materials[1].texture)
+  local baseBinding = assert(compiledBase.materials[1].texture, "the base material binds a texture from member 28")
+  local expectedBaseTexture = {
+    file = FieldEffectAssetCache.texturePath(assert(baseBinding.file:match("([^/]+)%.g4tx$"))),
+    textureName = baseBinding.textureName,
+    paletteName = baseBinding.paletteName,
+  }
 
   Assert.equal(#FieldEffects.followerReactions, 14)
   for selector, source in ipairs(FieldEffects.followerReactions) do
@@ -63,7 +68,7 @@ function T.compiles_base_binding_and_selector_pattern_resources(romFs)
 
     local material = assert(descriptor.materials[1])
     Assert.equal(material.name, "obj")
-    Assert.equal(material.texture, expectedBaseTexture, "frame-zero base binding must come from BTX0 member 28")
+    Assert.deepEqual(material.texture, expectedBaseTexture, "frame-zero base binding must come from BTX0 member 28")
     Assert.isTrue(#material.variants > 0, "selector texture pack must compile into pattern variants")
     local entry = assert(bundle.index.effects[source.key])
     Assert.equal(entry.kind, "reaction")

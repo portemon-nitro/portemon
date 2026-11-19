@@ -14,6 +14,7 @@ local ArtifactBattleJobs = require("romdump.src.build.ArtifactBattleJobs")
 ---@class ArtifactJobs.Job
 ---@field kind string
 ---@field key string
+---@field versionId string|nil explicit version identity when the caller carries it
 ---@field generationId string
 ---@field epoch integer
 ---@field stageName string
@@ -1217,6 +1218,91 @@ local function dispatchExecute(artifact, job, context)
   return descriptorFor(job.kind).execute(artifact, context, job)
 end
 
+-- A job whose authored outputs carry deferred images keeps its stage open and
+-- uniquely owned until the compiler pool's low-priority continuation writes
+-- every PNG: only then do `_finish` and publication run, exactly once, with
+-- the receipt last. A job without images seals here as it always has.
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job ArtifactJobs.Job
+---@param marker string
+---@return { stageName: string, result: table<string, unknown> }
+local function settleArtifact(artifact, context, job, marker)
+  local images = artifact:pendingImages()
+  if #images == 0 then
+    artifact:finishSuccess({ marker = marker })
+    return { stageName = job.stageName, result = { marker = marker } }
+  end
+  assert(context.pendingArtifact == nil, "a worker holds at most one deferred image parent")
+  context.pendingArtifact = {
+    artifact = artifact,
+    images = images,
+    result = { marker = marker },
+    stageName = job.stageName,
+    jobKey = job.kind .. ":" .. job.key,
+    versionId = job.versionId or context.versionId,
+    generationId = job.generationId,
+    epoch = job.epoch,
+    kind = job.kind,
+    key = job.key,
+  }
+  return { stageName = job.stageName, result = { marker = marker, pendingImages = images } }
+end
+
+-- The continuation packet identifies the parent it belongs to: stage, job,
+-- kind/key, epoch, generation and version must all agree with the held parent.
+---@param pending table<string, unknown>
+---@param job table<string, unknown> the dispatched continuation packet
+---@return boolean
+local function continuationMatches(pending, job)
+  return pending.stageName == job.stageName
+    and pending.jobKey == job.jobKey
+    and pending.kind == job.parentKind
+    and pending.key == job.key
+    and pending.epoch == job.epoch
+    and pending.generationId == job.generationId
+    and pending.versionId == job.versionId
+end
+
+-- The parent's deferred continuation writes each image through `writeImage`
+-- and then seals the same artifact. A stale continuation whose identity does
+-- not match the held parent is rejected; nothing publishes from it.
+---@param context table<string, unknown>
+---@param job table<string, unknown> the dispatched continuation packet
+---@param writeImage fun(image: PreparedArtifact.DeferredImage)
+function ArtifactJobs.completeDeferredImages(context, job, writeImage)
+  local pending = assert(context.pendingArtifact, "the png continuation has no pending parent")
+  assert(continuationMatches(pending, job), "the png continuation does not match its pending parent")
+  for _, image in ipairs(pending.images) do
+    writeImage(image)
+  end
+  pending.artifact:finishSuccess(pending.result)
+  context.pendingArtifact = nil
+end
+
+-- A failed continuation leaves no receipt: the stage is sealed as a failure so
+-- the pool's existing failure path reads the cause and discards it, and the
+-- previously published generation stays untouched. The pending RGBA buffers
+-- are released with the context record. A continuation that names another
+-- parent never touches the one in hand.
+---@param context table<string, unknown>
+---@param job table<string, unknown> the dispatched continuation packet
+---@param failure unknown
+---@param traceback string?
+---@return boolean abandoned
+function ArtifactJobs.abandonDeferredImages(context, job, failure, traceback)
+  local pending = context.pendingArtifact
+  if pending == nil or not continuationMatches(pending, job) then
+    return false
+  end
+  context.pendingArtifact = nil
+  local ok, finalizeError = pcall(pending.artifact.finishFailure, pending.artifact, failure, traceback)
+  if not ok then
+    error(finalizeError, 0)
+  end
+  return true
+end
+
 ---@param job ArtifactJobs.Job
 ---@param context table<string, unknown>
 ---@return { stageName: string, result: table<string, unknown> }
@@ -1272,8 +1358,7 @@ function ArtifactJobs.execute(job, context)
     error(info.failure, 0)
   end
   assert(type(marker) == "string" and marker ~= "", "family execution carries no marker")
-  artifact:finishSuccess({ marker = marker })
-  return { stageName = job.stageName, result = { marker = marker } }
+  return settleArtifact(artifact, context, job, marker)
 end
 
 ---@param cacheFs table<string, unknown>
