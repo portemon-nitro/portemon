@@ -12,7 +12,6 @@ local S = require("gen4.script")
 local ScriptBinaryDecoder = require("romdump.src.digest.script.ScriptBinaryDecoder")
 local SemanticLowering = require("romdump.src.digest.script.SemanticLowering")
 local Structurer = require("romdump.src.digest.script.Structurer")
-local LuaEmitter = require("romdump.src.digest.script.LuaEmitter")
 local Verifier = require("romdump.src.digest.script.Verifier")
 local Coverage = require("romdump.src.digest.script.Coverage")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
@@ -68,7 +67,7 @@ end
 -- Translate one script into a DSL resource.
 ---@param memberIr table<string, unknown>
 ---@param scriptIndex integer
----@param opts table<string, unknown> { stdCatalog, publicId, romSha1, repository, game, sourceHash }
+---@param opts table<string, unknown> { stdCatalog, publicId }
 ---@return table<string, unknown> resource, table<string, unknown> report
 local function translateScript(memberIr, scriptIndex, opts)
   local script = memberIr.scripts[scriptIndex]
@@ -91,27 +90,14 @@ local function translateScript(memberIr, scriptIndex, opts)
   end
 
   local id = opts.publicId or ScriptCompiler.publicId(memberIr.member, scriptIndex, opts.stdCatalog)
+  -- A generated base carries only the compiler discriminator: the storage
+  -- identity (member, source slot, generation) comes from the bundle it is
+  -- published in, and translation diagnostics stay in the member coverage
+  -- record instead of being repeated per resource.
   local resource = {
     api = 1,
     id = id,
-    metadata = {
-      generated = true,
-      generator = { name = "hgss-script-translator", version = LuaEmitter.GENERATOR_VERSION },
-      source = {
-        repository = opts.repository,
-        romSha1 = opts.romSha1,
-        path = memberIr.sourcePath,
-        game = opts.game,
-        archive = "scr_seq",
-        member = memberIr.member,
-        scriptIndex = scriptIndex,
-        sourceHash = opts.sourceHash or "",
-      },
-      coverage = {
-        complete = report.complete,
-        unsupportedCount = report.unsupportedCount,
-      },
-    },
+    metadata = { generated = true },
     steps = steps,
   }
   return resource, report
@@ -131,7 +117,6 @@ function ScriptCompiler.translateMember(memberIr, scriptIndices, opts)
       scriptIndex = index,
       resource = resource,
       report = report,
-      sourceHash = opts.sourceHash,
     }
   end
   return resources, results
@@ -242,7 +227,7 @@ function ScriptCompiler.compile(romFs, sha1hex, hashLua)
   hashLua = hashLua or Hashing.hashLua
   local plan = ScriptCompiler.plan(romFs, "", { sha1hex = sha1hex, hashLua = hashLua })
   local Session = require("romdump.src.digest.script.ScriptCompileSession")
-  local session = assert(Session.new(romFs, plan, { sha1hex = sha1hex, hashLua = hashLua }))
+  local session = assert(Session.new(romFs, plan))
   local records, resources, memberCoverage = {}, {}, {}
   local decodeNotes = 0
   for _, memberPlan in ipairs(plan.members) do
@@ -282,23 +267,6 @@ end
 
 function ScriptCompiler.memberBanksVersion()
   return "hgss-script-member-banks-v1"
-end
-
--- Emit the Lua text for one resource (the cache writer persists it).
----@param entry table<string, unknown> { id, member, scriptIndex, resource, report }
----@param opts table<string, unknown> { sourcePath, romSha1, game, sourceHash }
----@return string
-function ScriptCompiler.emit(entry, opts)
-  return LuaEmitter.emit(entry.resource, {
-    member = entry.member,
-    scriptIndex = entry.scriptIndex,
-    sourcePath = opts.sourcePath,
-    romSha1 = opts.romSha1,
-    repository = "portemon",
-    game = opts.game,
-    sourceHash = entry.sourceHash or opts.sourceHash,
-    coverage = entry.resource.metadata.coverage,
-  })
 end
 
 return ScriptCompiler

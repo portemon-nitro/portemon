@@ -6,7 +6,7 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
-local ScriptCache = require("libs.assets.src.ScriptCache")
+local ScriptCacheFixture = require("tests.support.ScriptCacheFixture")
 local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
 local Registry = require("libs.script.src.Registry")
 local Composition = require("libs.script.src.Composition")
@@ -39,51 +39,14 @@ local function generatedResource(id)
   return S.script({ api = 1, id = id, steps = { S.stop() } })
 end
 
-local function scriptText(id, step)
-  return string.format(
-    'local S = require("gen4.script")\nreturn S.script { api = 1, id = %q, steps = { %s } }\n',
-    id,
-    step
-  )
-end
-
 local function cacheWithScripts(files)
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:write(ScriptCache.markerPath(), "synthetic-script-cache")
-  local resources = {}
-  for id in pairs(files) do
-    resources[#resources + 1] = { id = id }
+  local scripts = {}
+  for id, steps in pairs(files) do
+    scripts[#scripts + 1] = { id = id, steps = steps }
   end
-  table.sort(resources, function(a, b)
-    return a.id < b.id
-  end)
-  for index, entry in ipairs(resources) do
-    entry.member = 0
-    entry.scriptIndex = index - 1
-  end
-  cache:write(ScriptCache.generationMarkerPath(GENERATION), "synthetic-script-cache")
-  cache:writeLua(ScriptCache.activeIndexPath(), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = GENERATION,
-    marker = "synthetic-script-cache",
-  })
-  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = GENERATION,
-    marker = "synthetic-script-cache",
-    resources = resources,
-  })
-  for id, content in pairs(files) do
-    cache:write(ScriptCache.scriptPath(GENERATION, 0, id), content)
-  end
+  ScriptCacheFixture.writeSingleMember(cache, GENERATION, "synthetic-script-cache", scripts)
   return cache
-end
-
-local function requireOverride(name)
-  if name == "gen4.script" then
-    return require("gen4.script")
-  end
-  error("unexpected require in override chunk: " .. name)
 end
 
 local function overrideFs(files)
@@ -162,7 +125,7 @@ end
 function T.tests.synthetic_override_keeps_explicit_precedence()
   local id = "test.generated.script"
   local generated = cacheWithScripts({
-    [id] = scriptText(id, "S.stop()"),
+    [id] = "S.stop()",
   })
   local withoutOverride = ScriptLoader.buildRegistry(generated, overrideFs({}))
   Assert.equal(assert(withoutOverride:base(id)).steps[1].op, "stop")
@@ -170,14 +133,17 @@ function T.tests.synthetic_override_keeps_explicit_precedence()
   local withOverride = ScriptLoader.buildRegistry(
     generated,
     overrideFs({
-      [id] = scriptText(id, "S.yieldTick()"),
+      [id] = 'local S = require("gen4.script")\nreturn S.script { api = 1, id = "'
+        .. id
+        .. '", steps = { S.yieldTick() } }\n',
     })
   )
   Assert.equal(assert(withOverride:base(id)).steps[1].op, "yield_tick")
 end
 
 function T.tests.malformed_override_loads_without_authoring_validation_and_fails_at_the_compiler_boundary()
-  local content = scriptText("test.deferred_validation", "S.setVar({})")
+  local content =
+    'local S = require("gen4.script")\nreturn S.script { api = 1, id = "test.deferred_validation", steps = { S.setVar({}) } }\n'
   local resource = ScriptLoader.loadOverride("test.deferred_validation", content, requireOverride)
   Assert.equal(resource.id, "test.deferred_validation")
   local valid, validateErr = S.validate(resource)
@@ -194,7 +160,7 @@ end
 function T.tests.generated_unsupported_node_is_a_scheduler_fault()
   local id = "vanilla.hgss.scr_seq.0842.script_016"
   local cache = cacheWithScripts({
-    [id] = scriptText(id, 'S.unsupported({ command = 999, originalName = "SyntheticUnsupported" })'),
+    [id] = 'S.unsupported({ command = 999, originalName = "SyntheticUnsupported" })',
   })
   local registry = ScriptLoader.buildRegistry(cache, productionFs())
   local composition = Composition.new(registry)

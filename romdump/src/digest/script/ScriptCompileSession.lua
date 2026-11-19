@@ -1,7 +1,6 @@
 -- Owns the reusable source/catalog context for member-level script
 -- compilation. The session is producer-local and is never exposed to runtime.
 
-local Hashing = require("romdump.src.digest.Hashing")
 local ScriptBinaryDecoder = require("romdump.src.digest.script.ScriptBinaryDecoder")
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
 local Coverage = require("romdump.src.digest.script.Coverage")
@@ -24,10 +23,9 @@ local function catalogs()
   }
 end
 
-function Session.new(romFs, plan, opts)
+function Session.new(romFs, plan)
   assert(romFs and romFs.openNarc, "script compile session requires RomFs")
   assert(type(plan) == "table" and type(plan.generationKey) == "string", "script compile session requires a plan")
-  opts = opts or {}
   local archive = assert(romFs:openNarc("field_scripts"))
   assert(archive:memberCount() == plan.memberCount, "script plan no longer matches the source archive")
   return setmetatable({
@@ -38,15 +36,15 @@ function Session.new(romFs, plan, opts)
     catalog = catalogs(),
     romSha1 = romFs:metadata().sha1,
     version = romFs:version(),
-    sha1hex = opts.sha1hex or Hashing.sha1hex,
   }, Session)
 end
 
 -- Direct dependency facts for one final structured resource: sorted unique
 -- audio sequence symbols plus sorted unique cross-script target ids. The
 -- compiler attaches this record to every member resource entry; the writer
--- persists it in the member sidecar without recomputation, and the summary
--- joins sidecars into the transitive per-member closure.
+-- emits it as the member bundle's compact direct facts without
+-- recomputation, and the summary joins them into the transitive per-member
+-- closure.
 local MUSIC_OPS = { play_music = "music", temporary_music = "music" }
 local FANFARE_OPS = { play_fanfare = "fanfare" }
 local SOUND_OPS = { play_sound = "sound", stop_sound = "sound", wait_sound = "sound" }
@@ -247,13 +245,8 @@ function Session:compileMember(memberId)
   for _, entry in ipairs(planned.scripts) do
     scriptIndices[#scriptIndices + 1] = entry.scriptIndex
   end
-  local sourceHash = self.sha1hex(view:toString())
   local resources, results = ScriptCompiler.translateMember(memberIr, scriptIndices, {
     stdCatalog = self.stdCatalog,
-    romSha1 = self.romSha1,
-    repository = "portemon",
-    game = self.version,
-    sourceHash = sourceHash,
   })
   local expected = {}
   for _, entry in ipairs(planned.scripts) do
@@ -269,7 +262,6 @@ function Session:compileMember(memberId)
   return {
     memberId = memberId,
     marker = planned.marker,
-    sourceHash = sourceHash,
     resources = resources,
     results = results,
     coverage = Coverage.record(memberIr, results, {

@@ -63,12 +63,10 @@ local function writeMarkers(cache, world)
     require("libs.assets.src.BagCache").markerPath(),
     FieldCameraCache.markerPath(),
     FieldFontCache.markerPath(),
-    FieldMessageCache.markerPath(),
     require("libs.assets.src.field.FieldUiAssetCache").markerPath(),
     require("libs.assets.src.newgame.IntroAssetCache").markerPath(),
     require("libs.assets.src.StarterChoiceAssetCache").markerPath(),
     require("libs.assets.src.field.FieldWeatherCache").markerPath(),
-    ScriptCache.markerPath(),
     require("libs.assets.src.field.FieldEffectAssetCache").markerPath(),
     require("libs.assets.src.field.FieldEmoteAssetCache").markerPath(),
     require("libs.assets.src.newgame.NewGameInitCache").markerPath(),
@@ -264,12 +262,12 @@ function T.member_with_a_missing_script_body_is_cold_before_its_summary()
   local marker = ScriptCache.marker("rom-sha", "dep-sha")
   local members = {
     { memberId = 3, id = "common.signpost", scriptIndex = 0 },
-    { memberId = 843, id = "new_bark.lab_sign", scriptIndex = 9 },
+    { memberId = 843, id = "new_bark.lab_sign", scriptIndex = 0 },
   }
   local plan, _ = publishScriptFamily(cache, marker, members, "missing-body")
   Assert.isTrue(ScriptCache.isReady(cache, marker), "the published class reads ready before damage")
 
-  cache:remove(ScriptCache.scriptPath(SCRIPT_GEN, 843, "new_bark.lab_sign"))
+  cache:remove(ScriptCache.memberPath(SCRIPT_GEN, 843))
 
   local plans = { scriptPlan = plan, scriptMemberIds = { 3, 843 } }
   Assert.isFalse(
@@ -306,10 +304,10 @@ function T.failed_leaf_repair_keeps_the_last_good_publication()
   local marker = ScriptCache.marker("rom-sha", "dep-sha")
   local members = {
     { memberId = 3, id = "common.signpost", scriptIndex = 0 },
-    { memberId = 843, id = "new_bark.lab_sign", scriptIndex = 9 },
+    { memberId = 843, id = "new_bark.lab_sign", scriptIndex = 0 },
   }
   local plan, _ = publishScriptFamily(cache, marker, members, "preserve-good")
-  cache:remove(ScriptCache.scriptPath(SCRIPT_GEN, 843, "new_bark.lab_sign"))
+  cache:remove(ScriptCache.memberPath(SCRIPT_GEN, 843))
 
   local plans = { scriptPlan = plan, scriptMemberIds = { 3, 843 } }
   Assert.isFalse(
@@ -343,14 +341,13 @@ function T.failed_leaf_repair_keeps_the_last_good_publication()
   backend.write = original
   Assert.isFalse(ok, "the injected staging failure must fail the repair")
 
-  Assert.equal(
-    cache:read(ScriptCache.memberMarkerPath(SCRIPT_GEN, 3)),
-    marker .. ":member:3",
-    "the healthy sibling marker survives the failed repair"
+  Assert.notNil(
+    cache:read(ScriptCache.memberPath(SCRIPT_GEN, 3)),
+    "the healthy sibling bundle survives the failed repair"
   )
-  local sibling = cache:loadModule(ScriptCache.scriptPath(SCRIPT_GEN, 3, "common.signpost"))
+  local sibling = assert(cache:loadModule(ScriptCache.memberPath(SCRIPT_GEN, 3))).scripts[1]
   Assert.equal(sibling.id, "common.signpost", "the healthy sibling body survives the failed repair")
-  Assert.equal(cache:read(ScriptCache.markerPath()), marker, "the previous summary marker survives")
+  Assert.equal(assert(ScriptCache.loadActive(cache)).marker, marker, "the previous summary selection survives")
   Assert.isNil(cache:read(require("romdump.src.DerivedCacheState").path), "no complete attestation publishes")
   Assert.isNil(backend:getInfo("staging/heartgold/failed-repair-843"), "the failed stage is discarded")
 end
@@ -403,8 +400,19 @@ end
 -- refusal names the deliberately damaged leaf.
 
 local function publishMessageFamily(cache, marker)
-  cache:write(FieldMessageCache.markerPath(), marker)
-  cache:writeLua(FieldMessageCache.indexPath(), { schema = FieldMessageCache.INDEX_SCHEMA, bankIds = {} })
+  local bankId = 219
+  cache:writeLua(FieldMessageCache.bankPath(bankId), {
+    schema = FieldMessageCache.SCHEMA,
+    bankId = bankId,
+    messageCount = 1,
+    messages = { [0] = { text = "", tokens = {} } },
+  })
+  writeReceipt(cache, "message-bank", tostring(bankId), marker)
+  cache:writeLua(FieldMessageCache.indexPath(), {
+    schema = FieldMessageCache.INDEX_SCHEMA,
+    version = "heartgold",
+    bankIds = { bankId },
+  })
   writeReceipt(cache, "message-summary", "global", marker)
 end
 

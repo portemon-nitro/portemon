@@ -129,8 +129,8 @@ function T.compiled_cache_artifacts_are_ready_and_stable(romFs, version)
     bankMarkers[bankId] = one.marker
   end
   messageSession:close()
-  local messageSummary = FieldMessageCacheWriter.summaryMarker(messageBundle.index, bankMarkers)
-  Assert.isTrue(FieldMessageCache.isReady(cache, messageSummary))
+  Assert.equal(type(FieldMessageCacheWriter.summaryMarker(messageBundle.index, bankMarkers)), "string")
+  Assert.isTrue(FieldMessageCache.isReady(cache), "the prepared message family reads ready")
   Assert.equal(FieldMessageCache.bankPath(542), "data/generated/field/messages/banks/0542.lua")
   local fontBundle = assert(FieldFontCompiler.compile(romFs))
   Assert.isTrue(require("romdump.src.digest.ui.FieldFontCacheWriter").isReady(cache, fontBundle.marker))

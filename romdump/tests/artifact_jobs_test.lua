@@ -718,10 +718,11 @@ local function publishWarmBank(cacheFs, generation, bankId)
     key = tostring(bankId),
     marker = marker,
   })
-  cacheFs:write(FieldMessageCache.bankMarkerPath(bankId), marker)
   cacheFs:writeLua(FieldMessageCache.bankPath(bankId), {
     schema = FieldMessageCache.SCHEMA,
     bankId = bankId,
+    messageCount = 0,
+    messages = {},
   })
 end
 
@@ -1309,10 +1310,7 @@ function T.cache_read_faults_escape_artifact_and_child_readiness()
   local childReceiptPath = ArtifactState.path("message-bank", "219")
   local childCache = {
     versionId = "heartgold",
-    read = function(_, path)
-      if path == FieldMessageCache.markerPath() then
-        return summaryMarker
-      end
+    read = function()
       return nil
     end,
     loadLua = function(_, path)
@@ -1326,10 +1324,10 @@ function T.cache_read_faults_escape_artifact_and_child_readiness()
         }
       end
       if path == FieldMessageCache.indexPath() then
-        return { schema = FieldMessageCache.INDEX_SCHEMA, bankIds = { 219 } }
+        return { schema = FieldMessageCache.INDEX_SCHEMA, version = "heartgold", bankIds = { 219 } }
       end
       if path == FieldMessageCache.bankPath(219) then
-        return { schema = FieldMessageCache.SCHEMA, bankId = 219 }
+        return { schema = FieldMessageCache.SCHEMA, bankId = 219, messageCount = 0, messages = {} }
       end
       if path == childReceiptPath then
         return nil, fault

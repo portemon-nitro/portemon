@@ -2,25 +2,43 @@
 -- corpus is one of the independently rebuildable derived classes (map
 -- geometry, actor visuals, messages/font, scripts): changing the script
 -- translator must not disturb the raw ROM dump or any compiled map.
--- Each immutable generation keeps its summary (index, provenance, coverage,
--- marker) under a `metadata/` child and its member payloads under
--- `members/`, so the summary can be published without replacing member
--- artifacts. The class is ready only when the completion marker matches exactly and
--- every indexed script file is present, so a partial build never reads as
--- complete. Paths are cache-relative; all IO goes through a CacheFs.
+-- Each immutable generation holds one readable Lua bundle per nonempty script
+-- archive member; a single active index selects a generation and carries the
+-- logical resource lookup plus the per-member transitive audio/asset-need
+-- closures; one aggregate coverage report describes the selected generation.
+-- Paths are cache-relative; all IO goes through a CacheFs.
 
 local ScriptCache = {}
 
+---@class ScriptCache.Resource
+---@field id string
+---@field member integer
+---@field scriptIndex integer
+
 ---@class ScriptCache.Index
 ---@field schema string
----@field resources table[]
+---@field version string
+---@field generation string
+---@field marker string
+---@field memberCount integer
+---@field scriptMemberCount integer
+---@field skippedMemberCount integer
+---@field scriptCount integer
+---@field resourceCount integer
+---@field resources ScriptCache.Resource[]
+---@field memberAudioSequences table<string, string[]>
+---@field memberAssetNeeds table<string, string[]>
 
 local Validate = require("libs.assets.src.Validate")
 local Contract = require("libs.assets.src.DerivedAssetContract")
 
 ScriptCache.FORMAT = Contract.scripts.cacheFormat
 ScriptCache.INDEX_SCHEMA = Contract.scripts.indexSchema
-ScriptCache.PROVENANCE_SCHEMA = Contract.scripts.provenanceSchema
+-- One bundle per nonempty script archive member: the ordered script
+-- resources of that member plus their compact direct dependency facts and the
+-- member coverage record. The owning member and generation are derived from
+-- the bundle path, never repeated inside it.
+ScriptCache.MEMBER_SCHEMA = Contract.scripts.memberSchema
 
 local DATA_DIR = "data/generated/script"
 local ACTIVE_DIR = DATA_DIR .. "/active"
@@ -47,23 +65,14 @@ function ScriptCache.generationsDir()
   return GENERATIONS_DIR
 end
 
+-- The one active selection: the indexed resource lookup, the generation it
+-- belongs to, and the per-member prefetch closures.
 function ScriptCache.activeIndexPath()
   return ACTIVE_DIR .. "/index.lua"
 end
 
-function ScriptCache.indexPath()
-  return ScriptCache.activeIndexPath()
-end
-function ScriptCache.provenancePath()
-  return ACTIVE_DIR .. "/provenance.lua"
-end
-function ScriptCache.markerPath()
-  return ACTIVE_DIR .. "/complete"
-end
-function ScriptCache.coverageJsonPath()
-  return ACTIVE_DIR .. "/coverage.json"
-end
-function ScriptCache.coverageMdPath()
+-- The one aggregate coverage report of the selected generation.
+function ScriptCache.coverageReportPath()
   return ACTIVE_DIR .. "/coverage.md"
 end
 
@@ -72,95 +81,15 @@ function ScriptCache.generationDir(generation)
   return GENERATIONS_DIR .. "/" .. generation
 end
 
-function ScriptCache.generationMetadataDir(generation)
-  return ScriptCache.generationDir(generation) .. "/metadata"
-end
-
-function ScriptCache.generationIndexPath(generation)
-  return ScriptCache.generationMetadataDir(generation) .. "/index.lua"
-end
-
-function ScriptCache.generationProvenancePath(generation)
-  return ScriptCache.generationMetadataDir(generation) .. "/provenance.lua"
-end
-
-function ScriptCache.generationCoverageJsonPath(generation)
-  return ScriptCache.generationMetadataDir(generation) .. "/coverage.json"
-end
-
-function ScriptCache.generationCoverageMdPath(generation)
-  return ScriptCache.generationMetadataDir(generation) .. "/coverage.md"
-end
-
-function ScriptCache.generationMarkerPath(generation)
-  return ScriptCache.generationMetadataDir(generation) .. "/complete"
-end
-
-function ScriptCache.memberDir(generation, memberId)
-  return ScriptCache.generationDir(generation) .. "/members/" .. memberName(memberId)
-end
-
-function ScriptCache.memberCoveragePath(generation, memberId)
-  return ScriptCache.memberDir(generation, memberId) .. "/coverage.lua"
-end
-
-function ScriptCache.memberMarkerPath(generation, memberId)
-  return ScriptCache.memberDir(generation, memberId) .. "/complete"
-end
-
--- Canonical per-resource hashes published alongside one member: the writer
--- stages this sidecar (validated there) before the member marker lands, so
--- a member without it is an incompatible older artifact, never a ready one.
-ScriptCache.HASHES_SCHEMA = "g4-script-resource-hashes-v3"
-
-function ScriptCache.memberHashesPath(generation, memberId)
+-- The physical unit of generated script content: every script of one source
+-- archive member in source order.
+function ScriptCache.memberPath(generation, memberId)
   assert(isSafeGeneration(generation), "generation key must be lowercase hexadecimal")
-  assert(type(memberId) == "number" and memberId % 1 == 0 and memberId >= 0, "member id must be a non-negative integer")
-  return ScriptCache.memberDir(generation, memberId) .. "/resource-hashes.lua"
-end
-
-function ScriptCache.scriptPath(generation, memberId, id)
-  assert(isSafeGeneration(generation), "generation key must be lowercase hexadecimal")
-  assert(type(memberId) == "number" and memberId % 1 == 0 and memberId >= 0, "member id must be a non-negative integer")
-  assert(type(id) == "string" and id ~= "", "script id must be a non-empty string")
-  return string.format("%s/scripts/%s.lua", ScriptCache.memberDir(generation, memberId), id)
+  return ScriptCache.generationDir(generation) .. "/" .. memberName(memberId) .. ".lua"
 end
 
 function ScriptCache.marker(romSha1, depHash)
   return string.format("%s:%s:%s", ScriptCache.FORMAT, romSha1, depHash)
-end
-
-function ScriptCache.loadActive(cacheFs)
-  local marker = cacheFs:read(ScriptCache.markerPath())
-  local active = cacheFs:loadLua(ScriptCache.activeIndexPath())
-  if type(active) ~= "table" or active.schema ~= ScriptCache.INDEX_SCHEMA then
-    return nil, "active script selection is malformed"
-  end
-  if not isSafeGeneration(active.generation) or type(active.marker) ~= "string" or active.marker == "" then
-    return nil, "active script selection is incomplete"
-  end
-  if marker ~= active.marker then
-    return nil, "active script marker does not match its index"
-  end
-  local generation = cacheFs:loadLua(ScriptCache.generationIndexPath(active.generation))
-  if type(generation) ~= "table" or generation.schema ~= ScriptCache.INDEX_SCHEMA then
-    return nil, "active script generation index is malformed"
-  end
-  if cacheFs:read(ScriptCache.generationMarkerPath(active.generation)) ~= active.marker then
-    return nil, "active script generation is incomplete"
-  end
-  if generation.generation ~= active.generation or generation.marker ~= active.marker then
-    return nil, "active script generation does not match its selector"
-  end
-  return { generation = active.generation, marker = active.marker, index = generation }
-end
-
-function ScriptCache.loadGenerationIndex(cacheFs, generation)
-  local index = cacheFs:loadLua(ScriptCache.generationIndexPath(generation))
-  if type(index) ~= "table" or index.schema ~= ScriptCache.INDEX_SCHEMA then
-    return nil, "script generation index is malformed"
-  end
-  return index
 end
 
 local function isSortedUniqueStrings(value, accepts)
@@ -214,54 +143,86 @@ local function isMemberAssetNeedsMapping(value)
   return isMemberClosureMapping(value, isNeedKey)
 end
 
-local function resourceFilesReady(cacheFs, generation, index)
+-- Strict validation of one active index: the current schema, its generation
+-- and marker, the indexed resource mapping (each logical id to exactly one
+-- member and source script slot), and every planned member's transitive
+-- closure. Returns true, or nil plus the cause.
+---@param index unknown
+---@return true|nil
+---@return string|nil
+local function checkIndex(index)
+  if type(index) ~= "table" or index.schema ~= ScriptCache.INDEX_SCHEMA then
+    return nil, "active script selection is malformed"
+  end
+  if not isSafeGeneration(index.generation) or type(index.marker) ~= "string" or index.marker == "" then
+    return nil, "active script selection is incomplete"
+  end
   if not Validate.isArray(index.resources) then
-    return false
+    return nil, "active script selection has no resource mapping"
   end
   -- Every planned member carries its transitive audio closure (possibly
   -- empty) under its decimal id; a mapping without it belongs to an
   -- incompatible older index, and a malformed list can never attest audio.
   if not isMemberAudioMapping(index.memberAudioSequences) then
-    return false
+    return nil, "active script selection has no usable audio closure"
   end
   -- Asset needs follow the same rule: every planned member carries its
   -- transitive closure (possibly empty).
   if not isMemberAssetNeedsMapping(index.memberAssetNeeds) then
-    return false
+    return nil, "active script selection has no usable asset needs"
   end
   local seenIds = {}
+  local seenSlots = {}
   local seenMembers = {}
   for _, entry in ipairs(index.resources) do
-    if type(entry) ~= "table" or type(entry.id) ~= "string" or entry.id == "" or type(entry.member) ~= "number" then
-      return false
-    end
-    -- Every indexed resource carries its published canonical hash; a
-    -- hashless entry belongs to an incompatible older index, and a repeated
-    -- id would attest the same resource twice.
-    if not Validate.isSha256Key(entry.resourceHash) then
-      return false
+    if
+      type(entry) ~= "table"
+      or type(entry.id) ~= "string"
+      or entry.id == ""
+      or not Validate.isNonNegativeInteger(entry.member)
+      or not Validate.isNonNegativeInteger(entry.scriptIndex)
+    then
+      return nil, "active script selection has a malformed resource"
     end
     if seenIds[entry.id] then
-      return false
+      return nil, "active script selection attests " .. entry.id .. " twice"
+    end
+    local slot = entry.member .. ":" .. entry.scriptIndex
+    if seenSlots[slot] then
+      return nil, "active script selection attests one source script slot twice"
     end
     seenIds[entry.id] = true
+    seenSlots[slot] = true
     seenMembers[entry.member] = true
-    local script = cacheFs:loadModule(ScriptCache.scriptPath(generation, entry.member, entry.id))
-    if type(script) ~= "table" or script.kind ~= "field_script" or script.id ~= entry.id then
-      return false
-    end
   end
   for member in pairs(seenMembers) do
-    local closure = index.memberAudioSequences[tostring(member)]
-    if not isSortedUniqueStrings(closure) then
-      return false
+    if index.memberAudioSequences[tostring(member)] == nil then
+      return nil, "active script selection is missing the audio closure of member " .. tostring(member)
     end
     local needs = index.memberAssetNeeds[tostring(member)]
-    if not isSortedUniqueStrings(needs, isNeedKey) then
-      return false
+    if needs == nil then
+      return nil, "active script selection is missing the asset needs of member " .. tostring(member)
     end
   end
   return true
+end
+
+-- The active selection, or nil plus the cause when no current selection is
+-- published. A malformed index is never treated as empty.
+---@param cacheFs CacheFs
+---@return { generation: string, marker: string, index: ScriptCache.Index }|nil
+---@return string|nil
+function ScriptCache.loadActive(cacheFs)
+  local index = cacheFs:loadLua(ScriptCache.activeIndexPath())
+  if type(index) ~= "table" then
+    return nil, "no active script selection is published"
+  end
+  local ok, reason = checkIndex(index)
+  if not ok then
+    return nil, reason
+  end
+  index = index --[[@as ScriptCache.Index]]
+  return { generation = index.generation, marker = index.marker, index = index }
 end
 
 -- The transitive audio closure for one script member: sorted unique
@@ -307,37 +268,31 @@ function ScriptCache.assetNeedsForMember(index, memberId)
   return needs
 end
 
--- True only if the marker is exact, the index loads with the expected schema,
--- resources is the required array of entries, and every indexed script's file
--- loads as a field_script resource whose id matches its index entry.
+-- True when the active index carries the expected marker and every member it
+-- indexes has a published bundle. Ordinary readiness never decodes the bundle
+-- bodies; the member and summary validators prove their contents.
 ---@param cacheFs CacheFs
----@param generation string
 ---@param expectedMarker string
 ---@return boolean
-function ScriptCache.isGenerationReady(cacheFs, generation, expectedMarker)
-  local ok, ready = pcall(function()
-    if not isSafeGeneration(generation) or type(expectedMarker) ~= "string" or expectedMarker == "" then
-      return false
-    end
-    local index = assert(ScriptCache.loadGenerationIndex(cacheFs, generation))
-    if index.generation ~= generation or index.marker ~= expectedMarker then
-      return false
-    end
-    if cacheFs:read(ScriptCache.generationMarkerPath(generation)) ~= expectedMarker then
-      return false
-    end
-    return resourceFilesReady(cacheFs, generation, index)
-  end)
-  return ok and ready == true
-end
-
 function ScriptCache.isReady(cacheFs, expectedMarker)
   local ok, ready = pcall(function()
     if type(expectedMarker) ~= "string" or expectedMarker == "" then
       return false
     end
-    local active = assert(ScriptCache.loadActive(cacheFs))
-    return active.marker == expectedMarker and ScriptCache.isGenerationReady(cacheFs, active.generation, expectedMarker)
+    local active = ScriptCache.loadActive(cacheFs)
+    if active == nil or active.marker ~= expectedMarker then
+      return false
+    end
+    local seen = {}
+    for _, entry in ipairs(active.index.resources) do
+      if not seen[entry.member] then
+        seen[entry.member] = true
+        if not cacheFs:exists(ScriptCache.memberPath(active.generation, entry.member), "file") then
+          return false
+        end
+      end
+    end
+    return true
   end)
   return ok and ready == true
 end

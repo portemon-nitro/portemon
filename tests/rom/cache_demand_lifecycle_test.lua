@@ -1,5 +1,6 @@
 -- Demand lifecycle against the real published corpus: lazy construction
--- reads no generated bodies, and first access reads only its own resource.
+-- reads no generated bodies, and first access reads only its own member
+-- bundle.
 -- Saved script state carries no aggregate fingerprint: a current bucket
 -- validates without one, and a predecessor bucket carrying stale
 -- fingerprints migrates by dropping only those fields.
@@ -28,12 +29,14 @@ local function builtins()
   return HgssScript.builtins()
 end
 
+-- Counts reads of generated member bundles: one readable bundle per nonempty
+-- script archive member is the generated body unit.
 local function countBodyReads(cacheFs)
   local reads = 0
   local backend = assert(cacheFs.backend, "the cache exposes its backend")
   local originalRead = assert(backend.read, "the backend reads by path")
   backend.read = function(self, path)
-    if type(path) == "string" and path:find("/scripts/", 1, true) ~= nil and path:sub(-4) == ".lua" then
+    if type(path) == "string" and path:find("/generations/", 1, true) ~= nil and path:sub(-4) == ".lua" then
       reads = reads + 1
     end
     return originalRead(self, path)
@@ -58,7 +61,7 @@ local function currentBucket()
 end
 
 -- Lazy construction reads no generated body; the first explicit base
--- access then reads exactly its own resource file.
+-- access then reads exactly its own member bundle.
 function T.lazy_build_reads_no_bodies_and_first_access_reads_only_its_resource(_, versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local fs = overrideFs()
@@ -80,7 +83,7 @@ function T.lazy_build_reads_no_bodies_and_first_access_reads_only_its_resource(_
   local finishAccessReads = countBodyReads(cacheFs)
   local base = assert(registry:base(firstId))
   Assert.equal(base.id, firstId, "first access resolves the pinned resource")
-  Assert.equal(finishAccessReads(), 1, "first access reads exactly its own body")
+  Assert.equal(finishAccessReads(), 1, "first access reads exactly its own member bundle")
 end
 
 function T.current_save_bucket_validates_without_fingerprints(_, versionId)
@@ -98,9 +101,8 @@ function T.current_save_bucket_validates_without_fingerprints(_, versionId)
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
--- Reads the runner-prepared complete scope (which publishes the complete
--- script corpus with canonical sidecars) read-only; body reads go through
--- the same cache without writing.
+-- Reads the runner-prepared complete scope read-only; member bundle reads
+-- go through the same cache without writing.
 suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.derivedAssets = { "script-summary:global" }
 suite.metadata.tags = { "script", "save" }

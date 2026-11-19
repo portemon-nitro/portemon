@@ -1,10 +1,10 @@
 -- Script member publication contract: members stage through a worker-owned
 -- preparation, never through a live cache handle, and the generation summary
 -- activates the complete selection only after every declared member is
--- current. Published per-resource content hashes stay derived from script
--- content, so an unrelated producer rotation preserves them while a real
--- semantic edit changes them. Saved script state carries no aggregate
--- fingerprint, so neither rotation nor edit gates a save at the envelope.
+-- current. A member bundle is byte-deterministic for its compiled content, so
+-- an unrelated producer rotation preserves it while a real semantic edit
+-- changes it. Saved script state carries no aggregate fingerprint, so neither
+-- rotation nor edit gates a save at the envelope.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -156,7 +156,6 @@ end
 local function stageAndPublishMember(cache, plan, member, stageName, outerGeneration, epoch)
   local artifact = memberArtifact(cache, member.memberId, stageName, outerGeneration, epoch)
   Assert.isTrue(ScriptCacheWriter.stageMember(artifact, plan, member))
-  artifact:addOwnedRoot(ScriptCache.memberDir(plan.generationKey, member.memberId))
   artifact:finishSuccess({ marker = member.marker })
   artifact:publish({
     generationId = outerGeneration,
@@ -195,13 +194,14 @@ local function publishCompleteGeneration(cache, generation, marker, specs, prefi
   return plan
 end
 
-local function publishedHashes(cache)
+-- One generation's published member-bundle bytes by resource id.
+local function publishedBundles(cache)
   local selection = assert(ScriptCache.loadActive(cache))
-  local hashes = {}
+  local bundles = {}
   for _, entry in ipairs(selection.index.resources) do
-    hashes[entry.id] = entry.resourceHash
+    bundles[entry.id] = assert(cache:read(ScriptCache.memberPath(selection.generation, entry.member)))
   end
-  return hashes
+  return bundles
 end
 
 local function saveBucket()
@@ -223,21 +223,17 @@ end
 function T.selected_member_repairs_stage_without_touching_live_files()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local plan = publishCompleteGeneration(cache, GENERATION_A, MARKER_A, nil, "repair-setup", OUTER_GENERATION_A)
-  local liveBefore = assert(cache:read(ScriptCache.scriptPath(GENERATION_A, 0, "stable.script")))
+  local liveBefore = assert(cache:read(ScriptCache.memberPath(GENERATION_A, 0)))
 
   local artifact = memberArtifact(cache, 0, "repair-private", OUTER_GENERATION_A)
   Assert.isTrue(ScriptCacheWriter.stageMember(artifact, plan, memberFor(0, "stable.script", GENERATION_A)))
   Assert.equal(
-    cache:read(ScriptCache.scriptPath(GENERATION_A, 0, "stable.script")),
+    cache:read(ScriptCache.memberPath(GENERATION_A, 0)),
     liveBefore,
     "private staging must not rewrite the live member"
   )
-  Assert.equal(
-    artifact:stageFs():read(ScriptCache.memberMarkerPath(GENERATION_A, 0)),
-    GENERATION_A .. ":member:0",
-    "the staged member carries its marker in the private stage"
-  )
-  artifact:addOwnedRoot(ScriptCache.memberDir(GENERATION_A, 0))
+  local stagedBundle = artifact:stageFs():loadModule(ScriptCache.memberPath(GENERATION_A, 0))
+  Assert.equal(stagedBundle.scripts[1].id, "stable.script", "the staged member lands in the private stage")
   artifact:finishSuccess({ marker = GENERATION_A .. ":member:0" })
 
   Assert.throws(function()
@@ -292,9 +288,9 @@ function T.live_cache_is_rejected_before_any_member_write()
 end
 
 -- The summary activates the whole selection at once: after publication both
--- member directories remain intact and the unchanged selection loader
--- resolves the complete generation.
-function T.summary_activation_keeps_both_member_directories()
+-- member bundles remain intact and the unchanged selection loader resolves
+-- the complete generation.
+function T.summary_activation_keeps_both_member_bundles()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local plan = planFor(GENERATION_A, MARKER_A, memberSpecs())
   for _, spec in ipairs(memberSpecs()) do
@@ -311,14 +307,11 @@ function T.summary_activation_keeps_both_member_directories()
   stageAndPublishSummary(cache, plan, "activation-summary", OUTER_GENERATION_A)
 
   for _, spec in ipairs(memberSpecs()) do
-    local resource = assert(cache:loadModule(ScriptCache.scriptPath(GENERATION_A, spec.memberId, spec.id)))
-    resource = resource --[[@as { kind: string, id: string }]]
-    Assert.equal(resource.kind, "field_script")
-    Assert.equal(resource.id, spec.id)
-    Assert.equal(
-      cache:read(ScriptCache.memberMarkerPath(GENERATION_A, spec.memberId)),
-      GENERATION_A .. ":member:" .. tostring(spec.memberId)
-    )
+    local bundle = assert(cache:loadModule(ScriptCache.memberPath(GENERATION_A, spec.memberId)))
+    bundle = bundle --[[@as { schema: string, scripts: { [1]: { kind: string, id: string } } }]]
+    Assert.equal(bundle.schema, ScriptCache.MEMBER_SCHEMA)
+    Assert.equal(bundle.scripts[1].kind, "field_script")
+    Assert.equal(bundle.scripts[1].id, spec.id)
   end
   local selection = assert(ScriptCache.loadActive(cache))
   Assert.equal(selection.generation, GENERATION_A)
@@ -370,18 +363,18 @@ end
 -- keeps the published per-resource content hashes, and the save envelope
 -- never consults them: a current bucket validates unchanged under both
 -- generations.
-function T.identical_content_under_two_producer_identities_keeps_published_hashes()
+function T.identical_content_under_two_producer_identities_keeps_published_bundles()
   local firstCache = CacheFs.forVersion("heartgold", FakeCache.new())
   publishCompleteGeneration(firstCache, GENERATION_A, MARKER_A, nil, "producer-first", OUTER_GENERATION_A)
   local secondCache = CacheFs.forVersion("heartgold", FakeCache.new())
   publishCompleteGeneration(secondCache, GENERATION_B, MARKER_B, nil, "producer-second", OUTER_GENERATION_B)
 
-  local first = publishedHashes(firstCache)
-  Assert.isTrue(first["stable.script"] ~= nil, "the published index carries a content hash per resource")
+  local first = publishedBundles(firstCache)
+  Assert.isTrue(first["stable.script"] ~= nil, "the published selection carries a member bundle per resource")
   Assert.deepEqual(
-    publishedHashes(secondCache),
+    publishedBundles(secondCache),
     first,
-    "producer-only rotation must not change the published content hashes"
+    "producer-only rotation must not change the published member bundles"
   )
 
   Assert.isNil(ScriptSave.validate(saveBucket(), {}), "the save validates under its own generation")
@@ -395,7 +388,7 @@ end
 function T.changed_script_content_no_longer_gates_the_save_envelope()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   publishCompleteGeneration(cache, GENERATION_A, MARKER_A, nil, "baseline", OUTER_GENERATION_A)
-  local baseline = publishedHashes(cache)
+  local baseline = publishedBundles(cache)
 
   local editedCache = CacheFs.forVersion("heartgold", FakeCache.new())
   local editedPlan = planFor(GENERATION_B, MARKER_B, memberSpecs())
@@ -414,15 +407,15 @@ function T.changed_script_content_no_longer_gates_the_save_envelope()
     OUTER_GENERATION_B
   )
   stageAndPublishSummary(editedCache, editedPlan, "edited-summary", OUTER_GENERATION_B)
-  local edited = publishedHashes(editedCache)
+  local edited = publishedBundles(editedCache)
   Assert.isTrue(
     edited["stable.script"] ~= baseline["stable.script"],
-    "a semantic edit must change the published content hash"
+    "a semantic edit must change the published member bundle"
   )
   Assert.equal(
     edited["second.script"],
     baseline["second.script"],
-    "an untouched script keeps its published content hash"
+    "an untouched member keeps its published bundle byte for byte"
   )
 
   Assert.isNil(ScriptSave.validate(saveBucket(), {}), "the quiescent save still validates under the edited registry")
@@ -475,17 +468,20 @@ function T.interrupted_summary_publication_recovers_the_previous_selection()
   backend.replace = originalReplace
 
   -- The interrupted publication moved the previous selection aside into
-  -- journal recovery material instead of leaving it live: the complete old
-  -- marker remains under the adjacent old root, while no selector is live
+  -- journal recovery material instead of leaving it live: the old active
+  -- index remains under the adjacent old root, while no selector is live
   -- until the existing journal recovery runs.
   local oldPrefix = "heartgold/" .. ScriptCache.activeDir() .. ".__g4old."
-  local oldMarker
+  local oldIndex
   for path, data in pairs(backend.files) do
-    if path:sub(1, #oldPrefix) == oldPrefix and path:sub(-#"/complete") == "/complete" then
-      oldMarker = data
+    if path:sub(1, #oldPrefix) == oldPrefix and path:sub(-#"/index.lua") == "/index.lua" then
+      oldIndex = data
     end
   end
-  Assert.equal(oldMarker, MARKER_A, "the previous complete selection must remain as recovery material")
+  Assert.isTrue(
+    type(oldIndex) == "string" and oldIndex:find(MARKER_A, 1, true) ~= nil,
+    "the previous complete selection must remain as recovery material"
+  )
   Assert.isFalse(
     ScriptCache.isReady(cache, MARKER_A),
     "a rolled-back selection is not live until journal recovery runs"

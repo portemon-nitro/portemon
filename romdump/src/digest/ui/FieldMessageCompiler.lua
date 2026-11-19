@@ -38,16 +38,13 @@ local APRICORN_BOX_MESSAGE_BANK = 21
 local NAMING_SCREEN_MESSAGE_BANK = 254
 
 ---@class FieldMessageCompiler.BankMessage
----@field id integer
 ---@field text string
----@field raw integer[]
 ---@field tokens FieldMessageText.Token[]
 
 ---@class FieldMessageCompiler.Bank
 ---@field schema string
 ---@field bankId integer
 ---@field messageCount integer
----@field key integer
 ---@field messages table<integer, FieldMessageCompiler.BankMessage>
 
 ---@class FieldMessageCompiler.Bundle
@@ -133,12 +130,12 @@ local function compileBank(source, bankId, sha1hex)
       tokenizeErr.context.messageId = index
       error(tokenizeErr)
     end
+    -- Two semantically distinct representations: modder-facing display text
+    -- (GMM-style markers for controls) and the lossless token stream the
+    -- renderer consumes without re-parsing the text. The array slot is the
+    -- message id, so no per-message id is stored.
     messages[index] = {
-      id = index,
-      -- Modder-facing display text (GMM-style markers for controls); the
-      -- token stream stays beside it as the lossless rendering source.
       text = FieldMessageText.tokensToText(tokens),
-      raw = message.raw,
       tokens = tokens,
     }
   end
@@ -147,7 +144,6 @@ local function compileBank(source, bankId, sha1hex)
     schema = FieldMessageCache.SCHEMA,
     bankId = bankId,
     messageCount = bank.messageCount,
-    key = bank.key,
     messages = messages,
   },
     memberSha1

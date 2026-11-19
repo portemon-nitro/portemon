@@ -157,18 +157,19 @@ local function build(files, avatarComposition)
     "unknown avatar composition: " .. tostring(avatarComposition)
   )
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:write(ScriptCache.markerPath(), SCRIPT_MARKER)
-  cache:write(ScriptCache.generationMarkerPath(SCRIPT_GENERATION), SCRIPT_MARKER)
   cache:writeLua(ScriptCache.activeIndexPath(), {
     schema = ScriptCache.INDEX_SCHEMA,
+    version = "heartgold",
     generation = SCRIPT_GENERATION,
     marker = SCRIPT_MARKER,
-  })
-  cache:writeLua(ScriptCache.generationIndexPath(SCRIPT_GENERATION), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = SCRIPT_GENERATION,
-    marker = SCRIPT_MARKER,
+    memberCount = 0,
+    scriptMemberCount = 0,
+    skippedMemberCount = 0,
+    scriptCount = 0,
+    resourceCount = 0,
     resources = {},
+    memberAudioSequences = {},
+    memberAssetNeeds = {},
   })
   local owner = FieldPlayerAvatarState.new({
     capability = capability(),

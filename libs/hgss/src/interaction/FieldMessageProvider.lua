@@ -47,7 +47,6 @@ FieldMessageProvider.MESSAGE_CONTROL_ARGUMENT_INVALID = "MESSAGE_CONTROL_ARGUMEN
 ---@field bankId integer
 ---@field messageId integer
 ---@field text string
----@field raw integer[]
 ---@field tokens MessageToken[]
 
 local DEFAULT_MAX_CACHED_BANKS = 4
@@ -168,8 +167,9 @@ function FieldMessageProvider:_touch(bankId)
 end
 
 -- Returns an immutable MessageTemplate for an acquired bank: the modder-
--- facing text plus the lossless token stream and raw code units. Never loads
--- on its own: bank lifetime is explicit.
+-- facing display text plus the lossless token stream that is the rendering
+-- source. The raw code units stay inside the tokens, so no second copy is
+-- exposed. Never loads on its own: bank lifetime is explicit.
 function FieldMessageProvider:get(bankId, messageId)
   local entry = self._banks[bankId]
   if not entry then
@@ -198,7 +198,6 @@ function FieldMessageProvider:get(bankId, messageId)
     bankId = bankId,
     messageId = messageId,
     text = message.text,
-    raw = message.raw,
     tokens = message.tokens,
   }
 end

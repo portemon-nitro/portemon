@@ -2,7 +2,6 @@
 -- successful translation through the default compiler path.
 
 local Assert = require("tests.support.Assert")
-local Hashing = require("romdump.src.digest.Hashing")
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
 local Session = require("romdump.src.digest.script.ScriptCompileSession")
 local Narc = require("libs.nds.src.nitro.Narc")
@@ -116,7 +115,7 @@ function T.dynamic_sound_and_music_operands_fail()
   Assert.equal(numericFailure.code, "SCRIPT_MEMBER_INVALID")
 end
 
-function T.member_session_hashes_the_exact_binary_view_bytes()
+function T.member_session_compiles_every_planned_script_without_a_member_hash()
   local memberBytes = ScriptFixture.member({
     scripts = {
       { offset = 0x20, instructions = { { op = 2, args = {} } } },
@@ -152,10 +151,12 @@ function T.member_session_hashes_the_exact_binary_view_bytes()
   local session = assert(Session.new(romFs, plan))
   local compiled = assert(session:compileMember(0))
 
-  Assert.equal(compiled.sourceHash, Hashing.sha1hex(memberBytes))
-  Assert.equal(#compiled.sourceHash, 40)
-  Assert.isTrue(compiled.sourceHash:match("^[0-9a-f]+$") ~= nil)
+  Assert.isNil(compiled.sourceHash, "a member payload carries no whole-member source hash")
+  Assert.equal(compiled.memberId, 0)
   Assert.equal(#compiled.resources, 1)
+  Assert.equal(compiled.resources[1].id, id)
+  Assert.equal(compiled.resources[1].resource.metadata.generated, true)
+  Assert.equal(compiled.resources[1].resource.metadata.source, nil)
   Assert.isTrue(compiled.results[0].report.complete)
 end
 

@@ -170,6 +170,23 @@ local function fixture()
   end
 end
 
+-- Publish one compiled corpus the way the per-bank jobs and the family
+-- summary job do: each bank's payload through its own transaction, then the
+-- family index.
+local function publishBundle(cache, bundle)
+  local bankMarkers = {}
+  for _, bankId in ipairs(bundle.index.bankIds) do
+    local marker = FieldMessageCache.marker("rom-sha", "dependency-sha-" .. tostring(bankId))
+    bankMarkers[bankId] = marker
+    FieldMessageCacheWriter.writeBank(cache, {
+      bankId = bankId,
+      bank = assert(bundle.banks[bankId], "the compiled corpus is missing bank " .. tostring(bankId)),
+      marker = marker,
+    })
+  end
+  return FieldMessageCacheWriter.writeSummary(cache, bundle.index, bankMarkers)
+end
+
 function T.compiles_tokenized_lossless_banks()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMessageCompiler.compile(romFs, sha1, hashLua))
@@ -185,7 +202,9 @@ function T.compiles_tokenized_lossless_banks()
   ---@type table<string, unknown>
   local bankShape = bank
   Assert.isNil(bankShape.source, "bank source identity lives in the dependency record")
-  Assert.deepEqual(bank.messages[0].raw, { 0x0141, 0x0153, 0x015B, 0x01AD, 0x01DE, 0xFFFF })
+  Assert.isNil(bankShape.messages[0].raw, "a stored message keeps no second raw code-unit copy")
+  Assert.deepEqual(bank.messages[0].tokens[1].raw, { 0x0141 })
+  Assert.equal(bank.messages[0].tokens[#bank.messages[0].tokens].kind, "eos")
   -- The asset carries the modder-facing display text beside the tokens.
   Assert.equal(bank.messages[0].text, "Wow, ")
   Assert.equal(bank.messages[1].text, "Professor {STRVAR_1 3, 0, 0}")
@@ -244,7 +263,7 @@ function T.route_29_bank_is_published_and_served_by_the_provider()
   Assert.equal(occurrences, 1, "Route 29's message bank must be indexed exactly once")
 
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldMessageCacheWriter.write(cache, bundle)
+  publishBundle(cache, bundle)
   local provider = assert(FieldMessageProvider.new(cache))
   local bank, err = provider:acquireBank(route29.messageMemberId)
   Assert.notNil(bank, err and err.message or "Route 29 message bank must be generated")
@@ -263,34 +282,43 @@ function T.compilation_is_deterministic()
   Assert.equal(a.marker, b.marker)
 end
 
-function T.writer_commits_marker_last_and_reads_back()
+function T.writer_publishes_each_bank_payload_and_the_family_index()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMessageCompiler.compile(romFs, sha1, hashLua))
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldMessageCacheWriter.write(cache, bundle)
-  Assert.isTrue(FieldMessageCache.isReady(cache, bundle.marker))
-  Assert.isFalse(FieldMessageCache.isReady(cache, bundle.marker .. "-stale"))
-  local loaded = assert(cache:loadLua(FieldMessageCache.bankPath(542)))
-  Assert.equal(loaded.bankId, 542)
-  Assert.equal(loaded.schema, FieldMessageCache.SCHEMA)
+  Assert.equal(publishBundle(cache, bundle), FieldMessageCacheWriter.summaryMarker(bundle.index, (function()
+    local markers = {}
+    for _, bankId in ipairs(bundle.index.bankIds) do
+      markers[bankId] = FieldMessageCache.marker("rom-sha", "dependency-sha-" .. tostring(bankId))
+    end
+    return markers
+  end)()))
+  Assert.isTrue(FieldMessageCache.isReady(cache))
+  for _, bankId in ipairs(bundle.index.bankIds) do
+    local loaded = assert(cache:loadLua(FieldMessageCache.bankPath(bankId)))
+    Assert.equal(loaded.bankId, bankId)
+    Assert.equal(loaded.schema, FieldMessageCache.SCHEMA)
+  end
 end
 
-function T.writer_failure_invalidates_the_class()
+function T.writer_failure_publishes_no_bank_payload()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMessageCompiler.compile(romFs, sha1, hashLua))
   local backend = FakeCache.new()
   local originalWrite = backend.write
   backend.write = function(self, path, data)
-    if path:find("banks/0543.lua", 1, true) then
+    if path:find("banks/0542.lua", 1, true) then
       error("injected")
     end
     return originalWrite(self, path, data)
   end
   local cache = CacheFs.forVersion("heartgold", backend)
   Assert.throws(function()
-    FieldMessageCacheWriter.write(cache, bundle)
+    publishBundle(cache, bundle)
   end)
-  Assert.isFalse(cache:exists(FieldMessageCache.dir()))
+  backend.write = originalWrite
+  Assert.isNil(cache:read(FieldMessageCache.bankPath(542)), "a failed bank publishes no payload")
+  Assert.isFalse(FieldMessageCache.isReady(cache), "a failed bank leaves no complete family index")
 end
 
 function T.failed_rebuild_preserves_the_previous_messages()
@@ -298,25 +326,25 @@ function T.failed_rebuild_preserves_the_previous_messages()
   local first = assert(FieldMessageCompiler.compile(romFs, sha1, hashLua))
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
-  FieldMessageCacheWriter.write(cache, first)
+  publishBundle(cache, first)
+  local previous = assert(cache:read(FieldMessageCache.bankPath(542)))
   local originalWrite = backend.write
   backend.write = function(self, path, data)
-    if path:find("banks/0543.lua", 1, true) then
+    if path:find("banks/0542.lua", 1, true) then
       error("injected")
     end
     return originalWrite(self, path, data)
   end
   local second = assert(FieldMessageCompiler.compile(romFs, sha1, hashLua))
-  second.marker = FieldMessageCache.marker(sha1, "new-dep-hash")
   Assert.throws(function()
-    FieldMessageCacheWriter.write(cache, second)
+    local marker = FieldMessageCache.marker("rom-sha", "new-dep-hash")
+    FieldMessageCacheWriter.writeBank(cache, { bankId = 542, bank = second.banks[542], marker = marker })
   end)
-  Assert.isTrue(FieldMessageCache.isReady(cache, first.marker), "the previous messages remain ready")
-  Assert.equal(cache:read(FieldMessageCache.markerPath()), first.marker, "no new marker leaked")
-  Assert.isNil(backend:getInfo("staging/heartgold/field-messages"), "the stage is cleaned on failure")
+  Assert.isTrue(FieldMessageCache.isReady(cache), "the previous messages remain ready")
+  Assert.equal(cache:read(FieldMessageCache.bankPath(542)), previous, "the previous bank payload survives")
   backend.write = originalWrite
-  FieldMessageCacheWriter.write(cache, second)
-  Assert.isTrue(FieldMessageCache.isReady(cache, second.marker), "a retry publishes the new messages")
+  publishBundle(cache, second)
+  Assert.isTrue(FieldMessageCache.isReady(cache), "a retry publishes the new messages")
 end
 
 function T.unmapped_glyph_fails_compilation_with_context()

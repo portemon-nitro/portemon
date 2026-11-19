@@ -14,6 +14,7 @@ local HgssFieldFog = require("romdump.src.digest.field.HgssFieldFog")
 local CollisionFixture = require("tests.support.CollisionFixture")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local ScriptCache = require("libs.assets.src.ScriptCache")
+local ScriptCacheFixture = require("tests.support.ScriptCacheFixture")
 local T = {}
 local SCRIPT_GENERATION = string.rep("a", 40)
 local APRICORN_KEYS = {
@@ -305,9 +306,18 @@ end
 local function writeMessageIndex(c, bankIds)
   c:writeLua(FieldMessageCache.indexPath(), {
     schema = FieldMessageCache.INDEX_SCHEMA,
+    version = "heartgold",
     bankIds = bankIds,
   })
-  c:write(FieldMessageCache.markerPath(), "m")
+end
+
+local function messageBank(bankId, schema)
+  return {
+    schema = schema or FieldMessageCache.SCHEMA,
+    bankId = bankId,
+    messageCount = 1,
+    messages = { [0] = { text = "", tokens = {} } },
+  }
 end
 
 local function mapScene(mapId)
@@ -415,7 +425,17 @@ local function writeFieldObjectRecord(c, object)
   })
 end
 
-local function writeGenerationIndex(c, generation, marker, resources, memberAudioSequences, memberAssetNeeds)
+-- One generated script selection: a real member bundle per member plus the
+-- single active index whose resource mapping and per-member closures are given
+-- explicitly so malformed shapes can be staged.
+local function writeScriptSelection(c, index, members)
+  for memberId, source in pairs(members or {}) do
+    c:write(ScriptCache.memberPath(SCRIPT_GENERATION, memberId), source)
+  end
+  c:writeLua(ScriptCache.activeIndexPath(), index)
+end
+
+local function scriptIndex(resources, memberAudioSequences, memberAssetNeeds)
   local closures = memberAudioSequences
   local needs = memberAssetNeeds
   if closures == nil or needs == nil then
@@ -428,32 +448,24 @@ local function writeGenerationIndex(c, generation, marker, resources, memberAudi
     closures = closures or empty
     needs = needs or empty
   end
-  c:write(ScriptCache.generationMarkerPath(generation), marker)
-  c:writeLua(ScriptCache.generationIndexPath(generation), {
+  return {
     schema = ScriptCache.INDEX_SCHEMA,
-    generation = generation,
-    marker = marker,
+    version = "heartgold",
+    generation = SCRIPT_GENERATION,
+    marker = "m",
+    memberCount = 1,
+    scriptMemberCount = 1,
+    skippedMemberCount = 0,
+    scriptCount = #resources,
+    resourceCount = #resources,
     resources = resources,
     memberAudioSequences = closures,
     memberAssetNeeds = needs,
-  })
+  }
 end
 
-local function writeScriptIndex(c, resources)
-  c:writeLua(ScriptCache.activeIndexPath(), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = SCRIPT_GENERATION,
-    marker = "m",
-  })
-  c:write(ScriptCache.markerPath(), "m")
-  writeGenerationIndex(c, SCRIPT_GENERATION, "m", resources)
-end
-
-local function writeGenerationResource(c, generation, member, id, kind)
-  c:write(
-    ScriptCache.scriptPath(generation, member, id),
-    string.format('return { kind = "%s", id = "%s" }\n', kind or "field_script", id)
-  )
+local function scriptMemberSource(id)
+  return ScriptCacheFixture.memberSource({ { id = id, steps = "S.stop()" } })
 end
 
 function T.actor_index_with_complete_avatar_state_maps_is_ready()
@@ -610,21 +622,21 @@ end
 function T.message_index_with_missing_bank_is_not_ready()
   local c = cache()
   writeMessageIndex(c, { 542 })
-  Assert.isFalse(FieldMessageCache.isReady(c, "m"), "an indexed bank file is required")
+  Assert.isFalse(FieldMessageCache.isReady(c), "an indexed bank file is required")
 end
 
 function T.message_bank_with_wrong_schema_is_not_ready()
   local c = cache()
   writeMessageIndex(c, { 542 })
-  c:writeLua(FieldMessageCache.bankPath(542), { schema = "g4-other-v1", bankId = 542 })
-  Assert.isFalse(FieldMessageCache.isReady(c, "m"), "bank file must carry the expected schema")
+  c:writeLua(FieldMessageCache.bankPath(542), messageBank(542, "g4-other-v1"))
+  Assert.isFalse(FieldMessageCache.isReady(c), "bank file must carry the expected schema")
 end
 
 function T.message_valid_artifact_is_ready()
   local c = cache()
   writeMessageIndex(c, { 542 })
-  c:writeLua(FieldMessageCache.bankPath(542), { schema = FieldMessageCache.SCHEMA, bankId = 542 })
-  Assert.isTrue(FieldMessageCache.isReady(c, "m"))
+  c:writeLua(FieldMessageCache.bankPath(542), messageBank(542))
+  Assert.isTrue(FieldMessageCache.isReady(c))
 end
 
 -- Map scene, model descriptors, and neighbor cells
@@ -711,58 +723,57 @@ function T.field_data_rejects_malformed_init_descriptor_union()
   Assert.isFalse(FieldMapDataCache.isReady(c, 60, "m"))
 end
 
-function T.script_generation_with_wrong_marker_is_not_ready()
+function T.script_selection_with_wrong_marker_is_not_ready()
   local c = cache()
-  writeGenerationIndex(c, SCRIPT_GENERATION, "m", {})
-  Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "other"))
+  writeScriptSelection(c, scriptIndex({}), {})
+  Assert.isFalse(ScriptCache.isReady(c, "other"))
 end
 
-function T.script_generation_with_missing_or_malformed_resource_is_not_ready()
+function T.script_selection_with_a_missing_member_bundle_is_not_ready()
   local c = cache()
   local resources = { { id = "a.b", member = 1, scriptIndex = 0 } }
-  writeGenerationIndex(c, SCRIPT_GENERATION, "m", resources)
-  Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"))
+  writeScriptSelection(c, scriptIndex(resources), {})
+  Assert.isFalse(ScriptCache.isReady(c, "m"))
 
-  writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b", "other")
-  Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"))
-end
-
-function T.script_generation_with_duplicate_entries_is_not_ready()
-  local c = cache()
-  local resources = {
-    { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("1", 64) },
-    { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("1", 64) },
-  }
-  writeGenerationIndex(c, SCRIPT_GENERATION, "m", resources)
-  writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b")
-  Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"), "duplicate index entries are not ready")
-end
-
-function T.script_valid_artifact_is_ready()
-  local c = cache()
-  writeScriptIndex(c, { { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("3", 64) } })
-  c:write(
-    ScriptCache.scriptPath(SCRIPT_GENERATION, 1, "a.b"),
-    'local S = require("gen4.script")\nreturn S.script { api = 1, id = "a.b", steps = { S.stop() } }\n'
-  )
+  writeScriptSelection(c, scriptIndex(resources), { [1] = scriptMemberSource("a.b") })
   Assert.isTrue(ScriptCache.isReady(c, "m"))
 end
 
-function T.script_generation_without_member_audio_closure_is_not_ready()
+function T.script_selection_with_duplicate_entries_is_not_ready()
   local c = cache()
-  local resources = { { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("3", 64) } }
-  c:write(ScriptCache.generationMarkerPath(SCRIPT_GENERATION), "m")
-  c:writeLua(ScriptCache.generationIndexPath(SCRIPT_GENERATION), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = SCRIPT_GENERATION,
-    marker = "m",
-    resources = resources,
+  local resources = {
+    { id = "a.b", member = 1, scriptIndex = 0 },
+    { id = "a.b", member = 1, scriptIndex = 0 },
+  }
+  writeScriptSelection(c, scriptIndex(resources), { [1] = scriptMemberSource("a.b") })
+  Assert.isFalse(ScriptCache.isReady(c, "m"), "duplicate index entries are not ready")
+end
+
+function T.script_selection_without_member_audio_closure_is_not_ready()
+  local c = cache()
+  local resources = { { id = "a.b", member = 1, scriptIndex = 0 } }
+  local index = scriptIndex(resources)
+  index.memberAudioSequences = nil
+  writeScriptSelection(c, index, { [1] = scriptMemberSource("a.b") })
+  Assert.isFalse(ScriptCache.isReady(c, "m"), "every indexed member requires a published audio closure")
+end
+
+function T.script_selection_without_member_asset_needs_is_not_ready()
+  local c = cache()
+  local resources = { { id = "a.b", member = 1, scriptIndex = 0 } }
+  local index = scriptIndex(resources, { ["1"] = {} })
+  index.memberAssetNeeds = nil
+  writeScriptSelection(c, index, { [1] = scriptMemberSource("a.b") })
+  Assert.isFalse(ScriptCache.isReady(c, "m"), "every indexed member requires its published asset needs")
+end
+
+function T.script_selection_with_unsorted_member_asset_needs_is_not_ready()
+  local c = cache()
+  local resources = { { id = "a.b", member = 1, scriptIndex = 0 } }
+  writeScriptSelection(c, scriptIndex(resources, nil, { ["1"] = { "field-effect:b", "field-effect:a" } }), {
+    [1] = scriptMemberSource("a.b"),
   })
-  writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b")
-  Assert.isFalse(
-    ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"),
-    "every generation member requires a published audio closure"
-  )
+  Assert.isFalse(ScriptCache.isReady(c, "m"), "unsorted needs can never attest a member")
 end
 
 function T.script_member_audio_lookup_returns_the_published_closure()
@@ -775,32 +786,6 @@ function T.script_member_audio_lookup_returns_the_published_closure()
   Assert.isNil(ScriptCache.audioSequencesForMember(index, 2))
   Assert.isNil(ScriptCache.audioSequencesForMember({ memberAudioSequences = { ["1"] = { "B", "A" } } }, 1))
   Assert.isNil(ScriptCache.audioSequencesForMember({}, 1))
-end
-
-function T.script_generation_without_member_asset_needs_is_not_ready()
-  local c = cache()
-  local resources = { { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("3", 64) } }
-  c:write(ScriptCache.generationMarkerPath(SCRIPT_GENERATION), "m")
-  c:writeLua(ScriptCache.generationIndexPath(SCRIPT_GENERATION), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = SCRIPT_GENERATION,
-    marker = "m",
-    resources = resources,
-    memberAudioSequences = { ["1"] = {} },
-  })
-  writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b")
-  Assert.isFalse(
-    ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"),
-    "every generation member requires its published asset needs"
-  )
-end
-
-function T.script_generation_with_unsorted_member_asset_needs_is_not_ready()
-  local c = cache()
-  local resources = { { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("3", 64) } }
-  writeGenerationIndex(c, SCRIPT_GENERATION, "m", resources, nil, { ["1"] = { "field-effect:b", "field-effect:a" } })
-  writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b")
-  Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"), "unsorted needs can never attest a member")
 end
 
 function T.script_member_asset_needs_lookup_returns_the_published_closure()

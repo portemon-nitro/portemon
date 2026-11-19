@@ -1,14 +1,14 @@
 -- Field script platform construction: the game builds its registry,
 -- composition, and task registry directly from the production owners. The
--- registry installs lazily, so construction reads no generated bodies; first
--- use decodes exactly its own body.
+-- registry installs lazily, so construction reads no member bundles; first
+-- use decodes exactly its own member.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local Composition = require("libs.script.src.Composition")
 local FakeCache = require("tests.support.FakeCache")
 local HgssScript = require("libs.hgss.src.script.Composition")
-local ScriptCache = require("libs.assets.src.ScriptCache")
+local ScriptCacheFixture = require("tests.support.ScriptCacheFixture")
 local ScriptLoader = require("libs.script.src.ScriptLoader")
 local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
 local TaskRegistry = require("libs.script.src.TaskRegistry")
@@ -18,9 +18,6 @@ local GENERATION = string.rep("a", 40)
 local MARKER = "script-cache-v4:rom-sha:dep-sha"
 
 local SCRIPT_ID = "new_bark.lab_sign"
-local SCRIPT = 'local S = require("gen4.script")\nreturn S.script { api = 1, id = "'
-  .. SCRIPT_ID
-  .. '", steps = { S.stop() } }\n'
 
 local function overrideFs()
   return {
@@ -35,29 +32,16 @@ end
 
 local function scriptCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:write(ScriptCache.markerPath(), MARKER)
-  cache:write(ScriptCache.generationMarkerPath(GENERATION), MARKER)
-  cache:writeLua(ScriptCache.activeIndexPath(), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = GENERATION,
-    marker = MARKER,
-  })
-  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = GENERATION,
-    marker = MARKER,
-    resources = { { id = SCRIPT_ID, member = 0, scriptIndex = 0 } },
-  })
-  cache:write(ScriptCache.scriptPath(GENERATION, 0, SCRIPT_ID), SCRIPT)
+  ScriptCacheFixture.writeSingleMember(cache, GENERATION, MARKER, { { id = SCRIPT_ID, steps = "S.stop()" } })
   return cache
 end
 
--- Count generated body reads through the cache backend from here on.
+-- Count generated member-bundle reads through the cache backend from here on.
 local function countScriptReads(cache)
   local reads = 0
   local originalRead = cache.backend.read
   cache.backend.read = function(self, path)
-    if path:find("/scripts/", 1, true) then
+    if path:find("/generations/", 1, true) then
       reads = reads + 1
     end
     return originalRead(self, path)

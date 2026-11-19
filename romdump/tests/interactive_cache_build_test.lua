@@ -625,7 +625,7 @@ local function stageBankReply(env, bankId, marker, stageName)
     })
     FieldMessageCacheWriter.stageBank(artifact, {
       bankId = bankId,
-      bank = { schema = FieldMessageCache.SCHEMA, bankId = bankId, messageCount = 0, key = bankId, messages = {} },
+      bank = { schema = FieldMessageCache.SCHEMA, bankId = bankId, messageCount = 0, messages = {} },
       marker = marker,
       dependencies = {
         cacheFormat = "synthetic",
@@ -661,7 +661,7 @@ local function stageBankReplyOnWorker(env, bankId, marker, workerId, occurrence)
     })
     FieldMessageCacheWriter.stageBank(artifact, {
       bankId = bankId,
-      bank = { schema = FieldMessageCache.SCHEMA, bankId = bankId, messageCount = 0, key = bankId, messages = {} },
+      bank = { schema = FieldMessageCache.SCHEMA, bankId = bankId, messageCount = 0, messages = {} },
       marker = marker,
       dependencies = {
         cacheFormat = "synthetic",
@@ -711,10 +711,11 @@ local function publishBankLive(env, bankId, marker)
       key = key,
       marker = marker,
     })
-    env.cacheFs:write(FieldMessageCache.bankMarkerPath(bankId), marker)
     env.cacheFs:writeLua(FieldMessageCache.bankPath(bankId), {
       schema = FieldMessageCache.SCHEMA,
       bankId = bankId,
+      messageCount = 0,
+      messages = {},
     })
   end)
 end
@@ -729,7 +730,6 @@ local function publishSummaryLive(env, bankIds, bankMarkers)
       key = "global",
       marker = marker,
     })
-    env.cacheFs:write(FieldMessageCache.markerPath(), marker)
     env.cacheFs:writeLua(FieldMessageCache.indexPath(), index)
   end)
 end
@@ -1656,20 +1656,25 @@ local function semanticAudioPlan()
   }
 end
 local function stageSemanticScriptClosure(cacheFs, memberSequences)
+  local memberAudioSequences = memberSequences or { [tostring(SEMANTIC_SCRIPT_MEMBER)] = {} }
+  local memberAssetNeeds = {}
+  for memberId in pairs(memberAudioSequences) do
+    memberAssetNeeds[memberId] = {}
+  end
   cacheFs:writeLua(ScriptCache.activeIndexPath(), {
     schema = ScriptCache.INDEX_SCHEMA,
+    version = "heartgold",
     generation = SEMANTIC_SCRIPT_GENERATION,
     marker = SEMANTIC_SCRIPT_MARKER,
-  })
-  cacheFs:write(ScriptCache.markerPath(), SEMANTIC_SCRIPT_MARKER)
-  cacheFs:writeLua(ScriptCache.generationIndexPath(SEMANTIC_SCRIPT_GENERATION), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = SEMANTIC_SCRIPT_GENERATION,
-    marker = SEMANTIC_SCRIPT_MARKER,
+    memberCount = 0,
+    scriptMemberCount = 0,
+    skippedMemberCount = 0,
+    scriptCount = 0,
+    resourceCount = 0,
     resources = {},
-    memberAudioSequences = memberSequences or { [tostring(SEMANTIC_SCRIPT_MEMBER)] = {} },
+    memberAudioSequences = memberAudioSequences,
+    memberAssetNeeds = memberAssetNeeds,
   })
-  cacheFs:write(ScriptCache.generationMarkerPath(SEMANTIC_SCRIPT_GENERATION), SEMANTIC_SCRIPT_MARKER)
 end
 local function stageSemanticFieldRecord(cacheFs, mapId, music, plates)
   stageSemanticScriptClosure(cacheFs)
@@ -1954,20 +1959,28 @@ local function stageScriptAudioRecord(cacheFs)
   cacheFs:writeLua(FieldMapDataCache.fieldPath(SCRIPT_AUDIO_MAP_ID), staged)
 end
 local function stageScriptAudioClosure(cacheFs, memberSequences)
+  local memberAudioSequences = {}
+  local memberAssetNeeds = {}
+  for memberId in pairs(memberSequences) do
+    memberAssetNeeds[memberId] = {}
+  end
+  for memberId, closure in pairs(memberSequences) do
+    memberAudioSequences[memberId] = closure
+  end
   cacheFs:writeLua(ScriptCache.activeIndexPath(), {
     schema = ScriptCache.INDEX_SCHEMA,
+    version = "heartgold",
     generation = SCRIPT_AUDIO_GENERATION,
     marker = SCRIPT_AUDIO_MARKER,
-  })
-  cacheFs:write(ScriptCache.markerPath(), SCRIPT_AUDIO_MARKER)
-  cacheFs:writeLua(ScriptCache.generationIndexPath(SCRIPT_AUDIO_GENERATION), {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = SCRIPT_AUDIO_GENERATION,
-    marker = SCRIPT_AUDIO_MARKER,
+    memberCount = 0,
+    scriptMemberCount = 0,
+    skippedMemberCount = 0,
+    scriptCount = 0,
+    resourceCount = 0,
     resources = {},
-    memberAudioSequences = memberSequences,
+    memberAudioSequences = memberAudioSequences,
+    memberAssetNeeds = memberAssetNeeds,
   })
-  cacheFs:write(ScriptCache.generationMarkerPath(SCRIPT_AUDIO_GENERATION), SCRIPT_AUDIO_MARKER)
 end
 local function adoptScriptAudioInventory(session)
   local messageBankIds = {}
