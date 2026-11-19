@@ -18,6 +18,7 @@ local PcPresentationFixture = require("tests.support.PcPresentationFixture")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
+local FakePreparationQueue = require("tests.support.FakePreparationQueue")
 
 local HOST_MODULE = "game.hgss.src.field.PartySelectionHost"
 local TARGET_MODULE = "game.hgss.src.field.FieldPresentationResources"
@@ -299,6 +300,7 @@ local function compositionRuntime()
     -- icons, Summary, and PC visuals: the injected pool keeps the
     -- composition honest without staging anything behind the doubles.
     imageAssets = SharedImagePoolFake.new(),
+    assetPreparation = FakePreparationQueue.new(),
   }
   runtime.iconDemands = {}
   runtime.derivedAssets = {

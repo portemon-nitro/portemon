@@ -26,6 +26,7 @@ local PartyCache = require("libs.assets.src.PartyCache")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
+local FakePreparationQueue = require("tests.support.FakePreparationQueue")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
 local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 local SummaryRenderer = require("libs.hgss.src.ui.SummaryRenderer")
@@ -601,6 +602,9 @@ local function fprRuntime(versionId)
     -- through it: the injected pool keeps construction honest without
     -- staging anything behind the doubles.
     imageAssets = SharedImagePoolFake.new(),
+    -- The bag hero the presented runtime constructs decodes its model bank
+    -- through the preparation worker; this suite's doubles answer ready.
+    assetPreparation = FakePreparationQueue.new(),
   }
   runtime.derivedAssets = {}
   runtime.bindPartyIconPreparation = function(_, _, _)

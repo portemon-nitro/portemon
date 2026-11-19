@@ -149,6 +149,7 @@ end
 ---@class StarterChoicePrepStep
 ---@field kind "mesh"|"g4gx"|"image"|"g4tx"|"models"|"finish"
 ---@field path string|ModelAsset.GeometryReference|ModelAsset.TextureReference?
+---@field draws { drawIndex: integer, key: string }[]? every draw a native bank step realizes
 ---@field wrapX string?
 ---@field wrapY string?
 ---@field width number?
@@ -163,28 +164,10 @@ end
 ---@field gxRenderer table<string, unknown> borrowed field graphics backend for the renderer wrapper
 ---@field derivedAssets table<string, function>? borrowed semantic host gating actual portrait pages
 
--- One generated reference as the identity this preparation keys its realized
--- entries by: a plain path, or a native bank selector expanded to the same
--- stable string the pool uses.
----@param reference string|ModelAsset.GeometryReference|ModelAsset.TextureReference
----@return string
-local function referenceKey(reference)
-  if type(reference) == "string" then
-    return reference
-  end
-  if reference.drawIndex ~= nil then
-    return string.format("%s#draw%d", reference.file, reference.drawIndex)
-  end
-  return string.format("%s#%s#%s", reference.file, tostring(reference.textureName), tostring(reference.paletteName))
-end
-
--- The preparation kind one reference needs: a plain procedural mesh or PNG, or
--- the native bank selector that replaced the per-draw mesh / per-pair image.
----@param reference string|ModelAsset.GeometryReference
----@return string
-local function meshKind(reference)
-  return type(reference) == "table" and "g4gx" or "mesh"
-end
+-- This preparation keys its realized entries by the shared generated-asset
+-- identity: a plain path, or a native bank selector expanded to the same stable
+-- string the pool uses.
+local referenceKey = ModelAsset.assetIdentity
 
 ---@param reference string|ModelAsset.TextureReference
 ---@return string
@@ -295,16 +278,34 @@ end
 ---@return StarterChoiceMeshRequest[] meshPaths, StarterChoicePrepStep[] imageSteps
 local function collectResources(manifest, portraits)
   local models = assert(manifest.models, "starter manifest is missing its models")
-  local meshPaths, seenMesh = {}, {}
+  -- Native geometry is prepared one whole model bank at a time (one worker
+  -- decode, one terrain repair, one upload packet per draw), so the plan holds
+  -- one step per bank carrying every draw this manifest selects from it.
+  local meshSteps, meshStepByBank = {}, {}
   local function addMesh(reference)
     assert(
       type(reference) == "string" or ModelAsset.isGeometrySelector(reference),
       "starter model batch references no geometry"
     )
-    local key = referenceKey(reference)
-    if not seenMesh[key] then
-      seenMesh[key] = true
-      meshPaths[#meshPaths + 1] = { reference = reference, key = key }
+    if type(reference) == "string" then
+      local key = referenceKey(reference)
+      if meshStepByBank[key] == nil then
+        meshStepByBank[key] = true
+        meshSteps[#meshSteps + 1] = { kind = "mesh", path = reference, key = key }
+      end
+      return
+    end
+    local bankFile = assert(reference.file)
+    local step = meshStepByBank[bankFile]
+    if step == nil then
+      step = { kind = "g4gx", path = bankFile, draws = {}, seenDraws = {} }
+      meshStepByBank[bankFile] = step
+      meshSteps[#meshSteps + 1] = step
+    end
+    local drawIndex = assert(reference.drawIndex)
+    if not step.seenDraws[drawIndex] then
+      step.seenDraws[drawIndex] = true
+      step.draws[#step.draws + 1] = { drawIndex = drawIndex, key = referenceKey(reference) }
     end
   end
   local imageSteps, seenImage = {}, {}
@@ -397,7 +398,7 @@ local function collectResources(manifest, portraits)
       addImage(MonCache.portraitPagePath(pageId), "clamp", "clamp", nil, nil, pageId)
     end
   end
-  return meshPaths, imageSteps
+  return meshSteps, imageSteps
 end
 
 ---@param manifest table<string, unknown>
@@ -517,7 +518,7 @@ function StarterChoicePreparation:advance(context, maxWorkUnits)
     end
   end
   if self.plan == nil then
-    local meshPaths, imageSteps = collectResources(self.manifest, self.portraits)
+    local meshSteps, imageSteps = collectResources(self.manifest, self.portraits)
     -- The chooser draws through the session image owner when the field
     -- composition provides one, instead of privately owned textures.
     -- The session owner behind leased 2D draws is remembered beside
@@ -529,8 +530,8 @@ function StarterChoicePreparation:advance(context, maxWorkUnits)
     self.prepareQueue = context.assetPreparation
     self.pageHost = context.derivedAssets
     local plan = {}
-    for _, mesh in ipairs(meshPaths) do
-      plan[#plan + 1] = { kind = meshKind(mesh.reference), path = mesh.reference, key = mesh.key }
+    for _, step in ipairs(meshSteps) do
+      plan[#plan + 1] = step
     end
     for _, step in ipairs(imageSteps) do
       plan[#plan + 1] = step
@@ -716,13 +717,36 @@ end
 function StarterChoicePreparation:_realizePrepared(step, payload)
   local pool = assert(self.pool, "starter preparation owns no pool")
   local path = assert(step.path, "starter preparation step carries no path")
-  if step.kind == "mesh" or step.kind == "g4gx" then
-    ---@cast path string|ModelAsset.GeometryReference
+  if step.kind == "mesh" then
+    ---@cast path string
     if not isMeshPayload(payload) then
       error("starter preparation produced no mesh upload buffers for " .. tostring(path), 0)
     end
     self._resources.meshEntries[referenceKey(path)] =
       pool:meshFromPrepared(path, payload --[[@as SceneMesh.PreparedMesh]])
+    return
+  end
+  if step.kind == "g4gx" then
+    ---@cast path string
+    -- One bank payload carries one upload packet per draw; every draw this
+    -- manifest selects realizes from it, so the bank decodes once.
+    local prepared = payload --[[@as { draws: table<string, unknown>[] } ]]
+    assert(type(prepared) == "table" and prepared.draws ~= nil, "starter bank payload carries no draws")
+    local packets = prepared.draws
+    for _, selected in ipairs(assert(step.draws, "bank step carries its selected draws")) do
+      local upload = packets[selected.drawIndex + 1]
+      if not isMeshPayload(upload) then
+        error(
+          "starter preparation produced no mesh upload buffers for "
+            .. tostring(path)
+            .. " draw "
+            .. tostring(selected.drawIndex),
+          0
+        )
+      end
+      self._resources.meshEntries[selected.key] =
+        pool:meshFromPrepared({ file = path, drawIndex = selected.drawIndex }, upload --[[@as SceneMesh.PreparedMesh]])
+    end
     return
   end
   assert(
@@ -747,9 +771,19 @@ end
 function StarterChoicePreparation:_realizeSynchronous(step)
   local pool = assert(self.pool, "starter preparation owns no pool")
   local path = assert(step.path, "starter preparation step carries no path")
-  if step.kind == "mesh" or step.kind == "g4gx" then
-    ---@cast path string|ModelAsset.GeometryReference
+  if step.kind == "mesh" then
+    ---@cast path string
     self._resources.meshEntries[referenceKey(path)] = pool:meshFor(path)
+    return
+  end
+  if step.kind == "g4gx" then
+    for _, selected in ipairs(assert(step.draws, "bank step carries its selected draws")) do
+      local reference = {
+        file = path --[[@as string]],
+        drawIndex = selected.drawIndex,
+      }
+      self._resources.meshEntries[selected.key] = pool:meshFor(reference)
+    end
     return
   end
   assert(

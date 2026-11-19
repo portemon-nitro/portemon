@@ -2106,8 +2106,14 @@ end
 function BagRenderer:prepare(status)
   assert(type(status) == "table", "the bag renderer requires a presentation")
   assert(self._pool ~= nil, "bag state preparation borrows its shared image owner")
-  local ready = advanceDemand(self, status)
-  return ready
+  if not advanceDemand(self, status) then
+    return false
+  end
+  -- The admitted state also waits for its 3D hero: the gendered model realizes
+  -- through the presentation preparation worker, so the first painted frame
+  -- never decodes a model bank or uploads a mesh.
+  local heroRenderer = assert(self._heroRenderer, "the hero pane borrows its model renderer")
+  return heroRenderer:prepare(assert(status.heroGender, "the bag presentation names its hero gender"), 1)
 end
 
 -- Draws one presentation snapshot through the resolved plan with quads
@@ -2133,6 +2139,12 @@ function BagRenderer:draw(presentation, plan, collaborators)
   if self._readySignature ~= demandSignature(presentation) then
     return
   end
+  local heroRenderer = assert(self._heroRenderer, "the hero pane borrows its model renderer")
+  if not heroRenderer:isReady(assert(presentation.heroGender, "the bag presentation names its hero gender")) then
+    -- The hero is still realizing on the presentation worker; the whole bag
+    -- paints once, never a partial menu with a missing backdrop model.
+    return
+  end
   local icons = assert(collaborators and collaborators.icons, "occupied cells need the icon provider")
   local content = assert(plan.content, "the bag plan carries its canonical content")
   local panes = assert(plan.panes, "the bag plan orders its panes")
@@ -2156,7 +2168,6 @@ function BagRenderer:draw(presentation, plan, collaborators)
     LogicalSurface.draw(graphics, hero, function()
       self:_drawHeroBackground(presentation)
     end)
-    local heroRenderer = assert(self._heroRenderer, "the hero pane borrows its model renderer")
     heroRenderer:draw(
       assert(presentation.heroGender, "the bag presentation names its hero gender"),
       assert(presentation.hero, "the bag presentation carries its hero status"),

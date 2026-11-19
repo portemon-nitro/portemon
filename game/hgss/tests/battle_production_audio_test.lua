@@ -31,6 +31,7 @@ local PngWriter = require("tests.support.PngEncoder")
 local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
+local FakePreparationQueue = require("tests.support.FakePreparationQueue")
 
 local T = {}
 
@@ -489,6 +490,7 @@ local function stubPresentationRuntime(cache, audio, itemCatalog, monCatalog)
     -- consumers (font quads read dimensions off borrows) honest without
     -- a second worker beside the stub.
     imageAssets = SummaryAcceptanceFixture.sizedImagePool(),
+    assetPreparation = FakePreparationQueue.new(),
     uiManifest = FieldUiFixture.fieldStateManifest(),
     audio = audio,
     itemCatalog = itemCatalog,

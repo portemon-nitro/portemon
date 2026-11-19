@@ -511,10 +511,10 @@ local function twoDrawBank()
   }))
 end
 
--- The pool decodes one selected draw out of a shared model bank: repeated
--- acquisition of the same draw reuses the resident resource without decoding
--- GX again, a different draw of the same bank is its own resource, and the
--- pool disposes each once on release.
+-- The pool decodes a shared model bank once: repeated acquisition of the same
+-- draw reuses the resident resource, every other draw of that bank realizes
+-- from the same bank operation (no second GX replay), each draw is its own
+-- resident resource, and the pool disposes each once on release.
 function T.native_bank_selectors_decode_once_and_share_one_resident_mesh()
   local bytes = twoDrawBank()
   local created = {}
@@ -526,12 +526,11 @@ function T.native_bank_selectors_decode_once_and_share_one_resident_mesh()
       return nil
     end,
   }
-  local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
-  local realDecode = GxDisplayList.decode
-  local decodes = 0
-  GxDisplayList.decode = function(...)
-    decodes = decodes + 1
-    return realDecode(...)
+  local realDecodeBank = SceneMesh.decodeNativeBank
+  local bankDecodes = 0
+  SceneMesh.decodeNativeBank = function(...)
+    bankDecodes = bankDecodes + 1
+    return realDecodeBank(...)
   end
   local ok, err = pcall(function()
     local pool = GpuAssetPool.new(cacheFs, {
@@ -547,7 +546,7 @@ function T.native_bank_selectors_decode_once_and_share_one_resident_mesh()
     })
 
     local first = pool:meshFor({ file = BANK_PATH, drawIndex = 0 })
-    Assert.equal(decodes, 1, "first demand decodes the selected draw out of its bank")
+    Assert.equal(bankDecodes, 1, "first demand decodes the whole bank once")
     Assert.equal(first.triangles, 1, "the selected draw reports its triangle count")
     Assert.deepEqual(first.center, { 1, 0, 3 }, "the selected draw reports its own model-space center")
     Assert.deepEqual(
@@ -559,12 +558,12 @@ function T.native_bank_selectors_decode_once_and_share_one_resident_mesh()
     local again = pool:meshFor({ file = BANK_PATH, drawIndex = 0 })
     Assert.equal(again, first, "the same selected draw resolves the resident entry")
     Assert.equal(again.mesh, first.mesh, "repeated demand reuses the resident GPU mesh")
-    Assert.equal(decodes, 1, "repeated demand performs no second GX decode")
+    Assert.equal(bankDecodes, 1, "repeated demand performs no second bank decode")
 
     local second = pool:meshFor({ file = BANK_PATH, drawIndex = 1 })
     Assert.isTrue(second.mesh ~= first.mesh, "another draw of the same bank is its own GPU resource")
     Assert.deepEqual(second.center, { -5, 0, 1.5 }, "the second draw reports its own center")
-    Assert.equal(decodes, 2, "the second selected draw is decoded once")
+    Assert.equal(bankDecodes, 1, "another draw of the same bank realizes from the same bank decode")
     Assert.equal(#pool.meshes, 2, "the pool owns one mesh per selected draw")
 
     pool:release()
@@ -573,10 +572,50 @@ function T.native_bank_selectors_decode_once_and_share_one_resident_mesh()
     Assert.equal(created[1].released, 1, "the first resident mesh is disposed exactly once")
     Assert.equal(created[2].released, 1, "the second resident mesh is disposed exactly once")
   end)
-  GxDisplayList.decode = realDecode
+  SceneMesh.decodeNativeBank = realDecodeBank
   if not ok then
     error(err, 0)
   end
+end
+
+-- The staged worker path realizes the same native bank the synchronous path
+-- decodes, but the bank comes from the preparation queue as one payload: the
+-- scene build awaits the bank once, every selected draw realizes from it, and
+-- an unknown draw index fails loudly instead of uploading nothing.
+function T.prepared_native_bank_payload_realizes_every_selected_draw()
+  local bytes = twoDrawBank()
+  local cacheFs = {
+    read = function(_, path)
+      return path == BANK_PATH and bytes or nil
+    end,
+  }
+  local graphics = fakeMeshGraphics()
+  local pool = GpuAssetPool.new(cacheFs, { graphics = graphics })
+  local prepared = SceneMesh.prepareNativeBank(bytes, "worker-bank")
+  local awaited = {}
+  local function await(kind, path)
+    awaited[#awaited + 1] = tostring(kind) .. " " .. tostring(path)
+    return prepared --[[@as table<string, unknown>]]
+  end
+
+  local first = pool:preparedMesh({ file = BANK_PATH, drawIndex = 0 }, await)
+  Assert.deepEqual(first.center, { 1, 0, 3 }, "the realized draw keeps its own model-space center")
+  local second = pool:preparedMesh({ file = BANK_PATH, drawIndex = 1 }, await)
+  Assert.deepEqual(second.center, { -5, 0, 1.5 }, "the second draw realizes from the same bank payload")
+  Assert.deepEqual(awaited, { "g4gx " .. BANK_PATH }, "the scene build awaits one bank, not one request per draw")
+
+  local ok, failure = pcall(function()
+    pool:preparedMesh({ file = BANK_PATH, drawIndex = 7 }, await)
+  end)
+  Assert.isFalse(ok, "a draw index the bank does not carry fails loudly")
+  Assert.equal(
+    type(failure) == "table" and failure.code or failure,
+    "SCENE_MESH_NATIVE_DRAW_MISSING",
+    "the missing-draw failure names the bank selector contract"
+  )
+  Assert.equal(#awaited, 1, "the failed selector never asks the worker again")
+
+  pool:release()
 end
 
 return {

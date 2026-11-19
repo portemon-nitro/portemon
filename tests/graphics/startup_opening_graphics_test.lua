@@ -6407,12 +6407,23 @@ local function openTitleScene(scope, versionId)
       return titleTopology(width, height)
     end,
   })
+  -- The title builds through the presentation preparation worker: the scope
+  -- owns the worker its model banks were prepared with.
+  local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+  local cacheFs = CacheFs.forVersion(versionId)
+  local queue = AssetPreparationQueue.new(cacheFs)
+  scope:own({
+    release = function()
+      queue:release()
+    end,
+  })
   local scene = HgssTitleScene.new({
     versionId = versionId,
-    cacheFs = CacheFs.forVersion(versionId),
+    cacheFs = cacheFs,
     width = TITLE_NATIVE_WIDTH,
     height = TITLE_NATIVE_HEIGHT,
     displayContext = context,
+    assetPreparation = queue,
   })
   scope:own({
     release = function()

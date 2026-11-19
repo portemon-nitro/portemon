@@ -1040,6 +1040,23 @@ function ModelAsset.retargetGeometry(reference, geometryPath)
   }
 end
 
+-- The stable identity of one generated asset reference: a plain path, or a
+-- native selector's file plus its selected draw or named texture/palette pair.
+-- Asset owners (GPU pools, the session image owner, presentation renderers)
+-- key resident resources by this identity, so a reference that travels as a
+-- table can never be mistaken for one that travels as a path.
+---@param value string|ModelAsset.GeometryReference|ModelAsset.TextureReference
+---@return string
+function ModelAsset.assetIdentity(value)
+  if type(value) == "string" then
+    return value
+  end
+  if value.drawIndex ~= nil then
+    return string.format("%s#draw%d", assert(value.file), value.drawIndex)
+  end
+  return string.format("%s#%s#%s", assert(value.file), tostring(value.textureName), tostring(value.paletteName))
+end
+
 -- Re-point one generated texture reference into another generated directory
 -- while keeping its named texture/palette selection.
 ---@param reference string|ModelAsset.TextureReference

@@ -64,15 +64,31 @@ local function countTitleImageDraws(scene, scope, width, height)
   return counts
 end
 
+-- The title scene builds through the presentation preparation worker: each
+-- scene owns the worker it prepared its model banks with, so the scope releases
+-- it after the scene.
+local function titlePreparation(scope, cacheFs)
+  local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+  local queue = AssetPreparationQueue.new(cacheFs)
+  scope:own({
+    release = function()
+      queue:release()
+    end,
+  })
+  return queue
+end
+
 local function renderEdition(scope, versionId)
   local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
   local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology("single") })
+  local cacheFs = CacheFs.forVersion(versionId)
   local scene = HgssTitleScene.new({
     versionId = versionId,
-    cacheFs = CacheFs.forVersion(versionId),
+    cacheFs = cacheFs,
     width = 512,
     height = 384,
     displayContext = context,
+    assetPreparation = titlePreparation(scope, cacheFs),
   })
   scope:own({
     release = function()
@@ -187,12 +203,14 @@ end
 local function openTitleScene(scope, versionId, width, height, kind)
   local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
   local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology(kind) })
+  local cacheFs = CacheFs.forVersion(versionId)
   local scene = HgssTitleScene.new({
     versionId = versionId,
-    cacheFs = CacheFs.forVersion(versionId),
+    cacheFs = cacheFs,
     width = width,
     height = height,
     displayContext = context,
+    assetPreparation = titlePreparation(scope, cacheFs),
   })
   scope:own({
     release = function()
@@ -720,12 +738,14 @@ local function titleMissingSurfaceFailsCleanly(scope, context)
       end,
     }
     local before = love.graphics.getStats()
+    local queue = titlePreparation(scope, realFs)
     local ok, failure = pcall(HgssTitleScene.new, {
       versionId = versionId,
       cacheFs = hollowFs,
       width = 512,
       height = 384,
       displayContext = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology("single") }),
+      assetPreparation = queue,
     })
     Assert.isFalse(ok, "a missing title surface stops title construction")
     Assert.isTrue(tostring(failure):find("subscreen") ~= nil, "the failure names the missing surface")

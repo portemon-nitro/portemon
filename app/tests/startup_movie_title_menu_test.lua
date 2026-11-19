@@ -144,6 +144,7 @@ local function withStartup(fn)
     graphicsRectangle = love.graphics.rectangle,
     romIsReady = require("romdump.src.source.RomImporter").isReady,
     titleSceneNew = titleSceneModule.new,
+    titleSceneBegin = titleSceneModule.begin,
     movieNew = movieModule.new,
     loadOpeningScene = StartupAssetCache.loadOpeningScene,
     firstPlayFactory = HgssGame.newFirstPlayCachePreparation,
@@ -310,7 +311,29 @@ local function withStartup(fn)
   HgssLoadingPresentation.new = function()
     return fakeLoading()
   end
-  titleSceneModule.new = function(options)
+  -- The launcher stages the title through its build task: the fake scene
+  -- realizes on the first advance and transfers like the real build.
+  local function fakeTitleBuild(scene)
+    local build = { _ready = false }
+    function build:advance(maxWorkUnits)
+      if maxWorkUnits == 0 or self._ready then
+        return 0
+      end
+      self._ready = true
+      return 1
+    end
+    function build:isReady()
+      return self._ready
+    end
+    function build:takeResult()
+      return scene
+    end
+    function build:release()
+      scene:dispose()
+    end
+    return build
+  end
+  titleSceneModule.begin = function(options)
     local bundle = { crySpeciesId = active.titleCrySpecies or 25 }
     if active.titleTimeoutFrames ~= nil then
       bundle.timeline = { start = { activeDurationFrames = active.titleTimeoutFrames } }
@@ -344,7 +367,7 @@ local function withStartup(fn)
       self.disposed = self.disposed + 1
     end
     active.scenes[#active.scenes + 1] = scene
-    return scene
+    return fakeTitleBuild(scene)
   end
   MainMenuComposition.new = fakeMenu
   FirstPlayCompletion.isCurrent = function()
@@ -413,6 +436,7 @@ local function withStartup(fn)
   love.graphics.rectangle = saved.graphicsRectangle
   require("romdump.src.source.RomImporter").isReady = saved.romIsReady
   titleSceneModule.new = saved.titleSceneNew
+  titleSceneModule.begin = saved.titleSceneBegin
   movieModule.new = saved.movieNew
   StartupAssetCache.loadOpeningScene = saved.loadOpeningScene
   HgssGame.newFirstPlayCachePreparation = saved.firstPlayFactory
@@ -1159,7 +1183,7 @@ function T.tests.partial_opening_manifest_keeps_the_loader_without_start_or_erro
     Assert.equal(state.phase, "loading", "four of five scenes never install the movie")
     Assert.isNil(state.movie, "a partial manifest constructs no movie session")
     Assert.isNil(state.sceneError, "a partial manifest reports no terminal failure")
-    Assert.equal(#active.scenes, 0, "no title constructs while the movie is still pending")
+    Assert.isNil(state.title, "no title presents while the movie is still pending")
     local paints = active.paints
     App.draw()
     Assert.isTrue(active.paints > paints, "the loader keeps painting while the last scene compiles")

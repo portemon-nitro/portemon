@@ -9,6 +9,7 @@
 -- No gameplay state is stored here: pocket and frame stay with the presenter.
 
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local Matrix4 = require("libs.math.src.Matrix4")
@@ -46,8 +47,10 @@ local BagCache = require("libs.assets.src.BagCache")
 ---@field _cameraFar number
 ---@field _pool GpuAssetPool?
 ---@field _imageAssets table<string, unknown>? borrowed session image owner behind hero textures
+---@field _assetPreparation table<string, unknown> borrowed presentation preparation worker
 ---@field _renderer FieldRenderer?
 ---@field _realized table<string, BagHeroRealization>
+---@field _builds table<string, BagHeroBuild> staged realization per gender
 ---@field _sync table<string, BagHeroSync>
 ---@field _released boolean
 local BagHeroRenderer = {}
@@ -256,6 +259,7 @@ end
 ---@field manifest table<string, unknown> the validated bag manifest carrying hero models and presentation
 ---@field graphics unknown? injectable graphics namespace (nil keeps love.graphics at realization)
 ---@field imageAssets table<string, unknown>? borrowed session image owner; nil fails loudly at the first texture acquisition (mesh-only and headless stand-in paths carry no textures)
+---@field assetPreparation table<string, unknown> borrowed presentation preparation worker the hero's model bank decodes through
 
 ---@param opts BagHeroRenderer.Options
 ---@return BagHeroRenderer
@@ -280,11 +284,21 @@ function BagHeroRenderer.new(opts)
   local edgeFacts = assert(presentation.edgeColors, "the hero presentation must carry its edge colors")
   local camera = buildCamera(cameraFacts, manifest.logicalSize)
   local transform = buildModelTransform(transformFacts)
+  local assetPreparation =
+    assert(opts.assetPreparation, "the bag hero renderer requires the presentation preparation worker")
+  assert(
+    type(assetPreparation.request) == "function"
+      and type(assetPreparation.poll) == "function"
+      and type(assetPreparation.take) == "function"
+      and type(assetPreparation.wait) == "function",
+    "the bag hero renderer requires a preparation queue"
+  )
   return setmetatable({
     _cacheFs = cacheFs,
     _manifest = manifest,
     _graphics = opts.graphics,
     _imageAssets = opts.imageAssets,
+    _assetPreparation = assetPreparation,
     _modelCanvas = nil,
     _cameraFacts = cameraFacts,
     _transformFacts = transformFacts,
@@ -297,6 +311,7 @@ function BagHeroRenderer.new(opts)
     _pool = nil,
     _renderer = nil,
     _realized = {},
+    _builds = {},
     _sync = {},
     _released = false,
   }, BagHeroRenderer)
@@ -343,34 +358,40 @@ local function genderDescriptor(self, gender)
   return descriptor
 end
 
--- Borrow one session-pool sampling handle for a hero texture path: the
+-- Borrow one session-pool sampling handle for a hero material texture: the
 -- single borrow per texture feeds the instance unpack, so indexed hero
--- textures bind their exact palette with no second borrow beside it.
--- Handles are cached per path and wrap; the caller owns the returned
--- borrows through its lease sink. A failed classification fails closed
--- naming the path.
+-- textures bind their exact palette with no second borrow beside it. Handles
+-- are cached per shared asset identity and wrap -- a reference that travels as
+-- a native bank selection keys the same way a PNG path does -- and the caller
+-- owns the returned borrows through its lease sink. `wait` runs once per
+-- pending poll, so a staged realization yields its frame instead of spinning on
+-- the classification worker. A failed classification fails closed naming the
+-- texture.
 ---@param imageAssets table<string, unknown> borrowed session image owner
 ---@param wrap table<string, string> resolved sampler wrap behind the borrow
----@param path string generated texture path behind diagnostics
----@param cache table<string, table<string, unknown>> path-and-wrap-keyed handle cache, mutated
+---@param reference string|ModelAsset.TextureReference material texture reference
+---@param cache table<string, table<string, unknown>> identity-and-wrap-keyed handle cache, mutated
 ---@param owned table[] acquired-lease sink, mutated
+---@param wait fun()
 ---@return table<string, unknown> sampling handle {image, palette?, indexed}
-local function borrowSamplingHandle(imageAssets, wrap, path, cache, owned)
-  local key = wrap.x .. "|" .. wrap.y .. "|" .. path
+local function borrowSamplingHandle(imageAssets, wrap, reference, cache, owned, wait)
+  local identity = ModelAsset.assetIdentity(reference)
+  local key = wrap.x .. "|" .. wrap.y .. "|" .. identity
   local known = cache[key]
   if known ~= nil then
     return known
   end
   -- The sampler mirrors the scene pool's shared sampler exactly: same
-  -- path and wrap resolve the same physical pair scene draws share.
+  -- reference and wrap resolve the same physical pair scene draws share.
   local sampler = { wrapX = wrap.x, wrapY = wrap.y, minFilter = "nearest", magFilter = "nearest" }
-  local token = imageAssets:request(path, sampler, "demand")
+  local token = imageAssets:request(reference, sampler, "demand")
   local status, failure = imageAssets:poll(token)
   while status == "pending" do
+    wait()
     status, failure = imageAssets:poll(token)
   end
   if status ~= "ready" then
-    error("hero shared image " .. path .. " is not ready: " .. tostring(failure), 0)
+    error("hero shared image " .. identity .. " is not ready: " .. tostring(failure), 0)
   end
   local lease = imageAssets:acquire(token)
   owned[#owned + 1] = lease
@@ -383,12 +404,30 @@ local function borrowSamplingHandle(imageAssets, wrap, path, cache, owned)
   return handle
 end
 
--- Realize one gender exactly once: definition, render meshes retained by mesh
--- id, sampler wraps, and the model instance. Only the resources this attempt
--- creates are unwound on failure; a shared pool already owned for the other
--- gender is never released here.
+---@class BagHeroBuild
+---@field thread thread staged realization coroutine
+---@field state string "active", "ready", or "failed"
+---@field token integer? preparation token the suspended coroutine waits on
+---@field finishing boolean the explicit synchronous caller blocks instead of yielding
+---@field failure unknown?
+
+-- Private staged-work sentinel: the realization coroutine yields it while the
+-- preparation worker or the session image owner is still busy. It charges no
+-- work budget; only one realized stage does.
+local BAG_HERO_WAIT = {}
+
+-- Realize one gender: definition, render meshes, material textures, and the
+-- model instance. The presentation worker decodes the hero's native model bank
+-- once, every material texture resolves through the session image owner, and
+-- the staged caller realizes one upload per advance instead of stalling the
+-- frame that opens the bag. Only the resources this attempt creates are
+-- unwound on failure; a shared pool already owned for the other gender is never
+-- released here.
+---@param self BagHeroRenderer
 ---@param gender string
-function BagHeroRenderer:_ensureGender(gender)
+---@param awaitPrepared fun(kind: string, path: string): table<string, unknown>
+---@param waitForImage fun()
+function BagHeroRenderer:_realizeGender(gender, awaitPrepared, waitForImage)
   if self._realized[gender] ~= nil then
     return
   end
@@ -416,16 +455,17 @@ function BagHeroRenderer:_ensureGender(gender)
     local definition = ModelDefinition.fromNitroDescriptor(nitroDescriptor, { key = "bag-hero:" .. gender })
     local renderMeshes = {}
     for _, mesh in ipairs(definition.meshes) do
-      local resource = pool:meshFor(mesh.geometry)
+      local resource = pool:preparedMesh(mesh.geometry, awaitPrepared)
       renderMeshes[mesh.id] = resource.mesh
       mesh.center = resource.center
+      coroutine["yield"](1)
     end
     local materials = assert(descriptor.materials, "the hero model must carry its materials")
     local wrapsByMaterial = {}
     for _, record in ipairs(materials) do
       wrapsByMaterial[record.id] = SceneDescriptor.wrap(record)
     end
-    ---@param path string?
+    ---@param path string|ModelAsset.TextureReference?
     ---@param materialId integer
     ---@return unknown
     local function resolveImage(path, materialId)
@@ -436,10 +476,18 @@ function BagHeroRenderer:_ensureGender(gender)
       if imageAssets == nil then
         return pool:imageFor(path, wrap.x, wrap.y)
       end
-      return borrowSamplingHandle(assert(imageAssets), wrap, path, samplingByKey, handleLeases)
+      return borrowSamplingHandle(assert(imageAssets), wrap, path, samplingByKey, handleLeases, waitForImage)
     end
     local instance = ModelInstance.new(definition, { resolveImage = resolveImage })
     instance.transform = self._modelTransform
+    -- Resolve every material's texture here, not on the first draw: the
+    -- session owner classifies through its worker while the bag opens, so
+    -- drawing binds the already-borrowed handle and performs no acquisition.
+    instance:evaluateMaterials()
+    for materialIndex = 0, #definition.materials - 1 do
+      instance:effectiveMaterial(materialIndex)
+    end
+    coroutine["yield"](1)
     if self._renderer == nil then
       local graphics = graphicsFor(self)
       self._renderer = FieldRenderer.new({ clearColor = { 0, 0, 0, 0 }, graphics = graphics })
@@ -467,6 +515,133 @@ function BagHeroRenderer:_ensureGender(gender)
       end
     end
     error(err, 0)
+  end
+end
+
+-- Start one gender's staged realization, once. The build owns its preparation
+-- token so release can drop pending interest, and the coroutine body runs the
+-- realization above.
+---@param gender string
+---@return BagHeroBuild
+function BagHeroRenderer:_startBuild(gender)
+  local existing = self._builds[gender]
+  if existing ~= nil then
+    return existing
+  end
+  assert(not self._released, "the bag hero renderer is released")
+  assert(gender == "male" or gender == "female", "the hero gender selects its model")
+  local queue = self._assetPreparation
+  ---@type BagHeroBuild
+  local build
+  local selfRef = self
+  local function awaitPrepared(kind, path)
+    local token = queue:request(kind, path, "prefetch")
+    build.token = token
+    while true do
+      local status, failure = queue:poll(token)
+      if status == "ready" then
+        build.token = nil
+        return queue:take(token)
+      end
+      if status == "failed" then
+        build.token = nil
+        error("hero asset " .. tostring(path) .. " (" .. kind .. ") failed: " .. tostring(failure), 0)
+      end
+      if build.finishing then
+        local waitOk, payload = pcall(queue.wait, queue, token)
+        build.token = nil
+        if not waitOk then
+          error(payload, 0)
+        end
+        return payload
+      end
+      coroutine["yield"](BAG_HERO_WAIT)
+    end
+  end
+  local function waitForImage()
+    if not build.finishing then
+      coroutine["yield"](BAG_HERO_WAIT)
+    end
+  end
+  build = {
+    thread = coroutine.create(function()
+      selfRef:_realizeGender(gender, awaitPrepared, waitForImage)
+    end),
+    state = "active",
+    token = nil,
+    finishing = false,
+    failure = nil,
+  }
+  self._builds[gender] = build
+  return build
+end
+
+---@param build BagHeroBuild
+---@param maxWorkUnits integer
+---@return integer consumed main-thread work units
+local function advanceBuild(build, maxWorkUnits)
+  if build.failure ~= nil then
+    error(build.failure, 0)
+  end
+  if build.state ~= "active" or maxWorkUnits == 0 then
+    return 0
+  end
+  local consumed = 0
+  while consumed < maxWorkUnits and build.state == "active" do
+    local ok, yielded = coroutine.resume(build.thread)
+    if not ok then
+      build.state = "failed"
+      build.token = nil
+      build.failure = yielded
+      error(yielded, 0)
+    end
+    if coroutine.status(build.thread) == "dead" then
+      build.state = "ready"
+    elseif yielded == BAG_HERO_WAIT then
+      break
+    else
+      assert(yielded == 1, "hero realization yielded an invalid work unit")
+      consumed = consumed + 1
+    end
+  end
+  return consumed
+end
+
+-- Advance one gender's staged realization by a bounded number of main-thread
+-- work units (one realized mesh upload or material resolution each) and report
+-- whether the hero can draw. The field presentation update phase calls this
+-- before drawing, so the first painted bag frame performs no decode or upload.
+---@param gender string
+---@param maxWorkUnits integer?
+---@return boolean ready
+function BagHeroRenderer:prepare(gender, maxWorkUnits)
+  assert(not self._released, "the bag hero renderer is released")
+  if self._realized[gender] ~= nil then
+    return true
+  end
+  local build = self:_startBuild(gender)
+  advanceBuild(build, maxWorkUnits or 1)
+  return self._realized[gender] ~= nil
+end
+
+-- Whether one gender's model is resident and drawable without any work.
+---@param gender string
+---@return boolean
+function BagHeroRenderer:isReady(gender)
+  return self._realized[gender] ~= nil
+end
+
+-- Realize one gender now: the explicit blocking entry for a caller that draws
+-- without advancing preparation first. Staged callers use prepare instead.
+---@param gender string
+function BagHeroRenderer:_ensureGender(gender)
+  if self._realized[gender] ~= nil then
+    return
+  end
+  local build = self:_startBuild(gender)
+  build.finishing = true
+  while build.state == "active" do
+    advanceBuild(build, 1)
   end
 end
 
@@ -704,6 +879,17 @@ function BagHeroRenderer:release()
       realized.handleLeases = {}
     end
   end
+  -- A build still in progress drops its pending preparation interest; a
+  -- running worker job is not preempted, its late payload is discarded.
+  local queue = self._assetPreparation
+  for _, build in pairs(self._builds) do
+    local token = build.token
+    if token ~= nil then
+      build.token = nil
+      pcall(queue.cancel, queue, token)
+    end
+  end
+  self._builds = {}
   self._realized = {}
   self._sync = {}
   if self._renderer ~= nil then

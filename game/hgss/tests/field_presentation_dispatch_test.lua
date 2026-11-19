@@ -28,6 +28,7 @@ local PcStorageState = require("game.hgss.src.pc.StorageScreenState")
 local PngWriter = require("tests.support.PngEncoder")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
+local FakePreparationQueue = require("tests.support.FakePreparationQueue")
 
 local T = {}
 
@@ -434,9 +435,11 @@ local function compositionRuntime()
       setModelFactory = function(_, _) end,
     },
     -- The presentation composition borrows its session image owner for
-    -- icons, Summary, and PC visuals: the injected pool keeps the
-    -- composition honest without a second worker beside the doubles.
+    -- icons, Summary, and PC visuals, and its preparation worker for the bag
+    -- hero's model bank: the injected doubles keep the composition honest
+    -- without a second worker beside them.
     imageAssets = SharedImagePoolFake.new(),
+    assetPreparation = FakePreparationQueue.new(),
   }
   runtime.iconDemands = {}
   runtime.derivedAssets = {

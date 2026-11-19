@@ -758,8 +758,8 @@ local function _compile(romFs)
   }
 
   local assets = {}
-  for key, bankBytes in pairs(meshes) do
-    assets[MapAssetCache.modelBankPath(key)] = bankBytes
+  for key, meshBytes in pairs(meshes) do
+    assets[MapAssetCache.modelBankPath(key)] = meshBytes
   end
   for key, bytes in pairs(textures) do
     assets[MapAssetCache.textureBankPath(key)] = assert(bytes, "compiled texture bank is missing its bytes")

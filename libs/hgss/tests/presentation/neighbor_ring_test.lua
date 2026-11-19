@@ -19,6 +19,16 @@ local STUB_GRAPHICS = {
   newImage = function()
     error("neighbor_ring does not build images in this test")
   end,
+  -- Worker-prepared geometry is realized as a LÖVE Mesh, so the prepared path
+  -- needs the mesh constructor even though the synchronous path uses the
+  -- pool's injectable mesh builder.
+  newMesh = function()
+    return {
+      setVertices = function() end,
+      setVertexMap = function() end,
+      release = function() end,
+    }
+  end,
 }
 ---@cast STUB_GRAPHICS GpuAssetPool.Graphics
 
@@ -465,6 +475,118 @@ function T.neighbor_vertical_offset_reaches_the_draw_transform()
   Assert.equal(ring.draws[1].transform[13], 32)
   Assert.equal(ring.draws[1].transform[14], 1)
   Assert.equal(ring.draws[1].transform[15], -32)
+  ring:release()
+end
+
+-- Neighbor geometry gets the same treatment as the central scene's: a native
+-- model bank is requested from the existing preparation worker once, and the
+-- ring realizes each cell's selected draw from that one prepared payload
+-- instead of replaying the bank on the main thread.
+function T.native_neighbor_geometry_arrives_through_the_preparation_queue()
+  local NativeGxFormat = require("libs.assets.src.model.NativeGxFormat")
+  local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
+  local function u32(value)
+    return string.char(
+      value % 256,
+      math.floor(value / 256) % 256,
+      math.floor(value / 65536) % 256,
+      math.floor(value / 16777216) % 256
+    )
+  end
+  local function vtx16(vertex)
+    local function fx(value)
+      return math.floor(value * 4096) % 0x10000
+    end
+    return u32(fx(vertex[1]) + fx(vertex[2]) * 0x10000) .. u32(fx(vertex[3]))
+  end
+  local function triangle(vertices)
+    local ops, params = { 0x40 }, { u32(0) }
+    for _, vertex in ipairs(vertices) do
+      ops[#ops + 1], params[#params + 1] = 0x21, u32(0x00000FFF)
+      ops[#ops + 1], params[#params + 1] = 0x22, u32(0)
+      ops[#ops + 1], params[#params + 1] = 0x23, vtx16(vertex)
+    end
+    ops[#ops + 1], params[#params + 1] = 0x41, ""
+    while #ops % 4 ~= 0 do
+      ops[#ops + 1], params[#params + 1] = 0x00, ""
+    end
+    local out = {}
+    for group = 0, #ops / 4 - 1 do
+      local opcodeBytes = {}
+      for slot = 1, 4 do
+        opcodeBytes[slot] = string.char(ops[group * 4 + slot])
+      end
+      out[#out + 1] = table.concat(opcodeBytes)
+      for slot = 1, 4 do
+        out[#out + 1] = params[group * 4 + slot]
+      end
+    end
+    return table.concat(out)
+  end
+  local bankPath = "assets/generated/maps/geometry/neighbor-bank.g4gx"
+  local bankBytes = NativeGxFormat.encode({
+    draws = {
+      {
+        commands = triangle({ { 0, 0, 0 }, { 2, 0, 0 }, { 2, 0, 2 } }),
+        nodeIndex = 0,
+        materialIndex = 0,
+        shapeIndex = 0,
+        transformMode = "static",
+      },
+      {
+        commands = triangle({ { 4, 0, 0 }, { 6, 0, 0 }, { 6, 0, 2 } }),
+        nodeIndex = 0,
+        materialIndex = 0,
+        shapeIndex = 0,
+        transformMode = "static",
+      },
+    },
+  })
+  local backend = FakeCache.new()
+  backend:write(bankPath, bankBytes)
+  local material = groundMaterial("neighbor-ground.png")
+  local descriptors = {
+    cell(32, 1, 0, material, { file = bankPath, drawIndex = 0 }),
+    cell(-32, 1, 0, material, { file = bankPath, drawIndex = 1 }),
+  }
+  local requests = {}
+  local queue = { requests = requests, _tokens = {}, _nextToken = 0 }
+  function queue:request(kind, path, priority)
+    self._nextToken = self._nextToken + 1
+    local token = self._nextToken
+    requests[#requests + 1] = { kind = kind, path = path, priority = priority }
+    self._tokens[token] = { kind = kind, payload = SceneMesh.prepareNativeBank(backend:read(path), path) }
+    return token
+  end
+  function queue:poll(token)
+    if self._tokens[token] == nil then
+      return "failed", "unknown preparation token"
+    end
+    return "ready"
+  end
+  function queue:take(token)
+    local record = assert(self._tokens[token], "take before ready")
+    self._tokens[token] = nil
+    return record.payload
+  end
+  function queue:cancel(token)
+    self._tokens[token] = nil
+  end
+  function queue:release() end
+
+  local images = SharedImagePoolFake.new()
+  local ring = NeighborRing.load(backend, descriptors, {
+    meshBuilder = fakeMeshBuilder,
+    imageAssets = images,
+    graphics = STUB_GRAPHICS,
+    assetPreparation = queue,
+  })
+  Assert.equal(#requests, 1, "one bank request serves every neighbor draw that selects it")
+  Assert.equal(requests[1].kind, "g4gx", "native neighbor geometry is prepared as a model bank")
+  Assert.equal(#ring.draws, 2, "both neighbor cells draw their selected bank draw")
+  Assert.equal(ring.draws[1].center[1], 1, "the realized center comes from the selected draw")
+  Assert.equal(ring.draws[1].transform[13], 32, "the cell offset still bakes into the draw transform")
+  Assert.equal(ring.draws[2].transform[13], -32, "the second cell keeps its own offset")
   ring:release()
 end
 

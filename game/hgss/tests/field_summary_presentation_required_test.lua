@@ -14,6 +14,7 @@ local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
+local FakePreparationQueue = require("tests.support.FakePreparationQueue")
 
 local T = {}
 
@@ -142,6 +143,7 @@ local function compositionRuntime(versionId, helper)
     -- icons, Summary, and PC visuals: the injected pool keeps the real
     -- Summary owner working without a second worker beside the doubles.
     imageAssets = helper.imagePool,
+    assetPreparation = FakePreparationQueue.new(),
     easyChatCatalog = {
       template = function()
         return nil

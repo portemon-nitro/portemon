@@ -899,6 +899,7 @@ local function startNeighbor(loader, ctx)
   end
   local neighborOptions = {
     textureSrt = ctx.scene.terrainAnimations.textureSrt,
+    assetPreparation = loader.assetPreparation,
   }
   if loader.imageAssets ~= nil then
     neighborOptions.imageAssets = loader.imageAssets
@@ -929,6 +930,7 @@ local function assembleComplete(loader, ctx, sceneRuntime, checkpoint, outerBox)
     if not physicalCells and loader.neighborLoader and #scene.neighbors > 0 and box.neighborRuntime == nil then
       local neighborOptions = {
         textureSrt = scene.terrainAnimations.textureSrt,
+        assetPreparation = loader.assetPreparation,
       }
       if loader.imageAssets ~= nil then
         neighborOptions.imageAssets = loader.imageAssets

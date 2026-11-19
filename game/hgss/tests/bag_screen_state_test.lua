@@ -1070,6 +1070,12 @@ end
 
 local function composedHeroSpy()
   local spy = { draws = 0, releaseCount = 0 }
+  function spy:prepare(_, _)
+    return true
+  end
+  function spy:isReady(_)
+    return true
+  end
   function spy:draw(_, _, _)
     self.draws = self.draws + 1
   end

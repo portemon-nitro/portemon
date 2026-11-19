@@ -140,6 +140,7 @@ local function withAppHarness(opts, ready, fn)
   local originalMenuNew = MainMenuComposition.new
   local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
   local originalTitleNew = HgssTitleScene.new
+  local originalTitleBegin = HgssTitleScene.begin
   local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
   local originalLoadingNew = HgssLoadingPresentation.new
   local graphics = love.graphics
@@ -307,7 +308,10 @@ local function withAppHarness(opts, ready, fn)
     end
     return presentation
   end
-  HgssTitleScene.new = function()
+  -- The launcher stages the title through its build task, so the harness
+  -- stands in there: the title is realized on the first advance and transfers
+  -- like the real build.
+  HgssTitleScene.begin = function()
     local title = { updates = 0, draws = 0, disposals = 0, bundle = { crySpeciesId = 25 } }
     function title:updateFixed()
       self.updates = self.updates + 1
@@ -320,7 +324,22 @@ local function withAppHarness(opts, ready, fn)
     end
     function title:resize() end
     function title:beginProceed() end
-    return title
+    local build = { _ready = false, _taken = false }
+    function build:advance(_)
+      self._ready = true
+      return 1
+    end
+    function build:isReady()
+      return self._ready
+    end
+    function build:takeResult()
+      self._taken = true
+      return title
+    end
+    function build:release()
+      title:dispose()
+    end
+    return build
   end
   -- The harness models the locked movie-first journey with an instantly
   -- finished movie and canned validated scene manifests: the flow under
@@ -385,6 +404,7 @@ local function withAppHarness(opts, ready, fn)
   App.pairIndex = originalPairIndex
   MainMenuComposition.new = originalMenuNew
   HgssTitleScene.new = originalTitleNew
+  HgssTitleScene.begin = originalTitleBegin
   HgssLoadingPresentation.new = originalLoadingNew
   graphics.print = originalPrint
   graphics.getDimensions = originalGetDimensions

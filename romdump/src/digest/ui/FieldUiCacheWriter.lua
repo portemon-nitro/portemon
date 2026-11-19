@@ -19,6 +19,8 @@ function FieldUiCacheWriter.isReady(cacheFs, marker)
   return FieldUiAssetCache.isReady(cacheFs, marker)
 end
 
+---@param stage table<string, unknown>
+---@param path string
 ---@param asset string|{ width: integer, height: integer, pixels: string }
 local function writeAsset(stage, path, asset)
   if type(asset) == "table" then

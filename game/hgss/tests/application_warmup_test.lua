@@ -22,6 +22,7 @@ local MoveIconFixture = require("tests.support.MoveIconFixture")
 local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
+local FakePreparationQueue = require("tests.support.FakePreparationQueue")
 local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
 
 local T = {}
@@ -44,6 +45,7 @@ local function stubPresentationRuntime(cache)
     assetNeeds = AssetNeedsRegistry.new(),
     derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
     imageAssets = SummaryAcceptanceFixture.sizedImagePool(),
+    assetPreparation = FakePreparationQueue.new(),
     uiManifest = FieldUiFixture.fieldStateManifest(),
     itemCatalog = ItemFixture.makeCatalog(),
     monCatalog = CatalogFixture.makeCatalog(),

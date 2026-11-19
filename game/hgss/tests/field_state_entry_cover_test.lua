@@ -19,6 +19,7 @@ local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEf
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
+local FakePreparationQueue = require("tests.support.FakePreparationQueue")
 local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
 
 local T = {}
@@ -70,6 +71,7 @@ local function boot(withCover)
       -- consumers (font quads read dimensions off borrows) honest without
       -- a second worker beside the stub.
       imageAssets = SummaryAcceptanceFixture.sizedImagePool(),
+      assetPreparation = FakePreparationQueue.new(),
       uiManifest = FieldUiFixture.fieldStateManifest(),
       itemCatalog = ItemFixture.makeCatalog(),
       monCatalog = CatalogFixture.makeCatalog(),

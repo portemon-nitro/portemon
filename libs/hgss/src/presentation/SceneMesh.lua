@@ -293,11 +293,20 @@ end
 --
 -- A G4GX draw keeps the source display-list command bytes, so the runtime
 -- replays them through the shared GX decoder instead of loading expanded
--- triangles. Every draw of one bank that takes part in terrain boundary repair
--- is decoded first, as one group, and conformed once before any of them is
--- handed on: the set of geometry the repair sees is the source model's, exactly
--- as the producer grouped it. Neutral geometry and the model-space matrices the
--- producer already resolved travel in the bank, so no source model is needed.
+-- triangles. One bank operation reads the bank once and keeps one slice per
+-- draw, so selecting several draws of one bank never repeats the bank's decode:
+--
+--   * each static draw is replayed once, under its own matrix/restore/seed
+--     context;
+--   * all transform-preserving draws that share a command stream are replayed
+--     once, and each segment draw keeps the pose segment it names;
+--   * every terrain-boundary-eligible draw of the bank is repaired together in
+--     one conformance pass, exactly the group the producer grouped.
+--
+-- The slices stay transient: the callers pack them into upload buffers (or
+-- reference vertex arrays) and nothing expanded outlives the bank operation.
+-- Neutral geometry and the model-space matrices the producer already resolved
+-- travel in the bank, so no source model is needed.
 -- ---------------------------------------------------------------------------
 
 ---@class SceneMesh.NativeDecoded
@@ -330,60 +339,81 @@ local function scaledMatrix(matrix, scale)
   return out
 end
 
---- Replay one draw's command bytes into `arena`, static or transform-preserving.
+--- Replay one transform-carrying draw's command bytes into `arena`.
 ---@param draw NativeGxFormat.Draw
 ---@param arena GxGeometryBuffer
+---@param scratch GxDisplayList.Scratch
 ---@param context unknown?
 ---@return SceneMesh.NativeSlice
-local function decodeNativeDraw(draw, arena, context)
-  local options = { arena = arena, collectCommands = false, context = context }
-  if draw.segmentIndex == nil then
-    local scale = draw.positionScale or 1
-    options.matrix = draw.matrix and scaledMatrix(draw.matrix, scale) or nil
-    options.restoreStack = draw.restoreStack
-    if draw.restoreStack ~= nil then
-      local scaled = {}
-      for slot, slotMatrix in pairs(draw.restoreStack) do
-        scaled[slot] = scaledMatrix(slotMatrix, scale)
-      end
-      options.restoreStack = scaled
+local function decodeStaticSlice(draw, arena, scratch, context)
+  local options = { arena = arena, scratch = scratch, collectCommands = false, context = context }
+  local scale = draw.positionScale or 1
+  options.matrix = draw.matrix and scaledMatrix(draw.matrix, scale) or nil
+  if draw.restoreStack ~= nil then
+    local scaled = {}
+    for slot, slotMatrix in pairs(draw.restoreStack) do
+      scaled[slot] = scaledMatrix(slotMatrix, scale)
     end
-    if draw.seedColorSource ~= nil then
-      options.initialState = { color = draw.seedColor, colorSource = draw.seedColorSource }
-    end
-    local geom, err = GxDisplayList.decode(draw.commands, options)
-    if not geom then
-      error(err)
-    end
-    local slice = geom.slice
-    return {
-      arena = slice.arena,
-      vertexOffset = slice.vertexOffset,
-      vertexCount = slice.vertexCount,
-      indexOffset = slice.indexOffset,
-      indexCount = slice.indexCount,
-      materialIndex = draw.materialIndex,
-      preScaled = true,
-    }
+    options.restoreStack = scaled
   end
-  options.dynamic = true
+  if draw.seedColorSource ~= nil then
+    options.initialState = { color = draw.seedColor, colorSource = draw.seedColorSource }
+  end
   local geom, err = GxDisplayList.decode(draw.commands, options)
   if not geom then
     error(err)
   end
-  local segment = geom.segments[
-    draw.segmentIndex --[[@as integer]] + 1
-  ]
+  local slice = geom.slice
+  return {
+    arena = slice.arena,
+    vertexOffset = slice.vertexOffset,
+    vertexCount = slice.vertexCount,
+    indexOffset = slice.indexOffset,
+    indexCount = slice.indexCount,
+    materialIndex = draw.materialIndex,
+    preScaled = true,
+  }
+end
+
+--- Replay one transform-preserving command stream once, keeping every pose
+--- segment it produces. The draw matrix is deferred to the segments' sources,
+--- so every segment draw of this stream selects from one replay.
+---@param draw NativeGxFormat.Draw
+---@param arena GxGeometryBuffer
+---@param scratch GxDisplayList.Scratch
+---@param context unknown?
+---@return GxDynamicGeometrySlice[]
+local function decodeDynamicSegments(draw, arena, scratch, context)
+  local geom, err = GxDisplayList.decode(draw.commands, {
+    arena = arena,
+    scratch = scratch,
+    collectCommands = false,
+    context = context,
+    dynamic = true,
+  })
+  if not geom then
+    error(err)
+  end
+  return geom.segments
+end
+
+--- One segment draw's slice out of its replayed command stream.
+---@param draw NativeGxFormat.Draw
+---@param segments GxDynamicGeometrySlice[]
+---@return SceneMesh.NativeSlice
+local function dynamicSlice(draw, segments)
+  local segmentIndex = assert(draw.segmentIndex)
+  local segment = segments[segmentIndex + 1]
   if not segment then
     Errors.raise(
       "SCENE_MESH_NATIVE_SEGMENT_MISSING",
-      "native draw names pose segment " .. tostring(draw.segmentIndex) .. " that its commands do not produce",
-      { segmentIndex = draw.segmentIndex }
+      "native draw names pose segment " .. tostring(segmentIndex) .. " that its commands do not produce",
+      { segmentIndex = segmentIndex }
     )
   end
   if segment.indexCount == 0 then
     Errors.raise("SCENE_MESH_NATIVE_EMPTY_SEGMENT", "native draw names an empty pose segment", {
-      segmentIndex = draw.segmentIndex,
+      segmentIndex = segmentIndex,
     })
   end
   return {
@@ -397,53 +427,60 @@ local function decodeNativeDraw(draw, arena, context)
   }
 end
 
--- Decode the requested draw together with every terrain-eligible draw of the
--- same bank and conform the eligible group once. Returns the requested slice
--- after repair plus the draw record that shapes its vertices.
+--- Replay every draw of one bank into one arena, replaying each distinct decode
+--- context exactly once, then repair the bank's terrain group once.
 ---@param bytes string|love.Data
----@param selector { file: string, drawIndex: integer }
 ---@param context unknown?
----@return NativeGxFormat.Draw draw
----@return SceneMesh.NativeSlice slice
-local function decodeNativeGroup(bytes, selector, context)
-  local bank = assert(NativeGxFormat.read(bytes))
-  local drawIndex = assert(selector.drawIndex)
-  local draw = bank.draws[drawIndex + 1]
-  if draw == nil then
-    Errors.raise("SCENE_MESH_NATIVE_DRAW_MISSING", "native model bank has no draw " .. tostring(drawIndex), {
-      file = selector.file,
-      drawIndex = drawIndex,
-    })
+---@return NativeGxFormat.Bank bank
+---@return SceneMesh.NativeSlice[] slices indexed by drawIndex + 1
+local function decodeNativeBankSlices(bytes, context)
+  local bank, readError = NativeGxFormat.read(bytes)
+  if bank == nil then
+    error(readError)
   end
-  ---@cast draw NativeGxFormat.Draw
   local arena = GxGeometryBuffer.new()
+  local scratch = GxDisplayList.newScratch()
   local slices = {}
   local eligible = {}
-  for index, candidate in ipairs(bank.draws) do
-    if candidate.terrainBoundaryEligible then
-      local slice = decodeNativeDraw(candidate, arena, context)
-      slices[index] = slice
+  local dynamicGroups = {}
+  for index, draw in ipairs(bank.draws) do
+    local slice
+    if draw.segmentIndex == nil then
+      slice = decodeStaticSlice(draw, arena, scratch, context)
+    else
+      local segments = dynamicGroups[draw.commands]
+      if segments == nil then
+        segments = decodeDynamicSegments(draw, arena, scratch, context)
+        dynamicGroups[draw.commands] = segments
+      end
+      slice = dynamicSlice(draw, segments)
+    end
+    slices[index] = slice
+    if draw.terrainBoundaryEligible then
       eligible[#eligible + 1] = slice
     end
   end
   if #eligible > 1 then
     TerrainBoundaryConformer.conform(eligible)
   end
-  local slice = slices[drawIndex + 1]
-  if slice == nil then
-    slice = decodeNativeDraw(draw, arena, context)
-  end
-  return draw, slice
+  return bank, slices
 end
 
--- One decoded draw as render-layout vertex arrays, for the synchronous pool
+---@class SceneMesh.NativeBank
+---@field format "g4gx"
+---@field drawCount integer
+---@field draws SceneMesh.NativeDecoded[] indexed by drawIndex + 1
+
+---@class SceneMesh.PreparedBank
+---@field draws SceneMesh.PreparedMesh[] indexed by drawIndex + 1
+
+-- One draw's slice as render-layout vertex arrays, for the synchronous pool
 -- path: the same values the prepared upload buffers carry, in the same order.
----@param bytes string|love.Data
----@param selector { file: string, drawIndex: integer }
+---@param draw NativeGxFormat.Draw
+---@param slice SceneMesh.NativeSlice
 ---@param context unknown?
 ---@return SceneMesh.NativeDecoded
-function SceneMesh.decodeNativeBank(bytes, selector, context)
-  local draw, slice = decodeNativeGroup(bytes, selector, context)
+local function decodedDraw(draw, slice, context)
   local arena = slice.arena
   local numeric = assert(arena.numeric)
   local attrib = assert(arena.attrib)
@@ -496,14 +533,13 @@ function SceneMesh.decodeNativeBank(bytes, selector, context)
   }
 end
 
--- One decoded draw packed straight into the GPU upload buffers, for the
--- background preparation worker: no per-vertex Lua table is created.
----@param bytes string|love.Data
----@param selector { file: string, drawIndex: integer }
+-- One draw's slice packed straight into the GPU upload buffers: no per-vertex
+-- Lua table is created.
+---@param draw NativeGxFormat.Draw
+---@param slice SceneMesh.NativeSlice
 ---@param context unknown?
 ---@return SceneMesh.PreparedMesh
-function SceneMesh.prepareNativeBank(bytes, selector, context)
-  local draw, slice = decodeNativeGroup(bytes, selector, context)
+local function packedDraw(draw, slice, context)
   local components = layoutComponents()
   local vertexCount, indexCount = slice.vertexCount, slice.indexCount
   if vertexCount == 0 then
@@ -582,6 +618,36 @@ function SceneMesh.prepareNativeBank(bytes, selector, context)
     minZ = minz,
     maxZ = maxz,
   }
+end
+
+-- Every draw of one native model bank as render-layout vertex arrays, for the
+-- synchronous pool path: one bank read, one replay per distinct decode context,
+-- one terrain repair, then one array per draw.
+---@param bytes string|love.Data
+---@param context unknown?
+---@return SceneMesh.NativeBank
+function SceneMesh.decodeNativeBank(bytes, context)
+  local bank, slices = decodeNativeBankSlices(bytes, context)
+  local draws = {}
+  for index = 1, bank.drawCount do
+    draws[index] = decodedDraw(bank.draws[index], slices[index], context)
+  end
+  return { format = "g4gx", drawCount = bank.drawCount, draws = draws }
+end
+
+-- Every draw of one native model bank packed into GPU upload buffers, for the
+-- background preparation worker: one bank read, one replay per distinct decode
+-- context, one terrain repair, then one packet per draw.
+---@param bytes string|love.Data
+---@param context unknown?
+---@return SceneMesh.PreparedBank
+function SceneMesh.prepareNativeBank(bytes, context)
+  local bank, slices = decodeNativeBankSlices(bytes, context)
+  local draws = {}
+  for index = 1, bank.drawCount do
+    draws[index] = packedDraw(bank.draws[index], slices[index], context)
+  end
+  return { draws = draws }
 end
 
 return SceneMesh
