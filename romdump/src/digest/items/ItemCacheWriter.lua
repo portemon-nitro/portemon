@@ -1,15 +1,15 @@
 -- Persists a compiled item bundle through the shared staged publication
 -- primitive: the catalog, index, icon manifest and atlas, and provenance
 -- are written into a disposable staging root, read back and validated there
--- (schemas, content hashes, image dimensions, and catalog-to-manifest icon
--- resolution), and only then is the completed stage published over the live
--- item roots with the marker last. A failure at any point leaves the
--- previous live class untouched; the stage is discarded. The raw ROM dump
--- and any other derived class are never touched.
+-- (schemas, the icon-pixel identity, and catalog-to-manifest icon resolution),
+-- and only then is the completed stage published over the live item roots with
+-- the marker last. The icon atlas reaches the stage either encoded here or
+-- deferred to the owning job's low-priority PNG continuation. A failure at any
+-- point leaves the previous live class untouched; the stage is discarded. The
+-- raw ROM dump and any other derived class are never touched.
 
 local Errors = require("libs.errors.src.Errors")
 local PngEncoder = require("romdump.src.digest.PngEncoder")
-local PngWriter = require("libs.assets.src.PngWriter")
 local ItemCache = require("libs.assets.src.ItemCache")
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
@@ -75,20 +75,20 @@ local function checkBundle(bundle)
     fail("ITEM_WRITER_HASH_MISMATCH", "index catalog hash does not match the catalog", {})
   end
   checkImage(bundle.icons, {}, "ITEM_WRITER_BAD_IMAGE", "icons")
-  local iconPng = PngEncoder.encode(bundle.icons.width, bundle.icons.height, bundle.icons.pixels)
-  if Hashing.sha1hex(iconPng) ~= bundle.index.iconHash then
-    fail("ITEM_WRITER_HASH_MISMATCH", "index icon hash does not match the atlas", {})
+  if Hashing.sha1hex(bundle.icons.pixels) ~= bundle.index.iconHash then
+    fail("ITEM_WRITER_HASH_MISMATCH", "index icon hash does not match the atlas pixels", {})
   end
   checkRectsInBounds(bundle.iconManifest, bundle.icons, {}, "ITEM_WRITER_RECT_OUT_OF_BOUNDS", "icon")
-  return iconPng
 end
 
-local function persist(tx, bundle, iconPng)
-  local stage = tx.stage
+-- The icon atlas reaches the stage either encoded here (a direct write) or
+-- deferred to the owning job's low-priority continuation. Everything else is
+-- small Lua and marker data, so only the image write differs between paths.
+local function persist(stage, bundle, writeIcon)
   stage:writeLua(ItemCache.catalogPath(), bundle.catalog)
   stage:writeLua(ItemCache.indexPath(), bundle.index)
   stage:writeLua(ItemCache.iconManifestPath(), bundle.iconManifest)
-  stage:write(ItemCache.iconImagePath(), iconPng)
+  writeIcon()
   stage:writeLua(ItemCache.provenancePath(), bundle.provenance)
 
   local catalog = stage:loadLua(ItemCache.catalogPath())
@@ -98,10 +98,6 @@ local function persist(tx, bundle, iconPng)
   local iconManifest = stage:loadLua(ItemCache.iconManifestPath())
   ItemAssetSchema.assertIconManifest(iconManifest)
   ItemAssetSchema.assertCatalogIcons(catalog, iconManifest)
-  local iconWidth, iconHeight = PngWriter.completeDimensions(assert(stage:read(ItemCache.iconImagePath())))
-  if iconWidth ~= bundle.icons.width or iconHeight ~= bundle.icons.height then
-    fail("ITEM_WRITER_PNG_UNREADABLE", "staged icon atlas dimensions mismatch", {})
-  end
 
   stage:write(ItemCache.markerPath(), bundle.marker)
   return bundle.marker
@@ -112,22 +108,28 @@ end
 ---@return string
 function ItemCacheWriter.stage(artifact, bundle)
   assert(artifact and artifact.stageFs, "item staging requires a PreparedArtifact")
-  local iconPng = checkBundle(bundle)
+  checkBundle(bundle)
   artifact:addOwnedRoot(ItemCache.assetDir())
   artifact:addOwnedRoot(ItemCache.dir())
-  return persist({ stage = artifact:stageFs() }, bundle, iconPng)
+  local icons = bundle.icons
+  return persist(artifact:stageFs(), bundle, function()
+    artifact:deferImage(ItemCache.iconImagePath(), icons.width, icons.height, icons.pixels)
+  end)
 end
 
 ---@param cacheFs CacheFs
 ---@param bundle table<string, unknown>
 ---@return string
 function ItemCacheWriter.write(cacheFs, bundle)
-  local iconPng = checkBundle(bundle)
+  checkBundle(bundle)
+  local iconPng = PngEncoder.encode(bundle.icons.width, bundle.icons.height, bundle.icons.pixels)
   local tx = ArtifactPublisher.begin(cacheFs, "items", {
     ItemCache.assetDir(),
     ItemCache.dir(),
   })
-  local ok, result = pcall(persist, tx, bundle, iconPng)
+  local ok, result = pcall(persist, tx.stage, bundle, function()
+    tx.stage:write(ItemCache.iconImagePath(), iconPng)
+  end)
   if not ok then
     tx:abort()
     error(result, 0)

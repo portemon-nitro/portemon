@@ -22,11 +22,11 @@ local function validateBundle(bundle)
   )
   assert(FieldCellCache.validateIndex(bundle.index), "field cell index is malformed")
   local encodedTextures = {}
-  for sha1, data in pairs(bundle.meshes or {}) do
-    assert(data ~= nil, "compiled mesh is missing finalized G4M2 Data for " .. sha1)
+  for key, data in pairs(bundle.meshes or {}) do
+    assert(data ~= nil, "compiled model bank is missing its bytes for " .. key)
   end
-  for sha1, texture in pairs(bundle.textures or {}) do
-    encodedTextures[sha1] = assert(texture.data, "compiled texture is missing finalized PNG Data")
+  for key, bytes in pairs(bundle.textures or {}) do
+    encodedTextures[key] = assert(bytes, "compiled texture bank is missing its bytes for " .. key)
   end
   for _, model in pairs(bundle.models or {}) do
     ModelAsset.validate(model)
@@ -72,11 +72,11 @@ local function validationCache(stage, cacheFs)
 end
 
 local function writeSharedAssets(cacheFs, encoded, models)
-  for sha1, bytes in pairs(encoded.meshes) do
-    cacheFs:write(MapAssetCache.geometryPath(sha1), bytes)
+  for key, bytes in pairs(encoded.meshes) do
+    cacheFs:write(MapAssetCache.modelBankPath(key), bytes)
   end
-  for sha1, bytes in pairs(encoded.textures) do
-    cacheFs:write(MapAssetCache.texturePath(sha1), bytes)
+  for key, bytes in pairs(encoded.textures) do
+    cacheFs:write(MapAssetCache.textureBankPath(key), bytes)
   end
   for modelKey, model in pairs(models) do
     cacheFs:writeLua(MapAssetCache.modelPath(modelKey), model)
@@ -155,11 +155,11 @@ function Writer.stagePrepared(prepared, descriptor, result)
     marker = cell.cellMarker,
   })
   writeSharedAssets(stage, encoded, result.models)
-  for sha1 in pairs(encoded.meshes) do
-    prepared:addSharedFile(MapAssetCache.geometryPath(sha1))
+  for key in pairs(encoded.meshes) do
+    prepared:addSharedFile(MapAssetCache.modelBankPath(key))
   end
-  for sha1 in pairs(encoded.textures) do
-    prepared:addSharedFile(MapAssetCache.texturePath(sha1))
+  for key in pairs(encoded.textures) do
+    prepared:addSharedFile(MapAssetCache.textureBankPath(key))
   end
   for modelKey in pairs(result.models) do
     prepared:addSharedFile(MapAssetCache.modelPath(modelKey))

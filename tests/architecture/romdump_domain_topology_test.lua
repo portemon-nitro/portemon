@@ -30,7 +30,6 @@ local DOMAINS = {
     "NeighborChunkCompiler",
     "NeighborPlan",
     "TerrainAnimationCompiler",
-    "TerrainBoundaryConformer",
     "TerrainInspector",
     "WorldManifest",
     "ZoneEvents",

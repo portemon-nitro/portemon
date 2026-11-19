@@ -221,6 +221,63 @@ local function ownedImage(self, path, width, height, filter)
   return image
 end
 
+-- One generated material texture reference as a GPU image. A PNG path uploads
+-- as bytes; a native texture bank selector decodes its named texels under the
+-- named palette first, so a title model samples the same visible texture the
+-- rest of the field does.
+---@param self HgssTitleScene
+---@param reference string|ModelAsset.TextureReference material texture reference
+---@param wrap { x: string, y: string }
+---@return love.Image image
+local function textureImage(self, reference, wrap)
+  if type(reference) == "string" then
+    local image = ownedImage(self, reference)
+    image:setWrap(wrap.x, wrap.y)
+    return image
+  end
+  local NativeTextureBank = require("libs.assets.src.model.NativeTextureBank")
+  local TextureDecoder = require("libs.nds.src.gx.TextureDecoder")
+  local file = assert(reference.file)
+  local bank = assert(NativeTextureBank.read(assert(self.cacheFs:read(file), "missing texture bank " .. file)))
+  local texture = assert(
+    bank:texture(assert(reference.textureName)),
+    "title texture bank has no texture " .. tostring(reference.textureName)
+  )
+  local palette = reference.paletteName and assert(bank:palette(reference.paletteName)) or nil
+  local opts = {
+    format = texture.formatRaw,
+    width = texture.width,
+    height = texture.height,
+    color0Transparent = texture.color0Transparent,
+    texel = texture.texels,
+    palette = palette and palette.data or "",
+  }
+  if texture.indexData ~= nil then
+    opts.indexData = texture.indexData
+  end
+  local rgba = love.data.newByteData(texture.width * texture.height * 4)
+  local rgbaSize = rgba:getSize()
+  ---@cast rgbaSize integer
+  TextureDecoder.decodeInto(opts, rgba:getFFIPointer(), rgbaSize, TextureDecoder.newScratch(), {
+    name = texture.name,
+  })
+  local imageData = love.image.newImageData(texture.width, texture.height, "rgba8", rgba --[[@as string]])
+  local image = self.graphics.newImage(imageData)
+  image:setFilter("nearest", "nearest")
+  image:setWrap(wrap.x, wrap.y)
+  self.images[#self.images + 1] = image
+  return image
+end
+
+---@param reference string|ModelAsset.TextureReference
+---@return string
+local function textureKey(reference)
+  if type(reference) == "string" then
+    return reference
+  end
+  return string.format("%s#%s#%s", reference.file, tostring(reference.textureName), tostring(reference.paletteName))
+end
+
 local function buildModel(self, descriptor, clips, key)
   local definition = ModelDefinition.fromNitroDescriptor(copyWithAnimations(descriptor, clips), { key = key })
   local meshes = {}
@@ -236,11 +293,10 @@ local function buildModel(self, descriptor, clips, key)
       return nil
     end
     local wrap = assert(wraps[materialId], "title material has no sampler wrap")
-    local imageKey = table.concat({ path, wrap.x, wrap.y }, "|")
+    local imageKey = table.concat({ textureKey(path), wrap.x, wrap.y }, "|")
     local image = imageByKey[imageKey]
     if image == nil then
-      image = ownedImage(self, path)
-      image:setWrap(wrap.x, wrap.y)
+      image = textureImage(self, path, wrap)
       imageByKey[imageKey] = image
     end
     return image

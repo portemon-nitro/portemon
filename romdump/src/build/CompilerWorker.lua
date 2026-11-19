@@ -14,6 +14,7 @@ local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
 local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
 local GxGeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
+local PngEncoder = require("romdump.src.digest.PngEncoder")
 
 local CompilerWorker = {}
 
@@ -180,6 +181,7 @@ end
 ---@param workSeconds number wall time spent on validation and compilation
 ---@param failure string|table<string, unknown>|nil channel-safe cause: the pool-reported typed error,
 --- a worker-caught compile or backend failure with its throw-site trace, or nothing on success paths
+---@param pendingImages { relativePath: string, width: integer, height: integer, rgba: love.Data }[]? the parent's unwritten PNG images
 local function pushCompletion(
   resultChannel,
   workerId,
@@ -189,9 +191,11 @@ local function pushCompletion(
   status,
   timingReason,
   workSeconds,
-  failure
+  failure,
+  pendingImages
 )
   resultChannel:push({
+    pendingImages = pendingImages,
     workerId = workerId,
     epoch = job.epoch,
     generationId = job.generationId,
@@ -280,6 +284,40 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
       -- no acknowledgement, so the controller never mistakes it for closure.
       closeContext(context)
       resultChannel:push({ workerId = workerId, status = "context-closed", closeToken = job.closeToken })
+    elseif job.kind == "encode-png" then
+      -- The parent's authored output is already staged; this is its deferred
+      -- low-priority image write into that same open stage. It carries no
+      -- receipt of its own: the owning parent seals and settles only after
+      -- every image is written, and a failure settles it as failed instead.
+      switchCacheContext(job, context)
+      local ok, failure = xpcall(function()
+        local pending = assert(context.pendingArtifact, "the png continuation has no pending parent")
+        local stageFs = pending.artifact:stageFs()
+        ArtifactJobs.completeDeferredImages(context, job, function(image)
+          local rgba = assert(image.rgba, "a pending image carries its RGBA pixels")
+          stageFs:write(image.relativePath, PngEncoder.encode(image.width, image.height, rgba:getString()))
+        end)
+      end, function(err)
+        return completionCause(err, throwSiteTraceback())
+      end)
+      if not ok then
+        local abandoned, abandonError = pcall(ArtifactJobs.abandonDeferredImages, context, job, failure)
+        if not abandoned then
+          failure = completionCause(abandonError, nil)
+        end
+      end
+      resultChannel:push({
+        workerId = workerId,
+        status = ok and "images-staged" or "images-failed",
+        kind = job.parentKind,
+        key = job.key,
+        jobKey = job.jobKey,
+        versionId = job.versionId,
+        generationId = job.generationId,
+        epoch = job.epoch,
+        stageName = job.stageName,
+        error = not ok and failure or nil,
+      })
     else
       local startedAt = wallSeconds()
       switchCacheContext(job, context)
@@ -368,6 +406,7 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
               releaseGeometryScratch(context)
             end
             if ok then
+              local pendingImages = result.result and result.result.pendingImages or nil
               pushCompletion(
                 resultChannel,
                 workerId,
@@ -376,7 +415,9 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
                 result.stageName,
                 "prepared",
                 "interleaved",
-                workSeconds
+                workSeconds,
+                nil,
+                pendingImages
               )
             else
               pushCompletion(

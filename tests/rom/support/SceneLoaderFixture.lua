@@ -73,15 +73,15 @@ local function fakeMeshBuilder(decoded)
 end
 
 -- Write one compiled bundle into the cache layout the loader reads: scene.lua,
--- the collision asset, every content-addressed .g4mesh, and every model
+-- the collision asset, every source model's native model bank, and every model
 -- descriptor. Texture blobs are deliberately omitted -- the injected fake
 -- shared owner below never reads them.
 local function writeBundle(backend, assets)
   local scene = assets.scene
   backend:write(MapAssetCache.mapDir(scene.mapId) .. "/scene.lua", LuaWriter.encode(scene))
   backend:write(scene.collision.file, CollisionGridAsset.encode(assets.collision))
-  for sha, mesh in pairs(assets.meshes) do
-    backend:write(MapAssetCache.geometryPath(sha), CompiledAsset.bytes(mesh))
+  for key, bank in pairs(assets.meshes) do
+    backend:write(MapAssetCache.modelBankPath(key), CompiledAsset.bytes(bank))
   end
   for modelKey, desc in pairs(assets.models) do
     backend:write(MapAssetCache.modelPath(modelKey), LuaWriter.encode(desc))

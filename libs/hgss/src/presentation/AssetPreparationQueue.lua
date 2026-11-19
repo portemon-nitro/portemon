@@ -48,7 +48,25 @@ Worker.run(requestChannel, replyChannel)
   WORKER_MODULE
 )
 
-local VALID_KINDS = { mesh = true, image = true, ["image-derivative"] = true, ["audio-sample"] = true }
+local VALID_KINDS =
+  { mesh = true, image = true, ["image-derivative"] = true, ["audio-sample"] = true, g4gx = true, g4tx = true }
+
+-- Native bank requests carry a discriminated selector instead of a single
+-- path; the identity of one request is its bank file plus the selected draw or
+-- named texture/palette pair, so repeated demand of one selected asset runs
+-- once while another selection of the same bank stays a separate decode.
+---@param kind string
+---@param payload string|ModelAsset.GeometryReference|ModelAsset.TextureReference
+---@return string
+local function requestIdentity(kind, payload)
+  if type(payload) == "string" then
+    return payload
+  end
+  if kind == "g4gx" then
+    return string.format("%s#draw%d", assert(payload.file), assert(payload.drawIndex))
+  end
+  return string.format("%s#%s#%s", assert(payload.file), tostring(payload.textureName), tostring(payload.paletteName))
+end
 local VALID_PRIORITIES = { demand = true, prefetch = true }
 
 -- Default ceiling for completed-but-unclaimed payload bytes held on the
@@ -156,6 +174,7 @@ function AssetPreparationQueue:_dispatch()
     path = record.path,
     versionId = self._versionId,
     logicalPath = record.logicalPath,
+    selector = record.selector,
   })
 end
 
@@ -340,7 +359,7 @@ function AssetPreparationQueue:_publishOk(record, response)
     self._readyPayloadBytes = self._readyPayloadBytes + (record.payloadBytes or 0)
     return
   end
-  if record.kind == "image-derivative" then
+  if record.kind == "g4tx" or record.kind == "image-derivative" then
     record.payload = {
       sourceHash = response.sourceHash,
       pixelHash = response.pixelHash,
@@ -383,8 +402,8 @@ end
 ---@param record table<string, unknown> settled primary record
 ---@param response table<string, unknown> worker reply behind the outcome
 function AssetPreparationQueue:_detachFollowers(primary, record, response)
-  local key = record.kind .. "\0" .. record.path
-  if self._inflight[key] == primary then
+  local key = record.key
+  if key ~= nil and self._inflight[key] == primary then
     self._inflight[key] = nil
   end
   for _, otherRecord in pairs(self._tokens) do
@@ -431,22 +450,27 @@ function AssetPreparationQueue:_drain()
   end
 end
 
----@param kind "mesh"|"image"|"image-derivative"|"audio-sample"
----@param logicalPath string
+---@param kind "mesh"|"image"|"image-derivative"|"audio-sample"|"g4gx"|"g4tx"
+---@param logicalPath string|ModelAsset.GeometryReference|ModelAsset.TextureReference generated file path, or a native bank selector for g4gx/g4tx
 ---@param priority "demand"|"prefetch"
 ---@return integer
 function AssetPreparationQueue:request(kind, logicalPath, priority)
   assert(not self._released, "asset preparation queue is released")
   assert(VALID_KINDS[kind], "unknown preparation kind " .. tostring(kind))
   assert(VALID_PRIORITIES[priority], "unknown preparation priority " .. tostring(priority))
-  assert(type(logicalPath) == "string", "preparation path is required")
+  assert(
+    type(logicalPath) == "string" or ((kind == "g4gx" or kind == "g4tx") and type(logicalPath) == "table"),
+    "preparation path is required"
+  )
   self:_drain()
   self:_checkWorkerHealth()
   if self._workerFailure ~= nil then
     error(self._workerFailure, 0)
   end
-  local resolved = self._cacheFs:resolve(logicalPath)
-  local key = kind .. "\0" .. resolved
+  local identity = requestIdentity(kind, logicalPath)
+  local file = type(logicalPath) == "table" and logicalPath.file or logicalPath
+  local resolved = self._cacheFs:resolve(file)
+  local key = kind .. "\0" .. resolved .. "\0" .. identity
   self._nextToken = self._nextToken + 1
   local token = self._nextToken
   -- An identical queued-or-running job runs once: the duplicate links to
@@ -457,8 +481,10 @@ function AssetPreparationQueue:request(kind, logicalPath, priority)
   if primaryRecord ~= nil and (primaryRecord.state == "queued" or primaryRecord.state == "running") then
     self._tokens[token] = {
       kind = kind,
-      logicalPath = logicalPath,
+      logicalPath = file,
+      selector = type(logicalPath) == "table" and logicalPath or nil,
       path = resolved,
+      key = key,
       priority = priority,
       state = "linked",
       link = primary,
@@ -469,8 +495,15 @@ function AssetPreparationQueue:request(kind, logicalPath, priority)
     self:_dispatch()
     return token
   end
-  self._tokens[token] =
-    { kind = kind, logicalPath = logicalPath, path = resolved, priority = priority, state = "queued" }
+  self._tokens[token] = {
+    kind = kind,
+    logicalPath = file,
+    selector = type(logicalPath) == "table" and logicalPath or nil,
+    path = resolved,
+    key = key,
+    priority = priority,
+    state = "queued",
+  }
   self._inflight[key] = token
   if priority == "demand" then
     self._demand[#self._demand + 1] = token
@@ -541,7 +574,7 @@ function AssetPreparationQueue:cancel(token)
   end
   -- A cancelled primary hands its job to its oldest follower instead of
   -- abandoning the shared work: the worker runs once either way.
-  local key = record.kind .. "\0" .. record.path
+  local key = assert(record.key, "preparation record is missing its identity")
   if self._inflight[key] ~= token then
     return
   end
@@ -625,7 +658,7 @@ function AssetPreparationQueue:wait(token)
       return assert(record.payload, "ready preparation has no payload")
     end
     if record.state == "failed" then
-      error("asset preparation failed for " .. tostring(record.logicalPath) .. ": " .. tostring(record.failure), 0)
+      error("asset preparation failed for " .. tostring(record.path) .. ": " .. tostring(record.failure), 0)
     end
     local response = self._reply:demand(WAIT_HEALTH_PROBE_SECONDS)
     if response ~= nil then

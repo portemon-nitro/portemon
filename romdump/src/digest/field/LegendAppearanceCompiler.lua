@@ -93,20 +93,20 @@ local function compileAnimation(archive, source, hashes, archiveName, compressed
   return clip
 end
 
-local function rewritePaths(descriptor, label)
+-- Re-point one compiled descriptor's generated references into the field-effect
+-- asset roots.
+---@param descriptor table<string, unknown>
+local function rewritePaths(descriptor)
   for _, batch in ipairs(descriptor.dynamic.batches) do
-    local sha1 = assert(batch.geometry:match("/([^/]+)%.g4mesh$"), label .. " model geometry path is malformed")
-    batch.geometry = FieldEffectAssetCache.geometryPath(sha1)
+    batch.geometry = ModelAsset.retargetGeometry(batch.geometry, FieldEffectAssetCache.geometryPath)
   end
   for _, material in ipairs(descriptor.materials) do
     if material.texture then
-      local sha1 = assert(material.texture:match("/([^/]+)%.png$"), label .. " model texture path is malformed")
-      material.texture = FieldEffectAssetCache.texturePath(sha1)
+      material.texture = ModelAsset.retargetTexture(material.texture, FieldEffectAssetCache.texturePath)
     end
     for _, variant in ipairs(material.variants or {}) do
       if variant.texture then
-        local sha1 = assert(variant.texture:match("/([^/]+)%.png$"), label .. " variant texture path is malformed")
-        variant.texture = FieldEffectAssetCache.texturePath(sha1)
+        variant.texture = ModelAsset.retargetTexture(variant.texture, FieldEffectAssetCache.texturePath)
       end
     end
   end
@@ -172,7 +172,7 @@ local function compileModel(archive, source, meshes, textures, hashes, archiveNa
       }
     end
   end
-  rewritePaths(descriptor, spec.label)
+  rewritePaths(descriptor)
   ModelAsset.validate(descriptor)
   return descriptor
 end

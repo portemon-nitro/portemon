@@ -1,18 +1,26 @@
--- Test-side RGBA reader for staged PNG bytes. Decodes through LÖVE's
--- standard image pipeline, so suites assert the pixels the runtime loads
--- rather than any particular encoder framing. Returns width, height, and
+-- Test-side RGBA reader for staged PNG bytes or a compiled RGBA image record.
+-- Staged bytes decode through LÖVE's standard image pipeline, so suites assert
+-- the pixels the runtime loads rather than any particular encoder framing; a
+-- compiled record already carries its finished rows. Returns width, height, and
 -- the raw RGBA rows (4 bytes per pixel).
 
 local PngReader = {}
 
 -- Returns width, height, and the raw RGBA rows (4 bytes per pixel).
----@param png string staged PNG bytes
+---@param image string|{ width: integer, height: integer, pixels: string } staged PNG bytes or a compiled RGBA image
 ---@return integer width
 ---@return integer height
 ---@return string rgba row-major RGBA bytes, top-left origin, straight alpha
-function PngReader.rgba(png)
-  assert(type(png) == "string", "PngReader.rgba requires staged PNG bytes")
-  local data = love.image.newImageData(love.filesystem.newFileData(png, "assertion.png"))
+function PngReader.rgba(image)
+  if type(image) == "table" then
+    local width, height, pixels = image.width, image.height, image.pixels
+    assert(type(width) == "number" and width > 0, "a compiled image carries its width")
+    assert(type(height) == "number" and height > 0, "a compiled image carries its height")
+    assert(type(pixels) == "string" and #pixels == width * height * 4, "a compiled image carries RGBA rows")
+    return width, height, pixels
+  end
+  assert(type(image) == "string", "PngReader.rgba requires staged PNG bytes or a compiled image")
+  local data = love.image.newImageData(love.filesystem.newFileData(image, "assertion.png"))
   local width, height = data:getWidth(), data:getHeight()
   assert(data:getFormat() == "rgba8", "PngReader requires RGBA8 decoded pixels")
   assert(data:getSize() == width * height * 4, "decoded RGBA8 byte length does not match dimensions")

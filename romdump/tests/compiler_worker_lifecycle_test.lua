@@ -968,4 +968,161 @@ function T.new_generation_rebuilds_the_job_and_replaces_only_generated_bytes()
   Assert.equal(backend:read(modPath), modLogical, "replacing the generated root leaves mods untouched")
 end
 
+-- A real 2D atlas family runs end to end through the worker: the field-font
+-- source phase stages its definitions and defers every atlas, the sweep
+-- continuation encodes those RGBA rows into the same open stage, and the
+-- parent seals once with one receipt after publication. While the images are
+-- pending there is no PNG in the stage and no receipt.
+function T.real_atlas_producer_defers_its_pngs_until_the_continuation_writes_them()
+  local CompilerWorker = require("romdump.src.build.CompilerWorker")
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+  local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
+  local FieldFontSourceFixture = require("tests.support.FieldFontSourceFixture")
+  local RomFs = require("romdump.src.source.RomFs")
+  local CacheFs = require("libs.storage.src.CacheFs")
+
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local backend = FakeCache.new()
+  local loveHost = fakeLove(backend)
+  loveHost.data = hostLove.data
+  local versionId = "heartgold"
+  local generation = "deferred-png-real-producer-generation"
+  local stageName = "field-font-real-stage"
+  local romFs = assert(FieldFontSourceFixture.build())
+  romFs.close = function() end
+  local cacheFs = CacheFs.forVersion(versionId, backend)
+  local stageFs = CacheFs.forArtifactStage(versionId, stageName, backend)
+  local receiptPath = ArtifactState.path("field-font", "global")
+  local imagePaths = {}
+  for _, fontId in ipairs(FieldFontCache.REQUIRED_FONT_IDS) do
+    imagePaths[#imagePaths + 1] = FieldFontCache.atlasPath(fontId)
+    imagePaths[#imagePaths + 1] = FieldFontCache.maskAtlasPath(fontId)
+    imagePaths[#imagePaths + 1] = FieldFontCache.focusIndicatorsPath(fontId)
+  end
+  local sourceJob = {
+    kind = "field-font",
+    key = "global",
+    jobKey = "field-font:global",
+    versionId = versionId,
+    generationId = generation,
+    epoch = 1,
+    stageName = stageName,
+    sizeClass = "normal",
+    payload = {},
+    producerFingerprint = "producer",
+  }
+  local input = scriptedChannel({ sourceJob, pooledSupply(sourceJob) })
+  local resultsChannel, received = recordingChannel()
+  local pendingImages, continuationSent, stagedBeforeContinuation, receiptBeforeContinuation
+  local realDemand = input.demand
+  input.demand = function(self)
+    if self:getCount() > 0 then
+      return self:pop()
+    end
+    if continuationSent then
+      return { kind = "stop" }
+    end
+    local parent
+    for _, message in ipairs(received) do
+      if message.jobKey == sourceJob.jobKey and message.status == "prepared" then
+        parent = message
+      end
+    end
+    Assert.notNil(parent, "the real producer reports its prepared parent before any continuation")
+    pendingImages = assert(parent.pendingImages, "the parent carries its unwritten images")
+    receiptBeforeContinuation = ArtifactState.read(cacheFs, generation, sourceJob.kind, sourceJob.key)
+    stagedBeforeContinuation = {}
+    for _, path in ipairs(imagePaths) do
+      stagedBeforeContinuation[#stagedBeforeContinuation + 1] = stageFs:exists(path, "file")
+    end
+    continuationSent = true
+    return {
+      kind = "encode-png",
+      workerId = 1,
+      parentKind = sourceJob.kind,
+      key = sourceJob.key,
+      jobKey = sourceJob.jobKey,
+      versionId = sourceJob.versionId,
+      generationId = sourceJob.generationId,
+      epoch = sourceJob.epoch,
+      stageName = parent.stageName,
+      pendingImages = parent.pendingImages,
+    }
+  end
+  local realOpen = RomFs.open
+  RomFs.open = function()
+    return romFs
+  end
+  local runOk, runErr
+  withLove(loveHost, function()
+    runOk, runErr = pcall(CompilerWorker.run, 1, input, resultsChannel)
+  end)
+  RomFs.open = realOpen
+  input.demand = realDemand
+  Assert.isTrue(runOk, "the driven worker loop resolves: " .. tostring(runErr))
+  Assert.isTrue(continuationSent, "the worker asked for its continuation after the parent prepared")
+  Assert.equal(#pendingImages, 9, "the field-font family defers three images for each of its three fonts")
+  Assert.isNil(receiptBeforeContinuation, "no receipt exists while the PNGs are unwritten")
+  for index, present in ipairs(stagedBeforeContinuation) do
+    Assert.isFalse(present, "no PNG is staged before the continuation: " .. imagePaths[index])
+  end
+  local prepared = {}
+  for _, message in ipairs(received) do
+    if message.jobKey == sourceJob.jobKey and message.status == "prepared" then
+      prepared[#prepared + 1] = message
+    end
+  end
+  Assert.equal(#prepared, 1, "the parent reports exactly one terminal result")
+  for _, path in ipairs(imagePaths) do
+    local bytes = assert(stageFs:read(path), "the continuation writes the PNG into the parent stage: " .. path)
+    Assert.equal(bytes:sub(1, 4), "\137PNG", "the continuation writes one plain PNG: " .. path)
+  end
+  local staged = {}
+  local function walk(relative)
+    for _, name in ipairs(stageFs:getDirectoryItems(relative)) do
+      local child = relative == "" and name or relative .. "/" .. name
+      local info = stageFs:getInfo(child)
+      if info ~= nil and info.type == "directory" then
+        walk(child)
+      elseif info ~= nil then
+        staged[#staged + 1] = child
+      end
+    end
+  end
+  walk("")
+  local receipts = 0
+  for _, path in ipairs(staged) do
+    Assert.isTrue(path:sub(-4) ~= ".rgba", "the stage holds no persistent RGBA file")
+    if path == receiptPath then
+      receipts = receipts + 1
+    end
+  end
+  Assert.equal(receipts, 1, "the sealed parent stage carries exactly one receipt")
+  local artifact = assert(PreparedArtifact.open({
+    cacheFs = cacheFs,
+    generationId = generation,
+    epoch = 1,
+    kind = sourceJob.kind,
+    key = sourceJob.key,
+    jobKey = sourceJob.jobKey,
+    stageName = stageName,
+  }))
+  artifact:publish({
+    generationId = generation,
+    epoch = 1,
+    kind = sourceJob.kind,
+    key = sourceJob.key,
+    jobKey = sourceJob.jobKey,
+    stageName = stageName,
+  })
+  Assert.notNil(
+    ArtifactState.read(cacheFs, generation, sourceJob.kind, sourceJob.key),
+    "the parent publishes its one receipt after every deferred image is staged"
+  )
+  for _, path in ipairs(imagePaths) do
+    Assert.notNil(cacheFs:read(path), "the published generation carries the deferred PNG: " .. path)
+  end
+end
+
 return { tests = T }

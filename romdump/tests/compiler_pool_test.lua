@@ -2655,4 +2655,304 @@ function T.boot_hold_release_refuses_stale_epoch()
   end)
 end
 
+-- A prepared result whose PNG continuation has not written its image yet is
+-- not a ready cache entry: the pool keeps the parent unsettled, hands the
+-- unwritten image to a sweep-priority continuation, publishes no receipt, and
+-- leaves the previously published bytes exactly as they were. A stale reply
+-- from an earlier epoch can never settle it either.
+function T.deferred_png_continuation_gates_parent_publication()
+  local CompilerPool = requirePool()
+  local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local host = newThreadHost(2)
+  host.love.data = hostLove.data
+  -- Publication renames staged trees, so this scenario uses the real cache
+  -- backend under a private version root instead of the in-memory host.
+  host.love.filesystem = hostLove.filesystem
+  local versionId = "deferred-png-publication-test"
+  local generation = "deferred-png-publication-generation"
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
+
+  local imagePath = "maps/60/atlas.png"
+  local pendingImage = {
+    relativePath = imagePath,
+    width = 1,
+    height = 1,
+    rgba = hostLove.data.newByteData(string.char(9, 8, 7, 255)),
+  }
+  local ok, err = pcall(function()
+    withLove(host.love, function()
+      local cache = CacheFs.forVersion(versionId)
+      local olderGeneration = "deferred-png-older-generation"
+      local published = requirePreparedArtifact().new({
+        cacheFs = cache,
+        generationId = olderGeneration,
+        epoch = 1,
+        kind = "map",
+        key = "60",
+        jobKey = "map:60",
+        stageName = "deferred-png-older-stage",
+      })
+      published:stageFs():write("maps/60/complete", "previously-published-marker")
+      published:addOwnedRoot("maps/60")
+      published:finishSuccess({ mapId = 60, marker = "previously-published-marker" })
+      published:publish({
+        generationId = olderGeneration,
+        epoch = 1,
+        kind = "map",
+        key = "60",
+        jobKey = "map:60",
+      })
+
+      pool:selectGeneration({ versionId = versionId, generationId = generation }, 1)
+      pool:request({
+        generationId = generation,
+        epoch = 1,
+        versionId = versionId,
+        kind = "map",
+        key = "60",
+        jobKey = "map:60",
+        priority = 0,
+        sizeClass = "normal",
+        payload = { mapId = 60 },
+      })
+      pool:update()
+      Assert.equal(pool:status("map:60"), "running", "the map job dispatches to a worker")
+      local dispatchedWork = assert(host.channels[2]:pop(), "the worker received the job")
+      local stageName = assert(dispatchedWork.stageName, "dispatched work carries its stage identity")
+
+      stageOwnedMap(versionId, generation, 1, "60", stageName)
+      host.channels[1]:push({
+        workerId = 1,
+        epoch = 1,
+        generationId = generation,
+        kind = "map",
+        key = "60",
+        jobKey = "map:60",
+        stageName = stageName,
+        status = "prepared",
+        pendingImages = { pendingImage },
+      })
+      pool:update()
+      pool:update()
+
+      local pendingState = pool:status("map:60")
+      Assert.isTrue(
+        pendingState ~= "ready" and pendingState ~= "failed",
+        "a parent with an unwritten deferred image stays pending: " .. tostring(pendingState)
+      )
+      Assert.isNil(
+        ArtifactState.read(cache, generation, "map", "60"),
+        "no current receipt exists while the deferred png is unwritten"
+      )
+      Assert.equal(
+        cache:read("maps/60/complete"),
+        "previously-published-marker",
+        "the previously published bytes stay untouched until publication"
+      )
+
+      local continuation = assert(host.channels[2]:pop(), "the pool hands the unwritten image to a continuation")
+      Assert.equal(continuation.kind, "encode-png", "the continuation is the pool's private png encode task")
+      Assert.equal(continuation.jobKey, "map:60", "the continuation names its owning parent job")
+      Assert.equal(continuation.stageName, stageName, "the continuation writes into the parent's stage")
+      Assert.equal(
+        continuation.priority,
+        ArtifactJobs.priorityFor("sweep"),
+        "png encoding continues at the existing sweep priority"
+      )
+      local images = assert(continuation.pendingImages, "the continuation carries the unwritten images")
+      Assert.equal(#images, 1, "each unwritten image is handed over once")
+      Assert.equal(images[1].relativePath, imagePath, "the continuation keeps the staged output path")
+
+      host.channels[1]:push({
+        workerId = 1,
+        epoch = 999,
+        generationId = generation,
+        kind = "map",
+        key = "60",
+        jobKey = "map:60",
+        stageName = stageName,
+        status = "prepared",
+        pendingImages = { pendingImage },
+      })
+      pool:update()
+      Assert.isTrue(pool:status("map:60") ~= "ready", "a stale result cannot settle the pending parent")
+      Assert.isNil(ArtifactState.read(cache, generation, "map", "60"), "a stale result publishes no current receipt")
+      Assert.equal(
+        cache:read("maps/60/complete"),
+        "previously-published-marker",
+        "a stale result never replaces the published bytes"
+      )
+
+      host.channels[1]:push({
+        workerId = 1,
+        epoch = 998,
+        generationId = generation,
+        kind = "map",
+        key = "60",
+        jobKey = "map:60",
+        stageName = stageName,
+        status = "images-failed",
+        error = "stale continuation failure",
+      })
+      pool:update()
+      Assert.isTrue(pool:status("map:60") ~= "ready", "a stale continuation failure cannot settle the parent")
+      Assert.isNil(
+        ArtifactState.read(cache, generation, "map", "60"),
+        "a stale continuation failure publishes no receipt"
+      )
+
+      host.channels[1]:push({
+        workerId = 1,
+        epoch = 1,
+        generationId = generation,
+        kind = "map",
+        key = "60",
+        jobKey = "map:60",
+        stageName = stageName,
+        status = "images-staged",
+      })
+      pool:update()
+      pool:update()
+      Assert.equal(pool:status("map:60"), "ready", "the parent settles ready after its continuation completes")
+      Assert.notNil(
+        ArtifactState.read(cache, generation, "map", "60"),
+        "exactly one parent receipt publishes after the continuation"
+      )
+      Assert.equal(pool:diagnostics().counts.ready, 1, "the job holds exactly one ready record")
+    end)
+  end)
+  pcall(function()
+    pool:shutdown()
+  end)
+  pcall(function()
+    CacheFs.forVersion(versionId):removeTree("")
+  end)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A failed deferred continuation never publishes the parent and never damages
+-- the previously published generation: its stage is discarded and the job
+-- settles as failed.
+function T.deferred_png_continuation_failure_publishes_nothing()
+  local CompilerPool = requirePool()
+  local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local host = newThreadHost(2)
+  host.love.data = hostLove.data
+  host.love.filesystem = hostLove.filesystem
+  local versionId = "deferred-png-failure-test"
+  local generation = "deferred-png-failure-generation"
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
+
+  local pendingImage = {
+    relativePath = "maps/61/atlas.png",
+    width = 1,
+    height = 1,
+    rgba = hostLove.data.newByteData(string.char(1, 2, 3, 255)),
+  }
+  local stageName
+  local ok, err = pcall(function()
+    withLove(host.love, function()
+      local cache = CacheFs.forVersion(versionId)
+      local olderGeneration = "deferred-png-failure-older"
+      local published = requirePreparedArtifact().new({
+        cacheFs = cache,
+        generationId = olderGeneration,
+        epoch = 1,
+        kind = "map",
+        key = "61",
+        jobKey = "map:61",
+        stageName = "deferred-png-failure-older-stage",
+      })
+      published:stageFs():write("maps/61/complete", "previously-published-marker")
+      published:addOwnedRoot("maps/61")
+      published:finishSuccess({ mapId = 61, marker = "previously-published-marker" })
+      published:publish({
+        generationId = olderGeneration,
+        epoch = 1,
+        kind = "map",
+        key = "61",
+        jobKey = "map:61",
+      })
+
+      pool:selectGeneration({ versionId = versionId, generationId = generation }, 1)
+      pool:request({
+        generationId = generation,
+        epoch = 1,
+        versionId = versionId,
+        kind = "map",
+        key = "61",
+        jobKey = "map:61",
+        priority = 0,
+        sizeClass = "normal",
+        payload = { mapId = 61 },
+      })
+      pool:update()
+      local dispatchedWork = assert(host.channels[2]:pop(), "the worker received the job")
+      stageName = assert(dispatchedWork.stageName, "dispatched work carries its stage identity")
+      stageOwnedMap(versionId, generation, 1, "61", stageName)
+      host.channels[1]:push({
+        workerId = 1,
+        epoch = 1,
+        generationId = generation,
+        kind = "map",
+        key = "61",
+        jobKey = "map:61",
+        stageName = stageName,
+        status = "prepared",
+        pendingImages = { pendingImage },
+      })
+      pool:update()
+      pool:update()
+      local continuation = assert(host.channels[2]:pop(), "the pool hands the unwritten image to a continuation")
+      Assert.equal(continuation.kind, "encode-png", "the continuation is the private png encode task")
+      host.channels[1]:push({
+        workerId = 1,
+        epoch = 1,
+        generationId = generation,
+        kind = "map",
+        key = "61",
+        jobKey = "map:61",
+        stageName = stageName,
+        status = "images-failed",
+        error = "injected png encode failure",
+      })
+      pool:update()
+      pool:update()
+      Assert.equal(pool:status("map:61"), "failed", "a failed continuation settles the parent as failed")
+      Assert.isNil(
+        ArtifactState.read(cache, generation, "map", "61"),
+        "a failed continuation publishes no current receipt"
+      )
+      Assert.equal(
+        cache:read("maps/61/complete"),
+        "previously-published-marker",
+        "the previously published generation stays untouched"
+      )
+      Assert.isFalse(
+        CacheFs.forArtifactStage(versionId, assert(stageName)):exists(""),
+        "a failed continuation discards its uncommitted stage"
+      )
+    end)
+  end)
+  pcall(function()
+    pool:shutdown()
+  end)
+  pcall(function()
+    CacheFs.forVersion(versionId):removeTree("")
+  end)
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return { tests = T }

@@ -5,8 +5,8 @@
 -- NANR animation (member 0). Character and palette members decode through
 -- the existing G2dDecoder primitives; this module only rasterizes
 -- palette-resolved RGBA and packs deterministic atlases. Returns raw image
--- buffers and manifest values; ItemCacheWriter owns PNG encoding and
--- publication.
+-- buffers and manifest values; ItemCacheWriter owns PNG encoding (or its
+-- deferral to the compiler pool) and publication.
 
 local Errors = require("libs.errors.src.Errors")
 local ItemSources = require("romdump.src.config.ItemSources")

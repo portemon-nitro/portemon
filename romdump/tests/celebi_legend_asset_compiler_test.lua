@@ -1,5 +1,6 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
 
@@ -44,13 +45,22 @@ local function compileWith(memberBytes, animationFormat)
         return {
           schema = ModelAsset.SCHEMA,
           kind = "nitro-dynamic",
-          dynamic = { batches = { { geometry = "assets/generated/maps/geometry/mesh.g4mesh" } } },
-          materials = { { texture = "assets/generated/maps/textures/texture.png", variants = {} } },
+          dynamic = {
+            batches = { { geometry = { file = "assets/generated/maps/models/mesh.g4gx", drawIndex = 0 } } },
+          },
+          materials = {
+            {
+              texture = { file = "assets/generated/maps/texture-banks/texture.g4tx", textureName = "tex0" },
+              variants = {},
+            },
+          },
           animations = animations.clips,
         }, {}
       end,
     },
     ["libs.assets.src.model.ModelAsset"] = {
+      retargetGeometry = ModelAsset.retargetGeometry,
+      retargetTexture = ModelAsset.retargetTexture,
       validate = function(descriptor)
         Assert.equal(descriptor.kind, "nitro-dynamic")
         Assert.equal(#descriptor.animations, 3)

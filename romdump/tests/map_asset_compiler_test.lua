@@ -41,7 +41,9 @@ local MapUnits = require("romdump.src.digest.map.MapUnits")
 local PcSources = require("romdump.src.config.PcSources")
 local NB = require("tests.support.NitroBuilder")
 local NsbmdFixture = require("tests.support.NsbmdFixture")
-local PngWriter = require("tests.support.PngEncoder")
+local NativeTextureBank = require("libs.assets.src.model.NativeTextureBank")
+local TextureDecoder = require("libs.nds.src.gx.TextureDecoder")
+
 local StarterLab = require("romdump.src.catalog.hgss.starter_lab")
 local TF = require("tests.support.TextureFixtures")
 local Tex0Fixture = require("tests.support.Tex0Fixture")
@@ -252,25 +254,38 @@ local function terrainLandModel(opts)
   })
 end
 
--- The compiled texture asset a scene material path refers to.
-local function textureAsset(path, textures)
-  for sha1, asset in pairs(textures) do
-    if MapAssetCache.texturePath(sha1) == path then
-      return asset
-    end
-  end
-  error("no compiled texture for " .. path)
-end
-
 -- Pixels of an 8x8 solid-colour decoded frame (64 texels, RGBA).
 local function solidPixels(r, g, b)
   return string.rep(string.char(r, g, b, 255), 64)
 end
 
-local function texturePng(path, textures)
-  local asset = textureAsset(path, textures)
-  Assert.isNil(asset.pixels, "compiled textures retain only finalized PNG Data")
-  return ffi.string(asset.data:getFFIPointer(), asset.data:getSize())
+-- The visible pixels a texture selector resolves to through its native bank:
+-- the named texels decoded under the named palette, exactly the runtime image
+-- path, so a material or a swap frame is judged by what it renders.
+local function textureRgba(selector, textures)
+  if type(selector) == "string" then
+    error("a 3D material binds a native texture bank selector, not an image path: " .. selector)
+  end
+  local key = assert(tostring(selector.file):match("([^/]+)%.g4tx$"), "selector names a texture bank")
+  local bank = assert(NativeTextureBank.read(assert(textures[key], "no compiled texture bank for " .. selector.file)))
+  local texture = assert(bank:texture(selector.textureName))
+  local palette = selector.paletteName and assert(bank:palette(selector.paletteName)) or nil
+  local opts = {
+    format = texture.formatRaw,
+    width = texture.width,
+    height = texture.height,
+    color0Transparent = texture.color0Transparent,
+    texel = texture.texels,
+    palette = palette and palette.data or "",
+  }
+  if texture.indexData then
+    opts.indexData = texture.indexData
+  end
+  local rgba = love.data.newByteData(texture.width * texture.height * 4)
+  TextureDecoder.decodeInto(opts, rgba:getFFIPointer(), rgba:getSize(), TextureDecoder.newScratch(), {
+    name = texture.name,
+  })
+  return rgba:getString()
 end
 
 -- ---- neighbour-ring fixtures ----
@@ -655,10 +670,10 @@ function T.central_terrain_materials_carry_the_terrain_fields_and_matched_swaps(
   Assert.deepEqual(durations, FLOWER_STEP_DURATIONS)
   -- The schedule repeats source index 0, so steps 1 and 3 are the same
   -- content-addressed path.
-  Assert.equal(material.textureSwap.steps[1].texture, material.textureSwap.steps[3].texture)
+  Assert.equal(material.textureSwap.steps[1].texture.file, material.textureSwap.steps[3].texture.file)
   Assert.isTrue(
-    material.textureSwap.steps[1].texture:find("^assets/generated/maps/textures/") ~= nil,
-    "swap frames are cache-relative paths"
+    material.textureSwap.steps[1].texture.file:find("^assets/generated/maps/texture%-banks/") ~= nil,
+    "swap frames name cache-relative texture banks"
   )
 
   -- The dependency record carries the table hash and the used replacement
@@ -791,10 +806,7 @@ function T.neighbor_terrain_compiles_against_its_own_pack_into_one_dependency_se
   Assert.equal(central.texHeight, 8)
   Assert.equal(central.texMtxMode, 0)
   Assert.equal(central.textureSwap.name, "flower02")
-  Assert.equal(
-    texturePng(central.textureSwap.steps[2].texture, bundle.textures),
-    PngWriter.encode(8, 8, solidPixels(0, 255, 0))
-  )
+  Assert.equal(textureRgba(central.textureSwap.steps[2].texture, bundle.textures), solidPixels(0, 255, 0))
 
   -- The neighbour chunk binds its own pack: flower01's frames decode under the
   -- neighbour palette (blue at index 2), never the central one.
@@ -810,10 +822,7 @@ function T.neighbor_terrain_compiles_against_its_own_pack_into_one_dependency_se
     durations[#durations + 1] = step.durationTicks
   end
   Assert.deepEqual(durations, FLOWER_STEP_DURATIONS)
-  Assert.equal(
-    texturePng(neighbor.textureSwap.steps[2].texture, bundle.textures),
-    PngWriter.encode(8, 8, solidPixels(0, 0, 255))
-  )
+  Assert.equal(textureRgba(neighbor.textureSwap.steps[2].texture, bundle.textures), solidPixels(0, 0, 255))
 
   -- The one area clip is owned by the central scene only; no neighbour
   -- descriptor repeats it.

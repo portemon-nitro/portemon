@@ -13,6 +13,8 @@ local MapCacheWriter = require("romdump.src.digest.map.MapCacheWriter")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
+local NativeGxFormat = require("libs.assets.src.model.NativeGxFormat")
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local CollisionGrid = require("libs.hgss.src.world.CollisionGrid")
 
@@ -80,10 +82,10 @@ function T.deterministic_bytes(romFs, version)
   Assert.deepEqual(sortedKeys(b1.textures), sortedKeys(b2.textures))
 
   for sha in pairs(b1.meshes) do
-    Assert.equal(c1:read(MapAssetCache.geometryPath(sha)), c2:read(MapAssetCache.geometryPath(sha)))
+    Assert.equal(c1:read(MapAssetCache.modelBankPath(sha)), c2:read(MapAssetCache.modelBankPath(sha)))
   end
   for sha in pairs(b1.textures) do
-    Assert.equal(c1:read(MapAssetCache.texturePath(sha)), c2:read(MapAssetCache.texturePath(sha)))
+    Assert.equal(c1:read(MapAssetCache.textureBankPath(sha)), c2:read(MapAssetCache.textureBankPath(sha)))
   end
 end
 
@@ -119,9 +121,10 @@ function T.completeness_and_ready(romFs, version)
     Assert.notNil(bundle.models[inst.modelKey], "instance references a compiled model: " .. inst.modelKey)
     Assert.isTrue(c:exists(MapAssetCache.modelPath(inst.modelKey)), "model descriptor on disk")
   end
-  -- Every map batch references a mesh present on disk.
+  -- Every map batch references a model bank present on disk.
   for _, b in ipairs(bundle.scene.mapBatches) do
-    Assert.isTrue(c:exists(b.geometry), "map mesh on disk: " .. b.geometry)
+    local file = ModelAsset.geometryFile(b.geometry)
+    Assert.isTrue(c:exists(file), "map model bank on disk: " .. file)
   end
 
   -- Representative compiled-animation payload: every animated model
@@ -174,15 +177,20 @@ end
 function T.uvs_are_normalized(romFs, version)
   local _, bundle = compileInto(romFs, version)
   local maxUV = 0
-  -- Finalized meshes are baked byte blobs, not Lua vertex tables: decode
-  -- each through the production mesh contract and bound the normalized UVs.
-  for _, batch in pairs(bundle.meshes) do
-    local bytes = batch
+  -- Geometry stays as draw command bytes: decode every draw of each source
+  -- model bank through the production runtime replay and bound the UVs.
+  for key, bank in pairs(bundle.meshes) do
+    local bytes = bank
     if type(bytes) ~= "string" then
-      bytes = assert(bytes:getString(), "a finalized mesh carries its bytes")
+      bytes = assert(bytes:getString(), "a finalized model bank carries its bytes")
     end
-    for _, vtx in ipairs(SceneMesh.decode(bytes).vertices) do
-      maxUV = math.max(maxUV, math.abs(vtx[4]), math.abs(vtx[5]))
+    local file = MapAssetCache.modelBankPath(key)
+    local drawCount = assert(NativeGxFormat.read(bytes)).drawCount
+    for drawIndex = 0, drawCount - 1 do
+      local decoded = SceneMesh.decodeNativeBank(bytes, { file = file, drawIndex = drawIndex })
+      for _, vtx in ipairs(decoded.vertices) do
+        maxUV = math.max(maxUV, math.abs(vtx[4]), math.abs(vtx[5]))
+      end
     end
   end
   Assert.isTrue(maxUV <= 8, "normalized UVs stay small, got max " .. maxUV)
@@ -212,12 +220,14 @@ function T.cache_only_restart(romFs, version)
   local terrain = assert(cache:loadLua(MapAssetCache.terrainPath(MAP_ID)))
   Assert.equal(terrain.schema, "g4-terrain-surfaces-v1")
 
-  -- Geometry loads as baked G4M2 batches from the derived-asset subtree; the map
+  -- Geometry loads as native model banks from the derived-asset subtree; the map
   -- never re-parses NSBMD/NSBTX at load, and no reference escapes the cache.
   for _, b in ipairs(scene.mapBatches) do
-    Assert.isTrue(b.geometry:find("^assets/generated/") ~= nil, "geometry is a derived asset: " .. b.geometry)
-    local decoded = SceneMesh.decode(assert(cache:read(b.geometry), "mesh present: " .. b.geometry))
-    Assert.isTrue(decoded.vertexCount > 0, "baked mesh has vertices")
+    local file = ModelAsset.geometryFile(b.geometry)
+    Assert.isTrue(file:find("^assets/generated/") ~= nil, "geometry is a derived asset: " .. file)
+    local bytes = assert(cache:read(file), "model bank present: " .. file)
+    local decoded = SceneMesh.decodeNativeBank(bytes, { file = file, drawIndex = b.geometry.drawIndex })
+    Assert.isTrue(decoded.vertexCount > 0, "baked draw has vertices")
   end
   for _, inst in ipairs(scene.buildingInstances) do
     Assert.isTrue(cache:exists(MapAssetCache.modelPath(inst.modelKey)), "model descriptor cached")

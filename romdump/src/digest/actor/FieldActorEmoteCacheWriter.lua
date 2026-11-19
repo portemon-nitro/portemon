@@ -9,14 +9,11 @@ local Writer = {}
 ---@param stage CacheFs
 ---@param bundle table<string, unknown>
 local function persist(stage, bundle)
-  for sha1, data in pairs(bundle.meshes) do
-    stage:write(FieldEmoteAssetCache.geometryPath(sha1), data)
+  for key, bank in pairs(bundle.meshes) do
+    stage:write(FieldEmoteAssetCache.geometryPath(key), bank)
   end
-  for sha1, texture in pairs(bundle.textures) do
-    stage:write(
-      FieldEmoteAssetCache.texturePath(sha1),
-      assert(texture.data, "compiled texture is missing finalized PNG Data")
-    )
+  for key, bank in pairs(bundle.textures) do
+    stage:write(FieldEmoteAssetCache.texturePath(key), bank)
   end
   stage:writeLua(FieldEmoteAssetCache.exclamationDescriptorPath(), bundle.model)
   local descriptor = assert(stage:loadLua(FieldEmoteAssetCache.exclamationDescriptorPath()))

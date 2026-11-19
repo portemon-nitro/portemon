@@ -1,15 +1,22 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
-local MeshWriter = require("libs.assets.src.model.MeshWriter")
-local PngWriter = require("tests.support.PngEncoder")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local Writer = require("romdump.src.digest.field.FieldEntranceIndicatorCacheWriter")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
 
-local TEXTURE_DATA = PngWriter.encode(1, 1, "rgba")
+local MESH_BANK = "G4GX-bank-bytes"
+local TEXTURE_BANK = "G4TX-bank-bytes"
+
+local function geometry(drawIndex)
+  return { file = FieldEffectAssetCache.geometryPath("mesh-key"), drawIndex = drawIndex }
+end
+
+local function texture(key)
+  return { file = FieldEffectAssetCache.texturePath(key or "texture-key"), textureName = "effect" }
+end
 
 local function model()
   return {
@@ -18,7 +25,7 @@ local function model()
     kind = "static",
     batches = {
       {
-        geometry = FieldEffectAssetCache.geometryPath("mesh-key"),
+        geometry = geometry(0),
         cullMode = "back",
         polygonMode = "modulation",
         polygonId = 0,
@@ -33,7 +40,7 @@ local function model()
       {
         id = 0,
         name = "effect",
-        texture = FieldEffectAssetCache.texturePath("texture-key"),
+        texture = texture(),
         textureFormat = 3,
         wrap = { x = "clamp", y = "clamp" },
         flip = { x = false, y = false },
@@ -44,10 +51,6 @@ local function model()
 end
 
 T.tests["publishes model marker and referenced mesh under owned effect roots"] = function()
-  local oldEncode = MeshWriter.encode
-  MeshWriter.encode = function()
-    return "encoded-mesh"
-  end
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local meshPath = FieldEffectAssetCache.geometryPath("mesh-key")
   local bundle = {
@@ -68,15 +71,15 @@ T.tests["publishes model marker and referenced mesh under owned effect roots"] =
       tall_grass = { model = model(), lifetime = 1 },
       very_tall_grass = { model = model(), lifetime = 1 },
     },
-    meshes = { ["mesh-key"] = {} },
-    textures = { ["texture-key"] = { width = 1, height = 1, data = TEXTURE_DATA } },
+    meshes = { ["mesh-key"] = MESH_BANK },
+    textures = { ["texture-key"] = TEXTURE_BANK },
   }
   local ok, err = pcall(Writer.write, cache, bundle)
-  MeshWriter.encode = oldEncode
   Assert.isTrue(ok, tostring(err))
   Assert.isTrue(cache:exists(FieldEffectAssetCache.indexPath(), "file"))
   Assert.equal(cache:read(FieldEffectAssetCache.markerPath()), bundle.marker)
-  Assert.equal(cache:read(meshPath), "encoded-mesh")
+  Assert.equal(cache:read(meshPath), MESH_BANK, "the model bank travels verbatim")
+  Assert.equal(cache:read(FieldEffectAssetCache.texturePath("texture-key")), TEXTURE_BANK)
 end
 
 T.tests["aborts before publication when the canonical model is invalid"] = function()
@@ -97,10 +100,6 @@ T.tests["aborts before publication when the canonical model is invalid"] = funct
 end
 
 T.tests["publishes the surf attachment definition and its referenced paths atomically"] = function()
-  local oldEncode = MeshWriter.encode
-  MeshWriter.encode = function()
-    return "encoded-mesh"
-  end
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local surf = model()
   surf.key = "field-effect:surf-attachment"
@@ -142,11 +141,10 @@ T.tests["publishes the surf attachment definition and its referenced paths atomi
       trainer_reveal = { model = model(), lifetime = 1 },
       surf_attachment = surfDefinition,
     },
-    meshes = { ["mesh-key"] = {} },
-    textures = { ["texture-key"] = { width = 1, height = 1, data = TEXTURE_DATA } },
+    meshes = { ["mesh-key"] = MESH_BANK },
+    textures = { ["texture-key"] = TEXTURE_BANK },
   }
   local ok, err = pcall(Writer.write, cache, bundle)
-  MeshWriter.encode = oldEncode
   Assert.isTrue(ok, tostring(err))
   local stored = assert(cache:loadLua(FieldEffectAssetCache.definitionPath("surf_attachment")))
   Assert.equal(stored.model.key, "field-effect:surf-attachment")
@@ -155,10 +153,6 @@ T.tests["publishes the surf attachment definition and its referenced paths atomi
 end
 
 T.tests["publishes multi-model transition definitions and aborts on a missing reference"] = function()
-  local oldEncode = MeshWriter.encode
-  MeshWriter.encode = function()
-    return "encoded-mesh"
-  end
   local function bundleFor(secondTexture)
     local first, second = model(), model()
     second.materials[1].texture = secondTexture
@@ -180,18 +174,17 @@ T.tests["publishes multi-model transition definitions and aborts on a missing re
           placementOffset = { x = 0, y = 0.375, z = 0 },
         },
       },
-      meshes = { ["mesh-key"] = {} },
-      textures = { ["texture-key"] = { width = 1, height = 1, data = TEXTURE_DATA } },
+      meshes = { ["mesh-key"] = MESH_BANK },
+      textures = { ["texture-key"] = TEXTURE_BANK },
     }
   end
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local ok, err = pcall(Writer.write, cache, bundleFor(FieldEffectAssetCache.texturePath("texture-key")))
-  MeshWriter.encode = oldEncode
+  local ok, err = pcall(Writer.write, cache, bundleFor(texture()))
   Assert.isTrue(ok, tostring(err))
   Assert.isTrue(cache:exists(FieldEffectAssetCache.definitionPath("follower_transition"), "file"))
 
   local broken = CacheFs.forVersion("heartgold", FakeCache.new())
-  local badOk = pcall(Writer.write, broken, bundleFor(FieldEffectAssetCache.texturePath("absent-key")))
+  local badOk = pcall(Writer.write, broken, bundleFor(texture("absent-key")))
   Assert.isFalse(badOk, "a transition with a missing referenced asset must not publish")
   Assert.isFalse(broken:exists(FieldEffectAssetCache.markerPath(), "file"))
 end

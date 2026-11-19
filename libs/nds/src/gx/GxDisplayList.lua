@@ -956,6 +956,80 @@ end
 
 GxDisplayList.COLOR_SOURCE = COLOR_SOURCE
 
+-- Bounded command-stream walk that reports what the producer needs to decide a
+-- draw's context without triangulating it: the opcode census, any in-display-list
+-- POLYGON_ATTR override words, and the geometry-engine color/normal state the
+-- stream leaves behind (the state the next shape inherits). Unknown opcodes and
+-- an unterminated primitive are rejected exactly like a full decode.
+---@class GxDisplayList.StateScan
+---@field opcodeCounts table<integer, integer>
+---@field polygonAttrs integer[]
+---@field finalState { color: number[], normal: number[], colorSource: integer|nil }
+
+---@param bytes string
+---@param context unknown?
+---@return GxDisplayList.StateScan
+function GxDisplayList.scanState(bytes, context)
+  local r = BinaryReader.new(bytes, "gx-dl-state")
+  local len = r:length()
+  local opcodeCounts, polygonAttrs = {}, {}
+  local colorR, colorG, colorB = 255, 255, 255
+  local normalX, normalY, normalZ = 0, 0, 0
+  local colorSource = nil
+  local runOpen = false
+  local pos = 0
+  while pos + 4 <= len do
+    local cmdWord = r:u32le(pos)
+    local cmdBytes = unpackCommandWord(cmdWord)
+    local cmdOffset = pos
+    pos = pos + 4
+    for i = 1, 4 do
+      local op = cmdBytes[i]
+      local n = PARAM_WORDS[op]
+      if n == nil then
+        error(
+          Errors.new(
+            "GX_UNKNOWN_OPCODE",
+            string.format("unknown geometry opcode 0x%02X at offset 0x%X", op, cmdOffset + i - 1),
+            { opcode = op, offset = cmdOffset + i - 1, source = context }
+          )
+        )
+      end
+      if op ~= 0x00 then
+        local params = readCommandParameters(r, pos, n)
+        pos = pos + n * 4
+        opcodeCounts[op] = (opcodeCounts[op] or 0) + 1
+        if op == 0x20 then
+          colorR, colorG, colorB = FixedPoint.rgb555(params[1] % 0x8000)
+          colorSource = COLOR_SOURCE.LITERAL
+        elseif op == 0x21 then
+          normalX, normalY, normalZ = FixedPoint.normal10(params[1])
+          colorSource = COLOR_SOURCE.NORMAL_LIT
+        elseif op == 0x29 then
+          polygonAttrs[#polygonAttrs + 1] = params[1]
+        elseif op == 0x40 then
+          runOpen = true
+        elseif op == 0x41 then
+          runOpen = false
+        end
+      end
+    end
+  end
+  if runOpen then
+    error(Errors.new("GX_UNTERMINATED_PRIMITIVE", "display list ended inside a BEGIN_VTXS block", { source = context }))
+  end
+  table.sort(polygonAttrs)
+  return {
+    opcodeCounts = opcodeCounts,
+    polygonAttrs = polygonAttrs,
+    finalState = {
+      color = { colorR, colorG, colorB },
+      normal = { normalX, normalY, normalZ },
+      colorSource = colorSource,
+    },
+  }
+end
+
 local function scanCommandStream(r, len, options)
   local vertexCount = 0
   local dynamicBoundaryCount = 0

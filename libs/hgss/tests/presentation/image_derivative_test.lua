@@ -13,7 +13,6 @@ local PngWriter = require("tests.support.PngEncoder")
 local T = {}
 
 local haveClassifier, ImageClassifier = pcall(require, "libs.hgss.src.presentation.ImageDerivative")
-local haveFormat, DerivativeFormat = pcall(require, "libs.assets.src.image.RuntimeImageCache")
 
 ---@return table the worker-side pixel classifier under test
 local function classifier()
@@ -23,16 +22,6 @@ local function classifier()
       .. "to indexed or straight RGBA payloads with exact pixels preserved"
   )
   return ImageClassifier --[[@as table]]
-end
-
----@return table the private derivative format owner under test
-local function derivativeFormat()
-  Assert.isTrue(
-    haveFormat,
-    "the private effective-image derivative path is missing: prepared payloads must "
-      .. "persist under source-isolated versioned paths"
-  )
-  return DerivativeFormat --[[@as table]]
 end
 
 local function requireQueue()
@@ -91,12 +80,12 @@ end
 -- four-byte RGBA tuples from the palette, straight payloads are raw RGBA.
 -- Worker records carry love Data payloads; validated cache entries decoded
 -- by the love-free format carry the same bytes as plain strings.
----@param record table classifier/worker result or decoded cache entry
+---@param record table classifier/worker result
 ---@return string concatenated row-major RGBA bytes
 local function unpackRecord(record)
   if record.kind == "r8" then
-    local palette = record.paletteData ~= nil and dataBytes(record.paletteData) or record.palette
-    local indexes = record.indexData ~= nil and dataBytes(record.indexData) or record.index
+    local palette = dataBytes(record.paletteData)
+    local indexes = dataBytes(record.indexData)
     local out = {}
     for offset = 1, #indexes do
       local slot = string.byte(indexes, offset)
@@ -105,10 +94,7 @@ local function unpackRecord(record)
     return table.concat(out)
   end
   Assert.equal(record.kind, "rgba8", "representations are indexed or straight RGBA")
-  if record.indexData ~= nil then
-    return dataBytes(record.indexData)
-  end
-  return record.index
+  return dataBytes(record.indexData)
 end
 
 ---@param record table classifier/worker result
@@ -118,7 +104,7 @@ local function assertBulkTransit(record)
   end
   Assert.isNil(record.image, "preparation never realizes a GPU image")
   Assert.isNil(record.mesh, "preparation never realizes a GPU mesh")
-  Assert.isNil(record.imageData, "derivative preparation answers with packed payloads, not decoded images")
+  Assert.isNil(record.imageData, "preparation answers with packed payloads, not decoded images")
 end
 
 ---@param versionId string
@@ -130,7 +116,7 @@ end
 ---@param queue table
 ---@param logicalPath string
 ---@return table payload transferred exactly once
-local function demandDerivative(queue, logicalPath)
+local function demandImage(queue, logicalPath)
   local token = queue:request("image-derivative", logicalPath, "demand")
   return queue:wait(token)
 end
@@ -220,18 +206,17 @@ function T.oversized_icon_like_image_classifies_to_rgba_through_the_worker()
   local runOk, runErr = pcall(function()
     cache:write("icons/crowded.png", encodePng(48, 48, pixels))
     local queue = AssetPreparationQueue.new(cache)
-    local first = demandDerivative(queue, "icons/crowded.png")
+    local first = demandImage(queue, "icons/crowded.png")
     queue:release()
     local later = AssetPreparationQueue.new(cache)
-    local second = demandDerivative(later, "icons/crowded.png")
+    local second = demandImage(later, "icons/crowded.png")
     later:release()
     Assert.equal(first.kind, "rgba8", "an icon-sized image past 256 tuples classifies to straight RGBA")
-    Assert.equal(first.sourceHash, sha256(encodePng(48, 48, pixels)), "the source hash binds the PNG bytes")
     Assert.equal(unpackRecord(first), pixels, "the worker payload recovers every pixel exactly")
     Assert.equal(
       dataBytes(second.indexData),
       dataBytes(first.indexData),
-      "a later worker reuses the persisted derivative instead of reclassifying"
+      "a later worker reads the same PNG to the same pixels"
     )
     assertBulkTransit(first)
   end)
@@ -253,62 +238,25 @@ function T.edited_sources_reclassify_while_untouched_sources_keep_their_derivati
     cache:write("sprites/a.png", firstPng)
     cache:write("sprites/b.png", firstPng)
     local queue = AssetPreparationQueue.new(cache)
-    local aBefore = demandDerivative(queue, "sprites/a.png")
-    local bBefore = demandDerivative(queue, "sprites/b.png")
+    local aBefore = demandImage(queue, "sprites/a.png")
+    local bBefore = demandImage(queue, "sprites/b.png")
     queue:release()
     Assert.equal(aBefore.kind, "r8", "two-color sources pack as indexed")
     Assert.equal(unpackRecord(aBefore), firstPixels, "the first source reads back exactly")
     cache:write("sprites/a.png", editedPng)
     local later = AssetPreparationQueue.new(cache)
-    local aAfter = demandDerivative(later, "sprites/a.png")
-    local bAfter = demandDerivative(later, "sprites/b.png")
+    local aAfter = demandImage(later, "sprites/a.png")
+    local bAfter = demandImage(later, "sprites/b.png")
     later:release()
-    Assert.equal(aAfter.sourceHash, sha256(editedPng), "the edited source binds the new PNG bytes")
     Assert.isTrue(aAfter.pixelHash ~= aBefore.pixelHash, "only the changed image reclassifies")
     Assert.equal(unpackRecord(aAfter), editedPixels, "the edited source reads back exactly")
-    Assert.equal(bAfter.sourceHash, bBefore.sourceHash, "the untouched path keeps its source identity")
+    Assert.equal(bAfter.pixelHash, bBefore.pixelHash, "the untouched path keeps its pixel identity")
     Assert.equal(
       dataBytes(bAfter.indexData),
       dataBytes(bBefore.indexData),
-      "the untouched derivative stays valid across the edit"
+      "the untouched image classifies identically across the edit"
     )
     assertBulkTransit(aAfter)
-  end)
-  cache:removeTree("")
-  if not runOk then
-    error(runErr, 0)
-  end
-end
-
-function T.corrupted_private_payloads_rebuild_from_the_trusted_source()
-  local AssetPreparationQueue = requireQueue()
-  local Format = derivativeFormat()
-  local pixels = cycledPixels(5, 3, { pixel(1, 2, 3, 255), pixel(4, 5, 6, 0), pixel(7, 8, 9, 64) })
-  local sourcePng = encodePng(5, 3, pixels)
-  local cache = fileBackedCache("image-derivative-rebuild-test")
-  local runOk, runErr = pcall(function()
-    cache:write("sprites/fragile.png", sourcePng)
-    local queue = AssetPreparationQueue.new(cache)
-    local prepared = demandDerivative(queue, "sprites/fragile.png")
-    queue:release()
-    local privatePath = Format.pathFor(prepared.sourceHash, Format.FORMAT_VERSION)
-    local valid = assert(cache:read(privatePath), "preparation persists its private derivative")
-    cache:write(privatePath, valid:sub(1, math.floor(#valid / 2)))
-    local rebuilt = AssetPreparationQueue.new(cache)
-    local again = demandDerivative(rebuilt, "sprites/fragile.png")
-    rebuilt:release()
-    Assert.equal(unpackRecord(again), pixels, "a damaged private file rebuilds to exact pixels")
-    Assert.equal(
-      dataBytes(again.indexData),
-      dataBytes(prepared.indexData),
-      "the rebuilt derivative matches the original classification"
-    )
-    Assert.equal(cache:read("sprites/fragile.png"), sourcePng, "rebuilding never touches the trusted source")
-    Assert.equal(
-      unpackRecord(Format.load(cache, privatePath)),
-      pixels,
-      "the private file is valid again after the rebuild"
-    )
   end)
   cache:removeTree("")
   if not runOk then
@@ -335,7 +283,7 @@ function T.unreadable_sources_fail_loudly_without_substitution()
     end
     local ok, err = pcall(queue.wait, queue, missingToken)
     Assert.isTrue(not ok, "missing sources fail instead of substituting bytes: " .. tostring(err))
-    local recovered = demandDerivative(queue, "sprites/good.png")
+    local recovered = demandImage(queue, "sprites/good.png")
     Assert.equal(
       unpackRecord(recovered),
       pixel(9, 9, 9, 255):rep(4),
@@ -373,6 +321,69 @@ function T.derivative_requests_share_queue_lifecycle_and_leave_no_gpu_objects()
     queue:release()
     local ok, err = pcall(queue.request, queue, "image-derivative", "sprites/lifecycle.png", "demand")
     Assert.isTrue(not ok, "a released queue accepts no further derivative work: " .. tostring(err))
+  end)
+  cache:removeTree("")
+  if not runOk then
+    error(runErr, 0)
+  end
+end
+
+-- Every file under one versioned cache root, so a scenario can prove that
+-- preparation created no persistent companion beside the source PNG.
+---@param cache table
+---@param relative string
+---@return string[]
+local function listCacheFiles(cache, relative)
+  local found = {}
+  for _, name in ipairs(cache:getDirectoryItems(relative)) do
+    local child = relative == "" and name or relative .. "/" .. name
+    local info = cache:getInfo(child)
+    if info ~= nil and info.type == "directory" then
+      for _, nested in ipairs(listCacheFiles(cache, child)) do
+        found[#found + 1] = nested
+      end
+    elseif info ~= nil then
+      found[#found + 1] = child
+    end
+  end
+  table.sort(found)
+  return found
+end
+
+-- A generated PNG is the only persistent image asset: warming it classifies
+-- the decoded pixels into the existing GPU-upload payload shape and leaves no
+-- private image-derivative file behind, so a later worker generation reads the
+-- same PNG again instead of trusting a second on-disk copy.
+function T.warm_png_preparation_persists_no_image_derivative()
+  local AssetPreparationQueue = requireQueue()
+  local pixels = cycledPixels(4, 3, { pixel(200, 10, 20, 255), pixel(10, 200, 30, 0), pixel(5, 6, 7, 128) })
+  local sourcePng = encodePng(4, 3, pixels)
+  local cache = fileBackedCache("image-derivative-warm-png-test")
+  local runOk, runErr = pcall(function()
+    cache:write("sprites/warm.png", sourcePng)
+    Assert.deepEqual(listCacheFiles(cache, ""), { "sprites/warm.png" }, "the cache starts with its PNG only")
+
+    local firstQueue = AssetPreparationQueue.new(cache)
+    local first = demandImage(firstQueue, "sprites/warm.png")
+    firstQueue:release()
+    Assert.equal(unpackRecord(first), pixels, "the warm PNG alone yields the exact GPU-upload pixels")
+    Assert.deepEqual(
+      listCacheFiles(cache, ""),
+      { "sprites/warm.png" },
+      "preparing a PNG writes no persistent image derivative beside it"
+    )
+
+    local secondQueue = AssetPreparationQueue.new(cache)
+    local second = demandImage(secondQueue, "sprites/warm.png")
+    secondQueue:release()
+    Assert.equal(unpackRecord(second), pixels, "a later worker generation reads the same PNG to the same pixels")
+    Assert.equal(second.kind, first.kind, "classification stays stable across worker generations")
+    Assert.deepEqual(
+      listCacheFiles(cache, ""),
+      { "sprites/warm.png" },
+      "repeated preparation keeps the PNG as the only persistent image asset"
+    )
+    Assert.equal(cache:read("sprites/warm.png"), sourcePng, "preparation never rewrites the generated PNG")
   end)
   cache:removeTree("")
   if not runOk then

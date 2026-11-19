@@ -69,8 +69,8 @@ local function validateBundle(bundle)
   for _, descriptor in pairs(bundle.models) do
     ModelAsset.validate(descriptor)
   end
-  for sha1, data in pairs(bundle.meshes) do
-    assert(data ~= nil, "compiled mesh is missing finalized G4M2 Data for " .. sha1)
+  for key, data in pairs(bundle.meshes) do
+    assert(data ~= nil, "compiled model bank is missing its bytes for " .. key)
   end
   return bundle.meshes
 end
@@ -90,15 +90,14 @@ local function persist(prepared, bundle)
   -- a re-write is idempotent and a failure can never clobber a descriptor an
   -- older ready map references (a different descriptor gets a different
   -- path).
-  for sha1, bytes in pairs(finalizedMeshes) do
-    local path = MapAssetCache.geometryPath(sha1)
+  for key, bytes in pairs(finalizedMeshes) do
+    local path = MapAssetCache.modelBankPath(key)
     stage:write(path, bytes)
     prepared:addSharedFile(path)
   end
-  for sha1, tex in pairs(bundle.textures) do
-    local path = MapAssetCache.texturePath(sha1)
-    assert(tex.data, "compiled texture is missing finalized PNG Data")
-    stage:write(path, tex.data)
+  for key, bytes in pairs(bundle.textures) do
+    local path = MapAssetCache.textureBankPath(key)
+    stage:write(path, bytes)
     prepared:addSharedFile(path)
   end
   for modelKey, descriptor in pairs(bundle.models) do

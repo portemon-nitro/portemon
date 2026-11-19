@@ -5,6 +5,7 @@
 -- occupancy is tracked separately from queued interest so retiring a game
 -- epoch never frees a still-executing worker.
 
+local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
 local CacheFs = require("libs.storage.src.CacheFs")
 local Errors = require("libs.errors.src.Errors")
@@ -35,6 +36,12 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 ---@field stageName string?
 ---@field workerId integer?
 ---@field timing table<string, unknown>?
+---@field pendingImages CompilerPool.PendingImage[]? the parent's unwritten RGBA images, nil once staged
+---@class CompilerPool.PendingImage
+---@field relativePath string stage-relative PNG destination
+---@field width integer
+---@field height integer
+---@field rgba love.ByteData
 ---@class CompilerPool.Worker
 ---@field id integer
 ---@field thread table<string, function>
@@ -1462,6 +1469,8 @@ function CompilerPool:_acceptMessage(message)
     self:_completeSourceRelease()
   elseif type(message) == "table" and message.status == "source-needed" then
     self:_acceptSourceNeeded(message)
+  elseif type(message) == "table" and (message.status == "images-staged" or message.status == "images-failed") then
+    self:_acceptImagesStaged(message)
   elseif
     type(message) == "table"
     and (message.status == "prepared" or message.status == "failed" or message.status == "reused")
@@ -1486,6 +1495,23 @@ function CompilerPool:_collectResults()
   self:_drainAvailable()
 end
 
+-- A slot is obsolete once its job leaves the selected generation's lookup or
+-- the selection is retired: its terminal reply must settle without publishing.
+---@param slot CompilerPool.Job
+---@return boolean
+function CompilerPool:_slotObsolete(slot)
+  if self.jobs[slot.jobKey] ~= slot then
+    return true
+  end
+  local selected = self.selected
+  if selected == nil or self.retired then
+    return true
+  end
+  return slot.generationId ~= selected.generationId
+    or slot.epoch ~= selected.epoch
+    or slot.versionId ~= selected.versionId
+end
+
 ---@param message table<string, unknown>
 function CompilerPool:_acceptCompletion(message)
   assert(type(message) == "table", "worker completion must be a table")
@@ -1500,6 +1526,12 @@ function CompilerPool:_acceptCompletion(message)
     self:_stopWithProtocolFailure(message, "duplicate completion for an idle worker")
   end
   assert(slot, "compiler worker slot is required")
+  if slot.state == "images" and message.status == "prepared" then
+    -- The parent's completion is already held; the pending image continuation
+    -- owns the slot until it returns. A repeat of the terminal reply (however
+    -- late its epoch) cannot settle it a second time.
+    return
+  end
   local identity = messageIdentity(message)
   if
     identity.workerId ~= worker.id
@@ -1515,18 +1547,7 @@ function CompilerPool:_acceptCompletion(message)
   if slot.state ~= "running" then
     self:_stopWithProtocolFailure(message, "worker completed an already-settled job")
   end
-  local selected = self.selected
-  local current = selected and self.jobs[slot.jobKey]
-  local obsolete = current ~= slot
-  if not obsolete then
-    if selected == nil or self.retired then
-      obsolete = true
-    else
-      obsolete = slot.generationId ~= selected.generationId
-        or slot.epoch ~= selected.epoch
-        or slot.versionId ~= selected.versionId
-    end
-  end
+  local obsolete = self:_slotObsolete(slot)
   -- One prepared unpublished result per physical worker: the worker stays
   -- pinned until its result is published, reused, failed, aborted, or
   -- otherwise authoritatively settled. Logical cancellation never frees a
@@ -1582,6 +1603,39 @@ function CompilerPool:_acceptCompletion(message)
     return
   end
   assert(message.status == "prepared", "worker completion must be prepared after reuse handling")
+  local pendingImages = message.pendingImages
+  if type(pendingImages) == "table" and #pendingImages > 0 then
+    -- The authored output is staged but its PNGs are not written: hand the
+    -- RGBA buffers to one low-priority continuation on this worker and hold
+    -- the slot until it reports back. Nothing is published until then.
+    slot.state = "images"
+    slot.pendingImages = pendingImages
+    slot.timing = {
+      compileSeconds = message.compileSeconds,
+      stageSeconds = message.stageSeconds,
+      workSeconds = message.workSeconds,
+      stagedBytes = message.stagedBytes,
+      timingReason = message.timingReason,
+    }
+    local ok, pushError = pcall(worker.input.push, worker.input, {
+      kind = "encode-png",
+      workerId = worker.id,
+      parentKind = slot.kind,
+      key = slot.key,
+      jobKey = slot.jobKey,
+      versionId = slot.versionId,
+      generationId = slot.generationId,
+      epoch = slot.epoch,
+      stageName = slot.stageName,
+      priority = ArtifactJobs.priorityFor("sweep"),
+      pendingImages = pendingImages,
+    })
+    if not ok then
+      self:_settleFailure(slot, worker.id, tostring(pushError))
+      self:_freeSlot(slot, worker.id)
+    end
+    return
+  end
   slot.state = "prepared"
   slot.timing = {
     compileSeconds = message.compileSeconds,
@@ -1597,6 +1651,47 @@ function CompilerPool:_acceptCompletion(message)
   if worker.closeAfter then
     self:_sendCloseContext(worker)
   end
+end
+
+-- The pending PNG continuation returned: the parent's stop is now complete, so
+-- its prepared result joins the publication queue. A reply whose identity no
+-- longer matches the pinned slot is a stale leftover and is ignored; a failed
+-- continuation settles the parent as failed with the typed cause and discards
+-- its stage, so no receipt can publish.
+---@param message table<string, unknown>
+function CompilerPool:_acceptImagesStaged(message)
+  local worker = self.workers[message.workerId]
+  local slot = worker and worker.slot
+  if slot == nil or slot.state ~= "images" then
+    return
+  end
+  if
+    slot.jobKey ~= message.jobKey
+    or slot.kind ~= message.kind
+    or slot.key ~= message.key
+    or slot.epoch ~= message.epoch
+    or slot.generationId ~= message.generationId
+    or slot.stageName ~= message.stageName
+  then
+    return
+  end
+  slot.pendingImages = nil
+  local settledWorker = assert(worker, "the pending parent holds its worker")
+  settledWorker.slot = nil
+  if settledWorker.closeAfter then
+    self:_sendCloseContext(settledWorker)
+  end
+  if self:_slotObsolete(slot) then
+    self:_abortStage(slot)
+    slot.state = "cancelled"
+    return
+  end
+  if message.status == "images-failed" then
+    self:_readFailure(slot, message)
+    return
+  end
+  slot.state = "prepared"
+  self.completions[#self.completions + 1] = { record = slot, workerId = worker.id }
 end
 
 ---@param record CompilerPool.Job
@@ -1723,7 +1818,12 @@ function CompilerPool:_maybeReleaseSource()
     return
   end
   for _, record in pairs(self.jobs) do
-    if record.state == "running" or record.state == "prepared" or record.state == "queued" then
+    if
+      record.state == "running"
+      or record.state == "prepared"
+      or record.state == "images"
+      or record.state == "queued"
+    then
       return
     end
   end
@@ -1777,12 +1877,17 @@ function CompilerPool:_pollWorkerFailures()
     local worker = suspect.worker
     -- Recheck the original physical slot: a later replacement or job must
     -- never inherit this dead observation.
-    if self.workers[worker.id] == worker and worker.slot == suspect.slot and suspect.slot.state == "running" then
+    if
+      self.workers[worker.id] == worker
+      and worker.slot == suspect.slot
+      and (suspect.slot.state == "running" or suspect.slot.state == "images")
+    then
       local errorText = worker.thread:getError()
       local dead = type(worker.thread.isRunning) == "function" and not worker.thread:isRunning()
       if errorText or dead then
         local record = suspect.slot
         local failure = errorText or "compiler worker stopped unexpectedly"
+        self:_abortStage(record)
         self:_settleFailure(record, worker.id, failure)
         worker.slot = nil
         self.fatalError = failure
@@ -1927,7 +2032,7 @@ function CompilerPool:_hasUnsettled()
     return true
   end
   for _, record in pairs(self.jobs) do
-    if record.state == "running" or record.state == "prepared" then
+    if record.state == "running" or record.state == "prepared" or record.state == "images" then
       return true
     end
   end
@@ -2052,7 +2157,12 @@ function CompilerPool:isQuiescent()
     return false
   end
   for _, record in pairs(self.jobs) do
-    if record.state == "running" or record.state == "prepared" or record.state == "queued" then
+    if
+      record.state == "running"
+      or record.state == "prepared"
+      or record.state == "images"
+      or record.state == "queued"
+    then
       return false
     end
   end
@@ -2070,7 +2180,7 @@ end
 
 ---@return table<string, unknown>
 function CompilerPool:diagnostics()
-  local counts = { queued = 0, running = 0, prepared = 0, ready = 0, failed = 0, cancelled = 0 }
+  local counts = { queued = 0, running = 0, prepared = 0, images = 0, ready = 0, failed = 0, cancelled = 0 }
   local sizes = { normal = 0, heavy = 0, jumbo = 0 }
   local active = {}
   for _, record in pairs(self.jobs) do
@@ -2080,7 +2190,7 @@ function CompilerPool:diagnostics()
     if sizes[record.sizeClass] ~= nil then
       sizes[record.sizeClass] = sizes[record.sizeClass] + 1
     end
-    if record.state == "running" or record.state == "prepared" then
+    if record.state == "running" or record.state == "prepared" or record.state == "images" then
       active[#active + 1] = record.jobKey
     end
   end
@@ -2191,7 +2301,7 @@ function CompilerPool:shutdown()
       pcall(function()
         self:_abortStage(record)
       end)
-      if record.state == "running" or record.state == "prepared" then
+      if record.state == "running" or record.state == "prepared" or record.state == "images" then
         record.state = "failed"
         record.details = { workerId = worker.id, error = "compiler worker stopped during shutdown" }
       end

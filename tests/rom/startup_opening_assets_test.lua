@@ -3499,11 +3499,11 @@ local function starterSparkleClipsMatchDecodedNanr(romFs, versionId)
   )
 end
 
--- Every town material binds its source texture to one staged image with
--- matching dimensions, and every texel run that names only palette entry
--- zero decodes to exactly that entry through the hardware color path,
--- without consulting the production decoder: uniform shadow texels stay
--- source-dark instead of hiding a wrong palette bind.
+-- Every town material binds its source texture to one staged native bank with
+-- matching dimensions, and every texel run that names only palette entry zero
+-- decodes to exactly that entry through the hardware color path rather than
+-- through any compiled classifier: uniform shadow texels stay source-dark
+-- instead of hiding a wrong palette bind.
 local function townShadowTexelsDecodeFromTheirSourcePaletteEntry(romFs, versionId)
   local SceneSources = requireProducer("OpeningMovieSceneSources")
   local decoderOk, Nsbmd = pcall(require, "libs.nds.src.nitro.g3d.Nsbmd")
@@ -3512,8 +3512,10 @@ local function townShadowTexelsDecodeFromTheirSourcePaletteEntry(romFs, versionI
   Assert.isTrue(packOk, "the texture pack reader is available for independent observation")
   local materialOk, MaterialCompiler = pcall(require, "romdump.src.digest.model.MaterialCompiler")
   Assert.isTrue(materialOk, "the shared material resolver is available for independent observation")
-  local pngOk, PngReader = pcall(require, "tests.support.PngReader")
-  Assert.isTrue(pngOk, "the staged pixel reader is available for independent observation")
+  local bankOk, TextureBank = pcall(require, "libs.assets.src.model.NativeTextureBank")
+  Assert.isTrue(bankOk, "the staged texture-bank reader is available for independent observation")
+  local compiledOk, CompiledAsset = pcall(require, "tests.rom.support.CompiledAsset")
+  Assert.isTrue(compiledOk, "the compiled asset reader is available for independent observation")
   local fixedOk, FixedPoint = pcall(require, "libs.math.src.FixedPoint")
   Assert.isTrue(fixedOk, "the hardware color conversion is available for independent observation")
   local archive, archiveErr = romFs:openNarc(SceneSources.ARCHIVE)
@@ -3535,37 +3537,38 @@ local function townShadowTexelsDecodeFromTheirSourcePaletteEntry(romFs, versionI
         local resolved = MaterialCompiler.resolveTexture(material, pack, textures, nil, {})
         local where = town.name .. " " .. tostring(material.name)
         Assert.notNil(resolved.texture, where .. " binds its source texture")
+        local selector = assert(resolved.texture)
         local tex = pack.textureByName[material.textureName]
         Assert.notNil(tex, where .. " names a packed texture")
-        local staged = bundle.files["assets/generated/startup/opening/3/textures/" .. resolved.texture .. ".png"]
-        Assert.notNil(staged, where .. " stages its decoded texture")
-        local bytes = staged
-        if type(bytes) ~= "string" then
-          local ok, str = pcall(function()
-            return bytes:getString()
-          end)
-          Assert.isTrue(ok and type(str) == "string", where .. " staged texture reads back as bytes")
-          bytes = (ok and str) or ""
-        end
-        local width, height, rgba = PngReader.rgba(bytes)
-        Assert.equal(width, tex.width, where .. " keeps its source width")
-        Assert.equal(height, tex.height, where .. " keeps its source height")
+        local key = assert(selector.file:match("([^/]+)%.g4tx$"), where .. " selects a native texture bank")
+        local stagedPath = sceneRoot(3) .. "textures/" .. key .. ".g4tx"
+        local staged = bundle.files[stagedPath]
+        Assert.notNil(staged, where .. " stages its native texture bank: " .. stagedPath)
+        local bank = assert(TextureBank.read(staged))
+        local bankTexture = assert(bank:texture(selector.textureName), where .. " bank holds its source texture")
+        Assert.equal(bankTexture.width, tex.width, where .. " keeps its source width")
+        Assert.equal(bankTexture.height, tex.height, where .. " keeps its source height")
         if indexed[tex.formatRaw] == true then
           local palette = material.paletteName ~= nil and pack.paletteByName[material.paletteName] or nil
           local opts = Nsbtx.decoderOpts(pack, tex, palette)
-          local allZero = #opts.texel > 0
-          for offset = 1, #opts.texel do
-            if string.byte(opts.texel, offset) ~= 0 then
+          local allZero = #bankTexture.texels > 0
+          for offset = 1, #bankTexture.texels do
+            if string.byte(bankTexture.texels, offset) ~= 0 then
               allZero = false
               break
             end
           end
-          if allZero and opts.palette ~= nil and #opts.palette >= 2 then
-            local word = string.byte(opts.palette, 1) + string.byte(opts.palette, 2) * 256
+          if allZero and selector.paletteName ~= nil and opts.palette ~= nil and #opts.palette >= 2 then
+            local bankPalette = assert(bank:palette(selector.paletteName), where .. " bank holds its source palette")
+            Assert.equal(bankPalette.data:sub(1, 2), opts.palette:sub(1, 2), where .. " keeps its source palette entry")
+            local word = string.byte(bankPalette.data, 1) + string.byte(bankPalette.data, 2) * 256
             local er, eg, eb = FixedPoint.rgb555(word)
             local ea = tex.color0Transparent and 0 or 255
-            local expected = string.rep(string.char(er, eg, eb, ea), width * height)
-            Assert.equal(rgba, expected, where .. " shadow texels match their source palette entry")
+            local expected = string.rep(string.char(er, eg, eb, ea), bankTexture.width * bankTexture.height)
+            -- The scene root maps the bank beside its PNG siblings; the shared
+            -- reader takes the bank bytes by key.
+            local compiled = CompiledAsset.texturePixels({ [key] = staged }, selector, where)
+            Assert.equal(compiled.pixels, expected, where .. " shadow texels match their source palette entry")
             checked = checked + 1
           end
         end

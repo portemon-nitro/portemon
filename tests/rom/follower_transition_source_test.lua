@@ -80,7 +80,8 @@ end
 local function collectAssetPaths(node, out)
   out = out or {}
   if type(node) == "string" then
-    if node:sub(-#".g4mesh") == ".g4mesh" or node:sub(-#".png") == ".png" then
+    local extension = node:match("%.([%w]+)$")
+    if extension == "g4gx" or extension == "g4tx" or extension == "g4mesh" or extension == "png" then
       out[#out + 1] = node
     end
     return out

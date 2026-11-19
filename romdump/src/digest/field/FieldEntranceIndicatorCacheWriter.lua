@@ -1,34 +1,25 @@
 -- Transactional writer for the normalized directional entrance field effect.
 
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
-local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local Writer = {}
 
----@param mesh MeshWriter.Batch|love.Data
----@return string|love.Data
-local function meshData(mesh)
-  if type(mesh) ~= "table" or type(mesh.getSize) == "function" then
-    ---@cast mesh love.Data
-    return mesh
-  end
-  ---@cast mesh MeshWriter.Batch
-  return MeshWriter.encode(mesh)
-end
-
 ---@param stage CacheFs
 ---@param bundle table<string, unknown>
 local function persist(stage, bundle)
-  for sha1, mesh in pairs(bundle.meshes) do
-    stage:write(FieldEffectAssetCache.geometryPath(sha1), meshData(mesh))
+  for key, bank in pairs(bundle.meshes) do
+    stage:write(FieldEffectAssetCache.geometryPath(key), bank)
   end
-  for sha1, texture in pairs(bundle.textures) do
-    stage:write(
-      FieldEffectAssetCache.texturePath(sha1),
-      assert(texture.data, "compiled texture is missing finalized PNG Data")
-    )
+  for key, texture in pairs(bundle.textures) do
+    -- 3D texture banks travel as their bytes; rasterized cinematic layers keep
+    -- the readable PNG beside them under their own path.
+    if type(texture) == "table" then
+      stage:write(FieldEffectAssetCache.imagePath(key), assert(texture.data, "compiled effect image is missing"))
+    else
+      stage:write(FieldEffectAssetCache.texturePath(key), texture)
+    end
   end
   for kind, definition in pairs(bundle.effects) do
     stage:writeLua(FieldEffectAssetCache.definitionPath(kind), definition)

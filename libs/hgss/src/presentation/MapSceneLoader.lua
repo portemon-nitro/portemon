@@ -244,7 +244,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
       end
       if status == "failed" then
         task._outstanding = nil
-        error("prepared asset " .. path .. " (" .. kind .. ") failed: " .. tostring(failure), 0)
+        error("prepared asset " .. tostring(path) .. " (" .. kind .. ") failed: " .. tostring(failure), 0)
       end
       coroutine["yield"](WAIT)
     end
@@ -253,7 +253,8 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
     local entry = meshEntries[path]
     if entry == nil then
       if queue then
-        entry = pool:meshFromPrepared(path, awaitPrepared("mesh", path))
+        local kind = type(path) == "table" and "g4gx" or "mesh"
+        entry = pool:meshFromPrepared(path, awaitPrepared(kind, path))
       else
         entry = pool:meshFor(path)
       end
@@ -563,7 +564,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
         animatedModelCount = animatedModelCount + 1
       end
       local function resolveImage(key, materialId)
-        local wrap = assert(desc.wrapByMaterial[materialId], "missing wrap for animated texture " .. key)
+        local wrap = assert(desc.wrapByMaterial[materialId], "missing wrap for animated texture " .. tostring(key))
         return acquireImage(key, wrap.x, wrap.y)
       end
       local function resolveImageDuringConstruction(key, materialId)

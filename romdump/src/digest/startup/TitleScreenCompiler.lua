@@ -418,28 +418,24 @@ local function baseTexturePack(model, modelPack)
   return modelPack
 end
 
+local function titleGeometryPath(key)
+  return "assets/generated/startup/title/geometry/" .. key .. ".g4gx"
+end
+
+local function titleTexturePath(key)
+  return "assets/generated/startup/title/textures/" .. key .. ".g4tx"
+end
+
 local function rewriteAssetPaths(model)
-  local function rewrite(path)
-    assert(type(path) == "string", "compiled title asset path is missing")
-    local geometry = path:match("^assets/generated/maps/geometry/(.+)$")
-    if geometry then
-      return "assets/generated/startup/title/geometry/" .. geometry
-    end
-    local texture = path:match("^assets/generated/maps/textures/(.+)$")
-    if texture then
-      return "assets/generated/startup/title/textures/" .. texture
-    end
-    return path
-  end
   for _, batch in ipairs(model.dynamic.batches) do
-    batch.geometry = rewrite(batch.geometry)
+    batch.geometry = ModelAsset.retargetGeometry(batch.geometry, titleGeometryPath)
   end
   for _, material in ipairs(model.materials) do
     if material.texture then
-      material.texture = rewrite(material.texture)
+      material.texture = ModelAsset.retargetTexture(material.texture, titleTexturePath)
     end
     for _, variant in ipairs(material.variants or {}) do
-      variant.texture = rewrite(variant.texture)
+      variant.texture = ModelAsset.retargetTexture(variant.texture, titleTexturePath)
     end
   end
 end
@@ -595,11 +591,11 @@ local function compile(romFs, versionId)
   ModelAsset.validate(sparkleModel)
 
   local files = {}
-  for sha1, mesh in pairs(meshes) do
-    files["assets/generated/startup/title/geometry/" .. sha1 .. ".g4mesh"] = finalizedData(mesh, "geometry")
+  for key, bank in pairs(meshes) do
+    files[titleGeometryPath(key)] = finalizedData(bank, "geometry")
   end
-  for sha1, texture in pairs(textures) do
-    files["assets/generated/startup/title/textures/" .. sha1 .. ".png"] = finalizedData(texture.data, "texture")
+  for key, bank in pairs(textures) do
+    files[titleTexturePath(key)] = finalizedData(bank, "texture")
   end
 
   local surfaces = {}

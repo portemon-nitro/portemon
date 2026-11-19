@@ -96,9 +96,23 @@ local TEXTURE_FORMATS = {
 ---@field frameCount number?
 ---@field pairKeys boolean?
 
+-- A generated geometry reference: a procedural mesh path for the genuine
+-- non-DS/procedural callers, or one draw selected out of a native model bank by
+-- its stable zero-based index.
+---@class ModelAsset.GeometryReference
+---@field file string native model bank path
+---@field drawIndex integer zero-based draw index inside that bank
+
+-- A generated texture reference: a PNG image path, or a named texture and
+-- (for paletted formats) a named palette inside one native texture bank.
+---@class ModelAsset.TextureReference
+---@field file string native texture bank path, or a PNG image path
+---@field textureName string name inside the texture bank
+---@field paletteName string? name inside the texture bank; absent for direct colour
+
 ---@class ModelAsset.Variant
 ---@field name string
----@field texture string?
+---@field texture string|ModelAsset.TextureReference?
 ---@field textureFormat number?
 ---@field width number?
 ---@field height number?
@@ -106,7 +120,7 @@ local TEXTURE_FORMATS = {
 
 ---@class ModelAsset.Batch
 ---@field id string|integer
----@field geometry string
+---@field geometry string|ModelAsset.GeometryReference
 ---@field materialIndex integer?
 
 ---@class ModelAsset.Material
@@ -185,8 +199,12 @@ end
 ---@param requireAlphaUsage boolean
 local function checkTextureBinding(m, where, desc, requireAlphaUsage)
   if m.texture ~= nil then
-    if type(m.texture) ~= "string" or #m.texture == 0 then
-      invalid(where .. " material has a non-string texture path", desc.key)
+    if type(m.texture) == "string" then
+      if #m.texture == 0 then
+        invalid(where .. " material has an empty texture path", desc.key)
+      end
+    elseif not ModelAsset.isTextureSelector(m.texture) then
+      invalid(where .. " material has an unknown texture reference", desc.key)
     end
     checkTextureFormat(m.textureFormat, where, desc)
     if requireAlphaUsage then
@@ -242,12 +260,16 @@ local function checkVariants(m, where, desc)
       -- A variant may be untextured: a pattern key whose texture the model's
       -- embedded TEX0 does not define still selects a variant, and it draws
       -- untextured exactly as the DS does.
-      if variant.texture ~= nil and type(variant.texture) ~= "string" then
-        invalid(where .. " material variant has a non-string texture path", desc.key)
+      if
+        variant.texture ~= nil
+        and type(variant.texture) ~= "string"
+        and not ModelAsset.isTextureSelector(variant.texture)
+      then
+        invalid(where .. " material variant has an unknown texture reference", desc.key)
       end
       local variantWhere = where .. " material variant " .. variant.name
       if variant.texture ~= nil then
-        if #variant.texture == 0 then
+        if type(variant.texture) == "string" and #variant.texture == 0 then
           invalid(variantWhere .. " has an empty texture path", desc.key)
         end
         checkTextureFormat(variant.textureFormat, variantWhere, desc)
@@ -793,7 +815,7 @@ end
 ---@param where string
 ---@param desc table<string, unknown>
 local function checkBatch(b, where, desc)
-  if type(b) ~= "table" or type(b.geometry) ~= "string" then
+  if type(b) ~= "table" or not (type(b.geometry) == "string" or ModelAsset.isGeometrySelector(b.geometry)) then
     invalid(where .. " batch does not reference a geometry path", desc.key)
   end
   local ok, err = pcall(PolygonState.validate, b, where .. " batch")
@@ -1002,6 +1024,88 @@ function ModelAsset.validate(desc)
   return desc
 end
 
+-- Re-point one generated geometry reference into another generated directory
+-- while keeping its draw selection. A family compiler that publishes its own
+-- subset supplies the target path for a content key.
+---@param reference string|ModelAsset.GeometryReference
+---@param geometryPath fun(key: string): string
+---@return string|ModelAsset.GeometryReference
+function ModelAsset.retargetGeometry(reference, geometryPath)
+  if type(reference) == "string" then
+    return geometryPath(assert(reference:match("([^/]+)%.g4mesh$"), "generated mesh path is malformed"))
+  end
+  return {
+    file = geometryPath(assert(reference.file:match("([^/]+)%.g4gx$"), "native model bank path is malformed")),
+    drawIndex = reference.drawIndex,
+  }
+end
+
+-- Re-point one generated texture reference into another generated directory
+-- while keeping its named texture/palette selection.
+---@param reference string|ModelAsset.TextureReference
+---@param texturePath fun(key: string): string
+---@return string|ModelAsset.TextureReference
+function ModelAsset.retargetTexture(reference, texturePath)
+  if type(reference) == "string" then
+    return texturePath(assert(reference:match("([^/]+)%.png$"), "generated texture path is malformed"))
+  end
+  return {
+    file = texturePath(assert(reference.file:match("([^/]+)%.g4tx$"), "native texture bank path is malformed")),
+    textureName = reference.textureName,
+    paletteName = reference.paletteName,
+  }
+end
+
+-- A generated scene selects one draw out of a native model bank: the selector
+-- names the bank file and the draw's zero-based index inside it.
+---@param value unknown
+---@return boolean
+function ModelAsset.isGeometrySelector(value)
+  return type(value) == "table"
+    and type(value.file) == "string"
+    and value.file ~= ""
+    and type(value.drawIndex) == "number"
+    and value.drawIndex % 1 == 0
+    and value.drawIndex >= 0
+end
+
+-- A material binds a named texture and, for paletted formats, a named palette
+-- inside one native texture bank. A direct-colour texture names no palette.
+---@param value unknown
+---@return boolean
+function ModelAsset.isTextureSelector(value)
+  return type(value) == "table"
+    and type(value.file) == "string"
+    and value.file ~= ""
+    and type(value.textureName) == "string"
+    and value.textureName ~= ""
+    and (value.paletteName == nil or (type(value.paletteName) == "string" and value.paletteName ~= ""))
+end
+
+-- The physical file a batch geometry reference reads, whether it is a
+-- procedural mesh path or a native bank selector.
+---@param value string|ModelAsset.GeometryReference
+---@return string
+function ModelAsset.geometryFile(value)
+  if type(value) == "table" then
+    return assert(value.file)
+  end
+  ---@cast value string
+  return value
+end
+
+-- The physical file a material texture reference reads, whether it is a PNG
+-- path or a native texture-bank selector.
+---@param value string|ModelAsset.TextureReference
+---@return string
+function ModelAsset.textureFile(value)
+  if type(value) == "table" then
+    return assert(value.file)
+  end
+  ---@cast value string
+  return value
+end
+
 -- Every cache-relative path a descriptor references: batch geometry, base
 -- material textures, and pattern-variant textures (a variant PNG is a
 -- referenced asset just like the base texture; readiness must cover it).
@@ -1012,17 +1116,17 @@ function ModelAsset.referencedPaths(desc)
   local paths = {} ---@type string[]
   ---@param b table<string, unknown>
   local function addBatch(b)
-    paths[#paths + 1] = b.geometry
+    paths[#paths + 1] = ModelAsset.geometryFile(b.geometry)
   end
   ---@param m table<string, unknown>
   local function addMaterial(m)
     if m.texture then
-      paths[#paths + 1] = m.texture
+      paths[#paths + 1] = ModelAsset.textureFile(m.texture)
     end
     local variants = m.variants or {} ---@type ModelAsset.Variant[]
     for _, variant in ipairs(variants) do
       if variant.texture then
-        paths[#paths + 1] = variant.texture
+        paths[#paths + 1] = ModelAsset.textureFile(variant.texture)
       end
     end
   end

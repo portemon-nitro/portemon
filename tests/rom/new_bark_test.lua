@@ -19,6 +19,7 @@ local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
 local MapCacheWriter = require("romdump.src.digest.map.MapCacheWriter")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local CollisionGrid = require("libs.hgss.src.world.CollisionGrid")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local NeighborPlan = require("romdump.src.digest.map.NeighborPlan")
@@ -250,24 +251,21 @@ function T.binary_zero_alpha_is_cutout(romFs)
   local bundle = assert(MapAssetCompiler.compile(romFs, "MAP_NEW_BARK"))
   local scene = bundle.scene
 
-  local function textureSha1(path)
-    return path and path:match("([0-9a-f]+)%.png$")
+  local function assertTextureBank(texture)
+    local file = ModelAsset.textureFile(texture)
+    local key = assert(file:match("([^/]+)%.g4tx$"), "material texture names a native texture bank: " .. tostring(file))
+    Assert.notNil(bundle.textures[key], "the compiled bundle carries the referenced texture bank: " .. file)
   end
 
   local function assertCutout(materials, batches)
     local cutoutById = {}
     for _, m in ipairs(materials or {}) do
-      local sha1 = textureSha1(m.texture)
-      local tex = sha1 and bundle.textures[sha1]
-      if
-        m.texture
-        and tex
-        and tex.alphaUsage
-        and tex.alphaUsage.hasZero
-        and m.textureFormat ~= 1
-        and m.textureFormat ~= 6
-      then
-        cutoutById[m.id] = true
+      if m.texture then
+        assertTextureBank(m.texture)
+        local alphaUsage = assert(m.alphaUsage, "a bound material carries its decoded alpha usage: " .. m.name)
+        if alphaUsage.hasZero and m.textureFormat ~= 1 and m.textureFormat ~= 6 then
+          cutoutById[m.id] = true
+        end
       end
     end
     for _, b in ipairs(batches or {}) do
@@ -471,9 +469,12 @@ function T.neighbors_are_digested_into_the_scene(romFs)
     Assert.isTrue(math.floor(d.offsetTilesZ) == d.offsetTilesZ, "integer offsetTilesZ")
     Assert.isTrue(#d.batches > 0, "descriptor has at least one batch")
     for _, b in ipairs(d.batches) do
-      local sha1 = b.geometry:match("(%x+)%.g4mesh$")
-      Assert.notNil(sha1, "batch geometry is a .g4mesh path: " .. tostring(b.geometry))
-      Assert.notNil(bundle.meshes[sha1], "neighbor geometry present in shared mesh pool: " .. sha1)
+      Assert.isTrue(
+        type(b.geometry) == "table" and tostring(b.geometry.file):sub(-5) == ".g4gx",
+        "batch geometry is a native model bank selector: " .. tostring(b.geometry)
+      )
+      local key = assert(tostring(b.geometry.file):match("([^/]+)%.g4gx$"))
+      Assert.notNil(bundle.meshes[key], "neighbor geometry present in shared bank pool: " .. key)
     end
   end
 end
@@ -522,14 +523,14 @@ function T.terrain_flower_swaps_conform(romFs)
       durations[#durations + 1] = step.durationTicks
     end
     Assert.deepEqual(durations, expectedDurations, name .. " carries the exact 18-tick duration sequence")
-    -- The schedule repeats source index 0, so steps 1 and 3 are the same
-    -- content-addressed image.
-    Assert.equal(swap.steps[1].texture, swap.steps[3].texture, name .. " repeats the step-zero image")
+    -- The schedule repeats source index 0, so steps 1 and 3 select the same
+    -- content-addressed texture bank.
+    Assert.equal(swap.steps[1].texture.file, swap.steps[3].texture.file, name .. " repeats the step-zero image")
     for _, step in ipairs(swap.steps) do
-      Assert.isTrue(
-        step.texture:find("^assets/generated/maps/textures/[0-9a-f]+%.png$") ~= nil,
-        name .. " alternate is a cache-relative path: " .. step.texture
-      )
+      local file = ModelAsset.textureFile(step.texture)
+      local key = assert(file:match("([^/]+)%.g4tx$"), name .. " alternate is a texture bank: " .. file)
+      Assert.equal(file, MapAssetCache.textureBankPath(key), name .. " alternate is a generated texture bank")
+      Assert.notNil(bundle.textures[key], name .. " alternate texture bank is compiled: " .. file)
     end
   end
   local flower03 = assert(byName.flower03, "flower03 material is in the scene")

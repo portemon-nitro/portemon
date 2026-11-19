@@ -22,7 +22,7 @@ local GeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
 
 local T = {}
 
-local CONFORMER_MODULE = "romdump.src.digest.map.TerrainBoundaryConformer"
+local CONFORMER_MODULE = "libs.hgss.src.presentation.TerrainBoundaryConformer"
 
 local function conformer()
   local ok, mod = pcall(require, CONFORMER_MODULE)

@@ -56,7 +56,7 @@ local DEFAULT_IDLE_IMAGE_BYTES = 64 * 1024 * 1024
 
 ---@class ImageAssetPoolRequest
 ---@field logicalKey string private resident lookup identity for the path plus sampler
----@field logicalPath string? generated PNG path in the selected cache, nil for synthesized native-index payloads
+---@field logicalPath string|ModelAsset.TextureReference? generated PNG path or native bank selector, nil for synthesized native-index payloads
 ---@field sampler ImageAssetPoolSampler
 ---@field priority "demand"|"prefetch"
 ---@field job integer? preparation queue token while the request is still queued
@@ -242,18 +242,31 @@ local function physicalKeyFor(pixelHash, width, height, sampler, kind)
   })
 end
 
+-- The stable identity of one generated image source: a PNG path, or the named
+-- texture/palette pair a native texture bank selector carries. Two palettes of
+-- one bank are different visible images, so the pair is part of the identity.
+---@param source string|ModelAsset.TextureReference
+---@return string
+local function sourceIdentity(source)
+  if type(source) == "string" then
+    return source
+  end
+  return string.format("%s#%s#%s", source.file, tostring(source.textureName), tostring(source.paletteName))
+end
+
 -- The private logical identity: the generated path plus the full immutable
 -- sampler state. The length prefix keeps a path containing a separator from
 -- colliding with a longer path plus sampler suffix; sampler channels are
 -- fixed enum strings that never embed a NUL byte.
----@param logicalPath string
+---@param logicalPath string|ModelAsset.TextureReference
 ---@param sampler ImageAssetPoolSampler
 ---@return string
 local function logicalKeyFor(logicalPath, sampler)
+  local identity = sourceIdentity(logicalPath)
   return table.concat({
-    tostring(#logicalPath),
+    tostring(#identity),
     ":",
-    logicalPath,
+    identity,
     "\0",
     sampler.wrapX,
     "\0",
@@ -700,13 +713,13 @@ end
 -- worker work; otherwise the request enrolls classification work at once.
 -- Returns an opaque single-use token; readiness is observed through poll
 -- and the token is consumed by exactly one successful acquire.
----@param logicalPath string generated PNG path in the selected cache
+---@param logicalPath string|ModelAsset.TextureReference generated PNG path, or a native texture-bank selector
 ---@param sampler ImageAssetPoolSampler immutable sampler state for the physical key
 ---@param priority "demand"|"prefetch"? demand jumps ahead of prefetch work
 ---@return integer token for poll and acquire
 function ImageAssetPool:request(logicalPath, sampler, priority)
   assert(not self._disposed, "image pool is disposed")
-  assert(type(logicalPath) == "string", "image request path is required")
+  assert(type(logicalPath) == "string" or type(logicalPath) == "table", "image request path is required")
   checkSampler(sampler)
   local level = priority or "demand"
   assert(level == "demand" or level == "prefetch", "unknown preparation priority " .. tostring(priority))
@@ -743,7 +756,12 @@ function ImageAssetPool:request(logicalPath, sampler, priority)
     end
     dropStaleAlias(self, logicalKey, mapped)
   end
-  local job = self._queue:request("image-derivative", logicalPath, level)
+  local job
+  if type(logicalPath) == "table" then
+    job = self._queue:request("g4tx", logicalPath, level)
+  else
+    job = self._queue:request("image-derivative", logicalPath, level)
+  end
   self._nextToken = self._nextToken + 1
   local token = self._nextToken
   self._requests[token] = {

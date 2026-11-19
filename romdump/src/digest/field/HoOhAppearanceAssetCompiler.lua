@@ -186,8 +186,7 @@ local function compileLeaves(archive, textures, hashes)
         memberId = memberId,
         sha1 = Hashing.sha1hex(readMember(archive, memberId)),
       }
-      frames[frameIndex] =
-        { path = FieldEffectAssetCache.texturePath(sha1), width = image.width, height = image.height }
+      frames[frameIndex] = { path = FieldEffectAssetCache.imagePath(sha1), width = image.width, height = image.height }
     end
     layers[layerName] = { frames = frames }
   end

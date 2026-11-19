@@ -5,6 +5,7 @@ local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCac
 local HoOhCinematicParts = require("libs.assets.src.field.HoOhCinematicParts")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local FieldEntranceIndicatorCompiler = require("romdump.src.digest.field.FieldEntranceIndicatorCompiler")
+local CompiledAsset = require("tests.rom.support.CompiledAsset")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local CORE_NAMES = { "bellRising", "bellShimmer", "cornerBells", "birdApproach", "wavesEffect" }
@@ -27,13 +28,8 @@ local function checkDescriptor(bundle, descriptor, name, version)
       path:match("^assets/generated/field/effects/") ~= nil,
       version .. " " .. name .. " references only owned field-effect assets"
     )
-    local key = assert(path:match("/([^/]+)%.([^/]+)$"))
-    if path:match("%.g4mesh$") then
-      Assert.notNil(bundle.meshes[key], "compiled geometry exists for " .. path)
-    else
-      Assert.notNil(bundle.textures[key], "compiled texture exists for " .. path)
-    end
   end
+  CompiledAsset.assertReferences(bundle, descriptor, version .. " " .. name)
 end
 
 -- Ho-Oh's cinematic models are skinned per vertex: their display lists change

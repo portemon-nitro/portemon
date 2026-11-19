@@ -27,7 +27,6 @@ local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local NitroAnimation = require("libs.nds.src.nitro.g3d.NitroAnimation")
 local MapPropAnimCompiler = require("romdump.src.digest.model.MapPropAnimCompiler")
 local DynamicModelCompiler = require("romdump.src.digest.model.DynamicModelCompiler")
-local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapUnits = require("romdump.src.digest.map.MapUnits")
@@ -1557,18 +1556,17 @@ local function _compile(romFs)
   local textures, meshes = {}, {}
   local male = compileHero(archive, "male", dependencies, textures, meshes)
   local female = compileHero(archive, "female", dependencies, textures, meshes)
-  for sha1, batch in pairs(meshes) do
-    assets[MapAssetCache.geometryPath(sha1)] = MeshWriter.encode(batch)
+  for key, bank in pairs(meshes) do
+    assets[MapAssetCache.modelBankPath(key)] = bank
   end
   do
     local keys = {}
-    for sha1 in pairs(textures) do
-      keys[#keys + 1] = sha1
+    for key in pairs(textures) do
+      keys[#keys + 1] = key
     end
     table.sort(keys)
-    for _, sha1 in ipairs(keys) do
-      local texture = textures[sha1]
-      assets[MapAssetCache.texturePath(sha1)] = assert(texture.data, "compiled texture is missing finalized PNG Data")
+    for _, key in ipairs(keys) do
+      assets[MapAssetCache.textureBankPath(key)] = assert(textures[key], "compiled texture bank is missing its bytes")
     end
   end
 

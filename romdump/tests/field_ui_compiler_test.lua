@@ -860,9 +860,14 @@ function T.compiles_the_manifest_and_all_assets()
   )
   Assert.isNil(bundle.manifest.signposts.types[2].wayfinding, "type 2 has no map graphic")
   Assert.isNil(bundle.manifest.startMenu.slots, "the normal selector publishes no synthetic slot grid")
-  for path, bytes in pairs(bundle.assets) do
+  for path, asset in pairs(bundle.assets) do
     Assert.isTrue(path:find("^assets/generated/field/ui/") ~= nil)
-    Assert.isTrue(#bytes > 0)
+    if type(asset) == "table" then
+      Assert.isTrue(asset.width > 0 and asset.height > 0, "a deferred image carries positive dimensions")
+      Assert.equal(#asset.pixels, asset.width * asset.height * 4, "a deferred image carries complete RGBA rows")
+    else
+      Assert.isTrue(#asset > 0)
+    end
   end
   Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest))
   Assert.notNil(bundle.manifest.assets[FieldUiAssetCache.ASSET.NAMING_SCREEN_POKEMON_GENDER_MALE])
@@ -996,8 +1001,8 @@ function T.compilation_is_deterministic()
   local b = assert(compileWithTestConfig(romFs, sha1, hashLua))
   Assert.equal(a.marker, b.marker)
   Assert.equal(LuaWriter.encode(a.manifest), LuaWriter.encode(b.manifest))
-  for path, bytes in pairs(a.assets) do
-    Assert.equal(bytes, b.assets[path])
+  for path, asset in pairs(a.assets) do
+    Assert.deepEqual(asset, b.assets[path])
   end
 end
 

@@ -38,32 +38,6 @@ local SPROUT_2F = "MAP_SPROUT_TOWER_2F"
 -- One compiled scene: the runtime map and the MapProps facade, the shape
 -- MapSceneLoader produces (the player house carries no building placements,
 -- so there are no animated instances to advance).
--- The model-space AABB of a descriptor's geometry, recomputed from the
--- compiled bundle's mesh table (the loader stamps this from the decoded
--- .g4mesh assets).
-local function footprintOf(desc, assets)
-  local batches = desc.kind == "static" and desc.batches or desc.dynamic.batches
-  local minX, maxX, minZ, maxZ
-  for _, batch in ipairs(batches) do
-    local sha = assert(batch.geometry:match("geometry/([%w]+)%.g4mesh"), "batch references .g4mesh geometry")
-    local mesh = assert(assets.meshes[sha], "batch geometry present in the bundle")
-    for _, v in ipairs(CompiledAsset.mesh(mesh).vertices) do
-      minX = minX == nil and v[1] or math.min(minX, v[1])
-      maxX = maxX == nil and v[1] or math.max(maxX, v[1])
-      minZ = minZ == nil and v[3] or math.min(minZ, v[3])
-      maxZ = maxZ == nil and v[3] or math.max(maxZ, v[3])
-    end
-  end
-  return {
-    minX = minX or 0,
-    maxX = maxX or 0,
-    minY = 0,
-    maxY = 0,
-    minZ = minZ or 0,
-    maxZ = maxZ or 0,
-  }
-end
-
 local function compileScene(romFs, symbol)
   local assets = assert(MapAssetCompiler.compile(romFs, symbol))
   local instances = {}
@@ -78,7 +52,7 @@ local function compileScene(romFs, symbol)
       placementIndex = inst.placementIndex,
       modelKey = inst.modelKey,
       transform = inst.transform,
-      bounds = footprintOf(desc, assets),
+      bounds = CompiledAsset.footprint(assets, desc),
     }
   end
   local map = RomRuntimeMap.compile(romFs, symbol)

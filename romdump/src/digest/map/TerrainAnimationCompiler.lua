@@ -19,7 +19,6 @@ local Errors = require("libs.errors.src.Errors")
 local BinaryReader = require("libs.codec.src.BinaryReader")
 local FieldTextureAnimation = require("romdump.src.digest.field.FieldTextureAnimation")
 local Hashing = require("romdump.src.digest.Hashing")
-local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MaterialCompiler = require("romdump.src.digest.model.MaterialCompiler")
 local NitroAnimation = require("libs.nds.src.nitro.g3d.NitroAnimation")
 local NsbtaClipCompiler = require("romdump.src.digest.model.NsbtaClipCompiler")
@@ -191,9 +190,15 @@ function TerrainAnimationCompiler:annotateMaterial(modelMaterial, compiledMateri
     if baseDecoderOpts.indexData then
       frameOpts.indexData = replacementDecoderOpts.indexData
     end
-    local key = MaterialCompiler.decodeTexture(baseTexture, frameOpts, textures, modelMaterial.textureName)
     steps[#steps + 1] = {
-      texture = MapAssetCache.texturePath(key),
+      texture = MaterialCompiler.derivedTextureBank(
+        baseTexture,
+        frameOpts.texel --[[@as string ]],
+        frameOpts.indexData and frameOpts.indexData --[[@as string ]] or nil,
+        basePalette and basePalette.name or nil,
+        basePalette and baseDecoderOpts.palette --[[@as string ]] or nil,
+        textures
+      ),
       durationTicks = sourceStep.durationTicks,
     }
   end

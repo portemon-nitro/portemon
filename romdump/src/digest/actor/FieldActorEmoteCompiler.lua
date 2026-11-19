@@ -71,13 +71,11 @@ function Compiler.compile(romFs, hashLua)
     materials = compiled.materials,
   }
   for _, batch in ipairs(modelDescriptor.batches) do
-    local sha1 = assert(batch.geometry:match("/([^/]+)%.g4mesh$"), "compiled field-emote geometry path is malformed")
-    batch.geometry = FieldEmoteAssetCache.geometryPath(sha1)
+    batch.geometry = ModelAsset.retargetGeometry(batch.geometry, FieldEmoteAssetCache.geometryPath)
   end
   for _, material in ipairs(modelDescriptor.materials) do
     if material.texture then
-      local sha1 = assert(material.texture:match("/([^/]+)%.png$"), "compiled field-emote texture path is malformed")
-      material.texture = FieldEmoteAssetCache.texturePath(sha1)
+      material.texture = ModelAsset.retargetTexture(material.texture, FieldEmoteAssetCache.texturePath)
     end
   end
   local descriptor = {

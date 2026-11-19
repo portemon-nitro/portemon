@@ -18,7 +18,7 @@ local Hashing = require("romdump.src.digest.Hashing")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local GeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
 
-local CONFORMER_MODULE = "romdump.src.digest.map.TerrainBoundaryConformer"
+local CONFORMER_MODULE = "libs.hgss.src.presentation.TerrainBoundaryConformer"
 
 local T = {}
 

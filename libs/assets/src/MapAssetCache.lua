@@ -138,12 +138,26 @@ function MapAssetCache.isStructuralWorld(value)
   return true
 end
 
+-- Procedural, genuinely non-DS triangle geometry: the expanded mesh contract.
 function MapAssetCache.geometryPath(sha1)
   return string.format("%s/maps/geometry/%s.g4mesh", DERIVED_ASSETS, sha1)
 end
 
+-- Generated 2D images: the human-editable PNG contract.
 function MapAssetCache.texturePath(sha1)
   return string.format("%s/maps/textures/%s.png", DERIVED_ASSETS, sha1)
+end
+
+-- One source model's native model bank (ordered draw command spans), keyed by
+-- the bank's own immutable content.
+function MapAssetCache.modelBankPath(key)
+  return string.format("%s/maps/models/%s.g4gx", DERIVED_ASSETS, key)
+end
+
+-- One source texture pack's native texture bank (named texels and palettes),
+-- keyed by the bank's own immutable content.
+function MapAssetCache.textureBankPath(key)
+  return string.format("%s/maps/texture-banks/%s.g4tx", DERIVED_ASSETS, key)
 end
 
 function MapAssetCache.modelPath(modelKey)
@@ -267,8 +281,11 @@ local function checkTextureSwap(m, invalid)
   end
   for i, step in ipairs(steps) do
     local where = "a material textureSwap step " .. i .. " "
-    if type(step) ~= "table" or type(step.texture) ~= "string" or #step.texture == 0 then
-      invalid(where .. "must carry a non-empty texture path")
+    if
+      type(step) ~= "table"
+      or not ((type(step.texture) == "string" and #step.texture > 0) or ModelAsset.isTextureSelector(step.texture))
+    then
+      invalid(where .. "must carry a texture reference")
     end
     if not (isFiniteInteger(step.durationTicks) and step.durationTicks >= 0) then
       invalid(where .. "durationTicks must be a non-negative integer")
@@ -285,7 +302,7 @@ end
 ---@param m table<string, unknown>
 ---@param invalid fun(reason: string)
 local function checkTerrainMaterial(m, invalid)
-  local textured = type(m.texture) == "string"
+  local textured = type(m.texture) == "string" or ModelAsset.isTextureSelector(m.texture)
   for _, field in ipairs({ "texWidth", "texHeight" }) do
     local value = m[field] ---@type number?
     if not isFiniteInteger(value) or (textured and value < 1) or (not textured and value < 0) then
@@ -429,28 +446,28 @@ function MapAssetCache.referencedPaths(scene, cacheFs)
   end
 
   local function addBatch(b)
-    if type(b) ~= "table" or type(b.geometry) ~= "string" then
+    if type(b) ~= "table" or not (type(b.geometry) == "string" or ModelAsset.isGeometrySelector(b.geometry)) then
       invalid("a batch does not reference a geometry path")
     end
-    local geometry = b.geometry ---@type string
-    paths[#paths + 1] = geometry
+    paths[#paths + 1] = ModelAsset.geometryFile(b.geometry)
   end
   local function addMaterial(m)
-    if type(m) ~= "table" or (m.texture ~= nil and type(m.texture) ~= "string") then
+    if type(m) ~= "table" then
+      invalid("a material is not a record with an optional texture path")
+    end
+    if m.texture ~= nil and type(m.texture) ~= "string" and not ModelAsset.isTextureSelector(m.texture) then
       invalid("a material is not a record with an optional texture path")
     end
     checkTerrainMaterial(m, invalid)
     checkSwapSchedule(m)
-    local texture = m.texture ---@type string?
-    if texture then
-      paths[#paths + 1] = texture
+    if m.texture then
+      paths[#paths + 1] = ModelAsset.textureFile(m.texture)
     end
     local textureSwap = m.textureSwap ---@type table?
     if textureSwap then
       local steps = textureSwap.steps ---@type table[]
       for _, step in ipairs(steps) do
-        local texturePath = step.texture ---@type string
-        paths[#paths + 1] = texturePath
+        paths[#paths + 1] = ModelAsset.textureFile(step.texture)
       end
     end
   end

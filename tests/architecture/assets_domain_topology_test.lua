@@ -23,6 +23,8 @@ local DOMAINS = {
     "G4MeshFormat",
     "MeshWriter",
     "ModelAsset",
+    "NativeGxFormat",
+    "NativeTextureBank",
     "NsbmdJointTransforms",
     "NsbmdSbcEvaluator",
     "PolygonState",
@@ -63,11 +65,6 @@ local DOMAINS = {
     "BattlePresentationCache",
     "BattlePresentationParticles",
     "BattlePresentationSchema",
-  },
-  -- The private effective-image derivative format behind worker-side
-  -- image classification: source-independent and love-free.
-  image = {
-    "RuntimeImageCache",
   },
 }
 

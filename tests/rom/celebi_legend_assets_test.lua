@@ -6,6 +6,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local NitroAnimation = require("libs.nds.src.nitro.g3d.NitroAnimation")
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local FieldEntranceIndicatorCompiler = require("romdump.src.digest.field.FieldEntranceIndicatorCompiler")
+local CompiledAsset = require("tests.rom.support.CompiledAsset")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local SOURCE_MEMBERS = {
@@ -61,15 +62,7 @@ local function testLegendModelAndAnimations(romFs, version)
     bundle.index.effects.celebi_time_travel,
     "the generated field-effects index points to the published definition"
   )
-  for _, path in ipairs(ModelAsset.referencedPaths(descriptor)) do
-    local key = assert(path:match("/([^/]+)%.([^/]+)$"))
-    if path:match("%.g4mesh$") then
-      Assert.notNil(bundle.meshes[key], "generated model geometry exists for " .. path)
-    else
-      Assert.isTrue(path:match("%.png$") ~= nil, "model texture uses a PNG path: " .. path)
-      Assert.notNil(bundle.textures[key], "generated model texture exists for " .. path)
-    end
-  end
+  CompiledAsset.assertReferences(bundle, descriptor, version .. " time-travel model")
   Assert.equal(
     FieldEffectAssetCache.definitionPath("celebi_time_travel"),
     bundle.index.effects.celebi_time_travel.path,

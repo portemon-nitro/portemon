@@ -19,7 +19,6 @@ local UiMessageBank = require("romdump.src.digest.ui.UiMessageBank")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local DisplayTiming = require("libs.nds.src.gx.DisplayTiming")
-local PngWriter = require("romdump.src.digest.PngEncoder")
 local OptionsSources = require("romdump.src.config.OptionsSources")
 local charmap = require("romdump.src.catalog.hgss.charmap")
 
@@ -458,7 +457,8 @@ end
 -- Renders one opaque 256x192 option backdrop from its audited base triple:
 -- the full 256x256 source map with palette-zero normalized to the same
 -- palette's opaque backdrop color, cropped to the top visible viewport.
--- Private to this module; the compiled bundle carries the staged bytes.
+-- Private to this module; the compiled bundle carries RGBA rows that the
+-- writer encodes or defers to the compiler pool.
 -- The decoded screen also returns for the row-plate builder so the MAIN
 -- base decodes once and both outputs share the same source pixels.
 ---@param archive Narc
@@ -468,7 +468,7 @@ end
 ---@param base { paletteMember: integer, charMember: integer, screenMember: integer }
 ---@param image string staged output path
 ---@param role string
----@return string png
+---@return { width: integer, height: integer, pixels: string } image RGBA rows awaiting PNG encoding
 ---@return { image: string, width: integer, height: integer }
 ---@return OptionsAssetCompiler.ScreenData decoded source screen
 local function renderBackdrop(archive, dependencies, chars, palettes, base, image, role)
@@ -506,14 +506,16 @@ local function renderBackdrop(archive, dependencies, chars, palettes, base, imag
   for y = 0, 191 do
     rows[#rows + 1] = render.pixels:sub(y * 256 * 4 + 1, (y + 1) * 256 * 4)
   end
-  return PngWriter.encode(256, 192, table.concat(rows)), { image = image, width = 256, height = 192 }, screen
+  return { width = 256, height = 192, pixels = table.concat(rows) },
+    { image = image, width = 256, height = 192 },
+    screen
 end
 
 -- Copies one opaque 256x24 shell band from the decoded 256x256 MAIN
 -- base: the listed source tile rows copied with their exact source
 -- entries (no scrubbing), rasterized through the shared screen path with
 -- palette-zero normalized to the opaque backdrop color. Private to this
--- module; the compiled bundle carries the staged bytes.
+-- module; the compiled bundle carries the image's RGBA rows.
 ---@param charData OptionsAssetCompiler.CharData decoded MAIN base tiles
 ---@param palette OptionsAssetCompiler.PaletteData decoded MAIN base palette
 ---@param screen OptionsAssetCompiler.ScreenData decoded 256x256 MAIN base
@@ -521,7 +523,7 @@ end
 ---@param tileRowCount integer count of source tile rows copied
 ---@param image string staged output path
 ---@param role string band role for failure detail
----@return string png
+---@return { width: integer, height: integer, pixels: string } image RGBA rows awaiting PNG encoding
 ---@return { image: string, width: integer, height: integer }
 local function renderBandFromScreen(charData, palette, screen, firstTileRow, tileRowCount, image, role)
   if tileRowCount <= 0 or firstTileRow < 0 or (firstTileRow + tileRowCount) * 8 > screen.height then
@@ -561,7 +563,7 @@ local function renderBandFromScreen(charData, palette, screen, firstTileRow, til
       sourceError("the options shell band is not fully opaque", { role = role, pixel = math.floor(offset / 4) })
     end
   end
-  return PngWriter.encode(256, height, render.pixels), { image = image, width = 256, height = height }
+  return { width = 256, height = height, pixels = render.pixels }, { image = image, width = 256, height = height }
 end
 
 -- Renders one opaque 256x24 shell band from its audited base triple by
@@ -569,7 +571,7 @@ end
 -- with exact source entries. Returns the decoded source screen alongside
 -- the staged band so the header decode also serves the footer band and
 -- the row plates without redecoding. Private to this module; the compiled
--- bundle carries the staged bytes.
+-- bundle carries the image's RGBA rows.
 ---@param archive Narc
 ---@param dependencies table[]
 ---@param chars table<integer, OptionsAssetCompiler.CharData>
@@ -579,7 +581,7 @@ end
 ---@param tileRowCount integer count of source tile rows copied
 ---@param image string staged output path
 ---@param role string
----@return string png
+---@return { width: integer, height: integer, pixels: string } image RGBA rows awaiting PNG encoding
 ---@return { image: string, width: integer, height: integer }
 ---@return OptionsAssetCompiler.ScreenData decoded source screen
 local function renderShellBand(archive, dependencies, chars, palettes, base, firstTileRow, tileRowCount, image, role)
@@ -606,8 +608,8 @@ local function renderShellBand(archive, dependencies, chars, palettes, base, fir
     sourceError("the options shell band palette is not decoded", { role = role, member = base.paletteMember })
   end
   assert(charData ~= nil and palette ~= nil, "a missing options shell band bank fails above")
-  local png, asset = renderBandFromScreen(charData, palette, screen, firstTileRow, tileRowCount, image, role)
-  return png, asset, screen
+  local band, asset = renderBandFromScreen(charData, palette, screen, firstTileRow, tileRowCount, image, role)
+  return band, asset, screen
 end
 
 -- Copies one 8px source tile row into a full-width plate row, flattening
@@ -617,7 +619,7 @@ end
 -- custom option layouts move controls freely, so a baked divider at a
 -- fixed x would ghost under relocated chrome. The retained label and
 -- edge spans keep their exact source entries. Private to this module;
--- the compiled bundle carries the staged bytes.
+-- the compiled bundle carries the image's RGBA rows.
 ---@param screen OptionsAssetCompiler.ScreenData decoded 256x256 MAIN base
 ---@param tileRow integer zero-based source tile row copied for one plate row
 ---@param expectedFiller integer audited backing tile for this tile row
@@ -753,7 +755,7 @@ end
 -- still removes the preprinted faces and still audits the filler backing;
 -- the pixel flatten additionally erases the divider remnant and
 -- edge-cap backing the tile grid cannot split. Private to this
--- module; the compiled bundle carries the staged bytes.
+-- module; the compiled bundle carries the image's RGBA rows.
 ---@param charData OptionsAssetCompiler.CharData decoded MAIN base tiles
 ---@param palette OptionsAssetCompiler.PaletteData decoded MAIN base palette
 ---@param screen OptionsAssetCompiler.ScreenData decoded 256x256 MAIN base
@@ -761,7 +763,7 @@ end
 ---@param expectedFillers integer[] audited backing tile per plate row
 ---@param image string staged output path
 ---@param role string plate role for failure detail
----@return string png
+---@return { width: integer, height: integer, pixels: string } image RGBA rows awaiting PNG encoding
 ---@return { image: string, width: integer, height: integer }
 local function renderRowPlate(charData, palette, screen, tileRows, expectedFillers, image, role)
   if #tileRows == 0 or #tileRows ~= #expectedFillers then
@@ -788,7 +790,7 @@ local function renderRowPlate(charData, palette, screen, tileRows, expectedFille
     end
   end
   local flat = flattenInterior(render.pixels, height)
-  return PngWriter.encode(256, height, flat), { image = image, width = 256, height = height }
+  return { width = 256, height = height, pixels = flat }, { image = image, width = 256, height = height }
 end
 
 -- Renders the transparent selected-row indicator from the separate MAIN
@@ -798,14 +800,14 @@ end
 -- the 24px row with a 3px overhang on each side; cropping only the
 -- middle rows would keep the side bars while dropping the top and
 -- bottom borders. Private to this module; the compiled bundle carries
--- the staged bytes.
+-- the image's RGBA rows.
 ---@param archive Narc
 ---@param dependencies table[]
 ---@param chars table<integer, OptionsAssetCompiler.CharData>
 ---@param palettes table<integer, OptionsAssetCompiler.PaletteData>
 ---@param image string staged output path
 ---@param role string
----@return string png
+---@return { width: integer, height: integer, pixels: string } image RGBA rows awaiting PNG encoding
 ---@return { image: string, width: integer, height: integer }
 local function renderSelectionOverlay(archive, dependencies, chars, palettes, image, role)
   local screenMember = OptionsSources.selectionOverlayScreen
@@ -842,7 +844,7 @@ local function renderSelectionOverlay(archive, dependencies, chars, palettes, im
   for y = 13, 42 do
     strip[#strip + 1] = render.pixels:sub(y * 256 * 4 + 1, (y + 1) * 256 * 4)
   end
-  return PngWriter.encode(256, 30, table.concat(strip)), { image = image, width = 256, height = 30 }
+  return { width = 256, height = 30, pixels = table.concat(strip) }, { image = image, width = 256, height = 30 }
 end
 
 ---@param romFs RomFs
@@ -1188,7 +1190,7 @@ function OptionsAssetCompiler.compile(romFs, versionId)
     local framePng, frameAsset =
       renderRowPlate(plateChar, platePalette, controlsScreen, frameTileRows, frameFillers, frameImage, "row-frame")
     local files = {
-      [image] = PngWriter.encode(atlasWidth, atlasHeight, table.concat(rows)),
+      [image] = { width = atlasWidth, height = atlasHeight, pixels = table.concat(rows) },
       [headerImage] = headerPng,
       [footerImage] = footerPng,
       [previewImage] = previewPng,

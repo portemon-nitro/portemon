@@ -1,6 +1,8 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
+local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local SourceFieldEffects = require("romdump.src.config.FieldEffects")
 
 local T = { tests = {} }
@@ -57,9 +59,11 @@ local function installCenterHealingMocks()
           dynamic = {
             nodes = {},
             transformProgram = {},
-            batches = { { geometry = "assets/generated/maps/geometry/mesh.g4mesh" } },
+            batches = { { geometry = { file = MapAssetCache.modelBankPath("mesh"), drawIndex = 0 } } },
           },
-          materials = { { id = 0, name = "effect", texture = "assets/generated/maps/textures/texture.png" } },
+          materials = {
+            { id = 0, name = "effect", texture = { file = MapAssetCache.textureBankPath("texture"), textureName = "effect" } },
+          },
           animations = { { name = name, frameCount = name == "moniter_mb" and 32 or 16 } },
         }
       end
@@ -284,8 +288,13 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
     compileModel = function(_, _, _, _, context)
       return {
         unresolved = {},
-        batches = { { geometry = "assets/generated/maps/geometry/mesh.g4mesh" } },
-        materials = { { name = context.modelName, texture = "assets/generated/maps/textures/texture.png" } },
+        batches = { { geometry = { file = MapAssetCache.modelBankPath("mesh"), drawIndex = 0 } } },
+        materials = {
+          {
+            name = context.modelName,
+            texture = { file = MapAssetCache.textureBankPath("texture"), textureName = context.modelName },
+          },
+        },
       }
     end,
   }
@@ -306,8 +315,8 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   }
   package.loaded["romdump.src.digest.model.DynamicModelCompiler"] = {
     compile = function(_, _, _, animResult, _, memberId, meshes, textures)
-      meshes["mesh"] = {}
-      textures["texture"] = { width = 1, height = 1, pixels = "pixel" }
+      meshes["mesh"] = "G4GX-bank-bytes"
+      textures["texture"] = "G4TX-bank-bytes"
       return {
         schema = "g4-model-v1",
         memberId = memberId,
@@ -315,13 +324,13 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
         dynamic = {
           nodes = {},
           transformProgram = {},
-          batches = { { geometry = "assets/generated/maps/geometry/mesh.g4mesh" } },
+          batches = { { geometry = { file = MapAssetCache.modelBankPath("mesh"), drawIndex = 0 } } },
         },
         materials = {
           {
             id = 0,
             name = "effect",
-            texture = "assets/generated/maps/textures/texture.png",
+            texture = { file = MapAssetCache.textureBankPath("texture"), textureName = "effect" },
             wrap = { x = "clamp", y = "clamp" },
             flip = { x = false, y = false },
           },
@@ -333,6 +342,8 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   package.loaded["libs.assets.src.model.ModelAsset"] = {
     SCHEMA = "g4-model-v1",
     validate = function() end,
+    retargetGeometry = ModelAsset.retargetGeometry,
+    retargetTexture = ModelAsset.retargetTexture,
   }
   package.loaded["romdump.src.digest.Hashing"] = {
     sha1hex = function(bytes)
@@ -499,7 +510,10 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   Assert.deepEqual(centerHeal.ballPositions[5].offset, { x = -0.28125, y = 0.75, z = 0.28125 })
   Assert.equal(centerHeal.ballPositions[6].role, "southeast")
   Assert.deepEqual(centerHeal.ballPositions[6].offset, { x = 0.28125, y = 0.75, z = 0.28125 })
-  Assert.equal(centerHeal.models[1].dynamic.batches[1].geometry, FieldEffectAssetCache.geometryPath("mesh"))
+  Assert.deepEqual(centerHeal.models[1].dynamic.batches[1].geometry, {
+    file = FieldEffectAssetCache.geometryPath("mesh"),
+    drawIndex = 0,
+  })
 
   invalidSelector = true
   local invalidOk, invalidErr = pcall(compiler.compile, romFs)
@@ -574,12 +588,14 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
   }
   package.loaded["romdump.src.digest.model.ModelAssetCompiler"] = {
     compileModel = function(_, _, meshes, textures)
-      meshes.mesh = {}
-      textures.texture = { width = 1, height = 1, pixels = "pixel" }
+      meshes.mesh = "G4GX-bank-bytes"
+      textures.texture = "G4TX-bank-bytes"
       return {
         unresolved = {},
-        batches = { { geometry = "assets/generated/maps/geometry/mesh.g4mesh" } },
-        materials = { { name = "effect", texture = "assets/generated/maps/textures/texture.png" } },
+        batches = { { geometry = { file = MapAssetCache.modelBankPath("mesh"), drawIndex = 0 } } },
+        materials = {
+          { name = "effect", texture = { file = MapAssetCache.textureBankPath("texture"), textureName = "effect" } },
+        },
       }
     end,
   }
@@ -600,8 +616,8 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
   }
   package.loaded["romdump.src.digest.model.DynamicModelCompiler"] = {
     compile = function(_, _, _, animResult, _, memberId, meshes, textures)
-      meshes.mesh = {}
-      textures.texture = { width = 1, height = 1, pixels = "pixel" }
+      meshes.mesh = "G4GX-bank-bytes"
+      textures.texture = "G4TX-bank-bytes"
       return {
         schema = "g4-model-v1",
         memberId = memberId,
@@ -609,14 +625,21 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
         dynamic = {
           nodes = {},
           transformProgram = {},
-          batches = { { geometry = "assets/generated/maps/geometry/mesh.g4mesh" } },
+          batches = { { geometry = { file = MapAssetCache.modelBankPath("mesh"), drawIndex = 0 } } },
         },
-        materials = { { id = 0, name = "effect", texture = "assets/generated/maps/textures/texture.png" } },
+        materials = {
+          { id = 0, name = "effect", texture = { file = MapAssetCache.textureBankPath("texture"), textureName = "effect" } },
+        },
         animations = animResult.clips,
       }, {}
     end,
   }
-  package.loaded["libs.assets.src.model.ModelAsset"] = { SCHEMA = "g4-model-v1", validate = function() end }
+  package.loaded["libs.assets.src.model.ModelAsset"] = {
+    SCHEMA = "g4-model-v1",
+    validate = function() end,
+    retargetGeometry = ModelAsset.retargetGeometry,
+    retargetTexture = ModelAsset.retargetTexture,
+  }
   package.loaded["romdump.src.digest.Hashing"] = {
     sha1hex = function()
       return "rom-hash"
@@ -655,8 +678,14 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
   end
   package.loaded["romdump.src.digest.field.FieldEntranceIndicatorCompiler"] = nil
   Assert.isTrue(ok, tostring(result))
-  Assert.equal(result.model.batches[1].geometry, FieldEffectAssetCache.geometryPath("mesh"))
-  Assert.equal(result.model.materials[1].texture, FieldEffectAssetCache.texturePath("texture"))
+  Assert.deepEqual(result.model.batches[1].geometry, {
+    file = FieldEffectAssetCache.geometryPath("mesh"),
+    drawIndex = 0,
+  })
+  Assert.deepEqual(result.model.materials[1].texture, {
+    file = FieldEffectAssetCache.texturePath("texture"),
+    textureName = "effect",
+  })
   Assert.notNil(result.effects.follower_transition, "the transition compiles alongside the entrance effects")
   Assert.isNil(result.model.memberId)
   Assert.isNil(result.manifest)

@@ -22,8 +22,10 @@ local NsbmdDynamicModel = require("romdump.src.digest.model.NsbmdDynamicModel")
 local NsbmdFixture = require("tests.support.NsbmdFixture")
 local Nsbtx = require("libs.nds.src.nitro.g3d.Nsbtx")
 local PngWriter = require("tests.support.PngEncoder")
+local NativeTextureBank = require("libs.assets.src.model.NativeTextureBank")
 local TF = require("tests.support.TextureFixtures")
 local Tex0Fixture = require("tests.support.Tex0Fixture")
+local TextureDecoder = require("libs.nds.src.gx.TextureDecoder")
 local TerrainAnimationCompiler = require("romdump.src.digest.map.TerrainAnimationCompiler")
 
 local T = {}
@@ -140,23 +142,38 @@ local function throwsCode(code, fn)
   return err
 end
 
-local function textureAsset(path, textures)
-  for sha1, asset in pairs(textures) do
-    if MapAssetCache.texturePath(sha1) == path then
-      return asset
-    end
-  end
-  error("no compiled texture for " .. path)
-end
-
 local function solidPixels(r, g, b)
   return string.rep(string.char(r, g, b, 255), 64)
 end
 
-local function texturePng(path, textures)
-  local asset = textureAsset(path, textures)
-  Assert.isNil(asset.pixels, "compiled textures retain only finalized PNG Data")
-  return ffi.string(asset.data:getFFIPointer(), asset.data:getSize())
+-- The visible pixels one texture selector resolves to through its native bank:
+-- the named texels decoded under the named palette, exactly the runtime image
+-- path. Texture swaps must change those pixels, never a persisted image copy.
+local function textureRgba(selector, textures)
+  if type(selector) == "string" then
+    error("a 3D material binds a native texture bank selector, not an image path: " .. selector)
+  end
+  local key = assert(tostring(selector.file):match("([^/]+)%.g4tx$"), "selector names a texture bank")
+  local bytes = assert(textures[key], "no compiled texture bank for " .. tostring(selector.file))
+  local bank = assert(NativeTextureBank.read(bytes))
+  local texture = assert(bank:texture(selector.textureName))
+  local palette = selector.paletteName and assert(bank:palette(selector.paletteName)) or nil
+  local opts = {
+    format = texture.formatRaw,
+    width = texture.width,
+    height = texture.height,
+    color0Transparent = texture.color0Transparent,
+    texel = texture.texels,
+    palette = palette and palette.data or "",
+  }
+  if texture.indexData then
+    opts.indexData = texture.indexData
+  end
+  local rgba = love.data.newByteData(texture.width * texture.height * 4)
+  TextureDecoder.decodeInto(opts, rgba:getFFIPointer(), rgba:getSize(), TextureDecoder.newScratch(), {
+    name = texture.name,
+  })
+  return rgba:getString()
 end
 
 local function stepDurations(swap)
@@ -179,15 +196,18 @@ function T.texture_name_match_annotates_the_terrain_material()
   Assert.deepEqual(stepDurations(material.textureSwap), { 18, 18, 18, 18 })
   local steps = material.textureSwap.steps
   for i, step in ipairs(steps) do
+    Assert.equal(type(step.texture), "table", "step " .. i .. " names its texture bank selector")
     Assert.isTrue(
-      type(step.texture) == "string" and step.texture:find("^assets/generated/maps/textures/") ~= nil,
-      "step " .. i .. " is a cache-relative path"
+      tostring(step.texture.file):find("^assets/generated/maps/texture%-banks/") ~= nil,
+      "step " .. i .. " is a cache-relative bank path"
     )
+    Assert.equal(step.texture.textureName, "flower01", "step " .. i .. " keeps the base texture name")
+    Assert.equal(step.texture.paletteName, "map_pal", "step " .. i .. " keeps the base palette name")
   end
-  -- Repeated source indices repeat the same content-addressed path.
-  Assert.equal(steps[1].texture, steps[3].texture)
-  Assert.isTrue(steps[1].texture ~= steps[2].texture)
-  Assert.isTrue(steps[2].texture ~= steps[4].texture)
+  -- Repeated source indices repeat the same content-addressed bank.
+  Assert.equal(steps[1].texture.file, steps[3].texture.file)
+  Assert.isTrue(steps[1].texture.file ~= steps[2].texture.file)
+  Assert.isTrue(steps[2].texture.file ~= steps[4].texture.file)
 end
 
 function T.an_unmatched_material_stays_static_and_reads_no_replacement_member()
@@ -214,15 +234,9 @@ end
 function T.alters_decode_with_the_base_palette_and_replacement_texels()
   local scene = assert(compileScene(animationSceneOpts()))
   local material = scene.compiled.materials[1]
-  Assert.equal(texturePng(material.texture, scene.textures), PngWriter.encode(8, 8, solidPixels(255, 0, 0)))
-  Assert.equal(
-    texturePng(material.textureSwap.steps[2].texture, scene.textures),
-    PngWriter.encode(8, 8, solidPixels(0, 255, 0))
-  )
-  Assert.equal(
-    texturePng(material.textureSwap.steps[4].texture, scene.textures),
-    PngWriter.encode(8, 8, solidPixels(0, 0, 0))
-  )
+  Assert.equal(textureRgba(material.texture, scene.textures), solidPixels(255, 0, 0))
+  Assert.equal(textureRgba(material.textureSwap.steps[2].texture, scene.textures), solidPixels(0, 255, 0))
+  Assert.equal(textureRgba(material.textureSwap.steps[4].texture, scene.textures), solidPixels(0, 0, 0))
 end
 
 -- The base material's image is the map pack's initially bound texture; the
@@ -243,19 +257,16 @@ function T.a_divergent_replacement_zero_compiles_as_its_own_asset()
     },
   }))
   local material = scene.compiled.materials[1]
-  Assert.equal(texturePng(material.texture, scene.textures), PngWriter.encode(8, 8, solidPixels(255, 0, 0)))
+  Assert.equal(textureRgba(material.texture, scene.textures), solidPixels(255, 0, 0))
   Assert.equal(#material.textureSwap.steps, 2)
   Assert.equal(material.textureSwap.steps[1].durationTicks, 1)
   Assert.equal(material.textureSwap.steps[2].durationTicks, 1)
-  Assert.isTrue(material.textureSwap.steps[1].texture ~= material.texture, "step zero is not the base image")
-  Assert.equal(
-    texturePng(material.textureSwap.steps[1].texture, scene.textures),
-    PngWriter.encode(8, 8, solidPixels(0, 255, 0))
+  Assert.isTrue(
+    material.textureSwap.steps[1].texture.file ~= material.texture.file,
+    "step zero is not the base image"
   )
-  Assert.equal(
-    texturePng(material.textureSwap.steps[2].texture, scene.textures),
-    PngWriter.encode(8, 8, solidPixels(0, 0, 255))
-  )
+  Assert.equal(textureRgba(material.textureSwap.steps[1].texture, scene.textures), solidPixels(0, 255, 0))
+  Assert.equal(textureRgba(material.textureSwap.steps[2].texture, scene.textures), solidPixels(0, 0, 255))
 end
 
 -- Compatibility is checked only for the replacement dictionary entries the

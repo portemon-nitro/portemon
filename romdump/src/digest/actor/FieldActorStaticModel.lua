@@ -153,9 +153,11 @@ function FieldActorStaticModel.compile(modelBytes, context, texturePack, texture
       local sourceTexture = assert(pack.textureByName[sourceMaterial.textureName])
       local sourcePalette = sourceMaterial.paletteName and pack.paletteByName[sourceMaterial.paletteName] or nil
       local decoderOpts = Nsbtx.decoderOpts(pack, sourceTexture, sourcePalette)
+      -- The atlas keeps only the source extent: the texels decode straight
+      -- from the model's texture pack, so no per-texture image is stored.
       local entry = {
         key = material.texture,
-        texture = assert(compiled.textures[material.texture]),
+        texture = { width = sourceTexture.width, height = sourceTexture.height },
         decoderOpts = decoderOpts,
       }
       textureByKey[material.texture] = entry
@@ -184,7 +186,7 @@ function FieldActorStaticModel.compile(modelBytes, context, texturePack, texture
       polygon.polygonAlpha,
       polygon.polygonMode,
       material.textureFormat or 0,
-      textureEntry and textureEntry.texture.alphaUsage or nil
+      textureEntry and material.alphaUsage or nil
     )
     local partBounds = bounds(vertices)
     parts[#parts + 1] = {

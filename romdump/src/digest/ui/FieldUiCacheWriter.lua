@@ -1,13 +1,16 @@
 -- Persists a compiled field-UI bundle through the shared staged
--- publication primitive: provenance, the manifest, and every generated PNG
+-- publication primitive: provenance, the manifest, and every generated image
 -- are written into a disposable staging root, readback-validated there, and
--- only then is the completed stage published with the marker last. Staging
--- and validation are one step; publication happens outside that step's
--- error handler, so a publish failure never triggers writer-level stage
+-- only then is the completed stage published with the marker last. A compiled
+-- image record defers its PNG encode and write to the owning job's
+-- low-priority continuation in the same stage; a direct write encodes it here.
+-- Staging and validation are one step; publication happens outside that
+-- step's error handler, so a publish failure never triggers writer-level stage
 -- cleanup that could delete the last remaining copy of the previous class.
 
 local Errors = require("libs.errors.src.Errors")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
+local PngEncoder = require("romdump.src.digest.PngEncoder")
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 
 local FieldUiCacheWriter = {}
@@ -16,14 +19,39 @@ function FieldUiCacheWriter.isReady(cacheFs, marker)
   return FieldUiAssetCache.isReady(cacheFs, marker)
 end
 
-local function stageBundle(stage, bundle)
+---@param asset string|{ width: integer, height: integer, pixels: string }
+local function writeAsset(stage, path, asset)
+  if type(asset) == "table" then
+    stage:write(path, PngEncoder.encode(asset.width, asset.height, asset.pixels))
+  else
+    stage:write(path, asset)
+  end
+end
+
+local function stageAssets(stage, bundle)
+  for path, asset in pairs(bundle.assets) do
+    writeAsset(stage, path, asset)
+  end
+end
+
+-- The staged copy of an image record is not written yet: its continuation owns
+-- that file, so readback accepts the pending registration instead.
+local function deferAssets(artifact, bundle)
+  local stage = artifact:stageFs()
+  for path, asset in pairs(bundle.assets) do
+    if type(asset) == "table" then
+      artifact:deferImage(path, asset.width, asset.height, asset.pixels)
+    else
+      stage:write(path, asset)
+    end
+  end
+end
+
+local function finishStage(stage, bundle, present)
   stage:writeLua(FieldUiAssetCache.provenancePath(), {
     schema = "g4-field-ui-provenance-v1",
     dependencies = bundle.dependencies,
   })
-  for path, bytes in pairs(bundle.assets) do
-    stage:write(path, bytes)
-  end
   stage:writeLua(FieldUiAssetCache.manifestPath(), bundle.manifest)
   local manifest = stage:loadLua(FieldUiAssetCache.manifestPath())
   if type(manifest) ~= "table" or manifest.schema ~= FieldUiAssetCache.SCHEMA then
@@ -35,7 +63,7 @@ local function stageBundle(stage, bundle)
     Errors.raise("FIELD_UI_CACHE_READBACK_FAILED", "ui manifest readback is invalid", { cause = err and err.message })
   end
   for _, entry in pairs(typedManifest.assets) do
-    if not stage:exists(entry.image, "file") then
+    if not present(entry.image) then
       Errors.raise("FIELD_UI_CACHE_READBACK_FAILED", "ui asset missing after stage: " .. entry.image, {
         image = entry.image,
       })
@@ -53,7 +81,10 @@ function FieldUiCacheWriter.stage(artifact, bundle)
   assert(bundle.manifest.schema == FieldUiAssetCache.SCHEMA, "ui manifest schema mismatch")
   artifact:addOwnedRoot(FieldUiAssetCache.assetDir())
   artifact:addOwnedRoot(FieldUiAssetCache.dir())
-  stageBundle(artifact:stageFs(), bundle)
+  deferAssets(artifact, bundle)
+  finishStage(artifact:stageFs(), bundle, function(image)
+    return artifact:hasDeferredImage(image) or artifact:stageFs():exists(image, "file")
+  end)
   return bundle.marker
 end
 
@@ -64,7 +95,13 @@ function FieldUiCacheWriter.write(cacheFs, bundle)
     FieldUiAssetCache.assetDir(),
     FieldUiAssetCache.dir(),
   })
-  local ok, err = pcall(stageBundle, tx.stage, bundle)
+  local stage = tx.stage
+  local ok, err = pcall(function()
+    stageAssets(stage, bundle)
+    finishStage(stage, bundle, function(image)
+      return stage:exists(image, "file")
+    end)
+  end)
   if not ok then
     tx:abort()
     error(err, 0)
