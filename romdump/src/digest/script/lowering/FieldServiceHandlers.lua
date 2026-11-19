@@ -1,6 +1,6 @@
--- Field service, lifecycle, query, prop-animation, and heal lowerings.
--- They live here so their names never become more file-scoped locals
--- in the main field-handler chunk.
+-- Field service, lifecycle, menu-builder, query, prop-animation, and heal
+-- lowerings. They live here so their names never become more file-scoped
+-- locals in the main field-handler chunk.
 
 local Errors = require("libs.errors.src.Errors")
 local Operands = require("romdump.src.digest.script.lowering.Operands")
@@ -542,6 +542,13 @@ end
 
 function FieldServiceHandlers.martCardPrefix(ins)
   return { op = "mart_query", kind = "card_prefix", result = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_MultichoiceSetAnchorRight reads one immediate selector and mutates the
+-- pending foreground menu builder; the source command returns TRUE, so the
+-- caller waits a source phase before the window is executed.
+function FieldServiceHandlers.multichoiceSetAnchorRight(ins)
+  return { op = "menu_anchor_right", enabled = Operands.operandValue(ins.operands[1]) ~= 0 }
 end
 
 return FieldServiceHandlers

@@ -1431,9 +1431,18 @@ local function externalMessageWait(ins)
   }
 end
 
+-- ScrCmd_MenuInitStdGmm/MenuInit (749/750) and ScrCmd_MultichoiceInitStdGmm/
+-- MultichoiceInit (64/65) share Script_CreateMenuFromArgs: four bytes of
+-- window geometry, cursor and cancellability followed by the result
+-- halfword. The multichoice family is the foreground framed window, so it
+-- keeps the source tile position the list family deliberately discards.
 local function standardMenuBegin(ins)
+  local multichoice = ins.opcode == 64
   return {
     op = "menu_begin",
+    kind = multichoice and "multichoice" or nil,
+    tileX = multichoice and Operands.operandValue(ins.operands[1]) or nil,
+    tileY = multichoice and Operands.operandValue(ins.operands[2]) or nil,
     messageSource = "standard",
     initialCursor = Operands.operandValue(ins.operands[3]),
     cancellable = Operands.operandValue(ins.operands[4]) ~= 0,
@@ -1447,8 +1456,12 @@ end
 
 local function scriptMenuBegin(ins, memberIr)
   assert(memberIr.messageBank ~= nil, "script menu requires a current script message bank")
+  local multichoice = ins.opcode == 65
   return {
     op = "menu_begin",
+    kind = multichoice and "multichoice" or nil,
+    tileX = multichoice and Operands.operandValue(ins.operands[1]) or nil,
+    tileY = multichoice and Operands.operandValue(ins.operands[2]) or nil,
     messageSource = { kind = "script", bank = memberIr.messageBank },
     initialCursor = Operands.operandValue(ins.operands[3]),
     cancellable = Operands.operandValue(ins.operands[4]) ~= 0,
@@ -1460,7 +1473,17 @@ local function scriptMenuBegin(ins, memberIr)
   }
 end
 
+-- ScrCmd_MenuItemAdd (751) reads three script-value operands including the
+-- list family's help-metadata selector; ScrCmd_MultichoiceItemAdd (66) reads
+-- the message id and result byte as two immediates and stores them as is.
 local function menuAdd(ins)
+  if ins.opcode == 66 then
+    return {
+      op = "menu_add",
+      messageId = Operands.operandValue(ins.operands[1]),
+      value = Operands.operandValue(ins.operands[2]),
+    }
+  end
   return {
     op = "menu_add",
     messageId = Operands.varRef(ins.operands[1]),
@@ -1890,6 +1913,14 @@ local FieldHandlers = {
   [750] = scriptMenuBegin,
   [751] = menuAdd,
   [752] = menuExecute,
+  [64] = standardMenuBegin,
+  [65] = scriptMenuBegin,
+  [66] = menuAdd,
+  [67] = menuExecute,
+  -- The multichoice anchor leaf rides the field-service leaf like the other
+  -- exhausted-budget leaves: this chunk is at LuaJIT's 200-local budget, so it
+  -- declares no further file-scoped local.
+  [841] = FieldServiceHandlers.multichoiceSetAnchorRight,
   [581] = lockLastTalkedActor,
   [582] = setSpecialSpawn,
   [596] = followerPartnerState,

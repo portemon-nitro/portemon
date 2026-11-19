@@ -121,6 +121,10 @@ function FieldMenuHost:_resolve(definition, selectedIndex)
   local layout = MenuLayout.resolve({
     topology = self._topology,
     menu = {
+      kind = definition.kind,
+      tileX = definition.tileX,
+      tileY = definition.tileY,
+      anchorRight = definition.anchorRight,
       items = definition.items,
       selectedIndex = selectedIndex,
       cancellable = definition.cancellable,

@@ -447,6 +447,7 @@ return {
       },
     },
     [64] = {
+      classification = "yield_next_tick",
       name = "ScrCmd_MultichoiceInitStdGmm",
       widths = {
         [1] = 1,
@@ -457,6 +458,7 @@ return {
       },
     },
     [65] = {
+      classification = "yield_next_tick",
       name = "ScrCmd_MultichoiceInit",
       widths = {
         [1] = 1,
@@ -467,6 +469,7 @@ return {
       },
     },
     [66] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_MultichoiceItemAdd",
       widths = {
         [1] = 1,
@@ -474,6 +477,7 @@ return {
       },
     },
     [67] = {
+      classification = "native_wait",
       name = "ScrCmd_MultichoiceExec",
       widths = {},
     },
@@ -6294,6 +6298,7 @@ return {
       },
     },
     [841] = {
+      classification = "yield_next_tick",
       name = "ScrCmd_MultichoiceSetAnchorRight",
       widths = {
         [1] = 1,

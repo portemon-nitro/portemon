@@ -37,6 +37,16 @@ local function messageBank(source)
   return source.bank
 end
 
+---@param spec table<string, unknown>
+---@return boolean
+local function isMultichoice(spec)
+  if spec.kind == nil then
+    return false
+  end
+  assert(spec.kind == "multichoice", "script menu kind is invalid")
+  return true
+end
+
 ---@param self ScriptMenuHost
 ---@param source unknown
 ---@param messageId integer
@@ -141,6 +151,8 @@ end
 
 -- Starts one source-faithful builder. `messageSource` deliberately retains
 -- the distinction between standard/global and current-script message banks.
+-- A `multichoice` builder is the foreground framed window family and keeps
+-- its native tile position; an absent kind is the auxiliary list family.
 ---@param spec table<string, unknown>
 ---@return table<string, unknown> builder
 function ScriptMenuHost:beginMenu(spec)
@@ -149,26 +161,54 @@ function ScriptMenuHost:beginMenu(spec)
   assertInteger(spec.initialCursor, "script menu initial cursor")
   assert(type(spec.cancellable) == "boolean", "script menu cancellable must be a boolean")
   assert(spec.result ~= nil, "script menu result target is required")
+  local multichoice = isMultichoice(spec)
   local messageSource = spec.messageSource
   if type(messageSource) == "table" then
     messageSource = { kind = "script", bank = messageSource.bank }
   end
   local cancelValue = spec.cancelValue
-  return {
+  local builder = {
     messageSource = messageSource,
     initialCursor = spec.initialCursor,
     cancellable = spec.cancellable,
     -- The retail list menu carries no cancellation value: B selects the
-    -- last row, so the builder leaves cancellation unresolved until
+    -- last row, so the list builder leaves cancellation unresolved until
     -- execute() can name the last item value.
     cancelValue = cancelValue,
     result = spec.result,
     items = {},
   }
+  if multichoice then
+    assertInteger(spec.tileX, "multichoice window column")
+    assertInteger(spec.tileY, "multichoice window row")
+    assert(spec.cancelValue ~= nil, "a source multichoice keeps its cancellation value")
+    builder.kind = "multichoice"
+    builder.tileX = spec.tileX
+    builder.tileY = spec.tileY
+    builder.anchorRight = false
+  end
+  return builder
+end
+
+-- ScrCmd_MultichoiceSetAnchorRight mutates the pending foreground builder; it
+-- only applies to the foreground family, so a list builder rejects it instead
+-- of silently ignoring the source request.
+---@param builder table<string, unknown>|nil imported HGSS menu builder owned by a ScriptInstance
+---@param enabled unknown source selector, already decoded to a boolean
+function ScriptMenuHost:setAnchorRight(builder, enabled)
+  if builder == nil then
+    Errors.raise(ScriptErrors.SCRIPT_MENU_NOT_INITIALIZED, "script menu anchor requested without a menu builder")
+  end
+  ---@cast builder table<string, unknown>
+  if builder.kind ~= "multichoice" then
+    Errors.raise(ScriptErrors.SCRIPT_MENU_KIND_INVALID, "only a multichoice menu has a foreground anchor")
+  end
+  assert(type(enabled) == "boolean", "multichoice anchor selector must be a boolean")
+  builder.anchorRight = enabled
 end
 
 ---@param builder table<string, unknown>|nil imported HGSS menu builder owned by a ScriptInstance
----@param item table<string, unknown> { messageId, vanillaMetadata, value }
+---@param item table<string, unknown> { messageId, vanillaMetadata?, value }
 function ScriptMenuHost:addItem(builder, item)
   if builder == nil then
     Errors.raise(ScriptErrors.SCRIPT_MENU_NOT_INITIALIZED, "script menu item added without a menu builder")
@@ -176,8 +216,14 @@ function ScriptMenuHost:addItem(builder, item)
   ---@cast builder table<string, unknown>
   assert(type(item) == "table", "script menu item must be a table")
   assertInteger(item.messageId, "script menu message id")
-  assert(item.vanillaMetadata ~= nil, "script menu vanilla metadata is required")
   assert(item.value ~= nil, "script menu result value is required")
+  local multichoice = builder.kind == "multichoice"
+  if multichoice and item.vanillaMetadata ~= nil then
+    Errors.raise(ScriptErrors.SCRIPT_MENU_KIND_INVALID, "a foreground multichoice item has no list help metadata")
+  end
+  if not multichoice and item.vanillaMetadata == nil then
+    Errors.raise(ScriptErrors.SCRIPT_MENU_KIND_INVALID, "a list menu item requires its help metadata selector")
+  end
   builder.items[#builder.items + 1] = {
     text = { source = builder.messageSource, id = item.messageId },
     vanillaMetadata = item.vanillaMetadata,
@@ -215,7 +261,14 @@ function ScriptMenuHost:execute(builder, textArgs)
     cancelValue = builder.cancelValue,
     result = builder.result,
   }
-  if request.cancellable and request.cancelValue == nil then
+  if builder.kind == "multichoice" then
+    -- The foreground window keeps the source geometry and anchor the pending
+    -- builder accumulated; the task owns this frozen definition from here.
+    request.kind = "multichoice"
+    request.tileX = builder.tileX
+    request.tileY = builder.tileY
+    request.anchorRight = builder.anchorRight == true
+  elseif request.cancellable and request.cancelValue == nil then
     -- Source B behavior for a cancellable list menu (touchscreen choice
     -- menu list input): the cursor jumps to the last row and confirms it,
     -- so cancellation carries the last item value instead of a synthetic one.

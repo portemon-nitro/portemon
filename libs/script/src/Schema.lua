@@ -116,6 +116,10 @@ Schema.ENUMS = {
   -- Union avatar choice projections: the trainer class behind opcode 288
   -- or the native sprite behind 558.
   union_avatar_attribute = { "class", "sprite" },
+  -- Menu families a script builder may name. The touchscreen list family is
+  -- the historical default and keeps its absent discriminator; the foreground
+  -- multichoice family carries native window geometry.
+  menu_kind = { "multichoice" },
 }
 
 Schema.ACTOR_SPECIALS = { "player", "self", "last_talked", "partner", "camera_target" }
@@ -806,6 +810,11 @@ Schema.OPERATIONS = {
   -- use `choose`; these preserve the source protocol's message-bank details.
   menu_begin = {
     fields = {
+      -- Absent for the auxiliary touchscreen list family; the foreground
+      -- multichoice family names its native tile position.
+      kind = { type = "enum:menu_kind" },
+      tileX = { type = "integer" },
+      tileY = { type = "integer" },
       messageSource = { type = "serializable", required = true },
       initialCursor = { type = "integer", required = true },
       cancellable = { type = "boolean", required = true },
@@ -819,11 +828,17 @@ Schema.OPERATIONS = {
   menu_add = {
     fields = {
       messageId = { type = "scalar_or_value", required = true },
-      vanillaMetadata = { type = "scalar_or_value", required = true },
+      -- The list family's help-message selector; the foreground multichoice
+      -- family has no item help metadata and leaves it absent.
+      vanillaMetadata = { type = "scalar_or_value" },
       value = { type = "scalar_or_value", required = true },
     },
   },
   menu_exec = { fields = {} },
+  -- ScrCmd_MultichoiceSetAnchorRight: the anchor selector for the pending
+  -- foreground builder. The source command returns TRUE, so the operation
+  -- itself is a run-phase boundary.
+  menu_anchor_right = { fields = { enabled = { type = "boolean", required = true } } },
   buffer_text = {
     fields = {
       slot = { type = "buffer_slot", required = true },

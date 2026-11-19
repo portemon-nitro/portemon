@@ -57,16 +57,18 @@ local function assertItems(menu)
   return selectedIndex
 end
 
--- The auxiliary surface carries the menu on dual displays; otherwise the first
--- surface does.
-local function selectSurface(topology)
+-- The auxiliary surface carries the list menu on dual displays; otherwise the
+-- first surface does. Source multichoice windows belong to the gameplay
+-- display instead, so they select the first non-auxiliary surface.
+local function selectSurface(topology, foreground)
   assert(
     type(topology) == "table" and type(topology.surfaces) == "table" and #topology.surfaces > 0,
     "menu layout requires a ScreenTopology"
   )
   local selected = topology.surfaces[1]
   for _, surface in ipairs(topology.surfaces) do
-    if surface.role == "auxiliary" then
+    local matches = foreground and surface.role ~= "auxiliary" or not foreground and surface.role == "auxiliary"
+    if matches then
       selected = surface
       break
     end
@@ -115,6 +117,100 @@ local function placement(surface, bounds, preferredScale)
 end
 
 local DIRECTIONS = { up = true, down = true, left = true, right = true }
+
+-- ScriptMenu_ShowMultichoice gives a source foreground window its native tile
+-- position, one measured-and-tile-rounded width and two source tile rows per
+-- item; its rows therefore span the window instead of sitting inside the
+-- padded auxiliary list surface. The window frame draws on those edges.
+local MULTICHOICE_ROW_HEIGHT = TILE * 2
+
+-- ScriptMenu_GetItemsWidth returns the widest measured label plus 12 pixels.
+local MULTICHOICE_WIDTH_PADDING = 12
+
+-- The foreground family's native geometry: the source tile position a script
+-- created the window with, plus the anchor selector it may set before the
+-- window is executed.
+---@param menu table<string, unknown>
+---@return { tileX: number, tileY: number, anchorRight: boolean }
+local function multichoiceGeometry(menu)
+  local tileX, tileY = menu.tileX, menu.tileY
+  assert(
+    type(tileX) == "number" and tileX % 1 == 0 and tileX >= 0 and tileX <= 255,
+    "multichoice window column must be a source tile coordinate"
+  )
+  assert(
+    type(tileY) == "number" and tileY % 1 == 0 and tileY >= 0 and tileY <= 255,
+    "multichoice window row must be a source tile coordinate"
+  )
+  local anchorRight = menu.anchorRight
+  assert(anchorRight == nil or type(anchorRight) == "boolean", "multichoice anchor must be a boolean")
+  return { tileX = tileX, tileY = tileY, anchorRight = anchorRight == true }
+end
+
+-- Places one source multichoice window in the 256x192 reference space. The
+-- right anchor moves the left edge: the stored tile column loses exactly the
+-- measured window width, which keeps the right edge on the source column.
+---@param spec MenuLayout.Spec
+---@param surface ScreenTopology.Surface
+---@param selectedIndex integer
+---@param items table[]
+---@param itemTexts table<integer, string>
+---@return table<string, unknown>
+local function resolveMultichoice(spec, surface, selectedIndex, items, itemTexts)
+  local geometry = multichoiceGeometry(spec.menu)
+  local itemCount = #items
+  local widestLabel = 0
+  for itemIndex = 0, itemCount - 1 do
+    widestLabel = math.max(widestLabel, spec.measureText(itemTexts[itemIndex]))
+  end
+  -- The source rounds that sum UP to whole tiles ((width >> 3) + 1 when it is
+  -- not tile-aligned), draws the window on that tile count and lets it overflow
+  -- the display: an over-wide window is a layout fault, never a clamp.
+  local width = alignUp(widestLabel + MULTICHOICE_WIDTH_PADDING)
+  local height = itemCount * MULTICHOICE_ROW_HEIGHT
+  local x = geometry.tileX * TILE
+  if geometry.anchorRight then
+    x = x - width
+  end
+  local y = geometry.tileY * TILE
+  assert(
+    x >= 0 and x + width <= NativeDisplay.WIDTH and y + height <= NativeDisplay.HEIGHT,
+    "multichoice window does not fit the 256x192 reference display"
+  )
+  local window = rect(x, y, width, height)
+  local rows = {}
+  local itemRects = {}
+  for itemIndex = 0, itemCount - 1 do
+    local rowY = y + itemIndex * MULTICHOICE_ROW_HEIGHT
+    itemRects[itemIndex] = rect(x, rowY, width, MULTICHOICE_ROW_HEIGHT)
+    rows[itemIndex + 1] = {
+      itemIndex = itemIndex,
+      rect = itemRects[itemIndex],
+      marker = rect(x + TILE / 2, rowY + 2, width - TILE, MULTICHOICE_ROW_HEIGHT - 4),
+      markerRadius = 2,
+      -- The source printer starts the label one glyph cell (one tile) in and
+      -- the window's measured width already carries its trailing margin, so
+      -- the remaining window is the label row.
+      labelRect = rect(x + TILE, rowY, width - TILE, MULTICHOICE_ROW_HEIGHT),
+    }
+  end
+  return {
+    surface = surface,
+    placement = placement(surface, spec.bounds, spec.preferredScale),
+    listSurface = { surface = window, content = window, rows = rows },
+    rows = rows,
+    itemCount = itemCount,
+    itemRects = itemRects,
+    itemTexts = itemTexts,
+    scrollViewport = window,
+    -- Source multichoice cancellation is the script's own B result; the
+    -- touchscreen list family keeps its cancel target.
+    cancelRect = nil,
+    selectedIndex = selectedIndex,
+    scrollOffset = 0,
+    maxScrollOffset = 0,
+  }
+end
 
 -- Finds the item most aligned with the current row or column in a cardinal
 -- direction. Cross-axis alignment wins over distance, preserving grid-like
@@ -178,7 +274,7 @@ end
 
 ---@class MenuLayout.Spec
 ---@field topology ScreenTopology
----@field menu { items: table[], selectedIndex?: integer, cancellable?: boolean }
+---@field menu { items: table[], kind?: "multichoice", tileX?: integer, tileY?: integer, anchorRight?: boolean, selectedIndex?: integer, cancellable?: boolean }
 ---@field bounds? ScreenTopology.Rectangle central 4:3 host region for world surfaces; defaults to the surface safe rect
 ---@field preferredScale? integer field pixel scale for world surfaces
 ---@field measureText fun(text: string): number
@@ -193,14 +289,20 @@ end
 function MenuLayout.resolve(spec)
   assert(type(spec) == "table", "menu layout requires a specification")
   local selectedIndex = assertItems(spec.menu)
+  ---@cast selectedIndex integer
   assert(type(spec.measureText) == "function", "menu text measurement must be a function")
-  local surface = selectSurface(spec.topology)
-  local resolvedPlacement = placement(surface, spec.bounds, spec.preferredScale)
+  local multichoice = spec.menu.kind == "multichoice"
+  local surface = selectSurface(spec.topology, multichoice)
   local items = spec.menu.items
   local itemTexts = {}
   for luaIndex = 1, #items do
     itemTexts[luaIndex - 1] = itemText(items[luaIndex])
   end
+  if multichoice then
+    return resolveMultichoice(spec, surface, selectedIndex, items, itemTexts)
+  end
+  local resolvedPlacement = placement(surface, spec.bounds, spec.preferredScale)
+  local scale = resolvedPlacement.scale
 
   local cancellable = spec.menu.cancellable == true and surface.touch == true
   local insets = ApplicationLayout.applicationFrameInsets()

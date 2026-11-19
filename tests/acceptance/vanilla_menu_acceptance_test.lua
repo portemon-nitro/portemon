@@ -1,5 +1,7 @@
--- Production-composed field-menu contracts. A real generated HGSS menu runs
--- through FieldRuntime: one complete selection path and one mid-menu restart.
+-- Production-composed field-menu contracts. Real generated HGSS menus run
+-- through FieldRuntime: the auxiliary touchscreen list family (a complete
+-- selection path and a mid-menu restart) and the source foreground multichoice
+-- (its native window, a resumed run, and cancellation).
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
@@ -8,7 +10,7 @@ local FieldState = require("game.hgss.src.field.FieldState")
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "map:7" },
+    derivedAssets = { "field-runtime", "map:7", "map-data:7", "script-member:4" },
     tags = { "field", "menu", "responsive", "topology", "script" },
   },
   tests = {},
@@ -19,6 +21,14 @@ local T = {
 -- initial row and the source-message id.
 local VANILLA_MENU = "vanilla.hgss.scr_seq.0003.script_056"
 local RESULT_VARIABLE = 32780
+
+-- Source foreground multichoice (ScrCmd_MultichoiceInitStdGmm, three
+-- ScrCmd_MultichoiceItemAdd, ScrCmd_MultichoiceExec) at native tile (1, 1) with
+-- source item values 0, 1, and 2.
+local FOREGROUND_MULTICHOICE = "vanilla.hgss.scr_seq.0004.script_011"
+local MULTICHOICE_TILE_X = 1
+local MULTICHOICE_TILE_Y = 1
+local MULTICHOICE_ITEM_COUNT = 3
 
 local function withGame(fieldOptions, fn)
   local game = AcceptanceHarness.new():boot({
@@ -89,6 +99,63 @@ local function selectSecondItem(game)
   return opened
 end
 
+-- The source multichoice script opens with two prints under a full field lock,
+-- so advance the production printer until the choice itself is modal. A script
+-- that stops before its window opens reports its recorded source reason.
+local function scriptStopReport(game)
+  local ended = game:recordsForScript(FOREGROUND_MULTICHOICE, "script.ended")[1]
+  local failed = game:recordsForScript(FOREGROUND_MULTICHOICE, "script.error")[1]
+  if ended == nil and failed == nil then
+    return nil
+  end
+  return "reason=" .. tostring(ended and ended.payload.reason) .. ", error=" .. tostring(failed and failed.payload.code)
+end
+
+local function openForegroundMultichoice(game)
+  for _ = 1, 480 do
+    local snapshot = game:snapshot()
+    if menuIsModal(snapshot) then
+      return snapshot
+    end
+    local stopped = scriptStopReport(game)
+    if stopped ~= nil then
+      error("the source multichoice never opened: " .. stopped, 0)
+    end
+    if snapshot.dialogue.modal then
+      game.runtime:pressAction()
+      game:step()
+      game.runtime:releaseAction()
+    else
+      game:step()
+    end
+  end
+  error("the source multichoice never opened within the source print sequence", 0)
+end
+
+local function assertSourceWindow(snapshot)
+  local layout = assert(snapshot.menu.layout, "modal menu must expose production layout")
+  Assert.isTrue(layout.surface.role ~= "auxiliary", "a source multichoice does not use the auxiliary surface")
+  local surface = layout.listSurface.surface
+  -- ScriptMenu_ShowMultichoice adds its main-display window at the stored source
+  -- tiles with the measured width and two tile rows per item. A framed window
+  -- spends at most one of those tiles per side on its border.
+  Assert.isTrue(
+    surface.x >= MULTICHOICE_TILE_X * 8 and surface.x <= (MULTICHOICE_TILE_X + 1) * 8,
+    "the window starts at its source tile column: " .. surface.x
+  )
+  Assert.isTrue(
+    surface.y >= MULTICHOICE_TILE_Y * 8 and surface.y <= (MULTICHOICE_TILE_Y + 1) * 8,
+    "the window starts at its source tile row: " .. surface.y
+  )
+  Assert.isTrue(
+    surface.height >= MULTICHOICE_ITEM_COUNT * 2 * 8 - 16 and surface.height <= MULTICHOICE_ITEM_COUNT * 2 * 8,
+    "the window is two source tile rows per item: " .. surface.height
+  )
+  Assert.equal(surface.width % 8, 0, "the source window stays on the tile grid")
+  Assert.equal(layout.itemCount, MULTICHOICE_ITEM_COUNT)
+  return layout, surface
+end
+
 -- A real 749--752 menu reaches the script-owned controller and writes the
 -- vanilla value, never the visual row number or source message id.
 function T.tests.vanilla_menu_selection_commits_its_script_result()
@@ -127,6 +194,58 @@ function T.tests.restart_after_hgss_menu_begin_resumes_the_real_menu_builder()
       return snapshot.menu ~= nil and not snapshot.menu.modal
     end, 120)
     Assert.equal(resumed.runtime.scripts.worldState:getVar(RESULT_VARIABLE), 1)
+  end)
+end
+
+-- The source foreground multichoice is a main-display window at its native tile
+-- position, and a resumed run publishes the same window before committing the
+-- clicked source value.
+function T.tests.foreground_multichoice_opens_at_its_source_window_and_resumes_into_a_clicked_choice()
+  withGame({ recordingScriptHosts = true }, function(game)
+    game:waitForFieldEntry()
+    game:startScript(FOREGROUND_MULTICHOICE)
+    local opened = openForegroundMultichoice(game)
+    local _, surface = assertSourceWindow(opened)
+
+    -- A display resize keeps the logical source window geometry.
+    game.runtime.menuHost:resize(640, 480)
+    game:step()
+    local resized = game:snapshot()
+    local _, resizedSurface = assertSourceWindow(resized)
+    Assert.equal(resizedSurface.x, surface.x, "a resize never moves the source window")
+    Assert.equal(resizedSurface.height, surface.height, "a resize never rescales the source window")
+
+    -- A save while the choice waits restores the same window, not a second one.
+    local resumed = game:restart({ save = "resume" })
+    local reopened = resumed:advanceUntil("resumed source multichoice becomes modal", menuIsModal, 120)
+    assertSourceWindow(reopened)
+
+    local x, y = itemCenter(reopened, 2)
+    resumed.runtime.input:pointerDown("mouse:1", x, y)
+    resumed:step()
+    resumed.runtime.input:pointerUp("mouse:1", x, y)
+    resumed:advanceUntil("resumed source multichoice closes after selection", function(snapshot)
+      return snapshot.menu ~= nil and not snapshot.menu.modal
+    end, 120)
+    Assert.equal(resumed.runtime.scripts.worldState:getVar("VAR_SPECIAL_RESULT"), 2, "the clicked source byte commits")
+    Assert.equal(resumed.runtime.menuHost:isModal(), false, "the foreground window closes once")
+  end)
+end
+
+-- ScrCmd_MultichoiceExec waits while the source result variable is unchanged, so
+-- B commits the retail cancellation sentinel and resumes the script.
+function T.tests.foreground_multichoice_cancels_to_the_source_cancel_value()
+  withGame({ recordingScriptHosts = true }, function(game)
+    game:waitForFieldEntry()
+    game:startScript(FOREGROUND_MULTICHOICE)
+    openForegroundMultichoice(game)
+    local state = hostCallbacks(game)
+    pressKey(game, state, "backspace")
+    game:advanceUntil("source multichoice closes after cancellation", function(snapshot)
+      return snapshot.menu ~= nil and not snapshot.menu.modal
+    end, 120)
+    Assert.equal(game.runtime.scripts.worldState:getVar("VAR_SPECIAL_RESULT"), 0xFFFE)
+    Assert.equal(game.runtime.menuHost:isModal(), false, "the cancelled window closes once")
   end)
 end
 

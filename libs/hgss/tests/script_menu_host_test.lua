@@ -96,6 +96,73 @@ function T.retains_var_derived_item_operands_as_concrete_values()
   Assert.equal(menu.items[1].value, 401)
 end
 
+-- ScrCmd_MultichoiceInit* and ScrCmd_MultichoiceItemAdd carry immediate
+-- geometry and item bytes: the builder keeps the native tile position for the
+-- foreground layout, and the item's source value must reach the request
+-- verbatim without the list menu's help-message selector.
+function T.multichoice_builders_keep_source_geometry_and_immediate_item_values()
+  local h = host()
+  local builder = h:beginMenu({
+    kind = "multichoice",
+    tileX = 20,
+    tileY = 6,
+    messageSource = "standard",
+    initialCursor = 0,
+    cancellable = true,
+    cancelValue = 0xFFFE,
+    result = "VAR_RESULT",
+  })
+  h:addItem(builder, { messageId = 0, value = 200 })
+  h:addItem(builder, { messageId = 0, value = 255 })
+  local request = h:execute(builder, {})
+  Assert.equal(request.kind, "multichoice")
+  Assert.equal(request.tileX, 20)
+  Assert.equal(request.tileY, 6)
+  Assert.equal(request.cancelValue, 0xFFFE)
+  Assert.equal(#request.items, 2)
+  Assert.equal(request.items[1].value, 200)
+  Assert.equal(request.items[2].value, 255)
+  Assert.isNil(request.items[1].vanillaMetadata, "a source multichoice item has no list help selector")
+  Assert.equal(request.items[1].text.text, "Standard")
+end
+
+-- The two builder families are one-of-kind records: an item of the other
+-- family (missing its own required metadata or carrying the other one) must
+-- fail through the structured script/menu error path rather than publish a
+-- window with mixed semantics.
+function T.builders_reject_items_from_the_other_menu_family()
+  local h = host()
+  local listBuilder = h:beginMenu({
+    messageSource = "standard",
+    initialCursor = 0,
+    cancellable = false,
+    result = "VAR_RESULT",
+  })
+  Assert.isTrue(
+    Errors.is(Assert.throws(function()
+      h:addItem(listBuilder, { messageId = 0, value = 1 })
+    end)),
+    "a source multichoice item cannot populate a list menu"
+  )
+
+  local multichoiceBuilder = h:beginMenu({
+    kind = "multichoice",
+    tileX = 4,
+    tileY = 2,
+    messageSource = "standard",
+    initialCursor = 0,
+    cancellable = false,
+    cancelValue = 0xFFFE,
+    result = "VAR_RESULT",
+  })
+  Assert.isTrue(
+    Errors.is(Assert.throws(function()
+      h:addItem(multichoiceBuilder, { messageId = 0, vanillaMetadata = 7, value = 1 })
+    end)),
+    "a list menu item cannot populate a source multichoice"
+  )
+end
+
 -- Source-faithful 749 menus carry `messageSource = "standard"`; their
 -- message ids are indices into the HGSS standard list-menu bank. The
 -- protocol constant is ROM-pinned (tests/rom verifies bank 191 holds the
@@ -225,6 +292,9 @@ function T.rejects_builder_misuse()
   local h = host()
   throwsCode("SCRIPT_MENU_NOT_INITIALIZED", function()
     h:addItem(nil, { messageId = 0, vanillaMetadata = 0, value = 1 })
+  end)
+  throwsCode("SCRIPT_MENU_NOT_INITIALIZED", function()
+    h:execute(nil, {})
   end)
   throwsCode("SCRIPT_MENU_EMPTY", function()
     h:execute({ items = {} }, {})

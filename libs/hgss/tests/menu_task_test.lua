@@ -11,7 +11,13 @@ local Scheduler = require("libs.script.src.Scheduler")
 local ScriptSave = require("libs.script.src.ScriptSave")
 local MenuTask = require("libs.hgss.src.script.tasks.MenuTask")
 ---@cast MenuTask TaskImplementation
+local ScriptMenuHost = require("libs.hgss.src.script.ScriptMenuHost")
+local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
+local MenuProtocol = require("libs.assets.src.MenuProtocol")
+local CacheFs = require("libs.storage.src.CacheFs")
 local FakeServices = require("tests.support.script.FakeServices")
+local FakeCache = require("tests.support.FakeCache")
 
 local T = {}
 
@@ -26,6 +32,7 @@ function RecordingMenuHost:sync(state)
   self.syncs[#self.syncs + 1] = {
     selectedIndex = state.selectedIndex,
     pressedPointerItem = state.pressedPointerItem,
+    definition = state.menuDefinition,
   }
 end
 
@@ -180,6 +187,226 @@ function T.menu_builder_survives_save_after_begin_with_a_fresh_stateless_host()
   h2.scheduler:step(101, {})
   Assert.equal(#h2.services.scriptMenu.requests, 1)
   Assert.equal(h2.services.scriptMenu.requests[1].items[1].value, 99)
+end
+
+local STANDARD_BANK_ITEMS = { 0, 1, 2 }
+
+-- The standard message data a source foreground multichoice resolves its item
+-- labels from (ScriptMenu_Init's NARC_msg_msg_0191_bin).
+local function standardMenuBank(messageIds)
+  local messages = {}
+  for _, messageId in ipairs(messageIds) do
+    messages[messageId] = {
+      id = messageId,
+      raw = { 0xFFFF },
+      text = "Choice " .. messageId,
+      tokens = { { kind = "glyph", text = "Choice " .. messageId }, { kind = "eos", raw = { 0xFFFF } } },
+    }
+  end
+  return {
+    schema = FieldMessageCache.SCHEMA,
+    bankId = MenuProtocol.STANDARD_MESSAGE_BANK,
+    messageCount = #messageIds,
+    source = {
+      narc = "NARC_msgdata_msg",
+      memberId = MenuProtocol.STANDARD_MESSAGE_BANK,
+      memberSha1 = "synthetic",
+    },
+    messages = messages,
+  }
+end
+
+-- Source foreground multichoice resolves its labels through the production
+-- script-menu host; only the presentation host stays a recording adapter,
+-- because this layer owns menu interaction rather than drawing.
+local function sourceMenuHarness()
+  local h = harness()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  cache:writeLua(FieldMessageCache.bankPath(MenuProtocol.STANDARD_MESSAGE_BANK), standardMenuBank(STANDARD_BANK_ITEMS))
+  local provider = assert(FieldMessageProvider.new(cache))
+  h.services.scriptMenu = ScriptMenuHost.new({
+    provider = provider,
+    substitutionResolvers = function()
+      return {}
+    end,
+  })
+  return h
+end
+
+-- The item values deliberately differ from their row indexes, so a committed
+-- result can only be the source result byte and never a visual position.
+local function multichoiceScript(opts)
+  local steps = {
+    S.setVar({ variable = "VAR_RESULT", value = 999 }),
+    S.menuBegin({
+      kind = "multichoice",
+      tileX = 20,
+      tileY = 6,
+      messageSource = "standard",
+      initialCursor = 0,
+      cancellable = opts.cancellable == true,
+      cancelValue = 0xFFFE,
+      result = S.var("VAR_RESULT"),
+    }),
+  }
+  if opts.anchor then
+    steps[#steps + 1] = { op = "menu_anchor_right", enabled = true }
+  end
+  for _, item in ipairs({ { messageId = 0, value = 99 }, { messageId = 1, value = 40 }, { messageId = 2, value = 7 } }) do
+    steps[#steps + 1] = S.menuAdd({ messageId = item.messageId, value = item.value })
+  end
+  steps[#steps + 1] = S.menuExec()
+  steps[#steps + 1] = S.setVar({ variable = "VAR_AFTER_MENU", value = 1 })
+  steps[#steps + 1] = S.stop()
+  return S.script({ api = 1, id = opts.id or "test.source_multichoice", steps = steps })
+end
+
+local function startScript(h, script, tick)
+  h.registry:installBase(script.id, script, "generated")
+  return h.scheduler:createForeground(assert(h.composition:effective(script.id)), nil, tick)
+end
+
+-- Steps one tick at a time until the presentation host receives the source
+-- menu, so each source phase boundary is observable as the tick the window
+-- appears in.
+local function menuPublishTick(opts)
+  local h = sourceMenuHarness()
+  startScript(h, multichoiceScript(opts), 100)
+  for tick = 100, 110 do
+    h.scheduler:step(tick, {})
+    if #h.host.syncs > 0 then
+      return tick, h
+    end
+  end
+  error("source multichoice never published a menu window", 0)
+end
+
+-- Source multichoice keeps the retail source timing: initialization and the
+-- right-anchor request each return TRUE and therefore consume one script tick,
+-- item adds stay on the current tick, and execution waits for the result
+-- variable. The committed result is the item's source byte.
+function T.source_multichoice_keeps_source_phase_timing_and_commits_its_item_value()
+  local plainTick = menuPublishTick({ anchor = false })
+  Assert.equal(plainTick, 102, "initialization yields one tick before the items are added")
+  local anchoredTick, h = menuPublishTick({ anchor = true })
+  Assert.equal(anchoredTick, plainTick + 1, "the anchor request yields its own source phase")
+
+  local definition = h.host.syncs[1].definition
+  Assert.equal(definition.kind, "multichoice")
+  Assert.equal(definition.tileX, 20)
+  Assert.equal(definition.tileY, 6)
+  Assert.isTrue(definition.anchorRight)
+  Assert.equal(#definition.items, 3)
+  Assert.equal(definition.items[2].value, 40)
+  Assert.isNil(definition.items[2].vanillaMetadata, "a foreground multichoice item carries no list help metadata")
+  Assert.equal(h.services.world:getVar("VAR_AFTER_MENU"), 0, "execution waits on the source result")
+
+  h.scheduler:step(anchoredTick + 1, { menuEvents = { { type = "focus", itemIndex = 1 } } })
+  h.scheduler:step(anchoredTick + 2, { menuEvents = { { type = "confirm" } } })
+  Assert.equal(h.services.world:getVar("VAR_RESULT"), 999, "a pending menu never commits a choice")
+  h.scheduler:step(anchoredTick + 3, {})
+  Assert.equal(h.services.world:getVar("VAR_RESULT"), 40, "the committed value is the source item byte")
+  Assert.equal(h.services.world:getVar("VAR_AFTER_MENU"), 1)
+  Assert.equal(h.host.closes, 1, "the foreground window closes exactly once")
+end
+
+-- B commits the source cancellation sentinel only where the source menu allows
+-- cancelling; otherwise the window ignores it and keeps waiting for a choice.
+function T.source_multichoice_cancels_only_when_the_source_menu_is_cancellable()
+  local cancellable = sourceMenuHarness()
+  startScript(cancellable, multichoiceScript({ cancellable = true }), 100)
+  cancellable.scheduler:step(100, {})
+  cancellable.scheduler:step(101, {})
+  cancellable.scheduler:step(102, {})
+  Assert.equal(#cancellable.host.syncs, 1, "the cancellable source menu is open")
+  cancellable.scheduler:step(103, { menuEvents = { { type = "cancel" } } })
+  cancellable.scheduler:step(104, {})
+  Assert.equal(cancellable.services.world:getVar("VAR_RESULT"), 0xFFFE, "cancelling commits 0xFFFE")
+  Assert.equal(cancellable.host.closes, 1)
+
+  local fixed = sourceMenuHarness()
+  startScript(fixed, multichoiceScript({ cancellable = false }), 100)
+  fixed.scheduler:step(100, {})
+  fixed.scheduler:step(101, {})
+  fixed.scheduler:step(102, {})
+  fixed.scheduler:step(103, { menuEvents = { { type = "cancel" } } })
+  Assert.equal(fixed.services.world:getVar("VAR_RESULT"), 999, "an uncancellable menu ignores B")
+  Assert.equal(fixed.host.closes, 0, "the uncancellable window stays open")
+  fixed.scheduler:step(104, { menuEvents = { { type = "confirm" } } })
+  fixed.scheduler:step(105, {})
+  Assert.equal(fixed.services.world:getVar("VAR_RESULT"), 99, "confirming the first row commits its byte")
+  Assert.equal(fixed.host.closes, 1)
+end
+
+-- Builder misuse fails through the existing script/menu error path instead of
+-- silently replacing or reusing the single foreground builder.
+function T.source_multichoice_builder_misuse_faults_the_script()
+  local begin = {
+    kind = "multichoice",
+    tileX = 20,
+    tileY = 6,
+    messageSource = "standard",
+    initialCursor = 0,
+    cancellable = false,
+    cancelValue = 0xFFFE,
+    result = S.var("VAR_RESULT"),
+  }
+  local cases = {
+    {
+      id = "test.multichoice_double_init",
+      steps = { S.menuBegin(begin), S.menuBegin(begin), S.stop() },
+      code = "SCRIPT_MENU_ALREADY_BUILDING",
+    },
+    {
+      id = "test.multichoice_anchor_before_init",
+      steps = { { op = "menu_anchor_right", enabled = true }, S.stop() },
+      code = "SCRIPT_MENU_NOT_INITIALIZED",
+    },
+  }
+  for _, case in ipairs(cases) do
+    local h = sourceMenuHarness()
+    local instanceId = startScript(h, S.script({ api = 1, id = case.id, steps = case.steps }), 100)
+    h.scheduler:step(100, {})
+    h.scheduler:step(101, {})
+    -- Ended instances are not retained, so the emitted end state is the
+    -- observation surface for the fault.
+    local fault =
+      assert(h.services.events:eventFor("script.error", instanceId), case.id .. " faults instead of continuing")
+    Assert.equal(fault.code, case.code)
+    Assert.equal(#h.host.syncs, 0, "no window opens for a rejected builder")
+  end
+end
+
+-- A script saved after initialization keeps the source geometry and anchor in
+-- its foreground builder, so the resumed instance publishes the same window.
+function T.source_multichoice_builder_survives_a_save_after_initialization()
+  local script = multichoiceScript({ anchor = true })
+  local h = sourceMenuHarness()
+  startScript(h, script, 100)
+  h.scheduler:step(100, {})
+
+  local bucket = ScriptSave.capture(h.scheduler, 100)
+  local builder = bucket.instances[1].menuBuilder
+  Assert.equal(builder.kind, "multichoice")
+  Assert.equal(builder.tileX, 20)
+  Assert.equal(builder.tileY, 6)
+  Assert.equal(#builder.items, 0)
+
+  local resumed = sourceMenuHarness()
+  resumed.registry:installBase(script.id, script, "generated")
+  ScriptSave.restore(bucket, resumed.scheduler, 100, {})
+  resumed.scheduler:step(101, {})
+  resumed.scheduler:step(102, {})
+  resumed.scheduler:step(103, {})
+  Assert.equal(resumed.host.closes, 0, "resuming rebuilds one live window")
+  local definition = resumed.host.syncs[1].definition
+  Assert.equal(definition.tileX, 20)
+  Assert.isTrue(definition.anchorRight)
+  Assert.equal(#definition.items, 3)
+  resumed.scheduler:step(104, { menuEvents = { { type = "confirm" } } })
+  resumed.scheduler:step(105, {})
+  Assert.equal(resumed.services.world:getVar("VAR_RESULT"), 99)
+  Assert.equal(resumed.host.closes, 1)
 end
 
 function T.semantic_choose_blocks_and_writes_its_stable_item_result()

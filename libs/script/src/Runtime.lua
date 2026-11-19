@@ -2038,6 +2038,9 @@ local function handleMenuBegin(node, run)
     cancelValue = semanticsFor(run).evaluateValue(node.cancelValue, run)
   end
   run.instance.menuBuilder = requireScriptMenu(run):beginMenu({
+    kind = node.kind,
+    tileX = node.tileX,
+    tileY = node.tileY,
     messageSource = node.messageSource,
     initialCursor = node.initialCursor,
     cancellable = node.cancellable,
@@ -2048,9 +2051,13 @@ local function handleMenuBegin(node, run)
 end
 local function handleMenuAdd(node, run)
   requireForeground(run, "menu_add")
+  local vanillaMetadata = nil
+  if node.vanillaMetadata ~= nil then
+    vanillaMetadata = semanticsFor(run).evaluateValue(node.vanillaMetadata, run)
+  end
   requireScriptMenu(run):addItem(run.instance.menuBuilder, {
     messageId = semanticsFor(run).evaluateValue(node.messageId, run),
-    vanillaMetadata = semanticsFor(run).evaluateValue(node.vanillaMetadata, run),
+    vanillaMetadata = vanillaMetadata,
     value = semanticsFor(run).evaluateValue(node.value, run),
   })
   return Runtime.OUTCOME_CONTINUE
@@ -3092,6 +3099,17 @@ HANDLERS.ask_yes_no = handleAskYesNo
 HANDLERS.choose = handleChoose
 HANDLERS.menu_begin = handleMenuBegin
 HANDLERS.menu_add = handleMenuAdd
+-- ScrCmd_MultichoiceSetAnchorRight mutates the pending foreground builder and
+-- returns TRUE, so the operation yields one source phase. The main chunk is at
+-- LuaJIT's local budget, so the handler lives in a block.
+do
+  local function handleMenuAnchorRight(node, run)
+    requireForeground(run, "menu_anchor_right")
+    requireScriptMenu(run):setAnchorRight(run.instance.menuBuilder, node.enabled)
+    return Runtime.OUTCOME_YIELD_TICK
+  end
+  HANDLERS.menu_anchor_right = handleMenuAnchorRight
+end
 HANDLERS.menu_exec = handleMenuExec
 HANDLERS.wait_movement = handleWaitMovement
 HANDLERS.move = handleMove

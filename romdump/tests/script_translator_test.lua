@@ -615,6 +615,120 @@ T["field menu operations verify as supported"] = function()
   Assert.equal(report.unsupportedCount, 0)
 end
 
+-- Source multichoice (ScrCmd_Multichoice*) is the foreground framed family,
+-- not the touchscreen list family: Script_CreateMenuFromArgs reads four bytes
+-- of native geometry then the result halfword, and the item operands are the
+-- immediate message id and result byte that ScriptMenu_AddItem stores as is.
+T["source multichoice commands lower with native geometry and immediate operands"] = function()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          {
+            op = 64,
+            args = {
+              { value = 17, width = 1 },
+              { value = 3, width = 1 },
+              { value = 1, width = 1 },
+              { value = 1, width = 1 },
+              { value = 0x4002, width = 2 },
+            },
+          },
+          { op = 841, args = { { value = 1, width = 1 } } },
+          { op = 66, args = { { value = 200, width = 1 }, { value = 255, width = 1 } } },
+          { op = 66, args = { { value = 7, width = 1 }, { value = 0, width = 1 } } },
+          { op = 67, args = {} },
+          { op = 2, args = {} },
+        },
+      },
+    },
+  })
+  local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
+  local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
+  Assert.equal(#lowered.unsupported, 0)
+  Assert.deepEqual(lowered.items[1], {
+    op = "menu_begin",
+    kind = "multichoice",
+    tileX = 17,
+    tileY = 3,
+    messageSource = "standard",
+    initialCursor = 1,
+    cancellable = true,
+    cancelValue = 0xFFFE,
+    result = { value = "var", id = "VAR_0x4002" },
+    provenance = { offsets = { 32 }, opcodes = { 64 } },
+  })
+  Assert.deepEqual(lowered.items[2], {
+    op = "menu_anchor_right",
+    enabled = true,
+    provenance = { offsets = { 40 }, opcodes = { 841 } },
+  })
+  Assert.deepEqual(lowered.items[3], {
+    op = "menu_add",
+    messageId = 200,
+    value = 255,
+    provenance = { offsets = { 43 }, opcodes = { 66 } },
+  })
+  Assert.deepEqual(lowered.items[4], {
+    op = "menu_add",
+    messageId = 7,
+    value = 0,
+    provenance = { offsets = { 47 }, opcodes = { 66 } },
+  })
+  Assert.deepEqual(lowered.items[5], {
+    op = "menu_exec",
+    provenance = { offsets = { 51 }, opcodes = { 67 } },
+  })
+end
+
+-- The same family resolves labels from the current script bank (65) instead of
+-- the standard message data, and each source return value keeps its own
+-- execution boundary: init and the anchor request a later tick, item add stays
+-- on the current tick, and exec waits for the source result variable.
+T["source multichoice commands classify with their source timing"] = function()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          {
+            op = 65,
+            args = {
+              { value = 31, width = 1 },
+              { value = 6, width = 1 },
+              { value = 0, width = 1 },
+              { value = 0, width = 1 },
+              { value = 0x4003, width = 2 },
+            },
+          },
+          { op = 841, args = { { value = 0, width = 1 } } },
+          { op = 66, args = { { value = 8, width = 1 }, { value = 1, width = 1 } } },
+          { op = 67, args = {} },
+          { op = 2, args = {} },
+        },
+      },
+    },
+  })
+  Assert.equal(CommandCatalog.classification(64), CommandCatalog.YIELD)
+  Assert.equal(CommandCatalog.classification(65), CommandCatalog.YIELD)
+  Assert.equal(CommandCatalog.classification(66), CommandCatalog.CONTINUE)
+  Assert.equal(CommandCatalog.classification(67), CommandCatalog.NATIVE_WAIT)
+  Assert.equal(CommandCatalog.classification(841), CommandCatalog.YIELD)
+
+  local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
+  local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
+  Assert.equal(#lowered.unsupported, 0)
+  Assert.equal(lowered.items[1].messageSource.kind, "script")
+  Assert.equal(lowered.items[1].messageSource.bank, 543)
+  Assert.isFalse(lowered.items[1].cancellable)
+  Assert.isFalse(lowered.items[2].enabled)
+  local report = Verifier.verifyScript(Structurer.structure(lowered, 0), ir.scripts[0], ir, lowered.omissions)
+  Assert.equal(report.unsupportedCount, 0)
+  Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "source multichoice must verify")
+  Assert.isTrue(report.complete)
+end
+
 -- 12. Opcodes 55-61 carry their execution classifications (runtime support
 -- lands atomically with each; 61 is the std_signpost context end).
 T["signpost 55-61 classify as supported"] = function()

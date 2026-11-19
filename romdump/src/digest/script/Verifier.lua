@@ -91,6 +91,7 @@ local YIELD_OPS = {
   release_all = true,
   follower_reset_movement = true,
   menu_begin = true,
+  menu_anchor_right = true,
   signpost_direction = true,
   signpost_set = true,
   signpost_command = true,
@@ -840,6 +841,53 @@ local function checkBuenasPassword(ins, step)
   return nil
 end
 
+-- ScrCmd_Multichoice* (64/65/66/841) carries its window geometry, cursor,
+-- cancellability and result halfword at initialization, the immediate message
+-- id and result byte per item, and the anchor selector. The foreground family
+-- has no list-family help-metadata operand.
+local function checkMultichoice(ins, step)
+  if ins.opcode == 66 then
+    if step.op ~= "menu_add" then
+      return "multichoice item changed by translation"
+    end
+    if not operandMatches(ins.operands[1].raw, step.messageId) then
+      return "multichoice message id changed by translation"
+    end
+    if not operandMatches(ins.operands[2].raw, step.value) then
+      return "multichoice item value changed by translation"
+    end
+    if step.vanillaMetadata ~= nil then
+      return "foreground multichoice item acquired list help metadata"
+    end
+    return nil
+  end
+  if ins.opcode == 841 then
+    if step.op ~= "menu_anchor_right" or step.enabled ~= (Operands.operandValue(ins.operands[1]) ~= 0) then
+      return "multichoice anchor changed by translation"
+    end
+    return nil
+  end
+  if step.op ~= "menu_begin" or step.kind ~= "multichoice" then
+    return "multichoice initialization changed by translation"
+  end
+  if not operandMatches(ins.operands[1].raw, step.tileX) then
+    return "multichoice window column changed by translation"
+  end
+  if not operandMatches(ins.operands[2].raw, step.tileY) then
+    return "multichoice window row changed by translation"
+  end
+  if not operandMatches(ins.operands[3].raw, step.initialCursor) then
+    return "multichoice initial cursor changed by translation"
+  end
+  if step.cancellable ~= (Operands.operandValue(ins.operands[4]) ~= 0) then
+    return "multichoice cancellability changed by translation"
+  end
+  if not operandMatches(ins.operands[5].raw, step.result) then
+    return "multichoice result variable changed by translation"
+  end
+  return nil
+end
+
 local CHECKERS = {
   [3] = checkWaitFrames,
   [22] = checkGotoTarget,
@@ -869,6 +917,10 @@ local CHECKERS = {
   [57] = checkSetSignpostAction,
   [59] = checkTrainerTips,
   [60] = checkWaitSignpost,
+  [64] = checkMultichoice,
+  [65] = checkMultichoice,
+  [66] = checkMultichoice,
+  [841] = checkMultichoice,
   [275] = checkMartLaunch,
   [276] = checkMartLaunch,
   [277] = checkMartLaunch,

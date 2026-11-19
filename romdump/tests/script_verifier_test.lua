@@ -554,4 +554,65 @@ function T.plain_call_continuation_keeps_the_caller_frame()
   end
 end
 
+-- The foreground multichoice family carries its source operands verbatim:
+-- window column, row, initial cursor, cancellability and the result halfword at
+-- initialization, the immediate message id and result byte per item, and the
+-- anchor selector. A translation that changes any of them must not verify.
+function T.foreground_multichoice_operands_must_survive_translation()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          {
+            op = 65,
+            args = {
+              { value = 17, width = 1 },
+              { value = 3, width = 1 },
+              { value = 1, width = 1 },
+              { value = 1, width = 1 },
+              { value = 0x4002, width = 2 },
+            },
+          },
+          { op = 841, args = { { value = 1, width = 1 } } },
+          { op = 66, args = { { value = 200, width = 1 }, { value = 255, width = 1 } } },
+          { op = 67, args = {} },
+          { op = 2, args = {} },
+        },
+      },
+    },
+  })
+  local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
+  local script = ir.scripts[0]
+  local function lower()
+    return SemanticLowering.lowerScript(script, ir, { stdCatalog = SourceCatalog.catalog() })
+  end
+
+  local faithful = lower()
+  local baseline = Verifier.verifyScript(Structurer.structure(faithful, 0), script, ir, faithful.omissions)
+  Assert.isTrue(baseline.ok, firstProblem(baseline))
+
+  local cases = {
+    { item = 1, field = "tileX", value = 18 },
+    { item = 1, field = "tileY", value = 4 },
+    { item = 1, field = "initialCursor", value = 2 },
+    { item = 1, field = "cancellable", value = false },
+    { item = 1, field = "result", value = { value = "var", id = "VAR_0x4003" } },
+    { item = 2, field = "enabled", value = false },
+    { item = 3, field = "messageId", value = 201 },
+    { item = 3, field = "value", value = 0 },
+    { item = 3, field = "vanillaMetadata", value = 7 },
+  }
+  for _, case in ipairs(cases) do
+    local mutated = lower()
+    mutated.items[case.item][case.field] = case.value
+    local report = Verifier.verifyScript(Structurer.structure(mutated, 0), script, ir, mutated.omissions)
+    Assert.isFalse(report.ok, "a changed " .. case.field .. " must not verify")
+    Assert.isTrue(
+      diagnosticsMention(report.problems, "multichoice"),
+      case.field .. " is attributed to the multichoice translation"
+    )
+  end
+end
+
 return { tests = T }
