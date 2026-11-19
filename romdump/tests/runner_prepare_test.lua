@@ -323,7 +323,6 @@ function T.check_rejects_a_foreign_generation_without_mutation()
     local CacheFs = require("libs.storage.src.CacheFs")
     local FakeCache = require("tests.support.FakeCache")
     local ArtifactState = require("romdump.src.build.ArtifactState")
-    local AudioCache = require("libs.assets.src.audio.AudioCache")
     local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
     local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
     local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
@@ -386,7 +385,6 @@ function T.check_rejects_a_foreign_generation_without_mutation()
         ItemCache.markerPath(),
         BagCache.markerPath(),
         ScriptCache.markerPath(),
-        AudioCache.markerPath(),
       }) do
         cache:write(path, "complete")
       end

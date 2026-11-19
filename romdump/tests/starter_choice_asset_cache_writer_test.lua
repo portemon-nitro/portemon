@@ -11,7 +11,6 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local RomSuite = require("tests.rom.support.RomSuite")
 
-local AudioCache = require("libs.assets.src.audio.AudioCache")
 local DerivedCacheAudit = require("romdump.src.DerivedCacheAudit")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
@@ -77,7 +76,6 @@ local function publishedCache(versionId)
     ItemCache.markerPath(),
     BagCache.markerPath(),
     ScriptCache.markerPath(),
-    AudioCache.markerPath(),
     MapAssetCache.mapDir(7) .. "/complete",
     FieldMapDataCache.markerPath(7),
     FieldMapDataCache.spawnIndexMarkerPath(),

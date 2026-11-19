@@ -1,7 +1,7 @@
 -- Synthetic audio bundle and cache fixtures for the asset/cache contract
 -- tests and the NDS/HGSS audio runtime tests. The bundle follows the
--- compiler-bundle shape (marker/index/sequences/banks/samples/
--- sampleMetadata/dependencies) with assets matching the frozen audio shapes:
+-- writer-input shape (marker/index/sequences/banks/samples/sampleMetadata)
+-- with assets matching the frozen audio shapes:
 -- zero-based sequence/bank ids, content-addressed samples, semantic
 -- instruction IR with index branch targets, direct/key_split/drum_set
 -- instruments, and sample/square/noise voices. readyCache writes a bundle
@@ -96,7 +96,6 @@ local AudioFixture = {}
 ---@field banks table<integer, AudioFixture.Bank>
 ---@field samples table<string, string>
 ---@field sampleMetadata table<string, AudioFixture.SampleMetadata>
----@field dependencies table
 
 -- A deterministic sha1-shaped content key (40 lowercase hex chars). Content
 -- addressing keys are also file-path components, so only the sha1 shape is
@@ -312,11 +311,6 @@ function AudioFixture.bundle()
       [keyA] = AudioFixture.sampleMetadata(keyA, { frames = 4 }),
       [keyB] = AudioFixture.sampleMetadata(keyB, { frames = 2 }),
     },
-    dependencies = {
-      cacheFormat = AudioCache.FORMAT,
-      versionRomSha1 = "rom-sha",
-      soundArchive = { path = "data/sound/gs_sound_data.sdat", fileId = 13, sha1 = "archive-sha" },
-    },
   } ---@cast bundle AudioFixture.Bundle
   return bundle
 end
@@ -329,10 +323,6 @@ end
 function AudioFixture.readyCache(bundle, backend)
   bundle = bundle or AudioFixture.bundle()
   local cache = CacheFs.forVersion("heartgold", backend or FakeCache.new())
-  cache:writeLua(AudioCache.provenancePath(), {
-    schema = AudioCache.PROVENANCE_SCHEMA,
-    dependencies = bundle.dependencies,
-  })
   cache:writeLua(AudioCache.indexPath(), bundle.index)
   for id, sequence in pairs(bundle.sequences) do
     cache:writeLua(AudioCache.sequencePath(id), sequence)
@@ -344,7 +334,6 @@ function AudioFixture.readyCache(bundle, backend)
     cache:write(AudioCache.samplePath(key), bytes)
     cache:writeLua(AudioCache.sampleMetadataPath(key), bundle.sampleMetadata[key])
   end
-  cache:write(AudioCache.markerPath(), bundle.marker)
   return cache
 end
 

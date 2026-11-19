@@ -100,9 +100,9 @@ ArtifactState.KINDS = {
   ["message-summary"] = true,
   -- One staged audio bank closure (or the catalog, or the family summary)
   -- per job: each bank owns its bank record, its sequence records, and
-  -- its completion record with shared content-addressed samples; the
-  -- catalog owns only the runtime index and its catalog completion; the
-  -- summary owns only the provenance and the full completion.
+  -- shared content-addressed samples, the catalog owns the runtime index,
+  -- and the summary owns no payload at all. Each current receipt is the
+  -- closure's whole completion proof.
   ["audio-bank"] = true,
   ["audio-catalog"] = true,
   ["audio-summary"] = true,

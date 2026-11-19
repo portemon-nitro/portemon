@@ -1,19 +1,19 @@
 -- The one authoritative cross-file bundle/reference walk for the derived
--- audio cache: index -> sequence -> bank -> sample metadata -> payload. Both
--- AudioCache.isReady and AudioCacheWriter's staged readback run this walk, so
--- readiness and the write gate can never drift apart; there is no second
--- inspection vocabulary. The walk is content-only: it returns nil when the
--- cache is valid or a problem message otherwise, never raises (the leaf
--- validators' structured errors are converted into problems). It verifies
--- every runtime-required index section -- sequences, banks, players, and both
--- symbol maps -- including player-record fields (supported id range, the
--- integer U16 channel mask, and a positive slot count for every player a
+-- audio cache: index -> sequence -> bank -> sample metadata -> payload. The
+-- writer's staged closure gate and the explicit integrity audit run this
+-- walk, so the publication gate and the audit can never drift apart; there
+-- is no second inspection vocabulary. Ordinary warm reuse never runs it: a
+-- current producer job receipt is the normal completion proof, and this walk
+-- is what an explicit audit asks for. The walk is content-only: it returns
+-- nil when the cache is valid or a problem message otherwise, never raises
+-- (the leaf validators' structured errors are converted into problems). It
+-- verifies every runtime-required index section -- sequences, banks, players,
+-- and both symbol maps -- including player-record fields (supported id range,
+-- the integer U16 channel mask, and a positive slot count for every player a
 -- sequence references), index records carrying no stored payload path (all
 -- paths derive from the numeric id), sequence player/bank resolution,
 -- index/asset identity agreement, and bidirectional symbol-map consistency,
--- but never filesystem orphans. The completion marker is the caller's
--- business (isReady checks it first; the writer writes it last). Pure domain
--- module.
+-- but never filesystem orphans. Pure domain module.
 
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local AudioSequence = require("libs.assets.src.audio.AudioSequence")
@@ -261,7 +261,7 @@ end
 -- validate. Samples stream one at a time; no payload set is accumulated.
 -- Returns nil when the closure is valid or a problem message otherwise,
 -- never raises. The family summary replays the complete walk over the
--- combined on-disk graph; this scope never claims family readiness.
+-- combined on-disk graph; this scope never claims family integrity.
 ---@param assetFs CacheFs
 ---@param bankId integer
 ---@param sequenceIds integer[]
@@ -389,10 +389,11 @@ function AudioCacheValidator.validateCatalog(index)
   return validateSymbolMaps(index)
 end
 
--- The authoritative walk over an explicitly supplied index: the same rule
--- readiness runs, with assets read from the given filesystem. Summary
--- staging validates the staged index against the already published bank
--- closures through this entry point without assembling a second PCM bundle.
+-- The authoritative walk over an explicitly supplied index, reading every
+-- referenced payload from the given filesystem. The writer's catalog staging
+-- validates the staged index through the catalog-only entry point, and an
+-- explicit audit validates the published index against the published
+-- closures through this full walk.
 ---@param assetFs CacheFs
 ---@param index AudioCacheValidator.Index|table<string, unknown>|nil
 ---@return string|nil

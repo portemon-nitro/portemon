@@ -8,6 +8,9 @@ local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
 local AudioCompiler = require("romdump.src.digest.audio.AudioCompiler")
 local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
+local AudioCache = require("libs.assets.src.audio.AudioCache")
+local AudioCacheValidator = require("libs.assets.src.audio.AudioCacheValidator")
+local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local Hashing = require("romdump.src.digest.Hashing")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
@@ -18,6 +21,7 @@ local SdatFixture = require("tests.support.SdatFixture")
 local SseqFixture = require("tests.support.SseqFixture")
 local SbnkFixture = require("tests.support.SbnkFixture")
 local SwarFixture = require("tests.support.SwarFixture")
+local Swav = require("libs.nds.src.nitro.sound.Swav")
 
 local T = {}
 
@@ -902,6 +906,119 @@ local function leafRomFs(bytes)
   }
 end
 
+-- Two used banks over one shared wave archive and one shared looping wave
+-- member: each closure publishes independently while referencing the same
+-- source sample. Returns the archive bytes and the raw wave member.
+local function twoBankAudioSource()
+  local spec = {
+    sequences = {
+      [0] = { bankId = 0, volume = 120, channelPriority = 127, playerPriority = 64, playerId = 0 },
+      [1] = { bankId = 7, volume = 100, channelPriority = 64, playerPriority = 64, playerId = 0 },
+    },
+    banks = {
+      [0] = { waveArchives = { 0, 0xFFFF, 0xFFFF, 0xFFFF } },
+      [7] = { waveArchives = { 0, 0xFFFF, 0xFFFF, 0xFFFF } },
+    },
+    waveArchives = { [0] = {} },
+    players = { [0] = { maxSequences = 2, channelMask = 0xC000, heapSize = 0x5E88 } },
+    extraFiles = 0,
+  }
+  local _, layout = SdatFixture.build(spec)
+  local looping = SwarFixture.pcm16(
+    { -32768, -1000, 0, 1000, 32767, 0, 128, -129 },
+    { loopFlag = 1, pnt = 0, len = 4, sampleRate = 32000 }
+  )
+  local instrument = {
+    type = 1,
+    param = { swav = 0, swarSlot = 0, rootKey = 60, attack = 120, decay = 60, sustain = 80, release = 100, pan = 64 },
+  }
+  spec.payloads = {
+    [layout.fileIds.sequences[0]] = SseqFixture.build({ { op = "fin" } }),
+    [layout.fileIds.sequences[1]] = SseqFixture.build({ { op = "fin" } }),
+    [layout.fileIds.banks[0]] = SbnkFixture.build({ instrument }),
+    [layout.fileIds.banks[7]] = SbnkFixture.build({ instrument }),
+    [layout.fileIds.waveArchives[0]] = SwarFixture.build({ looping }),
+  }
+  return SdatFixture.build(spec), looping
+end
+
+-- The generation source inventory an audio leaf job resolves: data only and
+-- bound to the exact sound identity the archive in hand hashes to.
+local function publishGenerationSourcePlan(cacheFs, generation, producerId, audioPlan, audioIdentity)
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  cacheFs:writeLua(SourcePlan.PATH, {
+    schema = SourcePlan.SCHEMA,
+    versionId = "heartgold",
+    romSha1 = audioIdentity.romSha1,
+    generationId = generation,
+    producerId = producerId,
+    world = { maps = {}, analysis = { excluded = {} } },
+    fieldCellIndexBundle = { index = { matrices = {} }, indexMarker = "synthetic-index-marker" },
+    scriptPlan = { members = {}, generationKey = "synthetic-script-generation" },
+    audioPlan = { index = audioPlan.index, bankPlans = audioPlan.bankPlans },
+    audioIdentity = audioIdentity,
+    mapCellKeys = {},
+  })
+end
+
+-- Runs one audio artifact job through the worker job executor and publishes
+-- its prepared stage through the real receipt path.
+local function executeAndPublish(cacheFs, context, identity, kind, key, stageName)
+  local job = {
+    kind = kind,
+    key = key,
+    generationId = identity.generation,
+    producerFingerprint = identity.producer,
+    stageName = stageName,
+    epoch = 1,
+  }
+  local outcome = assert(ArtifactJobs.execute(job, context))
+  local artifact = PreparedArtifact.open({
+    cacheFs = cacheFs,
+    generationId = identity.generation,
+    epoch = 1,
+    kind = kind,
+    key = key,
+    jobKey = kind .. ":" .. key,
+    stageName = stageName,
+  })
+  artifact:publish({
+    generationId = identity.generation,
+    epoch = 1,
+    kind = kind,
+    key = key,
+    jobKey = kind .. ":" .. key,
+  })
+  return outcome.result.marker
+end
+
+-- Collector for the sample payloads a prepared action reads from the cache.
+local function traceSamplePayloadReads(backend, action)
+  local reads = {}
+  local originalRead = backend.read
+  backend.read = function(self, path)
+    if type(path) == "string" and path:sub(-#".pcm16le") == ".pcm16le" then
+      reads[#reads + 1] = path
+    end
+    return originalRead(self, path)
+  end
+  local ok, result = pcall(action)
+  backend.read = originalRead
+  if not ok then
+    error(result, 0)
+  end
+  return result, reads
+end
+
+local function pcm16Frame(pcm, frame)
+  local low, high = pcm:byte(frame * 2 + 1, frame * 2 + 2)
+  local value = low + high * 256
+  if value >= 32768 then
+    value = value - 65536
+  end
+  return value
+end
+
 -- Leaf audio jobs consume the published generation source plan instead of
 -- re-planning the archive: bank, catalog, and summary executions all route
 -- through the worker source-plan memo while the standalone planners stay
@@ -928,10 +1045,22 @@ function T.audio_leaf_jobs_consume_the_published_generation_plan()
     audioIdentity = identity,
     mapCellKeys = { [7] = {} },
   })
+  -- Every planned closure and the catalog are already current jobs, so the
+  -- family summary's receipt preconditions hold exactly as they do for a
+  -- worker generation that compiled them.
+  local liveContext = { cacheFs = cacheFs, romFs = romFs, versionId = "heartgold" }
+  local liveIdentity = { generation = generation, producer = producerId }
   for _, bankPlan in ipairs(catalog.bankPlans) do
-    Assert.notNil(AudioCacheWriter.writeBank(cacheFs, romFs, bankPlan), "the live cache stages the planned bank")
+    executeAndPublish(
+      cacheFs,
+      liveContext,
+      liveIdentity,
+      "audio-bank",
+      tostring(bankPlan.bankId),
+      "leaf-bank-live-" .. tostring(bankPlan.bankId)
+    )
   end
-  Assert.notNil(AudioCacheWriter.writeCatalog(cacheFs, catalog, identity), "the live cache stages the planned catalog")
+  executeAndPublish(cacheFs, liveContext, liveIdentity, "audio-catalog", "global", "leaf-catalog-live")
   local planCalls, identityCalls = 0, 0
   local realPlan, realSoundIdentity = AudioCompiler.plan, AudioCompiler.soundIdentity
   AudioCompiler.plan = function(source)
@@ -1301,6 +1430,196 @@ function T.easy_chat_registers_two_bounded_global_scopes()
   Assert.isTrue(uiSet["field-ui:global"] == true, "the presentation scope waits for the field UI family")
   Assert.isTrue(uiSet["field-font:global"] == true, "the presentation scope waits for the field fonts")
   Assert.isTrue(uiSet["audio-catalog:global"] == true, "the presentation scope waits for the audio catalog")
+end
+
+-- Audio bank, catalog and summary jobs publish current-generation receipts
+-- and no separate completion or provenance files. Warm family readiness
+-- trusts those receipts without reading sample payloads, the summary never
+-- rereads the bank closures, and the explicit validator still reports a
+-- corrupt payload.
+function T.audio_family_readiness_trusts_current_job_receipts()
+  local bytes = assert(twoBankAudioSource())
+  local romFs = leafRomFs(bytes)
+  local audio = assert(AudioCompiler.planSource(romFs))
+  local generation = "receipt-audio-generation"
+  local producerId = "d" .. string.rep("5", 64)
+  local identity = { generation = generation, producer = producerId }
+  local backend = FakeCache.new()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  publishGenerationSourcePlan(cacheFs, generation, producerId, audio.plan, audio.identity)
+  local context = { cacheFs = cacheFs, romFs = romFs, versionId = "heartgold" }
+  local plans = { audioBankIds = { 0, 7 } }
+
+  executeAndPublish(cacheFs, context, identity, "audio-catalog", "global", "audio-catalog")
+  Assert.notNil(
+    ArtifactState.read(cacheFs, generation, "audio-catalog", "global"),
+    "the catalog job publishes its current receipt"
+  )
+  for _, bankId in ipairs({ 0, 7 }) do
+    local key = tostring(bankId)
+    executeAndPublish(cacheFs, context, identity, "audio-bank", key, "audio-bank-" .. key)
+    Assert.notNil(
+      ArtifactState.read(cacheFs, generation, "audio-bank", key),
+      "the bank job publishes its current receipt"
+    )
+  end
+
+  local _, summaryReads = traceSamplePayloadReads(backend, function()
+    executeAndPublish(cacheFs, context, identity, "audio-summary", "global", "audio-summary")
+  end)
+  Assert.equal(
+    #summaryReads,
+    0,
+    "the family summary never rereads sample payloads: " .. table.concat(summaryReads, ", ")
+  )
+  Assert.notNil(
+    ArtifactState.read(cacheFs, generation, "audio-summary", "global"),
+    "the summary job publishes its current receipt"
+  )
+  Assert.isTrue(
+    ArtifactJobs.validate(cacheFs, generation, "audio-summary", "global", plans),
+    "the published family reads ready from current receipts"
+  )
+
+  -- The receipt is the only completion proof: no bank/catalog/family marker
+  -- and no provenance record may exist beside the runtime audio payloads.
+  local forbidden = {
+    { fragment = "/data/generated/audio/bank-complete/", label = "bank completion file" },
+    { fragment = "/data/generated/audio/catalog.complete", label = "catalog completion file" },
+    { fragment = "/data/generated/audio/provenance.lua", label = "provenance file" },
+    { suffix = "/data/generated/audio/complete", label = "family completion marker" },
+  }
+  for path in pairs(backend.files) do
+    for _, rule in ipairs(forbidden) do
+      local found = rule.fragment ~= nil and path:find(rule.fragment, 1, true) ~= nil
+        or rule.suffix ~= nil and path:sub(-#rule.suffix) == rule.suffix
+      Assert.isFalse(found, "the audio family publishes no " .. rule.label .. " beside its payloads: " .. path)
+    end
+  end
+
+  local warmReady, warmReads = traceSamplePayloadReads(backend, function()
+    return ArtifactJobs.validate(cacheFs, generation, "audio-summary", "global", plans)
+  end)
+  Assert.isTrue(warmReady, "warm family readiness succeeds from current receipts")
+  Assert.equal(#warmReads, 0, "warm readiness never reads a sample payload: " .. table.concat(warmReads, ", "))
+
+  -- Explicit audit remains exhaustive: a corrupt payload is reported there,
+  -- while ordinary warm reuse keeps trusting the receipts that published it.
+  local bankAsset = assert(cacheFs:loadLua(AudioCache.bankPath(0)))
+  local sampleKey = bankAsset.instruments[0].voice.generator.sample
+  local payload = assert(cacheFs:read(AudioCache.samplePath(sampleKey)))
+  cacheFs:write(AudioCache.samplePath(sampleKey), payload:sub(1, #payload - 2))
+  Assert.notNil(AudioCacheValidator.validate(cacheFs), "the explicit validator reports the corrupt sample payload")
+  Assert.isTrue(
+    ArtifactJobs.validate(cacheFs, generation, "audio-bank", "0", plans),
+    "warm bank readiness stays receipt-based"
+  )
+  Assert.isTrue(
+    ArtifactJobs.validate(cacheFs, generation, "audio-summary", "global", plans),
+    "warm family readiness is not an exhaustive payload walk"
+  )
+  cacheFs:write(AudioCache.samplePath(sampleKey), payload)
+
+  -- One missing bank receipt breaks family readiness even though every
+  -- payload is present, and the explicit validator still accepts the bytes.
+  cacheFs:remove(ArtifactState.path("audio-bank", "7"))
+  Assert.isNil(AudioCacheValidator.validate(cacheFs), "the remaining payloads are complete")
+  Assert.isFalse(
+    ArtifactJobs.validate(cacheFs, generation, "audio-summary", "global", plans),
+    "the family summary requires every current bank receipt"
+  )
+  Assert.isFalse(
+    ArtifactJobs.validate(cacheFs, generation, "audio-bank", "7", plans),
+    "a missing bank receipt is not ready"
+  )
+end
+
+-- A bank stage failure publishes no receipt and no silence: the sibling bank
+-- stays current, a clean retry publishes the whole closure, and the runtime
+-- provider reads the source wave's timing, loop window and PCM frames.
+function T.failed_audio_bank_stage_keeps_siblings_and_retry_restores_playback()
+  local bytes, loopingMember = twoBankAudioSource()
+  local romFs = leafRomFs(bytes)
+  local audio = assert(AudioCompiler.planSource(romFs))
+  local generation = "failing-audio-generation"
+  local producerId = "d" .. string.rep("6", 64)
+  local identity = { generation = generation, producer = producerId }
+  local backend = FakeCache.new()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  publishGenerationSourcePlan(cacheFs, generation, producerId, audio.plan, audio.identity)
+  local context = { cacheFs = cacheFs, romFs = romFs, versionId = "heartgold" }
+  local plans = { audioBankIds = { 0, 7 } }
+  executeAndPublish(cacheFs, context, identity, "audio-catalog", "global", "audio-catalog")
+  executeAndPublish(cacheFs, context, identity, "audio-bank", "0", "audio-bank-0")
+  local healthyReceipt = assert(ArtifactState.read(cacheFs, generation, "audio-bank", "0"))
+
+  local originalWrite = backend.write
+  backend.write = function(self, path, data)
+    if type(path) == "string" and path:sub(-#".pcm16le") == ".pcm16le" then
+      error("injected sample stage failure")
+    end
+    return originalWrite(self, path, data)
+  end
+  local ok = pcall(function()
+    executeAndPublish(cacheFs, context, identity, "audio-bank", "7", "audio-bank-7-failing")
+  end)
+  backend.write = originalWrite
+  Assert.isFalse(ok, "the injected sample stage failure fails the bank job")
+  Assert.isNil(
+    ArtifactState.read(cacheFs, generation, "audio-bank", "7"),
+    "a failed bank job publishes no current receipt"
+  )
+  Assert.isFalse(ArtifactJobs.validate(cacheFs, generation, "audio-bank", "7", plans), "the failed bank is not ready")
+  Assert.equal(
+    assert(ArtifactState.read(cacheFs, generation, "audio-bank", "0")).marker,
+    healthyReceipt.marker,
+    "the failed sibling keeps its current receipt"
+  )
+  Assert.isTrue(ArtifactJobs.validate(cacheFs, generation, "audio-bank", "0", plans), "the healthy sibling stays ready")
+  Assert.isFalse(
+    ArtifactJobs.validate(cacheFs, generation, "audio-summary", "global", plans),
+    "the family summary refuses while a bank receipt is missing"
+  )
+
+  -- Retry publishes the whole closure; the runtime provider then reads the
+  -- exact playback timing, loop window and PCM frames of the source wave.
+  executeAndPublish(cacheFs, context, identity, "audio-bank", "7", "audio-bank-7-retry")
+  Assert.notNil(ArtifactState.read(cacheFs, generation, "audio-bank", "7"), "the retry publishes the current receipt")
+  Assert.isTrue(ArtifactJobs.validate(cacheFs, generation, "audio-bank", "7", plans), "the retried bank reads ready")
+
+  local AudioAssetProvider = require("libs.hgss.src.audio.AudioAssetProvider")
+  local provider = AudioAssetProvider.new(cacheFs)
+  local bank = provider:bank(7)
+  Assert.equal(bank.id, 7, "the runtime provider reads the retried bank")
+  Assert.equal(provider:sequence(1).bankId, 7, "the retried closure publishes its sequence")
+  local instrument = bank.instruments[0]
+  Assert.deepEqual(
+    instrument.voice.envelope,
+    { attack = 120, decay = 60, sustain = 80, release = 100 },
+    "the runtime bank keeps the source envelope"
+  )
+  Assert.equal(instrument.voice.pan, 64, "the runtime bank keeps the source pan")
+  Assert.equal(instrument.voice.originalKey, 60, "the runtime bank keeps the source original key")
+  local decoded = assert(Swav.decode(loopingMember, "fixture"))
+  local sampleKey = instrument.voice.generator.sample
+  Assert.equal(type(sampleKey), "string", "the runtime bank names its sample")
+  local sample = provider:loadSample(sampleKey)
+  Assert.equal(sample.metadata.frames, decoded.frames, "the runtime sample keeps the decoded frame count")
+  Assert.equal(sample.metadata.baseTimer, decoded.baseTimer, "the runtime sample keeps the source base timer")
+  Assert.equal(sample.metadata.loopEnabled, decoded.loopEnabled, "the runtime sample keeps the loop flag")
+  Assert.deepEqual(sample.metadata.loop, decoded.loop, "the runtime sample keeps the loop window")
+  Assert.equal(sample.pcm.frames, decoded.frames, "the packed runtime sample carries every frame")
+  for frame = 0, decoded.frames - 1 do
+    Assert.equal(
+      sample.pcm:read(frame),
+      pcm16Frame(decoded.pcm16le, frame),
+      "the runtime sample keeps source frame " .. frame
+    )
+  end
+  local missingOk = pcall(function()
+    provider:loadSample("0" .. string.rep("0", 39))
+  end)
+  Assert.isFalse(missingOk, "a missing sample is a failure, never silence")
 end
 
 return { metadata = { capabilities = {} }, tests = T }

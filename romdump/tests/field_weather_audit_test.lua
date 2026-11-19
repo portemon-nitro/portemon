@@ -20,7 +20,6 @@ local function publishedCache()
   local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
   local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
   local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
-  local AudioCache = require("libs.assets.src.audio.AudioCache")
   local ScriptCache = require("libs.assets.src.ScriptCache")
   local MapAssetCache = require("libs.assets.src.MapAssetCache")
   local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
@@ -31,7 +30,6 @@ local function publishedCache()
     FieldMessageCache.markerPath(),
     FieldUiAssetCache.markerPath(),
     IntroAssetCache.markerPath(),
-    AudioCache.markerPath(),
     ScriptCache.markerPath(),
     MapAssetCache.mapDir(7) .. "/complete",
     FieldMapDataCache.markerPath(7),
