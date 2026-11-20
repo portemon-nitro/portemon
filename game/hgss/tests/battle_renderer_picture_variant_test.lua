@@ -192,9 +192,12 @@ local function drawnDetail(view, opts)
   local frozenFrames = opts.frozenFrames
   local resources = {
     graphics = graphics,
-    text = { drawText = function() end, measure = function()
-      return { width = 0, height = 0 }
-    end },
+    text = {
+      drawText = function() end,
+      measure = function()
+        return { width = 0, height = 0 }
+      end,
+    },
     windows = {
       background = { 0, 0, 0, 1 },
       drawWindow = function() end,
@@ -251,6 +254,22 @@ local function picturesOf(items, handle)
   return found
 end
 
+---@param graphics table recording graphics boundary of one detail draw
+---@param handle string staged image identity under matching
+---@return table<string, unknown>[] OBJ fragment draws sampling the staged image
+local function copyDrawsOf(graphics, handle)
+  local found = {}
+  for _, record in ipairs(graphics.draws or {}) do
+    local image = record.image
+    -- OBJ fragments draw a quad; the suite's own primitive replay draws the
+    -- same staged image with plain placement and must not be counted.
+    if type(image) == "table" and image.handle == handle and record.quad ~= nil then
+      found[#found + 1] = record
+    end
+  end
+  return found
+end
+
 ---@param activation table<string, unknown> source activation behind the slot
 ---@param follow boolean source follow flag behind the slot
 ---@return table<string, unknown> bound battler-sprite slot instance
@@ -272,7 +291,8 @@ function T.bound_copies_resolve_the_frozen_first_frame()
   local player = battler({ activation = 1 })
   local view = snapshot({ player, foeBattler() }, { copyInstance(player, true) })
   local graphics = drawnDetail(view, { frozenFrames = frozenFrames })
-  Assert.equal(#picturesOf(graphics.pictureItems, "frozen-frame-0"), 2, "live and copy share the frozen first frame")
+  Assert.equal(#picturesOf(graphics.pictureItems, "frozen-frame-0"), 1, "the live picture keeps the frozen first frame")
+  Assert.equal(#copyDrawsOf(graphics, "frozen-frame-0"), 1, "the copy draws the frozen first frame as an OBJ")
 end
 
 function T.bound_copies_ignore_later_live_mutations_but_follow_the_transform()
@@ -280,7 +300,7 @@ function T.bound_copies_ignore_later_live_mutations_but_follow_the_transform()
   local player = battler({ activation = 1 })
   local view = snapshot({ player, foeBattler() }, { copyInstance(player, true) })
   local before = drawnDetail(view, { frozenFrames = frozenFrames })
-  local baseCenterX = picturesOf(before.pictureItems, "frozen-frame-0")[1].centerX
+  local baseCopyX = assert(copyDrawsOf(before, "frozen-frame-0")[1], "the copy draws before the mutation").x
   -- The live battler changes frame, portrait, tint, and position: the
   -- copy keeps the frozen first frame while its center follows live.
   player.portraitSelector = OTHER_SELECTOR
@@ -288,20 +308,12 @@ function T.bound_copies_ignore_later_live_mutations_but_follow_the_transform()
   player.pictureTint = { r = 0, g = 0, b = 0, a = 1 }
   player.entryDx = 12
   local graphics = drawnDetail(view, { frozenFrames = frozenFrames })
-  local copies = picturesOf(graphics.pictureItems, "frozen-frame-0")
+  local copies = copyDrawsOf(graphics, "frozen-frame-0")
   Assert.equal(#copies, 1, "exactly the copy keeps the frozen first frame")
   local live = picturesOf(graphics.pictureItems, "mon:" .. OTHER_SELECTOR)
   Assert.equal(#live, 1, "the live battler moves to its new portrait")
-  Assert.equal(
-    copies[1].centerX,
-    live[1].centerX,
-    "the follow-mode copy centers on the live transform"
-  )
-  Assert.equal(
-    copies[1].centerX,
-    baseCenterX + 12,
-    "the follow-mode copy moves its snapshot with the live entry shift"
-  )
+  Assert.equal(#picturesOf(graphics.pictureItems, "frozen-frame-0"), 0, "no stale live picture keeps the frozen frame")
+  Assert.equal(copies[1].x, baseCopyX + 12, "the follow-mode copy moves its snapshot with the live entry shift")
 end
 
 function T.bound_copies_survive_live_visibility_changes()
@@ -310,7 +322,8 @@ function T.bound_copies_survive_live_visibility_changes()
   local view = snapshot({ player, foeBattler() }, { copyInstance(player, true) })
   player.visible = false
   local graphics = drawnDetail(view, { frozenFrames = frozenFrames })
-  Assert.equal(#picturesOf(graphics.pictureItems, "frozen-frame-0"), 1, "the hidden live battler keeps its copy")
+  Assert.equal(#picturesOf(graphics.pictureItems, "frozen-frame-0"), 0, "a hidden live battler submits no picture")
+  Assert.equal(#copyDrawsOf(graphics, "frozen-frame-0"), 1, "the hidden live battler keeps its copy")
 end
 
 function T.opposite_facing_layout_mirrors_the_attacker_picture()

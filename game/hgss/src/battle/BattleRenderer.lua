@@ -974,9 +974,11 @@ end
 ---@param players table<integer, table<string, unknown>> live player-side battler facts in slot order
 ---@param enemies table<integer, table<string, unknown>> live enemy-side battler facts in slot order
 ---@param singles boolean true while the battle keeps its single layout
----@return table<integer, table<string, unknown>> depth-ordered picture submissions
+---@return table<integer, table<string, unknown>> picture submissions in native order
+---@return table<integer, table<string, unknown>> animation sprite copies in creation order
 local function collectPictureSubmissions(assets, view, players, enemies, singles)
   local pictures = {}
+  local copies = {}
   local battlerPictures = {}
   local function activationKey(activation)
     return tostring(activation.combatant) .. ":" .. tostring(activation.activation)
@@ -1056,14 +1058,17 @@ local function collectPictureSubmissions(assets, view, players, enemies, singles
       if type(sourceActivation) == "table" then
         local source = battlerPictures[activationKey(sourceActivation)]
         if source ~= nil then
-          submit(battlerCopyPicture(assets, picture, source))
+          local copy = battlerCopyPicture(assets, picture, source)
+          if copy ~= nil then
+            copies[#copies + 1] = copy
+          end
         end
       else
         submit(effectPicture(assets, picture))
       end
     end
   end
-  return pictures
+  return pictures, copies
 end
 
 -- Native clip-space extent behind one submitted picture: the shared 3D
@@ -1489,6 +1494,84 @@ local function silhouetteFragment(view, submissions)
   }
 end
 
+-- One animation sprite copy as a native OBJ fragment. CreateBattlerSprite
+-- builds a managed sprite (2D main VRAM, bgPriority 1) drawn by
+-- SpriteSystem_DrawSprites after PokepicManager_DrawAll, so a copy
+-- composites against the planes by OBJ priority instead of sharing the
+-- picture depth buffer. The quad reuses the picture pass's own screen
+-- geometry, so a copy can never drift from the picture it duplicates.
+-- Copies that carry a 3D rotation or a palette fade stay submitted as
+-- pictures: those states have no OBJ expression here.
+---@param picture table<string, unknown> resolved copy picture record
+---@return table<string, unknown>? OBJ fragment drawing the copy
+local function copyFragment(picture)
+  local rotated = false
+  for _, field in ipairs({ "rotation", "rotationX", "rotationY", "rotationZ" }) do
+    if numberOr(picture[field], 0) ~= 0 then
+      rotated = true
+    end
+  end
+  local fade = picture.paletteFade
+  if rotated or (type(fade) == "table" and fade.applied == true) then
+    return nil
+  end
+  local corners = BattlePicturePass.screenVertices(picture)
+  local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+  local u0, v0, u1, v1 = math.huge, math.huge, -math.huge, -math.huge
+  for _, point in ipairs(corners) do
+    minX, maxX = math.min(minX, point[1]), math.max(maxX, point[1])
+    minY, maxY = math.min(minY, point[2]), math.max(maxY, point[2])
+    u0, u1 = math.min(u0, point[4]), math.max(u1, point[4])
+    v0, v1 = math.min(v0, point[5]), math.max(v1, point[5])
+  end
+  local width, height = maxX - minX, maxY - minY
+  if width <= 0 or height <= 0 then
+    return nil
+  end
+  local image = picture.image
+  if type(image) ~= "table" and type(image) ~= "userdata" then
+    return nil
+  end
+  local pageWidth, pageHeight = 1, 1
+  if type(image.getDimensions) == "function" then
+    pageWidth, pageHeight = image:getDimensions()
+  end
+  local uWidth, vHeight = u1 - u0, v1 - v0
+  if pageWidth <= 0 or pageHeight <= 0 or uWidth <= 0 or vHeight <= 0 then
+    return nil
+  end
+  -- Only a drawable sampler resolves palette indices; a plain staged image
+  -- samples directly. The 3D path always samples picture.image, so the
+  -- fragment must fall back to it instead of drawing a non-drawable wrapper.
+  local art = image
+  if samplerOf(picture.sampler) ~= nil then
+    art = picture.sampler
+  end
+  local flipH = picture.flipH == true
+  local flipV = picture.flipV == true
+  local alpha = numberOr(picture.alpha, 1)
+  local red = numberOr(picture.tintR, 1)
+  local green = numberOr(picture.tintG, 1)
+  local blue = numberOr(picture.tintB, 1)
+  local function draw(graphics)
+    local quad =
+      graphics.newQuad(u0 * pageWidth, v0 * pageHeight, uWidth * pageWidth, vHeight * pageHeight, pageWidth, pageHeight)
+    graphics.setColor(red, green, blue, alpha)
+    local scaleX = flipH and -1 or 1
+    local scaleY = flipV and -1 or 1
+    local x = flipH and (minX + width) or minX
+    local y = flipV and (minY + height) or minY
+    drawArtwork(graphics, art, quad, x, y, 0, scaleX, scaleY)
+    graphics.setColor(1, 1, 1, 1)
+  end
+  return {
+    objPriority = 1,
+    submissionOrder = 0,
+    oamMode = "normal",
+    draw = draw,
+  }
+end
+
 -- Presents one main-engine frame through the screen compositor.
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot under drawing
@@ -1502,7 +1585,7 @@ local function presentMainFrame(resources, view, layout, planes, objects)
   collectParticlePrimitives(view, primitives)
   local players, enemies = BattleViewRoster.liveSides(view)
   local singles = not doublesFormat(view, players, enemies)
-  local submissions = collectPictureSubmissions(assets, view, players, enemies, singles)
+  local submissions, copies = collectPictureSubmissions(assets, view, players, enemies, singles)
   for _, picture in ipairs(submissions) do
     local primitive = pictureToPrimitive(picture, #primitives + 1)
     if primitive ~= nil then
@@ -1512,6 +1595,20 @@ local function presentMainFrame(resources, view, layout, planes, objects)
   local frameObjects = {}
   for _, fragment in ipairs(objects) do
     frameObjects[#frameObjects + 1] = fragment
+  end
+  for index, copy in ipairs(copies) do
+    local fragment = copyFragment(copy)
+    if fragment ~= nil then
+      -- Native submission order: copies draw in creation order, after the
+      -- caller's own OBJ fragments at the same priority.
+      fragment.submissionOrder = index
+      frameObjects[#frameObjects + 1] = fragment
+    else
+      local primitive = pictureToPrimitive(copy, #primitives + 1)
+      if primitive ~= nil then
+        primitives[#primitives + 1] = primitive
+      end
+    end
   end
   local silhouette = silhouetteFragment(view, submissions)
   if silhouette ~= nil then
