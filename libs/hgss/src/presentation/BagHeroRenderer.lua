@@ -365,16 +365,19 @@ end
 -- a native bank selection keys the same way a PNG path does -- and the caller
 -- owns the returned borrows through its lease sink. `wait` runs once per
 -- pending poll, so a staged realization yields its frame instead of spinning on
--- the classification worker. A failed classification fails closed naming the
--- texture.
+-- the classification worker. `track` publishes the outstanding ticket to the
+-- owning build (nil once nothing is pending), so a release or a failure exit
+-- drops that interest instead of leaving a copy in this suspended frame. A
+-- failed classification fails closed naming the texture.
 ---@param imageAssets table<string, unknown> borrowed session image owner
 ---@param wrap table<string, string> resolved sampler wrap behind the borrow
 ---@param reference string|ModelAsset.TextureReference material texture reference
 ---@param cache table<string, table<string, unknown>> identity-and-wrap-keyed handle cache, mutated
 ---@param owned table[] acquired-lease sink, mutated
 ---@param wait fun()
+---@param track fun(token: integer?)
 ---@return table<string, unknown> sampling handle {image, palette?, indexed}
-local function borrowSamplingHandle(imageAssets, wrap, reference, cache, owned, wait)
+local function borrowSamplingHandle(imageAssets, wrap, reference, cache, owned, wait, track)
   local identity = ModelAsset.assetIdentity(reference)
   local key = wrap.x .. "|" .. wrap.y .. "|" .. identity
   local known = cache[key]
@@ -385,15 +388,21 @@ local function borrowSamplingHandle(imageAssets, wrap, reference, cache, owned, 
   -- reference and wrap resolve the same physical pair scene draws share.
   local sampler = { wrapX = wrap.x, wrapY = wrap.y, minFilter = "nearest", magFilter = "nearest" }
   local token = imageAssets:request(reference, sampler, "demand")
+  track(token)
   local status, failure = imageAssets:poll(token)
   while status == "pending" do
     wait()
     status, failure = imageAssets:poll(token)
   end
   if status ~= "ready" then
+    -- A failed ticket is never claimed: drop the interest before the failure
+    -- unwinds so its payload stops being charged to the session owner.
+    imageAssets:cancel(token)
+    track(nil)
     error("hero shared image " .. identity .. " is not ready: " .. tostring(failure), 0)
   end
   local lease = imageAssets:acquire(token)
+  track(nil)
   owned[#owned + 1] = lease
   local handle = {
     image = assert(lease.image, "shared borrows carry their resolved image"),
@@ -407,9 +416,32 @@ end
 ---@class BagHeroBuild
 ---@field thread thread staged realization coroutine
 ---@field state string "active", "ready", or "failed"
+---@field queue table<string, unknown> borrowed presentation preparation queue
+---@field imageAssets table<string, unknown>? borrowed session image owner behind hero textures
 ---@field token integer? preparation token the suspended coroutine waits on
+---@field imageToken integer? shared-image ticket the suspended coroutine waits on
 ---@field finishing boolean the explicit synchronous caller blocks instead of yielding
 ---@field failure unknown?
+
+-- Drop both pending interests of one build exactly once each: the geometry
+-- preparation token and the shared-image ticket route back to their own owners,
+-- so a released or failed realization leaves no live packet charged to the
+-- session either way. Cancellation never masks the failure that triggered it.
+---@param build BagHeroBuild
+local function cancelBuildTokens(build)
+  local token = build.token
+  if token ~= nil then
+    build.token = nil
+    pcall(build.queue.cancel, build.queue, token)
+  end
+  local imageToken = build.imageToken
+  if imageToken ~= nil then
+    build.imageToken = nil
+    if build.imageAssets ~= nil then
+      pcall(build.imageAssets.cancel, build.imageAssets, imageToken)
+    end
+  end
+end
 
 -- Private staged-work sentinel: the realization coroutine yields it while the
 -- preparation worker or the session image owner is still busy. It charges no
@@ -427,7 +459,8 @@ local BAG_HERO_WAIT = {}
 ---@param gender string
 ---@param awaitPrepared fun(kind: string, path: string): table<string, unknown>
 ---@param waitForImage fun()
-function BagHeroRenderer:_realizeGender(gender, awaitPrepared, waitForImage)
+---@param trackImageToken fun(token: integer?)
+function BagHeroRenderer:_realizeGender(gender, awaitPrepared, waitForImage, trackImageToken)
   if self._realized[gender] ~= nil then
     return
   end
@@ -476,7 +509,15 @@ function BagHeroRenderer:_realizeGender(gender, awaitPrepared, waitForImage)
       if imageAssets == nil then
         return pool:imageFor(path, wrap.x, wrap.y)
       end
-      return borrowSamplingHandle(assert(imageAssets), wrap, path, samplingByKey, handleLeases, waitForImage)
+      return borrowSamplingHandle(
+        assert(imageAssets),
+        wrap,
+        path,
+        samplingByKey,
+        handleLeases,
+        waitForImage,
+        trackImageToken
+      )
     end
     local instance = ModelInstance.new(definition, { resolveImage = resolveImage })
     instance.transform = self._modelTransform
@@ -540,19 +581,20 @@ function BagHeroRenderer:_startBuild(gender)
     while true do
       local status, failure = queue:poll(token)
       if status == "ready" then
+        local payload = queue:take(token)
         build.token = nil
-        return queue:take(token)
+        return payload
       end
       if status == "failed" then
-        build.token = nil
+        -- The failed ticket is never claimed; the failure exit cancels it.
         error("hero asset " .. tostring(path) .. " (" .. kind .. ") failed: " .. tostring(failure), 0)
       end
       if build.finishing then
         local waitOk, payload = pcall(queue.wait, queue, token)
-        build.token = nil
         if not waitOk then
           error(payload, 0)
         end
+        build.token = nil
         return payload
       end
       coroutine["yield"](BAG_HERO_WAIT)
@@ -563,12 +605,18 @@ function BagHeroRenderer:_startBuild(gender)
       coroutine["yield"](BAG_HERO_WAIT)
     end
   end
+  local function trackImageToken(token)
+    build.imageToken = token
+  end
   build = {
     thread = coroutine.create(function()
-      selfRef:_realizeGender(gender, awaitPrepared, waitForImage)
+      selfRef:_realizeGender(gender, awaitPrepared, waitForImage, trackImageToken)
     end),
     state = "active",
+    queue = queue,
+    imageAssets = self._imageAssets,
     token = nil,
+    imageToken = nil,
     finishing = false,
     failure = nil,
   }
@@ -591,7 +639,7 @@ local function advanceBuild(build, maxWorkUnits)
     local ok, yielded = coroutine.resume(build.thread)
     if not ok then
       build.state = "failed"
-      build.token = nil
+      cancelBuildTokens(build)
       build.failure = yielded
       error(yielded, 0)
     end
@@ -879,15 +927,11 @@ function BagHeroRenderer:release()
       realized.handleLeases = {}
     end
   end
-  -- A build still in progress drops its pending preparation interest; a
-  -- running worker job is not preempted, its late payload is discarded.
-  local queue = self._assetPreparation
+  -- A build still in progress drops its pending preparation and shared-image
+  -- interests; a running worker job is not preempted, its late payload is
+  -- discarded.
   for _, build in pairs(self._builds) do
-    local token = build.token
-    if token ~= nil then
-      build.token = nil
-      pcall(queue.cancel, queue, token)
-    end
+    cancelBuildTokens(build)
   end
   self._builds = {}
   self._realized = {}

@@ -298,8 +298,9 @@ end
 --
 --   * each static draw is replayed once, under its own matrix/restore/seed
 --     context;
---   * all transform-preserving draws that share a command stream are replayed
---     once, and each segment draw keeps the pose segment it names;
+--   * transform-preserving draws that share a command stream, a baked matrix
+--     and inherited engine state are replayed once, and each segment draw keeps
+--     the pose segment it names;
 --   * every terrain-boundary-eligible draw of the bank is repaired together in
 --     one conformance pass, exactly the group the producer grouped.
 --
@@ -325,6 +326,20 @@ end
 ---@field materialIndex integer
 ---@field preScaled boolean the decoded positions are already in runtime units
 
+-- The geometry-engine state a bank draw inherits before its first command, or
+-- nil when the bank carries none (the commands resolve every vertex
+-- themselves). Both replay routes seed exactly this state, so a shape that
+-- issues no COLOR/NORMAL keeps the material or carried state the producer
+-- compiled against.
+---@param draw NativeGxFormat.Draw
+---@return { color: number[]?, normal: number[]?, colorSource: integer|nil }|nil
+local function seededState(draw)
+  if draw.seedColorSource == nil and draw.seedNormal == nil then
+    return nil
+  end
+  return { color = draw.seedColor, normal = draw.seedNormal, colorSource = draw.seedColorSource }
+end
+
 -- The draw matrix pre-multiplied by the draw's source-to-runtime scale, so the
 -- replay lands directly in runtime units: conformance then repairs the same
 -- numeric domain the producer repaired, and packing needs no second scale.
@@ -339,14 +354,22 @@ local function scaledMatrix(matrix, scale)
   return out
 end
 
---- Replay one transform-carrying draw's command bytes into `arena`.
 ---@param draw NativeGxFormat.Draw
 ---@param arena GxGeometryBuffer
 ---@param scratch GxDisplayList.Scratch
 ---@param context unknown?
 ---@return SceneMesh.NativeSlice
 local function decodeStaticSlice(draw, arena, scratch, context)
-  local options = { arena = arena, scratch = scratch, collectCommands = false, context = context }
+  local options = {
+    arena = arena,
+    scratch = scratch,
+    collectCommands = false,
+    context = context,
+    -- The producer refuses to publish a draw whose vertices end without a
+    -- resolved color source; the replay holds the same contract, so a bank that
+    -- lost its inherited state fails loudly instead of rendering a default.
+    requireColorSource = true,
+  }
   local scale = draw.positionScale or 1
   options.matrix = draw.matrix and scaledMatrix(draw.matrix, scale) or nil
   if draw.restoreStack ~= nil then
@@ -356,13 +379,12 @@ local function decodeStaticSlice(draw, arena, scratch, context)
     end
     options.restoreStack = scaled
   end
-  if draw.seedColorSource ~= nil then
-    options.initialState = { color = draw.seedColor, colorSource = draw.seedColorSource }
-  end
+  options.initialState = seededState(draw)
   local geom, err = GxDisplayList.decode(draw.commands, options)
-  if not geom then
+  if err ~= nil then
     error(err)
   end
+  assert(geom)
   local slice = geom.slice
   return {
     arena = slice.arena,
@@ -375,9 +397,12 @@ local function decodeStaticSlice(draw, arena, scratch, context)
   }
 end
 
---- Replay one transform-preserving command stream once, keeping every pose
---- segment it produces. The draw matrix is deferred to the segments' sources,
---- so every segment draw of this stream selects from one replay.
+-- Replay one transform-preserving command stream once, keeping every pose
+-- segment it produces. A bank draw carrying a matrix (a billboard's
+-- pose-independent post-BB bake) folds it into the vertices exactly like the
+-- reference mesh compile; every other segment defers its pose-derived matrix
+-- to the draw state its sources name. The inherited color/normal state is
+-- seeded the same way.
 ---@param draw NativeGxFormat.Draw
 ---@param arena GxGeometryBuffer
 ---@param scratch GxDisplayList.Scratch
@@ -390,11 +415,40 @@ local function decodeDynamicSegments(draw, arena, scratch, context)
     collectCommands = false,
     context = context,
     dynamic = true,
+    matrix = draw.matrix,
+    initialState = seededState(draw),
+    requireColorSource = true,
   })
-  if not geom then
+  if err ~= nil then
     error(err)
   end
+  assert(geom)
   return geom.segments
+end
+
+-- The identity of one transform-preserving replay: every semantic input that
+-- reaches the packed vertices. Two draws of one command stream replay once only
+-- when they also share the baked matrix and the inherited engine state; draws
+-- that differ in either keep their own replay.
+---@param draw NativeGxFormat.Draw
+---@return string
+local function dynamicReplayKey(draw)
+  local parts = { draw.commands }
+  if draw.matrix ~= nil then
+    for index = 1, 16 do
+      parts[#parts + 1] = string.format("%.17g", draw.matrix[index])
+    end
+  end
+  if draw.seedColorSource ~= nil or draw.seedNormal ~= nil then
+    parts[#parts + 1] = tostring(draw.seedColorSource)
+    for _, component in ipairs(draw.seedColor or {}) do
+      parts[#parts + 1] = tostring(component)
+    end
+    for _, component in ipairs(draw.seedNormal or {}) do
+      parts[#parts + 1] = string.format("%.17g", component)
+    end
+  end
+  return table.concat(parts, "\0")
 end
 
 --- One segment draw's slice out of its replayed command stream.
@@ -448,10 +502,11 @@ local function decodeNativeBankSlices(bytes, context)
     if draw.segmentIndex == nil then
       slice = decodeStaticSlice(draw, arena, scratch, context)
     else
-      local segments = dynamicGroups[draw.commands]
+      local key = dynamicReplayKey(draw)
+      local segments = dynamicGroups[key]
       if segments == nil then
         segments = decodeDynamicSegments(draw, arena, scratch, context)
-        dynamicGroups[draw.commands] = segments
+        dynamicGroups[key] = segments
       end
       slice = dynamicSlice(draw, segments)
     end

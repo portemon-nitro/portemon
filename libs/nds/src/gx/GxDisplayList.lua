@@ -210,9 +210,11 @@ local function resetScratch(scratch)
   Matrix4.identityInto(scratch.directionMatrix)
   Matrix4.identityInto(scratch.directionScratch)
   Matrix4.identityInto(scratch.directionOperand)
+  -- The push stacks need no reset: MTX_PUSH writes its slot before any
+  -- MTX_POP can read it, and pushDepth starts every decode at zero. Restore
+  -- slots keep their identity default because a restore may read a slot the
+  -- display list never stored.
   for i = 0, 31 do
-    Matrix4.identityInto(scratch.pushStack[i])
-    Matrix4.identityInto(scratch.directionPushStack[i])
     Matrix4.identityInto(scratch.restoreStack[i])
     Matrix4.identityInto(scratch.directionRestoreStack[i])
     scratch.restoreInitialized[i] = 0
@@ -965,8 +967,10 @@ GxDisplayList.COLOR_SOURCE = COLOR_SOURCE
 -- Bounded command-stream walk that reports what the producer needs to decide a
 -- draw's context without triangulating it: the opcode census, any in-display-list
 -- POLYGON_ATTR override words, and the geometry-engine color/normal state the
--- stream leaves behind (the state the next shape inherits). Unknown opcodes and
--- an unterminated primitive are rejected exactly like a full decode.
+-- stream leaves behind (the state the next shape inherits). `initialState` seeds
+-- the state the stream itself inherits, so a shape that issues no COLOR/NORMAL
+-- reports the carried state instead of a default. Unknown opcodes and an
+-- unterminated primitive are rejected exactly like a full decode.
 ---@class GxDisplayList.StateScan
 ---@field opcodeCounts table<integer, integer>
 ---@field polygonAttrs integer[]
@@ -974,14 +978,26 @@ GxDisplayList.COLOR_SOURCE = COLOR_SOURCE
 
 ---@param bytes string
 ---@param context unknown?
+---@param initialState { color: number[]?, normal: number[]?, colorSource: integer|nil }? -- state the stream inherits before its first command
 ---@return GxDisplayList.StateScan
-function GxDisplayList.scanState(bytes, context)
+function GxDisplayList.scanState(bytes, context, initialState)
   local r = BinaryReader.new(bytes, "gx-dl-state")
   local len = r:length()
   local opcodeCounts, polygonAttrs = {}, {}
   local colorR, colorG, colorB = 255, 255, 255
-  local normalX, normalY, normalZ = 0, 0, 0
+  -- The geometry engine's inherited normal, the same default a full decode
+  -- starts from, so a stream that issues no NORMAL reports the carried one.
+  local normalX, normalY, normalZ = 0, 1, 0
   local colorSource = nil
+  if initialState ~= nil then
+    if initialState.color then
+      colorR, colorG, colorB = initialState.color[1], initialState.color[2], initialState.color[3]
+    end
+    if initialState.normal then
+      normalX, normalY, normalZ = initialState.normal[1], initialState.normal[2], initialState.normal[3]
+    end
+    colorSource = initialState.colorSource
+  end
   local runOpen = false
   local pos = 0
   while pos + 4 <= len do

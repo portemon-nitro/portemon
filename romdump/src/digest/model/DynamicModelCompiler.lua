@@ -139,6 +139,7 @@ local function dynamicBatches(dynamicModel, model, meshes)
       local source = assert(draws[mesh.drawIndex + 1], "dynamic mesh references a draw that is not in the model")
       local shape = assert(shapeByIndex[source.shapeIndex], "dynamic draw references a missing shape")
       local textureSize = textureSizes[mesh.materialIndex]
+      local seed = mesh.initialState
       bankDraws[#bankDraws + 1] = {
         commands = shape.displayListBytes,
         nodeIndex = mesh.nodeIndex,
@@ -149,6 +150,16 @@ local function dynamicBatches(dynamicModel, model, meshes)
         texWidth = textureSize and textureSize.width or nil,
         texHeight = textureSize and textureSize.height or nil,
         positionScale = 1 / MapUnits.MODEL_UNITS_PER_TILE,
+        -- A billboard bakes its pose-independent post-BB draw matrix (POSSCALE
+        -- folds there) exactly like the reference mesh compile, so the runtime
+        -- replay reproduces the same shape extent. Other segments defer their
+        -- pose-derived matrix to their position source instead.
+        matrix = mesh.transformMode == PoseContract.BILLBOARD and source.matrix or nil,
+        -- The engine state this draw's commands inherit before their first
+        -- vertex: the material seed or the previous shape's final state.
+        seedColorSource = seed and seed.colorSource or nil,
+        seedColor = seed and seed.color or nil,
+        seedNormal = seed and seed.normal or nil,
       }
       local record = {
         id = mesh.id,
@@ -157,10 +168,10 @@ local function dynamicBatches(dynamicModel, model, meshes)
         nodeIndex = mesh.nodeIndex,
         materialIndex = mesh.materialIndex,
         transformMode = mesh.transformMode,
-        -- A billboard segment's own source resolves the live post-BB draw
-        -- matrix (the billboard base stays in the pose program), so the
-        -- runtime never needs a compile-time bake for it.
-        positionSource = mesh.positionSource or PoseContract.DRAW,
+        -- A billboard segment is fully baked (its pose-independent matrix rides
+        -- in the bank), so it carries no position source; every other segment
+        -- names the runtime draw state that resolves its matrix.
+        positionSource = mesh.positionSource,
       }
       for _, field in ipairs(PolygonState.FIELDS) do
         record[field] = poly[field]

@@ -91,9 +91,6 @@ end
 function NsbmdDynamicModel.compile(model, context)
   assert(type(model) == "table" and model.sbc ~= nil, "NsbmdDynamicModel.compile requires a decoded Nsbmd model")
   local meshes, _, program = MeshCompiler.compileDynamic(model, context)
-  -- UVs are texel units; normalize against the material's authored texture
-  -- size, the base dimensions texture pattern variants are authored against
-  -- (the animated layers keep the per-variant normalization).
   local materials = {}
   local texSize = {}
   for _, mat in ipairs(model.materials) do
@@ -113,20 +110,10 @@ function NsbmdDynamicModel.compile(model, context)
       textureSizes[index] = { width = size.width, height = size.height }
     end
   end
-  for _, mesh in ipairs(meshes) do
-    local size = textureSizes[mesh.materialIndex]
-    if size then
-      local numeric = mesh.batch.arena.numeric
-      for offset = 0, mesh.batch.vertexCount - 1 do
-        local v = numeric[mesh.batch.vertexOffset + offset]
-        v.u = v.u / size.width
-        v.v = v.v / size.height
-      end
-    end
-  end
-  -- The same authored extent is the UV divisor a draw's command bytes need:
-  -- the bank keeps no expanded vertices, so the runtime replay divides the
-  -- texel-unit UVs by these dimensions exactly as this compile just did.
+  -- The authored extent is the UV divisor the draw's command bytes need: the
+  -- bank keeps no expanded vertices, so the runtime replay divides the
+  -- texel-unit UVs by these dimensions at the same numeric seam the static path
+  -- normalizes against.
   return {
     program = program,
     meshes = meshes,
