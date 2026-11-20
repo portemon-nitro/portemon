@@ -1,7 +1,7 @@
 -- Animation sprite copies are native managed sprites: 2D OBJ objects drawn
 -- by the sprite system after the Pokepic 3D layer. They composite against
 -- the world plane by OBJ priority instead of sharing the picture depth
--- buffer, so an effect polygon in front of the picture never erases them.
+-- buffer, and they honor the source slot's draw flag.
 
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -41,8 +41,6 @@ end
 
 function T.sprite_copies_composite_above_the_3d_layer(scope)
   local graphics = love.graphics
-  -- The mon art and its copy share the portrait image; the transient effect
-  -- picture is a full-screen plane one unit closer to the camera.
   -- Staged portraits are 80x80 cells; the visible Pokepic window crops them.
   local monArt = solidImage(graphics, scope, 0, 1, 0, 80)
   local overlayArt = solidImage(graphics, scope, 1, 0, 0)
@@ -75,16 +73,7 @@ function T.sprite_copies_composite_above_the_3d_layer(scope)
     height = 192,
     alpha = 1,
   })
-  local pictureState = scene:pictureState(battler)
-  local renderBattler = {}
-  for field, value in pairs(battler) do
-    renderBattler[field] = value
-  end
-  if pictureState ~= nil then
-    for field, value in pairs(pictureState) do
-      renderBattler[field] = value
-    end
-  end
+  local pass = scope:own(BattlePicturePass.new(graphics))
   local assets = {}
   function assets:drawable(assetKey)
     if assetKey == "probe/overlay" then
@@ -95,33 +84,62 @@ function T.sprite_copies_composite_above_the_3d_layer(scope)
     end
     return nil
   end
-  local pass = scope:own(BattlePicturePass.new(graphics))
   function assets:renderPictures(hostGraphics, frame)
     return pass:render(hostGraphics, frame)
   end
-  local view = {
-    battlers = { renderBattler },
-    slotGeometry = SLOTS,
-    effectInstances = scene:effectViews(),
-    bgScroll = scene:scroll(),
-    hudSections = {},
-  }
   local canvas = scope:own(graphics.newCanvas(256, 192, { format = "rgba8", readable = true, dpiscale = 1 }))
-  graphics.setCanvas(canvas)
-  graphics.clear(0, 0, 0, 0)
-  BattleRenderer.drawPane({
-    graphics = graphics,
-    text = {},
-    windows = {},
-    assets = assets,
-    sceneImageKey = "missing-scene",
-  }, view, "detail", {}, { x = 0, y = 0, scale = 1 })
-  graphics.setCanvas()
-  local data = scope:own(canvas:newImageData())
-  local red, green = data:getPixel(128, 96)
+  local function centerPixel()
+    local pictureState = scene:pictureState(battler)
+    local renderBattler = {}
+    for field, value in pairs(battler) do
+      renderBattler[field] = value
+    end
+    if pictureState ~= nil then
+      for field, value in pairs(pictureState) do
+        renderBattler[field] = value
+      end
+    end
+    local view = {
+      battlers = { renderBattler },
+      slotGeometry = SLOTS,
+      effectInstances = scene:effectViews(),
+      bgScroll = scene:scroll(),
+      hudSections = {},
+    }
+    graphics.setCanvas(canvas)
+    graphics.clear(0, 0, 0, 0)
+    BattleRenderer.drawPane({
+      graphics = graphics,
+      text = {},
+      windows = {},
+      assets = assets,
+      sceneImageKey = "missing-scene",
+    }, view, "detail", {}, { x = 0, y = 0, scale = 1 })
+    graphics.setCanvas()
+    local data = scope:own(canvas:newImageData())
+    local red, green = data:getPixel(128, 96)
+    return red, green
+  end
+
+  local red, green = centerPixel()
   Assert.isTrue(
     green > 0.5 and red < 0.5,
     "the sprite copy draws above the nearer effect plane, got r=" .. red .. " g=" .. green
+  )
+  -- StopBattlerSpriteDraw / SetBattlerSpriteVisible hide the copy without
+  -- deleting it: the hidden copy submits nothing and the nearer effect plane
+  -- shows through instead.
+  scene:setAnimationSpriteDrawFlag(0, false)
+  local hiddenRed, hiddenGreen = centerPixel()
+  Assert.isTrue(
+    hiddenRed > 0.5 and hiddenGreen < 0.5,
+    "a hidden sprite copy stops drawing, got r=" .. hiddenRed .. " g=" .. hiddenGreen
+  )
+  scene:setAnimationSpriteDrawFlag(0, true)
+  local shownRed, shownGreen = centerPixel()
+  Assert.isTrue(
+    shownGreen > 0.5 and shownRed < 0.5,
+    "the copy returns with its source draw flag, got r=" .. shownRed .. " g=" .. shownGreen
   )
 end
 

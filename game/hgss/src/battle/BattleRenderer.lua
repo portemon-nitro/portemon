@@ -1053,7 +1053,9 @@ local function collectPictureSubmissions(assets, view, players, enemies, singles
   end
   for _, effect in ipairs(assert(view.effectInstances, "battle snapshots carry transient effect instances")) do
     local picture = effect.picture --[[@as table<string, unknown>?]]
-    if picture ~= nil then
+    -- A source slot whose draw flag a scripted SetBattlerSpriteVisible or
+    -- StopBattlerSpriteDraw cleared keeps its copy alive but hidden.
+    if picture ~= nil and effect.draw ~= false then
       local sourceActivation = picture.battlerActivation
       if type(sourceActivation) == "table" then
         local source = battlerPictures[activationKey(sourceActivation)]

@@ -2822,8 +2822,11 @@ function BattleScene:animationSpriteManagerPresent(name)
   return self._animationSpriteManagers[name] == true
 end
 
--- Publishes detached effect records in launch allocation order.
----@return table<integer, { id: integer, sourceKey: string, age: integer, picture?: table<string, unknown> }> renderable effect snapshot
+-- Publishes detached effect records in launch allocation order. A battler
+-- sprite copy also carries the native draw flag its source slot currently
+-- holds: SetBattlerSpriteVisible and StopBattlerSpriteDraw hide the copy
+-- without deleting it, so the renderer needs the flag, not just the slot.
+---@return table<integer, { id: integer, sourceKey: string, age: integer, draw?: boolean, picture?: table<string, unknown> }> renderable effect snapshot
 function BattleScene:effectViews()
   local ids = {}
   for id in pairs(self._effects) do
@@ -2848,7 +2851,13 @@ function BattleScene:effectViews()
         end
       end
     end
-    views[#views + 1] = { id = record.id, sourceKey = record.sourceKey, age = record.age, picture = picture }
+    local draw = nil
+    if type(picture) == "table" and type(picture.spriteSlot) == "number" then
+      local slotRecord = self._animationSprites[picture.spriteSlot]
+      draw = slotRecord == nil or slotRecord.draw ~= false
+    end
+    views[#views + 1] =
+      { id = record.id, sourceKey = record.sourceKey, age = record.age, draw = draw, picture = picture }
   end
   return views
 end
