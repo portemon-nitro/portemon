@@ -12,6 +12,7 @@ local FieldCallNoticeRenderer = require("game.hgss.src.field.FieldCallNoticeRend
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local StubLease = require("tests.support.StubLease")
 
 local T = {}
 
@@ -120,6 +121,31 @@ local function renderFieldSurface(scope, draw)
   return scope:own(canvas:newImageData())
 end
 
+-- The shared image owner the field presentation hands the notice: every
+-- request realizes the compiled PNG from the fixture cache on the main
+-- thread, so the notice draws through the same pooled lease surface
+-- production borrows, over the real compiled pixels.
+---@param scope table
+---@param cacheFs CacheFs
+---@return table pool
+local function imagePool(scope, cacheFs)
+  local pool = { leases = {} }
+  function pool:request(path)
+    local data = assert(cacheFs:read(path), "the fixture cache carries " .. path)
+    local image = scope:own(love.graphics.newImage(scope:own(love.filesystem.newFileData(data, path))))
+    self.leases[#self.leases + 1] = StubLease.over(image)
+    return #self.leases
+  end
+  function pool:poll()
+    return "ready"
+  end
+  function pool:acquire(token)
+    return assert(self.leases[token], "the pool hands back the lease it staged")
+  end
+  function pool:release() end
+  return pool
+end
+
 -- The caller notice cache: the dialogue font, the source-shaped field-UI
 -- manifest carrying the incoming-call projection, and the fixture notice art.
 ---@return CacheFs
@@ -142,10 +168,10 @@ function T.the_ringing_notice_paints_the_compiled_icon_and_caller_bubble(scope)
   local text = scope:own(FieldTextRenderer.new({ cacheFs = cache, fontId = 0 }))
   local notice = assert(manifest.startMenu.phoneNotification, "the fixture class carries the call projection")
   local renderer = scope:own(FieldCallNoticeRenderer.new({
-    cacheFs = cache,
     manifest = manifest,
     text = text,
     graphics = love.graphics,
+    imagePool = imagePool(scope, cache),
   }))
   local window = assert(notice.window)
   local width = renderer:windowWidth("MOM")

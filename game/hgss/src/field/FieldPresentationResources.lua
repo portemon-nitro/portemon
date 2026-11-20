@@ -895,7 +895,6 @@ function FieldPresentationResources:callNoticeRenderer()
     return renderer
   end
   renderer = FieldCallNoticeRenderer.new({
-    cacheFs = self.cacheFs,
     manifest = assert(self.uiManifest, "field UI manifest is unavailable"),
     text = assert(self.textRenderer, "field presentation owns no text renderer"),
     imagePool = assert(self._imagePool, "field presentation borrows its shared image owner"),

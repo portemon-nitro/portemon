@@ -36,28 +36,47 @@ local function callManifest()
   return FieldUiFixture.addStartMenuPhoneNotification(value)
 end
 
----@param value table
----@return CacheFs
-local function callCache(value)
-  local result = FieldUiFixture.startMenuCache()
-  result:writeLua("data/generated/field/ui/ui.lua", value)
-  FieldUiFixture.writeStartMenuPhoneNotificationPngs(result)
-  return result
+-- The synchronous image owner the notice borrows from: every request
+-- resolves at once, in creation order, to one lease over the next fake atlas
+-- (the ringing atlas then the caller bubble atlas). Requests and returned
+-- leases stay inspectable so the borrow contract is observable.
+---@param lg table
+---@return table pool
+local function imagePool(lg)
+  local pool = { requests = {}, leases = {}, returned = {} }
+  function pool:request(path, sampler, purpose)
+    local token = #self.requests + 1
+    self.requests[token] = { path = path, sampler = sampler, purpose = purpose }
+    self.leases[token] = StubLease.over(lg.newImage())
+    return token
+  end
+  function pool:poll()
+    return "ready"
+  end
+  function pool:acquire(token)
+    return assert(self.leases[token], "the pool hands back the lease it staged")
+  end
+  function pool:release(lease)
+    self.returned[#self.returned + 1] = lease
+  end
+  return pool
 end
 
--- One renderer over the fixture class: the ringing atlas then the caller
--- bubble atlas are the only images it materializes.
+-- One renderer over the fixture class and a fresh image owner.
 ---@param lg table
 ---@param text table?
 ---@return FieldCallNoticeRenderer
+---@return table pool
 local function renderer(lg, text)
   local value = callManifest()
+  local pool = imagePool(lg)
   return FieldCallNoticeRenderer.new({
-    cacheFs = callCache(value),
     manifest = value,
     text = text or callerText(),
     graphics = lg,
-  })
+    imagePool = pool,
+  }),
+    pool
 end
 
 -- Draws at a fake 1:1 reference frame and returns the notice's draw records.
@@ -174,85 +193,67 @@ function T.the_caller_bubble_wraps_the_name_in_the_source_nine_slice()
   subject:release()
 end
 
-function T.construction_requires_the_compiled_call_projection()
+function T.construction_requires_the_compiled_projection_and_an_image_owner()
   local lg = fakeGraphics({ imageSizes = { { 120, 32 }, { 40, 32 } } })
   local value = FieldUiFixture.addStartMenuIconContract(FieldUiFixture.manifest())
   local ok = pcall(function()
-    FieldCallNoticeRenderer.new({ cacheFs = callCache(value), manifest = value, text = callerText(), graphics = lg })
+    FieldCallNoticeRenderer.new({
+      manifest = value,
+      text = callerText(),
+      graphics = lg,
+      imagePool = imagePool(lg),
+    })
   end)
   Assert.isFalse(ok, "a class without the incoming-call projection must fail loudly")
+
+  local complete = callManifest()
+  ok = pcall(function()
+    FieldCallNoticeRenderer.new({ manifest = complete, text = callerText(), graphics = lg })
+  end)
+  Assert.isFalse(ok, "the notice must borrow the shared image owner instead of building its own art")
 end
 
--- The field composes the notice over the shared image owner, so the
--- production notice borrows both compiled atlases through the pool's request
--- protocol, draws through the returned leases, and gives every lease back
--- exactly once. The eager cacheFs path stands in for hosts that own their
--- images directly.
-function T.the_composed_notice_borrows_its_atlases_from_the_shared_image_owner()
+-- The notice is composed over the field presentation's shared image owner, so
+-- it borrows both compiled atlases through the pool's request protocol, draws
+-- through the returned leases, and gives every lease back exactly once.
+function T.the_notice_borrows_its_atlases_from_the_shared_image_owner()
   local lg = fakeGraphics({ imageSizes = { { 120, 32 }, { 40, 32 } } })
   local value = callManifest()
-  local requests, leases, returned = {}, {}, {}
-  local pool = {
-    request = function(_, path, sampler, purpose)
-      local token = #requests + 1
-      requests[token] = { path = path, sampler = sampler, purpose = purpose }
-      leases[token] = StubLease.over(lg.newImage())
-      return token
-    end,
-    poll = function()
-      return "ready"
-    end,
-    acquire = function(_, token)
-      return assert(leases[token], "the pool hands back the lease it staged")
-    end,
-    release = function(_, lease)
-      returned[#returned + 1] = lease
-    end,
-  }
+  local pool = imagePool(lg)
   local subject = FieldCallNoticeRenderer.new({
-    cacheFs = callCache(value),
     manifest = value,
     text = callerText(),
     graphics = lg,
     imagePool = pool,
   })
   draw(subject, lg, "MOM", 0)
-  Assert.equal(#requests, 2, "the notice borrows exactly its two compiled atlases")
-  for index, request in ipairs(requests) do
+  Assert.equal(#pool.requests, 2, "the notice borrows exactly its two compiled atlases")
+  for index, request in ipairs(pool.requests) do
     Assert.equal(request.purpose, "demand", "borrow " .. index .. " is a demand request")
-    Assert.deepEqual(request.sampler, {
-      wrapX = "clamp",
-      wrapY = "clamp",
-      minFilter = "nearest",
-      magFilter = "nearest",
-    }, "borrow " .. index .. " samples like the pooled art beside it")
+    Assert.deepEqual(
+      request.sampler,
+      { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" },
+      "borrow " .. index .. " samples like the shared art beside it"
+    )
   end
-  Assert.deepEqual({ requests[1].path, requests[2].path }, {
-    assert(value.assets.hgss_start_menu_ringing or value.assets["hgss.start_menu.ringing"]).image,
-    assert(value.assets["hgss.start_menu.caller_bubble"]).image,
+  local assets = value.assets --[[@as table<string, table<string, unknown>>]]
+  Assert.deepEqual({ pool.requests[1].path, pool.requests[2].path }, {
+    assert(assets[FieldUiAssetCache.ASSET.START_MENU_RINGING]).image,
+    assert(assets[FieldUiAssetCache.ASSET.START_MENU_CALLER_BUBBLE]).image,
   }, "the notice borrows the compiled ringing and caller bubble atlases")
+
   local drawnImages = {}
   for _, record in ipairs(lg.draws) do
     drawnImages[record.image] = true
   end
-  for token, lease in ipairs(leases) do
+  for token, lease in ipairs(pool.leases) do
     Assert.isTrue(drawnImages[lease.image] == true, "atlas " .. token .. " draws through its borrowed lease")
   end
-  subject:release()
-  Assert.equal(#returned, 2, "release returns both borrowed leases")
-  for token, lease in ipairs(leases) do
-    Assert.equal(returned[token], lease, "release returns lease " .. token .. " itself, never a copy")
-  end
-end
 
-function T.release_returns_every_acquired_atlas()
-  local lg = fakeGraphics({ imageSizes = { { 120, 32 }, { 40, 32 } } })
-  local subject = renderer(lg)
-  draw(subject, lg, "MOM", 0)
-  Assert.equal(#lg.images, 2, "the notice owns exactly its two compiled atlases")
   subject:release()
-  for index, image in ipairs(lg.images) do
-    Assert.equal(image.releaseCount, 1, "atlas " .. index .. " is released exactly once")
+  Assert.equal(#pool.returned, 2, "release returns both borrowed leases")
+  for token, lease in ipairs(pool.leases) do
+    Assert.equal(pool.returned[token], lease, "release returns lease " .. token .. " itself, never a copy")
   end
 end
 

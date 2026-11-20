@@ -36,11 +36,9 @@ local PixelScale = require("libs.ui.src.PixelScale")
 ---@field _bubbleQuads { left: love.Quad, right: love.Quad, top: love.Quad, bottom: love.Quad }
 ---@field _plate FieldCallNoticeRenderer.Color
 ---@field _name { foreground: FieldCallNoticeRenderer.Color, shadow: FieldCallNoticeRenderer.Color }
----@field _pool table<string, unknown>? the borrowed shared image owner; nil keeps eager construction
----@field _images love.Image[] every acquired image, released exactly once
----@field _imageByAsset table<string, love.Image>
----@field _leases table<integer, table<string, unknown>>?
----@field _leaseByAsset table<string, table<string, unknown>>?
+---@field _pool table<string, unknown> the borrowed shared image owner
+---@field _leases table<integer, table<string, unknown>> every installed lease, released exactly once
+---@field _leaseByAsset table<string, table<string, unknown>>
 local FieldCallNoticeRenderer = {}
 FieldCallNoticeRenderer.__index = FieldCallNoticeRenderer
 
@@ -51,8 +49,8 @@ local TEXT_INSET = 3
 -- The source frame is drawn around the window: three cap columns and one
 -- right column, one row above and one row below the two-tile window.
 local CAP_TILES = 3
--- Every notice visual samples point-filtered and clamped, matching the
--- eager construction, so pooled leases draw identically.
+-- Every notice visual samples point-filtered and clamped, so the shared
+-- owner's immutable pairs are the ones the notice draws.
 local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
 
 ---@param color FieldCallNoticeRenderer.Color
@@ -63,65 +61,46 @@ local function rgb(color)
   return color.r / 255, color.g / 255, color.b / 255
 end
 
--- Borrows one manifest atlas, either from the shared image owner or from the
--- version-scoped cache, and installs it under its asset id. Pooled
--- acquisitions keep their lease for release and draw through the exact
--- sampler.
+-- Borrows one manifest atlas from the shared image owner, yielding to the
+-- worker until the atlas resolves, and installs its lease under the asset id.
+-- The lease is the drawing surface and the release token.
 ---@param self FieldCallNoticeRenderer
----@param cacheFs CacheFs
 ---@param manifest table<string, unknown>
 ---@param assetId string
 ---@return love.Image
-local function acquireAtlas(self, cacheFs, manifest, assetId)
-  local existing = self._imageByAsset[assetId]
+local function acquireAtlas(self, manifest, assetId)
+  local existing = self._leaseByAsset[assetId]
   if existing ~= nil then
-    return existing
+    return assert(existing.image, "shared leases carry their resolved image")
   end
   local entry = assert(manifest.assets[assetId], "the field-UI manifest must index " .. assetId)
   local path = assert(entry.image, "the field-UI manifest must name the " .. assetId .. " image")
-  local graphics = assert(self._graphics)
-  local image
   local pool = self._pool
-  if pool ~= nil then
-    local token = pool:request(path, POOLED_SAMPLER, "demand")
-    local stalled = 0
-    while true do
-      local status, failure = pool:poll(token)
-      if status == "ready" then
-        local lease = pool:acquire(token)
-        self._images[#self._images + 1] = assert(lease.image, "shared leases carry their resolved image")
-        local leases = assert(self._leases, "pooled chrome tracks its installed leases")
-        leases[#leases + 1] = lease
-        local byAsset = assert(self._leaseByAsset, "pooled chrome tracks its leases by asset")
-        byAsset[assetId] = lease
-        image = assert(lease.image)
-        break
-      end
-      if status == "failed" then
-        error("missing generated field-UI image " .. path .. ": " .. tostring(failure), 0)
-      end
-      assert(status == "pending", "field-UI preparation reports pending or ready")
-      stalled = stalled + 1
-      if stalled > 10000 then
-        error("stalled generated field-UI image " .. path, 0)
-      end
-      local timer = love and love.timer
-      if timer ~= nil and timer.sleep ~= nil then
-        timer.sleep(0.001)
-      end
+  local token = pool:request(path, POOLED_SAMPLER, "demand")
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      local lease = pool:acquire(token)
+      self._leases[#self._leases + 1] = lease
+      self._leaseByAsset[assetId] = lease
+      local image = assert(lease.image, "shared leases carry their resolved image")
+      image:setFilter("nearest", "nearest")
+      return image
     end
-  else
-    local data = cacheFs:read(path)
-    if data == nil then
-      error("missing generated field-UI image at " .. path, 0)
+    if status == "failed" then
+      error("missing generated field-UI image " .. path .. ": " .. tostring(failure), 0)
     end
-    image = graphics.newImage(love.filesystem.newFileData(data, path))
-    self._images[#self._images + 1] = image
+    assert(status == "pending", "field-UI preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      error("stalled generated field-UI image " .. path, 0)
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
   end
-  assert(image ~= nil, "the field-UI atlas resolves an image")
-  image:setFilter("nearest", "nearest")
-  self._imageByAsset[assetId] = image
-  return image
 end
 
 -- One compiled ringing animation as installed quads, offsets, and source-tick
@@ -167,13 +146,10 @@ local function installRinging(self, record, image, assetId)
   self._loopStartFrame = loopStart + 1
 end
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: FieldTextRenderer, graphics?: love.graphics, imagePool?: table<string, unknown> }
+---@param opts { manifest: table<string, unknown>, text: FieldTextRenderer, imagePool: table<string, unknown>, graphics?: love.graphics }
 ---@return FieldCallNoticeRenderer
 function FieldCallNoticeRenderer.new(opts)
-  assert(
-    type(opts) == "table" and opts.cacheFs and opts.cacheFs.read,
-    "FieldCallNoticeRenderer requires a CacheFs-shaped object"
-  )
+  assert(type(opts) == "table", "FieldCallNoticeRenderer requires its options")
   local graphics = opts.graphics
   if graphics == nil then
     graphics = love and love.graphics
@@ -199,6 +175,14 @@ function FieldCallNoticeRenderer.new(opts)
   local gearPosition =
     assert(interactive.positions[gearIndex], "the Pokegear ringing icon must carry its source position")
   local pool = opts.imagePool
+  assert(
+    type(pool) == "table"
+      and type(pool.request) == "function"
+      and type(pool.poll) == "function"
+      and type(pool.acquire) == "function"
+      and type(pool.release) == "function",
+    "FieldCallNoticeRenderer borrows the shared image owner"
+  )
   local self = setmetatable({
     _graphics = graphics,
     _text = text,
@@ -208,15 +192,13 @@ function FieldCallNoticeRenderer.new(opts)
     _plate = assert(bubble.plate, "the caller bubble must carry its plate color"),
     _name = assert(bubble.name, "the caller bubble must carry its name colors"),
     _pool = pool,
-    _images = {},
-    _imageByAsset = {},
-    _leases = pool ~= nil and {} or nil,
-    _leaseByAsset = pool ~= nil and {} or nil,
+    _leases = {},
+    _leaseByAsset = {},
   }, FieldCallNoticeRenderer)
   local ok, err = pcall(function()
-    local ringingImage = acquireAtlas(self, opts.cacheFs, manifest, assert(ringing.asset))
+    local ringingImage = acquireAtlas(self, manifest, assert(ringing.asset))
     installRinging(self, ringing, ringingImage, assert(ringing.asset))
-    local bubbleImage = acquireAtlas(self, opts.cacheFs, manifest, self._bubbleAsset)
+    local bubbleImage = acquireAtlas(self, manifest, self._bubbleAsset)
     local width, height = bubbleImage:getWidth(), bubbleImage:getHeight()
     local quads = {}
     for _, key in ipairs({ "left", "right", "top", "bottom" }) do
@@ -273,8 +255,8 @@ function FieldCallNoticeRenderer:windowWidth(name)
   return tiles
 end
 
--- Draws one compiled slice through the exact sampler when the atlas is a
--- pooled borrow, else the unchanged eager draw.
+-- Draws one compiled slice through the borrowed lease, so the notice samples
+-- exactly like the shared art beside it.
 ---@param self FieldCallNoticeRenderer
 ---@param assetId string
 ---@param quad love.Quad
@@ -282,13 +264,8 @@ end
 ---@param y number
 function FieldCallNoticeRenderer:_drawSlice(assetId, quad, x, y)
   local graphics = assert(self._graphics)
-  local image = assert(self._imageByAsset[assetId], "a drawn slice must be acquired")
-  local lease = self._leaseByAsset ~= nil and self._leaseByAsset[assetId] or nil
-  if lease ~= nil then
-    lease:drawQuad(graphics, quad, x, y)
-    return
-  end
-  graphics.draw(image, quad, x, y)
+  local lease = assert(self._leaseByAsset[assetId], "a drawn slice must be acquired")
+  lease:drawQuad(graphics, quad, x, y)
 end
 
 -- Draws the caller bubble for one name at its source geometry: the plate
@@ -375,26 +352,19 @@ function FieldCallNoticeRenderer:draw(notice, tick, referenceFrame)
   end)
 end
 
--- Releases every acquired image or installed lease exactly once.
+-- Returns every borrowed lease to the shared image owner exactly once.
 function FieldCallNoticeRenderer:release()
   local pool = self._pool
   local leases = self._leases
-  self._leases = nil
-  self._leaseByAsset = nil
   self._pool = nil
-  if pool ~= nil then
-    for _, lease in ipairs(leases or {}) do
-      pool:release(lease)
-    end
-  else
-    for _, image in ipairs(self._images) do
-      if image.release then
-        image:release()
-      end
-    end
+  self._leases = {}
+  self._leaseByAsset = {}
+  if pool == nil then
+    return
   end
-  self._images = {}
-  self._imageByAsset = {}
+  for _, lease in ipairs(leases) do
+    pool:release(lease)
+  end
   self._bubbleQuads = nil
   self._ringingQuads = nil
   self._ringingOffsets = nil
