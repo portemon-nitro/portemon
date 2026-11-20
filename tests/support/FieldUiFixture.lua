@@ -914,6 +914,88 @@ function FieldUiFixture.startMenuRunningShoes()
   }
 end
 
+FieldUiFixture.RINGING_PATH = "assets/generated/field/ui/start-menu-ringing.png"
+FieldUiFixture.CALLER_BUBBLE_PATH = "assets/generated/field/ui/start-menu-caller-bubble.png"
+
+-- The compiled incoming-call projection for a fixture manifest: the source
+-- caller window geometry, three ringing frames with source tick durations
+-- and offsets, and the caller bubble nine-slice with its plate and name
+-- roles. Frames carry visibly distinct atlas columns and slices carry
+-- distinct colors so a missed frame or misdrawn slice is a pixel mismatch.
+---@param manifest table
+---@return table manifest
+function FieldUiFixture.addStartMenuPhoneNotification(manifest)
+  manifest.assets["hgss.start_menu.ringing"] = {
+    image = FieldUiFixture.RINGING_PATH,
+    width = 120,
+    height = 32,
+  }
+  manifest.assets["hgss.start_menu.caller_bubble"] = {
+    image = FieldUiFixture.CALLER_BUBBLE_PATH,
+    width = 40,
+    height = 32,
+  }
+  local startMenu = assert(manifest.startMenu, "the fixture manifest must carry the start menu section")
+  local ringing = { asset = "hgss.start_menu.ringing", playMode = "forward_loop", loopStartFrameIdx = 0, frames = {} }
+  local offsets = { { x = 0, y = 0 }, { x = 0, y = -6 }, { x = 0, y = 0 } }
+  local durations = { 2, 2, 3 }
+  for index = 1, 3 do
+    ringing.frames[index] = {
+      rect = { x = (index - 1) * 40, y = 0, width = 40, height = 32 },
+      offset = offsets[index],
+      duration = durations[index],
+    }
+  end
+  startMenu.phoneNotification = {
+    window = { tileLeft = 11, top = 19, height = 2, maxWidth = 9 },
+    ringing = ringing,
+    bubble = {
+      asset = "hgss.start_menu.caller_bubble",
+      left = { rect = { x = 0, y = 0, width = 24, height = 32 } },
+      right = { rect = { x = 24, y = 0, width = 8, height = 32 } },
+      top = { rect = { x = 32, y = 0, width = 8, height = 8 } },
+      bottom = { rect = { x = 32, y = 8, width = 8, height = 8 } },
+      plate = { r = 25, g = 132, b = 66, a = 1 },
+      name = {
+        foreground = { r = 255, g = 255, b = 255, a = 1 },
+        shadow = { r = 107, g = 107, b = 107, a = 1 },
+      },
+    },
+  }
+  return manifest
+end
+
+-- The fixture incoming-call art: one solid column per ringing frame and one
+-- solid color per bubble slice, with everything else transparent.
+---@param cache CacheFs
+function FieldUiFixture.writeStartMenuPhoneNotificationPngs(cache)
+  local frameColors = { { 220, 40, 40 }, { 40, 200, 60 }, { 40, 80, 220 } }
+  local rows = {}
+  for _ = 1, 32 do
+    local row = {}
+    for _, color in ipairs(frameColors) do
+      row[#row + 1] = string.rep(string.char(color[1], color[2], color[3], 255), 40)
+    end
+    rows[#rows + 1] = table.concat(row)
+  end
+  cache:write(FieldUiFixture.RINGING_PATH, PngWriter.encode(120, 32, table.concat(rows)))
+
+  local transparent = string.char(0, 0, 0, 0)
+  local left = string.char(200, 60, 60, 255)
+  local right = string.char(60, 200, 60, 255)
+  local top = string.char(60, 60, 200, 255)
+  local bottom = string.char(200, 200, 60, 255)
+  local bubbleRows = {}
+  for y = 0, 31 do
+    local row = {}
+    row[#row + 1] = string.rep(left, 24)
+    row[#row + 1] = string.rep(right, 8)
+    row[#row + 1] = string.rep(y < 8 and top or (y < 16 and bottom or transparent), 8)
+    bubbleRows[#bubbleRows + 1] = table.concat(row)
+  end
+  cache:write(FieldUiFixture.CALLER_BUBBLE_PATH, PngWriter.encode(40, 32, table.concat(bubbleRows)))
+end
+
 -- The retail seven-position interactive selector geometry for the field start
 -- menu: the cancel/header hit rectangle plus the source anchor, label window,
 -- touch hit rectangle, and ordered directional candidate lists for each normal

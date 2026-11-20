@@ -94,13 +94,36 @@ return {
     iconRingingAnim = 5,
     -- The caller-name window on the information screen: source background 5
     -- at tile left 11, top 19, height 2 tiles, with the width capped at 9
-    -- tiles (overlay 27 caller notification geometry).
+    -- tiles (overlay 27 caller notification geometry). The window frame is
+    -- the shared touchscreen menu frame drawn around that window on the SUB
+    -- background char set (TouchscreenMenu_DrawWindowFrame mode 1): a
+    -- three-tile cap whose tail points left at the Pokegear icon, a body
+    -- edge that repeats across the window width, and a one-tile right edge,
+    -- all through palette bank 2. The plate and the name resolve through the
+    -- window's own palette bank 4, through the source text colour
+    -- gTouchscreenMenuTextColors[1] (0x00050403: foreground slot 5, shadow
+    -- slot 4, background slot 3). The source fills the window pixel buffer
+    -- with that colour's low byte, so the background slot is the plate.
+    -- Tile indices are zero-based; the cap and right edge run top to bottom.
     phoneNotification = {
       subBg = 5,
       tileLeft = 11,
       top = 19,
       height = 2,
       maxWidthTiles = 9,
+      framePaletteBank = 2,
+      -- The frame tiles are cut from the touchscreen menu background, so the
+      -- area around the bubble is that background colour rather than the
+      -- reserved transparency slot. The generated bubble is a standalone
+      -- overlay, so the producer keys that source background out; no frame
+      -- pixel inside the bubble uses the slot.
+      frameBackgroundSlot = 6,
+      frameLeftTiles = { 0xA9, 0xAA, 0xAB, 0x64, 0x65, 0x66, 0x84, 0x85, 0x86, 0xA4, 0xA5, 0xA6 },
+      frameRightTiles = { 0xAD, 0x68, 0x88, 0xA8 },
+      frameTopTile = 0xAC,
+      frameBottomTile = 0xA7,
+      textPaletteBank = 4,
+      textColor = { foreground = 5, shadow = 4, background = 3 },
     },
     cursorCharMember = 64,
     cursorPaletteMember = 61,

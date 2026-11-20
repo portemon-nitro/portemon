@@ -18,6 +18,7 @@ local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local PixelScale = require("libs.ui.src.PixelScale")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local StubLease = require("tests.support.StubLease")
 
 local T = {}
 
@@ -81,11 +82,30 @@ local function spyGraphics(sink)
   end
 end
 
+-- Draws the field with the graphics primitives observed into the sink and
+-- returns the sink length the draw started at, so a caller can read exactly
+-- the records one frame appended. The spy is restored before a failure
+-- propagates, so a failing draw never leaves the process-global namespace
+-- patched for the next test.
+---@param state FieldState
+---@param sink table[]
+---@return integer frameStart
+local function drawSpying(state, sink)
+  local restore = spyGraphics(sink)
+  local start = #sink
+  local ok, err = pcall(state.draw, state)
+  restore()
+  if not ok then
+    error(err, 0)
+  end
+  return start
+end
+
 -- A bare FieldState shaped like a live presentation state: fake renderers
 -- recording into the sink, a fake runtime carrying every field draw touches,
 -- and the topology provider under test. The player visual record is
 -- invisible, so the actor assembly never touches a real asset provider.
----@param options { hostStatus: table, dialogueModal?: boolean, signpostModal?: boolean, blackoutStatus?: table, development?: boolean, topology?: ScreenTopology, worldViewport?: table }
+---@param options { hostStatus: table, dialogueModal?: boolean, signpostModal?: boolean, blackoutStatus?: table, development?: boolean, topology?: ScreenTopology, worldViewport?: table, pokegear?: table, companionImages?: table, incomingCalls?: table }
 ---@return FieldState state
 ---@return table[] sink
 local function drawableState(options)
@@ -117,6 +137,7 @@ local function drawableState(options)
       end,
     },
     session = {
+      tick = 32,
       renderAlpha = function()
         return 0.5
       end,
@@ -191,6 +212,22 @@ local function drawableState(options)
         return nil
       end,
     },
+    -- The script-owned companion host and the ambient call coordinator, when
+    -- the scenario presents a script surface or a ringing caller.
+    pokegear = options.pokegear,
+    incomingCalls = options.incomingCalls,
+    imageAssets = options.companionImages ~= nil and {
+      request = function(_, path)
+        return path
+      end,
+      poll = function()
+        return "ready"
+      end,
+      acquire = function(_, path)
+        return assert(options.companionImages[path], "the fixture realizes every companion image")
+      end,
+      release = function() end,
+    } or nil,
     yesNoHost = idleChoiceHost(),
     resizePresentation = function() end,
   }
@@ -214,6 +251,15 @@ local function drawableState(options)
       signpostRenderer = recordingRenderer("signpost", sink),
       startMenuRenderer = recordingRenderer("menu", sink),
       trainerCardRenderer = recordingRenderer("card", sink),
+      -- The incoming-call notice is built on first use in production; the
+      -- fixture hands back a recorder so the dispatch stays observable.
+      callNoticeRenderer = function(_)
+        return {
+          draw = function(_, notice, tick, referenceFrame)
+            sink[#sink + 1] = { "call-notice", notice, tick, referenceFrame }
+          end,
+        }
+      end,
       partyScreenRenderer = recordingRenderer("party", sink),
       monIconProvider = { id = "test-icon-provider" },
       menuRenderer = recordingRenderer("script-menu", sink),
@@ -278,11 +324,7 @@ function T.draw_routes_blackout_message_without_a_dialogue_modal()
   FieldBlackoutRenderer.draw = function(status)
     receivedStatus = status
   end
-  local restore = spyGraphics({})
-  local ok, err = pcall(function()
-    state:draw()
-  end)
-  restore()
+  local ok, err = pcall(drawSpying, state, {})
   FieldBlackoutRenderer.draw = priorDraw
   if not ok then
     error(err, 0)
@@ -298,6 +340,20 @@ local function labels(sink)
   return out
 end
 
+-- The incoming-call notice one frame painted into the sink, or nil when that
+-- frame carried none. `frameStart` is the sink length the frame began at.
+---@param sink table[]
+---@param frameStart integer
+---@return table?
+local function callNoticeDraw(sink, frameStart)
+  for index = #sink, frameStart + 1, -1 do
+    if sink[index][1] == "call-notice" then
+      return sink[index]
+    end
+  end
+  return nil
+end
+
 -- Idle field: the world draws first, then the open dialogue attached to the
 -- world surface, then the developer HUD. No fade, no application surface.
 function T.draw_orders_world_then_dialogue_then_hud_when_the_field_is_idle()
@@ -305,14 +361,7 @@ function T.draw_orders_world_then_dialogue_then_hud_when_the_field_is_idle()
   -- The developer overlay starts hidden; F3 reveals it so the HUD position
   -- in the draw order stays observable.
   state:keypressed("f3")
-  local restore = spyGraphics(sink)
-  local ok, err = pcall(function()
-    state:draw()
-  end)
-  restore()
-  if not ok then
-    error(err, 0)
-  end
+  drawSpying(state, sink)
 
   Assert.deepEqual(labels(sink), {
     "world",
@@ -341,14 +390,7 @@ end
 -- wipe interpolation.
 function T.draw_orders_world_then_signpost_then_hud_when_the_signpost_is_modal()
   local state, sink = drawableState({ hostStatus = { phase = "closed" }, signpostModal = true })
-  local restore = spyGraphics(sink)
-  local ok, err = pcall(function()
-    state:draw()
-  end)
-  restore()
-  if not ok then
-    error(err, 0)
-  end
+  drawSpying(state, sink)
 
   Assert.deepEqual(labels(sink), { "world", "signpost" })
   local signpostCall = sink[2]
@@ -390,14 +432,7 @@ function T.menu_phase_draws_only_the_start_menu_surface_through_its_plan()
     dialogueModal = true,
     signpostModal = true,
   })
-  local restore = spyGraphics(sink)
-  local ok, err = pcall(function()
-    state:draw()
-  end)
-  restore()
-  if not ok then
-    error(err, 0)
-  end
+  drawSpying(state, sink)
 
   -- Settled plans paint no matte: the world draws, then the menu draws
   -- through its plan with no settled fill between them.
@@ -448,14 +483,7 @@ function T.application_phase_draws_the_menu_below_the_card_with_no_fade()
     },
     signpostModal = true,
   })
-  local restore = spyGraphics(sink)
-  local ok, err = pcall(function()
-    state:draw()
-  end)
-  restore()
-  if not ok then
-    error(err, 0)
-  end
+  drawSpying(state, sink)
 
   Assert.deepEqual(labels(sink), { "world", "menu", "card" })
   local menuCall = sink[2]
@@ -480,14 +508,7 @@ function T.application_phase_draws_the_party_surface_through_the_presentation_di
       application = applicationStatus,
     },
   })
-  local restore = spyGraphics(sink)
-  local ok, err = pcall(function()
-    state:draw()
-  end)
-  restore()
-  if not ok then
-    error(err, 0)
-  end
+  drawSpying(state, sink)
 
   Assert.deepEqual(labels(sink), { "world", "menu", "party" })
   local partyCall = sink[3]
@@ -536,14 +557,7 @@ function T.application_phase_layers_the_retained_menu_below_the_child_with_no_fa
       application = applicationStatus,
     },
   })
-  local restore = spyGraphics(sink)
-  local ok, err = pcall(function()
-    state:draw()
-  end)
-  restore()
-  if not ok then
-    error(err, 0)
-  end
+  drawSpying(state, sink)
 
   Assert.deepEqual(labels(sink), { "world", "menu", "card" })
   local menuCall = sink[2]
@@ -552,6 +566,104 @@ function T.application_phase_layers_the_retained_menu_below_the_child_with_no_fa
   local cardCall = sink[3]
   Assert.equal(cardCall[2], applicationStatus, "the trainer card renderer receives the host's application presentation")
   Assert.equal(cardCall[3], state.runtime.viewport, "the card draws into the viewport")
+end
+
+-- A live call started by a script or accepted from a ring draws through the
+-- script host over the field: the published call window render paints the
+-- caller and message plates, the phone card's own plan render never runs,
+-- and its plan images realize through the shared companion image owner.
+function T.a_script_host_call_draws_the_call_window_over_the_field()
+  local upper = "assets/generated/pokegear/phone-upper-skin-0.png"
+  local drawn = nil
+  local plan = {
+    content = { upper = upper },
+    render = function()
+      error("the live call never draws the phone card over the field", 0)
+    end,
+    renderCallWindow = function(resources, snapshot, published)
+      drawn = { resources = resources, snapshot = snapshot, plan = published }
+    end,
+  }
+  local status = { tab = "phone", focus = "phone", view = { call = { name = "ELM" } }, presentation = plan }
+  local state, sink = drawableState({
+    hostStatus = { phase = "closed" },
+    pokegear = {
+      scriptHost = {
+        isActive = function()
+          return true
+        end,
+        status = function()
+          return status
+        end,
+      },
+    },
+    companionImages = { [upper] = StubLease.new("phone-upper") },
+  })
+  drawSpying(state, sink)
+
+  Assert.deepEqual(labels(sink), { "world" })
+  local call = assert(drawn, "the live call draws through its published call window render") --[[@as table]]
+  Assert.equal(call.snapshot, status, "the call window render receives the host's live status")
+  Assert.equal(call.plan, plan, "the call window render receives the published plan")
+  Assert.isTrue(
+    (call.resources --[[@as table]]).images[upper] ~= nil,
+    "the call window realizes its plan images through the companion image owner"
+  )
+end
+
+-- The ringing caller presents the compiled incoming-call notice over the
+-- live field on the field's own fixed tick: the clock arms on the first
+-- published ring and keeps its opening tick while the ring lasts, later
+-- draws only read it, a quiet coordinator paints nothing, and a modal
+-- surface owns the frame instead.
+function T.a_ringing_caller_draws_the_compiled_notice_on_the_field_tick()
+  local notice = nil
+  local state, sink = drawableState({
+    hostStatus = { phase = "closed" },
+    incomingCalls = {
+      notification = function()
+        return notice or false
+      end,
+    },
+  })
+
+  state:_trackIncomingCallNotice()
+  local frameStart = drawSpying(state, sink)
+  Assert.isNil(callNoticeDraw(sink, frameStart), "a quiet coordinator paints no notice")
+
+  notice = { contactKey = "custom.mom", name = "MOM", ringingAnimation = 5 }
+  state:_trackIncomingCallNotice()
+  frameStart = drawSpying(state, sink)
+  local call = assert(callNoticeDraw(sink, frameStart), "the field draws the ringing notice") --[[@as table]]
+  Assert.equal(call[2], notice, "the notice draw receives the live caller view")
+  Assert.equal(call[3], 0, "the first published ring reads tick zero")
+  Assert.equal(call[4], state.runtime.viewport.referenceFrame, "the notice draws in the field reference frame")
+
+  -- Later frames read elapsed field ticks instead of advancing their own
+  -- clock.
+  state.runtime.session.tick = state.runtime.session.tick + 16
+  state:_trackIncomingCallNotice()
+  frameStart = drawSpying(state, sink)
+  local advanced = assert(callNoticeDraw(sink, frameStart), "a live ring keeps painting") --[[@as table]]
+  Assert.equal(advanced[3], 16, "the ring reads the field ticks since the caller appeared")
+
+  -- The open menu owns the frame instead of the notice.
+  local before = #sink
+  state:_drawIncomingCallNotice(state.presentationResources, { menu = {} })
+  Assert.equal(#sink, before, "the open menu owns the frame instead of the notice")
+
+  -- Going quiet and ringing again re-arms the clock at the new field tick
+  -- rather than resuming the expired ring.
+  notice = nil
+  state:_trackIncomingCallNotice()
+  state.runtime.session.tick = state.runtime.session.tick + 40
+  frameStart = drawSpying(state, sink)
+  Assert.isNil(callNoticeDraw(sink, frameStart), "a quiet coordinator paints no notice")
+  notice = { contactKey = "custom.mom", name = "MOM", ringingAnimation = 5 }
+  state:_trackIncomingCallNotice()
+  frameStart = drawSpying(state, sink)
+  local rearmed = assert(callNoticeDraw(sink, frameStart), "the second ring paints again") --[[@as table]]
+  Assert.equal(rearmed[3], 0, "the next ring restarts the field tick")
 end
 
 return { tests = T }

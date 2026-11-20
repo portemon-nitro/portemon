@@ -144,6 +144,7 @@ end
 ---@field _fadeCover { topology: ScreenTopology, main: { x: number, y: number, width: number, height: number }[], both: { x: number, y: number, width: number, height: number }[] }? retained screen-fade cover rectangles, rebuilt only when the topology changes
 ---@field _entryFade StandardFade? one-shot covered-entry reveal, nil when inactive or complete
 ---@field _entryAccumulator number source-frame time held for the covered-entry reveal
+---@field _incomingCallStartTick integer? field fixed tick when the current ring first published a caller
 ---@field development boolean product mode (default) hides the developer overlay; dev mode shows it only after the F3 toggle and unbound keys stay inert
 ---@field _developmentOverlayVisible boolean dev-only overlay visibility, always false at construction
 ---@field _fpsElapsed number active-overlay seconds accumulated toward the current fps sample
@@ -170,6 +171,11 @@ local ENTRY_MAX_CATCH_UP = 6
 -- The developer-overlay sampling window: fps is published from rendered
 -- frames over active-overlay time, never from a host timer.
 local FPS_SAMPLE_SECONDS = 0.5
+
+-- The companion phone's source surface: the call windows present at this
+-- native size inside the host viewport.
+local PHONE_SURFACE_WIDTH = 256
+local PHONE_SURFACE_HEIGHT = 192
 
 ---@param game table<string, unknown> finalized unpublished game or validated loaded GameSave
 ---@param options FieldStateOptions?
@@ -220,6 +226,7 @@ function FieldState.new(game, options)
     _surfAnchor = { x = 0, y = 0, z = 0 },
     _entryFade = options.initialFadeIn == true and StandardFade.new({ direction = "in", color = 0 }) or nil,
     _entryAccumulator = 0,
+    _incomingCallStartTick = nil,
     _starterUiSuspended = false,
     _developmentOverlayVisible = false,
     _fpsElapsed = 0,
@@ -442,6 +449,7 @@ function FieldState:update(dt)
   self:_advanceStarterPreparation()
   self:_syncStarterPresentationInput()
   self:_advanceEntryCover(dt)
+  self:_trackIncomingCallNotice()
   self._actorDesiredReady =
     assert(self.actorPresentation, "field actor presentation is unavailable"):sync(self:_continuesWorld())
   self:_updateGameplayHold()
@@ -1268,6 +1276,43 @@ function FieldState:_drawPokegearApplication(resources, appStatus)
   end
 end
 
+-- Draws a live script-started or accepted call over the field: the
+-- phone's information plates carry the caller name and the current
+-- message page at their source window coordinates, with an owed choice
+-- menu in its shared frame beside them. The card's contact list, strip,
+-- and sprites never paint here, so the field stays visible around the
+-- call. Only the planes this surface draws realize through the shared
+-- image owner, never the card's own planes; the draw allocates nothing.
+---@param resources FieldPresentationResources
+---@param appStatus table<string, unknown> the script host status
+function FieldState:_drawPhoneCallWindow(resources, appStatus)
+  local plan = assert(appStatus.presentation, "the live call publishes its plan") --[[@as table<string, unknown>]]
+  local render = plan.renderCallWindow
+  if type(render) ~= "function" then
+    return
+  end
+  local content = assert(plan.content, "the live call plan carries its payload") --[[@as table<string, unknown>]]
+  local graphics = assert(love and love.graphics, "companion drawing requires its host graphics namespace")
+  local images = self:_realizeCompanionImages({ content.upper, content.menuTiles })
+  local viewport = assert(self.runtime.viewport, "field presentation needs its viewport")
+  local placement = assert(
+    PixelScale.placeFixed(
+      { x = 0, y = 0, width = viewport.width, height = viewport.height },
+      PHONE_SURFACE_WIDTH,
+      PHONE_SURFACE_HEIGHT
+    ),
+    "the phone call window needs its placement record"
+  )
+  LogicalSurface.draw(graphics, placement, function()
+    (render --[[@as fun(resources: table, snapshot: table, plan: table)]])({
+      graphics = graphics,
+      images = images,
+      textRenderer = resources.textRenderer,
+      phoneNameTextRenderer = resources.phoneNameTextRenderer,
+    }, appStatus, plan)
+  end)
+end
+
 -- Draws the script-owned Town map and Fly selector through the shared
 -- presentation pipeline: the plan carries its own leaf renderer and
 -- content, framed by nothing. Statuses without a view or plan draw
@@ -1290,21 +1335,25 @@ function FieldState:_drawScriptFlyMap(resources, appStatus)
   }, appStatus, plan)
 end
 
--- Draws the incoming-call caller window while the coordinator rings: the
--- view is read once per frame and the source tile window renders through
--- the shared placement, window, and text primitives. Modal application
--- surfaces own the frame instead. Nothing is retained, so hiding, closing,
--- or disposal clears the banner by itself. No audio or call policy lives
--- here.
+-- Draws the incoming-call notice while the coordinator rings: the shared
+-- touchscreen-menu Pokegear icon playing the source ringing animation, and
+-- the compiled source caller bubble beside it carrying the caller's name.
+-- The view is read once per frame; the ring tick is the field's own fixed
+-- tick since the notice appeared, so the draw never advances timing. The
+-- source shows this on the touchscreen menu, which this host has no
+-- auxiliary surface for, so it presents over the field itself. Modal
+-- application surfaces own the frame instead, and nothing is retained, so
+-- hiding, closing, or disposal clears the notice by itself. No audio or
+-- call policy lives here.
 ---@param resources FieldPresentationResources
 ---@param hostStatus table<string, unknown>?
-function FieldState:_drawIncomingCallBanner(resources, hostStatus)
+function FieldState:_drawIncomingCallNotice(resources, hostStatus)
   if hostStatus ~= nil and (hostStatus.menu or hostStatus.application) then
     return
   end
   local runtime = assert(self.runtime, "field presentation needs its runtime")
   -- An accepted or scripted companion call owns the foreground instead:
-  -- the banner yields to the live call surface.
+  -- the notice yields to the live call surface.
   local gearBundle = runtime.pokegear
   local scriptHost = type(gearBundle) == "table" and gearBundle.scriptHost or nil
   if scriptHost ~= nil and scriptHost:isActive() then
@@ -1315,49 +1364,35 @@ function FieldState:_drawIncomingCallBanner(resources, hostStatus)
   if coordinator == nil then
     return
   end
-  local view = coordinator:notification()
-  if type(view) ~= "table" then
+  local notice = coordinator:notification()
+  if type(notice) ~= "table" then
     return
   end
-  if type(view.sourceWindow) ~= "table" then
-    return
-  end
-  ---@type { tileLeft: integer, top: integer, height: integer, width: integer }
-  local window = view.sourceWindow
-  local windowRenderer = resources.windowRenderer
-  local textRenderer = resources.textRenderer
-  if windowRenderer == nil or textRenderer == nil then
-    return
-  end
-  local box = {
-    x = window.tileLeft * 8,
-    y = window.top * 8,
-    width = window.width * 8,
-    height = window.height * 8,
-  }
-  local name = view.name
-  if type(name) ~= "string" then
-    if type(view.nameTokens) == "table" then
-      name = table.concat(view.nameTokens)
-    else
-      return
-    end
-  end
-  local playerData = assert(runtime.playerData, "field presentation needs its player data")
-  local options = assert(playerData.options, "field presentation needs its player options")
-  local frameIndex = assert(options.textFrame, "field presentation needs its player frame") --[[@as integer]]
-  local background = textRenderer:windowBackgroundColor()
   local viewport = assert(runtime.viewport, "field presentation needs its viewport")
-  local width, height = viewport.width, viewport.height
-  local placement = assert(
-    PixelScale.placeFixed({ x = 0, y = 0, width = width, height = height }, 256, 192),
-    "the caller window needs its placement record"
-  )
-  local lg = love.graphics
-  LogicalSurface.draw(lg, placement, function()
-    windowRenderer:drawWindow(box, frameIndex, background)
-    textRenderer:drawText(name, box.x + 4, box.y)
-  end)
+  local tick = 0
+  local startTick = self._incomingCallStartTick
+  local session = runtime.session
+  if startTick ~= nil and session ~= nil then
+    tick = session.tick - startTick
+  end
+  resources:callNoticeRenderer():draw(notice, tick, viewport.referenceFrame)
+end
+
+-- Arms the incoming-call notice clock when the coordinator first publishes a
+-- caller: the ringing animation is a function of the field's fixed tick, so
+-- the first published frame reads tick zero and later draws only read it.
+function FieldState:_trackIncomingCallNotice()
+  local runtime = self.runtime
+  local coordinator = runtime ~= nil and runtime.incomingCalls or nil
+  local session = runtime ~= nil and runtime.session or nil
+  local notice = coordinator ~= nil and coordinator:notification() or false
+  if type(notice) == "table" and session ~= nil then
+    if self._incomingCallStartTick == nil then
+      self._incomingCallStartTick = session.tick
+    end
+    return
+  end
+  self._incomingCallStartTick = nil
 end
 
 -- The retained dialogue presentation geometry: recomputed only when the
@@ -1656,7 +1691,7 @@ function FieldState:draw()
   if overworldPresent or blackoutMessageActive then
     self:_drawFieldAttachedUi(resources, hostStatus, alpha)
   end
-  self:_drawIncomingCallBanner(resources, hostStatus)
+  self:_drawIncomingCallNotice(resources, hostStatus)
   -- Each present application surface draws in order: the retained Start
   -- Menu through its resolved presentation plan, then the foreground
   -- field application owned by the presentation dispatch. The retained
@@ -1711,16 +1746,16 @@ function FieldState:draw()
   end
   -- The script-owned companion child draws through the shared companion
   -- pipeline above the field's own covers: an accepted incoming call or a
-  -- scripted phone call owns the foreground while it is live, and the Town
-  -- map and Fly selector draw through their own plan when the lease holds
-  -- them instead. The card replaces the field presentation, so a field
-  -- cover never hides it; this site never prepares or steps the child.
+  -- scripted phone call presents its caller and message windows over the
+  -- live field, and the Town map and Fly selector draw through their own
+  -- plan when the lease holds them instead. This site never prepares or
+  -- steps the child.
   local gearBundle = self.runtime.pokegear
   local scriptHost = type(gearBundle) == "table" and gearBundle.scriptHost or nil
   if scriptHost ~= nil and scriptHost:isActive() then
     local scriptStatus = assert(scriptHost:status(), "active companion host publishes its status")
     if scriptStatus.tab == "phone" then
-      self:_drawPokegearApplication(resources, scriptStatus)
+      self:_drawPhoneCallWindow(resources, scriptStatus)
     elseif type(scriptStatus.view) == "table" and type(scriptStatus.presentation) == "table" then
       self:_drawScriptFlyMap(resources, scriptStatus)
     end
@@ -2401,6 +2436,7 @@ function FieldState:dispose()
   end
   self._entryFade = nil
   self._entryAccumulator = 0
+  self._incomingCallStartTick = nil
   -- Borrowers release before their owner: the envelope drops its live
   -- screen and removes only its own factory binding while the runtime
   -- binding is still installed; the runtime teardown follows.

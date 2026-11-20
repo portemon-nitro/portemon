@@ -1073,8 +1073,6 @@ function T.options_backdrops_require_the_two_indexed_roles()
   Assert.equal(overlayEntry.width, 256, "the selected-row strip width")
   Assert.equal(overlayEntry.height, 30, "the selected-row strip height")
   Assert.isTrue(FieldUiAssetCache.validateManifest(manifest), "the indexed backdrops and strip validate")
-  Assert.equal(FieldUiAssetCache.SCHEMA, "g4-field-ui-v28")
-  Assert.equal(DerivedAssetContract.fieldUi.schema, "g4-field-ui-v28")
   local cases = {
     ["missing preview role"] = function(o)
       o.backdrops.preview = nil
@@ -1406,6 +1404,39 @@ function T.player_subject_without_anchor_is_rejected_as_invalid_manifest()
   local ok, err = FieldUiAssetCache.validateManifest(manifest)
   Assert.isFalse(ok, "a subject without its source anchor must fail")
   Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID", "the owned error names the malformed anchor")
+end
+
+-- The incoming-call projection is a strict generated record once a class
+-- advertises a caller notice: the ringing animation and the caller bubble
+-- with its indexed slices and opaque plate/name roles must all be present,
+-- so a stale class that predates the caller bubble fails readiness.
+function T.phone_notification_requires_the_caller_bubble()
+  local function withCall()
+    return FieldUiFixture.addStartMenuPhoneNotification(validManifest())
+  end
+  Assert.isTrue(FieldUiAssetCache.validateManifest(withCall()), "the compiled call projection validates")
+  local cases = {
+    ["missing bubble"] = function(m)
+      m.startMenu.phoneNotification.bubble = nil
+    end,
+    ["unindexed ringing atlas"] = function(m)
+      m.startMenu.phoneNotification.ringing.asset = "hgss.start_menu.unknown"
+    end,
+    ["slice escapes its atlas"] = function(m)
+      m.startMenu.phoneNotification.bubble.left.rect.x = 30
+    end,
+    ["transparent plate"] = function(m)
+      m.startMenu.phoneNotification.bubble.plate.a = 0
+    end,
+    ["missing name shadow"] = function(m)
+      m.startMenu.phoneNotification.bubble.name.shadow = nil
+    end,
+  }
+  for name, mutate in pairs(cases) do
+    local stale = withCall()
+    mutate(stale)
+    Assert.isFalse(FieldUiAssetCache.validateManifest(stale), "a stale call projection is rejected: " .. name)
+  end
 end
 
 return { tests = T }

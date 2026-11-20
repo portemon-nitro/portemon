@@ -16,7 +16,6 @@ local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
 local PokegearCalendar = require("game.hgss.src.pokegear.PokegearCalendar")
 local PokegearState = require("libs.hgss.src.save.PokegearState")
-local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 ---@class IncomingCalls
 ---@field private _state table<string, unknown> the borrowed durable companion owner
@@ -74,17 +73,6 @@ IncomingCalls.DAYCARE_MAN_CONTACT_ID = 6
 -- (_020F677C): the single chunk table lives on the save owner and is
 -- borrowed here, so validation and selection can never disagree.
 local CHUNK_SIZES = PokegearState.HISTORY_CHUNK_SIZES
--- Caller-name window geometry on the field information screen, in source
--- tiles: left 11, top 19, height 2, width capped at 9 tiles.
-IncomingCalls.WINDOW_TILE_LEFT = 11
-IncomingCalls.WINDOW_TOP = 19
-IncomingCalls.WINDOW_HEIGHT = 2
-IncomingCalls.WINDOW_MAX_WIDTH = 9
--- Per-glyph width estimate behind the caller window while no font owner is
--- composed: the field font fallback advance. The retained menu art carries
--- no per-name metrics, so the policy sizes the window from the name and
--- the presentation draws the sized window.
-IncomingCalls.FALLBACK_ADVANCE = 4
 
 ---@param message string
 ---@param context table<string, unknown>?
@@ -98,16 +86,6 @@ end
 ---@return integer seconds since the serial epoch
 local function epochSeconds(moment)
   return PokegearCalendar.epochSeconds(moment)
-end
-
----@param name string
----@return integer the glyph count
-local function glyphCount(name)
-  local count = 0
-  for _ in Utf8Glyphs.iter(name) do
-    count = count + 1
-  end
-  return count
 end
 
 ---@class IncomingCallsOptions
@@ -925,10 +903,12 @@ function IncomingCalls:accept(parentOwner)
 end
 
 -- Borrows the detached notification view: false while silent, otherwise
--- the caller key, display name, shared ringing animation, and source
--- caller window. Reading the view draws no randomness and mutates
--- nothing. The view carries no art of its own.
----@return false|{ contactKey: string, name: string, nameTokens: string[], ringingAnimation: integer, sourceWindow: { tileLeft: integer, top: integer, height: integer, width: integer } }
+-- the caller key, display name, and the shared ringing animation. Reading
+-- the view draws no randomness and mutates nothing. The view carries no art
+-- and no window geometry of its own: the compiled field-UI class owns the
+-- caller bubble and the source window it frames, and the presentation sizes
+-- that window from the caller name.
+---@return false|{ contactKey: string, name: string, ringingAnimation: integer }
 function IncomingCalls:notification()
   if self._disposed then
     return false
@@ -951,21 +931,10 @@ function IncomingCalls:notification()
       name = record.label
     end
   end
-  local width = math.floor((glyphCount(name) * IncomingCalls.FALLBACK_ADVANCE) / 8) + 2
-  if width > IncomingCalls.WINDOW_MAX_WIDTH then
-    width = IncomingCalls.WINDOW_MAX_WIDTH
-  end
   return {
     contactKey = pending.contactKey,
     name = name,
-    nameTokens = { name },
     ringingAnimation = IncomingCalls.RINGING_ANIMATION,
-    sourceWindow = {
-      tileLeft = IncomingCalls.WINDOW_TILE_LEFT,
-      top = IncomingCalls.WINDOW_TOP,
-      height = IncomingCalls.WINDOW_HEIGHT,
-      width = width,
-    },
   }
 end
 

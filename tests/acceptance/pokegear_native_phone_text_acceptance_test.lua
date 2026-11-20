@@ -221,7 +221,6 @@ function T.tests.phone_rows_banner_and_call_pages_share_one_rom_text_path()
     bannerContact = assert(bannerContact, "the incoming banner caller resolves through the native phonebook")
     Assert.equal(notice.name, sourceName(game, bannerContact), "the banner uses the caller bank's entry-zero name")
     Assert.isFalse(notice.name == notice.contactKey, "the incoming banner never exposes an internal caller key")
-    Assert.equal(notice.nameTokens[1], notice.name, "the banner text token carries its resolved caller name")
   end, { localClock = clock })
 end
 

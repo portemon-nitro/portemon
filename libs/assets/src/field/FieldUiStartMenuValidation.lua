@@ -322,7 +322,7 @@ local function checkPhoneNotification(notification, atlases)
   if type(notification) ~= "table" then
     reject("startMenu.phoneNotification must be a table", {})
   end
-  demandCount(notification, 2, "startMenu.phoneNotification requires exactly window and ringing", {})
+  demandCount(notification, 3, "startMenu.phoneNotification requires exactly window, ringing, and bubble", {})
   local window = notification.window
   if type(window) ~= "table" then
     reject("startMenu.phoneNotification.window must be a table", {})
@@ -334,6 +334,41 @@ local function checkPhoneNotification(notification, atlases)
       height = window.height,
       maxWidth = window.maxWidth,
     })
+  end
+  local bubble = notification.bubble
+  if type(bubble) ~= "table" then
+    reject("startMenu.phoneNotification.bubble must be a table", {})
+  end
+  if type(bubble.asset) ~= "string" or atlases[bubble.asset] == nil then
+    reject("startMenu.phoneNotification.bubble must reference an indexed asset", {})
+  end
+  for _, key in ipairs({ "left", "right", "top", "bottom" }) do
+    local slice = bubble[key]
+    if type(slice) ~= "table" then
+      reject("startMenu.phoneNotification.bubble." .. key .. " must be a slice", {})
+    end
+    checkAtlasRect(slice.rect, atlases, bubble.asset, "startMenu.phoneNotification.bubble." .. key)
+  end
+  for _, role in ipairs({ "plate", "name" }) do
+    local record = bubble[role]
+    if type(record) ~= "table" then
+      reject("startMenu.phoneNotification.bubble." .. role .. " must be a color record", {})
+    end
+  end
+  local function checkBubbleColor(color, what)
+    if type(color) ~= "table" then
+      reject(what .. " must be a color", {})
+    end
+    for _, component in ipairs({ "r", "g", "b" }) do
+      checkInteger(color[component], 0, 255, what .. "." .. component .. " must be an integral byte 0..255", {})
+    end
+    if color.a ~= 1 then
+      reject(what .. " must be opaque", {})
+    end
+  end
+  checkBubbleColor(bubble.plate, "startMenu.phoneNotification.bubble.plate")
+  for _, role in ipairs({ "foreground", "shadow" }) do
+    checkBubbleColor(bubble.name[role], "startMenu.phoneNotification.bubble.name." .. role)
   end
   local ringing = notification.ringing
   if type(ringing) ~= "table" then

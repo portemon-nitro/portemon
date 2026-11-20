@@ -841,6 +841,65 @@ local function regionsDiffer(data, first, second)
   return changed
 end
 
+-- The compiled call plates occupy the lower band of the information
+-- plane: the source windows[0,1] boxes at y128 and y152 with their
+-- surrounding plate art, transparent above. Fixture planes carry the
+-- same shape so a window draw that paints anywhere else shows up.
+local CALL_PLATE_BAND = { x = 2, y = 120, width = 251, height = 68 }
+
+---@param scope table
+---@return table plate image
+local function callPlateImage(scope)
+  local canvas = scope:own(love.graphics.newCanvas(256, 192))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  love.graphics.setColor(0.2, 0.4, 0.9, 1)
+  love.graphics.rectangle(
+    "fill",
+    CALL_PLATE_BAND.x,
+    CALL_PLATE_BAND.y,
+    CALL_PLATE_BAND.width,
+    CALL_PLATE_BAND.height
+  )
+  love.graphics.setCanvas()
+  return scope:own(love.graphics.newImage(scope:own(canvas:newImageData())))
+end
+
+-- Draws one published plan entry into a transparent source-sized canvas
+-- so a capture shows exactly the pixels that entry paints.
+---@param scope table
+---@param plan table
+---@param entry string
+---@param snapshot table
+---@param resources table
+---@return table imageData
+local function drawPlanEntry(scope, plan, entry, snapshot, resources)
+  local canvas = scope:own(love.graphics.newCanvas(256, 192))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  love.graphics.setColor(1, 1, 1, 1)
+  local render = assert(plan[entry], "the published plan carries its " .. entry .. " render")
+  render(resources, snapshot, plan)
+  love.graphics.setCanvas()
+  return scope:own(canvas:newImageData())
+end
+
+---@param data table
+---@param rect table
+---@return integer opaque
+local function opaquePixels(data, rect)
+  local opaque = 0
+  for y = rect.y, rect.y + rect.height - 1 do
+    for x = rect.x, rect.x + rect.width - 1 do
+      local _, _, _, alpha = data:getPixel(x, y)
+      if alpha > 0 then
+        opaque = opaque + 1
+      end
+    end
+  end
+  return opaque
+end
+
 -- Selected and alternating rows keep their own text colors, and skins
 -- repaint from prepared assets: one cross-skin diff proves the skin
 -- select moves pixels, selection moves the band and text pixels, and
@@ -925,6 +984,64 @@ function T.call_text_colors_follow_source_across_skins(scope)
     changedPixels(repeated, settled, { x = 0, y = 0, width = 256, height = 192 }),
     0,
     "redrawing a settled call without a tick changes no pixel"
+  )
+  controller:dispose()
+end
+
+-- A live call presented over a host surface paints only the compiled call
+-- plates: the caller name and the current message page at their source
+-- window coordinates, plus an owed choice in its shared list-menu frame.
+-- Nothing of the phone card paints around them, so a host field stays
+-- visible behind the call.
+function T.call_window_paints_only_the_source_call_plates(scope)
+  local contacts, order = sortingFixture()
+  local manifest = fixtureManifest(contacts, order)
+  local resources = renderResources(scope, manifest)
+
+  local controller = openPhone(manifest, 0)
+  local status = assert(controller:status(), "the phone card publishes its status") --[[@as table]]
+  local plan = assert(status.presentation, "the phone card publishes its plan") --[[@as table]]
+  local content = assert(plan.content, "the plan carries its resolved payload") --[[@as table]]
+  Assert.isTrue(type(plan.renderCallWindow) == "function", "the plan publishes the call window render")
+
+  -- The generated information plane carries the call plates only and
+  -- stays transparent above them, exactly like the compiled art.
+  local upperPath = assert(content.upper, "the plan resolves its information plane") --[[@as string]]
+  resources.images[upperPath] = StubLease.over(callPlateImage(scope))
+
+  local call = { name = "ELM", lines = { { text = "HELLO THERE" } }, page = 1 }
+  local platesOnly = drawPlanEntry(scope, plan, "renderInformation", { view = {} }, resources)
+  local painted = drawPlanEntry(scope, plan, "renderCallWindow", { view = { call = call } }, resources)
+  Assert.isTrue(
+    opaquePixels(painted, { x = 0, y = 0, width = 256, height = CALL_PLATE_BAND.y }) == 0,
+    "the call window paints nothing above the plates"
+  )
+  Assert.isTrue(
+    opaquePixels(painted, CALL_PLATE_BAND) > 0,
+    "the call window paints the compiled plates"
+  )
+  local nameWindow = { x = 32, y = 128, width = 72, height = 16 }
+  local speechWindow = { x = 16, y = 152, width = 216, height = 32 }
+  Assert.isTrue(
+    changedPixels(platesOnly, painted, nameWindow) > 0,
+    "the caller name prints in its source window"
+  )
+  Assert.isTrue(
+    changedPixels(platesOnly, painted, speechWindow) > 0,
+    "the message prints in its source window"
+  )
+
+  -- An owed choice paints the shared list-menu frame beside the plates.
+  local menuFrame = { x = 56, y = 88, width = 176, height = 56 }
+  local choice = drawPlanEntry(scope, plan, "renderCallWindow", {
+    view = {
+      call = call,
+      callMenu = { options = { "YES", "NO" }, cursor = 0, frame = { x = 7, y = 11, width = 22, height = 7 } },
+    },
+  }, resources)
+  Assert.isTrue(
+    changedPixels(painted, choice, menuFrame) > 0,
+    "an owed choice paints its shared list-menu frame"
   )
   controller:dispose()
 end

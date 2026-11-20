@@ -902,4 +902,27 @@ function PokegearPhoneRenderer.drawInformation(resources, view, content)
   graphics.setColor(1, 1, 1, 1)
 end
 
+-- Draws a live call over a host surface that is not the phone card: the
+-- information plates carry the caller name and the current message page
+-- at their source window coordinates, and an owed choice paints its
+-- shared list-menu frame beside them. The card's own foreground plane,
+-- contact list, sprite, and strip never paint here, so the host's own
+-- pixels stay visible around the call. Reads only; draws
+-- deterministically with no allocation.
+---@param resources table<string, unknown> borrowed host collaborators
+---@param view table<string, unknown> the detached phone view
+---@param content table<string, unknown> the plan payload with resolved paths
+function PokegearPhoneRenderer.drawCallWindow(resources, view, content)
+  PokegearPhoneRenderer.drawInformation(resources, view, content)
+  local callMenu = view.callMenu
+  if type(callMenu) ~= "table" then
+    return
+  end
+  local graphics = assert(resources.graphics, "the phone render borrows its host graphics") --[[@as love.graphics]]
+  local images = assert(resources.images, "the phone render borrows its prepared images") --[[@as table<string, unknown>]]
+  local text = resources.textRenderer
+  drawMenu(graphics, images, text --[[@as table<string, unknown>?]], callMenu --[[@as table<string, unknown>]], content)
+  graphics.setColor(1, 1, 1, 1)
+end
+
 return PokegearPhoneRenderer

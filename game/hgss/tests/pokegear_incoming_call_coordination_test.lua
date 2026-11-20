@@ -455,6 +455,8 @@ function T.tests.incoming_calls_wait_for_ten_whole_minutes_then_follow_exact_sou
     Assert.notNil(view, "ten live minutes reach the threshold and ring")
     assert(type(view) == "table", "ringing publishes its caller view")
     Assert.equal(view.contactKey, MOM_KEY, "the pending trigger selects its owning caller")
+    Assert.equal(view.name, "MOM", "the caller view carries the contact's display name")
+    Assert.equal(view.ringingAnimation, 5, "ringing selects the shared source ringing animation")
     checkTrace(rig.trace, { "lc" }, "trigger selection")
     local expectedPick = PokegearRandom.new(4242):lc("independent")
     Assert.equal(rig.trace[1].value, expectedPick, "the trigger pick matches the independent linear replay")

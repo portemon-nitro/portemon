@@ -230,6 +230,22 @@ local function renderPhoneInformation(resources, snapshot, plan)
   PokegearPhoneRenderer.drawInformation(resources, view --[[@as table<string, unknown>]], plan.content)
 end
 
+-- The field call entry: the live caller plates and message with the owed
+-- choice menu, drawn over whatever the host already painted. The field
+-- presents scripted and accepted calls with this instead of the card, so
+-- the live field stays visible around the call.
+---@param resources table<string, unknown> borrowed host collaborators
+---@param snapshot table<string, unknown> the card status carrying the detached view
+---@param plan table<string, unknown> the published plan carrying the payload
+local function renderPhoneCallWindow(resources, snapshot, plan)
+  local PokegearPhoneRenderer = require("libs.hgss.src.presentation.PokegearPhoneRenderer")
+  local view = assert(
+    (snapshot --[[@as table<string, unknown>]]).view,
+    "the phone call window render reads the published child view"
+  )
+  PokegearPhoneRenderer.drawCallWindow(resources, view --[[@as table<string, unknown>]], plan.content)
+end
+
 ---@class PhoneController.Options
 ---@field state table<string, unknown> the durable companion owner
 ---@field catalog table<string, unknown> the borrowed contact catalog
@@ -1616,6 +1632,7 @@ function PhoneController:status()
     content = content,
     render = renderPhonePresentation,
     renderInformation = renderPhoneInformation,
+    renderCallWindow = renderPhoneCallWindow,
   }
   return {
     open = true,

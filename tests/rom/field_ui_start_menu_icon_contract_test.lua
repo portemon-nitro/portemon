@@ -37,8 +37,17 @@ local function memberBytes(romFs, archive, memberId)
   return bytes
 end
 
+-- The whole field-UI compilation is pure and costs a full pass over the
+-- dump, so every test here shares one bundle per open source reader instead
+-- of recompiling the same corpus.
+local compiledBundles = setmetatable({}, { __mode = "k" })
+
 local function compiledStartMenu(romFs)
-  local bundle = assert(FieldUiCompiler.compile(romFs))
+  local bundle = compiledBundles[romFs]
+  if bundle == nil then
+    bundle = assert(FieldUiCompiler.compile(romFs))
+    compiledBundles[romFs] = bundle
+  end
   local startMenu = assert(bundle.manifest.startMenu, "the compiled field UI must publish the start menu section")
   return bundle, startMenu
 end
@@ -486,6 +495,86 @@ function T.labels_resolve_through_the_sub_palette_bank(romFs, version)
   Assert.equal(labelPalette.shadow.a, 1, version .. " label shadow stays opaque")
   Assert.equal(labelPalette.background.a, 0, version .. " label background stays transparent over chrome")
   Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest))
+end
+
+-- The incoming-call projection: the ringing animation publishes the shared
+-- source frames, and the caller bubble is the source window frame sliced into
+-- repeatable edges. The panel background around the bubble is keyed to
+-- transparency so the notice can present over the field, and the plate and
+-- name roles resolve through the window palette bank the source prints with.
+function T.phone_notification_compiles_the_caller_bubble_from_source_frame_tiles(romFs, version)
+  local startMenu = selection()
+  local palette, paletteErr = G2dDecoder.decodePalette(
+    memberBytes(romFs, startMenu.alias, startMenu.subBackgroundPaletteMember),
+    { label = "start menu sub palette" }
+  )
+  assert(palette, paletteErr and paletteErr.message)
+  local function slot(bank, slotId)
+    return assert(
+      palette.colors[bank * 16 + slotId + 1],
+      version .. " SUB palette bank " .. bank .. " slot " .. slotId .. " exists"
+    )
+  end
+  local bundle, compiled = compiledStartMenu(romFs)
+  local notification = assert(compiled.phoneNotification, version .. " start menu section carries the call projection")
+  Assert.equal(
+    notification.ringing.asset,
+    FieldUiAssetCache.ASSET.START_MENU_RINGING,
+    version .. " the ring references the shared ringing atlas"
+  )
+  Assert.isTrue(#notification.ringing.frames > 1, version .. " the ringing animation carries several source frames")
+  Assert.equal(notification.ringing.playMode, "forward_loop", version .. " the ringing animation loops")
+  assert(assetBytes(bundle, FieldUiAssetCache.ASSET.START_MENU_RINGING))
+
+  local bubble = assert(notification.bubble, version .. " the call projection carries the caller bubble")
+  Assert.equal(
+    bubble.asset,
+    FieldUiAssetCache.ASSET.START_MENU_CALLER_BUBBLE,
+    version .. " the bubble references its compiled atlas"
+  )
+  local bubbleAsset, bytes = assetBytes(bundle, bubble.asset)
+  local width, height, rgba = PngReader.rgba(bytes)
+  Assert.equal(width, bubbleAsset.width, version .. " the emitted bubble atlas matches its declared width")
+  Assert.equal(height, bubbleAsset.height, version .. " the emitted bubble atlas matches its declared height")
+  for _, key in ipairs({ "left", "right", "top", "bottom" }) do
+    local rect = assert(bubble[key] and bubble[key].rect, version .. " the bubble carries its " .. key .. " slice")
+    local opaque = 0
+    for y = rect.y, rect.y + rect.height - 1 do
+      for x = rect.x, rect.x + rect.width - 1 do
+        local _, _, _, a = PngReader.pixel(rgba, width, x, y)
+        if a > 0 then
+          opaque = opaque + 1
+        end
+      end
+    end
+    Assert.isTrue(opaque > 0, version .. " the caller bubble " .. key .. " slice carries source art")
+  end
+  -- The source frame tiles are cut from the touchscreen menu background, so
+  -- the generated overlay keys that background to transparency; the panel
+  -- color must never reach the field.
+  local _, _, _, cornerAlpha = PngReader.pixel(rgba, width, 0, 0)
+  Assert.equal(cornerAlpha, 0, version .. " the caller bubble keys the menu background out")
+
+  local notificationCfg = assert(startMenu.phoneNotification, "the producer selects the call projection")
+  local textColor = assert(notificationCfg.textColor, "the producer selects the source text colour")
+  local plate = slot(notificationCfg.textPaletteBank, textColor.background)
+  local ink = slot(notificationCfg.textPaletteBank, textColor.foreground)
+  local shadow = slot(notificationCfg.textPaletteBank, textColor.shadow)
+  Assert.deepEqual(
+    { bubble.plate.r, bubble.plate.g, bubble.plate.b },
+    { plate.r, plate.g, plate.b },
+    version .. " the plate is the source window background slot"
+  )
+  Assert.deepEqual(
+    { bubble.name.foreground.r, bubble.name.foreground.g, bubble.name.foreground.b },
+    { ink.r, ink.g, ink.b },
+    version .. " the name uses the source foreground slot"
+  )
+  Assert.deepEqual(
+    { bubble.name.shadow.r, bubble.name.shadow.g, bubble.name.shadow.b },
+    { shadow.r, shadow.g, shadow.b },
+    version .. " the name uses the source shadow slot"
+  )
 end
 
 return require("tests.rom.support.RomSuite").fromFacts(T)

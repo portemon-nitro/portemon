@@ -223,6 +223,7 @@ function PokegearScriptHost:open(args)
     world = self._world,
     audio = self._audio,
     random = self._random,
+    assets = self._assets,
     request = {
       id = request.id,
       contact = request.contact,

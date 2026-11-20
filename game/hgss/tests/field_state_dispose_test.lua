@@ -88,6 +88,9 @@ local function disposableState()
     dialogueRenderer = fakeResource("release"),
     signpostRenderer = fakeResource("release"),
     startMenuRenderer = fakeResource("release"),
+    -- The incoming-call notice is built on first use in production and is
+    -- owned by the presentation once it exists.
+    callNoticeRenderer = fakeResource("release"),
     trainerCardRenderer = fakeResource("release"),
     fieldEntranceIndicatorRenderer = fakeResource("dispose"),
     fieldSurfRenderer = fakeResource("dispose"),
@@ -130,6 +133,7 @@ local function disposableState()
     dialogueRenderer = resources.dialogueRenderer,
     signpostRenderer = resources.signpostRenderer,
     startMenuRenderer = resources.startMenuRenderer,
+    _callNoticeRenderer = resources.callNoticeRenderer,
     trainerCardRenderer = resources.trainerCardRenderer,
     fieldEntranceIndicatorRenderer = resources.fieldEntranceIndicatorRenderer,
     fieldSurfRenderer = resources.fieldSurfRenderer,
@@ -160,6 +164,7 @@ function T.dispose_releases_each_resource_without_saving()
   Assert.equal(resources.dialogueRenderer.calls, 1)
   Assert.equal(resources.signpostRenderer.calls, 1, "disposal releases the signpost renderer once")
   Assert.equal(resources.startMenuRenderer.calls, 1, "disposal releases the start menu renderer once")
+  Assert.equal(resources.callNoticeRenderer.calls, 1, "disposal releases the incoming-call notice once")
   Assert.equal(resources.trainerCardRenderer.calls, 1, "disposal releases the trainer card renderer once")
   Assert.equal(resources.monIconProvider.calls, 1, "disposal releases the party icon atlas once")
   Assert.equal(resources.messageProvider.calls, 1)
@@ -184,6 +189,7 @@ function T.dispose_is_a_no_op_on_repeat_calls()
   Assert.equal(resources.saveStore.calls, 0)
   Assert.equal(resources.signpostRenderer.calls, 1, "repeat disposal never releases the signpost renderer twice")
   Assert.equal(resources.startMenuRenderer.calls, 1, "repeat disposal never releases the start menu renderer twice")
+  Assert.equal(resources.callNoticeRenderer.calls, 1, "repeat disposal never releases the call notice twice")
   Assert.equal(resources.trainerCardRenderer.calls, 1, "repeat disposal never releases the trainer card renderer twice")
 end
 

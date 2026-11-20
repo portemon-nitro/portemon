@@ -424,9 +424,14 @@ DerivedAssetContract.fieldEmotes = {
 -- left-pointing selection marker extracted from the selected pill
 -- overhang) the authored volume and battle-speed rails point with. A
 -- stale cache without them must fail readiness.
+-- fieldUi schema 29: the incoming-call notification projection carries the
+-- caller window's compiled frame bubbles (the source touchscreen menu frame
+-- around the caller window, sliced into repeatable edges with their plate
+-- and name roles), so a stale cache without the caller bubble art must fail
+-- readiness.
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v28",
+  schema = "g4-field-ui-v29",
 }
 
 -- The field-entry family carries the nine map-name banner skins and the

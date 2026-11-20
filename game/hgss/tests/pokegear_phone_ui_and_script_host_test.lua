@@ -83,26 +83,35 @@ local function visualRef(path)
 end
 
 -- The required phone call-dim roles beside the panel stub: the suites
--- below never paint the phone, but the generated family identity
--- requires the dim roles on every validating manifest.
+-- below never paint the phone card, but the generated family identity
+-- requires the dim roles on every validating manifest, and a presented
+-- call resolves its plates and window palette through the same family.
 local function phoneDimSection()
   local section = {
     panel = visualRef("assets/generated/pokegear/phone-panel.png"),
+    foreground = {},
     foregroundDim = {},
     foregroundDimChoice = {},
     dimShellForeground = {},
+    upper = {},
+    windowPalette = {},
     listPaletteDim = {},
   }
   for skin = 0, 5 do
     local suffix = "-skin-" .. skin .. ".png"
+    section.foreground[skin] = visualRef("assets/generated/pokegear/phone-foreground" .. suffix)
     section.foregroundDim[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim" .. suffix)
     section.foregroundDimChoice[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
     section.dimShellForeground[skin] = visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
+    section.upper[skin] = visualRef("assets/generated/pokegear/phone-upper" .. suffix)
     local palette = {}
+    local windowPalette = {}
     for index = 1, 16 do
       palette[index] = { r = index, g = index, b = index }
+      windowPalette[index] = { r = 255 - index, g = index, b = 128 }
     end
     section.listPaletteDim[skin] = palette
+    section.windowPalette[skin] = windowPalette
   end
   local dimSprites = {}
   for sequence = 1, 9 do
@@ -2090,6 +2099,38 @@ function T.tests.scripted_calls_thread_their_source_flags_through_the_task()
   Assert.equal(request.isScriptedCall, 2, "the host open keeps the scripted flag")
   Assert.equal(request.callScriptID, 5, "the host open keeps the script identity")
   host:cancel("test teardown")
+end
+
+-- A script-opened call borrows the same compiled family as the menu card:
+-- the published plan resolves the call plates and the window palette of the
+-- active skin, and it publishes the call window render the field draws over
+-- the live field. A host without the family publishes an unresolved plan and
+-- fails at its first draw.
+function T.tests.host_calls_borrow_the_compiled_phone_family()
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local manifest = fixtureManifest()
+  local record = PokegearAssetSchema.validate(manifest)
+  Assert.notNil(record, "the synthetic companion family must validate through the asset schema")
+  assert(record ~= nil, "synthetic family validated above")
+  local host = openHost(record, worldFixture(), countingAudio())
+  local handle = openCall(host, "host-plates")
+  local status = assert(host:status(), "the opened call publishes its status") --[[@as table]]
+  local plan = assert(status.presentation, "the call publishes its plan") --[[@as table]]
+  local content = assert(plan.content, "the plan carries its payload") --[[@as table]]
+  local skin = assert(content.skin, "the plan names the skin it resolved") --[[@as integer]]
+  Assert.equal(
+    content.upper,
+    assert(manifest.phone.upper[skin], "the fixture carries the skin's information plates").image,
+    "the call plan resolves the active skin's information plates"
+  )
+  Assert.equal(
+    content.windowPalette,
+    assert(manifest.phone.windowPalette[skin], "the fixture carries the skin's window palette"),
+    "the call plan resolves the active skin's window palette"
+  )
+  Assert.equal(#content.windowPalette, 16, "the window palette carries one entry per source color")
+  Assert.equal(type(plan.renderCallWindow), "function", "the plan publishes the field call window render")
+  host:close(handle)
 end
 
 return T

@@ -31,6 +31,7 @@ local FieldTerrainEffectRenderer = require("libs.hgss.src.presentation.FieldTerr
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
+local FieldCallNoticeRenderer = require("game.hgss.src.field.FieldCallNoticeRenderer")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local TrainerCardRenderer = require("libs.hgss.src.ui.TrainerCardRenderer")
@@ -101,6 +102,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field menuRenderer FieldMenuRenderer
 ---@field signpostRenderer FieldSignpostRenderer?
 ---@field startMenuRenderer StartMenuRenderer?
+---@field _callNoticeRenderer FieldCallNoticeRenderer? the lazily built incoming-call notice
 ---@field trainerCardRenderer TrainerCardRenderer?
 ---@field partyScreenRenderer PartyScreenRenderer?
 ---@field partyManifest table<string, unknown> validated native party-screen presentation geometry
@@ -882,6 +884,26 @@ function FieldPresentationResources:monNamingRenderer()
   return assert(self.namingRenderer, "field presentation owns no Pokemon naming renderer")
 end
 
+-- The incoming-call notice over the live field, built on first use so a
+-- field boot that never rings acquires no caller art. It borrows the shared
+-- image owner and the field text renderer, and releases with the rest of the
+-- presentation.
+---@return FieldCallNoticeRenderer
+function FieldPresentationResources:callNoticeRenderer()
+  local renderer = self._callNoticeRenderer
+  if renderer ~= nil then
+    return renderer
+  end
+  renderer = FieldCallNoticeRenderer.new({
+    cacheFs = self.cacheFs,
+    manifest = assert(self.uiManifest, "field UI manifest is unavailable"),
+    text = assert(self.textRenderer, "field presentation owns no text renderer"),
+    imagePool = assert(self._imagePool, "field presentation borrows its shared image owner"),
+  })
+  self._callNoticeRenderer = renderer
+  return renderer
+end
+
 -- Draws the current application through its registered presenter. The map is
 -- built once per instance alongside the renderers it borrows; a draw never
 -- acquires resources. An application id without a presenter is a composition
@@ -1358,6 +1380,10 @@ function FieldPresentationResources:dispose()
   if self.startMenuRenderer then
     self.startMenuRenderer:release()
     self.startMenuRenderer = nil
+  end
+  if self._callNoticeRenderer then
+    self._callNoticeRenderer:release()
+    self._callNoticeRenderer = nil
   end
   if self.trainerCardRenderer then
     self.trainerCardRenderer:release()

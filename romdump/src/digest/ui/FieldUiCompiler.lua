@@ -452,7 +452,141 @@ local function compileStartMenuSub(sha1hex, deps, assets, manifestAssets, archiv
     deps[#deps + 1] =
       { name = manifestConfig.startMenu.alias .. ":member:" .. memberId, sha1 = sha1hex(memberBytes[memberId]) }
   end
-  return pal
+  return pal, charData
+end
+
+-- The caller window's nine-slice frame: the source touchscreen menu frame
+-- tiles around the caller window, composed into one atlas. The left cap is
+-- the three-tile tail that points at the Pokegear icon, the right cap is a
+-- one-tile edge, and the single body edge tiles repeat across the window
+-- width at runtime. Every slice is rasterized through the frame palette bank
+-- of the already-decoded SUB background set, so no new source dependency
+-- enters here. The plate and name roles resolve through the window palette
+-- bank the source fills and prints with.
+---@param cfg table<string, unknown>
+---@param charData FieldUiCompiler.CharData
+---@param palette FieldUiCompiler.PaletteData
+---@param assets table<string, string>
+---@param manifestAssets table<string, table<string, unknown>>
+---@return table<string, unknown> the caller frame record
+local function compileCallerBubble(cfg, charData, palette, assets, manifestAssets)
+  local notification = cfg.phoneNotification
+  local bank = notification.framePaletteBank
+  local source = { asset = "start menu caller frame", member = cfg.subBackgroundCharMember }
+  local background = palette.colors[bank * 16 + notification.frameBackgroundSlot + 1]
+  if background == nil then
+    Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu SUB palette does not contain the frame background", {
+      member = cfg.subBackgroundPaletteMember,
+      bank = bank,
+      slot = notification.frameBackgroundSlot,
+      available = #palette.colors,
+    })
+  end
+  assert(background ~= nil, "a missing frame background fails above")
+  -- The frame tiles are cut from the menu background, so their surrounding
+  -- pixels carry that background colour instead of the transparency slot.
+  -- The bubble is a standalone overlay; keying the background keeps the
+  -- host surface visible around it. The keyed slot is measured in source
+  -- bytes, so no rounded comparison can leak a fringe into the overlay.
+  local function keyBackground(image)
+    if type(image.pixels) ~= "string" or #image.pixels ~= image.width * image.height * 4 then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the caller frame slice is malformed", {})
+    end
+    local pixels = ffi.new("uint8_t[?]", #image.pixels)
+    ffi.copy(pixels, image.pixels, #image.pixels)
+    for offset = 0, #image.pixels - 4, 4 do
+      if
+        pixels[offset] == background.r
+        and pixels[offset + 1] == background.g
+        and pixels[offset + 2] == background.b
+      then
+        pixels[offset + 3] = 0
+      end
+    end
+    return { width = image.width, height = image.height, pixels = ffi.string(pixels, #image.pixels) }
+  end
+  local function render(tiles, columns, rows, role)
+    if #tiles ~= columns * rows then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, role .. " must name one tile per cell", {
+        cells = columns * rows,
+        tiles = #tiles,
+      })
+    end
+    local entries = {}
+    for index, tile in ipairs(tiles) do
+      entries[index] = { tile = tile, palette = bank }
+    end
+    local image = G2dRasterizer.renderScreen(charData, { colors = palette.colors }, {
+      width = columns * 8,
+      height = rows * 8,
+      entries = entries,
+    }, source)
+    return keyBackground(image)
+  end
+  -- The source frame: three cap columns and one right column across the
+  -- top border, the two window rows, and the bottom border.
+  local left = render(notification.frameLeftTiles, 3, 4, "start menu caller frame left cap")
+  local right = render(notification.frameRightTiles, 1, 4, "start menu caller frame right cap")
+  local top = render({ notification.frameTopTile }, 1, 1, "start menu caller frame top edge")
+  local bottom = render({ notification.frameBottomTile }, 1, 1, "start menu caller frame bottom edge")
+  -- Deterministic packing: the caps side by side on the left, then the top
+  -- and bottom edges stacked in the last columns. Runtime slices address
+  -- these rects, never a source tile index.
+  local atlasWidth, atlasHeight = 24 + 8 + 8, 32
+  validateDimensions(atlasWidth, atlasHeight)
+  local pixelBytes = atlasWidth * atlasHeight * 4
+  local atlas = ffi.new("uint8_t[?]", pixelBytes)
+  ffi.fill(atlas, pixelBytes, 0)
+  local function place(image, destX, destY)
+    if type(image.pixels) ~= "string" or #image.pixels ~= image.width * image.height * 4 then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the caller frame slice is malformed", {})
+    end
+    local pixels = ffi.cast("const uint8_t *", image.pixels)
+    local rowBytes = image.width * 4
+    for y = 0, image.height - 1 do
+      ffi.copy(atlas + ((destY + y) * atlasWidth + destX) * 4, pixels + y * rowBytes, rowBytes)
+    end
+  end
+  place(left, 0, 0)
+  place(right, 24, 0)
+  place(top, 32, 0)
+  place(bottom, 32, 8)
+  local bubblePath = FieldUiAssetCache.assetDir() .. "/start-menu-caller-bubble.png"
+  assets[bubblePath] = PngWriter.encode(atlasWidth, atlasHeight, ffi.string(atlas, pixelBytes))
+  manifestAssets[FieldUiAssetCache.ASSET.START_MENU_CALLER_BUBBLE] =
+    { image = bubblePath, width = atlasWidth, height = atlasHeight }
+
+  -- The window fill and name ink are the source text colour roles of the
+  -- window's own palette bank: the same colour the source passes to the
+  -- text printer and, for the plate, fills the window pixel buffer with.
+  local function textRole(slot, role)
+    local color = palette.colors[notification.textPaletteBank * 16 + slot + 1]
+    if color == nil then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu SUB palette does not contain the " .. role, {
+        member = cfg.subBackgroundPaletteMember,
+        bank = notification.textPaletteBank,
+        slot = slot,
+        available = #palette.colors,
+      })
+    end
+    return assert(color)
+  end
+  local textColor = notification.textColor
+  local plate = textRole(textColor.background, "caller plate role")
+  local ink = textRole(textColor.foreground, "caller name role")
+  local shadow = textRole(textColor.shadow, "caller name shadow role")
+  return {
+    asset = FieldUiAssetCache.ASSET.START_MENU_CALLER_BUBBLE,
+    left = { rect = { x = 0, y = 0, width = 24, height = 32 } },
+    right = { rect = { x = 24, y = 0, width = 8, height = 32 } },
+    top = { rect = { x = 32, y = 0, width = 8, height = 8 } },
+    bottom = { rect = { x = 32, y = 8, width = 8, height = 8 } },
+    plate = { r = plate.r, g = plate.g, b = plate.b, a = 1 },
+    name = {
+      foreground = { r = ink.r, g = ink.g, b = ink.b, a = 1 },
+      shadow = { r = shadow.r, g = shadow.g, b = shadow.b, a = 1 },
+    },
+  }
 end
 
 -- The retail icon wobble as source-independent translation tracks: the
@@ -847,9 +981,10 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
   local cfg = manifestConfig.startMenu
   local memberBytes = {}
   local background = compileStartMenuMain(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
-  local subPalette = compileStartMenuSub(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
+  local subPalette, subChar = compileStartMenuSub(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
   local iconVisuals, shoesVisuals, focusShake, confirmHop, ringingVisual =
     compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
+  local callerBubble = compileCallerBubble(cfg, subChar, subPalette, assets, manifestAssets)
 
   -- The label roles are source palette slots, not font colors: the label
   -- windows live on the SUB background's palette bank 4, so foreground 14,
@@ -989,6 +1124,7 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
         maxWidth = cfg.phoneNotification.maxWidthTiles,
       },
       ringing = ringingVisual,
+      bubble = callerBubble,
     },
   }
 end
