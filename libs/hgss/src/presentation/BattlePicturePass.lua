@@ -660,14 +660,18 @@ end
 -- change targets, blend policy, source state or RNG):
 --   frame.engine: "main" or "sub".
 --   frame.animation: detached engine state with visible/priority/
---     firstTarget/secondTarget per role, backdrop {r,g,b}, windows
+--     firstTarget/secondTarget per role, objTargets {first,second} for
+--     OBJ fragments, backdrop {r,g,b}, windows
 --     {win0,win1,objWindow,outside}, blend {mode,eva,evb,evy} and
 --     brightness {mode,coefficient}. grayscaleBattlefield forces the
 --     native MAIN_BG fade-buffer grayscale on the battlefield plane.
 --     battlefieldFade {colorR,colorG,colorB 0..31, amount 0..16} fades
 --     the battlefield plane toward its target color by the amount.
 --     Roles are world3d (main) or menu
---     (sub), window, transition, battlefield, objects.
+--     (sub), window, transition, battlefield, objects. The 3D layer
+--     blends its own per-pixel alpha whenever the plane beneath it is a
+--     second target, which is what the animation system's default blend
+--     (no first targets) relies on.
 --   frame.primitives: ordered native polygon array for the shared 3D target.
 --   frame.planes: 2D content per role (window/transition/battlefield, plus
 --     sub-only menu): nil clears to transparent, {color={r,g,b}} fills

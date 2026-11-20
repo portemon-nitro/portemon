@@ -47,6 +47,10 @@
 ---@field restorePicture fun(activation: table<string, unknown>): boolean restore one persisted picture snapshot
 ---@field writeBlend fun(eva: integer, evb: integer): boolean move the main-screen sprite-blend coefficients
 ---@field setSpriteDrawFlag fun(slot: integer, draw: boolean): boolean record one battler-sprite draw flag
+---@field setSpritePriority fun(slot: integer, priority: integer): boolean record one battler-sprite draw priority
+---@field startSpriteDraw fun(loopIndex: integer, slot: integer): boolean start one battler-sprite draw loop
+---@field stopSpriteDraw fun(loopIndex: integer): boolean stop one battler-sprite draw loop
+---@field pictureState fun(activation: table<string, unknown>): table<string, unknown>? read one activation's presentation state
 ---@field stopSpriteFollow fun(slot: integer): boolean record one stopped sprite-follow binding
 ---@field setSpriteManager fun(name: string, present: boolean): boolean record one sprite-manager lifetime transition
 ---@field activationFor fun(selector: integer): table<string, unknown>? resolve one battler identity
@@ -1053,8 +1057,164 @@ local function handleUpdateBattleVisual(exec, instruction, index)
 end
 Handlers["update-battle-visual"] = handleUpdateBattleVisual
 
+-- StartBattlerSpriteDraw roles (resolveSpriteEffectMode's semantic
+-- names) and the battler types their draw-priority switch reads
+-- (include/constants/battle.h). Odd types are enemy-side rows.
+local SPRITE_DRAW_ROLES = {
+  ["first-battler-class-priority-gate"] = 0,
+  ["second-battler-class-priority-forward"] = 1,
+  ["first-battler-class-priority-alternate"] = 2,
+  ["second-battler-class-priority-reverse"] = 3,
+}
+local PLAYER_SIDE_SLOT_1 = 2
+local ENEMY_SIDE_SLOT_1 = 3
+local PLAYER_SIDE_SLOT_2 = 4
+local ENEMY_SIDE_SLOT_2 = 5
+-- Native ManagedSprite_SetDrawPriority values the opcode writes: 1 is
+-- in front of 255. The renderer maps 255 onto the lowest OBJ priority.
+local SPRITE_DRAW_FRONT_PRIORITY = 1
+local SPRITE_DRAW_BACK_PRIORITY = 255
+
+---@param battler table<string, unknown>? event-time battler binding
+---@return number? source battler type, nil when unaddressed
+local function battlerTypeOf(battler)
+  if type(battler) ~= "table" or type(battler.sideType) ~= "number" then
+    return nil
+  end
+  return battler.sideType
+end
+
+---@param topology table<string, unknown> event-time topology
+---@return boolean doubles true while the source battle keeps the doubles rows
+local function isDoubleBattle(topology)
+  local battlers = topology.sourceBattlers
+  if type(battlers) == "table" then
+    for _, candidate in ipairs(battlers) do
+      if type(candidate) == "table" and type(candidate.sideType) == "number" and candidate.sideType >= 2 then
+        return true
+      end
+    end
+  end
+  for _, battler in ipairs({ topology.attacker, topology.defender }) do
+    local sideType = battlerTypeOf(battler)
+    if sideType ~= nil and sideType >= 2 then
+      return true
+    end
+  end
+  return false
+end
+
+---@param topology table<string, unknown> event-time topology
+---@param role integer source battler role 0..3
+---@return table<string, unknown>? role battler, nil when the role is unaddressed
+local function roleBattler(topology, role)
+  if role == 0 then
+    return type(topology.attacker) == "table" and topology.attacker or nil
+  end
+  if role == 1 then
+    return type(topology.defender) == "table" and topology.defender or nil
+  end
+  local partner = role == 2 and topology.attackerPartner or role == 3 and topology.defenderPartner or nil
+  return type(partner) == "table" and partner or nil
+end
+
+-- Resolves the native per-role draw priority and the role-0/2 hide
+-- branch. Roles 1 and 3 keep their flag and only rewrite priority; a
+-- battler type outside the source switch writes no priority at all.
+---@param role integer source battler role 0..3
+---@param attackerType number? attacker battler type
+---@param defenderType number? defender battler type
+---@return integer? priority, boolean hide
+local function spriteDrawPriority(role, attackerType, defenderType)
+  if role == 0 or role == 2 then
+    local front = role == 0 and (attackerType == ENEMY_SIDE_SLOT_1 or attackerType == PLAYER_SIDE_SLOT_2)
+      or role == 2 and (attackerType == ENEMY_SIDE_SLOT_2 or attackerType == PLAYER_SIDE_SLOT_1)
+    if front then
+      return SPRITE_DRAW_FRONT_PRIORITY, false
+    end
+    return SPRITE_DRAW_BACK_PRIORITY, true
+  end
+  if role == 1 then
+    if defenderType == PLAYER_SIDE_SLOT_1 then
+      return SPRITE_DRAW_BACK_PRIORITY, false
+    elseif defenderType == ENEMY_SIDE_SLOT_1 or defenderType == PLAYER_SIDE_SLOT_2 then
+      return SPRITE_DRAW_FRONT_PRIORITY, false
+    elseif defenderType == ENEMY_SIDE_SLOT_2 then
+      return SPRITE_DRAW_BACK_PRIORITY, false
+    end
+    return nil, false
+  end
+  if role == 3 then
+    if defenderType == PLAYER_SIDE_SLOT_1 or defenderType == ENEMY_SIDE_SLOT_2 then
+      return SPRITE_DRAW_FRONT_PRIORITY, false
+    elseif defenderType == ENEMY_SIDE_SLOT_1 or defenderType == PLAYER_SIDE_SLOT_2 then
+      return SPRITE_DRAW_BACK_PRIORITY, false
+    end
+    return nil, false
+  end
+  return nil, false
+end
+
+---@param exec BattleAnimationExec occurrence facade behind the sprite write
+---@param battler table<string, unknown>? role battler behind the vanish gate
+---@return boolean vanished true while the role picture is hidden
+local function rolePictureVanished(exec, battler)
+  if type(battler) ~= "table" or type(battler.combatant) ~= "number" then
+    return false
+  end
+  local state = exec.pictureState({ combatant = battler.combatant, activation = battler.activation })
+  return type(state) == "table" and state.vanished == true
+end
+
 local function handleStartSpriteEffect(exec, instruction, index)
-  return spawnRaw(exec, instruction, index, "raw")
+  -- Native StartBattlerSpriteDraw clears the copy's draw flag
+  -- unconditionally. Only the doubles branch re-shows it (unless the
+  -- role's picture is vanished), writes the per-role draw priority, and
+  -- creates the draw task that finally paints the shared sprite
+  -- manager; in singles the copy therefore stays hidden.
+  local role = SPRITE_DRAW_ROLES[instruction.mode]
+  if role == nil then
+    exec.fail("sprite draw effect has no source role for mode " .. tostring(instruction.mode))
+    return "done"
+  end
+  local values = instruction.values --[[@as table<integer, integer>]]
+  local loopIndex, slot = values[1], values[2]
+  if
+    type(loopIndex) ~= "number"
+    or loopIndex % 1 ~= 0
+    or loopIndex < 0
+    or type(slot) ~= "number"
+    or slot % 1 ~= 0
+    or slot < 0
+  then
+    exec.fail("sprite draw effects carry a draw slot and a sprite slot")
+    return "done"
+  end
+  if not exec.setSpriteDrawFlag(slot, false) then
+    return "done"
+  end
+  local topology = exec.topology()
+  if type(topology) ~= "table" then
+    exec.fail("sprite draw effects read the event-time battler topology")
+    return "done"
+  end
+  if isDoubleBattle(topology) then
+    local vanished = rolePictureVanished(exec, roleBattler(topology, role))
+    local priority, hide = spriteDrawPriority(role, battlerTypeOf(topology.attacker), battlerTypeOf(topology.defender))
+    local draw = not vanished and not hide
+    if not exec.setSpriteDrawFlag(slot, draw) then
+      return "done"
+    end
+    if priority ~= nil and not exec.setSpritePriority(slot, priority) then
+      return "done"
+    end
+    if not exec.startSpriteDraw(loopIndex, slot) then
+      return "done"
+    end
+  end
+  exec.note({ op = "start-sprite-effect", index = index, mode = instruction.mode, slot = slot })
+  exec.advance()
+  return "continue"
 end
 Handlers["start-sprite-effect"] = handleStartSpriteEffect
 
@@ -1653,14 +1813,14 @@ end
 Handlers["clear-sprite-slot"] = handleClearSpriteSlot
 
 local function handleClearEffectSlot(exec, instruction, index)
-  -- Native StopBattlerSpriteDraw stops drawing one battler sprite by
-  -- source slot while the sprite itself stays alive.
-  local slot = drawSlot(instruction)
-  if slot == nil then
-    exec.fail("effect slot clears carry a source slot")
+  -- Native StopBattlerSpriteDraw deactivates one draw task by its
+  -- source loop index while the sprite and its draw flag stay alive.
+  local loopIndex = drawSlot(instruction)
+  if loopIndex == nil then
+    exec.fail("effect slot clears carry a source loop slot")
     return "done"
   end
-  if not exec.setSpriteDrawFlag(slot, false) then
+  if not exec.stopSpriteDraw(loopIndex) then
     return "done"
   end
   exec.note({ op = "clear-effect-slot", index = index })

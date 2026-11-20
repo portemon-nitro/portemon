@@ -217,6 +217,23 @@ function T.independent_blend_coefficients_resolve_without_double_multiply(scope)
     checkPixel(data2, 128, 96, 63, 0, 0, "alpha 31 replaces directly")
     data2:release()
   end
+  -- The 3D layer blends its own alpha whenever the plane beneath is a
+  -- second target, with or without a first-target mask: the animation
+  -- system's default blend has no first targets and still resolves the
+  -- translucent 3D pixels over the battlefield.
+  do
+    local texture = solidImage(graphics, scope, 1, 0, 0)
+    local frame = compositionFrame()
+    frame.animation.blend = { mode = "alpha", eva = 8, evb = 8, evy = 0 }
+    frame.animation.firstTarget = {}
+    frame.animation.secondTarget = { world3d = true, battlefield = true }
+    frame.primitives = { quad(texture, { r = 31, g = 0, b = 0 }, 15, 0) }
+    frame.planes = { battlefield = { color = { 0, 0, 1 } } }
+    local canvas = pass:render(graphics, frame)
+    local data = snapshot(canvas)
+    checkPixel(data, 128, 96, 32, 0, 32, "the 3D layer blends its own alpha against the second target")
+    data:release()
+  end
   -- Semitransparent OBJ over an eligible second plane uses EVA/EVB once:
   -- red floor((63 * 8 + 8) / 16) = 32, blue floor((63 * 8 + 8) / 16) = 32.
   do

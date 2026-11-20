@@ -47,6 +47,10 @@ BattleEffectTasks.PARTICLE_CONTINUATION_KIND = BattleParticleSystems.EMITTER_KIN
 BattleEffectTasks.EMITTER_BATTLER_PATH_KIND = BattleParticleSystems.PATH_KIND
 BattleEffectTasks.EMITTER_CURVED_PATH_KIND = BattleParticleSystems.CURVED_PATH_KIND
 BattleEffectTasks.PICTURE_ANIMATION_KIND = "pokemon-picture-animation"
+-- BattleAnimFunc_AnimateSprites' shared battler-sprite frame loop: it
+-- draws the sprite manager for its frame count and owns no
+-- interpolation, so copies stay visible exactly while the loop runs.
+local MANAGED_SPRITE_DRAW_KIND = "managed-sprite-draw-loop"
 
 local VALID_TASK_STATES = {
   pending = true,
@@ -868,11 +872,6 @@ local SYNCHRONOUS_MARKER_KINDS = {
   ["battle-palette-fade"] = true,
   ["battle-presentation-state-reset"] = true,
   ["battle-background-position-transition"] = true,
-  -- Sprite-effect spawns carry a mode and selector values, never timing
-  -- operands: the managed draw loop stages its sprite behind the
-  -- manager preset, so the typed task owns no interpolation lifetime
-  -- and retires on its first tick instead of failing closed.
-  ["managed-sprite-draw-loop"] = true,
   -- Sprite scale-settle presets carry their target behind the resolved
   -- callback without a compiled boundary: the settle owns no
   -- interpolation lifetime, so it retires on its first tick instead of
@@ -1748,7 +1747,6 @@ local NATIVE_VISUAL_KINDS = {
   ["battle-sprite-panel-slide"] = true,
   ["battle-sprite-priority-appearance-transition"] = true,
   ["battle-sprite-sinusoidal-position-animation"] = true,
-  ["managed-sprite-draw-loop"] = true,
   ["pokemon-picture-affine-blend-palette-transition"] = true,
   ["pokemon-picture-affine-sprite-entry-transition"] = true,
   ["pokemon-picture-and-battle-palette-fade"] = true,
@@ -4554,6 +4552,65 @@ local function newTwoStateTask(kind)
   return setmetatable({ _state = "pending", _ticks = 0, _disposed = false }, BattleTwoStateTask)
 end
 
+-- One shared battler-sprite manager draw window. The native frame loop
+-- draws the manager on its creation frame and on each of its remaining
+-- source ticks; the window therefore opens at construction and closes
+-- exactly once when the loop retires, is cancelled, or is disposed.
+---@param kind string normalized task kind under construction
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param services table<string, unknown> scene collaborator
+---@return table<string, unknown> runnable draw-window task
+local function newManagedSpriteDrawTask(kind, args, services)
+  local scene = checkScene(services, kind)
+  if
+    type(scene.openAnimationSpriteDrawWindow) ~= "function"
+    or type(scene.closeAnimationSpriteDrawWindow) ~= "function"
+  then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " requires its scene draw window", 0)
+  end
+  local parameters = args.parameters
+  local frameTicks = type(parameters) == "table" and parameters.frameTicks or nil
+  if type(frameTicks) ~= "number" or frameTicks % 1 ~= 0 or frameTicks < 1 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries a positive frame count", 0)
+  end
+  local owner = {}
+  local state = "pending"
+  local ticks = 0
+  local window = true
+  scene.openAnimationSpriteDrawWindow(scene, owner)
+  local function closeWindow()
+    if window then
+      window = false
+      scene.closeAnimationSpriteDrawWindow(scene, owner)
+    end
+  end
+  local function stepSourceTick()
+    if state == "complete" or state == "cancelled" then
+      return
+    end
+    state = "running"
+    ticks = ticks + 1
+    if ticks >= frameTicks then
+      state = "complete"
+      closeWindow()
+    end
+  end
+  local function status()
+    return state
+  end
+  local function cancel()
+    if state == "complete" then
+      return
+    end
+    state = "cancelled"
+    closeWindow()
+  end
+  local function dispose()
+    closeWindow()
+  end
+  return { stepSourceTick = stepSourceTick, status = status, cancel = cancel, dispose = dispose }
+end
+
 ---@param self BattleTwoStateTask
 ---@param tick table<string, unknown>? source tick under advancement
 function BattleTwoStateTask:stepSourceTick(tick)
@@ -5491,6 +5548,9 @@ function BattleEffectTasks.supportsKind(kind)
   if kind == "pokemon-battler-sprite-slot" then
     return true
   end
+  if kind == MANAGED_SPRITE_DRAW_KIND then
+    return true
+  end
   if SOUND_TASK_KINDS[kind] == true then
     return true
   end
@@ -5564,6 +5624,10 @@ function BattleEffectTasks.create(kind, args, context, services)
   if kind == "pokemon-battler-sprite-slot" then
     assert(type(services) == "table", "battler sprite slots require their services record")
     return newBattlerSpriteSlotTask(args or {}, context or {}, services)
+  end
+  if kind == MANAGED_SPRITE_DRAW_KIND then
+    assert(type(services) == "table", "managed sprite draw loops require their services record")
+    return newManagedSpriteDrawTask(kind, args or {}, services)
   end
   if kind == "battle-visual-none" then
     return newSyncNoopTask(kind)

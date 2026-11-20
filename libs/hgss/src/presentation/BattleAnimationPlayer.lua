@@ -250,6 +250,15 @@ function BattleAnimationPlayer:start(playback, program)
     randomState = 0,
     particles = { systems = {}, emitters = {}, perspective = requestedPerspective, flipY = {}, skipped = {} },
   }
+  -- Native StartMove installs G2_SetBlendAlpha(NONE, BG0..BD, 8, 8)
+  -- before the first instruction runs; refusal above leaves it alone.
+  local beginBlend = self._scene.initAnimationBlend
+  if type(beginBlend) == "function" then
+    local blendOk, blendErr = pcall(beginBlend, self._scene)
+    if not blendOk then
+      return nil, "animation system blend failed: " .. tostring(blendErr)
+    end
+  end
   self._occurrences[#self._occurrences + 1] = occurrence
   self._byId[id] = occurrence
   return { id = id }
@@ -366,6 +375,22 @@ local function settle(self, occurrence, phase, fault)
   end
   occurrence.phase = phase
   occurrence.fault = fault
+  -- Native EndMove restores the default blend once the move animation
+  -- system settles; overlapping occurrences keep the system blend
+  -- installed until the last live machine ends.
+  local endBlend = self._scene.setDefaultAnimationBlend
+  if type(endBlend) == "function" then
+    local live = false
+    for _, candidate in ipairs(self._occurrences) do
+      if LIVE_PHASES[candidate.phase] == true then
+        live = true
+        break
+      end
+    end
+    if not live then
+      pcall(endBlend, self._scene)
+    end
+  end
 end
 
 ---@param self BattleAnimationPlayer
@@ -723,6 +748,33 @@ function BattleAnimationPlayer:_exec(occurrence)
   -- slot registry the native battlerSprites array owns.
   function exec.setSpriteDrawFlag(slot, draw)
     return applyScene("setAnimationSpriteDrawFlag", slot, draw)
+  end
+  -- Records one native battler-sprite draw priority on its slot.
+  function exec.setSpritePriority(slot, priority)
+    return applyScene("setAnimationSpritePriority", slot, priority)
+  end
+  -- Starts the draw loop that finally paints the shared battler sprite
+  -- manager; a copy draws only while one loop is active.
+  function exec.startSpriteDraw(loopIndex, slot)
+    return applyScene("startAnimationSpriteDraw", loopIndex, slot)
+  end
+  -- Stops one draw loop without touching the sprite or its draw flag.
+  function exec.stopSpriteDraw(loopIndex)
+    return applyScene("stopAnimationSpriteDraw", loopIndex)
+  end
+  -- Reads one activation's presentable picture state; scenes that carry
+  -- no picture registry (recording doubles) read as unset.
+  function exec.pictureState(activation)
+    local port = player._scene.pictureState
+    if type(port) ~= "function" then
+      return nil
+    end
+    local results = { pcall(port, player._scene, activation) }
+    if results[1] ~= true then
+      failOccurrence(player, occurrence, "animation scene read failure: " .. tostring(results[2]))
+      return nil
+    end
+    return results[2]
   end
   -- Records one stopped sprite-follow binding in the same registry.
   function exec.stopSpriteFollow(slot)
@@ -1204,6 +1256,10 @@ function BattleAnimationPlayer:dispose()
       stopVoices(self, occurrence)
       retireTasks(occurrence, "player released")
     end
+  end
+  local endBlend = self._scene.setDefaultAnimationBlend
+  if type(endBlend) == "function" then
+    pcall(endBlend, self._scene)
   end
 end
 

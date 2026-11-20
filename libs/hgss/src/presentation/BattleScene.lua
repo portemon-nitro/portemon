@@ -101,7 +101,10 @@ function BattleScene.new()
     _effects = {},
     _battlerSpriteSlots = {},
     _animationSprites = {},
+    _animationSpriteDrawLoops = {},
+    _animationSpriteDrawWindows = {},
     _animationSpriteManagers = {},
+    _animationSystemBlend = nil,
     _stripe = nil,
     _objWindowSilhouette = nil,
     _nextEffect = 1,
@@ -1049,6 +1052,32 @@ function BattleScene:resetBlendCoefficients()
   end
 end
 
+-- Installs the native animation system's default blend, the
+-- G2_SetBlendAlpha(NONE, BG0..BG3 | OBJ | BD, 8, 8) that
+-- BattleAnimSystem_InitBlend writes at StartMove and ResetBlend. The
+-- first-target mask stays empty so every plane keeps its own pixels;
+-- the second-target mask lets the 3D layer blend its own alpha and
+-- translucent OBJ fragments blend against what lies beneath. The
+-- state belongs to the system, not to any task, so occurrence
+-- journals never restore it away.
+function BattleScene:initAnimationBlend()
+  assert(not self._released, "released scenes blend nothing")
+  self._animationSystemBlend = {
+    blend = { mode = "alpha", eva = 8, evb = 8, evy = 0 },
+    firstTarget = {},
+    secondTarget = { world3d = true, window = true, transition = true, battlefield = true },
+    objTargets = { second = true },
+  }
+end
+
+-- Restores the native default blend, BattleSystem_SetDefaultBlend's
+-- G2_BlendNone at animation teardown: no color effect is active, so
+-- every plane and fragment keeps its own pixels.
+function BattleScene:setDefaultAnimationBlend()
+  assert(not self._released, "released scenes blend nothing")
+  self._animationSystemBlend = nil
+end
+
 -- Returns a detached per-activation presentation view, if one is active.
 ---@param battler table<string, unknown> activation whose view is read
 ---@return table<string, unknown>? detached presentation view
@@ -1327,7 +1356,11 @@ function BattleScene:animationFrame()
   for _, engine in ipairs({ "main", "sub" }) do
     local bound = self._animationPlanes[engine] or {}
     local compositor = self._animationCompositor[engine] or {}
-    planes[engine] = { planes = copyValue(bound, 1), compositor = copyValue(compositor, 1) }
+    planes[engine] = {
+      planes = copyValue(bound, 1),
+      compositor = copyValue(compositor, 1),
+      systemBlend = engine == "main" and copyValue(self._animationSystemBlend, 1) or nil,
+    }
   end
   local pictures = {}
   for key, owned in pairs(self._pictureStates) do
@@ -2785,17 +2818,92 @@ function BattleScene:stopAnimationSpriteFollow(slot)
   record.followStopped = true
 end
 
+-- Records one native battler-sprite draw priority on its slot: the
+-- per-role writes of StartBattlerSpriteDraw select 1 or 255, and the
+-- port's OBJ layer maps the value onto its own 0..3 OAM priority range.
+---@param slot integer source battler-sprite slot under priority
+---@param priority integer native ManagedSprite_SetDrawPriority value
+function BattleScene:setAnimationSpritePriority(slot, priority)
+  assert(not self._released, "released scenes prioritize no battler sprites")
+  assert(type(slot) == "number" and slot % 1 == 0 and slot >= 0, "sprite draw priorities name a source slot")
+  assert(type(priority) == "number" and priority % 1 == 0, "sprite draw priorities carry a source value")
+  local record = self._animationSprites[slot]
+  if record == nil then
+    record = { draw = true, followStopped = false }
+    self._animationSprites[slot] = record
+  end
+  record.priority = priority
+end
+
+-- Starts one native battler-sprite draw loop: StartBattlerSpriteDraw
+-- creates a main-queue task that draws the shared battler sprite
+-- manager every frame, so copies stay invisible until a loop runs.
+-- The loop index is the native draw-task slot, independent of the
+-- sprite slot whose draw flag the opcode rewrites.
+---@param loopIndex integer source draw-task slot
+---@param spriteSlot integer source battler-sprite slot the loop draws
+function BattleScene:startAnimationSpriteDraw(loopIndex, spriteSlot)
+  assert(not self._released, "released scenes start no sprite draw")
+  assert(type(loopIndex) == "number" and loopIndex % 1 == 0 and loopIndex >= 0, "sprite draw loops name a source index")
+  assert(
+    type(spriteSlot) == "number" and spriteSlot % 1 == 0 and spriteSlot >= 0,
+    "sprite draw loops copy a source sprite slot"
+  )
+  self._animationSpriteDrawLoops[loopIndex] = { slot = spriteSlot }
+end
+
+-- Opens one manager draw window: BattleAnimFunc_AnimateSprites draws the
+-- shared battler sprite manager on every frame of its timer, independent
+-- of the StartBattlerSpriteDraw loops. The owning task closes the window
+-- exactly once on completion, cancellation, or disposal.
+---@param owner table<string, unknown>|integer owning task behind the window
+function BattleScene:openAnimationSpriteDrawWindow(owner)
+  assert(not self._released, "released scenes draw no sprite windows")
+  self._animationSpriteDrawWindows[owner] = true
+end
+
+-- Closes one manager draw window; unknown or repeated owners stay
+-- silent, and a released scene takes no further closes.
+---@param owner table<string, unknown>|integer owning task behind the window
+function BattleScene:closeAnimationSpriteDrawWindow(owner)
+  if self._released then
+    return
+  end
+  self._animationSpriteDrawWindows[owner] = nil
+end
+
+-- Stops one native battler-sprite draw loop: StopBattlerSpriteDraw only
+-- deactivates the draw task; the sprite and its draw flag stay alive.
+---@param loopIndex integer source draw-task slot
+function BattleScene:stopAnimationSpriteDraw(loopIndex)
+  assert(not self._released, "released scenes stop no sprite draw")
+  assert(type(loopIndex) == "number" and loopIndex % 1 == 0 and loopIndex >= 0, "sprite draw stops name a source index")
+  self._animationSpriteDrawLoops[loopIndex] = nil
+end
+
+-- Returns a detached copy of one active draw loop, absent when stopped.
+---@param loopIndex integer source draw-task slot under reading
+---@return { slot: integer }? detached loop record
+function BattleScene:animationSpriteDraw(loopIndex)
+  assert(not self._released, "released scenes expose no sprite draw")
+  local record = self._animationSpriteDrawLoops[loopIndex]
+  if record == nil then
+    return nil
+  end
+  return { slot = record.slot }
+end
+
 -- Returns a detached copy of one slot record, absent before any native
 -- draw or follow transition names the slot.
 ---@param slot integer source battler-sprite slot under reading
----@return { draw: boolean, followStopped: boolean }? detached slot record
+---@return { draw: boolean, followStopped: boolean, priority: integer? }? detached slot record
 function BattleScene:animationSprite(slot)
   assert(not self._released, "released scenes expose no battler sprites")
   local record = self._animationSprites[slot]
   if record == nil then
     return nil
   end
-  return { draw = record.draw, followStopped = record.followStopped }
+  return { draw = record.draw, followStopped = record.followStopped, priority = record.priority }
 end
 
 -- Records one sprite-manager lifetime transition by name: the battler
@@ -2823,10 +2931,12 @@ function BattleScene:animationSpriteManagerPresent(name)
 end
 
 -- Publishes detached effect records in launch allocation order. A battler
--- sprite copy also carries the native draw flag its source slot currently
--- holds: SetBattlerSpriteVisible and StopBattlerSpriteDraw hide the copy
--- without deleting it, so the renderer needs the flag, not just the slot.
----@return table<integer, { id: integer, sourceKey: string, age: integer, draw?: boolean, picture?: table<string, unknown> }> renderable effect snapshot
+-- sprite copy also carries the native draw flag and draw priority its
+-- source slot currently holds, plus the shared manager draw loop: copies
+-- stay hidden until StartBattlerSpriteDraw starts drawing and
+-- SetBattlerSpriteVisible/StopBattlerSpriteDraw clear or set their flag,
+-- so the renderer needs the flags, not just the slot.
+---@return table<integer, { id: integer, sourceKey: string, age: integer, draw?: boolean, priority?: integer, picture?: table<string, unknown> }> renderable effect snapshot
 function BattleScene:effectViews()
   local ids = {}
   for id in pairs(self._effects) do
@@ -2851,13 +2961,25 @@ function BattleScene:effectViews()
         end
       end
     end
-    local draw = nil
+    local draw, priority = nil, nil
     if type(picture) == "table" and type(picture.spriteSlot) == "number" then
       local slotRecord = self._animationSprites[picture.spriteSlot]
-      draw = slotRecord == nil or slotRecord.draw ~= false
+      -- The native draw task paints the shared manager only while that
+      -- manager is allocated, so copies need both the manager and an
+      -- active draw loop or frame-loop window beside their own slot flag.
+      draw = self._animationSpriteManagers["battler-sprite-manager"] == true
+        and (next(self._animationSpriteDrawLoops) ~= nil or next(self._animationSpriteDrawWindows) ~= nil)
+        and (slotRecord == nil or slotRecord.draw ~= false)
+      priority = slotRecord ~= nil and slotRecord.priority or nil
     end
-    views[#views + 1] =
-      { id = record.id, sourceKey = record.sourceKey, age = record.age, draw = draw, picture = picture }
+    views[#views + 1] = {
+      id = record.id,
+      sourceKey = record.sourceKey,
+      age = record.age,
+      draw = draw,
+      priority = priority,
+      picture = picture,
+    }
   end
   return views
 end
@@ -2977,7 +3099,10 @@ function BattleScene:release()
   self._animationCompositor = {}
   self._animationJournals = {}
   self._animationSprites = {}
+  self._animationSpriteDrawLoops = {}
+  self._animationSpriteDrawWindows = {}
   self._animationSpriteManagers = {}
+  self._animationSystemBlend = nil
   self._stripe = nil
   self._objWindowSilhouette = nil
   self._scanlineRows = nil

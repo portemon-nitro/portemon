@@ -18,10 +18,11 @@ local RomImporter = require("romdump.src.source.RomImporter")
 
 local T = {}
 local MOVES = { "TAIL_WHIP", "HYPNOSIS" }
--- Pixels are fingerprinted on a coarse grid at a coarse tick cadence; the
--- programs run to completion every tick, only the readback is sampled.
+-- Pixels are fingerprinted on a coarse grid on every source tick: the
+-- sprite-copy draw windows last only their source frame count, so a
+-- coarser readback cadence can miss them entirely. The programs still
+-- run to completion every tick; only the readback is per tick.
 local PIXEL_STRIDE = 2
-local SAMPLE_EVERY = 3
 
 local function firstReadyVersion()
   for _, versionId in ipairs(GameVersion.ORDER) do
@@ -237,25 +238,22 @@ local function runVersion(scope, versionId)
         bgScroll = scene:scroll(),
         hudSections = {},
       }
-      local sampled = tick % SAMPLE_EVERY == 1
-      if sampled then
-        graphics.setCanvas(canvas)
-        graphics.clear(0, 0, 0, 0)
-        BattleRenderer.drawPane({
-          graphics = graphics,
-          text = {},
-          windows = {},
-          assets = battleAssets,
-          sceneImageKey = "missing-scene",
-        }, battleView, "detail", {}, { x = 0, y = 0, scale = 1 })
-        graphics.setCanvas()
-        local hash, covered = nativePixels(scope:own(canvas:newImageData()))
-        visible = visible or covered > 0
-        if firstHash == nil then
-          firstHash = hash
-        elseif hash ~= firstHash then
-          changed = true
-        end
+      graphics.setCanvas(canvas)
+      graphics.clear(0, 0, 0, 0)
+      BattleRenderer.drawPane({
+        graphics = graphics,
+        text = {},
+        windows = {},
+        assets = battleAssets,
+        sceneImageKey = "missing-scene",
+      }, battleView, "detail", {}, { x = 0, y = 0, scale = 1 })
+      graphics.setCanvas()
+      local hash, covered = nativePixels(scope:own(canvas:newImageData()))
+      visible = visible or covered > 0
+      if firstHash == nil then
+        firstHash = hash
+      elseif hash ~= firstHash then
+        changed = true
       end
       if player:status(handle) == "complete" or player:status(handle) == "failed" then
         break

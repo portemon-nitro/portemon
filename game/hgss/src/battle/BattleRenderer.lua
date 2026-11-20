@@ -1062,6 +1062,9 @@ local function collectPictureSubmissions(assets, view, players, enemies, singles
         if source ~= nil then
           local copy = battlerCopyPicture(assets, picture, source)
           if copy ~= nil then
+            if type(effect.priority) == "number" then
+              copy.priority = effect.priority
+            end
             copies[#copies + 1] = copy
           end
         end
@@ -1238,6 +1241,7 @@ local function compositionAnimation(view, engine, priorityOverride)
   local sceneAnimation = view.sceneAnimation --[[@as table<string, unknown>?]]
   local perEngine = type(sceneAnimation) == "table" and sceneAnimation[engine] or nil
   local compositor = type(perEngine) == "table" and type(perEngine.compositor) == "table" and perEngine.compositor or {}
+  local systemBlend = type(perEngine) == "table" and perEngine.systemBlend or nil
   local function roleMap(source, fallback)
     local record = {}
     for role, default in pairs(fallback) do
@@ -1247,7 +1251,9 @@ local function compositionAnimation(view, engine, priorityOverride)
     return record
   end
   -- Blend target masks arrive as absolute register state, so scripted
-  -- keys survive even when the fallback names no role.
+  -- keys survive even when the fallback names no role. The animation
+  -- system's default blend is the base register state; every later
+  -- scripted write overrides it per role.
   local function targetMap(source)
     local record = {}
     if type(source) == "table" then
@@ -1258,6 +1264,15 @@ local function compositionAnimation(view, engine, priorityOverride)
       end
     end
     return record
+  end
+  local function overlayTargets(target, source)
+    if type(source) == "table" then
+      for role, value in pairs(source) do
+        if type(role) == "string" then
+          target[role] = value == true
+        end
+      end
+    end
   end
   local visible = roleMap(compositor.visible, {
     [worldRole] = true,
@@ -1274,10 +1289,22 @@ local function compositionAnimation(view, engine, priorityOverride)
       end
     end
   end
-  local firstTarget = targetMap(compositor.firstTarget)
-  local secondTarget = targetMap(compositor.secondTarget)
+  local firstTarget = targetMap(systemBlend ~= nil and systemBlend.firstTarget or nil)
+  local secondTarget = targetMap(systemBlend ~= nil and systemBlend.secondTarget or nil)
+  local objTargets = targetMap(systemBlend ~= nil and systemBlend.objTargets or nil)
+  overlayTargets(firstTarget, compositor.firstTarget)
+  overlayTargets(secondTarget, compositor.secondTarget)
+  overlayTargets(objTargets, compositor.objTargets)
   local scriptedTargets = next(firstTarget) ~= nil or next(secondTarget) ~= nil
   local blend = { mode = "none", eva = 0, evb = 0, evy = 0 }
+  if systemBlend ~= nil and type(systemBlend.blend) == "table" then
+    blend = {
+      mode = systemBlend.blend.mode or "none",
+      eva = clampCoefficient(systemBlend.blend.eva),
+      evb = clampCoefficient(systemBlend.blend.evb),
+      evy = clampCoefficient(systemBlend.blend.evy),
+    }
+  end
   if engine == "main" then
     local spriteBlend = view.spriteBlend --[[@as table<string, unknown>?]]
     if type(spriteBlend) == "table" and type(spriteBlend.blendCoefficientA) == "number" then
@@ -1366,7 +1393,7 @@ local function compositionAnimation(view, engine, priorityOverride)
     brightness = brightness,
     grayscaleBattlefield = grayscaleBattlefield,
     battlefieldFade = battlefieldFade,
-    objTargets = compositor.objTargets or {},
+    objTargets = objTargets,
   }
 end
 
@@ -1496,14 +1523,96 @@ local function silhouetteFragment(view, submissions)
   }
 end
 
+-- Repo-relative shader source read through the archive-or-checkout
+-- boundary every battle shader uses.
+---@param path string repo-relative shader source path
+---@return string shader source
+local function readShaderSource(path)
+  if love and love.filesystem then
+    local ok, source = pcall(love.filesystem.read, path)
+    if ok and type(source) == "string" and source ~= "" then
+      return source
+    end
+  end
+  local handle = io.open(path, "rb")
+  if handle ~= nil then
+    local source = handle:read("*a")
+    handle:close()
+    if type(source) == "string" and source ~= "" then
+      return source
+    end
+  end
+  error("cannot read battle shader source: " .. path, 0)
+end
+
+-- One shader serves every palette-faded copy on a graphics namespace.
+-- The source blend rides the shared sampling-and-fade snippets so an
+-- indexed portrait resolves through its exact palette before the 5-bit
+-- mix, exactly like the picture pass.
+local COPY_FADE_SHADER_PATH = "libs/hgss/src/presentation/shaders/battle_copy_palette_fade.glsl"
+local copyFadeShaders = setmetatable({}, { __mode = "k" })
+
+---@param graphics table<string, unknown> injected host graphics
+---@return table<string, unknown> compiled copy palette-fade shader
+local function copyFadeShader(graphics)
+  local shader = copyFadeShaders[graphics]
+  if shader == nil then
+    shader = graphics.newShader(ImageAssetPool.withSharedSnippets(readShaderSource(COPY_FADE_SHADER_PATH)))
+    copyFadeShaders[graphics] = shader
+  end
+  return shader
+end
+
+-- Draws one copy under the source palette blend toward an RGB555 target
+-- with the native integer coefficients.
+---@param graphics table<string, unknown> injected host graphics
+---@param picture table<string, unknown> resolved copy picture record
+---@param quad unknown caller-owned source viewport
+---@param x number draw position x
+---@param y number draw position y
+---@param scaleX number horizontal placement scale
+---@param scaleY number vertical placement scale
+local function drawFadedCopy(graphics, picture, quad, x, y, scaleX, scaleY)
+  local fade = picture.paletteFade --[[@as table<string, unknown>]]
+  local color = fade.targetColor
+  local intensity = fade.intensity
+  assert(type(color) == "number" and color % 1 == 0, "palette fade carries RGB555 target color")
+  assert(type(intensity) == "number" and intensity % 1 == 0, "palette fade carries integer intensity")
+  local previous = graphics.getShader()
+  local shader = copyFadeShader(graphics)
+  graphics.setShader(shader)
+  shader:send("u_fadeTarget", {
+    (color % 32) / 31,
+    (math.floor(color / 32) % 32) / 31,
+    (math.floor(color / 1024) % 32) / 31,
+  })
+  shader:send("u_fadeCoefficient", intensity)
+  if picture.imageKind == "r8" then
+    local palette = picture.palette
+    assert(palette ~= nil, "indexed copy fades require their exact palette")
+    shader:send("u_usePalette", true)
+    shader:send("u_paletteCount", palette:getWidth())
+    shader:send("u_palette", palette)
+    shader:send("u_paletteOffset", numberOr(picture.paletteOffset, 0))
+  else
+    shader:send("u_usePalette", false)
+  end
+  local ok, err = pcall(graphics.draw, picture.image, quad, x, y, 0, scaleX, scaleY)
+  graphics.setShader(previous)
+  if not ok then
+    error(err, 0)
+  end
+end
+
 -- One animation sprite copy as a native OBJ fragment. CreateBattlerSprite
 -- builds a managed sprite (2D main VRAM, bgPriority 1) drawn by
 -- SpriteSystem_DrawSprites after PokepicManager_DrawAll, so a copy
 -- composites against the planes by OBJ priority instead of sharing the
 -- picture depth buffer. The quad reuses the picture pass's own screen
 -- geometry, so a copy can never drift from the picture it duplicates.
--- Copies that carry a 3D rotation or a palette fade stay submitted as
--- pictures: those states have no OBJ expression here.
+-- A copy that carries a 3D rotation has no OBJ expression here and stays
+-- submitted as a picture; a palette fade rides the OBJ draw so the copy
+-- keeps its native layer.
 ---@param picture table<string, unknown> resolved copy picture record
 ---@return table<string, unknown>? OBJ fragment drawing the copy
 local function copyFragment(picture)
@@ -1513,10 +1622,11 @@ local function copyFragment(picture)
       rotated = true
     end
   end
-  local fade = picture.paletteFade
-  if rotated or (type(fade) == "table" and fade.applied == true) then
+  if rotated then
     return nil
   end
+  local fade = picture.paletteFade
+  local faded = type(fade) == "table" and fade.applied == true
   local corners = BattlePicturePass.screenVertices(picture)
   local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
   local u0, v0, u1, v1 = math.huge, math.huge, -math.huge, -math.huge
@@ -1563,11 +1673,24 @@ local function copyFragment(picture)
     local scaleY = flipV and -1 or 1
     local x = flipH and (minX + width) or minX
     local y = flipV and (minY + height) or minY
-    drawArtwork(graphics, art, quad, x, y, 0, scaleX, scaleY)
+    if faded then
+      drawFadedCopy(graphics, picture, quad, x, y, scaleX, scaleY)
+    else
+      drawArtwork(graphics, art, quad, x, y, 0, scaleX, scaleY)
+    end
     graphics.setColor(1, 1, 1, 1)
   end
+  -- Native draw priority: the per-role opcode writes 1 (front) or 255
+  -- (behind), and the creation template leaves 1 in place. The OBJ
+  -- layer consumes the same 0..3 OAM priority range.
+  local priority = numberOr(picture.priority, 1)
+  if priority < 0 then
+    priority = 0
+  elseif priority > 3 then
+    priority = 3
+  end
   return {
-    objPriority = 1,
+    objPriority = priority,
     submissionOrder = 0,
     oamMode = "normal",
     draw = draw,
@@ -2594,26 +2717,6 @@ end
 -- flashing ball on a graphics namespace.
 local BALL_FLASH_SHADER_PATH = "libs/hgss/src/presentation/shaders/ball_palette_flash.glsl"
 local ballFlashShaders = setmetatable({}, { __mode = "k" })
-
----@param path string repo-relative shader source path
----@return string shader source
-local function readShaderSource(path)
-  if love and love.filesystem then
-    local ok, source = pcall(love.filesystem.read, path)
-    if ok and type(source) == "string" and source ~= "" then
-      return source
-    end
-  end
-  local handle = io.open(path, "rb")
-  if handle ~= nil then
-    local source = handle:read("*a")
-    handle:close()
-    if type(source) == "string" and source ~= "" then
-      return source
-    end
-  end
-  error("cannot read battle ball flash shader source: " .. path, 0)
-end
 
 ---@param graphics table<string, unknown> injected host graphics
 ---@return table<string, unknown> compiled ball flash shader

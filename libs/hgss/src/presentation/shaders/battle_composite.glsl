@@ -293,7 +293,7 @@ vec4 effect(vec4 color, Image image, vec2 texture_coords, vec2 screen_coords)
     c6 = min(floor((t6 * eva + b6 * evb + 8.0) / 16.0), vec3(63.0));
     resolved = 1.0;
   }
-  if (resolved < 0.5 && topIs3D > 0.5 && topFirst > 0.5 && fxAllow > 0.5 && secondEligible > 0.5) {
+  if (resolved < 0.5 && topIs3D > 0.5 && fxAllow > 0.5 && secondEligible > 0.5) {
     float alpha5 = floor(topAlpha * 31.0 + 0.5);
     vec3 t6 = floor(topRgb * 63.0 + 0.5);
     if (alpha5 >= 31.0) {

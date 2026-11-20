@@ -3218,6 +3218,92 @@ function T.scripted_background_scroll_and_grayscale_reach_the_main_frame()
   end
 end
 
+function T.animation_system_blend_maps_to_the_main_engine()
+  -- BattleAnimSystem_InitBlend's default main-screen blend is base
+  -- register state: alpha 8/8, no first targets, every plane plus OBJ
+  -- as a second target. A later scripted compositor write overrides
+  -- it per role without a second side channel.
+  local observer = {}
+  drawNativePane(
+    "detail",
+    nativeView({
+      sceneAnimation = {
+        main = {
+          planes = {},
+          compositor = {},
+          systemBlend = {
+            blend = { mode = "alpha", eva = 8, evb = 8, evy = 0 },
+            firstTarget = {},
+            secondTarget = { world3d = true, window = true, transition = true, battlefield = true },
+            objTargets = { second = true },
+          },
+        },
+      },
+    }),
+    nil,
+    {},
+    nil,
+    nil,
+    observer
+  )
+  local frame = assert(observer.compositionFrame, "the default blend draws through one typed main frame")
+  Assert.equal(frame.engine, "main", "the default blend composes on the main engine")
+  Assert.deepEqual(
+    frame.animation.blend,
+    { mode = "alpha", eva = 8, evb = 8, evy = 0 },
+    "the default blend keeps its source coefficients"
+  )
+  Assert.deepEqual(frame.animation.firstTarget, {}, "the default blend has no first target")
+  Assert.deepEqual(
+    frame.animation.secondTarget,
+    { world3d = true, window = true, transition = true, battlefield = true },
+    "every main plane is a second target"
+  )
+  Assert.deepEqual(frame.animation.objTargets, { second = true }, "OBJ joins the second target")
+end
+
+function T.scripted_compositor_writes_override_the_system_blend()
+  local observer = {}
+  drawNativePane(
+    "detail",
+    nativeView({
+      sceneAnimation = {
+        main = {
+          planes = {},
+          compositor = {
+            blend = { mode = "alpha", eva = 15, evb = 0, evy = 0 },
+            firstTarget = { world3d = true },
+            secondTarget = { battlefield = true },
+          },
+          systemBlend = {
+            blend = { mode = "alpha", eva = 8, evb = 8, evy = 0 },
+            firstTarget = {},
+            secondTarget = { world3d = true, window = true, transition = true, battlefield = true },
+            objTargets = { second = true },
+          },
+        },
+      },
+    }),
+    nil,
+    {},
+    nil,
+    nil,
+    observer
+  )
+  local frame = assert(observer.compositionFrame, "the scripted blend draws through one typed main frame")
+  Assert.deepEqual(
+    frame.animation.blend,
+    { mode = "alpha", eva = 15, evb = 0, evy = 0 },
+    "the scripted write owns the blend coefficients"
+  )
+  Assert.deepEqual(frame.animation.firstTarget, { world3d = true }, "the scripted first target replaces the empty base")
+  Assert.deepEqual(
+    frame.animation.secondTarget,
+    { world3d = true, window = true, transition = true, battlefield = true },
+    "unwritten second-target roles keep the system mask"
+  )
+end
+
 function T.menu_slide_keeps_the_backdrop_visible_outside_the_strips()
   -- Only the sliding BG0/BG1 roles hide outside the two strips: the
   -- BG2 backdrop stays visible over the full pane instead of flashing

@@ -172,6 +172,7 @@ local function pictureRenderer(graphics, opts)
     graphics.pictureItems = primitives
     if opts ~= nil then
       opts.pictureItems = primitives
+      opts.objects = frame.objects
     end
     CompositionFrameDrain.drain(drawGraphics, frame)
     for _, primitive in ipairs(primitives) do
@@ -364,6 +365,62 @@ function T.other_layout_modes_reload_the_same_facing_mon()
   local doll = drawnDetail(view, { frozenFrames = frozenFrames })
   local same = picturesOf(doll.pictureItems, "frozen-frame-0")[1]
   Assert.notNil(same, "the substitute mode without a substitute flag keeps the base picture")
+end
+
+function T.palette_faded_copies_keep_their_obj_layer()
+  -- A copy that inherits a live palette fade keeps the native OBJ layer:
+  -- the fade rides its own draw instead of falling back to the
+  -- depth-tested picture path, so a nearer effect plane cannot erase it.
+  local player = battler({
+    activation = 1,
+    paletteFade = { applied = true, targetColor = 0x7FFF, intensity = 16 },
+  })
+  local copy = { picture = { spriteSlot = 0, battlerActivation = { combatant = 1, activation = 1 }, follow = false } }
+  local opts = {}
+  local view = snapshot({ player, foeBattler() }, { copy })
+  local graphics = drawnDetail(view, opts)
+  Assert.equal(
+    #picturesOf(opts.pictureItems, "mon:" .. FROZEN_SELECTOR),
+    1,
+    "the live picture keeps the depth-tested path"
+  )
+  local copyDraws = copyDrawsOf(graphics, "mon:" .. FROZEN_SELECTOR)
+  Assert.equal(#copyDraws, 1, "the faded copy still draws as an OBJ fragment")
+  local faded = false
+  for _, shader in ipairs(graphics.shaders) do
+    for _, send in ipairs(shader.sends) do
+      if send.name == "u_fadeCoefficient" and send.value == 16 then
+        faded = true
+      end
+    end
+  end
+  Assert.isTrue(faded, "the copy draw applies the source palette blend")
+end
+
+function T.sprite_copy_priority_follows_the_source_draw_priority()
+  -- StartBattlerSpriteDraw writes 1 (front) or 255 (behind); the OBJ
+  -- layer consumes the same 0..3 OAM priority, so 255 lands on the
+  -- behind slot and 1 keeps the copy in front.
+  local player = battler({ activation = 1 })
+  local function copyPriorities(priority)
+    local instance = copyInstance(player, true)
+    instance.priority = priority
+    local opts = {}
+    drawnDetail(snapshot({ player, foeBattler() }, { instance }), opts)
+    local priorities = {}
+    for _, fragment in ipairs(opts.objects or {}) do
+      -- Copies share native submission order 1 with the caller's HUD
+      -- fragment; the HUD keeps OAM priority 0.
+      if fragment.submissionOrder == 1 then
+        priorities[#priorities + 1] = fragment.objPriority
+      end
+    end
+    return priorities
+  end
+  local front = copyPriorities(1)
+  Assert.isTrue(#front == 2 and front[1] == 0 and front[2] == 1, "the front role draws at OAM priority 1")
+  local behind = copyPriorities(255)
+  Assert.isTrue(#behind == 2 and behind[1] == 0 and behind[2] == 3, "the behind role draws at the lowest OAM priority")
 end
 
 return { tests = T }

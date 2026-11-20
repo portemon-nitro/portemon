@@ -62,6 +62,10 @@ function T.sprite_copies_composite_above_the_3d_layer(scope)
   scene:observe({ battler })
   scene:install(battler)
   scene:setBattlerSpriteSlot("probe:1", 0, { combatant = 1, activation = 1 }, false)
+  -- Native copies stay invisible until the shared manager exists and
+  -- StartBattlerSpriteDraw creates the draw task that paints it.
+  scene:setAnimationSpriteManager("battler-sprite-manager", true)
+  scene:startAnimationSpriteDraw(0, 0)
   local overlay = scene:allocEffect("probe-overlay")
   scene:setEffectPicture(overlay.id, {
     assetKey = "probe/overlay",
@@ -117,8 +121,8 @@ function T.sprite_copies_composite_above_the_3d_layer(scope)
     }, view, "detail", {}, { x = 0, y = 0, scale = 1 })
     graphics.setCanvas()
     local data = scope:own(canvas:newImageData())
-    local red, green = data:getPixel(128, 96)
-    return red, green
+    local red, green, blue = data:getPixel(128, 96)
+    return red, green, blue
   end
 
   local red, green = centerPixel()
@@ -141,6 +145,26 @@ function T.sprite_copies_composite_above_the_3d_layer(scope)
     shownGreen > 0.5 and shownRed < 0.5,
     "the copy returns with its source draw flag, got r=" .. shownRed .. " g=" .. shownGreen
   )
+  -- StopBattlerSpriteDraw deactivates the draw loop without touching the
+  -- sprite: the copy record survives but nothing paints it.
+  scene:stopAnimationSpriteDraw(0)
+  local stoppedRed, stoppedGreen = centerPixel()
+  Assert.isTrue(
+    stoppedRed > 0.5 and stoppedGreen < 0.5,
+    "a stopped draw loop paints no copy, got r=" .. stoppedRed .. " g=" .. stoppedGreen
+  )
+  Assert.isTrue(#scene:effectViews() >= 1, "the stopped loop keeps its copy record alive")
+  -- A copy that carries the live palette fade keeps its OBJ layer: the
+  -- fade rides its own draw instead of falling back to the depth-tested
+  -- picture, so the nearer effect plane cannot erase it.
+  scene:startAnimationSpriteDraw(0, 0)
+  battler.paletteFade = { applied = true, targetColor = 0x7FFF, intensity = 16 }
+  local fadeRed, fadeGreen, fadeBlue = centerPixel()
+  Assert.isTrue(
+    fadeRed > 0.9 and fadeGreen > 0.9 and fadeBlue > 0.9,
+    "the faded copy draws on its OBJ layer, got " .. fadeRed .. "/" .. fadeGreen .. "/" .. fadeBlue
+  )
+  battler.paletteFade = nil
 end
 
 return GraphicsSmoke.suite(T)

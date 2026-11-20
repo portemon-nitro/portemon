@@ -2440,4 +2440,63 @@ function T.shake_targets_without_named_pictures_degrades_to_its_timing()
   Assert.equal(#journal.released, #journal.acquired, "the degraded shake stages no leases")
 end
 
+function T.managed_sprite_frame_loop_owns_the_manager_draw_window()
+  -- BattleAnimFunc_AnimateSprites draws the shared battler sprite
+  -- manager for its frame count, so copies stay visible through the
+  -- loop and stop when it retires.
+  local scene = BattleScene.new()
+  scene:setAnimationSpriteManager("battler-sprite-manager", true)
+  scene:setBattlerSpriteSlot("probe:1", 0, { combatant = 1, activation = 1 }, false)
+  local function copyDraws()
+    for _, view in ipairs(scene:effectViews()) do
+      if type(view.picture) == "table" and view.picture.spriteSlot == 0 then
+        return view.draw
+      end
+    end
+    return nil
+  end
+  Assert.equal(copyDraws(), false, "no loop paints the copy")
+  local services = { scene = scene, audio = {}, resources = {} }
+  Assert.isTrue(
+    not pcall(BattleEffectTasks.create, "managed-sprite-draw-loop", { parameters = {} }, {}, services),
+    "a frame loop needs its source frame count"
+  )
+  local task = assert(BattleEffectTasks.create(
+    "managed-sprite-draw-loop",
+    { parameters = { frameTicks = 3 } },
+    {},
+    services
+  ))
+  Assert.equal(copyDraws(), true, "the loop opens its manager draw window")
+  task:stepSourceTick({ tick = 1 })
+  Assert.equal(task:status(), "running", "the loop keeps drawing through its frame count")
+  Assert.equal(copyDraws(), true, "the copy stays painted inside the window")
+  task:stepSourceTick({ tick = 2 })
+  Assert.equal(copyDraws(), true, "the last running frame keeps the window")
+  task:stepSourceTick({ tick = 3 })
+  Assert.equal(task:status(), "complete", "the loop retires on its frame count")
+  Assert.equal(copyDraws(), false, "the retired loop paints no copy")
+  task:dispose()
+end
+
+function T.managed_sprite_frame_loop_cancellation_closes_its_window()
+  local scene = BattleScene.new()
+  scene:setAnimationSpriteManager("battler-sprite-manager", true)
+  scene:setBattlerSpriteSlot("probe:1", 0, { combatant = 1, activation = 1 }, false)
+  local task = assert(BattleEffectTasks.create(
+    "managed-sprite-draw-loop",
+    { parameters = { frameTicks = 5 } },
+    {},
+    { scene = scene, audio = {}, resources = {} }
+  ))
+  task:cancel("withdrawn")
+  Assert.equal(task:status(), "cancelled", "cancellation lands on cancelled")
+  for _, view in ipairs(scene:effectViews()) do
+    if type(view.picture) == "table" and view.picture.spriteSlot == 0 then
+      Assert.equal(view.draw, false, "cancellation closes the draw window")
+    end
+  end
+  task:dispose()
+end
+
 return { tests = T }

@@ -34,6 +34,19 @@ local function recordingScene()
   function scene.setAnimationSpriteDrawFlag(_self, slot, draw)
     calls[#calls + 1] = { method = "setAnimationSpriteDrawFlag", slot = slot, draw = draw }
   end
+  function scene.setAnimationSpritePriority(_self, slot, priority)
+    calls[#calls + 1] = { method = "setAnimationSpritePriority", slot = slot, priority = priority }
+  end
+  function scene.startAnimationSpriteDraw(_self, loopIndex, slot)
+    calls[#calls + 1] = { method = "startAnimationSpriteDraw", loopIndex = loopIndex, slot = slot }
+  end
+  function scene.stopAnimationSpriteDraw(_self, loopIndex)
+    calls[#calls + 1] = { method = "stopAnimationSpriteDraw", loopIndex = loopIndex }
+  end
+  function scene.pictureState(_self, activation)
+    calls[#calls + 1] = { method = "pictureState", activation = activation }
+    return nil
+  end
   function scene.stopAnimationSpriteFollow(_self, slot)
     calls[#calls + 1] = { method = "stopAnimationSpriteFollow", slot = slot }
   end
@@ -282,18 +295,22 @@ function T.sprite_draw_flags_and_follows_record_their_slots()
   }, scene)
   Assert.equal(player:status(handle), "complete", "the sprite program completes")
   local flags = {}
+  local stops = {}
   local follows = {}
   for _, call in ipairs(calls) do
     if call.method == "setAnimationSpriteDrawFlag" then
       flags[#flags + 1] = call
+    elseif call.method == "stopAnimationSpriteDraw" then
+      stops[#stops + 1] = call
     elseif call.method == "stopAnimationSpriteFollow" then
       follows[#follows + 1] = call
     end
   end
-  Assert.equal(#flags, 2, "both draw transitions record their flag")
+  Assert.equal(#flags, 1, "the explicit visibility write records its flag")
   Assert.equal(flags[1].slot, 2, "the explicit flag names its slot")
   Assert.isTrue(flags[1].draw == false, "a zero flag hides the sprite")
-  Assert.isTrue(flags[2].draw == false, "the effect clear stops drawing its slot")
+  Assert.equal(#stops, 1, "the effect clear stops its draw loop")
+  Assert.equal(stops[1].loopIndex, 2, "the stop names its source loop index")
   Assert.equal(#follows, 1, "the effect destroy stops its follow binding")
   Assert.equal(follows[1].slot, 3, "the destroy names its slot")
 end
@@ -373,6 +390,195 @@ function T.real_scene_registry_records_draw_and_manager_lifetimes()
   Assert.isTrue(slot.followStopped == true, "the slot records its stopped follow")
   Assert.isTrue(scene:animationSpriteManagerPresent("manager-1") == true, "the created manager reads present")
   Assert.isNil(scene:animationSprite(9), "unnamed slots read absent")
+end
+
+-- Doubles topology with explicit source battler types: attacker,
+-- defender, and their partner rows when the side owns one.
+local function doublesPacket(attackerSideType, defenderSideType)
+  local attacker = { combatant = 1, activation = 1, slot = "a", sideType = attackerSideType }
+  local defender = { combatant = 3, activation = 3, slot = "b", sideType = defenderSideType }
+  local attackerPartner = attackerSideType % 2 == 0
+      and { combatant = 2, activation = 2, slot = "a2", sideType = attackerSideType == 2 and 4 or 2 }
+    or { combatant = 4, activation = 4, slot = "a2", sideType = attackerSideType == 3 and 5 or 3 }
+  local defenderPartner = defenderSideType % 2 == 0
+      and { combatant = 5, activation = 5, slot = "b2", sideType = defenderSideType == 2 and 4 or 2 }
+    or { combatant = 6, activation = 6, slot = "b2", sideType = defenderSideType == 3 and 5 or 3 }
+  return {
+    launchId = "sprite-draw-probe",
+    packetId = 1,
+    topology = {
+      attacker = attacker,
+      defender = defender,
+      attackerPartner = attackerPartner,
+      defenderPartner = defenderPartner,
+      targets = { defender },
+      sourceBattlers = { attacker, attackerPartner, defender, defenderPartner },
+    },
+  }
+end
+
+local function runSpriteDraw(scene, playback, mode, loopIndex, slot)
+  local helpers = collaborators(scene)
+  local player = assert(BattleAnimationPlayer.new({
+    scene = helpers.scene,
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
+  }))
+  local handle = assert(player:start(playback, programOf({
+    { op = "start-sprite-effect", mode = mode, values = { loopIndex, slot }, taskKind = "managed-sprite-draw-loop" },
+    { op = "reset-blend-alpha" },
+  })))
+  for _ = 1, 8 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) ~= "running" and player:status(handle) ~= "waiting" then
+      break
+    end
+  end
+  Assert.equal(player:status(handle), "complete", "the sprite draw program completes")
+  return player
+end
+
+function T.singles_sprite_draw_keeps_the_copy_hidden()
+  -- Native StartBattlerSpriteDraw clears the copy's draw flag and only
+  -- the doubles branch re-shows it or creates the draw task, so a
+  -- single battle's copy stays hidden.
+  local scene = BattleScene.new()
+  runSpriteDraw(scene, packet(), "first-battler-class-priority-gate", 0, 4)
+  local slot = assert(scene:animationSprite(4), "the hidden slot reads back")
+  Assert.isTrue(slot.draw == false, "the single-battle copy stays hidden")
+  Assert.isNil(scene:animationSpriteDraw(0), "singles create no draw loop")
+end
+
+function T.doubles_sprite_draw_applies_the_native_role_priority_table()
+  local cases = {
+    {
+      mode = "first-battler-class-priority-gate",
+      attacker = 3,
+      defender = 2,
+      draw = true,
+      priority = 1,
+    },
+    {
+      mode = "first-battler-class-priority-gate",
+      attacker = 4,
+      defender = 2,
+      draw = true,
+      priority = 1,
+    },
+    {
+      mode = "first-battler-class-priority-gate",
+      attacker = 0,
+      defender = 3,
+      draw = false,
+      priority = 255,
+    },
+    {
+      mode = "first-battler-class-priority-alternate",
+      attacker = 5,
+      defender = 2,
+      draw = true,
+      priority = 1,
+    },
+    {
+      mode = "first-battler-class-priority-alternate",
+      attacker = 3,
+      defender = 2,
+      draw = false,
+      priority = 255,
+    },
+    { mode = "second-battler-class-priority-forward", attacker = 2, defender = 2, draw = true, priority = 255 },
+    { mode = "second-battler-class-priority-forward", attacker = 2, defender = 3, draw = true, priority = 1 },
+    { mode = "second-battler-class-priority-forward", attacker = 2, defender = 4, draw = true, priority = 1 },
+    { mode = "second-battler-class-priority-forward", attacker = 2, defender = 5, draw = true, priority = 255 },
+    { mode = "second-battler-class-priority-reverse", attacker = 2, defender = 2, draw = true, priority = 1 },
+    { mode = "second-battler-class-priority-reverse", attacker = 2, defender = 3, draw = true, priority = 255 },
+    { mode = "second-battler-class-priority-reverse", attacker = 2, defender = 4, draw = true, priority = 255 },
+    { mode = "second-battler-class-priority-reverse", attacker = 2, defender = 5, draw = true, priority = 1 },
+  }
+  for _, case in ipairs(cases) do
+    local scene = BattleScene.new()
+    runSpriteDraw(scene, doublesPacket(case.attacker, case.defender), case.mode, 1, 4)
+    local slot = assert(scene:animationSprite(4), case.mode .. " records its slot")
+    Assert.equal(slot.draw, case.draw, case.mode .. " draw flag for attacker " .. case.attacker)
+    Assert.equal(slot.priority, case.priority, case.mode .. " priority for attacker " .. case.attacker)
+    local loop = assert(scene:animationSpriteDraw(1), case.mode .. " starts its draw loop")
+    Assert.equal(loop.slot, 4, case.mode .. " draws the named sprite slot")
+  end
+end
+
+function T.vanished_role_pictures_hide_the_copy_but_keep_their_priority()
+  local scene = BattleScene.new()
+  local attacker = { combatant = 1, activation = 1 }
+  scene:install(attacker)
+  scene:applyPictureState(attacker, { vanished = true })
+  runSpriteDraw(scene, doublesPacket(3, 2), "first-battler-class-priority-gate", 0, 4)
+  local slot = assert(scene:animationSprite(4), "the vanished copy keeps its slot")
+  Assert.isTrue(slot.draw == false, "a vanished role picture keeps the copy hidden")
+  Assert.equal(slot.priority, 1, "the role priority still applies to a vanished picture")
+end
+
+function T.sprite_draw_stop_deactivates_only_the_loop()
+  local scene = BattleScene.new()
+  local playback = doublesPacket(3, 2)
+  local helpers = collaborators(scene)
+  local player = assert(BattleAnimationPlayer.new({
+    scene = helpers.scene,
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
+  }))
+  local handle = assert(player:start(playback, programOf({
+    { op = "start-sprite-effect", mode = "first-battler-class-priority-gate", values = { 0, 4 }, taskKind = "managed-sprite-draw-loop" },
+    { op = "clear-effect-slot", values = { 0 } },
+    { op = "reset-blend-alpha" },
+  })))
+  for _ = 1, 8 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) == "complete" then
+      break
+    end
+  end
+  Assert.equal(player:status(handle), "complete", "the draw program completes")
+  Assert.isNil(scene:animationSpriteDraw(0), "the stop deactivates the draw loop")
+  local slot = assert(scene:animationSprite(4), "the sprite slot survives the stop")
+  Assert.isTrue(slot.draw == true, "the stop leaves the draw flag untouched")
+end
+
+function T.move_programs_install_and_restore_the_system_blend()
+  local scene = BattleScene.new()
+  local helpers = collaborators(scene)
+  local player = assert(BattleAnimationPlayer.new({
+    scene = helpers.scene,
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+    services = { onNativeFrame = function() end },
+  }))
+  local handle = assert(player:start(packet(), programOf({
+    { op = "interpreter-wait", values = { 1 } },
+    { op = "reset-blend-alpha" },
+  })))
+  local frame = scene:animationFrame()
+  local blend = assert(frame.main.systemBlend, "the move installs the source default blend")
+  Assert.deepEqual(blend.blend, { mode = "alpha", eva = 8, evb = 8, evy = 0 }, "the default blend uses the source pair")
+  Assert.deepEqual(blend.firstTarget, {}, "the default blend targets nothing first")
+  Assert.deepEqual(
+    blend.secondTarget,
+    { world3d = true, window = true, transition = true, battlefield = true },
+    "every main plane joins the second target"
+  )
+  Assert.deepEqual(blend.objTargets, { second = true }, "OBJ joins the second target")
+  for _ = 1, 8 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) == "complete" then
+      break
+    end
+  end
+  Assert.equal(player:status(handle), "complete", "the move program completes")
+  Assert.isNil(scene:animationFrame().main.systemBlend, "teardown restores the hardware default")
 end
 
 return { tests = T }
