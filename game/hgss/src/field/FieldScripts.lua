@@ -413,6 +413,65 @@ local function trustedRequire(name)
   return require(name)
 end
 
+-- The naming screen carries its own message bank: `NamingScreen_SetDefaultName`
+-- (src/naming_screen.c) reads FIRST_DEFAULT_NAME_RIVAL from bank 254 when the
+-- player commits an empty rival name -- row 84 under HEARTGOLD and row 85
+-- otherwise. Reading the bank needs no map header or field script bank, so the
+-- producer lists it explicitly.
+local NAMING_SCREEN_MESSAGE_BANK_ID = 254
+local RIVAL_DEFAULT_NAME_HEARTGOLD_MESSAGE_ID = 84
+local RIVAL_DEFAULT_NAME_SOULSILVER_MESSAGE_ID = 85
+
+-- The generated default-name row the selected edition reads. The retail split
+-- is compile-time (`#ifdef HEARTGOLD`), so every non-HeartGold edition reads
+-- the 85 row.
+---@param versionId string
+---@return integer
+local function rivalDefaultNameMessageId(versionId)
+  if versionId == "heartgold" then
+    return RIVAL_DEFAULT_NAME_HEARTGOLD_MESSAGE_ID
+  end
+  return RIVAL_DEFAULT_NAME_SOULSILVER_MESSAGE_ID
+end
+
+-- Read one generated message as display text with scoped bank ownership: the
+-- bank is released after a successful read and also released before rethrowing
+-- the provider's original fault, so a missing bank or row surfaces its
+-- structured error instead of a substitute literal.
+---@param provider FieldMessageProvider
+---@param bankId integer
+---@param messageId integer
+---@return string
+local function scopedMessageText(provider, bankId, messageId)
+  local acquired, acquireErr = provider:acquireBank(bankId)
+  if not acquired then
+    error(acquireErr, 0)
+  end
+  local template, templateErr = provider:get(bankId, messageId)
+  if not template then
+    provider:releaseBank(bankId)
+    error(templateErr, 0)
+  end
+  provider:releaseBank(bankId)
+  return template.text
+end
+
+-- The generated default name the naming screen stores for an empty entry. The
+-- naming task asks for it once, when rival naming starts, so the bank read
+-- stays lazy: a composition that never runs rival naming never acquires the
+-- naming screen's bank, and a missing bank or row surfaces the provider's
+-- structured error instead of a literal.
+---@param provider FieldMessageProvider
+---@param versionId string
+---@return fun(): string
+local function rivalDefaultNameResolver(provider, versionId)
+  local messageId = rivalDefaultNameMessageId(versionId)
+  local function resolveDefaultName()
+    return scopedMessageText(provider, NAMING_SCREEN_MESSAGE_BANK_ID, messageId)
+  end
+  return resolveDefaultName
+end
+
 -- opts.overrideFs: love.filesystem-shaped read access for the repo
 -- `data/scripts/overrides` tree (the game mounts `data` before calling).
 ---@param opts FieldScriptsOptions
@@ -580,6 +639,14 @@ function FieldScripts.new(opts)
     moneyService = MoneyService.new(opts.profile, moneyBox)
   end
 
+  -- The generated rival default name is wired only when the runtime knows the
+  -- selected edition: without one there is no row to read, and the naming task
+  -- keeps its missing-service fault.
+  local rivalDefaultName = nil
+  if opts.versionId ~= nil then
+    rivalDefaultName = rivalDefaultNameResolver(opts.messageProvider, opts.versionId)
+  end
+
   ---@class FieldScriptsPlatform: FieldScripts
   ---@field initController MapInitScriptController
   ---@field blackoutFlow FieldBlackoutFlow?
@@ -707,6 +774,7 @@ function FieldScripts.new(opts)
       sweetScent = opts.sweetScent,
       fieldMoveCue = FieldMoveCue.new(),
       monNaming = opts.monNaming,
+      rivalDefaultName = rivalDefaultName,
       followingMon = opts.followingMon,
       celebiCinematic = opts.celebiCinematic,
       legendCutscene = opts.legendCutscene,

@@ -45,7 +45,10 @@
 -- transition starts, so destination demand, resolution, and the arrival facing
 -- all describe one record. A resolved destination facing wins over the
 -- trigger-derived facing because the source creates the arrival player with
--- the saved direction.
+-- the saved direction. Resolution also carries the trigger-time source facing
+-- snapshot (the source records PlayerAvatar_GetFacingDirection when the warp
+-- triggers), because the choreography turns the live player before the swap;
+-- downstream entrance publication reads that snapshot, never the player.
 --
 -- Panel warps run the teleport spin around the same lifecycle when the bound
 -- player offers facing + height pose control: TELE2 at each spin start, a
@@ -628,6 +631,19 @@ local function adjustVerticalDestination(self, resolution)
   resolution.worldY = resolution.worldY + offset
 end
 
+-- The destination map profile selection asks about. A dynamic anchor's 0x100
+-- warp names the 0xFFF sentinel map header, which names no map: the saved
+-- destination record is the only destination identity it has.
+---@param self FieldTransition
+---@return integer|string
+local function effectiveDestinationMapId(self)
+  local warp = assert(self.sourceWarp, "profile selection requires the source warp")
+  if warp.destinationWarpId == WarpSystem.DYNAMIC_WARP_SENTINEL then
+    return WarpSystem.dynamicWarpRecord(self.sourceMap, warp, self.dynamicWarp).map
+  end
+  return warp.destinationMapId
+end
+
 local function selectProfile(self, sourceMap, trigger)
   local descriptor = trigger.transition
   if not descriptor then
@@ -661,10 +677,11 @@ local function selectProfile(self, sourceMap, trigger)
   local sourceEnvironment = sourceMap.fieldData and sourceMap.fieldData.transitionEnvironment
   assert(sourceEnvironment, "source transition environment required")
   assert(type(self.loader.transitionEnvironment) == "function", "field map transition metadata required")
-  local destinationEnvironment = self.loader:transitionEnvironment(self.sourceWarp.destinationMapId)
+  local destinationMapId = effectiveDestinationMapId(self)
+  local destinationEnvironment = self.loader:transitionEnvironment(destinationMapId)
   return FieldTransitionProfile.selectEnvironment(sourceEnvironment, destinationEnvironment, {
     sourceMapId = sourceMap.mapId,
-    destinationMapId = self.sourceWarp.destinationMapId,
+    destinationMapId = destinationMapId,
     sourceEnvironment = sourceEnvironment,
     destinationEnvironment = destinationEnvironment,
   }),
@@ -1268,6 +1285,19 @@ function FieldTransition:updateFixed(inputSnapshot)
     local resolveOk, err = pcall(function()
       local result = self.resolveDestination(self.loader, self.sourceMap, self.sourceWarp, self.dynamicWarp)
       self.resolution = result
+      -- The source entrance facing is the trigger-time snapshot: the
+      -- choreography turns the live player before the swap, so the direction
+      -- the source records when the warp triggers (FieldSystem_MapConnection
+      -- stores PlayerAvatar_GetFacingDirection) travels with the resolution.
+      result.sourceFacing = self.facing
+      if result.facing ~= nil then
+        -- A saved dynamic destination direction is the facing the source
+        -- creates the arrival player with: it becomes the transition's
+        -- authoritative destination facing for prepare, commit and the
+        -- profile hooks. The destination geometry adjustments below keep
+        -- their own authority over the arrival facing.
+        self.destinationFacing = result.facing
+      end
       if self.profileId == FieldTransitionProfile.HORIZONTAL_STAIRS then
         adjustHorizontalStairDestination(self, result)
       elseif
@@ -1290,7 +1320,7 @@ function FieldTransition:updateFixed(inputSnapshot)
       else
         self.suppression = result.suppression
       end
-      self.prepared = self.prepare(result, result.facing or self.destinationFacing)
+      self.prepared = self.prepare(result, self.destinationFacing)
     end)
     if not resolveOk then
       return self:_abort(err)
@@ -1300,7 +1330,7 @@ function FieldTransition:updateFixed(inputSnapshot)
   end
   if self.phase == FieldTransition.PHASES.swap_map then
     assert(self.coveredSwap or self.fadeAlpha == 1, "map swap must occur while fully black")
-    self.commit(self.resolution, self.resolution.facing or self.destinationFacing, self.prepared)
+    self.commit(self.resolution, self.destinationFacing, self.prepared)
     if self.coveredSwap then
       -- The source-authored screen cover owns all visibility for this swap:
       -- no ordinary fade-in, no door/profile choreography. Source `FadeScreen`

@@ -215,43 +215,41 @@ end
 -- source refreshes on an arrival whose own anchor warp event is 0x100
 -- (FieldSystem_EnterLocation): the arriving map's anchor tile records the
 -- entrance position, so the next warp through that anchor leaves for the map
--- the player entered from. The record is the source's map-local tile and
--- facing; every other arrival leaves it untouched, and a missing travel owner
--- or warp record never fails the swap.
+-- the player entered from. The record is the source's map-local tile and the
+-- trigger-time entrance facing (FieldSystem_MapConnection stores
+-- PlayerAvatar_GetFacingDirection when the warp triggers), which the
+-- transition carries on its resolution; the live player has already been
+-- turned by the departure choreography and is never re-read here. Every other
+-- arrival leaves the record untouched, while a qualifying arrival requires the
+-- travel owner and the source entrance state the retail operation always has.
 ---@param self FieldWorldSwapCoordinator
 ---@param runtime table<string, unknown>
 ---@param resolution table<string, unknown>
 function FieldWorldSwapCoordinator:publishDynamicWarpEntrance(runtime, resolution)
-  local travel = runtime.fieldTravel
-  if travel == nil or type(travel.setDynamicWarp) ~= "function" then
-    return
-  end
   local destinationWarp = resolution.destinationWarp
   if type(destinationWarp) ~= "table" or destinationWarp.destinationWarpId ~= WarpSystem.DYNAMIC_WARP_SENTINEL then
     return
   end
-  local sourceMap, sourceWarp = resolution.sourceMap, resolution.sourceWarp
-  if
-    type(sourceMap) ~= "table"
-    or type(sourceMap.mapSymbol) ~= "string"
-    or type(sourceWarp) ~= "table"
-    or type(sourceWarp.index) ~= "number"
-    or type(sourceWarp.x) ~= "number"
-    or type(sourceWarp.z) ~= "number"
-  then
-    return
-  end
-  local player = runtime.player
-  if type(player) ~= "table" or type(player.facing) ~= "string" then
-    return
-  end
+  local travel = assert(runtime.fieldTravel, "dynamic warp entrance recording needs the travel owner")
+  assert(
+    type(travel.setDynamicWarp) == "function",
+    "dynamic warp entrance recording needs FieldTravelState.setDynamicWarp"
+  )
+  local sourceMap = assert(resolution.sourceMap, "dynamic warp entrance recording needs the source map")
+  assert(type(sourceMap.mapSymbol) == "string", "dynamic warp entrance recording needs the source map symbol")
+  local sourceWarp = assert(resolution.sourceWarp, "dynamic warp entrance recording needs the source warp record")
+  assert(type(sourceWarp.index) == "number", "dynamic warp entrance recording needs the source warp index")
+  assert(type(sourceWarp.x) == "number", "dynamic warp entrance recording needs the source warp tile")
+  assert(type(sourceWarp.z) == "number", "dynamic warp entrance recording needs the source warp tile")
+  local direction =
+    assert(resolution.sourceFacing, "dynamic warp entrance recording needs the trigger-time source facing")
   local localX, localZ = FieldCoordinates.fieldToLocal(sourceMap, sourceWarp.x, sourceWarp.z)
   travel:setDynamicWarp({
     map = sourceMap.mapSymbol,
     fieldX = localX,
     fieldZ = localZ,
     warpId = sourceWarp.index,
-    direction = player.facing,
+    direction = direction,
   })
 end
 

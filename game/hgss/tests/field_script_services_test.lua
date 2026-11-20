@@ -63,6 +63,31 @@ local function namingHost()
   })
 end
 
+-- The naming screen's own generated message bank: the source reads the
+-- selected edition's FIRST_DEFAULT_NAME_RIVAL row from bank 254 when the
+-- player commits an empty name (msg_0254_00084 under HeartGold). The provider
+-- is the real one over a fake cache, so the task's default travels the same
+-- generated-text path dialogue does.
+---@param rivalDefaultText string the bank's rival default-name row
+---@return FieldMessageProvider
+local function namingMessageProvider(rivalDefaultText)
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  cache:writeLua(FieldMessageCache.bankPath(254), {
+    schema = FieldMessageCache.SCHEMA,
+    bankId = 254,
+    messageCount = 91,
+    messages = {
+      [84] = {
+        id = 84,
+        raw = { 0xFFFF },
+        text = rivalDefaultText,
+        tokens = { { kind = "eos", raw = { 0xFFFF } } },
+      },
+    },
+  })
+  return FieldMessageProvider.new(cache)
+end
+
 local SAVE_CONTEXT = { charmap = CatalogFixture.CHARMAP, frameIndexes = { [0] = true } }
 
 -- The live saved player record, validated by its owning module.
@@ -724,6 +749,7 @@ function T.tests.rival_naming_blocks_then_publishes_the_accepted_name_to_the_sav
       monNaming = naming,
       profile = record.profile,
       versionId = "heartgold",
+      messageProvider = namingMessageProvider("SOUL"),
       fontDef = { charmap = CatalogFixture.CHARMAP },
       encode = encodedChunk,
     },
@@ -774,6 +800,55 @@ function T.tests.rival_naming_blocks_then_publishes_the_accepted_name_to_the_sav
   Assert.equal(platform.player:rivalName(), "SOUL", "a reloaded save still shows the new rival name")
 end
 
+-- The blank-entry default is the generated message text: the composition
+-- reads the naming screen's own bank row through the field message provider
+-- and the task commits exactly that text. The row here holds a name the retail
+-- rows do not, so the committed default proves source-data dependence rather
+-- than a runtime literal.
+function T.tests.blank_rival_name_commits_the_generated_source_default()
+  local record = savedPlayer("SILVER")
+  local naming = namingHost()
+  local platform = composeSlice(
+    {
+      travel = nil,
+      fieldMoves = nil,
+      monNaming = naming,
+      profile = record.profile,
+      versionId = "heartgold",
+      messageProvider = namingMessageProvider("LANCE"),
+      fontDef = { charmap = CatalogFixture.CHARMAP },
+      encode = encodedChunk,
+    },
+    "test.rival_default_name",
+    {
+      { op = "rival_naming", result = { value = "var", id = "VAR_TEMP_x4003" } },
+      { op = "set_var", variable = "VAR_TEMP_x4002", value = 7 },
+    }
+  )
+  local composed =
+    assert(platform.composition:effective("test.rival_default_name"), "the rival default-name slice must compose")
+  platform.scheduler:createForeground(composed, nil, 100)
+  local openedAt = assert(stepUntilNaming(platform, naming, 100), "the script blocks on the naming screen")
+
+  submitRivalName(platform, openedAt + 1, "")
+  Assert.equal(record.profile.rivalName, "SILVER", "an empty entry publishes nothing before the screen settles")
+  local closedAt =
+    assert(stepUntilNamingClosed(platform, naming, openedAt + 2), "the naming screen settles after its OK press")
+  for index = 1, 3 do
+    platform.scheduler:step(closedAt + index, nil)
+  end
+
+  Assert.isFalse(naming:isActive(), "the modal released the field")
+  Assert.equal(record.profile.rivalName, "LANCE", "the generated default name lands on the live saved profile")
+  Assert.equal(platform.player:rivalName(), "LANCE", "dialogue reads the committed default immediately")
+  Assert.equal(
+    platform.worldState:getVar("VAR_TEMP_x4003"),
+    0,
+    "the source result variable receives the accepted result code"
+  )
+  Assert.equal(platform.worldState:getVar("VAR_TEMP_x4002"), 7, "the resumed script ran to its end")
+end
+
 -- The live name write re-checks the saved-profile name contract, so a name the
 -- generated field font cannot encode -- or one outside the 1..7-glyph limit --
 -- faults before it reaches the profile or any later save capture.
@@ -818,6 +893,7 @@ function T.tests.rival_battle_outcome_gates_the_trainer_flag_and_the_following_n
     monNaming = winNaming,
     profile = record.profile,
     versionId = "heartgold",
+    messageProvider = namingMessageProvider("SOUL"),
     fontDef = { charmap = CatalogFixture.CHARMAP },
     encode = encodedChunk,
   }, "test.rival_battle", rivalBattleSteps())

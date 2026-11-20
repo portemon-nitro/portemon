@@ -30,6 +30,13 @@ local OPPOSITE_PROTAGONIST_NAME_BANK = 445
 local BLACKOUT_MESSAGE_BANK = 203
 local APRICORN_BOX_MESSAGE_BANK = 21
 
+-- The naming screen reads the default name its empty-entry case stores
+-- straight from its own bank: `NamingScreen_SetDefaultName` in
+-- src/naming_screen.c resolves FIRST_DEFAULT_NAME_RIVAL (row 84 under
+-- HEARTGOLD, row 85 otherwise). No map header or script bank references
+-- bank 254, so it must be listed explicitly.
+local NAMING_SCREEN_MESSAGE_BANK = 254
+
 ---@class FieldMessageCompiler.BankMessage
 ---@field id integer
 ---@field text string
@@ -190,6 +197,8 @@ function FieldMessageCompiler.requiredBankIds()
   set[MenuProtocol.START_MENU_MESSAGE_BANK] = true
   set[OAK_INTRO_MESSAGE_BANK] = true
   set[OPPOSITE_PROTAGONIST_NAME_BANK] = true
+  -- The rival naming screen defaults an empty entry from this bank row.
+  set[NAMING_SCREEN_MESSAGE_BANK] = true
   -- Follower reaction text is addressed directly by the retail overlay.
   set[40] = true
   set[265] = true

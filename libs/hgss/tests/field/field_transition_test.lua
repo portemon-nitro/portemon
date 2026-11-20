@@ -129,9 +129,9 @@ end
 
 -- The source map stub: the transition receives the warp kind from the trigger
 -- record and never reads the map's permission grid, so the stub is just a map
--- identity.
-local function sourceMap()
-  return { mapId = 61 }
+-- identity and the environment profile selection reads.
+local function sourceMap(environment)
+  return { mapId = 61, fieldData = { transitionEnvironment = environment or "outdoors" } }
 end
 
 local function advanceTo(transition, phase, maxTicks)
@@ -307,6 +307,7 @@ local function dynamicAnchorDestination()
     mapSymbol = "MAP_CELADON_CONDOMINIUMS_1F",
     coordinateOrigin = { x = 672, z = 384 },
     fieldData = {
+      transitionEnvironment = "building",
       events = {
         warps = {
           {
@@ -342,8 +343,8 @@ local function dynamicAnchorDestination()
   }
 end
 
-local function dynamicAnchorTrigger()
-  return {
+local function dynamicAnchorTrigger(overrides)
+  local trigger = {
     warp = {
       index = 1,
       x = 4,
@@ -352,6 +353,10 @@ local function dynamicAnchorTrigger()
       destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
     },
   }
+  for key, value in pairs(overrides or {}) do
+    trigger[key] = value
+  end
+  return trigger
 end
 
 -- A dynamic-warp anchor arrives where the saved destination points: the
@@ -404,6 +409,152 @@ function T.dynamic_anchor_arrival_uses_the_saved_destination()
     destinationMapId = 60,
     sourceWarpId = 1,
   })
+end
+
+-- Environment profile selection runs before destination resolution, so an
+-- anchor must ask the loader about the map the saved record names: the 0xFFF
+-- header it was triggered with names no map and selects no environment pair.
+function T.dynamic_anchor_environment_profile_uses_the_saved_destination_map()
+  local destination = dynamicAnchorDestination()
+  local asked = {}
+  local loader = {
+    load = function(_, destinationMap)
+      Assert.equal(destinationMap, destination.mapSymbol, "the saved destination names the map")
+      return destination
+    end,
+    requestWarp = function()
+      return true
+    end,
+    transitionEnvironment = function(_, mapId)
+      asked[#asked + 1] = mapId
+      return destination.fieldData.transitionEnvironment
+    end,
+  }
+  local transition = FieldTransition.new({
+    loader = loader,
+    dynamicWarp = function()
+      return savedDynamicWarp()
+    end,
+    prepare = function()
+      return {}
+    end,
+    commit = function() end,
+  })
+  transition:start(sourceMap("outdoors"), dynamicAnchorTrigger({ transition = { mode = "environment" } }), "south")
+  Assert.deepEqual(asked, { "MAP_CELADON_CONDOMINIUMS_1F" }, "profile selection asks for the saved map, never 4095")
+  Assert.equal(
+    transition.profileId,
+    FieldTransitionProfile.selectEnvironment("outdoors", destination.fieldData.transitionEnvironment),
+    "the outdoors -> building pair selects the indoor profile"
+  )
+  advanceTo(transition, "swap_map", 32)
+  Assert.equal(transition.resolution.fieldX, 700, "the saved destination still resolves its anchor tile")
+end
+
+-- The saved arrival facing becomes the transition's destination facing once
+-- resolution finishes: prepare, commit, and the profile enter hook read the one
+-- value, so a trigger-derived destination facing never overwrites it.
+function T.the_saved_arrival_facing_wins_over_the_trigger_destination_facing()
+  local destination = dynamicAnchorDestination()
+  local loader = {
+    load = function()
+      return destination
+    end,
+    requestWarp = function()
+      return true
+    end,
+  }
+  local prepares, commits, entered = {}, {}, {}
+  local transition
+  transition = FieldTransition.new({
+    loader = loader,
+    dynamicWarp = function()
+      return savedDynamicWarp()
+    end,
+    onProfile = function(_, phase)
+      if phase == "enter" then
+        entered[#entered + 1] = transition.destinationFacing
+      end
+    end,
+    prepare = function(_, facing)
+      prepares[#prepares + 1] = facing
+      return {}
+    end,
+    commit = function(_, facing)
+      commits[#commits + 1] = facing
+    end,
+  })
+  transition:start(
+    sourceMap(),
+    dynamicAnchorTrigger({ destinationFacing = "east", transition = { mode = "fixed", profile = 0 } }),
+    "south"
+  )
+  Assert.equal(transition.destinationFacing, "east", "the trigger facing holds until the destination resolves")
+  advanceTo(transition, "idle", 32)
+  Assert.equal(transition.phase, "idle", "the fixed-profile dynamic arrival completes")
+  Assert.equal(transition.destinationFacing, "west", "the saved direction is the arrival facing")
+  Assert.deepEqual(prepares, { "west" }, "the prepared player is created with the saved direction")
+  Assert.deepEqual(commits, { "west" }, "the commit receives the saved direction")
+  Assert.deepEqual(entered, { "west" }, "the enter profile hook reads the saved direction")
+end
+
+-- The posed player the panel spin drives: the spin needs facing, a numeric
+-- height, and the quarter-turn it applies.
+local function posedPlayer(facing)
+  return {
+    facing = facing,
+    worldY = 0,
+    turn = function(self, direction)
+      self.facing = direction
+    end,
+  }
+end
+
+-- The panel departure spin turns the live player before the swap, but the
+-- source entrance direction is the trigger-time facing the source records
+-- when the warp triggers (FieldSystem_MapConnection calls
+-- PlayerAvatar_GetFacingDirection). Resolution carries that snapshot, so the
+-- arrival facing is unaffected by the spin.
+function T.panel_departure_spin_keeps_the_trigger_time_source_facing()
+  local destination = dynamicAnchorDestination()
+  local player = posedPlayer("south")
+  local loader = {
+    load = function()
+      return destination
+    end,
+    requestWarp = function()
+      return true
+    end,
+  }
+  local prepares, commits, spunFacingAtCommit = {}, {}, nil
+  local transition
+  transition = FieldTransition.new({
+    loader = loader,
+    player = player,
+    dynamicWarp = function()
+      return savedDynamicWarp({ direction = "east" })
+    end,
+    prepare = function(_, facing)
+      prepares[#prepares + 1] = facing
+      return { player = posedPlayer(facing) }
+    end,
+    commit = function(_, facing, prepared)
+      commits[#commits + 1] = facing
+      spunFacingAtCommit = player.facing
+      transition.player = prepared.player
+    end,
+  })
+  transition:start(sourceMap(), dynamicAnchorTrigger(), "south")
+  advanceTo(transition, "swap_map", 64)
+  Assert.equal(player.facing, "west", "the departure spin turned the live player a quarter turn per beat")
+  Assert.equal(transition.resolution.sourceFacing, "south", "resolution keeps the trigger-time source facing")
+  Assert.equal(transition.destinationFacing, "east", "the saved direction is the arrival facing")
+  step(transition)
+  Assert.equal(spunFacingAtCommit, "west", "the commit runs after the departure spin")
+  Assert.deepEqual(prepares, { "east" })
+  Assert.deepEqual(commits, { "east" }, "the commit receives the saved arrival facing")
+  advanceTo(transition, "idle", 64)
+  Assert.equal(transition.phase, "idle", "the panel arrival completes")
 end
 
 -- An anchor with no established destination is an attributed abort: the

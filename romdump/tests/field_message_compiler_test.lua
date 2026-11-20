@@ -37,6 +37,9 @@ local function sourceReferenceBankIds()
   -- from this bank through the player gender; see FieldMessageCompiler's
   -- opposite-protagonist name bank.
   ids[445] = true
+  -- The rival naming screen defaults an empty entry from this bank row; see
+  -- FieldMessageCompiler's naming-screen bank.
+  ids[254] = true
   ids[40] = true
   ids[265] = true
   -- GetStdMsgNaix addresses these msgdata banks by immediate std index;

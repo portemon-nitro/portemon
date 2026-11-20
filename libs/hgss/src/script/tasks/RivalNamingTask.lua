@@ -1,6 +1,7 @@
 -- Blocking HGSS rival naming input task. The source NameRival command runs
 -- the shared field naming screen in rival mode and always accepts its
--- result: an empty entry commits the edition default name and a typed entry
+-- result: an empty entry commits the generated default name the composition
+-- resolves from the naming screen's own message bank and a typed entry
 -- commits the typed name, so the single accepted name reaches the live
 -- player profile.
 
@@ -18,11 +19,10 @@ RivalNamingTask.version = 1
 local MAX_RIVAL_NAME_GLYPHS = PlayerData.MAX_NAME_GLYPHS
 
 -- The rival naming screen has no nickname-style declined-input result: an
--- empty or all-space entry takes the edition default name
--- (`src/naming_screen.c:646-679` reads FIRST_DEFAULT_NAME_RIVAL, which is
--- msg_0254_00084 "Soul" for HeartGold and msg_0254_00085 "Heart" for
--- SoulSilver), and the source then stores it without setting `noInput`.
-local RIVAL_DEFAULT_NAMES = { heartgold = "Soul", soulsilver = "Heart" }
+-- empty or all-space entry takes the default name the naming screen stores
+-- (`src/naming_screen.c:NamingScreen_SetDefaultName` reads
+-- FIRST_DEFAULT_NAME_RIVAL), and the source then stores it without setting
+-- `noInput`. The composition resolves that generated text and injects it.
 
 ---@class RivalNamingTask.NamingHost
 ---@field isActive fun(self: RivalNamingTask.NamingHost): boolean
@@ -35,10 +35,16 @@ local RIVAL_DEFAULT_NAMES = { heartgold = "Soul", soulsilver = "Heart" }
 ---@class RivalNamingTask.PlayerFacade
 ---@field setRivalName fun(self: RivalNamingTask.PlayerFacade, name: string)
 
+-- The generated default name the naming screen stores for an empty entry:
+-- the composition resolves the selected edition's message row and returns its
+-- text.
+---@alias RivalNamingTask.DefaultNameResolver fun(): string
+
 ---@param ctx table<string, unknown>
 ---@param key "player"
 ---@return RivalNamingTask.PlayerFacade
 ---@overload fun(ctx: table<string, unknown>, key: "monNaming"): RivalNamingTask.NamingHost
+---@overload fun(ctx: table<string, unknown>, key: "rivalDefaultName"): RivalNamingTask.DefaultNameResolver
 local function service(ctx, key)
   local value = ctx.services and ctx.services[key]
   if value == nil then
@@ -46,7 +52,7 @@ local function service(ctx, key)
       scriptId = ctx.instance and ctx.instance.scriptId,
     })
   end
-  return value --[[@as RivalNamingTask.PlayerFacade|RivalNamingTask.NamingHost]]
+  return value --[[@as RivalNamingTask.PlayerFacade|RivalNamingTask.NamingHost|RivalNamingTask.DefaultNameResolver]]
 end
 
 local function glyphCount(text)
@@ -57,30 +63,9 @@ local function glyphCount(text)
   return count
 end
 
--- The edition default behind an empty entry, resolved from the selected game
--- version (`GetGameVersion` reaches it as the `versionId` service).
----@param ctx table<string, unknown>
----@return string
-local function editionDefaultName(ctx)
-  local versionId = ctx.services and ctx.services.versionId
-  if versionId == nil then
-    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "rival naming requires versionId", {
-      scriptId = ctx.instance and ctx.instance.scriptId,
-    })
-  end
-  ---@cast versionId string
-  local name = RIVAL_DEFAULT_NAMES[versionId]
-  if name == nil then
-    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "unknown game version " .. tostring(versionId), {
-      scriptId = ctx.instance and ctx.instance.scriptId,
-    })
-  end
-  return name --[[@as string]]
-end
-
 -- The source task keeps only its lifetime flags, editing buffer, and the
--- edition default an empty entry commits; the accepted write lives on the
--- player profile alone.
+-- generated default name an empty entry commits; the accepted write lives on
+-- the player profile alone.
 ---@param spec table<string, unknown>
 ---@param ctx table<string, unknown>
 ---@return table<string, unknown>
@@ -90,8 +75,11 @@ function RivalNamingTask.create(spec, ctx)
   assert(type(host.isActive) == "function", "rival naming host is incomplete")
   local player = service(ctx, "player")
   assert(type(player.setRivalName) == "function", "rival naming requires the player name writer")
+  local resolveDefaultName = service(ctx, "rivalDefaultName")
+  assert(type(resolveDefaultName) == "function", "rival naming requires the generated default-name resolver")
+  ---@cast resolveDefaultName RivalNamingTask.DefaultNameResolver
   return {
-    defaultText = editionDefaultName(ctx),
+    defaultText = resolveDefaultName(),
     currentText = "",
     opened = false,
     closed = false,
@@ -132,7 +120,7 @@ function RivalNamingTask.poll(state, ctx)
     return { complete = false, state = state }
   end
   -- The rival screen has no declined-input result: an empty or all-space
-  -- entry stores the edition default name, any other entry stores the typed
+  -- entry stores the generated default name, any other entry stores the typed
   -- name, and the source reports the untouched zero. The name is published
   -- exactly once.
   local name = status.text
