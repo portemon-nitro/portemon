@@ -288,11 +288,10 @@ local function settleTrail(w)
   end
 end
 
--- A lead swap arriving mid-trail publishes the replacement on the trail it
--- already reached: the presented battle that fainted the leader returns with
--- the follower's walk one tick short of its commit, and dropping that walk
--- would leave the new follower a second tile behind and force it to catch up
--- by teleporting a whole tile per step.
+-- A lead swap arriving mid-trail reseats the replacement behind the player:
+-- the presented battle that fainted the leader returns with the follower's
+-- walk one tick short of its commit, and the new follower must neither start
+-- a second tile behind nor catch up by teleporting a whole tile per step.
 function T.lead_swap_mid_trail_keeps_the_follower_on_its_trail()
   local w = world()
   w.svc:setLead(0, mon("CHIKORITA", 0x12345678))
@@ -312,7 +311,7 @@ function T.lead_swap_mid_trail_keeps_the_follower_on_its_trail()
   Assert.equal(
     swapped:getFieldPosition().fieldZ,
     w.player.fieldZ - 1,
-    "the replacement follower takes the tile the interrupted trail reached, never a tile further back"
+    "the replacement follower stands behind the player, never a tile further back"
   )
 
   -- The following steps trail one tile with the walk's own interpolation:
@@ -717,6 +716,66 @@ function T.party_swap_replaces_atomically_and_keeps_pause()
   Assert.equal(w.assets.references[20153] or 0, 0, "the old visual releases after publication")
   Assert.isTrue(w.controller:isMovementSettled(), "swap clears the queue without motion")
   w.controller:setMovementPaused(false)
+  w.mgr:dispose()
+end
+
+-- A coordinate script resets the follower on the player's commit tick,
+-- before the follower's own update commits its trail walk. Settling lands
+-- the walk on its destination; rolling it back would leave the follower a
+-- second tile behind with a permanent one-tile lag.
+function T.reset_on_the_commit_tick_settles_the_walk_on_its_destination()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  driveOrdinaryStep(w, "south")
+  settleTrail(w)
+  local vacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+  driveOrdinaryStep(w, "south")
+  w.controller:resetMovement()
+  w.controller:update()
+  local position = assert(w.mgr:getById("field:partner")):getFieldPosition()
+  Assert.equal(position.fieldX, vacated.fieldX, "the settled walk lands on the vacated tile")
+  Assert.equal(position.fieldZ, vacated.fieldZ, "the settled walk lands on the vacated tile")
+  Assert.isTrue(w.controller:isMovementSettled(), "the reset leaves no trail obligation")
+  settleTrail(w)
+  position = assert(w.mgr:getById("field:partner")):getFieldPosition()
+  Assert.equal(position.fieldZ, vacated.fieldZ, "no stale anchor replays after the reset")
+  w.mgr:dispose()
+end
+
+-- A lead swap resets the follower the way a map change does: whatever trail
+-- the old lead still owed is dropped and the replacement stands behind the
+-- player, so the next step trails exactly one tile instead of inheriting a
+-- stale lag.
+function T.lead_swap_reseats_the_replacement_behind_the_player()
+  local w = world()
+  w.svc:setLead(0, mon("CHIKORITA"))
+  tick(w, 2)
+  w.controller:setMovementPaused(true)
+  stepSouth(w)
+  tick(w, 2)
+  stepSouth(w)
+  tick(w, 2)
+  local actor = assert(w.mgr:getById("field:partner"))
+  Assert.equal(actor:getFieldPosition().fieldZ, 4, "setup: the paused follower lags behind its owed trail")
+
+  w.svc:setLead(1, mon("TOTODILE", 0x55667788))
+  tick(w, 1)
+  actor = assert(w.mgr:getById("field:partner"), "the replacement publishes")
+  Assert.equal(actor.spriteId, 20154, "the new lead visual publishes")
+  Assert.equal(actor:getFieldPosition().fieldX, w.player.fieldX, "the replacement stands behind the player")
+  Assert.equal(actor:getFieldPosition().fieldZ, w.player.fieldZ - 1, "the replacement stands behind the player")
+  Assert.isTrue(w.controller:isMovementSettled(), "the replacement owes no trail")
+
+  w.controller:setMovementPaused(false)
+  tick(w, 30)
+  actor = assert(w.mgr:getById("field:partner"))
+  Assert.equal(actor:getFieldPosition().fieldZ, w.player.fieldZ - 1, "no stale trail replays after the swap")
+  local vacatedZ = w.player.fieldZ
+  driveOrdinaryStep(w, "south")
+  settleTrail(w)
+  actor = assert(w.mgr:getById("field:partner"))
+  Assert.equal(actor:getFieldPosition().fieldZ, vacatedZ, "the next step trails exactly one tile")
   w.mgr:dispose()
 end
 

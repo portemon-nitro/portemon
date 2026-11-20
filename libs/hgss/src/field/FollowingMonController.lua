@@ -89,7 +89,6 @@ FollowingMonController.__index = FollowingMonController
 ---@field _spec fun(self: FollowingMonController, mapId: integer, fieldX: integer, fieldZ: integer, facing: string, worldY: number?, initiallyVisible: boolean?): FieldActorManager.PartnerSpec
 ---@field _tryInstall fun(self: FollowingMonController, spec: FieldActorManager.PartnerSpec): string?
 ---@field _tryUpdate fun(self: FollowingMonController, spec: FieldActorManager.PartnerSpec): string?
----@field _finishInFlightTrail fun(self: FollowingMonController, partnerId: string)
 ---@field _publish fun(self: FollowingMonController, mapId: integer)
 ---@field _suppress fun(self: FollowingMonController)
 ---@field _clearAll fun(self: FollowingMonController)
@@ -534,17 +533,19 @@ function FollowingMonController:_tryUpdate(spec)
   error(id)
 end
 
--- Finish the follower's in-flight trail at the actor owner: the walk's
--- destination becomes the committed tile exactly as its own commit tick
--- would have published it. Idempotent when no trail is in flight.
+-- Rebaseline player movement observation to the current transaction and
+-- commit, so no step already taken is observed again as a trail obligation.
 ---@param self FollowingMonController
----@param partnerId string
-function FollowingMonController:_finishInFlightTrail(partnerId)
-  if self._action == nil then
-    return
+local function rebaselinePlayerObservation(self)
+  local player = self._playerOf()
+  if type(player.movementTransaction) == "function" then
+    local tx = player:movementTransaction()
+    if tx ~= nil then
+      self._lastMovementTransactionRevision = tx.revision
+    end
   end
-  self._action = nil
-  self._actors:commitScriptedAction(partnerId)
+  self._lastPlayerRevision = player:movementRevision()
+  self._lastAnchor = player:committedAnchor()
 end
 
 -- Publish the desired lead: replace in place when an actor is live,
@@ -553,31 +554,37 @@ end
 -- anchor when the behind tile is blocked) for any other birth. Success
 -- records the published identity and retires the pending entry; a
 -- classified placement rejection keeps the pending entry for a later tick.
+-- A replacement resets the trail the way a map change does: the old lead's
+-- in-flight walk and owed anchors are dropped, player observation
+-- rebaselines, and the new lead stands behind the player (on the old
+-- actor's tile when that one is blocked). The pause latch and movement mode
+-- are script-owned and survive.
 ---@param self FollowingMonController
 ---@param mapId integer
 function FollowingMonController:_publish(mapId)
   local partnerId = self._actors:partnerId()
   if partnerId ~= nil then
-    -- The trail in flight belongs to the walk, not to the lead that started
-    -- it: a new lead is published on the tile that walk had already reached.
-    -- A held field returns that way, so dropping the walk here would install
-    -- the replacement a second tile behind and make it catch up by stepping
-    -- whole tiles.
-    self:_finishInFlightTrail(partnerId)
-    local position = assert(self._actors:getPosition(partnerId), "partner position is required")
-    local actor = assert(self._actors:getById(partnerId), "partner actor is required")
-    local id = self:_tryUpdate(self:_spec(mapId, position.fieldX, position.fieldZ, actor.facing, position.worldY))
+    self._actors:cancelScriptedMovement(partnerId)
+    self._action = nil
+    local anchor = self._playerOf():committedAnchor()
+    local id = nil
+    if anchor.mapId == mapId then
+      local behind = behindTile(anchor)
+      id = self:_tryUpdate(self:_spec(mapId, behind.x, behind.z, anchor.facing, anchor.worldY))
+    end
+    if id == nil then
+      local position = assert(self._actors:getPosition(partnerId), "partner position is required")
+      local actor = assert(self._actors:getById(partnerId), "partner actor is required")
+      id = self:_tryUpdate(self:_spec(mapId, position.fieldX, position.fieldZ, actor.facing, position.worldY))
+    end
     if id ~= nil then
       self._published = self._lead
       self._queue = {}
-      -- A new lead swaps the published visual in place on the tile the trail
-      -- reached, and the replacement actor is fresh with no in-flight walk: no
-      -- trail state from the previous lead resumes on it. Clearing mirrors the
-      -- map-change reset; only a map switch cleared it before.
       self._consumedStep = nil
       self._ledgeLanding = nil
       self._lastFollowerCommand = nil
       self._mapEntry = false
+      rebaselinePlayerObservation(self)
     end
     return
   end
@@ -1295,16 +1302,23 @@ function FollowingMonController:isMovementSettled()
   return self._action == nil and (self._paused or #self._queue == 0)
 end
 
--- Settle any in-flight trail through the manager owner. Waiting tasks
--- observe this through isMovementSettled; transitions and replacement call
--- it before republishing.
+-- Settle any in-flight trail through the manager owner: the walk lands on
+-- its destination exactly as its own commit tick would publish it, never
+-- back on its start tile. Waiting tasks observe this through
+-- isMovementSettled.
 ---@param self FollowingMonController
 function FollowingMonController:settleMovement()
   local partnerId = self._actors:partnerId()
-  if partnerId ~= nil then
+  if partnerId == nil then
+    self._action = nil
+    return
+  end
+  if self._action ~= nil then
+    self._action = nil
+    self._actors:commitScriptedAction(partnerId)
+  else
     self._actors:cancelScriptedMovement(partnerId)
   end
-  self._action = nil
 end
 
 function FollowingMonController:resetMovement()
@@ -1334,15 +1348,7 @@ function FollowingMonController:setMovementType(movementType)
   self._queue = {}
   self._consumedStep = nil
   self._ledgeLanding = nil
-  local player = self._playerOf()
-  if type(player.movementTransaction) == "function" then
-    local tx = player:movementTransaction()
-    if tx ~= nil then
-      self._lastMovementTransactionRevision = tx.revision
-    end
-  end
-  self._lastPlayerRevision = player:movementRevision()
-  self._lastAnchor = player:committedAnchor()
+  rebaselinePlayerObservation(self)
   self._movementType = movementType
 end
 
@@ -1726,14 +1732,7 @@ function FollowingMonController:swapPositionsWithPlayer()
   end
   self._actors:setFacing(partnerId, partnerFacing)
   player:turn(playerFacing)
-  if type(player.movementTransaction) == "function" then
-    local tx = player:movementTransaction()
-    if tx ~= nil then
-      self._lastMovementTransactionRevision = tx.revision
-    end
-  end
-  self._lastPlayerRevision = player:movementRevision()
-  self._lastAnchor = player:committedAnchor()
+  rebaselinePlayerObservation(self)
 end
 
 -- Release follower state without touching saved data. The manager owns the
