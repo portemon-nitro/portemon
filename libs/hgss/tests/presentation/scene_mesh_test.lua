@@ -59,7 +59,6 @@ end
 ---@field mesh unknown?
 ---@field image unknown?
 
-
 -- ---- native model banks -------------------------------------------------
 --
 -- A G4GX bank keeps the display-list command bytes, so the runtime replays
@@ -126,6 +125,29 @@ end
 -- geometry-engine state its bank draw seeds.
 local function gxUncoloredQuad(vertices)
   local ops, params = { 0x40 }, { gxU32(1) }
+  for _, vertex in ipairs(vertices) do
+    ops[#ops + 1], params[#params + 1] = 0x23, gxVertex(GX_FIXED, vertex[1], vertex[2], vertex[3])
+  end
+  ops[#ops + 1], params[#params + 1] = 0x41, ""
+  while #ops % 4 ~= 0 do
+    ops[#ops + 1], params[#params + 1] = 0x00, ""
+  end
+  return packGxCommands(ops, params)
+end
+
+-- One quad display list prefixed by raw matrix commands: a shape that re-homes
+-- its own transform, exactly like the DS applies it at the next vertex
+-- submission, so the vertices land in normalized model units whatever matrix
+-- the bank draw seeded.
+---@param matrixCommands { [1]: integer, [2]: string }[] opcode plus its param words ('' for none)
+---@param vertices number[][] four { x, y, z } corners in normalized model units
+---@return string
+local function gxQuadAfter(matrixCommands, vertices)
+  local ops, params = {}, {}
+  for _, command in ipairs(matrixCommands) do
+    ops[#ops + 1], params[#params + 1] = command[1], command[2]
+  end
+  ops[#ops + 1], params[#params + 1] = 0x40, gxU32(1)
   for _, vertex in ipairs(vertices) do
     ops[#ops + 1], params[#params + 1] = 0x23, gxVertex(GX_FIXED, vertex[1], vertex[2], vertex[3])
   end
@@ -628,6 +650,122 @@ return {
       Assert.equal(first[2].vertices[1][9], 0, "the second draw does not reuse the first draw's state")
       Assert.equal(first[2].vertices[1][10], 20 / 255, "the second draw keeps its own seeded color")
       Assert.equal(#prepared.draws, 2, "both draws still get their own upload packet")
+    end,
+
+    ["a static draw converts the positions its matrix commands resolve to runtime units"] = function()
+      -- The DS applies the shape's own matrix commands at the next vertex
+      -- submission, so the producer's resolved draw matrix only seeds the
+      -- replay. Whatever the commands leave in place is still normalized model
+      -- units, and that is what the single tile conversion has to see.
+      local scale = 1 / 16
+      local restoreSlot = 2
+      local loadTranslation = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 0, 4, 1 }
+      local seedTranslation = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 1 }
+      local restoredTranslation = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 8, 0, 0, 1 }
+      local function loadParams(matrix)
+        local parts = {}
+        for index = 1, 16 do
+          parts[index] = gxU32(GX_FIXED.fixed(matrix[index]))
+        end
+        return table.concat(parts)
+      end
+      local bytes = NativeGxFormat.encode({
+        draws = {
+          {
+            -- A literal matrix load replaces the seeded draw matrix.
+            commands = gxQuadAfter({ { 0x16, loadParams(loadTranslation) } }, {
+              { 0, 0, 0 },
+              { 1, 0, 0 },
+              { 1, 0, 1 },
+              { 0, 0, 1 },
+            }),
+            nodeIndex = 0,
+            materialIndex = 0,
+            shapeIndex = 0,
+            transformMode = "static",
+            positionScale = scale,
+            matrix = seedTranslation,
+            seedColorSource = 0,
+            seedColor = { 255, 255, 255 },
+          },
+          {
+            -- A restored matrix slot replaces the seeded draw matrix too.
+            commands = gxQuadAfter({ { 0x14, gxU32(restoreSlot) } }, {
+              { 0, 0, 0 },
+              { 1, 0, 0 },
+              { 1, 0, 1 },
+              { 0, 0, 1 },
+            }),
+            nodeIndex = 0,
+            materialIndex = 1,
+            shapeIndex = 0,
+            transformMode = "static",
+            positionScale = scale,
+            matrix = seedTranslation,
+            restoreStack = { [restoreSlot] = restoredTranslation },
+            seedColorSource = 0,
+            seedColor = { 255, 255, 255 },
+          },
+          {
+            -- A bank draw without a starting matrix replays from the identity.
+            commands = gxQuadAfter({}, { { 1, 0, 0 }, { 2, 0, 0 }, { 2, 0, 1 }, { 1, 0, 1 } }),
+            nodeIndex = 0,
+            materialIndex = 2,
+            shapeIndex = 0,
+            transformMode = "static",
+            positionScale = scale,
+            seedColorSource = 0,
+            seedColor = { 255, 255, 255 },
+          },
+        },
+      })
+
+      local prepared = SceneMesh.prepareNativeBank(bytes, "scene-mesh-scale")
+      local components = componentsPerVertex()
+      local function packedPositions(draw)
+        local floats = ffi.cast("float *", draw.vertexData:getFFIPointer())
+        local positions = {}
+        for index = 0, draw.vertexCount - 1 do
+          local base = index * components
+          positions[#positions + 1] = { floats[base], floats[base + 1], floats[base + 2] }
+        end
+        return positions
+      end
+      local function assertCorners(label, actual, expected)
+        Assert.equal(#actual, #expected, label .. " keeps every corner")
+        for index, corner in ipairs(expected) do
+          local got = actual[index]
+          Assert.near(got[1], corner[1], 1e-6, label .. " x of corner " .. index)
+          Assert.near(got[2], corner[2], 1e-6, label .. " y of corner " .. index)
+          Assert.near(got[3], corner[3], 1e-6, label .. " z of corner " .. index)
+        end
+      end
+
+      -- Source (0..1) + (4, 0, 4) from the literal load, in tiles.
+      assertCorners("the literal matrix load", packedPositions(prepared.draws[1]), {
+        { 4 * scale, 0, 4 * scale },
+        { 5 * scale, 0, 4 * scale },
+        { 5 * scale, 0, 5 * scale },
+        { 4 * scale, 0, 5 * scale },
+      })
+      -- Source (0..1) + (8, 0, 0) from the restored slot, in tiles.
+      assertCorners("the restored matrix slot", packedPositions(prepared.draws[2]), {
+        { 8 * scale, 0, 0 },
+        { 9 * scale, 0, 0 },
+        { 9 * scale, 0, 1 * scale },
+        { 8 * scale, 0, 1 * scale },
+      })
+      -- No seeded matrix at all: identity-transformed source units, in tiles.
+      local identity = packedPositions(prepared.draws[3])
+      assertCorners("the identity replay", identity, {
+        { 1 * scale, 0, 0 },
+        { 2 * scale, 0, 0 },
+        { 2 * scale, 0, 1 * scale },
+        { 1 * scale, 0, 1 * scale },
+      })
+      Assert.near(prepared.draws[3].minX, identity[1][1], 1e-6, "the reported bounds are in the same tiles")
+      Assert.near(prepared.draws[3].maxX, identity[2][1], 1e-6, "the reported bounds are in the same tiles")
+      Assert.near(prepared.draws[3].maxZ, identity[3][3], 1e-6, "the reported bounds are in the same tiles")
     end,
   },
 }

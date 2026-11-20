@@ -15,6 +15,7 @@ local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local FakeCache = require("tests.support.FakeCache")
 local FakePreparationQueue = require("tests.support.FakePreparationQueue")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
+local SynchronousWaitProbe = require("tests.support.SynchronousWaitProbe")
 
 local T = {}
 
@@ -212,6 +213,26 @@ function T.staged_begin_finish_completes_for_an_explicit_synchronous_owner()
   Assert.equal(ring.draws[1].transform[13], 32, "the finished ring carries the cell offset")
   ring:release()
   Assert.equal(images:outstandingLeases(), 0, "finish hands ownership to the returned ring")
+end
+
+-- The explicit synchronous entry blocks on a cold texture by sleeping for the
+-- worker instead of polling it: the ring completes once the owner replies,
+-- within a bounded number of polls, and returns every borrowed lease.
+function T.sync_load_blocks_on_a_cold_texture_without_hot_polling()
+  local geometryPath = "assets/generated/maps/geometry/neighbor-quad.g4mesh"
+  local backend = FakeCache.new()
+  backend:write(geometryPath, MeshWriter.encode(quad()))
+  local descriptors = { cell(32, 1, 0, groundMaterial("neighbor-ground.png"), geometryPath) }
+  local images = ControllableImageOwner.new()
+  local probe = SynchronousWaitProbe.new(images, { publishAfterSleeps = 2 })
+  probe:install()
+  local ok, ringOrFailure = pcall(NeighborRing.load, backend, descriptors, stagedNeighborOptions(images))
+  probe:restore()
+  Assert.isTrue(ok, "the blocking neighbour load completes: " .. tostring(ringOrFailure))
+  Assert.isTrue(probe.sleeps >= 1, "the blocking wait handed the CPU to the worker instead of polling it")
+  Assert.equal(#ringOrFailure.draws, 1, "the completed ring draws its cell")
+  ringOrFailure:release()
+  Assert.equal(images:outstandingLeases(), 0, "releasing the completed ring returns every borrowed lease")
 end
 
 -- A texture failure mid-build fails the staged advance with its cause,

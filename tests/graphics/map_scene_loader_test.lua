@@ -15,7 +15,9 @@ local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local PngWriter = require("tests.support.PngEncoder")
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
+local ControllableImageOwner = require("tests.support.ControllableImageOwner")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
+local SynchronousWaitProbe = require("tests.support.SynchronousWaitProbe")
 
 local T = {}
 
@@ -542,6 +544,25 @@ function T.ready_prepared_resources_still_respect_the_per_call_work_budget()
   Assert.equal(images.uploads, 2, "both textures borrow through the shared owner")
   Assert.isTrue(#queue.requestLog >= 1, "mesh preparation for the scene is still routed through the injected queue")
   runtime:release()
+end
+
+-- The explicit synchronous entry blocks on a cold scene texture by sleeping for
+-- the worker instead of polling it: the scene assembles once the owner replies,
+-- within a bounded number of polls, and keeps no borrowed lease behind.
+function T.synchronous_finish_blocks_on_a_cold_texture_without_hot_polling()
+  local cache, geomPath, texPath = cacheFs()
+  local s = scene({ material(0, texPath, { x = "clamp", y = "clamp" }) })
+  s.mapBatches = { batch(geomPath, 0) }
+  local images = ControllableImageOwner.new()
+  local probe = SynchronousWaitProbe.new(images, { publishAfterSleeps = 2 })
+  probe:install()
+  local ok, runtimeOrFailure = pcall(MapSceneLoader.load, cache, s, { imageAssets = images })
+  probe:restore()
+  Assert.isTrue(ok, "the blocking scene load completes: " .. tostring(runtimeOrFailure))
+  Assert.isTrue(probe.sleeps >= 1, "the blocking wait handed the CPU to the worker instead of polling it")
+  Assert.equal(#runtimeOrFailure.mapDraws, 1, "the completed scene draws its terrain batch")
+  runtimeOrFailure:release()
+  Assert.equal(images:outstandingLeases(), 0, "releasing the completed scene returns every borrowed lease")
 end
 
 -- A synchronous finish() whose outstanding mesh preparation fails inside

@@ -11,6 +11,7 @@ local ControllableImageOwner = require("tests.support.ControllableImageOwner")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local FakeGraphics = require("tests.support.FakeGraphics").new
 local FakePreparationQueue = require("tests.support.FakePreparationQueue")
+local SynchronousWaitProbe = require("tests.support.SynchronousWaitProbe")
 
 local HERO_MODULE = "libs.hgss.src.presentation.BagHeroRenderer"
 local POOL_MODULE = "libs.hgss.src.presentation.GpuAssetPool"
@@ -1017,6 +1018,33 @@ local function assertPendingTicketDroppedOnExit(source, exitPath)
     end
     Assert.isFalse(renderer:isReady("male"), label .. " publishes no resident model")
     Assert.equal(rec.pools[1].releaseCount, 1, label .. " disposes its pool exactly once")
+  end)
+end
+
+-- The explicit blocking draw entry waits for a cold hero texture by sleeping
+-- for the session image owner instead of polling it: the hero realizes once the
+-- worker replies, within a bounded number of polls.
+function T.blocking_draw_waits_for_a_cold_texture_without_hot_polling()
+  withDoubles(function(rec)
+    local Hero = requireHero()
+    local owner = ControllableImageOwner.new()
+    local renderer = Hero.new({
+      assetPreparation = fakePreparationQueue(),
+      cacheFs = stubCache(),
+      manifest = texturedManifest(),
+      graphics = FakeGraphics({}),
+      imageAssets = owner,
+    })
+    local probe = SynchronousWaitProbe.new(owner, { publishAfterSleeps = 2 })
+    probe:install()
+    local ok, failure = pcall(renderer.draw, renderer, "male", heroStatus("items", 0), heroPlacement())
+    probe:restore()
+    Assert.isTrue(ok, "the blocking hero draw completes: " .. tostring(failure))
+    Assert.isTrue(probe.sleeps >= 1, "the blocking wait handed the CPU to the worker instead of polling it")
+    Assert.isTrue(renderer:isReady("male"), "the completed draw leaves the hero realized")
+    Assert.equal(#rec.draws, 1, "the realized hero draws its canonical model once")
+    renderer:release()
+    Assert.equal(owner:outstandingLeases(), 0, "releasing the renderer returns every borrowed lease")
   end)
 end
 

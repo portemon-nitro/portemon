@@ -19,6 +19,7 @@ local BinaryWriter = require("libs.codec.src.BinaryWriter")
 local ErrorCodes = require("libs.assets.src.ErrorCodes")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
+local ControllableImageOwner = require("tests.support.ControllableImageOwner")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local T = {}
@@ -236,6 +237,51 @@ function T.failed_single_borrow_keeps_the_live_scene_leases()
   Assert.isTrue(retry ~= nil, "the failed sampler state is borrowable again")
   Assert.equal(pool:textureCount(), 2)
   pool:release()
+end
+
+-- A texture whose worker reply never arrives as pixels must not strand its
+-- ticket at the long-lived shared owner: a prefetched ticket that fails before
+-- acquisition is cancelled exactly once, so a rolled-back scene leaves no
+-- unreachable request (and no ready payload) charged to the session.
+function T.a_failed_prefetched_texture_cancels_its_shared_ticket()
+  local images = ControllableImageOwner.new()
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  pool:prefetchShared(TEX_PATH, "clamp", "clamp")
+  local token = assert(images.requests[1], "prefetching enrolls one shared ticket").token
+  images:failNow("injected shared image failure")
+  local err = Assert.throws(function()
+    pool:imageFor(TEX_PATH, "clamp", "clamp")
+  end)
+  Assert.isTrue(tostring(err):find("injected shared image failure", 1, true) ~= nil, "the borrow rethrows the cause")
+  Assert.equal(#images.cancelCalls, 1, "the failed borrow cancels its ticket exactly once")
+  Assert.equal(images.cancelCalls[1], token, "the cancelled ticket is the prefetched one")
+  Assert.equal(images:outstandingTickets(), 0, "the failed borrow strands no request at the owner")
+  Assert.equal(images.readyBytes, 0, "the failed borrow leaves no payload charged")
+  Assert.equal(pool:textureCount(), 0, "the failed borrow takes no lease")
+  pool:release()
+  Assert.equal(#images.cancelCalls, 1, "releasing after the failure cancels nothing twice")
+end
+
+-- A demand-created texture fails the same way, and a later retry after the
+-- owner recovers borrows normally: the failure drops only its own ticket.
+function T.a_failed_demand_texture_cancels_its_ticket_and_a_retry_succeeds()
+  local images = ControllableImageOwner.new()
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  images:failNow("injected shared image failure")
+  Assert.throws(function()
+    pool:imageFor(TEX_PATH, "repeat", "clamp")
+  end)
+  Assert.equal(#images.cancelCalls, 1, "the failed demand borrow cancels its ticket exactly once")
+  Assert.equal(images.cancelCalls[1], assert(images.requests[1]).token, "the cancelled ticket is the demand request")
+  Assert.equal(images:outstandingTickets(), 0, "the failed borrow strands no request at the owner")
+
+  images:clearFailure()
+  images:publish()
+  local handle = pool:imageFor(TEX_PATH, "repeat", "clamp")
+  Assert.isTrue(handle ~= nil, "an independent retry after the failure borrows normally")
+  Assert.equal(pool:textureCount(), 1, "the retry holds exactly its own lease")
+  pool:release()
+  Assert.equal(images:outstandingLeases(), 0, "releasing the retried pool returns its lease")
 end
 
 function T.release_returns_leases_and_prune_reclaims_exactly_once()

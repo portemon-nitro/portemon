@@ -12,6 +12,7 @@ local TITLE_MODULE = "libs.hgss.src.presentation.HgssTitleScene"
 local DOUBLE_NAMES = {
   "libs.assets.src.StartupAssetCache",
   "libs.hgss.src.presentation.GpuAssetPool",
+  "libs.hgss.src.presentation.ImageAssetPool",
   "libs.hgss.src.presentation.FieldRenderer",
   "libs.hgss.src.ui.FieldTextRenderer",
   "libs.hgss.src.presentation.ModelDefinition",
@@ -21,15 +22,63 @@ local DOUBLE_NAMES = {
 
 local TITLE_GEOMETRY = "assets/generated/models/title-legend.g4mdl"
 
+-- Recording stand-in for the title-owned shared image owner: tickets resolve
+-- one logical texture to one physical pair, readiness can be withheld to model
+-- a busy worker, and every cancellation and disposal is counted so a build can
+-- prove which ticket it dropped.
+---@param rec table doubles record the owning test inspects
+local function fakeImageOwner(rec)
+  local owner = { requests = {}, acquired = {}, disposeCount = 0 }
+  local nextToken = 0
+  local tickets = {}
+  local physical = { image = {}, kind = "rgba8" }
+  function owner:request(path, sampler, priority)
+    assert(sampler and sampler.wrapX ~= nil, "shared image request needs sampler state")
+    nextToken = nextToken + 1
+    self.requests[#self.requests + 1] = { token = nextToken, path = path, priority = priority }
+    tickets[nextToken] = { ready = false }
+    return nextToken
+  end
+  function owner:poll(token)
+    local ticket = assert(tickets[token], "unknown shared image ticket")
+    return ticket.ready and "ready" or "pending"
+  end
+  function owner:acquire(token)
+    local ticket = assert(tickets[token], "unknown shared image ticket")
+    assert(ticket.ready, "shared image ticket is not ready")
+    tickets[token] = nil
+    self.acquired[#self.acquired + 1] = token
+    return { image = physical.image, palette = nil, kind = physical.kind }
+  end
+  function owner:release()
+    return true
+  end
+  function owner:dispose()
+    self.disposeCount = self.disposeCount + 1
+    tickets = {}
+  end
+  -- The worker reply for every pending ticket, like publishing the shared
+  -- owner: readiness is observed by the next poll, and a ticket requested
+  -- afterwards starts cold again.
+  function owner:publish()
+    for _, ticket in pairs(tickets) do
+      ticket.ready = true
+    end
+  end
+  rec.imageAssets[#rec.imageAssets + 1] = owner
+  return owner
+end
+
 -- Recording doubles for the staged construction: the first model bank reaches
 -- the preparation await, so the build suspends on its ticket before any GPU
 -- object exists. Disposals record their own entry so the exit order is visible.
 ---@param log string[]
 local function makeDoubles(log)
-  local rec = { pools = {} }
+  local rec = { pools = {}, imageAssets = {}, definitionMaterials = nil }
   local startupAssetCache = {}
   function startupAssetCache.loadTitle()
-    local descriptor = { kind = "nitro-dynamic", animations = {}, materials = {}, dynamic = {} }
+    local descriptor =
+      { kind = "nitro-dynamic", animations = {}, materials = rec.definitionMaterials or {}, dynamic = {} }
     return {
       model = descriptor,
       clips = {},
@@ -41,11 +90,36 @@ local function makeDoubles(log)
     }
   end
   local poolModule = {}
-  function poolModule.new()
-    local pool = setmetatable({ releaseCount = 0 }, {})
+  function poolModule.new(_cacheFs, opts)
+    local pool = setmetatable({ releaseCount = 0, images = opts and opts.imageAssets, handles = {} }, {})
     function pool:preparedMesh(_reference, await)
       await("g4gx", TITLE_GEOMETRY)
       error("the title build realizes a mesh only after its bank is prepared", 0)
+    end
+    -- The scene-local borrow of the shared owner: dedup by reference plus
+    -- sampler wrap, ready polls acquire one lease, and the wait callback runs
+    -- while the worker is still busy.
+    function pool:sharedImage(path, wrapX, wrapY, wait)
+      if path == nil then
+        return nil
+      end
+      local key = tostring(path) .. "|" .. wrapX .. "|" .. wrapY
+      local held = self.handles[key]
+      if held ~= nil then
+        return held
+      end
+      local images = assert(self.images, "the title pool borrows a shared image owner")
+      local token = images:request(path, { wrapX = wrapX, wrapY = wrapY }, "demand")
+      local status = images:poll(token)
+      while status == "pending" do
+        wait()
+        status = images:poll(token)
+      end
+      assert(status == "ready", "shared image is not ready: " .. tostring(status))
+      local lease = images:acquire(token)
+      local handle = { image = lease.image, palette = lease.palette, indexed = lease.kind == "r8" }
+      self.handles[key] = handle
+      return handle
     end
     function pool:release()
       self.releaseCount = self.releaseCount + 1
@@ -53,6 +127,10 @@ local function makeDoubles(log)
     end
     rec.pools[#rec.pools + 1] = pool
     return pool
+  end
+  local imagePoolModule = {}
+  function imagePoolModule.new()
+    return fakeImageOwner(rec)
   end
   local fieldRendererModule = {}
   function fieldRendererModule.new()
@@ -64,6 +142,9 @@ local function makeDoubles(log)
   end
   local definitionModule = {}
   function definitionModule.fromNitroDescriptor(_descriptor, opts)
+    if rec.definitionMaterials ~= nil then
+      return { key = opts and opts.key, animations = {}, materials = rec.definitionMaterials, meshes = {} }
+    end
     return {
       key = opts and opts.key,
       animations = {},
@@ -83,6 +164,7 @@ local function makeDoubles(log)
     {
       ["libs.assets.src.StartupAssetCache"] = startupAssetCache,
       ["libs.hgss.src.presentation.GpuAssetPool"] = poolModule,
+      ["libs.hgss.src.presentation.ImageAssetPool"] = imagePoolModule,
       ["libs.hgss.src.presentation.FieldRenderer"] = fieldRendererModule,
       ["libs.hgss.src.ui.FieldTextRenderer"] = textRendererModule,
       ["libs.hgss.src.presentation.ModelDefinition"] = definitionModule,
@@ -132,10 +214,19 @@ local function suspendedBuild(log)
   end
   local build = requireTitle().begin({
     versionId = "heartgold",
-    cacheFs = { loadLua = function() end },
+    cacheFs = {
+      loadLua = function() end,
+      read = function()
+        return nil
+      end,
+      resolve = function(_, path)
+        return path
+      end,
+      versionId = "heartgold",
+    },
     width = 256,
     height = 192,
-    graphics = {},
+    graphics = { newImage = function() end, getImageFormats = function() return {} end },
     assetPreparation = queue,
   })
   Assert.equal(build:advance(1), 0, "a pending title bank consumes no work unit")
@@ -207,6 +298,76 @@ function T.title_build_release_drops_its_outstanding_ticket_before_dispose()
     Assert.isFalse(build:isReady(), "a released title build never becomes ready")
     local okTake = pcall(build.takeResult, build)
     Assert.isFalse(okTake, "a released title build transfers no scene")
+  end)
+end
+
+-- A material texture the shared image owner still owes keeps the staged title
+-- build pending: the build yields its frame budget instead of reporting
+-- readiness, it borrows the base and every pattern-variant texture of each
+-- model before it is ready, and the legend and sparkle share one borrow per
+-- distinct texture and sampler state.
+function T.title_build_borrows_every_material_texture_before_readiness()
+  withDoubles(function(rec)
+    rec.definitionMaterials = {
+      {
+        id = 0,
+        name = "legend",
+        texture = "assets/generated/title/legend.png",
+        wrap = { x = "clamp", y = "clamp" },
+        variants = {
+          { name = "alt", texture = "assets/generated/title/legend-alt.png", wrap = { x = "clamp", y = "clamp" } },
+        },
+      },
+    }
+    local queue = FakePreparationQueue.new({ deferred = true, payloadBytes = 2048 })
+    local build = requireTitle().begin({
+      versionId = "heartgold",
+      cacheFs = {
+        loadLua = function() end,
+        read = function()
+          return nil
+        end,
+        resolve = function(_, path)
+          return path
+        end,
+        versionId = "heartgold",
+      },
+      width = 256,
+      height = 192,
+      graphics = { newImage = function() end, getImageFormats = function() return {} end },
+      assetPreparation = queue,
+    })
+    Assert.equal(build:advance(1), 0, "a cold material texture yields the frame budget instead of charging work")
+    Assert.isFalse(build:isReady(), "the title build is not ready while a material texture is pending")
+    local owner = assert(rec.imageAssets[1], "the title build owns the image owner its textures borrow from")
+    Assert.equal(#owner.requests, 1, "the staged build requests the model's base texture first")
+    Assert.equal(owner.requests[1].path, "assets/generated/title/legend.png", "the base texture is what the model draws")
+
+    owner:publish()
+    Assert.equal(build:advance(1), 1, "the borrowed base texture charges one realized work unit")
+    Assert.isFalse(build:isReady(), "a pattern variant still keeps the build open")
+    Assert.equal(build:advance(1), 0, "the next cold texture yields the frame budget again")
+    Assert.equal(#owner.requests, 2, "the pattern variant texture is borrowed before readiness")
+    Assert.equal(
+      owner.requests[2].path,
+      "assets/generated/title/legend-alt.png",
+      "a pattern animation can select the alternate texture on any frame"
+    )
+
+    owner:publish()
+    Assert.equal(build:advance(1), 1, "the borrowed variant charges one realized work unit")
+    Assert.equal(#owner.acquired, 2, "both borrowed textures reach the scene as leases")
+    -- The legend and the sparkle select the same textures, so the second model
+    -- reuses the borrowed handles instead of requesting them again.
+    Assert.equal(build:advance(1), 1, "the sparkle stage realizes the shared base texture")
+    Assert.equal(build:advance(1), 1, "the sparkle stage realizes the shared variant texture")
+    Assert.equal(#owner.requests, 2, "the sparkle stage shares the legend's borrowed textures")
+    Assert.isFalse(build:isReady(), "the fixture stage stops before its canvas exists")
+
+    build:release()
+    build:release()
+    Assert.equal(owner.disposeCount, 1, "releasing the build disposes the title's image owner exactly once")
+    Assert.equal(rec.pools[1].releaseCount, 1, "releasing the build disposes the scene pool exactly once")
   end)
 end
 

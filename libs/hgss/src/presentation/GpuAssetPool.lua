@@ -22,6 +22,7 @@
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
+local SynchronousWait = require("libs.hgss.src.presentation.SynchronousWait")
 local VertexFormat = require("libs.assets.src.model.VertexFormat")
 local ErrorCodes = require("libs.assets.src.ErrorCodes")
 local Errors = require("libs.errors.src.Errors")
@@ -302,7 +303,7 @@ end
 -- Borrow one texture from the shared owner, blocking cooperatively while
 -- its classification is still in flight. `wait` is invoked once per
 -- pending poll so staged scene builds yield their checkpoint (nil waits by
--- spinning, for synchronous callers with no checkpoint to yield). Returns
+-- sleeping, for synchronous callers with no checkpoint to yield). Returns
 -- the stable sampling handle for the scene-local path/wrap identity: the
 -- bound image plus the exact palette and indexed flag the renderer's
 -- shared sampler consumes. Borrowing without a session image owner is a
@@ -326,21 +327,34 @@ function GpuAssetPool:sharedImage(path, wrapX, wrapY, wait)
     return held
   end
   local token = self._prefetchTokens[key]
-  self._prefetchTokens[key] = nil
   if token == nil then
     token = images:request(path, sharedSampler(wrapX, wrapY), "demand")
   end
-  local status, failure = images:poll(token)
-  while status == "pending" do
-    if wait ~= nil then
-      wait()
+  -- The ticket stays owned here until a lease exists: a failed poll or a
+  -- failed acquisition drops it through the shared owner, so a rolled-back
+  -- scene never leaves an unreachable request charged to the session.
+  local function acquireLease()
+    local status, failure = images:poll(token)
+    while status == "pending" do
+      if wait ~= nil then
+        wait()
+      else
+        SynchronousWait.block()
+      end
+      status, failure = images:poll(token)
     end
-    status, failure = images:poll(token)
+    if status ~= "ready" then
+      error("shared image " .. assetKey(path) .. " is not ready: " .. tostring(failure), 0)
+    end
+    return images:acquire(token)
   end
-  if status ~= "ready" then
-    error("shared image " .. assetKey(path) .. " is not ready: " .. tostring(failure), 0)
+  local acquired, leaseOrFailure = pcall(acquireLease)
+  self._prefetchTokens[key] = nil
+  if not acquired then
+    pcall(images.cancel, images, token)
+    error(leaseOrFailure, 0)
   end
-  local lease = images:acquire(token)
+  local lease = leaseOrFailure
   -- The sampling handle mirrors the borrowed lease: the scene holds leases
   -- (returned on release) while materials carry the handle's sampling
   -- fields. The handle is stable per path/wrap identity, so repeated

@@ -31,6 +31,7 @@ local Matrix4 = require("libs.math.src.Matrix4")
 local FixedPoint = require("libs.math.src.FixedPoint")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
+local SynchronousWait = require("libs.hgss.src.presentation.SynchronousWait")
 local TerrainMaterialAnimator = require("libs.hgss.src.presentation.TerrainMaterialAnimator")
 
 local NeighborRing = {}
@@ -295,7 +296,12 @@ function NeighborBuildTask:finish()
       self._stashed[outstanding] = payload
       self._outstanding = nil
     end
-    self:advance(1)
+    -- A coroutine suspended on a shared image yields without charging a work
+    -- unit, so an empty advance means the worker still owes the payload: sleep
+    -- instead of hot-polling it.
+    if self:advance(1) == 0 then
+      SynchronousWait.block()
+    end
   end
   return self:takeResult()
 end

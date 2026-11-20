@@ -17,6 +17,7 @@ local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
+local SynchronousWait = require("libs.hgss.src.presentation.SynchronousWait")
 local BagCache = require("libs.assets.src.BagCache")
 
 ---@class BagHeroSync
@@ -600,10 +601,15 @@ function BagHeroRenderer:_startBuild(gender)
       coroutine["yield"](BAG_HERO_WAIT)
     end
   end
+  -- A staged build yields its frame budget while the session image owner is
+  -- still working; the explicit synchronous caller has no checkpoint to yield,
+  -- so it sleeps instead of polling the owner in a tight loop.
   local function waitForImage()
-    if not build.finishing then
-      coroutine["yield"](BAG_HERO_WAIT)
+    if build.finishing then
+      SynchronousWait.block()
+      return
     end
+    coroutine["yield"](BAG_HERO_WAIT)
   end
   local function trackImageToken(token)
     build.imageToken = token

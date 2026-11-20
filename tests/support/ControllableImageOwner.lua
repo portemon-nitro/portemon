@@ -180,6 +180,14 @@ function ControllableImageOwner:failNow(message)
   self._failure = message
 end
 
+-- Drop the injected failure so a test can prove an independent retry after a
+-- failed borrow still succeeds.
+function ControllableImageOwner:clearFailure()
+  self._failure = nil
+  self.failAfter = nil
+  self.failMessage = nil
+end
+
 ---@param token integer
 ---@return table lease
 function ControllableImageOwner:acquire(token)
@@ -226,6 +234,18 @@ function ControllableImageOwner:release(lease)
   local physical = assert(self._physicals[lease._key], "physical image left the owner under its lease")
   physical.leases = physical.leases - 1
   return true
+end
+
+-- Live requests the owner still holds: staged or ready tickets that no
+-- acquisition or cancellation dropped, the census a rolled-back borrower must
+-- leave empty.
+---@return integer
+function ControllableImageOwner:outstandingTickets()
+  local total = 0
+  for _ in pairs(self._tickets) do
+    total = total + 1
+  end
+  return total
 end
 
 ---@return integer

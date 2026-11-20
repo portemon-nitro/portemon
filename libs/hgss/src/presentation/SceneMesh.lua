@@ -297,10 +297,12 @@ end
 -- draw, so selecting several draws of one bank never repeats the bank's decode:
 --
 --   * each static draw is replayed once, under its own matrix/restore/seed
---     context;
+--     context, and its decoded positions are converted to runtime units in place
+--     before the terrain repair;
 --   * transform-preserving draws that share a command stream, a baked matrix
 --     and inherited engine state are replayed once, and each segment draw keeps
---     the pose segment it names;
+--     the pose segment it names (its positions stay in pose space and scale at
+--     packing);
 --   * every terrain-boundary-eligible draw of the bank is repaired together in
 --     one conformance pass, exactly the group the producer grouped.
 --
@@ -324,7 +326,7 @@ end
 ---@field indexOffset integer
 ---@field indexCount integer
 ---@field materialIndex integer
----@field preScaled boolean the decoded positions are already in runtime units
+---@field preScaled boolean the slice's positions are already in runtime units
 
 -- The geometry-engine state a bank draw inherits before its first command, or
 -- nil when the bank carries none (the commands resolve every vertex
@@ -340,18 +342,23 @@ local function seededState(draw)
   return { color = draw.seedColor, normal = draw.seedNormal, colorSource = draw.seedColorSource }
 end
 
--- The draw matrix pre-multiplied by the draw's source-to-runtime scale, so the
--- replay lands directly in runtime units: conformance then repairs the same
--- numeric domain the producer repaired, and packing needs no second scale.
----@param matrix number[]
+-- Convert one static slice's decoded positions into runtime units in place,
+-- before the bank's terrain group is repaired, so conformance sees the same
+-- numeric domain the reference compile repaired. The conversion cannot ride on
+-- the starting matrix: the display list's own MTX_IDENTITY/MTX_LOAD/MTX_RESTORE
+-- commands land the vertices in source units regardless of what the draw seeded.
+---@param arena GxGeometryBuffer
+---@param slice SceneMesh.NativeSlice
 ---@param scale number
----@return number[]
-local function scaledMatrix(matrix, scale)
-  local out = {}
-  for index = 1, 16 do
-    out[index] = matrix[index] * scale
+local function scaleSlicePositions(arena, slice, scale)
+  if scale == 1 then
+    return
   end
-  return out
+  local numeric = assert(arena.numeric)
+  for offset = slice.vertexOffset, slice.vertexOffset + slice.vertexCount - 1 do
+    local vertex = numeric[offset]
+    vertex.x, vertex.y, vertex.z = vertex.x * scale, vertex.y * scale, vertex.z * scale
+  end
 end
 
 ---@param draw NativeGxFormat.Draw
@@ -370,15 +377,10 @@ local function decodeStaticSlice(draw, arena, scratch, context)
     -- lost its inherited state fails loudly instead of rendering a default.
     requireColorSource = true,
   }
-  local scale = draw.positionScale or 1
-  options.matrix = draw.matrix and scaledMatrix(draw.matrix, scale) or nil
-  if draw.restoreStack ~= nil then
-    local scaled = {}
-    for slot, slotMatrix in pairs(draw.restoreStack) do
-      scaled[slot] = scaledMatrix(slotMatrix, scale)
-    end
-    options.restoreStack = scaled
-  end
+  -- The replay runs in the producer's source units, exactly like the reference
+  -- mesh compile; the single tile conversion happens on the decoded positions.
+  options.matrix = draw.matrix
+  options.restoreStack = draw.restoreStack
   options.initialState = seededState(draw)
   local geom, err = GxDisplayList.decode(draw.commands, options)
   if err ~= nil then
@@ -386,6 +388,7 @@ local function decodeStaticSlice(draw, arena, scratch, context)
   end
   assert(geom)
   local slice = geom.slice
+  scaleSlicePositions(slice.arena, slice, draw.positionScale or 1)
   return {
     arena = slice.arena,
     vertexOffset = slice.vertexOffset,
