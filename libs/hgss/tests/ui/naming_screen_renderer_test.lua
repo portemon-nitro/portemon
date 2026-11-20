@@ -199,6 +199,24 @@ local function animatedFrameManifest()
       duration = 1,
     },
   }
+  naming.rivalSubject.playMode = "forward_loop"
+  naming.rivalSubject.loopStartFrameIdx = 0
+  naming.rivalSubject.frames = {
+    {
+      asset = "hgss.naming_screen.subject_rival_f0",
+      image = frameImage("hgss.naming_screen.subject_rival_f0", "subject-rival-f0.png"),
+      rect = { x = 0, y = 0, width = 16, height = 16 },
+      offset = { x = 0, y = 0 },
+      duration = 2,
+    },
+    {
+      asset = "hgss.naming_screen.subject_rival_f1",
+      image = frameImage("hgss.naming_screen.subject_rival_f1", "subject-rival-f1.png"),
+      rect = { x = 0, y = 0, width = 16, height = 16 },
+      offset = { x = 0, y = 0 },
+      duration = 1,
+    },
+  }
   local keyboard = naming.cursor.keyboard
   keyboard.playMode = "forward_loop"
   keyboard.loopStartFrameIdx = 0
@@ -304,6 +322,54 @@ function T.tests.player_subject_advances_through_generated_frames_by_presentatio
     contains(drawnPaths(calls), "subject-female-f0.png"),
     "the female subject draws from its own generated sequence"
   )
+  renderer:dispose()
+end
+
+-- The rival screen draws its own generated icon sequence at the source
+-- (24,8) anchor, advancing on the snapshot subject clock like the player
+-- subjects and never through the host mon-icon callback.
+function T.tests.rival_subject_draws_its_own_sequence_at_the_source_anchor()
+  local calls = { draws = {}, colors = {} }
+  local manifest = animatedFrameManifest()
+  local rival = manifest.namingScreen.rivalSubject
+  local seen = 0
+  local renderer = NamingScreenRenderer.new({
+    graphics = recordingGraphics(calls),
+    text = textFake(),
+    drawSubject = function()
+      seen = seen + 1
+    end,
+    manifest = manifest,
+    imageLoader = imageLoader(),
+  })
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  local function rivalFrameAt(tick)
+    calls.draws = {}
+    renderer:draw(
+      animatedSnapshot({
+        subject = { kind = "rival" },
+        presentation = { subjectTick = tick, cursorTick = 0, entrySlotTick = 0, glowAngle = 180, pressTicks = {} },
+      }),
+      layout
+    )
+    for _, draw in ipairs(calls.draws) do
+      local path = type(draw.image) == "table" and draw.image.path or nil
+      if path == "subject-rival-f0.png" or path == "subject-rival-f1.png" then
+        return path, draw
+      end
+    end
+    return nil, nil
+  end
+  local firstPath, firstDraw = rivalFrameAt(0)
+  Assert.equal(firstPath, "subject-rival-f0.png", "tick 0 draws the first rival frame")
+  Assert.deepEqual({ x = firstDraw.x, y = firstDraw.y }, {
+    x = rival.anchor.x + rival.frames[1].offset.x,
+    y = rival.anchor.y + rival.frames[1].offset.y,
+  }, "the rival frame draws at its generated anchor and frame offset")
+  Assert.equal(rivalFrameAt(1), "subject-rival-f0.png", "tick 1 holds the two-tick rival frame")
+  Assert.equal(rivalFrameAt(2), "subject-rival-f1.png", "tick 2 advances the rival sequence")
+  Assert.equal(rivalFrameAt(3), "subject-rival-f0.png", "tick 3 loops the rival sequence")
+  Assert.equal(seen, 0, "the rival subject never reaches the mon icon callback")
   renderer:dispose()
 end
 

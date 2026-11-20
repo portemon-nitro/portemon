@@ -1323,38 +1323,52 @@ function FieldRuntime:_composeTransitions(boot)
     doorAt = resolveDoorAt
     escalatorAt = resolveEscalatorAt
   end
-  self.transition = self.worldSwapCoordinator:createTransition(self, doorAt, escalatorAt, function(_, sourceMap, warp)
-    local physical
-    local ok, result = pcall(function()
-      local function loadDestination(_, mapId)
-        assert(mapId == warp.destinationMapId, "transition destination map mismatch")
-        local logicalMap = self.mapLoader:load(mapId)
-        local destinationPosition
-        if warp.direct then
-          destinationPosition = { fieldX = warp.x, fieldZ = warp.z }
-        else
-          local destinationWarp = logicalMap.fieldData.events.warps[warp.destinationWarpId + 1]
-          assert(destinationWarp, "transition destination warp is missing")
-          destinationPosition = { fieldX = destinationWarp.x, fieldZ = destinationWarp.z }
+  self.transition = self.worldSwapCoordinator:createTransition(
+    self,
+    doorAt,
+    escalatorAt,
+    function(_, sourceMap, warp, dynamicWarp)
+      local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
+      local physical
+      local ok, result = pcall(function()
+        -- A dynamic anchor is loaded by the symbol the saved destination names;
+        -- the sentinel header it was triggered with names no map.
+        local function loadDestination(_, destinationMap)
+          local logicalMap = self.mapLoader:load(destinationMap)
+          local destinationPosition
+          if warp.direct then
+            assert(destinationMap == warp.destinationMapId, "transition destination map mismatch")
+            destinationPosition = { fieldX = warp.x, fieldZ = warp.z }
+          elseif warp.destinationWarpId == WarpSystem.DYNAMIC_WARP_SENTINEL then
+            assert(dynamicWarp ~= nil, "a dynamic warp anchor carries the saved destination")
+            assert(destinationMap == dynamicWarp.map, "transition destination map mismatch")
+            local arrival = WarpSystem.dynamicDestination(logicalMap, dynamicWarp)
+            destinationPosition = { fieldX = arrival.fieldX, fieldZ = arrival.fieldZ }
+          else
+            assert(destinationMap == warp.destinationMapId, "transition destination map mismatch")
+            local destinationWarp = logicalMap.fieldData.events.warps[warp.destinationWarpId + 1]
+            assert(destinationWarp, "transition destination warp is missing")
+            destinationPosition = { fieldX = destinationWarp.x, fieldZ = destinationWarp.z }
+          end
+          local composed, ownership = boot.composePreparedMap(logicalMap, destinationPosition)
+          physical = ownership
+          return composed
         end
-        local composed, ownership = boot.composePreparedMap(logicalMap, destinationPosition)
-        physical = ownership
-        return composed
+        return WarpSystem.resolveDestination({
+          load = loadDestination,
+        }, sourceMap, warp, dynamicWarp)
+      end)
+      if not ok then
+        if physical and physical.replacement and physical.state == "prepared" then
+          physical.coverage:release()
+          physical.state = "released"
+        end
+        error(result, 0)
       end
-      return require("libs.hgss.src.transition.WarpSystem").resolveDestination({
-        load = loadDestination,
-      }, sourceMap, warp)
-    end)
-    if not ok then
-      if physical and physical.replacement and physical.state == "prepared" then
-        physical.coverage:release()
-        physical.state = "released"
-      end
-      error(result, 0)
+      result.physical = physical
+      return result
     end
-    result.physical = physical
-    return result
-  end)
+  )
   self.transition.player = self.player
   self.transition.suppression = nil
 

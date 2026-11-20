@@ -1938,6 +1938,7 @@ local FieldHandlers = {
   [733] = FieldServiceHandlers.partyLeadHasType,
   [734] = FieldServiceHandlers.followerJumpOnSpot,
   [851] = FieldServiceHandlers.bufferCapitalize,
+  [852] = FieldServiceHandlers.bufferDeptStoreFloorNo,
   [829] = FieldServiceHandlers.followerIsNextToPlayer,
   [753] = FieldServiceHandlers.rockSmashItemCheck,
   [754] = FieldServiceHandlers.tryHeadbuttEncounter,

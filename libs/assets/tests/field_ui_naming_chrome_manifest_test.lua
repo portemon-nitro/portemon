@@ -158,6 +158,33 @@ function T.sprite_visuals_without_offset_anchor_or_image_reference_are_rejected(
   end, "an entered-name advance must stay positive")
 end
 
+-- The rival icon sequence is a required subject record beside the player
+-- pair: it resolves through its runtime semantic asset id and keeps the same
+-- (24,8) source anchor.
+function T.rival_subject_is_a_required_animation_at_the_source_anchor()
+  local manifest = withNaming(FieldUiFixture.manifest())
+  Assert.isTrue(FieldUiAssetCache.validateManifest(manifest), "the rival subject record validates")
+  local rivalSubject = assert(manifest.namingScreen.rivalSubject)
+  Assert.equal(
+    rivalSubject.frames[1].asset,
+    FieldUiAssetCache.ASSET.NAMING_SCREEN_SUBJECT_RIVAL,
+    "the rival subject resolves through its semantic asset id"
+  )
+  reject(function(m)
+    m.namingScreen.rivalSubject = nil
+  end, "a naming section without the rival subject must fail")
+  reject(function(m)
+    m.namingScreen.rivalSubject.anchor = { x = 24.5, y = 8 }
+  end, "the rival subject must keep its integral (24,8) anchor")
+  reject(function(m)
+    m.namingScreen.rivalSubject = {
+      asset = FieldUiAssetCache.ASSET.NAMING_SCREEN_SUBJECT_RIVAL,
+      anchor = { x = 24, y = 8 },
+      offset = { x = 0, y = 0 },
+    }
+  end, "a static rival record without animation frames must fail")
+end
+
 function T.stale_static_subject_and_cursor_records_are_rejected()
   reject(function(m)
     m.namingScreen.playerSubjects.male =

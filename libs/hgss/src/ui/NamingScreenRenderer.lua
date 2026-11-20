@@ -3,13 +3,13 @@
 -- page overlay draws over it at its manifest placement, then the
 -- OAM-composed support backing, page controls, entry slots, keyboard and
 -- entered-name text from the generated text geometry, the animated player
--- subject from the manifest, and the animated cursor visual with its
--- source palette pulse mask on top. Subject and cursor frames resolve
+-- or rival subject from the manifest, and the animated cursor visual with
+-- its source palette pulse mask on top. Subject and cursor frames resolve
 -- deterministically from the snapshot presentation clocks against the
--- generated durations and playback modes. Non-player subjects stay
--- host-owned: the host injects drawSubject with an explicit source position
--- and icon frame, and the renderer only brackets the call with balanced
--- graphics state. Generated images are owned here and released on
+-- generated durations and playback modes. The party-nickname mon subject
+-- stays host-owned: the host injects drawSubject with an explicit source
+-- position and icon frame, and the renderer only brackets the call with
+-- balanced graphics state. Generated images are owned here and released on
 -- dispose, or borrowed from the shared image owner and returned there;
 -- the text renderer and subject resources stay host-owned.
 
@@ -95,6 +95,7 @@ local function acquireOrder(naming)
     naming.entrySlots.selected,
     naming.playerSubjects.male,
     naming.playerSubjects.female,
+    naming.rivalSubject,
     naming.pokemonGenderMarkers.male,
     naming.pokemonGenderMarkers.female,
   })
@@ -302,6 +303,7 @@ function NamingScreenRenderer.new(options)
   assert(type(naming.cursor) == "table", "naming renderer requires the naming cursor")
   assert(type(naming.entrySlots) == "table", "naming renderer requires the naming entry slots")
   assert(type(naming.playerSubjects) == "table", "naming renderer requires the naming player subjects")
+  assert(type(naming.rivalSubject) == "table", "naming renderer requires the naming rival subject")
   assert(type(naming.pokemonSubject) == "table", "naming renderer requires the mon subject animation")
   assert(type(naming.pokemonGenderMarkers) == "table", "naming renderer requires the mon gender markers")
   requireAnchor(naming.pokemonGenderMarkers.anchor, "mon gender marker")
@@ -318,6 +320,7 @@ function NamingScreenRenderer.new(options)
     naming.entrySlots.selected,
     naming.playerSubjects.male,
     naming.playerSubjects.female,
+    naming.rivalSubject,
     naming.pokemonGenderMarkers.male,
     naming.pokemonGenderMarkers.female,
     naming.cursor.keyboard,
@@ -625,6 +628,10 @@ function NamingScreenRenderer:draw(view, layout)
     local record = naming.playerSubjects[gender]
     local frame = record.frames[resolveFrameIndex(record, presentation.subjectTick)]
     self:_drawAnimatedFrame(record, frame, record.anchor.x, record.anchor.y, nil)
+  elseif view.subject.kind == "rival" then
+    local record = naming.rivalSubject
+    local frame = record.frames[resolveFrameIndex(record, presentation.subjectTick)]
+    self:_drawAnimatedFrame(record, frame, record.anchor.x, record.anchor.y, nil)
   elseif view.subject.kind == "pokemon" then
     local record = naming.pokemonSubject
     local frame = record.frames[resolveFrameIndex(record, presentation.subjectTick)]
@@ -652,10 +659,6 @@ function NamingScreenRenderer:draw(view, layout)
       assert(gender == "genderless", "mon naming subject has an unsupported gender")
     end
   end
-  -- The source rival subject is its own naming-screen animation
-  -- (src/naming_screen.c::NamingScreen_CreateIconSprite) that the generated
-  -- naming manifest does not carry, so the rival screen draws the shared
-  -- keyboard and name only rather than borrowing a party or player subject.
   -- The focus cursor composites last so it stays above the control it
   -- highlights.
   local cursor = view.cursor

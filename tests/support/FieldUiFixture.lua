@@ -1063,10 +1063,10 @@ end
 -- (80,24) advancing 12px per glyph, entry slots start at (80,39) stepping
 -- 12px, the page overlay rests at x=11, home controls carry their
 -- post-parent-transform anchors, keyboard text starts at screen x=27, the
--- keyboard cursor steps 16px by 19px from (26,91), and the player subject
--- anchors at (24,8). The keyboard text cells deliberately differ from the
--- interaction hit cells so a renderer that centers glyphs in hit rectangles
--- is a mismatch.
+-- keyboard cursor steps 16px by 19px from (26,91), and the player and
+-- rival subjects anchor at (24,8). The keyboard text cells deliberately
+-- differ from the interaction hit cells so a renderer that centers glyphs in
+-- hit rectangles is a mismatch.
 ---@return table manifest carrying only the assets and namingScreen section
 function FieldUiFixture.namingSemanticsManifest()
   local assets = {
@@ -1221,6 +1221,9 @@ function FieldUiFixture.namingSemanticsManifest()
         male = animated("subject-male", 48, 56, { x = 24, y = 8 }, { x = 0, y = 0 }),
         female = animated("subject-female", 48, 56, { x = 24, y = 8 }, { x = 2, y = 0 }),
       },
+      -- The rival icon sequence resolves through its runtime semantic asset
+      -- id, beside the player subjects at the same source anchor.
+      rivalSubject = animated("subject_rival", 48, 56, { x = 24, y = 8 }, { x = 0, y = 0 }),
       pokemonSubject = {
         playMode = "forward_loop",
         loopStartFrameIdx = 0,

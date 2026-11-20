@@ -20,7 +20,7 @@ end
 -- A compiled NSBCA-style rotation clip over 8 frames (pivot A = 1 - i/16,
 -- B = i/16, like the real `door_op`; pivot 4 = rotation about Y). `swing`
 -- true opens (angle 0 -> peak), false closes (peak -> 0).
-local function doorSwingClip(id, name, semantic, swing)
+local function rotationClip(id, name, semantic, swing)
   local rotData = {}
   for i = 0, 7 do
     local a, b = 4096 - i * 256, i * 256
@@ -61,11 +61,21 @@ local function doorSwingClip(id, name, semantic, swing)
 end
 
 function NitroModelFixture.doorOpenClip()
-  return doorSwingClip("fixture:door.open", "DoorOpen", "door.open", true)
+  return rotationClip("fixture:door.open", "DoorOpen", "door.open", true)
 end
 
 function NitroModelFixture.doorCloseClip()
-  return doorSwingClip("fixture:door.close", "DoorClose", "door.close", false)
+  return rotationClip("fixture:door.close", "DoorClose", "door.close", false)
+end
+
+-- The source elevator model's two directional one-shot animations, loaded and
+-- selected by direction (src/field/map_prop_anims.c::ElevatorAnimCreate).
+function NitroModelFixture.elevatorUpClip()
+  return rotationClip("fixture:elevator.up", "ElevatorUp", "elevator.up", true)
+end
+
+function NitroModelFixture.elevatorDownClip()
+  return rotationClip("fixture:elevator.down", "ElevatorDown", "elevator.down", false)
 end
 
 -- A compiled one-node program whose single draw drives one segment mesh.
@@ -186,16 +196,10 @@ function NitroModelFixture.drawState()
   }
 end
 
--- The door model definition: one node, one segment mesh, one opaque
--- material, and the door open/close clips. `clips` overrides the default
--- clip list (e.g. for close-only or banded fixtures). The mesh references
--- the .g4mesh path shape of the serialized descriptors -- geometry never
--- embeds a batch in a definition (the render tests build their meshes from
--- doorQuad() by mesh id).
-function NitroModelFixture.doorDefinition(clips)
-  clips = clips or { NitroModelFixture.doorOpenClip(), NitroModelFixture.doorCloseClip() }
-  return ModelDefinition.new({
-    key = "fixture:nitro-door",
+-- The one-node, one-quad model shape both fixture models are built on.
+local function modelOptions(key, animations)
+  return {
+    key = key,
     nodes = {
       {
         index = 0,
@@ -227,14 +231,40 @@ function NitroModelFixture.doorDefinition(clips)
         texHeight = 0,
       },
     },
-    animations = clips,
+    animations = animations,
     backend = {
       program = NitroModelFixture.doorProgram(),
       meshes = {
         ["draw0.seg0"] = NitroModelFixture.drawState(),
       },
     },
-  })
+  }
+end
+
+-- The door model definition: one node, one segment mesh, one opaque
+-- material, and the door open/close clips. `clips` overrides the default
+-- clip list (e.g. for close-only or banded fixtures). The mesh references
+-- the .g4mesh path shape of the serialized descriptors -- geometry never
+-- embeds a batch in a definition (the render tests build their meshes from
+-- doorQuad() by mesh id).
+function NitroModelFixture.doorDefinition(clips)
+  clips = clips or { NitroModelFixture.doorOpenClip(), NitroModelFixture.doorCloseClip() }
+  return ModelDefinition.new(modelOptions("fixture:nitro-door", clips))
+end
+
+-- The source elevator prop model under its generated placement identity:
+-- "<indoor|outdoor>:<source member id>:<descriptor sha1 prefix>" as
+-- BuildingModelCompiler emits it, with member 0xD0 (MAP_PROP_ELEVATOR in
+-- src/field/map_prop_anims.c). The definition carries no member-id field;
+-- production locates the prop through the placement identity, so the fixture
+-- does not invent one. `memberId` relabels the same model under another source
+-- member -- the ordinary building a map without an elevator carries.
+function NitroModelFixture.elevatorDefinition(memberId)
+  local key = string.format("indoor:%d:0a1b2c3d4e5f", memberId or 0xD0)
+  return ModelDefinition.new(modelOptions(key, {
+    NitroModelFixture.elevatorUpClip(),
+    NitroModelFixture.elevatorDownClip(),
+  }))
 end
 
 return NitroModelFixture

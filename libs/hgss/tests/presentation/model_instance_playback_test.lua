@@ -13,6 +13,7 @@ local Assert = require("tests.support.Assert")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local NitroModelFixture = require("tests.support.NitroModelFixture")
 local AnimationClip = require("libs.assets.src.model.AnimationClip")
+local AnimationPlayer = require("libs.hgss.src.presentation.AnimationPlayer")
 
 local T = {}
 
@@ -122,6 +123,22 @@ function T.play_stop_cycles_leave_no_stale_attachments()
   local survivor = instance:play("door.open")
   Assert.equal(#instance.animationState:attachments("joint"), 1)
   Assert.isTrue(instance.animationState:attachments("joint")[1] == survivor)
+end
+
+-- A caller-supplied player bounds the passes: it wraps after each completed
+-- pass and completes at the checked terminal of its last requested pass, so a
+-- one-shot prop animation can repeat a source count instead of running once.
+function T.a_bounded_player_completes_at_the_terminal_of_its_last_pass()
+  local instance = ModelInstance.new(NitroModelFixture.doorDefinition())
+  local clip = instance.definition:animation("door.open")
+  local handle = instance:play("door.open", { player = AnimationPlayer.new(clip, 2) })
+  for _ = 1, 15 do
+    instance:updateFixed()
+  end
+  Assert.equal(handle.player:isComplete(), false, "the second pass is not done before its terminal")
+  instance:updateFixed()
+  Assert.equal(handle.player:isComplete(), true, "the bounded player completes after its last pass")
+  Assert.equal(handle.player.frameFx, 8 * 0x1000, "completion lands on the terminal of the last pass")
 end
 
 return { tests = T }

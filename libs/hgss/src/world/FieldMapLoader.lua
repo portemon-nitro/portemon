@@ -1785,42 +1785,64 @@ end
 -- Nonblocking warp demand over already-loaded lightweight field data:
 -- resolves the destination coordinates through the shared warp selection
 -- and requests the destination closure as required. Returns
--- ready/pending/error before resolution and preparation run.
+-- ready/pending/error before resolution and preparation run. A dynamic-warp
+-- anchor demands the saved destination map: the sentinel header names no
+-- map, and no established destination is an attributed failure, never a
+-- pending demand or a fallback to the current map.
 ---@param sourceMap table<string, unknown>
 ---@param warp table<string, unknown>
+---@param dynamicWarp table<string, unknown>? the saved dynamic destination for a dynamic anchor
 ---@return boolean
 ---@return string|nil
-function FieldMapLoader:requestWarp(sourceMap, warp)
+function FieldMapLoader:requestWarp(sourceMap, warp, dynamicWarp)
   assert(not self.released, "field map loader is released")
   assert(type(sourceMap) == "table", "warp demand requires the source map")
   assert(type(warp) == "table", "warp demand requires the warp record")
   if self.derivedAssets == nil then
     return true
   end
-  if type(warp.destinationMapId) ~= "number" or warp.destinationMapId % 1 ~= 0 then
-    return false, "warp destination map is missing"
+  local destinationMapId, destinationOrigin
+  if warp.destinationWarpId == WarpSystem.DYNAMIC_WARP_SENTINEL then
+    local recordOk, recordOrError = pcall(WarpSystem.dynamicWarpRecord, sourceMap, warp, dynamicWarp)
+    if not recordOk then
+      return false, Errors.format(recordOrError)
+    end
+    local record = assert(recordOrError)
+    local placementOk, placementOrError = pcall(self.mapPlacement, self, record.map)
+    if not placementOk then
+      return false, Errors.is(placementOrError) and Errors.format(placementOrError) or tostring(placementOrError)
+    end
+    local placement = assert(placementOrError)
+    destinationMapId = placement.id
+    destinationOrigin = { x = placement.originX, z = placement.originZ }
+  else
+    if type(warp.destinationMapId) ~= "number" or warp.destinationMapId % 1 ~= 0 then
+      return false, "warp destination map is missing"
+    end
+    destinationMapId = warp.destinationMapId
   end
   -- The warp itself is the demand event for its destination: enroll the
   -- destination logical closure before reading so a not-yet-compiled
   -- record waits instead of failing. Indoor destinations are never matrix
   -- neighbors, so no other closure can demand them.
-  local logicalReady, logicalFailure = self.derivedAssets.requestLogicalField(warp.destinationMapId, "required")
+  local logicalReady, logicalFailure = self.derivedAssets.requestLogicalField(destinationMapId, "required")
   if logicalFailure ~= nil then
     return false, logicalFailure
   end
   if not logicalReady then
     return false
   end
-  local fieldData, fieldError = self:_destinationFieldData(warp.destinationMapId)
+  local fieldData, fieldError = self:_destinationFieldData(destinationMapId)
   if fieldData == nil then
     return false, fieldError
   end
-  local coordinatesOk, coordinatesOrError = pcall(WarpSystem.destinationCoordinates, sourceMap, warp, fieldData)
+  local coordinatesOk, coordinatesOrError =
+    pcall(WarpSystem.destinationCoordinates, sourceMap, warp, fieldData, dynamicWarp, destinationOrigin)
   if not coordinatesOk then
     return false, Errors.is(coordinatesOrError) and Errors.format(coordinatesOrError) or tostring(coordinatesOrError)
   end
   local coordinates = assert(coordinatesOrError)
-  return self:requestLocation(warp.destinationMapId, coordinates.fieldX, coordinates.fieldZ, "required")
+  return self:requestLocation(destinationMapId, coordinates.fieldX, coordinates.fieldZ, "required")
 end
 
 -- Reads only the generated semantic field record needed to plan a warp

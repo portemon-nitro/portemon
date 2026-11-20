@@ -21,11 +21,13 @@
 -- grid to classify the warp tile.
 
 local Assert = require("tests.support.Assert")
+local Errors = require("libs.errors.src.Errors")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
 local FieldTransitionFade = require("libs.hgss.src.transition.FieldTransitionFade")
 local FieldTransitionProfile = require("libs.hgss.src.transition.FieldTransitionProfile")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
+local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
 
 local T = {}
 
@@ -281,6 +283,159 @@ function T.default_resolver_handles_direct_warp_records()
   Assert.equal(transition.resolution.fieldZ, 392)
   Assert.equal(transition.resolution.destinationWarp.direct, true)
   Assert.deepEqual(transition.suppression, { mapId = 60, fieldX = 688, fieldZ = 392 })
+end
+
+-- The saved dynamic destination of a 0x100 anchor, read once at transition
+-- start: the destination map, its anchor warp event, and the arrival facing.
+local function savedDynamicWarp(overrides)
+  local record = {
+    map = "MAP_CELADON_CONDOMINIUMS_1F",
+    fieldX = 5,
+    fieldZ = 3,
+    warpId = 0,
+    direction = "west",
+  }
+  for key, value in pairs(overrides or {}) do
+    record[key] = value
+  end
+  return record
+end
+
+local function dynamicAnchorDestination()
+  return {
+    mapId = 60,
+    mapSymbol = "MAP_CELADON_CONDOMINIUMS_1F",
+    coordinateOrigin = { x = 672, z = 384 },
+    fieldData = {
+      events = {
+        warps = {
+          {
+            index = 0,
+            x = 700,
+            z = 400,
+            destinationMapId = 0xFFF,
+            destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
+            y = 0,
+          },
+        },
+      },
+    },
+    collision = {
+      containsLocal = function(_, x, z)
+        return x >= 0 and x < 32 and z >= 0 and z < 32
+      end,
+    },
+    terrain = TerrainSurface.new({
+      plates = {
+        {
+          id = 0,
+          minX = 0,
+          minZ = 0,
+          maxX = 32,
+          maxZ = 32,
+          normal = { x = 0, y = 1, z = 0 },
+          distance = 0,
+          slopeClass = "flat",
+        },
+      },
+    }),
+  }
+end
+
+local function dynamicAnchorTrigger()
+  return {
+    warp = {
+      index = 1,
+      x = 4,
+      z = 14,
+      destinationMapId = 0xFFF,
+      destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
+    },
+  }
+end
+
+-- A dynamic-warp anchor arrives where the saved destination points: the
+-- destination map's anchor warp event is the arrival tile, and the saved
+-- direction is the facing the arrival player is created with -- the source
+-- copies LocalFieldData.dynamicWarp wholesale and creates the player from its
+-- direction, so the trigger-derived facing never wins.
+function T.dynamic_anchor_arrival_uses_the_saved_destination()
+  local destination = dynamicAnchorDestination()
+  local loader = {
+    load = function(_, destinationMap)
+      Assert.equal(destinationMap, "MAP_CELADON_CONDOMINIUMS_1F", "the saved destination names the map")
+      return destination
+    end,
+    requestWarp = function()
+      return true
+    end,
+  }
+  local prepares, commits = {}, {}
+  local transition = FieldTransition.new({
+    loader = loader,
+    dynamicWarp = function()
+      return savedDynamicWarp()
+    end,
+    prepare = function(result, facing)
+      prepares[#prepares + 1] = { result = result, facing = facing }
+      return {}
+    end,
+    commit = function(result, facing)
+      commits[#commits + 1] = { result = result, facing = facing }
+    end,
+  })
+  transition:start(sourceMap(), dynamicAnchorTrigger(), "south")
+  advanceTo(transition, "swap_map", 32)
+  Assert.equal(transition.resolution.fieldX, 700)
+  Assert.equal(transition.resolution.fieldZ, 400)
+  Assert.equal(transition.resolution.destinationMap, destination)
+  Assert.equal(transition.resolution.destinationWarp.index, 0, "the saved warp event is the arrival anchor")
+  Assert.equal(transition.resolution.facing, "west")
+  Assert.equal(prepares[1].facing, "west", "the saved direction is the arrival facing")
+  local ticks = 0
+  while transition.phase ~= "idle" and ticks < 32 do
+    step(transition)
+    ticks = ticks + 1
+  end
+  Assert.equal(transition.phase, "idle", "a dynamic arrival finishes like any other warp")
+  Assert.equal(commits[1].facing, "west")
+  Assert.deepEqual(transition:consumeCompleted(), {
+    sourceMapId = 61,
+    destinationMapId = 60,
+    sourceWarpId = 1,
+  })
+end
+
+-- An anchor with no established destination is an attributed abort: the
+-- transition never loads the sentinel header as a map and never commits.
+function T.dynamic_anchor_without_a_saved_destination_aborts_before_the_swap()
+  local loader = {
+    load = function()
+      error("an unset dynamic destination must not load a map")
+    end,
+    requestWarp = function()
+      return true
+    end,
+  }
+  local commits = 0
+  local transition = FieldTransition.new({
+    loader = loader,
+    prepare = function() end,
+    commit = function()
+      commits = commits + 1
+    end,
+  })
+  transition:start(sourceMap(), dynamicAnchorTrigger(), "south")
+  advanceTo(transition, "load_destination", 32)
+  step(transition)
+  Assert.equal(transition.phase, "idle")
+  Assert.isFalse(transition.locked)
+  Assert.equal(commits, 0, "an unresolved dynamic destination never swaps the map")
+  local err = transition.error
+  Assert.isTrue(Errors.is(err), "expected structured error")
+  Assert.equal(assert(err).code, "FIELD_DYNAMIC_WARP_UNSET")
+  Assert.equal(assert(err).context.sourceMapId, 61)
+  Assert.equal(assert(err).context.sourceWarpId, 1)
 end
 
 -- A pending destination demand holds the covered transition: the source

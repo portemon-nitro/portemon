@@ -1878,11 +1878,14 @@ end
 -- The source floor box shows a non-modal window and returns in its own tick:
 -- the window observes the result variable and releases itself once the script
 -- writes the closing sentinel, so the command never writes it and never blocks.
+-- Its messages expand through the calling script's buffered text, exactly like
+-- the source MessageFormat the floor label substitution reads.
 function HANDLERS.floor_window_show(node, run)
   requireService(run, "floorWindow"):show({
     tileX = node.tileX,
     tileY = node.tileY,
     floor = semanticsFor(run).evaluateValue(node.floor, run),
+    textArgs = run.instance.textArgs or {},
     result = node.result,
   })
   return Runtime.OUTCOME_CONTINUE

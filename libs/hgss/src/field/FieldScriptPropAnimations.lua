@@ -3,6 +3,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
+local AnimationPlayer = require("libs.hgss.src.presentation.AnimationPlayer")
 
 ---@class FieldScriptPropAnimations
 ---@field private runtimeMap table<string, unknown>|nil
@@ -12,7 +13,11 @@ local FieldScriptPropAnimations = {}
 FieldScriptPropAnimations.__index = FieldScriptPropAnimations
 
 -- The source elevator prop (MAP_PROP_ELEVATOR in src/field/map_prop_anims.c)
--- is the building model whose member id the source prop id names.
+-- is located by build model (FieldSystem_FindMapProp compares
+-- MapProp_GetBuildModel(prop) == buildModel), and a map prop's member id IS
+-- its source prop id. The generated scene placement identity carries that
+-- member id: "<indoor|outdoor>:<source member id>:<descriptor sha1 prefix>"
+-- (romdump/src/digest/map/BuildingModelCompiler.lua).
 local ELEVATOR_PROP_MEMBER = 0xD0
 -- The source loads two one-shot animations and selects one by direction.
 local ELEVATOR_DIRECTION_COUNT = 2
@@ -109,6 +114,15 @@ function FieldScriptPropAnimations:clear()
   self.runtimeMap = nil
 end
 
+-- The source member id a generated model key names, or nil when the key is
+-- not the generated placement identity.
+---@param modelKey unknown
+---@return integer|nil
+local function sourceMemberId(modelKey)
+  local memberId = type(modelKey) == "string" and modelKey:match("^%a+:(%d+):")
+  return memberId and tonumber(memberId) or nil
+end
+
 -- The live elevator prop of the bound map, or nil when the map carries none.
 ---@return table<string, unknown>|nil
 local function elevatorProp(self)
@@ -121,8 +135,7 @@ local function elevatorProp(self)
     return nil
   end
   for _, placement in ipairs(mapProps.placements) do
-    local instance = mapProps.instances[placement.placementIndex]
-    if instance ~= nil and instance.definition ~= nil and instance.definition.memberId == ELEVATOR_PROP_MEMBER then
+    if sourceMemberId(placement.modelKey) == ELEVATOR_PROP_MEMBER then
       return mapProps:prop(placement.placementIndex)
     end
   end
@@ -136,14 +149,18 @@ local function requireElevator(self)
   return record
 end
 
--- Load the elevator's source one-shot animations. `length` is the source
--- command's frame count; the compiled model clip carries the animation's own
--- duration, so only the source halfword domain is validated here.
----@param length integer
-function FieldScriptPropAnimations:loadAnimation(length)
+-- Load the elevator's source one-shot animations. `loopCount` is the
+-- effective source repeat count: ScrCmd_ElevatorAnim reads a halfword and
+-- ElevatorAnimCreate takes a u8, so the caller applies the truncation, and
+-- the value becomes the animation loop count
+-- (MapPropOneShotAnimationManager_LoadPropAnimations asserts it non-zero and
+-- substitutes 1, then MapPropAnimation_Init / MapPropAnimationPoolList_Update
+-- loop it).
+---@param loopCount integer
+function FieldScriptPropAnimations:loadAnimation(loopCount)
   assert(
-    type(length) == "number" and length % 1 == 0 and length > 0 and length <= 0xFFFF,
-    "elevator animation length must be a source halfword"
+    type(loopCount) == "number" and loopCount % 1 == 0 and loopCount >= 1 and loopCount <= 0xFF,
+    "elevator animation loop count must be the effective source byte"
   )
   assert(self.elevator == nil, "an elevator animation is already loaded")
   local runtimeMap = assert(self.runtimeMap, "prop animations are not bound to a map")
@@ -160,10 +177,16 @@ function FieldScriptPropAnimations:loadAnimation(length)
   for index = 1, ELEVATOR_DIRECTION_COUNT do
     assert(clips[index] ~= nil, "the elevator model carries both source direction animations")
   end
-  self.elevator = { runtimeMap = runtimeMap, prop = prop, clips = { clips[1], clips[2] }, active = nil }
+  self.elevator = {
+    runtimeMap = runtimeMap,
+    prop = prop,
+    clips = { clips[1], clips[2] },
+    loopCount = loopCount,
+    active = nil,
+  }
 end
 
--- Play the source direction's one-shot animation.
+-- Play the source direction's one-shot animation for the loaded repeat count.
 ---@param direction integer source direction 0 or 1
 function FieldScriptPropAnimations:playAnimation(direction)
   local record = requireElevator(self)
@@ -171,7 +194,8 @@ function FieldScriptPropAnimations:playAnimation(direction)
   assert(record.active == nil, "the elevator animation is already playing")
   local clip = assert(record.clips[direction + 1])
   record.active = clip.name
-  local handle = record.prop:play(clip.name, { loopMode = "once" })
+  local player = AnimationPlayer.new(clip, record.loopCount)
+  local handle = record.prop:play(clip.name, { player = player })
   assert(handle ~= nil, "elevator prop animation did not create a playback attachment")
 end
 

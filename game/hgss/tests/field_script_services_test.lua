@@ -8,8 +8,13 @@
 
 local Assert = require("tests.support.Assert")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local CacheFs = require("libs.storage.src.CacheFs")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local FakeCache = require("tests.support.FakeCache")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
+local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local FieldScriptSliceFixture = require("tests.support.FieldScriptSliceFixture")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 local GameStats = require("libs.hgss.src.mons.GameStats")
@@ -97,7 +102,6 @@ local function stepUntilNaming(platform, naming, firstTick)
   end
   return nil
 end
-
 
 local function driveSlice(services, id, steps, tick)
   local platform = composeSlice(services, id, steps)
@@ -719,6 +723,7 @@ function T.tests.rival_naming_blocks_then_publishes_the_accepted_name_to_the_sav
       fieldMoves = nil,
       monNaming = naming,
       profile = record.profile,
+      versionId = "heartgold",
       fontDef = { charmap = CatalogFixture.CHARMAP },
       encode = encodedChunk,
     },
@@ -812,6 +817,7 @@ function T.tests.rival_battle_outcome_gates_the_trainer_flag_and_the_following_n
     battle = winHost,
     monNaming = winNaming,
     profile = record.profile,
+    versionId = "heartgold",
     fontDef = { charmap = CatalogFixture.CHARMAP },
     encode = encodedChunk,
   }, "test.rival_battle", rivalBattleSteps())
@@ -907,32 +913,84 @@ function T.tests.script_dynamic_warp_slice_writes_the_durable_destination_and_re
   )
 end
 
+-- The generated floor-label bank the source floor box reads, in the shape the
+-- message cache publishes: msg_0191_00016 is the window title, 00017 is the
+-- substitution template the script's buffered floor text fills, and
+-- 00116..00122 are the source storey labels (1F..6F, B1F). The provider is the
+-- real one, so the composed window resolves through the same path dialogue does.
+local FLOOR_WINDOW_MESSAGES = {
+  [16] = "Current Floor",
+  [17] = "{STRVAR_1 50, 0, 0}",
+  [116] = "1F",
+  [117] = "2F",
+  [118] = "3F",
+  [119] = "4F",
+  [120] = "5F",
+  [121] = "6F",
+  [122] = "B1F",
+  [125] = "ROOF",
+}
+
+---@return table<string, unknown> provider, table<string, unknown> fontDef
+local function floorWindowMessageSource()
+  local charmap = {}
+  local code = 0x0400
+  for _, text in pairs(FLOOR_WINDOW_MESSAGES) do
+    for index = 1, #text do
+      local char = text:sub(index, index)
+      if charmap[char] == nil then
+        charmap[char] = code
+        code = code + 1
+      end
+    end
+  end
+  local fontDef = { charmap = charmap }
+  local messages = {}
+  for messageId, text in pairs(FLOOR_WINDOW_MESSAGES) do
+    messages[messageId] = {
+      id = messageId,
+      raw = {},
+      text = text,
+      tokens = FieldMessageText.parse(text, fontDef, { eos = true }),
+    }
+  end
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  cache:writeLua(FieldMessageCache.bankPath(191), {
+    schema = FieldMessageCache.SCHEMA,
+    bankId = 191,
+    messageCount = 126,
+    source = { narc = "NARC_msgdata_msg", memberId = 191, memberSha1 = "synthetic" },
+    messages = messages,
+  })
+  return FieldMessageProvider.new(cache), fontDef
+end
+
 -- A composed floor-window slice shows the source window through the composed
--- host: the service supplies the live map's label table, the command never
--- writes the observed result variable, and the field's own tick releases the
--- window once the script writes the closing sentinel.
+-- host: the service supplies the live map's label table and the script's
+-- buffered floor text, the command never writes the observed result variable,
+-- and the field's own tick releases the window once the script writes the
+-- closing sentinel.
 function T.tests.script_floor_window_slice_observes_its_result_variable()
   local symbols = require("libs.assets.src.field.FieldScriptSymbols")
-  local platform = composeSlice({
-    travel = FieldTravelState.new({ lastHealSpawn = "SPAWN_NEW_BARK" }),
-    fieldMoves = nil,
-    sourceMap = {
-      mapSymbol = "MAP_GOLDENROD_DEPARTMENT_STORE_ELEVATOR",
-      fieldData = { mapId = 7, scriptBankId = 3, initScripts = {} },
+  local provider, fontDef = floorWindowMessageSource()
+  local platform = composeSlice(
+    {
+      travel = FieldTravelState.new({ lastHealSpawn = "SPAWN_NEW_BARK" }),
+      fieldMoves = nil,
+      sourceMap = {
+        mapSymbol = "MAP_GOLDENROD_DEPARTMENT_STORE_ELEVATOR",
+        fieldData = { mapId = 7, scriptBankId = 3, initScripts = {} },
+      },
+      messageProvider = provider,
+      fontDef = fontDef,
+      encode = encodedChunk,
     },
-    messageProvider = {
-      acquireBank = function()
-        return true
-      end,
-      releaseBank = function() end,
-      get = function()
-        return { tokens = {} }
-      end,
-      format = function(_, template)
-        return template
-      end,
-    },
-  }, "test.floor_window_slice", { { op = "floor_window_show", tileX = 4, tileY = 5, floor = 0 } })
+    "test.floor_window_slice",
+    {
+      { op = "buffer_text", slot = 0, value = { text = "dept_store_floor_no", floor = 4 } },
+      { op = "floor_window_show", tileX = 4, tileY = 5, floor = 4, result = { value = "var", id = "VAR_TEMP_x4001" } },
+    }
+  )
   local composed = assert(platform.composition:effective("test.floor_window_slice"))
   platform.scheduler:createForeground(composed, nil, 100)
   platform.scheduler:step(100, nil)
@@ -941,7 +999,9 @@ function T.tests.script_floor_window_slice_observes_its_result_variable()
   Assert.equal(snapshot.map, "MAP_GOLDENROD_DEPARTMENT_STORE_ELEVATOR", "the window carries the live map identity")
   Assert.equal(snapshot.tileX, 4)
   Assert.equal(snapshot.tileY, 5)
-  Assert.equal(snapshot.labelMessage, "msg.hgss.0191.00122", "the live map selects its own floor label")
+  Assert.equal(snapshot.labelMessage, "msg.hgss.0191.00017", "a numbered floor resolves the ordinary floor label")
+  Assert.equal(snapshot.title, "Current Floor", "the window draws the source title text")
+  Assert.equal(snapshot.label, "4F", "the label substitutes the floor text the script buffered")
   local resultId = symbols.variablesByName.VAR_TEMP_x4001
   Assert.equal(platform.worldState:getVar(resultId), 0, "the composing command never writes the observed variable")
 

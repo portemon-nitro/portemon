@@ -10,10 +10,17 @@
 -- 12 as a valid frame -- and a decoder fed an out-of-range frame from another
 -- source reproduces the SDK's last-key behavior through its own clamp.
 --
--- Loop modes:
---   "loop"   wrap forward at frameCount * FRAME_UNIT forever
---   "once"   land on frameCount * FRAME_UNIT and mark completed
+-- Loop modes and passes:
+--   "loop"   wrap forward at frameCount * FRAME_UNIT; with a pass count the
+--            player completes at the checked terminal of its last pass
+--   "once"   land on frameCount * FRAME_UNIT and mark completed (one pass)
 --
+-- The optional pass count mirrors the source prop-animation loop count:
+-- MapPropAnimation_Init stores it and MapPropAnimationPoolList_Update stops
+-- looping on the last frame once loopsDone + 1 >= loopCount
+-- (src/field/map_prop_render.c). nil is unbounded; an integer >= 1 is the
+-- number of passes played before completion.
+
 -- Terminal-state policy lives here: one completion notion (isComplete), the
 -- checked advance's done flag. There is no direction: playback always runs
 -- forward from frame 0. The player knows nothing about clips' source formats:
@@ -28,17 +35,25 @@ AnimationPlayer.LOOP_MODES = { loop = true, once = true }
 AnimationPlayer.FRAME_UNIT = AnimationClip.FRAME_UNIT
 
 -- Build a player for a clip (or any object with a positive integer
--- frameCount). The returned player is owned by the caller (or an attachment)
--- and is mutable -- two players over one clip never share state.
-function AnimationPlayer.new(clip)
+-- frameCount). `loopCount` bounds the number of passes; nil plays unbounded,
+-- like a looping field prop animation. The returned player is owned by the
+-- caller (or an attachment) and is mutable -- two players over one clip never
+-- share state.
+function AnimationPlayer.new(clip, loopCount)
   assert(type(clip) == "table" and clip.frameCount ~= nil, "AnimationPlayer.new requires a clip with a frameCount")
   local frameCount = clip.frameCount
   assert(
     type(frameCount) == "number" and frameCount >= 1 and math.floor(frameCount) == frameCount,
     "clip frameCount must be a positive integer"
   )
+  assert(
+    loopCount == nil or (type(loopCount) == "number" and math.floor(loopCount) == loopCount and loopCount >= 1),
+    "clip loopCount must be a positive integer or nil"
+  )
   return setmetatable({
     frameCount = frameCount,
+    loopCount = loopCount,
+    loopsDone = 0,
     frameFx = 0,
     loopMode = "loop",
     completed = false,
@@ -46,8 +61,9 @@ function AnimationPlayer.new(clip)
 end
 
 -- Advance one fixed step forward. A once-clip that reaches or passes the
--- checked-advance terminal lands exactly on it and is marked completed; a
--- loop wraps at the terminal.
+-- checked-advance terminal lands exactly on it and is marked completed; so
+-- does a bounded loop-mode clip on the terminal of its last pass; an
+-- unbounded loop wraps at the terminal.
 function AnimationPlayer:updateFixed()
   if self.completed then
     return
@@ -60,6 +76,14 @@ function AnimationPlayer:updateFixed()
       self.frameFx = stepFx
       self.completed = true
       return
+    end
+    if self.loopCount ~= nil then
+      if self.loopsDone + 1 >= self.loopCount then
+        self.frameFx = stepFx
+        self.completed = true
+        return
+      end
+      self.loopsDone = self.loopsDone + 1
     end
     -- "loop" wraps past the end; the Lua modulo yields a frame in
     -- [0, stepFx - 1] for any forward overshoot.

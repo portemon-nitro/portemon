@@ -2505,4 +2505,23 @@ T["the source overlay command lowers to an inert step with its provenance"] = fu
   end
 end
 
+-- ScrCmd_BufferDeptStoreFloorNo reads both operands as source bytes and
+-- buffers the storey label the floor box substitutes: the slot is the first
+-- byte and the floor the second, with no script-variable read between them
+-- (src/scrcmd_lottery.c -> src/message_format.c::BufferDeptStoreFloorNo).
+T["the department store floor buffer lowers its byte operands into buffered text"] = function()
+  local _, steps, report = translateOnly({
+    { op = 852, args = { { value = 0, width = 1 }, { value = 4, width = 1 } } },
+    { op = 2, args = {} },
+  })
+  Assert.equal(steps[1].op, "buffer_text", "the source buffer writes one message slot")
+  Assert.equal(steps[1].slot, 0, "the slot is the first source byte")
+  Assert.deepEqual(steps[1].value, { text = "dept_store_floor_no", floor = 4 }, "the floor is the second source byte")
+  Assert.deepEqual(steps[1].provenance, { offsets = { 0x20 }, opcodes = { 852 } })
+  Assert.equal(countVariableReferences(steps[1]), 0, "both operands are immediate source bytes")
+  Assert.isTrue(report.complete, "a buffered floor label is a complete translation")
+  Assert.equal(report.unsupportedCount, 0)
+  validateSteps("test.source_852", steps)
+end
+
 return { tests = T }

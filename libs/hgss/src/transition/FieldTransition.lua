@@ -40,6 +40,13 @@
 -- Stair warps use the profile-owned locked source step and never use door
 -- animation or coordinate compensation.
 --
+-- Dynamic-warp anchors (the source's 0x100) take their destination from the
+-- saved dynamic-warp record the script set: the supplier is read once when the
+-- transition starts, so destination demand, resolution, and the arrival facing
+-- all describe one record. A resolved destination facing wins over the
+-- trigger-derived facing because the source creates the arrival player with
+-- the saved direction.
+--
 -- Panel warps run the teleport spin around the same lifecycle when the bound
 -- player offers facing + height pose control: TELE2 at each spin start, a
 -- 20-tick departure rising on the height arc while turning through each
@@ -76,6 +83,7 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 ---@field commit fun(resolution: table<string, unknown>, facing: FieldDirection, prepared: table<string, unknown>)
 ---@field disposePrepared fun(resolution: table<string, unknown>?, prepared: table<string, unknown>?)? -- releases resources owned before commit
 ---@field resolveDestination function
+---@field dynamicWarpSource fun(): table<string, unknown>|nil -- late-read supplier of the saved dynamic-warp destination
 ---@field doorAt fun(runtimeMap: table<string, unknown>, fieldX: integer, fieldZ: integer): table<string, unknown>|nil -- nil = no door choreography
 ---@field playSound fun(soundId: string)?
 ---@field stopSound fun(soundId: string)?
@@ -111,6 +119,7 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 ---@field sourceMap RuntimeFieldMap?
 ---@field sourceWarp table<string, unknown>?
 ---@field coveredSwap boolean -- true while a covered scripted swap owns the lifecycle: destination resolution/commit run, but no FieldTransitionFade is created or advanced because an external screen cover already owns visibility
+---@field dynamicWarp table<string, unknown>|nil -- the saved dynamic-warp destination, resolved once when the transition starts and handed to destination demand and resolution
 ---@field selectPreview fun(sourceMap: RuntimeFieldMap, destinationMap: RuntimeFieldMap, profileId: integer|nil): { imageKey: string, timeSlot: integer, profileId: integer|nil }? -- post-commit source-selected area-preview selector
 ---@field follower { isPresent: fun(): boolean, recall: fun(), rejoin: fun(reason: string) }? -- optional presence-gated follower collaborator: panel departure recall, panel/preview arrival rejoin
 ---@field preview FieldAreaPreview? the active time-aware area preview, nil outside the preview substate
@@ -148,6 +157,7 @@ function FieldTransition.new(options)
   return setmetatable({
     loader = options.loader,
     resolveDestination = options.resolveDestination or WarpSystem.resolveDestination,
+    dynamicWarpSource = options.dynamicWarp,
     prepare = options.prepare,
     commit = options.commit,
     disposePrepared = options.disposePrepared,
@@ -181,6 +191,7 @@ function FieldTransition.new(options)
     ownsPlayerAnimationPause = false,
     escalator = nil,
     coveredSwap = false,
+    dynamicWarp = nil,
     preview = nil,
     previewArrival = nil,
     _panelSpin = nil,
@@ -569,6 +580,7 @@ local function resetTransient(self)
   self.escalator = nil
   self.progressTicks = 0
   self.coveredSwap = false
+  self.dynamicWarp = nil
   self.preview = nil
   self.previewArrival = nil
   self._panelSpin = nil
@@ -979,6 +991,10 @@ local function beginTransition(self, sourceMap, trigger, facing)
   self.sourceKind = trigger.kind
   self.transitionMode = nil
   self.destinationFacing = trigger.destinationFacing or facing
+  self.dynamicWarp = nil
+  if self.dynamicWarpSource ~= nil then
+    self.dynamicWarp = self.dynamicWarpSource()
+  end
   self.facing = facing
   self.resolution = nil
   self.suppression = nil
@@ -1238,7 +1254,7 @@ function FieldTransition:updateFixed(inputSnapshot)
     -- session keeps pumping; only readiness runs resolution and preparation
     -- once, and failures use the existing abort path.
     local ok, requestReady, requestError = pcall(function()
-      return self.loader:requestWarp(self.sourceMap, self.sourceWarp)
+      return self.loader:requestWarp(self.sourceMap, self.sourceWarp, self.dynamicWarp)
     end)
     if not ok then
       return self:_abort(requestReady)
@@ -1250,7 +1266,7 @@ function FieldTransition:updateFixed(inputSnapshot)
       return false
     end
     local resolveOk, err = pcall(function()
-      local result = self.resolveDestination(self.loader, self.sourceMap, self.sourceWarp)
+      local result = self.resolveDestination(self.loader, self.sourceMap, self.sourceWarp, self.dynamicWarp)
       self.resolution = result
       if self.profileId == FieldTransitionProfile.HORIZONTAL_STAIRS then
         adjustHorizontalStairDestination(self, result)
@@ -1274,7 +1290,7 @@ function FieldTransition:updateFixed(inputSnapshot)
       else
         self.suppression = result.suppression
       end
-      self.prepared = self.prepare(result, self.destinationFacing)
+      self.prepared = self.prepare(result, result.facing or self.destinationFacing)
     end)
     if not resolveOk then
       return self:_abort(err)
@@ -1284,7 +1300,7 @@ function FieldTransition:updateFixed(inputSnapshot)
   end
   if self.phase == FieldTransition.PHASES.swap_map then
     assert(self.coveredSwap or self.fadeAlpha == 1, "map swap must occur while fully black")
-    self.commit(self.resolution, self.destinationFacing, self.prepared)
+    self.commit(self.resolution, self.resolution.facing or self.destinationFacing, self.prepared)
     if self.coveredSwap then
       -- The source-authored screen cover owns all visibility for this swap:
       -- no ordinary fade-in, no door/profile choreography. Source `FadeScreen`

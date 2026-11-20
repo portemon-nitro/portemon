@@ -270,8 +270,9 @@ end
 -- integers backed by a variable, mon/party identities resolved through the
 -- injected live mon service and its catalog, item/pocket/TM/berry
 -- identities resolved through the injected shared item catalog (TM/HM move
--- names coordinate both catalogs), and buffered word identities resolved
--- through the shared word catalog. Any other form is a fault: the resolver
+-- names coordinate both catalogs), buffered word identities resolved
+-- through the shared word catalog, and the department-store floor label read
+-- from the generated floor-label bank. Any other form is a fault: the resolver
 -- contract never leaves a marker visible in the stream.
 -- One buffered word identity behind the easy_chat_word text form: the
 -- null identity stays empty, every other identity resolves its display
@@ -299,6 +300,43 @@ local function resolveEasyChatWord(catalog, descriptor)
   return catalogOwner:wordTokens(word)
 end
 
+-- The department-store floor label bank: the generated floor-label messages
+-- (files/msgdata/msg/msg_0191.gmm) that
+-- src/message_format.c::BufferDeptStoreFloorNo reads, message 122 for the
+-- basement and 116..121 for 1F..6F. The source asserts the floor fits that
+-- table, so any other value is an attributed fault instead of a read of an
+-- unrelated message.
+local DEPT_STORE_FLOOR_BANK_ID = 191
+local DEPT_STORE_BASEMENT_MESSAGE_ID = 122
+local DEPT_STORE_FIRST_FLOOR_MESSAGE_ID = 116
+local DEPT_STORE_TOP_FLOOR = 6
+
+---@param descriptor table<string, unknown> dept_store_floor_no text descriptor
+---@param provider FieldMessageProvider? scoped message bank provider
+---@param fontDef table<string, unknown>
+---@return table<string, unknown> replacementTokens glyph-kind tokens without a terminal marker
+local function deptStoreFloorGlyphs(descriptor, provider, fontDef)
+  local floor = descriptor.floor
+  if type(floor) ~= "number" or floor % 1 ~= 0 or floor < 0 or floor > DEPT_STORE_TOP_FLOOR then
+    local context = { floor = floor }
+    ---@cast context Errors.Context
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "department store floor label reads a floor 0..6", context)
+  end
+  ---@cast floor integer
+  if provider == nil then
+    local context = { floor = floor }
+    ---@cast context Errors.Context
+    Errors.raise(
+      ScriptErrors.SCRIPT_SERVICE_MISSING,
+      "department store floor labels require the message provider",
+      context
+    )
+  end
+  local providerOwner = provider --[[@as FieldMessageProvider]]
+  local messageId = floor == 0 and DEPT_STORE_BASEMENT_MESSAGE_ID or DEPT_STORE_FIRST_FLOOR_MESSAGE_ID + floor - 1
+  return scopedNameGlyphs(providerOwner, DEPT_STORE_FLOOR_BANK_ID, messageId, fontDef)
+end
+
 local function resolveTextValue(
   descriptor,
   player,
@@ -320,6 +358,9 @@ local function resolveTextValue(
   local value = descriptor.value
   if kind == "easy_chat_word" then
     return resolveEasyChatWord(easyChatCatalog, descriptor)
+  end
+  if kind == "dept_store_floor_no" then
+    return deptStoreFloorGlyphs(descriptor, provider, fontDef)
   end
   if kind == "player_name" then
     return FieldMessageProvider.asciiGlyphTokens(player:name(), fontDef)

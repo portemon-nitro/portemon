@@ -126,6 +126,7 @@ FieldUiAssetCache.ASSET = {
   NAMING_SCREEN_SLOT_SELECTED = "hgss.naming_screen.slot_selected",
   NAMING_SCREEN_SUBJECT_MALE = "hgss.naming_screen.subject_male",
   NAMING_SCREEN_SUBJECT_FEMALE = "hgss.naming_screen.subject_female",
+  NAMING_SCREEN_SUBJECT_RIVAL = "hgss.naming_screen.subject_rival",
   NAMING_SCREEN_POKEMON_GENDER_MALE = "hgss.naming_screen.pokemon_gender_male",
   NAMING_SCREEN_POKEMON_GENDER_FEMALE = "hgss.naming_screen.pokemon_gender_female",
   YES_NO_PROMPT_YES_NORMAL = "hgss.yes_no_prompt.yes_normal",

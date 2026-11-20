@@ -206,6 +206,10 @@ Schema.TEXT_VALUES = {
   trainer_class_name = { fields = { value = { type = "scalar_or_value", required = true } } },
   trainer_class_name_indefinite = { fields = { value = { type = "scalar_or_value", required = true } } },
   starter_species_name = { fields = {} },
+  -- The source storey label of one department-store floor, read from the
+  -- generated floor-label bank (src/message_format.c::BufferDeptStoreFloorNo):
+  -- floor 0 is the basement, floors 1..6 are 1F..6F.
+  dept_store_floor_no = { fields = { floor = { type = "integer", required = true } } },
   map_name = { fields = { value = { type = "scalar_or_value", required = true } } },
   easy_chat_word = {
     fields = {

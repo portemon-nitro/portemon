@@ -140,6 +140,10 @@ local function host(opts)
       ["t"] = 0x011A,
       ["h"] = 0x011B,
       ["n"] = 0x011C,
+      -- The department store floor labels read "1F".."6F" and "B1F" from
+      -- the generated floor-label bank.
+      ["F"] = 0x011D,
+      ["B"] = 0x011E,
     },
   }
   local gender = opts.gender or 0
@@ -384,6 +388,62 @@ function T.player_name_resolution_is_unchanged()
   local formatted = h:resolveMessage("msg.hgss.0542.00000", { [0] = { text = "player_name" } }, {})
   Assert.equal(formatted.text, "Gold")
   Assert.isFalse(formatted.hadUnresolvedSubstitutions)
+end
+
+-- The generated floor-label bank the department store floor text reads
+-- (src/message_format.c::BufferDeptStoreFloorNo): msg_0191_00116..00121 are
+-- 1F..6F, 00122 is the basement label, and 00125 the roof label.
+local function floorLabelBankArtifact()
+  local labels = { [122] = "B1F", [125] = "ROOF" }
+  for floor = 1, 6 do
+    labels[115 + floor] = floor .. "F"
+  end
+  local messages = {}
+  for messageId, text in pairs(labels) do
+    messages[messageId] = { id = messageId, raw = {}, text = text, tokens = glyphTokensFor(text) }
+  end
+  return {
+    schema = FieldMessageCache.SCHEMA,
+    bankId = 191,
+    messageCount = 126,
+    source = { narc = "NARC_msgdata_msg", memberId = 191, memberSha1 = "synthetic" },
+    messages = messages,
+  }
+end
+
+-- A department store floor buffer reads the storey's own label: floor 0 is the
+-- basement message, floors 1..6 are the 1F..6F messages, and a floor outside
+-- that source table is an attributed fault instead of an unrelated read.
+function T.department_store_floor_label_resolves_the_source_storey_messages()
+  local provider = assert(FieldMessageProvider.new(cacheWith({
+    [542] = bankArtifact(542),
+    [191] = floorLabelBankArtifact(),
+  })))
+  local h = host({ provider = provider })
+  local function floorText(floor)
+    h:openMessage({})
+    h:startPrint("msg.hgss.0542.00000", { [0] = { text = "dept_store_floor_no", floor = floor } })
+    local hostObject = h --[[@as { _controller: { request: { message: { text: string } }|nil } } ]]
+    return assert(hostObject._controller.request).message.text
+  end
+  local before = provider:stats().references
+  Assert.equal(floorText(0), "B1F", "floor 0 reads the basement label")
+  for floor = 1, 6 do
+    Assert.equal(floorText(floor), floor .. "F", "floor " .. floor .. " reads its own storey label")
+  end
+  Assert.equal(provider:stats().references, before, "resolved floor labels release their bank")
+
+  local outOfRange = Assert.throws(function()
+    floorText(7)
+  end)
+  Assert.isTrue(Errors.is(outOfRange), "a floor beyond the source table is an attributed fault")
+  Assert.equal(outOfRange.code, "SCRIPT_INVALID_REFERENCE")
+  local notAFloor = Assert.throws(function()
+    floorText("2")
+  end)
+  Assert.isTrue(Errors.is(notAFloor), "a non-integer floor is an attributed fault")
+  Assert.equal(notAFloor.code, "SCRIPT_INVALID_REFERENCE")
+  Assert.equal(provider:stats().references, before, "an invalid floor acquires no bank")
 end
 
 -- Mon and party text identities resolve through the injected live service

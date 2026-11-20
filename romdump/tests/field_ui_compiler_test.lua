@@ -336,11 +336,11 @@ local function nineBankPalette()
 end
 
 -- The normal naming OBJ stack in producer-side member numbers (this is the
--- romdump-side test): char 10, palette 1, cell 12, anim 14. Fifty cells and
--- animations cover the transcribed semantic animation table (subjects at 48
--- and 49); cell i references tile i % 16 of the 16-tile char through palette
--- bank i % 9, so every bank the nine-bank palette carries is exercised and
--- neighboring roles render distinct art.
+-- romdump-side test): char 10, palette 1, cell 12, anim 14. Cells and
+-- animations cover the transcribed semantic animation table (subjects at 48,
+-- 49, and 51); cell i references tile i % 16 of the 16-tile char through
+-- palette bank i % 9, so every bank the nine-bank palette carries is
+-- exercised and neighboring roles render distinct art.
 local function namingObjMembers(members)
   members[2] = nineBankPalette()
   members[11] = charData(16, 3)
@@ -348,7 +348,7 @@ local function namingObjMembers(members)
   local animCells = {}
   for index = 0, 53 do
     cells[index + 1] = { { x = 0, y = 0, tile = index % 16, pal = index % 9 } }
-    if index < 51 then
+    if index < 52 then
       animCells[index + 1] = index
     end
   end
@@ -1958,6 +1958,14 @@ function T.naming_manifest_publishes_source_text_and_object_geometry_beside_the_
   local subjects = assert(naming.playerSubjects, "the compiled naming must publish its player subjects")
   Assert.deepEqual(subjects.male.anchor, { x = 24, y = 8 })
   Assert.deepEqual(subjects.female.anchor, { x = 24, y = 8 })
+
+  local rivalSubject = assert(naming.rivalSubject, "the compiled naming must publish its rival subject")
+  Assert.deepEqual(rivalSubject.anchor, { x = 24, y = 8 }, "the rival subject keeps the source icon anchor")
+  Assert.equal(
+    rivalSubject.frames[1].asset,
+    FieldUiAssetCache.ASSET.NAMING_SCREEN_SUBJECT_RIVAL,
+    "the rival subject resolves through its semantic asset id"
+  )
 end
 
 -- The naming OBJ visuals honor each OAM object's own palette bank: the
@@ -2054,7 +2062,7 @@ end
 -- animation keeps one frame, so frame order, durations, mode, and loop
 -- start are observable in the generated subject record.
 local function multiFrameNamingAnim()
-  local animCount = 51
+  local animCount = 52
   local specs = {}
   for index = 0, animCount - 1 do
     specs[index + 1] = { playMode = 1, loopStart = 0, frames = { { cell = index, duration = 3 } } }

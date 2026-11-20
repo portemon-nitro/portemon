@@ -1,6 +1,8 @@
 -- Blocking HGSS rival naming input task. The source NameRival command runs
--- the shared field naming screen in rival mode and reports the native
--- no-input result; only an accepted name reaches the live player profile.
+-- the shared field naming screen in rival mode and always accepts its
+-- result: an empty entry commits the edition default name and a typed entry
+-- commits the typed name, so the single accepted name reaches the live
+-- player profile.
 
 local Errors = require("libs.errors.src.Errors")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
@@ -15,6 +17,13 @@ RivalNamingTask.version = 1
 -- PLAYER_NAME_LENGTH, so the rival screen shares the player name limit.
 local MAX_RIVAL_NAME_GLYPHS = PlayerData.MAX_NAME_GLYPHS
 
+-- The rival naming screen has no nickname-style declined-input result: an
+-- empty or all-space entry takes the edition default name
+-- (`src/naming_screen.c:646-679` reads FIRST_DEFAULT_NAME_RIVAL, which is
+-- msg_0254_00084 "Soul" for HeartGold and msg_0254_00085 "Heart" for
+-- SoulSilver), and the source then stores it without setting `noInput`.
+local RIVAL_DEFAULT_NAMES = { heartgold = "Soul", soulsilver = "Heart" }
+
 ---@class RivalNamingTask.NamingHost
 ---@field isActive fun(self: RivalNamingTask.NamingHost): boolean
 ---@field open fun(self: RivalNamingTask.NamingHost, spec: table<string, unknown>)
@@ -24,7 +33,6 @@ local MAX_RIVAL_NAME_GLYPHS = PlayerData.MAX_NAME_GLYPHS
 ---@field close fun(self: RivalNamingTask.NamingHost)
 
 ---@class RivalNamingTask.PlayerFacade
----@field rivalName fun(self: RivalNamingTask.PlayerFacade): string
 ---@field setRivalName fun(self: RivalNamingTask.PlayerFacade, name: string)
 
 ---@param ctx table<string, unknown>
@@ -49,8 +57,30 @@ local function glyphCount(text)
   return count
 end
 
--- The source task keeps only its lifetime flags and editing buffer: the
--- opening name and the accepted write live on the player profile.
+-- The edition default behind an empty entry, resolved from the selected game
+-- version (`GetGameVersion` reaches it as the `versionId` service).
+---@param ctx table<string, unknown>
+---@return string
+local function editionDefaultName(ctx)
+  local versionId = ctx.services and ctx.services.versionId
+  if versionId == nil then
+    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "rival naming requires versionId", {
+      scriptId = ctx.instance and ctx.instance.scriptId,
+    })
+  end
+  ---@cast versionId string
+  local name = RIVAL_DEFAULT_NAMES[versionId]
+  if name == nil then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "unknown game version " .. tostring(versionId), {
+      scriptId = ctx.instance and ctx.instance.scriptId,
+    })
+  end
+  return name --[[@as string]]
+end
+
+-- The source task keeps only its lifetime flags, editing buffer, and the
+-- edition default an empty entry commits; the accepted write lives on the
+-- player profile alone.
 ---@param spec table<string, unknown>
 ---@param ctx table<string, unknown>
 ---@return table<string, unknown>
@@ -59,9 +89,9 @@ function RivalNamingTask.create(spec, ctx)
   local host = service(ctx, "monNaming")
   assert(type(host.isActive) == "function", "rival naming host is incomplete")
   local player = service(ctx, "player")
-  assert(type(player.rivalName) == "function", "rival naming requires the player name reader")
+  assert(type(player.setRivalName) == "function", "rival naming requires the player name writer")
   return {
-    initialText = player:rivalName(),
+    defaultText = editionDefaultName(ctx),
     currentText = "",
     opened = false,
     closed = false,
@@ -101,17 +131,18 @@ function RivalNamingTask.poll(state, ctx)
   if not status.done then
     return { complete = false, state = state }
   end
-  -- The native result is the no-input flag: blank or unchanged input keeps
-  -- the previously stored rival name and reports 1, an accepted name is
-  -- published once and reports 0.
-  local result = 1
-  if status.text:match("^%s*$") == nil and status.text ~= state.initialText then
-    service(ctx, "player"):setRivalName(status.text)
-    result = 0
+  -- The rival screen has no declined-input result: an empty or all-space
+  -- entry stores the edition default name, any other entry stores the typed
+  -- name, and the source reports the untouched zero. The name is published
+  -- exactly once.
+  local name = status.text
+  if name:match("^%s*$") ~= nil then
+    name = assert(state.defaultText --[[@as string]])
   end
+  service(ctx, "player"):setRivalName(name)
   host:close()
   state.closed = true
-  return { complete = true, state = state, result = result }
+  return { complete = true, state = state, result = 0 }
 end
 
 ---@param state table<string, unknown>
@@ -135,10 +166,10 @@ function RivalNamingTask.validate(state)
   if type(state) ~= "table" then
     return Errors.new(ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE, "rival naming task state must be a record", {})
   end
-  if type(state.initialText) ~= "string" or type(state.currentText) ~= "string" then
+  if type(state.defaultText) ~= "string" or type(state.currentText) ~= "string" then
     return Errors.new(ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE, "rival naming task text must be strings", {})
   end
-  for _, text in ipairs({ state.initialText, state.currentText }) do
+  for _, text in ipairs({ state.defaultText, state.currentText }) do
     if glyphCount(text) > MAX_RIVAL_NAME_GLYPHS then
       return Errors.new(ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE, "rival naming task text exceeds seven glyphs", {})
     end

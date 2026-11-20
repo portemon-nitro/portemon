@@ -429,9 +429,13 @@ DerivedAssetContract.fieldEmotes = {
 -- around the caller window, sliced into repeatable edges with their plate
 -- and name roles), so a stale cache without the caller bubble art must fail
 -- readiness.
+-- fieldUi schema 30: the naming-screen section carries the rival subject
+-- animation (the source NAME_SCREEN_RIVAL icon sequence beside the player
+-- subjects) as a required animation record, so a stale cache without it
+-- must fail readiness.
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v29",
+  schema = "g4-field-ui-v30",
 }
 
 -- The field-entry family carries the nine map-name banner skins and the

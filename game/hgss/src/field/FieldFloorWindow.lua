@@ -6,13 +6,24 @@
 -- sentinel to elsewhere. This host therefore observes that variable and never
 -- writes it: the release happens on the sentinel, on field teardown, or never.
 -- It owns no script task, no focus, and no input.
+--
+-- Both source messages expand through the calling script's buffered text, like
+-- the source ScriptMenu_PrintMessage running StringExpandPlaceholders against
+-- the script's own MessageFormat: the ordinary floor label is the substitution
+-- template the script buffers its floor text into, so the resolver receives
+-- those text arguments at show time and the window snapshots only the display
+-- string the field text renderer draws.
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 
+---@class FieldFloorWindow.ResolvedMessage
+---@field text string the expanded display text
+---@field tokens table<string, unknown>[] the expanded glyph stream
+
 ---@class FieldFloorWindowOptions
 ---@field getVar fun(id: string): unknown
----@field resolveMessage fun(ref: string): unknown
+---@field resolveMessage fun(ref: string, textArgs: table<string, unknown>): FieldFloorWindow.ResolvedMessage
 
 ---@class FieldFloorWindow.OpenWindow
 ---@field map unknown the map whose floor label table applies
@@ -24,12 +35,12 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field titleMessage string
 ---@field labelMessage string
 ---@field labelInset integer
----@field title unknown
----@field label unknown
+---@field title string the expanded title display text
+---@field label string the expanded floor label display text
 
 ---@class FieldFloorWindow
 ---@field private _getVar fun(id: string): unknown
----@field private _resolveMessage fun(ref: string): unknown
+---@field private _resolveMessage fun(ref: string, textArgs: table<string, unknown>): FieldFloorWindow.ResolvedMessage
 ---@field private _window FieldFloorWindow.OpenWindow|nil
 local FieldFloorWindow = {}
 FieldFloorWindow.__index = FieldFloorWindow
@@ -82,6 +93,19 @@ local function floorLabel(mapSymbol, floor)
   return ORDINARY_FLOOR_MESSAGE, ORDINARY_LABEL_INSET
 end
 
+-- The injected resolver answers with the formatted-message record a source
+-- text expansion produces, not a rendered string: the window snapshots the
+-- display text the field text renderer draws, so a resolver that answers
+-- anything else faults here instead of reaching the renderer.
+---@param resolved unknown
+---@param message string
+---@return string
+local function displayText(resolved, message)
+  local text = type(resolved) == "table" and resolved.text or nil
+  assert(type(text) == "string", "the floor window message resolver answers a formatted message for " .. message)
+  return text
+end
+
 ---@param opts FieldFloorWindowOptions
 ---@return FieldFloorWindow
 function FieldFloorWindow.new(opts)
@@ -92,10 +116,11 @@ function FieldFloorWindow.new(opts)
 end
 
 -- Show one source floor box. `request` carries the source tile placement, the
--- evaluated floor value, the map whose label table applies, and the result
--- variable reference the script later closes. A second box may not open on top
--- of the current one: the source has exactly one such window.
----@param request { map: unknown, tileX: integer, tileY: integer, floor: unknown, result: unknown }
+-- evaluated floor value, the map whose label table applies, the calling
+-- script's buffered text arguments, and the result variable reference the
+-- script later closes. A second box may not open on top of the current one:
+-- the source has exactly one such window.
+---@param request { map: unknown, tileX: integer, tileY: integer, floor: unknown, textArgs: table<string, unknown>?, result: unknown }
 function FieldFloorWindow:show(request)
   assert(type(request) == "table", "the floor window starts from its request")
   if self._window ~= nil then
@@ -110,6 +135,7 @@ function FieldFloorWindow:show(request)
     "the floor window lifetime observes the source result variable"
   )
   local floor = assert(request.floor, "the floor window needs the evaluated floor")
+  local textArgs = request.textArgs or {}
   local titleMessage = TITLE_MESSAGE
   local labelMessage, labelInset = floorLabel(request.map, floor)
   self._window = {
@@ -122,8 +148,8 @@ function FieldFloorWindow:show(request)
     titleMessage = titleMessage,
     labelMessage = labelMessage,
     labelInset = labelInset,
-    title = self._resolveMessage(titleMessage),
-    label = self._resolveMessage(labelMessage),
+    title = displayText(self._resolveMessage(titleMessage, textArgs), titleMessage),
+    label = displayText(self._resolveMessage(labelMessage, textArgs), labelMessage),
   }
 end
 

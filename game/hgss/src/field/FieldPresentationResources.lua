@@ -851,10 +851,10 @@ end
 ---@return boolean ready
 ---@return string? failure
 function FieldPresentationResources:prepareMonNamingSubject(subject)
-  if subject.kind == "rival" then
-    -- Rival naming carries no mon icon: the source rival subject animation
-    -- is not part of the generated naming manifest, so only the shared
-    -- keyboard chrome is prepared.
+  -- Only the party-nickname subject owns a mon icon; the player and rival
+  -- subjects are generated naming animations the shared renderer draws
+  -- itself, so they need the renderer prepared and nothing else.
+  if subject.kind ~= "pokemon" then
     ensureMonNamingRenderer(self)
     return true, nil
   end

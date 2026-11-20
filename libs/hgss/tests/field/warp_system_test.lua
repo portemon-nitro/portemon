@@ -93,7 +93,166 @@ function T.resolves_destination_warp_and_nearest_height_surface()
   Assert.deepEqual(result.suppression, { mapId = 60, fieldX = 684, fieldZ = 393 })
 end
 
-function T.rejects_dynamic_and_missing_destination_warps()
+-- A dynamic-warp anchor carries no map of its own: the saved destination names
+-- the map, the warp event on it whose tile the arrival re-anchors on, and the
+-- facing the arrival player is created with.
+function T.dynamic_anchor_resolves_the_saved_destination_warp()
+  local savedWarp = {
+    index = 2,
+    x = 684,
+    z = 393,
+    destinationMapId = 0xFFF,
+    destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
+    y = 32,
+  }
+  local destination = runtimeMap(60, 672, 384, {
+    {
+      index = 0,
+      x = 676,
+      z = 386,
+      destinationMapId = 0xFFF,
+      destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
+      y = 0,
+    },
+    { index = 1, x = 677, z = 387, destinationMapId = 60, destinationWarpId = 1, y = 0 },
+    savedWarp,
+  }, {
+    {
+      id = 3,
+      minX = 0,
+      minZ = 0,
+      maxX = 32,
+      maxZ = 32,
+      normal = { x = 0, y = 1, z = 0 },
+      distance = 0,
+      slopeClass = "flat",
+    },
+    {
+      id = 7,
+      minX = 0,
+      minZ = 0,
+      maxX = 32,
+      maxZ = 32,
+      normal = { x = 0, y = 1, z = 0 },
+      distance = 2,
+      slopeClass = "flat",
+    },
+  })
+  local loader = {
+    load = function(_, destinationMap)
+      Assert.equal(destinationMap, "MAP_CELADON_CONDOMINIUMS_1F", "the saved destination names the map")
+      return destination
+    end,
+  }
+  local trigger = {
+    index = 1,
+    x = 4,
+    z = 14,
+    destinationMapId = 0xFFF,
+    destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
+  }
+  local result = WarpSystem.resolveDestination(loader, runtimeMap(61, 0, 0, {}), trigger, {
+    map = "MAP_CELADON_CONDOMINIUMS_1F",
+    fieldX = 5,
+    fieldZ = 3,
+    warpId = 2,
+    direction = "west",
+  })
+  Assert.equal(result.destinationMap, destination)
+  Assert.equal(result.destinationWarp, savedWarp, "the saved warp event is the arrival anchor")
+  Assert.equal(result.fieldX, 684)
+  Assert.equal(result.fieldZ, 393)
+  Assert.equal(result.surfaceId, 7, "the destination warp height selects the arrival floor")
+  Assert.equal(result.worldY, 2)
+  Assert.equal(result.facing, "west", "the saved direction is the arrival facing")
+end
+
+-- The source's -1 names no destination warp event: the saved map-local tile is
+-- the arrival, converted through the destination map's origin.
+function T.dynamic_anchor_without_a_destination_warp_uses_the_saved_local_tile()
+  local destination = runtimeMap(60, 672, 384, {})
+  local loader = {
+    load = function()
+      return destination
+    end,
+  }
+  local trigger =
+    { index = 1, x = 4, z = 14, destinationMapId = 0xFFF, destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL }
+  local result = WarpSystem.resolveDestination(loader, runtimeMap(61, 0, 0, {}), trigger, {
+    map = "MAP_CELADON_CONDOMINIUMS_1F",
+    fieldX = 5,
+    fieldZ = 3,
+    warpId = -1,
+    direction = "north",
+  })
+  Assert.equal(result.fieldX, 677, "the saved map-local tile converts through the destination origin")
+  Assert.equal(result.fieldZ, 387)
+  Assert.isNil(result.destinationWarp, "a saved tile names no destination warp event")
+  Assert.equal(result.surfaceId, 0, "with no warp height the topmost walkable surface is the arrival")
+  Assert.equal(result.facing, "north")
+end
+
+-- An anchor reached with no established destination is attributed, never
+-- resolved against the sentinel header or the source map.
+function T.dynamic_anchor_without_a_saved_destination_is_attributed()
+  local loader = {
+    load = function()
+      error("a dynamic warp anchor with no destination must not load a map")
+    end,
+  }
+  local trigger = {
+    index = 1,
+    x = 4,
+    z = 14,
+    destinationMapId = 0xFFF,
+    destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
+  }
+  local err = Assert.throws(function()
+    WarpSystem.resolveDestination(loader, runtimeMap(61, 0, 0, {}), trigger)
+  end)
+  Assert.isTrue(Errors.is(err), "expected structured error")
+  Assert.equal(assert(err).code, "FIELD_DYNAMIC_WARP_UNSET")
+  Assert.equal(assert(err).context.sourceMapId, 61)
+  Assert.equal(assert(err).context.sourceWarpId, 1)
+  Assert.equal(assert(err).context.destinationWarpId, WarpSystem.DYNAMIC_WARP_SENTINEL)
+end
+
+-- A saved warp id that names no record on the saved destination map is the
+-- same missing-record failure the indexed path reports, with the saved id.
+function T.dynamic_anchor_with_an_unknown_saved_warp_id_is_attributed()
+  local destination = runtimeMap(60, 672, 384, {
+    {
+      index = 0,
+      x = 684,
+      z = 393,
+      destinationMapId = 0xFFF,
+      destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
+      y = 0,
+    },
+  })
+  local loader = {
+    load = function()
+      return destination
+    end,
+  }
+  local trigger =
+    { index = 1, x = 4, z = 14, destinationMapId = 0xFFF, destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL }
+  local err = Assert.throws(function()
+    WarpSystem.resolveDestination(loader, runtimeMap(61, 0, 0, {}), trigger, {
+      map = "MAP_CELADON_CONDOMINIUMS_1F",
+      fieldX = 5,
+      fieldZ = 3,
+      warpId = 2,
+      direction = "west",
+    })
+  end)
+  Assert.isTrue(Errors.is(err), "expected structured error")
+  Assert.equal(assert(err).code, "FIELD_DESTINATION_WARP_UNKNOWN")
+  Assert.equal(assert(err).context.sourceWarpId, 1)
+  Assert.equal(assert(err).context.destinationWarpId, 2, "the attribution names the saved warp id")
+end
+
+function T.rejects_a_missing_indexed_destination_warp()
   local destination = runtimeMap(60, 0, 0, {})
   local loader = {
     load = function()
@@ -101,13 +260,6 @@ function T.rejects_dynamic_and_missing_destination_warps()
     end,
   }
   local source = runtimeMap(61, 0, 0, {})
-  throwsCode("FIELD_DYNAMIC_WARP_UNSUPPORTED", function()
-    WarpSystem.resolveDestination(loader, source, {
-      index = 0,
-      destinationMapId = 60,
-      destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
-    })
-  end)
   throwsCode("FIELD_DESTINATION_WARP_UNKNOWN", function()
     WarpSystem.resolveDestination(loader, source, { index = 0, destinationMapId = 60, destinationWarpId = 4 })
   end)
@@ -134,12 +286,34 @@ function T.destination_coordinates_share_planning_and_resolution_selection()
   Assert.equal(direct.fieldZ, 392)
   Assert.equal(direct.warp, directWarp)
 
-  throwsCode("FIELD_DYNAMIC_WARP_UNSUPPORTED", function()
-    WarpSystem.destinationCoordinates(source, {
-      index = 0,
-      destinationMapId = 60,
-      destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
-    }, fieldData)
+  -- A dynamic anchor plans through the same selection: the saved warp id names
+  -- the destination record, and a saved tile converts through the destination
+  -- origin the structural world table supplies.
+  local anchor = { index = 0, destinationMapId = 0xFFF, destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL }
+  local dynamic = WarpSystem.destinationCoordinates(source, anchor, fieldData, {
+    map = "MAP_CELADON_CONDOMINIUMS_1F",
+    fieldX = 5,
+    fieldZ = 3,
+    warpId = 2,
+    direction = "west",
+  }, { x = 672, z = 384 })
+  Assert.equal(dynamic.fieldX, 684)
+  Assert.equal(dynamic.fieldZ, 393)
+  Assert.equal(dynamic.warp, destinationWarp)
+
+  local savedTile = WarpSystem.destinationCoordinates(source, anchor, fieldData, {
+    map = "MAP_CELADON_CONDOMINIUMS_1F",
+    fieldX = 5,
+    fieldZ = 3,
+    warpId = -1,
+    direction = "west",
+  }, { x = 672, z = 384 })
+  Assert.equal(savedTile.fieldX, 677)
+  Assert.equal(savedTile.fieldZ, 387)
+  Assert.isNil(savedTile.warp, "a saved tile names no destination record")
+
+  throwsCode("FIELD_DYNAMIC_WARP_UNSET", function()
+    WarpSystem.destinationCoordinates(source, anchor, fieldData, nil, { x = 672, z = 384 })
   end)
   throwsCode("FIELD_DESTINATION_WARP_UNKNOWN", function()
     WarpSystem.destinationCoordinates(source, { index = 0, destinationMapId = 60, destinationWarpId = 4 }, fieldData)
@@ -161,7 +335,7 @@ function T.loader_failure_is_wrapped_with_warp_context()
   end)
   Assert.isTrue(Errors.is(err), "expected structured error")
   Assert.equal(assert(err).code, "FIELD_DESTINATION_MAP_UNKNOWN")
-  Assert.equal(assert(err).context.destinationMapId, 60)
+  Assert.equal(assert(err).context.destinationMap, 60)
 
   local other = {
     load = function()
@@ -413,7 +587,7 @@ function T.direct_warp_destination_loader_failure_wraps_like_the_indexed_path()
   end)
   Assert.isTrue(Errors.is(err), "expected structured error")
   Assert.equal(assert(err).code, "FIELD_DESTINATION_MAP_UNKNOWN")
-  Assert.equal(assert(err).context.destinationMapId, 62)
+  Assert.equal(assert(err).context.destinationMap, 62)
 end
 
 function T.suppression_lasts_until_the_player_leaves_its_coordinate()

@@ -247,17 +247,23 @@ local function checkNamingScreenEntrySlots(entrySlots, atlases)
   checkAnimationRecord(entrySlots.selected, atlases, "namingScreen.entrySlots.selected", false)
 end
 
+-- One subject animation drawn at the source icon anchor (24,8): the player
+-- male/female pair and the rival icon sequence share it.
+local function checkNamingScreenSubject(record, atlases, what)
+  checkAnimationRecord(record, atlases, what, false)
+  local anchor = record.anchor
+  if type(anchor) ~= "table" or anchor.x ~= 24 or anchor.y ~= 8 then
+    reject(what .. " must anchor at (24,8)", {})
+  end
+end
+
 local function checkNamingScreenPlayerSubjects(playerSubjects, atlases)
   if type(playerSubjects) ~= "table" then
     reject("namingScreen.playerSubjects must be a table", {})
   end
   demandCount(playerSubjects, 2, "namingScreen.playerSubjects must carry male and female", {})
   for _, id in ipairs({ "male", "female" }) do
-    checkAnimationRecord(playerSubjects[id], atlases, "namingScreen.playerSubjects." .. id, false)
-    local anchor = playerSubjects[id].anchor
-    if type(anchor) ~= "table" or anchor.x ~= 24 or anchor.y ~= 8 then
-      reject("namingScreen.playerSubjects." .. id .. " must anchor at (24,8)", {})
-    end
+    checkNamingScreenSubject(playerSubjects[id], atlases, "namingScreen.playerSubjects." .. id)
   end
 end
 
@@ -351,6 +357,7 @@ local function checkNamingScreen(s, atlases)
   checkNamingScreenCursor(s.cursor, atlases)
   checkNamingScreenEntrySlots(s.entrySlots, atlases)
   checkNamingScreenPlayerSubjects(s.playerSubjects, atlases)
+  checkNamingScreenSubject(s.rivalSubject, atlases, "namingScreen.rivalSubject")
   checkNamingScreenPokemonSubject(s.pokemonSubject)
   checkNamingScreenGenderMarkers(s.pokemonGenderMarkers, atlases)
 end

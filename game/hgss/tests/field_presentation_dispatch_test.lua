@@ -777,29 +777,29 @@ function T.mon_naming_renderer_is_prepared_lazily_and_borrows_shared_mon_icons()
       Assert.isNil(calls.iconQuadCount, "ordinary field construction does not acquire naming quads")
 
       calls.iconPageReady = false
-      local ready, failure = resources:prepareMonNamingSubject({ iconKey = "species:1:form:0" })
+      local ready, failure = resources:prepareMonNamingSubject({ kind = "pokemon", iconKey = "species:1:form:0" })
       Assert.isFalse(ready, "pending mon icon pages keep naming preparation pending")
       Assert.isNil(failure, "pending mon icon pages have no failure")
       Assert.isNil(calls.namingConstructed, "pending preparation creates no naming renderer")
       Assert.isNil(calls.iconQuadCount, "pending preparation creates no icon quads")
 
       calls.iconPageFailure = "page failed"
-      ready, failure = resources:prepareMonNamingSubject({ iconKey = "species:1:form:0" })
+      ready, failure = resources:prepareMonNamingSubject({ kind = "pokemon", iconKey = "species:1:form:0" })
       Assert.isFalse(ready, "failed mon icon pages do not prepare naming")
       Assert.equal(failure, "page failed", "provider failure is returned unchanged")
       Assert.isNil(calls.namingConstructed, "failed preparation creates no naming renderer")
       Assert.isNil(calls.iconQuadCount, "failed preparation creates no icon quads")
 
       calls.iconPageReady = true
-      ready, failure = resources:prepareMonNamingSubject({ iconKey = "species:1:form:0" })
+      ready, failure = resources:prepareMonNamingSubject({ kind = "pokemon", iconKey = "species:1:form:0" })
       Assert.isTrue(ready, "a ready icon page prepares naming")
       Assert.isNil(failure, "ready preparation has no failure")
       Assert.equal(calls.namingConstructed, 1, "first ready preparation creates naming renderer once")
       Assert.equal(calls.iconDimensions, "species:1:form:0", "the naming subject resolves through shared mon icons")
       resources:monNamingRenderer()
       Assert.equal(calls.namingConstructed, 1, "the renderer accessor is a pure read")
-      resources:prepareMonNamingSubject({ iconKey = "species:1:form:0" })
-      resources:prepareMonNamingSubject({ iconKey = "species:2:form:0" })
+      resources:prepareMonNamingSubject({ kind = "pokemon", iconKey = "species:1:form:0" })
+      resources:prepareMonNamingSubject({ kind = "pokemon", iconKey = "species:2:form:0" })
       Assert.equal(calls.namingConstructed, 1, "repeated and new icon demands reuse the renderer")
       Assert.equal(calls.iconQuadCount, 2, "each icon key prepares its borrowed semantic quad")
       local drawCalls = {}
@@ -807,15 +807,17 @@ function T.mon_naming_renderer_is_prepared_lazily_and_borrows_shared_mon_icons()
         draw = function(image, quad, x, y, rotation, scaleX, scaleY)
           drawCalls[#drawCalls + 1] = { image, quad, x, y, rotation, scaleX, scaleY }
         end,
-      }, { iconKey = "species:1:form:0" }, { x = 24, y = 8, frameIndex = 1 })
+      }, { kind = "pokemon", iconKey = "species:1:form:0" }, { x = 24, y = 8, frameIndex = 1 })
       Assert.equal(calls.iconImage, 1, "the semantic part draws the shared provider image")
       Assert.equal(#drawCalls, 1, "the naming subject draws one semantic placement")
       Assert.equal(drawCalls[1][1], "borrowed-icon-image", "the icon image comes from the shared provider")
       Assert.isNil(calls.icons, "using the naming renderer never releases the borrowed icon provider")
 
+      local demandCount = assert(calls.iconPrepareCalls)
       local rivalReady, rivalFailure = resources:prepareMonNamingSubject({ kind = "rival" })
       Assert.isTrue(rivalReady, "the rival screen prepares without a mon icon")
       Assert.isNil(rivalFailure, "the rival screen preparation has no failure")
+      Assert.equal(calls.iconPrepareCalls, demandCount, "the rival screen demands no mon icon pages")
       Assert.equal(calls.namingConstructed, 1, "the rival screen reuses the shared naming renderer")
       Assert.equal(calls.iconQuadCount, 2, "the rival screen demands no mon icon quads")
 

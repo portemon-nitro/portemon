@@ -1,7 +1,8 @@
 -- Rival naming task: the source NameRival wait runs the shared field naming
--- host in rival mode and commits an accepted name to the live player profile
--- only on the native no-input result zero. The task keeps no name of its own
--- and never publishes a partial edit.
+-- host in rival mode and always accepts its result, so the committed name
+-- (the typed name, or the edition default for an empty entry) is the one that
+-- lands on the live player profile. The task keeps no name of its own and
+-- never publishes a partial edit.
 
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -73,14 +74,11 @@ local function hostFixture()
   return host
 end
 
--- The script-facing player facade, reduced to the two operations this task
--- consumes around the real profile table.
+-- The script-facing player facade, reduced to the one operation this task
+-- consumes, writing through to the real profile table.
 local function playerFixture(profile)
   local writes = {}
   return {
-    rivalName = function()
-      return profile.rivalName
-    end,
     setRivalName = function(_, name)
       writes[#writes + 1] = name
       profile.rivalName = name
@@ -89,12 +87,12 @@ local function playerFixture(profile)
     writes
 end
 
-local function fixture(rivalName)
+local function fixture(rivalName, versionId)
   local profile = profileFixture(rivalName or "SILVER")
   local host = hostFixture()
   local player, writes = playerFixture(profile)
   return {
-    services = { monNaming = host, player = player },
+    services = { monNaming = host, player = player, versionId = versionId or "heartgold" },
     input = { uiEvents = { { type = "name_control", id = "ok" } } },
   },
     host,
@@ -133,23 +131,46 @@ function T.naming_host_opens_in_rival_mode_at_the_player_name_limit()
   Assert.equal(host.opened[1].subject.kind, "rival")
 end
 
--- A submitted blank or an unchanged name is the source no-input case: the
--- result variable receives one and the saved name stays untouched.
-function T.blank_or_unchanged_submission_keeps_the_saved_name()
+-- An empty or all-space entry is the source default case, not a cancelled
+-- one: the rival naming screen stores the edition default name (bank 254 row
+-- 84 "Soul" for HeartGold and row 85 "Heart" for SoulSilver) and reports the
+-- untouched accepted result.
+function T.empty_submission_commits_the_edition_default_name()
   local task = requireTask()
-  for _, submitted in ipairs({ "", "SILVER" }) do
-    local ctx, host, profile, writes = fixture("SILVER")
-    local state = task.create({}, ctx)
-    task.poll(state, ctx)
-    host.done = true
-    host.text = submitted
-    local result = task.poll(state, ctx)
-    Assert.isTrue(result.complete, "submitting " .. "'" .. submitted .. "'" .. " settles the task")
-    Assert.equal(result.result, 1, "no input reports the native no-input result")
-    Assert.equal(profile.rivalName, "SILVER", "the previously set rival name is untouched")
-    Assert.equal(#writes, 0, "no name is published without acceptance")
-    Assert.equal(host.closed, 1)
+  for _, case in ipairs({ { "heartgold", "Soul" }, { "soulsilver", "Heart" } }) do
+    for _, submitted in ipairs({ "", "   " }) do
+      local ctx, host, profile, writes = fixture("SILVER", case[1])
+      local state = task.create({}, ctx)
+      task.poll(state, ctx)
+      host.done = true
+      host.text = submitted
+      local result = task.poll(state, ctx)
+      local what = string.format("%q on %s", submitted, case[1])
+      Assert.isTrue(result.complete, "an empty entry settles the task for " .. what)
+      Assert.equal(result.result, 0, "the edition default is an accepted result for " .. what)
+      Assert.equal(profile.rivalName, case[2], "the " .. case[1] .. " default lands on the live saved profile")
+      Assert.deepEqual(writes, { case[2] }, "the default name is published exactly once")
+      Assert.equal(host.closed, 1)
+    end
   end
+end
+
+-- A typed entry is accepted even when it repeats the previously saved rival
+-- name: the source compares the edit against its own entry buffer, never
+-- against the stored rival name.
+function T.typed_name_matching_the_saved_rival_name_is_accepted()
+  local task = requireTask()
+  local ctx, host, profile, writes = fixture("SILVER")
+  local state = task.create({}, ctx)
+  task.poll(state, ctx)
+  host.done = true
+  host.text = "SILVER"
+  local result = task.poll(state, ctx)
+  Assert.isTrue(result.complete)
+  Assert.equal(result.result, 0, "a retyped saved name is an accepted result")
+  Assert.equal(profile.rivalName, "SILVER")
+  Assert.deepEqual(writes, { "SILVER" }, "the accepted name is published exactly once")
+  Assert.equal(host.closed, 1)
 end
 
 -- Cancelling the blocked script closes the naming host exactly once and
@@ -206,17 +227,23 @@ end
 function T.missing_services_fault_before_the_screen_opens()
   local task = requireTask()
   local host = hostFixture()
-  local function runUntilFault(ctx)
+  local function runUntilFault(ctx, code)
     local ok, err = pcall(function()
       task.poll(task.create({}, ctx), ctx)
     end)
-    Assert.isFalse(ok, "a missing service faults instead of naming the rival")
-    Assert.equal(err and err.code, ScriptErrors.SCRIPT_SERVICE_MISSING)
+    Assert.isFalse(ok, "a missing or invalid service faults instead of naming the rival")
+    Assert.equal(err and err.code, code)
   end
-  runUntilFault({ services = { monNaming = host } })
+  runUntilFault({ services = { monNaming = host } }, ScriptErrors.SCRIPT_SERVICE_MISSING)
   Assert.equal(#host.opened, 0, "no naming screen opens without the player facade")
   local player = playerFixture(profileFixture("SILVER"))
-  runUntilFault({ services = { player = player } })
+  runUntilFault({ services = { player = player } }, ScriptErrors.SCRIPT_SERVICE_MISSING)
+  runUntilFault({ services = { monNaming = host, player = player } }, ScriptErrors.SCRIPT_SERVICE_MISSING)
+  Assert.equal(#host.opened, 0, "no naming screen opens without the selected game version")
+  runUntilFault({
+    services = { monNaming = host, player = player, versionId = "platinum" },
+  }, ScriptErrors.SCRIPT_INVALID_REFERENCE)
+  Assert.equal(#host.opened, 0, "no naming screen opens for an unknown game version")
 end
 
 return { tests = T }

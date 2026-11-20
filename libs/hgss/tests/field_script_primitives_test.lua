@@ -6,6 +6,10 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldOverworldLifecycle = require("libs.hgss.src.field.FieldOverworldLifecycle")
 local FieldScriptPropAnimations = require("libs.hgss.src.field.FieldScriptPropAnimations")
+local MapProps = require("libs.hgss.src.world.MapProps")
+local Matrix4 = require("libs.math.src.Matrix4")
+local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
+local NitroModelFixture = require("tests.support.NitroModelFixture")
 local OverworldLifecycleTask = require("libs.hgss.src.script.tasks.OverworldLifecycleTask")
 local PropAnimationWaitTask = require("libs.hgss.src.script.tasks.PropAnimationWaitTask")
 local Runtime = require("libs.script.src.Runtime")
@@ -310,80 +314,78 @@ end
 
 -- The map-scoped prop owner also carries the source elevator one-shot: the
 -- commands drive it through the existing prop playback surface, and a map
--- without the elevator prop refuses to claim an animation.
+-- without the elevator prop refuses to claim an animation. The fixture is the
+-- generated placement identity ("indoor:<member>:<sha>") resolved through the
+-- real MapProps/ModelInstance owners, exactly as the live map resolves it;
+-- member 0xD0 is MAP_PROP_ELEVATOR.
 local ELEVATOR_PROP_MEMBER = 0xD0
+local ELEVATOR_PLACEMENT_INDEX = 7
+-- The ordinary building the fixture map also carries, so locating the elevator
+-- prop has to select by placement identity and never by being the only
+-- placement.
+local ORDINARY_PROP_MEMBER = 0x25
+local ORDINARY_PLACEMENT_INDEX = 3
 
-local function elevatorMap(propMember)
-  local log = {}
-  local complete = false
-  local instance = {
-    definition = {
-      memberId = propMember,
-      animations = { { name = "elevator.up" }, { name = "elevator.down" } },
-    },
+local function placeBuilding(placements, instances, placementIndex, memberId)
+  local definition = NitroModelFixture.elevatorDefinition(memberId)
+  placements[#placements + 1] = {
+    placementIndex = placementIndex,
+    modelKey = definition.key,
+    transform = Matrix4.translate(0, 0, 0),
   }
-  local prop = {
-    instance = instance,
-    play = function(_, name, opts)
-      Assert.equal(opts.loopMode, "once")
-      log[#log + 1] = "play:" .. name
-      return { player = {
-        isComplete = function()
-          return complete
-        end,
-      } }
-    end,
-    isFinished = function(_, name)
-      log[#log + 1] = "finished:" .. name
-      return complete
-    end,
-    stop = function(_, name)
-      log[#log + 1] = "stop:" .. name
-    end,
-  }
-  local placements = { { placementIndex = 0, modelKey = "indoor:1:x" } }
-  if propMember == ELEVATOR_PROP_MEMBER then
-    placements[#placements + 1] = { placementIndex = 7, modelKey = "indoor:d0:x" }
-  end
-  local mapProps = {
-    placements = placements,
-    instances = { [7] = instance },
-    doorAt = function()
-      return nil
-    end,
-    scriptPropAt = function()
-      return nil
-    end,
-    prop = function()
-      return prop
-    end,
-  }
-  return { mapId = 61, mapProps = mapProps }, log
+  instances[placementIndex] = ModelInstance.new(definition)
+  return instances[placementIndex]
+end
+
+-- A bound map whose second building carries `elevatorMember`, and that building's
+-- live model instance.
+---@param elevatorMember integer
+---@return table<string, unknown>, ModelInstance
+local function elevatorMap(elevatorMember)
+  local placements, instances = {}, {}
+  placeBuilding(placements, instances, ORDINARY_PLACEMENT_INDEX, ORDINARY_PROP_MEMBER)
+  local instance = placeBuilding(placements, instances, ELEVATOR_PLACEMENT_INDEX, elevatorMember)
+  local mapProps = MapProps.new({ placements = placements, instances = instances, doorTiles = {} })
+  return { mapId = 61, mapProps = mapProps }, instance
+end
+
+local function jointAttachments(instance)
+  return instance.animationState:attachments("joint")
 end
 
 function T.elevator_prop_commands_drive_the_source_one_shot_of_the_bound_map()
   local owner = FieldScriptPropAnimations.new()
-  local map, log = elevatorMap(ELEVATOR_PROP_MEMBER)
+  local map, instance = elevatorMap(ELEVATOR_PROP_MEMBER)
   owner:bindMap(map)
 
-  owner:loadAnimation(6)
-  Assert.deepEqual(log, {}, "loading the source animation starts no playback")
+  owner:loadAnimation(1)
+  Assert.equal(#jointAttachments(instance), 0, "loading the source animation starts no playback")
   owner:playAnimation(1)
-  Assert.deepEqual(log, { "play:elevator.down" }, "the source direction selects its own animation")
+  local attachment = jointAttachments(instance)[1]
+  Assert.equal(attachment.clip.name, "ElevatorDown", "the source direction selects its own animation")
   Assert.isFalse(owner:isAnimationLoopFinished(), "the loop end is the animation owner's answer")
+  for _ = 1, 7 do
+    instance:updateFixed()
+  end
+  Assert.isFalse(owner:isAnimationLoopFinished(), "the pass is not finished before its checked terminal")
+  instance:updateFixed()
+  Assert.isTrue(owner:isAnimationLoopFinished())
+
   owner:unloadAnimation()
-  Assert.isTrue(#log >= 2, "releasing the animation stops its playback")
+  Assert.equal(#jointAttachments(instance), 0, "releasing the animation stops its playback")
   Assert.throws(function()
     owner:isAnimationLoopFinished()
   end, "a released elevator animation has no playback state")
 
   local missing = FieldScriptPropAnimations.new()
-  missing:bindMap(assert(elevatorMap(0x25)))
+  local otherMap, otherInstance = elevatorMap(ORDINARY_PROP_MEMBER)
+  missing:bindMap(otherMap)
   local err = Assert.throws(function()
-    missing:loadAnimation(6)
+    missing:loadAnimation(1)
   end)
   Assert.isTrue(Errors.is(err), "a map without the elevator prop faults instead of claiming an animation")
   Assert.equal(err.code, FieldErrors.FIELD_ELEVATOR_PROP_MISSING)
+  Assert.equal(#jointAttachments(otherInstance), 0, "the fault claims no playback")
 
   local rebound = FieldScriptPropAnimations.new()
   rebound:bindMap(select(1, elevatorMap(ELEVATOR_PROP_MEMBER)))
@@ -392,6 +394,39 @@ function T.elevator_prop_commands_drive_the_source_one_shot_of_the_bound_map()
   Assert.throws(function()
     rebound:playAnimation(0)
   end, "a map rebind releases the animation loaded for the previous map")
+end
+
+function T.elevator_direction_selects_its_own_source_clip()
+  ---@type { direction: integer, clip: string }[]
+  local directions = { { direction = 0, clip = "ElevatorUp" }, { direction = 1, clip = "ElevatorDown" } }
+  for _, case in ipairs(directions) do
+    local owner = FieldScriptPropAnimations.new()
+    local map, instance = elevatorMap(ELEVATOR_PROP_MEMBER)
+    owner:bindMap(map)
+    owner:loadAnimation(1)
+    owner:playAnimation(case.direction)
+    Assert.equal(jointAttachments(instance)[1].clip.name, case.clip)
+  end
+end
+
+-- The source repeat count is the animation loop count: a trip of N floors plays
+-- N passes of the 8-frame clip and only then reports its loop end.
+function T.elevator_repeat_count_drives_the_animation_loop_count()
+  for _, loopCount in ipairs({ 1, 2, 5 }) do
+    local owner = FieldScriptPropAnimations.new()
+    local map, instance = elevatorMap(ELEVATOR_PROP_MEMBER)
+    owner:bindMap(map)
+    owner:loadAnimation(loopCount)
+    owner:playAnimation(0)
+    local ticks = 0
+    while not owner:isAnimationLoopFinished() do
+      ticks = ticks + 1
+      Assert.isTrue(ticks <= 8 * loopCount, "the loop ends at the requested pass count")
+      instance:updateFixed()
+    end
+    Assert.equal(ticks, 8 * loopCount, "each pass is the clip's 8 frames")
+    owner:unloadAnimation()
+  end
 end
 
 -- A map rebind already released the slot the elevator task owned, so a
@@ -582,20 +617,21 @@ function T.source_facing_refresh_reads_its_direction_from_a_script_variable()
 end
 
 -- The source elevator choreography loads the map elevator prop, plays it,
--- waits for the loop, plays the motor stop and chime, waits for the chime and
--- only then releases the animation.
-local function elevatorContext(propPresent, direction)
+-- waits for the loop count, plays the motor stop and chime, waits for the
+-- chime and only then releases the animation. The fake prop/sound owners keep
+-- the choreography observable; the real prop owner is exercised below.
+local function elevatorContext(propPresent)
   local log = {}
   local control = { loopFinished = false, chimePlaying = false }
   local propAnimations = { presented = propPresent == true }
-  function propAnimations:loadAnimation(length)
+  function propAnimations:loadAnimation(loopCount)
     if not self.presented then
       Errors.raise(FieldErrors.FIELD_ELEVATOR_PROP_MISSING, "the active map has no elevator prop")
     end
     assert(self.loaded ~= true, "the elevator animation is already loaded")
     self.loaded = true
-    self.length = length
-    log[#log + 1] = "load:" .. tostring(length)
+    self.loopCount = loopCount
+    log[#log + 1] = "load:" .. tostring(loopCount)
   end
   function propAnimations:playAnimation(elevatorDirection)
     assert(self.loaded == true, "the elevator animation must be loaded before it plays")
@@ -631,6 +667,33 @@ local function elevatorContext(propPresent, direction)
   return {
     services = { propAnimations = propAnimations, audio = audio },
   }, log, control, propAnimations
+end
+
+-- The live trip: the real prop owner over the fixture elevator model and a
+-- recording sound service, so the source phases drive the actual clip.
+local function elevatorTrip(memberId)
+  local owner = FieldScriptPropAnimations.new()
+  local map, instance = elevatorMap(memberId)
+  owner:bindMap(map)
+  local log = {}
+  local control = { chimePlaying = true }
+  local ctx = {
+    services = {
+      propAnimations = owner,
+      audio = {
+        play = function(_, sequence)
+          log[#log + 1] = "se:" .. sequence
+        end,
+        stop = function(_, sequence)
+          log[#log + 1] = "stop:" .. sequence
+        end,
+        isEffectWaitComplete = function()
+          return not control.chimePlaying
+        end,
+      },
+    },
+  }
+  return { instance = instance, ctx = ctx, log = log, control = control }
 end
 
 function T.elevator_animation_runs_the_source_prop_and_sound_sequence()
@@ -669,46 +732,174 @@ function T.elevator_animation_runs_the_source_prop_and_sound_sequence()
   Assert.isFalse(propAnimations.loaded, "the source-loaded animation is released")
   Assert.isTrue(ElevatorAnimTask.poll(state, ctx).complete, "a completed task never replays its sequence")
   Assert.equal(#log, 6, "the choreography runs once")
-  Assert.isNil(ElevatorAnimTask.validate(state), "the task state is serializable")
+  Assert.isNil(ElevatorAnimTask.validate(state), "the completed task state is serializable")
   for _, value in pairs(state) do
     Assert.isTrue(type(value) ~= "function", "the saved task state carries no host handles")
   end
 end
 
-function T.elevator_animation_releases_its_animation_when_cancelled()
+-- ScrCmd_ElevatorAnim reads both operands as halfwords and ElevatorAnimCreate
+-- takes u8 parameters: the direction keeps its low byte (0 or 1) and the length
+-- becomes the animation loop count, fixed to 1 when its low byte is 0
+-- (src/field/map_prop_animation.c).
+function T.elevator_animation_applies_the_source_operand_conversions()
   local ElevatorAnimTask = require("libs.hgss.src.script.tasks.ElevatorAnimTask")
+
   local ctx, log = elevatorContext(true)
-  local state = ElevatorAnimTask.create({ direction = 1, length = 3 }, ctx)
+  local state = ElevatorAnimTask.create({ direction = 0x100, length = 0x100 }, ctx)
+  Assert.deepEqual(log, { "load:1" }, "a length whose low byte is zero loads one pass")
   ElevatorAnimTask.poll(state, ctx)
-  ElevatorAnimTask.cancel(state, "script cancelled")
   Assert.deepEqual(
     log,
-    { "load:3", "play:1", "se:SEQ_SE_DP_ELEBETA2", "unload" },
-    "a cancelled animation releases its prop"
+    { "load:1", "play:0", "se:SEQ_SE_DP_ELEBETA2" },
+    "the direction's low byte selects the source pair"
   )
-  ElevatorAnimTask.cancel(state, "script cancelled")
-  Assert.equal(#log, 4, "cancellation releases exactly once")
+  Assert.equal(state.direction, 0, "the task keeps the effective direction")
+  Assert.equal(state.length, 1, "the task keeps the effective loop count")
+
+  local zeroCtx, zeroLog = elevatorContext(true)
+  ElevatorAnimTask.create({ direction = 1, length = 0 }, zeroCtx)
+  Assert.deepEqual(zeroLog, { "load:1" }, "a zero length never requests zero passes")
+
+  local rejected = {
+    { direction = 2, length = 1 },
+    { direction = 0x102, length = 1 },
+    { direction = "0", length = 1 },
+    { direction = 0, length = 0x10000 },
+    { direction = 0, length = 1.5 },
+  }
+  for _, spec in ipairs(rejected) do
+    local invalidCtx = elevatorContext(true)
+    local err = Assert.throws(function()
+      ElevatorAnimTask.create(spec, invalidCtx)
+    end)
+    Assert.isTrue(Errors.is(err), "an operand outside the source domain is an attributed failure")
+    Assert.equal(err.code, "SCRIPT_INVALID_REFERENCE")
+  end
 end
 
-function T.elevator_animation_faults_without_a_prop_or_a_source_direction()
+function T.elevator_animation_faults_without_the_map_elevator_prop()
   local ElevatorAnimTask = require("libs.hgss.src.script.tasks.ElevatorAnimTask")
-
   local missingCtx, missingLog = elevatorContext(false)
   local ok, err = pcall(function()
-    local state = ElevatorAnimTask.create({ direction = 0, length = 6 }, missingCtx)
-    return ElevatorAnimTask.poll(state, missingCtx)
+    return ElevatorAnimTask.create({ direction = 0, length = 6 }, missingCtx)
   end)
   Assert.isFalse(ok, "a map without the elevator prop faults instead of claiming success")
   Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, FieldErrors.FIELD_ELEVATOR_PROP_MISSING)
   Assert.deepEqual(missingLog, {}, "a failed acquisition releases nothing it never owned")
+end
 
-  local invalidCtx = elevatorContext(true)
-  ok, err = pcall(function()
-    local state = ElevatorAnimTask.create({ direction = 2, length = 6 }, invalidCtx)
-    return ElevatorAnimTask.poll(state, invalidCtx)
-  end)
-  Assert.isFalse(ok, "a direction outside the source pair faults")
-  Assert.isTrue(Errors.is(err))
+-- A trip of N floors plays N passes of the 8-frame clip before the motor stops
+-- and the arrival chime starts.
+function T.elevator_trip_holds_the_script_through_the_source_repeat_count()
+  local ElevatorAnimTask = require("libs.hgss.src.script.tasks.ElevatorAnimTask")
+  local trip = elevatorTrip(ELEVATOR_PROP_MEMBER)
+  local state = ElevatorAnimTask.create({ direction = 0, length = 2 }, trip.ctx)
+  Assert.isFalse(ElevatorAnimTask.poll(state, trip.ctx).complete)
+  Assert.deepEqual(trip.log, { "se:SEQ_SE_DP_ELEBETA2" }, "the trip starts its motor")
+
+  for _ = 1, 8 do
+    trip.instance:updateFixed()
+  end
+  Assert.isFalse(ElevatorAnimTask.poll(state, trip.ctx).complete, "a two-floor trip is still in its second pass")
+  Assert.deepEqual(trip.log, { "se:SEQ_SE_DP_ELEBETA2" }, "the first pass ends without stopping the motor")
+
+  for _ = 1, 8 do
+    trip.instance:updateFixed()
+  end
+  Assert.isFalse(ElevatorAnimTask.poll(state, trip.ctx).complete, "the chime still owns the script")
+  Assert.deepEqual(trip.log, {
+    "se:SEQ_SE_DP_ELEBETA2",
+    "stop:SEQ_SE_DP_ELEBETA2",
+    "se:SEQ_SE_DP_PINPON",
+  }, "the requested pass count ends the loop and starts the chime")
+
+  trip.control.chimePlaying = false
+  Assert.isTrue(ElevatorAnimTask.poll(state, trip.ctx).complete)
+  Assert.equal(#jointAttachments(trip.instance), 0, "the trip releases its prop after the chime")
+end
+
+-- The motor belongs to the trip, so cancellation stops it exactly once before
+-- the prop lease is released.
+function T.elevator_animation_stops_the_motor_when_cancelled()
+  local ElevatorAnimTask = require("libs.hgss.src.script.tasks.ElevatorAnimTask")
+  local ctx, log, _control, propAnimations = elevatorContext(true)
+  local state = ElevatorAnimTask.create({ direction = 1, length = 3 }, ctx)
+  ElevatorAnimTask.poll(state, ctx)
+  ElevatorAnimTask.cancel(state, "script cancelled", ctx)
+  Assert.deepEqual(log, {
+    "load:3",
+    "play:1",
+    "se:SEQ_SE_DP_ELEBETA2",
+    "stop:SEQ_SE_DP_ELEBETA2",
+    "unload",
+  }, "a cancelled animation stops its motor and releases its prop")
+  Assert.isFalse(propAnimations.loaded, "the cancelled trip holds no animation")
+  ElevatorAnimTask.cancel(state, "script cancelled", ctx)
+  Assert.equal(#log, 5, "repeated cancellation stops and releases nothing again")
+end
+
+function T.elevator_cancellation_during_the_chime_stops_nothing()
+  local ElevatorAnimTask = require("libs.hgss.src.script.tasks.ElevatorAnimTask")
+  local trip = elevatorTrip(ELEVATOR_PROP_MEMBER)
+  local state = ElevatorAnimTask.create({ direction = 1, length = 1 }, trip.ctx)
+  Assert.isFalse(ElevatorAnimTask.poll(state, trip.ctx).complete)
+  for _ = 1, 8 do
+    trip.instance:updateFixed()
+  end
+  Assert.isFalse(ElevatorAnimTask.poll(state, trip.ctx).complete, "the chime owns the script")
+  local chimeLog = {
+    "se:SEQ_SE_DP_ELEBETA2",
+    "stop:SEQ_SE_DP_ELEBETA2",
+    "se:SEQ_SE_DP_PINPON",
+  }
+  Assert.deepEqual(trip.log, chimeLog)
+
+  ElevatorAnimTask.cancel(state, "script cancelled", trip.ctx)
+  Assert.deepEqual(trip.log, chimeLog, "the motor already stopped, so cancellation stops nothing")
+  Assert.equal(#jointAttachments(trip.instance), 0, "the cancelled chime releases the held prop")
+end
+
+-- A map rebind already released the slot the elevator task owned, so a
+-- cancellation landing afterwards is a clean release of nothing instead of a
+-- fault over an animation the bound map no longer carries.
+function T.a_cancelled_elevator_task_tolerates_a_map_rebind()
+  local ElevatorAnimTask = require("libs.hgss.src.script.tasks.ElevatorAnimTask")
+  local trip = elevatorTrip(ELEVATOR_PROP_MEMBER)
+  local state = ElevatorAnimTask.create({ direction = 0, length = 2 }, trip.ctx)
+  Assert.isFalse(ElevatorAnimTask.poll(state, trip.ctx).complete, "the animation still owns the script")
+
+  local reboundMap = elevatorMap(ELEVATOR_PROP_MEMBER)
+  trip.ctx.services.propAnimations:bindMap(reboundMap)
+  ElevatorAnimTask.cancel(state, "script cancelled", trip.ctx)
+  Assert.deepEqual(trip.log, { "se:SEQ_SE_DP_ELEBETA2", "stop:SEQ_SE_DP_ELEBETA2" })
+end
+
+-- An active trip owns a live prop and sound lease the scheduler's restore hook
+-- cannot rebuild, so only the completed state is serializable.
+function T.elevator_task_state_is_serializable_only_once_complete()
+  local ElevatorAnimTask = require("libs.hgss.src.script.tasks.ElevatorAnimTask")
+  local ctx, _log, control = elevatorContext(true)
+  local state = ElevatorAnimTask.create({ direction = 0, length = 2 }, ctx)
+
+  local function refuses(phase)
+    local err = ElevatorAnimTask.validate(state)
+    Assert.isTrue(Errors.is(err), "an active trip cannot be saved in phase " .. phase)
+    Assert.equal(err.code, "SCRIPT_TASK_UNSERIALIZABLE")
+    Assert.equal(err.context.phase, phase)
+    Assert.isTrue(err.message:find("cannot be restored", 1, true) ~= nil, "the refusal names the unrestorable lease")
+  end
+
+  refuses("load")
+  ElevatorAnimTask.poll(state, ctx)
+  refuses("waitLoop")
+  control.loopFinished = true
+  ElevatorAnimTask.poll(state, ctx)
+  refuses("waitChime")
+  control.chimePlaying = false
+  Assert.isTrue(ElevatorAnimTask.poll(state, ctx).complete)
+  Assert.isNil(ElevatorAnimTask.validate(state), "the completed trip is serializable")
 end
 
 return { tests = T }

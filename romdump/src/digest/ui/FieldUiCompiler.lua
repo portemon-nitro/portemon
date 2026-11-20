@@ -2019,6 +2019,15 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
     cfg.objAnims.subjectFemale
   )
   subjectFemale.anchor = { x = cfg.objAnchors.subject.x, y = cfg.objAnchors.subject.y }
+  -- NamingScreen_CreateIconSprite draws the rival icon from its own sequence
+  -- at the same (24,8) source position as the player subjects.
+  local rivalSubject = publishAnimation(
+    "subject-rival",
+    FieldUiAssetCache.ASSET.NAMING_SCREEN_SUBJECT_RIVAL,
+    nil,
+    cfg.objAnims.rivalSubject
+  )
+  rivalSubject.anchor = { x = cfg.objAnchors.subject.x, y = cfg.objAnchors.subject.y }
 
   -- the retail ROM's naming-screen mon icon upload writes 0x200 bytes at
   -- OBJ address 0x57E0: one 32x32 icon at tile 703. Sequence 50's NCER
@@ -2189,6 +2198,7 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
       male = subjectMale,
       female = subjectFemale,
     },
+    rivalSubject = rivalSubject,
     pokemonSubject = pokemonSubject,
     pokemonGenderMarkers = pokemonGenderMarkers,
   }

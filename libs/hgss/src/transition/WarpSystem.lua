@@ -2,9 +2,13 @@
 -- terrain surfaces. Warp indexes are zero-based; event coordinates remain in
 -- the authoritative global field domain. Scripted warps arrive as `direct`
 -- records carrying pre-resolved global destination coordinates and resolve
--- through their own branch before any indexed-record dispatch. Warp *trigger*
--- semantics live in TransitionTrigger; this module only locates records and
--- resolves destinations.
+-- through their own branch before any indexed-record dispatch. Dynamic-warp
+-- anchors (destinationWarpId 0x100) resolve through the saved destination the
+-- script recorded on the travel owner, exactly as the source
+-- FieldSystem_MapConnection copies LocalFieldData.dynamicWarp wholesale; an
+-- anchor with no established destination is attributed, never guessed. Warp
+-- *trigger* semantics live in TransitionTrigger; this module only locates
+-- records and resolves destinations.
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
@@ -13,10 +17,11 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 
 local WarpSystem = {}
 
--- Dynamic-warp anchors: destinationWarpId 0x100 means the warp points at a
--- runtime-chosen destination (unsupported; kept as a loud rejection per the
--- field transition contract). The raw HGSS meaning is the dynamic-warp anchor;
--- real warps carry plain warp indexes, so this branch is a refusal, not a path.
+-- Dynamic-warp anchors: destinationWarpId 0x100 means the warp points at the
+-- runtime-chosen destination stored on the travel owner. The source asserts
+-- that such an anchor's map header is the 0xFFF sentinel, which names no map:
+-- the saved record carries the destination map, its warp id, its map-local
+-- tile, and the arrival facing.
 WarpSystem.DYNAMIC_WARP_SENTINEL = 0x100
 
 local WARP_Y_SCALE = 16
@@ -28,6 +33,14 @@ local function warps(runtimeMap)
   )
 end
 
+---@param sourceMap table<string, unknown>
+---@param sourceWarp table<string, unknown>
+---@param destinationMap table<string, unknown>
+---@param destinationWarp table<string, unknown>?
+---@param fieldX integer
+---@param fieldZ integer
+---@param sample table<string, unknown>
+---@return table<string, unknown>
 local function resolutionRecord(sourceMap, sourceWarp, destinationMap, destinationWarp, fieldX, fieldZ, sample)
   return {
     sourceMap = sourceMap,
@@ -55,44 +68,72 @@ function WarpSystem.findAt(runtimeMap, fieldX, fieldZ)
   return nil
 end
 
-local function loadDestination(loader, sourceMap, warp)
-  local ok, result = pcall(loader.load, loader, warp.destinationMapId)
+-- The trigger identity attributed to a destination-side failure of this warp.
+---@param sourceMap table<string, unknown>
+---@param warp table<string, unknown>
+---@return table<string, unknown>
+local function triggerContext(sourceMap, warp)
+  return {
+    sourceMapId = sourceMap.mapId,
+    sourceWarpId = warp.index,
+    destinationMapId = warp.destinationMapId,
+    destinationWarpId = warp.destinationWarpId,
+  }
+end
+
+-- Loads the destination map through the same unknown-destination-map wrap
+-- whichever record named it: the triggered warp's own map header, or the
+-- symbol the saved dynamic destination carries.
+---@param loader { load: fun(loader: unknown, destinationMap: integer|string): table<string, unknown> }
+---@param sourceMap table<string, unknown>
+---@param warp table<string, unknown>
+---@param destinationMap integer|string
+---@return table<string, unknown>
+local function loadDestination(loader, sourceMap, warp, destinationMap)
+  local ok, result = pcall(loader.load, loader, destinationMap)
   if ok then
     return result
   end
   if Errors.is(result) and result.code == FieldErrors.FIELD_MAP_UNKNOWN then
-    Errors.raise(FieldErrors.FIELD_DESTINATION_MAP_UNKNOWN, "warp destination map is unavailable", {
+    local context = triggerContext(sourceMap, warp)
+    context.destinationMap = destinationMap
+    context.cause = result.code
+    Errors.raise(FieldErrors.FIELD_DESTINATION_MAP_UNKNOWN, "warp destination map is unavailable", context)
+  end
+  error(result, 0)
+end
+
+-- The saved dynamic destination of a dynamic-warp anchor. An anchor reached
+-- with no established destination is attributed rather than resolved against
+-- the sentinel header or the current map.
+---@param sourceMap table<string, unknown>
+---@param warp table<string, unknown>
+---@param dynamicWarp table<string, unknown>?
+---@return table<string, unknown> { map, fieldX, fieldZ, warpId, direction }
+function WarpSystem.dynamicWarpRecord(sourceMap, warp, dynamicWarp)
+  if dynamicWarp == nil then
+    Errors.raise(FieldErrors.FIELD_DYNAMIC_WARP_UNSET, "dynamic warp anchor reached with no destination", {
       sourceMapId = sourceMap.mapId,
       sourceWarpId = warp.index,
       destinationMapId = warp.destinationMapId,
-      cause = result.code,
+      destinationWarpId = warp.destinationWarpId,
     })
   end
-  error(result)
+  return assert(dynamicWarp, "a dynamic warp anchor carries a saved destination")
 end
 
--- The arrival surface of a scripted direct warp. An explicit record `y` wins
--- (the caller's intent), then the destination map's indexed warp named by the
--- record (its height is authoritative, exactly as in the indexed path), then
--- the topmost walkable terrain surface at the point. Never an unconditional
+-- The arrival surface at a destination tile: an available height hint wins
+-- (the destination warp record's height is authoritative), otherwise the
+-- topmost walkable terrain surface at the point. Never an unconditional
 -- zero-height hint: that selects the wrong floor on vertically stacked maps.
 ---@param destinationMap table<string, unknown>
----@param warp table<string, unknown>
 ---@param localX number
 ---@param localZ number
+---@param hintY number?
 ---@return table<string, unknown> sample
-local function directSurface(destinationMap, warp, localX, localZ)
+local function warpSurface(destinationMap, localX, localZ, hintY)
   local x = localX + FieldCoordinates.TILE_CENTER_OFFSET
   local z = localZ + FieldCoordinates.TILE_CENTER_OFFSET
-  local hintY
-  if type(warp.y) == "number" then
-    hintY = warp.y
-  else
-    local destinationWarp = warps(destinationMap)[(warp.destinationWarpId or 0) + 1]
-    if destinationWarp ~= nil and destinationWarp.index == (warp.destinationWarpId or 0) then
-      hintY = destinationWarp.y / WARP_Y_SCALE
-    end
-  end
   if hintY ~= nil then
     return SurfaceResolver.new(destinationMap.terrain):resolve({ localX = x, localZ = z, currentY = hintY })
   end
@@ -109,6 +150,78 @@ local function directSurface(destinationMap, warp, localX, localZ)
   return best
 end
 
+-- The arrival surface of a scripted direct warp. An explicit record `y` wins
+-- (the caller's intent), then the destination map's indexed warp named by the
+-- record, then the topmost walkable terrain surface.
+---@param destinationMap table<string, unknown>
+---@param warp table<string, unknown>
+---@param localX number
+---@param localZ number
+---@return table<string, unknown> sample
+local function directSurface(destinationMap, warp, localX, localZ)
+  local hintY
+  if type(warp.y) == "number" then
+    hintY = warp.y
+  else
+    local destinationWarp = warps(destinationMap)[(warp.destinationWarpId or 0) + 1]
+    if destinationWarp ~= nil and destinationWarp.index == (warp.destinationWarpId or 0) then
+      hintY = destinationWarp.y / WARP_Y_SCALE
+    end
+  end
+  return warpSurface(destinationMap, localX, localZ, hintY)
+end
+
+-- The arrival tile of a dynamic-warp destination in the global field domain.
+-- A saved warp id names an event on the destination map whose tile the arrival
+-- re-anchors on (FieldSystem_EnterLocation), so that record stays the arrival
+-- anchor; the source's -1 names no record, and its saved map-local tile
+-- converts through the destination origin instead.
+---@param destinationFieldData table<string, unknown>
+---@param destinationOrigin { x: integer, z: integer }? the destination map origin; required only when the saved warp id names no record
+---@param dynamicWarp table<string, unknown> the saved destination record
+---@param context table<string, unknown> trigger identity, { sourceMapId, sourceWarpId, destinationMapId }
+---@return { fieldX: integer, fieldZ: integer, warp: table<string, unknown>? }
+local function dynamicArrival(destinationFieldData, destinationOrigin, dynamicWarp, context)
+  if dynamicWarp.warpId < 0 then
+    assert(destinationOrigin, "a dynamic warp with no destination warp event needs the destination map origin")
+    return {
+      fieldX = dynamicWarp.fieldX + destinationOrigin.x,
+      fieldZ = dynamicWarp.fieldZ + destinationOrigin.z,
+    }
+  end
+  local destinationWarps = destinationFieldData.events.warps
+  local destinationWarp = destinationWarps[dynamicWarp.warpId + 1]
+  if not destinationWarp or destinationWarp.index ~= dynamicWarp.warpId then
+    Errors.raise(FieldErrors.FIELD_DESTINATION_WARP_UNKNOWN, "destination warp index is unavailable", {
+      sourceMapId = context.sourceMapId,
+      sourceWarpId = context.sourceWarpId,
+      destinationMapId = context.destinationMapId,
+      destinationWarpId = dynamicWarp.warpId,
+    })
+  end
+  return { fieldX = destinationWarp.x, fieldZ = destinationWarp.z, warp = destinationWarp }
+end
+
+-- The arrival tile a dynamic-warp destination resolves to, shared by warp
+-- planning (lightweight field data plus the structural origin) and resolution
+-- (a loaded destination map). The loaded map's own origin is the coordinate
+-- authority there; a caller that only has field data passes the origin it
+-- resolved from the structural world table.
+---@param destinationMap table<string, unknown>
+---@param dynamicWarp table<string, unknown> the saved destination record
+---@param context table<string, unknown>? trigger identity for attribution
+---@return { fieldX: integer, fieldZ: integer, warp: table<string, unknown>|nil }
+function WarpSystem.dynamicDestination(destinationMap, dynamicWarp, context)
+  assert(
+    type(destinationMap) == "table" and destinationMap.fieldData and destinationMap.coordinateOrigin,
+    "dynamic warp destination map and origin required"
+  )
+  if context == nil then
+    context = { destinationMapId = destinationMap.mapId }
+  end
+  return dynamicArrival(destinationMap.fieldData, destinationMap.coordinateOrigin, dynamicWarp, context)
+end
+
 -- Shared destination coordinate selection for planning and resolution:
 -- the global arrival coordinates and the selected destination warp record
 -- for a source warp, preserving direct-before-dynamic-sentinel behavior
@@ -117,8 +230,10 @@ end
 ---@param sourceMap table<string, unknown>
 ---@param warp table<string, unknown>
 ---@param destinationFieldData table<string, unknown>
----@return { fieldX: integer, fieldZ: integer, warp: table<string, unknown> }
-function WarpSystem.destinationCoordinates(sourceMap, warp, destinationFieldData)
+---@param dynamicWarp table<string, unknown>? the saved dynamic destination for a dynamic anchor
+---@param destinationOrigin { x: integer, z: integer }? the destination map origin; required only for lightweight field data with no saved warp record
+---@return { fieldX: integer, fieldZ: integer, warp: table<string, unknown>? }
+function WarpSystem.destinationCoordinates(sourceMap, warp, destinationFieldData, dynamicWarp, destinationOrigin)
   assert(sourceMap and sourceMap.mapId and warp, "source map and warp required")
   assert(
     destinationFieldData and destinationFieldData.events and destinationFieldData.events.warps,
@@ -126,18 +241,14 @@ function WarpSystem.destinationCoordinates(sourceMap, warp, destinationFieldData
   )
   -- A scripted `direct` record carries pre-resolved global coordinates and
   -- selects itself before every indexed-path dispatch, including the
-  -- dynamic-warp refusal.
+  -- dynamic-warp anchor.
   if warp.direct then
     assert(type(warp.x) == "number" and type(warp.z) == "number", "direct warp carries global coordinates")
     return { fieldX = warp.x, fieldZ = warp.z, warp = warp }
   end
   if warp.destinationWarpId == WarpSystem.DYNAMIC_WARP_SENTINEL then
-    Errors.raise(FieldErrors.FIELD_DYNAMIC_WARP_UNSUPPORTED, "dynamic warp anchors are not supported", {
-      sourceMapId = sourceMap.mapId,
-      sourceWarpId = warp.index,
-      destinationMapId = warp.destinationMapId,
-      destinationWarpId = warp.destinationWarpId,
-    })
+    local record = WarpSystem.dynamicWarpRecord(sourceMap, warp, dynamicWarp)
+    return dynamicArrival(destinationFieldData, destinationOrigin, record, triggerContext(sourceMap, warp))
   end
   local destinationWarps = destinationFieldData.events.warps
   local destinationWarp = destinationWarps[warp.destinationWarpId + 1]
@@ -152,7 +263,12 @@ function WarpSystem.destinationCoordinates(sourceMap, warp, destinationFieldData
   return { fieldX = destinationWarp.x, fieldZ = destinationWarp.z, warp = destinationWarp }
 end
 
-function WarpSystem.resolveDestination(loader, sourceMap, warp)
+---@param loader { load: fun(loader: unknown, destinationMap: integer|string): table<string, unknown> }
+---@param sourceMap table<string, unknown>
+---@param warp table<string, unknown>
+---@param dynamicWarp table<string, unknown>? the saved dynamic destination for a dynamic anchor
+---@return table<string, unknown>
+function WarpSystem.resolveDestination(loader, sourceMap, warp, dynamicWarp)
   assert(loader and loader.load, "warp destination loader required")
   assert(sourceMap and sourceMap.mapId and warp, "source map and warp required")
 
@@ -160,9 +276,9 @@ function WarpSystem.resolveDestination(loader, sourceMap, warp)
   -- resolves its own warp instead of an indexed destination record. It
   -- loads through the same unknown-destination-map wrap as the indexed path
   -- (one standardized code) and must precede every indexed-path dispatch,
-  -- including the dynamic-warp refusal.
+  -- including the dynamic-warp anchor.
   if warp.direct then
-    local destinationMap = loadDestination(loader, sourceMap, warp)
+    local destinationMap = loadDestination(loader, sourceMap, warp, warp.destinationMapId)
     local coordinates = WarpSystem.destinationCoordinates(sourceMap, warp, assert(destinationMap.fieldData))
     local localX, localZ = FieldCoordinates.fieldToLocal(destinationMap, coordinates.fieldX, coordinates.fieldZ)
     local sample = directSurface(destinationMap, warp, localX, localZ)
@@ -179,18 +295,35 @@ function WarpSystem.resolveDestination(loader, sourceMap, warp)
       sample
     )
   end
+  -- A dynamic anchor names its destination only through the saved record; the
+  -- sentinel map header names no map, so the record's symbol loads it and its
+  -- direction is the arrival facing the source creates the player with.
   if warp.destinationWarpId == WarpSystem.DYNAMIC_WARP_SENTINEL then
-    Errors.raise(FieldErrors.FIELD_DYNAMIC_WARP_UNSUPPORTED, "dynamic warp anchors are not supported", {
-      sourceMapId = sourceMap.mapId,
-      sourceWarpId = warp.index,
-      destinationMapId = warp.destinationMapId,
-      destinationWarpId = warp.destinationWarpId,
-    })
+    local record = WarpSystem.dynamicWarpRecord(sourceMap, warp, dynamicWarp)
+    local destinationMap = loadDestination(loader, sourceMap, warp, record.map)
+    local coordinates = WarpSystem.dynamicDestination(destinationMap, record, triggerContext(sourceMap, warp))
+    local localX, localZ = FieldCoordinates.fieldToLocal(destinationMap, coordinates.fieldX, coordinates.fieldZ)
+    local hintY
+    if coordinates.warp ~= nil then
+      hintY = coordinates.warp.y / WARP_Y_SCALE
+    end
+    local sample = warpSurface(destinationMap, localX, localZ, hintY)
+    local resolution = resolutionRecord(
+      sourceMap,
+      warp,
+      destinationMap,
+      coordinates.warp,
+      coordinates.fieldX,
+      coordinates.fieldZ,
+      sample
+    )
+    resolution.facing = record.direction
+    return resolution
   end
 
-  local destinationMap = loadDestination(loader, sourceMap, warp)
+  local destinationMap = loadDestination(loader, sourceMap, warp, warp.destinationMapId)
   local coordinates = WarpSystem.destinationCoordinates(sourceMap, warp, assert(destinationMap.fieldData))
-  local destinationWarp = coordinates.warp
+  local destinationWarp = assert(coordinates.warp, "the indexed path names its destination record")
 
   local localX, localZ = FieldCoordinates.fieldToLocal(destinationMap, coordinates.fieldX, coordinates.fieldZ)
   local hintY = destinationWarp.y / WARP_Y_SCALE

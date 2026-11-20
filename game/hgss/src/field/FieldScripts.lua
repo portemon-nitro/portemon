@@ -554,12 +554,13 @@ function FieldScripts.new(opts)
   -- The source floor box: one non-modal window whose lifetime is the script
   -- variable the command names. The host observes that variable each script
   -- tick and on field teardown; the scheduler-facing service adds the live map
-  -- whose floor label applies.
+  -- whose floor label applies and the calling script's buffered text, which the
+  -- ordinary floor label substitutes into its message.
   local function floorWindowGetVar(id)
     return worldState:getVar(id)
   end
-  local function floorWindowResolveMessage(ref)
-    return dialogueHost:resolveMessage(ref, {}, {})
+  local function floorWindowResolveMessage(ref, textArgs)
+    return dialogueHost:resolveMessage(ref, {}, textArgs)
   end
   local floorWindowHost = FieldFloorWindow.new({
     getVar = floorWindowGetVar,
@@ -647,13 +648,15 @@ function FieldScripts.new(opts)
     return composition:effective(id)
   end
   -- The scheduler-facing floor-box service adds the live map whose floor label
-  -- table applies to the placement the command names.
+  -- table applies to the placement the command names, and the script's buffered
+  -- text the floor label message expands.
   local function floorWindowShow(_, request)
     floorWindowHost:show({
       map = platform.mapSource.mapSymbol,
       tileX = request.tileX,
       tileY = request.tileY,
       floor = request.floor,
+      textArgs = request.textArgs or {},
       result = request.result,
     })
   end

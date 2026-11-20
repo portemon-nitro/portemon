@@ -317,6 +317,10 @@ return {
       subjectMale = 48,
       subjectFemale = 49,
       pokemonSubject = 50,
+      -- NamingScreen_CreateIconSprite gives NAME_SCREEN_RIVAL its own icon
+      -- sequence beside the player subjects: the rival screen never borrows
+      -- a party or player subject.
+      rivalSubject = 51,
       pokemonGenderMale = 45,
       pokemonGenderFemale = 46,
     },

@@ -1,7 +1,7 @@
--- The Naming Screen renderer owns player presentation from the generated
--- manifest and delegates only non-player subjects to its host: one recording
--- callback proves the seam carries mon subjects while player snapshots
--- never reach it.
+-- The Naming Screen renderer owns player and rival presentation from the
+-- generated manifest and delegates only mon subjects to its host: one
+-- recording callback proves the seam carries mon subjects while player and
+-- rival snapshots never reach it.
 
 local Assert = require("tests.support.Assert")
 local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
@@ -231,10 +231,9 @@ function T.tests.subject_callback_is_a_required_constructor_collaborator()
   end, "a renderer without its host subject callback must fail at construction")
 end
 
--- The rival screen names a subject the generated manifest has no animation
--- for: the renderer draws the shared keyboard and name and never borrows the
--- party or player subject.
-function T.tests.rival_subject_draws_no_borrowed_portrait()
+-- The rival screen draws its own generated icon sequence: the host subject
+-- callback stays reserved for mon icons, and no player portrait is drawn.
+function T.tests.rival_subject_draws_its_generated_sequence()
   local graphics, calls = graphicsFake()
   local manifest = namingManifest()
   local seen = 0
@@ -251,16 +250,25 @@ function T.tests.rival_subject_draws_no_borrowed_portrait()
   local before = #calls.draws
   renderer:draw(snapshot({ kind = "rival" }), canonicalLayout())
   Assert.equal(seen, 0, "the rival subject never reaches the mon icon callback")
+  local rivalFrames = {}
+  for _, frame in ipairs(manifest.namingScreen.rivalSubject.frames) do
+    rivalFrames[manifest.assets[frame.asset].image] = true
+  end
   local playerSubjectAssets = {}
   for _, gender in ipairs({ "male", "female" }) do
     for _, frame in ipairs(manifest.namingScreen.playerSubjects[gender].frames) do
       playerSubjectAssets[manifest.assets[frame.asset].image] = true
     end
   end
+  local rivalDraws = 0
   for index = before + 1, #calls.draws do
     local path = calls.draws[index].image.path
     Assert.isNil(playerSubjectAssets[path], "the rival screen draws no player portrait")
+    if rivalFrames[path] then
+      rivalDraws = rivalDraws + 1
+    end
   end
+  Assert.equal(rivalDraws, 1, "the rival screen draws its own generated subject once")
   Assert.isTrue(#calls.draws > before, "the shared naming chrome still draws")
   Assert.equal(calls.push, calls.pop)
   renderer:dispose()

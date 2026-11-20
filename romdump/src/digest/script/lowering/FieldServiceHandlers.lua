@@ -154,6 +154,18 @@ function FieldServiceHandlers.bufferCapitalize(ins)
   return { op = "buffer_capitalize", slot = Operands.operandValue(ins.operands[1]) }
 end
 
+-- ScrCmd_BufferDeptStoreFloorNo reads both operands as source bytes and buffers
+-- the storey's own label: src/message_format.c::BufferDeptStoreFloorNo reads
+-- generated floor-label bank 191, where floor 0 is the basement and floors 1..6
+-- are 1F..6F.
+function FieldServiceHandlers.bufferDeptStoreFloorNo(ins)
+  return {
+    op = "buffer_text",
+    slot = Operands.operandValue(ins.operands[1]),
+    value = { text = "dept_store_floor_no", floor = Operands.operandValue(ins.operands[2]) },
+  }
+end
+
 -- ScrCmd_GiveEgg species, gift-location offset: both operands resolve
 -- like any variable-or-value source operand, there is no result, and
 -- the capacity check inside the service precedes any creation.

@@ -412,6 +412,7 @@ local function fixture(opts)
       }
     end
     animCells[51] = { 52, 53 }
+    animCells[52] = 51
     namein[13] = namingCellBank(cells)
     namein[15] = namingAnimBank(animCells)
   end

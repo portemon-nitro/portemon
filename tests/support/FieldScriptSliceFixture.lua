@@ -207,6 +207,7 @@ end
 ---@field mapLoader table|nil
 ---@field sourceMap table|nil
 ---@field profile table|nil
+---@field versionId string|nil selected game version behind script edition splits
 ---@field messageProvider table|nil
 ---@field monNaming table|nil
 ---@field fontDef table|nil
@@ -226,6 +227,7 @@ function FieldScriptSliceFixture.compose(services, id, steps)
     actors = stubActors(),
     player = { fieldX = 1, fieldZ = 2, worldY = 0, facing = "south" },
     profile = services.profile or { gender = 0, name = "Gold", badges = {} },
+    versionId = services.versionId,
     dialogue = { isModal = noop },
     messageProvider = services.messageProvider or {},
     layout = function()

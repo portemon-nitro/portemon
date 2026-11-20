@@ -6,6 +6,7 @@
 local Assert = require("tests.support.Assert")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
+local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
 
 local T = {}
 
@@ -22,6 +23,12 @@ local function mapDouble(symbol, environment)
     mapSymbol = symbol,
     mapId = 1,
     fieldData = { transitionEnvironment = environment },
+    coordinateOrigin = { x = 0, z = 0 },
+    collision = {
+      containsLocal = function(_, x, z)
+        return x >= 0 and x < 32 and z >= 0 and z < 32
+      end,
+    },
   }
 end
 
@@ -41,6 +48,7 @@ local function runtimeDouble(sourceMap, travel, facing)
     scripts = {
       onMapSwap = function() end,
     },
+    resetEncounterStepCounters = function() end,
     followingMon = nil,
     followingMonTransition = nil,
     audio = nil,
@@ -101,6 +109,155 @@ function T.aborted_swaps_leave_travel_untouched()
   Assert.isNil(travel:capture().specialSpawn, "an aborted entry must not record")
 end
 
+-- A warp trigger record whose destination is the dynamic-warp anchor: the
+-- sentinel map header names no map, so the saved destination does.
+local function dynamicAnchorTrigger()
+  return {
+    warp = {
+      index = 4,
+      x = 5,
+      z = 7,
+      destinationMapId = 0xFFF,
+      destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
+    },
+  }
+end
+
+-- An arrival whose own anchor warp is the 0x100 sentinel refreshes the saved
+-- dynamic destination with the entrance position (FieldSystem_EnterLocation),
+-- so the next warp through that anchor leaves for the map the player entered
+-- from. The record is the source map's local tile and the source facing.
+function T.dynamic_anchor_arrival_records_the_entrance_as_the_destination()
+  local travel = travelWith(nil)
+  local source = mapDouble("MAP_CELADON_CONDOMINIUMS_1F", "building")
+  local destination = mapDouble("MAP_CELADON_DEPARTMENT_STORE_1F", "building")
+  local coordinator = setmetatable({}, FieldWorldSwapCoordinator)
+  local runtime = runtimeDouble(source, travel, "west")
+  coordinator.runtime = runtime
+  coordinator:commit({
+    sourceMap = source,
+    sourceWarp = {
+      index = 4,
+      x = 5,
+      z = 7,
+      destinationMapId = 0xFFF,
+      destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
+    },
+    destinationMap = destination,
+    destinationWarp = {
+      index = 0,
+      x = 5,
+      z = 3,
+      destinationMapId = 0xFFF,
+      destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
+    },
+    fieldX = 5,
+    fieldZ = 3,
+    surfaceId = 0,
+    worldY = 0,
+    facing = "west",
+  }, "west", { player = runtime.player, camera = {}, playerVisual = {}, residency = {} })
+  Assert.deepEqual(travel:capture().dynamicWarp, {
+    map = "MAP_CELADON_CONDOMINIUMS_1F",
+    fieldX = 5,
+    fieldZ = 7,
+    warpId = 4,
+    direction = "west",
+  }, "the entrance position becomes the saved dynamic destination")
+  Assert.equal(runtime.runtimeMap, destination, "the entrance refresh never blocks the committed swap")
+end
+
+-- Only an arrival whose destination warp is itself the dynamic anchor
+-- refreshes the record: every ordinary arrival keeps whatever the script set.
+function T.ordinary_arrivals_retain_the_saved_dynamic_destination()
+  local recorded = { map = "MAP_CELADON_CONDOMINIUMS_1F", fieldX = 5, fieldZ = 3, warpId = 2, direction = "east" }
+  local travel = travelWith(nil)
+  travel:setDynamicWarp(recorded)
+  local source = mapDouble("MAP_CELADON_CONDOMINIUMS_2F", "building")
+  local coordinator = setmetatable({}, FieldWorldSwapCoordinator)
+  coordinator.runtime = runtimeDouble(source, travel, "south")
+  coordinator:commit({
+    sourceMap = source,
+    sourceWarp = { index = 1, x = 6, z = 8, destinationMapId = 60, destinationWarpId = 0 },
+    destinationMap = mapDouble("MAP_CELADON_DEPARTMENT_STORE_2F", "building"),
+    destinationWarp = { index = 0, x = 6, z = 8, destinationMapId = 60, destinationWarpId = 0 },
+    fieldX = 6,
+    fieldZ = 8,
+    surfaceId = 0,
+    worldY = 0,
+  }, "south", { player = {}, camera = {}, playerVisual = {}, residency = {} })
+  Assert.deepEqual(travel:capture().dynamicWarp, recorded, "an ordinary arrival keeps the scripted destination")
+  Assert.isNil(travel:capture().specialSpawn, "the entrance is not a special spawn")
+end
+
+-- A runtime without the travel owner keeps the swap working: the entrance
+-- refresh is a durable record, never a swap precondition.
+function T.a_missing_travel_owner_keeps_the_dynamic_arrival_swappable()
+  local source = mapDouble("MAP_CELADON_CONDOMINIUMS_1F", "building")
+  local destination = mapDouble("MAP_CELADON_DEPARTMENT_STORE_1F", "building")
+  local coordinator = setmetatable({}, FieldWorldSwapCoordinator)
+  local runtime = runtimeDouble(source, nil, "north")
+  runtime.fieldTravel = nil
+  coordinator.runtime = runtime
+  coordinator:commit({
+    sourceMap = source,
+    sourceWarp = {
+      index = 4,
+      x = 5,
+      z = 7,
+      destinationMapId = 0xFFF,
+      destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
+    },
+    destinationMap = destination,
+    destinationWarp = {
+      index = 0,
+      x = 5,
+      z = 3,
+      destinationMapId = 0xFFF,
+      destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
+    },
+    fieldX = 5,
+    fieldZ = 3,
+    surfaceId = 0,
+    worldY = 0,
+  }, "north", { player = runtime.player, camera = {}, playerVisual = {}, residency = {} })
+  Assert.equal(runtime.runtimeMap, destination)
+end
+
+-- The transition start demands the saved destination map and pre-fades the
+-- saved map's music: the anchor's own 0xFFF header names no map.
+function T.transition_start_demands_the_saved_destination_map()
+  local travel = travelWith(nil)
+  travel:setDynamicWarp({
+    map = "MAP_CELADON_CONDOMINIUMS_1F",
+    fieldX = 5,
+    fieldZ = 3,
+    warpId = 2,
+    direction = "west",
+  })
+  local source = mapDouble("MAP_CELADON_CONDOMINIUMS_1F", "building")
+  local warpDemands, warpAudio = {}, {}
+  local runtime = runtimeDouble(source, travel, "south")
+  runtime.mapLoader = {
+    requestWarp = function(_, demandSource, warp, dynamicWarp)
+      warpDemands[#warpDemands + 1] = { sourceMap = demandSource, warp = warp, dynamicWarp = dynamicWarp }
+      return true
+    end,
+  }
+  runtime.audio = {
+    beginWarp = function(_, destinationMap)
+      warpAudio[#warpAudio + 1] = destinationMap
+    end,
+  }
+  local coordinator = FieldWorldSwapCoordinator.new(runtime)
+  local transition = coordinator:createTransition(runtime, nil, nil, function() end)
+  runtime.transition = transition
+  transition:start(source, dynamicAnchorTrigger(), "south")
+  Assert.equal(#warpDemands, 1, "the transition start demands its destination once")
+  Assert.equal(warpDemands[1].warp.index, 4)
+  Assert.deepEqual(warpDemands[1].dynamicWarp, travel:dynamicWarp(), "the demand carries the saved destination")
+  Assert.deepEqual(warpAudio, { "MAP_CELADON_CONDOMINIUMS_1F" }, "the saved map symbol pre-fades its music")
+end
 local function cacheFsWithDeathMaps(deathEntries, eligibleEntries)
   local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
   local blackoutSpawns = {}

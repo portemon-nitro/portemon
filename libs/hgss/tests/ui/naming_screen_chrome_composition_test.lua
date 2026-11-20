@@ -1,8 +1,8 @@
 -- The reusable Naming Screen composes generated source visuals instead of
 -- hand-drawn rectangles: the opaque base first, the selected page overlay at
 -- its canonical placement, then the OAM-composed controls, entry slots,
--- source-placed text, cursor visual, and manifest player subject. Unknown
--- pages are programmer errors, never a silent fallback.
+-- source-placed text, cursor visual, and the manifest player or rival
+-- subject. Unknown pages are programmer errors, never a silent fallback.
 
 local Assert = require("tests.support.Assert")
 local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
@@ -149,6 +149,7 @@ function T.construction_acquires_the_base_pages_and_every_semantic_visual()
   end
   animationImages(naming.playerSubjects.male)
   animationImages(naming.playerSubjects.female)
+  animationImages(naming.rivalSubject)
   animationImages(naming.pokemonGenderMarkers.male)
   animationImages(naming.pokemonGenderMarkers.female)
   animationImages(naming.cursor.keyboard)
@@ -177,7 +178,7 @@ function T.construction_acquires_the_base_pages_and_every_semantic_visual()
 end
 
 function T.construction_failure_releases_already_acquired_images()
-  local loader, loads = imageLoaderFake(20)
+  local loader, loads = imageLoaderFake(21)
   local err = Assert.throws(function()
     NamingScreenRenderer.new({
       graphics = graphicsFake(),
@@ -188,7 +189,7 @@ function T.construction_failure_releases_already_acquired_images()
     })
   end, "a late acquisition image failure must fail construction")
   Assert.isTrue(tostring(err):find("injected image failure", 1, true) ~= nil)
-  Assert.equal(#loads.images, 19, "nineteen images were acquired before the failure")
+  Assert.equal(#loads.images, 20, "twenty images were acquired before the failure")
   for _, image in ipairs(loads.images) do
     Assert.isTrue(image.released, image.path .. " is released after the failed construction")
     Assert.equal(image.releaseCount, 1, image.path .. " is released exactly once")
