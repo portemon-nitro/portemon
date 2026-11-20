@@ -330,10 +330,7 @@ end
 -- per resolved frame record. A frameless plan paints no extra chrome.
 -- This is a synthetic pipeline check, so it lives with the cheap
 -- composition tests instead of the ROM graphics suite.
-function T.draw_mart_paints_the_resolved_outer_frames(_, context)
-  if not (love and love.graphics) then
-    context:skip("the mart frame proof needs its host graphics namespace")
-  end
+function T.draw_mart_paints_the_resolved_outer_frames()
   local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
   local draws = {}
   local framed = {}
