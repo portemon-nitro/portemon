@@ -1645,26 +1645,26 @@ function T.generated_script_and_message_lua_stay_readable_in_stage_and_live_tree
   local scriptSource = "--"
     .. string.rep("script-padding;", 80)
     .. "\nlocal S = require(\"gen4.script\")\nreturn { api = S.apiVersion, id = \"map-obj-0002\", steps = { 1, 2, 3 } }\n"
-  local bankPath = FieldMessageCache.bankPath(219)
-  local bankSource = "--"
-    .. string.rep("bank-padding;", 80)
-    .. "\nreturn { bankId = 219, messages = { \"first\", \"second\" } }\n"
+  local messageIndexPath = FieldMessageCache.indexPath()
+  local messageIndexSource = "--"
+    .. string.rep("index-padding;", 80)
+    .. "\nreturn { schema = \"g4-field-message-index-v1\", version = \"heartgold\", bankIds = { 219 } }\n"
   Assert.isTrue(
-    #scriptSource >= 1024 and #bankSource >= 1024,
+    #scriptSource >= 1024 and #messageIndexSource >= 1024,
     "both text fixtures must clear the wrap threshold"
   )
 
   stage:write(scriptPath, scriptSource)
-  stage:write(bankPath, bankSource)
+  stage:write(messageIndexPath, messageIndexSource)
   Assert.equal(
     storedBytes(backend, stageRoot .. scriptPath),
     scriptSource,
     "a staged script member is the Lua source itself: " .. scriptPath
   )
   Assert.equal(
-    storedBytes(backend, stageRoot .. bankPath),
-    bankSource,
-    "a staged message bank is the Lua source itself: " .. bankPath
+    storedBytes(backend, stageRoot .. messageIndexPath),
+    messageIndexSource,
+    "a staged message index is the Lua source itself: " .. messageIndexPath
   )
   Assert.deepEqual(
     stage:loadModule(scriptPath),
@@ -1672,29 +1672,29 @@ function T.generated_script_and_message_lua_stay_readable_in_stage_and_live_tree
     "a staged script member evaluates through the restricted module sandbox"
   )
   Assert.deepEqual(
-    stage:loadLua(bankPath),
-    { bankId = 219, messages = { "first", "second" } },
-    "a staged message bank loads as data"
+    stage:loadLua(messageIndexPath),
+    { schema = "g4-field-message-index-v1", version = "heartgold", bankIds = { 219 } },
+    "a staged message index loads as data"
   )
 
-  c:publishStaged(stage, { scriptPath, bankPath }, function()
+  c:publishStaged(stage, { scriptPath, messageIndexPath }, function()
     stage:removeTree("")
   end)
   local scriptPhysical = backendBytes(backend, "heartgold", scriptPath)
-  local bankPhysical = backendBytes(backend, "heartgold", bankPath)
+  local messageIndexPhysical = backendBytes(backend, "heartgold", messageIndexPath)
   Assert.equal(scriptPhysical, scriptSource, "a published script member stays the Lua source itself")
-  Assert.equal(bankPhysical, bankSource, "a published message bank stays the Lua source itself")
+  Assert.equal(messageIndexPhysical, messageIndexSource, "a published message index stays the Lua source itself")
   Assert.isFalse(CacheEnvelope.isWrapped(scriptPhysical), "a published script member carries no envelope tag")
-  Assert.isFalse(CacheEnvelope.isWrapped(bankPhysical), "a published message bank carries no envelope tag")
+  Assert.isFalse(CacheEnvelope.isWrapped(messageIndexPhysical), "a published message index carries no envelope tag")
   Assert.deepEqual(
     c:loadModule(scriptPath),
     { api = Schema.API_VERSION, id = "map-obj-0002", steps = { 1, 2, 3 } },
     "the published script member evaluates identically"
   )
   Assert.deepEqual(
-    c:loadLua(bankPath),
-    { bankId = 219, messages = { "first", "second" } },
-    "the published message bank loads identically"
+    c:loadLua(messageIndexPath),
+    { schema = "g4-field-message-index-v1", version = "heartgold", bankIds = { 219 } },
+    "the published message index loads identically"
   )
 
   -- The families that keep their envelope still store the same logical bytes

@@ -7,8 +7,11 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
+local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 local FakeCache = require("tests.support.FakeCache")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
+local GameVersion = require("romdump.src.source.GameVersion")
+local Schema = require("libs.script.src.Schema")
 
 local T = {}
 
@@ -98,6 +101,34 @@ function T.failed_atomic_publication_propagates_and_preserves_previous_state()
   Assert.equal(err.code, "CACHE_REPLACE_FAILED")
   local stored = cache:loadLua(DerivedCacheState.path)
   Assert.isTrue(DerivedCacheState.matches(stored, identity()), "the previous attestation must survive")
+end
+
+-- The shared asset revision is part of the release identity, so a complete fact
+-- or receipt written before the compact message representation cannot be
+-- reused: with the same version, ROM, and release producer identity, only the
+-- revision moves and the generation no longer matches.
+function T.previous_asset_revision_release_identity_never_matches()
+  local romSha1 = GameVersion.VERSIONS.heartgold.sha1
+  local producerId = "r7"
+  local previous = DerivedCacheState.current({
+    versionId = "heartgold",
+    romSha1 = romSha1,
+    mode = "release",
+    producerId = producerId,
+    assetRevision = 18,
+    scriptApi = Schema.API_VERSION,
+  })
+  local current = DerivedCacheState.currentForSelection({
+    versionId = "heartgold",
+    romSha1 = romSha1,
+    producerId = producerId,
+  })
+  Assert.equal(DerivedAssetContract.revision, 19, "the current shared asset revision is 19")
+  Assert.equal(current.assetRevision, 19)
+  Assert.equal(previous.assetRevision, 18)
+  Assert.isTrue(previous.generationId ~= current.generationId, "the revision alone changes the generation")
+  Assert.isFalse(DerivedCacheState.matches(previous, current), "a revision-18 identity must read as stale")
+  Assert.isTrue(DerivedCacheState.matches(current, current), "the current identity still matches itself")
 end
 
 return { tests = T }

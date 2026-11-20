@@ -14,6 +14,7 @@ local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+local FieldMessageFixture = require("tests.support.FieldMessageFixture")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMessageCacheWriter = require("romdump.src.digest.ui.FieldMessageCacheWriter")
 local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
@@ -625,7 +626,7 @@ local function stageBankReply(env, bankId, marker, stageName)
     })
     FieldMessageCacheWriter.stageBank(artifact, {
       bankId = bankId,
-      bank = { schema = FieldMessageCache.SCHEMA, bankId = bankId, messageCount = 0, messages = {} },
+      data = FieldMessageFixture.encode(FieldMessageFixture.bank(bankId, { { FieldMessageFixture.eos() } })),
       marker = marker,
       dependencies = {
         cacheFormat = "synthetic",
@@ -661,7 +662,7 @@ local function stageBankReplyOnWorker(env, bankId, marker, workerId, occurrence)
     })
     FieldMessageCacheWriter.stageBank(artifact, {
       bankId = bankId,
-      bank = { schema = FieldMessageCache.SCHEMA, bankId = bankId, messageCount = 0, messages = {} },
+      data = FieldMessageFixture.encode(FieldMessageFixture.bank(bankId, { { FieldMessageFixture.eos() } })),
       marker = marker,
       dependencies = {
         cacheFormat = "synthetic",
@@ -711,12 +712,7 @@ local function publishBankLive(env, bankId, marker)
       key = key,
       marker = marker,
     })
-    env.cacheFs:writeLua(FieldMessageCache.bankPath(bankId), {
-      schema = FieldMessageCache.SCHEMA,
-      bankId = bankId,
-      messageCount = 0,
-      messages = {},
-    })
+    FieldMessageFixture.write(env.cacheFs, bankId, { { FieldMessageFixture.eos() } })
   end)
 end
 local function publishSummaryLive(env, bankIds, bankMarkers)
@@ -1095,11 +1091,7 @@ function T.lone_battle_scene_demand_schedules_source_discovery()
     1,
     "the scene closure submits its shared global core once"
   )
-  Assert.equal(
-    submissionCount(pool, "source-plan:global"),
-    0,
-    "the scene closure schedules no source discovery"
-  )
+  Assert.equal(submissionCount(pool, "source-plan:global"), 0, "the scene closure schedules no source discovery")
   local again, againFailure = session:requestJob("battle-scene", "general/grass/day", "required")
   Assert.isFalse(again, "the scene waits on its global core instead of settling early")
   Assert.isNil(againFailure, "the core wait reports no failure while the worker is outstanding")

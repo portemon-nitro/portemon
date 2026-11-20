@@ -15,6 +15,7 @@ local CollisionFixture = require("tests.support.CollisionFixture")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCacheFixture = require("tests.support.ScriptCacheFixture")
+local FieldMessageFixture = require("tests.support.FieldMessageFixture")
 local T = {}
 local SCRIPT_GENERATION = string.rep("a", 40)
 local APRICORN_KEYS = {
@@ -311,13 +312,10 @@ local function writeMessageIndex(c, bankIds)
   })
 end
 
-local function messageBank(bankId, schema)
-  return {
-    schema = schema or FieldMessageCache.SCHEMA,
-    bankId = bankId,
-    messageCount = 1,
-    messages = { [0] = { text = "", tokens = {} } },
-  }
+local function messageBank(bankId)
+  return FieldMessageFixture.encode(
+    FieldMessageFixture.bank(bankId, { { FieldMessageFixture.glyph(0x0141, "A"), FieldMessageFixture.eos() } })
+  )
 end
 
 local function mapScene(mapId)
@@ -625,17 +623,24 @@ function T.message_index_with_missing_bank_is_not_ready()
   Assert.isFalse(FieldMessageCache.isReady(c), "an indexed bank file is required")
 end
 
-function T.message_bank_with_wrong_schema_is_not_ready()
+function T.message_bank_with_wrong_identity_is_not_ready()
   local c = cache()
   writeMessageIndex(c, { 542 })
-  c:writeLua(FieldMessageCache.bankPath(542), messageBank(542, "g4-other-v1"))
-  Assert.isFalse(FieldMessageCache.isReady(c), "bank file must carry the expected schema")
+  c:write(FieldMessageCache.bankPath(542), messageBank(999))
+  Assert.isFalse(FieldMessageCache.isReady(c), "a bank payload must carry the expected bank identity")
+end
+
+function T.message_bank_with_truncated_payload_is_not_ready()
+  local c = cache()
+  writeMessageIndex(c, { 542 })
+  c:write(FieldMessageCache.bankPath(542), messageBank(542):getString():sub(1, -2))
+  Assert.isFalse(FieldMessageCache.isReady(c), "a truncated bank payload is never ready")
 end
 
 function T.message_valid_artifact_is_ready()
   local c = cache()
   writeMessageIndex(c, { 542 })
-  c:writeLua(FieldMessageCache.bankPath(542), messageBank(542))
+  c:write(FieldMessageCache.bankPath(542), messageBank(542))
   Assert.isTrue(FieldMessageCache.isReady(c))
 end
 

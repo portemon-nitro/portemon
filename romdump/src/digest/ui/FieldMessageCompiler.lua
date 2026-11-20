@@ -1,14 +1,16 @@
--- Compiles source-referenced HGSS message banks into tokenized, lossless bank
--- artifacts. Each bank member is validated and decrypted by FieldMessageBank
--- (Decrypt1/Decrypt2) and then tokenized by
--- FieldMessageTokenizer. Bank selection comes from frozen map and script
--- references; static font configuration remains in FieldMessages.
+-- Compiles source-referenced HGSS message banks into compact indexed binary
+-- bank payloads (FieldMessageAsset). Each bank member is validated and
+-- decrypted by FieldMessageBank (Decrypt1/Decrypt2) and then tokenized by
+-- FieldMessageTokenizer; the normalized token stream is encoded once into the
+-- final bytes and no expanded bank survives the call. Bank selection comes
+-- from frozen map and script references; static font configuration remains in
+-- FieldMessages.
 
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
-local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
+local FieldMessageAsset = require("libs.assets.src.field.FieldMessageAsset")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local charmap = require("romdump.src.catalog.hgss.charmap")
@@ -37,25 +39,20 @@ local APRICORN_BOX_MESSAGE_BANK = 21
 -- bank 254, so it must be listed explicitly.
 local NAMING_SCREEN_MESSAGE_BANK = 254
 
----@class FieldMessageCompiler.BankMessage
----@field text string
----@field tokens FieldMessageText.Token[]
-
 ---@class FieldMessageCompiler.Bank
----@field schema string
 ---@field bankId integer
 ---@field messageCount integer
----@field messages table<integer, FieldMessageCompiler.BankMessage>
+---@field messages table<integer, { tokens: FieldMessageText.Token[] }>
 
 ---@class FieldMessageCompiler.Bundle
 ---@field marker string
 ---@field index FieldMessageCache.Index
----@field banks table<integer, FieldMessageCompiler.Bank>
+---@field banks table<integer, love.Data>
 ---@field dependencies FieldMessageCompiler.Dependencies
 
 ---@class FieldMessageCompiler.BankBundle
 ---@field bankId integer
----@field bank FieldMessageCompiler.Bank
+---@field data love.Data
 ---@field marker string
 ---@field dependencies FieldMessageCompiler.Dependencies
 
@@ -116,6 +113,9 @@ local function compileBank(source, bankId, sha1hex)
   }))
   local memberSha1 = sha1hex(memberBytes)
 
+  -- One transient normalized bank in the encoder's input shape: no display
+  -- text, no second copy of a message. The compact payload is the only
+  -- representation that leaves this call.
   local messages = {}
   for index = 0, bank.messageCount - 1 do
     local message = bank.messages[index + 1]
@@ -130,23 +130,16 @@ local function compileBank(source, bankId, sha1hex)
       tokenizeErr.context.messageId = index
       error(tokenizeErr)
     end
-    -- Two semantically distinct representations: modder-facing display text
-    -- (GMM-style markers for controls) and the lossless token stream the
-    -- renderer consumes without re-parsing the text. The array slot is the
-    -- message id, so no per-message id is stored.
-    messages[index] = {
-      text = FieldMessageText.tokensToText(tokens),
-      tokens = tokens,
-    }
+    messages[index] = { tokens = tokens }
   end
 
-  return {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = bankId,
-    messageCount = bank.messageCount,
-    messages = messages,
-  },
-    memberSha1
+  local normalized = { bankId = bankId, messageCount = bank.messageCount, messages = messages }
+  local size = FieldMessageAsset.encodedSize(normalized)
+  local data = love.data.newByteData(size)
+  local pointer = assert(data:getFFIPointer(), "compact message bank Data has no FFI pointer")
+  local written = FieldMessageAsset.encodeInto(normalized, pointer, size)
+  assert(written == size, "compact message encoding wrote " .. written .. " of " .. size .. " bytes")
+  return data, memberSha1
 end
 
 ---@param bankId unknown
@@ -340,19 +333,19 @@ function FieldMessageCompiler.newSession(romFs, sha1hex, hashLua)
       return nil
     end
     checkBankId(bankId)
-    local ok, bank, memberSha1 = pcall(compileBank, source, bankId, sha1hex)
+    local ok, data, memberSha1 = pcall(compileBank, source, bankId, sha1hex)
     if not ok then
-      if Errors.is(bank) then
-        return nil, bank --[[@as Errors.Error]]
+      if Errors.is(data) then
+        return nil, data --[[@as Errors.Error]]
       end
-      error(bank, 0)
+      error(data, 0)
     end
-    assert(bank ~= nil and memberSha1 ~= nil, "one-bank normalization must return its bank")
+    assert(data ~= nil and memberSha1 ~= nil, "one-bank normalization must return its payload")
     local dependencies = bankDependencies(source, romFs, bankId, memberSha1)
     local marker = FieldMessageCache.marker(romFs:metadata().sha1, hashLua(dependencies))
     return {
       bankId = bankId,
-      bank = bank,
+      data = data,
       marker = marker,
       dependencies = dependencies,
     }

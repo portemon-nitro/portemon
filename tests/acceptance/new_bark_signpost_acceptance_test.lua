@@ -9,7 +9,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local CacheFs = require("libs.storage.src.CacheFs")
-local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 
 local T = {
   metadata = {
@@ -82,12 +82,16 @@ function T.tests.friend_house_signpost_prints_the_counterpart_name_and_dismisses
     -- house-label template with its substitution marker removed.
     local cache = CacheFs.forVersion(versionId)
     local gender = game.runtime.playerData.profile.gender
-    local names = assert(cache:loadLua(FieldMessageCache.bankPath(445)), "generated name bank 445 is required")
-    local expectedName = assert(names.messages[gender == 0 and 1 or 0], "counterpart name is required").text
-    local house = assert(cache:loadLua(FieldMessageCache.bankPath(542)), "generated bank 542 is required")
-    local template = assert(house.messages[35], "house-label message is required").text
-    local label = assert(template:match("^%b{}(.*)$"), "house-label template carries one leading substitution")
-    Assert.equal(resolved, expectedName .. label, "the signpost names the counterpart's house")
+    local provider = assert(FieldMessageProvider.new(cache))
+    assert(provider:acquireBank(445), "generated name bank 445 is required")
+    local nameTemplate = assert(provider:get(445, gender == 0 and 1 or 0), "counterpart name is required")
+    assert(provider:acquireBank(542), "generated bank 542 is required")
+    local houseTemplate = assert(provider:get(542, 35), "house-label message is required")
+    provider:releaseBank(445)
+    provider:releaseBank(542)
+    local label =
+      assert(houseTemplate.text:match("^%b{}(.*)$"), "house-label template carries one leading substitution")
+    Assert.equal(resolved, nameTemplate.text .. label, "the signpost names the counterpart's house")
     -- Normal dismissal through confirmation: the script runs to its end and
     -- releases the field with no modal window left behind.
     local dismissed = nil

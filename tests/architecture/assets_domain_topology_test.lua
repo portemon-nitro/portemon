@@ -42,6 +42,7 @@ local DOMAINS = {
     "FieldFontCache",
     "FieldLightProfile",
     "FieldMapDataCache",
+    "FieldMessageAsset",
     "FieldMessageCache",
     "FieldMessageText",
     "FieldMoveCutInBannerAssetCache",

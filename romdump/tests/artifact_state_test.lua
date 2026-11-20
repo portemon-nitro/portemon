@@ -146,6 +146,43 @@ function T.previous_generation_receipt_is_cold()
   Assert.notNil(reason, "a cold receipt must name its reason")
 end
 
+-- A message bank receipt stamped by the previous asset revision cannot be
+-- reused: the release identity mixes that revision, so a receipt written
+-- before the compact message representation reads as cold even when the
+-- version, ROM identity, and release producer identity are unchanged.
+function T.previous_asset_revision_message_receipt_is_cold()
+  local receipts = requireReceipts()
+  local cache = newCache()
+  local producerId = "r3"
+  local previous = DerivedCacheState.current({
+    versionId = "heartgold",
+    romSha1 = HEARTGOLD_SHA1,
+    mode = "release",
+    producerId = producerId,
+    assetRevision = 18,
+    scriptApi = Schema.API_VERSION,
+  })
+  local current = DerivedCacheState.currentForSelection({
+    versionId = "heartgold",
+    romSha1 = HEARTGOLD_SHA1,
+    producerId = producerId,
+  })
+  Assert.isTrue(
+    previous.generationId ~= current.generationId,
+    "the asset revision alone must move the release generation"
+  )
+  cache:writeLua(receipts.path("message-bank", "219"), {
+    schema = RECEIPT_SCHEMA,
+    generationId = previous.generationId,
+    kind = "message-bank",
+    key = "219",
+    marker = "field-message-cache-v5:rom-sha:dependency-sha",
+  })
+  local receipt, reason = receipts.read(cache, assert(current.generationId), "message-bank", "219")
+  Assert.isNil(receipt, "a previous-revision message receipt must read as cold")
+  Assert.notNil(reason, "a cold receipt must name its reason")
+end
+
 function T.late_completion_cannot_publish()
   local stages = requireStages()
   local backend = FakeCache.new()

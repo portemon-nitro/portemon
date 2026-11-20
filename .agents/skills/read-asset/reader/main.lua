@@ -2,7 +2,14 @@
 -- physical compression, checksums, and version confinement stay canonical.
 local function parse(argv)
   local opts = {}
-  local valid = { ["--repo-root"] = "root", ["--version"] = "version", ["--path"] = "path", ["--output"] = "output", ["--list"] = "list" }
+  local valid = {
+    ["--repo-root"] = "root",
+    ["--version"] = "version",
+    ["--path"] = "path",
+    ["--output"] = "output",
+    ["--list"] = "list",
+    ["--message-text"] = "messageText",
+  }
   if #argv % 2 ~= 0 then
     error("each reader option requires a value")
   end
@@ -16,17 +23,27 @@ local function parse(argv)
   if not opts.root or (opts.version ~= "heartgold" and opts.version ~= "soulsilver") then
     error("reader requires --repo-root and a supported --version")
   end
-  if (opts.path ~= nil) == (opts.list ~= nil) or (opts.path ~= nil) ~= (opts.output ~= nil) then
-    error("reader requires either --list DIRECTORY or --path FILE --output FILE")
+  local modes = 0
+  for _, mode in ipairs({ "path", "list", "messageText" }) do
+    if opts[mode] ~= nil then
+      modes = modes + 1
+    end
+  end
+  if modes ~= 1 then
+    error("reader requires exactly one of --list DIRECTORY, --path FILE, or --message-text BANK")
+  end
+  if opts.list ~= nil and opts.output ~= nil then
+    error("--list takes no --output")
+  end
+  if opts.list == nil and opts.output == nil then
+    error("--path and --message-text require --output FILE")
   end
   return opts
 end
 
-local function readAsset(cacheFs, path, output)
-  local bytes = cacheFs:read(path)
-  if bytes == nil then
-    error("cache file is absent after preparation: " .. path)
-  end
+-- Writes one output file through the checked open/write/close sequence, so a
+-- failed write never leaves a partial decoded file behind.
+local function writeOutput(output, bytes)
   local file, openError = io.open(output, "wb")
   if not file then
     error("could not open decoded output: " .. tostring(openError))
@@ -37,13 +54,63 @@ local function readAsset(cacheFs, path, output)
     os.remove(output)
     error("could not write decoded output: " .. tostring(writeError or closeError))
   end
-  local digest = love.data.hash("sha1", bytes):gsub(".", function(char)
+end
+
+local function sha1hex(bytes)
+  return (love.data.hash("sha1", bytes):gsub(".", function(char)
     return string.format("%02x", char:byte())
-  end)
+  end))
+end
+
+local function report(cachePath, output, bytes)
   print("decoded_file=" .. output)
-  print("cache_path=" .. path)
+  print("cache_path=" .. cachePath)
   print("bytes=" .. #bytes)
-  print("sha1=" .. digest)
+  print("sha1=" .. sha1hex(bytes))
+end
+
+local function readAsset(cacheFs, path, output)
+  local bytes = cacheFs:read(path)
+  if bytes == nil then
+    error("cache file is absent after preparation: " .. path)
+  end
+  writeOutput(output, bytes)
+  report(path, output, bytes)
+end
+
+-- Human-readable export of one compact message bank: the authoritative codec
+-- decodes every message in id order, and LuaWriter serializes the result. The
+-- export keeps normalized tokens because display text alone cannot show
+-- trainer-name packing, control arguments, or tokens after EOS.
+local function exportMessages(cacheFs, path, output, modules)
+  local FieldMessageCache = modules.FieldMessageCache
+  local FieldMessageAsset = modules.FieldMessageAsset
+  local digits = path:match("^data/generated/field/messages/banks/(%d+)%.g4msg$")
+  if digits == nil then
+    error("message export requires one canonical message bank path, got: " .. path)
+  end
+  local bankId = tonumber(digits)
+  if FieldMessageCache.bankPath(bankId) ~= path then
+    error("message export requires the canonical bank path for bank " .. tostring(bankId))
+  end
+  local bytes = cacheFs:read(path)
+  if bytes == nil then
+    error("cache file is absent after preparation: " .. path)
+  end
+  FieldMessageAsset.validate(bytes, bankId)
+  local view = FieldMessageAsset.open(bytes, bankId)
+  local messages = {}
+  for messageId = 0, view.messageCount - 1 do
+    local template = FieldMessageAsset.message(view, messageId)
+    messages[messageId] = { text = template.text, tokens = template.tokens }
+  end
+  local chunk = modules.LuaWriter.encode({
+    bankId = bankId,
+    messageCount = view.messageCount,
+    messages = messages,
+  })
+  writeOutput(output, chunk)
+  report(path, output, chunk)
 end
 
 local function listAssets(cacheFs, directory)
@@ -78,7 +145,13 @@ function love.load(argv)
     package.path = opts.root .. "/?.lua;" .. opts.root .. "/?/init.lua;" .. package.path
     local CacheFs = require("libs.storage.src.CacheFs")
     local cacheFs = CacheFs.forVersion(opts.version)
-    if opts.path then
+    if opts.messageText then
+      exportMessages(cacheFs, opts.messageText, opts.output, {
+        FieldMessageCache = require("libs.assets.src.field.FieldMessageCache"),
+        FieldMessageAsset = require("libs.assets.src.field.FieldMessageAsset"),
+        LuaWriter = require("libs.codec.src.LuaWriter"),
+      })
+    elseif opts.path then
       readAsset(cacheFs, opts.path, opts.output)
     else
       listAssets(cacheFs, opts.list)

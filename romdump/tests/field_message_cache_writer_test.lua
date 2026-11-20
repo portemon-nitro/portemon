@@ -3,6 +3,7 @@
 -- encrypted members.
 
 local Assert = require("tests.support.Assert")
+local FieldMessageAsset = require("libs.assets.src.field.FieldMessageAsset")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
 local FieldMessageCacheWriter = require("romdump.src.digest.ui.FieldMessageCacheWriter")
@@ -123,7 +124,11 @@ function T.published_bank_readiness_needs_no_source_decode()
   })
   FieldMessageCacheWriter.stageBank(artifact, one)
   local stage = artifact:stageFs()
-  Assert.deepEqual(stage:loadLua(FieldMessageCache.bankPath(542)), one.bank, "the staged bank matches")
+  Assert.equal(
+    stage:read(FieldMessageCache.bankPath(542)),
+    one.data:getString(),
+    "the staged bank is the encoded payload"
+  )
   Assert.isFalse(stage:exists(FieldMessageCache.bankPath(543)), "no sibling bank is staged")
   artifact:finishSuccess({ marker = one.marker })
   artifact:publish({
@@ -203,8 +208,8 @@ function T.family_summary_attests_coverage_without_erasing_children()
   })
   Assert.isTrue(FieldMessageCache.isReady(cache), "full coverage publishes a ready family")
   for _, bankId in ipairs({ 542, 543 }) do
-    local bank = cache:loadLua(FieldMessageCache.bankPath(bankId))
-    Assert.equal(bank and bank.bankId, bankId, "bank " .. bankId .. " survives its summary")
+    local bytes = assert(cache:read(FieldMessageCache.bankPath(bankId)), "bank " .. bankId .. " survives its summary")
+    Assert.equal(assert(FieldMessageAsset.open(bytes, bankId)).bankId, bankId, "bank " .. bankId .. " survives")
   end
   cache:remove(FieldMessageCache.bankPath(543))
   Assert.isFalse(FieldMessageCache.isReady(cache), "a missing bank is never hidden by an old summary")

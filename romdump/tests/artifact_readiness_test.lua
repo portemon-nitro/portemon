@@ -401,12 +401,8 @@ end
 
 local function publishMessageFamily(cache, marker)
   local bankId = 219
-  cache:writeLua(FieldMessageCache.bankPath(bankId), {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = bankId,
-    messageCount = 1,
-    messages = { [0] = { text = "", tokens = {} } },
-  })
+  local FieldMessageFixture = require("tests.support.FieldMessageFixture")
+  FieldMessageFixture.write(cache, bankId, { { FieldMessageFixture.eos() } })
   writeReceipt(cache, "message-bank", tostring(bankId), marker)
   cache:writeLua(FieldMessageCache.indexPath(), {
     schema = FieldMessageCache.INDEX_SCHEMA,

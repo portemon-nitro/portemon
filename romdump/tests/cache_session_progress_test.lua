@@ -465,7 +465,7 @@ local function withFixtureFacts(env, fn)
 end
 
 local function publishBank(env, bankId, marker)
-  local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+  local FieldMessageFixture = require("tests.support.FieldMessageFixture")
   env.cacheFs:writeLua(ArtifactState.path("message-bank", tostring(bankId)), {
     schema = ArtifactState.RECEIPT_SCHEMA,
     generationId = env.generation,
@@ -473,12 +473,7 @@ local function publishBank(env, bankId, marker)
     key = tostring(bankId),
     marker = marker,
   })
-  env.cacheFs:writeLua(FieldMessageCache.bankPath(bankId), {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = bankId,
-    messageCount = 0,
-    messages = {},
-  })
+  FieldMessageFixture.write(env.cacheFs, bankId, { { FieldMessageFixture.eos() } })
 end
 
 -- Missing knowledge backed by a held worker is blocked, not runnable: the

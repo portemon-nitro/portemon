@@ -7,6 +7,13 @@
 -- constant; compiler implementation versions are deliberately absent (producer
 -- freshness belongs to the romdump source fingerprint).
 --
+-- revision 19: message banks persist one compact indexed binary payload
+-- (`.g4msg`) whose per-bank glyph dictionary stores each display string once
+-- over a normalized token stream, instead of readable Lua banks that repeated
+-- the display text beside the tokens. The scalar revision moves because
+-- release generation identity mixes it, so receipt-only reuse cannot carry a
+-- pre-change bank. Only the message representation changes.
+--
 -- revision 18 / model schema 7 / map cache v8 / map scene schema 14 /
 -- field-cell cache v4 / field-cell schema 5 / field-effect cache v17 /
 -- field-emote cache v4 / field-emote schema 3 / message cache v4 /
@@ -242,7 +249,7 @@
 
 local DerivedAssetContract = {}
 
-DerivedAssetContract.revision = 18
+DerivedAssetContract.revision = 19
 
 DerivedAssetContract.map = {
   cacheFormat = "map-cache-v8",
@@ -351,11 +358,15 @@ DerivedAssetContract.fieldMapData = {
 }
 
 DerivedAssetContract.messages = {
-  cacheFormat = "field-message-cache-v4",
-  -- v2 drops the duplicated per-message id and raw copy: the message array
-  -- slot is the id, and the lossless token stream owns the raw code units.
-  schema = "g4-field-message-bank-v2",
+  cacheFormat = "field-message-cache-v5",
+  -- v3: one compact indexed binary bank per source bank. The payload carries a
+  -- sorted glyph dictionary (each display string stored once) over a u16 word
+  -- stream of normalized tokens, addressable per message. v2 dropped the
+  -- duplicated per-message id and raw copy from the readable Lua banks this
+  -- replaces.
+  schema = "g4-field-message-bank-v3",
   indexSchema = "g4-field-message-index-v1",
+  binaryVersion = 1,
 }
 
 -- v6/v5: focus indicators use four ordered white alpha masks per frame,

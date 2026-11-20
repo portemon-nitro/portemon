@@ -8,7 +8,7 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
-local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+local FieldMessageFixture = require("tests.support.FieldMessageFixture")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
@@ -48,16 +48,16 @@ end
 
 local function seedLabelBank(cache)
   local messages = {}
-  for id, text in pairs(LABEL_TEXTS) do
-    messages[id] = { id = id, text = text, raw = {}, tokens = {} }
+  for messageId = 0, 14 do
+    messages[messageId + 1] = {}
   end
-  cache:writeLua(FieldMessageCache.bankPath(SOURCE_LABEL_BANK), {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = SOURCE_LABEL_BANK,
-    messageCount = 15,
-    key = 0,
-    messages = messages,
-  })
+  for messageId, text in pairs(LABEL_TEXTS) do
+    messages[messageId + 1] = {
+      FieldMessageFixture.glyph(0x0400 + messageId, text),
+      FieldMessageFixture.eos(),
+    }
+  end
+  FieldMessageFixture.write(cache, SOURCE_LABEL_BANK, messages)
 end
 
 -- The shared provider with the source label bank acquired, mirroring the

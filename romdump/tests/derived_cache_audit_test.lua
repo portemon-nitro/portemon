@@ -13,6 +13,7 @@ local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+local FieldMessageFixture = require("tests.support.FieldMessageFixture")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
@@ -376,12 +377,7 @@ function T.a_corrupt_real_payload_fails_the_explicit_audit()
     "the refusal names the corrupt payload, got: " .. tostring(corruptReason)
   )
 
-  cache:writeLua(FieldMessageCache.bankPath(4), {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = 4,
-    messageCount = 1,
-    messages = { [0] = { text = "first", tokens = {} } },
-  })
+  FieldMessageFixture.write(cache, 4, { { FieldMessageFixture.glyph(0x0141, "first"), FieldMessageFixture.eos() } })
   local restored = audit()
   Assert.isTrue(restored, "the restored real payload makes the job usable")
 end

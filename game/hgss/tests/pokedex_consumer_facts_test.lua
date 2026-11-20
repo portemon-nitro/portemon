@@ -15,7 +15,7 @@ local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FakeCache = require("tests.support.FakeCache")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
-local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+local FieldMessageFixture = require("tests.support.FieldMessageFixture")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -39,6 +39,17 @@ local T = {}
 
 local SOURCE_LABEL_BANK = MenuProtocol.START_MENU_MESSAGE_BANK
 
+-- The source label bank's used message ids; every other id in the bank's
+-- 15-message range is an empty placeholder.
+local LABELS = {
+  [0] = "DEX-LABEL",
+  [1] = "PARTY-LABEL",
+  [2] = "BAG-LABEL",
+  [4] = "SAVE-LABEL",
+  [5] = "OPTIONS-LABEL",
+  [14] = "GEAR-LABEL",
+}
+
 local function manifestWithIcons()
   local manifest = FieldUiFixture.manifest()
   FieldUiFixture.addStartMenuIconContract(manifest)
@@ -46,25 +57,17 @@ local function manifestWithIcons()
 end
 
 local function seedLabelBank(cache)
-  local messages = {
-    [0] = "DEX-LABEL",
-    [1] = "PARTY-LABEL",
-    [2] = "BAG-LABEL",
-    [4] = "SAVE-LABEL",
-    [5] = "OPTIONS-LABEL",
-    [14] = "GEAR-LABEL",
-  }
-  local bank = {}
-  for id, text in pairs(messages) do
-    bank[id] = { id = id, text = text, raw = {}, tokens = {} }
+  local messages = {}
+  for messageId = 0, 14 do
+    messages[messageId + 1] = {}
   end
-  cache:writeLua(FieldMessageCache.bankPath(SOURCE_LABEL_BANK), {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = SOURCE_LABEL_BANK,
-    messageCount = 15,
-    key = 0,
-    messages = bank,
-  })
+  for messageId, text in pairs(LABELS) do
+    messages[messageId + 1] = {
+      FieldMessageFixture.glyph(0x0400 + messageId, text),
+      FieldMessageFixture.eos(),
+    }
+  end
+  FieldMessageFixture.write(cache, SOURCE_LABEL_BANK, messages)
 end
 
 local function providerWithLabels()

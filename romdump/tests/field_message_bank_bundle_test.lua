@@ -1,9 +1,9 @@
--- Generated field-message bank publication: one readable Lua bank file per
--- source bank, without a completion marker, source provenance, or duplicated
--- per-message payload, and the runtime provider renders the same lossless
--- control stream from it.
+-- Generated field-message bank publication: one compact indexed payload per
+-- source bank, without a completion marker or source provenance, and the
+-- runtime provider renders the same lossless control stream from it.
 
 local Assert = require("tests.support.Assert")
+local FieldMessageAsset = require("libs.assets.src.field.FieldMessageAsset")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local FieldMessageCacheWriter = require("romdump.src.digest.ui.FieldMessageCacheWriter")
@@ -141,7 +141,7 @@ end
 local function bankFiles(cache)
   local bankPath = FieldMessageCache.bankPath(BANK_ID)
   local bankDir = assert(bankPath:match("^(.*)/[^/]+$"))
-  local name = FieldMessageCache.bankPath(BANK_ID):match("([^/]+)%.lua$")
+  local name = FieldMessageCache.bankPath(BANK_ID):match("([^/]+)%.g4msg$")
   local files = {}
   for _, path in ipairs(ScriptCacheBuildFixture.allFiles(cache)) do
     local pathDir = path:match("^(.*)/[^/]+$")
@@ -154,7 +154,7 @@ local function bankFiles(cache)
   return files
 end
 
-function T.published_bank_is_one_lean_readable_file()
+function T.published_bank_is_one_lean_compact_file()
   local cache = publishBank()
   local bankPath = FieldMessageCache.bankPath(BANK_ID)
   local files = bankFiles(cache)
@@ -165,29 +165,29 @@ function T.published_bank_is_one_lean_readable_file()
   )
   Assert.equal(files[1], bankPath, "the one published bank file carries the bank payload")
 
-  local bank = assert(cache:loadLua(bankPath)) --[[@as table<string, unknown>]]
-  Assert.equal(bank.schema, FieldMessageCache.SCHEMA)
-  Assert.equal(bank.bankId, BANK_ID)
-  Assert.equal(bank.messageCount, 2)
-  Assert.isNil(bank.key, "a generated bank stores no source decoder key")
+  local bytes = assert(cache:read(bankPath), "the published bank is readable bytes")
+  Assert.equal(bytes:sub(1, 4), FieldMessageAsset.MAGIC, "the published bank is the compact payload")
+  local view = assert(FieldMessageAsset.open(bytes, BANK_ID))
+  Assert.equal(view.schema, FieldMessageCache.SCHEMA)
+  Assert.equal(view.bankId, BANK_ID)
+  Assert.equal(view.messageCount, 2)
+  Assert.isTrue(FieldMessageAsset.validate(bytes, BANK_ID), "the published payload is a complete compact bank")
 
-  local messages = bank.messages --[[@as table<integer, table<string, unknown>>]]
   for messageId = 0, 1 do
-    local message = messages[messageId]
-    Assert.notNil(message, "the bank stores message " .. tostring(messageId))
-    Assert.isNil(message.id, "a stored message repeats no array-derived id")
-    Assert.isNil(message.raw, "a stored message keeps no second raw code-unit copy")
-    Assert.equal(type(message.text), "string", "a stored message keeps readable text")
-    Assert.equal(type(message.tokens), "table", "a stored message keeps its lossless token stream")
+    local message = assert(FieldMessageAsset.message(view, messageId), "the bank stores message " .. messageId)
+    Assert.isNil((message --[[@as table<string, unknown>]]).id, "a stored message repeats no index-derived id")
+    Assert.isNil((message --[[@as table<string, unknown>]]).raw, "a stored message keeps no second raw code-unit copy")
+    Assert.equal(type(message.text), "string", "a selected message carries readable text")
+    Assert.equal(type(message.tokens), "table", "a selected message carries its lossless token stream")
     Assert.equal(
       message.text,
       FieldMessageText.tokensToText(message.tokens),
-      "stored text stays the canonical control-marker rendering of its tokens"
+      "the derived text stays the canonical control-marker rendering of its tokens"
     )
   end
 end
 
-function T.provider_keeps_control_semantics_from_the_lean_bank()
+function T.provider_keeps_control_semantics_from_the_compact_bank()
   local cache, source = publishBank()
   Assert.deepEqual(source.readMemberIds, { BANK_ID }, "one bank job reads no sibling bank")
 
@@ -197,8 +197,9 @@ function T.provider_keeps_control_semantics_from_the_lean_bank()
   Assert.equal(template.bankId, BANK_ID)
   Assert.equal(template.messageId, 0)
   Assert.equal(type(template.text), "string", "the provider returns readable text without a font definition")
-  local published = assert(cache:loadLua(FieldMessageCache.bankPath(BANK_ID))) --[[@as table<string, unknown>]]
-  local publishedTokens = published.messages --[[@as table<integer, table<string, unknown>>]][0].tokens
+  local published = assert(cache:read(FieldMessageCache.bankPath(BANK_ID)))
+  local publishedView = assert(FieldMessageAsset.open(published, BANK_ID))
+  local publishedTokens = assert(FieldMessageAsset.message(publishedView, 0)).tokens
   Assert.equal(#template.tokens, #publishedTokens)
   Assert.isNil(template.raw, "the runtime template stores no second raw code-unit copy")
 

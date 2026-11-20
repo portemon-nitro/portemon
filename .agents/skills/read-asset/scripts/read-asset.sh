@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Targeted Portemon asset preparation plus logical-byte extraction or listing.
+# Targeted Portemon asset preparation plus logical-byte extraction, directory
+# listing, or human-readable message-bank export.
 set -euo pipefail
 cd "$(dirname "$0")/../../../.."
 
 usage() {
-  echo "usage: .agents/skills/read-asset/scripts/read-asset.sh --version <heartgold|soulsilver> --require <kind:key> (--path <cache-relative-file> | --list <cache-relative-directory>) [--rom-source <path>] [--rebuild]" >&2
+  echo "usage: .agents/skills/read-asset/scripts/read-asset.sh --version <heartgold|soulsilver> --require <kind:key> (--path <cache-relative-file> | --list <cache-relative-directory> | --message-text <cache-relative-bank>) [--rom-source <path>] [--rebuild]" >&2
   exit 2
 }
 
@@ -12,11 +13,12 @@ version=""
 requirement=""
 asset_path=""
 list_dir=""
+message_text=""
 rom_source=""
 rebuild=false
 while (( $# > 0 )); do
   case "$1" in
-    --version|--require|--path|--list|--rom-source)
+    --version|--require|--path|--list|--message-text|--rom-source)
       (( $# >= 2 )) || usage
       [[ -n "$2" && "$2" != --* ]] || usage
       case "$1" in
@@ -24,6 +26,7 @@ while (( $# > 0 )); do
         --require) [[ -z "$requirement" ]] || usage; requirement="$2" ;;
         --path) [[ -z "$asset_path" ]] || usage; asset_path="$2" ;;
         --list) [[ -z "$list_dir" ]] || usage; list_dir="$2" ;;
+        --message-text) [[ -z "$message_text" ]] || usage; message_text="$2" ;;
         --rom-source) [[ -z "$rom_source" ]] || usage; rom_source="$2" ;;
       esac
       shift 2
@@ -38,7 +41,11 @@ while (( $# > 0 )); do
 done
 [[ "$version" == heartgold || "$version" == soulsilver ]] || usage
 [[ "$requirement" == *:* ]] || usage
-if [[ -n "$asset_path" && -n "$list_dir" ]] || [[ -z "$asset_path" && -z "$list_dir" ]]; then
+modes=0
+if [[ -n "$asset_path" ]]; then modes=$((modes + 1)); fi
+if [[ -n "$list_dir" ]]; then modes=$((modes + 1)); fi
+if [[ -n "$message_text" ]]; then modes=$((modes + 1)); fi
+if (( modes != 1 )); then
   usage
 fi
 
@@ -63,15 +70,24 @@ reader=(--repo-root "$PWD" --version "$version")
 if [[ -n "$list_dir" ]]; then
   reader+=(--list "$list_dir")
 else
+  requested="$asset_path"
+  if [[ -n "$message_text" ]]; then
+    requested="$message_text"
+  fi
   mkdir -p .agents/tmp
   scratch="$(mktemp -d .agents/tmp/read-asset.XXXXXXXX)"
-  filename="${asset_path##*/}"
+  filename="${requested##*/}"
   if [[ -z "$filename" || "$filename" == . || "$filename" == .. ]]; then
     echo "read-asset: invalid output filename" >&2
     rmdir -- "$scratch"
     exit 2
   fi
-  output="$PWD/$scratch/$filename"
-  reader+=(--path "$asset_path" --output "$output")
+  if [[ -n "$message_text" ]]; then
+    output="$PWD/$scratch/${filename%.g4msg}.messages.lua"
+    reader+=(--message-text "$message_text" --output "$output")
+  else
+    output="$PWD/$scratch/$filename"
+    reader+=(--path "$asset_path" --output "$output")
+  fi
 fi
 scripts/lib/love.sh .agents/skills/read-asset/reader/ "${reader[@]}"

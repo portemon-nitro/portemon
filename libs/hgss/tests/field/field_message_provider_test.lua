@@ -1,43 +1,40 @@
--- Message provider tests over a FakeCache: bank lifetime, immutable templates,
--- substitution formatting, and eviction.
+-- Message provider tests over a FakeCache: active bank lifetime, immutable
+-- templates, and substitution formatting.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
-local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
+local FieldMessageFixture = require("tests.support.FieldMessageFixture")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 
 local T = {}
 
-local function bankArtifact(bankId, messageCount)
+-- One glyph per message whose display text is the message id, so a template's
+-- rendered text identifies the message it came from.
+local function bankMessages(messageCount)
   local messages = {}
   for id = 0, messageCount - 1 do
-    messages[id] = {
-      id = id,
-      raw = { 0xFFFF },
-      text = string.char(48 + id),
-      tokens = {
-        { kind = "glyph", code = 0x0121 + id, text = string.char(48 + id), raw = { 0x0121 + id } },
-        { kind = "eos", raw = { 0xFFFF } },
-      },
+    messages[#messages + 1] = {
+      FieldMessageFixture.glyph(0x0121 + id, string.char(48 + id)),
+      FieldMessageFixture.eos(),
     }
   end
-  return {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = bankId,
-    messageCount = messageCount,
-    source = { narc = "NARC_msgdata_msg", memberId = bankId, memberSha1 = "synthetic" },
-    messages = messages,
-  }
+  return messages
+end
+
+local function cacheWithBackend(banks)
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  for bankId, messageCount in pairs(banks) do
+    FieldMessageFixture.write(cache, bankId, bankMessages(messageCount))
+  end
+  return cache, backend
 end
 
 local function cacheWith(banks)
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  for bankId, artifact in pairs(banks) do
-    cache:writeLua(FieldMessageCache.bankPath(bankId), artifact)
-  end
+  local cache = cacheWithBackend(banks)
   return cache
 end
 
@@ -69,22 +66,76 @@ local function template(messageId, tokens)
   return { bankId = 543, messageId = messageId, text = "", tokens = tokens }
 end
 
-function T.acquire_pins_bank_and_release_evicts()
-  local cache = cacheWith({ [542] = bankArtifact(542, 2), [543] = bankArtifact(543, 2) })
-  local provider = assert(FieldMessageProvider.new(cache, { maxCachedBanks = 2 }))
+-- Active acquisition is the only bank lifetime: references are counted
+-- while consumers hold the bank, the final release removes its record instead
+-- of leaving an idle copy behind, and a returned template never depends on the
+-- record that produced it.
+function T.release_ends_the_active_acquisition_without_invalidating_returned_templates()
+  local cache, backend = cacheWithBackend({ [542] = 2, [543] = 2 })
+  local openedReads = 0
+  local storedRead = backend.read
+  backend.read = function(self, path)
+    if path:find("banks/0542", 1, true) then
+      openedReads = openedReads + 1
+    end
+    return storedRead(self, path)
+  end
+  local provider = assert(FieldMessageProvider.new(cache))
+
   local bank = assert(provider:acquireBank(542))
   Assert.equal(bank.bankId, 542)
   Assert.equal(provider:stats().loads, 1)
-  local again = provider:acquireBank(542)
-  Assert.equal(again, bank) -- same artifact, no reload
+  Assert.equal(provider:acquireBank(542), bank, "two active acquisitions share one bank view")
   Assert.equal(provider:stats().hits, 1)
+  Assert.equal(provider:stats().references, 2)
+  assert(provider:acquireBank(543), "another bank is acquired independently")
+  Assert.equal(provider:stats().live, 2)
+
+  local template = assert(provider:get(542, 1))
+  local formatted = provider:format(template, {})
+  Assert.equal(formatted.text, "1")
+
   provider:releaseBank(542)
+  Assert.equal(provider:stats().references, 2, "a partial release keeps the active record")
+  Assert.equal(assert(provider:get(542, 1)).text, "1", "a still-acquired bank keeps serving its messages")
+
   provider:releaseBank(542)
+  Assert.equal(provider:stats().live, 1, "the final release removes only that bank's record")
+  Assert.equal(provider:stats().disposals, 1)
+
+  local formattedAfterRelease = provider:format(template, {})
+  Assert.deepEqual(formattedAfterRelease.tokens, formatted.tokens, "a returned template outlives its bank record")
+  Assert.equal(formattedAfterRelease.text, "1")
+
+  local readsBeforeGet = openedReads
+  local missing, err = provider:get(542, 1)
+  Assert.isNil(missing)
+  Assert.equal(assert(err).code, FieldMessageProvider.MESSAGE_BANK_NOT_ACQUIRED)
+  Assert.equal(openedReads, readsBeforeGet, "a get on an unacquired bank reads no bytes")
+
+  assert(provider:acquireBank(542), "a released bank is opened again on reacquisition")
+  Assert.equal(provider:stats().loads, 3, "the reacquisition is the third new bank view")
+  Assert.equal(openedReads, readsBeforeGet + 1, "reacquisition reads the compact payload again")
+  local reopenedTemplate = assert(provider:get(542, 1))
+  Assert.deepEqual(reopenedTemplate.tokens, template.tokens, "reacquisition decodes the same message")
+  Assert.equal(reopenedTemplate.text, template.text)
+  Assert.equal(template.text, "1", "the earlier template stays unchanged across release and reacquisition")
+  Assert.equal(provider:stats().live, 2)
+
+  provider:dispose()
+  Assert.equal(provider:stats().live, 0, "dispose releases every active record")
   Assert.equal(provider:stats().references, 0)
+  Assert.equal(provider:stats().loads, 0, "a disposed provider reports no stale loads")
+  Assert.equal(provider:stats().hits, 0, "a disposed provider reports no stale hits")
+  Assert.equal(provider:stats().disposals, 0, "a disposed provider reports no stale disposals")
+  local disposed, disposedErr = provider:get(543, 0)
+  Assert.isNil(disposed)
+  Assert.equal(assert(disposedErr).code, FieldMessageProvider.MESSAGE_BANK_NOT_ACQUIRED)
+  Assert.equal(provider:format(template, {}).text, "1", "disposal never invalidates a returned template")
 end
 
 function T.get_returns_immutable_templates_and_bounds_errors()
-  local provider = assert(FieldMessageProvider.new(cacheWith({ [543] = bankArtifact(543, 3) })))
+  local provider = assert(FieldMessageProvider.new(cacheWith({ [543] = 3 })))
   provider:acquireBank(543)
   local firstTemplate = assert(provider:get(543, 1))
   Assert.equal(firstTemplate.bankId, 543)
@@ -111,7 +162,7 @@ function T.missing_bank_artifact_is_typed()
 end
 
 function T.format_substitutes_before_wrapping_and_never_mutates()
-  local provider = assert(FieldMessageProvider.new(cacheWith({ [542] = bankArtifact(542, 1) })))
+  local provider = assert(FieldMessageProvider.new(cacheWith({ [542] = 1 })))
   provider:acquireBank(542)
   local formattedTemplate = assert(provider:get(542, 0))
   local context = { playerName = "GOLD" }
@@ -154,7 +205,7 @@ function T.format_substitutes_before_wrapping_and_never_mutates()
 end
 
 function T.unresolved_substitution_stays_visible_and_traced()
-  local provider = assert(FieldMessageProvider.new(cacheWith({ [542] = bankArtifact(542, 1) })))
+  local provider = assert(FieldMessageProvider.new(cacheWith({ [542] = 1 })))
   local tokens = {
     { kind = "substitution", control = 0x0103, args = { 0, 0 }, raw = { 0xFFFE, 0x0103, 0x0002, 0, 0 } },
     { kind = "eos", raw = { 0xFFFF } },
@@ -180,101 +231,11 @@ function T.ascii_glyph_tokens_cover_the_demo_name()
   Assert.equal(accented[1].code, 0x0188)
 end
 
-function T.bounded_lru_evicts_only_unreferenced_banks()
-  local cache = cacheWith({
-    [542] = bankArtifact(542, 1),
-    [543] = bankArtifact(543, 1),
-    [544] = bankArtifact(544, 1),
-  })
-  local provider = assert(FieldMessageProvider.new(cache, { maxCachedBanks = 2 }))
-  provider:acquireBank(542)
-  provider:acquireBank(543)
-  provider:releaseBank(542)
-  provider:releaseBank(543)
-  provider:acquireBank(544) -- evicts 542 (LRU, zero references)
-  Assert.equal(provider:stats().live, 2)
-  Assert.equal(provider:stats().disposals, 1)
-  local missing, err = provider:get(542, 0)
-  Assert.isNil(missing)
-  Assert.equal(assert(err).code, "MESSAGE_BANK_NOT_ACQUIRED")
-
-  -- A referenced bank is never evicted: with 544 released, re-acquiring 542
-  -- evicts 543, and re-acquiring 543 evicts 544.
-  provider:releaseBank(544)
-  provider:acquireBank(542)
-  Assert.equal(provider:stats().live, 2)
-  provider:acquireBank(543)
-  Assert.equal(provider:stats().live, 2)
-  provider:releaseBank(543)
-  Assert.equal(provider:stats().references, 1) -- only 542 still referenced
-  Assert.equal(provider:stats().live, 2)
-end
-
-function T.pinned_tail_does_not_block_evicting_a_newer_unpinned_bank()
-  -- Over capacity with the least-recent bank pinned, eviction must skip past
-  -- it and evict the first unreferenced bank instead of stopping (the old
-  -- implementation checked only the oldest entry and gave up on a pin).
-  local cache = cacheWith({
-    [542] = bankArtifact(542, 1),
-    [543] = bankArtifact(543, 1),
-    [544] = bankArtifact(544, 1),
-  })
-  local provider = assert(FieldMessageProvider.new(cache, { maxCachedBanks = 2 }))
-  provider:acquireBank(542)
-  provider:acquireBank(543)
-  provider:releaseBank(543) -- 543 unreferenced, more recent than pinned 542
-  provider:acquireBank(544) -- over capacity: evicts 543, keeps pinned 542
-  Assert.equal(provider:stats().live, 2)
-  Assert.equal(provider:stats().disposals, 1)
-  local missing, err = provider:get(543, 0)
-  Assert.isNil(missing)
-  Assert.equal(assert(err).code, "MESSAGE_BANK_NOT_ACQUIRED")
-  Assert.equal(assert(provider:get(542, 0)).messageId, 0)
-  Assert.equal(assert(provider:get(544, 0)).messageId, 0)
-end
-
-function T.all_pinned_residents_make_capacity_soft()
-  local cache = cacheWith({
-    [542] = bankArtifact(542, 1),
-    [543] = bankArtifact(543, 1),
-    [544] = bankArtifact(544, 1),
-  })
-  local provider = assert(FieldMessageProvider.new(cache, { maxCachedBanks = 1 }))
-  provider:acquireBank(542)
-  provider:acquireBank(543)
-  provider:acquireBank(544)
-  Assert.equal(provider:stats().live, 3) -- every resident pinned: capacity is soft
-  Assert.equal(provider:stats().disposals, 0)
-  provider:releaseBank(542) -- now the one unreferenced bank is evictable
-  Assert.equal(provider:stats().live, 2)
-  Assert.equal(provider:stats().disposals, 1)
-  Assert.equal(assert(provider:get(543, 0)).messageId, 0)
-  Assert.equal(assert(provider:get(544, 0)).messageId, 0)
-end
-
 function T.dispose_releases_everything()
-  local provider = assert(FieldMessageProvider.new(cacheWith({ [542] = bankArtifact(542, 1) })))
+  local provider = assert(FieldMessageProvider.new(cacheWith({ [542] = 1 })))
   provider:acquireBank(542)
   provider:dispose()
   Assert.equal(provider:stats().live, 0)
-end
-
-function T.dispose_resets_the_instrument_counters()
-  local provider = assert(
-    FieldMessageProvider.new(
-      cacheWith({ [542] = bankArtifact(542, 1), [543] = bankArtifact(543, 1) }),
-      { maxCachedBanks = 1 }
-    )
-  )
-  provider:acquireBank(542)
-  provider:releaseBank(542)
-  provider:acquireBank(543) -- evicts the unreferenced 542
-  Assert.isTrue(provider:stats().loads > 0)
-  Assert.isTrue(provider:stats().disposals > 0)
-  provider:dispose()
-  Assert.equal(provider:stats().loads, 0, "a disposed provider reports no stale loads")
-  Assert.equal(provider:stats().hits, 0, "a disposed provider reports no stale hits")
-  Assert.equal(provider:stats().disposals, 0, "a disposed provider reports no stale disposals")
 end
 
 function T.prepared_glyphs_carry_the_default_color()

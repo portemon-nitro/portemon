@@ -155,76 +155,55 @@ local function testWorld()
   })
 end
 
----@param tokens table[]
----@return table bank artifact
-local function glyphBank(bankId, messages)
-  local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
-  local packed = {}
-  local count = 0
-  for id, glyphs in pairs(messages) do
-    local tokens = {}
-    for _, code in ipairs(glyphs) do
-      tokens[#tokens + 1] = { kind = "glyph", code = code, text = string.char(64 + (code % 26)), raw = { code } }
+---@param messages table<integer, integer[]> glyph codes by message id
+---@return table[] dense normalized messages
+local function glyphMessages(messages)
+  local FieldMessageFixture = require("tests.support.FieldMessageFixture")
+  local highest = -1
+  for messageId in pairs(messages) do
+    if messageId > highest then
+      highest = messageId
     end
-    tokens[#tokens + 1] = { kind = "eos", raw = { 0xFFFF } }
-    packed[id] = { id = id, raw = {}, text = "bank" .. bankId .. "/" .. id, tokens = tokens }
-    count = count + 1
   end
-  return {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = bankId,
-    messageCount = count,
-    source = { narc = "NARC_msgdata_msg", memberId = bankId, memberSha1 = "synthetic" },
-    messages = packed,
-  }
+  local dense = {}
+  for messageId = 0, highest do
+    local tokens = {}
+    for _, code in ipairs(messages[messageId] or {}) do
+      tokens[#tokens + 1] = FieldMessageFixture.glyph(code, string.char(64 + (code % 26)))
+    end
+    tokens[#tokens + 1] = FieldMessageFixture.eos()
+    dense[messageId + 1] = tokens
+  end
+  return dense
 end
 
 -- Message banks behind the deferred-parent branches: the fixed-phrase
 -- pair, the raw Frontier intro bank, the trainer-class name bank, and
 -- the Union language bank. Word glyph codes match the synthetic
 -- catalog so fixed-phrase comparison has a shared alphabet.
+---@param banks table<integer, table[]> dense normalized messages by bank id
 ---@return table provider
 local function providerWith(banks)
   local CacheFs = require("libs.storage.src.CacheFs")
   local FakeCache = require("tests.support.FakeCache")
-  local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+  local FieldMessageFixture = require("tests.support.FieldMessageFixture")
   local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  for bankId, artifact in pairs(banks) do
-    cache:writeLua(FieldMessageCache.bankPath(bankId), artifact)
+  for bankId, messages in pairs(banks) do
+    FieldMessageFixture.write(cache, bankId, messages)
   end
   return assert(FieldMessageProvider.new(cache))
 end
 
 ---@return table provider with the fixed-phrase pair
 local function fixedPhraseProvider()
-  local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+  local FieldMessageFixture = require("tests.support.FieldMessageFixture")
   local pair = {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = 202,
-    messageCount = 2,
-    source = { narc = "NARC_msgdata_msg", memberId = 202, memberSha1 = "synthetic" },
-    messages = {
-      [0] = {
-        id = 0,
-        raw = {},
-        text = "reference",
-        tokens = {
-          { kind = "glyph", code = 0x51, text = "Q", raw = { 0x51 } },
-          { kind = "glyph", code = 0x52, text = "R", raw = { 0x52 } },
-          { kind = "eos", raw = { 0xFFFF } },
-        },
-      },
-      [1] = {
-        id = 1,
-        raw = {},
-        text = "candidate",
-        tokens = {
-          { kind = "substitution", control = 0x0100, args = { 0, 0 }, raw = { 0xFFFE, 0x100, 1, 0 } },
-          { kind = "substitution", control = 0x0100, args = { 1, 0 }, raw = { 0xFFFE, 0x100, 1, 1 } },
-          { kind = "eos", raw = { 0xFFFF } },
-        },
-      },
+    { FieldMessageFixture.glyph(0x51, "Q"), FieldMessageFixture.glyph(0x52, "R"), FieldMessageFixture.eos() },
+    {
+      FieldMessageFixture.control(0x0100, { 0, 0 }),
+      FieldMessageFixture.control(0x0100, { 1, 0 }),
+      FieldMessageFixture.eos(),
     },
   }
   return providerWith({ [202] = pair })
@@ -435,7 +414,7 @@ end
 function T.tests.union_own_message_selects_contextual_branches()
   local Service = requireService()
   local banks = {
-    [730] = glyphBank(730, { [0] = { 0x4C, 0x41, 0x53, 0x53 }, [1] = { 0x58 } }),
+    [730] = glyphMessages({ [0] = { 0x4C, 0x41, 0x53, 0x53 }, [1] = { 0x58 } }),
   }
   local args = serviceArgs()
   args.messageProvider = providerWith(banks)
@@ -484,7 +463,7 @@ function T.tests.union_partner_languages_grant_only_mapped_greetings()
     languages[id] = { 0x40 + id }
   end
   local args = serviceArgs()
-  args.messageProvider = providerWith({ [738] = glyphBank(738, languages) })
+  args.messageProvider = providerWith({ [738] = glyphMessages(languages) })
   args.mons = { { species = "PIKACHU", language = "japanese" } }
   local grants = { [1] = 0, [2] = 1, [3] = 2, [4] = 3, [5] = 4, [7] = 5 }
   for language, bit in pairs(grants) do

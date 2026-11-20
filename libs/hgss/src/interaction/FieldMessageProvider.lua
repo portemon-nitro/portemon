@@ -1,27 +1,28 @@
 -- Runtime message bank cache and formatter over the generated message
--- derived class. Banks are pre-tokenized at import time (FieldMessageCompiler);
--- this module owns bank lifetime (acquire/release, bounded LRU), immutable
--- MessageTemplate access, and substitution formatting that never mutates the
--- template. Pure module: CacheFs-shaped IO only, no love dependency.
+-- derived class. Banks are compiled into compact indexed payloads at import
+-- time (FieldMessageCompiler); this module owns active bank lifetime
+-- (acquire/release), selected-message expansion through FieldMessageAsset, and
+-- substitution formatting that never mutates the template. Pure module:
+-- CacheFs-shaped IO only, no love dependency.
 
 local Errors = require("libs.errors.src.Errors")
+local FieldMessageAsset = require("libs.assets.src.field.FieldMessageAsset")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 
 ---@class FieldMessageProvider
 ---@field private _cacheFs CacheFs
----@field private _maxCachedBanks integer
----@field private _banks table<integer, table<string, unknown>>
----@field private _order integer[]
+---@field private _banks table<integer, { bank: FieldMessageAsset.View, references: integer }>
 ---@field private _stats table<string, unknown>
 local FieldMessageProvider = {}
 FieldMessageProvider.__index = FieldMessageProvider
 
 -- Named error codes: the provider's documented failure identity, exported so
--- callers (the script dialogue host) never duplicate the literals.
+-- callers (the script dialogue host) never duplicate the literals. The range
+-- identity belongs to the compact codec that decides it.
 FieldMessageProvider.MESSAGE_BANK_MISSING = "MESSAGE_BANK_MISSING"
 FieldMessageProvider.MESSAGE_BANK_NOT_ACQUIRED = "MESSAGE_BANK_NOT_ACQUIRED"
-FieldMessageProvider.MESSAGE_ID_OUT_OF_RANGE = "MESSAGE_ID_OUT_OF_RANGE"
+FieldMessageProvider.MESSAGE_ID_OUT_OF_RANGE = FieldMessageAsset.MESSAGE_ID_OUT_OF_RANGE
 FieldMessageProvider.MESSAGE_CONTROL_UNSUPPORTED = "MESSAGE_CONTROL_UNSUPPORTED"
 FieldMessageProvider.MESSAGE_CONTROL_ARGUMENT_INVALID = "MESSAGE_CONTROL_ARGUMENT_INVALID"
 
@@ -49,8 +50,6 @@ FieldMessageProvider.MESSAGE_CONTROL_ARGUMENT_INVALID = "MESSAGE_CONTROL_ARGUMEN
 ---@field text string
 ---@field tokens MessageToken[]
 
-local DEFAULT_MAX_CACHED_BANKS = 4
-
 -- COLOR's special argument values from the source printer: 100..106 store a
 -- color pair for later restoration, and 0xFF swaps the active and stored pairs
 -- (handled in the prepareControls pass below).
@@ -60,16 +59,12 @@ local SIZE_NORMAL = 100
 local SIZE_STRETCHED = 200
 
 ---@param cacheFs table<string, unknown> CacheFs-shaped
----@param opts table<string, unknown>|nil
 ---@return FieldMessageProvider
-function FieldMessageProvider.new(cacheFs, opts)
-  opts = opts or {}
-  assert(cacheFs and cacheFs.loadLua, "provider requires a CacheFs-shaped object")
+function FieldMessageProvider.new(cacheFs)
+  assert(cacheFs and cacheFs.read, "provider requires a CacheFs-shaped object")
   return setmetatable({
     _cacheFs = cacheFs,
-    _maxCachedBanks = opts.maxCachedBanks or DEFAULT_MAX_CACHED_BANKS,
-    _banks = {}, -- bankId -> { bank = artifact, references = n }
-    _order = {}, -- bankIds most-recently-used first (eviction order)
+    _banks = {}, -- bankId -> { bank = compact view, references = n }
     _stats = { loads = 0, hits = 0, disposals = 0 },
   }, FieldMessageProvider)
 end
@@ -89,19 +84,35 @@ function FieldMessageProvider:stats()
   return stats
 end
 
--- Loads the bank artifact once and pins it. Returns the bank artifact or
--- (nil, err) with MESSAGE_BANK_MISSING on an absent/corrupt cache file.
+-- Opens the bank's compact payload once and pins it. Returns the compact bank
+-- view or (nil, err) with MESSAGE_BANK_MISSING on an absent or recognized
+-- malformed payload; a failed acquisition installs no record.
 function FieldMessageProvider:acquireBank(bankId)
   local entry = self._banks[bankId]
   if entry then
     entry.references = entry.references + 1
-    self:_touch(bankId)
     self._stats.hits = self._stats.hits + 1
     return entry.bank
   end
-  local bank, err = self._cacheFs:loadLua(FieldMessageCache.bankPath(bankId))
-  if type(bank) ~= "table" or bank.schema ~= FieldMessageCache.SCHEMA or bank.bankId ~= bankId then
-    local context = { bankId = bankId, loadError = err }
+  local bytes = self._cacheFs:read(FieldMessageCache.bankPath(bankId))
+  local bank = nil ---@type FieldMessageAsset.View?
+  ---@type string|Errors.Error
+  local loadError = "the compact payload is absent"
+  if bytes ~= nil then
+    local opened, view = pcall(FieldMessageAsset.open, bytes, bankId)
+    if opened then
+      bank = view --[[@as FieldMessageAsset.View]]
+    else
+      local failure = view ---@type unknown
+      if Errors.is(failure) and failure.code == FieldMessageAsset.MESSAGE_ASSET_INVALID then
+        loadError = failure
+      else
+        error(failure, 0)
+      end
+    end
+  end
+  if bank == nil then
+    local context = { bankId = bankId, loadError = loadError }
     ---@cast context Errors.Context
     return nil,
       Errors.new(
@@ -111,12 +122,12 @@ function FieldMessageProvider:acquireBank(bankId)
       )
   end
   self._banks[bankId] = { bank = bank, references = 1 }
-  table.insert(self._order, 1, bankId) -- most-recently-used first
   self._stats.loads = self._stats.loads + 1
-  self:_evict()
   return bank
 end
 
+-- The final release removes the active record. Templates already returned to a
+-- caller contain plain Lua values, so they stay usable afterwards.
 function FieldMessageProvider:releaseBank(bankId)
   local entry = self._banks[bankId]
   if not entry then
@@ -129,47 +140,15 @@ function FieldMessageProvider:releaseBank(bankId)
   entry.references = entry.references - 1
   assert(entry.references >= 0, "message bank reference count went negative")
   if entry.references == 0 then
-    self:_evict()
+    self._banks[bankId] = nil
+    self._stats.disposals = self._stats.disposals + 1
   end
 end
 
--- Evicts unreferenced banks while the cache exceeds its bound, scanning from
--- least- to most-recently-used so a pinned least-recent bank cannot protect a
--- more-recent unreferenced one. Stops once within the bound or when every
--- resident is pinned: the capacity is necessarily soft then. Never reloads a
--- valid bank for every access.
-function FieldMessageProvider:_evict()
-  for i = #self._order, 1, -1 do
-    if #self._order <= self._maxCachedBanks then
-      break
-    end
-    local bankId = self._order[i]
-    if self._banks[bankId].references == 0 then
-      table.remove(self._order, i)
-      self._banks[bankId] = nil
-      self._stats.disposals = self._stats.disposals + 1
-    end
-  end
-end
-
-function FieldMessageProvider:_touch(bankId)
-  local position
-  for i, id in ipairs(self._order) do
-    if id == bankId then
-      position = i
-      break
-    end
-  end
-  if position then
-    table.remove(self._order, position)
-    table.insert(self._order, 1, bankId)
-  end
-end
-
--- Returns an immutable MessageTemplate for an acquired bank: the modder-
--- facing display text plus the lossless token stream that is the rendering
--- source. The raw code units stay inside the tokens, so no second copy is
--- exposed. Never loads on its own: bank lifetime is explicit.
+-- Returns an immutable MessageTemplate for an actively acquired bank: the
+-- modder-facing display text plus the lossless token stream that is the
+-- rendering source. Expands exactly the selected message and never loads a
+-- bank on its own: bank lifetime is explicit.
 function FieldMessageProvider:get(bankId, messageId)
   local entry = self._banks[bankId]
   if not entry then
@@ -180,8 +159,13 @@ function FieldMessageProvider:get(bankId, messageId)
         { bankId = bankId }
       )
   end
-  local message = entry.bank.messages[messageId]
-  if not message then
+  local bank = entry.bank
+  if
+    type(messageId) ~= "number"
+    or messageId ~= math.floor(messageId)
+    or messageId < 0
+    or messageId >= bank.messageCount
+  then
     return nil,
       Errors.new(
         FieldMessageProvider.MESSAGE_ID_OUT_OF_RANGE,
@@ -190,16 +174,11 @@ function FieldMessageProvider:get(bankId, messageId)
           .. " not in bank "
           .. tostring(bankId)
           .. " of "
-          .. tostring(entry.bank.messageCount),
-        { bankId = bankId, messageId = messageId, messageCount = entry.bank.messageCount }
+          .. tostring(bank.messageCount),
+        { bankId = bankId, messageId = messageId, messageCount = bank.messageCount }
       )
   end
-  return {
-    bankId = bankId,
-    messageId = messageId,
-    text = message.text,
-    tokens = message.tokens,
-  }
+  return FieldMessageAsset.message(bank, messageId)
 end
 
 -- Raises a printer-control fault that always carries the message's source
@@ -407,7 +386,6 @@ end
 
 function FieldMessageProvider:dispose()
   self._banks = {}
-  self._order = {}
   self._stats = { loads = 0, hits = 0, disposals = 0 }
 end
 

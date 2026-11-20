@@ -3,7 +3,7 @@
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
-local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+local FieldMessageFixture = require("tests.support.FieldMessageFixture")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local ScriptMenuHost = require("libs.hgss.src.script.ScriptMenuHost")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
@@ -12,30 +12,17 @@ local FakeCache = require("tests.support.FakeCache")
 
 local T = {}
 
-local function bankArtifact(bankId, text)
-  return {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = bankId,
-    messageCount = 1,
-    source = { narc = "NARC_msgdata_msg", memberId = bankId, memberSha1 = "synthetic" },
-    messages = {
-      [0] = {
-        id = 0,
-        raw = { 0xFFFF },
-        text = text,
-        tokens = { { kind = "glyph", text = text }, { kind = "eos", raw = { 0xFFFF } } },
-      },
-    },
-  }
+local FIELD = FieldMessageFixture
+
+-- One message carrying the given display text as a single glyph.
+local function labelledMessages(text)
+  return { { FIELD.glyph(0x0400 + string.byte(text:sub(1, 1)), text), FIELD.eos() } }
 end
 
 local function host()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:writeLua(
-    FieldMessageCache.bankPath(MenuProtocol.STANDARD_MESSAGE_BANK),
-    bankArtifact(MenuProtocol.STANDARD_MESSAGE_BANK, "Standard")
-  )
-  cache:writeLua(FieldMessageCache.bankPath(2), bankArtifact(2, "Script"))
+  FieldMessageFixture.write(cache, MenuProtocol.STANDARD_MESSAGE_BANK, labelledMessages("Standard"))
+  FieldMessageFixture.write(cache, 2, labelledMessages("Script"))
   local provider = assert(FieldMessageProvider.new(cache))
   local h = ScriptMenuHost.new({
     provider = provider,
@@ -246,22 +233,11 @@ end
 -- script's buffered text, like dialogue.
 function T.builder_items_expand_buffered_script_text()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:writeLua(FieldMessageCache.bankPath(MenuProtocol.STANDARD_MESSAGE_BANK), {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = MenuProtocol.STANDARD_MESSAGE_BANK,
-    messageCount = 1,
-    source = { narc = "NARC_msgdata_msg", memberId = MenuProtocol.STANDARD_MESSAGE_BANK, memberSha1 = "synthetic" },
-    messages = {
-      [0] = {
-        id = 0,
-        raw = { 0xFFFF },
-        text = "",
-        tokens = {
-          { kind = "substitution", control = "STRVAR", args = { 0 } },
-          { kind = "glyph", text = "'s PC" },
-          { kind = "eos", raw = { 0xFFFF } },
-        },
-      },
+  FieldMessageFixture.write(cache, MenuProtocol.STANDARD_MESSAGE_BANK, {
+    {
+      FIELD.control(0x0100, { 0 }),
+      FIELD.glyph(0x0453, "'s PC"),
+      FIELD.eos(),
     },
   })
   local seen
@@ -270,8 +246,8 @@ function T.builder_items_expand_buffered_script_text()
     substitutionResolvers = function(_, textArgs)
       seen = textArgs
       return {
-        STRVAR = function()
-          return { { kind = "glyph", text = "GOLD" } }
+        [0x0100] = function()
+          return { { kind = "glyph", code = 0x0457, text = "GOLD" } }
         end,
       }
     end,

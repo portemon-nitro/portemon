@@ -6,6 +6,8 @@ local Errors = require("libs.errors.src.Errors")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
 local FieldMessageCacheWriter = require("romdump.src.digest.ui.FieldMessageCacheWriter")
+local FieldMessageAsset = require("libs.assets.src.field.FieldMessageAsset")
+local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -180,7 +182,7 @@ local function publishBundle(cache, bundle)
     bankMarkers[bankId] = marker
     FieldMessageCacheWriter.writeBank(cache, {
       bankId = bankId,
-      bank = assert(bundle.banks[bankId], "the compiled corpus is missing bank " .. tostring(bankId)),
+      data = assert(bundle.banks[bankId], "the compiled corpus is missing bank " .. tostring(bankId)),
       marker = marker,
     })
   end
@@ -193,25 +195,25 @@ function T.compiles_tokenized_lossless_banks()
   Assert.deepEqual(bundle.index.bankIds, sourceReferenceBankIds())
   Assert.equal(bundle.index.schema, FieldMessageCache.INDEX_SCHEMA)
 
-  local bank = bundle.banks[542]
-  Assert.equal(bank.schema, FieldMessageCache.SCHEMA)
-  Assert.equal(bank.bankId, 542)
-  Assert.equal(bank.messageCount, 2)
-  -- A bank record carries no source identity; read it as an open map to
-  -- prove the field is absent.
-  ---@type table<string, unknown>
-  local bankShape = bank
-  Assert.isNil(bankShape.source, "bank source identity lives in the dependency record")
-  Assert.isNil(bankShape.messages[0].raw, "a stored message keeps no second raw code-unit copy")
-  Assert.deepEqual(bank.messages[0].tokens[1].raw, { 0x0141 })
-  Assert.equal(bank.messages[0].tokens[#bank.messages[0].tokens].kind, "eos")
-  -- The asset carries the modder-facing display text beside the tokens.
-  Assert.equal(bank.messages[0].text, "Wow, ")
-  Assert.equal(bank.messages[1].text, "Professor {STRVAR_1 3, 0, 0}")
-  Assert.equal(bank.messages[1].tokens[11].kind, "substitution")
-  Assert.equal(bank.messages[1].tokens[11].control, 0x0103)
-  Assert.deepEqual(bank.messages[1].tokens[11].args, { 0x0000, 0x0000 })
-  Assert.equal(bank.messages[1].tokens[#bank.messages[1].tokens].kind, "eos")
+  local bank = assert(bundle.banks[542], "the compiled corpus carries bank 542")
+  local view = assert(FieldMessageAsset.open(bank, 542))
+  Assert.equal(view.schema, FieldMessageCache.SCHEMA)
+  Assert.equal(view.bankId, 542)
+  Assert.equal(view.messageCount, 2)
+  -- The payload carries no source identity and no second raw copy: the
+  -- dependency record owns provenance and the indexed stream owns the tokens.
+  Assert.isTrue(FieldMessageAsset.validate(bank, 542), "the payload is a complete compact bank")
+  local first = assert(FieldMessageAsset.message(view, 0))
+  Assert.deepEqual(first.tokens[1].raw, { 0x0141 })
+  Assert.equal(first.tokens[#first.tokens].kind, "eos")
+  -- Display text is derived from the selected message's tokens.
+  Assert.equal(first.text, "Wow, ")
+  local second = assert(FieldMessageAsset.message(view, 1))
+  Assert.equal(second.text, "Professor {STRVAR_1 3, 0, 0}")
+  Assert.equal(second.tokens[11].kind, "substitution")
+  Assert.equal(second.tokens[11].control, 0x0103)
+  Assert.deepEqual(second.tokens[11].args, { 0x0000, 0x0000 })
+  Assert.equal(second.tokens[#second.tokens].kind, "eos")
 
   Assert.equal(bundle.dependencies.messageNarc.narcId, 27)
   ---@type table<string, unknown>
@@ -221,7 +223,7 @@ function T.compiles_tokenized_lossless_banks()
   for _, bankId in ipairs(bundle.index.bankIds) do
     Assert.equal(bundle.dependencies["bank" .. bankId .. "MemberSha1"], "member-" .. bankId .. "-sha")
   end
-  Assert.equal(bundle.marker, "field-message-cache-v4:rom-sha:dependency-sha")
+  Assert.equal(bundle.marker, "field-message-cache-v5:rom-sha:dependency-sha")
 end
 
 function T.source_references_form_one_sorted_bank_set()
@@ -278,7 +280,7 @@ function T.compilation_is_deterministic()
   local a = assert(FieldMessageCompiler.compile(romFs, sha1, hashLua))
   local b = assert(FieldMessageCompiler.compile(romFs, sha1, hashLua))
   Assert.equal(LuaWriter.encode(a.index), LuaWriter.encode(b.index))
-  Assert.equal(LuaWriter.encode(a.banks[542]), LuaWriter.encode(b.banks[542]))
+  Assert.equal(a.banks[542]:getString(), b.banks[542]:getString())
   Assert.equal(a.marker, b.marker)
 end
 
@@ -295,9 +297,10 @@ function T.writer_publishes_each_bank_payload_and_the_family_index()
   end)()))
   Assert.isTrue(FieldMessageCache.isReady(cache))
   for _, bankId in ipairs(bundle.index.bankIds) do
-    local loaded = assert(cache:loadLua(FieldMessageCache.bankPath(bankId)))
-    Assert.equal(loaded.bankId, bankId)
-    Assert.equal(loaded.schema, FieldMessageCache.SCHEMA)
+    local bytes = assert(cache:read(FieldMessageCache.bankPath(bankId)))
+    local view = assert(FieldMessageAsset.open(bytes, bankId))
+    Assert.equal(view.bankId, bankId)
+    Assert.equal(view.schema, FieldMessageCache.SCHEMA)
   end
 end
 
@@ -307,7 +310,7 @@ function T.writer_failure_publishes_no_bank_payload()
   local backend = FakeCache.new()
   local originalWrite = backend.write
   backend.write = function(self, path, data)
-    if path:find("banks/0542.lua", 1, true) then
+    if path:find("banks/0542.g4msg", 1, true) then
       error("injected")
     end
     return originalWrite(self, path, data)
@@ -330,7 +333,7 @@ function T.failed_rebuild_preserves_the_previous_messages()
   local previous = assert(cache:read(FieldMessageCache.bankPath(542)))
   local originalWrite = backend.write
   backend.write = function(self, path, data)
-    if path:find("banks/0542.lua", 1, true) then
+    if path:find("banks/0542.g4msg", 1, true) then
       error("injected")
     end
     return originalWrite(self, path, data)
@@ -338,13 +341,107 @@ function T.failed_rebuild_preserves_the_previous_messages()
   local second = assert(FieldMessageCompiler.compile(romFs, sha1, hashLua))
   Assert.throws(function()
     local marker = FieldMessageCache.marker("rom-sha", "new-dep-hash")
-    FieldMessageCacheWriter.writeBank(cache, { bankId = 542, bank = second.banks[542], marker = marker })
+    FieldMessageCacheWriter.writeBank(cache, { bankId = 542, data = second.banks[542], marker = marker })
   end)
   Assert.isTrue(FieldMessageCache.isReady(cache), "the previous messages remain ready")
   Assert.equal(cache:read(FieldMessageCache.bankPath(542)), previous, "the previous bank payload survives")
   backend.write = originalWrite
   publishBundle(cache, second)
   Assert.isTrue(FieldMessageCache.isReady(cache), "a retry publishes the new messages")
+end
+
+-- The compiled corpus publishes compact payload bytes that the production
+-- provider serves, and a failed replacement never damages the bank that is
+-- already live.
+function T.compact_publication_serves_dialogue_and_preserves_the_previous_bank()
+  local romFs, sha1, hashLua = fixture()
+  local bundle = assert(FieldMessageCompiler.compile(romFs, sha1, hashLua))
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  local bankPath = FieldMessageCache.bankPath(542)
+
+  local payload = assert(bundle.banks[542])
+  Assert.equal(type(payload.getString), "function", "a compiled bank is compact payload bytes")
+  local view = assert(FieldMessageAsset.open(payload, 542))
+  Assert.equal(view.bankId, 542)
+  Assert.equal(view.messageCount, 2)
+
+  FieldMessageCacheWriter.writeBank(cache, {
+    bankId = 542,
+    data = payload,
+    marker = FieldMessageCache.marker("rom-sha", "dependency-sha-542"),
+    dependencies = bundle.dependencies,
+  })
+  Assert.equal(assert(cache:read(bankPath)), payload:getString(), "publication writes the encoded bytes unchanged")
+  Assert.isTrue(FieldMessageCache.isBankReady(cache, 542), "the published bank reads ready")
+
+  local provider = assert(FieldMessageProvider.new(cache))
+  assert(provider:acquireBank(542))
+  local glyphMessage = assert(provider:get(542, 0))
+  local firstText = glyphMessage.text
+  Assert.equal(firstText, FieldMessageText.tokensToText(glyphMessage.tokens))
+  local substitutionMessage = assert(provider:get(542, 1))
+  local substitution
+  for _, token in ipairs(substitutionMessage.tokens) do
+    if token.kind == "substitution" then
+      substitution = token
+    end
+  end
+  Assert.notNil(substitution, "the compiled message keeps its substitution token")
+  Assert.equal(assert(substitution).control, 0x0103)
+  Assert.deepEqual(assert(substitution).args, { 0, 0 })
+  local fontDef = { charmap = { G = 0x0131, O = 0x013B, L = 0x0138, D = 0x012E } }
+  local formatted = provider:format(substitutionMessage, {}, {
+    [0x0103] = function()
+      return FieldMessageProvider.asciiGlyphTokens("GOLD", fontDef)
+    end,
+  })
+  Assert.isFalse(formatted.hadUnresolvedSubstitutions)
+  Assert.isTrue(formatted.text:find("GOLD", 1, true) ~= nil, "the substitution resolves inside the served message")
+  provider:releaseBank(542)
+
+  -- Publication owns its bytes: it never reopens the payload it just wrote.
+  local reads = {}
+  local storedRead = backend.read
+  backend.read = function(self, path)
+    reads[#reads + 1] = path
+    return storedRead(self, path)
+  end
+  FieldMessageCacheWriter.writeBank(cache, {
+    bankId = 543,
+    data = assert(bundle.banks[543]),
+    marker = FieldMessageCache.marker("rom-sha", "dependency-sha-543"),
+    dependencies = bundle.dependencies,
+  })
+  backend.read = storedRead
+  for _, path in ipairs(reads) do
+    Assert.isFalse(path:find("banks/0543", 1, true) ~= nil, "publishing bank 543 must not read it back: " .. path)
+  end
+
+  -- A failed replacement must leave the previous bank live and readable.
+  local previous = assert(cache:read(bankPath))
+  local storedWrite = backend.write
+  backend.write = function(self, path, data)
+    if path:find("banks/0542", 1, true) then
+      error("injected write failure")
+    end
+    return storedWrite(self, path, data)
+  end
+  Assert.throws(function()
+    FieldMessageCacheWriter.writeBank(cache, {
+      bankId = 542,
+      data = assert(bundle.banks[542]),
+      marker = FieldMessageCache.marker("rom-sha", "replacement"),
+      dependencies = bundle.dependencies,
+    })
+  end)
+  backend.write = storedWrite
+  Assert.equal(cache:read(bankPath), previous, "a failed replacement leaves the previous bank payload intact")
+  Assert.isTrue(FieldMessageCache.isBankReady(cache, 542), "the previous bank stays ready")
+  assert(provider:acquireBank(542))
+  Assert.equal(assert(provider:get(542, 0)).text, firstText, "the previous bank still serves its messages")
+  provider:releaseBank(542)
+  provider:dispose()
 end
 
 function T.unmapped_glyph_fails_compilation_with_context()
@@ -419,9 +516,9 @@ function T.session_compiles_a_selected_bank_without_its_siblings()
   Assert.isNil(reads[543], "compiling one bank must not decode its siblings")
   local whole = assert(FieldMessageCompiler.compile(romFs, sha1, hashLua))
   Assert.equal(
-    LuaWriter.encode(one.bank),
-    LuaWriter.encode(whole.banks[542]),
-    "the one-bank record matches the aggregate normalization"
+    one.data:getString(),
+    whole.banks[542]:getString(),
+    "the one-bank payload matches the aggregate normalization"
   )
   session:close()
   session:close()
@@ -474,7 +571,7 @@ function T.malformed_bank_fails_alone_without_poisoning_the_session()
   Assert.equal(err.context.bankId, 701)
   Assert.equal(err.context.messageId, 0)
   local second = assert(session:compileBank(700), "the session keeps serving valid banks after a failure")
-  Assert.equal(LuaWriter.encode(second.bank), LuaWriter.encode(first.bank))
+  Assert.equal(second.data:getString(), first.data:getString())
   session:close()
 end
 

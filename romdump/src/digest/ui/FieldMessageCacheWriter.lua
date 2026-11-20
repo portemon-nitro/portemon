@@ -1,15 +1,17 @@
 -- Persists compiled field-message banks one at a time through staged
--- publication: each bank's payload is written into a disposable stage and
--- readback-validated there, then published, so a failed bank never poisons its
--- siblings. The bank job's own receipt is its durable completion proof, so no
--- marker, provenance or family summary copies it again. The family index is a
--- separate small stage that attests complete coverage without retaining any
--- bank payload: it refuses partial coverage and never replaces bank children.
--- Staging and validation are one step; publication happens outside that
--- step's error handler, so a publish failure never triggers writer-level stage
--- cleanup that could delete the last remaining copy of the previous artifact.
+-- publication: each bank's compact payload is written into a disposable stage
+-- and published, so a failed bank never poisons its siblings. A successful
+-- write is not reopened: the encoder validated its own output, and the bank
+-- job's own receipt is its durable completion proof, so no marker, provenance
+-- or family summary copies it again. The family index is a separate small
+-- stage that attests complete coverage without retaining any bank payload: it
+-- refuses partial coverage and never replaces bank children. Publication
+-- happens outside the staging step's error handler, so a publish failure never
+-- triggers writer-level stage cleanup that could delete the last remaining
+-- copy of the previous artifact.
 
 local Errors = require("libs.errors.src.Errors")
+local FieldMessageAsset = require("libs.assets.src.field.FieldMessageAsset")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local Hashing = require("romdump.src.digest.Hashing")
 local Validate = require("libs.assets.src.Validate")
@@ -27,30 +29,29 @@ local function checkBankBundle(bundle)
   assert(type(bundle) == "table", "stageBank requires a one-bank bundle")
   ---@cast bundle FieldMessageCompiler.BankBundle
   assert(Validate.isNonNegativeInteger(bundle.bankId), "one-bank bundle carries an invalid bankId")
-  assert(type(bundle.bank) == "table", "one-bank bundle carries no bank record")
-  assert(bundle.bank.bankId == bundle.bankId, "one-bank record identity mismatch")
-  assert(bundle.bank.schema == FieldMessageCache.SCHEMA, "one-bank record schema mismatch")
+  local data = bundle.data
+  assert(
+    (type(data) == "table" or type(data) == "userdata")
+      and type(data.getFFIPointer) == "function"
+      and type(data.getSize) == "function",
+    "one-bank bundle carries no rooted compact payload"
+  )
   assert(type(bundle.marker) == "string" and bundle.marker ~= "", "one-bank bundle carries no marker")
+  -- The payload must open as this bank before any stage ownership changes, so
+  -- a bundle/encoder mismatch never reaches the live cache.
+  local opened, view = pcall(FieldMessageAsset.open, data, bundle.bankId)
+  assert(opened, "one-bank payload is not bank " .. tostring(bundle.bankId) .. ": " .. tostring(view))
   return bundle
 end
 
 -- The one staging step every bank entry point shares: write exactly this
--- bank's payload into the given stage filesystem and prove it reads back with
--- the current identity. Never touches a sibling bank.
+-- bank's payload bytes into the given stage filesystem. Never touches a
+-- sibling bank and never reopens what it wrote.
 ---@param stage CacheFs
 ---@param bundle FieldMessageCompiler.BankBundle
 ---@return string
 local function persistBank(stage, bundle)
-  local bankId = bundle.bankId
-  stage:writeLua(FieldMessageCache.bankPath(bankId), bundle.bank)
-  local bank = stage:loadLua(FieldMessageCache.bankPath(bankId))
-  if type(bank) ~= "table" or bank.schema ~= FieldMessageCache.SCHEMA or bank.bankId ~= bankId then
-    Errors.raise(
-      "FIELD_MESSAGE_CACHE_READBACK_FAILED",
-      "bank " .. tostring(bankId) .. " readback failed",
-      { bankId = bankId }
-    )
-  end
+  stage:write(FieldMessageCache.bankPath(bundle.bankId), bundle.data)
   return bundle.marker
 end
 

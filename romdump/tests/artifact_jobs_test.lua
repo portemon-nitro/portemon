@@ -710,7 +710,7 @@ end
 -- wrapper without a source reader: the authoritative family rule decides
 -- reuse, and a missing bank validates cold. No ROM handle is opened.
 local function publishWarmBank(cacheFs, generation, bankId)
-  local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+  local FieldMessageFixture = require("tests.support.FieldMessageFixture")
   local marker = "worker-warm-marker-" .. tostring(bankId)
   cacheFs:writeLua(ArtifactState.path("message-bank", tostring(bankId)), {
     schema = ArtifactState.RECEIPT_SCHEMA,
@@ -719,12 +719,7 @@ local function publishWarmBank(cacheFs, generation, bankId)
     key = tostring(bankId),
     marker = marker,
   })
-  cacheFs:writeLua(FieldMessageCache.bankPath(bankId), {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = bankId,
-    messageCount = 0,
-    messages = {},
-  })
+  FieldMessageFixture.write(cacheFs, bankId, { { FieldMessageFixture.eos() } })
 end
 
 function T.worker_receipt_identity_decides_reuse_without_source()
@@ -1309,9 +1304,15 @@ function T.cache_read_faults_escape_artifact_and_child_readiness()
   local summaryMarker = "message-summary-marker"
   local summaryReceiptPath = ArtifactState.path("message-summary", "global")
   local childReceiptPath = ArtifactState.path("message-bank", "219")
+  local FieldMessageFixture = require("tests.support.FieldMessageFixture")
+  local childBankBytes = FieldMessageFixture.encode(FieldMessageFixture.bank(219, { { FieldMessageFixture.eos() } }))
+    :getString()
   local childCache = {
     versionId = "heartgold",
-    read = function()
+    read = function(_, path)
+      if path == FieldMessageCache.bankPath(219) then
+        return childBankBytes
+      end
       return nil
     end,
     loadLua = function(_, path)
@@ -1326,9 +1327,6 @@ function T.cache_read_faults_escape_artifact_and_child_readiness()
       end
       if path == FieldMessageCache.indexPath() then
         return { schema = FieldMessageCache.INDEX_SCHEMA, version = "heartgold", bankIds = { 219 } }
-      end
-      if path == FieldMessageCache.bankPath(219) then
-        return { schema = FieldMessageCache.SCHEMA, bankId = 219, messageCount = 0, messages = {} }
       end
       if path == childReceiptPath then
         return nil, fault

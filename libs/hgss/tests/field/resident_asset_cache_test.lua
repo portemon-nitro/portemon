@@ -7,7 +7,7 @@ local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
-local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+local FieldMessageFixture = require("tests.support.FieldMessageFixture")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 
 local T = {}
@@ -221,29 +221,27 @@ end
 local function messageCacheWith(ids)
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   for _, bankId in ipairs(ids) do
-    cache:writeLua(FieldMessageCache.bankPath(bankId), {
-      schema = FieldMessageCache.SCHEMA,
-      bankId = bankId,
-      messageCount = 0,
-      messages = {},
-    })
+    FieldMessageFixture.write(cache, bankId, { { FieldMessageFixture.glyph(0x0141, "A"), FieldMessageFixture.eos() } })
   end
   return cache
 end
 
 function T.borrowed_entries_survive_pressure_like_message_banks()
   -- The message bank owner, used here exactly as shipped and never
-  -- redirected: a repeated acquire shares one artifact, a matched release
-  -- pair unpins it, and only then does pressure from a new bank evict it.
-  local messages = assert(FieldMessageProvider.new(messageCacheWith({ 7, 8 }), { maxCachedBanks = 1 }))
+  -- redirected: a repeated acquire shares one compact view, and a matched
+  -- release pair ends the active record exactly as the borrowed entry below
+  -- ends when its borrower lets go.
+  local messages = assert(FieldMessageProvider.new(messageCacheWith({ 7, 8 })))
   local bank = assert(messages:acquireBank(7))
-  Assert.isTrue(messages:acquireBank(7) == bank, "a second acquire shares the bank artifact")
+  Assert.isTrue(messages:acquireBank(7) == bank, "a second acquire shares the compact bank view")
+  Assert.equal(messages:stats().references, 2)
   messages:releaseBank(7)
+  Assert.equal(messages:stats().live, 1, "a partial release keeps the active record")
   messages:releaseBank(7)
-  messages:acquireBank(8)
-  Assert.equal(messages:stats().disposals, 1, "pressure evicts the released bank")
-  local evicted, err = messages:get(7, 0)
-  Assert.isNil(evicted, "the evicted bank is no longer acquired")
+  Assert.equal(messages:stats().live, 0, "the matched release pair ends the active record")
+  Assert.equal(messages:stats().disposals, 1)
+  local released, err = messages:get(7, 0)
+  Assert.isNil(released, "the released bank is no longer acquired")
   Assert.isTrue(Errors.is(err))
   Assert.equal(err.code, "MESSAGE_BANK_NOT_ACQUIRED")
 

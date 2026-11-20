@@ -9,30 +9,22 @@ local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local ScriptDialogueHost = require("libs.hgss.src.script.ScriptDialogueHost")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
+local FieldMessageFixture = require("tests.support.FieldMessageFixture")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
-local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local FieldYesNoController = require("libs.hgss.src.ui.FieldYesNoController")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 
 local T = {}
 
-local function bankArtifact(bankId)
+local FIELD = FieldMessageFixture
+
+-- One message whose only content is a player-name substitution.
+local function substitutionBankMessages()
   return {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = bankId,
-    messageCount = 1,
-    source = { narc = "NARC_msgdata_msg", memberId = bankId, memberSha1 = "synthetic" },
-    messages = {
-      [0] = {
-        id = 0,
-        raw = { 0xFFFE, 0x0100, 0x0002, 0, 0, 0xFFFF },
-        text = "{STRVAR_1 0, 0, 0}",
-        tokens = {
-          { kind = "substitution", control = 0x0100, args = { 0, 0 }, raw = { 0xFFFE, 0x0100, 0x0002, 0, 0 } },
-          { kind = "eos", raw = { 0xFFFF } },
-        },
-      },
+    {
+      FIELD.control(0x0100, { 0, 0 }),
+      FIELD.eos(),
     },
   }
 end
@@ -43,52 +35,32 @@ local function glyphTokensFor(word)
   local tokens = {}
   for i = 1, #word do
     local ch = word:sub(i, i)
-    tokens[#tokens + 1] = { kind = "glyph", code = 0x0400 + i, text = ch, raw = { 0x0400 + i } }
+    tokens[#tokens + 1] = FIELD.glyph(0x0400 + string.byte(ch), ch)
   end
-  tokens[#tokens + 1] = { kind = "eos", raw = { 0xFFFF } }
+  tokens[#tokens + 1] = FIELD.eos()
   return tokens
 end
 
-local function nameBankArtifact(bankId, zeroName, oneName)
-  return {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = bankId,
-    messageCount = 2,
-    source = { narc = "NARC_msgdata_msg", memberId = bankId, memberSha1 = "synthetic" },
-    messages = {
-      [0] = { id = 0, raw = {}, text = zeroName, tokens = glyphTokensFor(zeroName) },
-      [1] = { id = 1, raw = {}, text = oneName, tokens = glyphTokensFor(oneName) },
-    },
-  }
+local function nameBankMessages(zeroName, oneName)
+  return { glyphTokensFor(zeroName), glyphTokensFor(oneName) }
 end
 
 -- A message fixture carrying the same substitution control at two distinct
 -- slots: each occurrence must resolve from its own slot.
-local function twoSlotBankArtifact(bankId)
+local function twoSlotBankMessages()
   return {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = bankId,
-    messageCount = 1,
-    source = { narc = "NARC_msgdata_msg", memberId = bankId, memberSha1 = "synthetic" },
-    messages = {
-      [0] = {
-        id = 0,
-        raw = {},
-        text = "a {STRVAR_1 0, 0, 0} b {STRVAR_1 1, 0, 0}",
-        tokens = {
-          { kind = "substitution", control = 0x0100, args = { 0, 0 }, raw = {} },
-          { kind = "substitution", control = 0x0100, args = { 1, 0 }, raw = {} },
-          { kind = "eos", raw = {} },
-        },
-      },
+    {
+      FIELD.control(0x0100, { 0, 0 }),
+      FIELD.control(0x0100, { 1, 0 }),
+      FIELD.eos(),
     },
   }
 end
 
 local function cacheWith(banks)
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  for bankId, artifact in pairs(banks) do
-    cache:writeLua(FieldMessageCache.bankPath(bankId), artifact)
+  for bankId, messages in pairs(banks) do
+    FieldMessageFixture.write(cache, bankId, messages)
   end
   return cache
 end
@@ -97,7 +69,9 @@ local function host(opts)
   opts = opts or {}
   local provider = opts.provider
     or assert(
-      FieldMessageProvider.new(cacheWith({ [542] = bankArtifact(542), [445] = nameBankArtifact(445, "Ethan", "Lyra") }))
+      FieldMessageProvider.new(
+        cacheWith({ [542] = substitutionBankMessages(), [445] = nameBankMessages("Ethan", "Lyra") })
+      )
     )
   local controller = {
     open = function(self, request)
@@ -289,7 +263,7 @@ function T.same_control_at_two_slots_resolves_each_from_its_own_slot()
       return id == "VAR_A" and 1 or 2
     end,
   }
-  local provider = assert(FieldMessageProvider.new(cacheWith({ [543] = twoSlotBankArtifact(543) })))
+  local provider = assert(FieldMessageProvider.new(cacheWith({ [543] = twoSlotBankMessages() })))
   local h = host({ world = world, provider = provider })
   local formatted = h:resolveMessage("msg.hgss.0543.00000", {
     [0] = { text = "integer", value = { value = "var", id = "VAR_A" } },
@@ -364,8 +338,8 @@ end
 -- character with no field glyph, so substitution parsing fails.
 function T.failed_friend_name_read_releases_the_name_bank()
   local provider = assert(FieldMessageProvider.new(cacheWith({
-    [542] = bankArtifact(542),
-    [445] = nameBankArtifact(445, "Ethan", "Lyr~"),
+    [542] = substitutionBankMessages(),
+    [445] = nameBankMessages("Ethan", "Lyr~"),
   })))
   local h = host({ provider = provider, gender = 0 })
   local before = provider:stats().references
@@ -496,7 +470,7 @@ local function monsHost()
   local withMons = ScriptDialogueHost.new({
     controller = controller,
     yesNoController = FieldYesNoController.new(),
-    provider = assert(FieldMessageProvider.new(cacheWith({ [542] = bankArtifact(542) }))),
+    provider = assert(FieldMessageProvider.new(cacheWith({ [542] = substitutionBankMessages() }))),
     layout = function(formatted)
       return formatted
     end,
@@ -624,7 +598,7 @@ local function itemTextHost(opts)
   }
   hostOptions.controller = controller
   hostOptions.yesNoController = FieldYesNoController.new()
-  hostOptions.provider = assert(FieldMessageProvider.new(cacheWith({ [542] = bankArtifact(542) })))
+  hostOptions.provider = assert(FieldMessageProvider.new(cacheWith({ [542] = substitutionBankMessages() })))
   local withItems = ScriptDialogueHost.new(hostOptions)
   return withItems, catalog
 end
@@ -769,9 +743,9 @@ end
 
 function T.trainer_class_text_resolves_plain_indefinite_and_variable_forms()
   local h = trainerTextHost({
-    [542] = bankArtifact(542),
-    [730] = nameBankArtifact(730, "Youngster", "Lass"),
-    [731] = nameBankArtifact(731, "a Youngster", "a Lass"),
+    [542] = substitutionBankMessages(),
+    [730] = nameBankMessages("Youngster", "Lass"),
+    [731] = nameBankMessages("a Youngster", "a Lass"),
   })
   Assert.equal(textAt(h, { text = "trainer_class_name", value = 0 }), "Youngster")
   Assert.equal(textAt(h, { text = "trainer_class_name", value = 1 }), "Lass")
@@ -787,9 +761,9 @@ function T.trainer_class_text_resolves_plain_indefinite_and_variable_forms()
     "capitalization keeps an already capital plain name"
   )
   local withWorld = trainerTextHost({
-    [542] = bankArtifact(542),
-    [730] = nameBankArtifact(730, "Youngster", "Lass"),
-    [731] = nameBankArtifact(731, "a Youngster", "a Lass"),
+    [542] = substitutionBankMessages(),
+    [730] = nameBankMessages("Youngster", "Lass"),
+    [731] = nameBankMessages("a Youngster", "a Lass"),
   }, {
     getVar = function(_, id)
       assert(id == "VAR_CLASS")
@@ -805,9 +779,9 @@ end
 
 function T.trainer_class_text_releases_its_bank_on_success_and_failure()
   local banks = {
-    [542] = bankArtifact(542),
-    [730] = nameBankArtifact(730, "Youngster", "Lass"),
-    [731] = nameBankArtifact(731, "a Youngster", "a Lass"),
+    [542] = substitutionBankMessages(),
+    [730] = nameBankMessages("Youngster", "Lass"),
+    [731] = nameBankMessages("a Youngster", "a Lass"),
   }
   local h, provider = trainerTextHost(banks)
   local before = provider:stats().references
@@ -861,7 +835,7 @@ end
 -- two-glyph message the host resolves; the controller layout decides the
 -- boundary shape under test.
 local function productionHostWithPages(pages)
-  local provider = assert(FieldMessageProvider.new(cacheWith({ [901] = nameBankArtifact(901, "AB", "AB") })))
+  local provider = assert(FieldMessageProvider.new(cacheWith({ [901] = nameBankMessages("AB", "AB") })))
   local controller = FieldDialogueController.new({
     audio = { play = function() end },
     layout = function()

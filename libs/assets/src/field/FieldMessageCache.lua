@@ -1,11 +1,11 @@
 -- Readiness and paths for the derived field-message cache. Message banks are
 -- one of the independently rebuildable derived classes (map geometry, actor
 -- visuals, messages/font): changing the message compiler must not disturb the
--- raw ROM dump or any compiled map. Each source bank is one readable Lua file,
--- and the family index selects the complete set of banks a build provides. A
--- bank's own job receipt is its completion proof, so the payload carries no
--- proof of its own; an explicit validator still checks the bank shape.
--- Paths are cache-relative; all IO goes through a CacheFs.
+-- raw ROM dump or any compiled map. Each source bank is one compact binary
+-- payload (FieldMessageAsset), and the family index selects the complete set of
+-- banks a build provides. A bank's own job receipt is its completion proof, so
+-- the payload carries no proof of its own; an explicit validator still checks
+-- the bank layout. Paths are cache-relative; all IO goes through a CacheFs.
 
 local FieldMessageCache = {}
 
@@ -16,6 +16,8 @@ local FieldMessageCache = {}
 
 local Validate = require("libs.assets.src.Validate")
 local Contract = require("libs.assets.src.DerivedAssetContract")
+local Errors = require("libs.errors.src.Errors")
+local FieldMessageAsset = require("libs.assets.src.field.FieldMessageAsset")
 
 FieldMessageCache.FORMAT = Contract.messages.cacheFormat
 FieldMessageCache.SCHEMA = Contract.messages.schema
@@ -32,33 +34,39 @@ end
 
 function FieldMessageCache.bankPath(bankId)
   assert(Validate.isNonNegativeInteger(bankId), "bankId must be a non-negative integer")
-  return string.format("%s/banks/%04d.lua", DATA_DIR, bankId)
+  return string.format("%s/banks/%04d.g4msg", DATA_DIR, bankId)
 end
 
 function FieldMessageCache.marker(romSha1, depHash)
   return string.format("%s:%s:%s", FieldMessageCache.FORMAT, romSha1, depHash)
 end
 
--- True when the bank file loads with the current schema and matching
--- identity. The bank's job receipt is what proves it is current; this checks
--- the payload a consumer is about to read.
+-- True when the bank file carries one bounded compact payload with the current
+-- identity. Reads the header and section arithmetic only: a runtime readiness
+-- poll never walks the whole token stream. Absent and recognized malformed
+-- payloads are not ready; unrelated storage failures propagate.
 ---@param cacheFs CacheFs
 ---@param bankId integer
 ---@return boolean
 function FieldMessageCache.isBankReady(cacheFs, bankId)
-  local bank = cacheFs:loadLua(FieldMessageCache.bankPath(bankId)) ---@type table?
-  if type(bank) ~= "table" or bank.schema ~= FieldMessageCache.SCHEMA or bank.bankId ~= bankId then
+  local bytes = cacheFs:read(FieldMessageCache.bankPath(bankId))
+  if bytes == nil then
     return false
   end
-  if not Validate.isNonNegativeInteger(bank.messageCount) or type(bank.messages) ~= "table" then
+  local opened, view = pcall(FieldMessageAsset.open, bytes, bankId)
+  if opened then
+    return true
+  end
+  local failure = view ---@type unknown
+  if Errors.is(failure) and failure.code == FieldMessageAsset.MESSAGE_ASSET_INVALID then
     return false
   end
-  return true
+  error(failure, 0)
 end
 
 -- True when the family index loads with the expected schema, selects a
--- non-empty bank array, and every selected bank loads with the expected
--- schema and matching identity.
+-- non-empty bank array, and every selected bank carries a current compact
+-- payload with matching identity.
 ---@param cacheFs CacheFs
 ---@return boolean
 function FieldMessageCache.isReady(cacheFs)
