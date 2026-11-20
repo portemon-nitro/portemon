@@ -24,6 +24,7 @@ local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local TextureSrtEvaluator = require("libs.hgss.src.presentation.TextureSrtEvaluator")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
+local ControllableImageOwner = require("tests.support.ControllableImageOwner")
 
 local T = {}
 
@@ -1498,9 +1499,12 @@ function T.animated_variant_texture_uses_the_material_wrap()
   runtime:release()
 end
 
--- A pattern variant that was not needed for frame 0 remains a live pool
--- lookup after a staged build has transferred the runtime.
-function T.lazy_variant_loads_after_staged_build()
+-- A pattern variant the frame-0 pose does not draw is still borrowed before
+-- the build transfers: a live field tick binds only textures the scene build
+-- already holds, so a cold variant can never make the tick wait for worker
+-- classification or upload on the render thread.
+function T.cold_pattern_variant_is_borrowed_before_the_staged_build_transfers()
+  local baseTexture = MapAssetCache.texturePath("texbase")
   local variantTexture = MapAssetCache.texturePath("texvariant")
   local desc = texturedDescriptor({
     variants = {
@@ -1521,24 +1525,45 @@ function T.lazy_variant_loads_after_staged_build()
       transform = identityMatrix(),
     },
   }, { [desc.key] = desc })
-  local images = SharedImagePoolFake.new()
+  local images = ControllableImageOwner.new({ held = false })
+  images:withhold(variantTexture)
   local task = MapSceneLoader.begin(
     cache,
     assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
     { meshBuilder = fakeMeshBuilder, imageAssets = images }
   )
-  local runtime = task:finish()
-  Assert.equal(images.uploads, 1, "only the frame-0 base image is borrowed during construction")
 
-  runtime.animatedInstances[1]:play("pattern")
+  local guard = 0
+  while not task:isReady() and guard < 200 do
+    if task:advance(1) == 0 then
+      break
+    end
+    guard = guard + 1
+  end
+  Assert.isFalse(task:isReady(), "the staged build waits for the withheld pattern variant")
+  Assert.equal(#images.requests, 2, "construction requests the base texture and its pattern variant")
+  Assert.equal(images.requests[1].path, baseTexture, "the base texture is requested first")
+  Assert.equal(images.requests[2].path, variantTexture, "the pattern variant is requested during construction")
+
+  Assert.isTrue(images:publish(assert(images.requests[2].token)), "the worker can reply to the held variant")
+  local runtime = task:finish()
+  local requestedBefore = #images.requests
+  local instance = runtime.animatedInstances[1]
+
+  -- The pattern switch happens on a live tick: it must reuse the borrowed
+  -- variant instead of reaching the worker.
+  instance:play("pattern")
   runToCompletion(function()
     runtime:updateAnimated()
   end)
-
-  local variantImage = runtime.animatedBuildingDraws[1].material.image
-  Assert.equal(images.uploads, 2, "the live tick borrows the lazy variant")
-  Assert.equal(variantImage, images:findPhysical(variantTexture, REPEAT_SAMPLER))
+  Assert.equal(#images.requests, requestedBefore, "a live tick never asks the worker for a texture")
+  Assert.equal(
+    runtime.animatedBuildingDraws[1].material.image,
+    images:findPhysical(variantTexture, REPEAT_SAMPLER),
+    "the live tick binds the variant borrowed during construction"
+  )
   runtime:release()
+  Assert.equal(images:outstandingLeases(), 0, "releasing the scene returns every borrowed lease")
 end
 
 -- Untextured animated materials never touch the image pool: the resolveImage

@@ -284,6 +284,9 @@ function NeighborBuildTask:finish()
     -- payload is stashed for the resumed build to consume.
     local outstanding = self._outstanding
     if outstanding ~= nil and self._queue ~= nil then
+      -- The token stays owned until a wait consumed it: a failed promote or
+      -- wait leaves the ticket with the queue, and the task's failure unwind
+      -- cancels it.
       local promoteOk, promoteErr = pcall(self._queue.promote, self._queue, outstanding, "demand")
       if not promoteOk then
         failBuildTask(self, promoteErr)
@@ -352,8 +355,9 @@ function NeighborRing.begin(cacheFs, descriptors, opts)
   -- Geometry arrives the same way the central scene's does: the preparation
   -- worker decodes a whole native bank once for every draw the ring selects,
   -- and this build only realizes the prepared upload packets, yielding WAIT
-  -- while the worker is still busy. The task owns the outstanding ticket so
-  -- finish() can block-wait it and release() can cancel it.
+  -- while the worker is still busy. The task owns the outstanding ticket from
+  -- the request until the queue consumed it, so finish() can block-wait it and
+  -- every failure unwind can cancel it exactly once.
   local meshEntries = {}
   ---@type NeighborRing.BuildTask
   local task
@@ -364,6 +368,7 @@ function NeighborRing.begin(cacheFs, descriptors, opts)
     task._outstanding = token
     while true do
       if task._stashed ~= nil and task._stashed[token] ~= nil then
+        -- The finishing wait already consumed the ticket.
         local stashed = task._stashed[token]
         task._stashed[token] = nil
         task._outstanding = nil
@@ -376,7 +381,6 @@ function NeighborRing.begin(cacheFs, descriptors, opts)
         return payload
       end
       if status == "failed" then
-        task._outstanding = nil
         error("prepared asset " .. tostring(path) .. " (" .. kind .. ") failed: " .. tostring(failure), 0)
       end
       coroutine["yield"](WAIT)

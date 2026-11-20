@@ -638,9 +638,10 @@ function StarterChoicePreparation:_advancePlanStep()
     if status == "pending" then
       return false
     end
-    step.token = nil
-    self.outstanding[token] = nil
     if status ~= "ready" then
+      -- The queue keeps a failed ticket until it is cancelled, so the step
+      -- stays tracked and the failure unwind (dispose) drops it like any
+      -- other outstanding interest.
       error(
         "starter preparation failed for "
           .. tostring(step.path)
@@ -651,7 +652,11 @@ function StarterChoicePreparation:_advancePlanStep()
         0
       )
     end
-    self:_realizePrepared(step, queue:take(token))
+    -- The queue consumed the ticket, so the step owns it no longer.
+    local payload = queue:take(token)
+    step.token = nil
+    self.outstanding[token] = nil
+    self:_realizePrepared(step, payload)
     self.planIndex = self.planIndex + 1
     self:_submitWindow()
     return true

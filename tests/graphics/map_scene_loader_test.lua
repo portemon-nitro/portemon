@@ -187,6 +187,10 @@ local function fakeAssetPreparationQueue(cache, opts)
   -- prove failure propagation and cleanup of already-realized resources.
   local waitFailurePath = opts.waitFailurePath
   local waitFailureMessage = opts.waitFailureMessage or "injected preparation wait failure"
+  -- A single path whose preparation reports a terminal failure result, the
+  -- ordinary non-throwing "failed" status the real queue keeps the ticket for.
+  local pollFailurePath = opts.pollFailurePath
+  local pollFailureMessage = opts.pollFailureMessage or "injected preparation failure"
   local records = {}
   local nextToken = 0
   -- Requests actually routed through this queue, in order: the tests assert
@@ -194,7 +198,10 @@ local function fakeAssetPreparationQueue(cache, opts)
   -- synchronous acquisition (ignoring the injected queue) cannot pass by
   -- accident.
   local requestLog = {}
-  local queue = { requestLog = requestLog }
+  -- Cancellations in order, so a failed build can prove which ticket its
+  -- unwind dropped, and the live-ticket census a failed build must empty.
+  local cancelCalls = {}
+  local queue = { requestLog = requestLog, cancelCalls = cancelCalls }
   local function payloadFor(record)
     if record.kind == "mesh" then
       return SceneMesh.prepareUpload(assert(cache:read(record.path), "missing mesh " .. record.path))
@@ -205,11 +212,14 @@ local function fakeAssetPreparationQueue(cache, opts)
   function queue:request(kind, path, priority)
     nextToken = nextToken + 1
     records[nextToken] = { kind = kind, path = path, priority = priority, polls = 0 }
-    requestLog[#requestLog + 1] = { kind = kind, path = path, priority = priority }
+    requestLog[#requestLog + 1] = { token = nextToken, kind = kind, path = path, priority = priority }
     return nextToken
   end
   function queue:poll(token)
     local record = assert(records[token], "unknown token")
+    if pollFailurePath ~= nil and record.path == pollFailurePath then
+      return "failed", pollFailureMessage
+    end
     if waitFailurePath ~= nil and record.path == waitFailurePath then
       return "pending"
     end
@@ -243,7 +253,18 @@ local function fakeAssetPreparationQueue(cache, opts)
     return self:take(token)
   end
   function queue:cancel(token)
+    cancelCalls[#cancelCalls + 1] = token
     records[token] = nil
+  end
+  -- Live tickets still owned by a caller: queued/ready records no take, wait,
+  -- or cancel consumed.
+  ---@return integer
+  function queue:outstandingTickets()
+    local total = 0
+    for _ in pairs(records) do
+      total = total + 1
+    end
+    return total
   end
   function queue:release() end
   return queue
@@ -599,9 +620,49 @@ function T.synchronous_finish_propagates_preparation_wait_failure_and_releases_r
   Assert.equal(images:prune(), 1, "the failed finish leaves exactly one idle image")
   Assert.isTrue(borrowed.released, "the borrowed image is reclaimed exactly once")
   Assert.equal(borrowed.releaseCount, 1, "the failed finish reclaims the borrowed image exactly once")
+  Assert.equal(#queue.cancelCalls, 1, "the failed wait cancels the ticket it was suspended on exactly once")
+  Assert.equal(
+    queue.cancelCalls[1],
+    assert(queue.requestLog[#queue.requestLog].token, "the recorded mesh request carries no token"),
+    "the cancelled ticket is the awaited mesh preparation"
+  )
+  Assert.equal(queue:outstandingTickets(), 0, "the failed finish leaves no ticket charged to the session queue")
 
   task:release()
   Assert.equal(images:stats().outstandingLeases, 0, "releasing the failed task returns nothing further")
+  Assert.equal(#queue.cancelCalls, 1, "releasing the failed task cancels nothing twice")
+end
+
+-- A preparation that reports a terminal failure result (poll answers "failed"
+-- without raising) fails the staged build with its ticket still owned, so the
+-- unwind cancels it instead of leaving failed work charged to the session.
+function T.terminal_preparation_failure_cancels_the_outstanding_ticket()
+  local cache, geomPath, texPath = cacheFs()
+  local s = scene({ material(0, texPath, { x = "clamp", y = "clamp" }) })
+  s.mapBatches = { batch(geomPath, 0) }
+  local queue = fakeAssetPreparationQueue(cache, {
+    pollFailurePath = geomPath,
+    pollFailureMessage = "injected GX failure",
+  })
+  local images = SharedImagePoolFake.new()
+  local task = MapSceneLoader.begin(cache, s, { assetPreparation = queue, imageAssets = images })
+
+  Assert.equal(task:advance(1), 1, "the first work unit borrows the texture")
+  local err = Assert.throws(function()
+    task:advance(1)
+  end, "a terminal preparation failure fails the staged build")
+  Assert.isTrue(
+    tostring(err):find("injected GX failure", 1, true) ~= nil,
+    "the preparation cause propagates: " .. tostring(err)
+  )
+  Assert.equal(#queue.cancelCalls, 1, "the failed build cancels its outstanding ticket exactly once")
+  Assert.equal(queue.cancelCalls[1], assert(queue.requestLog[#queue.requestLog].token), "it cancels its own ticket")
+  Assert.equal(queue:outstandingTickets(), 0, "the failed build leaves no ticket charged to the session queue")
+  Assert.equal(images:stats().outstandingLeases, 0, "the failed build returns the borrowed lease")
+  Assert.equal(images:prune(), 1, "the failed build leaves exactly one idle image")
+
+  task:release()
+  Assert.equal(#queue.cancelCalls, 1, "releasing the failed task cancels nothing twice")
 end
 
 -- Resolve the physical image a draw material renders from, whether the

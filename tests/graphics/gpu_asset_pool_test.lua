@@ -284,6 +284,57 @@ function T.a_failed_demand_texture_cancels_its_ticket_and_a_retry_succeeds()
   Assert.equal(images:outstandingLeases(), 0, "releasing the retried pool returns its lease")
 end
 
+-- A scene released while a demand-created texture is still pending drops that
+-- ticket: the long-lived shared owner keeps no request and no unclaimed payload
+-- for a scene that no longer exists.
+function T.releasing_a_scene_cancels_its_pending_demand_texture_ticket()
+  local images = ControllableImageOwner.new({ held = false, payloadBytes = 2048 })
+  images:withhold(TEX_PATH)
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local leaseThread = coroutine.create(function()
+    return pool:sharedImage(TEX_PATH, "clamp", "clamp", function()
+      coroutine.yield("wait")
+    end)
+  end)
+  local resumed, state = coroutine.resume(leaseThread)
+  Assert.isTrue(resumed, tostring(state))
+  Assert.equal(state, "wait", "the borrow suspends on the withheld worker reply")
+  Assert.equal(images:outstandingTickets(), 1, "the pending demand ticket is charged to the shared owner")
+  Assert.equal(#images.requests, 1, "the scene requested the texture exactly once")
+
+  pool:release()
+  Assert.equal(#images.cancelCalls, 1, "releasing the scene cancels the pending demand ticket exactly once")
+  Assert.equal(images.cancelCalls[1], assert(images.requests[1]).token, "the cancelled ticket is the demand one")
+  Assert.equal(images:outstandingTickets(), 0, "the released scene strands no request at the shared owner")
+  Assert.isFalse(
+    images:publish(assert(images.requests[1]).token),
+    "a late worker reply cannot publish the dropped ticket"
+  )
+  Assert.equal(images.readyBytes, 0, "no unclaimed payload stays charged")
+  Assert.equal(pool:textureCount(), 0, "the released scene holds no lease")
+end
+
+-- The live texture lookup answers only identities the scene already holds: it
+-- never enrolls worker classification, so a render callback can bind a texture
+-- without a wait path.
+function T.heldImage_answers_only_already_borrowed_textures()
+  local images = ControllableImageOwner.new({ held = false })
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local borrowed = pool:sharedImage(TEX_PATH, "clamp", "clamp")
+  Assert.equal(pool:heldImage(TEX_PATH, "clamp", "clamp"), borrowed, "the held lookup answers the borrowed handle")
+  Assert.equal(#images.requests, 1, "the held lookup starts no additional request")
+  local err = Assert.throws(function()
+    pool:heldImage(TEX_PATH, "repeat", "clamp")
+  end)
+  Assert.isTrue(
+    Errors.is(err) and err.code == "GPU_ASSET_TEXTURE_NOT_HELD",
+    "an unborrowed sampler state fails loudly instead of starting worker work"
+  )
+  Assert.equal(#images.requests, 1, "an unborrowed identity never reaches the shared owner")
+  Assert.isNil(pool:heldImage(nil, "clamp", "clamp"), "an untextured material resolves no handle")
+  pool:release()
+end
+
 function T.release_returns_leases_and_prune_reclaims_exactly_once()
   local images = SharedImagePoolFake.new()
   local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
