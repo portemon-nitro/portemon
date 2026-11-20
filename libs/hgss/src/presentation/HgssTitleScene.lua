@@ -11,9 +11,11 @@ local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
+local SynchronousWait = require("libs.hgss.src.presentation.SynchronousWait")
 local Matrix4 = require("libs.math.src.Matrix4")
 
 ---@class HgssTitleScene
@@ -33,6 +35,7 @@ local Matrix4 = require("libs.math.src.Matrix4")
 ---@field images love.Image[]
 ---@field canvas love.Canvas?
 ---@field pool GpuAssetPool?
+---@field imageAssets ImageAssetPool? title-owned shared image owner the pool borrows from
 ---@field renderer FieldRenderer?
 ---@field legend ModelInstance?
 ---@field sparkle ModelInstance?
@@ -205,6 +208,20 @@ local function copyWithAnimations(descriptor, clips)
   return copy
 end
 
+-- Private staged-work sentinel: the build coroutine yields it while the
+-- preparation worker or the shared image owner is still busy. It consumes no
+-- work budget; only a realized stage yields 1.
+local TITLE_BUILD_WAIT = {}
+
+-- One generated title surface as a GPU image. Material textures do not go
+-- through here: they borrow from the title's shared image owner, which
+-- classifies them on the preparation worker.
+---@param self HgssTitleScene
+---@param path string generated image path
+---@param width integer? expected source width
+---@param height integer? expected source height
+---@param filter "linear"|"nearest"? sampling filter, nearest by default
+---@return love.Image image
 local function ownedImage(self, path, width, height, filter)
   local bytes = assert(self.cacheFs:read(path), "generated title image is missing: " .. path)
   local data = love.filesystem.newFileData(bytes, path)
@@ -221,67 +238,31 @@ local function ownedImage(self, path, width, height, filter)
   return image
 end
 
--- One generated material texture reference as a GPU image. A PNG path uploads
--- as bytes; a native texture bank selector decodes its named texels under the
--- named palette first, so a title model samples the same visible texture the
--- rest of the field does.
+-- Resolve one material texture through the title's shared image owner. The
+-- owner classifies on the preparation worker, so the staged build yields its
+-- frame budget while a texture is still cold; the first title frame then binds
+-- an already-borrowed handle. After the build completed every drawable texture
+-- is already pooled, so a wait that still has to yield there is a programming
+-- error and fails loudly instead of decoding a bank on the render thread.
 ---@param self HgssTitleScene
----@param reference string|ModelAsset.TextureReference material texture reference
----@param wrap { x: string, y: string }
----@return love.Image image
-local function textureImage(self, reference, wrap)
-  if type(reference) == "string" then
-    local image = ownedImage(self, reference)
-    image:setWrap(wrap.x, wrap.y)
-    return image
+---@param path string|ModelAsset.TextureReference? material texture reference
+---@param materialId integer material whose sampler wrap applies
+---@param wraps table<number, { x: string, y: string }>
+---@return GpuAssetPool.SamplingHandle? stable sampling handle, nil for an untextured material
+local function resolveMaterialImage(self, path, materialId, wraps)
+  if path == nil then
+    return nil
   end
-  local NativeTextureBank = require("libs.assets.src.model.NativeTextureBank")
-  local TextureDecoder = require("libs.nds.src.gx.TextureDecoder")
-  local file = assert(reference.file)
-  local bank = assert(NativeTextureBank.read(assert(self.cacheFs:read(file), "missing texture bank " .. file)))
-  local texture = assert(
-    bank:texture(assert(reference.textureName)),
-    "title texture bank has no texture " .. tostring(reference.textureName)
-  )
-  local palette = reference.paletteName and assert(bank:palette(reference.paletteName)) or nil
-  local opts = {
-    format = texture.formatRaw,
-    width = texture.width,
-    height = texture.height,
-    color0Transparent = texture.color0Transparent,
-    texel = texture.texels,
-    palette = palette and palette.data or "",
-  }
-  if texture.indexData ~= nil then
-    opts.indexData = texture.indexData
-  end
-  local rgba = love.data.newByteData(texture.width * texture.height * 4)
-  local rgbaSize = rgba:getSize()
-  ---@cast rgbaSize integer
-  TextureDecoder.decodeInto(opts, rgba:getFFIPointer(), rgbaSize, TextureDecoder.newScratch(), {
-    name = texture.name,
-  })
-  local imageData = love.image.newImageData(texture.width, texture.height, "rgba8", rgba --[[@as string]])
-  local image = self.graphics.newImage(imageData)
-  image:setFilter("nearest", "nearest")
-  image:setWrap(wrap.x, wrap.y)
-  self.images[#self.images + 1] = image
-  return image
+  local wrap = assert(wraps[materialId], "title material has no sampler wrap")
+  return self.pool:sharedImage(path, wrap.x, wrap.y, function()
+    coroutine["yield"](TITLE_BUILD_WAIT)
+  end)
 end
 
----@param reference string|ModelAsset.TextureReference
----@return string
-local function textureKey(reference)
-  if type(reference) == "string" then
-    return reference
-  end
-  return string.format("%s#%s#%s", reference.file, tostring(reference.textureName), tostring(reference.paletteName))
-end
-
--- One title stage: its geometry comes from the preparation worker (a whole
--- native bank prepared once per file), so this only realizes the upload
--- packets into LÖVE meshes and charges one work unit per realized stage, which
--- keeps the staged build spread across frames instead of stalling one.
+-- One title stage: its geometry and its material textures come from the
+-- presentation worker, so this only realizes upload packets into LÖVE meshes
+-- and borrows prepared textures, charging one work unit per realized stage so
+-- the staged build spreads across frames instead of stalling one.
 ---@param self HgssTitleScene
 ---@param descriptor table<string, unknown> staged model descriptor
 ---@param clips table<string, unknown> staged animation channels
@@ -298,19 +279,20 @@ local function buildModel(self, descriptor, clips, key, await)
     coroutine["yield"](1)
   end
   local wraps = SceneDescriptor.wrapByMaterial(descriptor.materials)
-  local imageByKey = {}
   local function resolveImage(path, materialId)
-    if path == nil then
-      return nil
+    return resolveMaterialImage(self, path, materialId, wraps)
+  end
+  -- Resolve every texture this stage can draw before the title reports ready.
+  -- A pattern animation selects any of a material's compiled variants, so the
+  -- base texture and every variant are borrowed here.
+  for materialIndex = 0, #definition.materials - 1 do
+    local material = definition.materials[materialIndex + 1]
+    resolveImage(material.texture, materialIndex)
+    coroutine["yield"](1)
+    for _, variant in ipairs(material.variants or {}) do
+      resolveImage(variant.texture, materialIndex)
+      coroutine["yield"](1)
     end
-    local wrap = assert(wraps[materialId], "title material has no sampler wrap")
-    local imageKey = table.concat({ textureKey(path), wrap.x, wrap.y }, "|")
-    local image = imageByKey[imageKey]
-    if image == nil then
-      image = textureImage(self, path, wrap)
-      imageByKey[imageKey] = image
-    end
-    return image
   end
   local instance = ModelInstance.new(definition, { transform = TITLE_OBJECT_PLACEMENT, resolveImage = resolveImage })
   instance.renderMeshesById = meshes
@@ -459,17 +441,22 @@ local function overlayTone(self)
 end
 
 -- The construction body, resumed by an owning build task: it loads the
--- validated title bundle, allocates the pool and renderers, and realizes the
--- two model stages one mesh at a time. Geometry CPU work and upload packing
--- already ran on the preparation worker, so an advance here only uploads
--- prepared packets on this thread.
+-- validated title bundle, allocates the pools and renderers, and realizes the
+-- two model stages one mesh at a time. Geometry CPU work, texture
+-- classification, and upload packing already ran on the preparation worker, so
+-- an advance here only uploads prepared packets on this thread.
 ---@param self HgssTitleScene
 ---@param await fun(kind: string, path: string): table<string, unknown>
-local function buildScene(self, await)
+---@param queue table<string, unknown> session preparation worker the title borrows
+local function buildScene(self, await, queue)
   local bundle = StartupAssetCache.loadTitle(self.cacheFs, self.versionId)
   assert(bundle, "validated title assets are unavailable")
   self.bundle = bundle
-  self.pool = GpuAssetPool.new(self.cacheFs, { graphics = self.graphics })
+  -- The title owns its texture cache, borrowing the session preparation worker
+  -- so no second worker thread runs beside it. Material textures are borrowed
+  -- through this owner, which is why their decode never lands on a draw.
+  self.imageAssets = ImageAssetPool.new(self.cacheFs, { graphics = self.graphics, queue = queue })
+  self.pool = GpuAssetPool.new(self.cacheFs, { graphics = self.graphics, imageAssets = self.imageAssets })
   self.renderer = FieldRenderer.new({ clearColor = { 0, 0, 0, 0 }, graphics = self.graphics })
   -- The start prompt prints with the ROM field font (font 0, the printer the
   -- decomp selects). The title milestone always carries the font beside the
@@ -512,11 +499,6 @@ end
 ---@field _failed unknown?
 local TitleBuild = {}
 TitleBuild.__index = TitleBuild
-
--- Private staged-work sentinel: the build coroutine yields it while the
--- preparation worker is still busy. It consumes no work budget; only a
--- realized stage yields 1.
-local TITLE_BUILD_WAIT = {}
 
 ---@param build HgssTitleScene.Build
 ---@param err unknown
@@ -588,7 +570,9 @@ end
 
 -- Finish the build synchronously: the outstanding preparation request blocks
 -- instead of yielding a frame. Only explicit synchronous owners call this;
--- the launcher advances the build across frames.
+-- the launcher advances the build across frames. A texture the shared image
+-- owner still owes yields without charging a work unit, so an empty advance
+-- sleeps for the worker instead of hot-polling it.
 ---@return HgssTitleScene
 function TitleBuild:finish()
   if self._failed ~= nil then
@@ -596,7 +580,9 @@ function TitleBuild:finish()
   end
   self._finishing = true
   while self._state == "active" do
-    self:advance(1)
+    if self:advance(1) == 0 then
+      SynchronousWait.block()
+    end
   end
   return self:takeResult()
 end
@@ -619,9 +605,10 @@ function TitleBuild:release()
 end
 
 -- Begin one resumable title build. The worker prepares the title model banks
--- (one bank request per model file), and this build realizes those prepared
--- packets as LÖVE meshes across as many frames as the caller grants. The
--- caller keeps ownership of `options.assetPreparation` for its whole lifetime.
+-- and classifies its material textures, and this build realizes those prepared
+-- packets and borrows the textures across as many frames as the caller grants.
+-- The caller keeps ownership of `options.assetPreparation` for its whole
+-- lifetime.
 ---@param options { versionId: string, cacheFs: table<string, unknown>, width: number, height: number, graphics?: table<string, unknown>, displayContext?: DisplayContext, assetPreparation: table<string, unknown> }
 ---@return HgssTitleScene.Build
 function HgssTitleScene.begin(options)
@@ -649,6 +636,7 @@ function HgssTitleScene.begin(options)
     images = {},
     canvas = nil,
     pool = nil,
+    imageAssets = nil,
     renderer = nil,
     legend = nil,
     sparkle = nil,
@@ -692,7 +680,7 @@ function HgssTitleScene.begin(options)
   build = setmetatable({
     _scene = self,
     _thread = coroutine.create(function()
-      buildScene(self, awaitPrepared)
+      buildScene(self, awaitPrepared, queue)
       return self
     end),
     _state = "active",
@@ -1291,9 +1279,10 @@ function HgssTitleScene:dispose()
     return
   end
   self.disposed = true
-  local images, pool, renderer, canvas, shader, textRenderer =
-    self.images, self.pool, self.renderer, self.canvas, self.blendShader, self.textRenderer
-  self.images, self.pool, self.renderer, self.canvas, self.blendShader, self.textRenderer = {}, nil, nil, nil, nil, nil
+  local images, pool, imageAssets, renderer, canvas, shader, textRenderer =
+    self.images, self.pool, self.imageAssets, self.renderer, self.canvas, self.blendShader, self.textRenderer
+  self.images, self.pool, self.imageAssets, self.renderer, self.canvas, self.blendShader, self.textRenderer =
+    {}, nil, nil, nil, nil, nil, nil
   self.legend, self.sparkle, self.surfaces, self.bundle, self.sourceEnvironment = nil, nil, nil, nil, nil
   for _, image in ipairs(images) do
     image:release()
@@ -1303,6 +1292,11 @@ function HgssTitleScene:dispose()
   end
   if pool ~= nil then
     pool:release()
+  end
+  if imageAssets ~= nil then
+    -- Every lease is back at the owner, so disposal reclaims the classified
+    -- textures the title borrowed.
+    imageAssets:dispose()
   end
   if renderer ~= nil then
     renderer:release()

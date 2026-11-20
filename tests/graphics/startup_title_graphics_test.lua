@@ -724,11 +724,15 @@ local function titleMissingSurfaceFailsCleanly(scope, context)
   for _, versionId in ipairs(readyVersionsOrSkip(context)) do
     local realFs = CacheFs.forVersion(versionId)
     local hollowFs = {
+      versionId = realFs.versionId,
       loadLua = function(_, path)
         return realFs:loadLua(path)
       end,
       exists = function(_, path, kind)
         return realFs:exists(path, kind)
+      end,
+      resolve = function(_, path)
+        return realFs:resolve(path)
       end,
       read = function(_, path)
         if path:find("subscreen", 1, true) ~= nil then
@@ -1359,6 +1363,35 @@ local function soulsilverLegendaryFramingMatchesSourceProjectionAtTwoPoses(scope
   scene:dispose()
 end
 
+-- The staged title build resolves every model texture before it reports ready,
+-- so the first title frame only binds handles the shared image owner already
+-- classified: no texture bank is read and no texels are decoded on the render
+-- thread that paints the handoff frame.
+local function titleFirstFrameResolvesNoModelTexture(scope, context)
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local TextureDecoder = require("libs.nds.src.gx.TextureDecoder")
+  for _, versionId in ipairs(readyVersionsOrSkip(context)) do
+    local scene = openTitleScene(scope, versionId, 512, 384, "single")
+    local counts = { textureReads = 0, decodes = 0 }
+    local realRead, realDecodeInto = CacheFs.read, TextureDecoder.decodeInto
+    CacheFs.read = function(fs, path)
+      if type(path) == "string" and path:sub(-5) == ".g4tx" then
+        counts.textureReads = counts.textureReads + 1
+      end
+      return realRead(fs, path)
+    end
+    TextureDecoder.decodeInto = function(...)
+      counts.decodes = counts.decodes + 1
+      return realDecodeInto(...)
+    end
+    local ok, failure = pcall(drawBytes, scene, scope, 512, 384)
+    CacheFs.read, TextureDecoder.decodeInto = realRead, realDecodeInto
+    Assert.isTrue(ok, "the first title frame draws: " .. tostring(failure))
+    Assert.equal(counts.textureReads, 0, "the first title frame reads no texture bank")
+    Assert.equal(counts.decodes, 0, "the first title frame decodes no texels")
+  end
+end
+
 local function heartgoldTitleFramingIsBlockedWithoutADump(scope, context)
   if not RomImporter.isReady("heartgold") then
     context:skip(
@@ -1382,6 +1415,7 @@ local T = GraphicsSmoke.suite({
   ["title canvas stays bounded on large hosts"] = titleCanvasStaysBoundedOnLargeHosts,
   ["title canvas failure releases staged assets"] = titleCanvasFailureReleasesStagedAssets,
   ["title missing surface fails cleanly"] = titleMissingSurfaceFailsCleanly,
+  ["first title frame resolves no model texture"] = titleFirstFrameResolvesNoModelTexture,
   ["title delivers its compiled lighting record"] = titleDeliversItsCompiledLightingRecord,
   ["title holds its prompt without staging copy"] = titleHoldsPromptWithoutStagingCopy,
   ["legendary silhouette matches its sourced reference frame at native size"] = legendaryMatchesItsSourcedReferenceFrame,

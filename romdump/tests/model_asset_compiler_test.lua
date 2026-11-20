@@ -10,11 +10,14 @@ local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
 local GxGeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
 local MeshCompiler = require("romdump.src.digest.model.MeshCompiler")
 local ModelAssetCompiler = require("romdump.src.digest.model.ModelAssetCompiler")
+local NBs = require("tests.support.NitroBuilder")
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local NsbmdFixture = require("tests.support.NsbmdFixture")
 local Nsbtx = require("libs.nds.src.nitro.g3d.Nsbtx")
+local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local TF = require("tests.support.TextureFixtures")
 local Tex0Fixture = require("tests.support.Tex0Fixture")
+local ffi = require("ffi")
 
 local T = {}
 
@@ -47,6 +50,28 @@ end
 
 local TEXEL = string.rep(string.char(0x11), 32)
 local PALETTE = TF.palette({ TF.BLACK, TF.RED, TF.GREEN, TF.BLACK })
+
+-- One quad display list in source units that first replaces the draw matrix
+-- with the identity, the way a shape re-homes its own transform: the vertices
+-- then land in source units whatever the SBC draw matrix held.
+---@param verts number[][] four { x, y, z } corners in source units
+---@return string
+local function identityReplacedQuadDL(verts)
+  local function appendVertex(params, v)
+    params[#params + 1] = NBs.vtx16xy(v[1], v[2])
+    params[#params + 1] = math.floor(v[3] * 4096) % 0x10000
+  end
+  local first = { 1 } -- BEGIN_VTXS(quads)
+  appendVertex(first, verts[1])
+  appendVertex(first, verts[2])
+  local second = {}
+  appendVertex(second, verts[3])
+  appendVertex(second, verts[4])
+  return NBs.gxPack({
+    { { 0x15, 0x40, 0x23, 0x23 }, first },
+    { { 0x23, 0x23, 0x41, 0x00 }, second },
+  })
+end
 
 -- One source model with two SBC draws of its single shape, bound to one named
 -- texture and palette.
@@ -280,6 +305,71 @@ function T.sequenced_shape_draws_record_the_carried_engine_state()
     colorSource = materialSeed.colorSource,
   }, "the first draw uses the material seed")
   Assert.deepEqual(seen[2], seen[1], "the second draw reproduces the carried state")
+end
+
+-- A shape that replaces the draw matrix with the identity lands its vertices in
+-- source units, exactly like the DS geometry engine. The runtime replay must
+-- still convert them to runtime tiles, because the reference mesh compile
+-- converts whatever the commands produced -- not whatever the draw seeded. The
+-- producer keeps the draw matrix in the bank either way, so the conversion
+-- cannot ride on that matrix.
+function T.runtime_replay_scales_positions_the_shape_matrix_commands_replace()
+  local verts = { { 1, 0, 0 }, { 3, 0, 0 }, { 3, 0, 2 }, { 1, 0, 2 } }
+  local modelBytes = NsbmdFixture.buildStaticQuad({
+    modelName = "matrix0",
+    materialName = "m_ground",
+    textureName = "flower01",
+    paletteName = "map_pal",
+    origWidth = 8,
+    origHeight = 8,
+    posScale = 16,
+    quad = { verts = verts, uvs = { { 0, 0 }, { 8, 0 }, { 8, 8 }, { 0, 8 } } },
+    displayList = identityReplacedQuadDL(verts),
+  })
+  local model = assert(Nsbmd.decode(modelBytes, { alias = "land_data", memberId = 244 })).models[1]
+  local packBytes = Tex0Fixture.btx0({
+    textures = { { name = "flower01", texel = TEXEL } },
+    palettes = { { name = "map_pal", palette = PALETTE } },
+  })
+  local pack = assert(Nsbtx.decode(packBytes, { alias = "map_textures", memberId = 3 }))
+  local meshes, textures = {}, {}
+  local compiled = ModelAssetCompiler.compileModel(model, pack, meshes, textures, compileContext())
+  Assert.equal(#compiled.batches, 1, "the fixture source submits one draw")
+
+  -- The reference compile over the same source model is the tile-space ground
+  -- truth the runtime replay has to reproduce.
+  local reference = MeshCompiler.compile(model)
+  Assert.equal(#reference, 1, "the reference compile produces one batch")
+  local expected = assert(reference[1])
+  local banks = compiledBank(meshes)
+  Assert.equal(#banks, 1, "the source model compiles one native bank")
+  local prepared = SceneMesh.prepareNativeBank(banks[1].bytes, "matrix-replacement")
+  local draw = assert(prepared.draws[1])
+  Assert.equal(draw.vertexCount, expected.vertexCount, "the replay decodes the same vertex count")
+
+  local components = 13 -- position, texcoord, normal, colour, colour source
+  local floats = ffi.cast("float *", draw.vertexData:getFFIPointer())
+  local minX, maxX, minZ, maxZ = math.huge, -math.huge, math.huge, -math.huge
+  for offset = 0, expected.vertexCount - 1 do
+    local want = expected.arena.numeric[expected.vertexOffset + offset]
+    local base = offset * components
+    Assert.near(floats[base], want.x, 1e-6, "replayed x of vertex " .. offset .. " matches the reference compile")
+    Assert.near(floats[base + 1], want.y, 1e-6, "replayed y of vertex " .. offset .. " matches the reference compile")
+    Assert.near(floats[base + 2], want.z, 1e-6, "replayed z of vertex " .. offset .. " matches the reference compile")
+    minX, maxX = math.min(minX, want.x), math.max(maxX, want.x)
+    minZ, maxZ = math.min(minZ, want.z), math.max(maxZ, want.z)
+  end
+  -- The source units are 16 model units per tile, so the quad spans 1/16 to
+  -- 3/16 of a tile on each axis; a replay that skipped the conversion would
+  -- report 16x that.
+  Assert.near(minX, 1 / 16, 1e-6, "the replayed quad starts at its source-unit tile")
+  Assert.near(maxX, 3 / 16, 1e-6, "the replayed quad ends at its source-unit tile")
+  Assert.near(minZ, 0, 1e-6, "the replayed quad keeps its source-unit depth extent")
+  Assert.near(maxZ, 2 / 16, 1e-6, "the replayed quad keeps its source-unit depth extent")
+  Assert.near(draw.minX, minX, 1e-6, "the upload packet's reported bounds match the replayed positions")
+  Assert.near(draw.maxX, maxX, 1e-6, "the upload packet's reported bounds match the replayed positions")
+  Assert.near(draw.minZ, minZ, 1e-6, "the upload packet's reported bounds match the replayed positions")
+  Assert.near(draw.maxZ, maxZ, 1e-6, "the upload packet's reported bounds match the replayed positions")
 end
 
 return { tests = T }
