@@ -283,7 +283,6 @@ function T.construction_schedules_the_source_inventory_without_compiling_sources
   local result = withPatched(patches, function()
     local pool = recordingPool()
     local session = openSession("construction-generation", pool)
-    local constructed = snapshotCalls(calls)
     local ready, failure = session:requestMilestone("new-game-intro", "required")
     -- Submission is paced by the shared per-update budget: a starved
     -- wall-clock slice may spend the first pump on roster construction, so
@@ -300,7 +299,6 @@ function T.construction_schedules_the_source_inventory_without_compiling_sources
     -- still cannot certify before its inventory publishes.
     local retainedReady, retainedFailure = session:requestMilestone("new-game-intro", "required")
     return {
-      constructed = constructed,
       scheduled = scheduled,
       ready = ready,
       failure = failure,
@@ -310,8 +308,9 @@ function T.construction_schedules_the_source_inventory_without_compiling_sources
       enumerationComplete = session:status().enumerationComplete,
     }
   end)
-  assertNoAggregateCompilation(result.constructed, "selecting a generation")
-  assertNoAggregateCompilation(result.scheduled, "scheduling the source inventory")
+  -- The planner call counts only accumulate, so the post-scheduling snapshot
+  -- covers construction as well.
+  assertNoAggregateCompilation(result.scheduled, "selection through scheduling")
   Assert.isFalse(result.ready, "the intro stays pending until the inventory publishes")
   Assert.isNil(result.failure, "the intro reports no failure while the inventory is pending")
   Assert.equal(

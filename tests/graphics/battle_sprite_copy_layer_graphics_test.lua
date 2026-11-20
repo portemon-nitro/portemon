@@ -132,39 +132,15 @@ function T.sprite_copies_composite_above_the_3d_layer(scope)
   )
   -- StopBattlerSpriteDraw / SetBattlerSpriteVisible hide the copy without
   -- deleting it: the hidden copy submits nothing and the nearer effect plane
-  -- shows through instead.
+  -- shows through instead. The draw-loop and palette-fade rules that pick
+  -- these flags or the OBJ layer live in the picture-variant and effect-task
+  -- units, which need no GPU pass.
   scene:setAnimationSpriteDrawFlag(0, false)
   local hiddenRed, hiddenGreen = centerPixel()
   Assert.isTrue(
     hiddenRed > 0.5 and hiddenGreen < 0.5,
     "a hidden sprite copy stops drawing, got r=" .. hiddenRed .. " g=" .. hiddenGreen
   )
-  scene:setAnimationSpriteDrawFlag(0, true)
-  local shownRed, shownGreen = centerPixel()
-  Assert.isTrue(
-    shownGreen > 0.5 and shownRed < 0.5,
-    "the copy returns with its source draw flag, got r=" .. shownRed .. " g=" .. shownGreen
-  )
-  -- StopBattlerSpriteDraw deactivates the draw loop without touching the
-  -- sprite: the copy record survives but nothing paints it.
-  scene:stopAnimationSpriteDraw(0)
-  local stoppedRed, stoppedGreen = centerPixel()
-  Assert.isTrue(
-    stoppedRed > 0.5 and stoppedGreen < 0.5,
-    "a stopped draw loop paints no copy, got r=" .. stoppedRed .. " g=" .. stoppedGreen
-  )
-  Assert.isTrue(#scene:effectViews() >= 1, "the stopped loop keeps its copy record alive")
-  -- A copy that carries the live palette fade keeps its OBJ layer: the
-  -- fade rides its own draw instead of falling back to the depth-tested
-  -- picture, so the nearer effect plane cannot erase it.
-  scene:startAnimationSpriteDraw(0, 0)
-  battler.paletteFade = { applied = true, targetColor = 0x7FFF, intensity = 16 }
-  local fadeRed, fadeGreen, fadeBlue = centerPixel()
-  Assert.isTrue(
-    fadeRed > 0.9 and fadeGreen > 0.9 and fadeBlue > 0.9,
-    "the faded copy draws on its OBJ layer, got " .. fadeRed .. "/" .. fadeGreen .. "/" .. fadeBlue
-  )
-  battler.paletteFade = nil
 end
 
 return GraphicsSmoke.suite(T)

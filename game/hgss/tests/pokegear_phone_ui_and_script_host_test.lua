@@ -89,7 +89,6 @@ end
 local function phoneDimSection()
   local section = {
     panel = visualRef("assets/generated/pokegear/phone-panel.png"),
-    foreground = {},
     foregroundDim = {},
     foregroundDimChoice = {},
     dimShellForeground = {},
@@ -99,7 +98,6 @@ local function phoneDimSection()
   }
   for skin = 0, 5 do
     local suffix = "-skin-" .. skin .. ".png"
-    section.foreground[skin] = visualRef("assets/generated/pokegear/phone-foreground" .. suffix)
     section.foregroundDim[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim" .. suffix)
     section.foregroundDimChoice[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
     section.dimShellForeground[skin] = visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)

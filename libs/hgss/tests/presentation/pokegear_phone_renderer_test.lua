@@ -45,6 +45,9 @@ local function recordingGraphics()
   function graphics.transformPoint(x, y)
     return x, y
   end
+  function graphics.newQuad(x, y, width, height, imageWidth, imageHeight)
+    return { x = x, y = y, width = width, height = height, imageWidth = imageWidth, imageHeight = imageHeight }
+  end
   graphics._records = records
   return graphics --[[@as table]]
 end
@@ -1070,6 +1073,41 @@ function T.list_corners_answer_card_focus_not_the_list_alone()
     cornerPaints({ entered = false }),
     "the strip-owned list hides its frame so only the strip corners show"
   )
+end
+
+-- A live call presented over a host surface paints the information plane and
+-- an owed choice's shared list-menu frame, and nothing of the card: no shell
+-- foreground, no contact list, no sprites. A host field keeps its own pixels
+-- around the call.
+function T.call_window_paints_its_information_plane_and_owed_choice_only()
+  local graphics = recordingGraphics()
+  local nameText = recordingText("name")
+  local classText = recordingText("class")
+  PokegearPhoneRenderer.drawCallWindow(
+    { graphics = graphics, images = stubImages(), textRenderer = classText, phoneNameTextRenderer = nameText },
+    browseView({
+      call = liveCall(),
+      callMenu = { options = { "YES", "NO" }, cursor = 0, frame = { x = 7, y = 11, width = 22, height = 7 } },
+    }),
+    contentFixture()
+  )
+
+  local images, quads = {}, {}
+  for _, record in ipairs(graphics._records) do
+    if record.op == "image" then
+      images[record.path] = (images[record.path] or 0) + 1
+    elseif record.op == "quad" then
+      quads[record.path] = (quads[record.path] or 0) + 1
+    end
+  end
+  Assert.deepEqual(
+    images,
+    { ["test-upper"] = 1 },
+    "the call window paints its information plane and no card plane"
+  )
+  Assert.isTrue((quads["menu-tiles"] or 0) > 0, "an owed choice paints its shared list-menu frame")
+  Assert.equal(callTextDraws({ nameText, classText }), 2, "the caller name and its message print")
+  Assert.equal(rowBandFills(graphics), 0, "the call window never paints contact row bands")
 end
 
 return { tests = T }

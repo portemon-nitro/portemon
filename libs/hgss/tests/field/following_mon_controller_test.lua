@@ -292,7 +292,7 @@ end
 -- the presented battle that fainted the leader returns with the follower's
 -- walk one tick short of its commit, and the new follower must neither start
 -- a second tile behind nor catch up by teleporting a whole tile per step.
-function T.lead_swap_mid_trail_keeps_the_follower_on_its_trail()
+function T.lead_swap_mid_walk_reseats_the_replacement_and_keeps_interpolated_steps()
   local w = world()
   w.svc:setLead(0, mon("CHIKORITA", 0x12345678))
   tick(w, 2)
@@ -745,9 +745,9 @@ end
 
 -- A lead swap resets the follower the way a map change does: whatever trail
 -- the old lead still owed is dropped and the replacement stands behind the
--- player, so the next step trails exactly one tile instead of inheriting a
--- stale lag.
-function T.lead_swap_reseats_the_replacement_behind_the_player()
+-- player. Setup pauses movement so the paused follower lags further back than
+-- one tile, so a replayed backlog would be visible as a stale catch-up.
+function T.lead_swap_from_a_paused_lag_drops_the_owed_trail()
   local w = world()
   w.svc:setLead(0, mon("CHIKORITA"))
   tick(w, 2)

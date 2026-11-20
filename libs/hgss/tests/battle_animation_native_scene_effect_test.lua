@@ -496,6 +496,10 @@ function T.doubles_sprite_draw_applies_the_native_role_priority_table()
     { mode = "second-battler-class-priority-reverse", attacker = 2, defender = 3, draw = true, priority = 255 },
     { mode = "second-battler-class-priority-reverse", attacker = 2, defender = 4, draw = true, priority = 255 },
     { mode = "second-battler-class-priority-reverse", attacker = 2, defender = 5, draw = true, priority = 1 },
+    -- A defender type outside the source switch writes no priority at all:
+    -- the slot keeps whatever it had and only the draw flag is decided.
+    { mode = "second-battler-class-priority-forward", attacker = 2, defender = 0, draw = true, priority = nil },
+    { mode = "second-battler-class-priority-reverse", attacker = 2, defender = 1, draw = true, priority = nil },
   }
   for _, case in ipairs(cases) do
     local scene = BattleScene.new()

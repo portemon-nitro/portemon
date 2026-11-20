@@ -402,25 +402,21 @@ function T.sprite_copy_priority_follows_the_source_draw_priority()
   -- layer consumes the same 0..3 OAM priority, so 255 lands on the
   -- behind slot and 1 keeps the copy in front.
   local player = battler({ activation = 1 })
-  local function copyPriorities(priority)
+  local function copyPriority(priority)
     local instance = copyInstance(player, true)
     instance.priority = priority
     local opts = {}
     drawnDetail(snapshot({ player, foeBattler() }, { instance }), opts)
-    local priorities = {}
-    for _, fragment in ipairs(opts.objects or {}) do
-      -- Copies share native submission order 1 with the caller's HUD
-      -- fragment; the HUD keeps OAM priority 0.
-      if fragment.submissionOrder == 1 then
-        priorities[#priorities + 1] = fragment.objPriority
-      end
-    end
-    return priorities
+    local fragments = assert(opts.objects, "the detail draw publishes its ordered OBJ fragments")
+    -- Copies are appended after the caller's own OBJ fragments, so the copy
+    -- is the last one and the caller's bundle keeps the top priority.
+    Assert.equal(fragments[1].objPriority, 0, "the caller's own fragment keeps OAM priority 0")
+    local copy = assert(fragments[#fragments], "the copy fragment is appended after the caller's")
+    Assert.equal(copy.submissionOrder, 1, "the copy keeps the native submission order")
+    return copy.objPriority
   end
-  local front = copyPriorities(1)
-  Assert.isTrue(#front == 2 and front[1] == 0 and front[2] == 1, "the front role draws at OAM priority 1")
-  local behind = copyPriorities(255)
-  Assert.isTrue(#behind == 2 and behind[1] == 0 and behind[2] == 3, "the behind role draws at the lowest OAM priority")
+  Assert.equal(copyPriority(1), 1, "the front role draws at OAM priority 1")
+  Assert.equal(copyPriority(255), 3, "the behind role draws at the lowest OAM priority")
 end
 
 return { tests = T }

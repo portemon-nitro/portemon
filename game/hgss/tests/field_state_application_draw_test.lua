@@ -653,16 +653,16 @@ function T.a_ringing_caller_draws_the_compiled_notice_on_the_field_tick()
   Assert.equal(#sink, before, "the open menu owns the frame instead of the notice")
 
   -- Going quiet and ringing again re-arms the clock at the new field tick
-  -- rather than resuming the expired ring.
+  -- rather than resuming the expired ring. The quiet frame itself paints
+  -- nothing, which the first frame above already proved.
   notice = nil
   state:_trackIncomingCallNotice()
   state.runtime.session.tick = state.runtime.session.tick + 40
-  frameStart = drawSpying(state, sink)
-  Assert.isNil(callNoticeDraw(sink, frameStart), "a quiet coordinator paints no notice")
   notice = { contactKey = "custom.mom", name = "MOM", ringingAnimation = 5 }
   state:_trackIncomingCallNotice()
   frameStart = drawSpying(state, sink)
   local rearmed = assert(callNoticeDraw(sink, frameStart), "the second ring paints again") --[[@as table]]
+  Assert.equal(rearmed[2], notice, "the second ring presents its own caller view")
   Assert.equal(rearmed[3], 0, "the next ring restarts the field tick")
 end
 

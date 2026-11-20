@@ -18,10 +18,11 @@ local RomImporter = require("romdump.src.source.RomImporter")
 
 local T = {}
 local MOVES = { "TAIL_WHIP", "HYPNOSIS" }
--- Pixels are fingerprinted on a coarse grid on every source tick: the
--- sprite-copy draw windows last only their source frame count, so a
--- coarser readback cadence can miss them entirely. The programs still
--- run to completion every tick; only the readback is per tick.
+-- Pixels are fingerprinted on a coarse grid on every source tick: an effect
+-- view can paint and disappear inside its own short source window (a
+-- battler-sprite copy loop is only a few frames long), so a coarser readback
+-- cadence can miss the only change a program makes. The programs still run to
+-- completion every tick; only the readback is per tick.
 local PIXEL_STRIDE = 2
 
 local function firstReadyVersion()
@@ -225,7 +226,8 @@ local function runVersion(scope, versionId)
         end
         renderBattlers[#renderBattlers + 1] = copy
       end
-      for _, view in ipairs(scene:effectViews()) do
+      local effectViews = scene:effectViews()
+      for _, view in ipairs(effectViews) do
         local source = view.picture
         if source ~= nil then
           battlerSpriteObserved = battlerSpriteObserved or source.battlerActivation ~= nil
@@ -234,7 +236,7 @@ local function runVersion(scope, versionId)
       local battleView = {
         battlers = renderBattlers,
         slotGeometry = slots,
-        effectInstances = scene:effectViews(),
+        effectInstances = effectViews,
         bgScroll = scene:scroll(),
         hudSections = {},
       }
