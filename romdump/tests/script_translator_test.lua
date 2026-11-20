@@ -2161,4 +2161,276 @@ T["source money commands lower to the money operations"] = function()
   }, "variable box coordinates stay value references")
 end
 
+-- The source operand *kind* is the contract for a lowered field command: a
+-- ScriptGetVar operand becomes a variable reference somewhere in the step,
+-- an immediate operand never does. Counting the references proves that
+-- without freezing where the semantic node keeps them.
+local function countVariableReferences(step)
+  local count = 0
+  local seen = {}
+  local function walk(value)
+    if type(value) ~= "table" or seen[value] then
+      return
+    end
+    seen[value] = true
+    if value.value == "var" then
+      count = count + 1
+      return
+    end
+    for _, item in pairs(value) do
+      walk(item)
+    end
+  end
+  walk(step)
+  return count
+end
+
+local function translateOnly(instructions)
+  local bytes = ScriptFixture.member({
+    scripts = { { offset = 0x20, instructions = instructions } },
+  })
+  return translate(bytes, 843, 0)
+end
+
+-- The emitted steps must also be a valid generated script: the semantic field
+-- names the source operands lower to are part of the DSL contract.
+local function validateSteps(id, steps)
+  local ok, err = S.validate({ api = 1, id = id, steps = steps })
+  Assert.isTrue(ok, "the emitted steps are a valid script: " .. tostring(err))
+end
+
+T["object movement and facing commands carry their distinct source operands"] = function()
+  Assert.equal(CommandCatalog.classification(109), CommandCatalog.CONTINUE, "a movement change returns in its own tick")
+  Assert.equal(CommandCatalog.classification(344), CommandCatalog.CONTINUE, "a facing refresh returns in its own tick")
+
+  -- ChangeObjectMovement: the object id is a ScriptGetVar operand, the
+  -- movement selector is an immediate halfword, so the step names the source
+  -- movement type without a second variable read.
+  local _, movementSteps, movementReport = translateOnly({
+    { op = 109, args = { { value = 0x8008, width = 2 }, { value = 3, width = 2 } } },
+    { op = 2, args = {} },
+  })
+  Assert.equal(movementSteps[1].op, "set_object_movement_type")
+  Assert.equal(movementSteps[1].movementType, "wander_around", "the immediate selector lowers to its source movement")
+  Assert.equal(movementSteps[1].changeMovement, true, "the source command reinitializes the object's movement")
+  Assert.equal(countVariableReferences(movementSteps[1]), 1, "only the object id comes from a script variable")
+  Assert.deepEqual(movementSteps[1].provenance, { offsets = { 0x20 }, opcodes = { 109 } })
+  Assert.isTrue(movementReport.complete, "a movement change is a complete translation")
+  validateSteps("test.source_109", movementSteps)
+
+  -- The selector is an immediate: a value inside the variable range is an
+  -- invalid movement code, never a variable dereference.
+  local selectorError = Assert.throws(function()
+    translateOnly({
+      { op = 109, args = { { value = 0x8008, width = 2 }, { value = 0x4001, width = 2 } } },
+      { op = 2, args = {} },
+    })
+  end)
+  Assert.equal(selectorError.code, "SCRIPT_UNKNOWN_OBJECT_MOVEMENT")
+
+  -- SetObjectFacingAndUpdateDraw: both the object id and the direction are
+  -- ScriptGetVar operands, so the step reads two script variables.
+  local _, facingSteps, facingReport = translateOnly({
+    { op = 344, args = { { value = 0x8008, width = 2 }, { value = 0x8009, width = 2 } } },
+    { op = 2, args = {} },
+  })
+  Assert.equal(facingSteps[1].op, "set_object_facing")
+  Assert.equal(countVariableReferences(facingSteps[1]), 2, "the direction is read through a script variable")
+  Assert.deepEqual(facingSteps[1].provenance, { offsets = { 0x20 }, opcodes = { 344 } })
+  Assert.isTrue(facingReport.complete, "a facing refresh is a complete translation")
+  validateSteps("test.source_344", facingSteps)
+
+  -- The same command with immediate operands (the retail corpus shape): a
+  -- literal object id stays an index and a literal direction code is the
+  -- cardinal direction it names, not a bare source code.
+  local _, literalFacingSteps, literalFacingReport = translateOnly({
+    { op = 344, args = { { value = 3, width = 2 }, { value = 2, width = 2 } } },
+    { op = 2, args = {} },
+  })
+  Assert.deepEqual(literalFacingSteps[1].actor, { ref = "actor", mapIndex = 3 })
+  Assert.equal(literalFacingSteps[1].direction, "west", "a literal direction code lowers to its cardinal")
+  Assert.equal(countVariableReferences(literalFacingSteps[1]), 0, "immediate operands read no script variable")
+  Assert.isTrue(literalFacingReport.complete, "an immediate facing refresh is a complete translation")
+  validateSteps("test.source_344_literal", literalFacingSteps)
+end
+
+T["dynamic warp and warp-event commands lower to their own travel operations"] = function()
+  for _, opcode in ipairs({ 240, 241, 342 }) do
+    Assert.equal(
+      CommandCatalog.classification(opcode),
+      CommandCatalog.CONTINUE,
+      "opcode " .. opcode .. " returns same tick"
+    )
+  end
+
+  local _, setSteps, setReport = translateOnly({
+    {
+      op = 240,
+      args = {
+        { value = 0x8008, width = 2 },
+        { value = 0x8009, width = 2 },
+        { value = 0x800A, width = 2 },
+        { value = 0x800B, width = 2 },
+        { value = 0x800C, width = 2 },
+      },
+    },
+    { op = 2, args = {} },
+  })
+  Assert.equal(setSteps[1].op, "set_dynamic_warp")
+  Assert.equal(countVariableReferences(setSteps[1]), 5, "every SetDynamicWarp operand is a script variable")
+  Assert.deepEqual(setSteps[1].provenance, { offsets = { 0x20 }, opcodes = { 240 } })
+  Assert.isTrue(setReport.complete)
+  validateSteps("test.source_240", setSteps)
+
+  -- The retail corpus passes the destination cells and the direction as
+  -- immediates: SetDynamicWarp reads every operand through ScriptGetVar, so a
+  -- literal direction code is still the semantic cardinal, never a source
+  -- code the runtime would have to reinterpret.
+  local _, literalSteps, literalReport = translateOnly({
+    {
+      op = 240,
+      args = {
+        { value = 60, width = 2 },
+        { value = 1, width = 2 },
+        { value = 5, width = 2 },
+        { value = 3, width = 2 },
+        { value = 2, width = 2 },
+      },
+    },
+    { op = 2, args = {} },
+  })
+  Assert.equal(literalSteps[1].direction, "west", "a literal direction code lowers to its cardinal")
+  Assert.equal(countVariableReferences(literalSteps[1]), 0, "immediate operands read no script variable")
+  Assert.isTrue(literalReport.complete)
+  validateSteps("test.source_240_literal", literalSteps)
+
+  -- A code outside the pinned table fails with the rejected source code
+  -- named, never a fallback cardinal.
+  local unknownDirection = Assert.throws(function()
+    translateOnly({
+      {
+        op = 240,
+        args = {
+          { value = 60, width = 2 },
+          { value = 1, width = 2 },
+          { value = 5, width = 2 },
+          { value = 3, width = 2 },
+          { value = 7, width = 2 },
+        },
+      },
+      { op = 2, args = {} },
+    })
+  end)
+  Assert.isTrue(
+    tostring(unknownDirection):find("unknown direction code 7", 1, true) ~= nil,
+    "an unknown direction code names the source operand it rejected"
+  )
+
+  local _, floorSteps, floorReport = translateOnly({
+    { op = 241, args = { { value = 0x8008, width = 2 } } },
+    { op = 2, args = {} },
+  })
+  Assert.equal(floorSteps[1].op, "get_dynamic_warp_floor")
+  Assert.equal(countVariableReferences(floorSteps[1]), 1, "the floor answer is written to the result variable")
+  Assert.isTrue(floorReport.complete)
+  validateSteps("test.source_241", floorSteps)
+
+  local _, moveSteps, moveReport = translateOnly({
+    {
+      op = 342,
+      args = { { value = 0x8008, width = 2 }, { value = 0x8009, width = 2 }, { value = 0x800A, width = 2 } },
+    },
+    { op = 2, args = {} },
+  })
+  Assert.equal(moveSteps[1].op, "move_warp_event")
+  Assert.equal(countVariableReferences(moveSteps[1]), 3, "the warp index and its new cell are script variables")
+  Assert.isTrue(moveReport.complete)
+  validateSteps("test.source_342", moveSteps)
+end
+
+T["floor window, elevator animation and clock commands keep source timing"] = function()
+  Assert.equal(CommandCatalog.classification(242), CommandCatalog.CONTINUE, "the floor window does not wait")
+  Assert.equal(
+    CommandCatalog.classification(488),
+    CommandCatalog.NATIVE_WAIT,
+    "the elevator animation blocks the script"
+  )
+  Assert.equal(CommandCatalog.classification(522), CommandCatalog.CONTINUE, "the clock answer is same tick")
+
+  local _, floorWindowSteps, floorWindowReport = translateOnly({
+    {
+      op = 242,
+      args = {
+        { value = 5, width = 1 },
+        { value = 6, width = 1 },
+        { value = 0x8008, width = 2 },
+        { value = 0x8009, width = 2 },
+      },
+    },
+    { op = 2, args = {} },
+  })
+  Assert.equal(floorWindowSteps[1].op, "floor_window_show")
+  Assert.equal(floorWindowSteps[1].tileX, 5, "the window tile x is a source byte")
+  Assert.equal(floorWindowSteps[1].tileY, 6, "the window tile y is a source byte")
+  Assert.equal(countVariableReferences(floorWindowSteps[1]), 2, "the result pointer and the floor are script variables")
+  Assert.isTrue(floorWindowReport.complete)
+  validateSteps("test.source_242", floorWindowSteps)
+
+  local _, elevatorSteps, elevatorReport = translateOnly({
+    { op = 488, args = { { value = 0x8008, width = 2 }, { value = 0x8009, width = 2 } } },
+    { op = 2, args = {} },
+  })
+  Assert.equal(elevatorSteps[1].op, "elevator_anim")
+  Assert.equal(countVariableReferences(elevatorSteps[1]), 2, "direction and length are script variables")
+  Assert.isTrue(elevatorReport.complete)
+  validateSteps("test.source_488", elevatorSteps)
+
+  local _, clockSteps, clockReport = translateOnly({
+    { op = 522, args = { { value = 0x8008, width = 2 } } },
+    { op = 2, args = {} },
+  })
+  Assert.equal(clockSteps[1].op, "field_clock_hour")
+  Assert.equal(countVariableReferences(clockSteps[1]), 1, "the hour is written to the result variable")
+  Assert.isTrue(clockReport.complete)
+  validateSteps("test.source_522", clockSteps)
+end
+
+T["the source overlay command lowers to an inert step with its provenance"] = function()
+  Assert.equal(
+    CommandCatalog.classification(784),
+    CommandCatalog.CONTINUE,
+    "the overlay command returns in its own tick"
+  )
+
+  local _, steps, report = translateOnly({
+    { op = 784, args = { { value = 5, width = 1 }, { value = 0, width = 1 } } },
+    { op = 30, args = { { value = 0x6A, width = 2 } } },
+    { op = 2, args = {} },
+  })
+  Assert.equal(steps[1].op, "noop", "the DS-only overlay load has no gameplay effect to run")
+  Assert.deepEqual(
+    steps[1].provenance,
+    { offsets = { 0x20 }, opcodes = { 784 } },
+    "the source command stays attributed"
+  )
+  Assert.equal(steps[2].op, "set_flag", "the following source command keeps its own position")
+  Assert.deepEqual(steps[2].provenance, { offsets = { 0x24 }, opcodes = { 30 } })
+  Assert.isTrue(report.complete, "an inert source command still completes its script")
+  Assert.equal(report.unsupportedCount, 0)
+  validateSteps("test.source_784", steps)
+
+  -- An unload action and a selector outside the source overlay table are the
+  -- same same-tick no-effect, never a runtime overlay operation.
+  for _, overlay in ipairs({ { 2, 1 }, { 4, 0 }, { 5, 0 } }) do
+    local _, unloadSteps, unloadReport = translateOnly({
+      { op = 784, args = { { value = overlay[1], width = 1 }, { value = overlay[2], width = 1 } } },
+      { op = 30, args = { { value = 0x6A, width = 2 } } },
+      { op = 2, args = {} },
+    })
+    Assert.equal(unloadSteps[1].op, "noop", "overlay selector " .. overlay[1] .. " is inert")
+    Assert.deepEqual(unloadSteps[1].provenance, { offsets = { 0x20 }, opcodes = { 784 } })
+    Assert.isTrue(unloadReport.complete)
+  end
+end
+
 return { tests = T }

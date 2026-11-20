@@ -862,4 +862,125 @@ function T.tests.rival_battle_outcome_gates_the_trainer_flag_and_the_following_n
   Assert.isFalse(FieldEventState.new():isFlagSet(TRAINER_FLAG_BASE + 3), "a new game carries no defeated trainer")
 end
 
+-- A composed dynamic-warp slice writes the durable destination on the
+-- injected travel owner, keeps the special spawn separate, and answers the
+-- floor from the pinned source map table in the same tick.
+function T.tests.script_dynamic_warp_slice_writes_the_durable_destination_and_reads_its_floor()
+  local travel = FieldTravelState.new({ lastHealSpawn = "SPAWN_NEW_BARK" })
+  local special = { map = "MAP_NEW_BARK", fieldX = 688, fieldZ = 393, warpId = -1, direction = "south" }
+  local platform = composeSlice(
+    {
+      travel = travel,
+      fieldMoves = nil,
+      mapLoader = {
+        mapSymbol = function(_, mapId)
+          Assert.equal(mapId, 40, "the source map id resolves through the injected map loader")
+          return "MAP_GOLDENROD_DEPARTMENT_STORE_1F"
+        end,
+      },
+    },
+    "test.dynamic_warp_slice",
+    {
+      { op = "set_special_spawn", map = special.map, fieldX = 688, fieldZ = 393, warpId = -1, direction = "south" },
+      { op = "set_dynamic_warp", map = 40, warpId = 0, fieldX = 5, fieldZ = 6, direction = "north" },
+      { op = "get_dynamic_warp_floor" },
+    }
+  )
+  Assert.isNil(travel:dynamicWarp(), "composing a script records no destination")
+  local composed = assert(platform.composition:effective("test.dynamic_warp_slice"))
+  platform.scheduler:createForeground(composed, nil, 100)
+  platform.scheduler:step(100, nil)
+
+  Assert.deepEqual(travel:dynamicWarp(), {
+    map = "MAP_GOLDENROD_DEPARTMENT_STORE_1F",
+    warpId = 0,
+    fieldX = 5,
+    fieldZ = 6,
+    direction = "north",
+  }, "the composed command reaches the durable travel owner")
+  Assert.deepEqual(travel:specialSpawn(), special, "the composed special spawn keeps its own value")
+  local symbols = require("libs.assets.src.field.FieldScriptSymbols")
+  Assert.equal(
+    platform.worldState:getVar(symbols.variablesByName.VAR_TEMP_x4001),
+    1,
+    "the source department-store floor table answers the query"
+  )
+end
+
+-- A composed floor-window slice shows the source window through the composed
+-- host: the service supplies the live map's label table, the command never
+-- writes the observed result variable, and the field's own tick releases the
+-- window once the script writes the closing sentinel.
+function T.tests.script_floor_window_slice_observes_its_result_variable()
+  local symbols = require("libs.assets.src.field.FieldScriptSymbols")
+  local platform = composeSlice({
+    travel = FieldTravelState.new({ lastHealSpawn = "SPAWN_NEW_BARK" }),
+    fieldMoves = nil,
+    sourceMap = {
+      mapSymbol = "MAP_GOLDENROD_DEPARTMENT_STORE_ELEVATOR",
+      fieldData = { mapId = 7, scriptBankId = 3, initScripts = {} },
+    },
+    messageProvider = {
+      acquireBank = function()
+        return true
+      end,
+      releaseBank = function() end,
+      get = function()
+        return { tokens = {} }
+      end,
+      format = function(_, template)
+        return template
+      end,
+    },
+  }, "test.floor_window_slice", { { op = "floor_window_show", tileX = 4, tileY = 5, floor = 0 } })
+  local composed = assert(platform.composition:effective("test.floor_window_slice"))
+  platform.scheduler:createForeground(composed, nil, 100)
+  platform.scheduler:step(100, nil)
+
+  local snapshot = assert(platform.floorWindow:snapshot(), "the composed command shows the source window")
+  Assert.equal(snapshot.map, "MAP_GOLDENROD_DEPARTMENT_STORE_ELEVATOR", "the window carries the live map identity")
+  Assert.equal(snapshot.tileX, 4)
+  Assert.equal(snapshot.tileY, 5)
+  Assert.equal(snapshot.labelMessage, "msg.hgss.0191.00122", "the live map selects its own floor label")
+  local resultId = symbols.variablesByName.VAR_TEMP_x4001
+  Assert.equal(platform.worldState:getVar(resultId), 0, "the composing command never writes the observed variable")
+
+  platform.worldState:setVar(resultId, 0xFFFF)
+  platform.scheduler:step(101, nil)
+  Assert.isNil(platform.floorWindow:snapshot(), "the field tick releases the window on the sentinel")
+end
+
+-- A composed clock slice answers the field hour from the injected local clock
+-- and keeps running in the same tick.
+function T.tests.script_clock_hour_slice_reads_the_injected_field_clock()
+  local travel = FieldTravelState.new({ lastHealSpawn = "SPAWN_NEW_BARK" })
+  local platform = composeSlice(
+    {
+      travel = travel,
+      fieldMoves = nil,
+      clock = {
+        nowLocal = function()
+          return { year = 2000, month = 1, day = 2, hour = 23, minute = 30 }
+        end,
+      },
+    },
+    "test.clock_slice",
+    {
+      { op = "field_clock_hour" },
+      { op = "set_spawn", spawn = "SPAWN_GOLDENROD" },
+    }
+  )
+  local composed = assert(platform.composition:effective("test.clock_slice"))
+  platform.scheduler:createForeground(composed, nil, 100)
+  platform.scheduler:step(100, nil)
+
+  local symbols = require("libs.assets.src.field.FieldScriptSymbols")
+  Assert.equal(
+    platform.worldState:getVar(symbols.variablesByName.VAR_TEMP_x4002),
+    23,
+    "the composed field clock answers the source hour"
+  )
+  Assert.equal(travel:capture().lastHealSpawn, "SPAWN_GOLDENROD", "the following command runs in the same tick")
+end
+
 return T

@@ -602,4 +602,91 @@ function FieldServiceHandlers.multichoiceSetAnchorRight(ins)
   return { op = "menu_anchor_right", enabled = Operands.operandValue(ins.operands[1]) ~= 0 }
 end
 
+-- ScrCmd_ChangeObjectMovement reads the object id through ScriptGetVar and the
+-- movement selector as an immediate halfword, then reinitializes the object's
+-- own movement. An object the current map does not carry is the source's
+-- intentional no-op, which the runtime keeps distinct from SetObjectMovementType.
+function FieldServiceHandlers.changeObjectMovement(ins)
+  return {
+    op = "set_object_movement_type",
+    actor = Operands.actorRef(ins.operands[1]),
+    movementType = Operands.movementType(ins),
+    changeMovement = true,
+  }
+end
+
+-- ScrCmd_SetObjectFacingAndUpdateDraw reads both operands through ScriptGetVar.
+-- The actor manager's facing is the orientation its draw path samples every
+-- frame, so the facing write is also the source command's immediate draw
+-- refresh; no separate draw request exists.
+function FieldServiceHandlers.setObjectFacingAndUpdateDraw(ins)
+  return {
+    op = "set_object_facing",
+    actor = Operands.actorRef(ins.operands[1]),
+    direction = Operands.directionRef(ins.operands[2]),
+  }
+end
+
+-- ScrCmd_SetDynamicWarp reads map, warp, x, y and direction through
+-- ScriptGetVar into the saved LocalFieldData destination.
+function FieldServiceHandlers.setDynamicWarp(ins)
+  return {
+    op = "set_dynamic_warp",
+    map = Operands.varRef(ins.operands[1]),
+    warpId = Operands.varRef(ins.operands[2]),
+    fieldX = Operands.varRef(ins.operands[3]),
+    fieldZ = Operands.varRef(ins.operands[4]),
+    direction = Operands.directionRef(ins.operands[5]),
+  }
+end
+
+-- ScrCmd_GetDynamicWarpFloorNo answers the saved destination's source floor.
+function FieldServiceHandlers.getDynamicWarpFloorNo(ins)
+  return { op = "get_dynamic_warp_floor", result = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_MoveWarp relocates one warp event of the current map.
+function FieldServiceHandlers.moveWarp(ins)
+  return {
+    op = "move_warp_event",
+    warpId = Operands.varRef(ins.operands[1]),
+    fieldX = Operands.varRef(ins.operands[2]),
+    fieldZ = Operands.varRef(ins.operands[3]),
+  }
+end
+
+-- ScrCmd_ElevatorCurFloorBox reads the tile placement as bytes and the floor as
+-- a script variable; the result operand is the variable pointer the window's
+-- lifetime observes, not a value the command writes.
+function FieldServiceHandlers.elevatorCurFloorBox(ins)
+  return {
+    op = "floor_window_show",
+    tileX = Operands.operandValue(ins.operands[1]),
+    tileY = Operands.operandValue(ins.operands[2]),
+    result = Operands.varRef(ins.operands[3]),
+    floor = Operands.varRef(ins.operands[4]),
+  }
+end
+
+function FieldServiceHandlers.elevatorAnim(ins)
+  return {
+    op = "elevator_anim",
+    direction = Operands.varRef(ins.operands[1]),
+    length = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function FieldServiceHandlers.getCurrentHour(ins)
+  return { op = "field_clock_hour", result = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_ScriptOverlayCmd only loads or unloads Nintendo DS overlays: the
+-- command has no gameplay effect in this port, where the generated runtime
+-- already carries those providers. Both the load and the unload action, and a
+-- selector outside the source overlay table, lower to the same inert same-tick
+-- step with the original source instruction in its provenance.
+function FieldServiceHandlers.scriptOverlayCmd(_)
+  return { op = "noop" }
+end
+
 return FieldServiceHandlers

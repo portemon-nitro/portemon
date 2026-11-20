@@ -189,6 +189,146 @@ function T.trainer_card_stars_writes_the_live_save_result()
   Assert.equal(written.STARS, 4)
 end
 
+function T.field_clock_hour_reads_the_injected_clock_same_tick()
+  local written = {}
+  local hour = 23
+  local run = runState({
+    clock = {
+      nowLocal = function()
+        return { year = 2000, month = 1, day = 1, hour = hour, minute = 5 }
+      end,
+    },
+  }, written)
+
+  Assert.equal(
+    Runtime.executeNode({ op = "field_clock_hour", result = { value = "var", id = "VAR_TEMP_x4001" } }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(written.VAR_TEMP_x4001, 23, "the late hour answers the injected local clock")
+
+  hour = 0
+  Assert.equal(
+    Runtime.executeNode({ op = "field_clock_hour", result = { value = "var", id = "VAR_TEMP_x4001" } }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(written.VAR_TEMP_x4001, 0, "the hour wraps to midnight through the same clock")
+end
+
+function T.dynamic_warp_operations_delegate_to_the_maps_service_same_tick()
+  local written = {}
+  local values = { DYNAMIC_MAP = 60, WARP = 2, X = 10, Z = 20, DIRECTION = 4 }
+  local calls = {}
+  local run = runState({
+    maps = {
+      setDynamicWarp = function(_, warp)
+        calls[#calls + 1] = { op = "set", warp = warp }
+      end,
+      dynamicWarpFloor = function()
+        return 3
+      end,
+      moveWarpEvent = function(_, warpId, x, z)
+        calls[#calls + 1] = { op = "move", warpId = warpId, fieldX = x, fieldZ = z }
+      end,
+    },
+  }, written)
+  run.semantics.evaluateValue = function(value)
+    if type(value) == "table" then
+      return values[value.id]
+    end
+    return value
+  end
+
+  Assert.equal(
+    Runtime.executeNode({
+      op = "set_dynamic_warp",
+      map = { id = "DYNAMIC_MAP" },
+      warpId = { id = "WARP" },
+      fieldX = { id = "X" },
+      fieldZ = { id = "Z" },
+      direction = { id = "DIRECTION" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.deepEqual(calls[1].warp, { map = 60, warpId = 2, fieldX = 10, fieldZ = 20, direction = 4 })
+
+  Assert.equal(
+    Runtime.executeNode({ op = "get_dynamic_warp_floor", result = { value = "var", id = "FLOOR" } }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(written.FLOOR, 3, "the floor query writes the maps-service answer")
+
+  Assert.equal(
+    Runtime.executeNode({
+      op = "move_warp_event",
+      warpId = { id = "WARP" },
+      fieldX = { id = "X" },
+      fieldZ = { id = "Z" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.deepEqual(calls[2], { op = "move", warpId = 2, fieldX = 10, fieldZ = 20 })
+end
+
+function T.elevator_animation_blocks_on_its_registered_task()
+  local run = runState({ propAnimations = {} }, {})
+  run.semantics.evaluateValue = function(value)
+    if type(value) == "table" and value.id == "DIRECTION" then
+      return 0
+    elseif type(value) == "table" and value.id == "LENGTH" then
+      return 6
+    end
+    return value
+  end
+  local outcome = Runtime.executeNode({
+    op = "elevator_anim",
+    direction = { id = "DIRECTION" },
+    length = { id = "LENGTH" },
+  }, run)
+  Assert.equal(outcome, Runtime.OUTCOME_BLOCK, "the elevator animation owns the script's frames")
+  Assert.equal(run.blockTaskId.type, "elevator_anim")
+  Assert.equal(run.blockTaskId.spec.direction, 0)
+  Assert.equal(run.blockTaskId.spec.length, 6, "the source length reaches the task evaluated")
+end
+
+-- The floor window command only shows a window: the source lifetime is the
+-- result variable, which the script (not the command) sets to its sentinel.
+function T.floor_window_show_is_same_tick_and_never_writes_its_result_variable()
+  local written = {}
+  local shown = {}
+  local run = runState(
+    { floorWindow = {
+      show = function(_, request)
+        shown[#shown + 1] = request
+      end,
+    } },
+    written
+  )
+  run.semantics.evaluateValue = function(value)
+    if type(value) == "table" then
+      return 2
+    end
+    return value
+  end
+
+  Assert.equal(
+    Runtime.executeNode({
+      op = "floor_window_show",
+      tileX = 5,
+      tileY = 6,
+      floor = { id = "FLOOR" },
+      result = { value = "var", id = "VAR_RESULT" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "showing the floor window returns in the same tick"
+  )
+  Assert.equal(#shown, 1)
+  Assert.equal(shown[1].tileX, 5)
+  Assert.equal(shown[1].tileY, 6)
+  Assert.equal(shown[1].floor, 2, "the evaluated floor reaches the window host")
+  Assert.equal(shown[1].result.id, "VAR_RESULT", "the window host observes the source result variable")
+  Assert.isNil(written.VAR_RESULT, "the command never writes the closing sentinel itself")
+end
+
 function T.nonblocking_message_evaluates_variable_bank_reference_before_host_dispatch()
   local resolved = nil
   local printed = nil

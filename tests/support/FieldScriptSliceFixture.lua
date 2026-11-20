@@ -104,7 +104,7 @@ local function stubActors()
 end
 
 local SLICE_OPS =
-  "set_spawn, set_special_spawn, field_move, game_score_event, battle, money ops, set_var, and yield_tick"
+  "set_spawn, set_special_spawn, field_move, game_score_event, battle, money ops, set_var, dynamic warp, floor window, field clock, and yield_tick"
 
 ---@param id string
 ---@param steps table[]
@@ -132,6 +132,26 @@ function FieldScriptSliceFixture.sliceChunk(id, steps)
         '    { op = "battle_launch", kind = "wild", details = { species = "TOTODILE", level = 4 }, result = { value = "var", id = "VAR_TEMP_x4001" } },'
     elseif step.op == "battle_result" then
       lines[#lines + 1] = '    { op = "battle_result", result = { value = "var", id = "VAR_TEMP_x4002" } },'
+    elseif step.op == "set_dynamic_warp" then
+      lines[#lines + 1] = string.format(
+        '    { op = "set_dynamic_warp", map = %d, warpId = %d, fieldX = %d, fieldZ = %d, direction = %q },',
+        step.map,
+        step.warpId,
+        step.fieldX,
+        step.fieldZ,
+        step.direction
+      )
+    elseif step.op == "get_dynamic_warp_floor" then
+      lines[#lines + 1] = '    { op = "get_dynamic_warp_floor", result = { value = "var", id = "VAR_TEMP_x4001" } },'
+    elseif step.op == "floor_window_show" then
+      lines[#lines + 1] = string.format(
+        '    { op = "floor_window_show", tileX = %d, tileY = %d, floor = %d, result = { value = "var", id = "VAR_TEMP_x4001" } },',
+        step.tileX,
+        step.tileY,
+        step.floor
+      )
+    elseif step.op == "field_clock_hour" then
+      lines[#lines + 1] = '    { op = "field_clock_hour", result = { value = "var", id = "VAR_TEMP_x4002" } },'
     elseif step.op == "set_var" then
       lines[#lines + 1] =
         string.format('    { op = "set_var", variable = "%s", value = %d },', step.variable, step.value)
@@ -183,6 +203,9 @@ end
 ---@field fieldMoves table|nil
 ---@field battle table|nil
 ---@field gameStats table|nil
+---@field clock table|nil
+---@field mapLoader table|nil
+---@field sourceMap table|nil
 ---@field profile table|nil
 ---@field messageProvider table|nil
 ---@field monNaming table|nil
@@ -216,11 +239,12 @@ function FieldScriptSliceFixture.compose(services, id, steps)
       end,
     },
     transition = {},
-    mapLoader = {},
-    sourceMap = { fieldData = { mapId = 7, scriptBankId = 3, initScripts = {} } },
+    mapLoader = services.mapLoader or {},
+    sourceMap = services.sourceMap or { fieldData = { mapId = 7, scriptBankId = 3, initScripts = {} } },
     auxiliaryUi = { advance = noop },
     menu = {},
     contextChoice = {},
+    clock = services.clock,
     travel = services.travel,
     fieldMoves = services.fieldMoves,
     battle = services.battle,

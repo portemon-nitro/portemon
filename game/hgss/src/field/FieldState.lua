@@ -1730,6 +1730,19 @@ function FieldState:draw()
   if banner ~= nil then
     resources:drawMapNameBanner(banner, self.runtime.viewport.worldViewport)
   end
+  -- The source floor box is a non-modal main-display window that outlives the
+  -- script that showed it: it draws at its own source tiles above the world and
+  -- under every modal surface until the script writes its closing sentinel.
+  local scripts = self.runtime.scripts
+  local floorWindowHost = scripts ~= nil and scripts.floorWindow or nil
+  local floorWindow = floorWindowHost ~= nil and floorWindowHost:snapshot() or nil
+  if floorWindow ~= nil then
+    resources:drawFloorWindow(
+      floorWindow,
+      self.runtime.viewport.referenceFrame,
+      self.runtime.fieldPixelScale:resolvedScale()
+    )
+  end
   -- Attached dialogue and signposts share the field scale and yield to modal
   -- application surfaces.
   local blackoutStatus = self.runtime.blackoutFlow and self.runtime.blackoutFlow:status() or nil

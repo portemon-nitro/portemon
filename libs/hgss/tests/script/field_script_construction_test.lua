@@ -95,6 +95,10 @@ T["construction registers the production task set"] = function()
   local cache = scriptCache()
   local _, _, taskRegistry = construct(cache, overrideFs())
   Assert.notNil(taskRegistry:resolve("wait_ticks", 1), "the production task set resolves wait_ticks")
+  Assert.notNil(
+    taskRegistry:resolve("elevator_anim", 1),
+    "the production task set resolves the source elevator animation"
+  )
 end
 
 return { tests = T }

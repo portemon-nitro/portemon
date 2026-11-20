@@ -9,26 +9,11 @@ local Errors = require("libs.errors.src.Errors")
 local HgssObjectMovement = require("romdump.src.digest.field.HgssObjectMovement")
 local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
 
--- Field-only operand normalization follows the pinned field direction table,
--- message-symbol format, and scrcmd.h actor specials.
-local ACTOR_REFERENCES = {
-  directionByCode = { [0] = "north", [1] = "south", [2] = "west", [3] = "east" },
-  stringSpecials = { obj_player = "player", obj_partner_poke = "partner" },
-  numericSpecials = {
-    [255] = "player",
-    [253] = "partner",
-    [241] = "camera_target",
-  },
-}
-
-local function normalizeFacing(value)
-  if type(value) ~= "number" then
-    return value
-  end
-  local direction = ACTOR_REFERENCES.directionByCode[value]
-  assert(direction ~= nil, "unknown direction code " .. tostring(value))
-  return direction
-end
+-- Field-only message-symbol normalization; actor references and directions
+-- come from the shared source-operand leaf.
+local actorRef = Operands.actorRef
+local normalizeFacing = Operands.normalizeFacing
+local directionRef = Operands.directionRef
 
 local function messageRef(symbol)
   if type(symbol) ~= "string" then
@@ -39,34 +24,6 @@ local function messageRef(symbol)
     return symbol
   end
   return string.format("msg.hgss.%04d.%05d", tonumber(bank), tonumber(index))
-end
-
-local function actorRef(value)
-  local raw = Operands.operandValue(value)
-  local special
-  if type(raw) == "number" then
-    special = ACTOR_REFERENCES.numericSpecials[raw]
-  elseif type(raw) == "string" then
-    special = ACTOR_REFERENCES.stringSpecials[raw]
-  end
-  if special ~= nil then
-    return { ref = "actor", special = special }
-  end
-  if type(raw) == "string" then
-    if raw == "VAR_SPECIAL_LAST_TALKED" then
-      -- The engine's last-interacted object variable spells the trigger's
-      -- own actor: object commands read it through ScriptGetVar, so the
-      -- decoded variable lowers to the semantic special instead of a
-      -- literal id no live actor carries. (FieldScriptSymbols pins
-      -- VAR_SPECIAL_LAST_TALKED to 0x800D; the decoder emits the name.)
-      return { ref = "actor", special = "last_talked" }
-    end
-    if raw:match("^VAR_") then
-      return { ref = "actor", mapIndex = { id = raw, value = "var" } }
-    end
-    return { ref = "actor", id = raw }
-  end
-  return { ref = "actor", mapIndex = raw }
 end
 
 local function movementFor(movementLabel, memberIr, _)
@@ -1278,26 +1235,17 @@ local function movePersonFacing(ins)
       {
         op = "set_object_facing",
         actor = actor,
-        direction = normalizeFacing(Operands.operandValue(ins.operands[5])),
+        direction = directionRef(ins.operands[5]),
       },
     },
   }
 end
 
 local function setObjectMovementType(ins)
-  local rawMovement = Operands.operandValue(ins.operands[2])
-  local ok, movementType = pcall(HgssObjectMovement.semanticType, rawMovement)
-  if not ok then
-    Errors.raise(
-      "SCRIPT_UNKNOWN_OBJECT_MOVEMENT",
-      "SetObjectMovementType has an invalid movement selector",
-      { sourceOffset = ins.offset, opcode = ins.opcode, movement = rawMovement }
-    )
-  end
   return {
     op = "set_object_movement_type",
     actor = actorRef(ins.operands[1]),
-    movementType = movementType,
+    movementType = Operands.movementType(ins),
   }
 end
 
@@ -1305,7 +1253,7 @@ local function setObjectFacing(ins)
   return {
     op = "set_object_facing",
     actor = actorRef(ins.operands[1]),
-    direction = normalizeFacing(Operands.operandValue(ins.operands[2])),
+    direction = directionRef(ins.operands[2]),
   }
 end
 
@@ -2065,6 +2013,23 @@ FieldHandlers[36] = FieldServiceHandlers.setTrainerFlag
 FieldHandlers[37] = FieldServiceHandlers.clearTrainerFlag
 FieldHandlers[38] = FieldServiceHandlers.checkTrainerFlag
 FieldHandlers[143] = FieldServiceHandlers.nameRival
+
+-- Source object and travel commands whose operand classes differ from their
+-- siblings: ChangeObjectMovement reinitializes the object's own movement with
+-- an immediate selector, SetObjectFacingAndUpdateDraw reads both its operands
+-- from script variables and redraws immediately, and the dynamic-warp, floor
+-- box, elevator and clock commands take ScriptGetVar operands. This chunk sits
+-- at LuaJIT's 200-local budget, so they ride the field-service leaf like the
+-- other source service commands.
+FieldHandlers[109] = FieldServiceHandlers.changeObjectMovement
+FieldHandlers[344] = FieldServiceHandlers.setObjectFacingAndUpdateDraw
+FieldHandlers[240] = FieldServiceHandlers.setDynamicWarp
+FieldHandlers[241] = FieldServiceHandlers.getDynamicWarpFloorNo
+FieldHandlers[342] = FieldServiceHandlers.moveWarp
+FieldHandlers[242] = FieldServiceHandlers.elevatorCurFloorBox
+FieldHandlers[488] = FieldServiceHandlers.elevatorAnim
+FieldHandlers[522] = FieldServiceHandlers.getCurrentHour
+FieldHandlers[784] = FieldServiceHandlers.scriptOverlayCmd
 
 -- The seventeen dex entries ride the cohesive PokedexHandlers leaf. This
 -- chunk sits at LuaJIT's 200-local budget, so the leaf is referenced

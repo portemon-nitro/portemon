@@ -1831,14 +1831,88 @@ local function handleSetObjectPosition(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+-- Source SetObjectFacing (341) and SetObjectFacingAndUpdateDraw (344) share
+-- this handler: the actor manager's facing is the orientation its draw path
+-- samples every frame, so the facing write already updates the drawn
+-- orientation in the same tick. There is no separate draw request to perform.
 local function handleSetObjectFacing(node, run)
-  local actorId = semanticsFor(run).requireActor(node.actor, run)
-  run.services.actors:setFacing(actorId, node.direction)
+  local semantics = semanticsFor(run)
+  local actorId = semantics.requireActor(node.actor, run)
+  run.services.actors:setFacing(actorId, semantics.decodeDirection(semantics.evaluateValue(node.direction, run), run))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+-- Source ChangeObjectMovement (109) reinitializes the object's own movement
+-- through the same manager call the plain movement-type setter (340) uses, and
+-- an object the current map does not carry is an intentional same-tick no-op.
+-- Source SetDynamicWarp, GetDynamicWarpFloor, MoveWarp, ElevatorCurFloorBox,
+-- ElevatorAnim and GetCurrentHour are the remaining source field operations
+-- over the injected HGSS services; only the elevator animation owns frames.
+function HANDLERS.set_dynamic_warp(node, run)
+  local semantics = semanticsFor(run)
+  requireService(run, "maps"):setDynamicWarp({
+    map = semantics.evaluateValue(node.map, run),
+    warpId = semantics.evaluateValue(node.warpId, run),
+    fieldX = semantics.evaluateValue(node.fieldX, run),
+    fieldZ = semantics.evaluateValue(node.fieldZ, run),
+    direction = semantics.evaluateValue(node.direction, run),
+  })
+  return Runtime.OUTCOME_CONTINUE
+end
+
+function HANDLERS.get_dynamic_warp_floor(node, run)
+  semanticsFor(run).writeRef(node.result, requireService(run, "maps"):dynamicWarpFloor(), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+
+function HANDLERS.move_warp_event(node, run)
+  local semantics = semanticsFor(run)
+  requireService(run, "maps"):moveWarpEvent(
+    semantics.evaluateValue(node.warpId, run),
+    semantics.evaluateValue(node.fieldX, run),
+    semantics.evaluateValue(node.fieldZ, run)
+  )
+  return Runtime.OUTCOME_CONTINUE
+end
+
+-- The source floor box shows a non-modal window and returns in its own tick:
+-- the window observes the result variable and releases itself once the script
+-- writes the closing sentinel, so the command never writes it and never blocks.
+function HANDLERS.floor_window_show(node, run)
+  requireService(run, "floorWindow"):show({
+    tileX = node.tileX,
+    tileY = node.tileY,
+    floor = semanticsFor(run).evaluateValue(node.floor, run),
+    result = node.result,
+  })
+  return Runtime.OUTCOME_CONTINUE
+end
+
+function HANDLERS.elevator_anim(node, run)
+  local semantics = semanticsFor(run)
+  requireService(run, "propAnimations")
+  return blockOnTask(run, "elevator_anim", {
+    direction = semantics.evaluateValue(node.direction, run),
+    length = semantics.evaluateValue(node.length, run),
+  })
+end
+
+function HANDLERS.field_clock_hour(node, run)
+  semanticsFor(run).writeRef(node.result, requireService(run, "clock"):nowLocal().hour, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
 local function handleSetObjectMovementType(node, run)
-  local actorId = semanticsFor(run).requireActor(node.actor, run)
+  local semantics = semanticsFor(run)
+  if node.changeMovement == true then
+    local actorId = semantics.findActor(node.actor, run)
+    if actorId == nil or not run.services.actors:exists(actorId) then
+      return Runtime.OUTCOME_CONTINUE
+    end
+    run.services.actors:setMovementType(actorId, node.movementType)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  local actorId = semantics.requireActor(node.actor, run)
   run.services.actors:setMovementType(actorId, node.movementType)
   return Runtime.OUTCOME_CONTINUE
 end

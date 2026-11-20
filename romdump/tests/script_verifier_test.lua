@@ -615,4 +615,122 @@ function T.foreground_multichoice_operands_must_survive_translation()
   end
 end
 
+-- The source field primitives (109/240/241/242/342/344/488/522) carry their
+-- operand kinds verbatim: ScriptGetVar operands must stay variable references
+-- and the immediate tile and movement operands must stay literals. A
+-- translation that changes any one of them must not verify.
+function T.source_field_primitive_operands_must_survive_translation()
+  local function lower()
+    local bytes = ScriptFixture.member({
+      scripts = {
+        {
+          offset = 0x20,
+          instructions = {
+            { op = 109, args = { { value = 0x8008, width = 2 }, { value = 3, width = 2 } } },
+            {
+              op = 240,
+              args = {
+                { value = 0x8008, width = 2 },
+                { value = 0x8009, width = 2 },
+                { value = 0x800A, width = 2 },
+                { value = 0x800B, width = 2 },
+                { value = 0x800C, width = 2 },
+              },
+            },
+            { op = 241, args = { { value = 0x4000, width = 2 } } },
+            {
+              op = 242,
+              args = {
+                { value = 5, width = 1 },
+                { value = 6, width = 1 },
+                { value = 0x4001, width = 2 },
+                { value = 0x4002, width = 2 },
+              },
+            },
+            {
+              op = 342,
+              args = {
+                { value = 0x4003, width = 2 },
+                { value = 0x4004, width = 2 },
+                { value = 0x4005, width = 2 },
+              },
+            },
+            { op = 344, args = { { value = 0x8009, width = 2 }, { value = 0x800A, width = 2 } } },
+            { op = 488, args = { { value = 0x4006, width = 2 }, { value = 0x4007, width = 2 } } },
+            { op = 522, args = { { value = 0x4008, width = 2 } } },
+            { op = 2, args = {} },
+          },
+        },
+      },
+    })
+    local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
+    local script = ir.scripts[0]
+    local lowered = SemanticLowering.lowerScript(script, ir, { stdCatalog = SourceCatalog.catalog() })
+    return script, ir, lowered
+  end
+
+  local function problemForOpcode(report, opcode)
+    for _, problem in ipairs(report.problems) do
+      if problem.context ~= nil and problem.context.opcode == opcode then
+        return problem.message
+      end
+    end
+    return nil
+  end
+
+  local script, ir, faithful = lower()
+  local baseline = Verifier.verifyScript(Structurer.structure(faithful, 0), script, ir, faithful.omissions)
+  Assert.isTrue(baseline.ok, firstProblem(baseline))
+  Assert.isTrue(baseline.complete, "the faithful field primitive translation is complete")
+
+  local cases = {
+    {
+      opcode = 109,
+      item = 1,
+      mutate = function(node)
+        node.actor = { ref = "actor", special = "player" }
+      end,
+    },
+    { opcode = 109, item = 1, mutate = function(node)
+      node.movementType = "stationary"
+    end },
+    { opcode = 240, item = 2, mutate = function(node)
+      node.fieldX = 3
+    end },
+    { opcode = 241, item = 3, mutate = function(node)
+      node.result = { value = "var", id = 0x4009 }
+    end },
+    { opcode = 242, item = 4, mutate = function(node)
+      node.result = node.floor
+    end },
+    { opcode = 242, item = 4, mutate = function(node)
+      node.tileY = 7
+    end },
+    { opcode = 342, item = 5, mutate = function(node)
+      node.fieldZ = 0
+    end },
+    { opcode = 344, item = 6, mutate = function(node)
+      node.direction = { value = "var", id = 0x8008 }
+    end },
+    { opcode = 488, item = 7, mutate = function(node)
+      node.length = 6
+    end },
+    { opcode = 522, item = 8, mutate = function(node)
+      node.result = { value = "var", id = 0x4009 }
+    end },
+  }
+  for _, case in ipairs(cases) do
+    local mutatedScript, mutatedIr, mutated = lower()
+    case.mutate(mutated.items[case.item])
+    local report = Verifier.verifyScript(Structurer.structure(mutated, 0), mutatedScript, mutatedIr, mutated.omissions)
+    Assert.isFalse(report.ok, "a tampered opcode " .. case.opcode .. " operand must not verify")
+    local message = problemForOpcode(report, case.opcode)
+    Assert.notNil(message, "the tampered operand is attributed to opcode " .. case.opcode)
+    Assert.isTrue(
+      assert(message):find("opcode " .. case.opcode, 1, true) ~= nil,
+      "the problem names the tampered source opcode"
+    )
+  end
+end
+
 return { tests = T }

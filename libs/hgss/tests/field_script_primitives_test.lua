@@ -1,10 +1,17 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
+local FieldActorFixture = require("tests.support.FieldActorFixture")
+local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
+local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldOverworldLifecycle = require("libs.hgss.src.field.FieldOverworldLifecycle")
 local FieldScriptPropAnimations = require("libs.hgss.src.field.FieldScriptPropAnimations")
 local OverworldLifecycleTask = require("libs.hgss.src.script.tasks.OverworldLifecycleTask")
 local PropAnimationWaitTask = require("libs.hgss.src.script.tasks.PropAnimationWaitTask")
+local Runtime = require("libs.script.src.Runtime")
+local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
+local ScriptActorWorld = require("libs.hgss.src.script.ScriptActorWorld")
+local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 
 local T = {}
 
@@ -203,6 +210,505 @@ function T.blocking_tasks_observe_the_shared_owners()
   Assert.isFalse(PropAnimationWaitTask.poll(waitState, waiterContext).complete)
   finished = true
   Assert.isTrue(PropAnimationWaitTask.poll(waitState, waiterContext).complete)
+end
+
+-- The source object commands act on the live field actors: ChangeObjectMovement
+-- reinitializes the object's own movement, SetObjectFacingAndUpdateDraw turns
+-- the drawn orientation immediately, and the two source commands disagree on
+-- what an absent object means.
+local POLICY = { variableSprites = { first = 101, last = 117, variableBase = 0x4020 } }
+
+local function flatTerrain()
+  return TerrainSurface.new({
+    plates = {
+      {
+        id = 0,
+        minX = 0,
+        minZ = 0,
+        maxX = 32,
+        maxZ = 32,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 0,
+        slopeClass = "flat",
+      },
+    },
+  })
+end
+
+local function objectEvent(overrides)
+  local event = {
+    index = 0,
+    objectEventId = 0,
+    spriteId = 99,
+    movementType = "look_north",
+    type = 0,
+    eventFlag = 0,
+    scriptId = 1,
+    facingDirection = "south",
+    facingDirectionRaw = 1,
+    param0 = 0,
+    param1 = 0,
+    param2 = 0,
+    xRange = 0,
+    yRange = 0,
+    x = 2,
+    z = 3,
+    y = 0,
+  }
+  for key, value in pairs(overrides or {}) do
+    event[key] = value
+  end
+  return event
+end
+
+local function liveActorWorld(objects, eventState, restoredObjects)
+  local manager = FieldActorManager.new({
+    assets = {
+      knows = function(_, spriteId)
+        return spriteId == 99
+      end,
+      acquire = function(_, spriteId)
+        return { spriteId = spriteId, visual = FieldActorFixture.visual(spriteId), references = 1 }
+      end,
+      release = function() end,
+    },
+    policy = POLICY,
+  })
+  local map = {
+    mapId = 61,
+    mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
+    coordinateOrigin = { x = 0, z = 0 },
+    collision = {
+      containsLocal = function(_, x, z)
+        return x >= 0 and x < 32 and z >= 0 and z < 32
+      end,
+    },
+    terrain = flatTerrain(),
+    mapSymbol = "test-map",
+    sceneRuntime = nil,
+    scene = {},
+    terrainDependencyHash = "test-terrain",
+    fieldRegion = {},
+    cameraType = 4,
+    fieldData = { events = { objects = objects, background = {}, warps = {}, coordinates = {} } },
+    release = function() end,
+    updateAnimated = function() end,
+  }
+  manager:enterMap(map --[[@as RuntimeFieldMap]], eventState or FieldEventState.new(), restoredObjects)
+  local world = ScriptActorWorld.new(manager, {
+    position = function()
+      return { fieldX = 0, fieldZ = 0, worldY = 0 }
+    end,
+    facing = function()
+      return "south"
+    end,
+  })
+  return manager, world
+end
+
+-- The map-scoped prop owner also carries the source elevator one-shot: the
+-- commands drive it through the existing prop playback surface, and a map
+-- without the elevator prop refuses to claim an animation.
+local ELEVATOR_PROP_MEMBER = 0xD0
+
+local function elevatorMap(propMember)
+  local log = {}
+  local complete = false
+  local instance = {
+    definition = {
+      memberId = propMember,
+      animations = { { name = "elevator.up" }, { name = "elevator.down" } },
+    },
+  }
+  local prop = {
+    instance = instance,
+    play = function(_, name, opts)
+      Assert.equal(opts.loopMode, "once")
+      log[#log + 1] = "play:" .. name
+      return { player = {
+        isComplete = function()
+          return complete
+        end,
+      } }
+    end,
+    isFinished = function(_, name)
+      log[#log + 1] = "finished:" .. name
+      return complete
+    end,
+    stop = function(_, name)
+      log[#log + 1] = "stop:" .. name
+    end,
+  }
+  local placements = { { placementIndex = 0, modelKey = "indoor:1:x" } }
+  if propMember == ELEVATOR_PROP_MEMBER then
+    placements[#placements + 1] = { placementIndex = 7, modelKey = "indoor:d0:x" }
+  end
+  local mapProps = {
+    placements = placements,
+    instances = { [7] = instance },
+    doorAt = function()
+      return nil
+    end,
+    scriptPropAt = function()
+      return nil
+    end,
+    prop = function()
+      return prop
+    end,
+  }
+  return { mapId = 61, mapProps = mapProps }, log
+end
+
+function T.elevator_prop_commands_drive_the_source_one_shot_of_the_bound_map()
+  local owner = FieldScriptPropAnimations.new()
+  local map, log = elevatorMap(ELEVATOR_PROP_MEMBER)
+  owner:bindMap(map)
+
+  owner:loadAnimation(6)
+  Assert.deepEqual(log, {}, "loading the source animation starts no playback")
+  owner:playAnimation(1)
+  Assert.deepEqual(log, { "play:elevator.down" }, "the source direction selects its own animation")
+  Assert.isFalse(owner:isAnimationLoopFinished(), "the loop end is the animation owner's answer")
+  owner:unloadAnimation()
+  Assert.isTrue(#log >= 2, "releasing the animation stops its playback")
+  Assert.throws(function()
+    owner:isAnimationLoopFinished()
+  end, "a released elevator animation has no playback state")
+
+  local missing = FieldScriptPropAnimations.new()
+  missing:bindMap(assert(elevatorMap(0x25)))
+  local err = Assert.throws(function()
+    missing:loadAnimation(6)
+  end)
+  Assert.isTrue(Errors.is(err), "a map without the elevator prop faults instead of claiming an animation")
+  Assert.equal(err.code, FieldErrors.FIELD_ELEVATOR_PROP_MISSING)
+
+  local rebound = FieldScriptPropAnimations.new()
+  rebound:bindMap(select(1, elevatorMap(ELEVATOR_PROP_MEMBER)))
+  rebound:loadAnimation(2)
+  rebound:bindMap(select(1, elevatorMap(ELEVATOR_PROP_MEMBER)))
+  Assert.throws(function()
+    rebound:playAnimation(0)
+  end, "a map rebind releases the animation loaded for the previous map")
+end
+
+-- A map rebind already released the slot the elevator task owned, so a
+-- cancellation landing afterwards is a clean release of nothing instead of a
+-- fault over an animation the bound map no longer carries.
+function T.a_cancelled_elevator_task_tolerates_a_map_rebind()
+  local ElevatorAnimTask = require("libs.hgss.src.script.tasks.ElevatorAnimTask")
+  local owner = FieldScriptPropAnimations.new()
+  owner:bindMap(select(1, elevatorMap(ELEVATOR_PROP_MEMBER)))
+  local ctx = {
+    services = {
+      propAnimations = owner,
+      audio = {
+        play = function() end,
+        stop = function() end,
+        isEffectWaitComplete = function()
+          return false
+        end,
+      },
+    },
+  }
+  local state = ElevatorAnimTask.create({ direction = 0, length = 2 }, ctx)
+  Assert.isFalse(ElevatorAnimTask.poll(state, ctx).complete, "the animation still owns the script")
+
+  owner:bindMap(select(1, elevatorMap(ELEVATOR_PROP_MEMBER)))
+  ElevatorAnimTask.cancel(state, "script cancelled")
+
+  owner:loadAnimation(2)
+  owner:unloadAnimation()
+end
+
+local function objectRun(actorWorld)
+  return {
+    instance = { scriptId = "test.object_commands", mode = "foreground" },
+    services = { actors = actorWorld },
+    semantics = RuntimeValues,
+  }
+end
+
+function T.object_commands_follow_their_source_movement_and_facing_rules()
+  local actorId = "map:61:object:0"
+  -- The actor's own source movement has already advanced its wait state, so a
+  -- reinitializing change is distinguishable from a plain field write.
+  local manager, world = liveActorWorld(
+    { objectEvent(), objectEvent({ objectEventId = 1, eventFlag = 401, x = 4 }) },
+    FieldEventState.new({ flags = { [401] = true } }),
+    {
+      schema = "g4-field-objects-v1",
+      rng = { state = 7, calls = 0 },
+      actors = {
+        [actorId] = {
+          actorId = actorId,
+          mapId = 61,
+          objectEventId = 0,
+          sourceMovementType = "look_north",
+          movementType = "look_north",
+          fieldX = 2,
+          fieldZ = 3,
+          facing = "south",
+          managerOrder = 0,
+          controller = { kind = "stationary", timer = 40 },
+        },
+      },
+    }
+  )
+  local actor = assert(manager:getById(actorId))
+  Assert.equal(actor.movementType, "look_north")
+  Assert.equal(manager.autonomy:state(actorId).timer, 40, "the restored actor carries an advanced movement wait")
+
+  local run = objectRun(world)
+  Assert.equal(
+    Runtime.executeNode({
+      op = "set_object_movement_type",
+      actor = { ref = "actor", mapIndex = 0 },
+      movementType = "wander_around",
+      changeMovement = true,
+    }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "a source movement change returns in the same tick"
+  )
+  Assert.equal(manager:getById(actorId), actor, "the actor manager's own actor answers the change")
+  Assert.equal(actor.movementType, "wander_around")
+  local autonomy = manager.autonomy:state(actorId)
+  Assert.equal(autonomy.movementType, "wander_around")
+  Assert.equal(autonomy.timer, 0, "the source change reinitializes the movement wait")
+  Assert.equal(#manager:drawRecords(), 1, "no second actor record appears")
+
+  -- An object id the current map does not carry is an intentional same-tick
+  -- no-op for the movement command.
+  Assert.equal(
+    Runtime.executeNode({
+      op = "set_object_movement_type",
+      actor = { ref = "actor", mapIndex = 7 },
+      movementType = "stationary",
+      changeMovement = true,
+    }, objectRun(world)),
+    Runtime.OUTCOME_CONTINUE,
+    "an unknown map object index is a same-tick no-op"
+  )
+  Assert.equal(
+    Runtime.executeNode({
+      op = "set_object_movement_type",
+      actor = { ref = "actor", id = "map:61:object:1" },
+      movementType = "stationary",
+      changeMovement = true,
+    }, objectRun(world)),
+    Runtime.OUTCOME_CONTINUE,
+    "an object whose flag keeps it out of the map is a same-tick no-op"
+  )
+  Assert.equal(#manager:drawRecords(), 1, "the no-ops create no actor record")
+
+  -- The facing command requires the object: the source asserts it exists.
+  local missing = Assert.throws(function()
+    Runtime.executeNode({
+      op = "set_object_facing",
+      actor = { ref = "actor", id = "map:61:object:1" },
+      direction = "east",
+    }, objectRun(world))
+  end)
+  Assert.isTrue(Errors.is(missing), "an absent object faults with an attributed error")
+  Assert.equal(missing.code, "SCRIPT_ACTOR_NOT_FOUND")
+
+  Assert.equal(
+    Runtime.executeNode({
+      op = "set_object_facing",
+      actor = { ref = "actor", mapIndex = 0 },
+      direction = "east",
+    }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(actor.facing, "east")
+  Assert.equal(manager:drawRecords()[1].facing, "east", "the drawn orientation follows in the same tick")
+end
+
+-- The source facing refresh reads its direction through a script variable, so
+-- the evaluated source code becomes the actor's drawn facing in the same tick;
+-- a code outside the source set is an attributed failure.
+function T.source_facing_refresh_reads_its_direction_from_a_script_variable()
+  local actorId = "map:61:object:0"
+  local manager, world = liveActorWorld({ objectEvent() }, FieldEventState.new(), {
+    schema = "g4-field-objects-v1",
+    rng = { state = 7, calls = 0 },
+    actors = {
+      [actorId] = {
+        actorId = actorId,
+        mapId = 61,
+        objectEventId = 0,
+        sourceMovementType = "look_north",
+        movementType = "look_north",
+        fieldX = 2,
+        fieldZ = 3,
+        facing = "south",
+        managerOrder = 0,
+        controller = { kind = "stationary", timer = 0 },
+      },
+    },
+  })
+  local variables = { VAR_TEMP_x4001 = 2 }
+  local run = objectRun(world)
+  run.services.world = {
+    getVar = function(_, id)
+      return variables[id] or 0
+    end,
+  }
+  Assert.equal(
+    Runtime.executeNode({
+      op = "set_object_facing",
+      actor = { ref = "actor", mapIndex = 0 },
+      direction = { value = "var", id = "VAR_TEMP_x4001" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "the facing refresh returns in the same tick"
+  )
+  local actor = assert(manager:getById(actorId))
+  Assert.equal(actor.facing, "west", "the source direction code becomes the actor facing")
+  Assert.equal(manager:drawRecords()[1].facing, "west", "the drawn orientation follows in the same tick")
+
+  variables.VAR_TEMP_x4001 = 7
+  local err = Assert.throws(function()
+    Runtime.executeNode({
+      op = "set_object_facing",
+      actor = { ref = "actor", mapIndex = 0 },
+      direction = { value = "var", id = "VAR_TEMP_x4001" },
+    }, run)
+  end)
+  Assert.isTrue(Errors.is(err), "a direction outside the source set is an attributed failure")
+  Assert.equal(manager:getById(actorId).facing, "west", "a rejected direction leaves the facing untouched")
+end
+
+-- The source elevator choreography loads the map elevator prop, plays it,
+-- waits for the loop, plays the motor stop and chime, waits for the chime and
+-- only then releases the animation.
+local function elevatorContext(propPresent, direction)
+  local log = {}
+  local control = { loopFinished = false, chimePlaying = false }
+  local propAnimations = { presented = propPresent == true }
+  function propAnimations:loadAnimation(length)
+    if not self.presented then
+      Errors.raise(FieldErrors.FIELD_ELEVATOR_PROP_MISSING, "the active map has no elevator prop")
+    end
+    assert(self.loaded ~= true, "the elevator animation is already loaded")
+    self.loaded = true
+    self.length = length
+    log[#log + 1] = "load:" .. tostring(length)
+  end
+  function propAnimations:playAnimation(elevatorDirection)
+    assert(self.loaded == true, "the elevator animation must be loaded before it plays")
+    self.direction = elevatorDirection
+    log[#log + 1] = "play:" .. tostring(elevatorDirection)
+  end
+  function propAnimations:isAnimationLoopFinished()
+    return control.loopFinished
+  end
+  function propAnimations:unloadAnimation()
+    assert(self.loaded == true, "only a loaded elevator animation is released")
+    self.loaded = false
+    log[#log + 1] = "unload"
+  end
+
+  local audio = {}
+  function audio:play(sequence)
+    log[#log + 1] = "se:" .. sequence
+    if sequence == "SEQ_SE_DP_PINPON" then
+      control.chimePlaying = true
+    end
+  end
+  function audio:stop(sequence)
+    log[#log + 1] = "stop:" .. sequence
+  end
+  function audio:isEffectWaitComplete(sequence)
+    if sequence == "SEQ_SE_DP_PINPON" then
+      return not control.chimePlaying
+    end
+    return true
+  end
+
+  return {
+    services = { propAnimations = propAnimations, audio = audio },
+  }, log, control, propAnimations
+end
+
+function T.elevator_animation_runs_the_source_prop_and_sound_sequence()
+  local ElevatorAnimTask = require("libs.hgss.src.script.tasks.ElevatorAnimTask")
+  Assert.equal(ElevatorAnimTask.type, "elevator_anim")
+  Assert.equal(ElevatorAnimTask.version, 1)
+
+  local ctx, log, control, propAnimations = elevatorContext(true)
+  local state = ElevatorAnimTask.create({ direction = 0, length = 6 }, ctx)
+  Assert.deepEqual(log, { "load:6" }, "creating the task loads the source one-shot animation")
+
+  Assert.isFalse(ElevatorAnimTask.poll(state, ctx).complete, "the animation loop still owns the script")
+  Assert.deepEqual(log, { "load:6", "play:0", "se:SEQ_SE_DP_ELEBETA2" }, "playback starts with the motor sound")
+
+  control.loopFinished = true
+  Assert.isFalse(ElevatorAnimTask.poll(state, ctx).complete, "the chime still owns the script")
+  Assert.deepEqual(log, {
+    "load:6",
+    "play:0",
+    "se:SEQ_SE_DP_ELEBETA2",
+    "stop:SEQ_SE_DP_ELEBETA2",
+    "se:SEQ_SE_DP_PINPON",
+  }, "the loop end stops the motor and plays the arrival chime")
+  Assert.isTrue(propAnimations.loaded, "the source-loaded animation is held until the chime finishes")
+
+  control.chimePlaying = false
+  Assert.isTrue(ElevatorAnimTask.poll(state, ctx).complete, "the script resumes after the chime finishes")
+  Assert.deepEqual(log, {
+    "load:6",
+    "play:0",
+    "se:SEQ_SE_DP_ELEBETA2",
+    "stop:SEQ_SE_DP_ELEBETA2",
+    "se:SEQ_SE_DP_PINPON",
+    "unload",
+  }, "the animation is released after the chime completes")
+  Assert.isFalse(propAnimations.loaded, "the source-loaded animation is released")
+  Assert.isTrue(ElevatorAnimTask.poll(state, ctx).complete, "a completed task never replays its sequence")
+  Assert.equal(#log, 6, "the choreography runs once")
+  Assert.isNil(ElevatorAnimTask.validate(state), "the task state is serializable")
+  for _, value in pairs(state) do
+    Assert.isTrue(type(value) ~= "function", "the saved task state carries no host handles")
+  end
+end
+
+function T.elevator_animation_releases_its_animation_when_cancelled()
+  local ElevatorAnimTask = require("libs.hgss.src.script.tasks.ElevatorAnimTask")
+  local ctx, log = elevatorContext(true)
+  local state = ElevatorAnimTask.create({ direction = 1, length = 3 }, ctx)
+  ElevatorAnimTask.poll(state, ctx)
+  ElevatorAnimTask.cancel(state, "script cancelled")
+  Assert.deepEqual(
+    log,
+    { "load:3", "play:1", "se:SEQ_SE_DP_ELEBETA2", "unload" },
+    "a cancelled animation releases its prop"
+  )
+  ElevatorAnimTask.cancel(state, "script cancelled")
+  Assert.equal(#log, 4, "cancellation releases exactly once")
+end
+
+function T.elevator_animation_faults_without_a_prop_or_a_source_direction()
+  local ElevatorAnimTask = require("libs.hgss.src.script.tasks.ElevatorAnimTask")
+
+  local missingCtx, missingLog = elevatorContext(false)
+  local ok, err = pcall(function()
+    local state = ElevatorAnimTask.create({ direction = 0, length = 6 }, missingCtx)
+    return ElevatorAnimTask.poll(state, missingCtx)
+  end)
+  Assert.isFalse(ok, "a map without the elevator prop faults instead of claiming success")
+  Assert.isTrue(Errors.is(err))
+  Assert.deepEqual(missingLog, {}, "a failed acquisition releases nothing it never owned")
+
+  local invalidCtx = elevatorContext(true)
+  ok, err = pcall(function()
+    local state = ElevatorAnimTask.create({ direction = 2, length = 6 }, invalidCtx)
+    return ElevatorAnimTask.poll(state, invalidCtx)
+  end)
+  Assert.isFalse(ok, "a direction outside the source pair faults")
+  Assert.isTrue(Errors.is(err))
 end
 
 return { tests = T }

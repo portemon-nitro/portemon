@@ -22,6 +22,8 @@ local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local FieldYesNoRenderer = require("libs.hgss.src.ui.FieldYesNoRenderer")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
+local PixelScale = require("libs.ui.src.PixelScale")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local FieldMenuRenderer = require("libs.hgss.src.ui.FieldMenuRenderer")
 local FieldSignpostRenderer = require("libs.hgss.src.ui.FieldSignpostRenderer")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
@@ -1306,6 +1308,39 @@ end
 function FieldPresentationResources.mainDisplayPlacement(referenceFrame, fieldScale)
   local scale = PixelScale.fitPreferred(referenceFrame, NativeDisplay.WIDTH, NativeDisplay.HEIGHT, fieldScale)
   return PixelScale.cover(referenceFrame, scale).placement
+end
+
+-- Draws an open source floor box on the MAIN field surface at its source tile
+-- placement: a framed window four tiles high with the source title on the first
+-- row and the floor label indented by its own source offset on the second. The
+-- host owns the window's lifetime; this only paints the current snapshot.
+---@param window table<string, unknown> the floor window snapshot
+---@param referenceFrame LayoutGeometry.Rect the canonical MAIN field screen
+---@param fieldScale integer the resolved field pixel scale
+function FieldPresentationResources:drawFloorWindow(window, referenceFrame, fieldScale)
+  local graphics = assert(love and love.graphics, "floor window drawing requires its host graphics namespace")
+  local text = assert(self.textRenderer, "floor window drawing borrows the field text renderer")
+  local windowRenderer = assert(self.windowRenderer, "floor window drawing borrows the shared field-window renderer")
+  local title = assert(window.title, "the source floor window carries its title text")
+  local label = assert(window.label, "the source floor window carries its floor label text")
+  local placement = FieldPresentationResources.mainDisplayPlacement(referenceFrame, fieldScale)
+  local inset = assert(window.labelInset, "the source floor label carries its row offset")
+  local widthTiles = math.max(4, math.ceil((math.max(text:textWidth(title), inset + text:textWidth(label)) + 8) / 8))
+  local box = {
+    x = window.tileX * 8,
+    y = window.tileY * 8,
+    width = widthTiles * 8,
+    height = window.heightTiles * 8,
+  }
+  local frameIndex = assert(self.applicationFrameIndex, "field presentation owns no application frame index")
+  local palette = FieldTextRenderer.dialoguePalette(assert(text.fontDef, "floor window text requires the field font"))
+  graphics.push("all")
+  LogicalSurface.draw(graphics, placement, function()
+    windowRenderer:drawWindow(box, frameIndex, text:windowBackgroundColor())
+    text:drawTextWithPalette(title, box.x, box.y, palette)
+    text:drawTextWithPalette(label, box.x + inset, box.y + 16, palette)
+  end)
+  graphics.pop()
 end
 
 -- Leases the one selected area-preview image the status names. A replacement

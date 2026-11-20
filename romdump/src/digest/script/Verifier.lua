@@ -76,6 +76,7 @@ local BLOCKING_OPS = {
   pokegear_open = true,
   phone_run_call = true,
   prop_animation_wait = true,
+  elevator_anim = true,
   follower_appearance = true,
   follower_recall = true,
   easy_chat_edit = true,
@@ -160,6 +161,21 @@ local function operandMatches(raw, node)
     end
   end
   return node == raw
+end
+
+-- Compare a ScriptGetVar direction operand with a node field: the script
+-- variable stays the value reference the step names, while a literal code is
+-- the cardinal direction both sides derive from the pinned source table. An
+-- unknown literal code matches nothing.
+---@param raw unknown
+---@param direction unknown
+---@return boolean
+local function directionOperandMatches(raw, direction)
+  if operandMatches(raw, direction) then
+    return true
+  end
+  local ok, cardinal = pcall(Operands.normalizeFacing, raw)
+  return ok and cardinal == direction
 end
 
 -- The per-opcode operand-equivalence checkers (item 6): `(ins, step)` ->
@@ -934,6 +950,129 @@ local function checkMoney(ins, step)
   return nil
 end
 
+-- Source field primitives (scrcmd_c.c, map_events.c, field/script_menu.c and
+-- field/map_prop_anims.c): the object commands carry a ScriptGetVar object id
+-- plus either an immediate movement selector or a ScriptGetVar direction, the
+-- travel commands carry their ScriptGetVar operands, the floor window
+-- separates its two immediate tile bytes from its result pointer and floor
+-- variable, and the elevator task reads both operands through ScriptGetVar.
+-- Each checker re-derives the operand kind from the raw instruction so a
+-- changed actor, a dropped warp coordinate, or a swapped result pointer fails
+-- instead of passing through the generic coverage rule.
+local function actorReferenceMatches(raw, actor)
+  if type(actor) ~= "table" or actor.ref ~= "actor" then
+    return false
+  end
+  local expected = Operands.actorRef(raw)
+  if expected.special ~= nil then
+    return actor.special == expected.special
+  end
+  if expected.id ~= nil then
+    return actor.special == nil and actor.id == expected.id
+  end
+  local index = actor.mapIndex
+  local expectedIndex = expected.mapIndex
+  if type(expectedIndex) == "table" then
+    return type(index) == "table" and index.id == expectedIndex.id and index.value == expectedIndex.value
+  end
+  return index == expectedIndex
+end
+
+local function sourceVariableOperandsMatch(ins, step, fields)
+  for position, field in ipairs(fields) do
+    if not operandMatches(ins.operands[position].raw, step[field]) then
+      return false
+    end
+  end
+  return true
+end
+
+local function checkFieldPrimitive(ins, step)
+  local opcode = ins.opcode
+  if opcode == 109 then
+    if step.op ~= "set_object_movement_type" or step.changeMovement ~= true then
+      return "opcode 109 movement change lost its source operation"
+    end
+    if not actorReferenceMatches(ins.operands[1].raw, step.actor) then
+      return "opcode 109 object changed by translation"
+    end
+    if step.movementType ~= Operands.movementType(ins) then
+      return "opcode 109 movement selector changed by translation"
+    end
+    return nil
+  end
+  if opcode == 240 then
+    if step.op ~= "set_dynamic_warp" then
+      return "opcode 240 dynamic warp changed by translation"
+    end
+    if not sourceVariableOperandsMatch(ins, step, { "map", "warpId", "fieldX", "fieldZ" }) then
+      return "opcode 240 dynamic warp operands changed by translation"
+    end
+    if not directionOperandMatches(ins.operands[5].raw, step.direction) then
+      return "opcode 240 dynamic warp direction changed by translation"
+    end
+    return nil
+  end
+  if opcode == 241 then
+    if step.op ~= "get_dynamic_warp_floor" or not operandMatches(ins.operands[1].raw, step.result) then
+      return "opcode 241 dynamic warp floor result changed by translation"
+    end
+    return nil
+  end
+  if opcode == 242 then
+    if step.op ~= "floor_window_show" then
+      return "opcode 242 floor window changed by translation"
+    end
+    if step.tileX ~= ins.operands[1].raw or step.tileY ~= ins.operands[2].raw then
+      return "opcode 242 floor window tile changed by translation"
+    end
+    if not operandMatches(ins.operands[3].raw, step.result) then
+      return "opcode 242 floor window result changed by translation"
+    end
+    if not operandMatches(ins.operands[4].raw, step.floor) then
+      return "opcode 242 floor window floor changed by translation"
+    end
+    return nil
+  end
+  if opcode == 342 then
+    if step.op ~= "move_warp_event" then
+      return "opcode 342 warp event move changed by translation"
+    end
+    if not sourceVariableOperandsMatch(ins, step, { "warpId", "fieldX", "fieldZ" }) then
+      return "opcode 342 warp event operands changed by translation"
+    end
+    return nil
+  end
+  if opcode == 344 then
+    if step.op ~= "set_object_facing" then
+      return "opcode 344 facing refresh changed by translation"
+    end
+    if not actorReferenceMatches(ins.operands[1].raw, step.actor) then
+      return "opcode 344 object changed by translation"
+    end
+    if not directionOperandMatches(ins.operands[2].raw, step.direction) then
+      return "opcode 344 facing direction changed by translation"
+    end
+    return nil
+  end
+  if opcode == 488 then
+    if step.op ~= "elevator_anim" then
+      return "opcode 488 elevator animation changed by translation"
+    end
+    if not sourceVariableOperandsMatch(ins, step, { "direction", "length" }) then
+      return "opcode 488 elevator animation operands changed by translation"
+    end
+    return nil
+  end
+  if opcode == 522 then
+    if step.op ~= "field_clock_hour" or not operandMatches(ins.operands[1].raw, step.result) then
+      return "opcode 522 clock result changed by translation"
+    end
+    return nil
+  end
+  return nil
+end
+
 local CHECKERS = {
   [3] = checkWaitFrames,
   [22] = checkGotoTarget,
@@ -1010,6 +1149,14 @@ local CHECKERS = {
   [115] = checkMoney,
   [360] = checkMoney,
   [368] = checkMoney,
+  [109] = checkFieldPrimitive,
+  [240] = checkFieldPrimitive,
+  [241] = checkFieldPrimitive,
+  [242] = checkFieldPrimitive,
+  [342] = checkFieldPrimitive,
+  [344] = checkFieldPrimitive,
+  [488] = checkFieldPrimitive,
+  [522] = checkFieldPrimitive,
   [256] = checkFashionTitleWord,
   [260] = checkUnionOwnChatMessage,
   [264] = checkUnionPartnerLanguage,

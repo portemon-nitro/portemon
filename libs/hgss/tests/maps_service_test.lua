@@ -9,6 +9,7 @@ local Errors = require("libs.errors.src.Errors")
 local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 local ScriptMapsService = require("libs.hgss.src.script.ScriptMapsService")
+local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
 
 local T = {}
 
@@ -293,6 +294,219 @@ function T.special_spawn_without_travel_faults_while_warp_use_stays_valid()
   Assert.throws(function()
     service:specialSpawn()
   end)
+end
+
+-- The source dynamic destination (SetDynamicWarp) is its own durable travel
+-- value: numeric source map ids resolve to the record symbol, and the write
+-- never aliases the special spawn.
+function T.dynamic_warp_setter_writes_a_separate_durable_destination()
+  local travel = FieldTravelState.new({ lastHealSpawn = "SPAWN_NEW_BARK" })
+  local service = ScriptMapsService.new({
+    transition = { start = function() end },
+    loader = {
+      load = function(_, ref)
+        return { mapId = ref, coordinateOrigin = { x = 600, z = 300 } }
+      end,
+      mapSymbol = function(_, id)
+        if id == 60 then
+          return "MAP_GOLDENROD_RADIO_TOWER_5F"
+        end
+        error(Errors.new("FIELD_MAP_UNKNOWN", "no runtime map for " .. tostring(id), { key = id }))
+      end,
+    },
+    sourceMap = fakeSourceMap(),
+    travel = travel,
+  })
+  local special = { map = "MAP_NEW_BARK", fieldX = 688, fieldZ = 393, warpId = -1, direction = "south" }
+  service:setSpecialSpawn(special)
+
+  Assert.isNil(travel:dynamicWarp(), "no dynamic destination exists before the source setter runs")
+  service:setDynamicWarp({ map = 60, warpId = 2, fieldX = 10, fieldZ = 20, direction = "north" })
+  local expected = {
+    map = "MAP_GOLDENROD_RADIO_TOWER_5F",
+    warpId = 2,
+    fieldX = 10,
+    fieldZ = 20,
+    direction = "north",
+  }
+  Assert.deepEqual(travel:dynamicWarp(), expected, "the resolved destination reaches the durable travel owner")
+  Assert.deepEqual(travel:capture().dynamicWarp, expected, "the destination survives travel capture")
+  Assert.deepEqual(travel:specialSpawn(), special, "the special spawn stays its own value")
+
+  Assert.throws(function()
+    service:setDynamicWarp({ map = 999, warpId = 0, fieldX = 1, fieldZ = 2, direction = "north" })
+  end)
+  Assert.deepEqual(travel:dynamicWarp(), expected, "an unknown source map leaves the prior destination intact")
+end
+
+-- A scripted dynamic warp reads its direction through ScriptGetVar, so the
+-- evaluated source code reaches the durable record as its cardinal direction;
+-- a code outside the source set never overwrites the established destination.
+function T.dynamic_warp_setter_normalizes_the_source_direction_code()
+  local travel = FieldTravelState.new({ lastHealSpawn = "SPAWN_NEW_BARK" })
+  local service = ScriptMapsService.new({
+    transition = { start = function() end },
+    loader = fakeLoader(),
+    sourceMap = fakeSourceMap(),
+    travel = travel,
+  })
+  service:setDynamicWarp({
+    map = "MAP_GOLDENROD_DEPARTMENT_STORE_2F",
+    warpId = 1,
+    fieldX = 4,
+    fieldZ = 5,
+    direction = 1,
+  })
+  Assert.equal(assert(travel:dynamicWarp()).direction, "south", "the evaluated code becomes its source direction")
+
+  local err = Assert.throws(function()
+    service:setDynamicWarp({
+      map = "MAP_GOLDENROD_DEPARTMENT_STORE_2F",
+      warpId = 1,
+      fieldX = 4,
+      fieldZ = 5,
+      direction = 9,
+    })
+  end)
+  Assert.isTrue(Errors.is(err), "a direction outside the source set is an attributed failure")
+  Assert.equal(assert(travel:dynamicWarp()).direction, "south", "a rejected write keeps the prior destination")
+end
+
+-- The floor answer is the pinned source map table, not a guess from the map
+-- name: several source elevators skip or restart their numbering.
+function T.dynamic_warp_floor_follows_the_source_map_table()
+  local travel = FieldTravelState.new({ lastHealSpawn = "SPAWN_NEW_BARK" })
+  local service = ScriptMapsService.new({
+    transition = { start = function() end },
+    loader = fakeLoader(),
+    sourceMap = fakeSourceMap(),
+    travel = travel,
+  })
+  local expected = {
+    { "MAP_GOLDENROD_RADIO_TOWER_5F", 0 },
+    { "MAP_GOLDENROD_RADIO_TOWER_OBSERVATION_DECK", 1 },
+    { "MAP_OLIVINE_LIGHTHOUSE_1F", 0 },
+    { "MAP_OLIVINE_LIGHTHOUSE_LIGHT_ROOM", 1 },
+    { "MAP_SAFFRON_SILPH_CO_HQ", 0 },
+    { "MAP_SAFFRON_SILPH_CO_ROTOM_ROOM", 1 },
+    { "MAP_GOLDENROD_DEPARTMENT_STORE_1F", 1 },
+    { "MAP_GOLDENROD_DEPARTMENT_STORE_2F", 2 },
+    { "MAP_GOLDENROD_DEPARTMENT_STORE_BASEMENT", 0 },
+    { "MAP_GOLDENROD_DEPARTMENT_STORE_6F", 6 },
+    { "MAP_CELADON_DEPARTMENT_STORE_1F", 0 },
+    { "MAP_CELADON_DEPARTMENT_STORE_ROOF", 5 },
+    { "MAP_CELADON_CONDOMINIUMS_3F", 2 },
+    { "MAP_CELADON_CONDOMINIUMS_ROOF", 3 },
+  }
+  for _, row in ipairs(expected) do
+    service:setDynamicWarp({ map = row[1], warpId = 0, fieldX = 1, fieldZ = 2, direction = "north" })
+    Assert.equal(service:dynamicWarpFloor(), row[2], "the floor of " .. row[1] .. " follows the source table")
+  end
+
+  local err = Assert.throws(function()
+    service:setDynamicWarp({ map = "MAP_NEW_BARK", warpId = 0, fieldX = 1, fieldZ = 2, direction = "north" })
+    return service:dynamicWarpFloor()
+  end)
+  Assert.isTrue(Errors.is(err), "a map outside the source elevator table is an attributed failure")
+
+  local unset = ScriptMapsService.new({
+    transition = { start = function() end },
+    loader = fakeLoader(),
+    sourceMap = fakeSourceMap(),
+    travel = FieldTravelState.new({ lastHealSpawn = "SPAWN_NEW_BARK" }),
+  })
+  Assert.throws(function()
+    unset:dynamicWarpFloor()
+  end, "an unestablished destination answers no floor instead of the current map's")
+end
+
+-- MoveWarp relocates the live warp event of the current map instance: the
+-- runtime map's warp list is already expressed in the field domain the trigger
+-- reads, so only the named event moves to the script's local cell converted
+-- through the map origin; the player is untouched and the shared source map
+-- data keeps its original coordinates.
+function T.move_warp_event_relocates_only_the_live_current_map_event()
+  local cachedWarps = {
+    { index = 0, x = 610, z = 320, destinationMapId = 60, destinationWarpId = 0 },
+    { index = 1, x = 630, z = 340, destinationMapId = 60, destinationWarpId = 1 },
+  }
+  local sourceMap = {
+    mapId = "MAP_NEW_BARK",
+    coordinateOrigin = { x = 600, z = 300 },
+    fieldData = { events = { warps = cachedWarps } },
+  }
+  local transitionStarts = 0
+  local service = ScriptMapsService.new({
+    transition = {
+      start = function()
+        transitionStarts = transitionStarts + 1
+      end,
+    },
+    loader = fakeLoader(),
+    sourceMap = sourceMap,
+  })
+
+  service:moveWarpEvent(0, 5, 6)
+  Assert.notNil(WarpSystem.findAt(sourceMap, 605, 306), "the moved warp answers at its new field cell")
+  Assert.equal(WarpSystem.findAt(sourceMap, 605, 306).index, 0, "the moved event keeps its source warp index")
+  Assert.isNil(WarpSystem.findAt(sourceMap, 610, 320), "the original cell no longer triggers the warp")
+  Assert.deepEqual(
+    WarpSystem.findAt(sourceMap, 630, 340),
+    cachedWarps[2],
+    "a sibling warp event keeps its field coordinates and every other record field"
+  )
+  Assert.equal(assert(WarpSystem.findAt(sourceMap, 630, 340)).index, 1, "sibling warp events stay at their own cell")
+  Assert.equal(cachedWarps[1].x, 610, "the shared source map data keeps its original coordinate")
+  Assert.equal(cachedWarps[1].z, 320, "the shared source map data keeps its original coordinate")
+  Assert.equal(transitionStarts, 0, "moving a warp event never travels")
+  Assert.isNil(service.pendingWarp, "moving a warp event starts no scripted warp")
+
+  local err = Assert.throws(function()
+    service:moveWarpEvent(9, 1, 2)
+  end)
+  Assert.isTrue(Errors.is(err), "an unknown warp index is an attributed failure")
+  Assert.notNil(WarpSystem.findAt(sourceMap, 605, 306), "a failed move leaves the live event where it was")
+end
+
+-- The map origin never applies twice: a nonzero origin with field-domain
+-- siblings must leave every other warp at its own field cell instead of
+-- displacing the whole list by the origin.
+function T.move_warp_event_leaves_field_domain_siblings_untouched_at_a_nonzero_origin()
+  local siblings = {
+    { index = 1, x = 648, z = 372, destinationMapId = 60, destinationWarpId = 1 },
+    { index = 2, x = 656, z = 388, destinationMapId = 60, destinationWarpId = 2 },
+  }
+  local sourceMap = {
+    mapId = "MAP_ECRUTEAK",
+    coordinateOrigin = { x = 640, z = 360 },
+    fieldData = {
+      events = {
+        warps = {
+          { index = 0, x = 645, z = 366, destinationMapId = 60, destinationWarpId = 0 },
+          siblings[1],
+          siblings[2],
+        },
+      },
+    },
+  }
+  local service = ScriptMapsService.new({
+    transition = { start = function() end },
+    loader = fakeLoader(),
+    sourceMap = sourceMap,
+  })
+
+  service:moveWarpEvent(0, 2, 3)
+  Assert.notNil(WarpSystem.findAt(sourceMap, 642, 363), "the moved warp lands at origin + source cell")
+  Assert.deepEqual(
+    WarpSystem.findAt(sourceMap, 648, 372),
+    siblings[1],
+    "the first sibling keeps its field coordinates"
+  )
+  Assert.deepEqual(
+    WarpSystem.findAt(sourceMap, 656, 388),
+    siblings[2],
+    "the second sibling keeps its field coordinates"
+  )
 end
 
 return { tests = T }

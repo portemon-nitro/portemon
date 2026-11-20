@@ -887,13 +887,14 @@ Schema.OPERATIONS = {
   set_object_facing = {
     fields = {
       actor = { type = "actor", required = true },
-      direction = { type = "enum:direction", required = true },
+      direction = { type = "direction_or_value", required = true },
     },
   },
   set_object_movement_type = {
     fields = {
       actor = { type = "actor", required = true },
       movementType = { type = "string", required = true },
+      changeMovement = { type = "boolean" },
     },
   },
   get_player_coords = {
@@ -1081,6 +1082,38 @@ Schema.OPERATIONS = {
       direction = { type = "enum:direction", required = true },
     },
   },
+  set_dynamic_warp = {
+    fields = {
+      map = { type = "scalar_or_value", required = true },
+      warpId = { type = "scalar_or_value", required = true },
+      fieldX = { type = "scalar_or_value", required = true },
+      fieldZ = { type = "scalar_or_value", required = true },
+      direction = { type = "direction_or_value", required = true },
+    },
+  },
+  get_dynamic_warp_floor = { fields = { result = { type = "value", required = true } } },
+  move_warp_event = {
+    fields = {
+      warpId = { type = "scalar_or_value", required = true },
+      fieldX = { type = "scalar_or_value", required = true },
+      fieldZ = { type = "scalar_or_value", required = true },
+    },
+  },
+  floor_window_show = {
+    fields = {
+      tileX = { type = "integer", required = true },
+      tileY = { type = "integer", required = true },
+      floor = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  elevator_anim = {
+    fields = {
+      direction = { type = "scalar_or_value", required = true },
+      length = { type = "scalar_or_value", required = true },
+    },
+  },
+  field_clock_hour = { fields = { result = { type = "value", required = true } } },
   shake_camera = {
     fields = {
       amplitudeX = { type = "number", required = true },

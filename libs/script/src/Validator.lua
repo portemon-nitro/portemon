@@ -664,6 +664,15 @@ local function checkScalarOrValue(context, v, path, field)
   end
   checkValueRef(context, v, path, field)
 end
+-- A source direction operand: a cardinal name, or the script variable that
+-- carries the source direction code until the command runs.
+local function checkDirectionOrValue(context, v, path, field)
+  if type(v) == "string" and ENUM_SETS.direction[v] then
+    return
+  end
+  checkValueRef(context, v, path, field)
+end
+CHECKERS.direction_or_value = checkDirectionOrValue
 CHECKERS.value = checkValueRef
 CHECKERS.writable_value = checkWritableValue
 CHECKERS.text_value = checkTextValue

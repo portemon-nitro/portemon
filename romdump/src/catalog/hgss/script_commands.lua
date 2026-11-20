@@ -767,6 +767,7 @@ return {
       },
     },
     [109] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_ChangeObjectMovement",
       widths = {
         [1] = 2,
@@ -1791,6 +1792,7 @@ return {
       },
     },
     [240] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_SetDynamicWarp",
       widths = {
         [1] = 2,
@@ -1801,12 +1803,14 @@ return {
       },
     },
     [241] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_GetDynamicWarpFloorNo",
       widths = {
         [1] = 2,
       },
     },
     [242] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_ElevatorCurFloorBox",
       widths = {
         [1] = 1,
@@ -2456,6 +2460,7 @@ return {
       },
     },
     [342] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_MoveWarp",
       widths = {
         [1] = 2,
@@ -2472,6 +2477,7 @@ return {
       },
     },
     [344] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_SetObjectFacingAndUpdateDraw",
       widths = {
         [1] = 2,
@@ -3678,6 +3684,7 @@ return {
       },
     },
     [488] = {
+      classification = "native_wait",
       name = "ScrCmd_ElevatorAnim",
       widths = {
         [1] = 2,
@@ -3965,6 +3972,7 @@ return {
       widths = {},
     },
     [522] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_GetCurrentHour",
       widths = {
         [1] = 2,
@@ -5903,6 +5911,7 @@ return {
       },
     },
     [784] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_ScriptOverlayCmd",
       widths = {
         [1] = 1,

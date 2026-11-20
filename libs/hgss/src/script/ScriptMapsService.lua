@@ -16,6 +16,7 @@ local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
 local FieldCoveredSwap = require("libs.hgss.src.transition.FieldCoveredSwap")
+local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
 
 ---@class ScriptMapsService
 ---@field private _transition table<string, unknown> FieldTransition-shaped
@@ -195,6 +196,137 @@ end
 function ScriptMapsService:specialSpawn()
   local travel = assert(self._travel, "special spawn requires the durable travel owner")
   return travel:specialSpawn()
+end
+
+-- The source elevator floor numbering (MapNumToFloorNo): a discrete table of
+-- the source map ids whose elevator floors are not the map's ordinal suffix
+-- (radio tower, lighthouses, the department stores, the condominiums).
+---@type table<string, integer>
+local ELEVATOR_FLOOR_BY_MAP = {
+  MAP_GOLDENROD_RADIO_TOWER_5F = 0,
+  MAP_GOLDENROD_RADIO_TOWER_OBSERVATION_DECK = 1,
+  MAP_OLIVINE_LIGHTHOUSE_1F = 0,
+  MAP_OLIVINE_LIGHTHOUSE_LIGHT_ROOM = 1,
+  MAP_SAFFRON_SILPH_CO_HQ = 0,
+  MAP_SAFFRON_SILPH_CO_ROTOM_ROOM = 1,
+  MAP_GOLDENROD_DEPARTMENT_STORE_1F = 1,
+  MAP_GOLDENROD_DEPARTMENT_STORE_2F = 2,
+  MAP_GOLDENROD_DEPARTMENT_STORE_3F = 3,
+  MAP_GOLDENROD_DEPARTMENT_STORE_4F = 4,
+  MAP_GOLDENROD_DEPARTMENT_STORE_5F = 5,
+  MAP_GOLDENROD_DEPARTMENT_STORE_6F = 6,
+  MAP_GOLDENROD_DEPARTMENT_STORE_BASEMENT = 0,
+  MAP_CELADON_DEPARTMENT_STORE_1F = 0,
+  MAP_CELADON_DEPARTMENT_STORE_2F = 1,
+  MAP_CELADON_DEPARTMENT_STORE_3F = 2,
+  MAP_CELADON_DEPARTMENT_STORE_4F = 3,
+  MAP_CELADON_DEPARTMENT_STORE_5F = 4,
+  MAP_CELADON_DEPARTMENT_STORE_ROOF = 5,
+  MAP_CELADON_CONDOMINIUMS_1F = 0,
+  MAP_CELADON_CONDOMINIUMS_2F = 1,
+  MAP_CELADON_CONDOMINIUMS_3F = 2,
+  MAP_CELADON_CONDOMINIUMS_ROOF = 3,
+}
+
+-- Record the source dynamic warp (opcode 240) on the durable travel owner.
+-- Its five operands arrive evaluated; a numeric source map id resolves to the
+-- record symbol through the loader before the unchanged durable write, so a
+-- resolution failure leaves the prior destination untouched. The destination
+-- is its own value: it never aliases the special spawn.
+---@param warp { map: unknown, warpId: integer, fieldX: integer, fieldZ: integer, direction: string }
+function ScriptMapsService:setDynamicWarp(warp)
+  local travel = assert(self._travel, "dynamic warp requires the durable travel owner")
+  local symbol = warp.map
+  if type(symbol) == "number" then
+    symbol = self._loader:mapSymbol(symbol)
+  end
+  local direction = RuntimeValues.sourceDirection(warp.direction)
+  if direction == nil then
+    Errors.raise(FieldErrors.FIELD_DYNAMIC_WARP_UNSUPPORTED, "the dynamic warp direction is invalid", {
+      sourceMapId = self._sourceMap.mapId,
+      direction = warp.direction,
+    })
+  end
+  travel:setDynamicWarp({
+    map = symbol,
+    warpId = warp.warpId,
+    fieldX = warp.fieldX,
+    fieldZ = warp.fieldZ,
+    direction = direction,
+  })
+end
+
+-- The source floor index for the saved dynamic-warp map (opcode 241). Reads
+-- only the durable destination and the pinned source table: an unestablished
+-- destination and a map outside that table are attributed failures, never the
+-- current map's floor and never a guess from the map name.
+---@return integer
+function ScriptMapsService:dynamicWarpFloor()
+  local travel = assert(self._travel, "dynamic warp requires the durable travel owner")
+  local warp = travel:dynamicWarp()
+  if warp == nil then
+    Errors.raise(FieldErrors.FIELD_DYNAMIC_WARP_FLOOR_UNKNOWN, "no dynamic warp destination is established", {
+      sourceMapId = self._sourceMap.mapId,
+    })
+  end
+  local destinationMap = assert(warp).map --[[@as string]]
+  local floor = ELEVATOR_FLOOR_BY_MAP[destinationMap]
+  if floor == nil then
+    Errors.raise(FieldErrors.FIELD_DYNAMIC_WARP_FLOOR_UNKNOWN, "the destination map has no source elevator floor", {
+      sourceMapId = self._sourceMap.mapId,
+      destinationMap = destinationMap,
+    })
+  end
+  return assert(floor)
+end
+
+-- Source MoveWarp (opcode 342): relocate one warp event of the current map
+-- instance. The shared source map data is never edited -- the runtime map
+-- receives its own event list at the new cell -- so the change lives and dies
+-- with that map instance, the player never moves, and no transition starts.
+-- The script's new cell is in the map's local cell space; the live list is
+-- already in the field domain the transition trigger reads, so only the named
+-- event is converted and the sibling records keep their field coordinates.
+---@param warpId integer
+---@param x integer
+---@param z integer
+function ScriptMapsService:moveWarpEvent(warpId, x, z)
+  local runtimeMap = self._sourceMap
+  local events = assert(
+    runtimeMap and runtimeMap.fieldData and runtimeMap.fieldData.events and runtimeMap.fieldData.events.warps,
+    "the current map owns its warp events"
+  )
+  local origin = assert(runtimeMap.coordinateOrigin, "the current map carries its coordinate origin")
+  local target
+  for _, warp in ipairs(events) do
+    if warp.index == warpId then
+      target = warp
+      break
+    end
+  end
+  if target == nil then
+    Errors.raise(FieldErrors.FIELD_WARP_EVENT_UNKNOWN, "the current map has no warp event " .. tostring(warpId), {
+      sourceMapId = runtimeMap.mapId,
+      sourceWarpId = warpId,
+    })
+  end
+  -- The live event list is already expressed in the field domain (that is
+  -- what the transition trigger and the door tile index read), so only the
+  -- named event is re-expressed from the script's local cell; every other
+  -- record is copied verbatim.
+  local relocated = {}
+  for index, warp in ipairs(events) do
+    local copy = {}
+    for key, value in pairs(warp) do
+      copy[key] = value
+    end
+    if warp == target then
+      copy.x = origin.x + x
+      copy.z = origin.z + z
+    end
+    relocated[index] = copy
+  end
+  runtimeMap.fieldData.events.warps = relocated
 end
 
 -- True when the started warp has run its course: the application consumed

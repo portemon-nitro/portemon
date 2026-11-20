@@ -5097,6 +5097,11 @@ function FieldRuntime:_releaseAll()
   if self.propAnimations then
     self.propAnimations:clear()
   end
+  -- A source floor box outlives the script that showed it, so field teardown
+  -- releases whatever is still open exactly once.
+  if self.scripts ~= nil and self.scripts.floorWindow ~= nil then
+    self.scripts.floorWindow:dispose()
+  end
   if self.overworld then
     self.overworld:dispose()
   end

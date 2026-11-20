@@ -52,6 +52,41 @@ function RuntimeValues.encodePlayerFacing(facing, run)
   return assert(code, "player facing code resolved")
 end
 
+-- The source direction code a script variable carries for an object facing
+-- write (0 north, 1 south, 2 west, 3 east). One authoritative conversion: the
+-- script runtime decodes facing operands through it and the maps service uses
+-- it for the dynamic-warp direction.
+local DIRECTION_BY_CODE = { [0] = "north", [1] = "south", [2] = "west", [3] = "east" }
+
+-- Decode an evaluated direction operand to its cardinal direction: a lowered
+-- literal already carries the name, a source variable carries the code. An
+-- unknown value answers nil so each caller can raise its own attributed error.
+---@param value unknown
+---@return string|nil
+function RuntimeValues.sourceDirection(value)
+  if type(value) == "string" and PLAYER_FACING_CODES[value] ~= nil then
+    return value
+  end
+  if type(value) == "number" then
+    return DIRECTION_BY_CODE[value]
+  end
+  return nil
+end
+
+---@param value unknown
+---@param run table<string, unknown>
+---@return string
+function RuntimeValues.decodeDirection(value, run)
+  local direction = RuntimeValues.sourceDirection(value)
+  if direction == nil then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "unknown source direction " .. tostring(value), {
+      scriptId = run.instance.scriptId,
+      direction = tostring(value),
+    })
+  end
+  return assert(direction)
+end
+
 -- Write a value reference: locals and vars are writable; args are read-only
 -- call data (writing one is an invalid reference). Shared by node handlers
 -- and the scheduler's task-result write.
@@ -479,6 +514,47 @@ function RuntimeValues.requireActor(ref, run)
     )
   end
   return actorId
+end
+
+-- Resolve an actor reference that is allowed to name nothing: a numeric map
+-- object index the current map does not carry and a special reference with no
+-- trigger target answer nil instead of faulting, exactly as the source commands
+-- that treat an absent object as a no-op require.
+---@param ref unknown
+---@param run table<string, unknown>
+---@return string|nil actorId
+function RuntimeValues.findActor(ref, run)
+  if type(ref) == "string" then
+    return ref
+  end
+  if ref.ref ~= "actor" then
+    Errors.raise(
+      ScriptErrors.SCRIPT_INVALID_REFERENCE,
+      "expected an actor reference",
+      { scriptId = run.instance.scriptId }
+    )
+  end
+  if ref.mapIndex ~= nil then
+    return run.services.actors:actorIdForMapIndex(RuntimeValues.evaluateMapIndex(ref, run))
+  end
+  if ref.id ~= nil then
+    return ref.id
+  end
+  local trigger = run.instance.trigger
+  if ref.special == "player" then
+    return "player"
+  elseif ref.special == "self" or ref.special == "last_talked" then
+    return trigger and trigger.selfActor or nil
+  elseif ref.special == "partner" then
+    return run.services.actors:partnerId()
+  elseif ref.special == "camera_target" then
+    return run.services.actors:cameraTargetId()
+  end
+  Errors.raise(
+    ScriptErrors.SCRIPT_INVALID_REFERENCE,
+    "expected an actor reference",
+    { scriptId = run.instance.scriptId, special = ref.special }
+  )
 end
 
 -- ShowPerson target: a numeric map-object index names an object that may be

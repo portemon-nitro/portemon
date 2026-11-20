@@ -26,6 +26,7 @@ local MapInitScriptController = require("libs.hgss.src.field.MapInitScriptContro
 local FollowerInteractionEngine = require("libs.hgss.src.field.FollowerInteractionEngine")
 local FieldMoveCue = require("game.hgss.src.field.FieldMoveCue")
 local FieldMoneyBox = require("game.hgss.src.field.FieldMoneyBox")
+local FieldFloorWindow = require("game.hgss.src.field.FieldFloorWindow")
 
 -- The player facade the script services consume: position/facing/gender/name
 -- plus the mutation hooks the movement tasks use (the player can be a
@@ -401,6 +402,7 @@ end
 ---@field moneyBox FieldMoneyBox the one transient source money window the field draw renders
 ---@field mapSource RuntimeFieldMap the active runtime map map-scoped script state is bound to
 ---@field propAnimations table<string, unknown>|nil
+---@field floorWindow FieldFloorWindow the source floor box the field presents and releases
 local FieldScripts = {}
 FieldScripts.__index = FieldScripts
 
@@ -549,6 +551,20 @@ function FieldScripts.new(opts)
     controller = opts.signpost,
     resolveMessage = resolveMessage,
   })
+  -- The source floor box: one non-modal window whose lifetime is the script
+  -- variable the command names. The host observes that variable each script
+  -- tick and on field teardown; the scheduler-facing service adds the live map
+  -- whose floor label applies.
+  local function floorWindowGetVar(id)
+    return worldState:getVar(id)
+  end
+  local function floorWindowResolveMessage(ref)
+    return dialogueHost:resolveMessage(ref, {}, {})
+  end
+  local floorWindowHost = FieldFloorWindow.new({
+    getVar = floorWindowGetVar,
+    resolveMessage = floorWindowResolveMessage,
+  })
 
   -- The transient source money window and its script facade. The box borrows
   -- the live profile for the displayed balance; the facade moves that same
@@ -582,6 +598,7 @@ function FieldScripts.new(opts)
     mapSource = opts.sourceMap,
     propAnimations = opts.propAnimations,
     moneyBox = moneyBox,
+    floorWindow = floorWindowHost,
   }, FieldScripts)
   if opts.propAnimations ~= nil then
     opts.propAnimations:bindMap(opts.sourceMap)
@@ -619,6 +636,7 @@ function FieldScripts.new(opts)
 
   local scheduler
   local function advanceAsync()
+    floorWindowHost:poll()
     opts.auxiliaryUi:advance()
     dialogueHost:advance(scheduler:currentInput())
     -- The signpost controller is pure and fixed-tick: exactly one step per
@@ -628,6 +646,17 @@ function FieldScripts.new(opts)
   local function resolveComposition(id)
     return composition:effective(id)
   end
+  -- The scheduler-facing floor-box service adds the live map whose floor label
+  -- table applies to the placement the command names.
+  local function floorWindowShow(_, request)
+    floorWindowHost:show({
+      map = platform.mapSource.mapSymbol,
+      tileX = request.tileX,
+      tileY = request.tileY,
+      floor = request.floor,
+      result = request.result,
+    })
+  end
   scheduler = Scheduler.new({
     services = {
       world = worldState,
@@ -635,6 +664,8 @@ function FieldScripts.new(opts)
       player = player,
       dialogue = dialogueHost,
       maps = mapsService,
+      clock = opts.clock,
+      floorWindow = { show = floorWindowShow },
       overworld = opts.overworld,
       propAnimations = opts.propAnimations,
       -- Optional backends: an absent service faults the operation that
