@@ -173,8 +173,22 @@ function T.deferred_entries_carry_one_category_and_stay_explicit(romFs)
       if item.op == "unsupported" and type(item.command) == "number" then
         if ItemScriptCommands.byOpcode[item.command] ~= nil then
           local tagged = ScriptCommands.byOpcode[item.command]
-          if tagged ~= nil and tagged.disposition ~= "deferred" then
-            reached[#reached + 1] = tostring(item.command) .. ":" .. CommandCatalog.name(item.command)
+          local identity = tostring(item.command) .. ":" .. CommandCatalog.name(item.command)
+          local owned = tagged ~= nil and tagged.disposition == "deferred"
+          if owned then
+            -- A wholly deferred family command keeps its catalog category.
+          elseif tagged ~= nil and tagged.disposition == "partial" then
+            -- A partially owned command may reach its unimplemented part only
+            -- while the deferred part stays attributed to its dependency.
+            local reason = type(item.reason) == "string" and item.reason or ""
+            if
+              ALLOWED_DEFERRALS[tagged.deferredReason] ~= true
+              or not reason:find(assert(tagged.deferredReason), 1, true)
+            then
+              reached[#reached + 1] = identity .. ":unattributed partial node"
+            end
+          else
+            reached[#reached + 1] = identity
           end
         end
       end

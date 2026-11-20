@@ -496,6 +496,13 @@ Schema.OPERATIONS = {
     },
   },
   mom_gift_take = { fields = {} },
+  -- Mystery Gift queue query: this product distributes no Mystery Gifts, so
+  -- the source waiting-gift check always writes the FALSE convention.
+  mystery_gift_has_gift = {
+    fields = {
+      result = { type = "writable_value", required = true },
+    },
+  },
   -- Broadcast password service: writes the first of three consecutive
   -- password-word message entries and the winning choice index.
   buena_password = {

@@ -70,7 +70,10 @@ end
 
 -- Mon-family disposition metadata. The authoritative entries live in the
 -- pinned reference table; these accessors are the single query path for
--- lowering and audits so no second disposition list can drift.
+-- lowering and audits so no second disposition list can drift. A disposition
+-- is `supported` (fully executable), `partial` (only a source-operand subset
+-- executes; the rest stays an explicit unsupported node attributed to its
+-- `deferredReason`), or `deferred` (no executable part).
 ---@param opcode integer
 ---@return string|nil
 function CommandCatalog.feature(opcode)

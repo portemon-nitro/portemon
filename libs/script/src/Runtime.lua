@@ -2866,6 +2866,13 @@ do
     semanticsFor(run).writeRef(node.result, gifts:momGift(), run)
     return Runtime.OUTCOME_CONTINUE
   end
+  -- The Mystery Gift queue check answers through the source FALSE convention:
+  -- this product runs no distribution system, so no gift can be queued and
+  -- there is no gift data to consult.
+  function GearEval.handleMysteryGiftHasGift(node, run)
+    semanticsFor(run).writeRef(node.result, 0, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
   function GearEval.handleMomGiftHead(node, run)
     local gifts = requireService(run, "phoneGifts")
     assert(gifts ~= nil, "companion service is available after the missing-service error")
@@ -2906,6 +2913,7 @@ do
   HANDLERS.phone_contact_gift = GearEval.handlePhoneContactGift
   HANDLERS.radio_music_query = GearEval.handleRadioMusicQuery
   HANDLERS.mom_gift_check = GearEval.handleMomGiftCheck
+  HANDLERS.mystery_gift_has_gift = GearEval.handleMysteryGiftHasGift
   HANDLERS.mom_gift_head = GearEval.handleMomGiftHead
   HANDLERS.mom_gift_take = GearEval.handleMomGiftTake
   HANDLERS.buena_password = GearEval.handleBuenaPassword

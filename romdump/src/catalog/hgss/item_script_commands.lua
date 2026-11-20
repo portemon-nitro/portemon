@@ -8,7 +8,9 @@
 --
 -- Explicitly not owned here:
 -- - fossil count/restoration (fossil rows below);
--- - Mystery Gift delivery (mystery_gift row below);
+-- - Mystery Gift delivery (mystery_gift row below): the queue framing and
+--   the waiting-gift query are owned by the field script runtime, but gift
+--   delivery stays deferred under the unimplemented distribution system;
 -- - daycare/communication sanitization item transfer (opcodes 689 and 690,
 --   owned by the mon family as deferred daycare/communication commands);
 -- - mart/shop buy/sell (shop rows below);

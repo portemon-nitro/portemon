@@ -135,7 +135,7 @@ function T.every_inventory_member_has_explicit_disposition()
     local entry = ScriptCommands.byOpcode[inventory.opcode]
     if entry == nil then
       problems[#problems + 1] = tostring(inventory.opcode) .. ":missing catalog entry"
-    elseif entry.disposition ~= "supported" and entry.disposition ~= "deferred" then
+    elseif entry.disposition ~= "supported" and entry.disposition ~= "deferred" and entry.disposition ~= "partial" then
       problems[#problems + 1] = tostring(inventory.opcode) .. ":missing disposition"
     elseif inventory.category == "items" then
       if entry.disposition ~= "supported" or entry.feature ~= "items" then
@@ -163,6 +163,20 @@ function T.every_inventory_member_has_explicit_disposition()
         problems[#problems + 1] = tostring(inventory.opcode) .. ":Apricorn neighbor has no disposition"
       elseif ALLOWED_DEFERRALS[entry.deferredReason] ~= true then
         problems[#problems + 1] = tostring(inventory.opcode) .. ":unexpected Apricorn deferral category"
+      end
+    elseif inventory.category == "mystery_gift" then
+      -- The queue framing and the waiting-gift query execute in the field
+      -- runtime; gift delivery still needs the unimplemented distribution
+      -- system, so the command is only partially owned and never joins the
+      -- item family.
+      if entry.disposition ~= "partial" then
+        problems[#problems + 1] = tostring(inventory.opcode) .. ":mystery-gift command is not partially owned"
+      elseif ALLOWED_DEFERRALS[entry.deferredReason] ~= true then
+        problems[#problems + 1] = tostring(inventory.opcode) .. ":unexpected mystery-gift deferral category"
+      elseif type(entry.deferredNote) ~= "string" or entry.deferredNote == "" then
+        problems[#problems + 1] = tostring(inventory.opcode) .. ":missing deferral reason note"
+      elseif entry.feature ~= nil then
+        problems[#problems + 1] = tostring(inventory.opcode) .. ":mystery-gift command claims a feature family"
       end
     elseif entry.disposition ~= "deferred" then
       problems[#problems + 1] = tostring(inventory.opcode) .. ":neighbor is not deferred"

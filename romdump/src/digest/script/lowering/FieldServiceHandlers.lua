@@ -478,6 +478,35 @@ function FieldServiceHandlers.martBuy(ins)
   return FieldServiceHandlers.martOpen("standard")
 end
 
+-- ScrCmd_MysteryGift (489) source variants (scrcmd_mystery_gift.c): the
+-- session framing and the waiting-gift query are executable, while the
+-- delivery variants need the Mystery Gift distribution system this product
+-- does not have. BEGIN/END open and close the queued-gift buffer, which
+-- stays empty, so they erase; HAS_GIFT writes through its own operation.
+local MYSTERY_GIFT_BEGIN, MYSTERY_GIFT_HAS_GIFT, MYSTERY_GIFT_END = 0, 1, 7
+
+function FieldServiceHandlers.mysteryGift(ins)
+  local variant = Operands.operandValue(ins.operands[1])
+  if variant == MYSTERY_GIFT_BEGIN or variant == MYSTERY_GIFT_END then
+    return { op = "noop" }
+  end
+  if variant == MYSTERY_GIFT_HAS_GIFT then
+    return { op = "mystery_gift_has_gift", result = Operands.varRef(ins.operands[2]) }
+  end
+  local arguments = {}
+  for index, operand in ipairs(ins.operands) do
+    arguments[index] = Operands.operandValue(operand)
+  end
+  return {
+    op = "unsupported",
+    command = ins.opcode,
+    originalName = "ScrCmd_MysteryGift",
+    arguments = arguments,
+    sourceOffset = ins.offset,
+    reason = "unimplemented part (mystery_gift): Mystery Gift delivery needs its distribution system",
+  }
+end
+
 function FieldServiceHandlers.martAthleteAvailable(ins)
   return { op = "mart_query", kind = "athlete_available", result = Operands.varRef(ins.operands[1]) }
 end

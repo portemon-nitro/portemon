@@ -2002,6 +2002,7 @@ local FieldHandlers = {
   -- discard_value semantic exactly like opcodes 219/279 share whiteout.
   [490] = FieldServiceHandlers.discardValue,
   [446] = FieldServiceHandlers.currentMapId,
+  [489] = FieldServiceHandlers.mysteryGift,
   [487] = FieldServiceHandlers.pokemonCenterHeal,
   [590] = FieldServiceHandlers.trainerCardStars,
   [771] = FieldServiceHandlers.martAthlete,

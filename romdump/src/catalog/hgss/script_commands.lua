@@ -3679,7 +3679,11 @@ return {
     },
     [489] = {
       name = "ScrCmd_MysteryGift",
-      disposition = "deferred",
+      -- Only the queue framing and the waiting-gift query execute: this
+      -- product distributes no Mystery Gifts, so BEGIN/END bracket nothing
+      -- and HAS_GIFT answers false. The delivery variants stay unsupported.
+      disposition = "partial",
+      classification = "continue_same_tick",
       deferredReason = "mystery_gift",
       deferredNote = "Mystery Gift delivery needs its distribution system",
       variants = {
