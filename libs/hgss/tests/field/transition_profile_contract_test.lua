@@ -559,10 +559,10 @@ end
 function T.tests.field_transition_consumes_trigger_profile_before_ownership()
   local metadataCalls = 0
   local loader = {
-    transitionEnvironment = function(_, mapId)
+    requestTransitionEnvironment = function(_, mapId)
       metadataCalls = metadataCalls + 1
       Assert.equal(mapId, 60)
-      return "building"
+      return true, "building"
     end,
     load = function()
       error("profile selection must not load a destination map", 0)
@@ -598,8 +598,8 @@ end
 function T.tests.field_transition_rejects_unsupported_environment_before_lock()
   local transition = FieldTransition.new({
     loader = {
-      transitionEnvironment = function()
-        return "outdoors"
+      requestTransitionEnvironment = function()
+        return true, "outdoors"
       end,
       requestWarp = function()
         return true

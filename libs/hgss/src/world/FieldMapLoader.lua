@@ -1987,14 +1987,36 @@ function FieldMapLoader:createPhysicalCoverage(runtimeMap, position)
   return self:beginPhysicalCoverage(runtimeMap, position):finish()
 end
 
--- Read only the generated semantic metadata needed to choose a transition.
--- This deliberately does not load a scene, collision grid, terrain, or GPU
--- resource, so profile selection cannot acquire destination ownership.
-function FieldMapLoader:transitionEnvironment(idOrSymbol)
+-- Non-blocking demand for the generated transition-environment metadata
+-- profile selection reads. It enrolls the destination logical field closure
+-- and never loads a scene, collision grid, terrain, or GPU resource, so a
+-- script-selected destination that is still compiling holds profile selection
+-- as a pending demand instead of failing on a not-yet-published record. A
+-- published but malformed record still fails loudly.
+---@param idOrSymbol integer|string
+---@return boolean ready
+---@return string|nil environment
+---@return string|nil failure
+function FieldMapLoader:requestTransitionEnvironment(idOrSymbol)
   assert(not self.released, "field map loader is released")
   local record = worldRecord(self.world, idOrSymbol)
-  local fieldData =
-    loadRequired(self.cacheFs, FieldMapDataCache.fieldPath(record.id), FieldErrors.FIELD_MAP_DATA_CACHE_MISSING)
+  local host = self.derivedAssets
+  if host ~= nil and type(host.requestLogicalField) == "function" then
+    local logicalReady, logicalFailure = host.requestLogicalField(record.id, "required")
+    if logicalFailure ~= nil then
+      return false, nil, logicalFailure
+    end
+    if not logicalReady then
+      return false
+    end
+  end
+  local fieldData = self.cacheFs:loadLua(FieldMapDataCache.fieldPath(record.id))
+  if fieldData == nil then
+    -- Absent record file: the logical closure is still compiling, so the
+    -- demand waits. Publication is not optional, so corruption below remains
+    -- a loud failure.
+    return false
+  end
   if
     fieldData.schema ~= FieldMapDataCache.FIELD_SCHEMA
     or fieldData.mapId ~= record.id
@@ -2008,7 +2030,7 @@ function FieldMapLoader:transitionEnvironment(idOrSymbol)
       { mapId = record.id }
     )
   end
-  return fieldData.transitionEnvironment
+  return true, fieldData.transitionEnvironment
 end
 
 function FieldMapLoader:get(mapId)

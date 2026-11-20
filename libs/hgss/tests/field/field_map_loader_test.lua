@@ -262,11 +262,51 @@ function T.loads_visual_field_collision_and_terrain_into_one_aggregate()
   loader:release()
 end
 
-function T.reads_transition_environment_without_loading_a_scene()
+function T.demands_transition_environment_without_loading_a_scene()
   local cache, world, sceneLoader = fixture(1)
   local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
-  Assert.equal(loader:transitionEnvironment(0), "outdoors")
+  Assert.deepEqual({ loader:requestTransitionEnvironment(0) }, { true, "outdoors" })
   Assert.equal(loader:residentCount(), 0)
+  loader:release()
+end
+
+-- Profile selection can run before a script-selected destination has
+-- compiled. The demand enrolls the destination logical closure and reports
+-- not-ready until the record publishes instead of failing on the read.
+function T.transition_environment_demand_waits_for_a_cold_destination()
+  local cache, world, sceneLoader, _, files = fixture(2)
+  local fieldPath = "data/generated/field/maps/0001/field.lua"
+  local publishedRecord = assert(files[fieldPath])
+  files[fieldPath] = nil
+  local published, requests = false, {}
+  local loader = FieldMapLoader.new(cache, world, {
+    sceneLoader = sceneLoader,
+    derivedAssets = {
+      requestLogicalField = function(mapId, urgency)
+        requests[#requests + 1] = { mapId, urgency }
+        return published
+      end,
+    },
+  })
+  Assert.deepEqual({ loader:requestTransitionEnvironment(1) }, { false }, "a cold destination is pending")
+  Assert.deepEqual(requests, { { 1, "required" } }, "the demand enrolls the destination logical closure")
+  files[fieldPath] = publishedRecord
+  published = true
+  Assert.deepEqual({ loader:requestTransitionEnvironment(1) }, { true, "outdoors" })
+  loader:release()
+end
+
+function T.transition_environment_demand_rejects_a_malformed_record()
+  local cache, world, sceneLoader, _, files = fixture(1)
+  files["data/generated/field/maps/0000/field.lua"].transitionEnvironment = "unknown"
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local err = Assert.throws(function()
+    loader:requestTransitionEnvironment(0)
+  end)
+  Assert.isTrue(
+    Errors.is(err) and err.code == "FIELD_MAP_DATA_CACHE_INVALID",
+    "a published malformed transition environment fails loudly"
+  )
   loader:release()
 end
 
@@ -845,7 +885,7 @@ function T.exposes_loaded_map_transition_environment()
   local cache, world, _, _, files = fixture(1)
   files["data/generated/field/maps/0000/field.lua"].transitionEnvironment = "cave"
   local loader = FieldMapLoader.new(cache, world)
-  Assert.equal(loader:transitionEnvironment(0), "cave")
+  Assert.deepEqual({ loader:requestTransitionEnvironment(0) }, { true, "cave" })
   loader:release()
 end
 

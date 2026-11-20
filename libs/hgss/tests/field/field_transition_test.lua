@@ -16,9 +16,11 @@
 -- data-contract failures and raise; a door-kind warp with NO door resolver
 -- is a headless caller stating it has no door choreography and degrades to a
 -- plain fade. Pre-commit failures abort to a coherent idle state; post-commit
--- faults propagate without pretending to roll back ownership. The warp kind is passed down
--- from the trigger record -- the transition never re-reads the permission
--- grid to classify the warp tile.
+-- faults propagate without pretending to roll back ownership. An
+-- environment-mode destination whose generated metadata is still compiling
+-- holds the field on the metadata wait instead of failing at start. The warp
+-- kind is passed down from the trigger record -- the transition never re-reads
+-- the permission grid to classify the warp tile.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -425,9 +427,9 @@ function T.dynamic_anchor_environment_profile_uses_the_saved_destination_map()
     requestWarp = function()
       return true
     end,
-    transitionEnvironment = function(_, mapId)
+    requestTransitionEnvironment = function(_, mapId)
       asked[#asked + 1] = mapId
-      return destination.fieldData.transitionEnvironment
+      return true, destination.fieldData.transitionEnvironment
     end,
   }
   local transition = FieldTransition.new({
@@ -449,6 +451,99 @@ function T.dynamic_anchor_environment_profile_uses_the_saved_destination_map()
   )
   advanceTo(transition, "swap_map", 32)
   Assert.equal(transition.resolution.fieldX, 700, "the saved destination still resolves its anchor tile")
+end
+
+-- A script-selected destination can still be compiling when its exit
+-- triggers. The transition demands its environment metadata instead of reading
+-- a not-yet-published record: the field stays locked with no map commit until
+-- the loader publishes it, then the profile is selected and the start
+-- choreography runs exactly once.
+function T.cold_dynamic_destination_waits_for_its_environment_metadata()
+  local destination = dynamicAnchorDestination()
+  local published = false
+  local asked, starts, prepares, commits = {}, 0, 0, 0
+  local loader = {
+    load = function()
+      return destination
+    end,
+    requestWarp = function()
+      return true
+    end,
+    requestTransitionEnvironment = function(_, mapId)
+      asked[#asked + 1] = mapId
+      if not published then
+        return false
+      end
+      return true, destination.fieldData.transitionEnvironment
+    end,
+  }
+  local transition = FieldTransition.new({
+    loader = loader,
+    dynamicWarp = function()
+      return savedDynamicWarp()
+    end,
+    onStart = function()
+      starts = starts + 1
+    end,
+    prepare = function()
+      prepares = prepares + 1
+      return {}
+    end,
+    commit = function()
+      commits = commits + 1
+    end,
+  })
+  transition:start(sourceMap("outdoors"), dynamicAnchorTrigger({ transition = { mode = "environment" } }), "south")
+  Assert.deepEqual(asked, { "MAP_CELADON_CONDOMINIUMS_1F" }, "the pending demand names the saved destination map")
+  Assert.equal(transition.phase, "await_destination_environment", "a cold destination holds the metadata wait")
+  Assert.isTrue(transition.locked, "the metadata wait locks the field")
+  Assert.isNil(transition.profileId, "no profile is guessed before its metadata publishes")
+  Assert.equal(starts, 0, "the start callback waits for the selected profile")
+  step(transition)
+  Assert.equal(transition.phase, "await_destination_environment", "the wait persists until the record publishes")
+  Assert.equal(commits, 0, "a pending metadata demand never commits a map")
+  published = true
+  step(transition)
+  Assert.equal(
+    transition.profileId,
+    FieldTransitionProfile.selectEnvironment("outdoors", destination.fieldData.transitionEnvironment),
+    "publication selects the environment profile"
+  )
+  Assert.equal(starts, 1, "the start callback runs once the profile is selected")
+  advanceTo(transition, "idle", 64)
+  Assert.equal(prepares, 1, "the destination prepares exactly once")
+  Assert.equal(commits, 1, "the destination commits exactly once")
+end
+
+-- An environment-mode anchor with no established destination is an attributed
+-- abort at profile selection: the transition never demands metadata for the
+-- 0xFFF sentinel header and never begins its choreography.
+function T.environment_anchor_without_a_saved_destination_aborts_before_the_wait()
+  local loader = {
+    requestWarp = function()
+      return true
+    end,
+    requestTransitionEnvironment = function()
+      error("an unset dynamic destination must not demand metadata")
+    end,
+  }
+  local transition = FieldTransition.new({
+    loader = loader,
+    prepare = function()
+      error("an unresolved dynamic destination must not prepare")
+    end,
+    commit = function()
+      error("an unresolved dynamic destination must not commit")
+    end,
+  })
+  transition:start(sourceMap(), dynamicAnchorTrigger({ transition = { mode = "environment" } }), "south")
+  Assert.equal(transition.phase, "idle", "the missing destination aborts coherently")
+  Assert.isFalse(transition.locked)
+  local err = transition.error
+  Assert.isTrue(Errors.is(err), "expected structured error")
+  Assert.equal(assert(err).code, "FIELD_DYNAMIC_WARP_UNSET")
+  Assert.equal(assert(err).context.sourceMapId, 61)
+  Assert.equal(assert(err).context.sourceWarpId, 1)
 end
 
 -- The saved arrival facing becomes the transition's destination facing once

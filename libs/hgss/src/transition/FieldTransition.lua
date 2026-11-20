@@ -96,7 +96,7 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 ---@field escalatorAt fun(runtimeMap: table<string, unknown>, fieldX: integer, fieldZ: integer): table<string, unknown>?
 ---@field onPanel fun(...: unknown)?
 ---@field player table<string, unknown>|nil -- FieldPlayer, bound by the owner across the swap
----@field phase "idle"|"await_source_visual"|"fade_out"|"load_destination"|"swap_map"|"fade_in"|"choreo_hold"|"preview"
+---@field phase "idle"|"await_destination_environment"|"await_source_visual"|"fade_out"|"load_destination"|"swap_map"|"fade_in"|"choreo_hold"|"preview"
 ---@field fadeAlpha number
 ---@field fade FieldTransitionFade|nil
 ---@field fadeStarted boolean
@@ -121,6 +121,7 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 ---@field prepared table<string, unknown>?
 ---@field sourceMap RuntimeFieldMap?
 ---@field sourceWarp table<string, unknown>?
+---@field trigger table<string, unknown>? -- the trigger record that started the transition; retained across the metadata wait
 ---@field coveredSwap boolean -- true while a covered scripted swap owns the lifecycle: destination resolution/commit run, but no FieldTransitionFade is created or advanced because an external screen cover already owns visibility
 ---@field dynamicWarp table<string, unknown>|nil -- the saved dynamic-warp destination, resolved once when the transition starts and handed to destination demand and resolution
 ---@field selectPreview fun(sourceMap: RuntimeFieldMap, destinationMap: RuntimeFieldMap, profileId: integer|nil): { imageKey: string, timeSlot: integer, profileId: integer|nil }? -- post-commit source-selected area-preview selector
@@ -140,6 +141,7 @@ FieldTransition.__index = FieldTransition
 
 FieldTransition.PHASES = {
   idle = "idle",
+  await_destination_environment = "await_destination_environment",
   await_source_visual = "await_source_visual",
   fade_out = "fade_out",
   fade_in = "fade_in",
@@ -584,6 +586,7 @@ local function resetTransient(self)
   self.progressTicks = 0
   self.coveredSwap = false
   self.dynamicWarp = nil
+  self.trigger = nil
   self.preview = nil
   self.previewArrival = nil
   self._panelSpin = nil
@@ -644,7 +647,7 @@ local function effectiveDestinationMapId(self)
   return warp.destinationMapId
 end
 
-local function selectProfile(self, sourceMap, trigger)
+local function selectProfile(trigger)
   local descriptor = trigger.transition
   if not descriptor then
     -- Scripted/plain callers have no source classification. They use the
@@ -671,21 +674,68 @@ local function selectProfile(self, sourceMap, trigger)
     )
     return descriptor.profile, descriptor.mode
   end
-  if descriptor.mode == FieldTransitionProfile.MODE_PANEL then
-    return nil, descriptor.mode
+  assert(descriptor.mode == FieldTransitionProfile.MODE_PANEL, "environment mode is resolved by its metadata demand")
+  return nil, descriptor.mode
+end
+
+-- Environment-mode selection needs the destination's generated environment
+-- metadata. That record can still be compiling when a script selected the
+-- destination, so the read is the loader's non-blocking demand: it enrolls the
+-- destination logical closure and reports readiness instead of reading a
+-- not-yet-published record. Only this demand is caught -- the source record and
+-- the profile pair keep their synchronous contract failures.
+---@param self FieldTransition
+---@return boolean ready
+---@return integer|string|nil destinationMapId
+---@return string|nil destinationEnvironment
+---@return string|nil failure
+local function demandDestinationEnvironment(self)
+  local destinationMapId = effectiveDestinationMapId(self)
+  local ready, destinationEnvironment, failure = self.loader:requestTransitionEnvironment(destinationMapId)
+  return ready, destinationMapId, destinationEnvironment, failure
+end
+
+-- Resolve the transition profile before any ownership change. Environment mode
+-- is the only mode that reads destination state; every other mode is decided
+-- from the trigger alone. A destination that is still compiling keeps the field
+-- locked on await_destination_environment and the caller retries until its
+-- metadata demand publishes; missing or failing destination state aborts
+-- through the ordinary pre-commit boundary.
+---@param self FieldTransition
+---@return boolean profile selected
+local function beginProfile(self)
+  local sourceMap = assert(self.sourceMap, "profile selection requires its source map")
+  local trigger = assert(self.trigger, "profile selection requires its trigger")
+  local descriptor = trigger.transition
+  if descriptor == nil or descriptor.mode ~= FieldTransitionProfile.MODE_ENVIRONMENT then
+    self.profileId, self.transitionMode = selectProfile(trigger)
+    return true
   end
   local sourceEnvironment = sourceMap.fieldData and sourceMap.fieldData.transitionEnvironment
   assert(sourceEnvironment, "source transition environment required")
-  assert(type(self.loader.transitionEnvironment) == "function", "field map transition metadata required")
-  local destinationMapId = effectiveDestinationMapId(self)
-  local destinationEnvironment = self.loader:transitionEnvironment(destinationMapId)
-  return FieldTransitionProfile.selectEnvironment(sourceEnvironment, destinationEnvironment, {
+  assert(type(self.loader.requestTransitionEnvironment) == "function", "field map transition metadata demand required")
+  local ok, ready, destinationMapId, destinationEnvironment, failure = pcall(demandDestinationEnvironment, self)
+  if not ok then
+    self:_abort(ready)
+    return false
+  end
+  if failure ~= nil then
+    self:_abort(failure)
+    return false
+  end
+  if not ready then
+    self.phase = FieldTransition.PHASES.await_destination_environment
+    self.locked = true
+    return false
+  end
+  self.profileId = FieldTransitionProfile.selectEnvironment(sourceEnvironment, assert(destinationEnvironment), {
     sourceMapId = sourceMap.mapId,
     destinationMapId = destinationMapId,
     sourceEnvironment = sourceEnvironment,
     destinationEnvironment = destinationEnvironment,
-  }),
-    descriptor.mode
+  })
+  self.transitionMode = descriptor.mode
+  return true
 end
 
 -- Begin the source choreography: resolve the source door at the warp tile and
@@ -1005,6 +1055,7 @@ local function beginTransition(self, sourceMap, trigger, facing)
   resetTransient(self)
   self.sourceMap = sourceMap
   self.sourceWarp = trigger.warp
+  self.trigger = trigger
   self.sourceKind = trigger.kind
   self.transitionMode = nil
   self.destinationFacing = trigger.destinationFacing or facing
@@ -1089,19 +1140,30 @@ local function beginFadeOut(self)
   runChoreo(self, beginSourceChoreography)
 end
 
-function FieldTransition:start(sourceMap, trigger, facing)
-  beginTransition(self, sourceMap, trigger, facing)
-  self.profileId, self.transitionMode = selectProfile(self, sourceMap, trigger)
-  if not runOnStart(self, sourceMap, trigger, facing) then
+-- Continue a started transition once its profile is selected. The onStart
+-- callback, the door source-visual wait, and the source fade-out begin here
+-- exactly once, whether the profile was selected synchronously or had to wait
+-- for destination metadata.
+local function beginProfileChoreography(self)
+  local sourceMap = assert(self.sourceMap, "profile choreography requires its source map")
+  local trigger = assert(self.trigger, "profile choreography requires its trigger")
+  if not runOnStart(self, sourceMap, trigger, self.facing) then
     return
   end
-
   if self.sourceKind == "door" and not realizeSourceVisual(self) then
     self.phase = FieldTransition.PHASES.await_source_visual
     self.locked = true
     return
   end
   beginFadeOut(self)
+end
+
+function FieldTransition:start(sourceMap, trigger, facing)
+  beginTransition(self, sourceMap, trigger, facing)
+  if not beginProfile(self) then
+    return
+  end
+  beginProfileChoreography(self)
 end
 
 -- Begin a covered scripted map swap: the caller (ScriptMapsService) has
@@ -1227,6 +1289,15 @@ function FieldTransition:updateFixed(inputSnapshot)
     if self.profileId == FieldTransitionProfile.LADDER_DOWN then
       beginPreviewArrival(self)
       return advancePreviewArrival(self)
+    end
+    return false
+  end
+  if self.phase == FieldTransition.PHASES.await_destination_environment then
+    -- Profile metadata wait: the destination logical closure compiles while the
+    -- field stays locked. Readiness selects the profile and begins the start
+    -- choreography exactly once; failures abort through the same boundary.
+    if beginProfile(self) then
+      beginProfileChoreography(self)
     end
     return false
   end

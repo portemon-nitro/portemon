@@ -129,12 +129,11 @@ local function runChoreography(_, sourceScene, destinationScene, trigger, facing
       return true
     end,
     protectMap = function() end,
-    transitionEnvironment = function(_, mapId)
+    requestTransitionEnvironment = function(_, mapId)
       local environmentMap = assert(maps[mapId], "map " .. tostring(mapId))
-      return assert(
-        environmentMap.fieldData.transitionEnvironment,
-        "transition environment for map " .. tostring(mapId)
-      )
+      local environment =
+        assert(environmentMap.fieldData.transitionEnvironment, "transition environment for map " .. tostring(mapId))
+      return true, environment
     end,
   }
 
@@ -596,8 +595,9 @@ function T.cave_entry_runs_the_0x10_environment_wipe_not_a_black_fade(romFs, _)
         return true
       end,
       protectMap = function() end,
-      transitionEnvironment = function(_, mapId)
-        return assert(maps[mapId].fieldData.transitionEnvironment)
+      requestTransitionEnvironment = function(_, mapId)
+        local environment = assert(maps[mapId].fieldData.transitionEnvironment)
+        return true, environment
       end,
     },
     player = player,
