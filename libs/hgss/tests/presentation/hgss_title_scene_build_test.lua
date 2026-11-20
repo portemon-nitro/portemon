@@ -199,20 +199,18 @@ local function requireTitle()
   return assert(mod)
 end
 
--- One build suspended on its first model bank, with the queue's cancellation
--- recorded beside the scene disposals so an exit can prove what it did first.
+-- One title build over `queue`, with the queue's cancellation recorded beside
+-- the scene disposals so an exit can prove what it did first.
+---@param queue FakePreparationQueue
 ---@param log string[]
 ---@return HgssTitleScene.Build build
----@return FakePreparationQueue queue
----@return integer token outstanding ticket the build is suspended on
-local function suspendedBuild(log)
-  local queue = FakePreparationQueue.new({ deferred = true, payloadBytes = 2048 })
+local function beginTitleBuild(queue, log)
   local cancelInterest = queue.cancel
   function queue:cancel(token)
     log[#log + 1] = "cancel"
     return cancelInterest(self, token)
   end
-  local build = requireTitle().begin({
+  return requireTitle().begin({
     versionId = "heartgold",
     cacheFs = {
       loadLua = function() end,
@@ -229,6 +227,16 @@ local function suspendedBuild(log)
     graphics = { newImage = function() end, getImageFormats = function() return {} end },
     assetPreparation = queue,
   })
+end
+
+-- One build suspended on its first model bank.
+---@param log string[]
+---@return HgssTitleScene.Build build
+---@return FakePreparationQueue queue
+---@return integer token outstanding ticket the build is suspended on
+local function suspendedBuild(log)
+  local queue = FakePreparationQueue.new({ deferred = true, payloadBytes = 2048 })
+  local build = beginTitleBuild(queue, log)
   Assert.equal(build:advance(1), 0, "a pending title bank consumes no work unit")
   Assert.isFalse(build:isReady(), "the title build waits for the worker")
   Assert.equal(#queue.requests, 1, "the title build requests its first model bank")
@@ -280,6 +288,52 @@ function T.title_build_failure_drops_its_outstanding_ticket_before_dispose()
     build:release()
     Assert.equal(#queue.cancelCalls, 1, "release after failure cancels nothing twice")
     Assert.equal(rec.pools[1].releaseCount, 1, "release after failure never disposes the pool twice")
+  end)
+end
+
+-- A preparation that reports a terminal failure (poll answers "failed" instead
+-- of raising) fails the title build with its ticket still owned, so the failure
+-- unwind cancels exactly that ticket before the started scene is disposed.
+function T.title_build_terminal_preparation_failure_cancels_its_ticket()
+  withDoubles(function(rec, log)
+    local queue = FakePreparationQueue.new({ deferred = true, failure = "injected GX failure", payloadBytes = 2048 })
+    local build = beginTitleBuild(queue, log)
+    local advanced, advanceErr = pcall(build.advance, build, 1)
+    Assert.isFalse(advanced, "a terminal preparation failure fails the title build")
+    Assert.isTrue(
+      tostring(advanceErr):find("injected GX failure", 1, true) ~= nil,
+      "the preparation cause propagates: " .. tostring(advanceErr)
+    )
+    Assert.equal(#queue.cancelCalls, 1, "the failed build cancels its outstanding ticket exactly once")
+    Assert.equal(queue.cancelCalls[1], assert(queue.requests[1]).token, "the failed build cancels its own ticket")
+    Assert.equal(queue:outstandingTickets(), 0, "no ticket stays charged to the session queue")
+    Assert.equal(queue.readyBytes, 0, "no ready payload stays charged")
+    assertEventOrder(log, "cancel", "pool-release")
+    Assert.equal(rec.pools[1].releaseCount, 1, "the failed build disposes its pool exactly once")
+    build:release()
+    Assert.equal(#queue.cancelCalls, 1, "release after failure cancels nothing twice")
+  end)
+end
+
+-- A blocking wait that raises while finishing fails the build with its ticket
+-- still owned, so the same unwind cancels it instead of leaving the request
+-- charged to the session queue.
+function T.title_finish_wait_failure_cancels_its_ticket()
+  withDoubles(function(rec, log)
+    local queue = FakePreparationQueue.new({ deferred = true, payloadBytes = 2048 })
+    local build = beginTitleBuild(queue, log)
+    Assert.equal(build:advance(1), 0, "the build suspends on its pending bank")
+    queue.wait = function()
+      error("injected wait failure", 0)
+    end
+    local finished, finishErr = pcall(build.finish, build)
+    Assert.isFalse(finished, "a failed wait fails the title build")
+    Assert.isTrue(tostring(finishErr):find("injected wait failure", 1, true) ~= nil, "the wait cause propagates")
+    Assert.equal(#queue.cancelCalls, 1, "the failed wait cancels the outstanding ticket exactly once")
+    Assert.equal(queue.cancelCalls[1], assert(queue.requests[1]).token, "the cancelled ticket is the awaited one")
+    Assert.equal(queue:outstandingTickets(), 0, "no ticket stays charged to the session queue")
+    Assert.equal(rec.pools[1].releaseCount, 1, "the failed build disposes its pool exactly once")
+    assertEventOrder(log, "cancel", "pool-release")
   end)
 end
 

@@ -652,26 +652,28 @@ function HgssTitleScene.begin(options)
   local build ---@type HgssTitleScene.Build
   -- One prepared bank per title model file, realized mesh by mesh; a pending
   -- worker request yields the frame budget instead of blocking it, and the
-  -- explicit synchronous entry blocks in `finish`.
+  -- explicit synchronous entry blocks in `finish`. The build owns the token
+  -- from the request until the queue consumed it -- a take or a wait that
+  -- returned a payload -- so its failure unwind can cancel it exactly once.
   local function awaitPrepared(kind, path)
     local token = queue:request(kind, path, "prefetch")
     build._token = token
     while true do
       local status, failure = queue:poll(token)
       if status == "ready" then
+        local payload = queue:take(token)
         build._token = nil
-        return queue:take(token)
+        return payload
       end
       if status == "failed" then
-        build._token = nil
         error("title asset " .. tostring(path) .. " (" .. kind .. ") failed: " .. tostring(failure), 0)
       end
       if build._finishing then
         local waitOk, payload = pcall(queue.wait, queue, token)
-        build._token = nil
         if not waitOk then
           error(payload, 0)
         end
+        build._token = nil
         return payload
       end
       coroutine["yield"](TITLE_BUILD_WAIT)

@@ -6,7 +6,9 @@
 -- can be suspended on one specific ticket; `publish` then models the worker
 -- reply and reports false for a ticket whose owner already dropped it. Polls,
 -- promotions, cancellations, and ready-payload bytes are recorded so a test can
--- prove who waited, who spun, and who paid for an unclaimed packet.
+-- prove who waited, who spun, and who paid for an unclaimed packet. The
+-- outstanding-ticket census mirrors the real queue: a terminal failure result
+-- and a throwing wait both leave the ticket owned by the caller.
 
 local FakePreparationQueue = {}
 
@@ -132,6 +134,17 @@ function FakePreparationQueue.new(opts)
   -- under a suspended owner, not a per-ticket failure result.
   function queue:failPoll(message)
     pollFault = message
+  end
+  -- Live tickets the queue still holds for an owner: queued, running, or
+  -- ready records that no take, wait, or cancel consumed, the census an
+  -- abandoned build must leave empty.
+  ---@return integer
+  function queue:outstandingTickets()
+    local total = 0
+    for _ in pairs(tokens) do
+      total = total + 1
+    end
+    return total
   end
   function queue:release() end
   return queue

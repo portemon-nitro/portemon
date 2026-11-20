@@ -264,6 +264,9 @@ local function fakePreparationQueue()
   end
   function queue:poll(token)
     Assert.notNil(self.live[token], "poll observes a live preparation token")
+    if self.failure ~= nil then
+      return "failed", self.failure
+    end
     if self.ready then
       return "ready"
     end
@@ -700,6 +703,40 @@ function T.pending_preparation_keeps_the_field_visible_and_inputs_frozen()
   host:close()
   Assert.isTrue(#queue.cancels > 0, "closing while pending cancels outstanding preparation")
   host.drawPresentation = originalDraw
+  host:dispose()
+end
+
+-- A terminal preparation failure (poll answers "failed" instead of raising)
+-- fails the chooser at that step and cancels every ticket it still owns: the
+-- session queue is never left charged for an abandoned preparation.
+function T.terminal_preparation_failure_cancels_the_pending_tickets()
+  local host, service = openHeadlessChoice()
+  local queue = fakePreparationQueue()
+  local backend = stubBackend()
+  local images = SummaryAcceptanceFixture.sizedImagePool()
+  local state = fieldComposition(host, queue, backend, images)
+  openTrio(host, service)
+  state:update(SourceTick.DT)
+  demandPrioritiesOnly(queue, "the first field update after the open")
+  local liveBefore = {}
+  for token in pairs(queue.live) do
+    liveBefore[#liveBefore + 1] = token
+  end
+  Assert.isTrue(#liveBefore > 0, "the open chooser keeps preparation tickets live")
+
+  queue.failure = "injected GX failure"
+  local advanced, advanceErr = pcall(function()
+    host:advancePresentationPreparation({ assetPreparation = queue, gxRenderer = backend, imageAssets = images }, 1)
+  end)
+  Assert.isFalse(advanced, "a terminal preparation failure fails the chooser")
+  Assert.isTrue(
+    tostring(advanceErr):find("injected GX failure", 1, true) ~= nil,
+    "the preparation cause propagates: " .. tostring(advanceErr)
+  )
+  for _, token in ipairs(liveBefore) do
+    Assert.isNil(queue.live[token], "ticket " .. tostring(token) .. " stays charged to the session queue")
+  end
+  Assert.isTrue(#queue.cancels >= #liveBefore, "the failed preparation cancels every outstanding ticket")
   host:dispose()
 end
 

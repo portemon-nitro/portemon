@@ -13,9 +13,8 @@
 -- placement. Failure has two scopes: a construction wrapped in build()
 -- releases everything the construction created (the loaders wrap their whole
 -- scene build in one, on a pool created immediately before), while a single
--- lazy acquire outside a build releases only the object that failed
--- acquisition itself created -- a failed variant load during live draw
--- evaluation never frees the resources the scene is drawing. The pool knows
+-- acquire outside a build releases only the object that failed acquisition
+-- itself created, never the resources a live scene is drawing. The pool knows
 -- nothing about maps, neighbors, materials, or transforms; those stay in
 -- the loaders.
 
@@ -52,7 +51,7 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field _imageAssets table<string, unknown>? session-scoped shared image owner every texture is borrowed from
 ---@field _imageLeases table<string, unknown>[] leases this scene borrowed from the shared owner, in acquisition order
 ---@field _pooledByKey table<string, GpuAssetPool.SamplingHandle> borrowed sampling handle by scene-local path/wrap identity
----@field _prefetchTokens table<string, integer> outstanding shared prefetch request by scene-local path/wrap identity
+---@field _imageTokens table<string, integer> outstanding shared image request by scene-local path/wrap identity, from the request until its lease replaces it
 ---@field _nativeDecoded table<string, table<string, unknown>> decoded native model bank by bank file, synchronous path
 ---@field _nativePrepared table<string, table<string, unknown>> prepared native model bank by bank file, worker path
 local GpuAssetPool = {}
@@ -143,7 +142,7 @@ function GpuAssetPool.new(cacheFs, opts)
     _imageAssets = opts.imageAssets,
     _imageLeases = {},
     _pooledByKey = {},
-    _prefetchTokens = {},
+    _imageTokens = {},
     -- Native model banks are acquired as one bank-scoped transaction (one
     -- read, one replay per decode context, one terrain repair), so the pool
     -- holds the bank result for the scene build and drops each draw's payload
@@ -295,8 +294,8 @@ function GpuAssetPool:prefetchShared(path, wrapX, wrapY)
   local images = assert(self._imageAssets, "GpuAssetPool requires a session image owner for textures")
   checkWrap(assetKey(path), wrapX, wrapY)
   local key = pooledKey(path, wrapX, wrapY)
-  if self._pooledByKey[key] == nil and self._prefetchTokens[key] == nil then
-    self._prefetchTokens[key] = images:request(path, sharedSampler(wrapX, wrapY), "prefetch")
+  if self._pooledByKey[key] == nil and self._imageTokens[key] == nil then
+    self._imageTokens[key] = images:request(path, sharedSampler(wrapX, wrapY), "prefetch")
   end
 end
 
@@ -306,10 +305,15 @@ end
 -- sleeping, for synchronous callers with no checkpoint to yield). Returns
 -- the stable sampling handle for the scene-local path/wrap identity: the
 -- bound image plus the exact palette and indexed flag the renderer's
--- shared sampler consumes. Borrowing without a session image owner is a
--- programming error and fails loudly. Unknown wrap modes raise; a missing
--- texture fails without publishing. A failure here borrows nothing -- the
--- shared owner keeps every live pair it already published.
+-- shared sampler consumes.
+--
+-- Every outstanding ticket -- prefetched or demand-created -- is tracked
+-- until the lease replaces it, so releasing the scene always drops the
+-- requests it started, including one still pending at the worker.
+-- Borrowing without a session image owner is a programming error and fails
+-- loudly. Unknown wrap modes raise; a missing texture fails without
+-- publishing. A failure here borrows nothing -- the shared owner keeps
+-- every live pair it already published.
 ---@param path string|ModelAsset.TextureReference?
 ---@param wrapX string
 ---@param wrapY string
@@ -326,9 +330,10 @@ function GpuAssetPool:sharedImage(path, wrapX, wrapY, wait)
   if held ~= nil then
     return held
   end
-  local token = self._prefetchTokens[key]
+  local token = self._imageTokens[key]
   if token == nil then
     token = images:request(path, sharedSampler(wrapX, wrapY), "demand")
+    self._imageTokens[key] = token
   end
   -- The ticket stays owned here until a lease exists: a failed poll or a
   -- failed acquisition drops it through the shared owner, so a rolled-back
@@ -349,7 +354,7 @@ function GpuAssetPool:sharedImage(path, wrapX, wrapY, wait)
     return images:acquire(token)
   end
   local acquired, leaseOrFailure = pcall(acquireLease)
-  self._prefetchTokens[key] = nil
+  self._imageTokens[key] = nil
   if not acquired then
     pcall(images.cancel, images, token)
     error(leaseOrFailure, 0)
@@ -363,6 +368,37 @@ function GpuAssetPool:sharedImage(path, wrapX, wrapY, wait)
   local handle = { image = lease.image, palette = lease.palette, kind = lease.kind, indexed = lease.kind == "r8" }
   self._pooledByKey[key] = handle
   self._imageLeases[#self._imageLeases + 1] = lease
+  return handle
+end
+
+-- The already-borrowed sampling handle for one texture identity, or a loud
+-- failure when the scene never borrowed it. Live render callbacks resolve
+-- their materials through this instead of sharedImage: a scene tick binds only
+-- textures its construction already holds, so no field frame can wait on
+-- worker classification or publish a freshly decoded image.
+---@param path string|ModelAsset.TextureReference?
+---@param wrapX string
+---@param wrapY string
+---@return GpuAssetPool.SamplingHandle?
+function GpuAssetPool:heldImage(path, wrapX, wrapY)
+  if path == nil then
+    return nil
+  end
+  checkWrap(assetKey(path), wrapX, wrapY)
+  local handle = self._pooledByKey[pooledKey(path, wrapX, wrapY)]
+  if handle == nil then
+    Errors.raise(
+      FieldErrors.GPU_ASSET_TEXTURE_NOT_HELD,
+      "texture "
+        .. assetKey(path)
+        .. " was never borrowed by this scene ("
+        .. tostring(wrapX)
+        .. "/"
+        .. tostring(wrapY)
+        .. "); live lookups never start worker work",
+      { path = assetKey(path), wrapX = wrapX, wrapY = wrapY }
+    )
+  end
   return handle
 end
 
@@ -472,9 +508,9 @@ function GpuAssetPool:textureCount()
 end
 
 -- Release every owned GPU object exactly once and return every borrowed
--- lease to the shared owner. Outstanding prefetch tokens cancel through
--- the shared owner so their worker payloads are discarded instead of
--- retained unclaimed. Idempotent: the owned mesh list, the lease list,
+-- lease to the shared owner. Outstanding image tickets cancel through the
+-- shared owner so their worker payloads are discarded instead of retained
+-- unclaimed. Idempotent: the owned mesh list, the lease list,
 -- and the triangle count are cleared, so a repeat release (or a cleanup
 -- after a failed acquire) never touches the same object twice. Pools
 -- behind other scenes keep their own leases and meshes; a release here
@@ -491,13 +527,13 @@ function GpuAssetPool:release()
     for _, lease in ipairs(self._imageLeases) do
       images:release(lease)
     end
-    for _, token in pairs(self._prefetchTokens) do
+    for _, token in pairs(self._imageTokens) do
       images:cancel(token)
     end
   else
     assert(#self._imageLeases == 0, "GpuAssetPool requires a session image owner for textures")
   end
-  self._imageLeases, self._pooledByKey, self._prefetchTokens = {}, {}, {}
+  self._imageLeases, self._pooledByKey, self._imageTokens = {}, {}, {}
   self._nativeDecoded, self._nativePrepared = {}, {}
   self.meshes = {}
   self._meshCache = {}

@@ -248,6 +248,16 @@ function ControllableImageOwner:outstandingTickets()
   return total
 end
 
+-- The live physical image for one reference plus sampler, or nil when that
+-- identity was never published.
+---@param path string|table
+---@param sampler table<string, string>
+---@return table<string, unknown>?
+function ControllableImageOwner:findPhysical(path, sampler)
+  local physical = self._physicals[sourceIdentity(path) .. "|" .. sampler.wrapX .. "|" .. sampler.wrapY]
+  return physical and physical.image or nil
+end
+
 ---@return integer
 function ControllableImageOwner:outstandingLeases()
   local total = 0

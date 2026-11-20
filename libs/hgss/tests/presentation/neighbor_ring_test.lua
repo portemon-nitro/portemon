@@ -418,7 +418,7 @@ end
 -- drops the ticket it was suspended on exactly once, so the ready worker packet
 -- stops being charged to the session queue's budget, a late reply publishes
 -- nothing, and the borrowed images return.
----@param exitPath string "release" or "failure"
+---@param exitPath string "release", "failure", or "terminal"
 local function assertGeometryTicketDroppedOnExit(exitPath)
   local backend = geometryBackend()
   local images = ControllableImageOwner.new()
@@ -439,7 +439,7 @@ local function assertGeometryTicketDroppedOnExit(exitPath)
   if exitPath == "release" then
     task:release()
     task:release()
-  else
+  elseif exitPath == "failure" then
     queue:failPoll("preparation queue reply is malformed")
     local ok, err = pcall(task.advance, task, 1)
     Assert.isFalse(ok, "a queue fault fails the staged build")
@@ -449,9 +449,22 @@ local function assertGeometryTicketDroppedOnExit(exitPath)
     )
     task:release()
     Assert.equal(#queue.cancelCalls, 1, "release after failure never cancels the same ticket twice")
+  else
+    -- A terminal failure result (poll answers "failed" without raising) leaves
+    -- the ticket owned by the build, so the same unwind must cancel it.
+    queue.failure = "injected GX failure"
+    local ok, err = pcall(task.advance, task, 1)
+    Assert.isFalse(ok, "a terminal preparation failure fails the staged build")
+    Assert.isTrue(
+      tostring(err):find("injected GX failure", 1, true) ~= nil,
+      "the preparation cause propagates instead of a cancellation error"
+    )
+    task:release()
+    Assert.equal(#queue.cancelCalls, 1, "release after failure never cancels the same ticket twice")
   end
 
   Assert.equal(#queue.cancelCalls, 1, exitPath .. " cancels the outstanding geometry ticket exactly once")
+  Assert.equal(queue:outstandingTickets(), 0, exitPath .. " leaves no ticket charged to the session queue")
   Assert.equal(queue.cancelCalls[1], token, exitPath .. " cancels the ticket the build was suspended on")
   Assert.equal(queue.readyBytes, 0, "the ready-payload budget returns to baseline")
   Assert.isFalse(task:isReady(), "a closed build never becomes ready")
@@ -467,6 +480,7 @@ end
 function T.staged_release_and_failure_cancel_the_outstanding_geometry_ticket_once()
   assertGeometryTicketDroppedOnExit("release")
   assertGeometryTicketDroppedOnExit("failure")
+  assertGeometryTicketDroppedOnExit("terminal")
 end
 
 -- The synchronous entry blocks on the worker instead of re-polling the

@@ -17,9 +17,9 @@
 -- every owned mesh/image. A build task owns a fresh pool transactionally, so
 -- any failure -- a missing descriptor, an unsupported transform mode --
 -- releases every GPU object the construction acquired before the error
--- propagates. After load, a single lazy acquire failure (resolveImage during
--- live draw evaluation) releases only the object that acquisition itself
--- created, never the resources the live scene is drawing.
+-- propagates. After load, live draw evaluation only rebinds sampling handles
+-- the build already borrowed: a texture the construction missed fails loudly
+-- instead of acquiring worker work on a field tick.
 -- The runtime also exposes the scene's MapProps facade so field coordinates
 -- resolve to placed doors and their semantic animations. The only ROM
 -- knowledge that reaches this layer is the normalized scene descriptor; raw
@@ -161,11 +161,14 @@ for _, band in ipairs(TimeOfDayProps.BANDS) do
 end
 
 -- Material assembly: acquire each normalized material record's sampling
--- handle under its resolved sampler wrap. The wrap pair is part of the
--- handle identity, so materials with the same pixels but different wraps
--- resolve to independent handles, and the handle's image/palette/indexed
--- fields ride the material table so the renderer's shared sampler binds
--- indexed sources through their exact palette.
+-- handle under its resolved sampler wrap, and every pattern variant it can
+-- draw. The wrap pair is part of the handle identity, so materials with the
+-- same pixels but different wraps resolve to independent handles, and the
+-- handle's image/palette/indexed fields ride the material table so the
+-- renderer's shared sampler binds indexed sources through their exact
+-- palette. Variants are borrowed here, during the staged build, because a
+-- pattern animation can select any of them on a live tick: the tick rebinds
+-- only handles the build already holds.
 local function materialsById(list, acquireImage, checkpoint)
   local byId = {}
   for id, record in pairs(SceneDescriptor.materials(list)) do
@@ -181,6 +184,10 @@ local function materialsById(list, acquireImage, checkpoint)
       wrap = wrap,
     }
     checkpoint()
+    for _, variant in ipairs(record.variants or {}) do
+      acquireImage(variant.texture, wrap.x, wrap.y)
+      checkpoint()
+    end
   end
   return byId
 end
@@ -208,14 +215,17 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
   -- path, so staged work budgets are unchanged.
   local meshEntries = {}
   -- A scene borrowing the session image owner enrolls every distinct
-  -- texture path and immutable wrap state before the first readiness
-  -- check so classification starts while the staged build still walks
-  -- descriptors. Unknown wrap modes raise here, matching the
-  -- acquisition contract.
+  -- texture path and immutable wrap state -- base textures and pattern
+  -- variants alike -- before the first readiness check so classification
+  -- starts while the staged build still walks descriptors. Unknown wrap
+  -- modes raise here, matching the acquisition contract.
   if opts.imageAssets ~= nil then
     for _, record in pairs(SceneDescriptor.materials(scene.materials)) do
       local wrap = SceneDescriptor.wrap(record)
       pool:prefetchShared(record.texture, wrap.x, wrap.y)
+      for _, variant in ipairs(record.variants or {}) do
+        pool:prefetchShared(variant.texture, wrap.x, wrap.y)
+      end
     end
   end
   -- Yield the staged-build checkpoint while a shared texture is still
@@ -225,14 +235,16 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
   end
   -- Block at the first unprepared resource: request it, then poll until it
   -- is ready, yielding WAIT (zero work) while pending. The task owns the
-  -- outstanding token so finish() can block-wait it and release() can
-  -- cancel it.
+  -- outstanding token from the request until the queue consumed it -- a take
+  -- or a wait that returned a payload -- so finish() can block-wait it and
+  -- every failure unwind can cancel it exactly once.
   local function awaitPrepared(kind, path)
     local priority = task._finishing and "demand" or "prefetch"
     local token = queue:request(kind, path, priority)
     task._outstanding = token
     while true do
       if task._stashed ~= nil and task._stashed[token] ~= nil then
+        -- The finishing wait already consumed the ticket.
         local stashed = task._stashed[token]
         task._stashed[token] = nil
         task._outstanding = nil
@@ -240,11 +252,11 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
       end
       local status, failure = queue:poll(token)
       if status == "ready" then
+        local payload = queue:take(token)
         task._outstanding = nil
-        return queue:take(token)
+        return payload
       end
       if status == "failed" then
-        task._outstanding = nil
         error("prepared asset " .. tostring(path) .. " (" .. kind .. ") failed: " .. tostring(failure), 0)
       end
       coroutine["yield"](WAIT)
@@ -465,10 +477,10 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
       ---@cast desc MapSceneLoader.ModelDescriptor
       checkpoint()
       local mats = materialsById(desc.materials, acquireImage, checkpoint)
-      -- Pattern-variant textures are resolved lazily at evaluation time; the
-      -- sampler state is keyed by material (never by texture path -- two
-      -- materials can share one texture under different wraps), so the
-      -- variant always samples with its own material's wrap.
+      -- Pattern-variant textures were borrowed with their material above;
+      -- the sampler state is keyed by material (never by texture path -- two
+      -- materials can share one texture under different wraps), so a variant
+      -- always samples with its own material's wrap.
       local wrapByMaterial = SceneDescriptor.wrapByMaterial(desc.materials)
       local batches
       if desc.kind == "static" then
@@ -567,9 +579,13 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
         animatedResourceCache[inst.modelKey] = modelResource
         animatedModelCount = animatedModelCount + 1
       end
+      -- A live tick resolves only handles the build already borrowed (the
+      -- material's base texture and every pattern variant): the pool answers
+      -- a held handle or fails loudly, so a field frame never waits for the
+      -- preparation worker or uploads a texture mid-frame.
       local function resolveImage(key, materialId)
         local wrap = assert(desc.wrapByMaterial[materialId], "missing wrap for animated texture " .. tostring(key))
-        return acquireImage(key, wrap.x, wrap.y)
+        return pool:heldImage(key, wrap.x, wrap.y)
       end
       local function resolveImageDuringConstruction(key, materialId)
         local image = resolveImage(key, materialId)
@@ -922,14 +938,15 @@ function BuildTask:finish()
     -- payload is stashed for the resumed build to consume.
     local outstanding = self._outstanding
     if outstanding ~= nil and self._queue ~= nil then
+      -- The token stays owned until a wait consumed it: a failed promote or
+      -- wait leaves the ticket with the queue, and the task's failure unwind
+      -- cancels it.
       local promoteOk, promoteErr = pcall(self._queue.promote, self._queue, outstanding, "demand")
       if not promoteOk then
-        self._outstanding = nil
         failTask(self, promoteErr)
       end
       local ok, payload = pcall(self._queue.wait, self._queue, outstanding)
       if not ok then
-        self._outstanding = nil
         failTask(self, payload)
       end
       self._stashed = self._stashed or {}
