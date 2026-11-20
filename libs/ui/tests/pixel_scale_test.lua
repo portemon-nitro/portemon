@@ -285,6 +285,43 @@ function T.fixed_fit_tiny_hosts_crop_once_then_report_no_fit()
   Assert.deepEqual(responsive.logicalViewport, rect(0, 0, 200, 150))
 end
 
+-- A fixed surface can pin its own top row to the target's top edge instead
+-- of centering vertically. The transient area-name banner slides through its
+-- top edge, so that edge must coincide with the screen's top edge and no
+-- authored row above it may be cropped away.
+function T.fixed_fit_can_anchor_the_surface_top_to_the_target_top()
+  local PixelScale = fixedScaleFor("top-anchored fixed-surface fitting")
+  local anchored = assert(PixelScale.placeFixed(rect(0, 0, 640, 480), 256, 192, { verticalAnchor = "top" }))
+  Assert.equal(anchored.pixelScale, 2, "top anchoring resolves the same fitting scale")
+  Assert.deepEqual(anchored.crop, { left = 0, right = 0, top = 0, bottom = 0 })
+  Assert.equal(anchored.origin.y, 0, "the authored top row lands on the target's top edge")
+  Assert.equal(anchored.frame.y, 0, "the anchored frame starts at the target's top edge")
+  Assert.equal(anchored.clipRect.y, 0, "the visible clip starts at the target's top edge")
+  -- The ordinary fit keeps the vertical slack above the surface, which would
+  -- start the banner's slide inside the screen instead of at its edge.
+  local centred = assert(PixelScale.placeFixed(rect(0, 0, 640, 480), 256, 192))
+  Assert.equal(centred.origin.y, 48, "the default resolution centers the surface vertically")
+
+  -- The bounded bump stays available while it needs no row above the anchor.
+  local bumped = assert(PixelScale.placeFixed(rect(0, 0, 750, 600), 256, 192, { verticalAnchor = "top" }))
+  Assert.equal(bumped.pixelScale, 3, "top anchoring keeps an admissible bump")
+  Assert.equal(bumped.crop.top, 0, "no authored row is hidden above the anchor")
+  Assert.equal(bumped.visibleLogicalRect.y, 0)
+  Assert.equal(bumped.origin.y, 0)
+  -- A bump that could only fit by hiding rows above the anchored top edge is
+  -- refused instead: the anchored edge never pays for the extra scale.
+  local refused = assert(PixelScale.placeFixed(rect(0, 0, 750, 560), 256, 192, { verticalAnchor = "top" }))
+  Assert.equal(refused.pixelScale, 2, "the anchored top edge never pays for the bump")
+  Assert.equal(refused.origin.y, 0)
+
+  -- A translated target anchors at its own top edge, never at the host origin.
+  local shifted = assert(PixelScale.placeFixed(rect(0, -40, 750, 560), 256, 192, { verticalAnchor = "top" }))
+  Assert.equal(shifted.origin.y, -40, "the anchor follows the target's own top edge")
+  rejects(function()
+    PixelScale.placeFixed(rect(0, 0, 750, 560), 256, 192, { verticalAnchor = "bottom" })
+  end)
+end
+
 function T.fixed_fit_empty_targets_have_no_placement()
   local PixelScale = fixedScaleFor("bounded fixed-surface fitting")
   local tooNarrow = PixelScale.placeFixed(rect(0, 0, 0.4, 10), 256, 192)

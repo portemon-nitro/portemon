@@ -8,9 +8,14 @@
 local WindowConfig = {}
 
 -- The reference window resolution: the test window opens at this size and the
--- field viewport falls back to it when no explicit size is configured.
-WindowConfig.REFERENCE_WIDTH = 640
-WindowConfig.REFERENCE_HEIGHT = 480
+-- field viewport falls back to it when no explicit size is configured. It holds
+-- three whole copies of the 256x192 native top screen every fixed-size HGSS
+-- presentation is authored at, because that presentation scales by whole
+-- physical pixels only: a window that merely contains a native screen at a
+-- fractional scale letterboxes the cinematic and every field menu into its
+-- centre instead of filling it.
+WindowConfig.REFERENCE_WIDTH = 768
+WindowConfig.REFERENCE_HEIGHT = 576
 
 -- The game's window/scene background color (RGBA, 0..1). Chosen to sit behind
 -- the field's rendered geometry, not a DS-authentic value.

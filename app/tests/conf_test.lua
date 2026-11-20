@@ -1,8 +1,12 @@
 -- Ordinary window configuration. The ordinary boot path must seed the reference
 -- size before applying independent environment overrides, and invalid
--- overrides must fail with the offending variable named.
+-- overrides must fail with the offending variable named. The reference size is
+-- also a presentation contract: the whole-pixel presentation can only fill the
+-- host window when the host is an exact integer multiple of the native pane.
 
 local Assert = require("tests.support.Assert")
+local NativeDisplay = require("libs.ui.src.NativeDisplay")
+local PixelScale = require("libs.ui.src.PixelScale")
 local WindowConfig = require("game.src.WindowConfig")
 
 local T = {}
@@ -93,6 +97,32 @@ end
 
 function T.invalid_height_is_rejected()
   assertInvalid({ PORTEMON_WINDOW_HEIGHT = "garbage" }, "PORTEMON_WINDOW_HEIGHT")
+end
+
+-- The default window shows exactly one native top screen at a single whole
+-- pixel scale: no letterbox, no fractional scale. A size that only nearly
+-- matches the pane (a non-integer multiple) would silently shrink every
+-- fixed-size HGSS presentation into the window's centre.
+function T.default_window_fits_one_native_top_screen_exactly()
+  withOrdinaryConf({}, function(t)
+    local bounds = { x = 0, y = 0, width = t.window.width, height = t.window.height }
+    local placement = assert(
+      PixelScale.placeFixed(bounds, NativeDisplay.WIDTH, NativeDisplay.HEIGHT),
+      "the default window must place a native top screen"
+    )
+    Assert.equal(
+      placement.pixelScale * NativeDisplay.WIDTH,
+      t.window.width,
+      "the default window width must be a whole number of native top screens"
+    )
+    Assert.equal(
+      placement.pixelScale * NativeDisplay.HEIGHT,
+      t.window.height,
+      "the default window height must be a whole number of native top screens"
+    )
+    Assert.equal(placement.frame.x, 0, "the native top screen must start at the window origin")
+    Assert.equal(placement.frame.y, 0, "the native top screen must start at the window origin")
+  end)
 end
 
 return { tests = T }

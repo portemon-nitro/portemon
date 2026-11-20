@@ -1277,16 +1277,16 @@ function FieldPresentationResources:_bannerSkinFor(styleKey)
 end
 
 -- Draws the transient area-name banner above the world and warp fade and below
--- script/foreground covers, anchored to the canonical MAIN reference frame.
+-- script/foreground covers, fitted to the actual screen bounds.
 -- A hidden banner paints nothing.
 ---@param banner FieldMapNameBanner the runtime's banner controller
----@param referenceFrame LayoutGeometry.Rect canonical MAIN field screen
-function FieldPresentationResources:drawMapNameBanner(banner, referenceFrame)
+---@param bounds LayoutGeometry.Rect actual host screen bounds
+function FieldPresentationResources:drawMapNameBanner(banner, bounds)
   local status = banner:status()
   if status == nil then
     return
   end
-  assert(self.bannerRenderer, "field presentation owns no map-name banner renderer"):draw(status, referenceFrame)
+  assert(self.bannerRenderer, "field presentation owns no map-name banner renderer"):draw(status, bounds)
 end
 
 -- Leases the one selected area-preview image the status names. A replacement

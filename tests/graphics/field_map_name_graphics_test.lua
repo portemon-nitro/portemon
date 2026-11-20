@@ -1,8 +1,8 @@
 -- Native placement, geometry, and composition order of the transient top-left
 -- area-name banner: the source 136x32 skin lands at logical x0 with the scroll
 -- displacement as a vertical offset, the centered title is painted through the
--- style's own palette path, the whole overlay anchors to the canonical 256x192
--- MAIN reference frame rather than the host origin, and the field composes it
+-- style's own palette path, the whole overlay fits the actual screen bounds
+-- with its top edge pinned to the screen's top edge, and the field composes it
 -- after the world and warp fade and before the script-owned cover.
 
 local Assert = require("tests.support.Assert")
@@ -76,7 +76,7 @@ local function bannerRenderer(behavior, graphics, text)
   return renderer, skin
 end
 
-local function referenceFrame(x, y)
+local function screenBounds(x, y)
   return { x = x, y = y, width = CANONICAL_WIDTH, height = CANONICAL_HEIGHT }
 end
 
@@ -84,7 +84,7 @@ function T.the_skin_and_centered_title_land_at_the_source_geometry()
   local graphics = FakeGraphics.new()
   local text = recordingText(80)
   local renderer, skin = bannerRenderer("area-name presentation", graphics, text)
-  renderer:draw({ title = "ROUTE 29", styleKey = 2, scrollOffset = 38 }, referenceFrame(40, 30))
+  renderer:draw({ title = "ROUTE 29", styleKey = 2, scrollOffset = 38 }, screenBounds(40, 30))
 
   -- One logical scope only: a single translate to the canonical origin and one
   -- scale. A second transform would scale the borrowed surface twice.
@@ -113,7 +113,7 @@ function T.the_title_uses_the_style_palette_roles()
   local graphics = FakeGraphics.new()
   local text = recordingText(96)
   local renderer = bannerRenderer("area-name text roles", graphics, text)
-  renderer:draw({ title = "NEW BARK TOWN", styleKey = 1, scrollOffset = 0 }, referenceFrame(0, 0))
+  renderer:draw({ title = "NEW BARK TOWN", styleKey = 1, scrollOffset = 0 }, screenBounds(0, 0))
 
   local palette = assert(text.calls[1] and text.calls[1].palette, "the title is painted through the style palette")
   Assert.deepEqual(palette.foreground, STYLE_PALETTE.foreground, "the style foreground role is forwarded")
@@ -121,23 +121,43 @@ function T.the_title_uses_the_style_palette_roles()
   Assert.deepEqual(palette.background, STYLE_PALETTE.background, "the style background role is forwarded")
 end
 
-function T.the_overlay_anchors_to_the_reference_frame_not_the_host_origin()
+-- The overlay is fitted to the actual screen bounds, never to the letterboxed
+-- 4:3 reference frame: the surface's top edge is the screen's top edge, so the
+-- entry/exit displacement clips at the screen edge, while the horizontal fit
+-- stays centered in the real host.
+function T.the_overlay_fits_the_actual_screen_with_its_top_edge_anchored()
   local graphics = FakeGraphics.new()
-  local renderer = bannerRenderer("MAIN-frame anchoring", graphics, recordingText(80))
-  local frame = referenceFrame(41, 27)
-  local placement = assert(PixelScale.placeFixed(frame, CANONICAL_WIDTH, CANONICAL_HEIGHT))
-  renderer:draw({ title = "ROUTE 29", styleKey = 2, scrollOffset = 0 }, frame)
+  local renderer = bannerRenderer("actual-screen anchoring", graphics, recordingText(80))
+  local bounds = { x = 0, y = 0, width = 1280, height = 720 }
+  local letterboxed = { x = 160, y = 0, width = 960, height = 720 }
+  local placement = assert(PixelScale.placeFixed(bounds, CANONICAL_WIDTH, CANONICAL_HEIGHT, {
+    maxOverdraw = { left = 0, right = 0, top = 0, bottom = 0 },
+    verticalAnchor = "top",
+  }))
+  local fromReferenceFrame = assert(PixelScale.placeFixed(letterboxed, CANONICAL_WIDTH, CANONICAL_HEIGHT))
+  renderer:draw({ title = "ROUTE 29", styleKey = 2, scrollOffset = 0 }, bounds)
 
   Assert.deepEqual(
     graphics.transforms[1],
     { "translate", placement.origin.x, placement.origin.y },
-    "the banner anchors at the resolved MAIN origin, not the host origin"
+    "the banner anchors in the actual screen's fitted surface"
   )
   Assert.deepEqual(
     graphics.transforms[2],
     { "scale", placement.scale, placement.scale },
-    "the banner applies the resolved MAIN scale exactly once"
+    "the banner applies the actual screen's fit scale exactly once"
   )
+  Assert.equal(
+    graphics.scissorIntersections[1].requested[2],
+    bounds.y,
+    "the entry and exit displacement clips at the screen's top edge"
+  )
+  Assert.equal(
+    fromReferenceFrame.origin.y,
+    72,
+    "the letterboxed reference frame would centre the surface's top inside the screen"
+  )
+  Assert.equal(placement.origin.y, 0, "only the actual screen bounds put the surface's top on the screen edge")
 end
 
 -- The field draw owner orders the banner above the world and warp fade and
@@ -151,9 +171,14 @@ local function drawableState(order, bannerStatus)
     role = "world",
   })
   local worldViewport = { x = 0, y = 0, width = 512, height = 384 }
-  local resources = {
+  -- A letterboxed 4:3 reference frame distinct from the actual screen: the
+  -- banner must be handed the real screen bounds, not this region.
+  local referenceFrame = { x = 64, y = 0, width = 384, height = 288 }
+  local resources
+  resources = {
     drawMart = function() end,
-    drawMapNameBanner = function(_, banner)
+    drawMapNameBanner = function(_, banner, bounds)
+      resources.bannerBounds = bounds
       if banner ~= nil and banner:status() ~= nil then
         order[#order + 1] = "banner"
       end
@@ -212,7 +237,7 @@ local function drawableState(order, bannerStatus)
       width = 512,
       height = 384,
       worldViewport = worldViewport,
-      referenceFrame = worldViewport,
+      referenceFrame = referenceFrame,
     },
     camera = { zoom = 1 },
     transition = {
@@ -330,15 +355,21 @@ local function render(scope, order, bannerStatus)
   end)
   love.graphics.setCanvas()
   Assert.isTrue(ok, "field draw must not throw: " .. tostring(err))
+  return state
 end
 
 function T.the_field_draws_the_banner_above_the_world_and_below_the_script_cover(scope)
   local order = {}
-  render(scope, order, { title = "ROUTE 29", styleKey = 2, scrollOffset = 12 })
+  local state = render(scope, order, { title = "ROUTE 29", styleKey = 2, scrollOffset = 12 })
   Assert.deepEqual(
     order,
     { "world", "warpFade", "banner", "scriptCover" },
     "the banner draws after the world and warp fade and before the script cover"
+  )
+  Assert.deepEqual(
+    state.presentationResources.bannerBounds,
+    state.runtime.viewport.worldViewport,
+    "the field hands the banner the actual screen bounds, not the 4:3 reference frame"
   )
 
   local hidden = {}
@@ -357,7 +388,7 @@ function T.the_skin_draws_at_full_white_tint_under_a_hostile_inherited_color()
     graphics.setColor(tint[1], tint[2], tint[3], tint[4])
     local text = recordingText(80)
     local renderer, skin = bannerRenderer("area-name tint scope", graphics, text)
-    renderer:draw({ title = "ROUTE 29", styleKey = 2, scrollOffset = 38 }, referenceFrame(40, 30))
+    renderer:draw({ title = "ROUTE 29", styleKey = 2, scrollOffset = 38 }, screenBounds(40, 30))
 
     local skinDraw = assert(graphics.draws[1], "the banner skin is drawn under " .. label)
     Assert.isTrue(skinDraw.image == skin, "the selected banner skin is drawn under " .. label)

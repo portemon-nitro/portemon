@@ -1,9 +1,10 @@
--- Paints the transient area-name banner at the canonical 256x192 MAIN field
--- surface: the compiled 136x32 skin at logical x0 displaced by the banner's
--- scroll offset, and the centered native title through the style's own text
--- palette. Placement, clip, and the single logical transform come from the
--- shared PixelScale/LogicalSurface primitives; the renderer resolves no map
--- data and owns no GPU image.
+-- Paints the transient area-name banner against the actual host screen: the
+-- authored 256x192 MAIN surface is fitted to the real screen bounds with its
+-- top row on the screen's top edge, the compiled 136x32 skin sits at logical
+-- x0 displaced by the banner's scroll offset, and the centered native title
+-- draws through the style's own text palette. Placement, clip, and the single
+-- logical transform come from the shared PixelScale/LogicalSurface primitives;
+-- the renderer resolves no map data and owns no GPU image.
 
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local PixelScale = require("libs.ui.src.PixelScale")
@@ -23,6 +24,13 @@ FieldMapNameRenderer.REFERENCE_HEIGHT = 192
 local BANNER_TEXT_SPAN = 132
 local TEXT_INSET = 4
 local TEXT_Y = 8
+-- The corner overlay is fitted whole and pinned to the screen's top edge, so a
+-- whole-pixel overdraw crop never cuts the plate and the enter/exit
+-- displacement clips at the screen edge itself.
+local BANNER_FIT = {
+  maxOverdraw = { left = 0, right = 0, top = 0, bottom = 0 },
+  verticalAnchor = "top",
+}
 
 ---@param opts { graphics: love.graphics, text: FieldTextRenderer, imageFor: fun(styleKey: integer): { image: love.Image, palette: FieldEntryAssetCache.BannerTextPalette } }
 ---@return FieldMapNameRenderer
@@ -34,14 +42,20 @@ function FieldMapNameRenderer.new(opts)
   return setmetatable({ _graphics = opts.graphics, _text = opts.text, _imageFor = opts.imageFor }, FieldMapNameRenderer)
 end
 
--- Renders one banner status into the MAIN reference frame. The skin and title
--- share the same vertical scroll displacement; the title is centered by the
--- source X formula at local row 8 and painted through the style palette.
+-- Renders one banner status against the actual screen bounds. The authored
+-- surface is fitted whole and top-anchored, so the enter/exit scroll
+-- displacement clips at the screen's top edge; the skin and title share that
+-- displacement, the title is centered by the source X formula at local row 8
+-- and painted through the style palette.
 ---@param status FieldMapNameBanner.Status
----@param referenceFrame LayoutGeometry.Rect
-function FieldMapNameRenderer:draw(status, referenceFrame)
-  local placement =
-    PixelScale.placeFixed(referenceFrame, FieldMapNameRenderer.REFERENCE_WIDTH, FieldMapNameRenderer.REFERENCE_HEIGHT)
+---@param bounds LayoutGeometry.Rect actual host screen bounds
+function FieldMapNameRenderer:draw(status, bounds)
+  local placement = PixelScale.placeFixed(
+    bounds,
+    FieldMapNameRenderer.REFERENCE_WIDTH,
+    FieldMapNameRenderer.REFERENCE_HEIGHT,
+    BANNER_FIT
+  )
   if placement == nil then
     return
   end

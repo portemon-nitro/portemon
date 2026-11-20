@@ -1514,7 +1514,7 @@ function FieldState:draw()
     end
     local banner = self.runtime.mapNameBanner
     if banner ~= nil then
-      resources:drawMapNameBanner(banner, self.runtime.viewport.referenceFrame)
+      resources:drawMapNameBanner(banner, self.runtime.viewport.worldViewport)
     end
     if previewActive then
       self:_drawFieldAttachedUi(resources, nil, self.runtime.session:renderAlpha())
@@ -1674,10 +1674,10 @@ function FieldState:draw()
   end
   -- The transient area-name banner sits over the world and warp fade and
   -- under every attached modal surface, script cover, and foreground
-  -- application, anchored to the canonical MAIN reference frame.
+  -- application, fitted to the actual screen with its top edge anchored there.
   local banner = self.runtime.mapNameBanner
   if banner ~= nil then
-    resources:drawMapNameBanner(banner, self.runtime.viewport.referenceFrame)
+    resources:drawMapNameBanner(banner, self.runtime.viewport.worldViewport)
   end
   -- Attached dialogue and signposts share the field scale and yield to modal
   -- application surfaces.

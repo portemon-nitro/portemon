@@ -1,16 +1,13 @@
 -- Shared window configuration contract. Environment dimensions are parsed by
 -- the same pure helper so the strictness lives in a testable function instead
--- of inside the untestable LÖVE configuration callback.
+-- of inside the untestable LÖVE configuration callback. The reference
+-- resolution itself is a presentation contract tested where the window host and
+-- the native top screen meet: `app/tests/conf_test.lua`.
 
 local Assert = require("tests.support.Assert")
 local WindowConfig = require("game.src.WindowConfig")
 
 local T = {}
-
-function T.reference_resolution_is_named_once()
-  Assert.equal(WindowConfig.REFERENCE_WIDTH, 640)
-  Assert.equal(WindowConfig.REFERENCE_HEIGHT, 480)
-end
 
 function T.positive_integer_dimensions_parse()
   local width, err = WindowConfig.parseEnvDimension("800", "PORTEMON_WINDOW_WIDTH")

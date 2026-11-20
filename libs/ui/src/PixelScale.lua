@@ -139,12 +139,16 @@ end
 -- integer pixel scale with at most one safe overdraw bump. Crop budgets are
 -- source-logical pixels per edge (default 4); the bump crops centred whole
 -- source pixels and is refused when it would exceed a budget, hide protected
--- content, or pass the preferred-scale cap. A target without an admissible
--- whole-pixel placement returns nil.
+-- content, or pass the preferred-scale cap. `verticalAnchor = "top"` pins the
+-- surface's own top row to the target's top edge instead of centring it
+-- vertically and takes every vertical crop from the bottom, so a top-edge
+-- overlay (one whose entry/exit slides through the target's top edge) never
+-- hides its own first row. A target without an admissible whole-pixel placement
+-- returns nil.
 ---@param bounds LayoutGeometry.Rect host-unit target region
 ---@param width integer native logical width
 ---@param height integer native logical height
----@param options { pixelRatio?: number, preferredScale?: integer, maxOverdraw?: { left: integer, right: integer, top: integer, bottom: integer }, protectedRect?: LayoutGeometry.Rect }?
+---@param options { pixelRatio?: number, preferredScale?: integer, maxOverdraw?: { left: integer, right: integer, top: integer, bottom: integer }, protectedRect?: LayoutGeometry.Rect, verticalAnchor?: "center"|"top" }?
 ---@return LayoutGeometry.Placement?
 function PixelScale.placeFixed(bounds, width, height, options)
   local target = LayoutGeometry.rect(bounds, "bounds")
@@ -178,6 +182,15 @@ function PixelScale.placeFixed(bounds, width, height, options)
   end
   assert(budget.left + budget.right < width, "the horizontal crop budget must leave visible content")
   assert(budget.top + budget.bottom < height, "the vertical crop budget must leave visible content")
+  local verticalAnchor = opts.verticalAnchor
+  assert(
+    verticalAnchor == nil or verticalAnchor == "center" or verticalAnchor == "top",
+    "options.verticalAnchor must be center or top"
+  )
+  -- A top-anchored surface reserves its own top edge: no authored row above
+  -- the anchor may be hidden, so the vertical crop always comes from the
+  -- bottom and the declared per-edge budgets still cap it.
+  local topAnchored = verticalAnchor == "top"
   local protected = nil
   if opts.protectedRect ~= nil then
     protected = LayoutGeometry.rect(opts.protectedRect, "options.protectedRect")
@@ -200,6 +213,23 @@ function PixelScale.placeFixed(bounds, width, height, options)
   local availableHeight = farY - nearY
   if availableWidth <= 0 or availableHeight <= 0 then
     return nil
+  end
+
+  -- The visible top row and the transform origin of a top-anchored surface are
+  -- the target's own top edge; the ordinary fit centres both.
+  ---@param hidden integer
+  ---@return integer
+  local function visibleTop(hidden)
+    return topAnchored and 0 or math.floor(hidden / 2)
+  end
+  ---@param visibleHeight integer
+  ---@param pixel integer
+  ---@return number
+  local function originTop(visibleHeight, pixel)
+    if topAnchored then
+      return nearY
+    end
+    return nearY + math.floor((availableHeight - visibleHeight * pixel) / 2)
   end
 
   ---@param visibleX integer
@@ -236,7 +266,7 @@ function PixelScale.placeFixed(bounds, width, height, options)
   ---@return LayoutGeometry.Placement
   local function croppedPlacement(pixel, visibleX, visibleY, visibleWidth, visibleHeight)
     local originX = nearX + math.floor((availableWidth - visibleWidth * pixel) / 2)
-    local originY = nearY + math.floor((availableHeight - visibleHeight * pixel) / 2)
+    local originY = originTop(visibleHeight, pixel)
     local fullX = originX - visibleX * pixel
     local fullY = originY - visibleY * pixel
     local scale = pixel / ratio
@@ -275,7 +305,7 @@ function PixelScale.placeFixed(bounds, width, height, options)
   ---@return LayoutGeometry.Placement
   local function centredPlacement(pixel)
     local originX = nearX + math.floor((availableWidth - width * pixel) / 2)
-    local originY = nearY + math.floor((availableHeight - height * pixel) / 2)
+    local originY = originTop(height, pixel)
     local scale = pixel / ratio
     local frame = {
       x = originX / ratio,
@@ -311,9 +341,10 @@ function PixelScale.placeFixed(bounds, width, height, options)
       local hiddenX = width - visibleWidth
       local hiddenY = height - visibleHeight
       -- Centred whole-source-pixel cropping: asymmetric budgets restrict
-      -- the centred cut, content never shifts to spend an open edge.
+      -- the centred cut, content never shifts to spend an open edge. A
+      -- top-anchored surface takes its whole vertical cut from the bottom.
       local visibleX = math.floor(hiddenX / 2)
-      local visibleY = math.floor(hiddenY / 2)
+      local visibleY = visibleTop(hiddenY)
       if hiddenX == 0 and hiddenY == 0 then
         return centredPlacement(candidate)
       end
@@ -334,7 +365,7 @@ function PixelScale.placeFixed(bounds, width, height, options)
     local hiddenX = width - unitWidth
     local hiddenY = height - unitHeight
     local visibleX = math.floor(hiddenX / 2)
-    local visibleY = math.floor(hiddenY / 2)
+    local visibleY = visibleTop(hiddenY)
     if hiddenX == 0 and hiddenY == 0 then
       return centredPlacement(1)
     end
