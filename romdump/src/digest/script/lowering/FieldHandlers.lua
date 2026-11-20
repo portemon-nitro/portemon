@@ -12,7 +12,6 @@ local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
 -- Field-only message-symbol normalization; actor references and directions
 -- come from the shared source-operand leaf.
 local actorRef = Operands.actorRef
-local normalizeFacing = Operands.normalizeFacing
 local directionRef = Operands.directionRef
 
 local function messageRef(symbol)
@@ -468,15 +467,16 @@ local function setFriendSprite(ins)
 end
 
 local function warp(ins)
-  -- Warp map, warp, x, z, dir: coordinates and direction may be variable
-  -- operands; numeric directions normalize to the string enum.
+  -- Warp map, warp, x, z, dir: every operand is read through ScriptGetVar, so
+  -- coordinates and direction may be variables and a literal direction code
+  -- normalizes to the cardinal direction it names.
   return {
     op = "warp",
     map = Operands.varRef(ins.operands[1]),
     warp = Operands.varRef(ins.operands[2]),
     fieldX = Operands.varRef(ins.operands[3]),
     fieldZ = Operands.varRef(ins.operands[4]),
-    facing = normalizeFacing(Operands.operandValue(ins.operands[5])),
+    facing = directionRef(ins.operands[5]),
   }
 end
 

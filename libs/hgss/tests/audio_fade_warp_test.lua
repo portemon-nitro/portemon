@@ -573,7 +573,57 @@ T["warp task evaluates variable-backed operands"] = function()
   Assert.equal(h.services.world:getVar("VAR_AFTER"), 1)
 end
 
--- 4d. A malformed warp operand (an unset local) faults the owning script with
+-- 4d. A variable-backed facing holds the source direction code, so the task
+-- decodes it through the injected semantics: the maps service receives the
+-- cardinal the code names, never the raw code.
+T["warp task decodes a source direction code"] = function()
+  local h = harness({ maps = true })
+  local resource = script("test.warpdir", {
+    S.setVar({ variable = "VAR_WARP_FACING", value = 3 }),
+    S.warp({
+      map = "MAP_NEW_BARK",
+      warp = 0,
+      fieldX = 684,
+      fieldZ = 393,
+      facing = S.var("VAR_WARP_FACING"),
+    }),
+    S.setVar({ variable = "VAR_AFTER", value = 1 }),
+    S.stop(),
+  })
+  startForeground(h, resource, 100)
+  h.scheduler:step(100, nil)
+  local target = h.maps.calls[1].target
+  Assert.equal(target.facing, "east", "the source direction code resolves to its cardinal")
+  h.scheduler:step(101, nil)
+  h.scheduler:step(102, nil)
+  Assert.equal(h.services.world:getVar("VAR_AFTER"), 1)
+end
+
+-- 4e. A direction code outside the source table is an invalid reference: the
+-- script faults before the maps service sees a target.
+T["warp task faults an out-of-range direction code"] = function()
+  local h = harness({ maps = true })
+  local resource = script("test.warpdirbad", {
+    S.setVar({ variable = "VAR_WARP_FACING", value = 7 }),
+    S.warp({
+      map = "MAP_NEW_BARK",
+      warp = 0,
+      fieldX = 684,
+      fieldZ = 393,
+      facing = S.var("VAR_WARP_FACING"),
+    }),
+    S.setVar({ variable = "VAR_AFTER", value = 1 }),
+    S.stop(),
+  })
+  local instanceId = startForeground(h, resource, 100)
+  h.scheduler:step(100, nil)
+  local fault = assert(h.services.events:eventFor("script.error", instanceId))
+  Assert.equal(fault.code, "SCRIPT_INVALID_REFERENCE")
+  Assert.equal(#h.maps.calls, 0, "the maps service must never see an unresolvable direction")
+  Assert.equal(h.services.world:getVar("VAR_AFTER"), 0)
+end
+
+-- 4f. A malformed warp operand (an unset local) faults the owning script with
 -- attribution instead of reaching the maps service arithmetic.
 T["warp task faults a malformed operand"] = function()
   local h = harness({ maps = true })
@@ -601,7 +651,7 @@ T["warp task faults a malformed operand"] = function()
   Assert.equal(h.services.world:getVar("VAR_AFTER"), 0)
 end
 
--- 4e. A failed scripted warp faults the script: the transition error is
+-- 4g. A failed scripted warp faults the script: the transition error is
 -- reported as a faulted task result, so the graph never continues as though
 -- the warp succeeded.
 T["failed scripted warp faults the script"] = function()

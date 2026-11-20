@@ -29,7 +29,7 @@ local T = {}
 local CATALOG = {
   sounds = { [1500] = "SEQ_SE_DP_SELECT" },
   flags = { [0x6A] = "FLAG_GOT_STARTER" },
-  vars = { [0x8008] = "VAR_SPECIAL_x8008" },
+  vars = { [0x8008] = "VAR_SPECIAL_x8008", [0x800C] = "VAR_SPECIAL_RESULT" },
   maps = {},
   spawns = { [5] = "SPAWN_GOLDENROD" },
 }
@@ -2346,6 +2346,78 @@ T["dynamic warp and warp-event commands lower to their own travel operations"] =
   Assert.equal(countVariableReferences(moveSteps[1]), 3, "the warp index and its new cell are script variables")
   Assert.isTrue(moveReport.complete)
   validateSteps("test.source_342", moveSteps)
+end
+
+-- ScrCmd_Warp reads map, the unused halfword, x, y, and direction through
+-- ScriptGetVar into CallTask_ScriptWarp. The direction is therefore one value
+-- read: a literal code is the cardinal it names, while a script variable stays
+-- a value reference the runtime decodes from the code the variable holds.
+T["script warp lowers its direction as a script-read direction operand"] = function()
+  Assert.equal(CommandCatalog.classification(176), CommandCatalog.NATIVE_WAIT, "Warp blocks until the transition ends")
+
+  local _, literalSteps, literalReport = translateOnly({
+    {
+      op = 176,
+      args = {
+        { value = 5, width = 2 },
+        { value = 0, width = 2 },
+        { value = 60, width = 2 },
+        { value = 1, width = 2 },
+        { value = 3, width = 2 },
+      },
+    },
+    { op = 2, args = {} },
+  })
+  Assert.equal(literalSteps[1].op, "warp")
+  Assert.equal(literalSteps[1].facing, "east", "a literal direction code lowers to its cardinal")
+  Assert.equal(countVariableReferences(literalSteps[1]), 0, "immediate operands read no script variable")
+  Assert.isTrue(literalReport.complete, "an immediate warp is a complete translation")
+  validateSteps("test.source_176_literal", literalSteps)
+
+  -- The retail corpus shape: the direction is the special-result variable, so
+  -- the step keeps the reference instead of naming the variable a direction.
+  local _, variableSteps, variableReport = translateOnly({
+    {
+      op = 176,
+      args = {
+        { value = 0x8008, width = 2 },
+        { value = 0, width = 2 },
+        { value = 0x8009, width = 2 },
+        { value = 0x800A, width = 2 },
+        { value = 0x800C, width = 2 },
+      },
+    },
+    { op = 2, args = {} },
+  })
+  Assert.deepEqual(
+    variableSteps[1].facing,
+    { value = "var", id = "VAR_SPECIAL_RESULT" },
+    "a variable direction stays a value reference"
+  )
+  Assert.equal(countVariableReferences(variableSteps[1]), 4, "map, x, z and the direction are script variables")
+  Assert.isTrue(variableReport.complete, "a variable warp is a complete translation")
+  validateSteps("test.source_176_variable", variableSteps)
+
+  -- A code outside the pinned table fails with the rejected source code named.
+  local unknownDirection = Assert.throws(function()
+    translateOnly({
+      {
+        op = 176,
+        args = {
+          { value = 5, width = 2 },
+          { value = 0, width = 2 },
+          { value = 60, width = 2 },
+          { value = 1, width = 2 },
+          { value = 7, width = 2 },
+        },
+      },
+      { op = 2, args = {} },
+    })
+  end)
+  Assert.isTrue(
+    tostring(unknownDirection):find("unknown direction code 7", 1, true) ~= nil,
+    "an unknown direction code names the source operand it rejected"
+  )
 end
 
 T["floor window, elevator animation and clock commands keep source timing"] = function()

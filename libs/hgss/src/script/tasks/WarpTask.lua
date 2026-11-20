@@ -3,13 +3,16 @@
 -- the transition through the maps service, polls its completion (the
 -- transition is engine-owned asynchronous work), and graph continuation
 -- follows the generic one-tick handoff. Every scalar_or_value operand is
--- evaluated against the world before the target is forwarded, and a failed
--- transition yields a faulted result so the script never continues as though
--- the warp succeeded. Script coordinates are global (the source authors
--- them alongside zone-event coordinates) while the maps service takes
--- destination-local ones, so the task rebases through the destination's
--- structural placement, which never loads the destination. Unknown maps
--- fault from the placement lookup. Warps are foreground-only.
+-- evaluated against the world before the target is forwarded, and the
+-- direction is decoded through the injected semantics: a lowered cardinal
+-- passes through while a source code the variable holds becomes the cardinal
+-- it names, so an unresolvable direction faults before the maps service sees
+-- a target. A failed transition yields a faulted result so the script never
+-- continues as though the warp succeeded. Script coordinates are global (the
+-- source authors them alongside zone-event coordinates) while the maps
+-- service takes destination-local ones, so the task rebases through the
+-- destination's structural placement, which never loads the destination.
+-- Unknown maps fault from the placement lookup. Warps are foreground-only.
 -- Pure domain module: no love dependency.
 
 local Errors = require("libs.errors.src.Errors")
@@ -32,7 +35,7 @@ function WarpTask.create(spec, ctx)
     warp = ctx.semantics.evaluateValue(node.warp, run),
     fieldX = ctx.semantics.evaluateValue(node.fieldX, run),
     fieldZ = ctx.semantics.evaluateValue(node.fieldZ, run),
-    facing = ctx.semantics.evaluateValue(node.facing, run),
+    facing = ctx.semantics.decodeDirection(ctx.semantics.evaluateValue(node.facing, run), run),
   }
   local placement = maps:placement(target.map)
   assert(type(target.fieldX) == "number" and type(target.fieldZ) == "number", "warp coordinates must be numbers")
