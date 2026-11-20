@@ -8,7 +8,9 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
+local NativeTextureBank = require("libs.assets.src.model.NativeTextureBank")
 local PngWriter = require("tests.support.PngEncoder")
+local TextureDecoder = require("libs.nds.src.gx.TextureDecoder")
 
 local T = {}
 
@@ -384,6 +386,137 @@ function T.warm_png_preparation_persists_no_image_derivative()
       "repeated preparation keeps the PNG as the only persistent image asset"
     )
     Assert.equal(cache:read("sprites/warm.png"), sourcePng, "preparation never rewrites the generated PNG")
+  end)
+  cache:removeTree("")
+  if not runOk then
+    error(runErr, 0)
+  end
+end
+
+-- One 8x8 format-3 (16-color) texture record whose low palette slots carry
+-- the selected colors.
+---@param name string
+---@param texels string byte-exact 4bpp texels for 64 pixels
+---@param color0Transparent boolean
+---@return NativeTextureBank.Texture
+local function indexedTexture(name, texels, color0Transparent)
+  return {
+    name = name,
+    formatRaw = 3,
+    width = 8,
+    height = 8,
+    color0Transparent = color0Transparent,
+    texels = texels,
+  }
+end
+
+---@param words integer[] BGR555 palette words for the leading slots
+---@return string 16-slot little-endian palette payload
+local function palettePayload(words)
+  local out = {}
+  for slot = 1, 16 do
+    local word = words[slot] or 0
+    out[#out + 1] = string.char(word % 256, math.floor(word / 256))
+  end
+  return table.concat(out)
+end
+
+---@param bank NativeTextureBank.Bank
+---@param textureName string
+---@param paletteName string
+---@return string row-major RGBA bytes of one texture/palette selection
+local function decodeSelection(bank, textureName, paletteName)
+  local texture = assert(bank:texture(textureName), "texture bank has texture " .. textureName)
+  local palette = assert(bank:palette(paletteName), "texture bank has palette " .. paletteName)
+  local decoded = TextureDecoder.decode({
+    format = texture.formatRaw,
+    width = texture.width,
+    height = texture.height,
+    color0Transparent = texture.color0Transparent,
+    texel = texture.texels,
+    palette = palette.data,
+  }, { name = texture.name })
+  return decoded.pixels
+end
+
+-- The queue identifies native texture work by bank file plus selected names, so
+-- several selections of one bank arrive as separate worker jobs. Each job must
+-- reuse the worker's parse of that bank rather than reading and decoding the
+-- whole bank again, and a selection must never be served from another bank's
+-- parse. The rewritten bank makes a fresh read visible: its bytes cannot occur
+-- at a content-addressed path in production, which is exactly why reusing the
+-- first parse is safe.
+function T.native_texture_selections_reuse_the_workers_parse_of_their_bank()
+  local AssetPreparationQueue = requireQueue()
+  local bankPath = "assets/generated/textures/selection-bank.g4tx"
+  local otherPath = "assets/generated/textures/replacement-bank.g4tx"
+  local cache = fileBackedCache("image-derivative-native-texture-bank-test")
+  local runOk, runErr = pcall(function()
+    local firstBytes = NativeTextureBank.encode({
+      textures = {
+        indexedTexture("t0", string.char(0x10):rep(32), false),
+        indexedTexture("t1", string.char(0x32):rep(32), true),
+      },
+      palettes = {
+        { name = "p0", data = palettePayload({ 0x001F, 0x03E0, 0x7C00, 0x7FFF }) },
+        { name = "p1", data = palettePayload({ 0x4210, 0x0C63, 0x6318, 0x2108 }) },
+      },
+    })
+    local rewrittenBytes = NativeTextureBank.encode({
+      textures = {
+        indexedTexture("t0", string.char(0x21):rep(32), false),
+        indexedTexture("t1", string.char(0x03):rep(32), true),
+      },
+      palettes = {
+        { name = "p0", data = palettePayload({ 0x5AD6, 0x2D6B, 0x14A5, 0x77BD }) },
+        { name = "p1", data = palettePayload({ 0x7C1F, 0x03FF, 0x7FE0, 0x0010 }) },
+      },
+    })
+    -- The other bank names the same texture and palette as the first, so a key
+    -- that forgot the bank file would serve the wrong texels.
+    local otherBytes = NativeTextureBank.encode({
+      textures = { indexedTexture("t0", string.char(0x03):rep(32), false) },
+      palettes = { { name = "p0", data = palettePayload({ 0x0842, 0x7FE0, 0x03FF }) } },
+    })
+    cache:write(bankPath, firstBytes)
+    cache:write(otherPath, otherBytes)
+    local firstBank = assert(NativeTextureBank.read(firstBytes))
+    local expectedSecond = decodeSelection(firstBank, "t1", "p1")
+    Assert.isTrue(
+      expectedSecond ~= decodeSelection(assert(NativeTextureBank.read(rewrittenBytes)), "t1", "p1"),
+      "the rewritten bank decodes to different texels, so a fresh read would be visible"
+    )
+
+    local queue = AssetPreparationQueue.new(cache)
+    local first =
+      queue:wait(queue:request("g4tx", { file = bankPath, textureName = "t0", paletteName = "p0" }, "demand"))
+    Assert.equal(unpackRecord(first), decodeSelection(firstBank, "t0", "p0"), "a selection yields its own texels")
+    Assert.equal(first.width, 8, "the selection reports its texture width")
+    Assert.equal(first.height, 8, "the selection reports its texture height")
+
+    cache:write(bankPath, rewrittenBytes)
+    local second =
+      queue:wait(queue:request("g4tx", { file = bankPath, textureName = "t1", paletteName = "p1" }, "demand"))
+    Assert.equal(
+      unpackRecord(second),
+      expectedSecond,
+      "another selection of the same bank reuses the parse of the original bytes"
+    )
+    Assert.isTrue(second.pixelHash ~= first.pixelHash, "each selection keeps its own pixel identity")
+
+    local other =
+      queue:wait(queue:request("g4tx", { file = otherPath, textureName = "t0", paletteName = "p0" }, "demand"))
+    Assert.equal(
+      unpackRecord(other),
+      decodeSelection(assert(NativeTextureBank.read(otherBytes)), "t0", "p0"),
+      "a different bank path replaces the reused parse and decodes its own texels"
+    )
+    Assert.deepEqual(
+      listCacheFiles(cache, ""),
+      { otherPath, bankPath },
+      "native texture preparation writes no persistent parse or derivative"
+    )
+    queue:release()
   end)
   cache:removeTree("")
   if not runOk then

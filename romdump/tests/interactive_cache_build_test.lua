@@ -2763,7 +2763,12 @@ function T.title_visual_scope_certifies_while_optional_audio_bank_fails()
     audioPlan = {
       index = {
         version = "heartgold",
-        sequences = { [41] = { bankId = 7 }, [42] = { bankId = 8 }, [43] = { bankId = 7 } },
+        sequences = {
+          [2] = { bankId = 1 },
+          [41] = { bankId = 7 },
+          [42] = { bankId = 8 },
+          [43] = { bankId = 7 },
+        },
         sequenceBySymbol = { SEQ_GS_TITLE = 43, SEQ_GS_POKEMON_THEME = 41, SEQ_SE_DP_SELECT = 42 },
       },
     },
@@ -2794,6 +2799,7 @@ function T.title_visual_scope_certifies_while_optional_audio_bank_fails()
   pool.states["audio-bank:7"] = { state = "failed", details = { error = "synthetic audio bank failure" } }
   pool.states["audio-bank:8"] = "ready"
   pool.states["audio-bank:250"] = "ready"
+  pool.states["audio-bank:1"] = "ready"
   pool.states["field-font:global"] = "ready"
   pool.states["startup-title:global"] = "ready"
   for _ = 1, 10 do

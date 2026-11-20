@@ -499,6 +499,8 @@ local function twoDrawBank()
         materialIndex = 0,
         shapeIndex = 0,
         transformMode = "static",
+        seedColorSource = 0,
+        seedColor = { 255, 255, 255 },
       },
       {
         commands = bankCommands({ { -6, 0, 0 }, { -4, 0, 0 }, { -6, 0, 3 } }),
@@ -506,6 +508,8 @@ local function twoDrawBank()
         materialIndex = 1,
         shapeIndex = 0,
         transformMode = "static",
+        seedColorSource = 0,
+        seedColor = { 255, 255, 255 },
       },
     },
   }))

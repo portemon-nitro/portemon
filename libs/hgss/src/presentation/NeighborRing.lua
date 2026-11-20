@@ -171,17 +171,22 @@ local function buildRing(pool, descriptors, clip, wait, checkpoint, acquireMesh)
   return ring
 end
 
--- One resumable neighbor-ring build. The task owns its pool until the
--- completed ring is transferred or the task is cancelled/failed. `advance`
--- executes bounded main-thread work and yields promptly (consuming no work
--- unit) while a shared image is still pending; `finish` is the explicitly
--- blocking path for synchronous callers. A failure releases everything the
--- task acquired exactly once and stays loud on every later call.
+-- One resumable neighbor-ring build. The task owns its pool and its
+-- outstanding preparation ticket until the completed ring is transferred or
+-- the task is cancelled/failed. `advance` executes bounded main-thread work and
+-- yields promptly (consuming no work unit) while the preparation worker is
+-- still busy; `finish` is the explicitly blocking path for synchronous
+-- callers. A failure releases everything the task acquired and cancels its
+-- outstanding ticket exactly once, and stays loud on every later call.
 ---@class NeighborRing.BuildTask
 ---@field _pool GpuAssetPool
 ---@field _thread thread
 ---@field _state string "active", "ready", "transferred", "released", or "failed"
 ---@field _poolReleased boolean
+---@field _queue table<string, unknown>? borrowed preparation queue
+---@field _outstanding integer? preparation token the suspended coroutine waits on
+---@field _stashed table<integer, table<string, unknown>>? waited payloads by token, consumed by the resumed coroutine
+---@field _finishing boolean the explicit synchronous caller blocks instead of yielding
 ---@field _result table<string, unknown>?
 ---@field _failed unknown?
 local NeighborBuildTask = {}
@@ -192,6 +197,13 @@ NeighborBuildTask.__index = NeighborBuildTask
 local function failBuildTask(task, err)
   if task._state == "active" then
     task._state = "failed"
+    local token = task._outstanding
+    task._outstanding = nil
+    if token ~= nil and task._queue ~= nil then
+      -- Cancellation must not mask the original failure (the queue may
+      -- already be gone when unwinding through layered releases).
+      pcall(task._queue.cancel, task._queue, token)
+    end
     if not task._poolReleased then
       task._poolReleased = true
       task._pool:release()
@@ -254,16 +266,35 @@ function NeighborBuildTask:takeResult()
   return result
 end
 
--- Finish the build synchronously: keep advancing (re-polling pending
--- shared images, the same wait a direct image acquisition performs) until
--- the ring completes. Only explicit synchronous owners call this; staged
--- map assembly advances cooperatively instead.
+-- Finish the build synchronously: the outstanding preparation ticket becomes
+-- demand and blocks once for its payload, which the resumed build consumes
+-- from the task stash. Later acquisitions while finishing request demand.
+-- Only explicit synchronous owners call this; staged map assembly advances
+-- cooperatively instead.
 ---@return table<string, unknown> the completed ring
 function NeighborBuildTask:finish()
   if self._failed ~= nil then
     error(self._failed, 0)
   end
+  self._finishing = true
   while self._state == "active" do
+    -- A coroutine suspended on worker preparation block-waits its
+    -- outstanding token instead of polling in a tight loop; the waited
+    -- payload is stashed for the resumed build to consume.
+    local outstanding = self._outstanding
+    if outstanding ~= nil and self._queue ~= nil then
+      local promoteOk, promoteErr = pcall(self._queue.promote, self._queue, outstanding, "demand")
+      if not promoteOk then
+        failBuildTask(self, promoteErr)
+      end
+      local ok, payload = pcall(self._queue.wait, self._queue, outstanding)
+      if not ok then
+        failBuildTask(self, payload)
+      end
+      self._stashed = self._stashed or {}
+      self._stashed[outstanding] = payload
+      self._outstanding = nil
+    end
     self:advance(1)
   end
   return self:takeResult()
@@ -278,6 +309,12 @@ function NeighborBuildTask:release()
   end
   self._state = "released"
   self._result = nil
+  local token = self._outstanding
+  self._outstanding = nil
+  if token ~= nil and self._queue ~= nil then
+    -- Release stays infallible even if the queue is already gone.
+    pcall(self._queue.cancel, self._queue, token)
+  end
   if not self._poolReleased then
     self._poolReleased = true
     self._pool:release()
@@ -309,17 +346,31 @@ function NeighborRing.begin(cacheFs, descriptors, opts)
   -- Geometry arrives the same way the central scene's does: the preparation
   -- worker decodes a whole native bank once for every draw the ring selects,
   -- and this build only realizes the prepared upload packets, yielding WAIT
-  -- while the worker is still busy.
+  -- while the worker is still busy. The task owns the outstanding ticket so
+  -- finish() can block-wait it and release() can cancel it.
   local meshEntries = {}
+  ---@type NeighborRing.BuildTask
+  local task
   local function awaitPrepared(kind, path)
     local prepareQueue = assert(queue, "prepared mesh realization requires a preparation queue")
-    local token = prepareQueue:request(kind, path, "prefetch")
+    local priority = task._finishing and "demand" or "prefetch"
+    local token = prepareQueue:request(kind, path, priority)
+    task._outstanding = token
     while true do
+      if task._stashed ~= nil and task._stashed[token] ~= nil then
+        local stashed = task._stashed[token]
+        task._stashed[token] = nil
+        task._outstanding = nil
+        return stashed
+      end
       local status, failure = prepareQueue:poll(token)
       if status == "ready" then
-        return prepareQueue:take(token)
+        local payload = prepareQueue:take(token)
+        task._outstanding = nil
+        return payload
       end
       if status == "failed" then
+        task._outstanding = nil
         error("prepared asset " .. tostring(path) .. " (" .. kind .. ") failed: " .. tostring(failure), 0)
       end
       coroutine["yield"](WAIT)
@@ -338,10 +389,14 @@ function NeighborRing.begin(cacheFs, descriptors, opts)
     return entry
   end
   ---@type NeighborRing.BuildTask
-  local task = setmetatable({
+  task = setmetatable({
     _pool = pool,
     _state = "active",
     _poolReleased = false,
+    _queue = queue,
+    _outstanding = nil,
+    _stashed = nil,
+    _finishing = false,
     _result = nil,
     _failed = nil,
   }, NeighborBuildTask)

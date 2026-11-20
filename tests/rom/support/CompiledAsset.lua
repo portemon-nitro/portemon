@@ -72,7 +72,10 @@ end
 ---@return SceneMesh.NativeDecoded
 function CompiledAsset.draw(assets, geometry)
   local bytes, file = CompiledAsset.bankBytes(assets, geometry)
-  return SceneMesh.decodeNativeBank(bytes, { file = file, drawIndex = assert(geometry.drawIndex) })
+  local drawIndex = assert(geometry.drawIndex)
+  local decoded = SceneMesh.decodeNativeBank(bytes, file).draws[drawIndex + 1]
+  assert(decoded ~= nil, "native model bank has no draw " .. tostring(drawIndex) .. " in " .. file)
+  return decoded --[[@as SceneMesh.NativeDecoded]]
 end
 
 -- The native texture bank one material's texture reference names, out of a map

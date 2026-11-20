@@ -6,6 +6,9 @@
 -- draw.
 
 local Assert = require("tests.support.Assert")
+local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
+local GxGeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
+local MeshCompiler = require("romdump.src.digest.model.MeshCompiler")
 local ModelAssetCompiler = require("romdump.src.digest.model.ModelAssetCompiler")
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local NsbmdFixture = require("tests.support.NsbmdFixture")
@@ -150,7 +153,7 @@ function T.one_native_bank_per_source_model_with_stable_draw_indices()
   Assert.equal(
     rawBytes(bank.draws[2].commands),
     sourceCommands,
-    "every draw record carries its own command span"
+    "every draw record keeps the source command bytes, stored once per distinct stream"
   )
 end
 
@@ -199,6 +202,84 @@ function T.shared_source_model_and_texture_reuse_one_bank_across_compiles()
   end
   Assert.equal(#firstTextureKeys, 1, "one texture bank is compiled for the source texture pack")
   Assert.notNil(secondTextures[firstTextureKeys[1]], "both compiles resolve the same shared texture bank")
+end
+
+-- The geometry engine carries its color/normal state from one shape call to the
+-- next. A draw's recorded seed must therefore describe what the *stream
+-- inherits*, not a default: two draws of a shape that issues no COLOR/NORMAL
+-- keep the material's seeded color, and the second draw inherits exactly the
+-- state the first one left behind.
+function T.sequenced_shape_draws_record_the_carried_engine_state()
+  -- NODEDESC(root), NODE(0, visible), POSSCALE, MAT 0, SHP 0, SHP 0, RET: the
+  -- second submission reapplies no material, so it inherits the first shape's
+  -- final state.
+  local sbc = string.char(0x06, 0, 0, 0)
+    .. string.char(0x02, 0, 1)
+    .. string.char(0x0B)
+    .. string.char(0x04, 0)
+    .. string.char(0x05, 0)
+    .. string.char(0x05, 0)
+    .. string.char(0x01)
+  local modelBytes = NsbmdFixture.buildWithSbc(sbc, {
+    modelName = "carry0",
+    materialName = "m_grass",
+    textureName = "flower01",
+    paletteName = "map_pal",
+    origWidth = 8,
+    origHeight = 8,
+    triangle = { { 0, 0, 0 }, { 2, 0, 0 }, { 0, 0, 3 } },
+  })
+  local model = assert(Nsbmd.decode(modelBytes, { alias = "land_data", memberId = 244 })).models[1]
+  local packBytes = Tex0Fixture.btx0({
+    textures = { { name = "flower01", texel = TEXEL } },
+    palettes = { { name = "map_pal", palette = PALETTE } },
+  })
+  local pack = assert(Nsbtx.decode(packBytes, { alias = "map_textures", memberId = 3 }))
+  local meshes, textures = {}, {}
+  local result = ModelAssetCompiler.compileModel(model, pack, meshes, textures, compileContext())
+  Assert.equal(#result.batches, 2, "the fixture SBC submits two draws of one shape")
+
+  local banks = compiledBank(meshes)
+  Assert.equal(#banks, 1, "both draws of one source model share one native bank")
+  local bank = assert(nativeFormat().read(banks[1].bytes))
+  Assert.equal(bank.drawCount, 2, "the bank carries one record per submitted draw")
+  local materialSeed = assert(MeshCompiler.materialState(model.materials[1]).seed)
+  for index, draw in ipairs(bank.draws) do
+    Assert.equal(
+      draw.seedColorSource,
+      materialSeed.colorSource,
+      "draw " .. index .. " inherits the material's color source"
+    )
+    Assert.deepEqual(draw.seedColor, materialSeed.color, "draw " .. index .. " inherits the material's seeded color")
+  end
+  Assert.deepEqual(
+    bank.draws[2].seedNormal,
+    { 0, 1, 0 },
+    "the second draw inherits the geometry engine's carried normal instead of reporting a zero default"
+  )
+
+  -- Replaying the published seeds reproduces the carried state: both draws emit
+  -- the same seeded vertex color.
+  local arena = GxGeometryBuffer.new()
+  local scratch = GxDisplayList.newScratch()
+  local seen = {}
+  for index, draw in ipairs(bank.draws) do
+    local geom = assert(GxDisplayList.decode(rawBytes(draw.commands), {
+      arena = arena,
+      scratch = scratch,
+      initialState = { color = draw.seedColor, normal = draw.seedNormal, colorSource = draw.seedColorSource },
+      matrix = draw.matrix,
+    }), "draw " .. index .. " replays")
+    local attrib = geom.slice.arena.attrib[geom.slice.vertexOffset]
+    seen[index] = { r = attrib.r, g = attrib.g, b = attrib.b, colorSource = attrib.colorSource }
+  end
+  Assert.deepEqual(seen[1], {
+    r = materialSeed.color[1],
+    g = materialSeed.color[2],
+    b = materialSeed.color[3],
+    colorSource = materialSeed.colorSource,
+  }, "the first draw uses the material seed")
+  Assert.deepEqual(seen[2], seen[1], "the second draw reproduces the carried state")
 end
 
 return { tests = T }

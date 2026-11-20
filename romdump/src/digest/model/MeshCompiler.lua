@@ -137,7 +137,7 @@ end
 ---@param dynamic boolean
 ---@param arena GxGeometryBuffer
 ---@param gxScratch GxDisplayList.Scratch|nil
----@return { draw: table<string, unknown>, shape: table<string, unknown>, matState: { polygonAttrRaw: integer, seed: table<string, unknown>|nil }, geom: table<string, unknown> }[]
+---@return { draw: table<string, unknown>, shape: table<string, unknown>, matState: { polygonAttrRaw: integer, seed: table<string, unknown>|nil }, geom: table<string, unknown>, initialState: { color: number[]?, normal: number[]?, colorSource: integer|nil } }[]
 local function decodeDraws(model, draws, dynamic, arena, gxScratch)
   local shapeByIndex = {}
   for _, shp in ipairs(model.shapes) do
@@ -195,7 +195,13 @@ local function decodeDraws(model, draws, dynamic, arena, gxScratch)
     end
     carriedState = geom.finalState
 
-    decoded[#decoded + 1] = { draw = draw, shape = shp, matState = matState, geom = geom }
+    decoded[#decoded + 1] = {
+      draw = draw,
+      shape = shp,
+      matState = matState,
+      geom = geom,
+      initialState = initialState,
+    }
   end
   return decoded
 end
@@ -270,6 +276,9 @@ end
 ---@field materialIndex integer
 ---@field transformMode TransformMode
 ---@field positionSource DrawSource|nil -- nil: fully baked (billboard segments)
+---@field initialState { color: number[]?, normal: number[]?, colorSource: integer|nil } the
+--  geometry-engine color/normal state this draw's source inherited before its
+--  first command, so a native replay seeds the same state
 ---@field polygonAttrRaw integer -- the material's polygon-attr word, the same
 --  state the static path rides on each batch: cull mode, polygon mode, id,
 --  depth flags, polygon alpha
@@ -386,6 +395,7 @@ function MeshCompiler.compileDynamic(model, context)
           materialIndex = draw.materialIndex,
           transformMode = draw.transformMode,
           positionSource = positionSource,
+          initialState = record.initialState,
           polygonAttrRaw = matState.polygonAttrRaw,
           batch = {
             arena = arena,

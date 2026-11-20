@@ -52,6 +52,40 @@ function Worker.run(requestChannel, replyChannel)
     replyChannel:push({ token = token, ok = false, kind = kind, path = path, error = text })
   end
 
+  -- One decoder scratch for every serial texture job: decodeInto resizes and
+  -- rewrites the palette storage it needs, so successive jobs can share it.
+  local textureScratch = TextureDecoder.newScratch()
+
+  -- One parsed native texture bank, keyed by its versioned logical path. The
+  -- queue identifies texture work by bank file plus selected names, so several
+  -- selections of one bank arrive as separate jobs; they reuse this parse
+  -- instead of reading and parsing the whole bank again. A different path
+  -- replaces the entry, so the worker holds at most one parsed bank. Generated
+  -- banks are content-addressed, so a path's bytes are stable for one worker
+  -- lifetime. Never persisted and never accompanied by a derivative.
+  local parsedBankPath = nil
+  local parsedBank = nil
+  ---@param cache CacheFs
+  ---@param logicalPath string
+  ---@param path string
+  ---@return NativeTextureBank.Bank
+  local function nativeBankFor(cache, logicalPath, path)
+    if parsedBankPath == logicalPath then
+      return parsedBank --[[@as NativeTextureBank.Bank]]
+    end
+    local bytes = cache:read(logicalPath)
+    if bytes == nil then
+      error("unreadable cache file: " .. tostring(path), 0)
+    end
+    local bank, bankError = NativeTextureBank.read(bytes)
+    if bank == nil then
+      error(bankError, 0)
+    end
+    parsedBankPath = logicalPath
+    parsedBank = bank
+    return bank
+  end
+
   -- Mesh bytes enter through the versioned cache so wrapped physical files
   -- decode off the main thread. The confined path travels with the request
   -- for channel compatibility, but the logical path is authoritative: it
@@ -193,7 +227,9 @@ function Worker.run(requestChannel, replyChannel)
   -- One named texture/palette pair of a native texture bank: the compact
   -- source texels decode straight to RGBA in this worker, then classify into
   -- the same upload payload the PNG path produces. The palette is selected by
-  -- name, never baked into the perspective of one material.
+  -- name, never baked into the perspective of one material. The decoded RGBA
+  -- bytes go to the classifier as the ByteData the decoder filled, so no
+  -- intermediate ImageData is created.
   local function prepareNativeTexture(token, versionId, logicalPath, path, selector)
     local function work()
       assert(
@@ -204,14 +240,7 @@ function Worker.run(requestChannel, replyChannel)
       if cache:resolve(logicalPath) ~= path then
         error("native texture preparation path escapes its confined cache entry", 0)
       end
-      local bytes = cache:read(logicalPath)
-      if bytes == nil then
-        error("unreadable cache file: " .. tostring(path), 0)
-      end
-      local bank, bankError = NativeTextureBank.read(bytes)
-      if bank == nil then
-        error(bankError, 0)
-      end
+      local bank = nativeBankFor(cache, logicalPath, path)
       local texture = bank:texture(selector.textureName)
       if texture == nil then
         error("texture bank has no texture " .. tostring(selector.textureName) .. ": " .. tostring(path), 0)
@@ -237,11 +266,10 @@ function Worker.run(requestChannel, replyChannel)
       local rgba = love.data.newByteData(texture.width * texture.height * 4)
       local rgbaSize = rgba:getSize()
       ---@cast rgbaSize integer
-      TextureDecoder.decodeInto(opts, rgba:getFFIPointer(), rgbaSize, TextureDecoder.newScratch(), {
+      TextureDecoder.decodeInto(opts, rgba:getFFIPointer(), rgbaSize, textureScratch, {
         name = texture.name,
       })
-      local imageData = love.image.newImageData(texture.width, texture.height, "rgba8", rgba --[[@as string]])
-      return ImageDerivative.classify(imageData)
+      return ImageDerivative.classifyPixels(texture.width, texture.height, rgba)
     end
     local ok, classified = pcall(work)
     if not ok then

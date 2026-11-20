@@ -71,6 +71,7 @@ function T.one_bank_round_trips_ordered_draw_commands()
   local Format = nativeFormat()
   local first = triangleCommands({ { 0, 0, 0 }, { 2, 0, 0 }, { 0, 0, 6 } })
   local second = triangleCommands({ { 0, 3, 0 }, { 2, 3, 0 }, { 0, 3, 6 } })
+  local matrix = { 8, 0, 0, 0, 0, 8, 0, 0, 0, 0, 8, 0, 1, 2, 3, 1 }
 
   local encoded = rawBytes(Format.encode({
     draws = {
@@ -81,6 +82,9 @@ function T.one_bank_round_trips_ordered_draw_commands()
         shapeIndex = 0,
         transformMode = "static",
         terrainBoundaryEligible = true,
+        seedColorSource = 1,
+        seedColor = { 12, 34, 56 },
+        seedNormal = { 0, 1, 0 },
       },
       {
         commands = second,
@@ -89,6 +93,12 @@ function T.one_bank_round_trips_ordered_draw_commands()
         shapeIndex = 1,
         transformMode = "billboard",
         terrainBoundaryEligible = false,
+        segmentIndex = 2,
+        positionScale = 0.0625,
+        matrix = matrix,
+        seedColorSource = 2,
+        seedColor = { 1, 2, 3 },
+        seedNormal = { 0, 0.5, -1 },
       },
     },
   }))
@@ -102,17 +112,59 @@ function T.one_bank_round_trips_ordered_draw_commands()
   Assert.notNil(bank, "a well-formed bank yields a reader")
   Assert.equal(bank.drawCount, 2, "one bank keeps one record per draw of its source model")
 
-  Assert.notNil(bank.draws[1], "draw records are addressed by their zero-based draw index")
-  Assert.notNil(bank.draws[2], "draw records are addressed by their zero-based draw index")
-  Assert.equal(rawBytes(bank.draws[1].commands), first, "the first draw's command span is preserved byte for byte")
-  Assert.equal(rawBytes(bank.draws[2].commands), second, "the second draw's command span is preserved byte for byte")
-  Assert.equal(bank.draws[1].nodeIndex, 0, "draw record keeps its node binding")
-  Assert.equal(bank.draws[2].nodeIndex, 1, "draw record keeps its node binding")
-  Assert.equal(bank.draws[1].materialIndex, 0, "draw record keeps its material binding")
-  Assert.equal(bank.draws[2].materialIndex, 2, "draw record keeps its material binding")
-  Assert.equal(bank.draws[2].transformMode, "billboard", "draw record keeps its transform mode")
-  Assert.isTrue(bank.draws[1].terrainBoundaryEligible, "draw record keeps its terrain boundary eligibility")
-  Assert.isFalse(bank.draws[2].terrainBoundaryEligible, "draw record keeps its terrain boundary eligibility")
+  local firstDraw, secondDraw = bank.draws[1], bank.draws[2]
+  Assert.notNil(firstDraw, "draw records are addressed by their zero-based draw index")
+  Assert.notNil(secondDraw, "draw records are addressed by their zero-based draw index")
+  Assert.equal(rawBytes(firstDraw.commands), first, "the first draw's command span is preserved byte for byte")
+  Assert.equal(rawBytes(secondDraw.commands), second, "the second draw's command span is preserved byte for byte")
+  Assert.equal(firstDraw.nodeIndex, 0, "draw record keeps its node binding")
+  Assert.equal(secondDraw.nodeIndex, 1, "draw record keeps its node binding")
+  Assert.equal(firstDraw.materialIndex, 0, "draw record keeps its material binding")
+  Assert.equal(secondDraw.materialIndex, 2, "draw record keeps its material binding")
+  Assert.equal(secondDraw.transformMode, "billboard", "draw record keeps its transform mode")
+  Assert.isTrue(firstDraw.terrainBoundaryEligible, "draw record keeps its terrain boundary eligibility")
+  Assert.isFalse(secondDraw.terrainBoundaryEligible, "draw record keeps its terrain boundary eligibility")
+
+  -- The resolved replay state a draw inherits: the geometry-engine color
+  -- source, color and normal, the pose segment, the baked pose-independent
+  -- matrix, and the source-to-runtime scale.
+  Assert.equal(firstDraw.seedColorSource, 1, "the inherited color source survives the round trip")
+  Assert.deepEqual(firstDraw.seedColor, { 12, 34, 56 }, "the inherited color survives the round trip")
+  Assert.deepEqual(firstDraw.seedNormal, { 0, 1, 0 }, "the inherited normal survives the round trip")
+  Assert.isNil(firstDraw.segmentIndex, "a static draw keeps no pose segment")
+  Assert.equal(secondDraw.seedColorSource, 2, "each draw keeps its own inherited color source")
+  Assert.deepEqual(secondDraw.seedColor, { 1, 2, 3 }, "each draw keeps its own inherited color")
+  Assert.deepEqual(secondDraw.seedNormal, { 0, 0.5, -1 }, "each draw keeps its own inherited normal")
+  Assert.equal(secondDraw.segmentIndex, 2, "the pose segment survives the round trip")
+  Assert.near(secondDraw.positionScale, 0.0625, 1e-9, "the position scale survives the round trip")
+  Assert.deepEqual(secondDraw.matrix, matrix, "the baked matrix survives the round trip")
+end
+
+-- Several draws of one bank legitimately share one command stream (the
+-- segments of one transform-preserving draw, a shape resubmitted under another
+-- state). The bank stores and decodes that stream once.
+function T.repeated_command_streams_are_stored_and_decoded_once()
+  local Format = nativeFormat()
+  local shared = triangleCommands({ { 0, 0, 0 }, { 2, 0, 0 }, { 0, 0, 6 } })
+  local other = triangleCommands({ { 0, 3, 0 }, { 2, 3, 0 }, { 0, 3, 6 } })
+  local drawsFor = function(second)
+    return Format.encode({
+      draws = {
+        { commands = shared, nodeIndex = 0, materialIndex = 0, shapeIndex = 0 },
+        { commands = second, nodeIndex = 0, materialIndex = 1, shapeIndex = 0 },
+      },
+    })
+  end
+  local duplicated = drawsFor(shared)
+  local distinct = drawsFor(other)
+  Assert.equal(#duplicated + #shared, #distinct, "a bank stores one copy of a command stream two draws share")
+
+  local bank = assert(Format.read(duplicated))
+  Assert.equal(bank.drawCount, 2, "both draws still keep their own record")
+  Assert.equal(rawBytes(bank.draws[1].commands), shared, "the first draw reads its shared stream")
+  Assert.equal(rawBytes(bank.draws[2].commands), shared, "the second draw reads the same shared stream")
+  Assert.equal(bank.draws[1].materialIndex, 0, "sharing a stream never merges per-draw state")
+  Assert.equal(bank.draws[2].materialIndex, 1, "sharing a stream never merges per-draw state")
 end
 
 ---@param Format table

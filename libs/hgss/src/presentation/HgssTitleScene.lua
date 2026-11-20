@@ -523,7 +523,13 @@ local TITLE_BUILD_WAIT = {}
 local function failBuild(build, err)
   if build._state == "active" then
     build._state = "failed"
+    local token = build._token
     build._token = nil
+    if token ~= nil then
+      -- Cancellation must not mask the original failure (the queue may
+      -- already be gone when unwinding through layered releases).
+      pcall(build._queue.cancel, build._queue, token)
+    end
     build._scene:dispose()
   end
   build._failed = err

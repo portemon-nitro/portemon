@@ -7,6 +7,7 @@
 -- narrow recording doubles; no graphics context is required.
 
 local Assert = require("tests.support.Assert")
+local ControllableImageOwner = require("tests.support.ControllableImageOwner")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local FakeGraphics = require("tests.support.FakeGraphics").new
 local FakePreparationQueue = require("tests.support.FakePreparationQueue")
@@ -929,6 +930,109 @@ function T.staged_preparation_realizes_the_hero_before_the_first_draw()
     Assert.equal(#rec.draws, 1, "the staged realization draws its canonical model once")
     renderer:release()
   end)
+end
+
+-- Advance a staged hero realization until it suspends on the supplied ticket
+-- source, whose request log is empty until the build reaches that stage.
+local function advanceToTicket(renderer, requests)
+  for _ = 1, 8 do
+    if #requests > 0 then
+      return
+    end
+    renderer:prepare("male", 1)
+  end
+  Assert.isTrue(#requests > 0, "the staged hero reaches its pending ticket")
+end
+
+-- One hero material sampling a real texture reference, so a staged
+-- realization borrows through the session image owner.
+local function texturedManifest()
+  local manifest = validManifest()
+  manifest.hero.model.male = heroDescriptor("male")
+  manifest.hero.model.male.materials = {
+    { id = 0, name = "hero", texture = "assets/generated/bag/hero.png", wrap = { x = "clamp", y = "clamp" } },
+  }
+  return manifest
+end
+
+-- One staged hero suspended on a published ticket of `source`, then left
+-- through `exitPath`. Both exits own the same obligation: the abandoned build
+-- drops the interest it was suspended on exactly once at that ticket's owner,
+-- so its packet stops being charged to the session, a late worker reply
+-- publishes nothing, and the realized mesh is disposed once.
+---@param source string "geometry" (preparation queue) or "image" (shared owner)
+---@param exitPath string "release" or "failure"
+local function assertPendingTicketDroppedOnExit(source, exitPath)
+  withDoubles(function(rec)
+    local Hero = requireHero()
+    local owner = nil
+    local queue
+    if source == "image" then
+      queue = fakePreparationQueue()
+      owner = ControllableImageOwner.new()
+    else
+      queue = FakePreparationQueue.new({ deferred = true, payloadBytes = 2048 })
+    end
+    local renderer = Hero.new({
+      assetPreparation = queue,
+      cacheFs = stubCache(),
+      manifest = owner ~= nil and texturedManifest() or validManifest(),
+      graphics = FakeGraphics({}),
+      imageAssets = owner,
+    })
+    local tickets = owner ~= nil and owner.requests or queue.requests
+    advanceToTicket(renderer, tickets)
+    Assert.equal(#tickets, 1, "the staged hero suspends on one " .. source .. " ticket")
+    local ticket = tickets[1].token
+    local ticketOwner = owner ~= nil and owner or queue
+    Assert.isTrue(ticketOwner:publish(ticket), "the worker publishes the pending " .. source)
+    Assert.equal(ticketOwner.readyBytes, 2048, "the published payload is charged to the ready budget")
+
+    if exitPath == "release" then
+      renderer:release()
+      renderer:release()
+    else
+      if owner ~= nil then
+        owner:failNow("injected shared image failure")
+      else
+        queue:failPoll("preparation queue reply is malformed")
+      end
+      local ok, err = pcall(renderer.prepare, renderer, "male", 1)
+      Assert.isFalse(ok, "a " .. source .. " fault fails the staged realization")
+      local cause = owner ~= nil and "injected shared image failure" or "preparation queue reply"
+      Assert.isTrue(
+        tostring(err):find(cause, 1, true) ~= nil,
+        "the " .. source .. " cause propagates instead of a cancellation error"
+      )
+      renderer:release()
+    end
+
+    local label = exitPath .. " on a pending " .. source .. " ticket"
+    Assert.equal(#ticketOwner.cancelCalls, 1, label .. " cancels that ticket exactly once")
+    Assert.equal(ticketOwner.cancelCalls[1], ticket, label .. " cancels the ticket it was suspended on")
+    Assert.equal(ticketOwner.readyBytes, 0, label .. " leaves no payload charged")
+    Assert.isFalse(ticketOwner:publish(ticket), label .. " discards a late worker reply")
+    if owner ~= nil then
+      Assert.equal(owner:outstandingLeases(), 0, label .. " takes no lease for the dropped ticket")
+    end
+    Assert.isFalse(renderer:isReady("male"), label .. " publishes no resident model")
+    Assert.equal(rec.pools[1].releaseCount, 1, label .. " disposes its pool exactly once")
+  end)
+end
+
+-- A staged hero abandoned while its preparation ticket is still owed drops that
+-- interest on release, whichever owner the ticket belongs to.
+function T.release_drops_the_pending_preparation_and_shared_image_tickets_once()
+  assertPendingTicketDroppedOnExit("geometry", "release")
+  assertPendingTicketDroppedOnExit("image", "release")
+end
+
+-- A staged hero that fails while its preparation ticket is still owed drops
+-- that interest without masking the cause, whichever owner the ticket belongs
+-- to.
+function T.failure_drops_the_pending_preparation_and_shared_image_tickets_once()
+  assertPendingTicketDroppedOnExit("geometry", "failure")
+  assertPendingTicketDroppedOnExit("image", "failure")
 end
 
 -- A native texture bank selection keys a hero material borrow exactly like a

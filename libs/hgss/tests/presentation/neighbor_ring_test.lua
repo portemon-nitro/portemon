@@ -8,9 +8,12 @@
 -- this suite needs no graphics capability.
 
 local Assert = require("tests.support.Assert")
+local ControllableImageOwner = require("tests.support.ControllableImageOwner")
 local NeighborRing = require("libs.hgss.src.presentation.NeighborRing")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
+local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local FakeCache = require("tests.support.FakeCache")
+local FakePreparationQueue = require("tests.support.FakePreparationQueue")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local T = {}
@@ -125,110 +128,16 @@ function T.neighbor_material_with_flip_resolves_to_mirrored_repeat()
   ring:release()
 end
 
--- A controllable stand-in for the session-scoped shared image owner: worker
--- results stay withheld until the test publishes them, so a staged neighbor
--- build can prove it yields instead of blocking. It models the same
--- request/poll/acquire/cancel/release shape the GPU pool consumes: one
--- physical image per texture path plus wrap state, explicit leases, and
--- failing polls once the injected threshold trips.
-local function controllableImageOwner()
-  local owner = {
-    uploads = 0,
-    held = true,
-    failAfter = nil,
-    failMessage = nil,
-    cancels = 0,
-    withheld = {},
-    _nextToken = 0,
-    _requests = {},
-    _physicals = {},
+---@param images ControllableImageOwner
+---@param queue table? preparation queue the staged build routes geometry through
+---@return table neighbor options
+local function stagedNeighborOptions(images, queue)
+  return {
+    meshBuilder = fakeMeshBuilder,
+    imageAssets = images,
+    graphics = STUB_GRAPHICS,
+    assetPreparation = queue,
   }
-  function owner:request(path, sampler, _priority)
-    assert(type(path) == "string", "shared image request path is required")
-    assert(
-      type(sampler) == "table" and sampler.wrapX ~= nil and sampler.wrapY ~= nil,
-      "shared image request needs sampler state"
-    )
-    self._nextToken = self._nextToken + 1
-    self._requests[self._nextToken] =
-      { state = "staged", path = path, key = path .. "|" .. sampler.wrapX .. "|" .. sampler.wrapY }
-    return self._nextToken
-  end
-  function owner:poll(token)
-    local request = assert(self._requests[token], "unknown image request token")
-    if request.state == "cancelled" then
-      error("image request was cancelled", 0)
-    end
-    if request.state == "acquired" then
-      return "ready"
-    end
-    if self.failAfter ~= nil and self.uploads >= self.failAfter then
-      return "failed", self.failMessage or "injected shared image failure"
-    end
-    if self.held or self.withheld[request.path] then
-      return "pending"
-    end
-    return "ready"
-  end
-  function owner:acquire(token)
-    local request = assert(self._requests[token], "unknown image request token")
-    assert(request.state == "staged", "image request is not ready")
-    local physical = self._physicals[request.key]
-    if physical == nil then
-      local image = { released = false, releaseCount = 0 }
-      function image:release()
-        self.released = true
-        self.releaseCount = self.releaseCount + 1
-      end
-      physical = { image = image, leases = 0 }
-      self._physicals[request.key] = physical
-      self.uploads = self.uploads + 1
-    end
-    physical.leases = physical.leases + 1
-    request.state = "acquired"
-    return { image = physical.image, palette = nil, kind = nil, _key = request.key, _owner = self, _released = false }
-  end
-  function owner:cancel(token)
-    local request = self._requests[token]
-    if request == nil or request.state == "acquired" then
-      return false
-    end
-    self._requests[token] = nil
-    self.cancels = self.cancels + 1
-    return true
-  end
-  function owner:release(lease)
-    assert(lease ~= nil and lease._owner == self, "image lease belongs to another pool")
-    if lease._released then
-      return false
-    end
-    lease._released = true
-    local physical = assert(self._physicals[lease._key], "physical image left the pool under its lease")
-    physical.leases = physical.leases - 1
-    return true
-  end
-  function owner:outstandingLeases()
-    local total = 0
-    for _, physical in pairs(self._physicals) do
-      total = total + physical.leases
-    end
-    return total
-  end
-  function owner:publish()
-    self.held = false
-  end
-  function owner:withhold(path)
-    self.withheld[path] = true
-  end
-  function owner:failAfterUploads(count, message)
-    self.failAfter = count
-    self.failMessage = message
-  end
-  return owner
-end
-
-local function stagedNeighborOptions(images)
-  return { meshBuilder = fakeMeshBuilder, imageAssets = images, graphics = STUB_GRAPHICS }
 end
 
 local function groundMaterial(texture)
@@ -257,7 +166,7 @@ function T.staged_begin_yields_on_cold_images_without_consuming_work()
     cell(32, 1, 0, groundMaterial("neighbor-ground.png"), geometryPath),
     cell(-32, 1, 0, groundMaterial("neighbor-ground.png"), geometryPath),
   }
-  local images = controllableImageOwner()
+  local images = ControllableImageOwner.new()
   local task = begin(backend, descriptors, stagedNeighborOptions(images))
   Assert.equal(task:advance(0), 0, "a zero budget does no work")
   Assert.isFalse(task:isReady(), "cold images keep the staged ring pending")
@@ -275,7 +184,7 @@ function T.staged_begin_yields_on_cold_images_without_consuming_work()
     "cells sharing a texture share one borrowed image"
   )
   Assert.equal(images.uploads, 1, "one shared texture uploads once")
-  local readyImages = controllableImageOwner()
+  local readyImages = ControllableImageOwner.new()
   readyImages:publish()
   local sync = NeighborRing.load(backend, descriptors, stagedNeighborOptions(readyImages))
   Assert.equal(#sync.draws, #ring.draws, "the staged ring draws every cell the synchronous build draws")
@@ -296,7 +205,7 @@ function T.staged_begin_finish_completes_for_an_explicit_synchronous_owner()
   local backend = FakeCache.new()
   backend:write(geometryPath, MeshWriter.encode(quad()))
   local descriptors = { cell(32, 1, 0, groundMaterial("neighbor-ground.png"), geometryPath) }
-  local images = controllableImageOwner()
+  local images = ControllableImageOwner.new()
   images:publish()
   local ring = begin(backend, descriptors, stagedNeighborOptions(images)):finish()
   Assert.equal(#ring.draws, 1, "finish builds the one neighbor cell")
@@ -317,7 +226,7 @@ function T.staged_begin_failure_releases_partial_borrows_and_publishes_nothing()
     cell(32, 1, 0, groundMaterial("neighbor-first.png"), geometryPath),
     cell(-32, 1, 0, groundMaterial("neighbor-second.png"), geometryPath),
   }
-  local images = controllableImageOwner()
+  local images = ControllableImageOwner.new()
   images:publish()
   images:failAfterUploads(1, "injected neighbor texture failure")
   local task = begin(backend, descriptors, stagedNeighborOptions(images))
@@ -334,7 +243,7 @@ function T.staged_begin_failure_releases_partial_borrows_and_publishes_nothing()
   task:release()
   task:release()
   Assert.equal(images:outstandingLeases(), 0, "repeated release is safe")
-  local healthy = controllableImageOwner()
+  local healthy = ControllableImageOwner.new()
   healthy:publish()
   local retry = begin(backend, descriptors, stagedNeighborOptions(healthy)):finish()
   Assert.equal(#retry.draws, 2, "an independent retry draws both cells")
@@ -353,10 +262,11 @@ function T.staged_begin_cancel_returns_borrows_without_touching_scene_leases()
     cell(32, 1, 0, groundMaterial("neighbor-first.png"), geometryPath),
     cell(-32, 1, 0, groundMaterial("neighbor-second.png"), geometryPath),
   }
-  local images = controllableImageOwner()
+  local images = ControllableImageOwner.new()
   images:publish()
   images:withhold("neighbor-second.png")
   local sceneToken = images:request("neighbor-first.png", { wrapX = "repeat", wrapY = "repeat" }, "demand")
+  Assert.equal(images:poll(sceneToken), "ready", "the sibling scene borrow is warm")
   local sceneLease = images:acquire(sceneToken)
   local task = begin(backend, descriptors, stagedNeighborOptions(images))
   task:advance(8)
@@ -392,7 +302,7 @@ function T.staged_begin_cold_swap_frame_yields_then_animates()
     },
   }
   local descriptors = { cell(32, 1, 0, material, geometryPath) }
-  local images = controllableImageOwner()
+  local images = ControllableImageOwner.new()
   images:publish()
   images:withhold("neighbor-swap-a.png")
   images:withhold("neighbor-swap-b.png")
@@ -436,7 +346,7 @@ function T.staged_begin_malformed_wrap_fails_without_borrowing()
   local material = groundMaterial("neighbor-ground.png")
   material.wrap = { x = "sideways", y = "repeat" }
   local descriptors = { cell(32, 1, 0, material, geometryPath) }
-  local images = controllableImageOwner()
+  local images = ControllableImageOwner.new()
   images:publish()
   local task = begin(backend, descriptors, stagedNeighborOptions(images))
   local ok = pcall(task.advance, task, 8)
@@ -451,6 +361,124 @@ function T.staged_begin_malformed_wrap_fails_without_borrowing()
   task:release()
   task:release()
   Assert.equal(images:outstandingLeases(), 0, "release after failure is safe")
+end
+
+-- One procedural neighbor geometry path plus the prepared upload payload the
+-- worker would answer it with, so a blocking finish realizes the same mesh a
+-- cooperative advance realizes.
+local GEOMETRY_PATH = "assets/generated/maps/geometry/neighbor-quad.g4mesh"
+
+local function geometryBackend()
+  local backend = FakeCache.new()
+  backend:write(GEOMETRY_PATH, MeshWriter.encode(quad()))
+  return backend
+end
+
+local function preparedMeshPayload(backend)
+  local bytes = assert(backend:read(GEOMETRY_PATH))
+  return SceneMesh.prepareUpload(bytes, GEOMETRY_PATH)
+end
+
+-- Advance a staged build until it suspends on its geometry ticket: the
+-- material stages charge work units of their own before the first geometry
+-- request reaches the worker.
+local function advanceToGeometryTicket(task, queue)
+  for _ = 1, 8 do
+    if #queue.requests > 0 then
+      return
+    end
+    task:advance(1)
+  end
+  Assert.isTrue(#queue.requests > 0, "the staged build requests its geometry")
+end
+
+-- Suspend one staged build on its published geometry ticket, then leave it
+-- through `exitPath`. Both exits own the same obligation: the abandoned build
+-- drops the ticket it was suspended on exactly once, so the ready worker packet
+-- stops being charged to the session queue's budget, a late reply publishes
+-- nothing, and the borrowed images return.
+---@param exitPath string "release" or "failure"
+local function assertGeometryTicketDroppedOnExit(exitPath)
+  local backend = geometryBackend()
+  local images = ControllableImageOwner.new()
+  images:publish()
+  local queue = FakePreparationQueue.new({ deferred = true, payloadBytes = 2048 })
+  local descriptors = { cell(32, 1, 0, groundMaterial("neighbor-ground.png"), GEOMETRY_PATH) }
+  local task = NeighborRing.begin(backend, descriptors, stagedNeighborOptions(images, queue))
+  advanceToGeometryTicket(task, queue)
+  Assert.equal(task:advance(1), 0, "a pending geometry ticket consumes no work unit")
+  Assert.isFalse(task:isReady(), "the ring waits for the geometry worker")
+  Assert.equal(#queue.requests, 1, "the ring requests its geometry from the worker")
+  Assert.equal(queue.requests[1].kind, "mesh", "procedural neighbor geometry is prepared as a mesh")
+  Assert.equal(queue.requests[1].priority, "prefetch", "a staged build keeps requesting at prefetch priority")
+  local token = queue.requests[1].token
+  Assert.isTrue(queue:publish(token), "the worker publishes the pending geometry")
+  Assert.equal(queue.readyBytes, 2048, "the published packet is charged to the ready budget")
+
+  if exitPath == "release" then
+    task:release()
+    task:release()
+  else
+    queue:failPoll("preparation queue reply is malformed")
+    local ok, err = pcall(task.advance, task, 1)
+    Assert.isFalse(ok, "a queue fault fails the staged build")
+    Assert.isTrue(
+      tostring(err):find("preparation queue reply is malformed", 1, true) ~= nil,
+      "the queue cause propagates instead of a cancellation error"
+    )
+    task:release()
+    Assert.equal(#queue.cancelCalls, 1, "release after failure never cancels the same ticket twice")
+  end
+
+  Assert.equal(#queue.cancelCalls, 1, exitPath .. " cancels the outstanding geometry ticket exactly once")
+  Assert.equal(queue.cancelCalls[1], token, exitPath .. " cancels the ticket the build was suspended on")
+  Assert.equal(queue.readyBytes, 0, "the ready-payload budget returns to baseline")
+  Assert.isFalse(task:isReady(), "a closed build never becomes ready")
+  Assert.throws(function()
+    task:takeResult()
+  end, "a closed build publishes no ring")
+  Assert.isFalse(queue:publish(token), "a late worker reply cannot publish a dropped ticket")
+  Assert.equal(images:outstandingLeases(), 0, "the closed build returns its borrowed images")
+end
+
+-- A staged build that is abandoned while the geometry worker still owes it a
+-- packet drops that interest through either exit, before the packet is claimed.
+function T.staged_release_and_failure_cancel_the_outstanding_geometry_ticket_once()
+  assertGeometryTicketDroppedOnExit("release")
+  assertGeometryTicketDroppedOnExit("failure")
+end
+
+-- The synchronous entry blocks on the worker instead of re-polling the
+-- suspended build: it promotes the outstanding ticket to demand, waits for the
+-- payload once, and resumes the build with that payload stashed.
+function T.staged_finish_waits_on_the_worker_instead_of_repolling_the_build()
+  local backend = geometryBackend()
+  local images = ControllableImageOwner.new()
+  images:publish()
+  local queue = FakePreparationQueue.new({
+    deferred = true,
+    payloadBytes = 2048,
+    pollLimit = 8,
+    payload = function(kind, path)
+      Assert.equal(kind, "mesh", "neighbor geometry arrives as a prepared mesh")
+      Assert.equal(path, GEOMETRY_PATH, "the worker prepares the requested geometry path")
+      return preparedMeshPayload(backend)
+    end,
+  })
+  local descriptors = { cell(32, 1, 0, groundMaterial("neighbor-ground.png"), GEOMETRY_PATH) }
+  local ring = NeighborRing.begin(backend, descriptors, stagedNeighborOptions(images, queue)):finish()
+  Assert.equal(#queue.requests, 1, "the finishing build issues its geometry request once")
+  Assert.equal(queue.requests[1].priority, "demand", "finishing promotes new requests to demand")
+  Assert.equal(queue.waited, 1, "finish blocks on the outstanding ticket once")
+  Assert.equal(#queue.promotions, 1, "finish promotes the outstanding ticket")
+  Assert.equal(queue.promotions[1].token, queue.requests[1].token, "the promoted ticket is the awaited one")
+  Assert.equal(queue.promotions[1].priority, "demand", "the outstanding ticket becomes demand before the wait")
+  Assert.equal(queue.polls, 1, "finish consumes its waited payload instead of re-polling the build")
+  Assert.equal(queue.readyBytes, 0, "the waited payload transfers instead of staying charged")
+  Assert.equal(#ring.draws, 1, "finish builds the one neighbor cell")
+  Assert.equal(ring.draws[1].transform[13], 32, "the finished ring carries the cell offset")
+  ring:release()
+  Assert.equal(images:outstandingLeases(), 0, "ring release returns every borrow")
 end
 
 function T.neighbor_vertical_offset_reaches_the_draw_transform()

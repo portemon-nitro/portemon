@@ -134,7 +134,15 @@ local function compileDraws(model, textureSizes, isTerrain)
     local matState = MeshCompiler.materialState(rawMaterial)
     local poly = DsPolygonAttr.decode(matState.polygonAttrRaw)
     local drawContext = { model = model.name, shape = shape.name, material = draw.materialIndex }
-    local scan = GxDisplayList.scanState(shape.displayListBytes, drawContext)
+    -- The geometry engine keeps color/normal state across shape calls; a
+    -- reapplied material reseeds it. Resolve the seed first and scan the shape
+    -- as inheriting it, so a shape that issues no COLOR/NORMAL leaves the
+    -- carried state intact instead of reporting a default.
+    local seed = carriedState or matState.seed
+    if draw.materialReapplied then
+      seed = matState.seed
+    end
+    local scan = GxDisplayList.scanState(shape.displayListBytes, drawContext, seed)
     MeshCompiler.assertSupportedShape(scan, drawContext)
     if draw.transformMode == PoseContract.BILLBOARD then
       MeshCompiler.assertWholeShapeBillboard(scan, drawContext)
@@ -149,13 +157,8 @@ local function compileDraws(model, textureSizes, isTerrain)
       })
     end
 
-    -- The geometry engine keeps color/normal state across shape calls; a
-    -- reapplied material reseeds it. Recording the resolved seed per draw lets
-    -- the runtime replay the very same state without the source model.
-    local seed = carriedState or matState.seed
-    if draw.materialReapplied then
-      seed = matState.seed
-    end
+    -- Recording the resolved seed per draw lets the runtime replay the very
+    -- same state without the source model.
     carriedState = scan.finalState
 
     if poly.cullMode ~= "all" then
@@ -174,6 +177,7 @@ local function compileDraws(model, textureSizes, isTerrain)
         positionScale = POSITION_SCALE,
         seedColorSource = seed and seed.colorSource or nil,
         seedColor = seed and seed.color or nil,
+        seedNormal = seed and seed.normal or nil,
       }
       bankDraws[#bankDraws + 1] = bankDraw
       selectable[#selectable + 1] = {

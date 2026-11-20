@@ -3,9 +3,11 @@
 -- display-list command bytes the runtime GX decoder replays, the draw's
 -- node/shape/material binding, the transform mode and terrain-boundary
 -- eligibility the renderer needs, the texture extent that normalized the UVs,
--- and an optional bounded pose blob holding the draw-time matrices the
--- producer already resolved (source-independent numbers, never a source
--- pointer or archive identity). The file stores no triangles: runtime
+-- and an optional bounded pose blob holding the draw-time state the producer
+-- already resolved (source-independent numbers, never a source pointer or
+-- archive identity): the pose-independent matrix a transform-preserving replay
+-- bakes, the geometry-engine color/normal state seeded before the commands, and
+-- the pose segment the replay keeps. The file stores no triangles: runtime
 -- geometry comes from replaying the commands. Pure domain module: no love
 -- dependency.
 
@@ -17,7 +19,7 @@ local Float32 = require("libs.codec.src.Float32")
 local NativeGxFormat = {}
 
 local MAGIC = "G4GX"
-local VERSION = 1
+local VERSION = 2
 -- magic[4], u16 version, u16 reserved, u32 totalBytes, u32 drawCount,
 -- u32 drawTableOffset, u32 commandPayloadOffset.
 local HEADER_SIZE = 24
@@ -37,6 +39,8 @@ local FLAG_TERRAIN_BOUNDARY = 0x01
 local POSE_FLAG_MATRIX = 0x01
 local POSE_FLAG_SEED = 0x04
 local POSE_SEED_SIZE = 4 -- u8 color source plus one, u8 red, u8 green, u8 blue
+local POSE_FLAG_SEED_NORMAL = 0x20
+local POSE_SEED_NORMAL_SIZE = 12 -- three f32 direction components
 local POSE_FLAG_SEGMENT = 0x08
 local POSE_SEGMENT_SIZE = 4 -- u16 pose segment index, u16 reserved
 local POSE_FLAG_SCALE = 0x10
@@ -144,20 +148,25 @@ end
 ---@field restoreStack { [integer]: number[] }|nil GX matrix-stack slots the commands restore
 ---@field seedColorSource integer|nil geometry-engine color source seeded before the commands (0 literal, 1 normal-lit, 2 field diffuse)
 ---@field seedColor number[]|nil seeded vertex color as { r, g, b } bytes
+---@field seedNormal number[]|nil seeded geometry-engine normal, the direction a shape inherits before issuing one
 ---@field segmentIndex integer|nil pose segment the runtime keeps from a transform-preserving decode
 ---@field positionScale number|nil factor the runtime applies to decoded positions (source units to runtime units)
 
 local function poseBytes(draw, slots)
   local hasMatrix = draw.matrix ~= nil
   local hasSeed = draw.seedColorSource ~= nil
+  local hasSeedNormal = draw.seedNormal ~= nil
   local hasSegment = draw.segmentIndex ~= nil
   local hasScale = draw.positionScale ~= nil
-  if not hasMatrix and not hasSeed and not hasSegment and not hasScale and #slots == 0 then
+  if not hasMatrix and not hasSeed and not hasSeedNormal and not hasSegment and not hasScale and #slots == 0 then
     return 0, nil
   end
   local flags = 0
   if hasSeed then
     flags = bit.bor(flags, POSE_FLAG_SEED)
+  end
+  if hasSeedNormal then
+    flags = bit.bor(flags, POSE_FLAG_SEED_NORMAL)
   end
   if hasSegment then
     flags = bit.bor(flags, POSE_FLAG_SEGMENT)
@@ -187,6 +196,18 @@ local function poseBytes(draw, slots)
       unsigned(color[3] or 255, 255, "draw seed blue")
     )
   end
+  if hasSeedNormal then
+    local normal = draw.seedNormal
+    if type(normal) ~= "table" or #normal ~= 3 then
+      fail("NATIVE_GX_BAD_FIELD", "draw seed normal must be three components", { field = "seedNormal" })
+    end
+    for index = 1, 3 do
+      if type(normal[index]) ~= "number" or normal[index] ~= normal[index] then
+        fail("NATIVE_GX_BAD_FIELD", "draw seed normal has a non-numeric component", { index = index })
+      end
+    end
+    chunks[#chunks + 1] = f32(normal[1]) .. f32(normal[2]) .. f32(normal[3])
+  end
   local function append(values)
     local parts = {}
     for index = 1, 16 do
@@ -207,9 +228,12 @@ local function poseBytes(draw, slots)
 end
 
 -- Deterministic, bounded encoding of an ordered draw list: fixed header,
--- fixed draw table, then the packed command spans and pose blobs in draw
--- order. Every offset is derived here, so an unchanged record always
--- produces identical bytes.
+-- fixed draw table, then the distinct command spans once each in first-use
+-- order, then the pose blobs in draw order. Several draws of one bank
+-- legitimately share a command stream (the segments of one transform-preserving
+-- dynamic draw, a static shape submitted under two states), so a span is stored
+-- and read once per bank. Every offset is derived here, so an unchanged record
+-- always produces identical bytes.
 ---@param record { draws: NativeGxFormat.Draw[] }
 ---@return string
 function NativeGxFormat.encode(record)
@@ -222,6 +246,8 @@ function NativeGxFormat.encode(record)
 
   local commandPayloadOffset = align4(HEADER_SIZE + drawCount * DRAW_RECORD_SIZE)
   local prepared = {}
+  local spanOffsets = {}
+  local uniqueSpans = {}
   local cursor = commandPayloadOffset
   for index, draw in ipairs(draws) do
     if type(draw) ~= "table" then
@@ -230,6 +256,13 @@ function NativeGxFormat.encode(record)
     local commands = byteString(draw.commands, "draw commands")
     if #commands == 0 then
       fail("NATIVE_GX_BAD_RECORD", "draw " .. index .. " carries no command bytes", { drawIndex = index - 1 })
+    end
+    local commandsOffset = spanOffsets[commands]
+    if commandsOffset == nil then
+      commandsOffset = cursor
+      spanOffsets[commands] = commandsOffset
+      uniqueSpans[#uniqueSpans + 1] = commands
+      cursor = cursor + #commands
     end
     local transformMode = draw.transformMode or "static"
     local encodedMode = TRANSFORM_MODES[transformMode]
@@ -240,14 +273,10 @@ function NativeGxFormat.encode(record)
         { drawIndex = index - 1 }
       )
     end
-    local slots = restoreSlots(draw)
-    local poseLength, pose = poseBytes(draw, slots)
     prepared[index] = {
-      commands = commands,
-      commandsOffset = cursor,
-      poseOffset = poseLength > 0 and (cursor + #commands) or 0,
-      poseLength = poseLength,
-      pose = pose,
+      draw = draw,
+      commandsOffset = commandsOffset,
+      commandsLength = #commands,
       encodedMode = encodedMode,
       nodeIndex = unsigned(draw.nodeIndex or 0, 0xFFFF, "node index"),
       materialIndex = unsigned(draw.materialIndex or 0, 0xFFFF, "material index"),
@@ -256,14 +285,21 @@ function NativeGxFormat.encode(record)
       texHeight = unsigned(draw.texHeight or 0, 0xFFFF, "texture height"),
       terrainBoundaryEligible = draw.terrainBoundaryEligible == true,
     }
-    cursor = cursor + #commands + poseLength
+  end
+  for _, item in ipairs(prepared) do
+    local slots = restoreSlots(item.draw)
+    local poseLength, pose = poseBytes(item.draw, slots)
+    item.poseLength = poseLength
+    item.pose = pose
+    item.poseOffset = poseLength > 0 and cursor or 0
+    cursor = cursor + poseLength
   end
 
   local chunks =
     { MAGIC, u16(VERSION), u16(0), u32(cursor), u32(drawCount), u32(HEADER_SIZE), u32(commandPayloadOffset) }
   for _, item in ipairs(prepared) do
     chunks[#chunks + 1] = u32(item.commandsOffset)
-      .. u32(#item.commands)
+      .. u32(item.commandsLength)
       .. u32(item.poseOffset)
       .. u32(item.poseLength)
       .. u32(item.shapeIndex)
@@ -278,8 +314,10 @@ function NativeGxFormat.encode(record)
   if tableEnd < commandPayloadOffset then
     chunks[#chunks + 1] = string.rep("\0", commandPayloadOffset - tableEnd)
   end
+  for _, commands in ipairs(uniqueSpans) do
+    chunks[#chunks + 1] = commands
+  end
   for _, item in ipairs(prepared) do
-    chunks[#chunks + 1] = item.commands
     if item.pose ~= nil then
       chunks[#chunks + 1] = item.pose
     end
@@ -301,7 +339,7 @@ local function readMatrix(reader, offset)
   return values
 end
 
-local function readDraw(reader, recordOffset)
+local function readDraw(reader, recordOffset, commandCache)
   local commandsOffset = reader:u32le(recordOffset)
   local commandsLength = reader:u32le(recordOffset + 4)
   local poseOffset = reader:u32le(recordOffset + 8)
@@ -323,8 +361,16 @@ local function readDraw(reader, recordOffset)
   if commandsOffset % 4 ~= 0 then
     fail("NATIVE_GX_BAD_OFFSET", "draw command span is not word aligned", { offset = commandsOffset })
   end
+  -- Draws legitimately share one stored command span (see encode); decode the
+  -- bytes once per span so a shared stream is copied once, not per draw.
+  local spanKey = commandsOffset .. ":" .. commandsLength
+  local commands = commandCache[spanKey]
+  if commands == nil then
+    commands = reader:bytes(commandsOffset, commandsLength)
+    commandCache[spanKey] = commands
+  end
   local draw = {
-    commands = reader:bytes(commandsOffset, commandsLength),
+    commands = commands,
     nodeIndex = nodeIndex,
     materialIndex = materialIndex,
     shapeIndex = shapeIndex,
@@ -345,6 +391,7 @@ local function readDraw(reader, recordOffset)
     end
     local expected = POSE_HEADER_SIZE
       + (bit.band(poseFlags, POSE_FLAG_SEED) ~= 0 and POSE_SEED_SIZE or 0)
+      + (bit.band(poseFlags, POSE_FLAG_SEED_NORMAL) ~= 0 and POSE_SEED_NORMAL_SIZE or 0)
       + (bit.band(poseFlags, POSE_FLAG_SEGMENT) ~= 0 and POSE_SEGMENT_SIZE or 0)
       + (bit.band(poseFlags, POSE_FLAG_SCALE) ~= 0 and POSE_SCALE_SIZE or 0)
       + (bit.band(poseFlags, POSE_FLAG_MATRIX) ~= 0 and POSE_MATRIX_SIZE or 0)
@@ -369,6 +416,10 @@ local function readDraw(reader, recordOffset)
       draw.seedColorSource = colorSourcePlusOne > 0 and (colorSourcePlusOne - 1) or nil
       draw.seedColor = { reader:u8(cursor + 1), reader:u8(cursor + 2), reader:u8(cursor + 3) }
       cursor = cursor + POSE_SEED_SIZE
+    end
+    if bit.band(poseFlags, POSE_FLAG_SEED_NORMAL) ~= 0 then
+      draw.seedNormal = { reader:f32le(cursor), reader:f32le(cursor + 4), reader:f32le(cursor + 8) }
+      cursor = cursor + POSE_SEED_NORMAL_SIZE
     end
     if bit.band(poseFlags, POSE_FLAG_MATRIX) ~= 0 then
       draw.matrix = readMatrix(reader, cursor)
@@ -434,8 +485,9 @@ function NativeGxFormat.read(bytes)
     })
   end
   local draws = {}
+  local commandCache = {}
   for index = 1, drawCount do
-    draws[index] = readDraw(reader, drawTableOffset + (index - 1) * DRAW_RECORD_SIZE)
+    draws[index] = readDraw(reader, drawTableOffset + (index - 1) * DRAW_RECORD_SIZE, commandCache)
   end
   return { drawCount = drawCount, draws = draws }, nil
 end

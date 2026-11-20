@@ -105,6 +105,7 @@ function T.title_visual_scopes_ignore_adopted_audio_membership()
       index = {
         version = "heartgold",
         sequences = {
+          [2] = { bankId = 1 },
           [41] = { bankId = 7 },
           [42] = { bankId = 8 },
           [43] = { bankId = 7 },
@@ -140,6 +141,7 @@ function T.title_visual_scopes_ignore_adopted_audio_membership()
   Assert.isTrue(found["audio-bank:7"], "theme bank is included")
   Assert.isTrue(found["audio-bank:8"], "menu select bank is included")
   Assert.isTrue(found["audio-bank:250"], "HeartGold cry bank is included")
+  Assert.isTrue(found["audio-bank:1"], "cry sequence bank is included")
 end
 
 function T.startup_writer_owns_disjoint_roots_and_stages_manifest_last()
@@ -470,13 +472,20 @@ function T.startup_visual_dependencies_are_empty_and_final()
 end
 
 -- The optional audio closure resolves exactly the opening theme, title theme,
--- menu effect, and legendary cry banks from the adopted index, independent
--- of either visual milestone.
+-- menu effect, legendary cry bank, and the cry note-template sequence's own
+-- bank from the adopted index, independent of either visual milestone. The
+-- title skip replays the standard cry sequence, which lives in a different
+-- bank closure than the cry species bank, so the roster must carry both.
 function T.startup_audio_closure_resolves_only_its_required_banks()
   local plan = {
     index = {
       version = "heartgold",
-      sequences = { [41] = { bankId = 7 }, [42] = { bankId = 8 }, [43] = { bankId = 9 } },
+      sequences = {
+        [2] = { bankId = 1 },
+        [41] = { bankId = 7 },
+        [42] = { bankId = 8 },
+        [43] = { bankId = 9 },
+      },
       sequenceBySymbol = { SEQ_GS_TITLE = 43, SEQ_GS_POKEMON_THEME = 41, SEQ_SE_DP_SELECT = 42 },
     },
   }
@@ -491,6 +500,7 @@ function T.startup_audio_closure_resolves_only_its_required_banks()
     for _, member in ipairs({
       "source-plan:global",
       "audio-catalog:global",
+      "audio-bank:1",
       "audio-bank:7",
       "audio-bank:8",
       "audio-bank:9",
@@ -514,13 +524,14 @@ function T.startup_audio_closure_resolves_only_its_required_banks()
   end
 end
 
--- A shared theme/menu bank appears once beside the edition cry bank, and a
--- missing theme symbol fails the optional roster with its own name.
+-- A shared theme/menu bank appears once beside the edition cry bank and the
+-- cry sequence bank, and a missing theme symbol fails the optional roster
+-- with its own name.
 function T.startup_audio_closure_dedupes_shared_banks_and_names_missing_symbols()
   local shared = {
     index = {
       version = "soulsilver",
-      sequences = { [41] = { bankId = 7 } },
+      sequences = { [2] = { bankId = 1 }, [41] = { bankId = 7 } },
       sequenceBySymbol = { SEQ_GS_TITLE = 41, SEQ_GS_POKEMON_THEME = 41, SEQ_SE_DP_SELECT = 41 },
     },
   }
@@ -534,13 +545,14 @@ function T.startup_audio_closure_dedupes_shared_banks_and_names_missing_symbols(
         banks[#banks + 1] = job.key
       end
     end
-    Assert.equal(#banks, 2, "the shared bank appears once beside the cry bank")
+    Assert.equal(#banks, 3, "the shared bank appears once beside both cry banks")
     local set = {}
     for _, key in ipairs(banks) do
       set[key] = true
     end
     Assert.isTrue(set["7"] == true, "the shared bank is present")
     Assert.isTrue(set["249"] == true, "the soulsilver cry bank is present")
+    Assert.isTrue(set["1"] == true, "the cry sequence bank is present")
     local missing = {
       index = {
         version = "heartgold",

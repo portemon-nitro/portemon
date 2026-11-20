@@ -92,17 +92,7 @@ local GX_FIXED = {
 
 -- BEGIN_VTXS(quads), one normal plus one VTX_16 per corner, END_VTXS, packed
 -- into the geometry FIFO's four-opcode groups.
-local function gxQuad(vertices)
-  local ops, params = { 0x40 }, { gxU32(1) }
-  for _, vertex in ipairs(vertices) do
-    ops[#ops + 1], params[#params + 1] = 0x21, gxU32(0x00000FFF)
-    ops[#ops + 1], params[#params + 1] = 0x22, gxU32(0)
-    ops[#ops + 1], params[#params + 1] = 0x23, gxVertex(GX_FIXED, vertex[1], vertex[2], vertex[3])
-  end
-  ops[#ops + 1], params[#params + 1] = 0x41, ""
-  while #ops % 4 ~= 0 do
-    ops[#ops + 1], params[#params + 1] = 0x00, ""
-  end
+local function packGxCommands(ops, params)
   local out = {}
   for group = 0, #ops / 4 - 1 do
     local opcodeBytes = {}
@@ -115,6 +105,35 @@ local function gxQuad(vertices)
     end
   end
   return table.concat(out)
+end
+
+local function gxQuad(vertices)
+  local ops, params = { 0x40 }, { gxU32(1) }
+  for _, vertex in ipairs(vertices) do
+    ops[#ops + 1], params[#params + 1] = 0x21, gxU32(0x00000FFF)
+    ops[#ops + 1], params[#params + 1] = 0x22, gxU32(0)
+    ops[#ops + 1], params[#params + 1] = 0x23, gxVertex(GX_FIXED, vertex[1], vertex[2], vertex[3])
+  end
+  ops[#ops + 1], params[#params + 1] = 0x41, ""
+  while #ops % 4 ~= 0 do
+    ops[#ops + 1], params[#params + 1] = 0x00, ""
+  end
+  return packGxCommands(ops, params)
+end
+
+-- BEGIN_VTXS(quads), one VTX_16 per corner and nothing else: a shape that
+-- issues neither COLOR nor NORMAL, so every vertex attribute comes from the
+-- geometry-engine state its bank draw seeds.
+local function gxUncoloredQuad(vertices)
+  local ops, params = { 0x40 }, { gxU32(1) }
+  for _, vertex in ipairs(vertices) do
+    ops[#ops + 1], params[#params + 1] = 0x23, gxVertex(GX_FIXED, vertex[1], vertex[2], vertex[3])
+  end
+  ops[#ops + 1], params[#params + 1] = 0x41, ""
+  while #ops % 4 ~= 0 do
+    ops[#ops + 1], params[#params + 1] = 0x00, ""
+  end
+  return packGxCommands(ops, params)
 end
 
 -- One terrain bank: two eligible draws sharing the boundary x=0 (the coarse
@@ -522,6 +541,93 @@ return {
       throwsCode("SCENE_MESH_NATIVE_SEGMENT_MISSING", function()
         SceneMesh.prepareNativeBank(bytes, "scene-mesh-segments")
       end)
+    end,
+
+    ["a native bank replay applies each draw's seeded state and baked matrix"] = function()
+      -- Both shapes issue neither COLOR nor NORMAL, so the seeded color and
+      -- normal are the only source of those vertex attributes; the billboard
+      -- draw's pose-independent matrix scales its replayed positions.
+      local doubleScale = { 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1 }
+      local bytes = NativeGxFormat.encode({
+        draws = {
+          {
+            commands = gxUncoloredQuad({ { 0, 1, 0 }, { 4, 1, 0 }, { 4, 1, 1 }, { 0, 1, 1 } }),
+            nodeIndex = 0,
+            materialIndex = 0,
+            shapeIndex = 0,
+            transformMode = "static",
+            positionScale = 1,
+            seedColorSource = 1,
+            seedColor = { 12, 34, 56 },
+            seedNormal = { 0, 0, 1 },
+          },
+          {
+            commands = gxUncoloredQuad({ { 0, 3, 0 }, { 4, 3, 0 }, { 4, 3, 1 }, { 0, 3, 1 } }),
+            nodeIndex = 1,
+            materialIndex = 1,
+            shapeIndex = 0,
+            transformMode = "billboard",
+            segmentIndex = 0,
+            positionScale = 1,
+            seedColorSource = 2,
+            seedColor = { 255, 255, 255 },
+            matrix = doubleScale,
+          },
+        },
+      })
+      local decoded = SceneMesh.decodeNativeBank(bytes, "scene-mesh-replay-state")
+
+      local seeded = decoded.draws[1].vertices[1]
+      Assert.equal(seeded[9], 12 / 255, "the inherited vertex color reaches the packed vertex")
+      Assert.equal(seeded[10], 34 / 255, "the inherited vertex color reaches the packed vertex")
+      Assert.equal(seeded[11], 56 / 255, "the inherited vertex color reaches the packed vertex")
+      Assert.equal(seeded[13], 1, "the inherited color source reaches the packed vertex")
+      Assert.near(seeded[6], 0, 1e-6, "the inherited normal drives the vertex direction")
+      Assert.near(seeded[8], 1, 1e-6, "the inherited normal drives the vertex direction")
+
+      local baked = decoded.draws[2].vertices[2]
+      Assert.near(baked[1], 8, 1e-6, "the draw's baked matrix scales the replayed position")
+      Assert.near(baked[2], 6, 1e-6, "the draw's baked matrix scales the replayed position")
+      Assert.equal(baked[13], 2, "each draw keeps its own inherited color source")
+    end,
+
+    ["transform-preserving draws that share commands keep their own inherited state"] = function()
+      local commands = gxUncoloredQuad({ { 0, 1, 0 }, { 4, 1, 0 }, { 4, 1, 1 }, { 0, 1, 1 } })
+      local bytes = NativeGxFormat.encode({
+        draws = {
+          {
+            commands = commands,
+            nodeIndex = 0,
+            materialIndex = 0,
+            shapeIndex = 0,
+            transformMode = "static",
+            segmentIndex = 0,
+            positionScale = 1,
+            seedColorSource = 1,
+            seedColor = { 10, 0, 0 },
+          },
+          {
+            commands = commands,
+            nodeIndex = 0,
+            materialIndex = 1,
+            shapeIndex = 0,
+            transformMode = "static",
+            segmentIndex = 0,
+            positionScale = 1,
+            seedColorSource = 1,
+            seedColor = { 0, 20, 0 },
+          },
+        },
+      })
+      local prepared, work = countingBankWork(function()
+        return SceneMesh.prepareNativeBank(bytes, "scene-mesh-shared-state")
+      end)
+      Assert.equal(work.replay, 2, "draws that inherit different state keep their own replay")
+      local first = SceneMesh.decodeNativeBank(bytes, "scene-mesh-shared-state").draws
+      Assert.equal(first[1].vertices[1][9], 10 / 255, "the first draw keeps its own seeded color")
+      Assert.equal(first[2].vertices[1][9], 0, "the second draw does not reuse the first draw's state")
+      Assert.equal(first[2].vertices[1][10], 20 / 255, "the second draw keeps its own seeded color")
+      Assert.equal(#prepared.draws, 2, "both draws still get their own upload packet")
     end,
   },
 }

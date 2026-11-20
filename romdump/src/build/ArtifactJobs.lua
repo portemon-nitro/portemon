@@ -232,10 +232,11 @@ function ArtifactJobs.startupTitleJobs()
 end
 
 -- The optional startup audio closure: the title theme, the menu select
--- effect and the edition legendary cry bank behind the adopted sound
--- index. Before adoption the roster names only its owners and reports
--- incomplete; after adoption it resolves the exact bank closures from
--- the adopted symbols, deduplicated. Bank ids are never spelled here.
+-- effect, the edition legendary cry bank, and the cry note-template
+-- sequence's own bank behind the adopted sound index. Before adoption the
+-- roster names only its owners and reports incomplete; after adoption it
+-- resolves the exact bank closures from the adopted symbols, deduplicated.
+-- Bank ids are never spelled here.
 ---@param audioPlan table<string, unknown>|nil adopted normalized audio membership
 ---@return { kind: string, key: string }[] roster
 ---@return boolean complete true once source audio membership resolved the bank closures
@@ -278,6 +279,16 @@ function ArtifactJobs.startupAudioJobs(audioPlan)
   local crySpeciesId = versionId == "heartgold" and 250 or versionId == "soulsilver" and 249 or nil
   assert(crySpeciesId ~= nil, "startup audio index has an unsupported edition")
   addBank(crySpeciesId, "legendary cry")
+  -- The title skip replays the standard cry sequence (the numeric CryPlayer
+  -- reference, resolved here through the adopted index like every other
+  -- startup reference), which lives in its own bank closure apart from the
+  -- species bank above; without that bank the first skip fails on a fresh
+  -- cache even though the milestone already went ready.
+  local crySequence = index.sequences[2]
+  if type(crySequence) ~= "table" then
+    error("startup audio has no adopted cry sequence", 0)
+  end
+  addBank(crySequence.bankId, "legendary cry sequence")
   table.sort(bankIds)
   for _, bankId in ipairs(bankIds) do
     jobs[#jobs + 1] = { kind = "audio-bank", key = tostring(bankId) }
