@@ -8,7 +8,6 @@ local ListSurface = require("libs.ui.src.ListSurface")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
 local SELECTED_MARKER = { 0.86, 0.16, 0.18, 1 }
-local CANCEL_COLOR = { 0.42, 0.12, 0.16, 1 }
 
 ---@class FieldMenuRenderer
 ---@field _graphics love.graphics
@@ -27,7 +26,7 @@ local function assertPresentation(presentation, frameIndex)
   assert(type(status.selectedIndex) == "number", "field menu status requires a selected index")
   local layout = presentation.layout
   assert(
-    type(layout) == "table" and layout.placement and layout.listSurface and layout.scrollViewport,
+    type(layout) == "table" and layout.placement and layout.listSurface and layout.scrollViewport and layout.frameBox,
     "field menu renderer requires a resolved layout"
   )
   assert(
@@ -67,7 +66,9 @@ end
 
 function FieldMenuRenderer:_drawList(status, layout, frameIndex)
   local graphics = self._graphics
-  local box = layout.listSurface.surface
+  -- One window carries the list and its trailing cancel row; only the item
+  -- area scrolls inside it.
+  local box = layout.frameBox
   local background = self._text:windowBackgroundColor()
   graphics.setColor(background[1], background[2], background[3], background[4])
   graphics.rectangle("fill", box.x, box.y, box.width, box.height)
@@ -86,6 +87,12 @@ function FieldMenuRenderer:_drawList(status, layout, frameIndex)
       )
     end
   end)
+  -- The cancel target is the list's trailing row, printed like any other
+  -- entry; it never holds the selection, so it carries no ring.
+  local cancelLabelRect = layout.cancelLabelRect
+  if cancelLabelRect ~= nil then
+    self._text:drawTextWithPalette("Cancel", cancelLabelRect.x, cancelLabelRect.y, palette)
+  end
 end
 
 function FieldMenuRenderer:_drawScrollIndicators(layout)
@@ -105,17 +112,6 @@ function FieldMenuRenderer:_drawScrollIndicators(layout)
   end
 end
 
-function FieldMenuRenderer:_drawCancel(layout, palette)
-  local rect = layout.cancelRect
-  if not rect then
-    return
-  end
-  local graphics = self._graphics
-  graphics.setColor(CANCEL_COLOR[1], CANCEL_COLOR[2], CANCEL_COLOR[3], CANCEL_COLOR[4])
-  graphics.rectangle("line", rect.x, rect.y, rect.width, rect.height)
-  self._text:drawTextWithPalette("Cancel", rect.x + 8, rect.y + (rect.height - 16) / 2, palette)
-end
-
 -- Draws one active menu from an immutable presentation snapshot. The renderer
 -- does not resolve text, reconstruct interaction state, or mutate the snapshot.
 
@@ -128,7 +124,6 @@ function FieldMenuRenderer:draw(presentation, frameIndex)
   LogicalSurface.draw(graphics, layout.placement, function()
     self:_drawList(status, layout, frameIndex)
     self:_drawScrollIndicators(layout)
-    self:_drawCancel(layout, FieldTextRenderer.dialoguePalette(self._text.fontDef))
   end)
   graphics.pop()
 end

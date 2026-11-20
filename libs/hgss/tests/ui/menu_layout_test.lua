@@ -2,6 +2,7 @@
 -- topologies without involving rendering or physical input.
 
 local Assert = require("tests.support.Assert")
+local ListSurface = require("libs.ui.src.ListSurface")
 local MenuLayout = require("libs.hgss.src.ui.MenuLayout")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
@@ -122,16 +123,75 @@ function T.large_menus_scroll_without_overflow_and_keep_the_selected_item_visibl
   end
 end
 
-function T.touch_menus_use_touch_sized_rows_and_a_cancel_target()
+-- The shared list presentation sizes rows from the field line height: three
+-- tile rows per entry, which leaves the focus ring clear of the glyph cell
+-- instead of slicing through it.
+function T.list_rows_keep_the_focus_ring_off_the_label_ink()
+  local layout = resolve({ topology = topology(256, 192), menu = menu(3) })
+
+  Assert.equal(#layout.rows, 3, "every option materializes its row")
+  Assert.equal(layout.itemRects[0].height, 24, "list entries keep the three-tile source row extent")
+  Assert.equal(layout.maxScrollOffset, 0, "three short options need no scrolling")
+  for _, row in ipairs(layout.rows) do
+    Assert.isTrue(row.marker.y > row.rect.y, "the focus ring insets its row")
+    Assert.isTrue(row.marker.y < row.labelRect.y, "the ring clears the label cell above")
+    Assert.isTrue(
+      row.marker.y + row.marker.height > row.labelRect.y + row.labelRect.height,
+      "the ring clears the label cell below"
+    )
+    Assert.isTrue(row.marker.x < row.labelRect.x, "the ring clears the label cell on the left")
+    Assert.isTrue(
+      row.marker.x + row.marker.width > row.labelRect.x + row.labelRect.width,
+      "the ring clears the label cell on the right"
+    )
+  end
+end
+
+-- The resolved surface is a padded ListSurface, so the row width the list
+-- measures must reserve that padding; otherwise the widest label overflows
+-- its row and the focus ring closes over the text.
+function T.a_menu_reserves_its_surface_padding_so_each_label_fits_its_row()
+  local widths = { BUY = 24, SELL = 32, ["SEE YA!"] = 56 }
+  local layout = resolve({
+    topology = topology(256, 192),
+    menu = {
+      items = { { text = "BUY" }, { text = "SELL" }, { text = "SEE YA!" } },
+    },
+    measureText = function(text)
+      return widths[text] or #text * 8
+    end,
+  })
+
+  for _, row in ipairs(layout.rows) do
+    local label = assert(layout.itemTexts[row.itemIndex], "the resolved row carries its label")
+    Assert.isTrue(row.labelRect.width >= widths[label], "row " .. row.itemIndex .. " fits its label")
+  end
+end
+
+function T.touch_menus_place_the_cancel_target_inside_the_same_frame()
   local layout = resolve({
     topology = topology(256, 192, { touch = true }),
-    menu = menu(2, { cancellable = true }),
+    menu = menu(3, { cancellable = true }),
   })
-  Assert.isTrue(layout.itemRects[0].height * layout.placement.scale >= MenuLayout.minimumTouchTarget)
+  local frame = layout.frameBox
   Assert.notNil(layout.cancelRect)
-  Assert.isTrue(layout.cancelRect.y >= layout.listSurface.surface.y + layout.listSurface.surface.height)
-  Assert.isTrue(layout.cancelRect.height * layout.placement.scale >= MenuLayout.minimumTouchTarget)
-  Assert.isNil(resolve({ topology = topology(256, 192), menu = menu(2, { cancellable = true }) }).cancelRect)
+  Assert.equal(layout.cancelRect.height, layout.itemRects[0].height, "the cancel target shares the list row extent")
+  Assert.isTrue(
+    layout.cancelRect.y >= layout.scrollViewport.y + layout.scrollViewport.height,
+    "the cancel target sits below the item viewport"
+  )
+  Assert.isTrue(
+    layout.cancelRect.y + layout.cancelRect.height <= frame.y + frame.height - ListSurface.PADDING,
+    "the cancel target stays inside the frame"
+  )
+  Assert.isTrue(frame.height > layout.listSurface.surface.height, "the frame carries the cancel row")
+  Assert.equal(layout.maxScrollOffset, 0, "three options and their cancel row fit without scrolling")
+  Assert.equal(frame.x, layout.listSurface.surface.x)
+  Assert.equal(frame.width, layout.listSurface.surface.width)
+  Assert.isNil(
+    resolve({ topology = topology(256, 192), menu = menu(3, { cancellable = true }) }).cancelRect,
+    "non-touch menus cancel through the input binding, not a row"
+  )
 end
 
 function T.dual_screen_menus_prefer_the_auxiliary_surface()

@@ -166,7 +166,7 @@ function T.anchors_to_the_supplied_central_region_at_the_field_scale()
   Assert.equal(layout.placement.origin.x, bounds.x + bounds.width - 256 * 3)
   local snapshot = host:snapshot()
   local row = snapshot.itemRects[0]
-  Assert.equal(row.height, 16 * 3, "snapshot rows are published in host coordinates")
+  Assert.equal(row.height, 24 * 3, "snapshot rows are published in host coordinates at the source row pitch")
   Assert.isTrue(row.x >= layout.placement.origin.x and row.x + row.width <= layout.placement.origin.x + 256 * 3)
 end
 

@@ -114,7 +114,8 @@ function T.draws_the_surface_with_the_players_frame_and_the_selected_row_marker(
   local frames = callsOfKind(graphics, "frame")
   Assert.equal(#frames, 1)
   Assert.equal(frames[1].frameIndex, FRAME_INDEX)
-  Assert.deepEqual(frames[1].box, resolved.listSurface.surface)
+  Assert.deepEqual(frames[1].box, resolved.frameBox)
+  Assert.deepEqual(resolved.frameBox, resolved.listSurface.surface, "a menu without a cancel row frames only its list")
   local markers = {}
   for _, call in ipairs(callsOfKind(graphics, "rectangle")) do
     if call.mode == "line" then
@@ -148,7 +149,8 @@ function T.scrolled_lists_draw_only_resolved_rows_with_indicators_and_touch_canc
   renderer(graphics):draw({ status = { selectedIndex = 19 }, layout = resolved }, FRAME_INDEX)
 
   local texts = {}
-  for _, call in ipairs(callsOfKind(graphics, "text")) do
+  local textCalls = callsOfKind(graphics, "text")
+  for _, call in ipairs(textCalls) do
     texts[#texts + 1] = call.text
   end
   Assert.equal(texts[#texts], "Cancel")
@@ -156,6 +158,33 @@ function T.scrolled_lists_draw_only_resolved_rows_with_indicators_and_touch_canc
   Assert.isTrue(#resolved.rows < 20)
   Assert.equal(texts[#texts - 1], "Option 20")
   Assert.equal(#callsOfKind(graphics, "polygon"), 1, "only the upward indicator shows at the end of the list")
+  local cancelCall = assert(textCalls[#textCalls], "the cancel row prints its label")
+  Assert.equal(cancelCall.x, resolved.cancelLabelRect.x)
+  Assert.equal(cancelCall.y, resolved.cancelLabelRect.y)
+end
+
+-- The cancel target is a list row inside the framed list, so it carries no
+-- second outline of its own: the only ring is the selected option's.
+function T.the_cancel_row_prints_as_a_list_row_without_its_own_outline()
+  local resolved = layout(3, true, 0)
+  local graphics = fakeGraphics()
+
+  renderer(graphics):draw({ status = { selectedIndex = 0 }, layout = resolved }, FRAME_INDEX)
+
+  local lines = 0
+  for _, call in ipairs(callsOfKind(graphics, "rectangle")) do
+    if call.mode == "line" then
+      lines = lines + 1
+    end
+  end
+  Assert.equal(lines, 1, "only the focused option draws a ring")
+  local frames = callsOfKind(graphics, "frame")
+  Assert.equal(#frames, 1)
+  Assert.deepEqual(frames[1].box, resolved.frameBox, "one frame carries the list and its cancel row")
+  Assert.isTrue(
+    frames[1].box.height > resolved.listSurface.surface.height,
+    "the framed box reaches past the item viewport over the cancel row"
+  )
 end
 
 function T.rejects_a_presentation_selection_outside_the_resolved_layout()

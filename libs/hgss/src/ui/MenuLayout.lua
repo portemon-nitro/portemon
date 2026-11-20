@@ -11,14 +11,14 @@ local ScrollViewport = require("libs.ui.src.ScrollViewport")
 ---@class MenuLayout
 local MenuLayout = {}
 
-MenuLayout.minimumTouchTarget = 44
-
 local ROW_HEIGHT = 16
+-- One entry keeps three tile rows, the pitch of the source touchscreen list
+-- menu (touchscreen_list_menu.c). The band below the glyph cell is what lets
+-- a row's focus ring frame its label instead of closing over the ink.
+local ROW_EXTENT = ROW_HEIGHT + 8
 local TILE = 8
 local EDGE_PADDING = 4
-local CANCEL_GAP = 4
 local MIN_SURFACE_WIDTH = 64
-local MAX_SURFACE_HEIGHT = 0.65
 
 local function isFiniteNumber(value)
   return type(value) == "number" and value == value and value > -math.huge and value < math.huge
@@ -196,52 +196,52 @@ function MenuLayout.resolve(spec)
   assert(type(spec.measureText) == "function", "menu text measurement must be a function")
   local surface = selectSurface(spec.topology)
   local resolvedPlacement = placement(surface, spec.bounds, spec.preferredScale)
-  local scale = resolvedPlacement.scale
   local items = spec.menu.items
   local itemTexts = {}
   for luaIndex = 1, #items do
     itemTexts[luaIndex - 1] = itemText(items[luaIndex])
   end
 
-  local touchHeight = math.ceil(MenuLayout.minimumTouchTarget / scale)
-  local rowHeight = surface.touch and alignUp(math.max(ROW_HEIGHT, touchHeight)) or ROW_HEIGHT
   local cancellable = spec.menu.cancellable == true and surface.touch == true
   local insets = ApplicationLayout.applicationFrameInsets()
   local marginX = insets.right + EDGE_PADDING
   local marginY = insets.top + EDGE_PADDING
-  local cancelHeight = cancellable and touchHeight or 0
-  local cancelReserve = cancellable and (insets.bottom + CANCEL_GAP + cancelHeight) or 0
+  -- The cancel target is a trailing list row inside the same frame, so it
+  -- reserves one more entry instead of a detached touch box below the list.
+  local cancelRows = cancellable and 1 or 0
+  local padding = ListSurface.PADDING
   local maxWidth = alignDown(NativeDisplay.WIDTH - marginX - insets.left - EDGE_PADDING)
-  local availableHeight = NativeDisplay.HEIGHT - marginY * 2 - cancelReserve
+  local availableHeight = NativeDisplay.HEIGHT - marginY * 2
   local font = { lineHeight = ROW_HEIGHT, measure = spec.measureText }
   local function labelAt(index)
     return { label = itemTexts[index - 1] }
   end
 
+  -- The measured width is one entry row, so the padded surface adds its own
+  -- insets back before it becomes the framed box.
   local preferredWidth = ListSurface.preferredWidth({
-    bounds = rect(0, 0, maxWidth, availableHeight),
+    bounds = rect(0, 0, maxWidth - padding * 2, availableHeight),
     rowCount = #items,
-    rowHeight = rowHeight,
+    rowHeight = ROW_EXTENT,
     gap = 0,
     font = font,
     rowAt = labelAt,
   })
-  local width = math.min(maxWidth, math.max(MIN_SURFACE_WIDTH, alignUp(preferredWidth)))
-  local naturalHeight = alignUp(#items * rowHeight + 16)
-  local height = math.min(naturalHeight, math.max(alignDown(availableHeight * MAX_SURFACE_HEIGHT), rowHeight + 16))
-  height = math.max(TILE * 2, alignDown(math.min(height, availableHeight)))
+  local width = math.min(maxWidth, math.max(MIN_SURFACE_WIDTH, alignUp(preferredWidth + padding * 2)))
+  local naturalHeight = alignUp((#items + cancelRows) * ROW_EXTENT + padding * 2)
+  local height = alignDown(math.min(naturalHeight, availableHeight))
 
   local x = NativeDisplay.WIDTH - insets.right - EDGE_PADDING - width
-  local bounds = rect(x, marginY, width, height)
-  local viewportHeight = height - ListSurface.PADDING * 2
-  local contentHeight = #items * rowHeight
+  local itemAreaHeight = height - cancelRows * ROW_EXTENT
+  local viewportHeight = itemAreaHeight - padding * 2
+  local contentHeight = #items * ROW_EXTENT
   local maxScrollOffset = math.max(0, contentHeight - viewportHeight)
   local scrollOffset =
-    ScrollViewport.clamp(selectedIndex * rowHeight - (viewportHeight - rowHeight), contentHeight, viewportHeight)
+    ScrollViewport.clamp(selectedIndex * ROW_EXTENT - (viewportHeight - ROW_EXTENT), contentHeight, viewportHeight)
   local list = ListSurface.resolve({
-    bounds = bounds,
+    bounds = rect(x, marginY, width, itemAreaHeight),
     rowCount = #items,
-    rowHeight = rowHeight,
+    rowHeight = ROW_EXTENT,
     gap = 0,
     maxWidth = width,
     scrollOffset = scrollOffset,
@@ -251,7 +251,7 @@ function MenuLayout.resolve(spec)
   local itemRects = {}
   for itemIndex = 0, #items - 1 do
     itemRects[itemIndex] =
-      rect(list.content.x, list.content.y + itemIndex * rowHeight - scrollOffset, list.content.width, rowHeight)
+      rect(list.content.x, list.content.y + itemIndex * ROW_EXTENT - scrollOffset, list.content.width, ROW_EXTENT)
   end
   local rows = {}
   for position, row in ipairs(list.rows) do
@@ -263,25 +263,42 @@ function MenuLayout.resolve(spec)
       labelRect = rect(row.labelRect.x, row.labelRect.y - scrollOffset, row.labelRect.width, row.labelRect.height),
     }
   end
-  local cancelRect
+  local frameBox = rect(list.surface.x, list.surface.y, list.surface.width, itemAreaHeight + cancelRows * ROW_EXTENT)
+  local cancelRect, cancelLabelRect
   if cancellable then
-    cancelRect = rect(
-      list.surface.x,
-      list.surface.y + list.surface.height + insets.bottom + CANCEL_GAP,
-      list.surface.width,
-      cancelHeight
+    -- The cancel row reuses the shared row insets, so it reads as one more
+    -- entry of the same list rather than a separate control.
+    local sample = assert(rows[1], "a cancellable menu materializes its first row")
+    cancelRect = rect(list.content.x, list.content.y + list.content.height, list.content.width, ROW_EXTENT)
+    local markerInsetX = sample.marker.x - sample.rect.x
+    local markerInsetY = sample.marker.y - sample.rect.y
+    local labelInsetX = sample.labelRect.x - sample.marker.x
+    local labelInsetY = sample.labelRect.y - sample.marker.y
+    local cancelMarker = rect(
+      cancelRect.x + markerInsetX,
+      cancelRect.y + markerInsetY,
+      cancelRect.width - markerInsetX * 2,
+      cancelRect.height - markerInsetY * 2
+    )
+    cancelLabelRect = rect(
+      cancelMarker.x + labelInsetX,
+      cancelMarker.y + labelInsetY,
+      cancelMarker.width - labelInsetX * 2,
+      sample.labelRect.height
     )
   end
   return {
     surface = surface,
     placement = resolvedPlacement,
     listSurface = list,
+    frameBox = frameBox,
     rows = rows,
     itemCount = #items,
     itemRects = itemRects,
     itemTexts = itemTexts,
     scrollViewport = list.content,
     cancelRect = cancelRect,
+    cancelLabelRect = cancelLabelRect,
     selectedIndex = selectedIndex,
     scrollOffset = scrollOffset,
     maxScrollOffset = maxScrollOffset,
