@@ -74,6 +74,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field audio { updateField: fun(self: table<string, unknown>), play: fun(self: table<string, unknown>, idOrSymbol: string) }?
 ---@field navigationBoundary table<string, unknown>?
 ---@field fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
+---@field gymMechanism FieldSession.GymMechanism? completed-step claim of the active gym mechanism; absent sessions claim no mechanism step
 ---@field overworld table<string, unknown>? lifecycle owner; absent sessions keep script scheduling but suspend ordinary field work
 ---@field initController table<string, unknown>|nil
 ---@field enterMapActors fun()?
@@ -89,6 +90,11 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field requestDisembark fun(self: FieldSession.FieldMoves): table<string, unknown>
 ---@field clearTransient fun(self: FieldSession.FieldMoves)
 ---@field requestWaterfallDescent fun(self: FieldSession.FieldMoves): table<string, unknown>
+
+-- The active gym mechanism's completed-step claim: the one place a committed
+-- step asks before ordinary step and warp work runs.
+---@class FieldSession.GymMechanism
+---@field tryClaimCompletedStep fun(self: FieldSession.GymMechanism, step: table<string, unknown>): boolean
 
 ---@class FieldSession.IncomingCalls
 ---@field onOpportunity fun(self: FieldSession.IncomingCalls, args: table<string, unknown>)
@@ -150,6 +156,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field mapEntryMode FieldMapEntryMode? read-only mode of the most recent map entry, kept after it completes
 ---@field mapEntryController FieldMapEntryController
 ---@field private fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
+---@field gymMechanism FieldSession.GymMechanism? completed-step claim of the active gym mechanism; absent sessions claim no mechanism step
 ---@field private overworld table<string, unknown>|nil
 ---@field incomingCalls FieldSession.IncomingCalls? ambient incoming-call collaborator; absent sessions offer no phone opportunity
 ---@field private fieldCallHandle table<string, unknown>? private foreground call handle this field session steps and releases
@@ -414,6 +421,12 @@ function FieldSession.new(options)
     "field event resolver required"
   )
   assert(options.eventState and options.eventState.getVar, "field event state required")
+  if options.gymMechanism ~= nil then
+    assert(
+      type(options.gymMechanism.tryClaimCompletedStep) == "function",
+      "field session gym mechanism port requires its completed-step claim"
+    )
+  end
   if options.fieldMoves ~= nil then
     assert(
       type(options.fieldMoves.tryStrengthPush) == "function" and type(options.fieldMoves.discardPending) == "function",
@@ -522,6 +535,7 @@ function FieldSession.new(options)
     _committedStep = nil,
     navigationBoundary = options.navigationBoundary,
     fieldMoves = options.fieldMoves,
+    gymMechanism = options.gymMechanism,
     overworld = options.overworld,
     incomingCalls = options.incomingCalls,
     pokegearApplications = options.pokegearApplications,
@@ -1975,6 +1989,24 @@ function FieldSession:updateFixed(inputSnapshot)
       self.audio:updateField()
     end
     if not zoneChanged then
+      -- The one gym mechanism owner is asked first: the source tries its
+      -- completed-step action straight after the physical move and before the
+      -- coordinate event, warp and ordinary-step owners run. A claimed step
+      -- finishes this tick without publishing an ordinary step.
+      if
+        self.gymMechanism ~= nil
+        and self.gymMechanism:tryClaimCompletedStep({
+          mapId = self.currentMap.mapId,
+          fieldX = self.player.fieldX,
+          fieldZ = self.player.fieldZ,
+          surfaceId = self.player.surfaceId,
+          worldY = self.player.worldY,
+          facing = self.player.facing,
+        })
+      then
+        self:_advanceTick()
+        return
+      end
       local coordinateIntent = resolveCoordinate(self)
       if coordinateIntent then
         consumeCoordinateIntent(self, coordinateIntent)

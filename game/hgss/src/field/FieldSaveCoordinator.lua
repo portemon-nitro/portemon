@@ -124,6 +124,12 @@ function FieldSaveCoordinator:capture(allowMenu)
   then
     return nil, "Save deferred: a field operation is pending or active"
   end
+  -- A live gym transport owns the player, the follower presentation and a
+  -- source sound sequence: it publishes no record until its arrival stop.
+  local gymMechanism = runtime.gymMechanism
+  if gymMechanism ~= nil and not gymMechanism:isStableForSave() then
+    return nil, "Save deferred: a gym transport is active"
+  end
   if not canCapture(runtime.session, allowMenu == true) then
     return nil, "Save deferred: movement, transition, map entry, or modal state is active"
   end
@@ -176,6 +182,8 @@ function FieldSaveCoordinator:capture(allowMenu)
     pokedex = assert(runtime.dexKnowledge, "field runtime has no dex knowledge"):bucket(),
     gameStats = assert(runtime.gameStats, "field runtime has no game stats"):bucket(),
     easyChat = assert(runtime.easyChatState, "field runtime has no word state"):capture(),
+    gymmick = assert(runtime.gymMechanism, "field runtime has no gym mechanism"):capture(),
+    followingMon = assert(runtime.followingMonState, "field runtime has no follower inhibit state"):capture(),
   }
   -- The runtime-owned companion bucket rides alongside the existing
   -- domains. The owner is required: capture never manufactures a default

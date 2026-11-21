@@ -57,6 +57,9 @@ Schema.ENUMS = {
   mart_query = { "athlete_available", "card_prefix" },
   -- The source money family's two mutations and three box commands.
   money_action = { "add", "subtract" },
+  -- The two closed native gym mechanisms this port implements; the source
+  -- union's other kinds stay unimplemented rather than named here.
+  gym_mechanism = { "violet", "azalea" },
   money_box_action = { "show", "update", "hide" },
   pc_application = { "storage", "mailbox", "photoAlbum" },
   -- The foreground phone call direction across the shared menu/script
@@ -1121,6 +1124,15 @@ Schema.OPERATIONS = {
       length = { type = "scalar_or_value", required = true },
     },
   },
+  -- Native gym mechanism commands. `gym_init` is the source gym init that
+  -- installs one closed kind in the same tick; the lift, spider ride and
+  -- switch flip block on the one registered mechanism task. The spider
+  -- selector is the source endpoint byte the ride is currently parked on,
+  -- and the switch number selects switch 0 or 1 of the Azalea mask.
+  gym_init = { fields = { kind = { type = "enum:gym_mechanism", required = true } } },
+  gym_elevator = { fields = {} },
+  gym_spinarak = { fields = { selector = { type = "integer", required = true } } },
+  gym_switch = { fields = { switchNumber = { type = "integer", required = true } } },
   field_clock_hour = { fields = { result = { type = "value", required = true } } },
   shake_camera = {
     fields = {

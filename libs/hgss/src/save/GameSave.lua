@@ -17,7 +17,8 @@ local SysInfoState = require("libs.hgss.src.save.SysInfoState")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v13"
+GameSave.SCHEMA = "g4-game-save-v14"
+GameSave.LEGACY_V13_SCHEMA = "g4-game-save-v13"
 GameSave.LEGACY_V12_SCHEMA = "g4-game-save-v12"
 GameSave.LEGACY_V11_SCHEMA = "g4-game-save-v11"
 GameSave.LEGACY_V10_SCHEMA = "g4-game-save-v10"
@@ -39,6 +40,8 @@ local TOP_LEVEL_FIELDS = {
   fashionCase = true,
   fieldPoison = true,
   fieldTravel = true,
+  followingMon = true,
+  gymmick = true,
   pokegear = true,
   fieldX = true,
   fieldZ = true,
@@ -108,6 +111,8 @@ local function validateLegacyShape(record, schema)
       and key ~= "photoAlbum"
       and key ~= "sysInfo"
       and key ~= "fieldPoison"
+      and key ~= "gymmick"
+      and key ~= "followingMon"
     then
       allowed[key] = value
     end
@@ -478,8 +483,30 @@ end
 function GameSave.migrateV12(record)
   assert(type(record) == "table" and record.schema == GameSave.LEGACY_V12_SCHEMA, "GameSave.migrateV12 requires v12")
   local migrated = deepCopy(record)
-  migrated.schema = GameSave.SCHEMA
+  migrated.schema = GameSave.LEGACY_V13_SCHEMA
   migrated.fieldPoison = FieldPoisonSave.initial()
+  return migrated
+end
+
+-- Pure v13 -> v14 conversion. Only the gym delta is applied: v13 records
+-- predate every gym mechanism, so they initialize the single inactive union
+-- and the clear follower inhibit bit. No badge, badge flag, or story flag is
+-- inferred from either bucket, and every other field and bucket passes
+-- through copied. A predecessor that already carries one of the new buckets
+-- is malformed, not migrated.
+---@param record table<string, unknown> a v13 save record
+---@return table<string, unknown> the migrated v14 record
+function GameSave.migrateV13(record)
+  assert(type(record) == "table" and record.schema == GameSave.LEGACY_V13_SCHEMA, "GameSave.migrateV13 requires v13")
+  if record.gymmick ~= nil or record.followingMon ~= nil then
+    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v13 save cannot contain v14 buckets", {})
+  end
+  local GymMechanismState = require("libs.hgss.src.field.GymMechanismState")
+  local FollowingMonState = require("libs.hgss.src.save.FollowingMonState")
+  local migrated = deepCopy(record)
+  migrated.schema = GameSave.SCHEMA
+  migrated.gymmick = GymMechanismState.restore(nil):capture()
+  migrated.followingMon = FollowingMonState.new():capture()
   return migrated
 end
 
@@ -513,6 +540,7 @@ function GameSave.metadata(record)
     assert(type(record) == "table")
     if
       record.schema ~= GameSave.SCHEMA
+      and record.schema ~= GameSave.LEGACY_V13_SCHEMA
       and record.schema ~= GameSave.LEGACY_V12_SCHEMA
       and record.schema ~= GameSave.LEGACY_V11_SCHEMA
       and record.schema ~= GameSave.LEGACY_V10_SCHEMA
@@ -600,6 +628,7 @@ function GameSave.normalize(record)
     local schema = record.schema
     if
       schema ~= GameSave.SCHEMA
+      and schema ~= GameSave.LEGACY_V13_SCHEMA
       and schema ~= GameSave.LEGACY_V12_SCHEMA
       and schema ~= GameSave.LEGACY_V11_SCHEMA
       and schema ~= GameSave.LEGACY_V10_SCHEMA
@@ -643,6 +672,9 @@ function GameSave.normalize(record)
     end
     if current.schema == GameSave.LEGACY_V12_SCHEMA then
       current = GameSave.migrateV12(current)
+    end
+    if current.schema == GameSave.LEGACY_V13_SCHEMA then
+      current = GameSave.migrateV13(current)
     end
     return canonicalizeCurrent(current)
   end)

@@ -2343,24 +2343,29 @@ return {
       widths = {},
     },
     [324] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_VioletGymInit",
       widths = {},
     },
     [325] = {
+      classification = "native_wait",
       name = "ScrCmd_VioletGymElevator",
       widths = {},
     },
     [326] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_AzaleaGymInit",
       widths = {},
     },
     [327] = {
+      classification = "native_wait",
       name = "ScrCmd_AzaleaGymSpinarak",
       widths = {
         [1] = 1,
       },
     },
     [328] = {
+      classification = "native_wait",
       name = "ScrCmd_AzaleaGymSwitch",
       widths = {
         [1] = 1,

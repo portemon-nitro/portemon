@@ -12,6 +12,8 @@ local PlayerData = require("libs.hgss.src.save.PlayerData")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local FieldPoisonSave = require("libs.hgss.src.save.FieldPoisonSave")
+local FollowingMonState = require("libs.hgss.src.save.FollowingMonState")
+local GymMechanismState = require("libs.hgss.src.field.GymMechanismState")
 local SysInfoState = require("libs.hgss.src.save.SysInfoState")
 local MonsSave = require("libs.mons.src.MonsSave")
 local U32 = require("libs.codec.src.U32")
@@ -198,6 +200,11 @@ function NewGame.createCandidate(options)
     playerData = nil,
     mons = mons,
     fieldPoison = FieldPoisonSave.initial(),
+    -- No gym mechanism is active in a new game and the follower is visible:
+    -- both buckets start from their own owning constructors, never from a
+    -- second handwritten schema.
+    gymmick = GymMechanismState.restore(nil):capture(),
+    followingMon = FollowingMonState.new():capture(),
     bag = BagSave.empty(),
     fashionCase = FashionCaseState.empty(),
     sysInfo = SysInfoState.empty(),

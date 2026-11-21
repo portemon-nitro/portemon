@@ -23,6 +23,7 @@ local BuildingModelCompiler = require("romdump.src.digest.map.BuildingModelCompi
 local CelebiTimeTravelAssetCompiler = require("romdump.src.digest.field.CelebiTimeTravelAssetCompiler")
 local HoOhAppearanceAssetCompiler = require("romdump.src.digest.field.HoOhAppearanceAssetCompiler")
 local LugiaAppearanceAssetCompiler = require("romdump.src.digest.field.LugiaAppearanceAssetCompiler")
+local StoryEffectAssetCompiler = require("romdump.src.digest.field.StoryEffectAssetCompiler")
 
 local Compiler = {}
 
@@ -93,22 +94,6 @@ local function compileModel(narc, memberId, key, section, role)
   end
   ModelAsset.validate(descriptor)
   return descriptor, meshes, textures, Hashing.sha1hex(bytes)
-end
-
-local function rewriteEffectPaths(descriptor)
-  for _, batch in ipairs(descriptor.dynamic.batches) do
-    batch.geometry = ModelAsset.retargetGeometry(batch.geometry, FieldEffectAssetCache.geometryPath)
-  end
-  for _, material in ipairs(descriptor.materials) do
-    if material.texture then
-      material.texture = ModelAsset.retargetTexture(material.texture, FieldEffectAssetCache.texturePath)
-    end
-    for _, variant in ipairs(material.variants or {}) do
-      if variant.texture then
-        variant.texture = ModelAsset.retargetTexture(variant.texture, FieldEffectAssetCache.texturePath)
-      end
-    end
-  end
 end
 
 local function compileDynamicEffect(
@@ -277,7 +262,7 @@ local function compileDynamicEffect(
     })
   end
   descriptor.key = key
-  rewriteEffectPaths(descriptor)
+  FieldEffectAssetCache.rewriteModelPaths(descriptor)
   ModelAsset.validate(descriptor)
   return descriptor, meshes, textures, Hashing.sha1hex(modelBytes)
 end
@@ -439,7 +424,7 @@ local function compileFollowerReaction(narc, source, basePack, basePattern)
     })
   end
   descriptor.key = "field-effect:" .. source.key:gsub("_", "-")
-  rewriteEffectPaths(descriptor)
+  FieldEffectAssetCache.rewriteModelPaths(descriptor)
   ModelAsset.validate(descriptor)
   return descriptor,
     meshes,
@@ -591,7 +576,7 @@ local function compileTransitionEffect(narc, animationNarc, animationArchive, ke
         })
       end
       descriptor.key = key .. "-" .. model.name
-      rewriteEffectPaths(descriptor)
+      FieldEffectAssetCache.rewriteModelPaths(descriptor)
       ModelAsset.validate(descriptor)
       descriptors[#descriptors + 1] = descriptor
       modelSha1s[#modelSha1s + 1] = Hashing.sha1hex(modelBytes)
@@ -710,7 +695,7 @@ local function compilePokemonCenterHeal(romFs, meshes, textures)
   local ballAnimation = "pc_mb"
   local machineClip = clipNamed(assert(compiled.models[machineModelKey]), machineAnimation, "machine")
   clipNamed(ballModel, ballAnimation, "ball")
-  rewriteEffectPaths(ballModel)
+  FieldEffectAssetCache.rewriteModelPaths(ballModel)
 
   local ballPositions = {}
   for index, point in ipairs(source.ballPositionsFx32) do
@@ -857,6 +842,11 @@ function Compiler.compile(romFs, hashLua)
   )
   local centerHeal, centerHealModelShas = compilePokemonCenterHeal(romFs, meshes, textures)
   sourceHashesByKind.pokemon_center_heal = centerHealModelShas
+  -- The gym mechanisms' runtime-loaded map props: the Violet car and the
+  -- Azalea Spinarak have no generated placement, so their models travel with
+  -- this bundle.
+  local storyEffects = StoryEffectAssetCompiler.compile(romFs, meshes, textures)
+  sourceHashesByKind.story_effects = storyEffects.memberHashes
   local celebi = CelebiTimeTravelAssetCompiler.compile(romFs)
   sourceHashesByKind.celebi_time_travel = celebi.memberHashes
   local hoOhAppearance = HoOhAppearanceAssetCompiler.compile(romFs)
@@ -978,6 +968,9 @@ function Compiler.compile(romFs, hashLua)
     celebi_time_travel = celebi.definition,
     lugia_appearance = lugiaAppearance.definition,
   }
+  for _, source in ipairs(FieldEffects.mechanismPropModels) do
+    effects[source.key] = assert(storyEffects.definitions[source.key], "mechanism prop definition is missing")
+  end
   -- The Ho-Oh appearance record is published in parts (core, and per
   -- cinematic shot a shared part plus per-variant overlays).
   for kind, definition in pairs(hoOhAppearance.definitions) do
@@ -1040,6 +1033,16 @@ function Compiler.compile(romFs, hashLua)
         definition = "pokemon_center_heal",
         path = FieldEffectAssetCache.definitionPath("pokemon_center_heal"),
       },
+      violet_gym_car = {
+        kind = "animated_model",
+        definition = "violet_gym_car",
+        path = FieldEffectAssetCache.definitionPath("violet_gym_car"),
+      },
+      azalea_gym_spinarak = {
+        kind = "animated_model",
+        definition = "azalea_gym_spinarak",
+        path = FieldEffectAssetCache.definitionPath("azalea_gym_spinarak"),
+      },
       celebi_time_travel = {
         kind = "cinematic",
         definition = "celebi_time_travel",
@@ -1080,6 +1083,9 @@ function Compiler.compile(romFs, hashLua)
     textures[sha1] = texture
   end
   for _, source in ipairs(centerHealModelShas.models) do
+    memberSha1[#memberSha1 + 1] = source.sha1
+  end
+  for _, source in ipairs(storyEffects.memberHashes) do
     memberSha1[#memberSha1 + 1] = source.sha1
   end
   for _, source in ipairs(centerHealModelShas.animations) do

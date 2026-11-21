@@ -6536,4 +6536,28 @@ function T.standing_grass_emits_its_overlay_once_map_entry_completes()
   Assert.equal(#emitted, 1, "idle ticks never re-emit the standing overlay")
 end
 
+
+-- The gym mechanism is the one owner asked about a completed step before the
+-- coordinate event, warp and ordinary-step owners run: a claimed step finishes
+-- the tick without ever being published as an ordinary step.
+function T.a_gym_mechanism_claims_the_completed_step_before_ordinary_publication()
+  local player = steppingPlayer()
+  local claimed = {}
+  local mechanism = {
+    tryClaimCompletedStep = function(_, step)
+      claimed[#claimed + 1] = step
+      return #claimed == 1
+    end,
+  }
+  local session = FieldSession.new(baseOptions({ player = player, gymMechanism = mechanism }))
+  session:updateFixed({})
+  Assert.equal(#claimed, 1, "the mechanism is asked once for the completed step")
+  Assert.equal(claimed[1].fieldX, 5, "the claim carries the committed tile")
+  Assert.equal(claimed[1].mapId, 61, "and the map it completed on")
+  Assert.isNil(session:takeCommittedStep(), "a claimed step is never published as an ordinary step")
+  session:updateFixed({})
+  Assert.equal(#claimed, 2, "the next completed step is asked again")
+  Assert.notNil(session:takeCommittedStep(), "an unclaimed step still publishes")
+end
+
 return { tests = T }

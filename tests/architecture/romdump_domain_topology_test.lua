@@ -113,6 +113,7 @@ local DOMAINS = {
     "HgssPermissionGrid",
     "LegendAppearanceCompiler",
     "LugiaAppearanceAssetCompiler",
+    "StoryEffectAssetCompiler",
     "HgssSoundplate",
     "HiddenItemParams",
   },
@@ -216,6 +217,7 @@ local EXISTING_DOMAINS = {
     "lowering/EasyChatHandlers",
     "lowering/Operands",
     "lowering/PokedexHandlers",
+    "lowering/StoryHandlers",
   },
 }
 

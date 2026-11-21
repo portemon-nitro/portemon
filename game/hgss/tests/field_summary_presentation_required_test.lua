@@ -135,7 +135,7 @@ local function compositionRuntime(versionId, helper)
       effects = { surf_attachment = { presentation = {}, model = {} } },
     },
     fieldEmoteModels = {},
-    fieldEffectAssets = {},
+    fieldEffectAssets = { effects = {} },
     fieldTerrainEffectController = {
       setModelFactory = function(_, _) end,
     },

@@ -380,6 +380,7 @@ end
 ---@field easyChatScriptHost table<string, unknown>? the script-owned word editor child host
 ---@field easyChatContexts table<string, unknown>? explicit parent command envelopes for deferred features
 ---@field propAnimations table<string, unknown>|nil the map-scoped one-shot prop slot owner
+---@field gymMechanism table<string, unknown>|nil the active gym mechanism the gym task drives (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field blackout { loader: table<string, unknown>, sourceMap: fun(): table<string, unknown> }? blackout flow construction inputs
 ---@field blackoutFlow FieldBlackoutFlow? runtime-owned whiteout presentation and recovery flow
 
@@ -740,6 +741,7 @@ function FieldScripts.new(opts)
       floorWindow = { show = floorWindowShow },
       overworld = opts.overworld,
       propAnimations = opts.propAnimations,
+      gymMechanism = opts.gymMechanism,
       -- Optional backends: an absent service faults the operation that
       -- needs it (SCRIPT_SERVICE_MISSING) instead of silently succeeding.
       -- The production game wires real audio/camera/screen/events here when

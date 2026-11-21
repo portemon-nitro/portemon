@@ -709,7 +709,7 @@ function T.v12_migration_adds_only_the_poison_counter()
   Assert.equal(source.schema, GameSave.LEGACY_V12_SCHEMA)
   Assert.isNil(source.fieldPoison, "v12 records carry no poison counter")
   local migrated = GameSave.migrateV12(source)
-  Assert.equal(migrated.schema, GameSave.SCHEMA, "the v12 step advances the envelope")
+  Assert.equal(migrated.schema, GameSave.LEGACY_V13_SCHEMA, "the v12 step advances the envelope")
   Assert.equal(source.schema, GameSave.LEGACY_V12_SCHEMA, "migration leaves its input untouched")
   Assert.isNil(source.fieldPoison, "migration never mutates its source record")
   Assert.deepEqual(migrated.fieldPoison, FieldPoisonSave.initial(), "v12 saves initialize the counter on phase zero")
@@ -793,6 +793,51 @@ function T.v8_migration_reconstructs_only_the_proven_radio_card()
   local normalized = assert(GameSave.normalize(v8record()))
   Assert.equal(normalized.schema, GameSave.SCHEMA, "normalization chains v8 through the companion step")
   Assert.notNil(normalized.pokegear, "normalized v8 records carry the companion bucket")
+end
+
+-- The v13 step adds the two closed buckets a settled gym mechanism owns: the
+-- single active union starts inactive and the follower inhibit bit starts
+-- clear. Every other field and bucket passes through untouched, no badge or
+-- story flag is inferred, and the source record is not mutated.
+function T.v13_migration_adds_only_the_gym_union_and_follower_inhibit()
+  local GymMechanismState = require("libs.hgss.src.field.GymMechanismState")
+  local FollowingMonState = require("libs.hgss.src.save.FollowingMonState")
+  local source = GameSave.migrateV12(GameSave.migrateV11(GameSave.migrateV10(v10record())))
+  Assert.equal(source.schema, GameSave.LEGACY_V13_SCHEMA)
+  Assert.isNil(source.gymmick, "v13 records carry no gym union")
+  Assert.isNil(source.followingMon, "v13 records carry no follower inhibit bucket")
+  local migrated = GameSave.migrateV13(source)
+  Assert.equal(migrated.schema, GameSave.SCHEMA, "the v13 step advances the envelope")
+  Assert.equal(source.schema, GameSave.LEGACY_V13_SCHEMA, "migration leaves its input untouched")
+  Assert.isNil(source.gymmick, "migration never mutates its source record")
+  Assert.deepEqual(migrated.gymmick, {
+    schema = GymMechanismState.SCHEMA,
+    kind = "none",
+    data = {},
+  }, "a pre-gym save starts with no active mechanism")
+  Assert.deepEqual(migrated.followingMon, {
+    schema = FollowingMonState.SCHEMA,
+    inhibited = false,
+  }, "a pre-gym save keeps the follower visible")
+  Assert.deepEqual(migrated.fieldPoison, source.fieldPoison, "migration preserves the poison counter")
+  Assert.deepEqual(migrated.world, source.world, "migration preserves world state exactly")
+  Assert.deepEqual(migrated.playerData.profile.badges, source.playerData.profile.badges)
+  local normalized = assert(GameSave.normalize(source))
+  Assert.equal(normalized.schema, GameSave.SCHEMA, "normalization chains v13 through the gym step")
+  Assert.deepEqual(normalized.gymmick, migrated.gymmick, "normalization installs the gym union")
+  local asNew = GameSave.migrateV13(v10record({ schema = GameSave.LEGACY_V13_SCHEMA }))
+  Assert.deepEqual(asNew.gymmick, migrated.gymmick, "the step is pure and idempotent in its own defaults")
+end
+
+-- A current v14 record keeps whatever a settled ride wrote: normalization is
+-- envelope-only and never resets the union to its initial kind.
+function T.a_current_record_keeps_its_settled_gym_union()
+  local record = GameSave.migrateV13(GameSave.migrateV12(GameSave.migrateV11(GameSave.migrateV10(v10record()))))
+  record.gymmick = { schema = "hgss-gymmick-v1", kind = "violet", data = { raised = true } }
+  record.followingMon = { schema = "hgss-following-mon-v1", inhibited = true }
+  local normalized = assert(GameSave.normalize(record))
+  Assert.deepEqual(normalized.gymmick, record.gymmick, "the settled ride survives normalization")
+  Assert.deepEqual(normalized.followingMon, record.followingMon)
 end
 
 return { tests = T }

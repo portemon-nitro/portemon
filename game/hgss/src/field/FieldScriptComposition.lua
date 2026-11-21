@@ -830,6 +830,7 @@ function FieldScriptComposition.compose(runtime, options)
     battle = options.battle,
     overworld = runtime.overworld,
     propAnimations = runtime.propAnimations,
+    gymMechanism = runtime.gymMechanism,
     pokemonCenterHeal = runtime.pokemonCenterHeal,
     blackout = {
       loader = runtime.mapLoader,

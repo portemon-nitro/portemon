@@ -532,4 +532,54 @@ function T.money_operations_carry_source_operands_only()
   Assert.isNil(validate({ op = "money_box", action = "update", tileX = 3 }), "no box action carries a coordinate")
 end
 
+-- The gym mechanism nodes: the init command is a same-tick union write, and
+-- every ride/switch command blocks on the one registered mechanism task with
+-- its evaluated operands. The runtime never drives the mechanism itself.
+function T.gym_mechanism_nodes_dispatch_their_source_operands()
+  local written = {}
+  local initialized = {}
+  local run = runState({
+    gymMechanism = {
+      initialize = function(_, kind)
+        initialized[#initialized + 1] = kind
+      end,
+    },
+  }, written)
+  Assert.equal(Runtime.executeNode({ op = "gym_init", kind = "violet" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(Runtime.executeNode({ op = "gym_init", kind = "azalea" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.deepEqual(initialized, { "violet", "azalea" }, "each init command installs its own closed kind")
+
+  local outcome = Runtime.executeNode({ op = "gym_elevator" }, run)
+  Assert.equal(outcome, Runtime.OUTCOME_BLOCK, "the lift owns the script's frames")
+  Assert.equal(run.blockTaskId.type, "gym_mechanism")
+  Assert.equal(run.blockTaskId.spec.action, "elevator")
+
+  outcome = Runtime.executeNode({ op = "gym_spinarak", selector = 7 }, run)
+  Assert.equal(outcome, Runtime.OUTCOME_BLOCK, "the spider ride owns the script's frames")
+  Assert.equal(run.blockTaskId.type, "gym_mechanism")
+  Assert.equal(run.blockTaskId.spec.action, "spinarak")
+  Assert.equal(run.blockTaskId.spec.selector, 7, "the source selector is a literal endpoint operand")
+
+  outcome = Runtime.executeNode({ op = "gym_switch", switchNumber = 1 }, run)
+  Assert.equal(outcome, Runtime.OUTCOME_BLOCK, "the switch waits for its own source sound")
+  Assert.equal(run.blockTaskId.type, "gym_mechanism")
+  Assert.equal(run.blockTaskId.spec.action, "switch")
+  Assert.equal(run.blockTaskId.spec.switchNumber, 1)
+end
+
+-- A runtime without the mechanism service faults instead of pretending the
+-- gym moved: the missing owner is a composition fault, not a no-op.
+function T.gym_mechanism_nodes_require_their_owner()
+  local run = runState({}, {})
+  local err = Assert.throws(function()
+    Runtime.executeNode({ op = "gym_init", kind = "violet" }, run)
+  end)
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, ScriptErrors.SCRIPT_SERVICE_MISSING)
+  err = Assert.throws(function()
+    Runtime.executeNode({ op = "gym_elevator" }, run)
+  end)
+  Assert.equal(err.code, ScriptErrors.SCRIPT_SERVICE_MISSING)
+end
+
 return { tests = T }

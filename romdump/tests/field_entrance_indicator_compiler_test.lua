@@ -126,6 +126,38 @@ local function installHoOhCompilerMock()
   }
 end
 
+-- The mechanism-prop compiler decodes its own map archives; this suite owns
+-- the bundle merge, so the source compilation is mocked here and covered
+-- against the real archive by the ROM source suites.
+local function installStoryEffectCompilerMock()
+  local function descriptor(key)
+    return {
+      schema = "g4-model-v1",
+      key = "field-effect:" .. key,
+      kind = "nitro-dynamic",
+      dynamic = {
+        nodes = {},
+        transformProgram = {},
+        batches = { { geometry = "assets/generated/maps/geometry/mesh.g4mesh" } },
+      },
+      materials = { { id = 0, name = "effect", texture = "assets/generated/maps/textures/texture.png" } },
+      animations = { { id = key, name = key, category = "joint", kind = "trs", frameCount = 8 } },
+    }
+  end
+  package.loaded["romdump.src.digest.field.StoryEffectAssetCompiler"] = {
+    compile = function(_, meshes, textures)
+      assert(type(meshes) == "table" and type(textures) == "table", "mechanism props share the asset accumulators")
+      return {
+        definitions = {
+          violet_gym_car = { model = descriptor("violet_gym_car") },
+          azalea_gym_spinarak = { model = descriptor("azalea_gym_spinarak") },
+        },
+        memberHashes = { { memberId = 111, sha1 = "car-model" }, { memberId = 118, sha1 = "spinarak-model" } },
+      }
+    end,
+  }
+end
+
 local function installLugiaCompilerMock()
   package.loaded["romdump.src.digest.field.LugiaAppearanceAssetCompiler"] = {
     compile = function()
@@ -145,6 +177,7 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
     "romdump.src.digest.field.CelebiTimeTravelAssetCompiler",
     "romdump.src.digest.field.HoOhAppearanceAssetCompiler",
     "romdump.src.digest.field.LugiaAppearanceAssetCompiler",
+    "romdump.src.digest.field.StoryEffectAssetCompiler",
     "libs.nds.src.nitro.g3d.Nsbmd",
     "libs.nds.src.nitro.g3d.Nsbtx",
     "libs.nds.src.nitro.g3d.NitroAnimation",
@@ -229,6 +262,10 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
         },
       },
     },
+    mechanismPropModels = {
+      { key = "violet_gym_car", mapSymbol = "MAP_VIOLET_GYM", modelMemberId = 111 },
+      { key = "azalea_gym_spinarak", mapSymbol = "MAP_AZALEA_GYM", modelMemberId = 118 },
+    },
     followerReactions = SourceFieldEffects.followerReactions,
     followerReactionBase = SourceFieldEffects.followerReactionBase,
   }
@@ -236,6 +273,7 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   installCelebiCompilerMock()
   installHoOhCompilerMock()
   installLugiaCompilerMock()
+  installStoryEffectCompilerMock()
   package.loaded["libs.nds.src.nitro.g3d.Nsbmd"] = {
     decode = function(_, context)
       assert(context and context.section, "Nsbmd.decode context.section is required")
@@ -411,6 +449,15 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
     { 104, 129 },
     "follower-transition-effect"
   )
+  Assert.equal(result.effects.violet_gym_car.model.key, "field-effect:violet_gym_car")
+  Assert.equal(result.effects.azalea_gym_spinarak.model.key, "field-effect:azalea_gym_spinarak")
+  Assert.equal(result.index.effects.violet_gym_car.kind, "animated_model")
+  Assert.equal(result.index.effects.azalea_gym_spinarak.kind, "animated_model")
+  Assert.equal(
+    result.index.effects.violet_gym_car.path,
+    FieldEffectAssetCache.definitionPath("violet_gym_car"),
+    "the mechanism props publish their own definition paths"
+  )
   Assert.equal(result.effects.warp_entrance.model.kind, "static")
   Assert.isNil(result.effects.warp_entrance.model.animations)
   local animation = result.effects.tall_grass.model.animations[1]
@@ -532,6 +579,7 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
     "romdump.src.digest.field.CelebiTimeTravelAssetCompiler",
     "romdump.src.digest.field.HoOhAppearanceAssetCompiler",
     "romdump.src.digest.field.LugiaAppearanceAssetCompiler",
+    "romdump.src.digest.field.StoryEffectAssetCompiler",
     "libs.nds.src.nitro.g3d.Nsbmd",
     "libs.nds.src.nitro.g3d.Nsbtx",
     "libs.nds.src.nitro.g3d.NitroAnimation",
@@ -660,6 +708,7 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
   installCelebiCompilerMock()
   installHoOhCompilerMock()
   installLugiaCompilerMock()
+  installStoryEffectCompilerMock()
   package.loaded["romdump.src.digest.field.FieldEntranceIndicatorCompiler"] = nil
 
   local ok, result = pcall(function()

@@ -2032,6 +2032,15 @@ FieldHandlers[342] = FieldServiceHandlers.moveWarp
 FieldHandlers[242] = FieldServiceHandlers.elevatorCurFloorBox
 FieldHandlers[488] = FieldServiceHandlers.elevatorAnim
 FieldHandlers[522] = FieldServiceHandlers.getCurrentHour
+-- The Violet and Azalea gym mechanism family rides the cohesive StoryHandlers
+-- leaf for the same local-budget reason: the two gym init commands install
+-- their own closed kind, the lift carries no operands, and the spider ride and
+-- switch selector are literal source bytes.
+FieldHandlers[324] = require("romdump.src.digest.script.lowering.StoryHandlers").violetGymInit
+FieldHandlers[325] = require("romdump.src.digest.script.lowering.StoryHandlers").violetGymElevator
+FieldHandlers[326] = require("romdump.src.digest.script.lowering.StoryHandlers").azaleaGymInit
+FieldHandlers[327] = require("romdump.src.digest.script.lowering.StoryHandlers").azaleaGymSpinarak
+FieldHandlers[328] = require("romdump.src.digest.script.lowering.StoryHandlers").azaleaGymSwitch
 FieldHandlers[784] = FieldServiceHandlers.scriptOverlayCmd
 
 -- The seventeen dex entries ride the cohesive PokedexHandlers leaf. This

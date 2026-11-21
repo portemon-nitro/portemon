@@ -213,6 +213,7 @@ local function world(options)
       return player
     end,
     transition = transition,
+    inhibitState = options.inhibitState,
   })
   return {
     mgr = mgr,
@@ -2967,6 +2968,34 @@ function T.map_change_mid_step_reveals_the_hidden_arrival_on_its_first_step()
   Assert.equal(hidden:getFieldPosition().fieldX, vacated.fieldX, "the revealed follower trails onto the vacated tile")
   Assert.equal(hidden:getFieldPosition().fieldZ, vacated.fieldZ, "the revealed follower trails onto the vacated tile")
   w.mgr:dispose()
+end
+
+
+-- The durable inhibit bit is not a movement pause: it keeps the partner out of
+-- the world whichever path would reveal it (party change, map entry, rejoin, or
+-- the ordinary reconciliation), and clearing it republishes the same follower
+-- in the same tick the clearing script ran.
+function T.the_inhibit_bit_suppresses_the_partner_until_it_is_cleared()
+  local FollowingMonState = require("libs.hgss.src.save.FollowingMonState")
+  local state = FollowingMonState.new()
+  local w = world({ inhibitState = state })
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  Assert.notNil(w.mgr:partnerId(), "the follower publishes while the bit is clear")
+  w.controller:setInhibited(true)
+  Assert.isTrue(state:isInhibited(), "the bit is the durable owner write")
+  Assert.isNil(w.mgr:partnerId(), "setting the bit clears the visible partner at once")
+  tick(w, 3)
+  Assert.isNil(w.mgr:partnerId(), "no reconciliation publishes the partner again")
+  Assert.isTrue(w.controller:isInhibited())
+  w.svc:setLead(0, mon("TOTODILE", 0x22222222))
+  tick(w, 2)
+  Assert.isNil(w.mgr:partnerId(), "a party change while inhibited reveals nothing")
+  w.controller:setInhibited(false)
+  Assert.isFalse(state:isInhibited())
+  Assert.notNil(w.mgr:partnerId(), "clearing the bit republishes the same follower")
+  tick(w, 1)
+  Assert.notNil(w.mgr:partnerId())
 end
 
 return { tests = T }

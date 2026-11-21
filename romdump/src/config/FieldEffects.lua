@@ -112,6 +112,15 @@ return {
       },
     },
   },
+  -- Source map props a gym mechanism loads at runtime rather than the map
+  -- scene placing them (MapPropManager_LoadOne in src/field/gymmick/violet.c
+  -- and azalea.c). Both are interior build models of their own map and both
+  -- are listed by that area's build config, so the area loader also registers
+  -- their anim-list records.
+  mechanismPropModels = {
+    { key = "violet_gym_car", mapSymbol = "MAP_VIOLET_GYM", modelMemberId = 111 },
+    { key = "azalea_gym_spinarak", mapSymbol = "MAP_AZALEA_GYM", modelMemberId = 118 },
+  },
   -- The retail ROM's follower reaction callback table
   -- pairs each reaction's BTX0 texture member with a companion four-frame
   -- selector table. Both source identities stay here; generated keys stay semantic.

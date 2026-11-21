@@ -262,6 +262,11 @@ local function presentationResourcesStub(renderer)
         return {}
       end,
     },
+    gymMechanismRenderer = {
+      drawItems = function(_, status)
+        return { { kind = "gym-mechanism-prop", status = status } }
+      end,
+    },
     dispose = function() end,
   }
 end
@@ -647,6 +652,11 @@ function T.draw_passes_the_render_environment_and_queries_the_menu_host()
           return { visible = false }
         end,
       },
+      gymMechanism = {
+        presentation = function()
+          return { car = { x = 15.5, y = 31, z = 20.5, rotationDegrees = 0 }, spiders = nil }
+        end,
+      },
       actors = {
         drawRecords = function()
           return {}
@@ -743,6 +753,9 @@ function T.draw_passes_the_render_environment_and_queries_the_menu_host()
   Assert.isTrue(received.worldParts[3] == sceneRuntime.animatedBuildingDraws)
   Assert.deepEqual(received.worldParts[4], {})
   Assert.deepEqual(received.worldParts[5], {})
+  local mechanismDraw = assert(received.worldParts[16][1], "the mechanism's own snapshot draws as a world part")
+  Assert.equal(mechanismDraw.kind, "gym-mechanism-prop")
+  Assert.equal(mechanismDraw.status.car.y, 31, "the draw reads the mechanism's own presentation snapshot")
   Assert.isNil(received.capture, "ordinary field draw does not create transition planes")
   Assert.equal(presentations, 1, "draw always queries the menu host presentation")
 end

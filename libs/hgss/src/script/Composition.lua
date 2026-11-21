@@ -47,6 +47,7 @@ local TASK_MODULES = {
   "libs.hgss.src.script.tasks.OverworldLifecycleTask",
   "libs.hgss.src.script.tasks.PropAnimationWaitTask",
   "libs.hgss.src.script.tasks.ElevatorAnimTask",
+  "libs.hgss.src.script.tasks.GymMechanismTask",
   "libs.hgss.src.script.tasks.PokemonCenterHealTask",
   "libs.hgss.src.script.tasks.BattleTask",
   "libs.hgss.src.script.tasks.WhiteoutTask",

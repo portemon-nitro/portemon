@@ -20,7 +20,15 @@ function M.load(cacheFs)
   -- audit own whole-definition validation. Model construction asserts the
   -- model fields it actually consumes.
   local effects = {}
-  for _, kind in ipairs({ "warp_entrance", "tall_grass", "very_tall_grass", "trainer_reveal", "surf_attachment" }) do
+  for _, kind in ipairs({
+    "warp_entrance",
+    "tall_grass",
+    "very_tall_grass",
+    "trainer_reveal",
+    "surf_attachment",
+    "violet_gym_car",
+    "azalea_gym_spinarak",
+  }) do
     local entry = assert(index.effects[kind], "field-effect index is missing " .. kind)
     local definition = assert(cacheFs:loadLua(entry.path), "field-effect definition is missing: " .. kind)
     effects[kind] = definition

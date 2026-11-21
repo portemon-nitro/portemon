@@ -29,6 +29,10 @@ local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 local FieldPlayerVisual = require("libs.hgss.src.actors.FieldPlayerVisual")
 local FieldZoneIdentity = require("libs.hgss.src.world.FieldZoneIdentity")
 local FollowingMonController = require("libs.hgss.src.field.FollowingMonController")
+local FollowingMonState = require("libs.hgss.src.save.FollowingMonState")
+local GymMechanism = require("libs.hgss.src.field.GymMechanism")
+local GymMechanismGeometry = require("libs.hgss.src.field.GymMechanismGeometry")
+local GymMechanismState = require("libs.hgss.src.field.GymMechanismState")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local FieldPoison = require("libs.hgss.src.field.FieldPoison")
 local FieldPoisonEffect = require("libs.hgss.src.field.FieldPoisonEffect")
@@ -1218,7 +1222,32 @@ function FieldRuntime:_loadInitialWorld(boot)
   boot.loadedGame = entryGame
   boot.activeGame = entryGame or self.game
   self.savePublished = entryGame ~= nil
-  self.runtimeMap, self.entryLocation = loadGameLocation(boot.activeGame, self.mapLoader, boot.composeInitialMap)
+  -- The gym mechanism union and the follower inhibit bit are saved owners: a
+  -- Continue restores the settled union here, and the dynamic terrain plate it
+  -- implies is projected over the loaded map before the entry position is
+  -- sampled, so a settled lift's height is the first height the player holds.
+  -- A saved record always carries both buckets (v14 is strict); a finalized
+  -- new-game candidate that carries neither starts from the same initial
+  -- owners NewGame composes.
+  local function entryBucket(name)
+    if entryGame ~= nil then
+      return assert(boot.activeGame[name], "a saved game carries its " .. name .. " bucket")
+    end
+    return boot.activeGame[name]
+  end
+  self.gymMechanismState = GymMechanismState.restore(entryBucket("gymmick"))
+  self.followingMonState = FollowingMonState.restore(entryBucket("followingMon"))
+  self.gymMechanismGeometry = GymMechanismGeometry.new()
+  local composeInitialMap = boot.composeInitialMap
+  local function composeAndDecorateInitialMap(logicalMap, position)
+    local runtimeMap = composeInitialMap(logicalMap, position)
+    self.gymMechanismGeometry:restoreViolet(
+      self.gymMechanismState:kind() == GymMechanismState.VIOLET and self.gymMechanismState:violetRaised() or false
+    )
+    self.gymMechanismGeometry:bindMap(runtimeMap)
+    return runtimeMap
+  end
+  self.runtimeMap, self.entryLocation = loadGameLocation(boot.activeGame, self.mapLoader, composeAndDecorateInitialMap)
   self.mapLoader:protectMap(self.runtimeMap.mapId, true)
 
   self.playerData = boot.activeGame.playerData
@@ -1616,6 +1645,15 @@ function FieldRuntime:_composeFieldServices(boot)
     end
     return self.mapLoader:get(mapId)
   end
+  -- The mechanism reads the session player once it resumes and the boot
+  -- player before the first map binds, so its own lookup stays separate
+  -- from the follower's map-only player view.
+  local function currentMechanismPlayer()
+    return self.session ~= nil and self.session.player or self.player
+  end
+  local function currentForegroundScriptId()
+    return self.scripts ~= nil and self.scripts.scheduler:foregroundScriptId() or nil
+  end
   -- The one follower-transition owner: composed before the following-mon
   -- controller so the controller can hold it as its required
   -- recall-transition collaborator.
@@ -1627,7 +1665,21 @@ function FieldRuntime:_composeFieldServices(boot)
     playerOf = currentPlayer,
     mapOf = currentMap,
     transition = self.followingMonTransition,
+    inhibitState = self.followingMonState,
   })
+  self.gymMechanism = GymMechanism.new({
+    state = self.gymMechanismState,
+    geometry = self.gymMechanismGeometry,
+    playerOf = currentMechanismPlayer,
+    actors = self.actors,
+    followingMon = self.followingMon,
+    audio = self.audio or (self.scriptHosts and self.scriptHosts.audio),
+    camera = self.camera,
+    foregroundScript = currentForegroundScriptId,
+  })
+  -- The initial map's own union decides which runtime-loaded source props the
+  -- mechanism presents, exactly like the source map init loading them.
+  self.gymMechanism:bindMap(self.runtimeMap)
   self.starterBalls = composeStarterBalls(self)
   self.partySelection = buildPartySelectionHost(self, boot.cacheFs)
   self:_composePartyMenu(boot.cacheFs)
@@ -2026,6 +2078,7 @@ function FieldRuntime:_startFieldSession(boot)
     playerAvatar = self.playerAvatar,
     progression = PlayerProgression.new(self.playerData.profile),
     partyKnowsMove = partyKnowsMove,
+    gymMechanism = self.gymMechanism,
   })
 
   if boot.loadedGame and boot.loadedGame.weatherId ~= nil then
@@ -2210,6 +2263,11 @@ function FieldRuntime:update(dt)
     self.session.accumulator = self.session.accumulator - FIXED_DT
     if self.pokemonCenterHeal then
       self.pokemonCenterHeal:updateFixed()
+    end
+    -- The mechanism's presented source props advance their own clip clocks on
+    -- the same fixed tick; gameplay state is untouched here.
+    if self.gymMechanism then
+      self.gymMechanism:updatePresentation()
     end
     self:_processApricornDate()
     -- The transient banner advances one fixed tick before the session so a
@@ -5618,6 +5676,13 @@ function FieldRuntime:_releaseAll()
     self.residency:dispose()
   end
   self.residency = nil
+  if self.gymMechanism then
+    self.gymMechanism:unbind()
+  end
+  self.gymMechanism = nil
+  self.gymMechanismGeometry = nil
+  self.gymMechanismState = nil
+  self.followingMonState = nil
   if self.followingMon then
     self.followingMon:dispose()
   end

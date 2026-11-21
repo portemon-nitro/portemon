@@ -130,6 +130,13 @@ local function validDynamicModel()
   }
 end
 
+-- A mechanism prop: one dynamic model carrying its single source clip.
+local function validMechanismPropDefinition(key)
+  local model = validDynamicModel()
+  model.key = "field-effect:" .. key
+  return { model = model }
+end
+
 local function validReactionModel(selector)
   local model = validDynamicModel()
   model.key = "field-effect:follower-reaction-" .. selector
@@ -293,6 +300,8 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
     "surf_attachment",
     "follower_transition",
     "pokemon_center_heal",
+    "violet_gym_car",
+    "azalea_gym_spinarak",
     "celebi_time_travel",
     "ho_oh_appearance",
     "lugia_appearance",
@@ -432,6 +441,9 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
       end
       if kind == "lugia_appearance" then
         return extra.lugiaDefinition or validLugiaDefinition()
+      end
+      if kind == "violet_gym_car" or kind == "azalea_gym_spinarak" then
+        return validMechanismPropDefinition(kind)
       end
       if kind == "trainer_reveal" then
         if extra.unknownLifecycleMode then
@@ -831,6 +843,16 @@ local function surfCache(surfDefinition, mutateIndex)
         definition = "pokemon_center_heal",
         path = FieldEffectAssetCache.definitionPath("pokemon_center_heal"),
       },
+      violet_gym_car = {
+        kind = "animated_model",
+        definition = "violet_gym_car",
+        path = FieldEffectAssetCache.definitionPath("violet_gym_car"),
+      },
+      azalea_gym_spinarak = {
+        kind = "animated_model",
+        definition = "azalea_gym_spinarak",
+        path = FieldEffectAssetCache.definitionPath("azalea_gym_spinarak"),
+      },
       celebi_time_travel = {
         kind = "cinematic",
         definition = "celebi_time_travel",
@@ -927,6 +949,9 @@ local function surfCache(surfDefinition, mutateIndex)
           placementSound = "SEQ_SE_DP_BOWA",
           fanfare = "SEQ_ME_ASA",
         }
+      end
+      if kind == "violet_gym_car" or kind == "azalea_gym_spinarak" then
+        return validMechanismPropDefinition(kind)
       end
       if kind == "trainer_reveal" then
         return {

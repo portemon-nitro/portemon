@@ -10,8 +10,16 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
 
-local KINDS =
-  { "warp_entrance", "tall_grass", "very_tall_grass", "trainer_reveal", "surf_attachment", "pokemon_center_heal" }
+local KINDS = {
+  "warp_entrance",
+  "tall_grass",
+  "very_tall_grass",
+  "trainer_reveal",
+  "surf_attachment",
+  "pokemon_center_heal",
+  "violet_gym_car",
+  "azalea_gym_spinarak",
+}
 for selector = 1, 14 do
   KINDS[#KINDS + 1] = "follower_reaction_" .. selector
 end

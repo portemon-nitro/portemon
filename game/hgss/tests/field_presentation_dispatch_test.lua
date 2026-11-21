@@ -431,7 +431,7 @@ local function compositionRuntime()
       },
     },
     fieldEmoteModels = {},
-    fieldEffectAssets = {},
+    fieldEffectAssets = { effects = {} },
     fieldTerrainEffectController = {
       setModelFactory = function(_, _) end,
     },

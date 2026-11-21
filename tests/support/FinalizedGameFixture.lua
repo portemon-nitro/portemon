@@ -9,6 +9,8 @@ local BagSave = require("libs.hgss.src.save.BagSave")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldPoisonSave = require("libs.hgss.src.save.FieldPoisonSave")
+local FollowingMonState = require("libs.hgss.src.save.FollowingMonState")
+local GymMechanismState = require("libs.hgss.src.field.GymMechanismState")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local MartSave = require("libs.hgss.src.save.MartSave")
 local MonBucket = require("tests.support.MonBucket")
@@ -70,6 +72,8 @@ function FinalizedGameFixture.build(versionId, options)
     photoAlbum = PhotoAlbum.new():capture(),
     sysInfo = SysInfoState.empty(),
     fieldPoison = FieldPoisonSave.initial(),
+    gymmick = GymMechanismState.restore(nil):capture(),
+    followingMon = FollowingMonState.new():capture(),
   }
 end
 

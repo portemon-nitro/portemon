@@ -366,6 +366,14 @@ function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
     runtime:applyAvatarTransitions()
   end
   runtime.scripts:onMapSwap(prepared.player, runtimeMap)
+  -- Every world swap is a non-connection entry, and the source clears the gym
+  -- mechanism union there before the destination map's own init script
+  -- installs the kind it needs: the destination starts with no mechanism and
+  -- no plate of its own. A seamless connection never reaches this commit,
+  -- which is why a connection retains the union.
+  if runtime.gymMechanism ~= nil then
+    runtime.gymMechanism:enterMap(runtimeMap)
+  end
   runtime.session:beginMapEntry()
   runtime:resetEncounterStepCounters()
   -- The durable destination is published: one ordinary arrival may announce

@@ -53,6 +53,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field _action { progress: integer, duration: integer }?
 ---@field _hopIntoBall { actorId: string, mapId: integer, state: integer, moveStep: integer, step: integer, timer: integer, toLeft: boolean, large: boolean, offset: { x: number, y: number, z: number }, shrinkOriginZ: number?, ballId: integer? }? active nurse-healing follower hop
 ---@field _suspended boolean
+---@field _inhibitState FollowingMonState? the durable inhibit-bit owner; absent compositions have no inhibit path
 ---@field new fun(opts: FollowingMonControllerOptions): FollowingMonController
 ---@field isEnabled fun(self: FollowingMonController): boolean
 ---@field isActive fun(self: FollowingMonController): boolean
@@ -85,6 +86,8 @@ FollowingMonController.__index = FollowingMonController
 ---@field repositionRelativeToPlayer fun(self: FollowingMonController, offsetSelector: integer, directionRaw: integer)
 ---@field facePlayer fun(self: FollowingMonController)
 ---@field isInactiveOrVisible fun(self: FollowingMonController): boolean
+---@field isInhibited fun(self: FollowingMonController): boolean
+---@field setInhibited fun(self: FollowingMonController, inhibited: boolean)
 ---@field swapPositionsWithPlayer fun(self: FollowingMonController)
 ---@field dispose fun(self: FollowingMonController)
 ---@field _descriptor fun(self: FollowingMonController, snapshot: table<string, unknown>): table<string, unknown>?
@@ -203,6 +206,7 @@ local KNOWN_TRIGGER_KINDS = { [1] = true, [2] = true }
 ---@field playerOf fun(): FieldPlayer player anchor source { movementRevision, committedAnchor }
 ---@field transition table<string, unknown> required follower-transition collaborator { start }
 ---@field mapOf (fun(mapId: integer): table<string, unknown>?)? read-only runtime map metadata lookup
+---@field inhibitState FollowingMonState? durable inhibit-bit owner { isInhibited, setInhibited }
 
 ---@param opts FollowingMonControllerOptions
 ---@return FollowingMonController
@@ -218,6 +222,14 @@ function FollowingMonController.new(opts)
   )
   if opts.mapOf ~= nil then
     assert(type(opts.mapOf) == "function", "following controller map lookup must be a function")
+  end
+  if opts.inhibitState ~= nil then
+    assert(
+      type(opts.inhibitState) == "table"
+        and type(opts.inhibitState.isInhibited) == "function"
+        and type(opts.inhibitState.setInhibited) == "function",
+      "following controller inhibit state must answer and accept the durable inhibit bit"
+    )
   end
   local actors = assert(opts.actors)
   local mapOf = opts.mapOf
@@ -260,6 +272,7 @@ function FollowingMonController.new(opts)
     _action = nil,
     _hopIntoBall = nil,
     _suspended = false,
+    _inhibitState = opts.inhibitState,
   }, FollowingMonController)
   ---@cast self FollowingMonController
   return self
@@ -1281,11 +1294,12 @@ function FollowingMonController:update()
     self:_clearAll()
     return
   end
-  if self._stowed or not self:_permitted(mapId) then
-    -- Permission lost or stowed for a ride: clear the visible partner but
-    -- keep the party-derived lead, so returning to an allowed map or
-    -- dismounting republishes the same follower. The player baseline (anchor
-    -- and movement starts) keeps tracking so no stale step replays later.
+  if self._stowed or self:isInhibited() or not self:_permitted(mapId) then
+    -- Stowed for a ride, inhibited, or permission lost: clear the visible
+    -- partner but keep the party-derived lead, so unstowing, clearing the bit,
+    -- or returning to an allowed map republishes the same follower. The player
+    -- baseline (anchor and movement starts) keeps tracking so no stale step
+    -- replays later.
     self._mapEntry = false
     self:_suppress()
     rebaselinePlayerObservation(self)
@@ -1491,6 +1505,40 @@ end
 function FollowingMonController:setMovementPaused(paused)
   paused = paused == true
   self._paused = paused
+end
+
+-- The durable inhibit bit: while it is set, the partner never appears,
+-- whichever path would reveal it (party change, map entry, rejoin, or the
+-- ordinary reconciliation). Inhibition is not a movement pause: the lead
+-- identity and the trail keep tracking, so clearing the bit reveals the
+-- follower the same tick instead of one reconciliation later.
+---@return boolean
+---@param self FollowingMonController
+function FollowingMonController:isInhibited()
+  return self._inhibitState ~= nil and self._inhibitState:isInhibited() == true
+end
+
+-- Write the inhibit bit and settle the visible partner in the same tick it is
+-- written: setting suppresses the partner at once, clearing republishes it.
+---@param inhibited boolean
+---@param self FollowingMonController
+function FollowingMonController:setInhibited(inhibited)
+  assert(self._inhibitState ~= nil, "this follower composition has no inhibit owner")
+  assert(type(inhibited) == "boolean", "the follower inhibit bit is a boolean")
+  self._inhibitState:setInhibited(inhibited)
+  local mapId = self._actors.currentMapId
+  if inhibited then
+    self._mapEntry = false
+    self:_suppress()
+    return
+  end
+  if mapId == nil then
+    return
+  end
+  self._published = nil
+  if self._lead ~= nil and self:_permitted(mapId) then
+    self:_publish(mapId)
+  end
 end
 
 -- Settle means no in-flight trail and no source-required pending

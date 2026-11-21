@@ -1909,6 +1909,30 @@ function HANDLERS.floor_window_show(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+-- The gym mechanism family. The init command installs one closed source kind
+-- and returns in its own tick, exactly like the source FALSE return; every
+-- ride and switch command hands its evaluated source operands to the one
+-- registered mechanism task and blocks until the transport or sound settled.
+function HANDLERS.gym_init(node, run)
+  requireService(run, "gymMechanism"):initialize(node.kind)
+  return Runtime.OUTCOME_CONTINUE
+end
+
+function HANDLERS.gym_elevator(_, run)
+  requireService(run, "gymMechanism")
+  return blockOnTask(run, "gym_mechanism", { action = "elevator" })
+end
+
+function HANDLERS.gym_spinarak(node, run)
+  requireService(run, "gymMechanism")
+  return blockOnTask(run, "gym_mechanism", { action = "spinarak", selector = node.selector })
+end
+
+function HANDLERS.gym_switch(node, run)
+  requireService(run, "gymMechanism")
+  return blockOnTask(run, "gym_mechanism", { action = "switch", switchNumber = node.switchNumber })
+end
+
 function HANDLERS.elevator_anim(node, run)
   local semantics = semanticsFor(run)
   requireService(run, "propAnimations")

@@ -30,6 +30,7 @@ local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldStaticEffectRenderer = require("libs.hgss.src.presentation.FieldStaticEffectRenderer")
 local FieldActorEmoteRenderer = require("libs.hgss.src.presentation.FieldActorEmoteRenderer")
 local FieldTerrainEffectRenderer = require("libs.hgss.src.presentation.FieldTerrainEffectRenderer")
+local StoryEffectRenderer = require("libs.hgss.src.presentation.StoryEffectRenderer")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
@@ -95,6 +96,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field followingMonTransition FollowingMonTransitionController?
 ---@field pokemonCenterHeal PokemonCenterHealFlow? active healing choreography
 ---@field pokemonCenterHealDefinition table<string, unknown>? generated healing-ball asset definition
+---@field gymMechanism GymMechanism? the runtime mechanism whose presented source props this composition owns
 
 ---@class FieldPresentationResources
 ---@field cacheFs CacheFs generated asset filesystem
@@ -161,6 +163,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field fieldEmotePool GpuAssetPool?
 ---@field fieldEmoteRenderer FieldActorEmoteRenderer?
 ---@field fieldTerrainEffectRenderer FieldTerrainEffectRenderer?
+---@field gymMechanismRenderer StoryEffectRenderer?
 ---@field presenters table<string, FieldPresentationApplicationPresenter>? the per-instance application presenter map
 ---@field _warmPartyRevision integer? last observed live party revision behind the idle selector memo
 ---@field _warmPortraitSelectors string[]? predicted non-egg portrait selectors in stable slot order
@@ -838,6 +841,26 @@ function FieldPresentationResources.new(runtime)
     local fieldTerrainEffectController =
       assert(runtime.fieldTerrainEffectController, "field terrain-effect controller is unavailable")
     fieldTerrainEffectController:setModelFactory(terrainModelFactory)
+    -- The gym mechanisms load their source props at runtime instead of the map
+    -- scene placing them, so their generated definitions travel with this
+    -- field-effect family and borrow the same pool. A definition-less
+    -- composition keeps the renderer nil and the mechanism presents nothing.
+    local carDefinition = fieldEffectAssets.effects.violet_gym_car
+    local spiderDefinition = fieldEffectAssets.effects.azalea_gym_spinarak
+    if carDefinition ~= nil and spiderDefinition ~= nil and runtime.gymMechanism ~= nil then
+      local mechanismRenderer = StoryEffectRenderer.new({
+        car = carDefinition,
+        spider = spiderDefinition,
+      }, entrancePool)
+      self.gymMechanismRenderer = mechanismRenderer
+      local function newMechanismCar()
+        return mechanismRenderer:newCar()
+      end
+      local function newMechanismSpider(slot)
+        return mechanismRenderer:newSpider(slot)
+      end
+      runtime.gymMechanism:setModelFactory({ car = newMechanismCar, spider = newMechanismSpider })
+    end
     self.presenters = buildPresenters(self)
   end)
   if not ok then
@@ -1778,6 +1801,10 @@ function FieldPresentationResources:dispose()
   if self.fieldTerrainEffectRenderer then
     self.fieldTerrainEffectRenderer:dispose()
     self.fieldTerrainEffectRenderer = nil
+  end
+  if self.gymMechanismRenderer then
+    self.gymMechanismRenderer:dispose()
+    self.gymMechanismRenderer = nil
   end
   if self.fieldEntranceIndicatorPool then
     self.fieldEntranceIndicatorPool:release()

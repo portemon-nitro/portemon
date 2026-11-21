@@ -451,6 +451,16 @@ local function hasExactKeys(value, keys, optionalKeys)
   return true
 end
 
+-- A mechanism prop carries exactly its own compiled model and the single
+-- source clip its anim-list record declares; where the prop stands is runtime
+-- geometry of the mechanism, not a generated placement.
+local function validMechanismPropDefinition(definition, _)
+  if not hasExactKeys(definition, { "model" }) then
+    return false
+  end
+  return singleDynamicClip(definition.model) ~= nil
+end
+
 local function validClipSummary(clips, models)
   if not hasExactKeys(clips, { "frames", "cinematic" }) then
     return false
@@ -659,6 +669,8 @@ local FIELD_EFFECT_INVENTORY = {
   { key = "tall_grass", entryKind = "animated_model", validator = validGrassDefinition },
   { key = "very_tall_grass", entryKind = "animated_model", validator = validGrassDefinition },
   { key = "trainer_reveal", entryKind = "animated_model", validator = validTrainerRevealDefinition },
+  { key = "violet_gym_car", entryKind = "animated_model", validator = validMechanismPropDefinition },
+  { key = "azalea_gym_spinarak", entryKind = "animated_model", validator = validMechanismPropDefinition },
   { key = "surf_attachment", entryKind = "model", validator = validSurfDefinition },
   { key = "follower_transition", entryKind = "transition", validator = validTransitionDefinition },
   { key = "pokemon_center_heal", entryKind = "healing", validator = validPokemonCenterHealDefinition },
@@ -767,6 +779,31 @@ end
 -- PNG contract beside the 3D texture banks.
 function FieldEffectAssetCache.imagePath(sha1)
   return ASSET_DIR .. "/textures/" .. sha1 .. ".png"
+end
+
+-- Repoint one compiled model descriptor's content-addressed assets at this
+-- family's published paths. Compilers that decode models from a map archive
+-- hand over descriptors whose paths name another family's asset root; the
+-- bundle owns its own copies, so the referenced digest is the only part kept.
+---@param descriptor table<string, unknown>
+function FieldEffectAssetCache.rewriteModelPaths(descriptor)
+  local batches = descriptor.kind == "static" and descriptor.batches or assert(descriptor.dynamic).batches
+  for _, batch in ipairs(batches) do
+    local sha1 = assert(batch.geometry:match("/([^/]+)%.g4mesh$"), "compiled geometry path is malformed")
+    batch.geometry = FieldEffectAssetCache.geometryPath(sha1)
+  end
+  for _, material in ipairs(descriptor.materials) do
+    if material.texture then
+      local sha1 = assert(material.texture:match("/([^/]+)%.png$"), "compiled texture path is malformed")
+      material.texture = FieldEffectAssetCache.texturePath(sha1)
+    end
+    for _, variant in ipairs(material.variants or {}) do
+      if variant.texture then
+        local sha1 = assert(variant.texture:match("/([^/]+)%.png$"), "compiled texture path is malformed")
+        variant.texture = FieldEffectAssetCache.texturePath(sha1)
+      end
+    end
+  end
 end
 function FieldEffectAssetCache.marker(romSha1, depHash)
   return string.format("%s:%s:%s", FieldEffectAssetCache.FORMAT, romSha1, depHash)

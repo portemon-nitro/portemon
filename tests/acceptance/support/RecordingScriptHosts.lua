@@ -30,6 +30,7 @@ function RecordingScriptHosts.new(options)
   end
 
   function audio:stop(sound)
+    effects[#effects + 1] = "stop:" .. tostring(sound)
     if self.current == sound then
       self.current = nil
     end

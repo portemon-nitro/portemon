@@ -274,6 +274,21 @@ local function captureRuntime(overrides)
   if runtime.saveCoordinator == nil then
     runtime.saveCoordinator = FieldSaveCoordinator.new(runtime)
   end
+  -- The capture boundary also composes the gym mechanism union and the
+  -- follower inhibit bit, so the fixture answers both like production does.
+  if runtime.gymMechanism == nil then
+    local FollowingMonState = require("libs.hgss.src.save.FollowingMonState")
+    local GymMechanismState = require("libs.hgss.src.field.GymMechanismState")
+    runtime.followingMonState = FollowingMonState.new()
+    runtime.gymMechanism = {
+      isStableForSave = function()
+        return true
+      end,
+      capture = function()
+        return GymMechanismState.restore(nil):capture()
+      end,
+    }
+  end
   return runtime
 end
 

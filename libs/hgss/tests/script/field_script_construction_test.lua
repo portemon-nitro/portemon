@@ -83,6 +83,10 @@ T["construction registers the production task set"] = function()
     taskRegistry:resolve("elevator_anim", 1),
     "the production task set resolves the source elevator animation"
   )
+  Assert.notNil(
+    taskRegistry:resolve("gym_mechanism", 1),
+    "the production task set resolves the blocking gym mechanism ride"
+  )
 end
 
 return { tests = T }

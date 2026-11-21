@@ -255,6 +255,7 @@ function FieldPlayer.new(options)
     _movementRevision = 0,
     _committedTerrainSteps = nil,
     _bikedSteps = 0,
+    _transport = nil,
     _lastTraversalKind = "idle",
     _movementStartRevision = 0,
     _movementTransaction = nil,
@@ -1063,6 +1064,12 @@ end
 ---@return boolean stepCompleted
 function FieldPlayer:updateFixed(input, run)
   input = input or {}
+  if self._transport ~= nil then
+    -- A carried player belongs to one transport lease: ordinary walking,
+    -- turning, and buffered prompts stay out of it until the mechanism
+    -- commits the arrival stop or restores its anchor.
+    return false
+  end
   local scripted = self._scriptedMotion
   if scripted ~= nil and scripted.advancement ~= "tick" then
     -- A caller-advanced scripted action belongs to the owner that began it
@@ -1289,6 +1296,115 @@ function FieldPlayer:setScriptPosition(position)
   self._gestureOffsetY = 0
   self.previousWorldX, self.previousWorldY, self.previousWorldZ = self.worldX, self.worldY, self.worldZ
   self:_commitTile("scripted")
+end
+
+-- --- Native transports (invariant-preserving) -------------------------------
+-- A source transport carries the player through world space without walking:
+-- the lift raises the avatar's map object each tick and the Azalea spiders set
+-- the player's position vector along their route, and only the arrival stop
+-- writes the committed tile once (src/field/gymmick/violet.c,
+-- src/field/gymmick/azalea.c). These four operations are the whole surface:
+-- begin claims one lease on an idle player, applyTransportPose publishes this
+-- tick's world pose, commitTransport writes the settled tile, and
+-- cancelTransport restores the captured anchor exactly. A carried player took
+-- no step, so the movement revision never bumps: followers, terrain responses,
+-- encounter admission, and every other committed-step consumer see nothing.
+
+-- Claim one transport lease over an idle player, capturing the anchor the
+-- lease restores on cancellation.
+---@return table<string, unknown> lease
+function FieldPlayer:beginTransport()
+  assert(self._transport == nil, "a player transport is already active")
+  assert(self.motion == "idle", "a player transport requires an idle player")
+  local lease = {
+    fieldX = self.fieldX,
+    fieldZ = self.fieldZ,
+    localX = self.localX,
+    localZ = self.localZ,
+    worldX = self.worldX,
+    worldY = self.worldY,
+    worldZ = self.worldZ,
+    surfaceId = self.surfaceId,
+    committedSourceCellKey = self.committedSourceCellKey,
+    committedSourceSurfaceId = self.committedSourceSurfaceId,
+  }
+  self._transport = lease
+  return lease
+end
+
+---@return boolean
+function FieldPlayer:isTransporting()
+  return self._transport ~= nil
+end
+
+-- Publish one carried world pose. The logical tile is untouched, so the
+-- player keeps standing where the ride started until its arrival stop.
+---@param worldX number
+---@param worldY number
+---@param worldZ number
+function FieldPlayer:applyTransportPose(worldX, worldY, worldZ)
+  assert(self._transport ~= nil, "no player transport owns the player")
+  assert(
+    type(worldX) == "number" and type(worldY) == "number" and type(worldZ) == "number",
+    "a transport pose needs finite world coordinates"
+  )
+  self.previousWorldX, self.previousWorldY, self.previousWorldZ = self.worldX, self.worldY, self.worldZ
+  self.worldX, self.worldY, self.worldZ = worldX, worldY, worldZ
+  self.progressTicks = 0
+  self.from, self.to = nil, nil
+  self._scriptedMotion = nil
+end
+
+-- Write the settled arrival tile once, on the surface the mechanism's own
+-- dynamic plate (or the map's generated terrain) answers there. An explicit
+-- worldY keeps the arrival height the ride already published; without one the
+-- destination surface decides.
+---@param fieldX integer
+---@param fieldZ integer
+---@param worldY number?
+function FieldPlayer:commitTransport(fieldX, fieldZ, worldY)
+  assert(self._transport ~= nil, "no player transport owns the player")
+  local localX, localZ = FieldCoordinates.fieldToLocal(self.currentMap, fieldX, fieldZ)
+  local sample = SurfaceResolver.new(self.currentMap.terrain):resolve({
+    localX = localX + FieldCoordinates.TILE_CENTER_OFFSET,
+    localZ = localZ + FieldCoordinates.TILE_CENTER_OFFSET,
+    currentY = worldY or self.worldY,
+  })
+  local world = FieldCoordinates.fieldToWorld(self.currentMap, fieldX, fieldZ, sample.worldY)
+  self.fieldX, self.fieldZ = fieldX, fieldZ
+  self.localX, self.localZ = localX, localZ
+  self.worldX, self.worldY, self.worldZ = world.x, world.y, world.z
+  self.surfaceId = sample.surfaceId
+  local plate = self.currentMap.terrain:plate(sample.surfaceId)
+  self.committedSourceCellKey = plate and plate.cellKey or nil
+  self.committedSourceSurfaceId = plate and plate.sourceSurfaceId or nil
+  self.previousWorldX, self.previousWorldY, self.previousWorldZ = self.worldX, self.worldY, self.worldZ
+  self.motion = "idle"
+  self.progressTicks = 0
+  self.from, self.to = nil, nil
+  self._scriptedMotion = nil
+  self._transport = nil
+end
+
+-- Restore the captured anchor exactly. A cancellation after the lease already
+-- committed is a clean no-op rather than a second restoration.
+function FieldPlayer:cancelTransport()
+  local lease = self._transport
+  if lease == nil then
+    return
+  end
+  self._transport = nil
+  self.fieldX, self.fieldZ = lease.fieldX, lease.fieldZ
+  self.localX, self.localZ = lease.localX, lease.localZ
+  self.worldX, self.worldY, self.worldZ = lease.worldX, lease.worldY, lease.worldZ
+  self.surfaceId = lease.surfaceId
+  self.committedSourceCellKey = lease.committedSourceCellKey
+  self.committedSourceSurfaceId = lease.committedSourceSurfaceId
+  self.previousWorldX, self.previousWorldY, self.previousWorldZ = lease.worldX, lease.worldY, lease.worldZ
+  self.motion = "idle"
+  self.progressTicks = 0
+  self.from, self.to = nil, nil
+  self._scriptedMotion = nil
 end
 
 function FieldPlayer:clearGesturePresentation()

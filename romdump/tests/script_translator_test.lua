@@ -2563,4 +2563,46 @@ T["the department store floor buffer lowers its byte operands into buffered text
   validateSteps("test.source_852", steps)
 end
 
+-- The Violet and Azalea gym mechanism family: the two init commands return in
+-- their own tick and install one closed source kind, while the lift, spider
+-- ride and switch flip block on the mechanism task. The spider selector and
+-- the switch number are literal source bytes, never script variables.
+T["violet and azalea gym mechanism commands lower to their closed source nodes"] = function()
+  Assert.equal(CommandCatalog.classification(324), CommandCatalog.CONTINUE, "the violet init returns in its own tick")
+  Assert.equal(CommandCatalog.classification(326), CommandCatalog.CONTINUE, "the azalea init returns in its own tick")
+  Assert.equal(CommandCatalog.classification(325), CommandCatalog.NATIVE_WAIT, "the lift blocks the script")
+  Assert.equal(CommandCatalog.classification(327), CommandCatalog.NATIVE_WAIT, "the spider ride blocks the script")
+  Assert.equal(CommandCatalog.classification(328), CommandCatalog.NATIVE_WAIT, "the switch waits for its sound")
+
+  local _, violetSteps, violetReport = translateOnly({
+    { op = 324, args = {} },
+    { op = 325, args = {} },
+    { op = 2, args = {} },
+  })
+  Assert.equal(violetSteps[1].op, "gym_init")
+  Assert.equal(violetSteps[1].kind, "violet")
+  Assert.deepEqual(violetSteps[1].provenance, { offsets = { 0x20 }, opcodes = { 324 } })
+  Assert.equal(violetSteps[2].op, "gym_elevator")
+  Assert.deepEqual(violetSteps[2].provenance, { offsets = { 0x22 }, opcodes = { 325 } })
+  Assert.isTrue(violetReport.complete, "the violet mechanism script completes")
+  validateSteps("test.source_324", violetSteps)
+
+  local _, azaleaSteps, azaleaReport = translateOnly({
+    { op = 326, args = {} },
+    { op = 327, args = { { value = 7, width = 1 } } },
+    { op = 328, args = { { value = 1, width = 1 } } },
+    { op = 2, args = {} },
+  })
+  Assert.equal(azaleaSteps[1].op, "gym_init")
+  Assert.equal(azaleaSteps[1].kind, "azalea")
+  Assert.equal(azaleaSteps[2].op, "gym_spinarak")
+  Assert.equal(azaleaSteps[2].selector, 7, "the source endpoint selector is a literal byte")
+  Assert.equal(countVariableReferences(azaleaSteps[2]), 0, "the ride command dereferences no variable")
+  Assert.equal(azaleaSteps[3].op, "gym_switch")
+  Assert.equal(azaleaSteps[3].switchNumber, 1, "the source switch selector is a literal byte")
+  Assert.equal(countVariableReferences(azaleaSteps[3]), 0)
+  Assert.isTrue(azaleaReport.complete, "the azalea mechanism script completes")
+  validateSteps("test.source_326", azaleaSteps)
+end
+
 return { tests = T }

@@ -1,0 +1,133 @@
+-- The persisted gym mechanism union: one tagged kind at a time, the source
+-- defaults each gym's init installs, and a strict detached capture/restore
+-- that never repairs malformed buckets.
+
+local Assert = require("tests.support.Assert")
+local Errors = require("libs.errors.src.Errors")
+local FieldErrors = require("libs.hgss.src.field.FieldErrors")
+local GymMechanismState = require("libs.hgss.src.field.GymMechanismState")
+
+local T = {}
+
+local function azaleaBucket(overrides)
+  local bucket = {
+    schema = GymMechanismState.SCHEMA,
+    kind = "azalea",
+    data = { endpoints = { 0, 1, 2, 7 }, switchMask = 0 },
+  }
+  for key, value in pairs(overrides or {}) do
+    bucket[key] = value
+  end
+  return bucket
+end
+
+function T.the_union_starts_inactive_and_round_trips_each_closed_kind()
+  local empty = GymMechanismState.restore(nil)
+  Assert.equal(empty:kind(), "none", "a save without the bucket carries no active mechanism")
+  Assert.deepEqual(empty:capture(), { schema = GymMechanismState.SCHEMA, kind = "none", data = {} })
+
+  local violet = GymMechanismState.restore({ schema = GymMechanismState.SCHEMA, kind = "violet", data = { raised = true } })
+  Assert.equal(violet:kind(), "violet")
+  Assert.isTrue(violet:violetRaised(), "the settled lift height survives the round trip")
+  Assert.deepEqual(violet:capture(), {
+    schema = GymMechanismState.SCHEMA,
+    kind = "violet",
+    data = { raised = true },
+  })
+
+  local azalea = GymMechanismState.restore(azaleaBucket())
+  Assert.equal(azalea:kind(), "azalea")
+  Assert.deepEqual(azalea:spiderEndpoints(), { 0, 1, 2, 7 }, "the four spider endpoints survive the round trip")
+  Assert.equal(azalea:switchMask(), 0)
+end
+
+-- The capture is detached: mutating the live owner after a capture never
+-- rewrites the record that was handed to the save, and a restored owner never
+-- shares its endpoint array with the bucket it read.
+function T.capture_and_restore_are_detached_from_their_source()
+  local bucket = azaleaBucket()
+  local state = GymMechanismState.restore(bucket)
+  local captured = state:capture()
+  state:setSpiderEndpoint(1, 5)
+  state:toggleSwitch(0)
+  Assert.deepEqual(bucket.data.endpoints, { 0, 1, 2, 7 }, "restore never aliases the persisted endpoints")
+  Assert.deepEqual(captured.data.endpoints, { 0, 1, 2, 7 }, "an earlier capture stays detached")
+  Assert.equal(captured.data.switchMask, 0)
+  Assert.deepEqual(state:capture().data.endpoints, { 5, 1, 2, 7 })
+  Assert.equal(state:switchMask(), 1)
+end
+
+-- The gym init command resets the union exactly like Save_Gymmick_Init: one
+-- kind wins and every other kind's data is gone.
+function T.initializing_a_kind_replaces_the_previous_union()
+  local state = GymMechanismState.restore(azaleaBucket())
+  state:initialize("violet")
+  Assert.equal(state:kind(), "violet")
+  Assert.isFalse(state:violetRaised(), "a fresh violet union starts on the lower floor")
+  state:setVioletRaised(true)
+  state:initialize("azalea")
+  Assert.equal(state:kind(), "azalea")
+  Assert.deepEqual(state:spiderEndpoints(), { 0, 1, 2, 7 }, "the azalea init installs the source spider endpoints")
+  Assert.equal(state:switchMask(), 0, "the azalea init installs the source switch mask")
+  state:setSpiderEndpoint(3, 9)
+  state:initialize("violet")
+  Assert.isFalse(state:violetRaised(), "replacing the union drops the previous kind's settled state")
+  Assert.throws(function()
+    state:spiderEndpoints()
+  end, "the azalea accessors are unavailable outside their kind")
+end
+
+-- Switch 0 owns the low bit and switch 1 the high bit; any other selector is
+-- a source assertion failure, never a silent no-op.
+function T.switches_toggle_only_their_own_source_bit()
+  local state = GymMechanismState.restore(azaleaBucket())
+  state:toggleSwitch(0)
+  Assert.equal(state:switchMask(), 1)
+  state:toggleSwitch(1)
+  Assert.equal(state:switchMask(), 3)
+  state:toggleSwitch(0)
+  Assert.equal(state:switchMask(), 2)
+  state:toggleSwitch(1)
+  Assert.equal(state:switchMask(), 0)
+  local err = Assert.throws(function()
+    state:toggleSwitch(2)
+  end)
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, FieldErrors.FIELD_GYM_MECHANISM_INVALID)
+end
+
+function T.the_spider_lookup_answers_the_node_each_spider_stands_on()
+  local state = GymMechanismState.restore(azaleaBucket())
+  Assert.equal(state:spiderAtEndpoint(0), 1, "the first spider stands on the first endpoint")
+  Assert.equal(state:spiderAtEndpoint(7), 4)
+  Assert.isNil(state:spiderAtEndpoint(4), "an unoccupied endpoint owns no spider")
+  local err = Assert.throws(function()
+    state:spiderAtEndpoint(12)
+  end)
+  Assert.equal(err.code, FieldErrors.FIELD_GYM_MECHANISM_INVALID)
+end
+
+function T.malformed_buckets_are_rejected_without_repair()
+  local cases = {
+    { bucket = { kind = "violet", data = {} } },
+    { bucket = { schema = "hgss-gymmick-v2", kind = "violet", data = { raised = false } } },
+    { bucket = { schema = GymMechanismState.SCHEMA, kind = "ecruteak", data = {} } },
+    { bucket = { schema = GymMechanismState.SCHEMA, kind = "none", data = { raised = false } } },
+    { bucket = { schema = GymMechanismState.SCHEMA, kind = "violet", data = { raised = "yes" } } },
+    { bucket = { schema = GymMechanismState.SCHEMA, kind = "violet", data = { raised = false, extra = 1 } } },
+    { bucket = azaleaBucket({ data = { endpoints = { 0, 1, 2 }, switchMask = 0 } }) },
+    { bucket = azaleaBucket({ data = { endpoints = { 0, 1, 2, 12 }, switchMask = 0 } }) },
+    { bucket = azaleaBucket({ data = { endpoints = { 0, 1, 2, 1.5 }, switchMask = 0 } }) },
+    { bucket = azaleaBucket({ data = { endpoints = { 0, 1, 2, 7 }, switchMask = 4 } }) },
+    { bucket = azaleaBucket({ data = { endpoints = { 0, 1, 2, 7 } } }) },
+  }
+  for index, case in ipairs(cases) do
+    local err = Assert.throws(function()
+      GymMechanismState.restore(case.bucket)
+    end)
+    Assert.isTrue(Errors.is(err), "case " .. index .. " raises a structured error")
+    Assert.equal(err.code, FieldErrors.FIELD_GYM_MECHANISM_INVALID, "case " .. index .. " keeps the bucket invalid")
+  end
+end
+
+return { tests = T }

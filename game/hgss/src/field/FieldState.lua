@@ -81,7 +81,7 @@ local POKEGEAR_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "linear
 ---@field _pollPresentationTopology boolean whether injected topology changes are polled during draw
 ---@field _surfPresentation { playerOffset: { x: number, y: number, z: number }, surf: { active: boolean, attachmentOffsetY: number } }
 ---@field _surfAnchor { x: number, y: number, z: number }
----@field worldParts table[][] ordered map, static building, animated building, neighbor, entrance-indicator, actor, movement-emote, and terrain-effect draw arrays
+---@field worldParts table[][] ordered map, static building, animated building, neighbor, entrance-indicator, actor, movement-emote, terrain-effect, and mechanism-prop draw arrays
 ---@field worldActorItems table[] persistent actor items kept in the world raster
 ---@field spriteItems table[] persistent presentation-resolution actor sprites
 ---@field _terrainItems table[] reusable terrain-effect draw storage refilled every frame
@@ -999,6 +999,12 @@ function FieldState:_worldParts(alpha)
     end
     worldParts[15] = NO_DRAWS
   end
+  -- The gym mechanisms' runtime-loaded source props draw from the mechanism's
+  -- own per-tick snapshot; the renderer only applies the transforms it carries.
+  local mechanismRenderer = resources.gymMechanismRenderer
+  local mechanism = self.runtime.gymMechanism
+  worldParts[16] = (mechanismRenderer and mechanism) and mechanismRenderer:drawItems(mechanism:presentation())
+    or NO_DRAWS
   return worldParts
 end
 
@@ -2626,6 +2632,7 @@ function FieldState:dispose()
     self.worldParts[13] = nil
     self.worldParts[14] = nil
     self.worldParts[15] = nil
+    self.worldParts[16] = nil
   end
   if self._hoOhAppearanceRenderer then
     -- The registry cancels the preparer's jobs before the renderer goes.
