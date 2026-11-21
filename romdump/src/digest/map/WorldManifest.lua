@@ -12,7 +12,6 @@
 
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local Errors = require("libs.errors.src.Errors")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local MapAnalysis = require("romdump.src.digest.map.MapAnalysis")
 local MapResolver = require("romdump.src.digest.map.MapResolver")
 local Hashing = require("romdump.src.digest.Hashing")
@@ -30,33 +29,6 @@ local function sortedById(records)
   end
   table.sort(out, sortById)
   return out
-end
-
-local function validateStagedManifest(tx, manifest)
-  tx.stage:writeLua(MapAssetCache.worldPath(), manifest)
-  local readBack = tx.stage:loadLua(MapAssetCache.worldPath())
-  if type(readBack) ~= "table" or type(readBack.maps) ~= "table" then
-    Errors.raise(
-      "WORLD_MANIFEST_READBACK_FAILED",
-      "world.lua did not read back as a manifest",
-      { path = MapAssetCache.worldPath() }
-    )
-  end
-end
-
----@param version string
----@param transaction ArtifactPublisher
----@return table<string, unknown>
-local function newStagedWorld(version, transaction)
-  local function publish()
-    transaction:publish()
-  end
-
-  local function abort()
-    transaction:abort()
-  end
-
-  return { version = version, publish = publish, abort = abort }
 end
 
 -- `excluded` holds maps whose matrix cell could not be selected; `compileExcluded`
@@ -140,24 +112,6 @@ function WorldManifest.build(entries, excluded, compileExcluded)
   }
 end
 
--- Stage the current manifest for the version's cache: build it, write it into
--- the disposable artifact stage, and prove it reads back as a manifest. The
--- live world.lua is untouched. Returns a handle with `version`, `publish()`
--- (swap the staged manifest over the live path through the shared publication
--- lifecycle, after which the caller must not abort), and `abort()` (discard
--- the disposable stage). A staging/validation failure discards the stage and
--- re-raises.
-function WorldManifest.stage(cacheFs, entries, excluded, compileExcluded)
-  local manifest = WorldManifest.build(entries, excluded, compileExcluded)
-  local tx = ArtifactPublisher.begin(cacheFs, "world", { MapAssetCache.worldPath() })
-  local ok, result = pcall(validateStagedManifest, tx, manifest)
-  if not ok then
-    tx:abort()
-    error(result, 0)
-  end
-  return newStagedWorld(cacheFs.versionId, tx)
-end
-
 -- Derive the structural world catalog from source analysis alone, without
 -- reading any compiled scene: every source-resolved map becomes a catalog
 -- record carrying its runtime identities plus the resolver-normalized world
@@ -224,13 +178,13 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function WorldManifest.stageCatalog(artifact, bundle)
-  assert(artifact and artifact.stageFs, "catalog staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "catalog staging requires a PreparedArtifact")
   assert(
     type(bundle) == "table" and type(bundle.maps) == "table" and type(bundle.marker) == "string",
     "invalid catalog bundle"
   )
   artifact:addOwnedRoot(MapAssetCache.worldPath())
-  local stage = artifact:stageFs()
+  local stage = artifact
   stage:writeLua(MapAssetCache.worldPath(), {
     schema = MapAssetCache.WORLD_SCHEMA,
     maps = bundle.maps,

@@ -14,6 +14,7 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
 local ScriptCompileSession = require("romdump.src.digest.script.ScriptCompileSession")
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local ScriptCacheBuildFixture = {}
 
@@ -110,13 +111,7 @@ function ScriptCacheBuildFixture.publishMember(cache, outerGeneration, plan, com
   local artifact = preparation(cache, outerGeneration, key, stageName)
   local marker = assert(ScriptCacheWriter.stageMember(artifact, plan, compiledMember))
   artifact:finishSuccess({ marker = marker })
-  assert(artifact:publish({
-    generationId = outerGeneration,
-    epoch = 1,
-    kind = "script-member",
-    key = key,
-    jobKey = "script-member:" .. key,
-  }))
+  assert(ResidentArtifactFixture.materialize(artifact))
 end
 
 ---@param cache CacheFs
@@ -127,13 +122,7 @@ function ScriptCacheBuildFixture.publishSummary(cache, outerGeneration, plan, st
   local artifact = preparation(cache, outerGeneration, "global", stageName)
   local marker = assert(ScriptCacheWriter.stageSummary(artifact, plan))
   artifact:finishSuccess({ marker = marker })
-  assert(artifact:publish({
-    generationId = outerGeneration,
-    epoch = 1,
-    kind = "script-member",
-    key = "global",
-    jobKey = "script-member:global",
-  }))
+  assert(ResidentArtifactFixture.materialize(artifact))
 end
 
 -- Compile and publish every planned nonempty member of one synthetic

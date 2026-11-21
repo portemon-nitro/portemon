@@ -20,6 +20,7 @@ local FAKE_PATHS = {
   "romdump.src.build.ArtifactJobs",
   "romdump.src.build.InteractiveCacheBuild",
   "romdump.src.build.CompilerPool",
+  "romdump.src.build.CacheArchive",
 }
 
 local T = {}
@@ -46,6 +47,10 @@ local function newEnv()
     },
     sessions = {},
     pools = {},
+    cuts = {},
+    snapshotComplete = false,
+    snapshotSequence = 7,
+    failingPersistVersions = {},
     shutdowns = 0,
     shutdownError = nil,
     retires = 0,
@@ -62,6 +67,32 @@ local function newEnv()
     updateRaise = nil,
     logLines = {},
   }
+end
+
+-- The cuts this run actually persisted: the writer records one snapshot
+-- packet per accepted version, and nothing is persisted twice.
+---@return table<string, unknown>[]
+local function snapshots()
+  local persisted = {}
+  for _, packet in ipairs(env.cuts) do
+    if packet.op == "snapshot" then
+      persisted[#persisted + 1] = packet
+    end
+  end
+  return persisted
+end
+
+-- The cuts whose persistence the writer acknowledged: a refused cut leaves no
+-- persisted snapshot behind for its version.
+---@return table<string, unknown>[]
+local function persistedSnapshots()
+  local persisted = {}
+  for _, packet in ipairs(snapshots()) do
+    if not env.failingPersistVersions[packet.versionId] then
+      persisted[#persisted + 1] = packet
+    end
+  end
+  return persisted
 end
 
 local function splitJobKey(jobKey)
@@ -176,6 +207,18 @@ local function makeSession(pool, identity)
       end
     end
     return true, nil
+  end
+  -- The milestone facts this session proved: every fixture roster whose whole
+  -- membership answered ready, which is what a captured cut carries.
+  function session:milestoneFacts()
+    local names = {}
+    for name in pairs(env.milestones) do
+      if self:_snapshotScope(name).state == "ready" then
+        names[#names + 1] = name
+      end
+    end
+    table.sort(names)
+    return names
   end
   function session:update()
     assert(not self.retired, "generation session is retired")
@@ -424,6 +467,56 @@ local function makeFakes()
       return { stubInventoryFor = identity ~= nil and identity.generationId or nil }
     end,
   }
+  -- The base snapshot owner is exercised by its own suites; here the command
+  -- observes only that its consistent cut reaches the writer unchanged, so the
+  -- fake answers a persisted acknowledgement without touching a data home.
+  fakes.CacheArchive = {
+    restoreBackup = function()
+      return false
+    end,
+    recoverableFileName = function()
+      if env.snapshotComplete then
+        return "cache.zip"
+      end
+      return nil
+    end,
+    open = function(versionId, identity)
+      if env.snapshotComplete then
+        return {
+          versionId = versionId,
+          sequence = env.snapshotSequence,
+          identity = identity,
+          entries = {},
+          artifacts = {},
+          milestones = {},
+          firstPlay = false,
+          complete = true,
+        }
+      end
+      return nil, { code = "CACHE_ARCHIVE_UNREADABLE", message = "no snapshot archive is present" }
+    end,
+    run = function(control, reply)
+      while true do
+        local packet = control:pop()
+        if packet == nil then
+          break
+        end
+        env.cuts[#env.cuts + 1] = packet
+        if packet.op == "snapshot" then
+          if env.failingPersistVersions[packet.versionId] then
+            reply:push({
+              op = "snapshot-failed",
+              versionId = packet.versionId,
+              sequence = packet.sequence,
+              error = { code = "CACHE_ARCHIVE_WRITE_FAILED", message = "injected persistence failure" },
+            })
+          else
+            reply:push({ op = "snapshot-persisted", versionId = packet.versionId, sequence = packet.sequence })
+          end
+        end
+      end
+    end,
+  }
   fakes.CompilerPool = {
     new = function()
       local pool = { requested = {}, selected = nil }
@@ -435,6 +528,20 @@ local function makeFakes()
       function pool:waitForProgress() end
       function pool:jobOutcome(_)
         return nil
+      end
+      -- The cut the command captures from a consistent pool: the committed
+      -- bytes and facts travel together, so this fixture publishes none.
+      function pool:snapshotCut(identity, completion)
+        return {
+          versionId = identity.versionId,
+          identity = identity,
+          sequence = completion.sequence,
+          entries = {},
+          artifacts = {},
+          milestones = completion.milestones or {},
+          firstPlay = completion.firstPlay == true,
+          complete = completion.complete == true,
+        }
       end
       function pool:shutdown()
         env.shutdowns = env.shutdowns + 1
@@ -533,8 +640,9 @@ function T.batch_reports_success_and_preserves_partial_publication_failure()
   )
   local requested = requestedSet(env.sessions[1])
   Assert.isTrue(requested["mon-summary:global"], "the mon summary is requested")
-  Assert.equal(#env.publishes, 1, "a strict success publishes its attestation")
-  local identity = env.publishes[1]
+  local persisted = snapshots()
+  Assert.equal(#persisted, 1, "a strict success persists exactly one snapshot")
+  local identity = persisted[1].identity
   local GameVersion = require("romdump.src.source.GameVersion")
   Assert.equal(identity.versionId, "heartgold")
   Assert.equal(identity.mode, "development")
@@ -544,30 +652,41 @@ function T.batch_reports_success_and_preserves_partial_publication_failure()
     GameVersion.VERSIONS.heartgold.sha1,
     "batch identity carries the canonical catalog hash, never a dump read"
   )
-  Assert.deepEqual(env.auditCalls, {}, "a strict success publishes without a second audit")
+  Assert.equal(persisted[1].complete, true, "a strict complete build persists a complete cut")
+  Assert.deepEqual(env.auditCalls, {}, "a strict success persists without a second audit")
   Assert.equal(env.shutdowns, 1, "the command shuts its pool down")
   Assert.equal(env.retires, 1, "the command retires its session")
 
   env = newEnv()
   env.auditAvailable = true
-  env.publishFailCalls[2] = true
+  env.failingPersistVersions.soulsilver = true
   local failedReport, failedErr = CacheBuilder.buildVersions(
     { "heartgold", "soulsilver", "heartgold" },
     { dev = true, developmentRepositoryRoot = "/checkout", log = testLog() }
   )
-  Assert.isNil(failedReport, "a failed later attestation publication fails the command")
+  Assert.isNil(failedReport, "a failed later persistence fails the command")
   Assert.equal(failedErr, "cache preparation failed")
-  Assert.equal(env.publishAttempts, 2, "publication stops after the failure")
-  Assert.equal(#env.publishes, 1, "the earlier publication remains recorded")
-  Assert.equal(env.publishes[1].versionId, "heartgold", "the first publication remains truthful")
+  local cutVersions = {}
+  for _, cut in ipairs(snapshots()) do
+    cutVersions[#cutVersions + 1] = cut.identity.versionId
+  end
+  Assert.deepEqual(
+    cutVersions,
+    { "heartgold", "soulsilver", "heartgold" },
+    "every selected version reaches its own persistence attempt"
+  )
+  local persistedVersions = {}
+  for _, cut in ipairs(persistedSnapshots()) do
+    persistedVersions[#persistedVersions + 1] = cut.identity.versionId
+  end
+  Assert.deepEqual(persistedVersions, { "heartgold", "heartgold" }, "persisted versions keep their cuts")
 end
 
--- A matching attestation with a valid audit is a fast path: no session, no
--- pool, no invalidation, and the current-style report line.
-function T.matching_attestation_with_available_cache_compiles_nothing()
+-- A complete snapshot of the current generation is a fast path: no session,
+-- no pool, nothing repersisted, and the current-style report line.
+function T.a_complete_snapshot_of_the_current_generation_compiles_nothing()
   env = newEnv()
-  env.stateStored = { schema = 2, generationId = "test-generation" }
-  env.stateMatches = true
+  env.snapshotComplete = true
   env.auditAvailable = true
   local report, err = CacheBuilder.buildVersions(
     { "heartgold" },
@@ -578,19 +697,16 @@ function T.matching_attestation_with_available_cache_compiles_nothing()
   Assert.deepEqual(env.logLines, { "build-cache: heartgold current" })
   Assert.equal(#env.sessions, 0, "the fast path opens no session")
   Assert.equal(#env.pools, 0, "the fast path creates no pool")
-  Assert.deepEqual(env.invalidatedVersions, {}, "a current cache is never invalidated")
-  Assert.equal(#env.publishes, 0, "a current cache is never republished")
+  Assert.equal(#snapshots(), 0, "a current cache is never repersisted")
   Assert.deepEqual(env.auditCalls, {}, "the fast path never consults the exhaustive audit")
 end
 
--- A matching attestation is trusted even when the exhaustive audit would
--- refuse and even without planning metadata: ordinary reuse never
--- re-proves published payloads, so no session opens and nothing is
--- invalidated or republished.
-function T.matching_attestation_is_trusted_without_audit_or_inventory()
+-- A complete current snapshot is trusted even when the exhaustive audit would
+-- refuse and even without planning metadata: ordinary reuse never re-proves
+-- published payloads, so no session opens and nothing is repersisted.
+function T.a_complete_snapshot_is_trusted_without_audit_or_inventory()
   env = newEnv()
-  env.stateStored = { schema = 2, generationId = "test-generation" }
-  env.stateMatches = true
+  env.snapshotComplete = true
   env.auditAvailable = false
   env.plansAvailable = false
   local report, err = CacheBuilder.buildVersions(
@@ -599,8 +715,7 @@ function T.matching_attestation_is_trusted_without_audit_or_inventory()
   )
   Assert.isNil(err)
   Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  Assert.deepEqual(env.invalidatedVersions, {}, "a trusted cache is never invalidated")
-  Assert.equal(#env.publishes, 0, "a trusted cache is never republished")
+  Assert.equal(#snapshots(), 0, "a trusted cache is never repersisted")
   Assert.equal(#env.sessions, 0, "the fast path opens no session")
   Assert.deepEqual(env.auditCalls, {}, "the fast path never consults the exhaustive audit")
   Assert.deepEqual(env.planCalls, {}, "the fast path never enumerates the published inventory")
@@ -661,12 +776,11 @@ function T.a_failed_version_continues_without_publishing_new_attestations()
   Assert.equal(#env.publishes, 0, "a failed batch defers every new attestation")
 end
 
--- A previously valid attestation for an unaffected version is preserved when
--- another version fails: the fast path never invalidates.
-function T.valid_attestations_for_unaffected_versions_are_preserved()
+-- A complete snapshot of an unaffected version survives another version's
+-- failure: the fast path neither recompiles nor repersists it.
+function T.a_complete_snapshot_of_an_unaffected_version_survives_another_failure()
   env = newEnv()
-  env.stateStored = { schema = 2, generationId = "test-generation" }
-  env.stateMatches = true
+  env.snapshotComplete = true
   env.auditAvailable = true
   local report, err = CacheBuilder.buildVersions(
     { "heartgold", "bogus-version" },
@@ -674,7 +788,7 @@ function T.valid_attestations_for_unaffected_versions_are_preserved()
   )
   Assert.isNil(report)
   Assert.equal(err, "cache preparation failed")
-  Assert.deepEqual(env.invalidatedVersions, {}, "the unaffected version keeps its attestation")
+  Assert.equal(#snapshots(), 0, "the unaffected version keeps its persisted snapshot")
   Assert.equal(env.logLines[1], "build-cache: heartgold current")
 end
 
@@ -768,7 +882,8 @@ function T.targeted_prepare_never_attests_while_complete_prepare_does()
   })
   Assert.isNil(targetedErr)
   Assert.isFalse(targeted.complete, "a targeted scope never attests completeness")
-  Assert.equal(#env.publishes, 0, "a targeted scope publishes no attestation")
+  Assert.equal(#snapshots(), 1, "a targeted scope persists its own partial cut")
+  Assert.equal(snapshots()[1].complete, false, "a targeted scope never persists a complete cut")
 
   local complete, completeErr = CacheBuilder.prepareVersion("heartgold", {
     identity = identity,
@@ -777,7 +892,8 @@ function T.targeted_prepare_never_attests_while_complete_prepare_does()
   })
   Assert.isNil(completeErr)
   Assert.isTrue(complete.complete, "a strict complete build attests completeness")
-  Assert.equal(#env.publishes, 1, "a strict complete build publishes one attestation")
+  Assert.equal(#snapshots(), 2, "a strict complete build persists its complete cut")
+  Assert.equal(snapshots()[2].complete, true, "the complete cut carries its completeness fact")
 end
 
 -- An unproved pool closure fails the build before attestation: no new

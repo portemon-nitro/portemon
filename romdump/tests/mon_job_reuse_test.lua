@@ -13,7 +13,9 @@ local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
 local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
 local MonSources = require("romdump.src.config.MonSources")
 local BattleSources = require("romdump.src.config.BattleSources")
+local ArtifactState = require("romdump.src.build.ArtifactState")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -263,11 +265,16 @@ local function syntheticRomFs()
   return fs
 end
 
+-- One committed fact map per fixture cache: a published prerequisite is what
+-- worker reuse reads, exactly as the controller commits bytes and fact.
+local facts = ArtifactState.new(GENERATION)
+
 local function newCache()
+  facts = ArtifactState.new(GENERATION)
   return CacheFs.forVersion("heartgold", FakeCache.new())
 end
 
-local function newArtifact(cache, kind, key, stageName)
+local function newArtifact(cache, kind, key)
   return PreparedArtifact.new({
     cacheFs = cache,
     generationId = GENERATION,
@@ -275,28 +282,22 @@ local function newArtifact(cache, kind, key, stageName)
     kind = kind,
     key = key,
     jobKey = kind .. ":" .. key,
-    stageName = stageName,
   })
 end
 
 local function publishArtifact(artifact, kind, key, marker)
-  artifact:finishSuccess({ marker = marker })
-  artifact:publish({
-    generationId = GENERATION,
-    epoch = 1,
-    kind = kind,
-    key = key,
-    jobKey = kind .. ":" .. key,
-  })
+  local sealed = artifact:finishSuccess({ marker = marker })
+  ResidentArtifactFixture.mirror(artifact:cacheFs(), sealed)
+  ResidentArtifactFixture.commitFact(facts, sealed)
 end
 
 local function publishCatalogAndLayout(cache, catalog, planned)
   local catalogMarker = MonCacheWriter.catalogMarker("synthetic-rom-sha", catalog)
-  local catalogStage = newArtifact(cache, "mon-catalog", "global", "reuse-catalog-stage")
+  local catalogStage = newArtifact(cache, "mon-catalog", "global")
   local stagedCatalog = MonCacheWriter.stageCatalog(catalogStage, { catalog = catalog, marker = catalogMarker })
   publishArtifact(catalogStage, "mon-catalog", "global", stagedCatalog)
   local layoutMarker = MonCacheWriter.layoutMarker("synthetic-rom-sha", planned.icons, planned.portraits)
-  local layoutStage = newArtifact(cache, "mon-layout", "global", "reuse-layout-stage")
+  local layoutStage = newArtifact(cache, "mon-layout", "global")
   local stagedLayout = MonCacheWriter.stageLayout(layoutStage, {
     icons = planned.icons,
     portraits = planned.portraits,
@@ -310,23 +311,11 @@ end
 
 local function runAndPublish(job, context)
   local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+  job.artifactFacts = facts
   local outcome = assert(ArtifactJobs.execute(job, context))
-  local artifact = PreparedArtifact.open({
-    cacheFs = context.cacheFs,
-    generationId = job.generationId,
-    epoch = job.epoch,
-    kind = job.kind,
-    key = job.key,
-    jobKey = job.kind .. ":" .. job.key,
-    stageName = job.stageName,
-  })
-  artifact:publish({
-    generationId = job.generationId,
-    epoch = job.epoch,
-    kind = job.kind,
-    key = job.key,
-    jobKey = job.kind .. ":" .. job.key,
-  })
+  Assert.equal(outcome.status, "prepared", "the worker returns one sealed result")
+  ResidentArtifactFixture.mirror(context.cacheFs, outcome.sealed)
+  ResidentArtifactFixture.commitFact(facts, outcome.sealed)
   return outcome
 end
 
@@ -362,14 +351,14 @@ function T.page_dispatch_produces_its_bounded_page_without_heavy_prerequisites()
   local savedCatalog, savedPlan = trapHeavy(counts)
   local ok, outcome = pcall(
     runAndPublish,
-    { kind = "mon-icon-page", key = "0", generationId = GENERATION, epoch = 1, stageName = "reuse-page-test" },
+    { kind = "mon-icon-page", key = "0", generationId = GENERATION, epoch = 1 },
     { romFs = romFs, cacheFs = cache }
   )
   restoreHeavy(savedCatalog, savedPlan)
   Assert.isTrue(ok, "page dispatch must succeed from published prerequisites: " .. tostring(outcome))
   Assert.equal(counts.catalogCalls, 0, "page dispatch never compiles the catalog")
   Assert.equal(counts.planCalls, 0, "page dispatch never plans the whole layout")
-  Assert.equal(outcome.result.marker, expectedMarker, "the staged page keeps its deterministic marker")
+  Assert.equal(outcome.sealed.marker, expectedMarker, "the staged page keeps its deterministic marker")
   Assert.isTrue(MonCache.isPageReady(cache, "icons", 0, expectedMarker), "the staged page reads ready")
 end
 
@@ -378,7 +367,7 @@ function T.layout_dispatch_consumes_the_published_catalog_exactly_once()
   local cache = newCache()
   local catalog = assert(MonCatalogCompiler.compileCatalog(romFs, { versionId = "heartgold" }))
   local catalogMarker = MonCacheWriter.catalogMarker("synthetic-rom-sha", catalog)
-  local catalogStage = newArtifact(cache, "mon-catalog", "global", "reuse-layout-catalog")
+  local catalogStage = newArtifact(cache, "mon-catalog", "global")
   publishArtifact(
     catalogStage,
     "mon-catalog",
@@ -399,7 +388,7 @@ function T.layout_dispatch_consumes_the_published_catalog_exactly_once()
   end
   local ok, outcome = pcall(
     runAndPublish,
-    { kind = "mon-layout", key = "global", generationId = GENERATION, epoch = 1, stageName = "reuse-layout-test" },
+    { kind = "mon-layout", key = "global", generationId = GENERATION, epoch = 1 },
     { romFs = romFs, cacheFs = cache }
   )
   MonCatalogCompiler.compileCatalog = savedCatalog
@@ -407,7 +396,7 @@ function T.layout_dispatch_consumes_the_published_catalog_exactly_once()
   Assert.isTrue(ok, "layout dispatch must succeed from the published catalog: " .. tostring(outcome))
   Assert.equal(counts.catalogCalls, 0, "layout dispatch never recompiles the catalog")
   Assert.equal(counts.planCalls, 1, "layout dispatch plans the whole layout exactly once")
-  local marker = assert(outcome.result.marker)
+  local marker = assert(outcome.sealed.marker)
   Assert.isTrue(MonCache.isLayoutReady(cache, marker), "the staged layout reads ready")
   local ready, _ = MonCacheWriter.isLayoutSourceReady(cache, GENERATION, marker)
   Assert.isTrue(ready, "layout publication carries its durable private handoff")
@@ -420,10 +409,10 @@ function T.missing_private_handoff_repairs_the_layout_before_the_page()
   local planned = assert(MonPresentationCompiler.plan(romFs, catalog))
   local _, layoutMarker = publishCatalogAndLayout(cache, catalog, planned)
   local pageOutcome = runAndPublish(
-    { kind = "mon-icon-page", key = "0", generationId = GENERATION, epoch = 1, stageName = "reuse-missing-page" },
+    { kind = "mon-icon-page", key = "0", generationId = GENERATION, epoch = 1 },
     { romFs = romFs, cacheFs = cache }
   )
-  local pageMarker = assert(pageOutcome.result.marker)
+  local pageMarker = assert(pageOutcome.sealed.marker)
   local imageBefore = assert(cache:read(MonCache.pageImagePath("icons", 0)), "the page image is staged")
   cache:remove(MonCacheWriter.sourcePagePlanPath("icons", 0))
   local ready, _ = MonCacheWriter.isLayoutSourceReady(cache, GENERATION, layoutMarker)
@@ -431,14 +420,14 @@ function T.missing_private_handoff_repairs_the_layout_before_the_page()
   local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
   local plans = { iconPageIds = planned.icons.pageIds, portraitPageIds = planned.portraits.pageIds }
   Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "mon-layout", "global", plans),
+    ArtifactJobs.validate(cache, facts, "mon-layout", "global", plans),
     "layout validation fails until the handoff is repaired"
   )
   local counts = {}
   local savedCatalog, savedPlan = trapHeavy(counts)
   local ok, pageErr = pcall(
     runAndPublish,
-    { kind = "mon-icon-page", key = "0", generationId = GENERATION, epoch = 1, stageName = "reuse-missing-retry" },
+    { kind = "mon-icon-page", key = "0", generationId = GENERATION, epoch = 1 },
     { romFs = romFs, cacheFs = cache }
   )
   restoreHeavy(savedCatalog, savedPlan)
@@ -587,14 +576,14 @@ function T.summary_dispatch_reads_published_results_without_recompiling()
   local savedCatalog, savedPlan = trapHeavy(counts)
   local ok, outcome = pcall(
     runAndPublish,
-    { kind = "mon-summary", key = "global", generationId = GENERATION, epoch = 1, stageName = "reuse-summary-test" },
+    { kind = "mon-summary", key = "global", generationId = GENERATION, epoch = 1 },
     { romFs = romFs, cacheFs = cache }
   )
   restoreHeavy(savedCatalog, savedPlan)
   Assert.isTrue(ok, "summary dispatch must succeed from published results: " .. tostring(outcome))
   Assert.equal(counts.catalogCalls, 0, "summary never recompiles the catalog")
   Assert.equal(counts.planCalls, 0, "summary never replans the layout")
-  Assert.isTrue(MonCache.isReady(cache, outcome.result.marker), "the staged summary reads ready")
+  Assert.isTrue(MonCache.isReady(cache, outcome.sealed.marker), "the staged summary reads ready")
 end
 
 function T.persisted_layout_manifest_corruption_blocks_worker_reuse()
@@ -610,7 +599,7 @@ function T.persisted_layout_manifest_corruption_blocks_worker_reuse()
   Assert.isTrue(handoffReady, "the private layout handoff reads ready before damage")
   Assert.isTrue(MonCache.isLayoutReady(cache, layoutMarker), "the published layout reads ready before damage")
   Assert.isTrue(
-    ArtifactJobs.validate(cache, GENERATION, "mon-layout", "global", plans),
+    ArtifactJobs.validate(cache, facts, "mon-layout", "global", plans),
     "the intact layout job validates before damage"
   )
 
@@ -623,7 +612,7 @@ function T.persisted_layout_manifest_corruption_blocks_worker_reuse()
   cache:writeLua(MonCache.iconManifestPath(), corruptedIcons)
   Assert.isFalse(MonCache.isLayoutReady(cache, layoutMarker), "the icon-corrupted layout is not ready")
   Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "mon-layout", "global", plans),
+    ArtifactJobs.validate(cache, facts, "mon-layout", "global", plans),
     "the icon-corrupted layout job must not validate"
   )
 
@@ -632,7 +621,7 @@ function T.persisted_layout_manifest_corruption_blocks_worker_reuse()
   Assert.isTrue(recoveredHandoff, "the private handoff survives the icon restore")
   Assert.isTrue(MonCache.isLayoutReady(cache, layoutMarker), "the restored layout reads ready again")
   Assert.isTrue(
-    ArtifactJobs.validate(cache, GENERATION, "mon-layout", "global", plans),
+    ArtifactJobs.validate(cache, facts, "mon-layout", "global", plans),
     "the restored layout job validates again"
   )
 
@@ -649,7 +638,7 @@ function T.persisted_layout_manifest_corruption_blocks_worker_reuse()
   cache:writeLua(MonCache.portraitManifestPath(), corruptedPortraits)
   Assert.isFalse(MonCache.isLayoutReady(cache, layoutMarker), "the portrait-corrupted layout is not ready")
   Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "mon-layout", "global", plans),
+    ArtifactJobs.validate(cache, facts, "mon-layout", "global", plans),
     "the portrait-corrupted layout job must not validate"
   )
 end

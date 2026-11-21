@@ -16,6 +16,7 @@ local FAKE_PATHS = {
   "romdump.src.DerivedCacheState",
   "romdump.src.DerivedCacheAudit",
   "romdump.src.build.ArtifactJobs",
+  "romdump.src.build.CacheArchive",
   "romdump.src.ProducerFingerprint",
   "romdump.src.build.InteractiveCacheBuild",
   "romdump.src.build.CompilerPool",
@@ -52,13 +53,12 @@ local function newEnv()
     sessions = {},
     pools = {},
     cacheWrites = {},
-    stateMatches = false,
+    hydration = nil,
     auditAvailable = false,
     plansAvailable = true,
-    invalidations = 0,
     auditCalls = 0,
-    publishes = 0,
-    publishedIdentity = nil,
+    persisted = {},
+    seeded = {},
     waitCalls = 0,
     localRounds = nil,
   }
@@ -354,6 +354,9 @@ local function makeSession(pool, identity)
   function session:retire()
     self.retired = true
   end
+  function session:milestoneFacts()
+    return {}
+  end
   return session
 end
 
@@ -379,19 +382,48 @@ local function makeFakes()
     end,
   }
   fakes.DerivedCacheState = {
-    path = "data/generated/build.lua",
     current = function(inputs)
       return { versionId = inputs.versionId, generationId = env.identity.generationId }
     end,
-    matches = function()
-      return env.stateMatches
+  }
+  fakes.CacheArchive = {
+    restoreBackup = function()
+      return false
     end,
-    invalidate = function()
-      env.invalidations = env.invalidations + 1
+    recoverableFileName = function()
+      return env.hydration ~= nil and "cache.zip" or nil
     end,
-    publish = function(_, identity)
-      env.publishes = env.publishes + 1
-      env.publishedIdentity = identity
+    open = function(_, expectedIdentity)
+      if env.hydration == nil then
+        return nil, { code = "CACHE_ARCHIVE_UNREADABLE", message = "no snapshot archive is present" }
+      end
+      if env.hydration.identity.generationId ~= expectedIdentity.generationId then
+        return nil, { code = "CACHE_ARCHIVE_SCHEMA_INVALID", message = "another generation" }
+      end
+      return env.hydration
+    end,
+    run = function(control, reply)
+      local packet = control:pop()
+      assert(type(packet) == "table" and packet.op == "snapshot", "the CLI flush writes one captured cut")
+      env.persisted[#env.persisted + 1] = packet
+      if env.persistFailure ~= nil then
+        reply:push({
+          op = "snapshot-failed",
+          versionId = packet.versionId,
+          generationId = packet.generationId,
+          epoch = packet.epoch,
+          sequence = packet.sequence,
+          error = { code = "CACHE_ARCHIVE_WRITE_FAILED", message = env.persistFailure },
+        })
+        return
+      end
+      reply:push({
+        op = "snapshot-persisted",
+        versionId = packet.versionId,
+        generationId = packet.generationId,
+        epoch = packet.epoch,
+        sequence = packet.sequence,
+      })
     end,
   }
   fakes.DerivedCacheAudit = {
@@ -437,6 +469,21 @@ local function makeFakes()
       function pool:jobOutcome(_)
         return nil
       end
+      function pool:seedCommittedGeneration(entries, artifacts)
+        env.seeded[#env.seeded + 1] = { entries = entries, artifacts = artifacts }
+      end
+      function pool:snapshotCut(identity, completion)
+        return {
+          versionId = identity.versionId,
+          identity = identity,
+          sequence = completion.sequence,
+          entries = {},
+          artifacts = {},
+          milestones = completion.milestones,
+          firstPlay = completion.firstPlay,
+          complete = completion.complete,
+        }
+      end
       function pool:shutdown() end
       env.pools[#env.pools + 1] = pool
       return pool
@@ -460,6 +507,21 @@ local function makeFakes()
     end,
   }
   return fakes
+end
+
+-- A captured complete snapshot of the requested generation: the warm path
+-- reuses it instead of opening a session.
+local function completeHydration()
+  return {
+    versionId = env.identity.versionId,
+    identity = env.identity,
+    sequence = 6,
+    entries = {},
+    artifacts = {},
+    milestones = { "bootstrap" },
+    firstPlay = true,
+    complete = true,
+  }
 end
 
 local function scopedOptions(overrides)
@@ -599,7 +661,8 @@ function T.targeted_map_request_runs_only_its_closure_without_full_attestation()
   Assert.isTrue(requested["map:7"], "the requested map must run")
   Assert.isNil(requested["map:5"], "an unrelated map must never be requested")
   Assert.isNil(requested["audio-bank:3"], "an unrelated audio bank must never be requested")
-  Assert.equal(env.publishes, 0, "a targeted scope must never publish full attestation")
+  Assert.equal(#env.persisted, 1, "a targeted scope persists its own cut")
+  Assert.isFalse(env.persisted[1].complete, "a targeted scope never marks its cut complete")
   local planned = report.counts.successful + report.counts.failed + report.counts.cancelled + report.counts.excluded
   Assert.equal(planned, report.counts.planned, "every planned key lands in exactly one outcome category")
 end
@@ -618,7 +681,7 @@ function T.unaccepted_map_failure_fails_without_full_attestation()
   local status = env.sessions[1]:status()
   Assert.equal(status.failed, 1, "the failed job stays visible")
   Assert.isTrue(status.failures[1]:find("map:5", 1, true) ~= nil, "the failure names its canonical key")
-  Assert.equal(env.publishes, 0, "a failed command publishes no full attestation")
+  Assert.equal(#env.persisted, 0, "a failed command persists no cut")
 end
 
 -- With explicitly accepted exclusions the exploratory run succeeds partially:
@@ -639,7 +702,8 @@ function T.accepted_map_exclusions_report_partial_success_without_full_attestati
   Assert.isFalse(report.complete, "an exclusion-accepting run must never claim completeness")
   Assert.equal(#report.exclusions, 1, "the excluded map is reported")
   Assert.isTrue(report.exclusions[1]:find("map:5", 1, true) ~= nil, "the exclusion names its canonical key")
-  Assert.equal(env.publishes, 0, "an exclusion-accepting run must not publish full attestation")
+  Assert.equal(#env.persisted, 1, "an accepted partial run still persists what it proved")
+  Assert.isFalse(env.persisted[1].complete, "an exclusion-accepting run never marks its cut complete")
   local planned = report.counts.successful + report.counts.failed + report.counts.cancelled + report.counts.excluded
   Assert.equal(planned, report.counts.planned, "every planned key lands in exactly one outcome category")
 end
@@ -659,14 +723,14 @@ function T.non_map_family_failure_is_never_hidden_by_map_exclusions()
   )
   Assert.isNil(report)
   Assert.notNil(err)
-  Assert.equal(env.publishes, 0, "a hidden audio failure must never pass as partial success")
+  Assert.equal(#env.persisted, 0, "a hidden audio failure never passes as partial success")
 end
 
 -- A matching full attestation with valid receipts is a fast path: no source
 -- compilation runs and the existing current state is reused.
-function T.warm_matching_attestation_compiles_nothing()
+function T.warm_complete_snapshot_compiles_nothing()
   env = newEnv()
-  env.stateMatches = true
+  env.hydration = completeHydration()
   env.auditAvailable = true
   requireScopedPreparation()
   local report, err = CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" } }))
@@ -675,16 +739,15 @@ function T.warm_matching_attestation_compiles_nothing()
   Assert.equal(env.auditCalls, 0, "the fast path never consults the exhaustive audit")
   Assert.equal(#env.pools, 0, "the fast path must not create a compiler pool")
   Assert.equal(#env.sessions, 0, "the fast path must not open a generation session")
-  Assert.equal(env.invalidations, 0, "a current cache must not be invalidated")
-  Assert.equal(env.publishes, 0, "a current cache must not be republished")
+  Assert.equal(#env.persisted, 0, "a current cache must not be rewritten")
 end
 
 -- A matching attestation is the ordinary complete-cache fast path: the
 -- exhaustive audit is never consulted, so even a refusing audit double
 -- leaves the warm cache current with no session and no pool.
-function T.matching_attestation_skips_the_exhaustive_audit()
+function T.complete_snapshot_skips_the_exhaustive_audit()
   env = newEnv()
-  env.stateMatches = true
+  env.hydration = completeHydration()
   env.auditAvailable = false
   requireScopedPreparation()
   local report, err = CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" } }))
@@ -699,9 +762,9 @@ end
 -- A matching attestation stays current without planning metadata: the
 -- warm path trusts attestation identity directly and never enumerates
 -- the published inventory.
-function T.matching_attestation_without_planning_metadata_stays_current()
+function T.complete_snapshot_without_planning_metadata_stays_current()
   env = newEnv()
-  env.stateMatches = true
+  env.hydration = completeHydration()
   env.auditAvailable = true
   env.plansAvailable = false
   requireScopedPreparation()
@@ -710,8 +773,8 @@ function T.matching_attestation_without_planning_metadata_stays_current()
   Assert.isNil(err)
   Assert.isTrue(report.complete, "the warm cache stays complete")
   Assert.equal(env.auditCalls, 0, "the warm path never consults the exhaustive audit")
-  Assert.equal(#env.sessions, 0, "missing plans run no session on a matching attestation")
-  Assert.equal(env.publishes, 0, "a current cache must not be republished")
+  Assert.equal(#env.sessions, 0, "missing plans run no session on a complete snapshot")
+  Assert.equal(#env.persisted, 0, "a current cache must not be rewritten")
 end
 
 -- An explicit development rebuild reruns only the selected ready job: its
@@ -738,7 +801,8 @@ function T.explicit_rebuild_reruns_only_the_selected_job()
   end
   Assert.isTrue(requested["map:7"], "the selected job reruns")
   Assert.isNil(requested["map:5"], "unrelated jobs must not rerun")
-  Assert.isTrue(env.invalidations >= 1, "a forced repair invalidates the stale completion proof first")
+  Assert.equal(#env.persisted, 1, "a forced repair replaces the snapshot it rebuilt")
+  Assert.isFalse(env.persisted[1].complete, "a single rebuilt job never marks its cut complete")
 end
 
 -- Malformed requirement strings fail before any cache mutation: unknown
@@ -770,7 +834,7 @@ function T.malformed_requests_fail_before_any_cache_mutation()
   Assert.notNil(missingErr)
   Assert.equal(#env.sessions, 0, "no malformed request may open a generation session")
   Assert.deepEqual(env.cacheWrites, {}, "no malformed request may mutate cache state")
-  Assert.equal(env.publishes, 0, "no malformed request may publish attestation")
+  Assert.equal(#env.persisted, 0, "no malformed request may persist a cut")
 end
 
 function T.drain_distinguishes_local_planning_from_physical_waiting()
@@ -819,7 +883,8 @@ function T.camera_only_scope_requests_no_inventory_work()
   end
   Assert.isTrue(requested["field-camera:global"], "the camera job runs")
   Assert.isNil(requested["source-plan:global"], "no inventory work is requested")
-  Assert.equal(env.publishes, 0, "a targeted scope publishes no full attestation")
+  Assert.equal(#env.persisted, 1, "a successful targeted run persists its own cut")
+  Assert.isFalse(env.persisted[1].complete, "a targeted scope never marks its cut complete")
 end
 
 -- The command never proves a scope the session still calls pending: a
@@ -843,12 +908,12 @@ function T.settled_counts_never_override_a_pending_scope()
     tostring(err):find("bootstrap", 1, true) ~= nil,
     "the failure names its pending scope: " .. tostring(err)
   )
-  Assert.equal(env.publishes, 0, "a pending scope publishes no attestation")
+  Assert.equal(#env.persisted, 0, "a pending scope persists nothing")
 end
 
 function T.warm_complete_with_absent_extra_map_refuses()
   env = newEnv()
-  env.stateMatches = true
+  env.hydration = completeHydration()
   env.auditAvailable = true
   env.excludedKeys["map:999999"] = true
   requireScopedPreparation()
@@ -865,15 +930,16 @@ function T.warm_complete_with_absent_extra_map_refuses()
   Assert.equal(#report.exclusions, 1, "the absent identity is reported exactly once")
   Assert.isTrue(report.exclusions[1]:find("map:999999", 1, true) ~= nil, "the exclusion names its canonical key")
   Assert.equal(#env.sessions, 1, "the uncovered key falls through to the normal session")
-  Assert.equal(env.publishes, 0, "a refused request publishes no attestation")
+  Assert.equal(#env.seeded, 1, "the session starts from the snapshot it hydrated")
+  Assert.equal(#env.persisted, 0, "a refused request persists no cut")
 end
 
 -- A refused uncovered mixed request preserves the audited attestation: the
 -- first call refuses without invalidating, and a later plain complete
 -- request reuses the current cache with no additional pool or session.
-function T.refused_uncovered_request_preserves_attestation_for_later_reuse()
+function T.refused_uncovered_request_preserves_complete_snapshot_for_later_reuse()
   env = newEnv()
-  env.stateMatches = true
+  env.hydration = completeHydration()
   env.auditAvailable = true
   env.excludedKeys["map:999999"] = true
   requireScopedPreparation()
@@ -885,16 +951,14 @@ function T.refused_uncovered_request_preserves_attestation_for_later_reuse()
   Assert.isFalse(first.complete, "a refused mixed request never reports a complete cache")
   Assert.equal(#first.exclusions, 1, "the uncovered identity is reported exactly once")
   Assert.isTrue(first.exclusions[1]:find("map:999999", 1, true) ~= nil, "the exclusion names its canonical key")
-  Assert.equal(env.invalidations, 0, "a refused request preserves the audited attestation")
-  Assert.equal(env.publishes, 0, "a refused request publishes no attestation")
+  Assert.equal(#env.persisted, 0, "a refused request persists no cut")
   Assert.equal(#env.sessions, 1, "the uncovered key falls through to the normal session")
   local pools, sessions = #env.pools, #env.sessions
   local second, secondErr = CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" } }))
   Assert.isNil(secondErr)
   assert(second, "the later complete request returns its report")
   Assert.isTrue(second.requestedReady, "the preserved attestation stays ready")
-  Assert.isTrue(second.complete, "the preserved attestation stays complete")
-  Assert.equal(env.invalidations, 0, "later reuse invalidates nothing")
+  Assert.isTrue(second.complete, "the preserved snapshot stays complete")
   Assert.equal(#env.pools, pools, "later reuse creates no additional pool")
   Assert.equal(#env.sessions, sessions, "later reuse opens no additional session")
 end
@@ -904,7 +968,6 @@ end
 -- trusted, and a rebuild always invalidates first.
 function T.stale_or_explicitly_rebuilt_complete_runs_the_normal_session()
   env = newEnv()
-  env.stateMatches = false
   env.auditAvailable = true
   requireScopedPreparation()
   local staleReport, staleErr =
@@ -912,12 +975,13 @@ function T.stale_or_explicitly_rebuilt_complete_runs_the_normal_session()
   Assert.isNil(staleErr)
   assert(staleReport, "a stale attestation runs the normal session to a report")
   Assert.isTrue(staleReport.requestedReady, "the rebuilt scope is ready")
-  Assert.equal(#env.sessions, 1, "a stale attestation runs the normal session")
-  Assert.isTrue(env.invalidations >= 1, "a stale attestation invalidates before replacement work")
-  Assert.equal(env.auditCalls, 0, "replacement work publishes without a second audit")
+  Assert.equal(#env.sessions, 1, "a stale cache runs the normal session")
+  Assert.equal(#env.persisted, 1, "replacement work persists its own cut")
+  Assert.isTrue(env.persisted[1].complete, "an exhaustive strict run marks its cut complete")
+  Assert.equal(env.auditCalls, 0, "replacement work persists without a second audit")
 
   env = newEnv()
-  env.stateMatches = true
+  env.hydration = completeHydration()
   env.auditAvailable = true
   requireScopedPreparation()
   local rebuiltReport, rebuiltErr = CacheBuilder.prepareVersion(
@@ -932,7 +996,8 @@ function T.stale_or_explicitly_rebuilt_complete_runs_the_normal_session()
   assert(rebuiltReport, "an explicit rebuild returns its report")
   Assert.isTrue(rebuiltReport.requestedReady, "the rebuilt scope is ready")
   Assert.equal(#env.sessions, 1, "an explicit rebuild runs the normal session")
-  Assert.isTrue(env.invalidations >= 1, "an explicit rebuild invalidates first")
+  Assert.equal(#env.seeded, 1, "an explicit rebuild still reuses the hydrated bytes")
+  Assert.isTrue(env.persisted[1].complete, "a rebuilt job keeps the complete coverage it started from")
 end
 
 -- Invocation-isolation probe: reports the output root this suite invocation
@@ -1037,7 +1102,8 @@ function T.field_runtime_scope_prepares_without_complete_attestation()
   Assert.isFalse(report.complete, "a milestone scope must never report a complete cache")
   Assert.equal(#env.sessions, 1, "one common session serves the milestone scope")
   Assert.isNil(env.sessions[1].completeRequested, "a milestone client must not request an unrelated complete build")
-  Assert.equal(env.publishes, 0, "a milestone scope must never publish full attestation")
+  Assert.equal(#env.persisted, 1, "a milestone scope persists its own partial cut")
+  Assert.isFalse(env.persisted[1].complete, "a milestone scope never marks its cut complete")
 end
 
 -- Output labels are confined to a safe alphabet so generated names can never

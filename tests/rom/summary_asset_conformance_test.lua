@@ -1,7 +1,7 @@
 -- ROM smoke for the Summary asset producer and its consumer boundary.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local MonCache = require("libs.assets.src.MonCache")
 local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
 local RomSuite = require("tests.rom.support.RomSuite")
@@ -11,7 +11,7 @@ local compiledByVersion = {}
 local function compileBundle(romFs, versionId)
   local compiler = require("romdump.src.digest.ui.SummaryAssetCompiler")
   local catalog = assert(MonCatalogCompiler.compileCatalog(romFs, { versionId = versionId }))
-  local portraits = assert(CacheFs.forVersion(versionId):loadLua(MonCache.portraitManifestPath()))
+  local portraits = assert(GeneratedCacheFixture.reader(versionId):loadLua(MonCache.portraitManifestPath()))
   return assert(compiler.compile(romFs, catalog, portraits))
 end
 

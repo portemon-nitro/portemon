@@ -4,12 +4,26 @@
 
 local Assert = require("tests.support.Assert")
 local App = require("app.src.App")
-local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
 local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
 local HgssGame = require("game.hgss.src.HgssGame")
 local StartupAudioSession = require("app.src.audio.StartupAudioSession")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
+
+-- The selected epoch's installed generated view for one construction: these
+-- cases stub the movie, title and menu consumers, so one reader object stands
+-- in for the epoch's resident bytes.
+---@return table<string, unknown> generatedView
+local function generatedView()
+  local view = { versionId = "heartgold" }
+  function view:resolveAsset(_)
+    return nil
+  end
+  function view:loadLua(_)
+    return nil, "the startup harness carries no generated payloads"
+  end
+  return view
+end
 
 local TITLE_SCENE_MODULE = "libs.hgss.src.presentation.HgssTitleScene"
 local titleSceneModule = require(TITLE_SCENE_MODULE)
@@ -125,9 +139,6 @@ local function withStartup(fn)
     pixelRatio = App.pixelRatio,
     loadingNew = HgssLoadingPresentation.new,
     menuNew = MainMenuComposition.new,
-    isCurrent = FirstPlayCompletion.isCurrent,
-    hasStored = FirstPlayCompletion.hasStored,
-    releaseGenerationId = FirstPlayCompletion.releaseGenerationId,
     graphicsDimensions = love.graphics.getDimensions,
     graphicsDpi = love.graphics.getDPIScale,
     graphicsSetColor = love.graphics.setColor,
@@ -203,6 +214,22 @@ local function withStartup(fn)
   function service:generationId(_)
     return "startup-test-generation"
   end
+  -- The selected epoch's installed generated view: these suites stub every
+  -- generated consumer, so one shared reader object stands in for it.
+  local generatedView = { versionId = "heartgold" }
+  function generatedView:resolveAsset(_)
+    return nil
+  end
+  function generatedView:loadLua(_)
+    return nil, "the startup harness carries no generated payloads"
+  end
+  function service:getCacheFs(_)
+    return generatedView
+  end
+  function service:firstPlayReady(_)
+    return active.firstPlayReady == true
+  end
+  function service:recordFirstPlay(_) end
   function service:shutdown() end
   function service:quiesce(_)
     return nil
@@ -306,15 +333,6 @@ local function withStartup(fn)
     return fakeTitleBuild(scene)
   end
   MainMenuComposition.new = fakeMenu
-  FirstPlayCompletion.isCurrent = function()
-    return false
-  end
-  FirstPlayCompletion.hasStored = function()
-    return false
-  end
-  FirstPlayCompletion.releaseGenerationId = function()
-    return "startup-test-generation"
-  end
   love.graphics.getDimensions = function()
     return 800, 600
   end
@@ -363,9 +381,6 @@ local function withStartup(fn)
   App.pixelRatio = saved.pixelRatio
   HgssLoadingPresentation.new = saved.loadingNew
   MainMenuComposition.new = saved.menuNew
-  FirstPlayCompletion.isCurrent = saved.isCurrent
-  FirstPlayCompletion.hasStored = saved.hasStored
-  FirstPlayCompletion.releaseGenerationId = saved.releaseGenerationId
   love.graphics.getDimensions = saved.graphicsDimensions
   love.graphics.getDPIScale = saved.graphicsDpi
   love.graphics.setColor = saved.graphicsSetColor
@@ -587,8 +602,8 @@ function T.tests.menu_is_staged_before_first_play_without_claiming_entry_readine
 
     Assert.equal(#active.menus, 1, "bootstrap readiness stages the actual menu while field milestones remain pending")
     Assert.isFalse(
-      FirstPlayCompletion.isCurrent("heartgold", "startup-test-generation"),
-      "menu readiness does not attest first-play completion"
+      App.service:firstPlayReady(App.epoch) == true,
+      "menu readiness does not install the first-play fact"
     )
     for _, request in ipairs(active.requests) do
       local selector = request.selector
@@ -1318,6 +1333,7 @@ function T.tests.throwing_transfer_callback_propagates_without_resurrecting_the_
     local state = StartupTitleState.new({
       versionId = "heartgold",
       epoch = 7,
+      cacheFs = generatedView(),
       derivedAssets = host,
       stageMenu = function()
         return menu
@@ -1433,6 +1449,7 @@ function T.tests.renderable_warm_movie_starts_without_waiting_for_the_loader_bea
     local state = StartupTitleState.new({
       versionId = "soulsilver",
       epoch = 7,
+      cacheFs = generatedView(),
       derivedAssets = fakeHost(),
       stageMenu = function()
         error("the movie beat test never stages a menu")
@@ -1584,6 +1601,7 @@ function T.tests.movie_holds_loader_until_soundtrack_start_is_confirmed()
     local state = StartupTitleState.new({
       versionId = "heartgold",
       epoch = 7,
+      cacheFs = generatedView(),
       derivedAssets = host,
       stageMenu = function()
         error("the soundtrack hold test never stages a menu")
@@ -1734,6 +1752,7 @@ function T.tests.audio_failure_keeps_loader_visible_instead_of_silent_movie()
       local state = StartupTitleState.new({
         versionId = "heartgold",
         epoch = 7,
+        cacheFs = generatedView(),
         derivedAssets = host,
         stageMenu = function()
           error("the " .. mode .. " case never stages a menu")
@@ -1951,6 +1970,7 @@ function T.tests.primed_output_precedes_first_tick_and_refusal_holds_loader()
       local state = StartupTitleState.new({
         versionId = "heartgold",
         epoch = 11,
+        cacheFs = generatedView(),
         derivedAssets = fakeHostMilestones(),
         stageMenu = function()
           error("refused queue never stages a menu")
@@ -2089,6 +2109,7 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
     local state = StartupTitleState.new({
       versionId = "heartgold",
       epoch = 23,
+      cacheFs = generatedView(),
       derivedAssets = milestones,
       stageMenu = function()
         error("loss test never stages a menu")
@@ -2127,6 +2148,7 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
     local titleState = StartupTitleState.new({
       versionId = "heartgold",
       epoch = 24,
+      cacheFs = generatedView(),
       derivedAssets = milestones,
       stageMenu = function()
         return { draw = function() end, dispose = function() end }
@@ -2295,6 +2317,7 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
     local appState = StartupTitleState.new({
       versionId = "soulsilver",
       epoch = 31,
+      cacheFs = generatedView(),
       derivedAssets = milestones,
       stageMenu = function()
         error("app routing test never stages a menu")

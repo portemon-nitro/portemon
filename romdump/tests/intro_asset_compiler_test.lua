@@ -6,6 +6,7 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local PngReader = require("tests.support.PngReader")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -597,12 +598,16 @@ function T.v9_bundle_publishes_without_profile_control_files()
   Assert.isNil(bundle.manifest.profileConfirmation)
   Assert.isNil(bundle.manifest.widgets.confirmation_yes)
   Assert.isNil(bundle.manifest.widgets.confirmation_no)
-  Assert.isTrue(CacheWriter.write(live, bundle))
+  local stagedArtifact = ResidentArtifactFixture.new(live, "intro", "global")
+  Assert.equal(CacheWriter.stage(stagedArtifact, bundle), bundle.marker)
+  stagedArtifact:finishSuccess({ marker = bundle.marker })
+  ResidentArtifactFixture.materialize(stagedArtifact, live)
   Assert.isTrue(cache.isReady(live, bundle.marker), "retained files are sufficient for readiness")
 
   local missing = fixtureBundle(cache, "intro-cache-v14:fixture:missing")
   missing.assets[missing.manifest.widgets.ball_open.image] = nil
-  Assert.isFalse(pcall(CacheWriter.write, live, missing), "missing widget files reject publication")
+  local refused = ResidentArtifactFixture.new(live, "intro", "global")
+  Assert.isFalse(pcall(CacheWriter.stage, refused, missing), "missing widget files reject the stage")
 end
 
 function T.predecessor_manifest_is_stale_and_does_not_publish()
@@ -617,8 +622,8 @@ function T.predecessor_manifest_is_stale_and_does_not_publish()
   Assert.isFalse(valid, "the predecessor numeric manifest must be rejected")
   Assert.equal(assert(err).code, "INTRO_MANIFEST_INVALID", "predecessor rejection has a typed error")
   Assert.isFalse(
-    pcall(CacheWriter.write, live, bundle),
-    "the predecessor manifest must not publish under the current contract"
+    pcall(CacheWriter.stage, ResidentArtifactFixture.new(live, "intro", "global"), bundle),
+    "the predecessor manifest must not stage under the current contract"
   )
 end
 
@@ -667,27 +672,21 @@ function T.failed_replacement_preserves_the_previous_ready_class()
   Assert.isFalse(cache.isReady(live, stale.marker), "schema-8 intro output is stale")
 
   local old = fixtureBundle(cache, "intro-cache-v14:old:dependencies")
-  CacheWriter.write(live, old)
+  local oldArtifact = ResidentArtifactFixture.new(live, "intro", "global")
+  Assert.equal(CacheWriter.stage(oldArtifact, old), old.marker)
+  oldArtifact:finishSuccess({ marker = old.marker })
+  ResidentArtifactFixture.materialize(oldArtifact, live)
   local oldMarker = live:read(cache.markerPath())
   local oldManifest = live:read(cache.manifestPath())
 
-  local replacements = 0
-  local originalReplace = backend.replace
-  local failingBackend = setmetatable({
-    replace = function(_, sourcePath, destinationPath)
-      replacements = replacements + 1
-      if replacements == 2 then
-        return false, "injected publication failure"
-      end
-      return originalReplace(backend, sourcePath, destinationPath)
-    end,
-  }, { __index = backend })
-  live = CacheFs.forVersion("heartgold", failingBackend)
-
+  -- The replacement bundle omits one declared asset, so its own strict
+  -- readback refuses it and the previous class stays live.
   local replacement = fixtureBundle(cache, "intro-cache-v14:new:dependencies")
-  local published, publishErr = pcall(CacheWriter.write, live, replacement)
-  Assert.isFalse(published, "a replacement failure must reach the caller")
-  Assert.isTrue(tostring(publishErr):find("publication", 1, true) ~= nil)
+  replacement.assets[replacement.manifest.widgets.ball_open.image] = nil
+  local refused = ResidentArtifactFixture.new(live, "intro", "global")
+  local staged, stageErr = pcall(CacheWriter.stage, refused, replacement)
+  Assert.isFalse(staged, "a refused replacement must reach the caller")
+  Assert.isTrue(tostring(stageErr):find("missing", 1, true) ~= nil, "the refusal names its cause")
   Assert.equal(live:read(cache.markerPath()), oldMarker)
   Assert.equal(live:read(cache.manifestPath()), oldManifest)
   Assert.isTrue(cache.isReady(live, oldMarker), "the previous class remains ready")
@@ -739,10 +738,9 @@ function T.staging_accepts_the_current_schema_through_the_production_path()
     kind = "intro",
     key = "global",
     jobKey = "intro:global",
-    stageName = "intro-stage",
   })
   Assert.equal(CacheWriter.stage(artifact, bundle), bundle.marker)
-  local staged = artifact:stageFs()
+  local staged = artifact
   local manifest = assert(staged:loadLua(cache.manifestPath()), "the staged manifest reads back")
   Assert.equal(manifest.schemaVersion, cache.SCHEMA_VERSION, "staged manifest keeps the current schema")
   Assert.isTrue(cache.validateManifest(manifest), "staged manifest validates")

@@ -11,7 +11,7 @@ local Assert = require("tests.support.Assert")
 local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldOverworldLifecycle = require("libs.hgss.src.field.FieldOverworldLifecycle")
@@ -2011,7 +2011,7 @@ end
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       versions[#versions + 1] = versionId
     end
   end
@@ -2084,9 +2084,15 @@ local function requireVersions(context)
   return versions
 end
 
-local function runtimeOptions()
+---@param versionId string
+---@return table<string, unknown> headless runtime options over the produced corpus
+local function runtimeOptions(versionId)
   local Fixture = require("tests.support.FieldStatePresentationFixture")
-  return { presentation = false, derivedAssets = Fixture.iconHost().derivedAssets }
+  return {
+    presentation = false,
+    derivedAssets = Fixture.iconHost().derivedAssets,
+    cacheFs = GeneratedCacheFixture.reader(versionId),
+  }
 end
 
 -- A production boot reaches the real encounter service: an attempt on the
@@ -2096,7 +2102,7 @@ end
 function T.boot_composes_the_live_encounter_service(context)
   local versions = requireVersions(context)
   for _, versionId in ipairs(versions) do
-    local runtime = FieldRuntime.new(validEntry(versionId), runtimeOptions())
+    local runtime = FieldRuntime.new(validEntry(versionId), runtimeOptions(versionId))
     local ok, err = xpcall(function()
       local attemptArgs = {
         eventId = 1,
@@ -2140,7 +2146,7 @@ end
 function T.boot_resolves_a_generated_trainer_identity(context)
   local versions = requireVersions(context)
   for _, versionId in ipairs(versions) do
-    local runtime = FieldRuntime.new(validEntry(versionId), runtimeOptions())
+    local runtime = FieldRuntime.new(validEntry(versionId), runtimeOptions(versionId))
     local battle = nil
     local ok, err = xpcall(function()
       Assert.isTrue(
@@ -2151,7 +2157,7 @@ function T.boot_resolves_a_generated_trainer_identity(context)
         runtime.monService:giveMon({ species = "CHIKORITA", level = 6 }),
         "the boot battle needs its second battle-eligible party member"
       )
-      local compiled = BattleDataCache.loadTrainers(CacheFs.forVersion(versionId))
+      local compiled = BattleDataCache.loadTrainers(GeneratedCacheFixture.reader(versionId))
       local key = firstTrainerKey(compiled)
       -- The smallest generated identity is a rival template, which resolves
       -- its display name from the saved profile's rival name (non-rival

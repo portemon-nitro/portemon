@@ -9,7 +9,7 @@ local Assert = require("tests.support.Assert")
 local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local RosterIconStandIn = require("tests.support.RosterIconStandIn")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
@@ -31,8 +31,8 @@ local T = {}
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
-      local cacheFs = CacheFs.forVersion(versionId)
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       local marker = cacheFs:read(PartyCache.markerPath())
       if
         marker ~= nil
@@ -115,7 +115,7 @@ local function realizedImage(scope, cacheFs, path)
 end
 
 local function composition(scope, versionId)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local manifest = PartyCache.loadManifest(cacheFs)
   local text = FieldTextRenderer.new({ cacheFs = cacheFs })
   local renderer = SummaryRenderer.new({ text = text })

@@ -134,7 +134,6 @@ function T.runtime_assets_phase_trusts_published_catalogs_without_revalidating()
   local weatherCalls, followerCalls = 0, 0
   local monValidatorCalls, itemValidatorCalls = 0, 0
   local originals = {
-    forVersion = CacheFs.forVersion,
     fontLoad = FieldFontLoader.load,
     weatherValidate = FieldWeatherCache.validateCatalog,
     followerValidate = FollowerInteractionCache.validateCatalog,
@@ -144,9 +143,6 @@ function T.runtime_assets_phase_trusts_published_catalogs_without_revalidating()
     entranceLoad = FieldEntranceIndicatorRuntime.load,
     emoteLoad = FieldActorEmoteRuntime.load,
   }
-  rawset(CacheFs, "forVersion", function()
-    return cache
-  end)
   rawset(FieldFontLoader, "load", function()
     return { charmap = {} }
   end)
@@ -184,8 +180,7 @@ function T.runtime_assets_phase_trusts_published_catalogs_without_revalidating()
     presentation = false,
     derivedAssets = {},
   }, FieldRuntime)
-  local ok, phaseErr = pcall(FieldRuntime._loadRuntimeAssets, runtime, {})
-  rawset(CacheFs, "forVersion", originals.forVersion)
+  local ok, phaseErr = pcall(FieldRuntime._loadRuntimeAssets, runtime, {}, { cacheFs = cache })
   rawset(FieldFontLoader, "load", originals.fontLoad)
   rawset(FieldWeatherCache, "validateCatalog", originals.weatherValidate)
   rawset(FollowerInteractionCache, "validateCatalog", originals.followerValidate)

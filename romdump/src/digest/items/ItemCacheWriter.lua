@@ -9,10 +9,8 @@
 -- raw ROM dump and any other derived class are never touched.
 
 local Errors = require("libs.errors.src.Errors")
-local PngEncoder = require("romdump.src.digest.PngEncoder")
 local ItemCache = require("libs.assets.src.ItemCache")
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local Hashing = require("romdump.src.digest.Hashing")
 
 ---@class ItemCacheWriter
@@ -107,35 +105,14 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function ItemCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "item staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "item staging requires a PreparedArtifact")
   checkBundle(bundle)
   artifact:addOwnedRoot(ItemCache.assetDir())
   artifact:addOwnedRoot(ItemCache.dir())
   local icons = bundle.icons
-  return persist(artifact:stageFs(), bundle, function()
+  return persist(artifact, bundle, function()
     artifact:deferImage(ItemCache.iconImagePath(), icons.width, icons.height, icons.pixels)
   end)
-end
-
----@param cacheFs CacheFs
----@param bundle table<string, unknown>
----@return string
-function ItemCacheWriter.write(cacheFs, bundle)
-  checkBundle(bundle)
-  local iconPng = PngEncoder.encode(bundle.icons.width, bundle.icons.height, bundle.icons.pixels)
-  local tx = ArtifactPublisher.begin(cacheFs, "items", {
-    ItemCache.assetDir(),
-    ItemCache.dir(),
-  })
-  local ok, result = pcall(persist, tx.stage, bundle, function()
-    tx.stage:write(ItemCache.iconImagePath(), iconPng)
-  end)
-  if not ok then
-    tx:abort()
-    error(result, 0)
-  end
-  tx:publish()
-  return result
 end
 
 return ItemCacheWriter

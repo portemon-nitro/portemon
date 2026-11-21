@@ -9,7 +9,7 @@ local Assert = require("tests.support.Assert")
 local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local RosterIconStandIn = require("tests.support.RosterIconStandIn")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local EasyChatCache = require("libs.assets.src.EasyChatCache")
 local EasyChatCatalog = require("libs.hgss.src.ui.EasyChatCatalog")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -165,7 +165,7 @@ local function openProductionPartyFlow(versionId, summaryManifest, class, specie
   local HgssBagService = require("libs.hgss.src.items.HgssBagService")
   local ItemFixture = require("libs.items.tests.item_fixture")
   local PartyActions = require("libs.hgss.src.field.PartyActions")
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local helper = SummaryAcceptanceFixture.preparationDoubles({})
   local Owner = requireOwner(versionId, helper)
   local service = openService(realCatalog(cacheFs), 0x5EED5001)
@@ -581,7 +581,7 @@ end
 ---@param versionId string
 ---@return table<string, unknown> production-shaped presentation runtime over the real cache
 local function fprRuntime(versionId)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local runtime = {
     cacheFs = cacheFs,
     easyChatCatalog = EasyChatCatalog.new(assert(EasyChatCache.loadCatalog(cacheFs))),
@@ -718,7 +718,7 @@ end
 
 function T.production_presenters_draw_the_live_summary_without_a_stand_in(scope)
   local versionId = readyVersion()
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local _, summaryManifest = SummaryAcceptanceFixture.loadSummaryManifest(versionId)
   local rig = openProductionPartyFlow(versionId, summaryManifest, "nativeLike")
   local active, exitCoefficients, entryCoefficients = openNestedSummary(rig)
@@ -816,7 +816,7 @@ function T.native_content_ignores_host_topology_with_a_guarded_fallback()
   -- The too-small pair cannot keep 1x logical resolution, so it keeps
   -- the existing nativeLike fallback instead of distorting widgets.
   local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
-  local service = openService(realCatalog(CacheFs.forVersion(versionId)), 0x5EED5002)
+  local service = openService(realCatalog(GeneratedCacheFixture.reader(versionId)), 0x5EED5002)
   SummaryAcceptanceFixture.gift(service, "CHIKORITA", 12)
   local context = SummaryAcceptanceFixture.displayContext(summaryManifest, service:partyCount())
   local helper = SummaryAcceptanceFixture.preparationDoubles({})
@@ -1143,7 +1143,7 @@ end
 -- repeat identically.
 function T.production_summary_draws_through_the_ready_bundle_without_party_graft(scope)
   local versionId = readyVersion()
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local _, summaryManifest = SummaryAcceptanceFixture.loadSummaryManifest(versionId)
   local rig = openProductionPartyFlow(versionId, summaryManifest, "nativeLike")
   local active = openNestedSummary(rig)
@@ -1187,7 +1187,7 @@ end
 -- party.
 function T.production_summary_moves_member_chrome_through_its_ready_bundle(scope)
   local versionId = readyVersion()
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local _, summaryManifest = SummaryAcceptanceFixture.loadSummaryManifest(versionId)
   local rig = openProductionPartyFlow(versionId, summaryManifest, "nativeLike", { "CHIKORITA", "CHIKORITA" })
   local active = openNestedSummary(rig)

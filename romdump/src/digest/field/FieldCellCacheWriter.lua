@@ -2,7 +2,6 @@
 -- ordering. The class owns only its cell data; shared meshes, textures, and
 -- model descriptors remain content-addressed cache assets shared with maps.
 
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
@@ -71,15 +70,15 @@ local function validationCache(stage, cacheFs)
   }
 end
 
-local function writeSharedAssets(cacheFs, encoded, models)
+local function writeSharedAssets(stage, encoded, models)
   for key, bytes in pairs(encoded.meshes) do
-    cacheFs:write(MapAssetCache.modelBankPath(key), bytes)
+    stage:write(MapAssetCache.modelBankPath(key), bytes)
   end
   for key, bytes in pairs(encoded.textures) do
-    cacheFs:write(MapAssetCache.textureBankPath(key), bytes)
+    stage:write(MapAssetCache.textureBankPath(key), bytes)
   end
   for modelKey, model in pairs(models) do
-    cacheFs:writeLua(MapAssetCache.modelPath(modelKey), model)
+    stage:writeLua(MapAssetCache.modelPath(modelKey), model)
   end
 end
 
@@ -129,12 +128,12 @@ function Writer.stageComplete(stage, marker)
 end
 
 function Writer.stagePrepared(prepared, descriptor, result)
-  assert(prepared and prepared.stageFs and prepared.addOwnedRoot, "prepared field cell artifact is required")
+  assert(prepared and prepared.write and prepared.addOwnedRoot, "prepared field cell artifact is required")
   assert(
     type(result) == "table" and result.cell and result.meshes and result.textures and result.models,
     "invalid cell result"
   )
-  local stage = prepared:stageFs()
+  local stage = prepared
   local cell = result.cell
   local encoded = validateBundle({
     index = {
@@ -172,62 +171,8 @@ function Writer.stagePrepared(prepared, descriptor, result)
   )
 end
 
-function Writer.writeIndex(cacheFs, bundle)
-  local tx = ArtifactPublisher.begin(
-    cacheFs,
-    "field-cell-index",
-    { FieldCellCache.indexPath(), FieldCellCache.indexMarkerPath() }
-  )
-  tx.stage:writeLua(FieldCellCache.indexPath(), bundle.index)
-  tx.stage:write(FieldCellCache.indexMarkerPath(), assert(bundle.indexMarker))
-  tx:publish()
-end
-
-function Writer.writeComplete(cacheFs, marker)
-  local tx = ArtifactPublisher.begin(cacheFs, "field-cell-complete", { FieldCellCache.markerPath() })
-  tx.stage:write(FieldCellCache.markerPath(), marker)
-  tx:publish()
-end
-
-local function persist(cacheFs, tx, bundle)
-  local encoded = validateBundle(bundle)
-  local stage = tx.stage
-  writeSharedAssets(stage, encoded, bundle.models)
-  for _, matrix in ipairs(bundle.index.matrices) do
-    for _, descriptor in ipairs(matrix.cells) do
-      local cell = assert(bundle.cells[descriptor.matrixMemberId .. ":" .. descriptor.index])
-      stageCell(stage, descriptor, cell, bundle.marker)
-    end
-  end
-  Writer.stageIndex(stage, bundle.index)
-  local index = FieldCellCache.loadIndex(stage)
-  for _, matrix in ipairs(index.matrices) do
-    for _, descriptor in ipairs(matrix.cells) do
-      local cell = assert(stage:loadLua(descriptor.file))
-      assert(
-        FieldCellCache.validateCell(validationCache(stage, cacheFs), cell, descriptor),
-        "field cell did not validate after staging"
-      )
-    end
-  end
-  Writer.stageComplete(stage, bundle.marker)
-  writeSharedAssets(cacheFs, encoded, bundle.models)
-  return bundle.marker
-end
-
 function Writer.isReady(cacheFs, marker)
   return FieldCellCache.isReady(cacheFs, marker)
-end
-
-function Writer.write(cacheFs, bundle)
-  local tx = ArtifactPublisher.begin(cacheFs, "field-cells", { FieldCellCache.dir() })
-  local ok, result = pcall(persist, cacheFs, tx, bundle)
-  if not ok then
-    tx:abort()
-    error(result, 0)
-  end
-  tx:publish()
-  return result
 end
 
 return Writer

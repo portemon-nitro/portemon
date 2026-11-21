@@ -1,7 +1,7 @@
 -- Graphics smoke for the production starter chooser.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local GameVersion = require("romdump.src.source.GameVersion")
@@ -133,7 +133,7 @@ end
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       versions[#versions + 1] = versionId
     end
   end
@@ -422,7 +422,7 @@ function T.source_rate_rotation_renders_intermediate_frames_without_advancing_se
   local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
 
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     loadManifest(cacheModule, cacheFs)
     local host = openProductionChoice(versionId, cacheFs, nil, function()
       return nativeWideBox()
@@ -520,7 +520,7 @@ function T.native_info_artwork_remains_visible_through_zoom_and_back_out(scope, 
   local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
 
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     loadManifest(cacheModule, cacheFs)
     local host = openProductionChoice(versionId, cacheFs, nil, function()
       return nativeWideBox()
@@ -577,7 +577,7 @@ function T.native_machine_art_tracks_source_prompt_layer_visibility(scope, conte
   local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
 
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local manifest = loadManifest(cacheModule, cacheFs)
     local host = openProductionChoice(versionId, cacheFs, nil, function()
       return nativeWideBox()
@@ -675,7 +675,7 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
   local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
 
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local marker = cacheFs:read(cacheModule.markerPath())
     Assert.notNil(marker, versionId .. " publishes the starter application marker")
     Assert.isTrue(cacheModule.isReady(cacheFs, marker), versionId .. " starter cache is ready")
@@ -758,7 +758,7 @@ function T.non_trio_candidate_inspects_through_the_mon_portrait_contract(scope, 
   local Personality = requireModule("libs.mons.src.gen4.Personality", "personality owns gender and shininess")
 
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     loadManifest(cacheModule, cacheFs)
     local catalog = MonCatalog.new(MonCache.loadCatalog(cacheFs), ItemCatalog.new(ItemCache.loadCatalog(cacheFs)))
     local host = openProductionChoice(versionId, cacheFs, { "CHIKORITA", "PIKACHU", "TOTODILE" }, function()
@@ -952,7 +952,7 @@ function T.actual_topology_replaces_fabricated_screens_with_usable_machine_pane(
   local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
 
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     Assert.isTrue(
       cacheModule.isReady(cacheFs, cacheFs:read(cacheModule.markerPath())),
       versionId .. " starter cache is ready"
@@ -1097,7 +1097,7 @@ function T.native_like_inspect_shows_the_machine_derived_chooser(scope, context)
   end
   local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     Assert.isTrue(
       cacheModule.isReady(cacheFs, cacheFs:read(cacheModule.markerPath())),
       versionId .. " starter cache is ready"
@@ -1155,7 +1155,7 @@ function T.translated_dpi2_machine_placement_agrees_with_source_projection(_, co
     context:skip("the starter projection needs a ready user-owned ROM with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local worldRect = { x = 400, y = 100, width = 512, height = 384 }
     local auxRect = { x = 100, y = 300, width = 512, height = 384 }
     local box = graphicsBox(

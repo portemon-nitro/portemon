@@ -33,6 +33,7 @@ local PngWriter = require("libs.assets.src.PngWriter")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local Schema = require("libs.script.src.Schema")
 local Sha256 = require("libs.script.src.Sha256")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -322,7 +323,7 @@ local function generationIdFor(producerBody)
   return assert(identity.generationId)
 end
 
-local function newArtifact(cache, generation, kind, key, stageName)
+local function newArtifact(cache, generation, kind, key)
   return PreparedArtifact.new({
     cacheFs = cache,
     generationId = generation,
@@ -330,19 +331,12 @@ local function newArtifact(cache, generation, kind, key, stageName)
     kind = kind,
     key = key,
     jobKey = kind .. ":" .. key,
-    stageName = stageName,
   })
 end
 
 local function publishArtifact(artifact, generation, kind, key, marker)
   artifact:finishSuccess({ marker = marker })
-  artifact:publish({
-    generationId = generation,
-    epoch = 1,
-    kind = kind,
-    key = key,
-    jobKey = kind .. ":" .. key,
-  })
+  ResidentArtifactFixture.materialize(artifact)
 end
 
 -- Locate one page source plan without assuming the container shape: page-id
@@ -497,7 +491,7 @@ function T.catalog_stages_without_rasterizing_any_pixels()
     local cache = CacheFs.forVersion("heartgold", FakeCache.new())
     local generation = generationIdFor(Sha256.hex("mon catalog stage"))
     local marker = MonCache.marker("synthetic-rom-sha", Hashing.hashLua(catalog))
-    local artifact = newArtifact(cache, generation, "mon-catalog", "global", "mon-catalog-stage")
+    local artifact = newArtifact(cache, generation, "mon-catalog", "global")
     local staged = MonCacheWriter.stageCatalog(artifact, { catalog = catalog, marker = marker })
     if type(staged) ~= "string" then
       staged = marker
@@ -712,7 +706,7 @@ function T.partial_page_sets_report_staged_readiness_levels()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local generation = generationIdFor(Sha256.hex("mon partial readiness"))
   local catalogMarker = MonCache.marker("synthetic-rom-sha", Hashing.hashLua(catalog))
-  local catalogStage = newArtifact(cache, generation, "mon-catalog", "global", "mon-catalog-partial")
+  local catalogStage = newArtifact(cache, generation, "mon-catalog", "global")
   local stagedCatalog = MonCacheWriter.stageCatalog(catalogStage, { catalog = catalog, marker = catalogMarker })
   if type(stagedCatalog) ~= "string" then
     stagedCatalog = catalogMarker
@@ -722,7 +716,7 @@ function T.partial_page_sets_report_staged_readiness_levels()
   Assert.isFalse(MonCache.isLayoutReady(cache, "no-layout-published"), "layout stays unread before its own stage")
   local planned = assert(MonPresentationCompiler.plan(romFs, catalog))
   local layoutMarker = MonCache.marker("synthetic-rom-sha", Hashing.hashLua({ planned.icons, planned.portraits }))
-  local layoutStage = newArtifact(cache, generation, "mon-layout", "global", "mon-layout-partial")
+  local layoutStage = newArtifact(cache, generation, "mon-layout", "global")
   local stagedLayout = MonCacheWriter.stageLayout(layoutStage, {
     icons = planned.icons,
     portraits = planned.portraits,
@@ -761,7 +755,7 @@ function T.partial_page_sets_report_staged_readiness_levels()
     if pageId == nil then
       pageId = staged
     end
-    local artifact = newArtifact(cache, generation, "mon-icon-page", tostring(pageId), "mon-icon-page-" .. staged)
+    local artifact = newArtifact(cache, generation, "mon-icon-page", tostring(pageId))
     local marker = MonCacheWriter.stagePage(artifact, bundle)
     if type(marker) ~= "string" then
       marker = bundle.marker
@@ -787,7 +781,7 @@ function T.partial_page_sets_report_staged_readiness_levels()
   }
   local portraitPageId = portraitBundle.pageId or 0
   local portraitArtifact =
-    newArtifact(cache, generation, "mon-portrait-page", tostring(portraitPageId), "mon-portrait-page-0")
+    newArtifact(cache, generation, "mon-portrait-page", tostring(portraitPageId))
   local portraitMarker = MonCacheWriter.stagePage(portraitArtifact, portraitBundle)
   if type(portraitMarker) ~= "string" then
     portraitMarker = portraitBundle.marker
@@ -828,7 +822,7 @@ function T.malformed_pages_and_selectors_fail_before_publishing()
   }
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local generation = generationIdFor(Sha256.hex("mon malformed page"))
-  local artifact = newArtifact(cache, generation, "mon-icon-page", "0", "mon-icon-page-broken")
+  local artifact = newArtifact(cache, generation, "mon-icon-page", "0")
   local ok, stageErr = pcall(MonCacheWriter.stagePage, artifact, broken)
   Assert.isFalse(ok, "a truncated page buffer must not stage: " .. tostring(stageErr))
   artifact:abort()

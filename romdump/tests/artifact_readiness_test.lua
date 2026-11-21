@@ -26,30 +26,33 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local HgssFieldEdgeColors = require("romdump.src.digest.field.HgssFieldEdgeColors")
 local HgssFieldFog = require("romdump.src.digest.field.HgssFieldFog")
 local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
-local DerivedCacheState = require("romdump.src.DerivedCacheState")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
-
-local savedModules = {}
-local CacheBuilder
-local builderBackend = nil
 
 local GENERATION = "readiness-test-generation"
 local SCRIPT_GEN = string.rep("e", 40)
 local SCRIPT_SOURCE_HASH = string.rep("c", 40)
 
+-- One committed fact map per fixture cache: the completion facts the
+-- controller commits with an artifact's bytes are what make a key reuseable.
+local facts = ArtifactState.new(GENERATION)
+
 local function newCache()
+  facts = ArtifactState.new(GENERATION)
   return CacheFs.forVersion("heartgold", FakeCache.new())
 end
 
-local function writeReceipt(cache, kind, key, marker)
-  cache:writeLua(ArtifactState.path(kind, key), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = GENERATION,
+local function recordFact(kind, key, marker)
+  facts.records[ArtifactState.key(kind, key)] = {
     kind = kind,
     key = key,
     marker = marker,
-  })
+    dependencies = {},
+    ownedRoots = {},
+    sharedPaths = {},
+    files = {},
+  }
 end
 
 -- Marker-only completion state: every family marker plus a world manifest.
@@ -85,7 +88,7 @@ local function publishCellIndex(cache, marker)
   Assert.isTrue(FieldCellCache.validateIndex(index), "the synthetic index must validate")
   cache:writeLua(FieldCellCache.indexPath(), index)
   cache:write(FieldCellCache.indexMarkerPath(), marker)
-  writeReceipt(cache, "field-cell-index", "global", marker)
+  recordFact("field-cell-index", "global", marker)
 end
 
 -- Script family fixtures: one member with one script, published through the
@@ -179,7 +182,7 @@ local function scriptPlan(marker, members)
   return plan
 end
 
-local function stageScriptMember(cache, plan, staged, stageName)
+local function stageScriptMember(cache, plan, staged)
   local artifact = PreparedArtifact.new({
     cacheFs = cache,
     generationId = GENERATION,
@@ -187,21 +190,14 @@ local function stageScriptMember(cache, plan, staged, stageName)
     kind = "script-member",
     key = tostring(staged.memberId),
     jobKey = "script-member:" .. tostring(staged.memberId),
-    stageName = stageName,
   })
   local marker = assert(ScriptCacheWriter.stageMember(artifact, plan, staged))
   artifact:finishSuccess({ marker = marker })
-  Assert.isTrue(artifact:publish({
-    generationId = GENERATION,
-    epoch = 1,
-    kind = "script-member",
-    key = tostring(staged.memberId),
-    jobKey = "script-member:" .. tostring(staged.memberId),
-  }))
-  writeReceipt(cache, "script-member", tostring(staged.memberId), marker)
+  Assert.isTrue(ResidentArtifactFixture.materialize(artifact))
+  recordFact("script-member", tostring(staged.memberId), marker)
 end
 
-local function stageScriptSummary(cache, plan, stageName)
+local function stageScriptSummary(cache, plan)
   local artifact = PreparedArtifact.new({
     cacheFs = cache,
     generationId = GENERATION,
@@ -209,32 +205,24 @@ local function stageScriptSummary(cache, plan, stageName)
     kind = "script-summary",
     key = "global",
     jobKey = "script-summary:global",
-    stageName = stageName,
   })
   local marker = assert(ScriptCacheWriter.stageSummary(artifact, plan))
   artifact:finishSuccess({ marker = marker })
-  Assert.isTrue(artifact:publish({
-    generationId = GENERATION,
-    epoch = 1,
-    kind = "script-summary",
-    key = "global",
-    jobKey = "script-summary:global",
-  }))
-  writeReceipt(cache, "script-summary", "global", marker)
+  Assert.isTrue(ResidentArtifactFixture.materialize(artifact))
+  recordFact("script-summary", "global", marker)
   return marker
 end
 
-local function publishScriptFamily(cache, marker, members, prefix)
+local function publishScriptFamily(cache, marker, members)
   local plan = scriptPlan(marker, members)
   for _, entry in ipairs(members) do
     stageScriptMember(
       cache,
       plan,
-      scriptMember(entry.memberId, entry.id, entry.scriptIndex, marker .. ":member:" .. entry.memberId),
-      prefix .. "-member-" .. entry.memberId
+      scriptMember(entry.memberId, entry.id, entry.scriptIndex, marker .. ":member:" .. entry.memberId)
     )
   end
-  return plan, stageScriptSummary(cache, plan, prefix .. "-summary")
+  return plan, stageScriptSummary(cache, plan)
 end
 
 -- A receipt/marker pair with no index payload is cold, and the dependent
@@ -243,10 +231,10 @@ function T.index_marker_without_its_index_payload_is_cold()
   local cache = newCache()
   local marker = FieldCellCache.indexMarker("test-rom", "test-dep")
   cache:write(FieldCellCache.indexMarkerPath(), marker)
-  writeReceipt(cache, "field-cell-index", "global", marker)
+  recordFact("field-cell-index", "global", marker)
 
   Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "field-cell-index", "global", {}),
+    ArtifactJobs.validate(cache, facts, "field-cell-index", "global", {}),
     "an index marker without its index payload must not read ready"
   )
   local dependencies = ArtifactJobs.dependencies("field-cell", "12-5", {})
@@ -264,18 +252,18 @@ function T.member_with_a_missing_script_body_is_cold_before_its_summary()
     { memberId = 3, id = "common.signpost", scriptIndex = 0 },
     { memberId = 843, id = "new_bark.lab_sign", scriptIndex = 0 },
   }
-  local plan, _ = publishScriptFamily(cache, marker, members, "missing-body")
+  local plan, _ = publishScriptFamily(cache, marker, members)
   Assert.isTrue(ScriptCache.isReady(cache, marker), "the published class reads ready before damage")
 
   cache:remove(ScriptCache.memberPath(SCRIPT_GEN, 843))
 
   local plans = { scriptPlan = plan, scriptMemberIds = { 3, 843 } }
   Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "script-member", "843", plans),
+    ArtifactJobs.validate(cache, facts, "script-member", "843", plans),
     "a member with a missing script body must not read ready"
   )
   Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "script-summary", "global", plans),
+    ArtifactJobs.validate(cache, facts, "script-summary", "global", plans),
     "the summary cannot stay ready while a member body is missing"
   )
   local found = false
@@ -306,22 +294,18 @@ function T.failed_leaf_repair_keeps_the_last_good_publication()
     { memberId = 3, id = "common.signpost", scriptIndex = 0 },
     { memberId = 843, id = "new_bark.lab_sign", scriptIndex = 0 },
   }
-  local plan, _ = publishScriptFamily(cache, marker, members, "preserve-good")
+  local plan, _ = publishScriptFamily(cache, marker, members)
   cache:remove(ScriptCache.memberPath(SCRIPT_GEN, 843))
 
   local plans = { scriptPlan = plan, scriptMemberIds = { 3, 843 } }
   Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "script-member", "843", plans),
+    ArtifactJobs.validate(cache, facts, "script-member", "843", plans),
     "the damaged leaf must force its own repair"
   )
+  local factBefore = facts.records["script-member:843"]
 
-  local original = backend.write
-  backend.write = function(self, path, data)
-    if path:find("/scripts/", 1, true) then
-      error("injected member write failure")
-    end
-    return original(self, path, data)
-  end
+  -- The repair's own stage rejects a member that disagrees with the plan, so
+  -- the private output never seals and its fact is never committed.
   local failed = PreparedArtifact.new({
     cacheFs = cache,
     generationId = GENERATION,
@@ -329,17 +313,15 @@ function T.failed_leaf_repair_keeps_the_last_good_publication()
     kind = "script-member",
     key = "843",
     jobKey = "script-member:843",
-    stageName = "failed-repair-843",
   })
   local ok = pcall(
     ScriptCacheWriter.stageMember,
     failed,
     plan,
-    scriptMember(843, "new_bark.lab_sign", 9, marker .. ":member:843")
+    scriptMember(843, "new_bark.lab_sign", 9, marker .. ":member:843-mismatched")
   )
   failed:abort()
-  backend.write = original
-  Assert.isFalse(ok, "the injected staging failure must fail the repair")
+  Assert.isFalse(ok, "the rejected repair exposure must fail the stage")
 
   Assert.notNil(
     cache:read(ScriptCache.memberPath(SCRIPT_GEN, 3)),
@@ -348,51 +330,8 @@ function T.failed_leaf_repair_keeps_the_last_good_publication()
   local sibling = assert(cache:loadModule(ScriptCache.memberPath(SCRIPT_GEN, 3))).scripts[1]
   Assert.equal(sibling.id, "common.signpost", "the healthy sibling body survives the failed repair")
   Assert.equal(assert(ScriptCache.loadActive(cache)).marker, marker, "the previous summary selection survives")
-  Assert.isNil(cache:read(require("romdump.src.DerivedCacheState").path), "no complete attestation publishes")
-  Assert.isNil(backend:getInfo("staging/heartgold/failed-repair-843"), "the failed stage is discarded")
-end
-
--- A matching attestation is the ordinary reuse authority even with a
--- damaged payload: common preparation reports current without re-proving
--- payloads, while the explicit diagnostic audit still names the damaged
--- leaf and performs no repair.
-function T.matching_attestation_trusts_a_damaged_payload_for_ordinary_reuse()
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
-  writeMarkers(cache, { maps = {} })
-  cache:write(FieldCameraCache.profilesPath(), "payload")
-  cache:write(FieldCameraCache.provenancePath(), "payload")
-  cache:remove(FieldCameraCache.profilesPath())
-  local Contract = require("libs.assets.src.DerivedAssetContract")
-  local ScriptApi = require("libs.script.src.Schema")
-  local identity = {
-    schema = DerivedCacheState.schema,
-    versionId = "heartgold",
-    romSha1 = string.rep("a", 40),
-    mode = "development",
-    producerId = "d" .. string.rep("1", 64),
-    assetRevision = Contract.revision,
-    scriptApi = ScriptApi.API_VERSION,
-    generationId = "attested-generation",
-  }
-  DerivedCacheState.publish(cache, identity)
-  Assert.isTrue(
-    DerivedCacheState.matches(cache:loadLua(DerivedCacheState.path), identity),
-    "the attestation matches before preparation"
-  )
-  builderBackend = backend
-  local report = CacheBuilder.prepareVersion("heartgold", {
-    identity = identity,
-    requirements = { "complete" },
-    log = function() end,
-  })
-  builderBackend = nil
-  Assert.notNil(report, "a matching attestation reports without re-proving payloads")
-  Assert.isTrue(report.complete == true, "a matching attestation reports current despite the damage")
-  Assert.isTrue(
-    DerivedCacheState.matches(cache:loadLua(DerivedCacheState.path), identity),
-    "ordinary reuse preserves the matching attestation without repair"
-  )
+  Assert.equal(facts.records["script-member:843"], factBefore, "a failed repair commits no new fact")
+  Assert.isNil(cache:read(ScriptCache.memberPath(SCRIPT_GEN, 843)), "a failed repair publishes no member bundle")
 end
 
 -- Synthetic corpus builders below: every family publishes minimal valid
@@ -403,13 +342,13 @@ local function publishMessageFamily(cache, marker)
   local bankId = 219
   local FieldMessageFixture = require("tests.support.FieldMessageFixture")
   FieldMessageFixture.write(cache, bankId, { { FieldMessageFixture.eos() } })
-  writeReceipt(cache, "message-bank", tostring(bankId), marker)
+  recordFact("message-bank", tostring(bankId), marker)
   cache:writeLua(FieldMessageCache.indexPath(), {
     schema = FieldMessageCache.INDEX_SCHEMA,
     version = "heartgold",
     bankIds = { bankId },
   })
-  writeReceipt(cache, "message-summary", "global", marker)
+  recordFact("message-summary", "global", marker)
 end
 
 local function publishAudioFamily(cache, marker)
@@ -421,8 +360,8 @@ local function publishAudioFamily(cache, marker)
     sequenceBySymbol = {},
     bankBySymbol = {},
   })
-  writeReceipt(cache, "audio-catalog", "global", marker)
-  writeReceipt(cache, "audio-summary", "global", marker)
+  recordFact("audio-catalog", "global", marker)
+  recordFact("audio-summary", "global", marker)
 end
 
 local function publishMonFamily(cache, marker)
@@ -483,11 +422,11 @@ local function publishMonFamily(cache, marker)
     portraitPages = { portraitMarker },
   })
   cache:write(MonCache.markerPath(), marker)
-  writeReceipt(cache, "mon-summary", "global", marker)
-  writeReceipt(cache, "mon-catalog", "global", MonCache.marker("test-rom", "catalog"))
-  writeReceipt(cache, "mon-layout", "global", MonCache.marker("test-rom", "layout"))
-  writeReceipt(cache, "mon-icon-page", "0", iconMarker)
-  writeReceipt(cache, "mon-portrait-page", "0", portraitMarker)
+  recordFact("mon-summary", "global", marker)
+  recordFact("mon-catalog", "global", MonCache.marker("test-rom", "catalog"))
+  recordFact("mon-layout", "global", MonCache.marker("test-rom", "layout"))
+  recordFact("mon-icon-page", "0", iconMarker)
+  recordFact("mon-portrait-page", "0", portraitMarker)
   return {
     marker = marker,
     iconMarker = iconMarker,
@@ -568,14 +507,14 @@ local function publishMapDataRecord(cache, mapId, marker)
   })
   cache:writeLua(FieldMapData.dependenciesPath(mapId), { generated = true })
   cache:write(FieldMapData.markerPath(mapId), marker)
-  writeReceipt(cache, "map-data", tostring(mapId), marker)
+  recordFact("map-data", tostring(mapId), marker)
 end
 
 local function publishCameraFamily(cache, marker)
   cache:write(FieldCameraCache.profilesPath(), "profiles")
   cache:write(FieldCameraCache.provenancePath(), "provenance")
   cache:write(FieldCameraCache.markerPath(), marker)
-  writeReceipt(cache, "field-camera", "global", marker)
+  recordFact("field-camera", "global", marker)
 end
 
 local function publishFontFamily(cache, marker)
@@ -587,7 +526,7 @@ local function publishFontFamily(cache, marker)
     cache:write(FontCache.focusIndicatorsPath(fontId), "focus")
   end
   cache:write(FontCache.markerPath(), marker)
-  writeReceipt(cache, "field-font", "global", marker)
+  recordFact("field-font", "global", marker)
 end
 
 local function publishFieldEntryFamily(cache, marker)
@@ -620,7 +559,7 @@ local function publishFieldEntryFamily(cache, marker)
     cache:write(entry.image, "bytes")
   end
   cache:write(FieldEntry.markerPath(), marker)
-  writeReceipt(cache, "field-entry", "global", marker)
+  recordFact("field-entry", "global", marker)
 end
 
 local function publishActorFamily(cache)
@@ -696,9 +635,12 @@ local function publishActorFamily(cache)
     provenance = { schema = "g4-field-actor-provenance-v1" },
     dependencies = {},
   }
-  Assert.equal(Writer.write(cache, bundle), bundle.marker)
+  local stagedMarker = ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
+    return Writer.stage(artifact, bundle)
+  end)
+  Assert.equal(stagedMarker, bundle.marker)
   Assert.isTrue(FieldActorCache.isReady(cache, bundle.marker), "the synthetic actor class must read ready")
-  writeReceipt(cache, "actors", "global", bundle.marker)
+  recordFact("actors", "global", bundle.marker)
 end
 
 local function publishItemFamily(cache)
@@ -733,9 +675,11 @@ local function publishItemFamily(cache)
     },
     provenance = {},
   }
-  Writer.write(cache, bundle)
+  ResidentArtifactFixture.publish(cache, "items", "global", function(artifact)
+    return Writer.stage(artifact, bundle)
+  end)
   Assert.isTrue(ItemCache.isReady(cache, marker), "the synthetic item class must read ready")
-  writeReceipt(cache, "items", "global", marker)
+  recordFact("items", "global", marker)
 end
 
 local function publishEmoteFamily(cache)
@@ -772,18 +716,20 @@ local function publishEmoteFamily(cache)
       },
     },
   }
-  local ok, err = pcall(Writer.write, cache, {
-    marker = marker,
-    model = {
-      schema = "g4-field-emote-v3",
-      model = modelAsset,
-    },
-    meshes = { ["mesh-key"] = "G4GX-bank-bytes" },
-    textures = { ["texture-key"] = "G4TX-bank-bytes" },
-  })
+  local ok, err = pcall(ResidentArtifactFixture.publish, cache, "field-emotes", "global", function(artifact)
+    return Writer.stage(artifact, {
+      marker = marker,
+      model = {
+        schema = "g4-field-emote-v3",
+        model = modelAsset,
+      },
+      meshes = { ["mesh-key"] = "G4GX-bank-bytes" },
+      textures = { ["texture-key"] = "G4TX-bank-bytes" },
+    })
+  end)
   Assert.isTrue(ok, tostring(err))
   Assert.isTrue(EmoteCache.isReady(cache, marker), "the synthetic emote class must read ready")
-  writeReceipt(cache, "field-emotes", "global", marker)
+  recordFact("field-emotes", "global", marker)
 end
 
 local function publishWeatherFamily(cache)
@@ -791,9 +737,11 @@ local function publishWeatherFamily(cache)
   local Compiler = require("romdump.src.digest.field.FieldWeatherCompiler")
   local Writer = require("romdump.src.digest.field.FieldWeatherCacheWriter")
   local bundle = assert(Compiler.compile())
-  Assert.isTrue(Writer.write(cache, bundle))
+  ResidentArtifactFixture.publish(cache, "field-weather", "global", function(artifact)
+    return Writer.stage(artifact, bundle)
+  end)
   Assert.isTrue(WeatherCache.isReady(cache, bundle.marker), "the compiled weather class must read ready")
-  writeReceipt(cache, "field-weather", "global", bundle.marker)
+  recordFact("field-weather", "global", bundle.marker)
 end
 
 local function publishEffectFamily(cache)
@@ -1154,11 +1102,13 @@ local function publishEffectFamily(cache)
       lifecycle = { mode = "once", frameCount = 4 },
     }
   end
-  local ok, err = pcall(Writer.write, cache, bundle)
+  local ok, err = pcall(ResidentArtifactFixture.publish, cache, "field-effects", "global", function(artifact)
+    return Writer.stage(artifact, bundle)
+  end)
   Assert.isTrue(ok, tostring(err))
   local ready, readyErr = EffectCache.isReady(cache, marker)
   Assert.isTrue(ready, tostring(readyErr))
-  writeReceipt(cache, "field-effects", "global", marker)
+  recordFact("field-effects", "global", marker)
 end
 
 local function publishUiFamily(cache)
@@ -1179,7 +1129,7 @@ local function publishUiFamily(cache)
   cache:write(UiCache.markerPath(), marker)
   local ready, readyErr = UiCache.isReady(cache, marker)
   Assert.isTrue(ready, tostring(readyErr))
-  writeReceipt(cache, "field-ui", "global", marker)
+  recordFact("field-ui", "global", marker)
 end
 
 local function publishIntroFamily(cache)
@@ -1248,45 +1198,41 @@ local function publishIntroFamily(cache)
   cache:write(IntroCache.markerPath(), marker)
   local ready, readyErr = IntroCache.isReady(cache, marker)
   Assert.isTrue(ready, tostring(readyErr))
-  writeReceipt(cache, "intro", "global", marker)
+  recordFact("intro", "global", marker)
 end
 
--- Lower-level leaf coverage: receipts prove nothing without usable
+-- Lower-level leaf coverage: completion facts prove nothing without usable
 -- payloads, whatever the family.
 
--- A receipt from another generation is cold even with a usable payload,
--- while the current receipt over the same payload is usable.
-function T.stale_generation_receipt_is_cold_but_current_receipt_is_usable()
+-- A fact map from another generation can never answer as the current
+-- generation: the explicit audit refuses the mismatch instead of trusting the
+-- markers, while the current generation's fact over the same payload reads
+-- ready.
+function T.facts_from_another_generation_are_refused()
   local cache = newCache()
   local marker = "g4-field-camera-cache-v1:test-rom:test-dep"
   publishCameraFamily(cache, marker)
-  cache:writeLua(ArtifactState.path("field-camera", "global"), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = "previous-generation",
+  local staleFacts = ArtifactState.new("previous-generation")
+  staleFacts.records["field-camera:global"] = {
     kind = "field-camera",
     key = "global",
     marker = marker,
-  })
-  Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "field-camera", "global", {}),
-    "a stale-generation receipt must not read ready"
-  )
-  writeReceipt(cache, "field-camera", "global", marker)
+    dependencies = {},
+    ownedRoots = {},
+    sharedPaths = {},
+    files = {},
+  }
+  local identity = { versionId = "heartgold", generationId = GENERATION, producerId = "readiness-producer" }
+  local ok, err = pcall(DerivedCacheAudit.isAvailable, cache, staleFacts, identity, {})
+  Assert.isFalse(ok, "another generation's facts are a programming error, never a readiness answer")
   Assert.isTrue(
-    ArtifactJobs.validate(cache, GENERATION, "field-camera", "global", {}),
-    "the current receipt over a usable payload reads ready"
+    tostring(err):find("another generation", 1, true) ~= nil,
+    "the refusal names the generation mismatch: " .. tostring(err)
   )
-end
-
--- A receipt that does not parse is cold, never a validation pass.
-function T.corrupt_receipt_shape_is_cold()
-  local cache = newCache()
-  local marker = "g4-field-camera-cache-v1:test-rom:test-dep"
-  publishCameraFamily(cache, marker)
-  cache:write(ArtifactState.path("field-camera", "global"), "not a lua receipt{{{")
-  Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "field-camera", "global", {}),
-    "a corrupt receipt must not read ready"
+  recordFact("field-camera", "global", marker)
+  Assert.isTrue(
+    ArtifactJobs.validate(cache, facts, "field-camera", "global", {}),
+    "the current fact over a usable payload reads ready"
   )
 end
 
@@ -1296,14 +1242,14 @@ function T.coarse_payload_damage_is_cold()
   local cache = newCache()
   local marker = "g4-field-camera-cache-v1:test-rom:test-dep"
   publishCameraFamily(cache, marker)
-  writeReceipt(cache, "field-camera", "global", marker)
+  recordFact("field-camera", "global", marker)
   Assert.isTrue(
-    ArtifactJobs.validate(cache, GENERATION, "field-camera", "global", {}),
+    ArtifactJobs.validate(cache, facts, "field-camera", "global", {}),
     "the intact coarse payload reads ready before damage"
   )
   cache:remove(FieldCameraCache.profilesPath())
   Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "field-camera", "global", {}),
+    ArtifactJobs.validate(cache, facts, "field-camera", "global", {}),
     "a coarse payload deleted under its marker must not read ready"
   )
 end
@@ -1316,9 +1262,9 @@ function T.layout_without_private_source_plans_is_cold()
   cache:writeLua(MonCache.iconManifestPath(), {})
   cache:writeLua(MonCache.portraitManifestPath(), {})
   cache:write(MonCache.layoutMarkerPath(), marker)
-  writeReceipt(cache, "mon-layout", "global", marker)
+  recordFact("mon-layout", "global", marker)
   Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "mon-layout", "global", {}),
+    ArtifactJobs.validate(cache, facts, "mon-layout", "global", {}),
     "a layout without its private source plans must not read ready"
   )
 end
@@ -1331,14 +1277,14 @@ function T.staged_source_inventory_with_current_marker_is_usable()
   local producerId = "d" .. string.rep("1", 64)
   local identity = { versionId = "heartgold", generationId = GENERATION, producerId = producerId }
   local cache = newCache()
-  writeReceipt(cache, "source-plan", "global", SourcePlan.marker(GENERATION))
+  recordFact("source-plan", "global", SourcePlan.marker(GENERATION))
   Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "source-plan", "global", {}, identity),
+    ArtifactJobs.validate(cache, facts, "source-plan", "global", {}, identity),
     "a source-plan receipt without its staged record must not read ready"
   )
   cache:writeLua(SourcePlan.PATH, { schema = SourcePlan.SCHEMA, generationId = GENERATION })
   Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "source-plan", "global", {}, identity),
+    ArtifactJobs.validate(cache, facts, "source-plan", "global", {}, identity),
     "a schema-only staged record must not read ready"
   )
   cache:writeLua(SourcePlan.PATH, {
@@ -1354,7 +1300,7 @@ function T.staged_source_inventory_with_current_marker_is_usable()
     audioIdentity = { romSha1 = string.rep("a", 40), sdatSha1 = string.rep("e", 40), sdatFileId = 11 },
     mapCellKeys = {},
   })
-  local ready, validatedPlan = ArtifactJobs.validate(cache, GENERATION, "source-plan", "global", {}, identity)
+  local ready, validatedPlan = ArtifactJobs.validate(cache, facts, "source-plan", "global", {}, identity)
   Assert.isTrue(ready, "the staged source inventory under its current marker reads ready")
   Assert.equal(
     assert(validatedPlan, "a ready source plan carries its validated record").generationId,
@@ -1372,7 +1318,7 @@ function T.source_plan_validation_requires_its_expected_identity()
   local SourcePlan = require("romdump.src.build.SourcePlan")
   local producerId = "d" .. string.rep("1", 64)
   local cache = newCache()
-  writeReceipt(cache, "source-plan", "global", SourcePlan.marker(GENERATION))
+  recordFact("source-plan", "global", SourcePlan.marker(GENERATION))
   cache:writeLua(SourcePlan.PATH, {
     schema = SourcePlan.SCHEMA,
     generationId = GENERATION,
@@ -1380,15 +1326,15 @@ function T.source_plan_validation_requires_its_expected_identity()
   })
   local matching = { versionId = "heartgold", generationId = GENERATION, producerId = producerId }
   Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "source-plan", "global", {}, matching),
+    ArtifactJobs.validate(cache, facts, "source-plan", "global", {}, matching),
     "a schema-only record is not ready even with a matching identity"
   )
   local foreign = { versionId = "heartgold", generationId = GENERATION, producerId = "d" .. string.rep("2", 64) }
   Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "source-plan", "global", {}, foreign),
+    ArtifactJobs.validate(cache, facts, "source-plan", "global", {}, foreign),
     "a record disagreeing with the expected identity is not ready"
   )
-  local missingOk = pcall(ArtifactJobs.validate, cache, GENERATION, "source-plan", "global", {})
+  local missingOk = pcall(ArtifactJobs.validate, cache, facts, "source-plan", "global", {})
   Assert.isFalse(missingOk, "a missing required source identity fails instead of silently passing")
 end
 
@@ -1411,7 +1357,7 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
   local scriptMarker = ScriptCache.marker("rom-sha", "dep-sha")
   local publishedPlan, _ = publishScriptFamily(cache, scriptMarker, {
     { memberId = 3, id = "common.signpost", scriptIndex = 0 },
-  }, "audit-script")
+  })
   local monMarker = MonCache.marker("test-rom", "test-dep")
   publishMonFamily(cache, monMarker)
   local indexMarker = FieldCellCache.indexMarker("test-rom", "test-dep")
@@ -1466,13 +1412,13 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
   end
   cache:writeLua(InteractionCache.catalogPath(), interactionCatalog)
   cache:write(InteractionCache.markerPath(), interactionMarker)
-  writeReceipt(cache, "follower-interactions", "global", interactionMarker)
+  recordFact("follower-interactions", "global", interactionMarker)
   publishUiFamily(cache)
   publishIntroFamily(cache)
-  writeReceipt(cache, "source-plan", "global", "source-plan-marker")
-  writeReceipt(cache, "new-game-init", "global", "new-game-init-marker")
-  writeReceipt(cache, "starter-choice", "global", "starter-choice-marker")
-  writeReceipt(cache, "world-catalog", "global", "world-catalog-marker")
+  recordFact("source-plan", "global", "source-plan-marker")
+  recordFact("new-game-init", "global", "new-game-init-marker")
+  recordFact("starter-choice", "global", "starter-choice-marker")
+  recordFact("world-catalog", "global", "world-catalog-marker")
   cache:writeLua(MapAssetCache.worldPath(), {
     schema = MapAssetCache.WORLD_SCHEMA,
     maps = {},
@@ -1517,7 +1463,7 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
     { kind = "map-data", key = tostring(present) },
   }) do
     Assert.isTrue(
-      ArtifactJobs.validate(cache, GENERATION, premise.kind, premise.key, plans),
+      ArtifactJobs.validate(cache, facts, premise.kind, premise.key, plans),
       "premise job must be usable: " .. premise.kind .. ":" .. premise.key
     )
   end
@@ -1537,10 +1483,10 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
     return copy
   end
   local identity = { versionId = "heartgold", generationId = GENERATION, producerId = "readiness-producer" }
-  writeReceipt(cache, "apricorn-box", "global", "separately-validated-apricorn-family")
-  writeReceipt(cache, "bag", "global", "separately-validated-bag-family")
-  writeReceipt(cache, "easy-chat-data", "global", "separately-validated-easy-chat-family")
-  writeReceipt(cache, "easy-chat", "global", "separately-validated-easy-chat-family")
+  recordFact("apricorn-box", "global", "separately-validated-apricorn-family")
+  recordFact("bag", "global", "separately-validated-bag-family")
+  recordFact("easy-chat-data", "global", "separately-validated-easy-chat-family")
+  recordFact("easy-chat", "global", "separately-validated-easy-chat-family")
   -- The complete inventory also enumerates the finite battle leaf
   -- families (shared core, evolution bundle, and one trainer/ball leaf
   -- per source selector) ahead of the summaries. This audit isolates
@@ -1553,12 +1499,12 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
       or job.kind == "battle-trainer-picture"
       or job.kind == "battle-ball"
     then
-      writeReceipt(cache, job.kind, job.key, "separately-validated-battle-leaf-family")
+      recordFact(job.kind, job.key, "separately-validated-battle-leaf-family")
     end
   end
   local before = snapshot()
   local realValidate = ArtifactJobs.validate
-  ArtifactJobs.validate = function(candidate, generation, kind, key, candidatePlans)
+  ArtifactJobs.validate = function(candidate, candidateFacts, kind, key, candidatePlans, candidateIdentity)
     if
       (kind == "apricorn-box" and key == "global")
       or (kind == "bag" and key == "global")
@@ -1576,9 +1522,9 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
       -- this audit isolates completeness of the field-map inventory.
       return true
     end
-    return realValidate(candidate, generation, kind, key, candidatePlans)
+    return realValidate(candidate, candidateFacts, kind, key, candidatePlans, candidateIdentity)
   end
-  local ok, available, reason = pcall(DerivedCacheAudit.isAvailable, cache, identity, plans)
+  local ok, available, reason = pcall(DerivedCacheAudit.isAvailable, cache, facts, identity, plans)
   ArtifactJobs.validate = realValidate
   assert(ok, "the field-map audit must return a readiness verdict")
   Assert.deepEqual(snapshot(), before, "a read-only audit performs no writes")
@@ -1621,14 +1567,14 @@ function T.damaged_mon_page_fails_controlled_audit_until_the_leaf_is_restored()
   Assert.isTrue(seen["mon-summary:global"], "the canonical inventory covers the mon summary")
   Assert.isTrue(MonCache.isReady(cache, summaryMarker), "the intact family reads ready before damage")
   Assert.isTrue(
-    ArtifactJobs.validate(cache, GENERATION, "mon-summary", "global", plans),
+    ArtifactJobs.validate(cache, facts, "mon-summary", "global", plans),
     "the intact summary validates before damage"
   )
 
   local siblingBytes = cache:read(MonCache.portraitPagePath(0))
-  local iconReceipt = cache:read(ArtifactState.path("mon-icon-page", "0"))
-  local portraitReceipt = cache:read(ArtifactState.path("mon-portrait-page", "0"))
-  local summaryReceipt = cache:read(ArtifactState.path("mon-summary", "global"))
+  local iconFact = facts.records["mon-icon-page:0"]
+  local portraitFact = facts.records["mon-portrait-page:0"]
+  local summaryFact = facts.records["mon-summary:global"]
 
   local limitedJobs = {
     { kind = "mon-icon-page", key = "0", jobKey = "mon-icon-page:0" },
@@ -1641,7 +1587,7 @@ function T.damaged_mon_page_fails_controlled_audit_until_the_leaf_is_restored()
     ArtifactJobs.completeJobs = function(_)
       return limitedJobs
     end
-    local ok, available, reason = pcall(DerivedCacheAudit.isAvailable, cache, identity, plans)
+    local ok, available, reason = pcall(DerivedCacheAudit.isAvailable, cache, facts, identity, plans)
     ArtifactJobs.completeJobs = realCompleteJobs
     assert(ok, "the controlled audit must run to a boolean verdict")
     return available, reason
@@ -1654,7 +1600,7 @@ function T.damaged_mon_page_fails_controlled_audit_until_the_leaf_is_restored()
   Assert.isFalse(MonCache.isPageReady(cache, "icons", 0, family.iconMarker), "the removed page must not read ready")
   Assert.isFalse(MonCache.isReady(cache, summaryMarker), "the summary must not stay ready over a removed page")
   Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "mon-summary", "global", plans),
+    ArtifactJobs.validate(cache, facts, "mon-summary", "global", plans),
     "the damaged summary must not validate"
   )
   local availableDamaged, reasonDamaged = controlledAudit()
@@ -1671,7 +1617,6 @@ function T.damaged_mon_page_fails_controlled_audit_until_the_leaf_is_restored()
     kind = "mon-icon-page",
     key = "0",
     jobKey = "mon-icon-page:0",
-    stageName = "restore-icon-page",
   })
   local restoredMarker = MonCacheWriter.stagePage(leaf, {
     kind = "icons",
@@ -1684,13 +1629,7 @@ function T.damaged_mon_page_fails_controlled_audit_until_the_leaf_is_restored()
   Assert.equal(restoredMarker, family.iconMarker, "restoration keeps the staged page identity")
   leaf:finishSuccess({ marker = restoredMarker })
   Assert.isTrue(
-    leaf:publish({
-      generationId = GENERATION,
-      epoch = 1,
-      kind = "mon-icon-page",
-      key = "0",
-      jobKey = "mon-icon-page:0",
-    }),
+    ResidentArtifactFixture.materialize(leaf),
     "the restored leaf publishes"
   )
 
@@ -1700,21 +1639,13 @@ function T.damaged_mon_page_fails_controlled_audit_until_the_leaf_is_restored()
   local availableAfter, reasonAfter = controlledAudit()
   Assert.isTrue(availableAfter, "the controlled audit passes after the leaf repair, got: " .. tostring(reasonAfter))
   Assert.equal(cache:read(MonCache.portraitPagePath(0)), siblingBytes, "the sibling bytes survive the leaf repair")
+  Assert.deepEqual(iconFact, facts.records["mon-icon-page:0"], "the repaired page keeps its previous fact")
   Assert.equal(
-    cache:read(ArtifactState.path("mon-icon-page", "0")),
-    iconReceipt,
-    "the icon receipt survives the leaf repair"
+    portraitFact,
+    facts.records["mon-portrait-page:0"],
+    "the sibling page fact survives the leaf repair"
   )
-  Assert.equal(
-    cache:read(ArtifactState.path("mon-portrait-page", "0")),
-    portraitReceipt,
-    "the sibling receipt survives the leaf repair"
-  )
-  Assert.equal(
-    cache:read(ArtifactState.path("mon-summary", "global")),
-    summaryReceipt,
-    "the summary receipt survives the leaf repair"
-  )
+  Assert.equal(summaryFact, facts.records["mon-summary:global"], "the summary fact survives the leaf repair")
 end
 
 function T.persisted_structural_corruption_is_cold_through_worker_dispatch()
@@ -1722,7 +1653,7 @@ function T.persisted_structural_corruption_is_cold_through_worker_dispatch()
   local uiCache = newCache()
   publishUiFamily(uiCache)
   Assert.isTrue(
-    ArtifactJobs.validate(uiCache, GENERATION, "field-ui", "global", {}),
+    ArtifactJobs.validate(uiCache, facts, "field-ui", "global", {}),
     "the intact field-ui job validates before damage"
   )
   local uiManifest = assert(uiCache:loadLua(FieldUiAssetCache.manifestPath()), "the persisted ui manifest reads back")
@@ -1732,7 +1663,7 @@ function T.persisted_structural_corruption_is_cold_through_worker_dispatch()
   local uiMarker = uiCache:read(FieldUiAssetCache.markerPath())
   Assert.isFalse(FieldUiAssetCache.isReady(uiCache, uiMarker), "the corrupted field-ui class is not ready")
   Assert.isFalse(
-    ArtifactJobs.validate(uiCache, GENERATION, "field-ui", "global", {}),
+    ArtifactJobs.validate(uiCache, facts, "field-ui", "global", {}),
     "the corrupted field-ui job must not validate"
   )
   -- The bag leg of this corruption round-trip used to publish a synthetic
@@ -1750,7 +1681,7 @@ end
 function T.unpublished_party_never_validates_through_worker_dispatch()
   local partyCache = newCache()
   Assert.isFalse(
-    ArtifactJobs.validate(partyCache, GENERATION, "party", "global", {}),
+    ArtifactJobs.validate(partyCache, facts, "party", "global", {}),
     "the missing party job must not validate"
   )
 end
@@ -1762,160 +1693,9 @@ end
 function T.unpublished_spawns_never_validates_through_worker_dispatch()
   local spawnCache = newCache()
   Assert.isFalse(
-    ArtifactJobs.validate(spawnCache, GENERATION, "spawns", "global", {}),
+    ArtifactJobs.validate(spawnCache, facts, "spawns", "global", {}),
     "the missing spawn index must not validate"
   )
 end
 
-local module = {
-  beforeAll = function()
-    for _, path in ipairs({
-      "libs.storage.src.CacheFs",
-      "romdump.src.build.InteractiveCacheBuild",
-      "romdump.src.build.CompilerPool",
-    }) do
-      savedModules[path] = package.loaded[path]
-      package.loaded[path] = nil
-    end
-    local RealCacheFs = require("libs.storage.src.CacheFs")
-    package.loaded["libs.storage.src.CacheFs"] = setmetatable({
-      forVersion = function(versionId)
-        return RealCacheFs.forVersion(versionId, builderBackend or FakeCache.new())
-      end,
-    }, { __index = RealCacheFs })
-    package.loaded["romdump.src.build.InteractiveCacheBuild"] = {
-      new = function(options)
-        assert(type(options) == "table", "generation session options are required")
-        assert(type(options.identity) == "table", "generation session identity is required")
-        assert(type(options.epoch) == "number", "generation session epoch is required")
-        assert(type(options.pool) == "table", "generation session requires the process-owned pool")
-        assert(
-          options.sweepEnabled == nil,
-          "exhaustive intent travels as an explicit request, never a construction flag"
-        )
-        local session = { requested = {}, completed = {}, retired = false, completeRequested = nil }
-        function session:requestJob(kind, key, urgency)
-          assert(type(kind) == "string" and type(key) == "string", "job needs its canonical kind and key")
-          assert(urgency == "required" or urgency == "near" or urgency == "sweep", "unknown urgency")
-          local jobKey = kind .. ":" .. key
-          self.requested[#self.requested + 1] = jobKey
-          self.completed[jobKey] = true
-          return true, nil
-        end
-        function session:requestMilestone(name, urgency)
-          assert(name == "bootstrap" or name == "field-runtime", "milestones accept only bootstrap or field-runtime")
-          assert(urgency == "required" or urgency == "near" or urgency == "sweep", "unknown urgency")
-          return true, nil
-        end
-        function session:requestComplete(urgency)
-          assert(urgency == "required" or urgency == "near" or urgency == "sweep", "unknown urgency")
-          self.completeRequested = urgency
-          return true, nil
-        end
-        function session:update()
-          assert(not self.retired, "generation session is retired")
-        end
-        function session:status()
-          local ready = 0
-          for _ in pairs(self.completed) do
-            ready = ready + 1
-          end
-          return {
-            ready = ready,
-            queued = 0,
-            running = 0,
-            failed = 0,
-            failures = {},
-            enumerated = #self.requested,
-            enumerationComplete = true,
-            settled = true,
-            planningPending = false,
-          }
-        end
-        function session:retire()
-          self.retired = true
-        end
-        function session:outcomes()
-          local list = {}
-          local seen = {}
-          for _, jobKey in ipairs(self.requested) do
-            if seen[jobKey] == nil then
-              seen[jobKey] = true
-              local kind, key = jobKey:match("^([^:]+):(.+)$")
-              list[#list + 1] = {
-                kind = kind,
-                key = key,
-                jobKey = jobKey,
-                state = "successful",
-                reused = false,
-                error = nil,
-                causeJobKey = nil,
-                failureClass = nil,
-              }
-            end
-          end
-          table.sort(list, function(left, right)
-            return left.jobKey < right.jobKey
-          end)
-          return list
-        end
-        -- Read-only finalization observation: this stub completes every
-        -- registered job, so requested refs answer ready without
-        -- registering anything new; an unrequested complete scope stays
-        -- pending.
-        function session:completionSnapshot(refs)
-          assert(not self.retired, "completion facts are captured before session retirement")
-          assert(type(refs) == "table", "completion facts observe parsed requirement refs")
-          local answers = {}
-          for _, ref in ipairs(refs) do
-            if ref.scope ~= nil then
-              if ref.scope == "complete" and self.completeRequested == nil then
-                answers[#answers + 1] = { label = ref.scope, state = "pending", failure = nil }
-              else
-                answers[#answers + 1] = { label = ref.scope, state = "ready", failure = nil }
-              end
-            else
-              answers[#answers + 1] = { label = ref.kind .. ":" .. ref.key, state = "ready", failure = nil }
-            end
-          end
-          return {
-            generationId = "readiness-generation",
-            epoch = 1,
-            retired = false,
-            settled = true,
-            enumerationComplete = true,
-            completeExhausted = self.completeRequested ~= nil,
-            answers = answers,
-            outcomes = session:outcomes(),
-          }
-        end
-        return session
-      end,
-    }
-    package.loaded["romdump.src.build.CompilerPool"] = {
-      new = function(_)
-        return {
-          drain = function() end,
-          shutdown = function() end,
-        }
-      end,
-    }
-    package.loaded["romdump.src.CacheBuilder"] = nil
-    CacheBuilder = require("romdump.src.CacheBuilder")
-  end,
-  afterAll = function()
-    for _, path in ipairs({
-      "libs.storage.src.CacheFs",
-      "romdump.src.build.InteractiveCacheBuild",
-      "romdump.src.build.CompilerPool",
-    }) do
-      package.loaded[path] = savedModules[path]
-    end
-    package.loaded["romdump.src.CacheBuilder"] = nil
-    CacheBuilder = nil
-    builderBackend = nil
-  end,
-  tests = T,
-}
-
-return module
+return { tests = T }

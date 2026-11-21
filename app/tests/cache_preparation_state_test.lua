@@ -44,6 +44,22 @@ local function bootService(script)
     end
     return false, nil
   end
+  -- The epoch's installed generated view: these cases stub every generated
+  -- consumer, so a shared empty reader stands in for the installed bytes.
+  -- script.noGeneratedView models an epoch that installed nothing yet.
+  local generatedView = { versionId = "heartgold" }
+  function generatedView:resolveAsset(_)
+    return nil
+  end
+  function generatedView:loadLua(_)
+    return nil, "the preparation harness carries no generated payloads"
+  end
+  function service:getCacheFs(_)
+    if script.noGeneratedView == true then
+      return nil
+    end
+    return generatedView
+  end
   return service
 end
 
@@ -428,6 +444,17 @@ function T.terminal_worker_failure_is_escape_only_until_a_fresh_selection()
     assert(service:requestBootSource(epoch))
     service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
     service:update()
+    -- The selected epoch installs its generated view at select: the wait
+    -- adopts the installed reader, never a physical generated root.
+    local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
+    SnapshotBootFixture.install(service, {
+      epoch = epoch,
+      identity = SnapshotBootFixture.identity(),
+      sequence = 1,
+      initial = true,
+      entries = {},
+    })
+    service:update()
     local script = { fired = 0, cancelled = 0 }
     local state = CachePreparationState.new({
       kind = "boot-source",
@@ -482,6 +509,13 @@ function T.terminal_worker_failure_is_escape_only_until_a_fresh_selection()
     local second = assert(service:select({ versionId = "heartgold" }))
     Assert.isTrue(second ~= epoch, "the fresh epoch differs from the failed one")
     assert(service:requestBootSource(second))
+    SnapshotBootFixture.install(service, {
+      epoch = second,
+      identity = SnapshotBootFixture.identity(),
+      sequence = 1,
+      initial = true,
+      entries = {},
+    })
     service:injectReply({ op = "boot-source-result", epoch = second, state = "ready" })
     service:update()
     local freshLoading = fakeAdopter()
@@ -544,6 +578,17 @@ function T.local_adoption_failure_needs_one_explicit_key_per_attempt()
     local epoch = assert(service:select({ versionId = "heartgold" }))
     assert(service:requestBootSource(epoch))
     service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
+    service:update()
+    -- The selected epoch installs its generated view at select: the wait
+    -- adopts the installed reader, never a physical generated root.
+    local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
+    SnapshotBootFixture.install(service, {
+      epoch = epoch,
+      identity = SnapshotBootFixture.identity(),
+      sequence = 1,
+      initial = true,
+      entries = {},
+    })
     service:update()
     local script = { fired = 0 }
     local state = CachePreparationState.new({
@@ -964,6 +1009,101 @@ function T.quiescence_card_names_the_pending_file_before_the_barrier_admits()
   end, debug.traceback)
   retireStartedImporters()
   restoreAll()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A loading presentation that records which generated reader adopted it.
+local function recordingAdopter()
+  local presentation = { adoptions = 0, adoptedFs = nil, disposals = 0 }
+  function presentation:update() end
+  function presentation:resize() end
+  function presentation:draw() end
+  function presentation:dispose()
+    self.disposals = self.disposals + 1
+  end
+  function presentation:adoptGeneratedAssets(cacheFs)
+    self.adoptions = self.adoptions + 1
+    self.adoptedFs = cacheFs
+    return true
+  end
+  return presentation
+end
+
+-- The retained wait before the title draws the presented art from the selected
+-- epoch's installed generated view: before that view exists it stays on the
+-- built-in art, and every later adoption hands over the installed reader
+-- itself instead of reopening a physical generated root.
+function T.loading_art_comes_from_the_installed_generated_view()
+  local CacheService = require("app.src.CacheService")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
+  local Loading = require(LOADING_MODULE)
+  local savedNew = Loading.new
+  local loading = recordingAdopter()
+  Loading.new = function()
+    return loading
+  end
+  local originalForVersion = CacheFs.forVersion
+  local physicalOpens = 0
+  rawset(CacheFs, "forVersion", function(_)
+    physicalOpens = physicalOpens + 1
+    return nil, "a physical generated root serves no resident payloads"
+  end)
+  local ok, err = xpcall(function()
+    local host = newChannelHost()
+    local service = CacheService.new({ thread = host })
+    local epoch = assert(service:select({ versionId = "heartgold" }))
+    assert(service:requestBootSource(epoch))
+    service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
+    service:update()
+    local script = { fired = 0 }
+    local state = CachePreparationState.new({
+      kind = "boot-source",
+      epoch = epoch,
+      service = service,
+      versionId = "heartgold",
+      pairIndex = 5,
+      isCurrent = function()
+        return true
+      end,
+      onReady = function()
+        script.fired = script.fired + 1
+      end,
+      onCancel = function() end,
+    })
+    Assert.equal(
+      physicalOpens,
+      0,
+      "the boot wait must draw from the installed generated view, never reopen a physical generated root"
+    )
+    Assert.equal(loading.adoptions, 0, "built-in art is used while the epoch has installed nothing")
+    local identity = SnapshotBootFixture.identity()
+    SnapshotBootFixture.install(service, {
+      epoch = epoch,
+      identity = identity,
+      sequence = 1,
+      initial = true,
+      entries = {},
+    })
+    service:update()
+    local installedReader = assert(service:getCacheFs(epoch), "the installed epoch exposes its generated view")
+    state:update(0.016)
+    service:update()
+    local walkerId = assert(walkerCommandId(host, epoch), "the wait demands the selected pair")
+    service:injectReply({ op = "request-result", epoch = epoch, requestId = walkerId, state = "ready" })
+    service:update()
+    state:update(0.016)
+    Assert.equal(loading.adoptions, 1, "the ready pair is adopted once")
+    Assert.isTrue(loading.adoptedFs == installedReader, "the adopted art reads the installed generated view")
+    Assert.equal(physicalOpens, 0, "adoption never reopens a physical generated root")
+    Assert.equal(script.fired, 1, "the admitted wait transfers its presentation")
+    state:dispose()
+    service:shutdown()
+  end, debug.traceback)
+  Loading.new = savedNew
+  rawset(CacheFs, "forVersion", originalForVersion)
   if not ok then
     error(err, 0)
   end

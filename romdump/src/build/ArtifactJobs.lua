@@ -19,6 +19,7 @@ local ArtifactBattleJobs = require("romdump.src.build.ArtifactBattleJobs")
 ---@field epoch integer
 ---@field stageName string
 ---@field producerFingerprint string|nil
+---@field artifactFacts ArtifactState|nil committed dependency facts for this job
 ---@field payload table<string, unknown>|nil scalar selectors for the worker
 
 ---@class ArtifactJobs.Plans
@@ -37,8 +38,6 @@ local ArtifactBattleJobs = require("romdump.src.build.ArtifactBattleJobs")
 ---@field world table<string, unknown>|nil WorldManifest.compileCatalog bundle
 
 local ArtifactJobs = {}
-
-ArtifactJobs.MILESTONE_SCHEMA = "g4-cache-milestone-v1"
 
 local PRIORITY = {
   required = 0,
@@ -65,6 +64,7 @@ local PARTY_AUDIO_SEQUENCES = {
 ---@class ArtifactJobs.ReadinessCheck
 ---@field cacheFs table<string, unknown>
 ---@field generationId string
+---@field facts ArtifactState
 ---@field key string
 ---@field plans ArtifactJobs.Plans
 ---@field marker string retained receipt marker
@@ -104,7 +104,7 @@ end
 ---@param key string
 ---@return string
 function ArtifactJobs.jobKey(kind, key)
-  ArtifactState.path(kind, key)
+  ArtifactState.validateKey(kind, key)
   return kind .. ":" .. key
 end
 
@@ -380,7 +380,7 @@ end
 ---@return { kind: string, key: string }[] currently known prerequisites
 ---@return boolean complete true once planning prerequisites are adopted and the list is final
 function ArtifactJobs.dependencies(kind, key, plans)
-  ArtifactState.path(kind, key)
+  ArtifactState.validateKey(kind, key)
   assert(type(plans) == "table", "dependency edges require the session plans")
   -- False until the planning prerequisites behind the resolved list are
   -- satisfied and adopted. Callers may record and wake from incomplete
@@ -505,7 +505,7 @@ local function executeCellIndex(artifact, context, producer)
   end, "cell index")
   artifact:addOwnedRoot(FieldCellCache.indexPath())
   artifact:addOwnedRoot(FieldCellCache.indexMarkerPath())
-  local stage = artifact:stageFs()
+  local stage = artifact
   FieldCellCacheWriter.stageIndex(stage, bundle.index)
   stage:write(FieldCellCache.indexMarkerPath(), assert(bundle.indexMarker, "cell index carries no marker"))
   return bundle.indexMarker
@@ -999,22 +999,21 @@ local function executeMessageSummary(artifact, context)
   local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
   local FieldMessageCacheWriter = require("romdump.src.digest.ui.FieldMessageCacheWriter")
   local romFs = assert(context.romFs, "message summary jobs require a source reader")
-  local cacheFs = assert(context.cacheFs, "message summary jobs require a cache filesystem")
-  local generationId = assert(context.generationId, "message summary jobs require a generation")
   local index = {
     schema = FieldMessageCache.INDEX_SCHEMA,
     version = romFs:version(),
     bankIds = FieldMessageCompiler.requiredBankIds(),
   }
-  -- Every bank's own receipt carries the marker binding its source identity;
-  -- the summary joins those proofs instead of a second payload-side marker.
+  -- Every bank's own committed fact carries the marker binding its source
+  -- identity; the summary joins those facts instead of a second payload-side
+  -- marker.
   local bankMarkers = {}
   for _, bankId in ipairs(index.bankIds) do
-    local receipt = ArtifactState.read(cacheFs, generationId, "message-bank", tostring(bankId))
-    if receipt == nil then
-      error("message summary misses the published bank " .. tostring(bankId), 0)
+    local bankFact = artifact:dependencyFact("message-bank", tostring(bankId))
+    if bankFact == nil then
+      error("message summary misses the committed bank " .. tostring(bankId), 0)
     end
-    bankMarkers[bankId] = receipt.marker
+    bankMarkers[bankId] = bankFact.marker
   end
   return FieldMessageCacheWriter.stageSummary(artifact, index, bankMarkers)
 end
@@ -1113,25 +1112,22 @@ local function executeAudioSummary(artifact, context, job)
   local source = generationAudioSource(context, job, "audio summary jobs")
   local audioPlan = assert(source.audioPlan, "audio summary jobs require the published audio membership")
   ---@cast audioPlan table<string, unknown>
-  local cacheFs = assert(context.cacheFs, "audio summary jobs require a cache filesystem")
-  local generationId = assert(job.generationId, "audio summary jobs require a generation")
-  -- The current-generation receipt is the sole completion proof of each
-  -- independent job, so the summary publishes only once the catalog and
-  -- every planned closure are current. The catalog receipt marker already
-  -- binds the adopted source identity and runtime index, so the summary
-  -- hashes it instead of serializing the index again. No payload is read
-  -- back here.
-  local catalogReceipt = ArtifactState.read(cacheFs, generationId, "audio-catalog", "global")
-  if catalogReceipt == nil then
-    error("audio summary is missing the current catalog receipt", 0)
+  -- The committed fact of each independent job is its sole completion
+  -- proof, so the summary publishes only once the catalog and every planned
+  -- closure are committed. The catalog fact marker already binds the adopted
+  -- source identity and runtime index, so the summary hashes it instead of
+  -- serializing the index again. No payload is read back here.
+  local catalogFact = artifact:dependencyFact("audio-catalog", "global")
+  if catalogFact == nil then
+    error("audio summary is missing the committed catalog fact", 0)
   end
   for _, bankPlan in ipairs(assert(audioPlan.bankPlans, "audio summary jobs require the published bank closures")) do
     ---@cast bankPlan table<string, unknown>
-    if ArtifactState.read(cacheFs, generationId, "audio-bank", tostring(bankPlan.bankId)) == nil then
-      error("audio summary is missing the current receipt for bank " .. tostring(bankPlan.bankId), 0)
+    if artifact:dependencyFact("audio-bank", tostring(bankPlan.bankId)) == nil then
+      error("audio summary is missing the committed fact for bank " .. tostring(bankPlan.bankId), 0)
     end
   end
-  return AudioCacheWriter.stageSummary(artifact, audioPlan, catalogReceipt.marker)
+  return AudioCacheWriter.stageSummary(artifact, audioPlan, catalogFact.marker)
 end
 
 local function executeScriptMember(artifact, context, memberId, generationKey, producer)
@@ -1232,112 +1228,73 @@ local function dispatchExecute(artifact, job, context)
   return descriptorFor(job.kind).execute(artifact, context, job)
 end
 
--- A job whose authored outputs carry deferred images keeps its stage open and
--- uniquely owned until the compiler pool's low-priority continuation writes
--- every PNG: only then do `_finish` and publication run, exactly once, with
--- the receipt last. A job without images seals here as it always has.
----@param artifact table<string, unknown>
----@param context table<string, unknown>
----@param job ArtifactJobs.Job
+-- A job whose authored outputs carry deferred images keeps its output open
+-- until the compiler pool's low-priority continuation writes every PNG: only
+-- then does the artifact seal, exactly once, with complete pixels. A job
+-- without images seals here.
+---@param artifact PreparedArtifact
 ---@param marker string
----@return { stageName: string, result: table<string, unknown> }
-local function settleArtifact(artifact, context, job, marker)
+---@return table<string, unknown> worker result: a sealed artifact or the pending image packet
+local function settleArtifact(artifact, marker)
   local images = artifact:pendingImages()
   if #images == 0 then
-    artifact:finishSuccess({ marker = marker })
-    return { stageName = job.stageName, result = { marker = marker } }
+    return { status = "prepared", sealed = artifact:finishSuccess({ marker = marker }) }
   end
-  assert(context.pendingArtifact == nil, "a worker holds at most one deferred image parent")
-  context.pendingArtifact = {
-    artifact = artifact,
+  local captured = artifact:captureOutput()
+  return {
+    status = "images-pending",
+    marker = marker,
+    ownedRoots = captured.ownedRoots,
+    sharedPaths = captured.sharedPaths,
+    entries = captured.entries,
     images = images,
-    result = { marker = marker },
-    stageName = job.stageName,
-    jobKey = job.kind .. ":" .. job.key,
-    versionId = job.versionId or context.versionId,
-    generationId = job.generationId,
-    epoch = job.epoch,
-    kind = job.kind,
-    key = job.key,
   }
-  return { stageName = job.stageName, result = { marker = marker, pendingImages = images } }
-end
-
--- The continuation packet identifies the parent it belongs to: stage, job,
--- kind/key, epoch, generation and version must all agree with the held parent.
----@param pending table<string, unknown>
----@param job table<string, unknown> the dispatched continuation packet
----@return boolean
-local function continuationMatches(pending, job)
-  return pending.stageName == job.stageName
-    and pending.jobKey == job.jobKey
-    and pending.kind == job.parentKind
-    and pending.key == job.key
-    and pending.epoch == job.epoch
-    and pending.generationId == job.generationId
-    and pending.versionId == job.versionId
 end
 
 -- The parent's deferred continuation writes each image through `writeImage`
--- and then seals the same artifact. A stale continuation whose identity does
--- not match the held parent is rejected; nothing publishes from it.
----@param context table<string, unknown>
----@param job table<string, unknown> the dispatched continuation packet
+-- and then seals the same output. The pool owns packet identity checks; a
+-- rejected or stale continuation never reaches this call.
+---@param artifact PreparedArtifact
+---@param marker string
 ---@param writeImage fun(image: PreparedArtifact.DeferredImage)
-function ArtifactJobs.completeDeferredImages(context, job, writeImage)
-  local pending = assert(context.pendingArtifact, "the png continuation has no pending parent")
-  assert(continuationMatches(pending, job), "the png continuation does not match its pending parent")
-  for _, image in ipairs(pending.images) do
+---@return PreparedArtifact.Sealed
+function ArtifactJobs.completeDeferredImages(artifact, marker, writeImage)
+  for _, image in ipairs(artifact:pendingImages()) do
     writeImage(image)
   end
-  pending.artifact:finishSuccess(pending.result)
-  context.pendingArtifact = nil
+  return artifact:finishSuccess({ marker = marker })
 end
 
--- A failed continuation leaves no receipt: the stage is sealed as a failure so
--- the pool's existing failure path reads the cause and discards it, and the
--- previously published generation stays untouched. The pending RGBA buffers
--- are released with the context record. A continuation that names another
--- parent never touches the one in hand.
----@param context table<string, unknown>
----@param job table<string, unknown> the dispatched continuation packet
+-- A failed continuation seals nothing and drops the remaining RGBA rows with
+-- the private output: the previously committed generation stays untouched.
+---@param artifact PreparedArtifact
 ---@param failure unknown
 ---@param traceback string?
----@return boolean abandoned
-function ArtifactJobs.abandonDeferredImages(context, job, failure, traceback)
-  local pending = context.pendingArtifact
-  if pending == nil or not continuationMatches(pending, job) then
-    return false
-  end
-  context.pendingArtifact = nil
-  local ok, finalizeError = pcall(pending.artifact.finishFailure, pending.artifact, failure, traceback)
-  if not ok then
-    error(finalizeError, 0)
-  end
-  return true
+function ArtifactJobs.abandonDeferredImages(artifact, failure, traceback)
+  artifact:finishFailure(failure, traceback)
 end
 
 ---@param job ArtifactJobs.Job
 ---@param context table<string, unknown>
----@return { stageName: string, result: table<string, unknown> }
+---@return table<string, unknown> worker result carrying the sealed output or its pending images
 function ArtifactJobs.execute(job, context)
   assert(type(job) == "table", "worker job must be a table")
   assert(type(job.kind) == "string" and job.kind ~= "", "worker job kind is required")
   assert(type(job.key) == "string" and job.key ~= "", "worker job key is required")
-  ArtifactState.path(job.kind, job.key)
+  ArtifactState.validateKey(job.kind, job.key)
   assert(context and context.romFs and context.cacheFs, "worker context is incomplete")
-  assert(type(job.stageName) == "string", "worker job stage name is required")
   assert(type(job.generationId) == "string" and job.generationId ~= "", "worker job generation is required")
   assert(type(job.epoch) == "number" and job.epoch % 1 == 0, "worker job epoch must be an integer")
+  assert(type(job.artifactFacts) == "table", "worker job requires its committed dependency facts")
   local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
   local artifact = PreparedArtifact.new({
     cacheFs = context.cacheFs,
+    facts = job.artifactFacts,
     generationId = job.generationId,
     epoch = job.epoch,
     kind = job.kind,
     key = job.key,
     jobKey = job.kind .. ":" .. job.key,
-    stageName = job.stageName,
   })
   -- Workers arrive through two shapes: the pool forwards scalar selectors
   -- inside payload, while direct execution flattens them beside the job
@@ -1372,34 +1329,32 @@ function ArtifactJobs.execute(job, context)
     error(info.failure, 0)
   end
   assert(type(marker) == "string" and marker ~= "", "family execution carries no marker")
-  return settleArtifact(artifact, context, job, marker)
+  return settleArtifact(artifact, marker)
 end
 
----@param cacheFs table<string, unknown>
----@param generationId string
+---@param facts ArtifactState
 ---@param receiptKind string
 ---@param receiptKey string
 ---@return string|nil marker
-local function receiptMarker(cacheFs, generationId, receiptKind, receiptKey)
-  local receipt = ArtifactState.read(cacheFs, generationId, receiptKind, receiptKey)
-  if receipt == nil then
+local function receiptMarker(facts, receiptKind, receiptKey)
+  local fact = ArtifactState.read(facts, receiptKind, receiptKey)
+  if fact == nil then
     return nil
   end
-  local marker = receipt.marker
+  local marker = fact.marker
   if type(marker) ~= "string" or marker == "" then
     return nil
   end
   return marker
 end
 
----@param cacheFs table<string, unknown>
----@param generationId string
+---@param facts ArtifactState
 ---@param childKind string
 ---@param childKey string
 ---@param ready fun(marker: string): boolean
 ---@return boolean
-local function childReady(cacheFs, generationId, childKind, childKey, ready)
-  local marker = receiptMarker(cacheFs, generationId, childKind, childKey)
+local function childReady(facts, childKind, childKey, ready)
+  local marker = receiptMarker(facts, childKind, childKey)
   if marker == nil then
     return false
   end
@@ -1650,13 +1605,13 @@ end
 ---@return boolean
 local function validateMessageSummary(check)
   local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
-  local cacheFs, generationId, plans = check.cacheFs, check.generationId, check.plans
+  local cacheFs, facts, plans = check.cacheFs, check.facts, check.plans
   if not FieldMessageCache.isReady(cacheFs) then
     return false
   end
   for _, bankId in ipairs(assert(plans.messageBankIds, "message summary needs the required banks")) do
     if
-      not childReady(cacheFs, generationId, "message-bank", tostring(bankId), function()
+      not childReady(facts, "message-bank", tostring(bankId), function()
         return FieldMessageCache.isBankReady(cacheFs, bankId)
       end)
     then
@@ -1721,12 +1676,12 @@ end
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
 local function validateAudioSummary(check)
-  local cacheFs, generationId, plans = check.cacheFs, check.generationId, check.plans
-  if receiptMarker(cacheFs, generationId, "audio-catalog", "global") == nil then
+  local facts, plans = check.facts, check.plans
+  if receiptMarker(facts, "audio-catalog", "global") == nil then
     return false
   end
   for _, bankId in ipairs(assert(plans.audioBankIds, "audio summary needs the bank closures")) do
-    if receiptMarker(cacheFs, generationId, "audio-bank", tostring(bankId)) == nil then
+    if receiptMarker(facts, "audio-bank", tostring(bankId)) == nil then
       return false
     end
   end
@@ -1783,14 +1738,14 @@ end
 ---@return boolean
 local function validateScriptSummary(check)
   local ScriptCache = require("libs.assets.src.ScriptCache")
-  local cacheFs, generationId, plans, marker = check.cacheFs, check.generationId, check.plans, check.marker
+  local cacheFs, facts, plans, marker = check.cacheFs, check.facts, check.plans, check.marker
   if not ScriptCache.isReady(cacheFs, marker) then
     return false
   end
   local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
   local scriptPlan = assert(plans.scriptPlan, "script summary needs the generation plan")
   for _, memberId in ipairs(assert(plans.scriptMemberIds, "script summary needs the nonempty members")) do
-    if receiptMarker(cacheFs, generationId, "script-member", tostring(memberId)) == nil then
+    if receiptMarker(facts, "script-member", tostring(memberId)) == nil then
       return false
     end
     local ready, _ = ScriptCacheWriter.isMemberReady(cacheFs, scriptPlan, memberId)
@@ -2354,14 +2309,14 @@ for kind in pairs(DESCRIPTORS) do
   assert(ArtifactState.KINDS[kind] == true, "descriptor names an unknown artifact kind: " .. tostring(kind))
 end
 ---@param cacheFs table<string, unknown>
----@param generationId string
+---@param facts ArtifactState
 ---@param kind string
 ---@param key string
 ---@param plans ArtifactJobs.Plans
 ---@param identity { versionId: string, generationId: string, producerId: string }|nil expected source identity, mandatory for source-plan
 ---@return boolean
 ---@return table<string, unknown>|nil validated source plan on source-plan success for immediate adoption
-function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans, identity)
+function ArtifactJobs.validate(cacheFs, facts, kind, key, plans, identity)
   if kind == "source-plan" then
     assert(type(identity) == "table", "source-plan validation requires its expected identity")
     assert(
@@ -2377,19 +2332,20 @@ function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans, identity
       "source-plan validation requires the expected producer"
     )
   end
-  ArtifactState.path(kind, key)
+  ArtifactState.validateKey(kind, key)
   assert(type(plans) == "table", "readiness validation requires the session plans")
   local descriptor = descriptorFor(kind)
-  local marker = receiptMarker(cacheFs, generationId, kind, key)
+  local marker = receiptMarker(facts, kind, key)
   if marker == nil then
     return false
   end
   local function isChildReady(childKind, childKey, isReady)
-    return childReady(cacheFs, generationId, childKind, childKey, isReady)
+    return childReady(facts, childKind, childKey, isReady)
   end
   local ready, validatedPlan = descriptor.validate({
     cacheFs = cacheFs,
-    generationId = generationId,
+    generationId = facts.generationId,
+    facts = facts,
     key = key,
     plans = plans,
     marker = marker,

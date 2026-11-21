@@ -7,7 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
@@ -40,8 +40,8 @@ end
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
-      local cacheFs = CacheFs.forVersion(versionId)
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       local marker = cacheFs:read(PartyCache.markerPath())
       if marker ~= nil and PartyCache.isReady(cacheFs, marker) then
         versions[#versions + 1] = versionId
@@ -309,7 +309,7 @@ local function liveComposition(versionId, root)
   local bag = openBag()
   local cursor = BagCursor.new()
   local actions = PartyActions.new({ mons = mons, bag = bag })
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local icons = recordingIcons()
   local flow = openFlow(Flow, {
     root = root,

@@ -5,6 +5,7 @@
 -- the personal NARC on supported dumps (Chikorita special attack is 49,
 -- Totodile special attack/defense are 44/48).
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local RomSuite = require("tests.rom.support.RomSuite")
 
@@ -76,7 +77,7 @@ function T.abilities_and_presentation_selectors_resolve(romFs, versionId)
   Assert.equal(abilities[1], "SYNCHRONIZE")
   Assert.equal(abilities[2], "INNER_FOCUS")
 
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   local icons = assert(cache:loadLua(MonCache.iconManifestPath()), "icon manifest must load")
   local portraits = assert(cache:loadLua(MonCache.portraitManifestPath()), "portrait manifest must load")
   for _, key in ipairs({ "CHIKORITA", "CYNDAQUIL", "TOTODILE" }) do

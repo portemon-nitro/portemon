@@ -16,7 +16,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local SessionFixture = require("libs.battle.tests.session_fixture")
@@ -156,7 +156,7 @@ end
 ---@param versionId string ready game version behind slot geometry
 ---@return table published native slot rows behind the selector
 local function slotGeometryFor(versionId)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local manifest = assert(
     BattlePresentationCache.load(cacheFs),
     versionId .. " stages the battle presentation manifest behind admission"

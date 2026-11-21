@@ -17,7 +17,7 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local CollisionGrid = require("libs.hgss.src.world.CollisionGrid")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Errors = require("libs.errors.src.Errors")
 local MapProps = require("libs.hgss.src.world.MapProps")
 
@@ -35,7 +35,7 @@ local function collisionPath(scene, mapId)
 end
 
 function T.resolved_maps_warp_bearing_doors_resolve(romFs, versionId, context)
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   if not cache:exists("data/generated/maps", "directory") then
     context:skip(versionId .. ": no derived cache to census")
   end

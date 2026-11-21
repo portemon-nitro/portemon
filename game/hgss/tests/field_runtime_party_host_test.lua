@@ -4,7 +4,7 @@
 -- fails the boot loudly with no half-built host. ROM-backed cache.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local GameVersion = require("romdump.src.source.GameVersion")
@@ -21,8 +21,8 @@ local T = {
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
-      local cacheFs = CacheFs.forVersion(versionId)
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       local marker = cacheFs:read(PartyCache.markerPath())
       if marker ~= nil and PartyCache.isReady(cacheFs, marker) then
         versions[#versions + 1] = versionId
@@ -85,6 +85,7 @@ function T.tests.boot_builds_and_teardown_releases_the_host(context)
     local runtime = FieldRuntime.new(validEntry(versionId), {
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
       presentation = false,
+      cacheFs = GeneratedCacheFixture.reader(versionId),
     })
     local host = assert(runtime.partySelection, "boot constructs the script party host")
     Assert.equal(runtime.fashionCase:quantity(0), 0, "boot keeps the live Fashion Case state")
@@ -114,6 +115,7 @@ function T.tests.manifest_failure_fails_boot_loudly(context)
       FieldRuntime.new(validEntry(versionId), {
         derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
         presentation = false,
+        cacheFs = GeneratedCacheFixture.reader(versionId),
       })
     end)
     package.loaded["libs.assets.src.PartyCache"] = saved

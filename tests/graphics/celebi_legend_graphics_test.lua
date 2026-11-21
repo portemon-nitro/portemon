@@ -2,7 +2,7 @@
 
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
@@ -25,7 +25,7 @@ local MonsSave = require("libs.mons.src.MonsSave")
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       versions[#versions + 1] = versionId
     end
   end
@@ -45,7 +45,7 @@ local function status(frame)
 end
 
 local function freshGame(versionId)
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   local fontDef = FieldFontLoader.load(cache)
   local service = HgssMonService.new({
     catalog = MonBucket.openCatalogs(versionId),
@@ -113,6 +113,7 @@ local T = GraphicsSmoke.suite({
     Assert.notNil(versionId, "a ready imported game version is required")
     local state = FieldState.new(freshGame(versionId), {
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+      cacheFs = GeneratedCacheFixture.reader(versionId),
     })
     local scene = state.runtime.celebiTimeTravelScene
     local originalSceneStatus = scene.status
@@ -208,7 +209,7 @@ local T = GraphicsSmoke.suite({
     local versions = readyVersions()
     Assert.isTrue(#versions > 0, "a ready imported game version is required")
     for _, versionId in ipairs(versions) do
-      local cache = CacheFs.forVersion(versionId)
+      local cache = GeneratedCacheFixture.reader(versionId)
       local record = assert(cache:loadLua(FieldEffectAssetCache.definitionPath("celebi_time_travel")))
       Assert.isTrue(type(record.model) == "table", versionId .. " publishes the Celebi model")
       local definition = ModelDefinition.fromNitroDescriptor(record.model, { key = "field-effect:celebi_time_travel" })

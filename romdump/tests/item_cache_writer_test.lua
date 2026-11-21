@@ -9,6 +9,7 @@ local FakeCache = require("tests.support.FakeCache")
 local Hashing = require("romdump.src.digest.Hashing")
 local PngWriter = require("tests.support.PngEncoder")
 local ItemFixture = require("libs.items.tests.item_fixture")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -54,7 +55,9 @@ function T.writes_the_class_and_reports_ready()
   local ItemCache, ItemCacheWriter = contracts()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = ItemCache.marker("abc", "dep")
-  Assert.equal(ItemCacheWriter.write(cache, bundle(marker)), marker)
+  Assert.equal(ResidentArtifactFixture.publish(cache, "items", "global", function(artifact)
+      return ItemCacheWriter.stage(artifact, bundle(marker))
+    end), marker)
   Assert.isTrue(ItemCache.isReady(cache, marker), "ready after write")
   local catalog = ItemCache.loadCatalog(cache)
   Assert.equal(catalog.items.POTION.nativeId, 17, "the published catalog loads back")
@@ -66,7 +69,9 @@ function T.rejects_a_malformed_class_without_publishing()
   local bad = bundle(ItemCache.marker("abc", "dep"))
   bad.catalog = { items = {} }
   local err = Assert.throws(function()
-    ItemCacheWriter.write(cache, bad)
+    ResidentArtifactFixture.publish(cache, "items", "global", function(artifact)
+      return ItemCacheWriter.stage(artifact, bad)
+    end)
   end)
   Assert.isTrue(Errors.is(err), "malformed class must fail structurally")
   Assert.isNil(cache:read(ItemCache.markerPath()), "no ready marker after rejection")
@@ -80,12 +85,16 @@ function T.failed_rebuild_preserves_the_previous_artifact()
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
   local firstMarker = ItemCache.marker("abc", "dep")
-  ItemCacheWriter.write(cache, bundle(firstMarker))
+  ResidentArtifactFixture.publish(cache, "items", "global", function(artifact)
+      return ItemCacheWriter.stage(artifact, bundle(firstMarker))
+    end)
 
   local broken = bundle(ItemCache.marker("abc", "new-dep"))
   broken.catalog = nil
   Assert.throws(function()
-    ItemCacheWriter.write(cache, broken)
+    ResidentArtifactFixture.publish(cache, "items", "global", function(artifact)
+      return ItemCacheWriter.stage(artifact, broken)
+    end)
   end)
   Assert.isTrue(ItemCache.isReady(cache, firstMarker), "the previous artifact remains ready")
   Assert.equal(cache:read(ItemCache.markerPath()), firstMarker, "the new marker never reached the live tree")
@@ -97,7 +106,9 @@ function T.v3_item_marker_is_not_ready_under_the_current_item_identity()
   local ItemCacheWriter = require("romdump.src.digest.items.ItemCacheWriter")
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local previousMarker = "item-cache-v3:abc:dep"
-  ItemCacheWriter.write(cache, bundle(previousMarker))
+  ResidentArtifactFixture.publish(cache, "items", "global", function(artifact)
+      return ItemCacheWriter.stage(artifact, bundle(previousMarker))
+    end)
 
   Assert.isFalse(
     ItemCache.isReady(cache, ItemCache.marker("abc", "dep")),
@@ -120,27 +131,19 @@ function T.stages_through_a_prepared_artifact_without_touching_live_before_publi
     kind = "items",
     key = "global",
     jobKey = "items:global",
-    stageName = "items-stage-test",
   })
   Assert.equal(ItemCacheWriter.stage(artifact, bundle(marker)), marker)
   Assert.isFalse(ItemCache.isReady(cache, marker), "staging alone never reads ready before publication")
   Assert.isFalse(
-    artifact:stageFs():exists(ItemCache.iconImagePath(), "file"),
+    artifact:exists(ItemCache.iconImagePath(), "file"),
     "the source phase stages no PNG before its deferred continuation runs"
   )
   local deferred = assert(artifact:pendingImages()[1], "the icon atlas is deferred to the continuation")
   Assert.equal(deferred.relativePath, ItemCache.iconImagePath())
   artifact
-    :stageFs()
     :write(deferred.relativePath, PngWriter.encode(deferred.width, deferred.height, deferred.rgba:getString()))
   artifact:finishSuccess({ marker = marker })
-  artifact:publish({
-    generationId = "test-generation",
-    epoch = 1,
-    kind = "items",
-    key = "global",
-    jobKey = "items:global",
-  })
+  ResidentArtifactFixture.materialize(artifact)
   Assert.isTrue(ItemCache.isReady(cache, marker), "the published class reads ready")
 end
 
@@ -189,7 +192,9 @@ function T.icon_atlas_stays_a_plain_png_with_identical_pixels_and_rectangles()
   local first = builtBundle()
   local second = builtBundle()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  ItemCacheWriter.write(cache, first)
+  ResidentArtifactFixture.publish(cache, "items", "global", function(artifact)
+      return ItemCacheWriter.stage(artifact, first)
+    end)
   local published = assert(cache:read(ItemCache.iconImagePath()), "the atlas image is published")
   Assert.equal(published:sub(1, 4), "\137PNG", "the atlas is one plain PNG file on disk")
 
@@ -209,7 +214,9 @@ function T.icon_atlas_stays_a_plain_png_with_identical_pixels_and_rectangles()
   Assert.deepEqual(manifest.representative, first.iconManifest.representative)
 
   local otherCache = CacheFs.forVersion("heartgold", FakeCache.new())
-  ItemCacheWriter.write(otherCache, second)
+  ResidentArtifactFixture.publish(otherCache, "items", "global", function(artifact)
+      return ItemCacheWriter.stage(artifact, second)
+    end)
   Assert.equal(
     assert(otherCache:read(ItemCache.iconImagePath())),
     published,

@@ -8,7 +8,6 @@ local function withCompositionStubs(fn)
   local names = {
     "app.src.mainmenu.MainMenuComposition",
     "libs.storage.src.SaveFs",
-    "libs.storage.src.CacheFs",
     "libs.hgss.src.save.GameSaveStore",
     "libs.hgss.src.ui.FieldTextRenderer",
     "libs.ui.src.DisplayContext",
@@ -73,11 +72,6 @@ local function withCompositionStubs(fn)
       return "global save root"
     end,
   }
-  package.loaded["libs.storage.src.CacheFs"] = {
-    forVersion = function(versionId)
-      return { versionId = versionId }
-    end,
-  }
   package.loaded["libs.hgss.src.save.GameSaveStore"] = {
     new = function(root, options)
       Assert.equal(root, "global save root")
@@ -115,9 +109,13 @@ function T.tests.menu_composition_preserves_resource_ownership_on_success_and_fa
     Assert.isTrue(ok, "the app must provide a menu composition owner")
 
     local onResult = function() end
+    -- The selected epoch's installed generated view, supplied by the caller:
+    -- the composition opens no generated root of its own.
+    local generatedView = { versionId = "heartgold" }
     observed.displayContextFailure = "injected display context construction failure"
     local displayOk, displayError = pcall(Composition.new, {
       versionId = "heartgold",
+      cacheFs = generatedView,
       onResult = onResult,
     })
     Assert.isFalse(displayOk, "display context failure must propagate")
@@ -125,7 +123,7 @@ function T.tests.menu_composition_preserves_resource_ownership_on_success_and_fa
     Assert.equal(observed.textCreated, 0, "display context construction precedes resource acquisition")
     observed.displayContextFailure = nil
 
-    local state = Composition.new({ versionId = "heartgold", onResult = onResult })
+    local state = Composition.new({ versionId = "heartgold", cacheFs = generatedView, onResult = onResult })
     Assert.equal(observed.textCreated, 1)
     Assert.equal(observed.rendererCreated, 1)
     state:dispose()
@@ -135,6 +133,7 @@ function T.tests.menu_composition_preserves_resource_ownership_on_success_and_fa
     observed.rendererFailure = "injected renderer construction failure"
     local rendererOk, rendererError = pcall(Composition.new, {
       versionId = "heartgold",
+      cacheFs = generatedView,
       onResult = onResult,
     })
     Assert.isFalse(rendererOk, "renderer failure must propagate")
@@ -146,6 +145,7 @@ function T.tests.menu_composition_preserves_resource_ownership_on_success_and_fa
     observed.stateFailure = "injected state construction failure"
     local stateOk, stateError = pcall(Composition.new, {
       versionId = "heartgold",
+      cacheFs = generatedView,
       onResult = onResult,
     })
     Assert.isFalse(stateOk, "state failure must propagate")

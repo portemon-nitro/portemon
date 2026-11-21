@@ -47,6 +47,7 @@ local POKEGEAR_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "linear
 ---@field topologyProvider (fun(width: number, height: number): ScreenTopology)?
 ---@field displayContext DisplayContext? shared actual-display measurement owner (defaults to a state-owned context)
 ---@field localClock LocalClock? injectable host-local civil-time boundary
+---@field cacheFs table<string, unknown>? selected epoch's installed generated view
 ---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
 ---@field saveStore table<string, unknown>? global GameSaveStore
 ---@field audioOutput table<string, unknown>? audio-output host namespace for deterministic runtime audio
@@ -192,6 +193,7 @@ function FieldState.new(game, options)
   local runtimeOptions = {
     fieldScaleConfig = options.fieldScaleConfig,
     presentation = true,
+    cacheFs = options.cacheFs,
     preparedEntry = options.preparedEntry,
     saveStore = options.saveStore,
     audioOutput = options.audioOutput,

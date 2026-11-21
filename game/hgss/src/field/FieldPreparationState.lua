@@ -13,11 +13,11 @@
 -- failure policy.
 -- Cancellation remains available while pending and publishes nothing.
 
-local CacheFs = require("libs.storage.src.CacheFs")
 local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 
 ---@class FieldPreparationOptions
 ---@field kind "continue"|"newgame"
+---@field cacheFs table<string, unknown> selected epoch's installed generated view
 ---@field saveId string? Continue only: the catalog-visible save to load on the first update
 ---@field candidate table<string, unknown>? New Game only: the finalized Oak candidate
 ---@field versionId string selected game version, carried for diagnostics
@@ -30,7 +30,7 @@ local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentatio
 ---@field displayContext DisplayContext? host topology and safe-area provider
 
 ---@class FieldPreparationLoading
----@field adoptGeneratedAssets fun(self: FieldPreparationLoading, cacheFs: CacheFs): boolean, unknown?
+---@field adoptGeneratedAssets fun(self: FieldPreparationLoading, cacheFs: table<string, unknown>): boolean, unknown?
 ---@field update fun(self: FieldPreparationLoading, dt: number)
 ---@field draw fun(self: FieldPreparationLoading, status: table<string, unknown>)
 ---@field resize fun(self: FieldPreparationLoading, width: number, height: number)
@@ -41,6 +41,7 @@ local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentatio
 ---@field saveId string?
 ---@field candidate table<string, unknown>?
 ---@field versionId string
+---@field cacheFs table<string, unknown>
 ---@field startupPairIndex integer
 ---@field derivedAssets table<string, function>
 ---@field saveStore table<string, unknown>?
@@ -90,6 +91,7 @@ function FieldPreparationState.new(options)
     saveId = options.saveId,
     candidate = options.candidate,
     versionId = options.versionId,
+    cacheFs = options.cacheFs,
     derivedAssets = options.derivedAssets,
     saveStore = options.saveStore,
     createLoader = options.createLoader,
@@ -141,7 +143,7 @@ function FieldPreparationState:_pollLoaderArt()
     return
   end
   local adopted, adoptedResult, adoptionError = pcall(function()
-    return self.loading:adoptGeneratedAssets(CacheFs.forVersion(self.versionId))
+    return self.loading:adoptGeneratedAssets(assert(self.cacheFs, "field preparation lost its generated view"))
   end)
   self.loaderArtObserved = true
   if not adopted then

@@ -23,6 +23,7 @@ local SseqFixture = require("tests.support.SseqFixture")
 local SbnkFixture = require("tests.support.SbnkFixture")
 local SwarFixture = require("tests.support.SwarFixture")
 local Swav = require("libs.nds.src.nitro.sound.Swav")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -66,10 +67,9 @@ local CANONICAL_KEYS = {
   ["map"] = "7",
 }
 
-function T.every_family_key_shape_resolves_to_a_receipt_path()
+function T.every_family_key_shape_resolves_to_its_canonical_fact_identity()
   for kind, key in pairs(CANONICAL_KEYS) do
-    local path = assert(ArtifactState.path(kind, key))
-    Assert.equal(path, "data/generated/jobs/" .. kind .. "/" .. key .. ".lua")
+    Assert.equal(ArtifactState.key(kind, key), kind .. ":" .. key)
   end
 end
 
@@ -227,14 +227,9 @@ function T.selective_battle_leaves_register_safe_keyed_jobs()
     "a trainer job key carries its safe class key"
   )
   Assert.equal(
-    ArtifactState.path("battle-trainer-picture", "front-YOUNGSTER"),
-    "data/generated/jobs/battle-trainer-picture/front-YOUNGSTER.lua",
-    "a trainer receipt nests under its kind"
-  )
-  Assert.equal(
-    ArtifactState.path("battle-trainer-picture", "back-PKMN_TRAINER_ETHAN"),
-    "data/generated/jobs/battle-trainer-picture/back-PKMN_TRAINER_ETHAN.lua",
-    "a back-picture receipt keeps its safe class key"
+    ArtifactState.key("battle-trainer-picture", "back-PKMN_TRAINER_ETHAN"),
+    "battle-trainer-picture:back-PKMN_TRAINER_ETHAN",
+    "a back-picture fact keeps its safe class key"
   )
   Assert.equal(
     ArtifactJobs.jobKey("battle-ball", "POKE_BALL"),
@@ -242,9 +237,9 @@ function T.selective_battle_leaves_register_safe_keyed_jobs()
     "a ball job key carries its safe item key"
   )
   Assert.equal(
-    ArtifactState.path("battle-ball", "POKE_BALL"),
-    "data/generated/jobs/battle-ball/POKE_BALL.lua",
-    "a ball receipt nests under its kind"
+    ArtifactState.key("battle-ball", "POKE_BALL"),
+    "battle-ball:POKE_BALL",
+    "a ball fact carries its safe item key"
   )
   Assert.equal(
     ArtifactJobs.jobKey("battle-evolution", "global"),
@@ -252,24 +247,24 @@ function T.selective_battle_leaves_register_safe_keyed_jobs()
     "evolution stays one global-keyed job"
   )
   Assert.equal(
-    ArtifactState.path("battle-evolution", "global"),
-    "data/generated/jobs/battle-evolution/global.lua",
-    "the evolution receipt nests under its kind"
+    ArtifactState.key("battle-evolution", "global"),
+    "battle-evolution:global",
+    "the evolution fact carries its global key"
   )
   for _, badKey in ipairs({ "front:YOUNGSTER", "front-YOUNGSTER/extra", "../evil", "", "global" }) do
     Assert.isFalse(
-      pcall(ArtifactState.path, "battle-trainer-picture", badKey),
+      pcall(ArtifactState.key, "battle-trainer-picture", badKey),
       "a trainer key with separators or the global key never resolves: " .. tostring(badKey)
     )
   end
   for _, badKey in ipairs({ "ball:POKE_BALL", "POKE_BALL/extra", "../evil", "" }) do
     Assert.isFalse(
-      pcall(ArtifactState.path, "battle-ball", badKey),
+      pcall(ArtifactState.key, "battle-ball", badKey),
       "a ball key with separators never resolves: " .. tostring(badKey)
     )
   end
   Assert.isFalse(
-    pcall(ArtifactState.path, "battle-evolution", "front-YOUNGSTER"),
+    pcall(ArtifactState.key, "battle-evolution", "front-YOUNGSTER"),
     "evolution never resolves a per-selector key"
   )
   for _, leaf in ipairs({
@@ -341,13 +336,13 @@ function T.field_move_cut_in_banner_runs_as_a_standalone_global_route()
   Assert.isTrue(complete, "the standalone banner route plans without prerequisites")
   Assert.deepEqual(deps, {}, "the standalone banner route carries no child edges")
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local ready = ArtifactJobs.validate(cache, "route-generation", "field-move-cut-in-banner", "global", {})
+  local ready = ArtifactJobs.validate(cache, ArtifactState.new("route-generation"), "field-move-cut-in-banner", "global", {})
   Assert.isFalse(ready, "an absent banner receipt is a normal cache miss")
 end
 
 function T.unknown_kinds_are_rejected_before_planning()
   for _, kind in ipairs({ "world", "field-map-data", "portrait", "maps", "", "MAP" }) do
-    local ok = pcall(ArtifactState.path, kind, "global")
+    local ok = pcall(ArtifactState.key, kind, "global")
     Assert.isFalse(ok, "kind must be rejected: " .. tostring(kind))
   end
 end
@@ -366,7 +361,7 @@ function T.malformed_keys_are_rejected_for_their_kind()
     { kind = "audio-bank", key = "01" },
   }
   for _, case in ipairs(cases) do
-    local ok = pcall(ArtifactState.path, case.kind, case.key)
+    local ok = pcall(ArtifactState.key, case.kind, case.key)
     Assert.isFalse(ok, "key must be rejected: " .. case.kind .. "/" .. tostring(case.key))
   end
 end
@@ -430,8 +425,7 @@ end
 -- catalog completion.
 function T.audio_catalog_maps_to_the_heavy_lane()
   Assert.equal(ArtifactJobs.sizeClass("audio-catalog"), "heavy")
-  local path = assert(ArtifactState.path("audio-catalog", "global"))
-  Assert.equal(path, "data/generated/jobs/audio-catalog/global.lua")
+  Assert.equal(ArtifactState.key("audio-catalog", "global"), "audio-catalog:global")
 end
 
 local function oakAudioPlan()
@@ -636,8 +630,9 @@ function T.complete_inventory_enumerates_battle_leaves_once_in_order()
   Assert.deepEqual(dependencies, {}, "an ordinary global request enrolls no leaf inventory")
 end
 
--- Mon and battle execution share the dispatcher-owned stage and failure
--- receipt protocol even when their compilers fail.
+-- Mon and battle execution share the dispatcher-owned failure path even when
+-- their compilers fail: the failure escapes with its cause and publishes no
+-- payload and no completion fact.
 function T.mon_and_battle_compile_failures_use_the_central_artifact_wrapper()
   local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
   local BattleDataCompiler = require("romdump.src.digest.battle.BattleDataCompiler")
@@ -648,7 +643,6 @@ function T.mon_and_battle_compile_failures_use_the_central_artifact_wrapper()
       {
         kind = "mon-catalog",
         key = "global",
-        stageName = "d10-mon-failure",
         message = "injected mon compilation failure",
         context = { romFs = {} },
         inject = function()
@@ -660,7 +654,6 @@ function T.mon_and_battle_compile_failures_use_the_central_artifact_wrapper()
       {
         kind = "battle-data",
         key = "global",
-        stageName = "d10-battle-failure",
         message = "injected battle compilation failure",
         context = { romFs = {}, versionId = "heartgold" },
         inject = function()
@@ -675,28 +668,30 @@ function T.mon_and_battle_compile_failures_use_the_central_artifact_wrapper()
       local cacheFs = CacheFs.forVersion("heartgold", backend)
       case.context.cacheFs = cacheFs
       case.inject()
+      local publishedBefore = {}
+      for payloadPath in pairs(backend.files) do
+        publishedBefore[#publishedBefore + 1] = payloadPath
+      end
+      table.sort(publishedBefore)
       local executeOk, executeFailure = pcall(ArtifactJobs.execute, {
         kind = case.kind,
         key = case.key,
         generationId = "d10-generation",
         producerFingerprint = "d10-producer",
-        stageName = case.stageName,
         epoch = 1,
+        artifactFacts = ArtifactState.new("d10-generation"),
       }, case.context)
       Assert.isFalse(executeOk, "the injected family compiler failure escapes")
       Assert.isTrue(
         tostring(executeFailure):find(case.message, 1, true) ~= nil,
         "the family failure keeps its cause: " .. tostring(executeFailure)
       )
-      local staged = CacheFs.forArtifactStage("heartgold", case.stageName, backend)
-      local manifest = staged:loadLua("_prepared/result.lua")
-      Assert.equal(manifest.status, "failure", "the dispatcher finalizes one failed staged artifact")
-      Assert.isNil(manifest.result, "a failed artifact carries no successful result")
-      Assert.equal(#manifest.ownedRoots, 0, "a compiler failure publishes no family roots")
-      Assert.isNil(
-        cacheFs:loadLua(ArtifactState.path(case.kind, case.key)),
-        "a compiler failure publishes no live success receipt"
-      )
+      local publishedAfter = {}
+      for payloadPath in pairs(backend.files) do
+        publishedAfter[#publishedAfter + 1] = payloadPath
+      end
+      table.sort(publishedAfter)
+      Assert.deepEqual(publishedAfter, publishedBefore, "a compiler failure publishes no payload")
     end
   end)
   MonCatalogCompiler.compileCatalog = originalMonCompile
@@ -706,32 +701,25 @@ function T.mon_and_battle_compile_failures_use_the_central_artifact_wrapper()
   end
 end
 
--- A published message bank validates warm through the worker-facing
--- wrapper without a source reader: the authoritative family rule decides
--- reuse, and a missing bank validates cold. No ROM handle is opened.
-local function publishWarmBank(cacheFs, generation, bankId)
-  local FieldMessageFixture = require("tests.support.FieldMessageFixture")
-  local marker = "worker-warm-marker-" .. tostring(bankId)
-  cacheFs:writeLua(ArtifactState.path("message-bank", tostring(bankId)), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = generation,
-    kind = "message-bank",
-    key = tostring(bankId),
-    marker = marker,
-  })
-  FieldMessageFixture.write(cacheFs, bankId, { { FieldMessageFixture.eos() } })
-end
-
-function T.worker_receipt_identity_decides_reuse_without_source()
+-- A committed message-bank fact answers the worker's reuse decision without a
+-- source reader: the fact map is generation-scoped, and a key it does not
+-- carry is a plain miss.
+function T.worker_fact_identity_decides_reuse_without_source()
   local generation = "worker-validation-generation"
-  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
-  publishWarmBank(cacheFs, generation, 219)
-  local receipt, reason = ArtifactState.read(cacheFs, generation, "message-bank", "219")
-  Assert.notNil(receipt, "a published bank carries a current receipt: " .. tostring(reason))
-  Assert.equal(receipt.marker, "worker-warm-marker-219", "the receipt carries the published marker")
-  local missing, missingReason = ArtifactState.read(cacheFs, generation, "message-bank", "220")
-  Assert.isNil(missing, "a missing bank carries no current receipt")
-  Assert.notNil(missingReason, "a missing receipt names its reason")
+  local facts = ArtifactState.new(generation)
+  facts.records["message-bank:219"] = {
+    kind = "message-bank",
+    key = "219",
+    marker = "worker-warm-marker-219",
+    dependencies = {},
+    ownedRoots = {},
+    sharedPaths = {},
+    files = {},
+  }
+  local fact = ArtifactState.read(facts, "message-bank", "219")
+  Assert.notNil(fact, "a published bank carries a current fact")
+  Assert.equal(fact.marker, "worker-warm-marker-219", "the fact carries the published marker")
+  Assert.isNil(ArtifactState.read(facts, "message-bank", "220"), "a missing bank carries no current fact")
 end
 
 -- The worker-local source-plan memo reads the published inventory once
@@ -958,35 +946,23 @@ local function publishGenerationSourcePlan(cacheFs, generation, producerId, audi
   })
 end
 
--- Runs one audio artifact job through the worker job executor and publishes
--- its prepared stage through the real receipt path.
-local function executeAndPublish(cacheFs, context, identity, kind, key, stageName)
+-- Runs one audio artifact job through the worker job executor, mirrors its
+-- sealed output into the test cache, and commits the completion fact the
+-- controller commits with it.
+local function executeAndPublish(cacheFs, facts, context, identity, kind, key)
   local job = {
     kind = kind,
     key = key,
     generationId = identity.generation,
     producerFingerprint = identity.producer,
-    stageName = stageName,
     epoch = 1,
+    artifactFacts = facts,
   }
   local outcome = assert(ArtifactJobs.execute(job, context))
-  local artifact = PreparedArtifact.open({
-    cacheFs = cacheFs,
-    generationId = identity.generation,
-    epoch = 1,
-    kind = kind,
-    key = key,
-    jobKey = kind .. ":" .. key,
-    stageName = stageName,
-  })
-  artifact:publish({
-    generationId = identity.generation,
-    epoch = 1,
-    kind = kind,
-    key = key,
-    jobKey = kind .. ":" .. key,
-  })
-  return outcome.result.marker
+  Assert.equal(outcome.status, "prepared", kind .. " seals without deferred images")
+  ResidentArtifactFixture.mirror(cacheFs, outcome.sealed)
+  ResidentArtifactFixture.commitFact(facts, outcome.sealed)
+  return outcome.sealed.marker
 end
 
 -- Collector for the sample payloads a prepared action reads from the cache.
@@ -1043,21 +1019,15 @@ function T.audio_leaf_jobs_consume_the_published_generation_plan()
     mapCellKeys = { [7] = {} },
   })
   -- Every planned closure and the catalog are already current jobs, so the
-  -- family summary's receipt preconditions hold exactly as they do for a
-  -- worker generation that compiled them.
+  -- family summary's fact preconditions hold exactly as they do for a worker
+  -- generation that compiled them.
+  local facts = ArtifactState.new(generation)
   local liveContext = { cacheFs = cacheFs, romFs = romFs, versionId = "heartgold" }
   local liveIdentity = { generation = generation, producer = producerId }
   for _, bankPlan in ipairs(catalog.bankPlans) do
-    executeAndPublish(
-      cacheFs,
-      liveContext,
-      liveIdentity,
-      "audio-bank",
-      tostring(bankPlan.bankId),
-      "leaf-bank-live-" .. tostring(bankPlan.bankId)
-    )
+    executeAndPublish(cacheFs, facts, liveContext, liveIdentity, "audio-bank", tostring(bankPlan.bankId))
   end
-  executeAndPublish(cacheFs, liveContext, liveIdentity, "audio-catalog", "global", "leaf-catalog-live")
+  executeAndPublish(cacheFs, facts, liveContext, liveIdentity, "audio-catalog", "global")
   local planCalls, identityCalls = 0, 0
   local realPlan, realSoundIdentity = AudioCompiler.plan, AudioCompiler.soundIdentity
   AudioCompiler.plan = function(source)
@@ -1070,23 +1040,23 @@ function T.audio_leaf_jobs_consume_the_published_generation_plan()
   end
   local ok, failure = pcall(function()
     local context = { cacheFs = cacheFs, romFs = romFs, versionId = "heartgold" }
-    local function execute(kind, key, stageName)
+    local function execute(kind, key)
       return ArtifactJobs.execute({
         kind = kind,
         key = key,
         generationId = generation,
         producerFingerprint = producerId,
-        stageName = stageName,
         epoch = 1,
+        artifactFacts = facts,
       }, context)
     end
-    local bank = execute("audio-bank", "0", "leaf-bank-stage")
-    Assert.notNil(bank.result.marker, "the planned bank stages its marker")
-    local staged = execute("audio-catalog", "global", "leaf-catalog-stage")
-    Assert.notNil(staged.result.marker, "the planned catalog stages its marker")
-    local summary = execute("audio-summary", "global", "leaf-summary-stage")
-    Assert.notNil(summary.result.marker, "the planned summary stages its marker")
-    local unknown, unknownErr = pcall(execute, "audio-bank", "7", "leaf-unknown-stage")
+    local bank = execute("audio-bank", "0")
+    Assert.notNil(bank.sealed.marker, "the planned bank stages its marker")
+    local staged = execute("audio-catalog", "global")
+    Assert.notNil(staged.sealed.marker, "the planned catalog stages its marker")
+    local summary = execute("audio-summary", "global")
+    Assert.notNil(summary.sealed.marker, "the planned summary stages its marker")
+    local unknown, unknownErr = pcall(execute, "audio-bank", "7")
     Assert.isFalse(unknown, "a bank outside the published membership fails")
     Assert.isTrue(
       tostring(unknownErr):find("7", 1, true) ~= nil,
@@ -1251,40 +1221,49 @@ function T.complete_inventory_covers_supported_records_absent_from_the_world()
   )
 end
 
--- Missing and malformed receipts remain ordinary cache misses during an
--- explicit readiness audit; neither result publishes or repairs cache data.
-function T.unusable_receipts_remain_cache_misses()
+-- An absent completion fact is an ordinary cache miss during an explicit
+-- readiness audit, and a fact without its payload stays cold; neither result
+-- publishes or repairs cache data.
+function T.unusable_facts_remain_cache_misses()
   local generationId = "artifact-readiness-generation"
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
-  local receiptPath = ArtifactState.path("field-camera", "global")
-  local fullReceiptPath = cache:resolve(receiptPath)
+  local facts = ArtifactState.new(generationId)
 
-  local missingOk, missingReady = pcall(ArtifactJobs.validate, cache, generationId, "field-camera", "global", {})
-  Assert.isTrue(missingOk, "an absent receipt is a normal readiness result")
-  Assert.isFalse(missingReady, "an absent receipt is not ready")
-  Assert.isNil(backend.files[fullReceiptPath], "auditing an absent receipt does not publish it")
-
-  cache:write(receiptPath, "not a lua receipt{{{")
-  local corruptOk, corruptReady = pcall(ArtifactJobs.validate, cache, generationId, "field-camera", "global", {})
-  Assert.isTrue(corruptOk, "an invalid receipt is a normal readiness result")
-  Assert.isFalse(corruptReady, "an invalid receipt is not ready")
-  Assert.equal(backend.files[fullReceiptPath], "not a lua receipt{{{", "auditing does not rewrite the receipt")
+  local function publishedPaths()
+    local paths = {}
+    for path in pairs(backend.files) do
+      paths[#paths + 1] = path
+    end
+    table.sort(paths)
+    return paths
+  end
+  local before = publishedPaths()
+  local missingOk, missingReady = pcall(ArtifactJobs.validate, cache, facts, "field-camera", "global", {})
+  Assert.isTrue(missingOk, "an absent fact is a normal readiness result")
+  Assert.isFalse(missingReady, "an absent fact is not ready")
+  Assert.deepEqual(publishedPaths(), before, "auditing an absent fact publishes nothing")
 
   local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
-  local marker = "field-camera-marker"
-  cache:writeLua(receiptPath, {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = generationId,
+  facts.records["field-camera:global"] = {
     kind = "field-camera",
     key = "global",
-    marker = marker,
-  })
-  cache:write(FieldCameraCache.markerPath(), marker)
+    marker = "field-camera-marker",
+    dependencies = {},
+    ownedRoots = {},
+    sharedPaths = {},
+    files = {},
+  }
+  local coldOk, coldReady = pcall(ArtifactJobs.validate, cache, facts, "field-camera", "global", {})
+  Assert.isTrue(coldOk, "a fact without its payload is a normal readiness result")
+  Assert.isFalse(coldReady, "a fact without its payload is not ready")
+  Assert.deepEqual(publishedPaths(), before, "auditing a fact without payload publishes nothing")
+
+  cache:write(FieldCameraCache.markerPath(), "field-camera-marker")
   cache:write(FieldCameraCache.profilesPath(), "profiles")
   cache:write(FieldCameraCache.provenancePath(), "provenance")
-  local ready, plan = ArtifactJobs.validate(cache, generationId, "field-camera", "global", {})
-  Assert.isTrue(ready, "a valid normal-family receipt is ready")
+  local ready, plan = ArtifactJobs.validate(cache, facts, "field-camera", "global", {})
+  Assert.isTrue(ready, "a committed fact over a usable payload is ready")
   Assert.isNil(plan, "normal-family readiness does not return a source plan")
 end
 
@@ -1292,50 +1271,64 @@ end
 -- direct artifact check and a summary's child receipt check.
 function T.cache_read_faults_escape_artifact_and_child_readiness()
   local generationId = "artifact-readiness-generation"
-  local fault = Errors.new(StorageErrors.CACHE_READ_FAILED, "backend read fault", { path = "receipt.lua" })
+  local fault = Errors.new(StorageErrors.CACHE_READ_FAILED, "backend read fault", { path = "payload.lua" })
+  local directFacts = ArtifactState.new(generationId)
+  directFacts.records["field-camera:global"] = {
+    kind = "field-camera",
+    key = "global",
+    marker = "field-camera-marker",
+    dependencies = {},
+    ownedRoots = {},
+    sharedPaths = {},
+    files = {},
+  }
   local directCache = {
     versionId = "heartgold",
-    loadLua = function()
-      return nil, fault
+    read = function()
+      error(fault, 0)
     end,
   }
-  local directOk, directFailure = pcall(ArtifactJobs.validate, directCache, generationId, "field-camera", "global", {})
+  local directOk, directFailure = pcall(ArtifactJobs.validate, directCache, directFacts, "field-camera", "global", {})
   local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
-  local summaryMarker = "message-summary-marker"
-  local summaryReceiptPath = ArtifactState.path("message-summary", "global")
-  local childReceiptPath = ArtifactState.path("message-bank", "219")
   local FieldMessageFixture = require("tests.support.FieldMessageFixture")
   local childBankBytes = FieldMessageFixture.encode(FieldMessageFixture.bank(219, { { FieldMessageFixture.eos() } }))
     :getString()
+  local childFacts = ArtifactState.new(generationId)
+  childFacts.records["message-summary:global"] = {
+    kind = "message-summary",
+    key = "global",
+    marker = "message-summary-marker",
+    dependencies = {},
+    ownedRoots = {},
+    sharedPaths = {},
+    files = {},
+  }
+  childFacts.records["message-bank:219"] = {
+    kind = "message-bank",
+    key = "219",
+    marker = "message-bank-marker",
+    dependencies = {},
+    ownedRoots = {},
+    sharedPaths = {},
+    files = {},
+  }
   local childCache = {
     versionId = "heartgold",
     read = function(_, path)
       if path == FieldMessageCache.bankPath(219) then
-        return childBankBytes
+        error(fault, 0)
       end
       return nil
     end,
     loadLua = function(_, path)
-      if path == summaryReceiptPath then
-        return {
-          schema = ArtifactState.RECEIPT_SCHEMA,
-          generationId = generationId,
-          kind = "message-summary",
-          key = "global",
-          marker = summaryMarker,
-        }
-      end
       if path == FieldMessageCache.indexPath() then
         return { schema = FieldMessageCache.INDEX_SCHEMA, version = "heartgold", bankIds = { 219 } }
-      end
-      if path == childReceiptPath then
-        return nil, fault
       end
       error("unexpected message-summary read: " .. path)
     end,
   }
   local childOk, childFailure =
-    pcall(ArtifactJobs.validate, childCache, generationId, "message-summary", "global", { messageBankIds = { 219 } })
+    pcall(ArtifactJobs.validate, childCache, childFacts, "message-summary", "global", { messageBankIds = { 219 } })
   Assert.isTrue(
     not directOk
       and Errors.is(directFailure)
@@ -1354,53 +1347,43 @@ end
 -- converted to not-ready or mutate the published store.
 function T.unexpected_family_validator_fault_escapes_without_mutation()
   local generationId = "artifact-readiness-generation"
-  local marker = "field-camera-marker"
-  local receiptPath = ArtifactState.path("field-camera", "global")
-  local fault = "unexpected camera cache access"
-  local store = {
-    [receiptPath] = {
-      schema = ArtifactState.RECEIPT_SCHEMA,
-      generationId = generationId,
-      kind = "field-camera",
-      key = "global",
-      marker = marker,
-    },
-    ["published"] = "last-known-good",
+  local facts = ArtifactState.new(generationId)
+  facts.records["field-camera:global"] = {
+    kind = "field-camera",
+    key = "global",
+    marker = "field-camera-marker",
+    dependencies = {},
+    ownedRoots = {},
+    sharedPaths = {},
+    files = {},
   }
-  local before = { published = store.published, receipt = store[receiptPath] }
+  local factBefore = facts.records["field-camera:global"]
+  local fault = "unexpected camera cache access"
   local readCount = 0
   local cache = {
     versionId = "heartgold",
-    loadLua = function(_, path)
-      return store[path]
-    end,
     read = function()
       readCount = readCount + 1
       error(fault, 0)
     end,
   }
 
-  local ok, failure = pcall(ArtifactJobs.validate, cache, generationId, "field-camera", "global", {})
+  local ok, failure = pcall(ArtifactJobs.validate, cache, facts, "field-camera", "global", {})
   Assert.isFalse(ok, "a family validator fault is terminal")
   Assert.equal(failure, fault, "the original family validator fault escapes")
   Assert.equal(readCount, 1, "the family validator is called once")
-  Assert.equal(store.published, before.published, "the published artifact remains unchanged")
-  Assert.equal(store[receiptPath], before.receipt, "the receipt remains unchanged")
+  Assert.equal(facts.records["field-camera:global"], factBefore, "the committed fact remains unchanged")
 end
 
 function T.easy_chat_registers_two_bounded_global_scopes()
   for _, kind in ipairs({ "easy-chat-data", "easy-chat" }) do
     Assert.isTrue(ArtifactState.KINDS[kind] == true, kind .. " is a recognized generated family")
-    Assert.equal(
-      ArtifactState.path(kind, "global"),
-      "data/generated/jobs/" .. kind .. "/global.lua",
-      kind .. " resolves to its receipt path"
-    )
-    Assert.isFalse(pcall(ArtifactState.path, kind, "1"), kind .. " carries no paged keys")
+    Assert.equal(ArtifactState.key(kind, "global"), kind .. ":global", kind .. " resolves to its global fact")
+    Assert.isFalse(pcall(ArtifactState.key, kind, "1"), kind .. " carries no paged keys")
     local classes = { normal = true, heavy = true, jumbo = true }
     Assert.isTrue(classes[ArtifactJobs.sizeClass(kind)] == true, kind .. " resolves to a known size class")
   end
-  Assert.isFalse(pcall(ArtifactState.path, "pokegear-word-entry", "global"), "the retired word-entry family is gone")
+  Assert.isFalse(pcall(ArtifactState.key, "pokegear-word-entry", "global"), "the retired word-entry family is gone")
 
   local runtimeSet = {}
   for _, job in ipairs(ArtifactJobs.fieldRuntimeJobs()) do
@@ -1433,10 +1416,11 @@ end
 -- inventory is narrowed to those jobs so the family payload walk is the only
 -- subject, matching the controlled audits elsewhere.
 ---@param cacheFs CacheFs
+---@param facts ArtifactState
 ---@param generation string
 ---@param plans ArtifactJobs.Plans
 ---@return boolean
-local function audioFamilyAudit(cacheFs, generation, plans)
+local function audioFamilyAudit(cacheFs, facts, generation, plans)
   local realCompleteJobs = ArtifactJobs.completeJobs
   ArtifactJobs.completeJobs = function()
     local jobs = {}
@@ -1446,7 +1430,7 @@ local function audioFamilyAudit(cacheFs, generation, plans)
     jobs[#jobs + 1] = { kind = "audio-catalog", key = "global", jobKey = "audio-catalog:global" }
     return jobs
   end
-  local ok, available = pcall(DerivedCacheAudit.isAvailable, cacheFs, {
+  local ok, available = pcall(DerivedCacheAudit.isAvailable, cacheFs, facts, {
     versionId = "heartgold",
     generationId = generation,
     producerId = "controlled-audio-audit",
@@ -1456,16 +1440,15 @@ local function audioFamilyAudit(cacheFs, generation, plans)
   return available == true
 end
 
--- Audio bank, catalog and summary jobs publish current-generation receipts
--- and no separate completion or provenance files. Warm family readiness
--- trusts those receipts without reading sample payloads, the summary never
--- rereads the bank closures, and the explicit audit still reports a corrupt
--- or missing payload.
-function T.audio_family_readiness_trusts_current_job_receipts()
+-- Audio bank, catalog and summary jobs commit current-generation facts and no
+-- separate completion or provenance files. Warm family readiness trusts those
+-- facts without reading sample payloads, the summary never rereads the bank
+-- closures, and the explicit audit still reports a corrupt or missing payload.
+function T.audio_family_readiness_trusts_current_job_facts()
   local bytes = assert(twoBankAudioSource())
   local romFs = leafRomFs(bytes)
   local audio = assert(AudioCompiler.planSource(romFs))
-  local generation = "receipt-audio-generation"
+  local generation = "fact-audio-generation"
   local producerId = "d" .. string.rep("5", 64)
   local identity = { generation = generation, producer = producerId }
   local backend = FakeCache.new()
@@ -1473,23 +1456,21 @@ function T.audio_family_readiness_trusts_current_job_receipts()
   publishGenerationSourcePlan(cacheFs, generation, producerId, audio.plan, audio.identity)
   local context = { cacheFs = cacheFs, romFs = romFs, versionId = "heartgold" }
   local plans = { audioBankIds = { 0, 7 } }
+  local facts = ArtifactState.new(generation)
 
-  executeAndPublish(cacheFs, context, identity, "audio-catalog", "global", "audio-catalog")
+  executeAndPublish(cacheFs, facts, context, identity, "audio-catalog", "global")
   Assert.notNil(
-    ArtifactState.read(cacheFs, generation, "audio-catalog", "global"),
-    "the catalog job publishes its current receipt"
+    ArtifactState.read(facts, "audio-catalog", "global"),
+    "the catalog job commits its current fact"
   )
   for _, bankId in ipairs({ 0, 7 }) do
     local key = tostring(bankId)
-    executeAndPublish(cacheFs, context, identity, "audio-bank", key, "audio-bank-" .. key)
-    Assert.notNil(
-      ArtifactState.read(cacheFs, generation, "audio-bank", key),
-      "the bank job publishes its current receipt"
-    )
+    executeAndPublish(cacheFs, facts, context, identity, "audio-bank", key)
+    Assert.notNil(ArtifactState.read(facts, "audio-bank", key), "the bank job commits its current fact")
   end
 
   local _, summaryReads = traceSamplePayloadReads(backend, function()
-    executeAndPublish(cacheFs, context, identity, "audio-summary", "global", "audio-summary")
+    executeAndPublish(cacheFs, facts, context, identity, "audio-summary", "global")
   end)
   Assert.equal(
     #summaryReads,
@@ -1497,11 +1478,11 @@ function T.audio_family_readiness_trusts_current_job_receipts()
     "the family summary never rereads sample payloads: " .. table.concat(summaryReads, ", ")
   )
   Assert.notNil(
-    ArtifactState.read(cacheFs, generation, "audio-summary", "global"),
+    ArtifactState.read(facts, "audio-summary", "global"),
     "the summary job publishes its current receipt"
   )
   Assert.isTrue(
-    ArtifactJobs.validate(cacheFs, generation, "audio-summary", "global", plans),
+    ArtifactJobs.validate(cacheFs, facts, "audio-summary", "global", plans),
     "the published family reads ready from current receipts"
   )
 
@@ -1522,50 +1503,56 @@ function T.audio_family_readiness_trusts_current_job_receipts()
   end
 
   local warmReady, warmReads = traceSamplePayloadReads(backend, function()
-    return ArtifactJobs.validate(cacheFs, generation, "audio-summary", "global", plans)
+    return ArtifactJobs.validate(cacheFs, facts, "audio-summary", "global", plans)
   end)
-  Assert.isTrue(warmReady, "warm family readiness succeeds from current receipts")
+  Assert.isTrue(warmReady, "warm family readiness succeeds from current facts")
   Assert.equal(#warmReads, 0, "warm readiness never reads a sample payload: " .. table.concat(warmReads, ", "))
 
   -- Explicit audit remains exhaustive: a corrupt payload is reported there,
-  -- while ordinary warm reuse keeps trusting the receipts that published it.
+  -- while ordinary warm reuse keeps trusting the facts that committed it.
   local bankAsset = assert(cacheFs:loadLua(AudioCache.bankPath(0)))
   local sampleKey = bankAsset.instruments[0].voice.generator.sample
   local payload = assert(cacheFs:read(AudioCache.samplePath(sampleKey)))
   cacheFs:write(AudioCache.samplePath(sampleKey), payload:sub(1, #payload - 2))
   Assert.notNil(AudioCacheValidator.validate(cacheFs), "the explicit validator reports the corrupt sample payload")
-  Assert.isFalse(audioFamilyAudit(cacheFs, generation, plans), "the explicit audit reports the corrupt sample payload")
-  Assert.isTrue(
-    ArtifactJobs.validate(cacheFs, generation, "audio-bank", "0", plans),
-    "warm bank readiness stays receipt-based"
+  Assert.isFalse(
+    audioFamilyAudit(cacheFs, facts, generation, plans),
+    "the explicit audit reports the corrupt sample payload"
   )
   Assert.isTrue(
-    ArtifactJobs.validate(cacheFs, generation, "audio-summary", "global", plans),
+    ArtifactJobs.validate(cacheFs, facts, "audio-bank", "0", plans),
+    "warm bank readiness stays fact-based"
+  )
+  Assert.isTrue(
+    ArtifactJobs.validate(cacheFs, facts, "audio-summary", "global", plans),
     "warm family readiness is not an exhaustive payload walk"
   )
   cacheFs:write(AudioCache.samplePath(sampleKey), payload)
-  Assert.isTrue(audioFamilyAudit(cacheFs, generation, plans), "restoring the payload makes the audit pass again")
+  Assert.isTrue(audioFamilyAudit(cacheFs, facts, generation, plans), "restoring the payload makes the audit pass again")
   cacheFs:remove(AudioCache.samplePath(sampleKey))
-  Assert.isFalse(audioFamilyAudit(cacheFs, generation, plans), "the explicit audit reports a missing sample payload")
+  Assert.isFalse(
+    audioFamilyAudit(cacheFs, facts, generation, plans),
+    "the explicit audit reports a missing sample payload"
+  )
   cacheFs:write(AudioCache.samplePath(sampleKey), payload)
 
-  -- One missing bank receipt breaks family readiness even though every
-  -- payload is present, and the explicit validator still accepts the bytes.
-  cacheFs:remove(ArtifactState.path("audio-bank", "7"))
+  -- One missing bank fact breaks family readiness even though every payload
+  -- is present, and the explicit validator still accepts the bytes.
+  facts.records["audio-bank:7"] = nil
   Assert.isNil(AudioCacheValidator.validate(cacheFs), "the remaining payloads are complete")
   Assert.isFalse(
-    ArtifactJobs.validate(cacheFs, generation, "audio-summary", "global", plans),
-    "the family summary requires every current bank receipt"
+    ArtifactJobs.validate(cacheFs, facts, "audio-summary", "global", plans),
+    "the family summary requires every current bank fact"
   )
   Assert.isFalse(
-    ArtifactJobs.validate(cacheFs, generation, "audio-bank", "7", plans),
-    "a missing bank receipt is not ready"
+    ArtifactJobs.validate(cacheFs, facts, "audio-bank", "7", plans),
+    "a missing bank fact is not ready"
   )
 end
 
--- A bank stage failure publishes no receipt and no silence: the sibling bank
--- stays current, a clean retry publishes the whole closure, and the runtime
--- provider reads the source wave's timing, loop window and PCM frames.
+-- A bank stage failure publishes no fact and no partial quiet state: the
+-- sibling bank stays current, a clean retry commits the whole closure, and the
+-- runtime provider reads the source wave's timing, loop window and PCM frames.
 function T.failed_audio_bank_stage_keeps_siblings_and_retry_restores_playback()
   local bytes, loopingMember = twoBankAudioSource()
   local romFs = leafRomFs(bytes)
@@ -1578,43 +1565,47 @@ function T.failed_audio_bank_stage_keeps_siblings_and_retry_restores_playback()
   publishGenerationSourcePlan(cacheFs, generation, producerId, audio.plan, audio.identity)
   local context = { cacheFs = cacheFs, romFs = romFs, versionId = "heartgold" }
   local plans = { audioBankIds = { 0, 7 } }
-  executeAndPublish(cacheFs, context, identity, "audio-catalog", "global", "audio-catalog")
-  executeAndPublish(cacheFs, context, identity, "audio-bank", "0", "audio-bank-0")
-  local healthyReceipt = assert(ArtifactState.read(cacheFs, generation, "audio-bank", "0"))
+  local facts = ArtifactState.new(generation)
+  executeAndPublish(cacheFs, facts, context, identity, "audio-catalog", "global")
+  executeAndPublish(cacheFs, facts, context, identity, "audio-bank", "0")
+  local healthyFact = assert(ArtifactState.read(facts, "audio-bank", "0"))
 
-  local originalWrite = backend.write
-  backend.write = function(self, path, data)
-    if type(path) == "string" and path:sub(-#".pcm16le") == ".pcm16le" then
-      error("injected sample stage failure")
+  -- Bank 7's own stage rejects the closure, so the job produces no sealed
+  -- output and no completion fact.
+  local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
+  local realStageBank = AudioCacheWriter.stageBank
+  AudioCacheWriter.stageBank = function(artifact, source, bankPlan)
+    if type(bankPlan) == "table" and bankPlan.bankId == 7 then
+      error("injected bank stage failure")
     end
-    return originalWrite(self, path, data)
+    return realStageBank(artifact, source, bankPlan)
   end
   local ok = pcall(function()
-    executeAndPublish(cacheFs, context, identity, "audio-bank", "7", "audio-bank-7-failing")
+    executeAndPublish(cacheFs, facts, context, identity, "audio-bank", "7")
   end)
-  backend.write = originalWrite
-  Assert.isFalse(ok, "the injected sample stage failure fails the bank job")
+  AudioCacheWriter.stageBank = realStageBank
+  Assert.isFalse(ok, "the rejected bank stage fails the bank job")
   Assert.isNil(
-    ArtifactState.read(cacheFs, generation, "audio-bank", "7"),
-    "a failed bank job publishes no current receipt"
+    ArtifactState.read(facts, "audio-bank", "7"),
+    "a failed bank job commits no current fact"
   )
-  Assert.isFalse(ArtifactJobs.validate(cacheFs, generation, "audio-bank", "7", plans), "the failed bank is not ready")
+  Assert.isFalse(ArtifactJobs.validate(cacheFs, facts, "audio-bank", "7", plans), "the failed bank is not ready")
   Assert.equal(
-    assert(ArtifactState.read(cacheFs, generation, "audio-bank", "0")).marker,
-    healthyReceipt.marker,
-    "the failed sibling keeps its current receipt"
+    assert(ArtifactState.read(facts, "audio-bank", "0")).marker,
+    healthyFact.marker,
+    "the failed sibling keeps its current fact"
   )
-  Assert.isTrue(ArtifactJobs.validate(cacheFs, generation, "audio-bank", "0", plans), "the healthy sibling stays ready")
+  Assert.isTrue(ArtifactJobs.validate(cacheFs, facts, "audio-bank", "0", plans), "the healthy sibling stays ready")
   Assert.isFalse(
-    ArtifactJobs.validate(cacheFs, generation, "audio-summary", "global", plans),
-    "the family summary refuses while a bank receipt is missing"
+    ArtifactJobs.validate(cacheFs, facts, "audio-summary", "global", plans),
+    "the family summary refuses while a bank fact is missing"
   )
 
   -- Retry publishes the whole closure; the runtime provider then reads the
   -- exact playback timing, loop window and PCM frames of the source wave.
-  executeAndPublish(cacheFs, context, identity, "audio-bank", "7", "audio-bank-7-retry")
-  Assert.notNil(ArtifactState.read(cacheFs, generation, "audio-bank", "7"), "the retry publishes the current receipt")
-  Assert.isTrue(ArtifactJobs.validate(cacheFs, generation, "audio-bank", "7", plans), "the retried bank reads ready")
+  executeAndPublish(cacheFs, facts, context, identity, "audio-bank", "7")
+  Assert.notNil(ArtifactState.read(facts, "audio-bank", "7"), "the retry commits the current fact")
+  Assert.isTrue(ArtifactJobs.validate(cacheFs, facts, "audio-bank", "7", plans), "the retried bank reads ready")
 
   local AudioAssetProvider = require("libs.hgss.src.audio.AudioAssetProvider")
   local provider = AudioAssetProvider.new(cacheFs)

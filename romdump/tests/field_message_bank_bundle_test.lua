@@ -12,6 +12,7 @@ local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProv
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local ScriptCacheBuildFixture = require("tests.support.ScriptCacheBuildFixture")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -122,17 +123,10 @@ local function publishBank()
     kind = "message-bank",
     key = key,
     jobKey = "message-bank:" .. key,
-    stageName = "field-message-bank",
   })
   local marker = assert(FieldMessageCacheWriter.stageBank(artifact, bundle))
   artifact:finishSuccess({ marker = marker })
-  assert(artifact:publish({
-    generationId = "outer-generation-a",
-    epoch = 1,
-    kind = "message-bank",
-    key = key,
-    jobKey = "message-bank:" .. key,
-  }))
+  assert(ResidentArtifactFixture.materialize(artifact))
   return cache, source
 end
 

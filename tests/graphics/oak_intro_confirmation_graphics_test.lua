@@ -1,7 +1,7 @@
 -- Final-pixel checks for Oak confirmation widgets via shared TextButton.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -31,7 +31,7 @@ local function readyManifests()
   local result = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
-      local cache = CacheFs.forVersion(versionId)
+      local cache = GeneratedCacheFixture.reader(versionId)
       local manifest = assert(cache:loadLua(IntroAssetCache.manifestPath()))
       Assert.isTrue(IntroAssetCache.validateManifest(manifest), versionId .. " intro manifest is invalid")
       result[#result + 1] = { cache = cache, manifest = manifest, versionId = versionId }

@@ -5,6 +5,7 @@
 local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
 local RomSuite = require("tests.rom.support.RomSuite")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local OPENING_SCHEMA = "g4-startup-opening-scene-v13"
 local SOURCE_TICK_RATE = 30
@@ -189,7 +190,6 @@ end
 local function stageScene(cacheFs, generationId, bundle, sceneNumber)
   local writer = requireProducer("OpeningMovieCacheWriter")
   Assert.isTrue(type(writer.stageScene) == "function", "the opening scene writer stages one numbered scene")
-  local CacheFsModule = require("libs.storage.src.CacheFs")
   local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
   local artifact = PreparedArtifact.new({
     cacheFs = cacheFs,
@@ -198,20 +198,11 @@ local function stageScene(cacheFs, generationId, bundle, sceneNumber)
     kind = "opening-scene",
     key = tostring(sceneNumber),
     jobKey = "opening-scene:" .. tostring(sceneNumber),
-    stageName = "opening-scene-" .. tostring(sceneNumber),
   })
-  local _ = CacheFsModule
   local marker, err = writer.stageScene(artifact, bundle, generationId, sceneNumber)
   Assert.notNil(marker, "scene " .. sceneNumber .. " stages its numbered package: " .. tostring(err))
   artifact:finishSuccess({ marker = marker })
-  local published = artifact:publish({
-    generationId = generationId,
-    epoch = 1,
-    kind = "opening-scene",
-    key = tostring(sceneNumber),
-    jobKey = "opening-scene:" .. tostring(sceneNumber),
-    stageName = "opening-scene-" .. tostring(sceneNumber),
-  })
+  local published = ResidentArtifactFixture.materialize(artifact)
   Assert.isTrue(published, "scene " .. sceneNumber .. " publishes its numbered package")
   return marker
 end
@@ -239,8 +230,8 @@ local function sourceOpeningScenesCompileToFiveIndependentVersionedBundles(romFs
   local cacheFs = CacheFs.forVersion(versionId, backend)
   local generationId = "opening-scene-independence"
   for sceneNumber = 1, 5 do
-    local receiptPath = ArtifactState.path("opening-scene", tostring(sceneNumber))
-    Assert.notNil(receiptPath, "scene " .. sceneNumber .. " addresses its own readiness receipt")
+    local identity = ArtifactState.key("opening-scene", tostring(sceneNumber))
+    Assert.equal(identity, "opening-scene:" .. tostring(sceneNumber), "scene " .. sceneNumber .. " carries its own fact identity")
     local bundle = compileScene(romFs, versionId, sceneNumber)
     checkSceneBundle(bundle, versionId, sceneNumber)
     stageScene(cacheFs, generationId, bundle, sceneNumber)
@@ -253,9 +244,9 @@ local function sourceOpeningScenesCompileToFiveIndependentVersionedBundles(romFs
     for other = 1, 5 do
       if other ~= sceneNumber then
         Assert.isTrue(
-          ArtifactState.path("opening-scene", tostring(sceneNumber))
-            ~= ArtifactState.path("opening-scene", tostring(other)),
-          "scenes " .. sceneNumber .. " and " .. other .. " publish through distinct receipts"
+          ArtifactState.key("opening-scene", tostring(sceneNumber))
+            ~= ArtifactState.key("opening-scene", tostring(other)),
+          "scenes " .. sceneNumber .. " and " .. other .. " publish through distinct facts"
         )
       end
     end
@@ -437,21 +428,22 @@ local function sourceOpeningAssetsKeepLayeredModelsParticlesAndFailedStagesPrese
   local siblingBundle = compileScene(romFs, versionId, 2)
   stageScene(cacheFs, goodGeneration, siblingBundle, 2)
   local liveManifestPath = StartupAssetCache.openingScenePath(4)
-  local liveReceiptPath = ArtifactState.path("opening-scene", "4")
   local liveManifest = cacheFs:loadLua(liveManifestPath)
-  local liveReceipt = cacheFs:loadLua(liveReceiptPath)
   Assert.notNil(liveManifest, "the staged scene 4 manifest is live before the failed restage")
-  Assert.notNil(liveReceipt, "the staged scene 4 receipt is live before the failed restage")
+  local facts = ArtifactState.new(goodGeneration)
+  local liveFact = {
+    kind = "opening-scene",
+    key = "4",
+    marker = "scene-4-marker",
+    dependencies = {},
+    ownedRoots = {},
+    sharedPaths = {},
+    files = {},
+  }
+  ArtifactState.commitFact(facts, liveFact)
 
-  local originalWrite = backend.write
-  local stagedWrites = 0
-  backend.write = function(self, path, bytes)
-    stagedWrites = stagedWrites + 1
-    if stagedWrites == 2 then
-      error("injected opening scene staged write failure", 0)
-    end
-    return originalWrite(self, path, bytes)
-  end
+  -- The replacement bundle omits one declared asset, so its own readback
+  -- refuses it and nothing is committed.
   local writer = requireProducer("OpeningMovieCacheWriter")
   local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
   local artifact = PreparedArtifact.new({
@@ -461,20 +453,20 @@ local function sourceOpeningAssetsKeepLayeredModelsParticlesAndFailedStagesPrese
     kind = "opening-scene",
     key = "4",
     jobKey = "opening-scene:4",
-    stageName = "opening-scene-4-failure",
   })
-  local ok, failure = pcall(writer.stageScene, artifact, goodBundle, "opening-scene-broken", 4)
-  backend.write = originalWrite
-  Assert.isFalse(ok, "the injected staged failure fails the scene 4 restage: " .. tostring(failure))
+  local brokenBundle = { manifest = goodBundle.manifest, files = {} }
+  local ok, failure = pcall(writer.stageScene, artifact, brokenBundle, "opening-scene-broken", 4)
+  Assert.isFalse(ok, "the refused scene 4 bundle fails the restage: " .. tostring(failure))
+  artifact:abort()
   Assert.deepEqual(
     cacheFs:loadLua(liveManifestPath),
     liveManifest,
     "a failed scene 4 stage preserves its previous good manifest"
   )
-  Assert.deepEqual(
-    cacheFs:loadLua(liveReceiptPath),
-    liveReceipt,
-    "a failed scene 4 stage preserves its previous good receipt"
+  Assert.equal(
+    ArtifactState.read(facts, "opening-scene", "4"),
+    liveFact,
+    "a failed scene 4 stage commits no new fact"
   )
   local sibling = loadScene(cacheFs, 2, versionId)
   Assert.equal(sibling.sceneNumber, 2, "a failed scene 4 stage leaves its sibling scene untouched")

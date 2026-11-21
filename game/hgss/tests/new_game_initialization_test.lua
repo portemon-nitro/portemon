@@ -307,23 +307,17 @@ function T.lottery_persists_through_world_capture_and_game_save()
   Assert.equal(restored:getVar(vars.VAR_LOTO_NUMBER_HI), 0)
 end
 
--- The generated initial-location accessor reads the published artifact
--- through the same trust boundary as apply. The cache stub below is
--- restored on every path, including assertion failure.
+-- The generated initial-location accessor reads the published artifact from
+-- the selected epoch's installed generated view, through the same trust
+-- boundary as apply.
 local function withInitialLocationArtifact(artifactOrNil, fn)
-  local CacheFs = require("libs.storage.src.CacheFs")
   local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
-  local originalForVersion = CacheFs.forVersion
-  rawset(CacheFs, "forVersion", function(_)
-    local cacheFs = {}
-    function cacheFs.loadLua(_, path)
-      Assert.equal(path, NewGameInitCache.path())
-      return artifactOrNil
-    end
-    return cacheFs
-  end)
-  local ok, err = pcall(fn)
-  rawset(CacheFs, "forVersion", originalForVersion)
+  local cacheFs = {}
+  function cacheFs.loadLua(_, path)
+    Assert.equal(path, NewGameInitCache.path())
+    return artifactOrNil
+  end
+  local ok, err = pcall(fn, cacheFs)
   if not ok then
     error(err, 0)
   end
@@ -332,20 +326,20 @@ end
 function T.initial_location_returns_the_generated_record()
   local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
   Assert.notNil(NewGameInitialization.initialLocation, "the game owns a generated initial-location accessor")
-  withInitialLocationArtifact(v3Artifact(), function()
-    Assert.deepEqual(NewGameInitialization.initialLocation("heartgold"), initialLocation())
+  withInitialLocationArtifact(v3Artifact(), function(cacheFs)
+    Assert.deepEqual(NewGameInitialization.initialLocation(cacheFs), initialLocation())
   end)
 end
 
 function T.initial_location_returns_a_defensive_copy()
   local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
   Assert.notNil(NewGameInitialization.initialLocation, "the game owns a generated initial-location accessor")
-  withInitialLocationArtifact(v3Artifact(), function()
-    local first = NewGameInitialization.initialLocation("heartgold")
+  withInitialLocationArtifact(v3Artifact(), function(cacheFs)
+    local first = NewGameInitialization.initialLocation(cacheFs)
     first.fieldX = 999
     first.facing = "north"
     first.mapSymbol = "MAP_FAKE"
-    local second = NewGameInitialization.initialLocation("heartgold")
+    local second = NewGameInitialization.initialLocation(cacheFs)
     Assert.deepEqual(second, initialLocation())
     Assert.isFalse(first == second, "each read returns a caller-owned table")
   end)
@@ -359,9 +353,9 @@ function T.initial_location_rejects_stale_artifacts()
     versionId = "heartgold",
     operations = v3Artifact().operations,
     sourceDependency = v3Artifact().sourceDependency,
-  }, function()
+  }, function(cacheFs)
     Assert.throws(function()
-      NewGameInitialization.initialLocation("heartgold")
+      NewGameInitialization.initialLocation(cacheFs)
     end, "a stale artifact without the location must not read as current")
   end)
 end
@@ -408,8 +402,8 @@ function T.initial_location_trusts_the_published_artifact_without_semantic_runti
   end)
   local location = nil
   local ok, err = pcall(function()
-    withInitialLocationArtifact(v3Artifact(), function()
-      location = NewGameInitialization.initialLocation("heartgold")
+    withInitialLocationArtifact(v3Artifact(), function(cacheFs)
+      location = NewGameInitialization.initialLocation(cacheFs)
     end)
   end)
   rawset(NewGameInitCache, "validate", original)
@@ -423,9 +417,9 @@ end
 function T.initial_location_fails_loudly_when_cache_is_cold()
   local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
   Assert.notNil(NewGameInitialization.initialLocation, "the game owns a generated initial-location accessor")
-  withInitialLocationArtifact(nil, function()
+  withInitialLocationArtifact(nil, function(cacheFs)
     Assert.throws(function()
-      NewGameInitialization.initialLocation("heartgold")
+      NewGameInitialization.initialLocation(cacheFs)
     end, "a missing artifact must not read as a default location")
   end)
 end

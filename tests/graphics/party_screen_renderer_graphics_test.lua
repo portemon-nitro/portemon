@@ -3,7 +3,7 @@
 -- Pixel checks pin relationships, not copyrighted screenshots.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local GameVersion = require("romdump.src.source.GameVersion")
@@ -29,8 +29,8 @@ local T = {}
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
-      local cacheFs = CacheFs.forVersion(versionId)
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       local marker = cacheFs:read(PartyCache.markerPath())
       if marker ~= nil and PartyCache.isReady(cacheFs, marker) then
         versions[#versions + 1] = versionId
@@ -41,7 +41,7 @@ local function readyVersions()
 end
 
 local function manifestFor(versionId)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local manifest = PartyCache.loadManifest(cacheFs)
   Assert.equal(manifest.schema, "g4-party-presentation-v7", versionId .. " renders the current party manifest")
   return cacheFs, manifest

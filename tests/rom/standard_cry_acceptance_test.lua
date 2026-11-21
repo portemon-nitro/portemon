@@ -4,7 +4,7 @@
 local Assert = require("tests.support.Assert")
 local AudioBank = require("libs.assets.src.audio.AudioBank")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
@@ -31,7 +31,7 @@ function T.beforeAll()
   contexts = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
-      local cacheFs = CacheFs.forVersion(versionId)
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       local index = cacheFs:loadLua(AudioCache.indexPath())
       Assert.notNil(index, versionId .. " must have a generated audio index")
       contexts[#contexts + 1] = { versionId = versionId, cacheFs = cacheFs, index = index }

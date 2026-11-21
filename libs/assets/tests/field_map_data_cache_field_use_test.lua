@@ -12,6 +12,7 @@ local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMapDataCacheWriter = require("romdump.src.digest.field.FieldMapDataCacheWriter")
 local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
 local Fixture = require("tests.support.FieldMapDataFixture")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -23,7 +24,9 @@ end
 
 local function publishedCache(bundle)
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldMapDataCacheWriter.write(cache, bundle)
+  ResidentArtifactFixture.publish(cache, "map-data", tostring(bundle.mapId), function(artifact)
+    return FieldMapDataCacheWriter.stage(artifact, bundle)
+  end)
   return cache
 end
 
@@ -38,8 +41,7 @@ end
 function T.absent_encounter_member_fails_readiness()
   local bundle = compile(60)
   bundle.field.wildEncounterMemberId = nil
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldMapDataCacheWriter.write(cache, bundle)
+  local cache = publishedCache(bundle)
   Assert.isFalse(FieldMapDataCache.hasEncounterMember(nil))
   Assert.isFalse(FieldMapDataCache.isReady(cache, 60, bundle.marker))
 end
@@ -56,8 +58,9 @@ function T.absent_or_partial_move_encounter_records_fail_readiness()
   for _, field in ipairs({ "rockSmash", "headbutt" }) do
     local broken = compile(60)
     broken.field[field] = nil
-    local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-    FieldMapDataCacheWriter.write(cache, broken)
+    -- The stage proves its own marker, so a record missing its move policy is
+    -- published but never reads ready.
+    local cache = publishedCache(broken)
     Assert.isFalse(FieldMapDataCache.isReady(cache, 60, broken.marker), field)
   end
 end
@@ -65,8 +68,7 @@ end
 function T.absent_policy_fails_readiness()
   local bundle = compile(60)
   bundle.field.fieldUse = nil
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldMapDataCacheWriter.write(cache, bundle)
+  local cache = publishedCache(bundle)
   Assert.isFalse(FieldMapDataCache.hasFieldUsePolicy(nil))
   Assert.isFalse(FieldMapDataCache.isReady(cache, 60, bundle.marker))
 end
@@ -75,8 +77,7 @@ function T.partial_policy_fails_readiness()
   local bundle = compile(60)
   bundle.field.fieldUse.cave = nil
   Assert.isFalse(FieldMapDataCache.hasFieldUsePolicy(bundle.field.fieldUse))
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldMapDataCacheWriter.write(cache, bundle)
+  local cache = publishedCache(bundle)
   Assert.isFalse(FieldMapDataCache.isReady(cache, 60, bundle.marker))
 end
 

@@ -8,7 +8,7 @@
 -- trainer_card_renderer_test.lua.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -248,7 +248,7 @@ function T.canonical_golden_matches_the_real_generated_card_pixel_for_pixel(scop
     context:skip("no field-UI class in the shared derived cache")
     return
   end
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   if cache:getInfo(FieldUiAssetCache.manifestPath()) == nil then
     context:skip("no field-UI class in the shared derived cache")
     return

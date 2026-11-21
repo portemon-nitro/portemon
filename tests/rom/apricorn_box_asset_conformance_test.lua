@@ -4,6 +4,7 @@
 local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
 local ApricornBoxAssetCompiler = require("romdump.src.digest.ui.ApricornBoxAssetCompiler")
+local FieldMessageAsset = require("libs.assets.src.field.FieldMessageAsset")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
 local ApricornBoxSources = require("romdump.src.config.ApricornBoxSources")
 local RomSuite = require("tests.rom.support.RomSuite")
@@ -35,6 +36,9 @@ function T.box_panes_and_row_animation_frames_are_source_backed(romFs, versionId
   local session = FieldMessageCompiler.newSession(romFs)
   local messageBundle = assert(session:compileBank(21))
   session:close()
+  -- The compiled bank is the compact payload the runtime opens; each row's
+  -- label is read through the same decoding path a player sees.
+  local messages = assert(FieldMessageAsset.open(messageBundle.data, messageBundle.bankId))
   local paneNames = { "upper", "lower" }
   for _, paneName in ipairs(paneNames) do
     local pane = bundle.manifest[paneName]
@@ -77,7 +81,7 @@ function T.box_panes_and_row_animation_frames_are_source_backed(romFs, versionId
       ROW_ITEM_IDS[rowIndex],
       "visible row carries its native item identity for plural lookup"
     )
-    Assert.equal(messageBundle.bank.messages[row.nameMessageId].text, ROW_LABELS[rowIndex])
+    Assert.equal(FieldMessageAsset.message(messages, row.nameMessageId).text, ROW_LABELS[rowIndex])
     local source = ApricornBoxSources.geometry.rowIcons[rowIndex]
     Assert.equal(row.icon.x, source.x)
     Assert.equal(row.icon.y, source.y)

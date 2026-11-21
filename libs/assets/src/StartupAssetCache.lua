@@ -2035,7 +2035,7 @@ end
 -- display mapping. Every image, mesh, and clip lives under that scene's
 -- asset root; source member identities, executable payloads, legacy v1
 -- records, and sibling roots never cross into the runtime manifest.
----@param cacheFs CacheFs
+---@param cacheFs table<string, unknown> CacheFs-shaped staged-asset filesystem
 ---@param sceneNumber integer
 ---@param versionId string
 ---@return table<string, unknown>|nil
@@ -2204,7 +2204,7 @@ local function validSubjectEntry(entry, atlasPath)
     and hasWalkerPivot(entry.visual)
 end
 
----@param cacheFs CacheFs
+---@param cacheFs table<string, unknown> CacheFs-shaped staged-asset filesystem
 ---@param versionId string
 ---@return table<string, unknown>|nil
 ---@return Errors.Error|string|nil

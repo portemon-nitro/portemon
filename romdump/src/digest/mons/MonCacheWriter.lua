@@ -14,7 +14,6 @@ local PngWriter = require("libs.assets.src.PngWriter")
 local MonCache = require("libs.assets.src.MonCache")
 local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
 local Validate = require("libs.assets.src.Validate")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local Hashing = require("romdump.src.digest.Hashing")
 
 ---@class MonCacheWriter
@@ -130,25 +129,11 @@ end
 ---@param args { catalog: table<string, unknown>, marker: string }
 ---@return string
 function MonCacheWriter.stageCatalog(artifact, args)
-  assert(artifact and artifact.stageFs, "catalog staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "catalog staging requires a PreparedArtifact")
   assert(type(args) == "table", "catalog staging requires its catalog and marker")
   artifact:addOwnedRoot(MonCache.catalogPath())
   artifact:addOwnedRoot(MonCache.catalogMarkerPath())
-  return persistCatalog(artifact:stageFs(), args.catalog, args.marker)
-end
-
-function MonCacheWriter.writeCatalog(cacheFs, catalog, marker)
-  local tx = ArtifactPublisher.begin(cacheFs, "mon-catalog", {
-    MonCache.catalogPath(),
-    MonCache.catalogMarkerPath(),
-  })
-  local ok, result = pcall(persistCatalog, tx.stage, catalog, marker)
-  if not ok then
-    tx:abort()
-    error(result, 0)
-  end
-  tx:publish()
-  return result
+  return persistCatalog(artifact, args.catalog, args.marker)
 end
 
 -- Durable producer handoff for bounded page jobs: the layout job plans once
@@ -501,36 +486,13 @@ end
 ---@param args { icons: table<string, unknown>, portraits: table<string, unknown>, marker: string, pagePlans: { iconPages: table<integer, table<string, unknown>>, portraitPages: table<integer, table<string, unknown>> }, generationId: string }
 ---@return string
 function MonCacheWriter.stageLayout(artifact, args)
-  assert(artifact and artifact.stageFs, "layout staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "layout staging requires a PreparedArtifact")
   assert(type(args) == "table", "layout staging requires its manifests and marker")
   artifact:addOwnedRoot(MonCache.iconManifestPath())
   artifact:addOwnedRoot(MonCache.portraitManifestPath())
   artifact:addOwnedRoot(MonCache.layoutMarkerPath())
   artifact:addOwnedRoot(SOURCE_ROOT)
-  return persistLayout(artifact:stageFs(), args.icons, args.portraits, args.marker, args.pagePlans, args.generationId)
-end
-
----@param cacheFs CacheFs
----@param icons table<string, unknown>
----@param portraits table<string, unknown>
----@param marker string
----@param pagePlans { iconPages: table<integer, table<string, unknown>>, portraitPages: table<integer, table<string, unknown>> }
----@param generationId string
----@return string
-function MonCacheWriter.writeLayout(cacheFs, icons, portraits, marker, pagePlans, generationId)
-  local tx = ArtifactPublisher.begin(cacheFs, "mon-layout", {
-    MonCache.iconManifestPath(),
-    MonCache.portraitManifestPath(),
-    SOURCE_ROOT,
-    MonCache.layoutMarkerPath(),
-  })
-  local ok, result = pcall(persistLayout, tx.stage, icons, portraits, marker, pagePlans, generationId)
-  if not ok then
-    tx:abort()
-    error(result, 0)
-  end
-  tx:publish()
-  return result
+  return persistLayout(artifact, args.icons, args.portraits, args.marker, args.pagePlans, args.generationId)
 end
 
 -- Load one durable page record for a worker: the generation, kind, page
@@ -703,7 +665,7 @@ end
 ---@param bundle { kind: "icons"|"portraits", pageId: integer, width: integer, height: integer, pixels: string, marker: string }
 ---@return string
 function MonCacheWriter.stagePage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "page staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "page staging requires a PreparedArtifact")
   local owned = checkPageBundle(bundle)
   artifact:addOwnedRoot(MonCache.pageImagePath(owned.kind, owned.pageId))
   if owned.kind == "portraits" then
@@ -711,27 +673,7 @@ function MonCacheWriter.stagePage(artifact, bundle)
     artifact:addOwnedRoot(MonCache.portraitPalettePagePath(owned.pageId))
   end
   artifact:addOwnedRoot(MonCache.pageMarkerPath(owned.kind, owned.pageId))
-  return persistPage(artifact:stageFs(), owned)
-end
-
-function MonCacheWriter.writePage(cacheFs, bundle)
-  local owned = checkPageBundle(bundle)
-  local paths = {
-    MonCache.pageImagePath(owned.kind, owned.pageId),
-    MonCache.pageMarkerPath(owned.kind, owned.pageId),
-  }
-  if owned.kind == "portraits" then
-    paths[#paths + 1] = MonCache.portraitIndexPagePath(owned.pageId)
-    paths[#paths + 1] = MonCache.portraitPalettePagePath(owned.pageId)
-  end
-  local tx = ArtifactPublisher.begin(cacheFs, "mon-page", paths)
-  local ok, result = pcall(persistPage, tx.stage, owned)
-  if not ok then
-    tx:abort()
-    error(result, 0)
-  end
-  tx:publish()
-  return result
+  return persistPage(artifact, owned)
 end
 
 -- The one staging step every summary entry point shares: prove every page
@@ -776,26 +718,11 @@ end
 ---@param provenance table<string, unknown> family provenance record
 ---@return string
 function MonCacheWriter.stageSummary(artifact, index, provenance)
-  assert(artifact and artifact.stageFs and artifact.cacheFs, "summary staging requires a PreparedArtifact")
+  assert(artifact and artifact.write and artifact.cacheFs, "summary staging requires a PreparedArtifact")
   artifact:addOwnedRoot(MonCache.indexPath())
   artifact:addOwnedRoot(MonCache.provenancePath())
   artifact:addOwnedRoot(MonCache.markerPath())
-  return persistSummary(artifact:stageFs(), artifact:cacheFs(), index, provenance)
-end
-
-function MonCacheWriter.writeSummary(cacheFs, index, provenance)
-  local tx = ArtifactPublisher.begin(cacheFs, "mons", {
-    MonCache.indexPath(),
-    MonCache.provenancePath(),
-    MonCache.markerPath(),
-  })
-  local ok, result = pcall(persistSummary, tx.stage, cacheFs, index, provenance)
-  if not ok then
-    tx:abort()
-    error(result, 0)
-  end
-  tx:publish()
-  return result
+  return persistSummary(artifact, artifact:cacheFs(), index, provenance)
 end
 
 return MonCacheWriter

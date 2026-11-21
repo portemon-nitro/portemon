@@ -3,7 +3,7 @@
 -- family, and party gifts over a live mon service. Suites keep their own
 -- assertions; this helper only assembles inputs every scenario needs.
 
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
@@ -19,8 +19,8 @@ function SummaryAcceptanceFixture.readySummaryVersions()
   local SummaryCache = require("libs.assets.src.SummaryCache")
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
-      local cacheFs = CacheFs.forVersion(versionId)
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       local marker = cacheFs:read(SummaryCache.markerPath())
       if marker ~= nil and SummaryCache.isReady(cacheFs, marker) then
         versions[#versions + 1] = versionId
@@ -35,7 +35,7 @@ end
 ---@return table<string, unknown> validated Summary family
 function SummaryAcceptanceFixture.loadSummaryManifest(versionId)
   local SummaryCache = require("libs.assets.src.SummaryCache")
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   return cacheFs, SummaryCache.loadManifest(cacheFs)
 end
 

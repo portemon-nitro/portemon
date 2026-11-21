@@ -4,6 +4,7 @@
 
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
 local HgssGame = require("game.hgss.src.HgssGame")
 local FieldState = require("game.hgss.src.field.FieldState")
@@ -271,6 +272,7 @@ local function newGame(context, candidate)
     entry = { kind = "new_game" },
     onExit = function() end,
     derivedAssets = readyHost(),
+    cacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader,
     fieldMapLoader = planningLoader(),
   })
   return game, controller
@@ -342,6 +344,7 @@ function T.continue_never_reapplies_fresh_startup_initialization()
       entry = { kind = "continue", saveId = clearedFlagGame.saveId },
       onExit = function() end,
       derivedAssets = derivedAssets,
+      cacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader,
       fieldMapLoader = planningLoader(),
     })
     settle(game)
@@ -413,6 +416,7 @@ function T.continue_enters_the_field_without_the_covered_entry()
       entry = { kind = "continue", saveId = clearedFlagGame.saveId },
       onExit = function() end,
       derivedAssets = readyHost(),
+      cacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader,
       fieldMapLoader = planningLoader(),
     })
     settle(game)
@@ -693,6 +697,7 @@ function T.presented_oak_black_draw_precedes_field_construction()
       entry = { kind = "new_game" },
       onExit = function() end,
       derivedAssets = readyHost(),
+      cacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader,
       fieldMapLoader = planningLoader(),
     })
     settle(game)
@@ -767,6 +772,7 @@ function T.continue_constructs_the_field_without_the_oak_handoff()
       entry = { kind = "continue", saveId = clearedFlagGame.saveId },
       onExit = function() end,
       derivedAssets = readyHost(),
+      cacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader,
       fieldMapLoader = planningLoader(),
     })
     settle(game)
@@ -789,6 +795,10 @@ function T.continue_enters_field_when_optional_loading_art_throws()
     saveId = "save-00000002",
     versionId = "heartgold",
     startupPairIndex = 1,
+    -- The decorative cover adopts the epoch's installed pair art; these
+    -- scenarios stub or complete that adoption, so an empty resident view is
+    -- the whole generated surface they read.
+    cacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader,
     derivedAssets = {
       requestStartupWalker = function(urgency)
         artRequests = artRequests + 1
@@ -867,6 +877,10 @@ function T.continue_pending_loader_art_never_blocks_transfer_and_is_never_adopte
     saveId = "save-00000002",
     versionId = "heartgold",
     startupPairIndex = 1,
+    -- The decorative cover adopts the epoch's installed pair art; these
+    -- scenarios stub or complete that adoption, so an empty resident view is
+    -- the whole generated surface they read.
+    cacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader,
     derivedAssets = {
       requestStartupWalker = function(urgency)
         artRequests = artRequests + 1
@@ -967,6 +981,10 @@ function T.continue_malformed_loader_art_latches_once_and_cancel_releases_cover_
     saveId = "save-00000002",
     versionId = "heartgold",
     startupPairIndex = 1,
+    -- The decorative cover adopts the epoch's installed pair art; these
+    -- scenarios stub or complete that adoption, so an empty resident view is
+    -- the whole generated surface they read.
+    cacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader,
     derivedAssets = {
       requestStartupWalker = function(urgency)
         artRequests = artRequests + 1

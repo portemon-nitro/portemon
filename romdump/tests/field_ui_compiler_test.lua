@@ -2,9 +2,9 @@
 -- source archives: every decode path (char/screen/palette/cell/animation)
 -- runs against hand-built members, malformed source and generated metadata
 -- are rejected at the owning layer, and the publication matrix (stage write
--- failure, stage validation failure, first/second publish rename failure)
--- reuses ArtifactPublisher through a FakeCache so the previous ready class
--- stays readable and the marker never claims an incomplete class.
+-- failure, stage validation failure) stages through a prepared artifact over a
+-- FakeCache so the previous ready class stays readable and the marker never
+-- claims an incomplete class.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -21,6 +21,7 @@ local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local G2dBankFixture = require("tests.support.G2dBankFixture")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local cellBank, animBank = G2dBankFixture.cellBank, G2dBankFixture.animBank
 
@@ -1676,7 +1677,9 @@ function T.writer_commits_marker_last_and_reads_back()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldUiCacheWriter.write(cache, bundle)
+  ResidentArtifactFixture.publish(cache, "field-ui", "global", function(artifact)
+      return FieldUiCacheWriter.stage(artifact, bundle)
+    end)
   Assert.isTrue(FieldUiAssetCache.isReady(cache, bundle.marker))
   Assert.isFalse(FieldUiAssetCache.isReady(cache, bundle.marker .. "-stale"))
   local manifest = assert(cache:loadLua(FieldUiAssetCache.manifestPath()))
@@ -1688,7 +1691,9 @@ function T.failed_rebuild_preserves_the_previous_class()
   local first = assert(compileWithTestConfig(romFs, sha1, hashLua))
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
-  FieldUiCacheWriter.write(cache, first)
+  ResidentArtifactFixture.publish(cache, "field-ui", "global", function(artifact)
+      return FieldUiCacheWriter.stage(artifact, first)
+    end)
   local originalWrite = backend.write
   backend.write = function(self, path, data)
     if path:find("start-menu.png", 1, true) then
@@ -1699,13 +1704,17 @@ function T.failed_rebuild_preserves_the_previous_class()
   local second = assert(compileWithTestConfig(romFs, sha1, hashLua))
   second.marker = FieldUiAssetCache.marker(sha1, "new-dep-hash")
   Assert.throws(function()
-    FieldUiCacheWriter.write(cache, second)
+    ResidentArtifactFixture.publish(cache, "field-ui", "global", function(artifact)
+      return FieldUiCacheWriter.stage(artifact, second)
+    end)
   end)
   Assert.isTrue(FieldUiAssetCache.isReady(cache, first.marker), "the previous class remains ready")
   Assert.equal(cache:read(FieldUiAssetCache.markerPath()), first.marker, "no new marker leaked")
   Assert.isNil(backend:getInfo("staging/heartgold/field-ui"), "the stage is cleaned on failure")
   backend.write = originalWrite
-  FieldUiCacheWriter.write(cache, second)
+  ResidentArtifactFixture.publish(cache, "field-ui", "global", function(artifact)
+      return FieldUiCacheWriter.stage(artifact, second)
+    end)
   Assert.isTrue(FieldUiAssetCache.isReady(cache, second.marker), "a retry publishes the new class")
 end
 
@@ -1715,68 +1724,18 @@ function T.stage_validation_failure_is_typed_and_preserves_the_previous_class()
   local romFs, sha1, hashLua = fixture()
   local first = assert(compileWithTestConfig(romFs, sha1, hashLua))
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldUiCacheWriter.write(cache, first)
+  ResidentArtifactFixture.publish(cache, "field-ui", "global", function(artifact)
+      return FieldUiCacheWriter.stage(artifact, first)
+    end)
   local second = assert(compileWithTestConfig(romFs, sha1, hashLua))
   second.manifest.namingScreen.playerSubjects.female.anchor = nil
   second.marker = FieldUiAssetCache.marker(sha1, "new-dep-hash")
   Assert.throws(function()
-    FieldUiCacheWriter.write(cache, second)
+    ResidentArtifactFixture.publish(cache, "field-ui", "global", function(artifact)
+      return FieldUiCacheWriter.stage(artifact, second)
+    end)
   end)
   Assert.isTrue(FieldUiAssetCache.isReady(cache, first.marker), "the previous class remains ready")
-  Assert.equal(cache:read(FieldUiAssetCache.markerPath()), first.marker)
-end
-
--- A first publish rename failure (moving the live asset root aside) rolls
--- back and keeps the old class readable.
-function T.first_publish_rename_failure_rolls_back()
-  local romFs, sha1, hashLua = fixture()
-  local first = assert(compileWithTestConfig(romFs, sha1, hashLua))
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
-  FieldUiCacheWriter.write(cache, first)
-  local originalReplace = backend.replace
-  local calls = 0
-  backend.replace = function(self, source, destination)
-    calls = calls + 1
-    if calls == 1 then
-      error("injected rename failure")
-    end
-    return originalReplace(self, source, destination)
-  end
-  local second = assert(compileWithTestConfig(romFs, sha1, hashLua))
-  second.marker = FieldUiAssetCache.marker(sha1, "new-dep-hash")
-  Assert.throws(function()
-    FieldUiCacheWriter.write(cache, second)
-  end)
-  backend.replace = originalReplace
-  Assert.isTrue(FieldUiAssetCache.isReady(cache, first.marker), "the previous class remains ready after rollback")
-  Assert.equal(cache:read(FieldUiAssetCache.markerPath()), first.marker)
-end
-
--- A second publish rename failure (moving the data root into place after the
--- asset root landed) must also roll back the first move.
-function T.second_publish_rename_failure_rolls_back_both_roots()
-  local romFs, sha1, hashLua = fixture()
-  local first = assert(compileWithTestConfig(romFs, sha1, hashLua))
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
-  FieldUiCacheWriter.write(cache, first)
-  local originalReplace = backend.replace
-  local calls = 0
-  backend.replace = function(self, source, destination)
-    calls = calls + 1
-    if calls == 2 then
-      error("injected second rename failure")
-    end
-    return originalReplace(self, source, destination)
-  end
-  local second = assert(compileWithTestConfig(romFs, sha1, hashLua))
-  second.marker = FieldUiAssetCache.marker(sha1, "new-dep-hash")
-  Assert.throws(function()
-    FieldUiCacheWriter.write(cache, second)
-  end)
-  backend.replace = originalReplace
-  Assert.isTrue(FieldUiAssetCache.isReady(cache, first.marker), "the previous class remains ready after rollback")
   Assert.equal(cache:read(FieldUiAssetCache.markerPath()), first.marker)
 end
 

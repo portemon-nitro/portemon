@@ -8,7 +8,7 @@
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 
 local T = {
@@ -80,7 +80,7 @@ function T.tests.friend_house_signpost_prints_the_counterpart_name_and_dismisses
     -- Expectations come from the same generated banks the runtime reads: the
     -- counterpart name selected by the fresh protagonist's gender, plus the
     -- house-label template with its substitution marker removed.
-    local cache = CacheFs.forVersion(versionId)
+    local cache = GeneratedCacheFixture.reader(versionId)
     local gender = game.runtime.playerData.profile.gender
     local provider = assert(FieldMessageProvider.new(cache))
     assert(provider:acquireBank(445), "generated name bank 445 is required")

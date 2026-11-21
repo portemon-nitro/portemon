@@ -1,17 +1,19 @@
 -- Runs fixed producer jobs inside one persistent worker VM.
--- Each job carries its explicit source version, generation, and epoch. The
--- worker selects its cache context at job boundaries, trusts a current
--- receipt before opening any source handle, compiles and stages one
--- prepared artifact per job without a current receipt, and releases
--- transient geometry scratch at map job boundaries. The VM persists
--- across jobs: large compilations never retire it.
+-- Each job carries its explicit source version, generation, epoch, and
+-- dispatch identity. The worker builds one closed dependency view per job
+-- from the committed entries the controller sends, compiles that job into a
+-- private in-memory artifact, and returns its immutable output entries; it
+-- never opens a generated filesystem and never decides readiness. Transient
+-- geometry scratch is released at map job boundaries. The VM persists across
+-- jobs: large compilations never retire it.
 
 local CacheFs = require("libs.storage.src.CacheFs")
 local Errors = require("libs.errors.src.Errors")
+local ResidentCache = require("libs.storage.src.ResidentCache")
 local RomFs = require("romdump.src.source.RomFs")
 local RomSource = require("romdump.src.source.RomSource")
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
-local ArtifactState = require("romdump.src.build.ArtifactState")
+local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
 local GxGeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
 local PngEncoder = require("romdump.src.digest.PngEncoder")
@@ -32,10 +34,17 @@ end
 ---@param context table<string, unknown>
 local function closeContext(context)
   ArtifactJobs.closeSessions(context)
+  if context.dependencyView ~= nil then
+    context.dependencyView:close()
+    context.dependencyView = nil
+    context.cacheFs = nil
+    context.artifactFacts = nil
+  end
   if context.romFs ~= nil then
     local romFs = context.romFs
     context.romFs = nil
     context.cacheFs = nil
+    context.artifactFacts = nil
     context.versionId = nil
     context.generationId = nil
     -- A failed close propagates with its original failure and emits no
@@ -44,6 +53,7 @@ local function closeContext(context)
     romFs:close()
   else
     context.cacheFs = nil
+    context.artifactFacts = nil
     context.versionId = nil
     context.generationId = nil
   end
@@ -54,25 +64,54 @@ local function closeContext(context)
   end
 end
 
--- Select the version-scoped cache without opening ROM source: the receipt
--- read inspects receipt identity only, so most reuse decisions never pay
--- for a source handle.
+-- Build the one closed dependency view this job may read: the committed
+-- entries the controller declared for the job's dependency closure, committed
+-- into a job-local byte store that is dropped at every terminal path. A read
+-- outside that view is a graph error, never a filesystem fallback.
 ---@param job table<string, unknown>
 ---@param context table<string, unknown>
-local function switchCacheContext(job, context)
+local function openDependencyView(job, context)
   assert(type(job.versionId) == "string" and job.versionId ~= "", "worker job version is required")
   assert(type(job.generationId) == "string" and job.generationId ~= "", "worker job generation is required")
   assert(type(job.epoch) == "number" and job.epoch % 1 == 0, "worker job epoch must be an integer")
-  -- A same-version generation change replaces the whole source context:
-  -- every family session and ROM reader closes before the new context
-  -- establishes, so no session outlives its generation.
-  if context.versionId ~= job.versionId or context.generationId ~= job.generationId then
-    closeContext(context)
-    context.cacheFs = CacheFs.forVersion(job.versionId)
-    context.versionId = job.versionId
-    context.generationId = job.generationId
+  local dependencies = job.dependencies
+  assert(type(dependencies) == "table", "worker job requires its declared dependencies")
+  assert(type(dependencies.artifacts) == "table", "worker job requires its committed dependency facts")
+  assert(type(dependencies.entries) == "table", "worker job requires its dependency entries")
+  if context.dependencyView ~= nil then
+    local sameGeneration = context.generationId == job.generationId
+    local sameView = context.dependencyViewGeneration == job.generationId
+    if sameGeneration and sameView then
+      return
+    end
+    context.dependencyView:close()
+    context.dependencyView = nil
+    context.cacheFs = nil
+    context.artifactFacts = nil
   end
+  local owner = ResidentCache.new(job.versionId, assert(dependencies.sourceId, "dependency entries carry a source"))
+  owner:commit(owner:prepare(dependencies.entries))
+  context.dependencyView = owner
+  context.dependencyViewGeneration = job.generationId
+  context.cacheFs = CacheFs.fromStore(owner)
+  context.artifactFacts = dependencies.artifacts
+  context.versionId = job.versionId
+  context.generationId = job.generationId
   assert(context.cacheFs, "worker context is incomplete")
+end
+
+-- Drop one job's dependency view; the shared payload Data stays alive through
+-- every other owner and no consumer may mutate it.
+---@param context table<string, unknown>
+local function releaseDependencyView(context)
+  if context.dependencyView == nil then
+    return
+  end
+  context.dependencyView:close()
+  context.dependencyView = nil
+  context.dependencyViewGeneration = nil
+  context.cacheFs = nil
+  context.artifactFacts = nil
 end
 
 -- Ask the pool for the shared source buffer after a genuine receipt miss
@@ -175,34 +214,32 @@ end
 ---@param workerId integer
 ---@param job table<string, unknown> channel job carrying the controller identity
 ---@param executeJob table<string, unknown> worker job with the resolved key
----@param stageName string|nil prepared stage, present only for compiled output
----@param status string reused, prepared, or failed
----@param timingReason string reused or interleaved
+---@param status string prepared, images-pending, or failed
+---@param timingReason string interleaved
 ---@param workSeconds number wall time spent on validation and compilation
 ---@param failure string|table<string, unknown>|nil channel-safe cause: the pool-reported typed error,
 --- a worker-caught compile or backend failure with its throw-site trace, or nothing on success paths
----@param pendingImages { relativePath: string, width: integer, height: integer, rgba: love.Data }[]? the parent's unwritten PNG images
+---@param artifactResult table<string, unknown>|nil sealed output or its pending image packet
 local function pushCompletion(
   resultChannel,
   workerId,
   job,
   executeJob,
-  stageName,
   status,
   timingReason,
   workSeconds,
   failure,
-  pendingImages
+  artifactResult
 )
-  resultChannel:push({
-    pendingImages = pendingImages,
+  local packet = {
     workerId = workerId,
+    dispatchId = job.dispatchId,
     epoch = job.epoch,
     generationId = job.generationId,
+    versionId = job.versionId,
     kind = job.kind,
     key = executeJob.key,
     jobKey = assert(job.jobKey or job.key),
-    stageName = stageName,
     status = status,
     compileSeconds = nil,
     stageSeconds = nil,
@@ -210,7 +247,23 @@ local function pushCompletion(
     stagedBytes = nil,
     timingReason = timingReason,
     error = failure,
-  })
+  }
+  if artifactResult ~= nil then
+    local sealed = artifactResult.sealed
+    if sealed ~= nil then
+      packet.marker = sealed.marker
+      packet.ownedRoots = sealed.ownedRoots
+      packet.sharedPaths = sealed.sharedPaths
+      packet.entries = sealed.entries
+    else
+      packet.marker = artifactResult.marker
+      packet.ownedRoots = artifactResult.ownedRoots
+      packet.sharedPaths = artifactResult.sharedPaths
+      packet.entries = artifactResult.entries
+      packet.images = artifactResult.images
+    end
+  end
+  resultChannel:push(packet)
 end
 
 -- Captures the throw-site traceback for a failure caught by xpcall. Called
@@ -285,42 +338,58 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
       closeContext(context)
       resultChannel:push({ workerId = workerId, status = "context-closed", closeToken = job.closeToken })
     elseif job.kind == "encode-png" then
-      -- The parent's authored output is already staged; this is its deferred
-      -- low-priority image write into that same open stage. It carries no
-      -- receipt of its own: the owning parent seals and settles only after
-      -- every image is written, and a failure settles it as failed instead.
-      switchCacheContext(job, context)
+      -- The parent's authored output waits in its packet; this is the
+      -- deferred low-priority image encode into that same private map. The
+      -- owning parent seals only after every image is written, and a failure
+      -- settles it as failed instead.
+      openDependencyView(job, context)
+      local pending = assert(job.pending, "the png continuation has no pending parent")
+      local artifact = PreparedArtifact.fromPending(pending, {
+        cacheFs = assert(context.cacheFs, "worker context is incomplete"),
+        facts = assert(context.artifactFacts, "worker job requires its committed dependency facts"),
+      })
+      local sealed
       local ok, failure = xpcall(function()
-        local pending = assert(context.pendingArtifact, "the png continuation has no pending parent")
-        local stageFs = pending.artifact:stageFs()
-        ArtifactJobs.completeDeferredImages(context, job, function(image)
+        sealed = ArtifactJobs.completeDeferredImages(artifact, pending.marker, function(image)
           local rgba = assert(image.rgba, "a pending image carries its RGBA pixels")
-          stageFs:write(image.relativePath, PngEncoder.encode(image.width, image.height, rgba:getString()))
+          artifact:write(image.relativePath, PngEncoder.encode(image.width, image.height, rgba:getString()))
         end)
       end, function(err)
         return completionCause(err, throwSiteTraceback())
       end)
       if not ok then
-        local abandoned, abandonError = pcall(ArtifactJobs.abandonDeferredImages, context, job, failure)
+        local abandoned, abandonError = pcall(ArtifactJobs.abandonDeferredImages, artifact, failure, nil)
         if not abandoned then
           failure = completionCause(abandonError, nil)
         end
       end
-      resultChannel:push({
-        workerId = workerId,
-        status = ok and "images-staged" or "images-failed",
-        kind = job.parentKind,
+      releaseDependencyView(context)
+      -- The continuation answers the parent attempt it belongs to: the
+      -- completion identity is the parent's job identity, never the private
+      -- encode task the pool handed over.
+      local parentIdentity = {
+        dispatchId = job.dispatchId,
+        epoch = job.epoch,
+        generationId = job.generationId,
+        versionId = job.versionId,
+        kind = assert(job.parentKind, "the png continuation names its parent job kind"),
         key = job.key,
         jobKey = job.jobKey,
-        versionId = job.versionId,
-        generationId = job.generationId,
-        epoch = job.epoch,
-        stageName = job.stageName,
-        error = not ok and failure or nil,
-      })
+      }
+      pushCompletion(
+        resultChannel,
+        workerId,
+        parentIdentity,
+        { key = job.key },
+        ok and "prepared" or "failed",
+        "interleaved",
+        job.workSeconds or 0,
+        ok and nil or failure,
+        ok and { sealed = sealed } or nil
+      )
     else
       local startedAt = wallSeconds()
-      switchCacheContext(job, context)
+      openDependencyView(job, context)
       local executeJob = {
         kind = job.kind,
         key = job.key or job.jobKey,
@@ -328,125 +397,94 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
         generationId = job.generationId,
         epoch = job.epoch,
         producerFingerprint = job.producerFingerprint,
-        stageName = job.stageName,
+        artifactFacts = context.artifactFacts,
         payload = job.payload,
       }
-      -- Receipt-only reuse first: a current receipt reuses with no
-      -- stage, no publication, no payload read, and no source handle.
-      -- Only a missing, stale, or unusable receipt compiles below. A
-      -- genuine cache backend failure is terminal for the job, exactly
-      -- like a compile failure.
-      local receiptTraceback = nil
-      local receiptOk, receipt = xpcall(function()
-        return ArtifactState.read(context.cacheFs, executeJob.generationId, executeJob.kind, executeJob.key)
-      end, function(failure)
-        receiptTraceback = throwSiteTraceback()
-        return failure
-      end)
-      if receiptOk and receipt ~= nil then
+      -- The controller dispatches only uncompiled jobs: there is no local
+      -- reuse decision left, so a job either compiles from the pool-owned
+      -- shared source or settles with the typed source failure.
+      local sourceOutcome, sourceDetail = "supplied", nil
+      if context.romFs == nil then
+        sourceOutcome, sourceDetail = awaitPooledSource(job, context, workerId, inputChannel, resultChannel)
+        if sourceOutcome == "stop" then
+          break
+        end
+        if sourceOutcome == "supplied" then
+          local versionId = assert(job.versionId, "worker job version is required")
+          local romFs, openError = RomFs.open(versionId, RomSource.fromByteData(assert(sourceDetail)))
+          if not romFs then
+            error(openError, 0)
+          end
+          context.romFs = romFs
+        end
+      end
+      if sourceOutcome == "unavailable" then
+        if isGeometryJob(executeJob) then
+          releaseGeometryScratch(context)
+        end
+        releaseDependencyView(context)
         pushCompletion(
           resultChannel,
           workerId,
           job,
           executeJob,
-          job.stageName,
-          "reused",
-          "reused",
-          wallSeconds() - startedAt
+          "failed",
+          "interleaved",
+          wallSeconds() - startedAt,
+          sourceDetail
         )
+        -- Fall through to the next control message without compiling.
       else
-        if receiptOk then
-          -- A genuine miss compiles from the pool-owned shared buffer. A
-          -- borrowed view already established for this generation is reused
-          -- without asking again; otherwise this job suspends behind one
-          -- typed pool request. A pool-reported source failure settles the
-          -- job as failed with the typed cause instead of compiling.
-          local sourceOutcome, sourceDetail = "supplied", nil
-          if context.romFs == nil then
-            sourceOutcome, sourceDetail = awaitPooledSource(job, context, workerId, inputChannel, resultChannel)
-            if sourceOutcome == "stop" then
-              break
-            end
-            if sourceOutcome == "supplied" then
-              local versionId = assert(job.versionId, "worker job version is required")
-              local romFs, openError = RomFs.open(versionId, RomSource.fromByteData(assert(sourceDetail)))
-              if not romFs then
-                error(openError, 0)
-              end
-              context.romFs = romFs
-            end
-          end
-          if sourceOutcome == "unavailable" then
-            if isGeometryJob(executeJob) then
-              releaseGeometryScratch(context)
-            end
+        assert(context.romFs and context.cacheFs, "worker context is incomplete")
+        local compileTraceback = nil
+        local ok, result = xpcall(function()
+          return CompilerWorker.execute(executeJob, context)
+        end, function(failure)
+          compileTraceback = throwSiteTraceback()
+          return failure
+        end)
+        local workSeconds = wallSeconds() - startedAt
+        if isGeometryJob(executeJob) then
+          releaseGeometryScratch(context)
+        end
+        if ok then
+          if result.status == "images-pending" then
             pushCompletion(
               resultChannel,
               workerId,
               job,
               executeJob,
-              job.stageName,
-              "failed",
+              "images-pending",
               "interleaved",
-              wallSeconds() - startedAt,
-              sourceDetail
+              workSeconds,
+              nil,
+              result
             )
-            -- Fall through to the next control message without compiling.
           else
-            assert(context.romFs and context.cacheFs, "worker context is incomplete")
-            local compileTraceback = nil
-            local ok, result = xpcall(function()
-              return CompilerWorker.execute(executeJob, context)
-            end, function(failure)
-              compileTraceback = throwSiteTraceback()
-              return failure
-            end)
-            local workSeconds = wallSeconds() - startedAt
-            if isGeometryJob(executeJob) then
-              releaseGeometryScratch(context)
-            end
-            if ok then
-              local pendingImages = result.result and result.result.pendingImages or nil
-              pushCompletion(
-                resultChannel,
-                workerId,
-                job,
-                executeJob,
-                result.stageName,
-                "prepared",
-                "interleaved",
-                workSeconds,
-                nil,
-                pendingImages
-              )
-            else
-              pushCompletion(
-                resultChannel,
-                workerId,
-                job,
-                executeJob,
-                job.stageName,
-                "failed",
-                "interleaved",
-                workSeconds,
-                completionCause(result, compileTraceback)
-              )
-            end
+            releaseDependencyView(context)
+            pushCompletion(
+              resultChannel,
+              workerId,
+              job,
+              executeJob,
+              "prepared",
+              "interleaved",
+              workSeconds,
+              nil,
+              result
+            )
           end
         else
-          if isGeometryJob(executeJob) then
-            releaseGeometryScratch(context)
-          end
+          releaseDependencyView(context)
           pushCompletion(
             resultChannel,
             workerId,
             job,
             executeJob,
-            job.stageName,
             "failed",
             "interleaved",
-            wallSeconds() - startedAt,
-            completionCause(receipt, receiptTraceback)
+            workSeconds,
+            completionCause(result, compileTraceback)
           )
         end
       end

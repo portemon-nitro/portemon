@@ -1,4 +1,4 @@
--- Compiler-pool component scenarios cover queue ownership, staged map
+-- Compiler-pool component scenarios cover queue ownership, in-memory map
 -- publication, and unsupported host capability handling.
 
 local Assert = require("tests.support.Assert")
@@ -7,6 +7,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapCacheWriter = require("romdump.src.digest.map.MapCacheWriter")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -154,27 +155,12 @@ function T.failed_preparation_preserves_the_previous_map()
     kind = "map",
     key = tostring(first.mapId),
     jobKey = "map:" .. first.mapId,
-    stageName = "map-preparation-baseline",
   })
   MapCacheWriter.stage(baseline, first)
   baseline:finishSuccess({ mapId = first.mapId, marker = first.marker })
-  baseline:publish({
-    generationId = generation,
-    epoch = 1,
-    kind = "map",
-    key = tostring(first.mapId),
-    jobKey = "map:" .. first.mapId,
-  })
+  ResidentArtifactFixture.materialize(baseline)
   local oldMarker = cache:read(MapAssetCache.mapDir(first.mapId) .. "/complete")
   local oldScene = cache:read(MapAssetCache.mapDir(first.mapId) .. "/scene.lua")
-
-  local originalWrite = backend.write
-  backend.write = function(self, path, data)
-    if path:find("scene.lua", 1, true) then
-      error("injected preparation failure")
-    end
-    return originalWrite(self, path, data)
-  end
 
   local artifact = prepared.new({
     cacheFs = cache,
@@ -183,17 +169,15 @@ function T.failed_preparation_preserves_the_previous_map()
     kind = "map",
     key = tostring(first.mapId),
     jobKey = "map:" .. first.mapId,
-    stageName = "map-preparation-test",
   })
   Assert.throws(function()
-    MapCacheWriter.stage(artifact, BundleFixture.minimal())
+    MapCacheWriter.stage(artifact, { mapId = first.mapId })
   end)
   artifact:abort()
-  backend.write = originalWrite
 
   Assert.equal(cache:read(MapAssetCache.mapDir(first.mapId) .. "/complete"), oldMarker)
   Assert.equal(cache:read(MapAssetCache.mapDir(first.mapId) .. "/scene.lua"), oldScene)
-  Assert.isNil(backend:getInfo("staging/heartgold/map-preparation-test"))
+  Assert.equal(artifact:status(), "aborted", "a failed preparation seals no output")
 end
 
 -- Epoch ownership pins the census contract: a new selection inherits no
@@ -215,6 +199,7 @@ function T.selected_epoch_resets_current_lookup()
       jobKey = "map:" .. key,
       priority = priority,
       sizeClass = "normal",
+      dependencies = {},
       payload = { mapId = mapId },
     }
   end
@@ -264,6 +249,7 @@ function T.queued_promotion_reorders_dispatch_while_running_holds()
       jobKey = "map:" .. key,
       priority = priority,
       sizeClass = "normal",
+      dependencies = {},
       payload = { mapId = mapId },
     }
   end
@@ -306,6 +292,7 @@ function T.retired_selection_cancels_queued_work()
       jobKey = "map:" .. key,
       priority = priority,
       sizeClass = "normal",
+      dependencies = {},
       payload = { mapId = mapId },
     }
   end
@@ -350,6 +337,7 @@ function T.queued_jobs_are_deduplicated_and_priority_fifo()
       jobKey = "map:" .. key,
       priority = priority,
       sizeClass = "normal",
+      dependencies = {},
       payload = { mapId = mapId },
     }
   end
@@ -465,66 +453,239 @@ function T.constructor_failure_joins_started_workers()
   end
 end
 
+-- Two artifacts may declare one shared payload: the controller reconciles it
+-- at commit, reuses the committed bytes for an identical declaration, and
+-- refuses the whole artifact when its bytes contradict them.
 function T.staged_shared_files_promote_once_and_conflicts_fail()
-  local prepared = requirePreparedArtifact()
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
+  local CompilerPool = requirePool()
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local host = newThreadHost(2)
+  host.love.data = hostLove.data
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
   local generation = "shared-promotion-generation"
-  local function publishShared(key, stageName, sharedBytes)
-    local artifact = prepared.new({
-      cacheFs = cache,
-      generationId = generation,
-      epoch = 1,
-      kind = "map",
-      key = key,
-      jobKey = "map:" .. key,
-      stageName = stageName,
-    })
-    artifact:stageFs():write("geometry/shared", sharedBytes)
-    artifact:addSharedFile("geometry/shared")
-    artifact:stageFs():write("maps/" .. key .. "/complete", "ready")
-    artifact:addOwnedRoot("maps/" .. key)
-    artifact:finishSuccess({ mapId = tonumber(key), marker = "complete" })
-    artifact:publish({
-      generationId = generation,
-      epoch = 1,
-      kind = "map",
-      key = key,
-      jobKey = "map:" .. key,
-    })
+  local sharedPath = "data/generated/geometry/shared"
+  local function bytes(text)
+    return assert(hostLove.data.newByteData(text))
   end
-  publishShared("61", "promotion-first", "first")
-  Assert.equal(cache:read("geometry/shared"), "first")
-
-  publishShared("62", "promotion-second", "first")
-  Assert.equal(cache:read("geometry/shared"), "first", "identical shared bytes promote once")
-  Assert.equal(cache:read("maps/62/complete"), "ready")
-
-  local clashing = prepared.new({
-    cacheFs = cache,
-    generationId = generation,
-    epoch = 1,
-    kind = "map",
-    key = "63",
-    jobKey = "map:63",
-    stageName = "promotion-conflict",
-  })
-  clashing:stageFs():write("geometry/shared", "different")
-  clashing:addSharedFile("geometry/shared")
-  clashing:stageFs():write("maps/63/complete", "ready")
-  clashing:addOwnedRoot("maps/63")
-  -- Worker-side reconciliation seals shared proof before success: a staged
-  -- contradiction fails here, never reaching controller publication.
-  local conflict = Assert.throws(function()
-    clashing:finishSuccess({ mapId = 63, marker = "complete" })
+  local function dispatchMap(key)
+    withLove(host.love, function()
+      pool:request({
+        generationId = generation,
+        epoch = 1,
+        versionId = "heartgold",
+        kind = "map",
+        key = key,
+        jobKey = "map:" .. key,
+        priority = 0,
+        sizeClass = "normal",
+        dependencies = {},
+        payload = { mapId = tonumber(key) },
+      })
+      pool:update()
+    end)
+    return assert(host.channels[2]:pop(), "the worker received the job")
+  end
+  local function reportShared(dispatched, key, sharedText)
+    local shared = bytes(sharedText)
+    local marker = bytes("ready")
+    host.channels[1]:push({
+      workerId = 1,
+      epoch = 1,
+      generationId = generation,
+      kind = "map",
+      key = key,
+      jobKey = "map:" .. key,
+      dispatchId = dispatched.dispatchId,
+      status = "prepared",
+      marker = "complete",
+      ownedRoots = { "data/generated/maps/" .. key },
+      sharedPaths = { sharedPath },
+      entries = {
+        { path = sharedPath, data = shared, size = shared:getSize() },
+        { path = "data/generated/maps/" .. key .. "/complete", data = marker, size = marker:getSize() },
+      },
+    })
+    withLove(host.love, function()
+      pool:update()
+    end)
+  end
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
   end)
+
+  reportShared(dispatchMap("61"), "61", "first")
+  Assert.equal(pool:status("map:61"), "ready", "the first artifact commits its shared payload")
+  local sharedEntry = assert(pool:cacheFs():resolveAsset(sharedPath), "the shared payload is resident")
+  Assert.equal(sharedEntry.data:getString(), "first")
+
+  reportShared(dispatchMap("62"), "62", "first")
+  Assert.equal(pool:status("map:62"), "ready", "identical shared bytes commit once")
   Assert.isTrue(
-    tostring(conflict):find("PREPARED_SHARED_CONFLICT", 1, true) ~= nil,
-    "the worker seals the shared contradiction"
+    pool:cacheFs():resolveAsset(sharedPath) == sharedEntry,
+    "identical shared bytes reuse the committed buffer"
   )
-  clashing:abort()
-  Assert.equal(cache:read("geometry/shared"), "first", "a shared conflict never overwrites live bytes")
-  Assert.isFalse(cache:exists("maps/63/complete"), "a shared conflict never exposes the staged family")
+  Assert.equal(pool:cacheFs():readData("data/generated/maps/62/complete"):getString(), "ready")
+
+  reportShared(dispatchMap("63"), "63", "different")
+  local state, details = pool:status("map:63")
+  Assert.equal(state, "failed", "a shared contradiction refuses the whole artifact")
+  Assert.isTrue(
+    tostring(details and details.error or ""):find("PREPARED_SHARED_CONFLICT", 1, true) ~= nil,
+    "the contradiction names its cause: " .. tostring(details and details.error)
+  )
+  Assert.equal(
+    pool:cacheFs():readData(sharedPath):getString(),
+    "first",
+    "a shared conflict never overwrites committed bytes"
+  )
+  Assert.isNil(
+    pool:cacheFs():resolveAsset("data/generated/maps/63/complete"),
+    "a shared conflict exposes no family output"
+  )
+  pool:shutdown()
+end
+
+-- Two artifacts may publish one logical path without declaring it shared: an
+-- owned output of both resolves to the payload the first artifact installed,
+-- each fact keeps its own declarations, one captured cut lists the payload
+-- once, and a contradiction still refuses the whole artifact.
+function T.overlapping_owned_outputs_commit_once_and_conflicts_fail()
+  local CompilerPool = requirePool()
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local host = newThreadHost(2)
+  host.love.data = hostLove.data
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
+  local generation = "owned-overlap-generation"
+  local ownedPath = "data/generated/geometry/overlapped"
+  local function bytes(text)
+    return assert(hostLove.data.newByteData(text))
+  end
+  local function dispatchMap(key)
+    withLove(host.love, function()
+      pool:request({
+        generationId = generation,
+        epoch = 1,
+        versionId = "heartgold",
+        kind = "map",
+        key = key,
+        jobKey = "map:" .. key,
+        priority = 0,
+        sizeClass = "normal",
+        dependencies = {},
+        payload = { mapId = tonumber(key) },
+      })
+      pool:update()
+    end)
+    return assert(host.channels[2]:pop(), "the worker received the job")
+  end
+  local function reportOwned(dispatched, key, ownedText)
+    local owned = bytes(ownedText)
+    local marker = bytes("ready")
+    host.channels[1]:push({
+      workerId = 1,
+      epoch = 1,
+      generationId = generation,
+      kind = "map",
+      key = key,
+      jobKey = "map:" .. key,
+      dispatchId = dispatched.dispatchId,
+      status = "prepared",
+      marker = "complete",
+      ownedRoots = { ownedPath, "data/generated/maps/" .. key },
+      sharedPaths = {},
+      entries = {
+        { path = ownedPath, data = owned, size = owned:getSize() },
+        { path = "data/generated/maps/" .. key .. "/complete", data = marker, size = marker:getSize() },
+      },
+    })
+    withLove(host.love, function()
+      pool:update()
+    end)
+  end
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
+  end)
+
+  reportOwned(dispatchMap("71"), "71", "overlapped")
+  Assert.equal(pool:status("map:71"), "ready", "the first artifact commits its owned output")
+  local committed = assert(pool:cacheFs():resolveAsset(ownedPath), "the owned output is resident")
+  Assert.equal(committed.data:getString(), "overlapped")
+
+  reportOwned(dispatchMap("72"), "72", "overlapped")
+  Assert.equal(pool:status("map:72"), "ready", "an artifact producing an identical owned output commits")
+  Assert.isTrue(
+    pool:cacheFs():resolveAsset(ownedPath) == committed,
+    "identical owned bytes reuse the committed buffer instead of replacing it"
+  )
+  local facts = assert(pool:artifactFacts())
+  for _, key in ipairs({ "71", "72" }) do
+    local fact = assert(ArtifactState.read(facts, "map", key), "each artifact keeps its own fact: " .. key)
+    Assert.deepEqual(fact.files, {
+      ownedPath,
+      "data/generated/maps/" .. key .. "/complete",
+    }, "each fact names the payload it published: " .. key)
+    Assert.deepEqual(fact.ownedRoots, {
+      ownedPath,
+      "data/generated/maps/" .. key,
+    }, "each fact keeps its owned roots: " .. key)
+    Assert.deepEqual(fact.sharedPaths, {}, "neither artifact declares the payload shared: " .. key)
+  end
+
+  local cut = pool:snapshotCut({ versionId = "heartgold", generationId = generation }, { sequence = 1 })
+  local rows, carried = 0, nil
+  for _, entry in ipairs(cut.entries) do
+    if entry.path == ownedPath then
+      rows = rows + 1
+      carried = entry.data
+    end
+  end
+  Assert.equal(rows, 1, "one cut lists the overlapping payload once")
+  Assert.isTrue(carried == committed.data, "the cut carries the committed buffer")
+  Assert.equal(#cut.artifacts, 2, "both artifacts are captured")
+  for _, artifact in ipairs(cut.artifacts) do
+    local namesPayload = false
+    for _, path in ipairs(artifact.files) do
+      if path == ownedPath then
+        namesPayload = true
+      end
+    end
+    Assert.isTrue(namesPayload, "each captured artifact names the payload it published")
+  end
+
+  reportOwned(dispatchMap("73"), "73", "contradiction")
+  local state, details = pool:status("map:73")
+  Assert.equal(state, "failed", "a contradictory owned output refuses the whole artifact")
+  Assert.isTrue(
+    tostring(details and details.error or ""):find("PREPARED_SHARED_CONFLICT", 1, true) ~= nil,
+    "the contradiction names its cause: " .. tostring(details and details.error)
+  )
+  Assert.isTrue(
+    pool:cacheFs():resolveAsset(ownedPath) == committed,
+    "a contradiction never overwrites the committed payload"
+  )
+  Assert.isNil(
+    pool:cacheFs():resolveAsset("data/generated/maps/73/complete"),
+    "a contradictory artifact exposes no family output"
+  )
+
+  -- The boot side of a hydrate: the captured cut seeds a fresh committed
+  -- generation as one payload and both artifact facts.
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 2)
+    pool:seedCommittedGeneration(cut.entries, cut.artifacts)
+  end)
+  local seeded = assert(pool:cacheFs():resolveAsset(ownedPath), "a hydrated cut carries the payload")
+  Assert.equal(seeded.data:getString(), "overlapped")
+  local seededFacts = assert(pool:artifactFacts())
+  for _, key in ipairs({ "71", "72" }) do
+    Assert.notNil(ArtifactState.read(seededFacts, "map", key), "a hydrated cut keeps its fact: " .. key)
+  end
+  pool:shutdown()
 end
 
 function T.shutdown_is_idempotent_and_joins_workers()
@@ -673,6 +834,7 @@ function T.plain_worker_failures_keep_their_message()
       jobKey = "map:60",
       priority = 0,
       sizeClass = "normal",
+      dependencies = {},
       payload = { mapId = 60 },
     })
     instance:update()
@@ -682,15 +844,15 @@ function T.plain_worker_failures_keep_their_message()
   for index = 2, #channels do
     inputChannels[#inputChannels + 1] = channels[index]
   end
-  local stageName, workerId = nil, nil
+  local dispatchId, workerId = nil, nil
   for offset, channel in ipairs(inputChannels) do
     local dispatched = channel:pop()
     if type(dispatched) == "table" and dispatched.jobKey == "map:60" then
-      stageName = dispatched.stageName
+      dispatchId = dispatched.dispatchId
       workerId = offset
     end
   end
-  Assert.notNil(stageName, "the pool dispatched the job with a stage name")
+  Assert.notNil(dispatchId, "the pool dispatched the job with its dispatch identity")
   Assert.notNil(workerId, "the pool dispatched the job to a known worker")
   local backend = withLove(fakeLove, function()
     return ScopedFs.loveBackend()
@@ -703,9 +865,9 @@ function T.plain_worker_failures_keep_their_message()
     kind = "map",
     key = "60",
     jobKey = "map:60",
-    stageName = stageName,
+    dispatchId = dispatchId,
   })
-  artifact:finishFailure("plain worker boom")
+  local cause = artifact:finishFailure("plain worker boom")
   resultChannel:push({
     workerId = workerId,
     epoch = 1,
@@ -713,8 +875,9 @@ function T.plain_worker_failures_keep_their_message()
     kind = "map",
     key = "60",
     jobKey = "map:60",
-    stageName = stageName,
+    dispatchId = dispatchId,
     status = "failed",
+    error = cause.message,
   })
   withLove(fakeLove, function()
     pool:update()
@@ -832,6 +995,7 @@ function T.unstaged_worker_failures_keep_their_worker_cause()
       jobKey = "map:60",
       priority = 0,
       sizeClass = "normal",
+      dependencies = {},
       payload = { mapId = 60 },
     })
     instance:request({
@@ -843,6 +1007,7 @@ function T.unstaged_worker_failures_keep_their_worker_cause()
       jobKey = "map:61",
       priority = 0,
       sizeClass = "normal",
+      dependencies = {},
       payload = { mapId = 61 },
     })
     instance:update()
@@ -870,7 +1035,7 @@ function T.unstaged_worker_failures_keep_their_worker_cause()
     kind = "map",
     key = "60",
     jobKey = "map:60",
-    stageName = first.stageName,
+    dispatchId = first.dispatchId,
     status = "failed",
     error = "synthetic compile boom",
   })
@@ -897,7 +1062,7 @@ function T.unstaged_worker_failures_keep_their_worker_cause()
     kind = "map",
     key = "61",
     jobKey = "map:61",
-    stageName = second.stageName,
+    dispatchId = second.dispatchId,
     status = "failed",
     error = {
       code = "BAG_SOURCE_INVALID",
@@ -930,65 +1095,6 @@ function T.unstaged_worker_failures_keep_their_worker_cause()
   )
   pool:shutdown()
 end
-
-function T.dispatched_stages_skip_names_left_by_an_earlier_process()
-  local CompilerPool = requirePool()
-  local host = newThreadHost(4)
-  local pool = assert(withLove(host.love, function()
-    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
-  end))
-  local nonce = pool.nonce
-  Assert.equal(type(nonce), "number", "the pool carries its process-local allocation identity")
-  local generation = "orphan-stage-generation"
-  local occupied = {}
-  withLove(host.love, function()
-    for suffix = 1, 8 do
-      local name = string.format("run%d-w1-j%d", nonce, suffix)
-      occupied[#occupied + 1] = name
-      CacheFs.forArtifactStage("heartgold", name):write("orphan", "busy")
-    end
-    CacheFs.forVersion("heartgold"):write("maps/61/complete", "live")
-  end)
-  withLove(host.love, function()
-    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
-    pool:request({
-      generationId = generation,
-      epoch = 1,
-      versionId = "heartgold",
-      kind = "map",
-      key = "61",
-      jobKey = "map:61",
-      priority = 10,
-      sizeClass = "normal",
-      payload = { mapId = 61 },
-    })
-    pool:update()
-  end)
-  local dispatched = host.channels[2]:pop()
-  Assert.notNil(dispatched, "the pool dispatched the job to the first worker")
-  assert(type(dispatched) == "table", "a dispatched job is a record")
-  local stageName = assert(dispatched.stageName, "dispatched work carries its stage identity")
-  withLove(host.love, function()
-    Assert.isNil(
-      CacheFs.forArtifactStage("heartgold", stageName):read("orphan"),
-      "the dispatched stage is absent from the version staging namespace"
-    )
-    for _, name in ipairs(occupied) do
-      Assert.equal(
-        CacheFs.forArtifactStage("heartgold", name):read("orphan"),
-        "busy",
-        "an earlier stage is left untouched: " .. name
-      )
-    end
-    Assert.equal(
-      CacheFs.forVersion("heartgold"):read("maps/61/complete"),
-      "live",
-      "live bytes stay untouched until a valid publication"
-    )
-  end)
-  pool:shutdown()
-end
-
 -- A worker thread that stops behind a real command keeps truthful evidence:
 -- The command preserves a worker failure recorded by the pool and joins the
 -- worker exactly once. Real command, session, dependencies, and pool; only
@@ -1048,6 +1154,7 @@ function T.large_backlog_dispatch_preserves_order_without_whole_queue_sort()
       jobKey = "map:" .. key,
       priority = priority,
       sizeClass = sizeClass or "normal",
+      dependencies = {},
       payload = { mapId = mapId },
     }
   end
@@ -1061,8 +1168,9 @@ function T.large_backlog_dispatch_preserves_order_without_whole_queue_sort()
     pool:request(mapJob("31203", 31203, 0))
     pool:request(mapJob("30001", 30001, 0))
     local realSort = table.sort
-    table.sort = function()
-      error("hot-path whole-queue sort during dispatch", 0)
+    table.sort = function(list)
+      assert(#list <= 16, "hot-path whole-queue sort during dispatch")
+      return realSort(list)
     end
     local ok, sortFailure = pcall(function()
       pool:update()
@@ -1104,6 +1212,7 @@ function T.stronger_priority_dispatches_first_without_sort()
       jobKey = "map:" .. key,
       priority = priority,
       sizeClass = sizeClass,
+      dependencies = {},
       payload = { mapId = mapId },
     }
   end
@@ -1118,8 +1227,9 @@ function T.stronger_priority_dispatches_first_without_sort()
     pool:request(mapJob("32003", 32003, 100, "normal"))
     pool:request(mapJob("32004", 32004, 0, "normal"))
     local realSort = table.sort
-    table.sort = function()
-      error("hot-path whole-queue sort during dispatch", 0)
+    table.sort = function(list)
+      assert(#list <= 16, "hot-path whole-queue sort during dispatch")
+      return realSort(list)
     end
     local ok, sortFailure = pcall(function()
       pool:update()
@@ -1164,6 +1274,7 @@ function T.promotion_stale_nodes_never_dispatch_and_retry_takes_a_fresh_sequence
       jobKey = "map:" .. key,
       priority = priority,
       sizeClass = "normal",
+      dependencies = {},
       payload = { mapId = mapId },
     }
   end
@@ -1179,7 +1290,7 @@ function T.promotion_stale_nodes_never_dispatch_and_retry_takes_a_fresh_sequence
     local dispatched = host.channels[2]:pop()
     assert(type(dispatched) == "table", "the worker received a job record")
     dispatchedOrder[#dispatchedOrder + 1] = assert(dispatched.jobKey, "dispatched work names its job")
-    local stageName = assert(dispatched.stageName, "dispatched work carries its stage identity")
+    local dispatchId = assert(dispatched.dispatchId, "dispatched work carries its stage identity")
     host.channels[1]:push({
       workerId = 1,
       epoch = 1,
@@ -1187,7 +1298,7 @@ function T.promotion_stale_nodes_never_dispatch_and_retry_takes_a_fresh_sequence
       kind = "map",
       key = "33001",
       jobKey = "map:33001",
-      stageName = stageName,
+      dispatchId = dispatchId,
       status = "failed",
     })
     pool:update()
@@ -1205,7 +1316,7 @@ function T.promotion_stale_nodes_never_dispatch_and_retry_takes_a_fresh_sequence
       kind = "map",
       key = "33002",
       jobKey = "map:33002",
-      stageName = assert(runningMessage.stageName, "dispatched work carries its stage identity"),
+      dispatchId = assert(runningMessage.dispatchId, "dispatched work carries its stage identity"),
       status = "failed",
     })
     pool:update()
@@ -1219,7 +1330,7 @@ function T.promotion_stale_nodes_never_dispatch_and_retry_takes_a_fresh_sequence
       kind = "map",
       key = "33003",
       jobKey = "map:33003",
-      stageName = assert(thirdMessage.stageName, "dispatched work carries its stage identity"),
+      dispatchId = assert(thirdMessage.dispatchId, "dispatched work carries its stage identity"),
       status = "failed",
     })
     pool:update()
@@ -1261,6 +1372,7 @@ function T.physical_occupancy_pins_prepared_results_across_retirement_and_late_c
       jobKey = "map:" .. key,
       priority = priority,
       sizeClass = sizeClass,
+      dependencies = {},
       payload = { mapId = mapId },
     }
   end
@@ -1274,7 +1386,7 @@ function T.physical_occupancy_pins_prepared_results_across_retirement_and_late_c
     Assert.equal(pool:status("map:62"), "running", "a normal job overlaps the heavy job")
     local normalMessage = host.channels[3]:pop()
     assert(type(normalMessage) == "table", "the second worker received the normal job")
-    local normalStage = assert(normalMessage.stageName, "dispatched work carries its stage identity")
+    local normalStage = assert(normalMessage.dispatchId, "dispatched work carries its stage identity")
     host.channels[1]:push({
       workerId = 2,
       epoch = 1,
@@ -1282,7 +1394,7 @@ function T.physical_occupancy_pins_prepared_results_across_retirement_and_late_c
       kind = "map",
       key = "62",
       jobKey = "map:62",
-      stageName = normalStage,
+      dispatchId = normalStage,
       status = "failed",
     })
     pool:update()
@@ -1304,7 +1416,7 @@ function T.physical_occupancy_pins_prepared_results_across_retirement_and_late_c
     )
     local heavyMessage = host.channels[2]:pop()
     assert(type(heavyMessage) == "table", "the first worker received the heavy job")
-    local heavyStage = assert(heavyMessage.stageName, "dispatched work carries its stage identity")
+    local heavyStage = assert(heavyMessage.dispatchId, "dispatched work carries its stage identity")
     host.channels[1]:push({
       workerId = 1,
       epoch = 1,
@@ -1312,7 +1424,7 @@ function T.physical_occupancy_pins_prepared_results_across_retirement_and_late_c
       kind = "map",
       key = "61",
       jobKey = "map:61",
-      stageName = heavyStage,
+      dispatchId = heavyStage,
       status = "prepared",
       compileSeconds = 1,
       stageSeconds = 1,
@@ -1342,7 +1454,7 @@ function T.physical_occupancy_pins_prepared_results_across_retirement_and_late_c
     )
     local retiredMessage = host.channels[3]:pop()
     assert(type(retiredMessage) == "table", "the retired job reached the second worker")
-    local retiredStage = assert(retiredMessage.stageName, "retired work carries its stage identity")
+    local retiredStage = assert(retiredMessage.dispatchId, "retired work carries its stage identity")
     host.channels[1]:push({
       workerId = 2,
       epoch = 1,
@@ -1350,7 +1462,7 @@ function T.physical_occupancy_pins_prepared_results_across_retirement_and_late_c
       kind = "map",
       key = "63",
       jobKey = "map:63",
-      stageName = retiredStage,
+      dispatchId = retiredStage,
       status = "failed",
     })
     pool:update()
@@ -1360,241 +1472,85 @@ function T.physical_occupancy_pins_prepared_results_across_retirement_and_late_c
   end)
   pool:shutdown()
 end
-
--- A worker reuse completion carries no stage and publishes nothing: the
--- pool marks the current-epoch record ready at once and frees the worker
--- for the next dispatch.
-function T.reused_completions_become_ready_without_publication()
-  local CompilerPool = requirePool()
-  local host = newThreadHost(2)
-  local pool = assert(withLove(host.love, function()
-    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
-  end))
-  local generation = "reuse-completion-generation"
-  local job = {
-    generationId = generation,
-    epoch = 1,
-    versionId = "heartgold",
-    kind = "map",
-    key = "60",
-    jobKey = "map:60",
-    priority = 0,
-    sizeClass = "normal",
-    payload = { mapId = 60 },
-  }
-  withLove(host.love, function()
-    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
-    pool:request(job)
-    pool:update()
-  end)
-  Assert.equal(pool:status("map:60"), "running", "the job dispatches to a worker")
-  local dispatched = host.channels[2]:pop()
-  assert(type(dispatched) == "table", "the worker received the job")
-  local stageName = assert(dispatched.stageName, "dispatched work carries its stage identity")
-  host.channels[1]:push({
-    workerId = 1,
-    epoch = 1,
-    generationId = generation,
-    kind = "map",
-    key = "60",
-    jobKey = "map:60",
-    stageName = stageName,
-    status = "reused",
-    workSeconds = 0,
-    timingReason = "reused",
-    retiring = false,
-  })
-  withLove(host.love, function()
-    pool:update()
-  end)
-  Assert.equal(pool:status("map:60"), "ready", "the reused result settles ready")
-  Assert.equal(pool:diagnostics().pendingPublications, 0, "reuse enters no publication queue")
-  local followup = {
-    generationId = generation,
-    epoch = 1,
-    versionId = "heartgold",
-    kind = "map",
-    key = "61",
-    jobKey = "map:61",
-    priority = 0,
-    sizeClass = "normal",
-    payload = { mapId = 61 },
-  }
-  withLove(host.love, function()
-    pool:request(followup)
-    pool:update()
-  end)
-  Assert.equal(pool:status("map:61"), "running", "the reuse freed its worker for new work")
-  pool:shutdown()
-end
-
--- A reused jumbo validation retires no worker: the VM stays available
--- for the next dispatch instead of recycling.
-function T.reused_jumbo_completions_keep_their_worker()
-  local CompilerPool = requirePool()
-  local host = newThreadHost(2)
-  local pool = assert(withLove(host.love, function()
-    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
-  end))
-  local generation = "reuse-jumbo-generation"
-  local job = {
-    generationId = generation,
-    epoch = 1,
-    versionId = "heartgold",
-    kind = "map",
-    key = "70",
-    jobKey = "map:70",
-    priority = 0,
-    sizeClass = "jumbo",
-    payload = { mapId = 70 },
-  }
-  withLove(host.love, function()
-    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
-    pool:request(job)
-    pool:update()
-  end)
-  Assert.equal(pool:status("map:70"), "running", "the jumbo job dispatches while idle")
-  local dispatched = host.channels[2]:pop()
-  assert(type(dispatched) == "table", "the worker received the jumbo job")
-  host.channels[1]:push({
-    workerId = 1,
-    epoch = 1,
-    generationId = generation,
-    kind = "map",
-    key = "70",
-    jobKey = "map:70",
-    stageName = assert(dispatched.stageName, "dispatched work carries its stage identity"),
-    status = "reused",
-    workSeconds = 0,
-    timingReason = "reused",
-    retiring = false,
-  })
-  withLove(host.love, function()
-    pool:update()
-  end)
-  Assert.equal(pool:status("map:70"), "ready", "the reused jumbo settles ready")
-  local followup = {
-    generationId = generation,
-    epoch = 1,
-    versionId = "heartgold",
-    kind = "map",
-    key = "71",
-    jobKey = "map:71",
-    priority = 0,
-    sizeClass = "jumbo",
-    payload = { mapId = 71 },
-  }
-  withLove(host.love, function()
-    pool:request(followup)
-    pool:update()
-  end)
-  Assert.equal(pool:status("map:71"), "running", "a reuse-only jumbo retires no worker VM")
-  pool:shutdown()
-end
-
--- A late reuse from a retired selection can never become ready: the
--- stale result is cancelled and no live root moves.
-function T.stale_reused_completions_cannot_publish()
-  local CompilerPool = requirePool()
-  local host = newThreadHost(2)
-  local pool = assert(withLove(host.love, function()
-    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
-  end))
-  local generation = "stale-reuse-generation"
-  local job = {
-    generationId = generation,
-    epoch = 1,
-    versionId = "heartgold",
-    kind = "map",
-    key = "60",
-    jobKey = "map:60",
-    priority = 0,
-    sizeClass = "normal",
-    payload = { mapId = 60 },
-  }
-  local stageName = nil
-  withLove(host.love, function()
-    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
-    pool:request(job)
-    pool:update()
-  end)
-  local dispatched = host.channels[2]:pop()
-  assert(type(dispatched) == "table", "the worker received the job")
-  stageName = assert(dispatched.stageName, "dispatched work carries its stage identity")
-  withLove(host.love, function()
-    Assert.isTrue(pool:retireSelection(1), "the selection retires while the worker runs")
-  end)
-  host.channels[1]:push({
-    workerId = 1,
-    epoch = 1,
-    generationId = generation,
-    kind = "map",
-    key = "60",
-    jobKey = "map:60",
-    stageName = stageName,
-    status = "reused",
-    workSeconds = 0,
-    timingReason = "reused",
-    retiring = false,
-  })
-  withLove(host.love, function()
-    pool:update()
-  end)
-  Assert.equal(pool:status("map:60"), "cancelled", "the retired reuse never becomes ready")
-  Assert.equal(pool:diagnostics().pendingPublications, 0, "the stale reuse enters no publication queue")
-  pool:shutdown()
-end
-
--- Controller publication is metadata and renames only: with backend
--- counters armed after the worker-side finish, publishing a prepared
--- artifact with owned and shared payload reads and writes no payload
--- bytes while the final live bytes equal the staged bytes.
+-- Controller publication is a move, not a copy: the committed bytes are the
+-- worker's own immutable buffers, the reader serves those buffers, and no host
+-- file is read or written for them.
 function T.controller_publication_moves_payload_without_byte_copies()
-  local prepared = requirePreparedArtifact()
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
+  local CompilerPool = requirePool()
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local host = newThreadHost(2)
+  host.love.data = hostLove.data
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
   local generation = "payload-free-publication-generation"
-  local artifact = prepared.new({
-    cacheFs = cache,
-    generationId = generation,
-    epoch = 1,
-    kind = "map",
-    key = "60",
-    jobKey = "map:60",
-    stageName = "payload-free-stage",
-  })
-  local scene = string.rep("scene-payload", 64)
-  local shared = string.rep("shared-payload", 64)
-  artifact:stageFs():write("maps/60/scene.lua", scene)
-  artifact:addOwnedRoot("maps/60")
-  artifact:stageFs():write("geometry/shared", shared)
-  artifact:addSharedFile("geometry/shared")
-  artifact:finishSuccess({ mapId = 60, marker = "payload-free-marker" })
-  local reads, writes = {}, {}
-  local realBackendRead = backend.read
-  local realBackendWrite = backend.write
-  backend.read = function(self, path)
-    reads[#reads + 1] = path
-    return realBackendRead(self, path)
+  local scenePath = "data/generated/maps/60/scene.lua"
+  local sharedPath = "data/generated/geometry/shared"
+  local function bytes(text)
+    return assert(hostLove.data.newByteData(text))
   end
-  backend.write = function(self, path, data)
+  local scene = bytes(string.rep("scene-payload", 64))
+  local shared = bytes(string.rep("shared-payload", 64))
+  local writes, reads = {}, {}
+  local filesystem = host.love.filesystem
+  local realWrite, realRead = filesystem.write, filesystem.read
+  filesystem.write = function(path, data)
     writes[#writes + 1] = path
-    return realBackendWrite(self, path, data)
+    return realWrite(path, data)
+  end
+  filesystem.read = function(path)
+    reads[#reads + 1] = path
+    return realRead(path)
   end
   local ok, failure = pcall(function()
-    artifact:publish({
-      generationId = generation,
+    withLove(host.love, function()
+      pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
+      pool:request({
+        generationId = generation,
+        epoch = 1,
+        versionId = "heartgold",
+        kind = "map",
+        key = "60",
+        jobKey = "map:60",
+        priority = 0,
+        sizeClass = "normal",
+        dependencies = {},
+        payload = { mapId = 60 },
+      })
+      pool:update()
+    end)
+    local dispatched = assert(host.channels[2]:pop(), "the worker received the job")
+    writes, reads = {}, {}
+    host.channels[1]:push({
+      workerId = 1,
       epoch = 1,
+      generationId = generation,
       kind = "map",
       key = "60",
       jobKey = "map:60",
+      dispatchId = dispatched.dispatchId,
+      status = "prepared",
+      marker = "payload-free-marker",
+      ownedRoots = { "data/generated/maps/60" },
+      sharedPaths = { sharedPath },
+      entries = {
+        { path = scenePath, data = scene, size = scene:getSize() },
+        { path = sharedPath, data = shared, size = shared:getSize() },
+      },
     })
+    withLove(host.love, function()
+      pool:update()
+    end)
   end)
-  backend.read = realBackendRead
-  backend.write = realBackendWrite
+  filesystem.write = realWrite
+  filesystem.read = realRead
   if not ok then
     error(failure, 0)
   end
+  Assert.equal(pool:status("map:60"), "ready", "the sealed result commits")
+  local reader = assert(pool:cacheFs(), "the selected generation owns its resident reader")
+  Assert.isTrue(reader:readData(scenePath) == scene, "the owned payload is the worker's own buffer")
+  Assert.isTrue(reader:readData(sharedPath) == shared, "the shared install is the worker's own buffer")
   for _, path in ipairs(reads) do
     Assert.isFalse(
       path:find("maps/60", 1, true) ~= nil or path:find("geometry/shared", 1, true) ~= nil,
@@ -1607,8 +1563,9 @@ function T.controller_publication_moves_payload_without_byte_copies()
       "controller publication copies no payload bytes: " .. tostring(path)
     )
   end
-  Assert.equal(cache:read("maps/60/scene.lua"), scene, "the owned payload moves intact")
-  Assert.equal(cache:read("geometry/shared"), shared, "the shared install lands intact")
+  Assert.equal(reader:readData(scenePath):getString(), scene:getString(), "the owned payload moves intact")
+  Assert.equal(reader:readData(sharedPath):getString(), shared:getString(), "the shared install lands intact")
+  pool:shutdown()
 end
 
 local function selectedInteractivePool(host, generation)
@@ -1632,6 +1589,7 @@ local function activityMapJob(generation, key, mapId, priority)
     jobKey = "map:" .. key,
     priority = priority,
     sizeClass = "normal",
+    dependencies = {},
     payload = { mapId = mapId },
   }
 end
@@ -1674,7 +1632,7 @@ function T.queued_worker_reply_reports_runnable_without_consuming_it()
     pool:update()
   end)
   local dispatched = assert(host.channels[2]:pop(), "the worker received its job record")
-  local stageName = assert(dispatched.stageName, "dispatched work carries its stage identity")
+  local dispatchId = assert(dispatched.dispatchId, "dispatched work carries its stage identity")
   host.channels[1]:push({
     workerId = 1,
     epoch = 1,
@@ -1682,7 +1640,7 @@ function T.queued_worker_reply_reports_runnable_without_consuming_it()
     kind = "map",
     key = "60",
     jobKey = "map:60",
-    stageName = stageName,
+    dispatchId = dispatchId,
     status = "failed",
   })
   Assert.equal(host.channels[1]:getCount(), 1, "the reply waits on the result channel")
@@ -1702,7 +1660,7 @@ function T.prepared_completion_reports_runnable_before_publication()
     pool:update()
   end)
   local dispatched = assert(host.channels[2]:pop(), "the worker received its job record")
-  local stageName = assert(dispatched.stageName, "dispatched work carries its stage identity")
+  local dispatchId = assert(dispatched.dispatchId, "dispatched work carries its stage identity")
   host.channels[1]:push({
     workerId = 1,
     epoch = 1,
@@ -1710,7 +1668,7 @@ function T.prepared_completion_reports_runnable_before_publication()
     kind = "map",
     key = "60",
     jobKey = "map:60",
-    stageName = stageName,
+    dispatchId = dispatchId,
     status = "prepared",
   })
   withLove(host.love, function()
@@ -1854,6 +1812,7 @@ local function sourceMapJob(versionId, generation, epoch, key, mapId, priority)
     jobKey = "map:" .. key,
     priority = priority,
     sizeClass = "normal",
+    dependencies = {},
     payload = { mapId = mapId },
   }
 end
@@ -1886,7 +1845,7 @@ local function reportSourceNeeded(host, workerId, dispatched, epoch, generation)
     kind = dispatched.kind,
     key = dispatched.key,
     jobKey = dispatched.jobKey,
-    stageName = dispatched.stageName,
+    dispatchId = dispatched.dispatchId,
   })
 end
 
@@ -1923,24 +1882,36 @@ local function assertSharedSupply(supply, data, owner)
   return answered
 end
 
-local function stageOwnedMap(versionId, generation, epoch, key, stageName)
+-- The sealed output one compiled map carries back to the controller: a
+-- private entry list plus the completion fact, exactly as the worker reports
+-- it. The bytes never touch a host file.
+local function sealedMapOutput(cacheFs, generation, epoch, key)
   local prepared = requirePreparedArtifact()
-  local cache = CacheFs.forVersion(versionId)
   local artifact = prepared.new({
-    cacheFs = cache,
+    cacheFs = cacheFs,
     generationId = generation,
     epoch = epoch,
     kind = "map",
     key = key,
     jobKey = "map:" .. key,
-    stageName = stageName,
   })
-  artifact:stageFs():write("maps/" .. key .. "/complete", "ready")
-  artifact:addOwnedRoot("maps/" .. key)
+  artifact:write("data/generated/maps/" .. key .. "/complete", "ready")
+  artifact:addOwnedRoot("data/generated/maps/" .. key)
   artifact:finishSuccess({ mapId = tonumber(key), marker = "sweep-marker" })
+  local sealed = artifact:sealed()
+  local entry = assert(sealed.entries[1], "a sealed map carries its output")
+  return {
+    path = entry.path,
+    data = entry.data,
+    size = entry.data:getSize(),
+    marker = sealed.marker,
+    ownedRoots = sealed.ownedRoots,
+    sharedPaths = sealed.sharedPaths,
+  }
 end
 
-local function pushPrepared(host, workerId, epoch, generation, key, stageName)
+local function pushPrepared(host, workerId, epoch, generation, key, dispatchId, cacheFs)
+  local output = sealedMapOutput(cacheFs, generation, epoch, key)
   host.channels[1]:push({
     workerId = workerId,
     epoch = epoch,
@@ -1948,21 +1919,12 @@ local function pushPrepared(host, workerId, epoch, generation, key, stageName)
     kind = "map",
     key = key,
     jobKey = "map:" .. key,
-    stageName = stageName,
+    dispatchId = dispatchId,
     status = "prepared",
-  })
-end
-
-local function pushReused(host, workerId, epoch, generation, key, stageName)
-  host.channels[1]:push({
-    workerId = workerId,
-    epoch = epoch,
-    generationId = generation,
-    kind = "map",
-    key = key,
-    jobKey = "map:" .. key,
-    stageName = stageName,
-    status = "reused",
+    marker = output.marker,
+    ownedRoots = output.ownedRoots,
+    sharedPaths = output.sharedPaths,
+    entries = { { path = output.path, data = output.data, size = output.size } },
   })
 end
 
@@ -2035,14 +1997,13 @@ end
 
 -- The complete sweep keeps its scheduling from a direct source: the
 -- required job overtakes background admission, every planned member
--- settles with its receipt on disk, and settling ready work evicts
--- nothing. The required miss compiles through the one shared buffer;
--- background hits reuse without source traffic.
+-- settles in memory, and settling ready work evicts nothing. The required
+-- miss compiles through the one shared buffer; a background member settles
+-- from its own in-memory result without source traffic.
 function T.background_sweep_compiles_from_shared_source_without_evicting_ready_work()
   local CompilerPool = requirePool()
   local RomSource = require("romdump.src.source.RomSource")
   local RomBinding = require("romdump.src.source.RomBinding")
-  local ArtifactState = require("romdump.src.build.ArtifactState")
   local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
   withDirectSourceSelection("synthsweep", "IXS3", function(selection)
     local host = newThreadHost(4)
@@ -2064,15 +2025,6 @@ function T.background_sweep_compiles_from_shared_source_without_evicting_ready_w
           zipEntry = false,
         })
         Assert.notNil(recorded, "the binding registers the synthetic ROM: " .. tostring(recordErr))
-        for _, key in ipairs({ "61", "62" }) do
-          cache:writeLua(ArtifactState.path("map", key), {
-            schema = ArtifactState.RECEIPT_SCHEMA,
-            generationId = "sweep-generation",
-            kind = "map",
-            key = key,
-            marker = "sweep-seed",
-          })
-        end
         pool:selectGeneration({ versionId = "synthsweep", generationId = "sweep-generation" }, 1)
         pool:request(sourceMapJob("synthsweep", "sweep-generation", 1, "60", 60, 0))
         pool:request(sourceMapJob("synthsweep", "sweep-generation", 1, "61", 61, 100))
@@ -2082,9 +2034,10 @@ function T.background_sweep_compiles_from_shared_source_without_evicting_ready_w
         Assert.equal(required.jobKey, "map:60", "the required job overtakes background admission")
         local background = dispatchedJob(host, 2)
         Assert.equal(background.jobKey, "map:61", "background work still admits beside the required job")
-        pushReused(host, 2, 1, "sweep-generation", "61", background.stageName)
+        pushPrepared(host, 2, 1, "sweep-generation", "61", background.dispatchId, pool:cacheFs())
         pool:update()
-        Assert.equal(pool:status("map:61"), "ready", "the background hit reuses without source traffic")
+        Assert.equal(pool:status("map:61"), "ready", "the background member settles without source traffic")
+        Assert.equal(fromPathCalls, 0, "a settled background member acquires no source")
         reportSourceNeeded(host, 1, required, 1, "sweep-generation")
         local driveOk, driveErr = pcall(function()
           pool:update()
@@ -2097,13 +2050,12 @@ function T.background_sweep_compiles_from_shared_source_without_evicting_ready_w
         end
         local supply = findSupply(drainMessages(host, 1))
         assertSharedSupply(supply, selection.data, "the required miss")
-        stageOwnedMap("synthsweep", "sweep-generation", 1, "60", required.stageName)
-        pushPrepared(host, 1, 1, "sweep-generation", "60", required.stageName)
+        pushPrepared(host, 1, 1, "sweep-generation", "60", required.dispatchId, pool:cacheFs())
         pool:update()
         Assert.equal(pool:status("map:60"), "ready", "the required miss compiles and publishes")
         local last = dispatchedJob(host, 2)
         Assert.equal(last.jobKey, "map:62", "the sweep continues through every planned member")
-        pushReused(host, 2, 1, "sweep-generation", "62", last.stageName)
+        pushPrepared(host, 2, 1, "sweep-generation", "62", last.dispatchId, pool:cacheFs())
         pool:update()
         local diagnostics = pool:diagnostics()
         pcall(function()
@@ -2190,10 +2142,8 @@ function T.source_release_waits_for_every_borrower_close_then_reacquires_on_dema
         local sharedBuffer = firstSupply.romByteData
         -- Both jobs settle with the sweep exhausted and no further
         -- interest: the pool must now ask every borrower to close.
-        stageOwnedMap("synthrelease", "release-generation", 1, "60", first.stageName)
-        stageOwnedMap("synthrelease", "release-generation", 1, "61", second.stageName)
-        pushPrepared(host, 1, 1, "release-generation", "60", first.stageName)
-        pushPrepared(host, 2, 1, "release-generation", "61", second.stageName)
+        pushPrepared(host, 1, 1, "release-generation", "60", first.dispatchId, pool:cacheFs())
+        pushPrepared(host, 2, 1, "release-generation", "61", second.dispatchId, pool:cacheFs())
         pool:update(math.huge)
         Assert.equal(pool:status("map:60"), "ready", "the first job settles")
         Assert.equal(pool:status("map:61"), "ready", "the second job settles")
@@ -2237,7 +2187,7 @@ function T.source_release_waits_for_every_borrower_close_then_reacquires_on_dema
           kind = "map",
           key = "60",
           jobKey = "map:60",
-          stageName = first.stageName,
+          dispatchId = first.dispatchId,
         })
         local staleOk, staleErr = pcall(function()
           pool:update()
@@ -2350,7 +2300,7 @@ function T.duplicate_and_unknown_source_requests_acquire_nothing_extra()
           kind = "map",
           key = "60",
           jobKey = "map:60",
-          stageName = first.stageName,
+          dispatchId = first.dispatchId,
         })
         local strangerOk, strangerErr = pcall(function()
           pool:update()
@@ -2442,8 +2392,7 @@ function T.source_release_waits_for_settled_sweep_work_before_closing_borrowers(
         reportSourceNeeded(host, 1, first, 1, "hold-generation")
         pool:update()
         assertSharedSupply(findSupply(drainMessages(host, 1)), selection.data, "the borrower")
-        stageOwnedMap("synthhold", "hold-generation", 1, "60", first.stageName)
-        pushPrepared(host, 1, 1, "hold-generation", "60", first.stageName)
+        pushPrepared(host, 1, 1, "hold-generation", "60", first.dispatchId, pool:cacheFs())
         pool:update(math.huge)
         Assert.equal(pool:status("map:60"), "ready", "the job settles")
         Assert.isNil(
@@ -2654,12 +2603,10 @@ function T.boot_hold_release_refuses_stale_epoch()
     pool:shutdown()
   end)
 end
-
 -- A prepared result whose PNG continuation has not written its image yet is
--- not a ready cache entry: the pool keeps the parent unsettled, hands the
--- unwritten image to a sweep-priority continuation, publishes no receipt, and
--- leaves the previously published bytes exactly as they were. A stale reply
--- from an earlier epoch can never settle it either.
+-- not a committed cache entry: the pool keeps the parent unsettled, hands the
+-- unwritten image to a sweep-priority continuation, commits no fact or bytes,
+-- and a late reply from an earlier attempt can never settle it.
 function T.deferred_png_continuation_gates_parent_publication()
   local CompilerPool = requirePool()
   local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
@@ -2667,16 +2614,14 @@ function T.deferred_png_continuation_gates_parent_publication()
   local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
   local host = newThreadHost(2)
   host.love.data = hostLove.data
-  -- Publication renames staged trees, so this scenario uses the real cache
-  -- backend under a private version root instead of the in-memory host.
-  host.love.filesystem = hostLove.filesystem
-  local versionId = "deferred-png-publication-test"
+  local versionId = "heartgold"
   local generation = "deferred-png-publication-generation"
+  local scenePath = "data/generated/maps/60/scene.lua"
+  local imagePath = "data/generated/maps/60/atlas.png"
   local pool = assert(withLove(host.love, function()
     return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
   end))
-
-  local imagePath = "maps/60/atlas.png"
+  local sceneBytes = assert(hostLove.data.newByteData("return { mapId = 60 }\n"))
   local pendingImage = {
     relativePath = imagePath,
     width = 1,
@@ -2685,28 +2630,6 @@ function T.deferred_png_continuation_gates_parent_publication()
   }
   local ok, err = pcall(function()
     withLove(host.love, function()
-      local cache = CacheFs.forVersion(versionId)
-      local olderGeneration = "deferred-png-older-generation"
-      local published = requirePreparedArtifact().new({
-        cacheFs = cache,
-        generationId = olderGeneration,
-        epoch = 1,
-        kind = "map",
-        key = "60",
-        jobKey = "map:60",
-        stageName = "deferred-png-older-stage",
-      })
-      published:stageFs():write("maps/60/complete", "previously-published-marker")
-      published:addOwnedRoot("maps/60")
-      published:finishSuccess({ mapId = 60, marker = "previously-published-marker" })
-      published:publish({
-        generationId = olderGeneration,
-        epoch = 1,
-        kind = "map",
-        key = "60",
-        jobKey = "map:60",
-      })
-
       pool:selectGeneration({ versionId = versionId, generationId = generation }, 1)
       pool:request({
         generationId = generation,
@@ -2717,14 +2640,14 @@ function T.deferred_png_continuation_gates_parent_publication()
         jobKey = "map:60",
         priority = 0,
         sizeClass = "normal",
+        dependencies = {},
         payload = { mapId = 60 },
       })
       pool:update()
       Assert.equal(pool:status("map:60"), "running", "the map job dispatches to a worker")
       local dispatchedWork = assert(host.channels[2]:pop(), "the worker received the job")
-      local stageName = assert(dispatchedWork.stageName, "dispatched work carries its stage identity")
+      local dispatchId = assert(dispatchedWork.dispatchId, "dispatched work carries its dispatch identity")
 
-      stageOwnedMap(versionId, generation, 1, "60", stageName)
       host.channels[1]:push({
         workerId = 1,
         epoch = 1,
@@ -2732,9 +2655,13 @@ function T.deferred_png_continuation_gates_parent_publication()
         kind = "map",
         key = "60",
         jobKey = "map:60",
-        stageName = stageName,
-        status = "prepared",
-        pendingImages = { pendingImage },
+        dispatchId = dispatchId,
+        status = "images-pending",
+        marker = "deferred-png-marker",
+        ownedRoots = { "data/generated/maps/60" },
+        sharedPaths = {},
+        entries = { { path = scenePath, data = sceneBytes, size = sceneBytes:getSize() } },
+        images = { pendingImage },
       })
       pool:update()
       pool:update()
@@ -2745,28 +2672,28 @@ function T.deferred_png_continuation_gates_parent_publication()
         "a parent with an unwritten deferred image stays pending: " .. tostring(pendingState)
       )
       Assert.isNil(
-        ArtifactState.read(cache, generation, "map", "60"),
-        "no current receipt exists while the deferred png is unwritten"
+        ArtifactState.read(pool:artifactFacts(), "map", "60"),
+        "no committed fact exists while the deferred image is unwritten"
       )
-      Assert.equal(
-        cache:read("maps/60/complete"),
-        "previously-published-marker",
-        "the previously published bytes stay untouched until publication"
-      )
+      Assert.isNil(pool:cacheFs():resolveAsset(scenePath), "no payload byte is committed before the continuation")
 
       local continuation = assert(host.channels[2]:pop(), "the pool hands the unwritten image to a continuation")
       Assert.equal(continuation.kind, "encode-png", "the continuation is the pool's private png encode task")
       Assert.equal(continuation.jobKey, "map:60", "the continuation names its owning parent job")
-      Assert.equal(continuation.stageName, stageName, "the continuation writes into the parent's stage")
+      Assert.equal(continuation.dispatchId, dispatchId, "the continuation resumes the parent's dispatch attempt")
       Assert.equal(
         continuation.priority,
         ArtifactJobs.priorityFor("sweep"),
         "png encoding continues at the existing sweep priority"
       )
-      local images = assert(continuation.pendingImages, "the continuation carries the unwritten images")
+      local images = assert(continuation.pending and continuation.pending.images, "the continuation carries the unwritten images")
       Assert.equal(#images, 1, "each unwritten image is handed over once")
-      Assert.equal(images[1].relativePath, imagePath, "the continuation keeps the staged output path")
+      Assert.equal(images[1].relativePath, imagePath, "the continuation keeps the pending output path")
+      local carried = assert(continuation.pending.entries, "the continuation carries the parent's private output")
+      Assert.equal(carried[1].path, scenePath, "the continuation keeps the parent's committed-scene output")
 
+      -- A result for an attempt this worker no longer owns cannot settle the
+      -- pinned parent: it is dropped with its own references.
       host.channels[1]:push({
         workerId = 1,
         epoch = 999,
@@ -2774,37 +2701,24 @@ function T.deferred_png_continuation_gates_parent_publication()
         kind = "map",
         key = "60",
         jobKey = "map:60",
-        stageName = stageName,
+        dispatchId = dispatchId + 1000,
         status = "prepared",
-        pendingImages = { pendingImage },
+        marker = "stale-marker",
+        ownedRoots = { "data/generated/maps/60" },
+        sharedPaths = {},
+        entries = { { path = scenePath, data = sceneBytes, size = sceneBytes:getSize() } },
       })
       pool:update()
       Assert.isTrue(pool:status("map:60") ~= "ready", "a stale result cannot settle the pending parent")
-      Assert.isNil(ArtifactState.read(cache, generation, "map", "60"), "a stale result publishes no current receipt")
-      Assert.equal(
-        cache:read("maps/60/complete"),
-        "previously-published-marker",
-        "a stale result never replaces the published bytes"
-      )
-
-      host.channels[1]:push({
-        workerId = 1,
-        epoch = 998,
-        generationId = generation,
-        kind = "map",
-        key = "60",
-        jobKey = "map:60",
-        stageName = stageName,
-        status = "images-failed",
-        error = "stale continuation failure",
-      })
-      pool:update()
-      Assert.isTrue(pool:status("map:60") ~= "ready", "a stale continuation failure cannot settle the parent")
       Assert.isNil(
-        ArtifactState.read(cache, generation, "map", "60"),
-        "a stale continuation failure publishes no receipt"
+        ArtifactState.read(pool:artifactFacts(), "map", "60"),
+        "a stale result commits no fact"
       )
+      Assert.isNil(pool:cacheFs():resolveAsset(scenePath), "a stale result commits no bytes")
+      pool.fatalError = nil
+      Assert.equal(pool:status("map:60"), "images", "the pinned parent still owns its worker")
 
+      -- The sealed output of the same attempt settles it exactly once.
       host.channels[1]:push({
         workerId = 1,
         epoch = 1,
@@ -2812,79 +2726,99 @@ function T.deferred_png_continuation_gates_parent_publication()
         kind = "map",
         key = "60",
         jobKey = "map:60",
-        stageName = stageName,
-        status = "images-staged",
+        dispatchId = dispatchId,
+        status = "prepared",
+        marker = "deferred-png-marker",
+        ownedRoots = { "data/generated/maps/60" },
+        sharedPaths = {},
+        entries = {
+          { path = scenePath, data = sceneBytes, size = sceneBytes:getSize() },
+          { path = imagePath, data = assert(hostLove.data.newByteData("png-bytes")), size = 9 },
+        },
       })
       pool:update()
       pool:update()
       Assert.equal(pool:status("map:60"), "ready", "the parent settles ready after its continuation completes")
       Assert.notNil(
-        ArtifactState.read(cache, generation, "map", "60"),
-        "exactly one parent receipt publishes after the continuation"
+        ArtifactState.read(pool:artifactFacts(), "map", "60"),
+        "exactly one parent fact publishes after the continuation"
       )
+      Assert.equal(pool:cacheFs():readData(imagePath):getString(), "png-bytes", "the encoded image reaches the store")
       Assert.equal(pool:diagnostics().counts.ready, 1, "the job holds exactly one ready record")
     end)
   end)
   pcall(function()
     pool:shutdown()
   end)
-  pcall(function()
-    CacheFs.forVersion(versionId):removeTree("")
-  end)
   if not ok then
     error(err, 0)
   end
 end
 
--- A failed deferred continuation never publishes the parent and never damages
--- the previously published generation: its stage is discarded and the job
--- settles as failed.
+-- A failed deferred continuation never commits the parent and never damages
+-- the previously committed generation: the private output is dropped and the
+-- job settles as failed.
 function T.deferred_png_continuation_failure_publishes_nothing()
   local CompilerPool = requirePool()
-  local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
   local ArtifactState = require("romdump.src.build.ArtifactState")
   local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
   local host = newThreadHost(2)
   host.love.data = hostLove.data
-  host.love.filesystem = hostLove.filesystem
-  local versionId = "deferred-png-failure-test"
+  local versionId = "heartgold"
   local generation = "deferred-png-failure-generation"
+  local scenePath = "data/generated/maps/61/scene.lua"
   local pool = assert(withLove(host.love, function()
     return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
   end))
-
+  local sceneBytes = assert(hostLove.data.newByteData("return { mapId = 61 }\n"))
   local pendingImage = {
-    relativePath = "maps/61/atlas.png",
+    relativePath = "data/generated/maps/61/atlas.png",
     width = 1,
     height = 1,
     rgba = hostLove.data.newByteData(string.char(1, 2, 3, 255)),
   }
-  local stageName
+  local dispatchId
   local ok, err = pcall(function()
     withLove(host.love, function()
-      local cache = CacheFs.forVersion(versionId)
-      local olderGeneration = "deferred-png-failure-older"
-      local published = requirePreparedArtifact().new({
-        cacheFs = cache,
-        generationId = olderGeneration,
-        epoch = 1,
-        kind = "map",
-        key = "61",
-        jobKey = "map:61",
-        stageName = "deferred-png-failure-older-stage",
-      })
-      published:stageFs():write("maps/61/complete", "previously-published-marker")
-      published:addOwnedRoot("maps/61")
-      published:finishSuccess({ mapId = 61, marker = "previously-published-marker" })
-      published:publish({
-        generationId = olderGeneration,
-        epoch = 1,
-        kind = "map",
-        key = "61",
-        jobKey = "map:61",
-      })
-
+      -- A previously committed map keeps its bytes through the failed rebuild.
       pool:selectGeneration({ versionId = versionId, generationId = generation }, 1)
+      pool:request({
+        generationId = generation,
+        epoch = 1,
+        versionId = versionId,
+        kind = "map",
+        key = "60",
+        jobKey = "map:60",
+        priority = 0,
+        sizeClass = "normal",
+        dependencies = {},
+        payload = { mapId = 60 },
+      })
+      pool:update()
+      local prior = assert(host.channels[2]:pop(), "the worker received the earlier job")
+      host.channels[1]:push({
+        workerId = 1,
+        epoch = 1,
+        generationId = generation,
+        kind = "map",
+        key = "60",
+        jobKey = "map:60",
+        dispatchId = assert(prior.dispatchId),
+        status = "prepared",
+        marker = "previously-published-marker",
+        ownedRoots = { "data/generated/maps/60" },
+        sharedPaths = {},
+        entries = {
+          {
+            path = "data/generated/maps/60/complete",
+            data = assert(hostLove.data.newByteData("previously-published-marker")),
+            size = #"previously-published-marker",
+          },
+        },
+      })
+      pool:update()
+      Assert.equal(pool:status("map:60"), "ready", "the earlier map is committed")
+
       pool:request({
         generationId = generation,
         epoch = 1,
@@ -2894,12 +2828,12 @@ function T.deferred_png_continuation_failure_publishes_nothing()
         jobKey = "map:61",
         priority = 0,
         sizeClass = "normal",
+        dependencies = {},
         payload = { mapId = 61 },
       })
       pool:update()
-      local dispatchedWork = assert(host.channels[2]:pop(), "the worker received the job")
-      stageName = assert(dispatchedWork.stageName, "dispatched work carries its stage identity")
-      stageOwnedMap(versionId, generation, 1, "61", stageName)
+      local dispatchedWork = assert(host.channels[2]:pop(), "the worker received the failing job")
+      dispatchId = assert(dispatchedWork.dispatchId, "dispatched work carries its dispatch identity")
       host.channels[1]:push({
         workerId = 1,
         epoch = 1,
@@ -2907,9 +2841,13 @@ function T.deferred_png_continuation_failure_publishes_nothing()
         kind = "map",
         key = "61",
         jobKey = "map:61",
-        stageName = stageName,
-        status = "prepared",
-        pendingImages = { pendingImage },
+        dispatchId = dispatchId,
+        status = "images-pending",
+        marker = "deferred-png-failure-marker",
+        ownedRoots = { "data/generated/maps/61" },
+        sharedPaths = {},
+        entries = { { path = scenePath, data = sceneBytes, size = sceneBytes:getSize() } },
+        images = { pendingImage },
       })
       pool:update()
       pool:update()
@@ -2922,37 +2860,228 @@ function T.deferred_png_continuation_failure_publishes_nothing()
         kind = "map",
         key = "61",
         jobKey = "map:61",
-        stageName = stageName,
-        status = "images-failed",
+        dispatchId = dispatchId,
+        status = "failed",
         error = "injected png encode failure",
       })
       pool:update()
       pool:update()
       Assert.equal(pool:status("map:61"), "failed", "a failed continuation settles the parent as failed")
       Assert.isNil(
-        ArtifactState.read(cache, generation, "map", "61"),
-        "a failed continuation publishes no current receipt"
+        ArtifactState.read(pool:artifactFacts(), "map", "61"),
+        "a failed continuation commits no fact"
       )
+      Assert.isNil(pool:cacheFs():resolveAsset(scenePath), "a failed continuation commits no bytes")
       Assert.equal(
-        cache:read("maps/61/complete"),
+        pool:cacheFs():readData("data/generated/maps/60/complete"):getString(),
         "previously-published-marker",
-        "the previously published generation stays untouched"
-      )
-      Assert.isFalse(
-        CacheFs.forArtifactStage(versionId, assert(stageName)):exists(""),
-        "a failed continuation discards its uncommitted stage"
+        "the previously committed generation stays untouched"
       )
     end)
   end)
   pcall(function()
     pool:shutdown()
   end)
-  pcall(function()
-    CacheFs.forVersion(versionId):removeTree("")
-  end)
   if not ok then
     error(err, 0)
   end
 end
+
+
+-- A selection that is retired while one of its workers is still encoding a
+-- deferred image keeps that physical slot until the continuation settles
+-- exactly once, the one shared source is released as soon as no compilation
+-- needs it (a pending snapshot cut is not compilation), the cut's immutable
+-- bytes outlive that release, and a late result from the retired epoch reaches
+-- neither the live view nor a later capture.
+function T.a_retired_continuation_holds_its_slot_while_a_pending_cut_keeps_its_bytes()
+  local CompilerPool = requirePool()
+  local RomSource = require("romdump.src.source.RomSource")
+  local RomBinding = require("romdump.src.source.RomBinding")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  withDirectSourceSelection("synthretire", "IRL5", function(selection)
+    local host = newThreadHost(4)
+    host.love.data = hostLove.data
+    local realFromPath = RomSource.fromPath
+    local fromPathCalls = 0
+    RomSource.fromPath = function(path)
+      fromPathCalls = fromPathCalls + 1
+      return realFromPath(path)
+    end
+    local generation = "retired-continuation-generation"
+
+    -- One completed artifact as the compiler worker reports it: private output
+    -- bytes plus its completion fact, addressed by the dispatch it belongs to.
+    ---@param workerId integer
+    ---@param epoch integer
+    ---@param key string
+    ---@param dispatchId integer
+    ---@param text string
+    ---@return table<string, unknown>
+    local function memoryResult(workerId, epoch, key, dispatchId, text)
+      local data = assert(hostLove.data.newByteData(text), "a result needs real Data buffers")
+      return {
+        workerId = workerId,
+        epoch = epoch,
+        generationId = generation,
+        versionId = "synthretire",
+        kind = "map",
+        key = key,
+        jobKey = "map:" .. key,
+        dispatchId = dispatchId,
+        status = "prepared",
+        marker = "map-" .. key .. "-ready",
+        ownedRoots = { "data/generated/field/" .. key },
+        sharedPaths = {},
+        entries = {
+          { path = "data/generated/field/" .. key .. "/scene.lua", data = data, size = data:getSize() },
+        },
+      }
+    end
+
+    local bodyOk, bodyErr = pcall(function()
+      withLove(host.love, function()
+        local pool = CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+        local cache = CacheFs.forVersion("synthretire")
+        local recorded, recordErr = RomBinding.record(cache, selection.rom, {
+          kind = "nds",
+          path = selection.romPath,
+          displayName = "synthetic.nds",
+          zipEntry = false,
+        })
+        Assert.notNil(recorded, "the binding registers the synthetic ROM: " .. tostring(recordErr))
+        pool:selectGeneration({ versionId = "synthretire", generationId = generation }, 1)
+        pool:request(sourceMapJob("synthretire", generation, 1, "60", 60, 0))
+        pool:request(sourceMapJob("synthretire", generation, 1, "61", 61, 0))
+        pool:update()
+        Assert.equal(pool:status("map:60"), "running", "the first source-dependent job dispatches")
+        Assert.equal(pool:status("map:61"), "running", "the second source-dependent job dispatches")
+        local first = dispatchedJob(host, 1)
+        local second = dispatchedJob(host, 2)
+        reportSourceNeeded(host, 1, first, 1, generation)
+        reportSourceNeeded(host, 2, second, 1, generation)
+        pool:update()
+        local firstSupply = assertSharedSupply(findSupply(drainMessages(host, 1)), selection.data, "the first job")
+        local secondSupply = assertSharedSupply(findSupply(drainMessages(host, 2)), selection.data, "the second job")
+        Assert.isTrue(firstSupply.romByteData == secondSupply.romByteData, "both jobs borrow the same buffer")
+        Assert.equal(fromPathCalls, 1, "two source-dependent jobs need exactly one source allocation")
+
+        -- Compiled work travels in memory: the dispatch identity a worker
+        -- answers is process-local, never a disk stage name.
+        Assert.notNil(first.dispatchId, "dispatched work carries its in-memory dispatch identity")
+
+        local sceneData = assert(hostLove.data.newByteData("return { mapId = 60 }\n"))
+        local pendingEntry = {
+          path = "data/generated/field/60/scene.lua",
+          data = sceneData,
+          size = sceneData:getSize(),
+        }
+        host.channels[1]:push({
+          workerId = 1,
+          status = "images-pending",
+          epoch = 1,
+          generationId = generation,
+          versionId = "synthretire",
+          kind = "map",
+          key = "60",
+          jobKey = "map:60",
+          dispatchId = first.dispatchId,
+          marker = "map-60-ready",
+          ownedRoots = { "data/generated/field/60" },
+          sharedPaths = {},
+          entries = { pendingEntry },
+          images = {
+            {
+              path = "data/generated/field/60/atlas.png",
+              width = 1,
+              height = 1,
+              rgba = assert(hostLove.data.newByteData(string.char(9, 8, 7, 255))),
+            },
+          },
+        })
+        pool:update()
+        pool:update()
+        local pendingState = pool:status("map:60")
+        Assert.isTrue(
+          pendingState ~= "ready" and pendingState ~= "failed",
+          "a job whose image is not written yet is not a ready artifact: " .. tostring(pendingState)
+        )
+        pool:request(sourceMapJob("synthretire", generation, 1, "62", 62, 0))
+        Assert.equal(pool:status("map:62"), "queued", "the unwritten image keeps its physical worker slot")
+        local continuation = assert(host.channels[2]:pop(), "the pool hands the unwritten image to its own worker")
+        Assert.equal(continuation.kind, "encode-png", "the continuation is the pool's private encode task")
+        Assert.equal(continuation.jobKey, "map:60", "the continuation names its owning parent job")
+
+        -- Retirement cancels interest without freeing a physical slot: the
+        -- unwritten image keeps its worker, the next generation waits behind
+        -- it, and the one shared source is already gone even though that
+        -- continuation is still owed.
+        Assert.isTrue(pool:retireSelection(1), "the selection retires while the continuation is pending")
+        Assert.isNil(
+          pool.sharedSource,
+          "retirement releases the shared source while a continuation still owes work"
+        )
+        pool:selectGeneration({ versionId = "synthretire", generationId = generation }, 2)
+        pool:request(sourceMapJob("synthretire", generation, 2, "63", 63, 0))
+        local waitingState, waitingDetails = pool:status("map:63")
+        Assert.equal(waitingState, "queued", "the next generation waits behind the retired occupancy")
+        Assert.equal(
+          type(waitingDetails) == "table" and waitingDetails.waitingOn,
+          "active-job",
+          "the wait names physical occupancy, not a policy label"
+        )
+
+        -- The finished continuation releases the retired slot exactly once.
+        host.channels[1]:push(memoryResult(1, 1, "60", first.dispatchId, "return { mapId = 60 }\n"))
+        pool:update()
+        pool:update()
+        Assert.equal(pool:status("map:63"), "running", "the settled continuation frees its worker for the live epoch")
+        Assert.isTrue(pool:status("map:60") ~= "ready", "a retired continuation never becomes ready work")
+        host.channels[1]:push(memoryResult(1, 1, "60", first.dispatchId, "late duplicate bytes"))
+        pool:update()
+        Assert.equal(pool:status("map:63"), "running", "a duplicate late result frees no second worker")
+        local live = dispatchedJob(host, 1)
+        Assert.notNil(live.dispatchId, "the live epoch's work carries its own dispatch identity")
+
+        -- The second retired job settles too, and the live epoch's work
+        -- settles from its own in-memory result.
+        host.channels[1]:push(memoryResult(2, 1, "61", second.dispatchId, "return { mapId = 61 }\n"))
+        pool:update()
+        host.channels[1]:push(memoryResult(1, 2, "63", live.dispatchId, "return { mapId = 63 }\n"))
+        pool:update(math.huge)
+        Assert.equal(pool:status("map:63"), "ready", "the live epoch's work settles from memory")
+        Assert.isNil(pool.sharedSource, "settled work keeps no source the selection no longer needs")
+
+        -- A cut already captured for persistence keeps its own immutable
+        -- bytes, and a late result's bytes are released rather than retained.
+        collectgarbage("collect")
+        Assert.equal(
+          pendingEntry.data:getString(),
+          "return { mapId = 60 }\n",
+          "a pending snapshot cut keeps the immutable bytes it captured"
+        )
+        local weak = setmetatable({}, { __mode = "v" })
+        local late = memoryResult(1, 1, "60", first.dispatchId, "late abandoned bytes")
+        weak[1] = late.entries[1].data
+        host.channels[1]:push(late)
+        late = nil
+        pool:update()
+        collectgarbage("collect")
+        collectgarbage("collect")
+        Assert.isNil(weak[1], "a late result's bytes are released, never retained by the live selection")
+        Assert.equal(pool:status("map:63"), "ready", "a late retired result cannot change the live view")
+        Assert.equal(fromPathCalls, 1, "the whole journey needs its one verified source allocation")
+        pcall(function()
+          pool:shutdown()
+        end)
+      end)
+    end)
+    RomSource.fromPath = realFromPath
+    if not bodyOk then
+      error(bodyErr, 0)
+    end
+  end)
+end
+
 
 return { tests = T }

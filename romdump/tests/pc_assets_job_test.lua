@@ -6,12 +6,12 @@ local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 
 local T = {}
 
-function T.pc_family_receipt_uses_only_the_global_key()
-  local accepted, path = pcall(ArtifactState.path, "pc", "global")
-  Assert.isTrue(accepted, "the PC cache family must admit its global receipt")
-  Assert.equal(path, "data/generated/jobs/pc/global.lua")
+function T.pc_family_fact_uses_only_the_global_key()
+  local accepted, identity = pcall(ArtifactState.key, "pc", "global")
+  Assert.isTrue(accepted, "the PC cache family must admit its global fact")
+  Assert.equal(identity, "pc:global")
 
-  local acceptedNonGlobalKey = pcall(ArtifactState.path, "pc", "0")
+  local acceptedNonGlobalKey = pcall(ArtifactState.key, "pc", "0")
   Assert.isFalse(acceptedNonGlobalKey, "the PC cache family must reject non-global keys")
 end
 

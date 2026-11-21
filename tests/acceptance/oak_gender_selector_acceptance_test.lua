@@ -1,7 +1,7 @@
 -- Production-composed Oak profile selection through the real generated cache.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
@@ -43,6 +43,7 @@ local function compose(versionId, width, height)
   return OakIntroComposition.compose({
     candidate = candidate(versionId),
     versionId = versionId,
+    cacheFs = GeneratedCacheFixture.reader(versionId),
     graphics = love.graphics,
     audioOutput = { audio = audio.audio, sound = audio.sound },
     clock = {
@@ -294,7 +295,7 @@ end
 T.tests.production_intro_cache_publishes_no_selector_masks_and_retains_naming_subjects = function()
   local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
   local versionId = AcceptanceHarness.defaultVersion()
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   local manifest = assert(cache:loadLua(IntroAssetCache.manifestPath()))
   Assert.isTrue(IntroAssetCache.validateManifest(manifest))
   local selector = assert(manifest.genderSelector)

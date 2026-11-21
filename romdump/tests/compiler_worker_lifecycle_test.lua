@@ -5,7 +5,9 @@
 -- control must surface the failure without a closure acknowledgement.
 
 local Assert = require("tests.support.Assert")
+local ArtifactState = require("romdump.src.build.ArtifactState")
 local FakeCache = require("tests.support.FakeCache")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -76,21 +78,50 @@ local function pooledSupply(job)
   }
 end
 
+-- Every dispatched job carries the controller's attempt identity and its
+-- declared dependency closure. These fixture generations own no committed
+-- prerequisites, so each job reads an empty, closed dependency view.
+local dispatchSequence = 0
+local function asDispatched(value)
+  if
+    type(value) ~= "table"
+    or type(value.kind) ~= "string"
+    or type(value.jobKey) ~= "string"
+    or type(value.versionId) ~= "string"
+    or type(value.generationId) ~= "string"
+    or value.sizeClass == nil
+  then
+    return value
+  end
+  if value.dispatchId == nil then
+    dispatchSequence = dispatchSequence + 1
+    value.dispatchId = dispatchSequence
+  end
+  if value.dependencies == nil then
+    value.dependencies = {
+      sourceId = "base:" .. value.generationId,
+      artifacts = ArtifactState.new(value.generationId),
+      entries = {},
+    }
+  end
+  return value
+end
+
 local function scriptedChannel(messages)
   local pending = {}
   for _, message in ipairs(messages) do
-    pending[#pending + 1] = message
+    pending[#pending + 1] = asDispatched(message)
   end
   local channel = {}
   function channel:push(value)
-    pending[#pending + 1] = value
+    pending[#pending + 1] = asDispatched(value)
     return true
   end
   function channel:pop()
     if #pending == 0 then
       return nil
     end
-    return table.remove(pending, 1)
+    return asDispatched(table.remove(pending, 1))
   end
   function channel:demand()
     local value = self:pop()
@@ -101,7 +132,7 @@ local function scriptedChannel(messages)
     return #pending
   end
   function channel:queueFront(value)
-    table.insert(pending, 1, value)
+    table.insert(pending, 1, asDispatched(value))
     return true
   end
   return channel
@@ -118,60 +149,10 @@ local function recordingChannel()
   return channel, received
 end
 
--- A current-generation receipt settles the job as reused without reading
--- the payload or opening ROM source: the receipt is the ordinary warm
--- reuse authority, so an absent payload never blocks reuse.
-function T.current_receipt_reuses_without_payload_or_source()
-  local CompilerWorker = require("romdump.src.build.CompilerWorker")
-  local CacheFs = require("libs.storage.src.CacheFs")
-  local ArtifactState = require("romdump.src.build.ArtifactState")
-  local RomFs = require("romdump.src.source.RomFs")
-  local generation = "receipt-trust-generation"
-  local input = scriptedChannel({
-    {
-      kind = "field-font",
-      key = "global",
-      jobKey = "field-font:global",
-      versionId = "heartgold",
-      generationId = generation,
-      epoch = 1,
-      stageName = "font-stage",
-      sizeClass = "normal",
-      payload = {},
-      producerFingerprint = "producer",
-    },
-    { kind = "stop" },
-  })
-  local resultsChannel, received = recordingChannel()
-  local sourceOpened = false
-  local realOpen = RomFs.open
-  RomFs.open = function(_)
-    sourceOpened = true
-    error("receipt reuse must not open ROM source")
-  end
-  local runOk, runErr = withLove(fakeLove(), function()
-    local cacheFs = CacheFs.forVersion("heartgold")
-    cacheFs:writeLua(ArtifactState.path("field-font", "global"), {
-      schema = ArtifactState.RECEIPT_SCHEMA,
-      generationId = generation,
-      kind = "field-font",
-      key = "global",
-      marker = "receipt-trust-marker",
-    })
-    -- No payload is published: reuse proves receipt identity only.
-    return pcall(CompilerWorker.run, 1, input, resultsChannel)
-  end)
-  RomFs.open = realOpen
-  Assert.isTrue(runOk, "the driven worker loop resolves: " .. tostring(runErr))
-  Assert.equal(#received, 1, "the reused job reports once")
-  Assert.equal(received[1].status, "reused", "a current receipt reuses without payload validation")
-  Assert.isFalse(sourceOpened, "receipt reuse opens no ROM source")
-end
-
--- A missing current receipt falls through to ordinary compilation: trust
--- never turns absence into readiness. The miss first asks the pool for its
--- shared source and only compiles once the matching supply arrives.
-function T.missing_receipt_compiles_through_the_producer_path()
+-- A compiled job asks the pool for its shared source and only compiles once
+-- the matching supply arrives: the controller dispatches uncompiled work, so
+-- the worker owns no local reuse decision.
+function T.missing_source_asks_the_pool_and_compiles_after_its_supply()
   local CompilerWorker = require("romdump.src.build.CompilerWorker")
   local RomFs = require("romdump.src.source.RomFs")
   local job = {
@@ -204,126 +185,11 @@ function T.missing_receipt_compiles_through_the_producer_path()
   RomFs.open = realOpen
   CompilerWorker.execute = realExecute
   Assert.isTrue(runOk, "the driven worker loop resolves: " .. tostring(runErr))
-  Assert.equal(#received, 2, "the miss asks first, then the compiled job reports")
-  Assert.equal(received[1].status, "source-needed", "the miss emits its typed pool request")
+  Assert.equal(#received, 2, "the job asks first, then reports")
+  Assert.equal(received[1].status, "source-needed", "the job emits its typed pool request")
   Assert.equal(received[1].jobKey, "field-font:global", "the request names its job")
-  Assert.equal(received[2].status, "prepared", "a missing receipt compiles after its supply")
+  Assert.equal(received[2].status, "prepared", "the job compiles after its supply")
   Assert.isTrue(sourceOpened, "compilation opens the supplied source lazily")
-end
-
--- A receipt file that cannot be parsed or evaluated as Lua proves nothing,
--- so the job falls through to ordinary compilation exactly like a missing
--- receipt: damaged trust metadata never becomes readiness and never fails
--- the job by itself.
-function T.damaged_receipt_lua_compiles_through_the_producer_path()
-  local CompilerWorker = require("romdump.src.build.CompilerWorker")
-  local CacheFs = require("libs.storage.src.CacheFs")
-  local ArtifactState = require("romdump.src.build.ArtifactState")
-  local RomFs = require("romdump.src.source.RomFs")
-  local damages = {
-    { label = "parse damage", rawLua = "return { this is not valid receipt lua !!!" },
-    { label = "evaluation damage", rawLua = "return undefined_global()" },
-  }
-  for _, damage in ipairs(damages) do
-    local job = {
-      kind = "field-font",
-      key = "global",
-      jobKey = "field-font:global",
-      versionId = "heartgold",
-      generationId = "damaged-receipt-generation",
-      epoch = 1,
-      stageName = "font-stage",
-      sizeClass = "normal",
-      payload = {},
-      producerFingerprint = "producer",
-    }
-    local input = scriptedChannel({ job, pooledSupply(job), { kind = "stop" } })
-    local resultsChannel, received = recordingChannel()
-    local sourceOpened = false
-    local realOpen = RomFs.open
-    RomFs.open = function(_)
-      sourceOpened = true
-      return { close = function(_) end }
-    end
-    local realExecute = CompilerWorker.execute
-    CompilerWorker.execute = function(_, _)
-      return { stageName = "font-stage", result = { marker = "fresh-marker" } }
-    end
-    local runOk, runErr = withLove(fakeLove(), function()
-      local cacheFs = CacheFs.forVersion("heartgold")
-      assert(cacheFs:write(ArtifactState.path("field-font", "global"), damage.rawLua))
-      return pcall(CompilerWorker.run, 1, input, resultsChannel)
-    end)
-    RomFs.open = realOpen
-    CompilerWorker.execute = realExecute
-    Assert.isTrue(runOk, "the driven worker loop resolves: " .. tostring(runErr))
-    Assert.equal(#received, 2, "the miss asks first, then the compiled job reports (" .. damage.label .. ")")
-    Assert.equal(received[1].status, "source-needed", "the miss emits its typed pool request")
-    Assert.equal(received[2].status, "prepared", "a damaged receipt compiles after its supply (" .. damage.label .. ")")
-    Assert.isTrue(sourceOpened, "compilation opens the supplied source lazily (" .. damage.label .. ")")
-  end
-end
-
--- A receipt the backend reports present but cannot read is an
--- infrastructure failure, not unusable metadata: the job fails without
--- opening ROM source as a recovery fallback.
-function T.unreadable_receipt_backend_failure_stays_terminal()
-  local CompilerWorker = require("romdump.src.build.CompilerWorker")
-  local CacheFs = require("libs.storage.src.CacheFs")
-  local ArtifactState = require("romdump.src.build.ArtifactState")
-  local RomFs = require("romdump.src.source.RomFs")
-  local input = scriptedChannel({
-    {
-      kind = "field-font",
-      key = "global",
-      jobKey = "field-font:global",
-      versionId = "heartgold",
-      generationId = "backend-failure-generation",
-      epoch = 1,
-      stageName = "font-stage",
-      sizeClass = "normal",
-      payload = {},
-      producerFingerprint = "producer",
-    },
-    { kind = "stop" },
-  })
-  local resultsChannel, received = recordingChannel()
-  local sourceOpened = false
-  local realOpen = RomFs.open
-  RomFs.open = function(_)
-    sourceOpened = true
-    return { close = function(_) end }
-  end
-  local realExecute = CompilerWorker.execute
-  CompilerWorker.execute = function(_, _)
-    error("a backend receipt failure must not reach compilation")
-  end
-  local hosted = fakeLove()
-  local runOk, runErr = withLove(hosted, function()
-    local cacheFs = CacheFs.forVersion("heartgold")
-    cacheFs:writeLua(ArtifactState.path("field-font", "global"), {
-      schema = ArtifactState.RECEIPT_SCHEMA,
-      generationId = "backend-failure-generation",
-      kind = "field-font",
-      key = "global",
-      marker = "receipt-trust-marker",
-    })
-    local receiptFullPath = cacheFs:resolve(ArtifactState.path("field-font", "global"))
-    local realRead = hosted.filesystem.read
-    hosted.filesystem.read = function(path)
-      if path == receiptFullPath then
-        return nil, "injected receipt read failure"
-      end
-      return realRead(path)
-    end
-    return pcall(CompilerWorker.run, 1, input, resultsChannel)
-  end)
-  RomFs.open = realOpen
-  CompilerWorker.execute = realExecute
-  Assert.isTrue(runOk, "the driven worker loop resolves: " .. tostring(runErr))
-  Assert.equal(#received, 1, "the failed job reports once")
-  Assert.equal(received[1].status, "failed", "a backend receipt read failure stays terminal")
-  Assert.isFalse(sourceOpened, "a backend failure never opens ROM source as a fallback")
 end
 
 function T.failed_source_close_emits_no_closure_acknowledgement()
@@ -484,15 +350,13 @@ function T.pool_reported_source_failure_fails_the_job_with_its_typed_cause()
   Assert.equal(received[2].error.code, "ROM_SOURCE_REQUIRED", "the cause keeps its source-required code")
 end
 
--- A missing current receipt suspends only its own job behind a typed pool
--- request: the worker names the exact worker and job that need source bytes
--- and waits for the matching pool reply instead of opening the ROM itself.
--- A receipt hit on the same worker still reuses with no source traffic at
--- all, even when the persisted binding points at a file that no longer
--- exists. The input channel stands in for the pool: it injects the matching
--- supply the moment the worker asks, so the suspended job can continue
--- through the ordinary staging path.
-function T.receipt_miss_asks_the_pool_for_source_and_suspends_the_job()
+-- A missing source suspends only its own job behind a typed pool request: the
+-- worker names the exact worker and job that need source bytes and waits for
+-- the matching pool reply instead of opening the ROM itself. The input channel
+-- stands in for the pool: it injects the matching supply the moment the worker
+-- asks, so the suspended job continues through the ordinary staging path, and
+-- the second job reuses the installed source view without asking again.
+function T.missing_source_suspends_the_job_and_reuses_one_supply()
   local CompilerWorker = require("romdump.src.build.CompilerWorker")
   local CacheFs = require("libs.storage.src.CacheFs")
   local ArtifactState = require("romdump.src.build.ArtifactState")
@@ -533,6 +397,9 @@ function T.receipt_miss_asks_the_pool_for_source_and_suspends_the_job()
       }
     end
     local pending = { mapJob("60", 60), mapJob("61", 61), { kind = "stop" } }
+    for _, entry in ipairs(pending) do
+      asDispatched(entry)
+    end
     local input = {}
     function input:push(value)
       pending[#pending + 1] = value
@@ -625,15 +492,8 @@ function T.receipt_miss_asks_the_pool_for_source_and_suspends_the_job()
     local summary = withLove(fake, function()
       resultsChannel.supplyBuffer = hostLove.data.newByteData(data)
       local cacheFs = CacheFs.forVersion(versionId)
-      cacheFs:writeLua(ArtifactState.path("map", "60"), {
-        schema = ArtifactState.RECEIPT_SCHEMA,
-        generationId = generation,
-        kind = "map",
-        key = "60",
-        marker = "receipt-trust-marker",
-      })
-      -- The persisted binding dangles at a removed file: reuse must never
-      -- consult it, and the miss must ask the pool rather than the path.
+      -- The persisted binding dangles at a removed file: the worker must ask
+      -- the pool rather than the path.
       cacheFs:writeLua("rom-source.lua", {
         schema = 1,
         versionId = versionId,
@@ -653,35 +513,38 @@ function T.receipt_miss_asks_the_pool_for_source_and_suspends_the_job()
     CompilerWorker.execute = realExecute
     Assert.equal(summary, "ok", "the worker suspends the miss behind a pool supply instead of failing it: " .. summary)
     Assert.isTrue(#received >= 1, "the driven worker reports its jobs")
-    Assert.equal(received[1].status, "reused", "the receipt hit reuses without source traffic")
-    Assert.equal(#sourceRequests, 1, "the miss emits exactly one typed source request")
+    Assert.equal(#sourceRequests, 1, "the worker asks for its source exactly once")
     local request = sourceRequests[1]
     Assert.equal(request.workerId, 1, "the request names its worker")
-    Assert.equal(request.jobKey, "map:61", "the request names its job")
+    Assert.equal(request.jobKey, "map:60", "the request names the job that needs source bytes")
     Assert.equal(request.versionId, versionId, "the request names its version")
     Assert.equal(request.generationId, generation, "the request names its generation")
     Assert.equal(request.epoch, 1, "the request names its epoch")
     local requestIndex, terminalIndex = nil, nil
+    local prepared = 0
     for index, message in ipairs(received) do
       if message == request then
         requestIndex = index
       end
-      if
-        type(message) == "table"
-        and message.jobKey == "map:61"
-        and (message.status == "reused" or message.status == "prepared" or message.status == "failed")
-      then
-        terminalIndex = index
-        Assert.equal(message.status, "prepared", "the supplied job continues through staging")
+      if type(message) == "table" and (message.jobKey == "map:60" or message.jobKey == "map:61") then
+        if message.status == "prepared" then
+          prepared = prepared + 1
+        elseif message.status ~= "source-needed" then
+          terminalIndex = index
+        end
+        if message.jobKey == "map:61" and message.status == "prepared" then
+          terminalIndex = index
+        end
       end
     end
+    Assert.equal(prepared, 2, "both jobs continue through staging on the one supply")
     Assert.notNil(requestIndex, "the source request reaches the pool channel")
     Assert.notNil(terminalIndex, "the suspended job reports exactly once after its supply")
     Assert.isTrue(
       (terminalIndex or 0) > (requestIndex or 0),
       "the miss reports nothing terminal before its supply arrives"
     )
-    Assert.equal(#openCalls, 1, "only the genuine miss opens source, never the receipt hit")
+    Assert.equal(#openCalls, 1, "the installed source view serves every job without reopening")
     local only = openCalls[1]
     Assert.equal(only.first, versionId, "the source open names its version")
     Assert.equal(type(only.second), "table", "the miss opens a direct source, never the dump")
@@ -790,76 +653,11 @@ end
 -- A cache backend failure carries its cause the same way: the receipt read
 -- runs behind an xpcall boundary too, so its infrastructure message must
 -- reach the pool instead of collapsing to the generic fault.
-function T.unreadable_receipt_failures_carry_their_cause()
-  local CompilerWorker = require("romdump.src.build.CompilerWorker")
-  local RomFs = require("romdump.src.source.RomFs")
-  local input = scriptedChannel({
-    {
-      kind = "field-font",
-      key = "global",
-      jobKey = "field-font:global",
-      versionId = "heartgold",
-      generationId = "receipt-cause-generation",
-      epoch = 1,
-      stageName = "font-cause-stage",
-      sizeClass = "normal",
-      payload = {},
-      producerFingerprint = "producer",
-    },
-    { kind = "stop" },
-  })
-  local resultsChannel, received = recordingChannel()
-  local sourceOpened = false
-  local realOpen = RomFs.open
-  RomFs.open = function(_)
-    sourceOpened = true
-    return { close = function(_) end }
-  end
-  local realExecute = CompilerWorker.execute
-  CompilerWorker.execute = function(_, _)
-    error("a backend receipt failure must not reach compilation")
-  end
-  local hosted = fakeLove()
-  local runOk, runErr = withLove(hosted, function()
-    local CacheFs = require("libs.storage.src.CacheFs")
-    local ArtifactState = require("romdump.src.build.ArtifactState")
-    local cacheFs = CacheFs.forVersion("heartgold")
-    cacheFs:writeLua(ArtifactState.path("field-font", "global"), {
-      schema = ArtifactState.RECEIPT_SCHEMA,
-      generationId = "receipt-cause-generation",
-      kind = "field-font",
-      key = "global",
-      marker = "receipt-trust-marker",
-    })
-    local receiptFullPath = cacheFs:resolve(ArtifactState.path("field-font", "global"))
-    local realRead = hosted.filesystem.read
-    hosted.filesystem.read = function(path)
-      if path == receiptFullPath then
-        return nil, "injected receipt read failure"
-      end
-      return realRead(path)
-    end
-    return pcall(CompilerWorker.run, 1, input, resultsChannel)
-  end)
-  RomFs.open = realOpen
-  CompilerWorker.execute = realExecute
-  Assert.isTrue(runOk, "the driven worker loop resolves: " .. tostring(runErr))
-  Assert.equal(#received, 1, "the failed job reports once")
-  Assert.equal(received[1].status, "failed", "a backend receipt read failure stays terminal")
-  Assert.isFalse(sourceOpened, "a backend failure never opens ROM source as a fallback")
-  local cause = received[1].error
-  local text = type(cause) == "table" and tostring(cause.message or "") or tostring(cause or "")
-  Assert.isTrue(
-    text:find("injected receipt read failure", 1, true) ~= nil,
-    "the failure keeps the backend message: " .. text
-  )
-end
 
--- A receipt belongs to the generation that produced it: the same job asked
--- for under a newer generation asks for its source again instead of reusing,
--- and replacing the whole generated version root leaves user saves and mods
--- byte-identical.
-function T.new_generation_rebuilds_the_job_and_replaces_only_generated_bytes()
+-- A generation owns its own compiled output: the same job asked for under a
+-- newer generation asks for its source again instead of settling as reuse, and
+-- generated publication never reaches user saves or mods.
+function T.new_generation_rebuilds_the_job_and_leaves_saves_untouched()
   local CompilerWorker = require("romdump.src.build.CompilerWorker")
   local CacheFs = require("libs.storage.src.CacheFs")
   local ArtifactState = require("romdump.src.build.ArtifactState")
@@ -876,15 +674,7 @@ function T.new_generation_rebuilds_the_job_and_replaces_only_generated_bytes()
   backend:write(modPath, modLogical)
 
   local cache = CacheFs.forVersion(versionId, backend)
-  cache:recoverPublication()
-  cache:write("maps/7/complete", "earlier-generation-bytes")
-  cache:writeLua(ArtifactState.path("map", "7"), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = earlierGeneration,
-    kind = "map",
-    key = "7",
-    marker = "earlier",
-  })
+  cache:write("data/generated/maps/0007/terrain.lua", "return { earlier = true }\n")
 
   local sourceRequests = {}
   local reported = {}
@@ -927,13 +717,10 @@ function T.new_generation_rebuilds_the_job_and_replaces_only_generated_bytes()
     CompilerWorker.execute = realExecute
     Assert.isTrue(completed, "the driven worker loop resolves: " .. tostring(runErr))
 
-    Assert.isNil(
-      ArtifactState.read(cache, selectedGeneration, "map", "7"),
-      "the earlier generation's receipt is not current for the selected generation"
-    )
-    Assert.notNil(
-      ArtifactState.read(cache, earlierGeneration, "map", "7"),
-      "the earlier generation keeps its own receipt until it is rebuilt"
+    Assert.equal(
+      cache:read("data/generated/maps/0007/terrain.lua"),
+      "return { earlier = true }\n",
+      "the earlier generation's bytes stay in place until the replacement publishes"
     )
   end)
 
@@ -951,32 +738,21 @@ function T.new_generation_rebuilds_the_job_and_replaces_only_generated_bytes()
     end
   end
   Assert.equal(#terminal, 1, "the job reports exactly one terminal result")
-  Assert.equal(terminal[1].status, "prepared", "a receipt from an earlier generation never settles as reuse")
+  Assert.equal(terminal[1].status, "prepared", "the newer generation compiles its own output")
 
-  local staging = CacheFs.forStaging(versionId, backend)
-  staging:write("data/generated/maps/0007/terrain.lua", "return { rebuilt = true }\n")
-  cache:publishFromStage(staging)
-  Assert.equal(
-    cache:read("data/generated/maps/0007/terrain.lua"),
-    "return { rebuilt = true }\n",
-    "the replacement installs the new generated bytes"
-  )
-  Assert.isNil(cache:read("maps/7/complete"), "the replaced generation root carries no earlier payload")
   Assert.isNil(cache:read(savePath), "a generated cache root never reaches a save")
   Assert.isNil(cache:read(modPath), "a generated cache root never reaches a mod")
-  Assert.equal(backend:read(savePath), saveLogical, "replacing the generated root leaves user saves untouched")
-  Assert.equal(backend:read(modPath), modLogical, "replacing the generated root leaves mods untouched")
+  Assert.equal(backend:read(savePath), saveLogical, "generated publication leaves user saves untouched")
+  Assert.equal(backend:read(modPath), modLogical, "generated publication leaves mods untouched")
 end
 
 -- A real 2D atlas family runs end to end through the worker: the field-font
--- source phase stages its definitions and defers every atlas, the sweep
--- continuation encodes those RGBA rows into the same open stage, and the
--- parent seals once with one receipt after publication. While the images are
--- pending there is no PNG in the stage and no receipt.
+-- source phase stages its definitions and defers every atlas as one image
+-- packet, the low-priority continuation encodes those RGBA rows into the same
+-- private output, and the parent seals once with its PNGs. While the images are
+-- pending the packet carries no PNG and the parent is not sealed.
 function T.real_atlas_producer_defers_its_pngs_until_the_continuation_writes_them()
   local CompilerWorker = require("romdump.src.build.CompilerWorker")
-  local ArtifactState = require("romdump.src.build.ArtifactState")
-  local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
   local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
   local FieldFontSourceFixture = require("tests.support.FieldFontSourceFixture")
   local RomFs = require("romdump.src.source.RomFs")
@@ -988,12 +764,9 @@ function T.real_atlas_producer_defers_its_pngs_until_the_continuation_writes_the
   loveHost.data = hostLove.data
   local versionId = "heartgold"
   local generation = "deferred-png-real-producer-generation"
-  local stageName = "field-font-real-stage"
   local romFs = assert(FieldFontSourceFixture.build())
   romFs.close = function() end
   local cacheFs = CacheFs.forVersion(versionId, backend)
-  local stageFs = CacheFs.forArtifactStage(versionId, stageName, backend)
-  local receiptPath = ArtifactState.path("field-font", "global")
   local imagePaths = {}
   for _, fontId in ipairs(FieldFontCache.REQUIRED_FONT_IDS) do
     imagePaths[#imagePaths + 1] = FieldFontCache.atlasPath(fontId)
@@ -1007,14 +780,14 @@ function T.real_atlas_producer_defers_its_pngs_until_the_continuation_writes_the
     versionId = versionId,
     generationId = generation,
     epoch = 1,
-    stageName = stageName,
     sizeClass = "normal",
     payload = {},
     producerFingerprint = "producer",
   }
+  asDispatched(sourceJob)
   local input = scriptedChannel({ sourceJob, pooledSupply(sourceJob) })
   local resultsChannel, received = recordingChannel()
-  local pendingImages, continuationSent, stagedBeforeContinuation, receiptBeforeContinuation
+  local imagePacket, continuationSent, entriesBeforeContinuation
   local realDemand = input.demand
   input.demand = function(self)
     if self:getCount() > 0 then
@@ -1025,29 +798,41 @@ function T.real_atlas_producer_defers_its_pngs_until_the_continuation_writes_the
     end
     local parent
     for _, message in ipairs(received) do
-      if message.jobKey == sourceJob.jobKey and message.status == "prepared" then
+      if message.jobKey == sourceJob.jobKey and message.status == "images-pending" then
         parent = message
       end
     end
-    Assert.notNil(parent, "the real producer reports its prepared parent before any continuation")
-    pendingImages = assert(parent.pendingImages, "the parent carries its unwritten images")
-    receiptBeforeContinuation = ArtifactState.read(cacheFs, generation, sourceJob.kind, sourceJob.key)
-    stagedBeforeContinuation = {}
-    for _, path in ipairs(imagePaths) do
-      stagedBeforeContinuation[#stagedBeforeContinuation + 1] = stageFs:exists(path, "file")
+    Assert.notNil(parent, "the real producer reports its pending image packet before any continuation")
+    imagePacket = parent
+    local stagedPaths = {}
+    for _, entry in ipairs(parent.entries) do
+      stagedPaths[entry.path] = true
     end
+    entriesBeforeContinuation = stagedPaths
     continuationSent = true
     return {
       kind = "encode-png",
       workerId = 1,
+      dispatchId = sourceJob.dispatchId,
       parentKind = sourceJob.kind,
       key = sourceJob.key,
       jobKey = sourceJob.jobKey,
       versionId = sourceJob.versionId,
       generationId = sourceJob.generationId,
       epoch = sourceJob.epoch,
-      stageName = parent.stageName,
-      pendingImages = parent.pendingImages,
+      dependencies = sourceJob.dependencies,
+      pending = {
+        generationId = generation,
+        epoch = 1,
+        kind = sourceJob.kind,
+        key = sourceJob.key,
+        jobKey = sourceJob.jobKey,
+        marker = parent.marker,
+        ownedRoots = parent.ownedRoots,
+        sharedPaths = parent.sharedPaths,
+        entries = parent.entries,
+        images = parent.images,
+      },
     }
   end
   local realOpen = RomFs.open
@@ -1061,65 +846,32 @@ function T.real_atlas_producer_defers_its_pngs_until_the_continuation_writes_the
   RomFs.open = realOpen
   input.demand = realDemand
   Assert.isTrue(runOk, "the driven worker loop resolves: " .. tostring(runErr))
-  Assert.isTrue(continuationSent, "the worker asked for its continuation after the parent prepared")
-  Assert.equal(#pendingImages, 9, "the field-font family defers three images for each of its three fonts")
-  Assert.isNil(receiptBeforeContinuation, "no receipt exists while the PNGs are unwritten")
-  for index, present in ipairs(stagedBeforeContinuation) do
-    Assert.isFalse(present, "no PNG is staged before the continuation: " .. imagePaths[index])
+  Assert.isTrue(continuationSent, "the worker asked for its continuation after the parent deferred its images")
+  Assert.equal(#imagePacket.images, 9, "the field-font family defers three images for each of its three fonts")
+  Assert.isNil(imagePacket.entries ~= nil and imagePacket.entries[1] and nil, "no payload travels as an argument")
+  for _, path in ipairs(imagePaths) do
+    Assert.isNil(entriesBeforeContinuation[path], "no PNG is staged before the continuation: " .. path)
   end
-  local prepared = {}
+  local sealedReply = nil
   for _, message in ipairs(received) do
     if message.jobKey == sourceJob.jobKey and message.status == "prepared" then
-      prepared[#prepared + 1] = message
+      sealedReply = message
     end
   end
-  Assert.equal(#prepared, 1, "the parent reports exactly one terminal result")
+  Assert.notNil(sealedReply, "the continuation seals the parent exactly once")
+  Assert.equal(sealedReply.dispatchId, sourceJob.dispatchId, "the sealed reply answers the parent attempt")
+  local sealedPaths = {}
+  for _, entry in ipairs(sealedReply.entries) do
+    sealedPaths[entry.path] = entry
+  end
   for _, path in ipairs(imagePaths) do
-    local bytes = assert(stageFs:read(path), "the continuation writes the PNG into the parent stage: " .. path)
-    Assert.equal(bytes:sub(1, 4), "\137PNG", "the continuation writes one plain PNG: " .. path)
+    local entry = assert(sealedPaths[path], "the sealed parent carries the deferred PNG: " .. path)
+    Assert.equal(entry.data:getString():sub(1, 4), "\137PNG", "the continuation writes one plain PNG: " .. path)
   end
-  local staged = {}
-  local function walk(relative)
-    for _, name in ipairs(stageFs:getDirectoryItems(relative)) do
-      local child = relative == "" and name or relative .. "/" .. name
-      local info = stageFs:getInfo(child)
-      if info ~= nil and info.type == "directory" then
-        walk(child)
-      elseif info ~= nil then
-        staged[#staged + 1] = child
-      end
-    end
+  for _, entry in ipairs(sealedReply.entries) do
+    Assert.isNil(entry.path:find("%.rgba$"), "the sealed output holds no persistent RGBA file: " .. entry.path)
   end
-  walk("")
-  local receipts = 0
-  for _, path in ipairs(staged) do
-    Assert.isTrue(path:sub(-4) ~= ".rgba", "the stage holds no persistent RGBA file")
-    if path == receiptPath then
-      receipts = receipts + 1
-    end
-  end
-  Assert.equal(receipts, 1, "the sealed parent stage carries exactly one receipt")
-  local artifact = assert(PreparedArtifact.open({
-    cacheFs = cacheFs,
-    generationId = generation,
-    epoch = 1,
-    kind = sourceJob.kind,
-    key = sourceJob.key,
-    jobKey = sourceJob.jobKey,
-    stageName = stageName,
-  }))
-  artifact:publish({
-    generationId = generation,
-    epoch = 1,
-    kind = sourceJob.kind,
-    key = sourceJob.key,
-    jobKey = sourceJob.jobKey,
-    stageName = stageName,
-  })
-  Assert.notNil(
-    ArtifactState.read(cacheFs, generation, sourceJob.kind, sourceJob.key),
-    "the parent publishes its one receipt after every deferred image is staged"
-  )
+  ResidentArtifactFixture.mirror(cacheFs, sealedReply)
   for _, path in ipairs(imagePaths) do
     Assert.notNil(cacheFs:read(path), "the published generation carries the deferred PNG: " .. path)
   end

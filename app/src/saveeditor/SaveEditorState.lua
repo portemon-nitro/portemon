@@ -1,7 +1,6 @@
 -- Coordinates the editor's asynchronous opening, input, session, and resources.
 
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
-local CacheFs = require("libs.storage.src.CacheFs")
 local Errors = require("libs.errors.src.Errors")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
@@ -253,6 +252,7 @@ end
 ---@field valueReturnFocus string?
 ---@field pendingFocusReturn string?
 ---@field versionId string
+---@field cacheFs table<string, unknown> selected epoch's installed generated view
 ---@field saveId string
 ---@field startupPairIndex integer selected 1..32 walking pair, decorative only
 ---@field width number
@@ -472,11 +472,11 @@ local function logicalFocus(layout, targetId)
   return nil
 end
 
-local function makeText(versionId, pool)
+local function makeText(cacheFs, pool)
   if pool ~= nil then
-    return FieldTextRenderer.new({ cacheFs = CacheFs.forVersion(versionId), imagePool = pool })
+    return FieldTextRenderer.new({ cacheFs = cacheFs, imagePool = pool })
   end
-  return FieldTextRenderer.new({ cacheFs = CacheFs.forVersion(versionId) })
+  return FieldTextRenderer.new({ cacheFs = cacheFs })
 end
 
 local function scopeDescription(state)
@@ -542,14 +542,15 @@ function State.new(options)
   -- no pool can serve (headless or test doubles) keeps the direct path;
   -- those paths never reach pooled draws. The renderer borrows this
   -- pool; the State disposes it after renderer teardown.
+  local cacheFs = assert(options.cacheFs, "the save editor needs the selected epoch's installed generated view")
   local sessionPool
   do
-    local poolOk, poolOrError = pcall(ImageAssetPool.new, CacheFs.forVersion(options.versionId), {})
+    local poolOk, poolOrError = pcall(ImageAssetPool.new, cacheFs, {})
     if poolOk then
       sessionPool = poolOrError
     end
   end
-  local text = makeText(options.versionId, sessionPool)
+  local text = makeText(cacheFs, sessionPool)
   local rendererOk, rendererOrError =
     pcall(Renderer.new, { text = text, versionId = options.versionId, imagePool = sessionPool })
   if not rendererOk then
@@ -575,6 +576,7 @@ function State.new(options)
   ---@type SaveEditorState
   local self = setmetatable({
     versionId = options.versionId,
+    cacheFs = cacheFs,
     saveId = options.saveId,
     startupPairIndex = options.startupPairIndex,
     width = width,
@@ -741,7 +743,7 @@ function State:_pollLoadingArt()
     return
   end
   local adopted, adoptedResult, adoptionError = pcall(function()
-    return loading:adoptGeneratedAssets(CacheFs.forVersion(self.versionId))
+    return loading:adoptGeneratedAssets(assert(self.cacheFs, "the save editor lost its generated view"))
   end)
   self.loaderArtObserved = true
   if not adopted then
@@ -831,6 +833,7 @@ function State:update(dt)
     end
     local opened, graphOrError = pcall(Composition.open, {
       versionId = self.versionId,
+      cacheFs = assert(self.cacheFs, "the save editor lost its generated view"),
       saveId = self.saveId,
       repositoryRoot = self.repositoryRoot,
       derivedAssets = self.derivedAssets,

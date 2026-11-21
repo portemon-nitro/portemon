@@ -1,11 +1,21 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 local FakeCache = require("tests.support.FakeCache")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local Writer = require("romdump.src.digest.field.FieldEntranceIndicatorCacheWriter")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
+
+---@param cacheFs table<string, unknown>
+---@param bundle table<string, unknown>
+---@return string marker
+local function publish(cacheFs, bundle)
+  return (ResidentArtifactFixture.publish(cacheFs, "field-effects", "global", function(artifact)
+    return Writer.stage(artifact, bundle)
+  end))
+end
 
 local MESH_BANK = "G4GX-bank-bytes"
 local TEXTURE_BANK = "G4TX-bank-bytes"
@@ -74,7 +84,7 @@ T.tests["publishes model marker and referenced mesh under owned effect roots"] =
     meshes = { ["mesh-key"] = MESH_BANK },
     textures = { ["texture-key"] = TEXTURE_BANK },
   }
-  local ok, err = pcall(Writer.write, cache, bundle)
+  local ok, err = pcall(publish, cache, bundle)
   Assert.isTrue(ok, tostring(err))
   Assert.isTrue(cache:exists(FieldEffectAssetCache.indexPath(), "file"))
   Assert.equal(cache:read(FieldEffectAssetCache.markerPath()), bundle.marker)
@@ -86,11 +96,20 @@ T.tests["aborts before publication when the canonical model is invalid"] = funct
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local oldMarker = "field-effect-cache-v11:rom:previous"
   cache:write(FieldEffectAssetCache.markerPath(), oldMarker)
-  local ok = pcall(Writer.write, cache, {
+  local ok = pcall(publish, cache, {
     marker = "field-effect-cache-v3:rom:dep",
-    index = { schema = "g4-field-effect-index-v1", effects = {} },
-    effects = {},
-    model = {},
+    index = {
+      schema = "g4-field-effect-index-v1",
+      effects = {
+        warp_entrance = {
+          path = FieldEffectAssetCache.definitionPath("warp_entrance"),
+          definition = "warp_entrance",
+        },
+      },
+    },
+    -- The canonical model carries no schema identity, so the stage refuses it
+    -- before any definition, index or completion marker is published.
+    effects = { warp_entrance = { model = {} } },
     meshes = {},
     textures = {},
   })
@@ -144,7 +163,7 @@ T.tests["publishes the surf attachment definition and its referenced paths atomi
     meshes = { ["mesh-key"] = MESH_BANK },
     textures = { ["texture-key"] = TEXTURE_BANK },
   }
-  local ok, err = pcall(Writer.write, cache, bundle)
+  local ok, err = pcall(publish, cache, bundle)
   Assert.isTrue(ok, tostring(err))
   local stored = assert(cache:loadLua(FieldEffectAssetCache.definitionPath("surf_attachment")))
   Assert.equal(stored.model.key, "field-effect:surf-attachment")
@@ -179,12 +198,12 @@ T.tests["publishes multi-model transition definitions and aborts on a missing re
     }
   end
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local ok, err = pcall(Writer.write, cache, bundleFor(texture()))
+  local ok, err = pcall(publish, cache, bundleFor(texture()))
   Assert.isTrue(ok, tostring(err))
   Assert.isTrue(cache:exists(FieldEffectAssetCache.definitionPath("follower_transition"), "file"))
 
   local broken = CacheFs.forVersion("heartgold", FakeCache.new())
-  local badOk = pcall(Writer.write, broken, bundleFor(texture("absent-key")))
+  local badOk = pcall(publish, broken, bundleFor(texture("absent-key")))
   Assert.isFalse(badOk, "a transition with a missing referenced asset must not publish")
   Assert.isFalse(broken:exists(FieldEffectAssetCache.markerPath(), "file"))
 end

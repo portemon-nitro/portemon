@@ -5,7 +5,7 @@
 -- every traced member feeds the generated dependency identity.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local FieldEffects = require("romdump.src.config.FieldEffects")
 local FieldEntranceIndicatorCompiler = require("romdump.src.digest.field.FieldEntranceIndicatorCompiler")
@@ -245,7 +245,7 @@ function T.compile_yields_the_exact_ready_transition(romFs, versionId)
     "a cache without the transition definition must not be ready"
   )
 
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local liveIndex = assert(cacheFs:loadLua(FieldEffectAssetCache.indexPath()), "the live effect index must load")
   local liveEntry = assert(
     liveIndex.effects and liveIndex.effects.follower_transition,

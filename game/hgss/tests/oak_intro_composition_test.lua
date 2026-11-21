@@ -2,7 +2,6 @@
 -- host-owned randomness boundary without embedding generated dialogue.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
 local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
@@ -82,7 +81,6 @@ function T.tests.composition_trusts_published_intro_manifest_without_revalidatin
     calls = calls + 1
     error("published intro manifests must not be revalidated at composition", 0)
   end)
-  local originalForVersion = CacheFs.forVersion
   local originalFontLoad = FieldFontLoader.load
   local originalProviderNew = FieldMessageProvider.new
   local originalAudioCompose = GameAudio.compose
@@ -107,9 +105,6 @@ function T.tests.composition_trusts_published_intro_manifest_without_revalidatin
       error("unexpected cache path " .. path)
     end,
   }
-  rawset(CacheFs, "forVersion", function()
-    return fakeCache
-  end)
   rawset(FieldFontLoader, "load", function()
     return { charmap = {} }
   end)
@@ -158,6 +153,7 @@ function T.tests.composition_trusts_published_intro_manifest_without_revalidatin
   local ok, state = pcall(OakIntroComposition.compose, {
     candidate = {},
     versionId = "heartgold",
+    cacheFs = fakeCache,
     clock = {},
     randomU32 = function()
       return 1
@@ -167,7 +163,6 @@ function T.tests.composition_trusts_published_intro_manifest_without_revalidatin
     end,
   })
 
-  rawset(CacheFs, "forVersion", originalForVersion)
   rawset(introCache, "validateManifest", originalValidate)
   rawset(FieldFontLoader, "load", originalFontLoad)
   rawset(FieldMessageProvider, "new", originalProviderNew)
@@ -200,7 +195,6 @@ end
 
 function T.tests.composition_releases_font_zero_when_font_four_acquisition_fails()
   local modules = {
-    cache = CacheFs.forVersion,
     fontLoad = FieldFontLoader.load,
     providerNew = FieldMessageProvider.new,
     poolNew = ImageAssetPool.new,
@@ -245,9 +239,6 @@ function T.tests.composition_releases_font_zero_when_font_four_acquisition_fails
     self.releases = self.releases + 1
   end
 
-  rawset(CacheFs, "forVersion", function()
-    return fakeCache
-  end)
   rawset(FieldFontLoader, "load", function()
     return { charmap = {}, fontId = 0 }
   end)
@@ -280,10 +271,9 @@ function T.tests.composition_releases_font_zero_when_font_four_acquisition_fails
   end)
 
   local ok, failure = pcall(function()
-    OakIntroComposition.compose({ candidate = {}, versionId = "heartgold" })
+    OakIntroComposition.compose({ candidate = {}, versionId = "heartgold", cacheFs = fakeCache })
   end)
 
-  rawset(CacheFs, "forVersion", modules.cache)
   rawset(FieldFontLoader, "load", modules.fontLoad)
   rawset(FieldMessageProvider, "new", modules.providerNew)
   rawset(ImageAssetPool, "new", modules.poolNew)

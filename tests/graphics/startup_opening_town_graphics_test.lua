@@ -5,7 +5,7 @@
 -- running against faked art.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local RomImporter = require("romdump.src.source.RomImporter")
@@ -46,7 +46,7 @@ end
 local function loadScenes(versionId)
   local scenes = {}
   for sceneNumber = 1, 5 do
-    local loaded, err = StartupAssetCache.loadOpeningScene(CacheFs.forVersion(versionId), sceneNumber, versionId)
+    local loaded, err = StartupAssetCache.loadOpeningScene(GeneratedCacheFixture.reader(versionId), sceneNumber, versionId)
     Assert.notNil(loaded, "scene " .. sceneNumber .. " reads back as a ready bundle: " .. tostring(err))
     scenes[sceneNumber] = loaded
   end
@@ -65,7 +65,7 @@ local function openMovie(scope, versionId, width, height)
     versionId = versionId,
     splRandomState = { state = 0 },
     scenes = loadScenes(versionId),
-    cacheFs = CacheFs.forVersion(versionId),
+    cacheFs = GeneratedCacheFixture.reader(versionId),
     width = width,
     height = height,
     displayContext = context,

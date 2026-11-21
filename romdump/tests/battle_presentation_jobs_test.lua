@@ -18,6 +18,9 @@ local Assert = require("tests.support.Assert")
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
 local RomSuite = require("tests.rom.support.RomSuite")
+local CacheFs = require("libs.storage.src.CacheFs")
+local FakeCache = require("tests.support.FakeCache")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -32,18 +35,18 @@ function T.kinds_sizes_and_keys_follow_the_closed_dispatch()
     "scene job keys carry the semantic key"
   )
   Assert.equal(
-    ArtifactState.path("battle-scene", "general/grass/day"),
-    "data/generated/jobs/battle-scene/general/grass/day.lua",
-    "scene receipts nest under their kind"
+    ArtifactState.key("battle-scene", "general/grass/day"),
+    "battle-scene:general/grass/day",
+    "scene facts carry their semantic key"
   )
 end
 
 function T.scene_keys_validate_while_effect_backgrounds_do_not()
-  local ok = pcall(ArtifactState.path, "battle-scene", "general/grass/day")
-  Assert.isTrue(ok, "an ordinary scene key resolves to a receipt path")
-  local effectOk = pcall(ArtifactState.path, "battle-scene", "effect/flash/day")
-  Assert.isFalse(effectOk, "an effect background never resolves to a receipt path")
-  local globalOk = pcall(ArtifactState.path, "battle-presentation", "other")
+  local ok = pcall(ArtifactState.key, "battle-scene", "general/grass/day")
+  Assert.isTrue(ok, "an ordinary scene key resolves to a canonical fact")
+  local effectOk = pcall(ArtifactState.key, "battle-scene", "effect/flash/day")
+  Assert.isFalse(effectOk, "an effect background never resolves to a canonical fact")
+  local globalOk = pcall(ArtifactState.key, "battle-presentation", "other")
   Assert.isFalse(globalOk, "the global family carries no other key")
 end
 
@@ -106,32 +109,53 @@ function T.global_build_keeps_detached_families_behind_safe_keyed_leaf_receipts(
   end
   package.loaded[audioModule] = countingAudio
 
-  local function newStage()
-    local stage = { files = {}, owned = {}, order = {} }
-    stage.artifact = {
-      stageFs = function()
-        return {
-          write = function(_, path, bytes)
-            stage.files[path] = bytes
-            stage.order[#stage.order + 1] = path
-          end,
-          writeLua = function(_, path, value)
-            stage.files[path] = value
-            stage.order[#stage.order + 1] = path
-          end,
-        }
-      end,
-      addOwnedRoot = function(_, path)
-        stage.owned[path] = true
-      end,
-    }
+  -- One real private output per staged worker: the recorded order proves the
+  -- marker lands last, the recorded roots prove ownership, and staged records
+  -- read back through the artifact itself.
+  local function newStage(kind, key)
+    local artifact = ResidentArtifactFixture.new(
+      CacheFs.forVersion("heartgold", FakeCache.new()),
+      kind,
+      key,
+      "provider-gate"
+    )
+    local stage = { artifact = artifact, files = {}, owned = {}, order = {} }
+    local nesting = 0
+    local realWrite, realWriteLua = artifact.write, artifact.writeLua
+    function artifact:write(path, bytes)
+      if nesting == 0 then
+        stage.files[path] = bytes
+        stage.order[#stage.order + 1] = path
+      end
+      nesting = nesting + 1
+      local ok, failure = pcall(realWrite, self, path, bytes)
+      nesting = nesting - 1
+      if not ok then
+        error(failure, 0)
+      end
+    end
+    function artifact:writeLua(path, record)
+      stage.files[path] = record
+      stage.order[#stage.order + 1] = path
+      nesting = nesting + 1
+      local ok, failure = pcall(realWriteLua, self, path, record)
+      nesting = nesting - 1
+      if not ok then
+        error(failure, 0)
+      end
+    end
+    local realAddOwnedRoot = artifact.addOwnedRoot
+    function artifact:addOwnedRoot(path)
+      stage.owned[path] = true
+      return realAddOwnedRoot(self, path)
+    end
     return stage
   end
 
   local gateOk, gateErr = pcall(function()
     local context = { romFs = countingRomFs, versionId = versionId }
 
-    local globalStage = newStage()
+    local globalStage = newStage("battle-presentation", "global")
     local globalMarker =
       BattleJobs.executePresentation(globalStage.artifact, context, { generationId = "provider-gate", key = "global" })
     Assert.isTrue(type(globalMarker) == "string" and globalMarker ~= "", "the global worker returns its marker")
@@ -182,15 +206,11 @@ function T.global_build_keeps_detached_families_behind_safe_keyed_leaf_receipts(
     Assert.equal(globalStage.order[#globalStage.order], BattleCache.markerPath(), "the global marker publishes last")
 
     local function checkSingleLeafReceipt(kind, key, selector, recordPath, markerPath, expectedSchema, readyCheck)
-      local stage = newStage()
+      local stage = newStage(kind, key)
       local execute = kind == "battle-trainer-picture" and BattleJobs.executeTrainerPicture or BattleJobs.executeBall
       local marker = execute(stage.artifact, context, { generationId = "provider-gate", key = key })
       Assert.isTrue(type(marker) == "string" and marker ~= "", "the " .. selector .. " worker returns its marker")
-      Assert.equal(
-        ArtifactState.path(kind, key),
-        "data/generated/jobs/" .. kind .. "/" .. key .. ".lua",
-        "the " .. selector .. " receipt nests under its safe key"
-      )
+      Assert.equal(ArtifactState.key(kind, key), kind .. ":" .. key, "the " .. selector .. " fact carries its key")
       local record = stage.files[recordPath]
       Assert.isTrue(type(record) == "table", "one " .. selector .. " request stages one leaf receipt")
       Assert.equal(record.selector, selector, "the leaf receipt names its exact selector")

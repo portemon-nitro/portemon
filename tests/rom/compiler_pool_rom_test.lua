@@ -43,11 +43,46 @@ function T.independent_map_jobs_overlap_on_bounded_batch_workers(romFs, versionI
   })
   pool:selectGeneration(identity, 1)
 
+  -- The prepared scope is this test's starting cut: hydrate the one snapshot
+  -- exactly as a selection does, so every dependency a job declares is already
+  -- committed when the pool builds its closed dependency view.
+  local CacheArchive = require("romdump.src.build.CacheArchive")
+  CacheArchive.restoreBackup(versionId)
+  local fileName = assert(CacheArchive.recoverableFileName(versionId), "the prepared scope carries one snapshot")
+  local hydration = assert(CacheArchive.open(versionId, identity, fileName))
+  -- The prepared scope already covers both maps; that cut is the prerequisite
+  -- set this test compiles against, so the maps themselves are left out and
+  -- recompiled from the ROM exactly like a partial-cache miss.
+  local seededArtifacts, seededPaths = {}, {}
+  local function isCompiledMap(artifact)
+    return artifact.kind == "map" and (artifact.key == "60" or artifact.key == "61")
+  end
+  for _, artifact in ipairs(hydration.artifacts) do
+    if not isCompiledMap(artifact) then
+      seededArtifacts[#seededArtifacts + 1] = artifact
+      for _, path in ipairs(artifact.files) do
+        seededPaths[path] = true
+      end
+    end
+  end
+  local seededEntries = {}
+  for _, entry in ipairs(hydration.entries) do
+    if seededPaths[entry.path] then
+      seededEntries[#seededEntries + 1] = entry
+    end
+  end
+  pool:seedCommittedGeneration(seededEntries, seededArtifacts)
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  local record = assert(SourcePlan.read(pool:cacheFs(), identity), "the snapshot carries its plan")
+  local plans = SourcePlan.project(record)
+  plans.mapCellKeys = record.mapCellKeys
+
   local jobs = {
     { key = "60", mapId = 60 },
     { key = "61", mapId = 61 },
   }
   for _, job in ipairs(jobs) do
+    local dependencies = assert(ArtifactJobs.dependencies("map", job.key, plans), "map membership is adopted")
     pool:request({
       versionId = versionId,
       generationId = generationId,
@@ -58,12 +93,13 @@ function T.independent_map_jobs_overlap_on_bounded_batch_workers(romFs, versionI
       priority = 0,
       sizeClass = ArtifactJobs.sizeClass("map"),
       payload = { mapId = job.mapId, producerFingerprint = producerId },
+      dependencies = dependencies,
     })
   end
   pool:drain()
 
   local workerIds = {}
-  local cache = CacheFs.forVersion(versionId)
+  local cache = pool:cacheFs()
   for _, job in ipairs(jobs) do
     local state, details = pool:status("map:" .. job.key)
     Assert.equal(state, "ready", "map " .. job.key .. " completes: " .. tostring(details and details.error))

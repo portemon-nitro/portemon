@@ -3,6 +3,7 @@
 -- them in the background from map entry, without any scene running. Maps
 -- whose scripts declare nothing prepare nothing.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
@@ -41,6 +42,7 @@ end
 local function boot(scope, location)
   local state = FieldState.new(freshGame(location), {
     derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+    cacheFs = GeneratedCacheFixture.reader(VERSION),
   })
   scope:own({
     release = function()

@@ -26,7 +26,6 @@ local MapCompilePlan = require("romdump.src.digest.map.MapCompilePlan")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
 local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
-local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local Schema = require("libs.script.src.Schema")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
@@ -66,6 +65,18 @@ end
 -- work on retirement, and no live inheritance across selections. Superseded
 -- records survive only in the append-only epoch-labeled history, which
 -- never answers lookups or counts toward the frontier.
+-- One committed fact map per generation: the fake pool serves the same
+-- controller facts the real one owns, and the census reads them directly.
+local factsByGeneration = {}
+local function factsFor(generationId)
+  local facts = factsByGeneration[generationId]
+  if facts == nil then
+    facts = ArtifactState.new(generationId)
+    factsByGeneration[generationId] = facts
+  end
+  return facts
+end
+
 local function FakePool()
   local pool = { records = {}, order = {}, history = {}, selected = nil }
   local function archiveCurrent(event)
@@ -182,6 +193,12 @@ local function FakePool()
     return { workerCount = math.max(1, math.floor(processorBound() / 2)), counts = counts, error = nil }
   end
   function pool:shutdown() end
+  function pool:cacheFs()
+    return self.cacheReader
+  end
+  function pool:artifactFacts()
+    return factsFor(assert(self.selected, "pool has no selected generation").generationId)
+  end
   function pool:fail(jobKey, message)
     local record = assert(self.records[jobKey], "unknown compiler job: " .. tostring(jobKey))
     record.state = "failed"
@@ -375,37 +392,23 @@ local function completeThroughWorker(context, pool, jobKey, stageName)
       end
     end
   end
-  local receiptOk, receipt =
-    pcall(ArtifactState.read, context.cacheFs, workerJob.generationId, workerJob.kind, workerJob.key)
-  if receiptOk and receipt ~= nil then
-    -- Receipt-only reuse without compilation: a current receipt reuses
-    -- with no stage, no publication, and no payload read, exactly like
-    -- the production worker.
+  local facts = pool:artifactFacts()
+  if ArtifactState.read(facts, workerJob.kind, workerJob.key) ~= nil then
+    -- A committed fact settles the member without compilation or a payload
+    -- read, exactly like the production pool's ready answer.
     pool:markReady(jobKey)
     reusedThroughWorker[jobKey] = record.epoch
     return { reused = true }
   end
+  workerJob.artifactFacts = facts
   local compiledOk, result = pcall(CompilerWorker.execute, workerJob, context)
   if not compiledOk then
     error("worker path cannot complete " .. tostring(jobKey) .. ": " .. tostring(result), 0)
   end
   compiledThroughWorker[jobKey] = record.epoch
-  local artifact = PreparedArtifact.open({
-    cacheFs = context.cacheFs,
-    generationId = job.generationId,
-    epoch = job.epoch,
-    kind = job.kind,
-    key = job.key,
-    jobKey = job.jobKey,
-    stageName = workerJob.stageName,
-  })
-  artifact:publish({
-    generationId = job.generationId,
-    epoch = job.epoch,
-    kind = job.kind,
-    key = job.key,
-    jobKey = job.jobKey,
-  })
+  Assert.equal(result.status, "prepared", "the worker path seals one result")
+  ResidentArtifactFixture.mirror(context.cacheFs, result.sealed)
+  ResidentArtifactFixture.commitFact(facts, result.sealed)
   pool:markReady(jobKey)
   return result
 end
@@ -421,6 +424,7 @@ function T.common_session_drives_bootstrap_complete_and_background_storm(romFs, 
   local identity = identityFor(versionId, romSha1)
   local generationId = assert(identity.generationId, "generation identity is required")
   local pool = FakePool()
+  pool.cacheReader = cache
   local context = workerContextFor(romFs, versionId, cache)
   -- Milestone files live in the private backend.
   local stageSeq = 0
@@ -527,7 +531,7 @@ function T.common_session_drives_bootstrap_complete_and_background_storm(romFs, 
     for _, identityKey in ipairs(membership) do
       local kind, key = identityKey:match("^([^:]+):(.+)$")
       assert(kind ~= nil and key ~= nil, "census membership carries kind:key identities")
-      if ArtifactState.read(cache, generationId, kind, key) ~= nil then
+      if ArtifactState.read(factsFor(generationId), kind, key) ~= nil then
         preReady[identityKey] = true
       end
     end
@@ -714,7 +718,7 @@ function T.common_session_drives_bootstrap_complete_and_background_storm(romFs, 
     end
     for identityKey in pairs(targetedSet) do
       local kind, key = identityKey:match("^([^:]+):(.+)$")
-      if ArtifactState.read(cache, generationId, kind, key) == nil then
+      if ArtifactState.read(factsFor(generationId), kind, key) == nil then
         Assert.notNil(requested[identityKey], "restart keeps the planned bootstrap identities")
       end
     end
@@ -820,7 +824,7 @@ function T.common_session_drives_bootstrap_complete_and_background_storm(romFs, 
   do
     -- The summary is planned once its banks complete; a published summary
     -- answers ready instead.
-    if ArtifactState.read(cache, generationId, "message-summary", "global") == nil then
+    if ArtifactState.read(factsFor(generationId), "message-summary", "global") == nil then
       local summaries = pool:recordsForKind("message-summary")
       Assert.isTrue(#summaries >= 1, "the message summary is planned once its banks can complete")
       complete(summaries[1].jobKey)
@@ -830,7 +834,7 @@ function T.common_session_drives_bootstrap_complete_and_background_storm(romFs, 
   completeKind("script-member")
   settle(session, pool)
   do
-    if ArtifactState.read(cache, generationId, "script-summary", "global") == nil then
+    if ArtifactState.read(factsFor(generationId), "script-summary", "global") == nil then
       local summaries = pool:recordsForKind("script-summary")
       Assert.isTrue(#summaries >= 1, "the script summary is planned once its members can complete")
       complete(summaries[1].jobKey)
@@ -938,7 +942,7 @@ function T.common_session_drives_bootstrap_complete_and_background_storm(romFs, 
       Assert.equal(reusedThroughWorker[jobKey], 3, "every warm resubmission reuses through worker proof: " .. jobKey)
     end
     for _, memberId in ipairs(scriptMemberIds) do
-      local receipt = ArtifactState.read(cache, generationId, "script-member", tostring(memberId))
+      local receipt = ArtifactState.read(factsFor(generationId), "script-member", tostring(memberId))
       Assert.notNil(receipt, "completed script members stay published across restart")
     end
     Assert.notNil(
@@ -1028,7 +1032,7 @@ function T.common_session_drives_bootstrap_complete_and_background_storm(romFs, 
     -- correct session answer, so only demand pending-or-published.
     if first then
       Assert.notNil(
-        ArtifactState.read(cache, generationId, kind, tostring(key)),
+        ArtifactState.read(factsFor(generationId), kind, tostring(key)),
         what .. " answers ready only for published work"
       )
       return
@@ -1189,7 +1193,7 @@ function T.common_session_drives_bootstrap_complete_and_background_storm(romFs, 
       if union[identityKey] ~= nil then
         return
       end
-      if ArtifactState.read(cache, generationId, kind, key) ~= nil then
+      if ArtifactState.read(factsFor(generationId), kind, key) ~= nil then
         return
       end
       -- Held-frontier work parks unsubmitted without receipts, so a key the
@@ -1512,6 +1516,7 @@ function T.field_runtime_settles_standard_menu_bank_without_family_summaries(rom
   local romSha1 = assert(romFs:metadata().sha1, "dump has no SHA-1 identity")
   local identity = identityFor(versionId, romSha1)
   local pool = FakePool()
+  pool.cacheReader = cache
   local context = workerContextFor(romFs, versionId, cache)
   local stageSeq = 0
   local function complete(jobKey)
@@ -1565,6 +1570,7 @@ function T.logical_field_waits_for_script_only_audio_bank(romFs, versionId)
   local romSha1 = assert(romFs:metadata().sha1, "dump has no SHA-1 identity")
   local identity = identityFor(versionId, romSha1)
   local pool = FakePool()
+  pool.cacheReader = cache
   local context = workerContextFor(romFs, versionId, cache)
   local stageSeq = 0
   local function complete(jobKey)
@@ -1591,6 +1597,7 @@ function T.logical_field_waits_for_script_only_audio_bank(romFs, versionId)
   local withheldKey = "audio-bank:" .. tostring(selection.bankId)
   session:retire()
   local logicalPool = FakePool()
+  logicalPool.cacheReader = cache
   local logicalSession = openSession(identity, 13, logicalPool)
   local logicalContext = workerContextFor(romFs, versionId, cache)
   local logicalStage = 0
@@ -1675,6 +1682,7 @@ function T.logical_field_waits_for_script_only_audio_bank(romFs, versionId)
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 -- Self-driven census: every job is planned and completed through the
 -- in-process session against the raw dump, so the suite consumes no
 -- prepared scope -- only the imported dump it borrows read-only. The

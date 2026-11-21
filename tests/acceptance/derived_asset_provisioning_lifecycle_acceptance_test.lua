@@ -8,7 +8,6 @@ local App = require("app.src.App")
 local HgssGame = require("game.hgss.src.HgssGame")
 local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
 local RomImporter = require("romdump.src.source.RomImporter")
-local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local StartupTitleState = require("app.src.launcher.StartupTitleState")
 local FakeStartupTitleState = require("tests.support.FakeStartupTitleState")
@@ -34,19 +33,10 @@ local function withApp(fn)
   local originalQuit = love.event.quit
   local originalAppBackend = ProducerFingerprint.appBackend
 
-  -- Attestation currency is not this suite's contract: ordinary selections
-  -- keep the bootstrap path while no real attestation file is touched.
-  local result = { events = {}, launches = {}, firstPlayCurrent = true }
-  local originalIsCurrent = FirstPlayCompletion.isCurrent
-  local originalHasStored = FirstPlayCompletion.hasStored
-  local originalPublish = FirstPlayCompletion.publish
-  FirstPlayCompletion.isCurrent = function(_, _)
-    return result.firstPlayCurrent
-  end
-  FirstPlayCompletion.hasStored = function()
-    return true
-  end
-  FirstPlayCompletion.publish = function() end
+  -- First play is an installed fact of the selected epoch: ordinary
+  -- selections model an epoch whose closure is already captured, so no
+  -- extra near preparation runs and no cache file is touched.
+  local result = { events = {}, launches = {}, firstPlayReady = true }
   App.state = nil
   App.importer = nil
   App.provisioner = nil
@@ -122,9 +112,6 @@ local function withApp(fn)
   MainMenuComposition.new = originalMenuNew
   StartupTitleState.new = originalTitleNew
   RomImporter.isReady = originalReady
-  FirstPlayCompletion.isCurrent = originalIsCurrent
-  FirstPlayCompletion.hasStored = originalHasStored
-  FirstPlayCompletion.publish = originalPublish
   love.graphics.getDimensions = originalDimensions
   love.event.quit = originalQuit
   ProducerFingerprint.appBackend = originalAppBackend
@@ -159,6 +146,13 @@ T.tests["the selected game receives only the semantic provisioning host"] = func
     end
     function service:update() end
     function service:retire(_) end
+    function service:getCacheFs(_)
+      return { versionId = "heartgold" }
+    end
+    function service:firstPlayReady(_)
+      return result.firstPlayReady == true
+    end
+    function service:recordFirstPlay(_) end
     App.service = service
     App._bootMainMenu({ "heartgold" })
     App.update(SourceTick.DT)
@@ -170,7 +164,7 @@ T.tests["the selected game receives only the semantic provisioning host"] = func
     local host = assert(launch.derivedAssets, "the running game must receive a derived-asset host")
     Assert.keySet(
       host,
-      "ensureCell,ensureField,ensureLogicalField,milestoneStatus,requestAudioBank,requestBattleBall,requestBattleEffect,requestBattleEvolution,requestBattlePresentation,requestBattleScene,requestBattleTrainerPicture,requestCell,requestEasyChat,requestField,requestIconPage,requestLogicalField,requestMilestone,requestMonPortraitPage,requestOpeningScene,requestPokedex,requestStartupWalker,status"
+      "ensureCell,ensureField,ensureLogicalField,getCacheFs,milestoneStatus,requestAudioBank,requestBattleBall,requestBattleEffect,requestBattleEvolution,requestBattlePresentation,requestBattleScene,requestBattleTrainerPicture,requestCell,requestEasyChat,requestField,requestIconPage,requestLogicalField,requestMilestone,requestMonPortraitPage,requestOpeningScene,requestPokedex,requestStartupWalker,status"
     )
     Assert.equal(type(host.requestField), "function")
     Assert.equal(type(host.ensureField), "function")

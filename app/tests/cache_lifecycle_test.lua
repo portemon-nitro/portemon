@@ -22,36 +22,18 @@ local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
 local VersionSelectState = require("app.src.launcher.VersionSelectState")
-local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
 
--- Hermetic completion answers for live-controller tests: the suites own
--- controller/threading contracts, not attestation currency, so ordinary
--- selections keep their established bootstrap paths while no real
--- attestation file is read or written. Tests that own currency set the
--- context fields before selecting.
-local function stubFirstPlayCompletion(context)
-  context.firstPlayCurrent = true
-  context.firstPlayStored = true
-  context.firstPlayPublished = {}
-  local originalIsCurrent = FirstPlayCompletion.isCurrent
-  local originalHasStored = FirstPlayCompletion.hasStored
-  local originalPublish = FirstPlayCompletion.publish
-  FirstPlayCompletion.isCurrent = function(_, _)
-    return context.firstPlayCurrent
+-- First play is an installed fact of the selected epoch. These suites own
+-- App routing, not the controller's capture, so a scripted harness answers
+-- the fact for live epochs and nothing for retired ones.
+---@param context table harness holding the scripted first-play state
+---@param epoch integer selected epoch
+---@return boolean? ready
+local function scriptedFirstPlayReady(context, epoch)
+  if context.retiredEpochs ~= nil and context.retiredEpochs[epoch] == true then
+    return nil
   end
-  FirstPlayCompletion.hasStored = function()
-    return context.firstPlayStored
-  end
-  FirstPlayCompletion.publish = function(versionId, generationId)
-    context.firstPlayPublished[#context.firstPlayPublished + 1] = { versionId = versionId, generationId = generationId }
-  end
-  return { isCurrent = originalIsCurrent, hasStored = originalHasStored, publish = originalPublish }
-end
-
-local function restoreFirstPlayCompletion(originals)
-  FirstPlayCompletion.isCurrent = originals.isCurrent
-  FirstPlayCompletion.hasStored = originals.hasStored
-  FirstPlayCompletion.publish = originals.publish
+  return context.firstPlayCurrent == true
 end
 
 local T = {}
@@ -242,6 +224,22 @@ local function newMenuService(events)
   end
   function service:update() end
   function service:retire(_) end
+  -- The epoch's installed generated view: the menu composition is stubbed in
+  -- these cases, so one shared empty reader stands in for its bytes.
+  local generatedView = { versionId = "heartgold" }
+  function generatedView:resolveAsset(_)
+    return nil
+  end
+  function generatedView:loadLua(_)
+    return nil, "the menu harness carries no generated payloads"
+  end
+  function service:getCacheFs(_)
+    return generatedView
+  end
+  function service:firstPlayReady(_)
+    return true
+  end
+  function service:recordFirstPlay(_) end
   return service
 end
 
@@ -353,6 +351,29 @@ local function withAppStubs(fn)
   end
   function service:retire(epochArg)
     context.retires[#context.retires + 1] = epochArg
+    context.retiredEpochs[epochArg] = true
+  end
+  -- One installed generated reader per live epoch: these cases stub every
+  -- generated consumer, so a shared empty view stands in for the epoch's
+  -- resident bytes.
+  context.generatedView = { versionId = "heartgold" }
+  function context.generatedView:resolveAsset(_)
+    return nil
+  end
+  function context.generatedView:loadLua(_)
+    return nil, "the lifecycle harness carries no generated payloads"
+  end
+  function service:getCacheFs(epochArg)
+    if context.retiredEpochs[epochArg] == true then
+      return nil
+    end
+    return context.generatedView
+  end
+  function service:firstPlayReady(epochArg)
+    return scriptedFirstPlayReady(context, epochArg)
+  end
+  function service:recordFirstPlay(epochArg)
+    context.firstPlayPublished[#context.firstPlayPublished + 1] = { epoch = epochArg }
   end
   function service:quiesce(epochArg)
     barrier = barrier + 1
@@ -398,7 +419,7 @@ local function withAppStubs(fn)
     return true
   end
   context.cannedGeneration = "test-generation"
-  local completionOriginals = stubFirstPlayCompletion(context)
+  context.retiredEpochs = {}
   local restoreStartupTitle = stubStartupTitleHandoff()
   love.graphics.getDimensions = function()
     return 640, 480
@@ -434,7 +455,6 @@ local function withAppStubs(fn)
   HgssLoadingPresentation.new = originalLoadingNew
   MainMenuComposition.new = original.menuNew
   RomImporter.isReady = original.isReady
-  restoreFirstPlayCompletion(completionOriginals)
   rawset(Store, "new", original.storeNew)
   love.graphics.getDimensions = original.dimensions
   App.state = original.state
@@ -1029,7 +1049,7 @@ local function failRunningOnWorker(harness, workerId, pool)
     kind = job.kind,
     key = job.key,
     jobKey = job.jobKey,
-    stageName = job.stageName,
+    dispatchId = job.dispatchId,
     error = "synthetic worker failure",
   })
 end
@@ -1185,10 +1205,37 @@ local function withLiveApp(context, fn)
   end
   local harness = { launches = {}, importers = {}, quitCodes = {}, prints = {}, threadHost = newControlledThreadHost() }
   local threadHost = harness.threadHost
-  -- Live-controller tests own threading contracts, never attestation
-  -- currency: stub the durable answers so no real file is read or
-  -- written and ordinary selections keep their bootstrap paths.
-  local completionOriginals = stubFirstPlayCompletion({})
+  -- Live-controller tests own threading contracts, not the first-play
+  -- capture: model an epoch whose closure already settled (no near
+  -- preparation, no publication) and no real generated write.
+  local CacheService = require("app.src.CacheService")
+  local retiredEpochs = {}
+  local originalServiceNew = CacheService.new
+  CacheService.new = function(...)
+    local service = originalServiceNew(...)
+    local baseRetire = service.retire
+    service.retire = function(self, epochArg)
+      retiredEpochs[epochArg] = true
+      return baseRetire(self, epochArg)
+    end
+    service.firstPlayReady = function(_, epochArg)
+      if retiredEpochs[epochArg] == true then
+        return nil
+      end
+      return true
+    end
+    service.recordFirstPlay = function() end
+    return service
+  end
+  local originalFirstPlayFactory = HgssGame.newFirstPlayCachePreparation
+  HgssGame.newFirstPlayCachePreparation = function()
+    local preparation = {}
+    function preparation:poll()
+      return nil, nil
+    end
+    function preparation:dispose() end
+    return preparation
+  end
   local restoreStartupTitle = stubStartupTitleHandoff()
   HgssGame.new = function(options)
     harness.launches[#harness.launches + 1] = options
@@ -1241,9 +1288,10 @@ local function withLiveApp(context, fn)
     }, { __index = realLove })
   )
   local ok, err = pcall(fn, App, harness, versionId)
+  CacheService.new = originalServiceNew
+  HgssGame.newFirstPlayCachePreparation = originalFirstPlayFactory
   restoreStartupTitle()
   rawset(_G, "love", realLove)
-  restoreFirstPlayCompletion(completionOriginals)
   HgssGame.new = original.gameNew
   RomImporter.new = original.importerNew
   ProducerFingerprint.appBackend = original.appBackend
@@ -1421,7 +1469,7 @@ function T.same_version_reselection_reuses_one_service_with_fresh_interest(conte
       kind = answered.kind,
       key = answered.key,
       jobKey = answered.jobKey,
-      stageName = answered.stageName,
+      dispatchId = answered.dispatchId,
     })
     pumpApp(App, harness, 2)
     local state, _ = pool:status(answered.jobKey)
@@ -1519,7 +1567,7 @@ function T.quit_after_cancelled_preparation_joins_owned_workers_once(context)
       kind = answered.kind,
       key = answered.key,
       jobKey = answered.jobKey,
-      stageName = answered.stageName,
+      dispatchId = answered.dispatchId,
     })
     pumpApp(App, harness, 1)
     local staleState, _ = pool:status(answered.jobKey)
@@ -1893,7 +1941,7 @@ local function newBootGateChannelHost()
   return { newChannel = newChannel, newThread = newThread, channels = channels, threads = threads }
 end
 
----@param options table|nil { firstPlayCurrent: boolean?, firstPlayStored: boolean?, readyVersions: string[]? }
+---@param options table|nil { firstPlayCurrent: boolean?, readyVersions: string[]?, generatedViewInstalled: boolean? }
 ---@param fn fun(App: table, context: table)
 local function withBootGateApp(options, fn)
   options = options or {}
@@ -1947,15 +1995,11 @@ local function withBootGateApp(options, fn)
     sweeps = 0,
     firstPlayPublished = {},
   }
-  local completionOriginals = stubFirstPlayCompletion(context)
+  context.retiredEpochs = {}
   local restoreStartupTitle = stubStartupTitleHandoff()
   context.firstPlayCurrent = options.firstPlayCurrent
   if context.firstPlayCurrent == nil then
     context.firstPlayCurrent = true
-  end
-  context.firstPlayStored = options.firstPlayStored
-  if context.firstPlayStored == nil then
-    context.firstPlayStored = true
   end
   App.opts = { dev = false }
   App.state = nil
@@ -2026,6 +2070,60 @@ local function withBootGateApp(options, fn)
     context.sweeps = context.sweeps + 1
     return baseEnableSweep(self, epoch)
   end
+  -- First play is an installed fact: the scripted flag answers it for live
+  -- epochs, retirement exposes nothing, and a recorded fact is observable
+  -- without any cache file.
+  local baseRetire = service.retire
+  service.retire = function(self, epoch)
+    context.retiredEpochs[epoch] = true
+    return baseRetire(self, epoch)
+  end
+  local baseFirstPlayReady = service.firstPlayReady
+  service.firstPlayReady = function(self, epoch)
+    local installed = baseFirstPlayReady(self, epoch)
+    if installed ~= nil then
+      return installed
+    end
+    return scriptedFirstPlayReady(context, epoch)
+  end
+  service.recordFirstPlay = function(_, epoch)
+    context.firstPlayPublished[#context.firstPlayPublished + 1] = { epoch = epoch }
+  end
+  -- The epoch's installed generated view. A real installation always wins.
+  -- Cases that do not install one themselves (every generated consumer is
+  -- stubbed) get the same stable empty reader per live epoch, because the boot
+  -- wait and the menu handoff both require the reader to exist; the authored
+  -- installation case opts out so it can observe the pre-install answer.
+  context.generatedViewInstalled = options.generatedViewInstalled
+  if context.generatedViewInstalled == nil then
+    context.generatedViewInstalled = true
+  end
+  local installedViews = {}
+  local baseGetCacheFs = service.getCacheFs
+  service.getCacheFs = function(self, epoch)
+    local installed = baseGetCacheFs(self, epoch)
+    if installed ~= nil then
+      return installed
+    end
+    if context.retiredEpochs[epoch] == true or context.generatedViewInstalled ~= true then
+      return nil
+    end
+    local view = installedViews[epoch]
+    if view == nil then
+      view = { versionId = "heartgold" }
+      function view:resolveAsset(_)
+        return nil
+      end
+      function view:readData(_)
+        return nil
+      end
+      function view:loadLua(_)
+        return nil, "the lifecycle harness carries no generated payloads"
+      end
+      installedViews[epoch] = view
+    end
+    return view
+  end
   graphics.getDimensions = function()
     return 640, 480
   end
@@ -2049,7 +2147,6 @@ local function withBootGateApp(options, fn)
   MainMenuComposition.new = original.menuNew
   HgssLoadingPresentation.new = original.loadingNew
   RomImporter.isReady = original.isReady
-  restoreFirstPlayCompletion(completionOriginals)
   graphics.getDimensions = original.getDimensions
   graphics.getDPIScale = original.getDPIScale
   graphics.getWidth = original.getWidth
@@ -2203,7 +2300,7 @@ end
 -- destroys nothing, and a current full-corpus marker with the same missing
 -- file reaches the menu with zero ROM file activity.
 function T.incomplete_cache_with_a_ready_first_play_closure_stays_in_the_boot_wait()
-  withBootGateApp({ firstPlayCurrent = true, firstPlayStored = true }, function(App, context)
+  withBootGateApp({ firstPlayCurrent = true }, function(App, context)
     local RomFs = require("romdump.src.source.RomFs")
     local RomSource = require("romdump.src.source.RomSource")
     local realOpen = RomFs.open
@@ -2300,7 +2397,7 @@ end
 -- beside bootstrap readiness, and the menu remains usable while that
 -- optional work is pending.
 function T.fresh_import_offer_reaches_the_controller_before_the_boot_check_on_one_epoch()
-  withBootGateApp({ firstPlayCurrent = false, firstPlayStored = false }, function(App, context)
+  withBootGateApp({ firstPlayCurrent = false }, function(App, context)
     local GameVersion = require("romdump.src.source.GameVersion")
     local RomFs = require("romdump.src.source.RomFs")
     local RomSource = require("romdump.src.source.RomSource")
@@ -2418,7 +2515,6 @@ function T.fresh_import_offer_reaches_the_controller_before_the_boot_check_on_on
       Assert.equal(#context.games, 1, "the restart never starts retail")
       restarted:keypressed("escape", nil, nil)
       context.firstPlayCurrent = true
-      context.firstPlayStored = true
       App._selectVersion(VERSION)
       local third = assert(App.epoch, "the attested boot must borrow a fresh epoch")
       context.service:injectReply({ op = "boot-source-result", epoch = third, state = "ready" })
@@ -2459,7 +2555,7 @@ end
 -- the menu without a destructive import.
 function T.blocked_boot_refuses_a_wrong_version_and_ignores_stale_replies()
   withBootGateApp(
-    { firstPlayCurrent = false, firstPlayStored = false, readyVersions = { "heartgold", "soulsilver" } },
+    { firstPlayCurrent = false, readyVersions = { "heartgold", "soulsilver" } },
     function(App, context)
       local GameVersion = require("romdump.src.source.GameVersion")
       App._selectVersion(VERSION)
@@ -2635,6 +2731,132 @@ function T.terminal_walker_record_keeps_its_identity_across_epochs()
   Assert.equal(freshReady, true, "the fresh epoch answers ready on its independent record")
   Assert.isNil(freshFailure, "the fresh epoch carries no failure")
   service:shutdown()
+end
+
+-- Every generated consumer of one selection reads the epoch's installed view:
+-- the menu, the retail game entry, and the game-facing host share the reader
+-- the service installed, while first play is a fact of that installed epoch
+-- instead of a marker the main thread writes. Retirement revokes the view and
+-- reselection never sees the previous epoch's bytes or facts as current.
+function T.selected_consumers_share_the_installed_view_and_first_play_is_an_installed_fact()
+  withBootGateApp({ firstPlayCurrent = false, generatedViewInstalled = false }, function(App, context)
+    local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
+    local CacheFs = require("libs.storage.src.CacheFs")
+    local realForVersion = CacheFs.forVersion
+    local physicalReaders = {}
+    rawset(CacheFs, "forVersion", function(versionId, backend)
+      local reader = realForVersion(versionId, backend or FakeCache.new())
+      physicalReaders[#physicalReaders + 1] = reader
+      return reader
+    end)
+    local function rewritesPhysical(value)
+      for _, reader in ipairs(physicalReaders) do
+        if reader == value then
+          return true
+        end
+      end
+      return false
+    end
+    local scenePath = "data/generated/field/60/scene.lua"
+    local sceneText = "return { mapId = 60 }\n"
+    local ok, err = xpcall(function()
+      App._selectVersion(VERSION)
+      local epoch = assert(App.epoch, "selection must borrow a controller epoch")
+      -- The controller's initial installation precedes every readiness
+      -- observation, so the epoch owns its generated view before any
+      -- consumer is constructed.
+      local identity = SnapshotBootFixture.identity()
+      SnapshotBootFixture.install(context.service, {
+        epoch = epoch,
+        identity = identity,
+        sequence = 1,
+        initial = true,
+        entries = { SnapshotBootFixture.blob(identity, scenePath, sceneText) },
+        firstPlay = true,
+      })
+      pumpBootGate(App, 1)
+      context.service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
+      pumpBootGate(App, 2)
+      local walkerId = assert(walkerRequestId(context, epoch), "the admitted wait requests the selected pair")
+      context.service:injectReply({ op = "request-result", epoch = epoch, requestId = walkerId, state = "ready" })
+      pumpBootGate(App, 3)
+      local bootstrapId = assert(
+        milestoneRequestId(context, epoch, "bootstrap"),
+        "the title requests ordinary bootstrap readiness"
+      )
+      context.service:injectReply({ op = "request-result", epoch = epoch, requestId = bootstrapId, state = "ready" })
+      pumpBootGate(App, 2)
+      Assert.equal(#context.menus, 1, "the admitted boot installs its menu")
+      Assert.equal(
+        type(context.service.getCacheFs),
+        "function",
+        "the selected epoch exposes one installed generated view"
+      )
+      local installed = assert(context.service:getCacheFs(epoch), "the installed epoch exposes its generated view")
+      local provisioner = assert(App.provisioner, "the selection keeps its provisioner")
+      Assert.equal(
+        type(provisioner.getCacheFs),
+        "function",
+        "the provisioner hands its epoch's installed generated view to consumers"
+      )
+      Assert.isTrue(provisioner:getCacheFs() == installed, "the provisioner serves the installed view itself")
+      Assert.isTrue(provisioner:gameHost().getCacheFs() == installed, "the game-facing host serves the same view")
+      Assert.isTrue(
+        context.menus[1].options.cacheFs == installed,
+        "the menu composition receives the installed view instead of a physical generated root"
+      )
+      Assert.isFalse(rewritesPhysical(installed), "the installed view is not a physical generated root")
+      local asset = assert(installed:resolveAsset(scenePath), "the installed bytes are readable at once")
+      Assert.equal(asset.data:getString(), sceneText, "the installed view lends the captured bytes")
+      Assert.isTrue(installed:readData(scenePath) == asset.data, "readData borrows the same bytes")
+      App._launchGameWithProvisioner(VERSION, { kind = "continue", saveId = "fixture" })
+      Assert.equal(#context.games, 1, "the menu route launches one retail entry")
+      Assert.isTrue(
+        context.games[1].launchOptions.cacheFs == installed,
+        "the retail entry receives the same installed view"
+      )
+      Assert.equal(
+        context.service:firstPlayReady(epoch),
+        true,
+        "first play is a cached fact of the installed epoch"
+      )
+      App._publishFirstPlay(VERSION)
+      Assert.equal(
+        #context.firstPlayPublished,
+        0,
+        "first play is recorded through the cache service instead of being published from the main thread"
+      )
+      App._retireSelection()
+      Assert.isNil(context.service:getCacheFs(epoch), "retirement revokes new lookups on the retired view")
+      Assert.equal(context.service:firstPlayReady(epoch), nil, "a retired epoch exposes no first-play fact")
+      App._selectVersion(VERSION)
+      local secondEpoch = assert(App.epoch, "reselection borrows a fresh epoch")
+      Assert.isTrue(secondEpoch > epoch, "reselection mints a fresh epoch")
+      Assert.isNil(App.provisioner:getCacheFs(), "a reselected epoch exposes nothing before its own install")
+      context.service:injectReply({ op = "boot-source-result", epoch = secondEpoch, state = "ready" })
+      pumpBootGate(App, 2)
+      SnapshotBootFixture.install(context.service, {
+        epoch = secondEpoch,
+        identity = SnapshotBootFixture.identity(),
+        sequence = 1,
+        initial = true,
+        entries = {},
+      })
+      pumpBootGate(App, 2)
+      local fresh = assert(context.service:getCacheFs(secondEpoch), "the reselected epoch installs its own view")
+      Assert.isTrue(fresh ~= installed, "reselection never reuses the retired view")
+      Assert.isNil(fresh:resolveAsset(scenePath), "reselection never sees the retired epoch's bytes")
+      Assert.equal(
+        context.service:firstPlayReady(secondEpoch),
+        false,
+        "a reselected epoch does not inherit the retired first-play fact"
+      )
+    end, debug.traceback)
+    rawset(CacheFs, "forVersion", realForVersion)
+    if not ok then
+      error(err, 0)
+    end
+  end)
 end
 
 return { tests = T }

@@ -10,6 +10,7 @@ local Assert = require("tests.support.Assert")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local GameVersion = require("romdump.src.source.GameVersion")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local RomImporter = require("romdump.src.source.RomImporter")
 
@@ -17,9 +18,15 @@ local T = {}
 
 local MAP = "MAP_NEW_BARK_PLAYER_HOUSE_2F"
 
-local function runtimeOptions()
+---@param versionId string
+---@return table<string, unknown> headless runtime options over the produced corpus
+local function runtimeOptions(versionId)
   local Fixture = require("tests.support.FieldStatePresentationFixture")
-  return { presentation = false, derivedAssets = Fixture.iconHost().derivedAssets }
+  return {
+    presentation = false,
+    derivedAssets = Fixture.iconHost().derivedAssets,
+    cacheFs = GeneratedCacheFixture.reader(versionId),
+  }
 end
 
 local function validEntry(versionId)
@@ -63,7 +70,7 @@ end
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       versions[#versions + 1] = versionId
     end
   end
@@ -126,7 +133,7 @@ end
 local function continueBoot(snapshot, versionId)
   local runtime = nil
   local ok, err = xpcall(function()
-    runtime = FieldRuntime.new(snapshot, runtimeOptions())
+    runtime = FieldRuntime.new(snapshot, runtimeOptions(versionId))
   end, debug.traceback)
   Assert.isTrue(ok, versionId .. " Continue boots its saved record: " .. tostring(err))
   assert(runtime ~= nil, "a successful Continue owns its runtime")
@@ -154,7 +161,7 @@ local function closeRuntime(runtime)
 end
 
 local function runLegacyJourney(versionId)
-  local first = FieldRuntime.new(validEntry(versionId), runtimeOptions())
+  local first = FieldRuntime.new(validEntry(versionId), runtimeOptions(versionId))
   local ok, err = xpcall(function()
     first.eventState:setFlag(107)
     local snapshot = settleCapture(first)
@@ -198,7 +205,7 @@ local function runLegacyJourney(versionId)
 end
 
 local function runMissingJourney(versionId)
-  local first = FieldRuntime.new(validEntry(versionId), runtimeOptions())
+  local first = FieldRuntime.new(validEntry(versionId), runtimeOptions(versionId))
   local ok, err = xpcall(function()
     local snapshot = settleCapture(first)
     snapshot.playerData.profile.nationalDex = false
@@ -225,7 +232,7 @@ local function runMissingJourney(versionId)
 end
 
 local function runCurrentJourney(versionId)
-  local first = FieldRuntime.new(validEntry(versionId), runtimeOptions())
+  local first = FieldRuntime.new(validEntry(versionId), runtimeOptions(versionId))
   local ok, err = xpcall(function()
     local snapshot = settleCapture(first)
     snapshot.playerData.profile.nationalDex = false
@@ -385,7 +392,7 @@ local COVERED_MAP = "MAP_NEW_BARK"
 local function withUnlockedRuntime(versionId, fn)
   local entry = validEntry(versionId)
   entry.location.mapSymbol = COVERED_MAP
-  local booted = FieldRuntime.new(entry, runtimeOptions())
+  local booted = FieldRuntime.new(entry, runtimeOptions(versionId))
   local ok, err = xpcall(function()
     booted.eventState:setFlag(107)
     settleCapture(booted)

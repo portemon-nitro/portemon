@@ -11,7 +11,7 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 local BattlePresentationFlow = require("game.hgss.src.battle.BattlePresentationFlow")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleParticleSystems = require("libs.hgss.src.presentation.BattleParticleSystems")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local RomImporter = require("romdump.src.source.RomImporter")
@@ -53,7 +53,7 @@ end
 
 local function runVersion(scope, versionId)
   local graphics = love.graphics
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local slots = ManifestFixture.manifest().battlefield.slots
   local before = {
     own = { { combatant = 1, activation = 1, side = 1, position = 1 } },

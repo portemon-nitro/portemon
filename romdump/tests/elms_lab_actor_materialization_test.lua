@@ -14,6 +14,7 @@ local FieldActorAssetProvider = require("libs.hgss.src.presentation.FieldActorAs
 local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -57,7 +58,9 @@ function T.a_fresh_clear_hide_flag_materializes_and_draws_the_real_elm_actor(rom
 
   local actorBundle = assert(FieldActorCompiler.compile(romFs))
   local cache = CacheFs.forVersion(version, FakeCache.new())
-  FieldActorCacheWriter.write(cache, actorBundle)
+  ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
+      return FieldActorCacheWriter.stage(artifact, actorBundle)
+    end)
   local assets = FieldActorAssetProvider.new(cache, { graphics = stubGraphics() })
 
   -- A genuinely fresh save: no flag has ever been written, so

@@ -6,7 +6,7 @@
 -- through the renderer first.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
@@ -48,10 +48,12 @@ end
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    local cacheFs = CacheFs.forVersion(versionId)
-    local marker = cacheFs:read(PcCache.markerPath())
-    if marker ~= nil and PcCache.isReady(cacheFs, marker) then
-      versions[#versions + 1] = { id = versionId, cacheFs = cacheFs, manifest = PcCache.loadManifest(cacheFs) }
+    if GeneratedCacheFixture.isPrepared(versionId) then
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
+      local marker = cacheFs:read(PcCache.markerPath())
+      if marker ~= nil and PcCache.isReady(cacheFs, marker) then
+        versions[#versions + 1] = { id = versionId, cacheFs = cacheFs, manifest = PcCache.loadManifest(cacheFs) }
+      end
     end
   end
   return versions

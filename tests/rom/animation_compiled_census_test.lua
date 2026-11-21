@@ -9,7 +9,7 @@
 -- corpus is clean, and it pins that the contract cannot break real data.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local RomImporter = require("romdump.src.source.RomImporter")
@@ -31,7 +31,7 @@ function T.beforeAll()
   handles = opened
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
-      opened[#opened + 1] = { versionId = versionId, cache = CacheFs.forVersion(versionId) }
+      opened[#opened + 1] = { versionId = versionId, cache = GeneratedCacheFixture.reader(versionId) }
     end
   end
   if #opened == 0 then

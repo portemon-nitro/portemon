@@ -136,7 +136,6 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
   local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
   local CacheFs = require("libs.storage.src.CacheFs")
   local LoadingModule = require("libs.hgss.src.ui.HgssLoadingPresentation")
-  local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
   local HgssGame = require("game.hgss.src.HgssGame")
   local StartupTitleState = require("app.src.launcher.StartupTitleState")
   local saved = {
@@ -155,7 +154,6 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
     loadWalker = StartupAssetCache.loadWalker,
     forVersion = CacheFs.forVersion,
     loadingNew = LoadingModule.new,
-    isCurrent = FirstPlayCompletion.isCurrent,
     firstPlayFactory = HgssGame.newFirstPlayCachePreparation,
     random = love.math.random,
   }
@@ -186,6 +184,20 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
   end
   function service:retire(_)
   end
+  local generatedView = { versionId = "heartgold" }
+  function generatedView:resolveAsset(_)
+    return nil
+  end
+  function generatedView:loadLua(_)
+    return nil, "the startup harness carries no generated payloads"
+  end
+  function service:getCacheFs(_)
+    return generatedView
+  end
+  function service:firstPlayReady(_)
+    return false
+  end
+  function service:recordFirstPlay(_) end
   function service:generationId(_)
     return "synthetic-test-generation"
   end
@@ -230,7 +242,6 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
     StartupAssetCache.loadWalker = saved.loadWalker
     CacheFs.forVersion = saved.forVersion
     LoadingModule.new = saved.loadingNew
-    FirstPlayCompletion.isCurrent = saved.isCurrent
     HgssGame.newFirstPlayCachePreparation = saved.firstPlayFactory
     love.math.random = saved.random
   end
@@ -243,9 +254,6 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
     end
     LoadingModule.new = function()
       return loading
-    end
-    FirstPlayCompletion.isCurrent = function()
-      return false
     end
     HgssGame.newFirstPlayCachePreparation = function(_)
       local preparation = {}
@@ -302,7 +310,6 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
   local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
   local CacheFs = require("libs.storage.src.CacheFs")
   local LoadingModule = require("libs.hgss.src.ui.HgssLoadingPresentation")
-  local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
   local HgssGame = require("game.hgss.src.HgssGame")
   local saved = {
     state = App.state,
@@ -320,7 +327,6 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
     loadWalker = StartupAssetCache.loadWalker,
     forVersion = CacheFs.forVersion,
     loadingNew = LoadingModule.new,
-    isCurrent = FirstPlayCompletion.isCurrent,
     firstPlayFactory = HgssGame.newFirstPlayCachePreparation,
     random = love.math.random,
   }
@@ -354,6 +360,20 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
   end
   function service:retire(_)
   end
+  local generatedView = { versionId = "heartgold" }
+  function generatedView:resolveAsset(_)
+    return nil
+  end
+  function generatedView:loadLua(_)
+    return nil, "the startup harness carries no generated payloads"
+  end
+  function service:getCacheFs(_)
+    return generatedView
+  end
+  function service:firstPlayReady(_)
+    return false
+  end
+  function service:recordFirstPlay(_) end
   function service:generationId(_)
     return "synthetic-test-generation"
   end
@@ -391,7 +411,6 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
     StartupAssetCache.loadWalker = saved.loadWalker
     CacheFs.forVersion = saved.forVersion
     LoadingModule.new = saved.loadingNew
-    FirstPlayCompletion.isCurrent = saved.isCurrent
     HgssGame.newFirstPlayCachePreparation = saved.firstPlayFactory
     love.math.random = saved.random
   end
@@ -405,9 +424,6 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
     end
     LoadingModule.new = function()
       return loading
-    end
-    FirstPlayCompletion.isCurrent = function()
-      return false
     end
     HgssGame.newFirstPlayCachePreparation = function(_)
       local preparation = {}

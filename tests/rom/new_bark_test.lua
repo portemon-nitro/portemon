@@ -25,6 +25,7 @@ local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local NeighborPlan = require("romdump.src.digest.map.NeighborPlan")
 local NeighborChunkCompiler = require("romdump.src.digest.map.NeighborChunkCompiler")
 local AlphaClassifier = require("libs.nds.src.gx.AlphaClassifier")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -358,13 +359,7 @@ function T.central_cell_scene(romFs, version)
   })
   MapCacheWriter.stage(prepared, bundle)
   prepared:finishSuccess({ marker = bundle.marker })
-  prepared:publish({
-    generationId = "test-generation",
-    epoch = 1,
-    kind = "map",
-    key = key,
-    jobKey = "map:" .. key,
-  })
+  ResidentArtifactFixture.materialize(prepared)
   local scene = bundle.scene
 
   local m = scene.matrix

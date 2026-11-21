@@ -1,5 +1,6 @@
 -- Retail trainer loss reaches the blocking whiteout recovery path.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
@@ -246,7 +247,7 @@ function T.tests.non_mother_loss_uses_blackout_destination_separate_from_telepor
   local ok, err = xpcall(function()
     local CacheFs = require("libs.storage.src.CacheFs")
     local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
-    local cache = CacheFs.forVersion(AcceptanceHarness.defaultVersion())
+    local cache = GeneratedCacheFixture.reader(AcceptanceHarness.defaultVersion())
     local index = assert(cache:loadLua(FieldMapDataCache.spawnIndexPath()))
     Assert.isTrue(type(index.spawns) == "table", "the generated cache publishes all outdoor destinations")
     Assert.isTrue(

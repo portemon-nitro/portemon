@@ -1,6 +1,7 @@
 -- Renders the retail Elm starter naming flow through FieldState's production
 -- runtime and presentation ownership.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
@@ -22,7 +23,7 @@ local PREVENT_ESCAPE = FieldScriptSymbols.flagsByName.FLAG_ELMS_LAB_PREVENT_PLAY
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       versions[#versions + 1] = versionId
     end
   end
@@ -379,6 +380,7 @@ local function verifyVersion(scope, versionId)
   local state = assert(FieldState.new(newGame(versionId), {
     audioOutput = { audio = audioOutput.audio, sound = audioOutput.sound },
     derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+    cacheFs = GeneratedCacheFixture.reader(versionId),
   }))
   scope:own({
     release = function()

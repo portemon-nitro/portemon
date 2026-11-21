@@ -1,7 +1,8 @@
 -- Spawn landing index reader tests: resolution answers fresh records
 -- for cited keys, nil for unknown keys, and corrupt generated data
--- raises instead of warping somewhere convenient. Published through the
--- real family writer over an isolated fake cache.
+-- raises instead of warping somewhere convenient. Published by staging the
+-- real family bundle through a prepared artifact and mirroring the sealed
+-- bytes into an isolated fake cache.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -12,6 +13,7 @@ local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMapDataCacheWriter = require("romdump.src.digest.field.FieldMapDataCacheWriter")
 local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
 local Fixture = require("tests.support.FieldMapDataFixture")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -20,7 +22,9 @@ local function publishedCache()
   Assert.isTrue(bundle ~= nil, "compile failed: " .. tostring(err and err.message or err))
   bundle = assert(bundle)
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldMapDataCacheWriter.writeSpawnIndex(cache, bundle)
+  ResidentArtifactFixture.publish(cache, "spawns", "global", function(artifact)
+    return FieldMapDataCacheWriter.stageSpawnIndex(artifact, bundle)
+  end)
   return cache, bundle
 end
 
@@ -307,7 +311,8 @@ function T.spawn_index_writer_refuses_a_partial_namespace_bundle()
     spawns = bundle.index.spawns,
     blackoutSpawns = bundle.index.blackoutSpawns,
   }
-  local ok, err = pcall(FieldMapDataCacheWriter.writeSpawnIndex, cache, { index = partial, marker = bundle.marker })
+  local artifact = ResidentArtifactFixture.new(cache, "spawns", "global")
+  local ok, err = pcall(FieldMapDataCacheWriter.stageSpawnIndex, artifact, { index = partial, marker = bundle.marker })
   Assert.isFalse(ok, "a bundle without the special namespace must not publish")
   Assert.isTrue(Errors.is(err), "the refused publish carries a structured error")
 end

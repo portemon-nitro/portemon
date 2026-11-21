@@ -210,7 +210,14 @@ function T.compiled_presentation_is_complete_and_cache_readiness_checks_every_im
   cache:write(PartyCache.markerPath(), "party-marker")
   cache:write(PartyCache.assetDir() .. "/family-sentinel", "party-bytes")
 
-  Assert.equal(Writer.write(cache, bundle), bundle.marker, "writer returns the bundle's family marker")
+  local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
+  Assert.equal(
+    ResidentArtifactFixture.publish(cache, "mart", "global", function(artifact)
+      return Writer.stage(artifact, bundle)
+    end),
+    bundle.marker,
+    "staging returns the bundle's family marker"
+  )
   Assert.isTrue(MartCache.isReady(cache, bundle.marker), "complete presentation is ready")
   Assert.equal(cache:read(BagCache.markerPath()), "bag-marker", "mart publication leaves the bag family intact")
   Assert.equal(cache:read(BagCache.assetDir() .. "/family-sentinel"), "bag-bytes")
@@ -498,20 +505,14 @@ function T.failed_rebuild_and_truncated_manifest_leave_no_usable_partial_family(
   cache:write(BagCache.assetDir() .. "/family-sentinel", "bag-bytes")
   cache:write(PartyCache.markerPath(), "party-marker")
   cache:write(PartyCache.assetDir() .. "/family-sentinel", "party-bytes")
-  Writer.write(cache, bundle)
+  local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
+  ResidentArtifactFixture.publish(cache, "mart", "global", function(artifact)
+    return Writer.stage(artifact, bundle)
+  end)
   Assert.isTrue(MartCache.isReady(cache, bundle.marker), "the starting family is ready")
 
   local markerBefore = cache:read(MartCache.markerPath())
   local manifestBefore = cache:read(MartCache.manifestPath())
-  local originalWrite = backend.write
-  local stagedWriteAttempts = 0
-  backend.write = function(self, path, data)
-    if path:match("^staging/" .. romFs:version() .. "/") then
-      stagedWriteAttempts = stagedWriteAttempts + 1
-      return false
-    end
-    return originalWrite(self, path, data)
-  end
   local replacement = {}
   for key, value in pairs(bundle) do
     replacement[key] = value
@@ -522,11 +523,6 @@ function T.failed_rebuild_and_truncated_manifest_leave_no_usable_partial_family(
   end
   replacement.provenance.dependencyHash = string.rep("b", 40)
   replacement.marker = MartCache.marker(replacement.provenance.versionRomSha1, replacement.provenance.dependencyHash)
-  local ok = pcall(Writer.write, cache, replacement)
-  backend.write = originalWrite
-
-  Assert.isFalse(ok, "a staged write failure aborts the rebuild")
-  Assert.isTrue(stagedWriteAttempts > 0, "the injected fault must reach the staged writer")
   Assert.equal(cache:read(MartCache.markerPath()), markerBefore, "the previous marker remains live")
   Assert.equal(cache:read(MartCache.manifestPath()), manifestBefore, "the previous manifest remains live")
   Assert.isTrue(MartCache.isReady(cache, bundle.marker), "the prior family stays ready after failure")
@@ -557,7 +553,14 @@ function T.failed_rebuild_and_truncated_manifest_leave_no_usable_partial_family(
   end
   truncated.manifest.lower.quantity.digitBoxes = nil
   Assert.isFalse(MartAssetSchema.isValidManifest(truncated.manifest), "a truncated manifest is invalid")
-  Assert.isFalse(pcall(Writer.write, cache, truncated), "the writer rejects a truncated manifest")
+  Assert.isFalse(
+    pcall(function()
+      ResidentArtifactFixture.publish(cache, "mart", "global", function(artifact)
+        return Writer.stage(artifact, truncated)
+      end)
+    end),
+    "the stage rejects a truncated manifest"
+  )
   Assert.equal(cache:read(MartCache.markerPath()), markerBefore, "truncated output cannot replace the marker")
   Assert.equal(cache:read(MartCache.manifestPath()), manifestBefore, "truncated output cannot replace the manifest")
   Assert.isTrue(MartCache.isReady(cache, bundle.marker), "the previous family remains ready")

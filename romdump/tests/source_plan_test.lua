@@ -28,6 +28,7 @@ local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
 local SourcePlan = require("romdump.src.build.SourcePlan")
 local StorageErrors = require("libs.storage.src.errors")
 local WorldManifest = require("romdump.src.digest.map.WorldManifest")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -162,12 +163,47 @@ local function plannerPatches(calls, options)
   }
 end
 
+-- One committed fact map per generation: the controller's facts are what make
+-- a staged reply reuseable and publishable in a milestone roster.
+local factsByGeneration = {}
+local function factsFor(generation)
+  local facts = factsByGeneration[generation]
+  if facts == nil then
+    facts = ArtifactState.new(generation)
+    factsByGeneration[generation] = facts
+  end
+  return facts
+end
+
+-- One committed completion fact for a staged fixture job. A repeated fixture
+-- publication replaces the record, exactly like re-writing the same key.
+local function recordFact(generation, kind, key, marker)
+  factsFor(generation).records[ArtifactState.key(kind, key)] = {
+    kind = kind,
+    key = key,
+    marker = marker,
+    dependencies = {},
+    ownedRoots = {},
+    sharedPaths = {},
+    files = {},
+  }
+end
+
 local function recordingPool()
   local pool = { submitted = {}, states = {}, selects = 0 }
+  -- The session reads committed bytes and artifact facts only through its
+  -- pool: this fixture serves the test's own cache and the generation's facts.
+  function pool:cacheFs()
+    return self.cacheFsReader
+  end
+  function pool:artifactFacts()
+    return factsFor(assert(self.generation, "generation session requires its pool generation"))
+  end
   function pool:selectGeneration(selection, epoch)
     self.selects = self.selects + 1
     self.selection = selection
     self.epoch = epoch
+    self.generation = selection.generationId
   end
   function pool:update() end
   local function stateOf(self, jobKey)
@@ -241,6 +277,9 @@ local function contains(list, value)
 end
 
 local function openSession(generation, pool, epoch)
+  -- Every planner scope patches CacheFs.forVersion to the test's own backend,
+  -- so the pool's reader is the cache the test publishes into.
+  pool.cacheFsReader = pool.cacheFsReader or CacheFs.forVersion("heartgold")
   return InteractiveCacheBuild.new({
     identity = identity(generation),
     epoch = epoch or 1,
@@ -497,14 +536,10 @@ local function compileSynthetic(generation, failingMapId)
     return SourcePlan.compile(syntheticRomFs(), identity(generation)), calls
   end)
 end
-local function publishStagedSource(cacheFs, pool, generation)
-  cacheFs:writeLua(ArtifactState.path("source-plan", "global"), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = generation,
-    kind = "source-plan",
-    key = "global",
-    marker = SourcePlan.marker(generation),
-  })
+-- The published inventory's staged reply plus its completion fact: ready is
+-- worker proof, and the fact is what the session validates for adoption.
+local function publishStagedSource(pool, generation)
+  recordFact(generation, "source-plan", "global", SourcePlan.marker(generation))
   pool.states["source-plan:global"] = "ready"
 end
 function T.inventory_compiles_membership_without_pixel_or_geometry_work()
@@ -546,18 +581,11 @@ local function stageSynthetic(cacheFs, generation)
     kind = "source-plan",
     key = "global",
     jobKey = "source-plan:global",
-    stageName = "inventory-stage",
   })
   local marker = SourcePlan.stage(artifact, plan)
   Assert.equal(marker, SourcePlan.marker(generation), "staging returns the generation marker")
   artifact:finishSuccess({ marker = marker })
-  artifact:publish({
-    generationId = generation,
-    epoch = 1,
-    kind = "source-plan",
-    key = "global",
-    jobKey = "source-plan:global",
-  })
+  ResidentArtifactFixture.materialize(artifact)
   return plan
 end
 function T.staged_inventory_reads_back_and_rejects_tampering()
@@ -708,11 +736,7 @@ function T.field_record_membership_uses_the_source_rule()
     {},
     "the inventory job plans no prerequisite"
   )
-  Assert.equal(
-    ArtifactState.path("source-plan", "global"),
-    "data/generated/jobs/source-plan/global.lua",
-    "the inventory receipt is namespaced"
-  )
+  Assert.equal(ArtifactState.key("source-plan", "global"), "source-plan:global")
 end
 
 function T.complete_inventory_covers_every_family_once()
@@ -816,7 +840,7 @@ function T.loaded_inventory_answers_known_members_and_rejects_unknown_ones()
     session:update()
     -- One staged pool reply adopts the published inventory; planner
     -- calls below must stay zero throughout.
-    pool.states["source-plan:global"] = "ready"
+    publishStagedSource(pool, "loaded-member-generation")
     for _ = 1, 3 do
       session:update()
     end
@@ -1003,14 +1027,32 @@ local function minimalCatalog()
   }
 end
 
-local function writeMonReceipt(cacheFs, generation, kind, key, marker)
-  cacheFs:writeLua(ArtifactState.path(kind, key), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = generation,
-    kind = kind,
-    key = key,
-    marker = marker,
-  })
+-- Publish the mon catalog through its real stage function.
+local function stageMonCatalog(cacheFs, generation, marker)
+  ResidentArtifactFixture.publish(cacheFs, "mon-catalog", "global", function(artifact)
+    local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+    return MonCacheWriter.stageCatalog(artifact, { catalog = minimalCatalog(), marker = marker })
+  end, generation)
+  recordFact(generation, "mon-catalog", "global", marker)
+end
+
+-- Publish the selector layout through its real stage function. The private
+-- page records the producer stages are what page adoption consumes.
+local function stageMonLayout(cacheFs, generation, marker, icons, pagePlans)
+  local MonCache = require("libs.assets.src.MonCache")
+  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+  ResidentArtifactFixture.publish(cacheFs, "mon-layout", "global", function(artifact)
+    return MonCacheWriter.stageLayout(artifact, {
+      icons = icons
+        or layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
+      portraits = layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
+      marker = marker,
+      pagePlans = pagePlans
+        or { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
+      generationId = generation,
+    })
+  end, generation)
+  recordFact(generation, "mon-layout", "global", marker)
 end
 
 -- Failure to read old private layout data does not block a repaired
@@ -1040,23 +1082,14 @@ function T.page_adoption_reaches_the_same_closure_in_either_arrival_order()
       local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
       local function stageLayout()
         local PngWriter = require("tests.support.PngEncoder")
-        MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), "order-catalog-marker")
-        writeMonReceipt(cacheFs, generation, "mon-catalog", "global", "order-catalog-marker")
-        MonCacheWriter.writeLayout(
-          cacheFs,
-          layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
-          layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
-          "order-layout-marker",
-          { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
-          generation
-        )
-        writeMonReceipt(cacheFs, generation, "mon-layout", "global", "order-layout-marker")
+        stageMonCatalog(cacheFs, generation, "order-catalog-marker")
+        stageMonLayout(cacheFs, generation, "order-layout-marker")
         cacheFs:write(
           MonCache.pageImagePath("portraits", 0),
           PngWriter.encode(640, 320, string.rep("\0", 640 * 320 * 4))
         )
         cacheFs:write(MonCache.pageMarkerPath("portraits", 0), "order-portrait-marker-0")
-        writeMonReceipt(cacheFs, generation, "mon-portrait-page", "0", "order-portrait-marker-0")
+        recordFact(generation, "mon-portrait-page", "0", "order-portrait-marker-0")
       end
       local pool = recordingPool()
       local session = openSession(generation, pool)
@@ -1081,7 +1114,7 @@ function T.page_adoption_reaches_the_same_closure_in_either_arrival_order()
       end
       -- Worker replies land after staging: flipping a state the pool
       -- already reported would hide the transition the session waits for.
-      pool.states["source-plan:global"] = "ready"
+      publishStagedSource(pool, generation)
       pool.states["mon-catalog:global"] = "ready"
       pool.states["mon-layout:global"] = "ready"
       for _ = 1, 10 do
@@ -1141,18 +1174,9 @@ function T.denied_adoption_step_runs_next_update_without_new_notification()
       session:update()
     end
     Assert.isFalse(session.pagesKnown, "wide work does not invent membership")
-    MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), "pause-catalog-marker")
-    writeMonReceipt(cacheFs, generation, "mon-catalog", "global", "pause-catalog-marker")
-    pool.states["source-plan:global"] = "ready"
-    MonCacheWriter.writeLayout(
-      cacheFs,
-      layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
-      layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
-      "pause-layout-marker",
-      { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
-      generation
-    )
-    writeMonReceipt(cacheFs, generation, "mon-layout", "global", "pause-layout-marker")
+    stageMonCatalog(cacheFs, generation, "pause-catalog-marker")
+    publishStagedSource(pool, generation)
+    stageMonLayout(cacheFs, generation, "pause-layout-marker")
     pool.states["mon-catalog:global"] = "ready"
     pool.states["mon-layout:global"] = "ready"
     for _ = 1, 60 do
@@ -1181,18 +1205,9 @@ function T.repaired_layout_with_the_same_marker_is_adopted()
   local cacheFs = realForVersion("heartgold", backend)
   stageSynthetic(cacheFs, generation)
   local catalogMarker = "synthetic-catalog-marker"
-  MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), catalogMarker)
-  writeMonReceipt(cacheFs, generation, "mon-catalog", "global", catalogMarker)
+  stageMonCatalog(cacheFs, generation, catalogMarker)
   local layoutMarker = "synthetic-layout-marker"
-  MonCacheWriter.writeLayout(
-    cacheFs,
-    layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
-    layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
-    layoutMarker,
-    { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
-    generation
-  )
-  writeMonReceipt(cacheFs, generation, "mon-layout", "global", layoutMarker)
+  stageMonLayout(cacheFs, generation, layoutMarker)
   local pagePlanPath = MonCacheWriter.sourcePagePlanPath("portraits", 0)
   local savedRecord = assert(cacheFs:loadLua(pagePlanPath), "the staged page record reads back")
   cacheFs:remove(pagePlanPath)
@@ -1217,7 +1232,7 @@ function T.repaired_layout_with_the_same_marker_is_adopted()
       local ready, err = session:requestJob("mon-portrait-page", "0", "required")
       Assert.isFalse(ready, "the portrait stays pending while its layout record is missing")
       Assert.isNil(err, "the portrait reports no failure while its layout is pending")
-      pool.states["source-plan:global"] = "ready"
+      publishStagedSource(pool, generation)
       pool.states["mon-catalog:global"] = "ready"
       session:update()
       session:update()
@@ -1267,13 +1282,7 @@ function T.one_budget_covers_request_and_completion_work()
     members[#members + 1] = memberId
   end
   sharedFs:writeLua(SourcePlan.PATH, inventoryPlan(generation, members))
-  sharedFs:writeLua(ArtifactState.path("source-plan", "global"), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = generation,
-    kind = "source-plan",
-    key = "global",
-    marker = SourcePlan.marker(generation),
-  })
+  recordFact(generation, "source-plan", "global", SourcePlan.marker(generation))
   local realDependencies = ArtifactJobs.dependencies
   local realValidate = ArtifactJobs.validate
   local counting = { enabled = false, dependencies = 0, validate = 0, order = {} }
@@ -1322,7 +1331,7 @@ function T.one_budget_covers_request_and_completion_work()
       local pool = recordingPool()
       -- Staged ready replies stand in for worker reuse proof, so every
       -- admitted demand settles through the pool within the budget.
-      pool.states["source-plan:global"] = "ready"
+      publishStagedSource(pool, generation)
       for memberId = 1, 61 do
         pool.states["script-member:" .. tostring(memberId)] = "ready"
       end
@@ -1408,7 +1417,7 @@ function T.unknown_member_stays_pending_until_membership_is_known()
     Assert.isFalse(ready, "an unknown member stays pending while membership is unknown")
     Assert.isNil(failure, "an unknown member reports no failure while membership is unknown")
     cacheFs:writeLua(SourcePlan.PATH, staged)
-    publishStagedSource(cacheFs, pool, generation)
+    publishStagedSource(pool, generation)
     for _ = 1, 3 do
       session:update()
     end
@@ -1441,36 +1450,27 @@ function T.corrupted_page_gets_targeted_repair_while_siblings_reuse()
   local realForVersion = CacheFs.forVersion
   local cacheFs = realForVersion("heartgold", backend)
   local catalogMarker = "synthetic-catalog-marker"
-  MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), catalogMarker)
-  writeMonReceipt(cacheFs, generation, "mon-catalog", "global", catalogMarker)
+  stageMonCatalog(cacheFs, generation, catalogMarker)
   local layoutMarker = "synthetic-layout-marker"
   local icons = layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32)
   icons.pages[1] = { pageId = 1, image = MonCache.iconPagePath(1), width = 256, height = 128 }
   icons.pageIds = { 0, 1 }
-  MonCacheWriter.writeLayout(
-    cacheFs,
-    icons,
-    layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
-    layoutMarker,
-    {
-      iconPages = { [0] = iconPagePlan(0), [1] = iconPagePlan(1) },
-      portraitPages = { [0] = portraitPagePlan(0) },
-    },
-    generation
-  )
-  writeMonReceipt(cacheFs, generation, "mon-layout", "global", layoutMarker)
+  stageMonLayout(cacheFs, generation, layoutMarker, icons, {
+    iconPages = { [0] = iconPagePlan(0), [1] = iconPagePlan(1) },
+    portraitPages = { [0] = portraitPagePlan(0) },
+  })
   local function publishIconPage(pageId)
     local marker = "synthetic-icon-marker-" .. tostring(pageId)
     cacheFs:write(MonCache.pageImagePath("icons", pageId), PngWriter.encode(256, 128, string.rep("\0", 256 * 128 * 4)))
     cacheFs:write(MonCache.pageMarkerPath("icons", pageId), marker)
-    writeMonReceipt(cacheFs, generation, "mon-icon-page", tostring(pageId), marker)
+    recordFact(generation, "mon-icon-page", tostring(pageId), marker)
   end
   publishIconPage(0)
   publishIconPage(1)
   local portraitMarker = "synthetic-portrait-marker-0"
   cacheFs:write(MonCache.pageImagePath("portraits", 0), PngWriter.encode(640, 320, string.rep("\0", 640 * 320 * 4)))
   cacheFs:write(MonCache.pageMarkerPath("portraits", 0), portraitMarker)
-  writeMonReceipt(cacheFs, generation, "mon-portrait-page", "0", portraitMarker)
+  recordFact(generation, "mon-portrait-page", "0", portraitMarker)
   cacheFs:remove(MonCache.pageImagePath("icons", 1))
   withPatched({
     {
@@ -1663,8 +1663,7 @@ function T.failed_layout_discovery_ends_layout_demand_with_its_cause()
   local cacheFs = realForVersion("heartgold", backend)
   stageSynthetic(cacheFs, generation)
   local catalogMarker = "synthetic-catalog-marker"
-  MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), catalogMarker)
-  writeMonReceipt(cacheFs, generation, "mon-catalog", "global", catalogMarker)
+  stageMonCatalog(cacheFs, generation, catalogMarker)
   local patches = plannerPatches(calls)
   patches[#patches + 1] = {
     target = CacheFs,
@@ -1679,7 +1678,7 @@ function T.failed_layout_discovery_ends_layout_demand_with_its_cause()
     -- Layout demand schedules only after source adoption: the intro pulls
     -- the inventory first, then the layout is demanded explicitly.
     session:requestMilestone("new-game-intro", "required")
-    pool.states["source-plan:global"] = "ready"
+    publishStagedSource(pool, generation)
     for _ = 1, 25 do
       session:update()
       if session.sourceLoaded then
@@ -1738,7 +1737,7 @@ function T.unsupported_map_is_excluded_by_updates_after_late_adoption()
     Assert.isNil(failure, "an unknown map reports no failure while membership is unknown")
     local staged = compileSynthetic(generation)
     cacheFs:writeLua(SourcePlan.PATH, staged)
-    publishStagedSource(cacheFs, pool, generation)
+    publishStagedSource(pool, generation)
     for _ = 1, 5 do
       session:update()
     end
@@ -1793,7 +1792,7 @@ function T.supported_deferred_map_runs_after_adoption_without_exclusion()
       contains(pool.submitted, "source-plan:global"),
       "the supported map still schedules its declared inventory prerequisite"
     )
-    publishStagedSource(cacheFs, pool, generation)
+    publishStagedSource(pool, generation)
     for _ = 1, 5 do
       session:update()
     end
@@ -1912,20 +1911,11 @@ function T.refused_page_handoff_fails_the_ready_owner_once()
     local MonCache = require("libs.assets.src.MonCache")
     local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
     local PngWriter = require("tests.support.PngEncoder")
-    MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), "refused-catalog-marker")
-    writeMonReceipt(cacheFs, generation, "mon-catalog", "global", "refused-catalog-marker")
-    MonCacheWriter.writeLayout(
-      cacheFs,
-      layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
-      layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
-      "refused-layout-marker",
-      { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
-      generation
-    )
-    writeMonReceipt(cacheFs, generation, "mon-layout", "global", "refused-layout-marker")
+    stageMonCatalog(cacheFs, generation, "refused-catalog-marker")
+    stageMonLayout(cacheFs, generation, "refused-layout-marker")
     cacheFs:write(MonCache.pageImagePath("portraits", 0), PngWriter.encode(640, 320, string.rep("\0", 640 * 320 * 4)))
     cacheFs:write(MonCache.pageMarkerPath("portraits", 0), "refused-portrait-marker-0")
-    writeMonReceipt(cacheFs, generation, "mon-portrait-page", "0", "refused-portrait-marker-0")
+    recordFact(generation, "mon-portrait-page", "0", "refused-portrait-marker-0")
     local pool = recordingPool()
     local session = openSession(generation, pool)
     -- The refusal is injected before any update: adoption runs promptly
@@ -1940,7 +1930,7 @@ function T.refused_page_handoff_fails_the_ready_owner_once()
     local ready, failure = session:requestJob("mon-portrait-page", "0", "required")
     Assert.isFalse(ready, "the portrait starts pending")
     Assert.isNil(failure, "the portrait reports no failure")
-    pool.states["source-plan:global"] = "ready"
+    publishStagedSource(pool, generation)
     pool.states["mon-catalog:global"] = "ready"
     pool.states["mon-layout:global"] = "ready"
     local ok, err = pcall(function()
@@ -2117,17 +2107,8 @@ function T.persisted_inventory_carries_no_producer_known_membership()
   Assert.equal(slimRecord.schema, SourcePlan.SCHEMA, "the slim inventory carries the current schema")
   Assert.isNil(slimRecord.messageBankIds, "the slim inventory stores no bank list")
   Assert.isNil(slimRecord.mapDataIds, "the slim inventory stores no record list")
-  MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), "slim-catalog-marker")
-  writeMonReceipt(cacheFs, generation, "mon-catalog", "global", "slim-catalog-marker")
-  MonCacheWriter.writeLayout(
-    cacheFs,
-    layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
-    layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
-    "slim-layout-marker",
-    { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
-    generation
-  )
-  writeMonReceipt(cacheFs, generation, "mon-layout", "global", "slim-layout-marker")
+  stageMonCatalog(cacheFs, generation, "slim-catalog-marker")
+  stageMonLayout(cacheFs, generation, "slim-layout-marker")
   local projected, plansReason = ArtifactJobs.publishedPlans(cacheFs, identity(generation))
   Assert.notNil(projected, "the slim inventory projects to scheduler plans: " .. tostring(plansReason))
   local schedulerPlans = assert(projected, "the slim inventory projects to scheduler plans")
@@ -2221,17 +2202,8 @@ function T.validated_inventory_projects_scheduler_membership_from_one_owner()
   Assert.isTrue(again.audioBankIds ~= projected.audioBankIds, "derived identity arrays are fresh per call")
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   stageSynthetic(cacheFs, generation)
-  MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), "projection-catalog-marker")
-  writeMonReceipt(cacheFs, generation, "mon-catalog", "global", "projection-catalog-marker")
-  MonCacheWriter.writeLayout(
-    cacheFs,
-    layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
-    layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
-    "projection-layout-marker",
-    { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
-    generation
-  )
-  writeMonReceipt(cacheFs, generation, "mon-layout", "global", "projection-layout-marker")
+  stageMonCatalog(cacheFs, generation, "projection-catalog-marker")
+  stageMonLayout(cacheFs, generation, "projection-layout-marker")
   local reread = assert(SourcePlan.read(cacheFs, identity(generation)), "the staged inventory reads back")
   local published, publishedReason = ArtifactJobs.publishedPlans(cacheFs, identity(generation))
   Assert.notNil(published, "the consumer path publishes plans: " .. tostring(publishedReason))

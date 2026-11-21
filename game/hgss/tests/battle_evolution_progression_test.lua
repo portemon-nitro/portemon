@@ -7,6 +7,7 @@
 -- without replaying battle rewards. A stale owner between commit and
 -- publication changes nothing live.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local ItemFixture = require("libs.items.tests.item_fixture")
@@ -1343,7 +1344,7 @@ function T.versioned_catalogs_evolve_real_level_triggers(context)
     context:skip("the versioned evolution flow needs a ready user-owned dump with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local root = MonCache.loadCatalog(cacheFs)
     Assert.equal(root.version.id, versionId, "the owned catalog names its own version, never a shared fallback")
     local items = ItemCatalog.new(ItemCache.loadCatalog(cacheFs))

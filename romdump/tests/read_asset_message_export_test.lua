@@ -125,22 +125,45 @@ function love.load(argv)
     local specPath = assert(argv[2], "the seed spec is required")
     local expectedPath = assert(argv[3], "the expected-bytes path is required")
     package.path = root .. "/?.lua;" .. root .. "/?/init.lua;" .. package.path
-    local CacheFs = require("libs.storage.src.CacheFs")
     local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
     local FieldMessageFixture = require("tests.support.FieldMessageFixture")
+    local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
     local spec = assert(loadfile(specPath))()
-    local cache = CacheFs.forVersion("heartgold")
+    -- The seeded cache is one saved snapshot: the inspector reads the same
+    -- members a next boot hydrates, and no loose generated file exists to
+    -- serve instead.
+    local identity = SnapshotBootFixture.identity()
+    local cut = {
+      generationId = identity.generationId,
+      identity = identity,
+      sequence = 1,
+      entries = {},
+      artifacts = {},
+      milestones = {},
+      firstPlay = false,
+      complete = false,
+    }
+    local files = {}
     local sealed
     for _, entry in ipairs(spec.entries) do
       local bytes = FieldMessageFixture.encode(FieldMessageFixture.bank(entry.bankId, entry.messages))
+      local text = bytes:getString()
       if entry.keepBytes then
-        local prefix = bytes:getString():sub(1, entry.keepBytes)
-        cache:write(FieldMessageCache.bankPath(entry.bankId), love.data.newByteData(prefix))
+        text = text:sub(1, entry.keepBytes)
       else
-        cache:write(FieldMessageCache.bankPath(entry.bankId), bytes)
         sealed = bytes
       end
+      local path = FieldMessageCache.bankPath(entry.bankId)
+      cut.entries[#cut.entries + 1] = SnapshotBootFixture.blob(identity, path, text)
+      files[#files + 1] = path
     end
+    cut.artifacts[1] = {
+      kind = "message-bank",
+      key = "seed",
+      marker = "seed-ready",
+      files = files,
+    }
+    SnapshotBootFixture.save("heartgold", cut)
     local file = assert(io.open(expectedPath, "wb"))
     assert(file:write(assert(sealed):getString()))
     assert(file:close())
@@ -461,4 +484,83 @@ local function removeOwnedRoot()
   )
 end
 
-return { tests = T, afterAll = removeOwnedRoot, metadata = { tags = { "messages", "tooling" } } }
+-- The prepared cache this process runs against: the runner's scoped
+-- preparation leaves one snapshot archive under the process's own data home,
+-- and a separate reader process must read exactly those members. The proof runs
+-- against an owned copy of that archive beside a stale loose generated member
+-- whose bytes contradict it, so the bytes the inspector serves show which
+-- source it read. The prepared root itself is shared and stays untouched: an
+-- older producer's loose files there are neither a fallback nor cleaned up.
+function T.the_inspector_serves_members_from_the_prepared_snapshot()
+  local SnapshotArchive = require("tests.support.SnapshotArchive")
+  Assert.notNil(os.getenv("XDG_DATA_HOME"), "the scoped preparation runs against a private data home")
+  local index, members, archiveBytes = SnapshotArchive.read("heartgold")
+  Assert.notNil(index, "the scoped preparation must leave one snapshot archive the next process can read")
+  Assert.notNil(archiveBytes, "the prepared snapshot is readable as archive bytes")
+  local preparedBank = nil
+  for _, path in ipairs(SnapshotArchive.memberPaths(index)) do
+    if path:match("^data/generated/field/messages/banks/%d+%.g4msg$") ~= nil then
+      preparedBank = path
+      break
+    end
+  end
+  Assert.notNil(preparedBank, "the prepared snapshot carries the requested message bank")
+  local root = ensureRoot()
+  local dataHome = root .. "/snapshot-cache"
+  local saveDir = dataHome .. "/love/portemon/heartgold"
+  local loosePath = saveDir .. "/" .. preparedBank
+  os.execute("mkdir -p -- " .. shellQuote(loosePath:gsub("/[^/]+$", "")))
+  writeFile(saveDir .. "/cache.zip", assert(archiveBytes))
+  writeFile(loosePath, "stale-loose-bank-bytes")
+  local decoded = root .. "/snapshot-bank.g4msg"
+  local output, exit = run(readerCommand(dataHome, {
+    "--path",
+    shellQuote(preparedBank),
+    "--output",
+    shellQuote(decoded),
+  }))
+  Assert.equal(exit, 0, "the inspector reads a prepared snapshot member, got:\n" .. output)
+  Assert.equal(readFile(decoded), members[preparedBank], "the inspector returns the snapshot member's bytes")
+  Assert.isTrue(
+    readFile(decoded) ~= "stale-loose-bank-bytes",
+    "the inspector answers from the snapshot, never from the stale loose member beside it"
+  )
+  Assert.equal(
+    readFile(loosePath),
+    "stale-loose-bank-bytes",
+    "reading a snapshot member leaves a loose generated file untouched"
+  )
+  local listed, listExit = run(readerCommand(dataHome, { "--list", shellQuote("data/generated/field/messages") }))
+  Assert.equal(listExit, 0, "the inspector lists the prepared snapshot, got:\n" .. listed)
+  Assert.isTrue(
+    listed:find(preparedBank, 1, true) ~= nil,
+    "the listing reaches the snapshot member path: " .. preparedBank
+  )
+end
+
+-- A generated root that only carries old loose files is not a cache: the
+-- inspector reports the missing snapshot instead of exporting from it.
+function T.the_inspector_refuses_a_loose_bank_without_a_snapshot()
+  local root = ensureRoot()
+  local dataHome = root .. "/loose-cache"
+  local saveDir = dataHome .. "/love/portemon"
+  local loosePath = saveDir .. "/heartgold/" .. bankPath(EXPORTED_BANK_ID)
+  os.execute("mkdir -p -- " .. shellQuote((loosePath:gsub("/[^/]+$", ""))))
+  writeFile(loosePath, "legacy-loose-bank-bytes")
+  local decoded = root .. "/loose-bank.g4msg"
+  local output, exit = run(readerCommand(dataHome, {
+    "--path",
+    shellQuote(bankPath(EXPORTED_BANK_ID)),
+    "--output",
+    shellQuote(decoded),
+  }))
+  Assert.isTrue(exit ~= 0, "a loose generated file is not a readable cache, got:\n" .. output)
+  Assert.isNil(readFile(decoded), "a refused read writes no decoded output")
+  Assert.equal(readFile(loosePath), "legacy-loose-bank-bytes", "a refused read leaves the loose file untouched")
+end
+
+return {
+  tests = T,
+  afterAll = removeOwnedRoot,
+  metadata = { tags = { "messages", "tooling" }, derivedAssets = { "message-bank:219" } },
+}

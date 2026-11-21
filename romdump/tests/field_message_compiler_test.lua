@@ -175,18 +175,39 @@ end
 -- Publish one compiled corpus the way the per-bank jobs and the family
 -- summary job do: each bank's payload through its own transaction, then the
 -- family index.
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
+
+-- Publish one bank through its real stage function.
+local function publishBank(cache, bundle)
+  return ResidentArtifactFixture.publish(cache, "message-bank", tostring(bundle.bankId), function(artifact)
+    return FieldMessageCacheWriter.stageBank(artifact, bundle)
+  end)
+end
+
 local function publishBundle(cache, bundle)
   local bankMarkers = {}
   for _, bankId in ipairs(bundle.index.bankIds) do
     local marker = FieldMessageCache.marker("rom-sha", "dependency-sha-" .. tostring(bankId))
     bankMarkers[bankId] = marker
-    FieldMessageCacheWriter.writeBank(cache, {
+    publishBank(cache, {
       bankId = bankId,
       data = assert(bundle.banks[bankId], "the compiled corpus is missing bank " .. tostring(bankId)),
       marker = marker,
     })
   end
-  return FieldMessageCacheWriter.writeSummary(cache, bundle.index, bankMarkers)
+  return ResidentArtifactFixture.publish(cache, "message-summary", "global", function(artifact)
+    return FieldMessageCacheWriter.stageSummary(artifact, bundle.index, bankMarkers)
+  end)
+end
+
+-- A payload that does not open as its bank: the stage refuses it before any
+-- ownership changes.
+local function refusedBank(bankId, marker)
+  return {
+    bankId = bankId,
+    data = love.data.newByteData("not a message bank payload"),
+    marker = marker,
+  }
 end
 
 function T.compiles_tokenized_lossless_banks()
@@ -305,21 +326,10 @@ function T.writer_publishes_each_bank_payload_and_the_family_index()
 end
 
 function T.writer_failure_publishes_no_bank_payload()
-  local romFs, sha1, hashLua = fixture()
-  local bundle = assert(FieldMessageCompiler.compile(romFs, sha1, hashLua))
-  local backend = FakeCache.new()
-  local originalWrite = backend.write
-  backend.write = function(self, path, data)
-    if path:find("banks/0542.g4msg", 1, true) then
-      error("injected")
-    end
-    return originalWrite(self, path, data)
-  end
-  local cache = CacheFs.forVersion("heartgold", backend)
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   Assert.throws(function()
-    publishBundle(cache, bundle)
+    publishBank(cache, refusedBank(542, FieldMessageCache.marker("rom-sha", "refused")))
   end)
-  backend.write = originalWrite
   Assert.isNil(cache:read(FieldMessageCache.bankPath(542)), "a failed bank publishes no payload")
   Assert.isFalse(FieldMessageCache.isReady(cache), "a failed bank leaves no complete family index")
 end
@@ -327,25 +337,15 @@ end
 function T.failed_rebuild_preserves_the_previous_messages()
   local romFs, sha1, hashLua = fixture()
   local first = assert(FieldMessageCompiler.compile(romFs, sha1, hashLua))
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   publishBundle(cache, first)
   local previous = assert(cache:read(FieldMessageCache.bankPath(542)))
-  local originalWrite = backend.write
-  backend.write = function(self, path, data)
-    if path:find("banks/0542.g4msg", 1, true) then
-      error("injected")
-    end
-    return originalWrite(self, path, data)
-  end
   local second = assert(FieldMessageCompiler.compile(romFs, sha1, hashLua))
   Assert.throws(function()
-    local marker = FieldMessageCache.marker("rom-sha", "new-dep-hash")
-    FieldMessageCacheWriter.writeBank(cache, { bankId = 542, data = second.banks[542], marker = marker })
+    publishBank(cache, refusedBank(542, FieldMessageCache.marker("rom-sha", "new-dep-hash")))
   end)
   Assert.isTrue(FieldMessageCache.isReady(cache), "the previous messages remain ready")
   Assert.equal(cache:read(FieldMessageCache.bankPath(542)), previous, "the previous bank payload survives")
-  backend.write = originalWrite
   publishBundle(cache, second)
   Assert.isTrue(FieldMessageCache.isReady(cache), "a retry publishes the new messages")
 end
@@ -366,7 +366,7 @@ function T.compact_publication_serves_dialogue_and_preserves_the_previous_bank()
   Assert.equal(view.bankId, 542)
   Assert.equal(view.messageCount, 2)
 
-  FieldMessageCacheWriter.writeBank(cache, {
+  publishBank(cache, {
     bankId = 542,
     data = payload,
     marker = FieldMessageCache.marker("rom-sha", "dependency-sha-542"),
@@ -407,7 +407,7 @@ function T.compact_publication_serves_dialogue_and_preserves_the_previous_bank()
     reads[#reads + 1] = path
     return storedRead(self, path)
   end
-  FieldMessageCacheWriter.writeBank(cache, {
+  publishBank(cache, {
     bankId = 543,
     data = assert(bundle.banks[543]),
     marker = FieldMessageCache.marker("rom-sha", "dependency-sha-543"),
@@ -418,24 +418,11 @@ function T.compact_publication_serves_dialogue_and_preserves_the_previous_bank()
     Assert.isFalse(path:find("banks/0543", 1, true) ~= nil, "publishing bank 543 must not read it back: " .. path)
   end
 
-  -- A failed replacement must leave the previous bank live and readable.
+  -- A refused replacement must leave the previous bank live and readable.
   local previous = assert(cache:read(bankPath))
-  local storedWrite = backend.write
-  backend.write = function(self, path, data)
-    if path:find("banks/0542", 1, true) then
-      error("injected write failure")
-    end
-    return storedWrite(self, path, data)
-  end
   Assert.throws(function()
-    FieldMessageCacheWriter.writeBank(cache, {
-      bankId = 542,
-      data = assert(bundle.banks[542]),
-      marker = FieldMessageCache.marker("rom-sha", "replacement"),
-      dependencies = bundle.dependencies,
-    })
+    publishBank(cache, refusedBank(542, FieldMessageCache.marker("rom-sha", "replacement")))
   end)
-  backend.write = storedWrite
   Assert.equal(cache:read(bankPath), previous, "a failed replacement leaves the previous bank payload intact")
   Assert.isTrue(FieldMessageCache.isBankReady(cache, 542), "the previous bank stays ready")
   assert(provider:acquireBank(542))

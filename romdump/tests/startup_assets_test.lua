@@ -10,19 +10,61 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
+-- A real private output that also records its staged writes and declared
+-- roots: the startup stages own bounded files and must land the manifest last.
+---@return PreparedArtifact artifact
+---@return table[] writes
+---@return string[] roots
+local function recordingArtifact(cacheFs, kind, key, generationId)
+  local artifact = ResidentArtifactFixture.new(cacheFs, kind, key, generationId)
+  local writes, roots = {}, {}
+  local nesting = 0
+  local realWrite, realWriteLua, realAddOwnedRoot = artifact.write, artifact.writeLua, artifact.addOwnedRoot
+  function artifact:write(path, bytes)
+    if nesting == 0 then
+      writes[#writes + 1] = { path = path, bytes = bytes }
+    end
+    nesting = nesting + 1
+    local ok, failure = pcall(realWrite, self, path, bytes)
+    nesting = nesting - 1
+    if not ok then
+      error(failure, 0)
+    end
+  end
+  function artifact:writeLua(path, record)
+    writes[#writes + 1] = { path = path, record = record }
+    nesting = nesting + 1
+    local ok, failure = pcall(realWriteLua, self, path, record)
+    nesting = nesting - 1
+    if not ok then
+      error(failure, 0)
+    end
+  end
+  function artifact:addOwnedRoot(path)
+    roots[#roots + 1] = path
+    return realAddOwnedRoot(self, path)
+  end
+  return artifact, writes, roots
+end
+
+local function emptyCache()
+  return CacheFs.forVersion("heartgold", FakeCache.new())
+end
+
 function T.startup_families_are_closed_global_artifacts()
   Assert.isTrue(ArtifactState.KINDS["startup-loader"] == true, "startup-loader is a known family")
-  Assert.equal(ArtifactState.path("startup-loader", "global"), "data/generated/jobs/startup-loader/global.lua")
-  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "1"), "startup-loader rejects numeric selectors")
-  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "32"), "startup-loader rejects numeric selectors")
-  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "0"), "startup-loader rejects numeric selectors")
+  Assert.equal(ArtifactState.key("startup-loader", "global"), "startup-loader:global")
+  Assert.isFalse(pcall(ArtifactState.key, "startup-loader", "1"), "startup-loader rejects numeric selectors")
+  Assert.isFalse(pcall(ArtifactState.key, "startup-loader", "32"), "startup-loader rejects numeric selectors")
+  Assert.isFalse(pcall(ArtifactState.key, "startup-loader", "0"), "startup-loader rejects numeric selectors")
   Assert.isTrue(pcall(ArtifactJobs.sizeClass, "startup-loader"), "startup-loader has a worker descriptor")
   Assert.isTrue(ArtifactState.KINDS["startup-title"] == true, "startup-title is a known family")
-  Assert.equal(ArtifactState.path("startup-title", "global"), "data/generated/jobs/startup-title/global.lua")
-  Assert.isFalse(pcall(ArtifactState.path, "startup-title", "1"), "startup-title rejects numeric selectors")
+  Assert.equal(ArtifactState.key("startup-title", "global"), "startup-title:global")
+  Assert.isFalse(pcall(ArtifactState.key, "startup-title", "1"), "startup-title rejects numeric selectors")
   Assert.isTrue(pcall(ArtifactJobs.sizeClass, "startup-title"), "startup-title has a worker descriptor")
 end
 
@@ -146,39 +188,7 @@ end
 
 function T.startup_writer_owns_disjoint_roots_and_stages_manifest_last()
   local StartupCacheWriter = require("romdump.src.digest.startup.StartupCacheWriter")
-  local writes, roots = {}, {}
-  local stage = {
-    write = function(_, path, bytes)
-      writes[#writes + 1] = { path = path, bytes = bytes }
-    end,
-    writeLua = function(_, path, record)
-      writes[#writes + 1] = { path = path, record = record }
-    end,
-    loadLua = function(_, path)
-      for _, write in ipairs(writes) do
-        if write.path == path then
-          return write.record
-        end
-      end
-    end,
-    exists = function(_, path, kind)
-      Assert.equal(kind, "file")
-      for _, write in ipairs(writes) do
-        if write.path == path then
-          return true
-        end
-      end
-      return false
-    end,
-  }
-  local artifact = {
-    stageFs = function()
-      return stage
-    end,
-    addOwnedRoot = function(_, path)
-      roots[#roots + 1] = path
-    end,
-  }
+  local artifact, writes, roots = recordingArtifact(emptyCache(), "startup-loader", "global", "generation-a")
   local function pairVisual(frameWidth, frameHeight)
     return {
       render = { kind = "atlas", frameWidth = frameWidth, frameHeight = frameHeight, frameCount = 2 },
@@ -245,33 +255,8 @@ end
 function T.title_writer_stages_compiler_files()
   local StartupCacheWriter = require("romdump.src.digest.startup.StartupCacheWriter")
   local ModelAsset = require("libs.assets.src.model.ModelAsset")
-  local writes = {}
-  local stage = {
-    write = function(_, path, bytes)
-      writes[#writes + 1] = { path = path, bytes = bytes }
-    end,
-    writeLua = function(_, path, record)
-      writes[#writes + 1] = { path = path, record = record }
-    end,
-    loadLua = function(_, path)
-      for _, write in ipairs(writes) do
-        if write.path == path then
-          return write.record
-        end
-      end
-    end,
-  }
-  local artifact = {
-    stageFs = function()
-      return stage
-    end,
-    addOwnedRoot = function() end,
-  }
-  local meshData = {
-    getSize = function()
-      return 10
-    end,
-  }
+  local artifact, writes = recordingArtifact(emptyCache(), "startup-title", "global", "generation-a")
+  local meshData = assert(love.data.newByteData("mesh-bytes"), "the fixture needs its finalized bytes")
   local bundle = {
     manifest = {
       schema = StartupAssetContract.startupTitle.schema,
@@ -303,39 +288,20 @@ function T.title_writer_stages_compiler_files()
   local staged = pcall(StartupCacheWriter.stageTitle, artifact, bundle, "generation-a")
   Assert.isFalse(staged, "strict readback rejects a hollow title bundle after staging its files")
   Assert.equal(writes[1].path, "assets/generated/startup/title/geometry/test.g4mesh")
-  Assert.isTrue(writes[1].bytes == meshData, "finalized Love Data is staged without copying")
+  Assert.isTrue(artifact:readData(writes[1].path) == meshData, "finalized Love Data is staged without copying")
   Assert.equal(writes[#writes].path, StartupAssetCache.titlePath())
 end
 
-function T.title_stage_write_failure_keeps_the_previous_live_output()
+function T.title_stage_failure_keeps_the_previous_live_output()
   local StartupCacheWriter = require("romdump.src.digest.startup.StartupCacheWriter")
-  local backend = FakeCache.new()
-  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local cacheFs = emptyCache()
   local liveAsset = "assets/generated/startup/title/previous.g4mesh"
   local titlePath = StartupAssetCache.titlePath()
-  local receiptPath = ArtifactState.path("startup-title", "global")
   cacheFs:write(liveAsset, "previous mesh")
   cacheFs:writeLua(titlePath, { generationId = "previous-generation" })
-  cacheFs:writeLua(receiptPath, { generationId = "previous-generation", marker = "previous" })
 
-  local originalWrite = backend.write
-  local stagedWrites = 0
-  backend.write = function(self, path, bytes)
-    stagedWrites = stagedWrites + 1
-    if stagedWrites == 2 then
-      error("injected staged binary write failure")
-    end
-    return originalWrite(self, path, bytes)
-  end
-  local artifact = PreparedArtifact.new({
-    cacheFs = cacheFs,
-    generationId = "current-generation",
-    epoch = 1,
-    kind = "startup-title",
-    key = "global",
-    jobKey = "startup-title:global",
-    stageName = "title-write-failure",
-  })
+  local artifact = ResidentArtifactFixture.new(cacheFs, "startup-title", "global", "current-generation")
+  local facts = ArtifactState.new("current-generation")
   local ok, failure = pcall(StartupCacheWriter.stageTitle, artifact, {
     manifest = { versionId = "heartgold" },
     files = {
@@ -343,17 +309,15 @@ function T.title_stage_write_failure_keeps_the_previous_live_output()
       ["assets/generated/startup/title/second.g4mesh"] = "second",
     },
   }, "current-generation")
-  Assert.isFalse(ok, "the injected stage write fails: " .. tostring(failure))
-  Assert.equal(
-    stagedWrites,
-    2,
-    "the failure is injected on the second staged write; observed " .. stagedWrites .. ": " .. tostring(failure)
-  )
-  Assert.isFalse(artifact:stageFs():exists(titlePath, "file"), "a failed family stage has no title manifest")
-  Assert.isFalse(artifact:stageFs():exists(receiptPath, "file"), "a failed family stage has no receipt")
+  Assert.isFalse(ok, "the hollow title bundle fails its strict readback: " .. tostring(failure))
+  Assert.equal(artifact:status(), "open", "a failed family stage never seals its private output")
+  artifact:abort()
   Assert.equal(cacheFs:read(liveAsset), "previous mesh", "the previous live asset remains intact")
   Assert.equal(cacheFs:loadLua(titlePath).generationId, "previous-generation", "the previous live title remains intact")
-  Assert.equal(cacheFs:loadLua(receiptPath).marker, "previous", "the previous readiness receipt remains intact")
+  Assert.isNil(
+    ArtifactState.read(facts, "startup-title", "global"),
+    "a failed family stage commits no completion fact"
+  )
 end
 
 function T.title_manifest_requires_all_model_assets_under_its_owned_root()
@@ -1072,10 +1036,10 @@ end
 -- addresses its own receipt and catalog root, numeric keys address
 -- nothing, and only the manifest matching the requested edition validates.
 function T.shared_catalog_receipts_are_global_and_isolated()
-  Assert.equal(ArtifactState.path("startup-loader", "global"), "data/generated/jobs/startup-loader/global.lua")
-  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "1"), "numeric loader keys are rejected")
-  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "32"), "numeric loader keys are rejected")
-  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "0"), "numeric loader keys are rejected")
+  Assert.equal(ArtifactState.key("startup-loader", "global"), "startup-loader:global")
+  Assert.isFalse(pcall(ArtifactState.key, "startup-loader", "1"), "numeric loader keys are rejected")
+  Assert.isFalse(pcall(ArtifactState.key, "startup-loader", "32"), "numeric loader keys are rejected")
+  Assert.isFalse(pcall(ArtifactState.key, "startup-loader", "0"), "numeric loader keys are rejected")
   Assert.equal(StartupAssetCache.walkerCatalogPath(), "data/generated/startup/loader/catalog.lua")
   Assert.isTrue(type(StartupAssetCache.loadWalker) == "function", "the startup cache reads one strict catalog")
   local manifest = sharedCatalogManifest("heartgold")
@@ -1169,37 +1133,18 @@ function T.shared_catalog_reader_rejects_invalid_edition_subjects_and_defects()
   Assert.notNil(badSubjectErr, "the unknown subject reports its cause")
 end
 
--- A failed catalog restage preserves its previous live output: the writer
--- stages all eighteen subject images before the manifest, and a failure
--- halfway through leaves the previous live catalog and receipt intact.
+-- A rejected catalog restage preserves its previous live output: the writer
+-- stages all eighteen subject images before the manifest, and a bundle the
+-- strict readback refuses leaves the previous live catalog intact.
 function T.shared_catalog_failed_publish_keeps_previous_live_catalog()
   local StartupCacheWriter = require("romdump.src.digest.startup.StartupCacheWriter")
-  local backend = FakeCache.new()
-  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local cacheFs = emptyCache()
   local livePng = "assets/generated/startup/loader/subjects/heroes/ethan.png"
   local catalogPath = StartupAssetCache.walkerCatalogPath()
-  local receiptPath = ArtifactState.path("startup-loader", "global")
   cacheFs:write(livePng, "previous pixels")
   cacheFs:writeLua(catalogPath, { generationId = "previous-generation" })
-  cacheFs:writeLua(receiptPath, { generationId = "previous-generation", marker = "previous" })
-  local originalWrite = backend.write
-  local stagedWrites = 0
-  backend.write = function(self, path, bytes)
-    stagedWrites = stagedWrites + 1
-    if stagedWrites == 2 then
-      error("injected staged binary write failure")
-    end
-    return originalWrite(self, path, bytes)
-  end
-  local artifact = PreparedArtifact.new({
-    cacheFs = cacheFs,
-    generationId = "current-generation",
-    epoch = 1,
-    kind = "startup-loader",
-    key = "global",
-    jobKey = "startup-loader:global",
-    stageName = "catalog-write-failure",
-  })
+  local facts = ArtifactState.new("current-generation")
+  local artifact = ResidentArtifactFixture.new(cacheFs, "startup-loader", "global", "current-generation")
   local pixels = string.char(200, 180, 120, 255) .. string.char(0, 0, 0, 0)
   local manifest = sharedCatalogManifest("heartgold")
   local atlases = {}
@@ -1209,57 +1154,36 @@ function T.shared_catalog_failed_publish_keeps_previous_live_catalog()
   for _, entry in pairs(manifest.followers) do
     atlases[entry.atlasPath] = { width = 2, height = 1, pixels = pixels }
   end
+  -- An opaque atlas is malformed, so the strict readback refuses the bundle.
+  local opaque = string.rep(string.char(200, 180, 120, 255), 2)
+  for _, entry in pairs(manifest.heroes) do
+    atlases[entry.atlasPath] = { width = 2, height = 1, pixels = opaque }
+  end
   local ok, failure = pcall(StartupCacheWriter.stageLoader, artifact, {
     manifest = manifest,
     atlases = atlases,
     dependencies = { versionId = "heartgold" },
   }, "current-generation")
-  Assert.isFalse(ok, "the injected stage write fails: " .. tostring(failure))
-  Assert.isFalse(artifact:stageFs():exists(catalogPath, "file"), "a failed family stage has no catalog")
-  Assert.isFalse(artifact:stageFs():exists(receiptPath, "file"), "a failed family stage has no receipt")
+  Assert.isFalse(ok, "the refused bundle fails the stage: " .. tostring(failure))
+  Assert.isFalse(artifact:exists(catalogPath), "a failed family stage has no catalog")
+  artifact:abort()
   Assert.equal(cacheFs:read(livePng), "previous pixels", "the previous live subject remains intact")
   Assert.equal(
     cacheFs:loadLua(catalogPath).generationId,
     "previous-generation",
     "the previous live catalog remains intact"
   )
-  Assert.equal(cacheFs:loadLua(receiptPath).marker, "previous", "the previous readiness receipt remains intact")
+  Assert.isNil(
+    ArtifactState.read(facts, "startup-loader", "global"),
+    "a failed family stage commits no completion fact"
+  )
 end
 
 -- An atlas without transparent pixels is malformed: the writer fails the
 -- stage instead of publishing an opaque square.
 function T.startup_pair_writer_rejects_opaque_atlases()
   local StartupCacheWriter = require("romdump.src.digest.startup.StartupCacheWriter")
-  local writes = {}
-  local stage = {
-    write = function(_, path, bytes)
-      writes[#writes + 1] = { path = path, bytes = bytes }
-    end,
-    writeLua = function(_, path, record)
-      writes[#writes + 1] = { path = path, record = record }
-    end,
-    loadLua = function(_, path)
-      for _, write in ipairs(writes) do
-        if write.path == path then
-          return write.record
-        end
-      end
-    end,
-    exists = function(_, path, kind)
-      for _, write in ipairs(writes) do
-        if write.path == path then
-          return true
-        end
-      end
-      return false
-    end,
-  }
-  local artifact = {
-    stageFs = function()
-      return stage
-    end,
-    addOwnedRoot = function() end,
-  }
+  local artifact = ResidentArtifactFixture.new(emptyCache(), "startup-loader", "global", "generation-a")
   local opaque = string.rep(string.char(200, 180, 120, 255), 2)
   local manifest = sharedCatalogManifest("heartgold")
   local atlases = {}
@@ -1784,38 +1708,8 @@ function T.opening_scene_writer_preserves_sibling_scenes()
     "the opening scene writer stages one numbered scene"
   )
   local function stageSceneWrites(sceneNumber)
-    local writes, roots = {}, {}
-    local stage = {
-      write = function(_, path, bytes)
-        writes[#writes + 1] = { path = path, bytes = bytes }
-      end,
-      writeLua = function(_, path, record)
-        writes[#writes + 1] = { path = path, record = record }
-      end,
-      loadLua = function(_, path)
-        for _, write in ipairs(writes) do
-          if write.path == path then
-            return write.record
-          end
-        end
-      end,
-      exists = function(_, path)
-        for _, write in ipairs(writes) do
-          if write.path == path then
-            return true
-          end
-        end
-        return false
-      end,
-    }
-    local artifact = {
-      stageFs = function()
-        return stage
-      end,
-      addOwnedRoot = function(_, path)
-        roots[#roots + 1] = path
-      end,
-    }
+    local artifact, writes, roots =
+      recordingArtifact(emptyCache(), "opening-scene", tostring(sceneNumber), "generation-a")
     local root = "assets/generated/startup/opening/" .. tostring(sceneNumber)
     local manifest = validCurrentOpeningManifest(sceneNumber, "heartgold")
     local bundle = {
@@ -1857,9 +1751,9 @@ function T.opening_scene_staged_failure_keeps_the_previous_live_output()
     ok and type(OpeningMovieCacheWriter.stageScene) == "function",
     "the opening scene writer stages one numbered scene"
   )
-  local backend = FakeCache.new()
-  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local cacheFs = emptyCache()
   local goodGeneration = "previous-generation"
+  local facts = ArtifactState.new("current-generation")
   local function seedScene(sceneNumber)
     local root = "assets/generated/startup/opening/" .. tostring(sceneNumber)
     cacheFs:write(root .. "/main-bg.png", "previous art")
@@ -1870,53 +1764,33 @@ function T.opening_scene_staged_failure_keeps_the_previous_live_output()
       generationId = goodGeneration,
       sceneNumber = sceneNumber,
     })
-    cacheFs:writeLua(ArtifactState.path("opening-scene", tostring(sceneNumber)), {
-      generationId = goodGeneration,
-      marker = "previous",
-    })
   end
   seedScene(4)
   seedScene(2)
   local manifestPath = StartupAssetCache.openingScenePath(4)
-  local receiptPath = ArtifactState.path("opening-scene", "4")
-  local originalWrite = backend.write
-  local stagedWrites = 0
-  backend.write = function(self, path, bytes)
-    stagedWrites = stagedWrites + 1
-    if stagedWrites == 2 then
-      error("injected opening scene staged write failure", 0)
-    end
-    return originalWrite(self, path, bytes)
-  end
   local root = "assets/generated/startup/opening/4"
+  -- The bundle omits one declared asset, so the strict readback refuses it.
   local bundle = {
     manifest = validCurrentOpeningManifest(4, "heartgold"),
     files = {
       [root .. "/main-bg.png"] = "first",
       [root .. "/sub-bg.png"] = "second",
-      [root .. "/sprites/clip0.png"] = "third",
     },
   }
-  local artifact = PreparedArtifact.new({
-    cacheFs = cacheFs,
-    generationId = "current-generation",
-    epoch = 1,
-    kind = "opening-scene",
-    key = "4",
-    jobKey = "opening-scene:4",
-    stageName = "opening-scene-4-failure",
-  })
+  local artifact = ResidentArtifactFixture.new(cacheFs, "opening-scene", "4", "current-generation")
   local stageOk, failure = pcall(OpeningMovieCacheWriter.stageScene, artifact, bundle, "current-generation", 4)
-  backend.write = originalWrite
-  Assert.isFalse(stageOk, "the injected staged failure fails the scene 4 restage: " .. tostring(failure))
-  Assert.isFalse(artifact:stageFs():exists(manifestPath, "file"), "a failed scene stage publishes no manifest")
-  Assert.isFalse(artifact:stageFs():exists(receiptPath, "file"), "a failed scene stage publishes no receipt")
+  Assert.isFalse(stageOk, "the refused scene bundle fails the scene 4 restage: " .. tostring(failure))
+  Assert.equal(artifact:status(), "open", "a failed scene stage never seals its private output")
+  artifact:abort()
+  Assert.isNil(
+    ArtifactState.read(facts, "opening-scene", "4"),
+    "a failed scene stage commits no completion fact"
+  )
   Assert.equal(
     cacheFs:loadLua(manifestPath).generationId,
     goodGeneration,
     "the previous good scene 4 manifest remains intact"
   )
-  Assert.equal(cacheFs:loadLua(receiptPath).marker, "previous", "the previous good scene 4 receipt remains intact")
   Assert.equal(
     cacheFs:read("assets/generated/startup/opening/4/main-bg.png"),
     "previous art",
@@ -2315,20 +2189,11 @@ function T.opening_scene_writer_publishes_typed_bundles_atomically()
     ok and type(OpeningMovieCacheWriter.stageScene) == "function",
     "the opening scene writer stages one numbered scene"
   )
-  local backend = FakeCache.new()
-  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local cacheFs = emptyCache()
   local root = "assets/generated/startup/opening/1"
   local manifest = typedOpeningManifest()
   manifest.generationId = "typed-generation"
-  local artifact = PreparedArtifact.new({
-    cacheFs = cacheFs,
-    generationId = "typed-generation",
-    epoch = 1,
-    kind = "opening-scene",
-    key = "1",
-    jobKey = "opening-scene:1",
-    stageName = "opening-scene-1-typed",
-  })
+  local artifact = ResidentArtifactFixture.new(cacheFs, "opening-scene", "1", "typed-generation")
   local marker, stageErr = OpeningMovieCacheWriter.stageScene(
     artifact,
     { manifest = manifest, files = typedOpeningFiles(root) },
@@ -2338,14 +2203,7 @@ function T.opening_scene_writer_publishes_typed_bundles_atomically()
   Assert.notNil(marker, "the typed scene stages its numbered package: " .. tostring(stageErr))
   artifact:finishSuccess({ marker = marker })
   Assert.isTrue(
-    artifact:publish({
-      generationId = "typed-generation",
-      epoch = 1,
-      kind = "opening-scene",
-      key = "1",
-      jobKey = "opening-scene:1",
-      stageName = "opening-scene-1-typed",
-    }),
+    ResidentArtifactFixture.materialize(artifact),
     "the typed scene publishes its numbered package"
   )
   local loaded, loadErr = StartupAssetCache.loadOpeningScene(cacheFs, 1, "heartgold")
@@ -2361,18 +2219,15 @@ function T.opening_scene_writer_publishes_typed_bundles_atomically()
   Assert.equal(blend.secondMask, 32, "the staged blend keeps its second plane mask")
   Assert.equal(blend.direction, 1, "the staged blend keeps its source direction")
   local liveManifest = cacheFs:loadLua(StartupAssetCache.openingScenePath(1))
-  local liveReceipt = cacheFs:loadLua(ArtifactState.path("opening-scene", "1"))
+  local facts = ArtifactState.new("typed-generation")
+  local typedSealed = artifact:sealed()
+  Assert.notNil(typedSealed, "the typed scene seals its output")
+  ResidentArtifactFixture.commitFact(facts, typedSealed)
+  local liveFact = ArtifactState.read(facts, "opening-scene", "1")
+  Assert.notNil(liveFact, "the typed scene commits its completion fact")
   local broken = deepCopy(manifest)
   broken.assets[root .. "/main-bg-alt.png"] = nil
-  local brokenArtifact = PreparedArtifact.new({
-    cacheFs = cacheFs,
-    generationId = "broken-generation",
-    epoch = 1,
-    kind = "opening-scene",
-    key = "1",
-    jobKey = "opening-scene:1",
-    stageName = "opening-scene-1-broken",
-  })
+  local brokenArtifact = ResidentArtifactFixture.new(cacheFs, "opening-scene", "1", "broken-generation")
   local brokenOk, brokenErr = pcall(
     OpeningMovieCacheWriter.stageScene,
     brokenArtifact,
@@ -2381,15 +2236,16 @@ function T.opening_scene_writer_publishes_typed_bundles_atomically()
     1
   )
   Assert.isFalse(brokenOk, "the corrupt replacement fails the scene restage: " .. tostring(brokenErr))
+  brokenArtifact:abort()
   Assert.deepEqual(
     cacheFs:loadLua(StartupAssetCache.openingScenePath(1)),
     liveManifest,
     "a failed restage preserves its previous good manifest"
   )
-  Assert.deepEqual(
-    cacheFs:loadLua(ArtifactState.path("opening-scene", "1")),
-    liveReceipt,
-    "a failed restage preserves its previous good receipt"
+  Assert.equal(
+    ArtifactState.read(facts, "opening-scene", "1"),
+    liveFact,
+    "a failed restage preserves its previous good fact"
   )
 end
 
@@ -2422,12 +2278,8 @@ function T.shared_loader_catalog_publishes_eighteen_subjects_atomically()
     "g4-startup-walker-v2",
     "the shared catalog carries the versioned schema"
   )
-  Assert.equal(
-    ArtifactState.path("startup-loader", "global"),
-    "data/generated/jobs/startup-loader/global.lua",
-    "readiness is one global receipt"
-  )
-  Assert.isFalse(pcall(ArtifactState.path, "startup-loader", "1"), "a numeric loader key is rejected")
+  Assert.equal(ArtifactState.key("startup-loader", "global"), "startup-loader:global", "readiness is one global fact")
+  Assert.isFalse(pcall(ArtifactState.key, "startup-loader", "1"), "a numeric loader key is rejected")
   Assert.deepEqual(
     ArtifactJobs.startupLoaderJobs(),
     { { kind = "startup-loader", key = "global" } },

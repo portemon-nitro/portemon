@@ -131,4 +131,27 @@ function T.previous_asset_revision_release_identity_never_matches()
   Assert.isTrue(DerivedCacheState.matches(current, current), "the current identity still matches itself")
 end
 
+-- The release generation token callers derive on the game thread without a
+-- producer scan: accepted ROM SHA-1, the per-game release counter, the asset
+-- revision, and the script API version, and nothing else.
+function T.release_generation_id_uses_pure_release_constants()
+  local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
+  local generation = DerivedCacheState.releaseGenerationId("heartgold")
+  local expected = DerivedCacheState.currentForSelection({
+    versionId = "heartgold",
+    romSha1 = GameVersion.VERSIONS.heartgold.sha1,
+    producerId = "r" .. tostring(DerivedCacheVersions.heartgold),
+  }).generationId
+  Assert.equal(generation, expected, "the release token is the current release selection identity")
+  local identity = DerivedCacheState.currentForSelection({
+    versionId = "heartgold",
+    romSha1 = GameVersion.VERSIONS.heartgold.sha1,
+    producerId = "r" .. tostring(DerivedCacheVersions.heartgold),
+  })
+  Assert.isTrue(identity.mode == "release", "the release token derives a release identity")
+  Assert.throws(function()
+    DerivedCacheState.releaseGenerationId("unregistered-version")
+  end, "an unknown version has no release generation")
+end
+
 return { tests = T }

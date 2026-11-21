@@ -8,7 +8,7 @@
 
 local Assert = require("tests.support.Assert")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
-
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local LOADING_MODULE = "libs.hgss.src.ui.HgssLoadingPresentation"
 
 local T = {}
@@ -20,6 +20,14 @@ local function bootService(script)
   script.pairRequests = {}
   script.pairUrgencies = {}
   local service = {}
+  -- The boot wait adopts whatever view the epoch installed before it transfers.
+  -- This harness pairs it with a fake loading presentation, so the answered view
+  -- is one real resident reader over no payloads: the adoption call is recorded,
+  -- not drawn.
+  local view = GeneratedCacheFixture.resident("heartgold", {})
+  function service:getCacheFs(_)
+    return view.reader
+  end
   function service:bootSourceStatus(_)
     script.calls = script.calls + 1
     if script.bootFailure ~= nil then

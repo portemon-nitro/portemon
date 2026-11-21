@@ -7,7 +7,7 @@
 -- worker thread as Data payloads the main thread never pixel-scans.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local NativeTextureBank = require("libs.assets.src.model.NativeTextureBank")
 local PngWriter = require("tests.support.PngEncoder")
 local TextureDecoder = require("libs.nds.src.gx.TextureDecoder")
@@ -110,9 +110,18 @@ local function assertBulkTransit(record)
 end
 
 ---@param versionId string
----@return table versioned file-backed cache the worker thread can also read
-local function fileBackedCache(versionId)
-  return CacheFs.forVersion(versionId)
+---@return GeneratedCacheFixture.ResidentView resident fixture view the worker reads through
+-- Fixture payloads live in one resident store the queue reads through, the
+-- same reader shape a selected epoch installs: `write` commits a payload with
+-- its own content identity and closing retires the whole view.
+local function fixtureView(versionId)
+  return GeneratedCacheFixture.resident(versionId, {})
+end
+
+---@param relative string fixture file below the generated payload root
+---@return string logical generated path
+local function generated(relative)
+  return "assets/generated/" .. relative
 end
 
 ---@param queue table
@@ -204,14 +213,14 @@ function T.oversized_icon_like_image_classifies_to_rgba_through_the_worker()
     tuples[#tuples + 1] = pixel(index % 256, math.floor(index / 256), 9, 255)
   end
   local pixels = cycledPixels(48, 48, tuples)
-  local cache = fileBackedCache("image-derivative-icon-test")
+  local view = fixtureView("image-derivative-icon-test")
   local runOk, runErr = pcall(function()
-    cache:write("icons/crowded.png", encodePng(48, 48, pixels))
-    local queue = AssetPreparationQueue.new(cache)
-    local first = demandImage(queue, "icons/crowded.png")
+    GeneratedCacheFixture.put(view, generated("icons/crowded.png"), encodePng(48, 48, pixels))
+    local queue = AssetPreparationQueue.new(view.reader)
+    local first = demandImage(queue, generated("icons/crowded.png"))
     queue:release()
-    local later = AssetPreparationQueue.new(cache)
-    local second = demandImage(later, "icons/crowded.png")
+    local later = AssetPreparationQueue.new(view.reader)
+    local second = demandImage(later, generated("icons/crowded.png"))
     later:release()
     Assert.equal(first.kind, "rgba8", "an icon-sized image past 256 tuples classifies to straight RGBA")
     Assert.equal(unpackRecord(first), pixels, "the worker payload recovers every pixel exactly")
@@ -222,7 +231,7 @@ function T.oversized_icon_like_image_classifies_to_rgba_through_the_worker()
     )
     assertBulkTransit(first)
   end)
-  cache:removeTree("")
+  GeneratedCacheFixture.close(view)
   if not runOk then
     error(runErr, 0)
   end
@@ -235,20 +244,20 @@ function T.edited_sources_reclassify_while_untouched_sources_keep_their_derivati
     encodePng(4, 4, cycledPixels(4, 4, { pixel(255, 0, 0, 255), pixel(0, 255, 0, 128), pixel(0, 0, 0, 0) }))
   local firstPixels = cycledPixels(4, 4, { pixel(255, 0, 0, 255), pixel(0, 0, 255, 0) })
   local editedPixels = cycledPixels(4, 4, { pixel(255, 0, 0, 255), pixel(0, 255, 0, 128), pixel(0, 0, 0, 0) })
-  local cache = fileBackedCache("image-derivative-isolation-test")
+  local view = fixtureView("image-derivative-isolation-test")
   local runOk, runErr = pcall(function()
-    cache:write("sprites/a.png", firstPng)
-    cache:write("sprites/b.png", firstPng)
-    local queue = AssetPreparationQueue.new(cache)
-    local aBefore = demandImage(queue, "sprites/a.png")
-    local bBefore = demandImage(queue, "sprites/b.png")
+    GeneratedCacheFixture.put(view, generated("sprites/a.png"), firstPng)
+    GeneratedCacheFixture.put(view, generated("sprites/b.png"), firstPng)
+    local queue = AssetPreparationQueue.new(view.reader)
+    local aBefore = demandImage(queue, generated("sprites/a.png"))
+    local bBefore = demandImage(queue, generated("sprites/b.png"))
     queue:release()
     Assert.equal(aBefore.kind, "r8", "two-color sources pack as indexed")
     Assert.equal(unpackRecord(aBefore), firstPixels, "the first source reads back exactly")
-    cache:write("sprites/a.png", editedPng)
-    local later = AssetPreparationQueue.new(cache)
-    local aAfter = demandImage(later, "sprites/a.png")
-    local bAfter = demandImage(later, "sprites/b.png")
+    GeneratedCacheFixture.put(view, generated("sprites/a.png"), editedPng)
+    local later = AssetPreparationQueue.new(view.reader)
+    local aAfter = demandImage(later, generated("sprites/a.png"))
+    local bAfter = demandImage(later, generated("sprites/b.png"))
     later:release()
     Assert.isTrue(aAfter.pixelHash ~= aBefore.pixelHash, "only the changed image reclassifies")
     Assert.equal(unpackRecord(aAfter), editedPixels, "the edited source reads back exactly")
@@ -260,7 +269,7 @@ function T.edited_sources_reclassify_while_untouched_sources_keep_their_derivati
     )
     assertBulkTransit(aAfter)
   end)
-  cache:removeTree("")
+  GeneratedCacheFixture.close(view)
   if not runOk then
     error(runErr, 0)
   end
@@ -268,13 +277,21 @@ end
 
 function T.unreadable_sources_fail_loudly_without_substitution()
   local AssetPreparationQueue = requireQueue()
-  local cache = fileBackedCache("image-derivative-failure-test")
+  local view = fixtureView("image-derivative-failure-test")
   local runOk, runErr = pcall(function()
-    cache:write("sprites/good.png", encodePng(2, 2, pixel(9, 9, 9, 255):rep(4)))
-    cache:write("sprites/garbage.png", "not-a-png")
-    local queue = AssetPreparationQueue.new(cache)
-    local garbageToken = queue:request("image-derivative", "sprites/garbage.png", "demand")
-    local missingToken = queue:request("image-derivative", "sprites/absent.png", "demand")
+    GeneratedCacheFixture.put(view, generated("sprites/good.png"), encodePng(2, 2, pixel(9, 9, 9, 255):rep(4)))
+    GeneratedCacheFixture.put(view, generated("sprites/garbage.png"), "not-a-png")
+    local queue = AssetPreparationQueue.new(view.reader)
+    local garbageToken = queue:request("image-derivative", generated("sprites/garbage.png"), "demand")
+    -- A path the installed view does not carry is refused when it is
+    -- requested: the queue resolves its immutable reference before any job.
+    local missingOk, missingErr = pcall(queue.request, queue, "image-derivative", generated("sprites/absent.png"),
+      "demand")
+    Assert.isFalse(missingOk, "missing sources fail instead of substituting bytes")
+    Assert.isTrue(
+      tostring(missingErr):find(generated("sprites/absent.png"), 1, true) ~= nil,
+      "the missing source is named in its failure: " .. tostring(missingErr)
+    )
     local status, cause = queue:poll(garbageToken)
     if status == "pending" then
       local ok, err = pcall(queue.wait, queue, garbageToken)
@@ -283,9 +300,7 @@ function T.unreadable_sources_fail_loudly_without_substitution()
       Assert.equal(status, "failed", "corrupted sources report failure")
       Assert.notNil(cause, "the failure carries a cause")
     end
-    local ok, err = pcall(queue.wait, queue, missingToken)
-    Assert.isTrue(not ok, "missing sources fail instead of substituting bytes: " .. tostring(err))
-    local recovered = demandImage(queue, "sprites/good.png")
+    local recovered = demandImage(queue, generated("sprites/good.png"))
     Assert.equal(
       unpackRecord(recovered),
       pixel(9, 9, 9, 255):rep(4),
@@ -293,7 +308,7 @@ function T.unreadable_sources_fail_loudly_without_substitution()
     )
     queue:release()
   end)
-  cache:removeTree("")
+  GeneratedCacheFixture.close(view)
   if not runOk then
     error(runErr, 0)
   end
@@ -302,29 +317,29 @@ end
 function T.derivative_requests_share_queue_lifecycle_and_leave_no_gpu_objects()
   local AssetPreparationQueue = requireQueue()
   local pixels = cycledPixels(3, 2, { pixel(11, 22, 33, 255), pixel(44, 55, 66, 0) })
-  local cache = fileBackedCache("image-derivative-lifecycle-test")
+  local view = fixtureView("image-derivative-lifecycle-test")
   local runOk, runErr = pcall(function()
-    cache:write("sprites/lifecycle.png", encodePng(3, 2, pixels))
-    local queue = AssetPreparationQueue.new(cache)
-    local background = queue:request("image-derivative", "sprites/lifecycle.png", "prefetch")
+    GeneratedCacheFixture.put(view, generated("sprites/lifecycle.png"), encodePng(3, 2, pixels))
+    local queue = AssetPreparationQueue.new(view.reader)
+    local background = queue:request("image-derivative", generated("sprites/lifecycle.png"), "prefetch")
     queue:promote(background, "demand")
-    local cancelled = queue:request("image-derivative", "sprites/lifecycle.png", "prefetch")
+    local cancelled = queue:request("image-derivative", generated("sprites/lifecycle.png"), "prefetch")
     queue:cancel(cancelled)
     local status = queue:poll(background)
     Assert.isTrue(status ~= nil, "promoted derivative work reports a lifecycle state")
     local payload = queue:wait(background)
     Assert.equal(unpackRecord(payload), pixels, "promoted work still delivers exact pixels")
-    local watched = queue:request("image-derivative", "sprites/lifecycle.png", "demand")
+    local watched = queue:request("image-derivative", generated("sprites/lifecycle.png"), "demand")
     local watchStatus = queue:poll(watched)
     Assert.isTrue(watchStatus ~= nil, "repeated interest in one source reports a lifecycle state")
     queue:cancel(watched)
     assertBulkTransit(payload)
     queue:release()
     queue:release()
-    local ok, err = pcall(queue.request, queue, "image-derivative", "sprites/lifecycle.png", "demand")
+    local ok, err = pcall(queue.request, queue, "image-derivative", generated("sprites/lifecycle.png"), "demand")
     Assert.isTrue(not ok, "a released queue accepts no further derivative work: " .. tostring(err))
   end)
-  cache:removeTree("")
+  GeneratedCacheFixture.close(view)
   if not runOk then
     error(runErr, 0)
   end
@@ -360,34 +375,34 @@ function T.warm_png_preparation_persists_no_image_derivative()
   local AssetPreparationQueue = requireQueue()
   local pixels = cycledPixels(4, 3, { pixel(200, 10, 20, 255), pixel(10, 200, 30, 0), pixel(5, 6, 7, 128) })
   local sourcePng = encodePng(4, 3, pixels)
-  local cache = fileBackedCache("image-derivative-warm-png-test")
+  local view = fixtureView("image-derivative-warm-png-test")
   local runOk, runErr = pcall(function()
-    cache:write("sprites/warm.png", sourcePng)
-    Assert.deepEqual(listCacheFiles(cache, ""), { "sprites/warm.png" }, "the cache starts with its PNG only")
+    GeneratedCacheFixture.put(view, generated("sprites/warm.png"), sourcePng)
+    Assert.deepEqual(listCacheFiles(view.reader, ""), { generated("sprites/warm.png") }, "the cache starts with its PNG only")
 
-    local firstQueue = AssetPreparationQueue.new(cache)
-    local first = demandImage(firstQueue, "sprites/warm.png")
+    local firstQueue = AssetPreparationQueue.new(view.reader)
+    local first = demandImage(firstQueue, generated("sprites/warm.png"))
     firstQueue:release()
     Assert.equal(unpackRecord(first), pixels, "the warm PNG alone yields the exact GPU-upload pixels")
     Assert.deepEqual(
-      listCacheFiles(cache, ""),
-      { "sprites/warm.png" },
+      listCacheFiles(view.reader, ""),
+      { generated("sprites/warm.png") },
       "preparing a PNG writes no persistent image derivative beside it"
     )
 
-    local secondQueue = AssetPreparationQueue.new(cache)
-    local second = demandImage(secondQueue, "sprites/warm.png")
+    local secondQueue = AssetPreparationQueue.new(view.reader)
+    local second = demandImage(secondQueue, generated("sprites/warm.png"))
     secondQueue:release()
     Assert.equal(unpackRecord(second), pixels, "a later worker generation reads the same PNG to the same pixels")
     Assert.equal(second.kind, first.kind, "classification stays stable across worker generations")
     Assert.deepEqual(
-      listCacheFiles(cache, ""),
-      { "sprites/warm.png" },
+      listCacheFiles(view.reader, ""),
+      { generated("sprites/warm.png") },
       "repeated preparation keeps the PNG as the only persistent image asset"
     )
-    Assert.equal(cache:read("sprites/warm.png"), sourcePng, "preparation never rewrites the generated PNG")
+    Assert.equal(view.reader:read(generated("sprites/warm.png")), sourcePng, "preparation never rewrites the generated PNG")
   end)
-  cache:removeTree("")
+  GeneratedCacheFixture.close(view)
   if not runOk then
     error(runErr, 0)
   end
@@ -450,7 +465,7 @@ function T.native_texture_selections_reuse_the_workers_parse_of_their_bank()
   local AssetPreparationQueue = requireQueue()
   local bankPath = "assets/generated/textures/selection-bank.g4tx"
   local otherPath = "assets/generated/textures/replacement-bank.g4tx"
-  local cache = fileBackedCache("image-derivative-native-texture-bank-test")
+  local view = fixtureView("image-derivative-native-texture-bank-test")
   local runOk, runErr = pcall(function()
     local firstBytes = NativeTextureBank.encode({
       textures = {
@@ -478,8 +493,8 @@ function T.native_texture_selections_reuse_the_workers_parse_of_their_bank()
       textures = { indexedTexture("t0", string.char(0x03):rep(32), false) },
       palettes = { { name = "p0", data = palettePayload({ 0x0842, 0x7FE0, 0x03FF }) } },
     })
-    cache:write(bankPath, firstBytes)
-    cache:write(otherPath, otherBytes)
+    GeneratedCacheFixture.put(view, bankPath, firstBytes)
+    GeneratedCacheFixture.put(view, otherPath, otherBytes)
     local firstBank = assert(NativeTextureBank.read(firstBytes))
     local expectedSecond = decodeSelection(firstBank, "t1", "p1")
     Assert.isTrue(
@@ -487,14 +502,14 @@ function T.native_texture_selections_reuse_the_workers_parse_of_their_bank()
       "the rewritten bank decodes to different texels, so a fresh read would be visible"
     )
 
-    local queue = AssetPreparationQueue.new(cache)
+    local queue = AssetPreparationQueue.new(view.reader)
     local first =
       queue:wait(queue:request("g4tx", { file = bankPath, textureName = "t0", paletteName = "p0" }, "demand"))
     Assert.equal(unpackRecord(first), decodeSelection(firstBank, "t0", "p0"), "a selection yields its own texels")
     Assert.equal(first.width, 8, "the selection reports its texture width")
     Assert.equal(first.height, 8, "the selection reports its texture height")
 
-    cache:write(bankPath, rewrittenBytes)
+    GeneratedCacheFixture.put(view, bankPath, rewrittenBytes)
     local second =
       queue:wait(queue:request("g4tx", { file = bankPath, textureName = "t1", paletteName = "p1" }, "demand"))
     Assert.equal(
@@ -512,13 +527,13 @@ function T.native_texture_selections_reuse_the_workers_parse_of_their_bank()
       "a different bank path replaces the reused parse and decodes its own texels"
     )
     Assert.deepEqual(
-      listCacheFiles(cache, ""),
+      listCacheFiles(view.reader, ""),
       { otherPath, bankPath },
       "native texture preparation writes no persistent parse or derivative"
     )
     queue:release()
   end)
-  cache:removeTree("")
+  GeneratedCacheFixture.close(view)
   if not runOk then
     error(runErr, 0)
   end

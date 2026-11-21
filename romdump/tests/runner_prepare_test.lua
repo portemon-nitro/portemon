@@ -322,7 +322,6 @@ function T.check_rejects_a_foreign_generation_without_mutation()
   withRunnerHarness(function(quitCode)
     local CacheFs = require("libs.storage.src.CacheFs")
     local FakeCache = require("tests.support.FakeCache")
-    local ArtifactState = require("romdump.src.build.ArtifactState")
     local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
     local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
     local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
@@ -386,13 +385,6 @@ function T.check_rejects_a_foreign_generation_without_mutation()
         cache:write(path, "complete")
       end
       cache:writeLua(MapAssetCache.worldPath(), { maps = {} })
-      cache:writeLua(ArtifactState.path("field-camera", "global"), {
-        schema = ArtifactState.RECEIPT_SCHEMA,
-        generationId = "foreign-generation",
-        kind = "field-camera",
-        key = "global",
-        marker = "complete",
-      })
       local before = {}
       for path, data in pairs(backend.files) do
         before[path] = data

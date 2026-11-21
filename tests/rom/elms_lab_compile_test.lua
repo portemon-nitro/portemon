@@ -16,6 +16,7 @@ local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local CollisionGrid = require("libs.hgss.src.world.CollisionGrid")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 local SYMBOL = "MAP_NEW_BARK_ELMS_LAB_1F"
@@ -43,13 +44,7 @@ local function stageMap(cacheFs, bundle)
     error(stageErr, 0)
   end
   prepared:finishSuccess({ marker = bundle.marker })
-  prepared:publish({
-    generationId = "test-generation",
-    epoch = 1,
-    kind = "map",
-    key = key,
-    jobKey = "map:" .. key,
-  })
+  ResidentArtifactFixture.materialize(prepared)
 end
 
 local function compileInto(romFs, version)
@@ -245,18 +240,16 @@ end
 
 function T.injected_failure_leaves_no_marker(romFs, version)
   local backend = FakeCache.new()
-  local orig = backend.write
-  backend.write = function(self, path, data)
-    if path:find("scene.lua", 1, true) then
-      error("injected write failure")
-    end
-    return orig(self, path, data)
-  end
   local c = CacheFs.forVersion(version, backend)
   c:write("rom-dump.complete", "raw-owned-by-earlier-run")
+  -- The publication of the sealed artifact is what fails: the fixture backend
+  -- refuses every write, so no committed member reaches the cache.
+  backend.write = function()
+    error("injected write failure")
+  end
 
   local bundle = assert(MapAssetCompiler.compile(romFs, SYMBOL))
-  Assert.isTrue(not pcall(stageMap, c, bundle), "staging raises")
+  Assert.isTrue(not pcall(stageMap, c, bundle), "publication raises")
   Assert.isTrue(not c:exists(MapAssetCache.mapDir(MAP_ID) .. "/complete"), "no false marker")
   Assert.isTrue(c:exists("rom-dump.complete"), "raw-dump marker preserved")
 end

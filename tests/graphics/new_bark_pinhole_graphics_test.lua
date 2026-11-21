@@ -11,7 +11,7 @@
 -- The assertion is a semantic zero count, never a golden screenshot.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
@@ -68,7 +68,7 @@ local function sceneCenter(draws)
 end
 
 local function runVersion(scope, versionId)
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   local scene = assert(cache:loadLua(MapAssetCache.mapDir(NEW_BARK_MAP_ID) .. "/scene.lua"))
   local imagePool = ImageAssetPool.new(cache)
   scope:own({

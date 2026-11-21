@@ -4,7 +4,7 @@
 -- sharing that section proves the section identity is never the header id.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local MapAnalysis = require("romdump.src.digest.map.MapAnalysis")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
@@ -36,7 +36,7 @@ local function analysisFor(romFs, versionId, mapId)
 end
 
 local function worldEntry(versionId, mapId)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local world = assert(cacheFs:loadLua(MapAssetCache.worldPath()), "the generated world manifest must load")
   local index = assert(world.byId[mapId], "map " .. mapId .. " must be in the generated world")
   return cacheFs, world, assert(world.maps[index])

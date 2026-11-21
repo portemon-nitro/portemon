@@ -11,7 +11,7 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BagCache = require("libs.assets.src.BagCache")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
@@ -437,7 +437,7 @@ function T.tests.bag_blur_cancels_stale_press_and_fresh_input_recovers()
     end
     -- Resolve generated tab/cell geometry through the manifest and the
     -- published interactive placement.
-    local manifest = BagCache.loadManifest(CacheFs.forVersion(AcceptanceHarness.defaultVersion()))
+    local manifest = BagCache.loadManifest(GeneratedCacheFixture.reader(AcceptanceHarness.defaultVersion()))
     local interactiveManifest = assert(manifest.interactive, "the generated manifest must carry its interactive pane")
     local slots = assert(
       interactiveManifest.itemSlots and interactiveManifest.itemSlots.slots,
@@ -859,6 +859,7 @@ local function oakCompose(versionId, width, height)
   return OakIntroComposition.compose({
     candidate = oakCandidate(versionId),
     versionId = versionId,
+    cacheFs = GeneratedCacheFixture.reader(versionId),
     graphics = love.graphics,
     audioOutput = { audio = audio.audio, sound = audio.sound },
     clock = {
@@ -1136,10 +1137,10 @@ local function withMenu(count, width, height, fn)
   local saveIds = seedRecords(saveFs, count)
   local results = {}
   local store = GameSaveStore.new(saveFs)
-  local menuText = FieldTextRenderer.new({ cacheFs = CacheFs.forVersion(versionId) })
+  local menuText = FieldTextRenderer.new({ cacheFs = GeneratedCacheFixture.reader(versionId) })
   local menuRenderer = MainMenuRenderer.new({
     text = menuText,
-    cacheFs = CacheFs.forVersion(versionId),
+    cacheFs = GeneratedCacheFixture.reader(versionId),
     versionId = versionId,
   })
   local menu = MainMenuState.new({

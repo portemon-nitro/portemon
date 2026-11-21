@@ -8,14 +8,13 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 
 local FieldMapDataCacheWriter = {}
 
 -- The one staging step both entry points share: write the map's own record,
 -- dependencies, and marker into the given stage filesystem and prove they
 -- read back with the current identity. Never touches a sibling map's record.
----@param stage CacheFs
+---@param stage PreparedArtifact
 ---@param bundle table<string, unknown>
 ---@return string
 local function persist(stage, bundle)
@@ -53,24 +52,11 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function FieldMapDataCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "field-map staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "field-map staging requires a PreparedArtifact")
   assert(type(bundle) == "table" and bundle.mapId and bundle.marker, "invalid field-map bundle")
   local mapId = bundle.mapId --[[@as integer]]
   artifact:addOwnedRoot(FieldMapDataCache.mapDir(mapId))
-  return persist(artifact:stageFs(), bundle)
-end
-
-function FieldMapDataCacheWriter.write(cacheFs, bundle)
-  assert(cacheFs and type(bundle) == "table" and bundle.mapId and bundle.marker, "invalid field-map bundle")
-  local tx =
-    ArtifactPublisher.begin(cacheFs, "field-map-data-" .. bundle.mapId, { FieldMapDataCache.mapDir(bundle.mapId) })
-  local ok, result = pcall(persist, tx.stage, bundle)
-  if not ok then
-    tx:abort()
-    error(result, 0)
-  end
-  tx:publish()
-  return result
+  return persist(artifact, bundle)
 end
 
 -- Persists the family-level teleport landing index through the same
@@ -98,22 +84,10 @@ local function persistSpawnIndex(tx, bundle)
 end
 
 function FieldMapDataCacheWriter.stageSpawnIndex(artifact, bundle)
-  assert(artifact and artifact.stageFs, "spawn index staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "spawn index staging requires a PreparedArtifact")
   assert(type(bundle) == "table" and bundle.index and bundle.marker, "invalid spawn index bundle")
   artifact:addOwnedRoot(FieldMapDataCache.spawnDir())
-  return persistSpawnIndex({ stage = artifact:stageFs() }, bundle)
-end
-
-function FieldMapDataCacheWriter.writeSpawnIndex(cacheFs, bundle)
-  assert(cacheFs and type(bundle) == "table" and bundle.index and bundle.marker, "invalid spawn index bundle")
-  local tx = ArtifactPublisher.begin(cacheFs, "field-spawn-index", { FieldMapDataCache.spawnDir() })
-  local ok, result = pcall(persistSpawnIndex, tx, bundle)
-  if not ok then
-    tx:abort()
-    error(result, 0)
-  end
-  tx:publish()
-  return result
+  return persistSpawnIndex({ stage = artifact }, bundle)
 end
 
 return FieldMapDataCacheWriter

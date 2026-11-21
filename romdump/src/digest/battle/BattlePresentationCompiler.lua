@@ -3286,7 +3286,7 @@ end
 function BattlePresentationCompiler.stageTrainerPicture(artifact, leaf, marker)
   assert(type(marker) == "string" and marker ~= "", "trainer picture staging requires its marker")
   assert(type(leaf) == "table" and type(leaf.selector) == "string", "trainer picture staging requires its leaf")
-  local stage = artifact:stageFs()
+  local stage = artifact
   artifact:addOwnedRoot(BattlePresentationCache.trainerPicturePath(leaf.selector))
   artifact:addOwnedRoot(BattlePresentationCache.trainerPictureMarkerPath(leaf.selector))
   stage:writeLua(BattlePresentationCache.trainerPicturePath(leaf.selector), {
@@ -4352,7 +4352,7 @@ end
 function BattlePresentationCompiler.stageBall(artifact, leaf, marker)
   assert(type(marker) == "string" and marker ~= "", "ball staging requires its marker")
   assert(type(leaf) == "table" and type(leaf.selector) == "string", "ball staging requires its leaf")
-  local stage = artifact:stageFs()
+  local stage = artifact
   artifact:addOwnedRoot(BattlePresentationCache.ballPath(leaf.selector))
   artifact:addOwnedRoot(BattlePresentationCache.ballMarkerPath(leaf.selector))
   stage:writeLua(BattlePresentationCache.ballPath(leaf.selector), {
@@ -4693,7 +4693,7 @@ end
 function BattlePresentationCompiler.stageEvolution(artifact, evolution, marker)
   assert(type(marker) == "string" and marker ~= "", "evolution staging requires its marker")
   assert(type(evolution) == "table" and evolution.kind == "evolution", "evolution staging requires its bundle")
-  local stage = artifact:stageFs()
+  local stage = artifact
   artifact:addOwnedRoot(BattlePresentationCache.evolutionPath())
   artifact:addOwnedRoot(BattlePresentationCache.evolutionMarkerPath())
   stage:writeLua(BattlePresentationCache.evolutionPath(), {
@@ -6244,7 +6244,7 @@ end
 ---@return string marker
 function BattlePresentationCompiler.stageGlobal(artifact, bundle, marker)
   assert(type(marker) == "string" and marker ~= "", "global staging requires its marker")
-  local stage = artifact:stageFs()
+  local stage = artifact
   artifact:addOwnedRoot(BattlePresentationCache.manifestPath())
   artifact:addOwnedRoot(BattlePresentationCache.provenancePath())
   artifact:addOwnedRoot(BattlePresentationCache.markerPath())
@@ -6335,7 +6335,7 @@ end
 ---@return string marker
 function BattlePresentationCompiler.stageScene(artifact, scene, marker)
   assert(type(marker) == "string" and marker ~= "", "scene staging requires its marker")
-  local stage = artifact:stageFs()
+  local stage = artifact
   artifact:addOwnedRoot(BattlePresentationCache.scenePath(scene.key))
   artifact:addOwnedRoot(BattlePresentationCache.sceneImagePath(scene.key))
   artifact:addOwnedRoot(scene.introLayer.image)
@@ -8029,7 +8029,7 @@ end
 ---@return string marker
 function BattlePresentationCompiler.stageEffect(artifact, effect, marker)
   assert(type(marker) == "string" and marker ~= "", "effect staging requires its marker")
-  local stage = artifact:stageFs()
+  local stage = artifact
   artifact:addOwnedRoot(BattlePresentationCache.effectPath(effect.key))
   artifact:addOwnedRoot(BattlePresentationCache.effectMarkerPath(effect.key))
   local resourcePaths = {}

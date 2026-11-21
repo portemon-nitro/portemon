@@ -6,7 +6,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -312,7 +312,7 @@ local function assertTargetMenuJourney(game)
   party:setMove(1, 0, "TACKLE")
 
   local catalog = party:catalog()
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local presentation = presentationServices()
   local manifest = launchViewFor(
     cacheFs,
@@ -487,7 +487,7 @@ local function assertEvolutionSceneJourney(game)
       language = "english",
     },
   })
-  local cacheFs = CacheFs.forVersion(game.versionId)
+  local cacheFs = GeneratedCacheFixture.reader(game.versionId)
   local manifest = launchViewFor(cacheFs, game.versionId, { "back:PKMN_TRAINER_ETHAN" }, { "ball:POKE_BALL" })
   local presentation = presentationServices(cacheFs)
   local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")

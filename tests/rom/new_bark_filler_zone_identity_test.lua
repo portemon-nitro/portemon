@@ -5,7 +5,7 @@
 
 local Assert = require("tests.support.Assert")
 local MapResolver = require("romdump.src.digest.map.MapResolver")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local FieldCoverage = require("libs.hgss.src.world.FieldCoverage")
@@ -19,7 +19,7 @@ local EVERYWHERE_HEADER = 0
 
 function T.everywhere_filler_cells_keep_raw_header_zero_with_new_bark_as_logical_owner(romFs, versionId)
   local r = assert(MapResolver.resolve(romFs, "MAP_NEW_BARK"))
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   local index = FieldCellCache.loadIndex(cache)
 
   -- Raw physical provenance for both filler neighbors, with real terrain.

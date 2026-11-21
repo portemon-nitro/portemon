@@ -4,7 +4,9 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FakeCache = require("tests.support.FakeCache")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 local FieldActorDefinitionProvider = require("libs.hgss.src.actors.FieldActorDefinitionProvider")
 local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
@@ -673,11 +675,15 @@ function T.compilation_is_deterministic_and_writes_a_ready_cache(romFs, version)
   Assert.equal(first.marker, second.marker)
 
   local cache = CacheFs.forVersion(version, FakeCache.new())
-  Assert.equal(FieldActorCacheWriter.write(cache, first), first.marker)
+  Assert.equal(ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
+      return FieldActorCacheWriter.stage(artifact, first)
+    end), first.marker)
   Assert.isTrue(FieldActorCache.isReady(cache, first.marker))
 
   local other = CacheFs.forVersion(version, FakeCache.new())
-  FieldActorCacheWriter.write(other, second)
+  ResidentArtifactFixture.publish(other, "actors", "global", function(artifact)
+      return FieldActorCacheWriter.stage(artifact, second)
+    end)
   for _, spriteId in ipairs(first.index.spriteIds) do
     Assert.equal(
       cache:read(FieldActorCache.atlasPath(spriteId)),
@@ -705,7 +711,7 @@ function T.nonzero_object_event_y_reaches_runtime_surface_projection(romFs, vers
     rawByObjectEventId[event.objectEventId] = event
   end
 
-  local cache = CacheFs.forVersion(version)
+  local cache = GeneratedCacheFixture.reader(version)
   local actorIndex = assert(FieldActorCache.loadIndex(cache))
   local assets = FieldActorDefinitionProvider.new(cache)
   local candidate

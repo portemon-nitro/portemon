@@ -6,7 +6,7 @@
 
 local Assert = require("tests.support.Assert")
 local ArtifactState = require("romdump.src.build.ArtifactState")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local DerivedCacheAudit = require("romdump.src.DerivedCacheAudit")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
@@ -23,7 +23,7 @@ function T.prepared_complete_corpus_passes_audit_with_matching_attestation(romFs
     developmentRepositoryRoot = sourceBase,
   })
   local generationId = assert(identity.generationId, "the selection identity carries its generation")
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
   local plans, plansReason = ArtifactJobs.publishedPlans(cacheFs, identity)
   assert(plans ~= nil, "the prepared corpus publishes its inventory: " .. tostring(plansReason))

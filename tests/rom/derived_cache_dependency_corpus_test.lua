@@ -5,7 +5,7 @@
 -- Nothing is compiled or published here; the command tests own publication
 -- and failure evidence.
 
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 
@@ -20,7 +20,7 @@ function T.complete_derived_dependency_graph_is_closed_and_acyclic(romFs, versio
     producerId = ProducerFingerprint.compute(ProducerFingerprint.checkoutBackend(sourceBase)),
     developmentRepositoryRoot = sourceBase,
   })
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
   local plans, plansReason = ArtifactJobs.publishedPlans(cacheFs, identity)
   assert(plans ~= nil, "the prepared corpus publishes its inventory: " .. tostring(plansReason))

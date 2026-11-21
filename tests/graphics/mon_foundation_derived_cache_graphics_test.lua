@@ -5,7 +5,7 @@
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
@@ -64,7 +64,7 @@ end
 function T.follower_variant_selectors_address_distinct_rendered_pixels(_, _)
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
-      local cache = CacheFs.forVersion(versionId)
+      local cache = GeneratedCacheFixture.reader(versionId)
       local portraits, portraitPages = atlasPages(cache, MonCache.portraitManifestPath())
       local function portraitRect(selector)
         local entry = assert(portraits.entries[selector], versionId .. " portrait resolves: " .. selector)
@@ -118,7 +118,7 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
 
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
-      local cacheFs = CacheFs.forVersion(versionId)
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       local catalog = MonBucket.openCatalogs(versionId)
       local fontDef = FieldFontLoader.load(cacheFs)
       local service = HgssMonService.new({
@@ -182,7 +182,10 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
           return { bootstrap = "ready" }
         end,
       }
-      local state = assert(FieldState.new(game, { derivedAssets = readyHost }))
+      local state = assert(FieldState.new(game, {
+        derivedAssets = readyHost,
+        cacheFs = GeneratedCacheFixture.reader(versionId),
+      }))
       local ok, err = xpcall(function()
         local runtime = assert(state.runtime)
         local function step()

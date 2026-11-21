@@ -10,6 +10,7 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -167,7 +168,9 @@ function T.failed_rebuild_preserves_the_prior_ready_family_and_warm_reads_avoid_
   local cacheFs = CacheFs.forVersion("heartgold", backend)
   local oldMarker = PokegearCache.marker("rom-sha", "deps-sha")
   local oldBundle = syntheticBundle(oldMarker)
-  Assert.isTrue(PokegearCacheWriter.write(cacheFs, oldBundle), "the first publication must succeed")
+  Assert.isTrue(ResidentArtifactFixture.publish(cacheFs, "pokegear", "global", function(artifact)
+      return PokegearCacheWriter.stage(artifact, oldBundle)
+    end), "the first publication must succeed")
   Assert.isTrue(PokegearCache.isReady(cacheFs, oldMarker), "the first publication must report its family ready")
 
   -- A late backend failure must not report success and must leave the
@@ -182,7 +185,9 @@ function T.failed_rebuild_preserves_the_prior_ready_family_and_warm_reads_avoid_
 
   -- A successful rebuild publishes a complete receipt: every referenced
   -- path is present under the new marker.
-  Assert.isTrue(PokegearCacheWriter.write(cacheFs, syntheticBundle(newMarker)), "the retry must succeed")
+  Assert.isTrue(ResidentArtifactFixture.publish(cacheFs, "pokegear", "global", function(artifact)
+      return PokegearCacheWriter.stage(artifact, syntheticBundle(newMarker))
+    end), "the retry must succeed")
   Assert.isTrue(PokegearCache.isReady(cacheFs, newMarker), "the retried publication must report ready")
   local published = PokegearCache.loadManifest(cacheFs)
   for _, path in ipairs(referencedPaths(PokegearCache, published, syntheticBundle(newMarker))) do

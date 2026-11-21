@@ -1,20 +1,23 @@
--- Producer-private generation receipts for derived-cache artifacts. A receipt
--- is a cheap per-artifact proof that its family output was published for one
--- immutable generation; ordinary warm reuse trusts a current receipt
--- without re-reading the family payload, while family validators stay
--- authoritative for compilation staging and the explicit manual audit.
--- Receipts live at data/generated/jobs/<kind>/<key>.lua and travel to the
--- live cache inside the same staged transaction as the family output they
--- accompany.
+-- Committed artifact facts for one derived-cache generation. A fact is the
+-- cheap, in-memory proof that one canonical job's output is committed for an
+-- immutable generation: ordinary warm reuse trusts a current fact without
+-- re-reading family payload, while family validators stay authoritative for
+-- compilation staging and the explicit manual audit. The controller owns the
+-- record map; workers and planners receive a read-only subset carrying the
+-- same generation. Records are addressed by the canonical `kind:key` identity
+-- and hold sorted dependency and file lists only, never paths to disk.
 
-local StorageErrors = require("libs.storage.src.errors")
-
----@class ArtifactState.Receipt
----@field schema string
----@field generationId string
+---@class ArtifactState.Fact
 ---@field kind string
 ---@field key string
 ---@field marker string
+---@field dependencies string[] sorted canonical job keys
+---@field ownedRoots string[] sorted owned logical roots
+---@field sharedPaths string[] sorted shared logical paths
+---@field files string[] sorted logical payload paths
+---@class ArtifactState
+---@field generationId string
+---@field records table<string, ArtifactState.Fact>
 local ArtifactState = {}
 
 ArtifactState.KINDS = {
@@ -101,7 +104,7 @@ ArtifactState.KINDS = {
   -- One staged audio bank closure (or the catalog, or the family summary)
   -- per job: each bank owns its bank record, its sequence records, and
   -- shared content-addressed samples, the catalog owns the runtime index,
-  -- and the summary owns no payload at all. Each current receipt is the
+  -- and the summary owns no payload at all. Each current fact is the
   -- closure's whole completion proof.
   ["audio-bank"] = true,
   ["audio-catalog"] = true,
@@ -124,38 +127,10 @@ ArtifactState.KINDS = {
   ["startup-loader"] = true,
   ["startup-title"] = true,
   -- Five independently requestable opening-movie scenes: each numbered
-  -- scene owns its own receipt, manifest, and asset root, never the movie
+  -- scene owns its own fact, manifest, and asset root, never the movie
   -- as a whole.
   ["opening-scene"] = true,
 }
-
-ArtifactState.RECEIPT_SCHEMA = "g4-derived-receipt-v1"
-ArtifactState.RECEIPT_ROOT = "data/generated/jobs"
-
-local RECEIPT_FIELDS = {
-  schema = true,
-  generationId = true,
-  kind = true,
-  key = true,
-  marker = true,
-}
-
--- Receipt trust metadata that cannot be loaded proves nothing: a missing file
--- and Lua content the cache loader cannot parse or evaluate are unusable
--- receipts, not infrastructure faults. Genuine backend failures stay
--- terminal and propagate to the caller unchanged.
-local UNUSABLE_RECEIPT_CODES = {
-  [StorageErrors.CACHE_FILE_MISSING] = true,
-  [StorageErrors.CACHE_LUA_PARSE_FAILED] = true,
-  [StorageErrors.CACHE_LUA_EVAL_FAILED] = true,
-}
-
----@param loadError unknown
----@return boolean
-local function isUnusableReceiptError(loadError)
-  local code = type(loadError) == "table" and loadError.code or nil
-  return UNUSABLE_RECEIPT_CODES[code] == true
-end
 
 local function checkKind(kind)
   assert(type(kind) == "string" and ArtifactState.KINDS[kind], "unknown artifact kind: " .. tostring(kind))
@@ -243,78 +218,111 @@ end
 
 ---@param kind string
 ---@param key string
----@return string
-function ArtifactState.path(kind, key)
+function ArtifactState.validateKey(kind, key)
   checkKind(kind)
   checkKey(kind, key)
-  return ArtifactState.RECEIPT_ROOT .. "/" .. kind .. "/" .. key .. ".lua"
 end
 
----@param receipt unknown
----@param expected { generationId: string, kind: string, key: string }
----@return true|nil
----@return string|nil
-function ArtifactState.validate(receipt, expected)
-  assert(type(expected) == "table", "receipt expectation is required")
-  if type(receipt) ~= "table" then
-    return nil, "receipt is not a table"
-  end
-  ---@cast receipt table<string, unknown>
-  for field in pairs(receipt) do
-    if not RECEIPT_FIELDS[field] then
-      return nil, "receipt has an unexpected field: " .. tostring(field)
-    end
-  end
-  for field in pairs(RECEIPT_FIELDS) do
-    if receipt[field] == nil then
-      return nil, "receipt is missing " .. field
-    end
-  end
-  if receipt.schema ~= ArtifactState.RECEIPT_SCHEMA then
-    return nil, "receipt schema mismatch"
-  end
-  if type(receipt.marker) ~= "string" or receipt.marker == "" then
-    return nil, "receipt marker is missing"
-  end
-  if receipt.generationId ~= expected.generationId then
-    return nil, "receipt generation is not current"
-  end
-  if receipt.kind ~= expected.kind then
-    return nil, "receipt kind mismatch"
-  end
-  if receipt.key ~= expected.key then
-    return nil, "receipt key mismatch"
-  end
-  return true
-end
-
----@param cacheFs CacheFs
----@param generationId string
 ---@param kind string
 ---@param key string
----@return ArtifactState.Receipt|nil
----@return string|nil
-function ArtifactState.read(cacheFs, generationId, kind, key)
-  assert(cacheFs and cacheFs.versionId, "receipt read requires a cache filesystem")
-  assert(type(generationId) == "string" and generationId ~= "", "receipt read requires a generation identity")
-  checkKind(kind)
-  checkKey(kind, key)
-  local path = ArtifactState.path(kind, key)
-  local receipt, loadError = cacheFs:loadLua(path)
-  if receipt == nil then
-    if isUnusableReceiptError(loadError) then
-      return nil, "no current receipt is published"
-    end
-    if loadError == nil then
-      return nil, "no current receipt is published"
-    end
-    error(loadError, 0)
+---@return string canonical fact identity
+function ArtifactState.key(kind, key)
+  ArtifactState.validateKey(kind, key)
+  return kind .. ":" .. key
+end
+
+---@param generationId string
+---@return ArtifactState
+function ArtifactState.new(generationId)
+  assert(type(generationId) == "string" and generationId ~= "", "artifact facts require a generation identity")
+  return setmetatable({ generationId = generationId, records = {} }, ArtifactState)
+end
+
+---@param facts ArtifactState
+---@param kind string
+---@param key string
+---@return ArtifactState.Fact|nil
+function ArtifactState.read(facts, kind, key)
+  assert(type(facts) == "table" and type(facts.records) == "table", "artifact fact lookup requires its record map")
+  return facts.records[ArtifactState.key(kind, key)]
+end
+
+---@param paths unknown
+---@param label string
+---@return string[]
+local function sortedPathList(paths, label)
+  assert(type(paths) == "table", "artifact fact " .. label .. " must be a list")
+  local seen = {}
+  local result = {}
+  for _, path in ipairs(paths) do
+    assert(type(path) == "string" and path ~= "", "artifact fact " .. label .. " carries a non-string path")
+    assert(not seen[path], "artifact fact " .. label .. " repeats a path: " .. path)
+    seen[path] = true
+    result[#result + 1] = path
   end
-  local valid, reason = ArtifactState.validate(receipt, { generationId = generationId, kind = kind, key = key })
-  if not valid then
-    return nil, assert(reason, "receipt rejection must name its reason")
+  table.sort(result)
+  return result
+end
+
+-- Validate one candidate success before anything becomes visible: canonical
+-- identity, marker, ownership declarations, payload paths, and the transitive
+-- dependency closure the controller already committed. The result is a plain
+-- fact record; committing it changes only the supplied record map.
+---@param result { kind: string, key: string, marker: string, ownedRoots: string[], sharedPaths: string[], entries: { path: string, size: integer }[] }
+---@param dependencyKeys string[] canonical job keys the artifact read
+---@param facts ArtifactState
+---@return ArtifactState.Fact
+function ArtifactState.prepareFact(result, dependencyKeys, facts)
+  assert(type(result) == "table", "artifact fact result is required")
+  assert(type(facts) == "table" and type(facts.records) == "table", "artifact facts require their record map")
+  local kind = result.kind
+  local key = result.key
+  ArtifactState.validateKey(kind, key)
+  assert(type(result.marker) == "string" and result.marker ~= "", "artifact fact marker is required")
+  assert(type(dependencyKeys) == "table", "artifact fact dependencies must be a list")
+  local dependencies = {}
+  local seen = {}
+  for _, dependency in ipairs(dependencyKeys) do
+    assert(type(dependency) == "string" and dependency ~= "", "artifact dependency must be a canonical job key")
+    assert(not seen[dependency], "artifact dependency is listed twice: " .. dependency)
+    assert(facts.records[dependency] ~= nil, "artifact dependency is not committed for this generation: " .. dependency)
+    seen[dependency] = true
+    dependencies[#dependencies + 1] = dependency
   end
-  return receipt --[[@as ArtifactState.Receipt]]
+  table.sort(dependencies)
+  local ownedRoots = sortedPathList(result.ownedRoots or {}, "owned roots")
+  local sharedPaths = sortedPathList(result.sharedPaths or {}, "shared paths")
+  assert(type(result.entries) == "table", "artifact fact entries must be a list")
+  local files = {}
+  for _, entry in ipairs(result.entries) do
+    assert(type(entry) == "table" and type(entry.path) == "string" and entry.path ~= "", "artifact entry is invalid")
+    files[#files + 1] = entry.path
+  end
+  table.sort(files)
+  for index = 2, #files do
+    assert(files[index] ~= files[index - 1], "artifact entry is listed twice: " .. files[index])
+  end
+  return {
+    kind = kind,
+    key = key,
+    marker = result.marker,
+    dependencies = dependencies,
+    ownedRoots = ownedRoots,
+    sharedPaths = sharedPaths,
+    files = files,
+  }
+end
+
+-- Insert one already validated record. The caller has proven the closure and
+-- this call only fills the record map, so it neither yields nor re-validates.
+---@param facts ArtifactState
+---@param record ArtifactState.Fact
+function ArtifactState.commitFact(facts, record)
+  assert(type(facts) == "table" and type(facts.records) == "table", "artifact facts require their record map")
+  assert(type(record) == "table", "artifact fact record is required")
+  local identity = ArtifactState.key(record.kind, record.key)
+  assert(facts.records[identity] == nil, "artifact fact is committed twice: " .. identity)
+  facts.records[identity] = record
 end
 
 return ArtifactState

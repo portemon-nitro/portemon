@@ -6,7 +6,6 @@
 -- publication leaves the previous ready family untouched.
 
 local Errors = require("libs.errors.src.Errors")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
 
@@ -64,7 +63,7 @@ local function validateBundle(bundle)
   end
 end
 
----@param stage CacheFs
+---@param stage PreparedArtifact
 ---@param bundle table<string, unknown>
 ---@param liveFs CacheFs|nil live filesystem hosting already-published shared blobs
 ---@param share (fun(path: string))|nil shared-file registrar for worker stages
@@ -114,42 +113,15 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function StarterChoiceAssetCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "starter-choice staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "starter-choice staging requires a PreparedArtifact")
   assert(bundle, "starter-choice staging requires a bundle")
   validateBundle(bundle)
   artifact:addOwnedRoot(StarterChoiceAssetCache.assetDir())
   artifact:addOwnedRoot(StarterChoiceAssetCache.dir())
-  stageBundle(artifact:stageFs(), bundle, artifact:cacheFs(), function(path)
+  stageBundle(artifact, bundle, artifact:cacheFs(), function(path)
     artifact:addSharedFile(path)
   end)
   return bundle.marker
-end
-
----@param cacheFs CacheFs
----@param bundle table<string, unknown>
----@return boolean
-function StarterChoiceAssetCacheWriter.write(cacheFs, bundle)
-  assert(cacheFs and bundle, "starter-choice publication requires a cache and a bundle")
-  validateBundle(bundle)
-  local tx = ArtifactPublisher.begin(
-    cacheFs,
-    "starter-choice",
-    { StarterChoiceAssetCache.assetDir(), StarterChoiceAssetCache.dir() }
-  )
-  local ok, err = pcall(stageBundle, tx.stage, bundle, cacheFs, nil)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  local published, publishErr = pcall(tx.publish, tx)
-  if not published then
-    Errors.raise(
-      StarterChoiceAssetCacheWriter.ERROR.PUBLICATION_FAILED,
-      "starter-choice publication failed: " .. tostring(publishErr),
-      { cause = tostring(publishErr) }
-    )
-  end
-  return true
 end
 
 return StarterChoiceAssetCacheWriter

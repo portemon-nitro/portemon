@@ -1,7 +1,7 @@
 -- Complete the real following-mon script through the production field runtime.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FollowerInteractionCache = require("libs.assets.src.field.FollowerInteractionCache")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldActorEmote = require("libs.hgss.src.actors.FieldActorEmote")
@@ -85,7 +85,7 @@ function T.tests.compiled_following_mon_script_blocks_on_live_interaction_and_re
   local versionId = AcceptanceHarness.defaultVersion()
   local game = boot(versionId)
   local ok, err = xpcall(function()
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local catalog = assert(cacheFs:loadLua(FollowerInteractionCache.catalogPath()))
     Assert.isTrue(
       FollowerInteractionCache.validateCatalog(catalog),

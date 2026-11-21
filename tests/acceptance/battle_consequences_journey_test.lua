@@ -6,6 +6,7 @@
 -- application battle lifetime, and the battle committer; the headless
 -- presentation port acknowledges immediately and never authors decisions.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
@@ -195,7 +196,7 @@ end
 local function mapIdentity(versionId, mapSymbol)
   local CacheFs = require("libs.storage.src.CacheFs")
   local MapAssetCache = require("libs.assets.src.MapAssetCache")
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local world = assert(cacheFs:loadLua(MapAssetCache.worldPath()), "the roamer leg needs its world catalog")
   assert(type(world) == "table", "the world catalog loads")
   local bySymbol = (world --[[@as table<string, unknown>]]).bySymbol --[[@as table<string, integer>]]

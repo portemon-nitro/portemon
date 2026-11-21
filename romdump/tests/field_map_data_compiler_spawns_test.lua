@@ -1,7 +1,7 @@
 -- Spawn landing index compiler tests: the family-level teleport record
 -- projects every cited producer destination with the current schema, and
 -- the bundle marker binds the ROM identity and the content hash through
--- the real production compiler and writer.
+-- the real production compiler and staged family writer.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -11,6 +11,7 @@ local FieldMapDataCacheWriter = require("romdump.src.digest.field.FieldMapDataCa
 local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
 local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
 local Fixture = require("tests.support.FieldMapDataFixture")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -22,7 +23,9 @@ end
 
 local function publishedCache(bundle)
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldMapDataCacheWriter.writeSpawnIndex(cache, bundle)
+  ResidentArtifactFixture.publish(cache, "spawns", "global", function(artifact)
+    return FieldMapDataCacheWriter.stageSpawnIndex(artifact, bundle)
+  end)
   return cache
 end
 

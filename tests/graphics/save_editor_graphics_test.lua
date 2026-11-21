@@ -5615,27 +5615,42 @@ end
 function T.editor_generated_images_use_borrowed_classified_images_and_free_on_exit(scope)
   local visualSets = {
     {
-      incNormal = "editor-staging/set-a/inc-normal.png",
-      incPressed = "editor-staging/set-a/inc-pressed.png",
-      decNormal = "editor-staging/set-a/dec-normal.png",
-      decPressed = "editor-staging/set-a/dec-pressed.png",
+      incNormal = "assets/generated/editor-staging/set-a/inc-normal.png",
+      incPressed = "assets/generated/editor-staging/set-a/inc-pressed.png",
+      decNormal = "assets/generated/editor-staging/set-a/dec-normal.png",
+      decPressed = "assets/generated/editor-staging/set-a/dec-pressed.png",
     },
     {
-      incNormal = "editor-staging/set-b/inc-normal.png",
-      incPressed = "editor-staging/set-b/inc-pressed.png",
-      decNormal = "editor-staging/set-b/dec-normal.png",
-      decPressed = "editor-staging/set-b/dec-pressed.png",
+      incNormal = "assets/generated/editor-staging/set-b/inc-normal.png",
+      incPressed = "assets/generated/editor-staging/set-b/inc-pressed.png",
+      decNormal = "assets/generated/editor-staging/set-b/dec-normal.png",
+      decPressed = "assets/generated/editor-staging/set-b/dec-pressed.png",
     },
   }
-  local cache = CacheFs.forVersion("editor-staging-convergence-probe")
+  -- The editor draws from the selected epoch's resident generated view, so
+  -- the probe stages its quantity visuals as resident payloads instead of
+  -- physical cache files.
+  local ResidentCache = require("libs.storage.src.ResidentCache")
+  local sourceId = "base:editor-staging-convergence-probe"
+  local store = ResidentCache.new("editor-staging-convergence-probe", sourceId)
   local seed = 3
+  local entries = {}
   for _, set in ipairs(visualSets) do
     for _, path in pairs(set) do
       seed = seed + 17
       local pixel = string.char(seed % 256, (seed + 60) % 256, (seed + 120) % 256, 255)
-      cache:write(path, PngWriter.encode(8, 8, string.rep(pixel, 8 * 8)))
+      local png = PngWriter.encode(8, 8, string.rep(pixel, 8 * 8))
+      entries[#entries + 1] = {
+        path = path,
+        data = assert(love.data.newByteData(png)),
+        size = #png,
+        sourceId = sourceId,
+        contentId = "editor-staging-convergence-probe\0" .. path,
+      }
     end
   end
+  store:commit(store:prepare(entries))
+  local cache = CacheFs.fromStore(store)
   local graphics = FakeGraphics.new()
   graphics.getImageFormats = function()
     return {}
@@ -5711,12 +5726,12 @@ function T.editor_generated_images_use_borrowed_classified_images_and_free_on_ex
     )
   end)
   local disposeOk, disposeErr = pcall(pool.dispose, pool)
-  local removeOk, removeErr = pcall(cache.removeTree, cache, "")
+  local removeOk, removeErr = pcall(store.close, store)
   if not ok then
     error(err, 0)
   end
   Assert.isTrue(disposeOk, "the borrowed image owner disposes after the run: " .. tostring(disposeErr))
-  Assert.isTrue(removeOk, "the synthetic fixture cleans up after the run: " .. tostring(removeErr))
+  Assert.isTrue(removeOk, "the synthetic resident view closes after the run: " .. tostring(removeErr))
 end
 
 return GraphicsSmoke.suite(T, { capabilities = { "graphics" } })

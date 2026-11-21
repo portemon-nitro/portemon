@@ -9,6 +9,7 @@ local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 local GENERATION_A = string.rep("a", 40)
@@ -113,7 +114,6 @@ local function preparation(cache, key, stageName, outerGeneration, epoch)
     kind = "script-member",
     key = key,
     jobKey = "script-member:" .. key,
-    stageName = stageName,
   })
 end
 
@@ -122,13 +122,7 @@ local function publishMember(cache, currentPlan, staged, stageName, outerGenerat
   local marker = assert(ScriptCacheWriter.stageMember(artifact, currentPlan, staged))
   Assert.equal(marker, staged.marker)
   artifact:finishSuccess({ marker = staged.marker })
-  Assert.isTrue(artifact:publish({
-    generationId = outerGeneration,
-    epoch = 1,
-    kind = "script-member",
-    key = tostring(staged.memberId),
-    jobKey = "script-member:" .. tostring(staged.memberId),
-  }))
+  Assert.isTrue(ResidentArtifactFixture.materialize(artifact))
 end
 
 local function publishSummary(cache, currentPlan, stageName, outerGeneration)
@@ -136,13 +130,7 @@ local function publishSummary(cache, currentPlan, stageName, outerGeneration)
   local marker = assert(ScriptCacheWriter.stageSummary(artifact, currentPlan))
   Assert.equal(marker, currentPlan.marker)
   artifact:finishSuccess({ marker = currentPlan.marker })
-  Assert.isTrue(artifact:publish({
-    generationId = outerGeneration,
-    epoch = 1,
-    kind = "script-member",
-    key = "global",
-    jobKey = "script-member:global",
-  }))
+  Assert.isTrue(ResidentArtifactFixture.materialize(artifact))
 end
 
 local function publishGeneration(cache, generation, marker, prefix, outerGeneration)
@@ -303,84 +291,6 @@ T["readback failure stages no member"] = function()
   artifact:abort()
   Assert.isNil(cache:read(ScriptCache.memberPath(GENERATION_A, 3)))
   Assert.isNil(cache:loadLua(ScriptCache.activeIndexPath()))
-end
-
--- 4. A failed member rebuild leaves the previous ready artifact untouched,
--- the disposable stage is aborted, and a retry publishes the new artifact.
-T["failed member rebuild preserves the previous script artifact"] = function()
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
-  local marker = "script-cache-v6:rom-sha:dep-sha"
-  publishGeneration(cache, GENERATION_A, marker, "previous", "outer-a")
-  local original = backend.write
-  backend.write = function(self, path, data)
-    if path:find("/generations/", 1, true) then
-      error("injected member write failure")
-    end
-    return original(self, path, data)
-  end
-  local nextPlan = plan(GENERATION_B, "script-cache-v6:rom-sha:new-dep-sha")
-  local failed = preparation(cache, "3", "failed-member", "outer-b")
-  Assert.throws(function()
-    ScriptCacheWriter.stageMember(failed, nextPlan, member(3, "common.signpost", GENERATION_B))
-  end)
-  failed:abort()
-  backend.write = original
-  Assert.isTrue(ScriptCache.isReady(cache, marker), "the previous artifact remains ready")
-  Assert.isNil(backend:getInfo("staging/heartgold/failed-member"), "the failed stage is discarded")
-  publishMember(cache, nextPlan, member(3, "common.signpost", GENERATION_B), "retry-member-3", "outer-b")
-  publishMember(cache, nextPlan, member(843, "new_bark.lab_sign", GENERATION_B), "retry-member-843", "outer-b")
-  publishSummary(cache, nextPlan, "retry-summary", "outer-b")
-  Assert.isTrue(
-    ScriptCache.isReady(cache, "script-cache-v6:rom-sha:new-dep-sha"),
-    "a retry publishes the new artifact"
-  )
-end
-
--- 5. A publish failure after ownership begins must not delete recovery
--- material: the adjacent old active directory keeps the last-known-good
--- selector for journal recovery, and a retried direct summary then activates.
-T["publish failure keeps recovery material for the journal"] = function()
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
-  local marker = "script-cache-v6:rom-sha:dep-sha"
-  publishGeneration(cache, GENERATION_A, marker, "recovery-old", "outer-a")
-  local nextPlan = plan(GENERATION_B, "script-cache-v6:rom-sha:new-dep-sha")
-  publishMember(cache, nextPlan, member(3, "common.signpost", GENERATION_B), "recovery-member-3", "outer-b")
-  publishMember(cache, nextPlan, member(843, "new_bark.lab_sign", GENERATION_B), "recovery-member-843", "outer-b")
-  local originalReplace = backend.replace
-  backend.replace = function(self, sourcePath, destinationPath)
-    local nextPrefix = "heartgold/" .. ScriptCache.activeDir() .. ".__g4next."
-    local oldPrefix = "heartgold/" .. ScriptCache.activeDir() .. ".__g4old."
-    if sourcePath:sub(1, #nextPrefix) == nextPrefix or sourcePath:sub(1, #oldPrefix) == oldPrefix then
-      return false, "injected publish failure"
-    end
-    return originalReplace(self, sourcePath, destinationPath)
-  end
-  local err = Assert.throws(function()
-    ScriptCacheWriter.writeSummary(cache, nextPlan)
-  end)
-  err = err --[[@as { code: string }]]
-  Assert.equal(err.code, "CACHE_PUBLISH_ROLLBACK_INCOMPLETE")
-  backend.replace = originalReplace
-  local oldPrefix = "heartgold/" .. ScriptCache.activeDir() .. ".__g4old."
-  local recoveredIndex
-  for path, data in pairs(backend.files) do
-    if path:sub(1, #oldPrefix) == oldPrefix and path:sub(-#"/index.lua") == "/index.lua" then
-      recoveredIndex = data
-    end
-  end
-  Assert.isTrue(
-    type(recoveredIndex) == "string" and recoveredIndex:find(marker, 1, true) ~= nil,
-    "the last-known-good selector stays as recovery material"
-  )
-  cache:recoverPublication()
-  Assert.isTrue(ScriptCache.isReady(cache, marker), "journal recovery restores the previous artifact")
-  Assert.isTrue(ScriptCacheWriter.writeSummary(cache, nextPlan))
-  Assert.isTrue(
-    ScriptCache.isReady(cache, "script-cache-v6:rom-sha:new-dep-sha"),
-    "a retried summary activates the new artifact"
-  )
 end
 
 -- 6. Member readiness proves the live member bundle: a published member reads
@@ -693,7 +603,7 @@ T["a summary over incomplete members is refused and keeps the previous selection
   local beforeIndex = cache:read(ScriptCache.activeIndexPath())
   local beforeReport = cache:read(ScriptCache.coverageReportPath())
   local err = Assert.throws(function()
-    ScriptCacheWriter.writeSummary(cache, currentPlan)
+    publishSummary(cache, currentPlan, "refused-summary", "outer-a")
   end)
   Assert.notNil(err, "a summary over an incomplete member set must be refused")
   Assert.equal(cache:read(ScriptCache.activeIndexPath()), beforeIndex, "the previous index survives a refused summary")

@@ -2,7 +2,6 @@
 -- FieldMapLoader, drives the deterministic elevation-aware player, and
 -- exposes the field warp transition lifecycle.
 
-local CacheFs = require("libs.storage.src.CacheFs")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 local PixelScale = require("libs.ui.src.PixelScale")
 local FieldActorDefinitionProvider = require("libs.hgss.src.actors.FieldActorDefinitionProvider")
@@ -540,6 +539,7 @@ end
 ---@field audioOutput table<string, unknown>? { audio: table<string, unknown>, sound: table<string, unknown> } audio-output host namespaces for the LÖVE sink (defaults to love.audio + love.sound)
 ---@field audioPreferences table<string, function>? borrowed app-wide volume port (never serialized)
 ---@field derivedAssets table<string, function>? semantic derived-asset host
+---@field cacheFs table<string, unknown> selected epoch's installed generated view
 ---@field localClock LocalClock? injectable host-local civil-time boundary
 ---@field weatherClock table<string, unknown>? injectable host boundary { today()->{month,day}, hasPenalty()->boolean }
 ---@field saveStore FieldRuntimeSaveStore? global publication owner
@@ -984,7 +984,10 @@ end
 ---@param boot table<string, unknown>
 ---@param loadOptions FieldRuntimeOptions?
 function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
-  boot.cacheFs = CacheFs.forVersion(self.versionId)
+  boot.cacheFs = assert(
+    loadOptions ~= nil and loadOptions.cacheFs,
+    "the field runtime requires the selected epoch's installed generated view"
+  )
   self.cacheFs = boot.cacheFs
   -- The compiled actor index carries the runtime-facing actor configuration
   -- (avatars + variable-sprite policy); a missing runtime block is a stale
@@ -2018,6 +2021,7 @@ function FieldRuntime.new(game, options)
     audioOutput = options.audioOutput,
     audioPreferences = options.audioPreferences,
     derivedAssets = options.derivedAssets,
+    cacheFs = options.cacheFs,
     saveStore = options.saveStore,
     savePublished = false,
     localClock = options.localClock or LocalClock.system(),
@@ -2588,7 +2592,7 @@ function FieldRuntime:_menuFieldSources()
   return self.menuComposer:menuFieldSources()
 end
 
----@param cacheFs CacheFs
+---@param cacheFs table<string, unknown>
 function FieldRuntime:_composeFollowerTransition(cacheFs)
   self.menuComposer:composeFollowerTransition(cacheFs)
 end

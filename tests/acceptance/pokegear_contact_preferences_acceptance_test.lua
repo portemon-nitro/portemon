@@ -9,7 +9,7 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local Fixture = require("tests.support.PokegearJourneyFixture")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local PokegearCache = require("libs.assets.src.PokegearCache")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local PokegearSources = require("romdump.src.config.PokegearSources")
 local StartMenuFacts = require("tests.acceptance.support.StartMenuFacts")
 
@@ -73,7 +73,7 @@ end
 
 function T.tests.field_phonebook_preferences_and_strip_focus_persist_through_save()
   Fixture.withGame(Fixture.TOWN, function(game)
-    local manifest = PokegearCache.loadManifest(CacheFs.forVersion(AcceptanceHarness.defaultVersion()))
+    local manifest = PokegearCache.loadManifest(GeneratedCacheFixture.reader(AcceptanceHarness.defaultVersion()))
     local catalog = assert(manifest.catalog, "the prepared ROM cache publishes the phone catalog")
     local mom = nativeMom(catalog)
     local state = assert(game.runtime.pokegearState, "the field runtime owns phonebook state")

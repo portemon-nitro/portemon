@@ -4,7 +4,6 @@
 -- the completed stage published with the marker last.
 
 local Errors = require("libs.errors.src.Errors")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
 
 local FieldWeatherCacheWriter = {}
@@ -34,27 +33,12 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function FieldWeatherCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "weather staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "weather staging requires a PreparedArtifact")
   assert(bundle and bundle.marker and bundle.catalog and bundle.provenance, "stage requires a weather bundle")
   assert(bundle.catalog.schema == FieldWeatherCache.SCHEMA, "weather catalog schema mismatch")
   artifact:addOwnedRoot(FieldWeatherCache.dir())
-  stageBundle(artifact:stageFs(), bundle)
+  stageBundle(artifact, bundle)
   return bundle.marker
-end
-
-function FieldWeatherCacheWriter.write(cacheFs, bundle)
-  assert(bundle and bundle.marker and bundle.catalog and bundle.provenance, "write requires a weather bundle")
-  assert(bundle.catalog.schema == FieldWeatherCache.SCHEMA, "weather catalog schema mismatch")
-  local tx = ArtifactPublisher.begin(cacheFs, "field-weather", {
-    FieldWeatherCache.dir(),
-  })
-  local ok, err = pcall(stageBundle, tx.stage, bundle)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
-  return true
 end
 
 return FieldWeatherCacheWriter

@@ -10,7 +10,7 @@
 -- only, never the distance outcome.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
@@ -78,7 +78,7 @@ function T.tests.real_door_tiles_stay_within_the_corpus_backed_bound(context)
   local runnable = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
-      local cache = CacheFs.forVersion(versionId)
+      local cache = GeneratedCacheFixture.reader(versionId)
       if cache:exists("data/generated/maps", "directory") then
         runnable[#runnable + 1] = { versionId = versionId, cache = cache }
       end
@@ -157,7 +157,7 @@ function T.tests.every_warp_bearing_door_tile_resolves_exactly_one_placement(con
   local runnable = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
-      local cache = CacheFs.forVersion(versionId)
+      local cache = GeneratedCacheFixture.reader(versionId)
       if cache:exists("data/generated/maps", "directory") then
         runnable[#runnable + 1] = { versionId = versionId, cache = cache }
       end

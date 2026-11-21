@@ -1,7 +1,7 @@
 -- Original Bell Tower cutscene models must reach the production field renderer.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
@@ -26,7 +26,7 @@ local function sceneRuntime()
 end
 
 local function runVersion(scope, versionId)
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   local index = assert(cache:loadLua(FieldEffectAssetCache.indexPath()))
   assert(index.effects.ho_oh_appearance, "the cache index publishes original Ho-Oh models")
   local images = ImageAssetPool.new(cache)
@@ -282,7 +282,7 @@ end
 
 local function testLeafOverlayFollowsTheFieldViewport(scope, context)
   skipWithoutHeartGold(context)
-  local cache = CacheFs.forVersion("heartgold")
+  local cache = GeneratedCacheFixture.reader("heartgold")
   local images = ImageAssetPool.new(cache)
   scope:own({
     release = function()
@@ -342,7 +342,7 @@ end
 
 local function testLeafOverlayCoversExpandedViewports(scope, context)
   skipWithoutHeartGold(context)
-  local cache = CacheFs.forVersion("heartgold")
+  local cache = GeneratedCacheFixture.reader("heartgold")
   local images = ImageAssetPool.new(cache)
   scope:own({
     release = function()

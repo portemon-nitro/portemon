@@ -9,7 +9,7 @@
 -- paths are injected fakes and stay in start_menu_renderer_test.lua.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -364,8 +364,8 @@ end
 -- above the panel band, and the focus shake record without any cursor asset.
 function T.real_generated_start_menu_icons_match_the_retail_source_contract(scope)
   for _, versionId in ipairs(GameVersion.ORDER) do
-    local cache = CacheFs.forVersion(versionId)
-    if RomImporter.isReady(versionId, cache) then
+    local cache = GeneratedCacheFixture.isPrepared(versionId) and GeneratedCacheFixture.reader(versionId) or nil
+    if cache ~= nil and RomImporter.isReady(versionId, cache) then
       local manifest = assert(cache:loadLua(FieldUiAssetCache.manifestPath()), "the manifest must load")
       local startMenu = assert(manifest.startMenu, "the generated class carries the start menu section")
       local iconTable = assert(

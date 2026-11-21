@@ -10,6 +10,7 @@
 -- is one half inset left of X=176 at baseline Y=42. Needs a ready
 -- user-owned ROM with a prepared derived cache, otherwise it skips.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local BattleScreenFixture = require("game.hgss.tests.support.BattleScreenFixture")
@@ -126,7 +127,7 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
   local GameVersion = require("romdump.src.source.GameVersion")
   local ready = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       ready[#ready + 1] = versionId
     end
   end
@@ -139,7 +140,7 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
   local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
   local ScreenTopology = require("libs.ui.src.ScreenTopology")
   local versionId = ready[1]
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local core = BattlePresentationCache.load(cacheFs)
   Assert.equal(core.schema, BattlePresentationCache.MANIFEST_SCHEMA, versionId .. " stages the v3 battle manifest")
   Assert.equal(#core.battlefield.slots, 6, versionId .. " stages all six source slot geometries")

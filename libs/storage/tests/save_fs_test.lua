@@ -193,15 +193,19 @@ function T.load_lua_read_failure_is_not_reclassified_as_missing()
 end
 
 -- The two scoped types remain separate public surfaces: the shared
--- mechanics must never leak cache-only capabilities (tree deletion, staged
--- publication, module loading) into the save type, or a save-carrying
--- object could gain a cache-clearing operation.
+-- mechanics must never leak cache-only capabilities (tree deletion, module
+-- loading) into the save type, or a save-carrying object could gain a
+-- cache-clearing operation. Staged publication belongs to the producer's
+-- artifact, so the cache surface carries no publishing method at all.
 function T.save_surface_has_no_cache_capabilities()
   local s = save("heartgold")
   local c = CacheFs.forVersion("heartgold", FakeCache.new())
-  for _, name in ipairs({ "removeTree", "removeStagedTree", "publishStaged", "publishFromStage", "loadModule" }) do
+  for _, name in ipairs({ "removeTree", "loadModule" }) do
     Assert.isNil(s[name], "SaveFs must not expose " .. name)
     Assert.notNil(c[name], "CacheFs must expose " .. name)
+  end
+  for _, name in ipairs({ "removeStagedTree", "publishStaged", "publishFromStage" }) do
+    Assert.isNil(c[name], "CacheFs must not expose the retired publication path " .. name)
   end
 end
 

@@ -25,6 +25,7 @@ local AudioFixture = require("tests.support.AudioFixture")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
 local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FakeCache = require("tests.support.FakeCache")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
@@ -223,15 +224,21 @@ local function validEntry(versionId)
 end
 
 ---@return table headless production runtime options under test driving
-local function runtimeOptions()
+---@param versionId string
+---@return table<string, unknown> headless runtime options over the produced corpus
+local function runtimeOptions(versionId)
   local Fixture = require("tests.support.FieldStatePresentationFixture")
-  return { presentation = false, derivedAssets = Fixture.iconHost().derivedAssets }
+  return {
+    presentation = false,
+    derivedAssets = Fixture.iconHost().derivedAssets,
+    cacheFs = GeneratedCacheFixture.reader(versionId),
+  }
 end
 
 ---@param versionId string
 ---@return FieldRuntime live headless production runtime with a stocked party
 local function bootRuntime(versionId)
-  local runtime = FieldRuntime.new(validEntry(versionId), runtimeOptions())
+  local runtime = FieldRuntime.new(validEntry(versionId), runtimeOptions(versionId))
   Assert.isTrue(runtime.monService:giveMon({ species = "CHIKORITA", level = 9 }), "the route needs its lead")
   Assert.isTrue(runtime.monService:giveMon({ species = "CHIKORITA", level = 9 }), "the route needs its reserve")
   return runtime
@@ -293,7 +300,7 @@ local function bindEnvelope(runtime, versionId, measurement, audio)
   doubles.leaves = selectedLeafHost()
   local envelope = FieldBattlePresentation.new({
     splRandomState = { state = 0 },
-    cacheFs = CacheFs.forVersion(versionId),
+    cacheFs = GeneratedCacheFixture.reader(versionId),
     windows = doubles.windows,
     text = doubles.text,
     audio = doubles.audio,
@@ -492,7 +499,7 @@ local function readyVersions()
   local GameVersion = require("romdump.src.source.GameVersion")
   local RomImporter = require("romdump.src.source.RomImporter")
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       return { versionId }
     end
   end
@@ -502,7 +509,7 @@ end
 ---@param versionId string
 ---@return table staged audio role symbols by role
 local function stagedRoleSymbols(versionId)
-  local manifest = BattlePresentationCache.load(CacheFs.forVersion(versionId))
+  local manifest = BattlePresentationCache.load(GeneratedCacheFixture.reader(versionId))
   Assert.isTrue(type(manifest.audioRoles) == "table", "the staged manifest carries its audio roles")
   return manifest.audioRoles
 end
@@ -1048,7 +1055,7 @@ function T.heard_battle_cases_trace_their_cues_and_render_audible_samples()
     -- Native program voices name shared sequence symbols: only symbols no
     -- staged index resolves still count as unknown, exactly like the quiet
     -- journey below.
-    local stagedProvider = AudioAssetProvider.new(CacheFs.forVersion(versionId))
+    local stagedProvider = AudioAssetProvider.new(GeneratedCacheFixture.reader(versionId))
     local faintSequence = stagedProvider:sequence(BattleAudio.SINK_SOUNDS.faint)
     local faintBankReady = pcall(function()
       stagedProvider:bank(faintSequence.bankId)
@@ -1738,7 +1745,7 @@ function T.quiet_visual_modes_keep_the_mandatory_cues_and_no_substitutes()
     -- voices the quiet path keeps) are mandatory-adjacent cues, not
     -- invented substitutes: only symbols no staged index resolves still
     -- count as unknown.
-    local stagedProvider = AudioAssetProvider.new(CacheFs.forVersion(versionId))
+    local stagedProvider = AudioAssetProvider.new(GeneratedCacheFixture.reader(versionId))
     local function stagedSymbol(symbol)
       return (pcall(function()
         return stagedProvider:sequence(symbol)
@@ -1857,6 +1864,12 @@ return {
     capabilities = { "rom_dump", "derived_assets" },
     derivedAssets = {
       "field-runtime",
+      "audio-bank:721",
+      "audio-bank:727",
+      "mon-portrait-page:30",
+      "mon-portrait-page:34",
+      "mon-icon-page:0",
+      "audio-bank:720",
       "map-data:63",
       "map-data:64",
       "map:63",

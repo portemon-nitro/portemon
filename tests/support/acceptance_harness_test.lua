@@ -138,6 +138,11 @@ function T.tests.move_to_reuses_a_route_until_the_stop_map()
     runtimeFactory = function()
       return runtime
     end,
+    -- The stub runtime owns no generated consumer: it models field movement
+    -- over a scripted map, so this harness boot asks no epoch for a view.
+    generatedView = function()
+      return nil
+    end,
     saveNamespace = function()
       return "acceptance-harness-test"
     end,
@@ -164,6 +169,11 @@ function T.tests.move_to_prefers_a_direct_route_through_a_large_open_area()
     versions = { "test" },
     runtimeFactory = function()
       return runtime
+    end,
+    -- The stub runtime owns no generated consumer: it models field movement
+    -- over a scripted map, so this harness boot asks no epoch for a view.
+    generatedView = function()
+      return nil
     end,
     saveNamespace = function()
       return "acceptance-harness-open-area-test"

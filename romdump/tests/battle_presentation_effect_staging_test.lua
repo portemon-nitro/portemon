@@ -7,16 +7,14 @@ function T.stage_effect_owns_and_writes_each_decoded_resource_payload()
   local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
   local files = {}
   local owned = {}
+  -- The artifact is its own private output owner: it captures bytes and
+  -- declares the roots it owns.
   local artifact = {
-    stageFs = function()
-      return {
-        write = function(_, path, bytes)
-          files[path] = bytes
-        end,
-        writeLua = function(_, path, value)
-          files[path] = value
-        end,
-      }
+    write = function(_, path, bytes)
+      files[path] = bytes
+    end,
+    writeLua = function(_, path, value)
+      files[path] = value
     end,
     addOwnedRoot = function(_, path)
       owned[path] = true
@@ -49,11 +47,9 @@ end
 
 function T.stage_effect_rejects_unreferenced_payloads()
   local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
-  local stage = { write = function() end, writeLua = function() end }
   local artifact = {
-    stageFs = function()
-      return stage
-    end,
+    write = function() end,
+    writeLua = function() end,
     addOwnedRoot = function() end,
   }
   local effect = {

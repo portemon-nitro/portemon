@@ -145,13 +145,13 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function PokedexCacheWriter.stageData(artifact, bundle)
-  assert(artifact and artifact.stageFs, "pokedex staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "pokedex staging requires a PreparedArtifact")
   local liveFs = artifact:cacheFs()
   validateDataBundle(bundle, loadMonCatalogOrNil(liveFs))
   artifact:addOwnedRoot(PokedexCache.catalogPath())
   artifact:addOwnedRoot(PokedexCache.provenancePath("data"))
   artifact:addOwnedRoot(PokedexCache.dataMarkerPath())
-  local stage = artifact:stageFs()
+  local stage = artifact
   stage:writeLua(PokedexCache.catalogPath(), bundle.catalog)
   stage:writeLua(PokedexCache.provenancePath("data"), bundle.provenance or {})
   readbackData(stage, bundle, liveFs)
@@ -163,7 +163,7 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function PokedexCacheWriter.stagePresentation(artifact, bundle)
-  assert(artifact and artifact.stageFs, "pokedex staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "pokedex staging requires a PreparedArtifact")
   local liveFs = artifact:cacheFs()
   local catalog = PokedexCache.loadCatalog(liveFs)
   validatePresentationBundle(bundle, catalog)
@@ -171,7 +171,7 @@ function PokedexCacheWriter.stagePresentation(artifact, bundle)
   artifact:addOwnedRoot(PokedexCache.provenancePath("presentation"))
   artifact:addOwnedRoot(PokedexCache.markerPath())
   artifact:addOwnedRoot(PokedexCache.assetDir())
-  local stage = artifact:stageFs()
+  local stage = artifact
   for _, path in ipairs(PokedexCache.referencedPaths(bundle.manifest)) do
     stage:write(path, bundle.assets[path])
   end

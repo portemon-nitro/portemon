@@ -3,7 +3,7 @@
 -- loading presentation, paints walker pixels, and never transfers.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local RomImporter = require("romdump.src.source.RomImporter")
@@ -70,7 +70,7 @@ local function pending_gate_paints_adopted_walker_pixels_without_transfer(scope,
   if not RomImporter.isReady("soulsilver") then
     context:skip("no user-owned SoulSilver dump is ready")
   end
-  local cacheFs = CacheFs.forVersion("soulsilver")
+  local cacheFs = GeneratedCacheFixture.reader("soulsilver")
   local pairIndex = 5
   local manifest = StartupAssetCache.loadWalker(cacheFs, "soulsilver")
   Assert.notNil(manifest, "the shared walking catalog reads back as a ready bundle")

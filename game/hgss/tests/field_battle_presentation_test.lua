@@ -13,7 +13,7 @@ local ParticlesFixture = require("tests.support.BattleEncounterParticlesFixture"
 local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
@@ -164,12 +164,15 @@ local function validEntry(versionId)
   }
 end
 
-local function runtimeOptions()
+---@param versionId string
+---@return table<string, unknown> headless runtime options over the produced corpus
+local function runtimeOptions(versionId)
   local Fixture = require("tests.support.FieldStatePresentationFixture")
   local LocalClock = require("game.src.LocalClock")
   return {
     presentation = false,
     derivedAssets = Fixture.iconHost().derivedAssets,
+    cacheFs = GeneratedCacheFixture.reader(versionId),
     localClock = LocalClock.new(function()
       return { year = 2024, month = 6, day = 1, hour = 12, minute = 0, second = 0 }
     end),
@@ -184,7 +187,7 @@ local function bootRuntime(versionId, location)
   if location ~= nil then
     entry.location = location
   end
-  local runtime = FieldRuntime.new(entry, runtimeOptions())
+  local runtime = FieldRuntime.new(entry, runtimeOptions(versionId))
   Assert.isTrue(runtime.monService:giveMon({ species = "CHIKORITA", level = 9 }), "the route needs its lead")
   Assert.isTrue(runtime.monService:giveMon({ species = "CHIKORITA", level = 9 }), "the route needs its reserve")
   return runtime
@@ -339,7 +342,7 @@ local function bindEnvelope(runtime, versionId, measurement, graphics, transitio
   local transitionAssets = transition ~= nil and transition.derivedAssets or nil
   local envelope = FieldBattlePresentation.new({
     splRandomState = { state = 0 },
-    cacheFs = syntheticEffectCacheFs(CacheFs.forVersion(versionId)),
+    cacheFs = syntheticEffectCacheFs(GeneratedCacheFixture.reader(versionId)),
     windows = doubles.windows,
     text = doubles.text,
     audio = doubles.audio,
@@ -381,7 +384,7 @@ local function readyVersions()
   local GameVersion = require("romdump.src.source.GameVersion")
   local RomImporter = require("romdump.src.source.RomImporter")
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       return { versionId }
     end
   end
@@ -1315,7 +1318,7 @@ end
 function T.portrait_demands_speak_exact_canonical_selectors()
   local MonCache = require("libs.assets.src.MonCache")
   local versionId = readyVersions()[1]
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local portraits =
     assert(cacheFs:loadLua(MonCache.portraitManifestPath()), versionId .. " carries its staged portrait manifest")
   local markers =
@@ -1573,7 +1576,7 @@ end
 -- work, and the shared owner sees no return while the pin stands.
 function T.warm_fixed_drawables_survive_release_without_re_enrolling()
   local versionId = readyVersions()[1]
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local requests, releases = {}, {}
   local pool = {}
   function pool:request(path, _, _)
@@ -1686,7 +1689,7 @@ end
 function T.pooled_portrait_cells_share_one_page_upload_across_selectors()
   local MonCache = require("libs.assets.src.MonCache")
   local versionId = readyVersions()[1]
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local portraits = assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "staged portraits are planned")
   -- Discover two staged selectors sharing one atlas page instead of
   -- naming a fixed pair: the manifest stays free to repack pages.
@@ -1867,7 +1870,7 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
     paletteColors[index] = { r = 0, g = 0, b = 0 }
   end
   for _, versionId in ipairs(readyVersions()) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local stagedRecord = {
       schema = BattlePresentationCache.SCENE_SCHEMA,
       key = sceneKey,
@@ -2223,7 +2226,7 @@ function T.scene_host_failure_fails_closed_naming_its_scene()
   local recordPath = BattlePresentationCache.scenePath(sceneKey)
   local imagePath = BattlePresentationCache.sceneImagePath(sceneKey)
   for _, versionId in ipairs(readyVersions()) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local view = { versionId = cacheFs.versionId }
     function view.loadLua(_, path)
       if path == recordPath then
@@ -2327,7 +2330,7 @@ end
 function T.scene_worker_failure_aborts_the_pending_launch_without_a_result()
   local sceneKey = "general/plain/day"
   for _, versionId in ipairs(readyVersions()) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local worker = { ready = nil, failure = nil, asks = {} }
     local derivedAssets = {}
     function derivedAssets.requestBattleScene(key, urgency)
@@ -2443,7 +2446,7 @@ function T.disposed_pending_launch_builds_no_screen_for_the_next_launch()
   local firstScene = "general/plain/day"
   local secondScene = "general/grass/day"
   for _, versionId in ipairs(readyVersions()) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local worker = { ready = nil, failure = nil, asks = {} }
     local derivedAssets = {}
     function derivedAssets.requestBattleScene(key, urgency)
@@ -2568,7 +2571,7 @@ function T.preparing_waits_for_the_staged_scene_through_the_runtime_gate()
   local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
   local sceneKey = "general/grass/day"
   for _, versionId in ipairs(readyVersions()) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local worker = { ready = nil, failure = nil, asks = {} }
     local derivedAssets = {}
     function derivedAssets.requestBattleScene(key, urgency)
@@ -2656,7 +2659,7 @@ function T.scene_failure_reports_once_without_driving_the_host()
   local sceneKey = "general/plain/day"
   for _, point in ipairs({ "covering", "active" }) do
     for _, versionId in ipairs(readyVersions()) do
-      local cacheFs = CacheFs.forVersion(versionId)
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       local worker = { ready = nil, failure = nil }
       local derivedAssets = {}
       function derivedAssets.requestBattleScene(_, _)
@@ -3334,7 +3337,7 @@ local function bindScheduledEnvelope(runtime, versionId, measurement, graphicsOv
   readySelectedLeaves(derivedAssets)
   local envelope = FieldBattlePresentation.new({
     splRandomState = { state = 0 },
-    cacheFs = syntheticEffectCacheFs(CacheFs.forVersion(versionId)),
+    cacheFs = syntheticEffectCacheFs(GeneratedCacheFixture.reader(versionId)),
     windows = doubles.windows,
     text = doubles.text,
     audio = doubles.audio,
@@ -3869,7 +3872,7 @@ end
 -- every stale callback collapses without a second report or a raise.
 function T.scheduled_port_operation_failures_report_once_with_their_context()
   for _, versionId in ipairs(readyVersions()) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local worker = { ready = nil, failure = nil }
     local derivedAssets = {}
     function derivedAssets.requestBattleScene(_, _)
@@ -3977,7 +3980,7 @@ end
 -- observed settlement forgets the launch.
 function T.scheduled_live_port_dispose_releases_the_screen_once_and_keeps_the_envelope()
   for _, versionId in ipairs(readyVersions()) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local worker = { ready = true, failure = nil }
     local derivedAssets = {}
     function derivedAssets.requestBattleScene(_, _)
@@ -4800,6 +4803,11 @@ return {
     capabilities = { "rom_dump", "derived_assets" },
     derivedAssets = {
       "field-runtime",
+      "audio-bank:721",
+      "mon-portrait-page:30",
+      "mon-portrait-page:34",
+      "mon-icon-page:0",
+      "audio-bank:720",
       "map-data:63",
       "map-data:64",
       "map:63",

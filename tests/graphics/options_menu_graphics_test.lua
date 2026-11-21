@@ -13,6 +13,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -37,33 +38,37 @@ end
 
 local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
 
--- Private worker-readable namespace for this suite's synthetic option art.
--- Never a real game version: the pool worker resolves every image through
--- this version's love-backend root, and teardown removes only this root
--- after pool disposal, so suites never share staged bytes or touch ROM
--- derived files.
+-- Private fixture namespace for this suite's synthetic option art. Never a
+-- real game version: the art is staged into a fixture cache root and installed
+-- as one resident view, so suites never share staged bytes, never write under
+-- a game version's prepared root, and the pool worker resolves every image the
+-- way an installed epoch serves it.
 local ISOLATED_VERSION = "test-options-menu"
 
-local function ownPool(scope, pool)
+local function ownPool(scope, pool, view)
   scope:own({
     release = function()
       pcall(function()
         pool:dispose()
       end)
-      CacheFs.forVersion(ISOLATED_VERSION):removeTree("")
+      GeneratedCacheFixture.close(view)
     end,
   })
 end
 
+-- Fixture art is staged into a private fixture cache root and then installed
+-- as one resident view: the pool worker resolves every image through the same
+-- immutable references an epoch installs, and nothing is written under a game
+-- version's prepared root.
 local function optionsCache()
-  local cache = CacheFs.forVersion(ISOLATED_VERSION, FakeCache.new())
+  local staging = CacheFs.forVersion(ISOLATED_VERSION, FakeCache.new())
   local manifest = FieldUiFixture.manifest()
   FieldUiFixture.addNamingSemantics(manifest)
   FieldUiFixture.addStartMenuIconContract(manifest)
   FieldUiFixture.addOptionsContract(manifest)
-  cache:writeLua(FieldUiAssetCache.manifestPath(), manifest)
-  FieldUiFixture.writeOptionsPngs(CacheFs.forVersion(ISOLATED_VERSION))
-  return cache, manifest
+  staging:writeLua(FieldUiAssetCache.manifestPath(), manifest)
+  FieldUiFixture.writeOptionsPngs(staging)
+  return GeneratedCacheFixture.fromCache(staging), manifest
 end
 
 -- Source token text collaborators behind direct renderer construction: they
@@ -263,9 +268,10 @@ end
 
 function T.tests.preparing_renderer_paints_and_returns_leases_to_baseline(scope)
   local _, Renderer = modules()
-  local cache, manifest = optionsCache()
+  local view, manifest = optionsCache()
+  local cache = view.reader
   local pool = ImageAssetPool.new(cache)
-  ownPool(scope, pool)
+  ownPool(scope, pool, view)
   local before = pool:stats()
   local renderer = Renderer.new({
     cacheFs = cache,
@@ -330,9 +336,10 @@ end
 
 local function preparedPlacedPainter(scope)
   local _, Renderer = modules()
-  local cache, manifest = optionsCache()
+  local view, manifest = optionsCache()
+  local cache = view.reader
   local pool = ImageAssetPool.new(cache)
-  ownPool(scope, pool)
+  ownPool(scope, pool, view)
   local text = recordingPlacedText()
   local window = recordingWindow()
   local renderer = Renderer.new({
@@ -504,9 +511,10 @@ end
 function T.tests.pane_backing_stays_opaque_while_host_pixels_outside_stay_untouched(scope)
   local Interface, Renderer = modules()
   local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-  local cache, manifest = optionsCache()
+  local view, manifest = optionsCache()
+  local cache = view.reader
   local pool = ImageAssetPool.new(cache)
-  ownPool(scope, pool)
+  ownPool(scope, pool, view)
   local renderer = Renderer.new({
     cacheFs = cache,
     manifest = manifest,
@@ -552,9 +560,10 @@ function T.tests.prepared_art_is_reused_across_draws_and_failures_release_everyt
   local Interface, Renderer = modules()
   local measurements = topologies()
   local resolvers = Interface.defaults()
-  local cache, manifest = optionsCache()
+  local view, manifest = optionsCache()
+  local cache = view.reader
   local pool = ImageAssetPool.new(cache)
-  ownPool(scope, pool)
+  ownPool(scope, pool, view)
   local baseline = pool:stats()
   local realNewQuad = love.graphics.newQuad
   local quadCalls = 0
@@ -620,7 +629,8 @@ function T.tests.prepared_art_is_reused_across_draws_and_failures_release_everyt
   local ok, err = pcall(run)
   love.graphics.newQuad = realNewQuad
   Assert.isTrue(ok, "the reuse check runs: " .. tostring(err))
-  local cache2, manifest2 = optionsCache()
+  local view2, manifest2 = optionsCache()
+  local cache2 = view2.reader
   local pool2 = ImageAssetPool.new(cache2)
   scope:own({
     release = function()
@@ -713,9 +723,10 @@ function T.tests.failed_open_returns_the_pooled_renderer_for_a_fresh_open(scope)
   local Resources = require("game.hgss.src.field.FieldPresentationResources")
   local Coordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
   local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
-  local cache, manifest = optionsCache()
+  local view, manifest = optionsCache()
+  local cache = view.reader
   local pool = ImageAssetPool.new(cache)
-  ownPool(scope, pool)
+  ownPool(scope, pool, view)
   local stubText = {
     fontDef = {
       glyphs = { [0] = { advance = 8 } },
@@ -771,7 +782,9 @@ function T.tests.failed_open_returns_the_pooled_renderer_for_a_fresh_open(scope)
     end,
   })
   local baseline = pool:stats().pinnedBytes
-  FieldUiFixture.writeFont(cache, 1)
+  for path, bytes in pairs(FieldUiFixture.fontAssets(1)) do
+    GeneratedCacheFixture.put(view, path, bytes)
+  end
   local frameIndexes = {}
   for slot = 0, 19 do
     frameIndexes[slot] = true
@@ -859,15 +872,15 @@ end
 -- shell bands, preview, strip, and row plates) where the pool worker
 -- reads them, and never equals a real game version.
 function T.tests.stages_a_private_complete_image_set(scope)
-  local workerVisible = CacheFs.forVersion(ISOLATED_VERSION)
-  workerVisible:removeTree("")
+  local fresh = GeneratedCacheFixture.fromCache(CacheFs.forVersion(ISOLATED_VERSION, FakeCache.new()))
   Assert.isNil(
-    workerVisible:read(FieldUiFixture.OPTIONS_HEADER_BACKGROUND_PATH),
+    fresh.reader:read(FieldUiFixture.OPTIONS_HEADER_BACKGROUND_PATH),
     "the private namespace starts clean without another suite running first"
   )
-  local cache, manifest = optionsCache()
+  local view, manifest = optionsCache()
+  local cache = view.reader
   local pool = ImageAssetPool.new(cache)
-  ownPool(scope, pool)
+  ownPool(scope, pool, view)
   Assert.equal(cache.versionId, ISOLATED_VERSION, "the staged cache carries the private namespace")
   Assert.isTrue(ISOLATED_VERSION ~= "heartgold", "the private namespace is not the HeartGold cache")
   Assert.isTrue(ISOLATED_VERSION ~= "soulsilver", "the private namespace is not the SoulSilver cache")
@@ -888,7 +901,7 @@ function T.tests.stages_a_private_complete_image_set(scope)
     FieldUiFixture.OPTIONS_ROW_FRAME_PATH,
     FieldUiFixture.OPTIONS_SLIDER_THUMB_PATH,
   }) do
-    Assert.notNil(workerVisible:read(path), "the worker-readable namespace stages " .. path)
+    Assert.notNil(cache:read(path), "the resident fixture view stages " .. path)
   end
   local overlay =
     assert(manifest.assets[FieldUiFixture.optionsSelectionOverlayKey()], "the selected-row strip asset is indexed")
@@ -1074,12 +1087,13 @@ function T.tests.options_composition_gate_uses_real_window_and_source_art(scope)
   local Widgets = require("game.hgss.src.ui.OptionsWidgets")
   local measurements = topologies()
   local resolvers = Interface.defaults()
-  local cache, manifest = optionsCache()
-  CacheFs.forVersion(ISOLATED_VERSION):write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
+  local view, manifest = optionsCache()
+  local cache = view.reader
+  GeneratedCacheFixture.put(view, FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
   local pool = ImageAssetPool.new(cache)
-  ownPool(scope, pool)
+  ownPool(scope, pool, view)
   local text = tokenRecordingText()
-  local window = scope:own(FieldWindowRenderer.new({ cacheFs = CacheFs.forVersion(ISOLATED_VERSION), manifest = manifest }))
+  local window = scope:own(FieldWindowRenderer.new({ cacheFs = cache, manifest = manifest }))
   local renderer = Renderer.new({
     cacheFs = cache,
     manifest = manifest,

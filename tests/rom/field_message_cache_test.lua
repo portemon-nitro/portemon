@@ -2,7 +2,7 @@
 -- generated cache. Structural facts only; no retail message text is asserted.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
@@ -23,7 +23,7 @@ function T.known_target_messages_format_with_prepared_tokens(_, version)
   -- glyphs carry their effective colorIndex, and the indicator survives with
   -- field 0. A layout/controller-only test cannot prove this: the provider is
   -- the playback boundary that validates and prepares printer controls.
-  local cache = CacheFs.forVersion(version)
+  local cache = GeneratedCacheFixture.reader(version)
   local def = assert(cache:loadLua("data/generated/field/font/font-0.lua"))
   local provider = assert(FieldMessageProvider.new(cache))
   provider:acquireBank(543)
@@ -85,7 +85,7 @@ function T.artifact_text_round_trips_through_marker_parse(romFs, version)
   -- the compiled font charmap and rendering it back yields the same string.
   local messages = assert(romFs:openNarc("messages"))
   local fontDef = {
-    charmap = assert(CacheFs.forVersion(version):loadLua("data/generated/field/font/font-0.lua")).charmap,
+    charmap = assert(GeneratedCacheFixture.reader(version):loadLua("data/generated/field/font/font-0.lua")).charmap,
   }
   local samples = { [542] = { 0, 1, 4, 5 }, [543] = { 0, 5, 14, 18, 93, 97 } }
   for bankId, messageIds in pairs(samples) do
@@ -104,7 +104,7 @@ function T.artifact_text_round_trips_through_marker_parse(romFs, version)
 end
 
 function T.compiled_cache_artifacts_are_ready_and_stable(romFs, version)
-  local cache = CacheFs.forVersion(version)
+  local cache = GeneratedCacheFixture.reader(version)
   local function archiveSha(alias)
     local info = assert(romFs:resolvedNarc(alias))
     return require("romdump.src.digest.Hashing").sha1hex(assert(romFs:read(info.fileId)))

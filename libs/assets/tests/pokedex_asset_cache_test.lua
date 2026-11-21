@@ -11,6 +11,7 @@ local FakeCache = require("tests.support.FakeCache")
 local MonCache = require("libs.assets.src.MonCache")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local PokedexSources = require("romdump.src.config.PokedexSources")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -329,16 +330,9 @@ local function stageScope(PokedexCacheWriter, cacheFs, kind, stageName, stageMet
   })
   local marker = assert(PokedexCacheWriter[stageMethod](artifact, bundle))
   artifact:finishSuccess({ marker = marker })
-  Assert.isTrue(
-    artifact:publish({
-      generationId = GENERATION,
-      epoch = 1,
-      kind = kind,
-      key = "global",
-      jobKey = kind .. ":global",
-    }),
-    kind .. " publication must succeed"
-  )
+  -- Publication is the controller's: the fixture mirrors the sealed output the
+  -- worker handed over, so the scopes below read exactly the staged bytes.
+  ResidentArtifactFixture.materialize(artifact, cacheFs)
   return marker
 end
 

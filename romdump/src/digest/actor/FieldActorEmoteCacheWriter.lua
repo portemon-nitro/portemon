@@ -1,12 +1,11 @@
 -- Transactional writer for the normalized movement-emote billboard descriptor.
 
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local Writer = {}
 
----@param stage CacheFs
+---@param stage PreparedArtifact
 ---@param bundle table<string, unknown>
 local function persist(stage, bundle)
   for key, bank in pairs(bundle.meshes) do
@@ -31,24 +30,12 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function Writer.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "field-emotes staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "field-emotes staging requires a PreparedArtifact")
   assert(type(bundle) == "table" and bundle.marker, "invalid field-emotes bundle")
   artifact:addOwnedRoot("assets/generated/field/emotes")
   artifact:addOwnedRoot("data/generated/field/emotes")
-  persist(artifact:stageFs(), bundle)
+  persist(artifact, bundle)
   return bundle.marker
 end
 
-function Writer.write(cacheFs, bundle)
-  local tx = ArtifactPublisher.begin(cacheFs, "field-emotes", {
-    "assets/generated/field/emotes",
-    "data/generated/field/emotes",
-  })
-  local ok, err = pcall(persist, tx.stage, bundle)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
-end
 return Writer

@@ -1,963 +1,161 @@
--- Identity-sealed worker stages with atomic receipts: a stage carries its
--- generation, epoch, and canonical job identity from construction, finishes
--- only with a result marker plus a real family-owned root, publishes only
--- against the controller-supplied expected identity, and reports a staged
--- shared file that contradicts live bytes instead of silently reusing it. A
--- finished job keeps exactly one current receipt as its completion proof, so a
--- warm worker settles it without reading a payload or enumerating the cache.
+-- The job-private artifact output: one writable memory map per job, sealed
+-- once into the immutable entry list the controller publishes, with ownership
+-- declarations, deferred PNG rows, and the dependency reader every producer
+-- may consult read-only.
 
 local Assert = require("tests.support.Assert")
-local CacheEnvelope = require("tests.support.CacheEnvelope")
 local CacheFs = require("libs.storage.src.CacheFs")
-local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
-local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local FakeCache = require("tests.support.FakeCache")
-local GameVersion = require("romdump.src.source.GameVersion")
-local Schema = require("libs.script.src.Schema")
-local Sha256 = require("libs.script.src.Sha256")
+local PngEncoder = require("romdump.src.digest.PngEncoder")
+local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 
 local T = {}
 
-local HEARTGOLD_SHA1 = GameVersion.VERSIONS.heartgold.sha1
-local PREPARED_SCHEMA = "g4-prepared-artifact-v3"
-local RECEIPT_SCHEMA = "g4-derived-receipt-v1"
+local GENERATION = "prepared-artifact-test-generation"
 
-local function requireReceipts()
-  local ok, receipts = pcall(require, "romdump.src.build.ArtifactState")
-  Assert.isTrue(ok, "the generation-scoped receipt boundary is missing")
-  return receipts
+local function dependencyReader()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  cache:writeLua("data/generated/field/30/scene.lua", { mapId = 30 })
+  return cache
 end
 
-local function requireStages()
-  local ok, stages = pcall(require, "romdump.src.build.PreparedArtifact")
-  Assert.isTrue(ok, "the production staged-artifact boundary is missing")
-  return assert(stages)
-end
-
-local function generationIdFor(producerBody)
-  local identity = DerivedCacheState.current({
-    versionId = "heartgold",
-    romSha1 = HEARTGOLD_SHA1,
-    mode = "development",
-    producerId = "d" .. producerBody,
-    assetRevision = DerivedAssetContract.revision,
-    scriptApi = Schema.API_VERSION,
-  })
-  return assert(identity.generationId)
-end
-
-local function newCache(backend)
-  return CacheFs.forVersion("heartgold", backend or FakeCache.new())
-end
-
-local function stageOptions(kind, key, generation, epoch, stageName, cache)
-  return {
-    cacheFs = cache,
-    generationId = generation,
-    epoch = epoch,
+local function newArtifact(kind, key, cacheFs)
+  return PreparedArtifact.new({
+    cacheFs = cacheFs or dependencyReader(),
+    generationId = GENERATION,
+    epoch = 1,
     kind = kind,
     key = key,
     jobKey = kind .. ":" .. key,
-    stageName = stageName,
-  }
-end
-
-local function expectedOf(kind, key, generation, epoch)
-  return {
-    generationId = generation,
-    epoch = epoch,
-    kind = kind,
-    key = key,
-    jobKey = kind .. ":" .. key,
-  }
-end
-
-function T.success_manifest_seals_identity_and_stages_its_receipt()
-  local receipts = requireReceipts()
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("sealed-stage producer"))
-  local cache = newCache()
-  cache:recoverPublication()
-  local artifact = stages.new(stageOptions("map", "61", generation, 1, "sealed-stage", cache))
-  artifact:stageFs():write("maps/61/complete", "ready")
-  artifact:addOwnedRoot("maps/61")
-  artifact:finishSuccess({ marker = "complete" })
-  local manifest = artifact:manifest()
-  Assert.equal(manifest.schema, PREPARED_SCHEMA)
-  Assert.equal(manifest.generationId, generation)
-  Assert.equal(manifest.epoch, 1)
-  Assert.equal(manifest.kind, "map")
-  Assert.equal(manifest.key, "61")
-  Assert.equal(manifest.jobKey, "map:61")
-  Assert.equal(manifest.stageName, "sealed-stage")
-  local receiptPath = receipts.path("map", "61")
-  Assert.equal(manifest.ownedRoots[#manifest.ownedRoots], receiptPath)
-  local staged = artifact:stageFs():loadLua(receiptPath)
-  Assert.deepEqual(staged, {
-    schema = RECEIPT_SCHEMA,
-    generationId = generation,
-    kind = "map",
-    key = "61",
-    marker = "complete",
   })
 end
 
-function T.finish_requires_a_result_marker()
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("empty-finish producer"))
-  local cache = newCache()
-  cache:recoverPublication()
-  local bare = stages.new(stageOptions("map", "62", generation, 1, "empty-finish", cache))
+-- Identity is validated before any output exists: a mismatched job key, an
+-- unknown family, or an unsafe key never produces a writable artifact.
+function T.identity_is_validated_before_any_output()
   Assert.throws(function()
-    bare:finishSuccess({ marker = "" })
-  end)
+    PreparedArtifact.new({
+      cacheFs = dependencyReader(),
+      generationId = GENERATION,
+      epoch = 1,
+      kind = "party",
+      key = "global",
+      jobKey = "party:other",
+    })
+  end, "a job key that contradicts its kind and key is refused")
   Assert.throws(function()
-    bare:finishSuccess({})
-  end)
-  Assert.isTrue(bare:isAbortable(), "a stage that never finished stays abortable")
-  bare:abort()
+    newArtifact("not-a-family", "global")
+  end, "an unknown family cannot own output")
+  Assert.throws(function()
+    newArtifact("message-bank", "../escape")
+  end, "a path-shaped key cannot own output")
 end
 
--- A job whose whole output is its own generation receipt publishes that
--- receipt: a family summary over already published jobs writes nothing else.
-function T.receipt_only_jobs_publish_its_generation_receipt()
-  local receipts = requireReceipts()
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("receipt-only producer"))
-  local cache = newCache()
-  cache:recoverPublication()
-  local artifact = stages.new(stageOptions("audio-summary", "global", generation, 1, "receipt-only", cache))
-  artifact:finishSuccess({ marker = "family-marker" })
-  Assert.deepEqual(
-    artifact:manifest().ownedRoots,
-    { receipts.path("audio-summary", "global") },
-    "the receipt is the only owned root of an output-free job"
-  )
-  artifact:publish(expectedOf("audio-summary", "global", generation, 1))
-  local live = receipts.read(cache, generation, "audio-summary", "global")
-  Assert.notNil(live, "the receipt-only job publishes its current receipt")
-  Assert.equal(live.marker, "family-marker", "the published receipt carries the job marker")
+-- The dependency reader is read-only and separate: writing artifact output
+-- never changes it, so no producer can publish through the view it reads.
+function T.writes_never_touch_the_dependency_reader()
+  local cache = dependencyReader()
+  local artifact = newArtifact("field-camera", "global", cache)
+  Assert.equal(artifact:cacheFs(), cache, "the artifact exposes the reader it was given")
+  artifact:addOwnedRoot("data/generated/field/30/camera")
+  artifact:write("data/generated/field/30/camera/manifest.lua", "return {}\n")
+  Assert.equal(cache:read("data/generated/field/30/camera/manifest.lua"), nil, "the reader stays unchanged")
+  Assert.deepEqual(cache:loadLua("data/generated/field/30/scene.lua"), { mapId = 30 }, "dependencies stay readable")
+  Assert.equal(artifact:read("data/generated/field/30/camera/manifest.lua"), "return {}\n", "private output holds it")
 end
 
--- Declaring an owned root is a promise: a job that never staged one of its
--- roots cannot publish success, and no receipt becomes visible.
-function T.success_requires_every_declared_owned_root_to_be_staged()
-  local receipts = requireReceipts()
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("missing-root producer"))
-  local cache = newCache()
-  cache:recoverPublication()
-  local artifact = stages.new(stageOptions("map", "63", generation, 1, "missing-root", cache))
-  artifact:addOwnedRoot("maps/63")
-  artifact:finishSuccess({ marker = "complete" })
-  local ok = pcall(artifact.publish, artifact, expectedOf("map", "63", generation, 1))
-  Assert.isFalse(ok, "a declared owned root that never reached the stage blocks publication")
-  Assert.isNil(receipts.read(cache, generation, "map", "63"), "no receipt is visible after the refused publication")
+-- A deferred image holds the artifact open until its continuation writes it,
+-- and the seal then carries both the authored output and the encoded PNG.
+function T.deferred_images_join_the_sealed_output()
+  local artifact = newArtifact("items", "global")
+  artifact:addOwnedRoot("assets/generated/item")
+  artifact:deferImage("assets/generated/item/icons.png", 2, 2, string.rep("r", 2 * 2 * 4))
+  local deferred = assert(artifact:pendingImages()[1], "the icon atlas is deferred")
+  Assert.equal(deferred.width, 2, "the pending image carries its width")
+  artifact:write(deferred.relativePath, PngEncoder.encode(deferred.width, deferred.height, deferred.rgba:getString()))
+  artifact:write("data/generated/item/manifest.lua", "return {}\n")
+  local sealed = artifact:finishSuccess({ marker = "items-ready" })
+  local found = {}
+  for _, entry in ipairs(sealed.entries) do
+    found[entry.path] = entry.size
+  end
+  Assert.isTrue((found["assets/generated/item/icons.png"] or 0) > 0, "the encoded PNG is in the seal")
+  Assert.equal(found["data/generated/item/manifest.lua"], 10, "authored output keeps its size")
+end
+
+-- A string output becomes one Data buffer once; a supplied Data buffer is
+-- adopted, so the same immutable bytes travel by reference.
+function T.strings_become_data_once_and_data_is_adopted()
+  local artifact = newArtifact("party", "global")
+  local supplied = assert(love.data.newByteData("PNGDATA"))
+  artifact:write("assets/generated/party/panel.png", supplied)
+  artifact:write("data/generated/party/manifest.lua", "return {}\n")
+  Assert.equal(artifact:readData("assets/generated/party/panel.png"), supplied, "supplied Data is adopted as-is")
+  artifact:addOwnedRoot("assets/generated/party")
+  artifact:addOwnedRoot("data/generated/party")
+  local sealed = artifact:finishSuccess({ marker = "party-ready" })
+  for _, entry in ipairs(sealed.entries) do
+    if entry.path == "assets/generated/party/panel.png" then
+      Assert.equal(entry.data, supplied, "the seal carries the same buffer")
+    end
+  end
+end
+
+-- Overlapping completion ownership is refused before any output is written,
+-- so two jobs can never claim the same bytes.
+function T.ownership_conflicts_are_refused_before_output()
+  local artifact = newArtifact("mon-layout", "global")
+  artifact:addOwnedRoot("data/generated/mon/layout")
+  Assert.throws(function()
+    artifact:addOwnedRoot("data/generated/mon/layout/pages")
+  end, "an overlapping root is refused")
+  artifact:addSharedFile("assets/generated/shared/icon.png")
+  Assert.throws(function()
+    artifact:addOwnedRoot("assets/generated/shared")
+  end, "an owned root may not swallow a declared shared file")
+end
+
+-- Aborting a stage discards only its private output; the dependency reader and
+-- every other owner's bytes are untouched.
+function T.abort_discards_only_private_output()
+  local cache = dependencyReader()
+  local artifact = newArtifact("party", "global", cache)
+  artifact:addOwnedRoot("data/generated/party")
+  artifact:write("data/generated/party/manifest.lua", "return {}\n")
   artifact:abort()
-end
-
-function T.unknown_kinds_and_unsafe_keys_fail_before_io()
-  local receipts = requireReceipts()
-  local backend = FakeCache.new()
-  local cache = newCache(backend)
-  local writes = 0
-  local originalWrite = backend.write
-  backend.write = function(self, path, data)
-    writes = writes + 1
-    return originalWrite(self, path, data)
-  end
+  Assert.isNil(artifact:read("data/generated/party/manifest.lua"), "aborted output is gone")
+  Assert.deepEqual(cache:loadLua("data/generated/field/30/scene.lua"), { mapId = 30 }, "dependencies survive")
   Assert.throws(function()
-    receipts.path("portrait", "61")
-  end)
+    artifact:abort()
+  end, "an aborted artifact cannot abort twice")
+end
+
+-- A failed stage keeps the cause as transport data and publishes nothing, so a
+-- family validation failure never becomes visible output.
+function T.failures_carry_their_cause_and_publish_nothing()
+  local Errors = require("libs.errors.src.Errors")
+  local artifact = newArtifact("field-camera", "global")
+  artifact:addOwnedRoot("data/generated/field/30/camera")
+  artifact:write("data/generated/field/30/camera/manifest.lua", "return {}\n")
+  local record = artifact:finishFailure(Errors.new("FIELD_CAMERA_INVALID", "camera bundle is invalid", {}), "trace")
+  Assert.equal(record.code, "FIELD_CAMERA_INVALID", "the cause keeps its code")
+  Assert.equal(record.traceback, "trace", "the trace is retained")
+  Assert.isNil(artifact:read("data/generated/field/30/camera/manifest.lua"), "failed output is dropped")
   Assert.throws(function()
-    receipts.path("map", "../escape")
-  end)
+    artifact:finishSuccess({ marker = "camera-ready" })
+  end, "a failed stage cannot seal success")
+end
+
+-- The sealed result is required: a success without a marker proves nothing.
+function T.success_requires_a_result_marker()
+  local artifact = newArtifact("party", "global")
+  artifact:write("data/generated/party/manifest.lua", "return {}\n")
   Assert.throws(function()
-    receipts.path("map", "01")
-  end)
+    artifact:finishSuccess({})
+  end, "a missing marker cannot seal")
   Assert.throws(function()
-    receipts.path("map", "3-12")
-  end)
-  Assert.throws(function()
-    receipts.read(cache, "generation", "portrait", "61")
-  end)
-  Assert.throws(function()
-    receipts.read(cache, "generation", "map", "a/b")
-  end)
-  backend.write = originalWrite
-  Assert.equal(writes, 0, "kind and key validation must precede any cache write")
-  Assert.equal(receipts.path("field-cell", "3-12"), "data/generated/jobs/field-cell/3-12.lua")
-  Assert.equal(receipts.path("map", "global"), "data/generated/jobs/map/global.lua")
-  Assert.equal(receipts.path("map", "0"), "data/generated/jobs/map/0.lua")
-end
-
-function T.receipt_validation_names_identity_mismatches()
-  local receipts = requireReceipts()
-  local generation = generationIdFor(Sha256.hex("receipt-validation producer"))
-  local current = {
-    schema = RECEIPT_SCHEMA,
-    generationId = generation,
-    kind = "map",
-    key = "63",
-    marker = "complete",
-  }
-  local ok, reason = receipts.validate(current, { generationId = generation, kind = "map", key = "63" })
-  Assert.isTrue(ok)
-  Assert.isNil(reason)
-  ok, reason = receipts.validate("not-a-table", { generationId = generation, kind = "map", key = "63" })
-  Assert.isNil(ok)
-  Assert.notNil(reason)
-  ok, reason = receipts.validate({ schema = RECEIPT_SCHEMA }, { generationId = generation, kind = "map", key = "63" })
-  Assert.isNil(ok, "a receipt missing its identity must not validate")
-  Assert.notNil(reason)
-  local stale = {
-    schema = RECEIPT_SCHEMA,
-    generationId = generationIdFor(Sha256.hex("other producer tree")),
-    kind = "map",
-    key = "63",
-    marker = "complete",
-  }
-  ok, reason = receipts.validate(stale, { generationId = generation, kind = "map", key = "63" })
-  Assert.isNil(ok, "an old-generation receipt must not validate as current")
-  Assert.notNil(reason)
-  local wrongKey = {
-    schema = RECEIPT_SCHEMA,
-    generationId = generation,
-    kind = "map",
-    key = "64",
-    marker = "complete",
-  }
-  ok, reason = receipts.validate(wrongKey, { generationId = generation, kind = "map", key = "63" })
-  Assert.isNil(ok, "a receipt for another key must not validate")
-  local padded = {
-    schema = RECEIPT_SCHEMA,
-    generationId = generation,
-    kind = "map",
-    key = "63",
-    marker = "complete",
-    extra = "unowned",
-  }
-  ok, reason = receipts.validate(padded, { generationId = generation, kind = "map", key = "63" })
-  Assert.isNil(ok, "a receipt carrying unowned fields must not validate")
-end
-
-function T.missing_receipt_reads_cold_without_writing()
-  local receipts = requireReceipts()
-  local backend = FakeCache.new()
-  local cache = newCache(backend)
-  local generation = generationIdFor(Sha256.hex("cold-read producer"))
-  local writes = 0
-  local originalWrite = backend.write
-  backend.write = function(self, path, data)
-    writes = writes + 1
-    return originalWrite(self, path, data)
-  end
-  local receipt, reason = receipts.read(cache, generation, "map", "65")
-  backend.write = originalWrite
-  Assert.isNil(receipt)
-  Assert.notNil(reason)
-  Assert.equal(writes, 0, "a readiness read must not write anything")
-end
-
-function T.duplicate_roots_coalesce_but_ancestors_are_rejected()
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("overlap producer"))
-  local cache = newCache()
-  cache:recoverPublication()
-  local artifact = stages.new(stageOptions("map", "66", generation, 1, "overlap-stage", cache))
-  artifact:stageFs():write("maps/66/complete", "ready")
-  artifact:addOwnedRoot("maps/66")
-  artifact:addOwnedRoot("maps/66")
-  Assert.throws(function()
-    artifact:addOwnedRoot("maps/66/sub")
-  end)
-  Assert.throws(function()
-    artifact:addOwnedRoot("maps")
-  end)
-  Assert.throws(function()
-    artifact:addSharedFile("maps/66/extra")
-  end)
-  artifact:finishSuccess({ marker = "complete" })
-  artifact:publish(expectedOf("map", "66", generation, 1))
-  Assert.equal(cache:read("maps/66/complete"), "ready")
-end
-
-function T.shared_files_may_not_hide_inside_owned_roots()
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("shared-placement producer"))
-  local cache = newCache()
-  cache:recoverPublication()
-  local artifact = stages.new(stageOptions("map", "67", generation, 1, "shared-placement", cache))
-  artifact:stageFs():write("geometry/shared67", "shared")
-  artifact:addSharedFile("geometry/shared67")
-  Assert.throws(function()
-    artifact:addOwnedRoot("geometry")
-  end)
-  Assert.throws(function()
-    artifact:addOwnedRoot("geometry/shared67")
-  end)
-  artifact:stageFs():write("maps/67/complete", "ready")
-  artifact:addOwnedRoot("maps/67")
-  artifact:finishSuccess({ marker = "complete" })
-  artifact:publish(expectedOf("map", "67", generation, 1))
-  Assert.equal(cache:read("geometry/shared67"), "shared")
-end
-
-function T.mixed_file_and_directory_roots_publish_together()
-  local receipts = requireReceipts()
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("mixed-roots producer"))
-  local cache = newCache()
-  cache:recoverPublication()
-  local artifact = stages.new(stageOptions("map", "global", generation, 1, "mixed-roots", cache))
-  artifact:stageFs():write("catalog/index.lua", "return {}")
-  artifact:addOwnedRoot("catalog/index.lua")
-  artifact:stageFs():write("maps/68/complete", "ready")
-  artifact:addOwnedRoot("maps/68")
-  artifact:finishSuccess({ marker = "complete" })
-  artifact:publish(expectedOf("map", "global", generation, 1))
-  Assert.equal(cache:read("catalog/index.lua"), "return {}")
-  Assert.equal(cache:read("maps/68/complete"), "ready")
-  local receipt = receipts.read(cache, generation, "map", "global")
-  Assert.notNil(receipt)
-  assert(receipt, "a published receipt is a record")
-  Assert.equal(receipt.marker, "complete")
-end
-
-function T.overlapping_completions_serialize_without_losing_work()
-  local receipts = requireReceipts()
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("serialized producer"))
-  local cache = newCache()
-  cache:recoverPublication()
-  local first = stages.new(stageOptions("map", "69", generation, 1, "overlap-first", cache))
-  local second = stages.new(stageOptions("map", "70", generation, 1, "overlap-second", cache))
-  first:stageFs():write("maps/69/complete", "first")
-  first:addOwnedRoot("maps/69")
-  second:stageFs():write("maps/70/complete", "second")
-  second:addOwnedRoot("maps/70")
-  first:finishSuccess({ marker = "complete" })
-  second:finishSuccess({ marker = "complete" })
-  first:publish(expectedOf("map", "69", generation, 1))
-  second:publish(expectedOf("map", "70", generation, 1))
-  Assert.equal(cache:read("maps/69/complete"), "first")
-  Assert.equal(cache:read("maps/70/complete"), "second")
-  Assert.notNil(receipts.read(cache, generation, "map", "69"))
-  Assert.notNil(receipts.read(cache, generation, "map", "70"))
-
-  local replacement = stages.new(stageOptions("map", "69", generation, 1, "overlap-replacement", cache))
-  replacement:stageFs():write("maps/69/complete", "replaced")
-  replacement:addOwnedRoot("maps/69")
-  replacement:finishSuccess({ marker = "complete" })
-  replacement:publish(expectedOf("map", "69", generation, 1))
-  Assert.equal(cache:read("maps/69/complete"), "replaced")
-  local receipt = receipts.read(cache, generation, "map", "69")
-  Assert.notNil(receipt)
-  assert(receipt, "a replaced receipt is a record")
-  Assert.equal(receipt.marker, "complete")
-end
-
-function T.identical_shared_bytes_promote_once_but_conflicts_fail()
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("shared-bytes producer"))
-  local cache = newCache()
-  cache:recoverPublication()
-  local first = stages.new(stageOptions("map", "71", generation, 1, "shared-first", cache))
-  first:stageFs():write("geometry/shared", "first")
-  first:addSharedFile("geometry/shared")
-  first:stageFs():write("maps/71/complete", "ready")
-  first:addOwnedRoot("maps/71")
-  first:finishSuccess({ marker = "complete" })
-  first:publish(expectedOf("map", "71", generation, 1))
-
-  local same = stages.new(stageOptions("map", "72", generation, 1, "shared-same", cache))
-  same:stageFs():write("geometry/shared", "first")
-  same:addSharedFile("geometry/shared")
-  same:stageFs():write("maps/72/complete", "ready")
-  same:addOwnedRoot("maps/72")
-  same:finishSuccess({ marker = "complete" })
-  same:publish(expectedOf("map", "72", generation, 1))
-  Assert.equal(cache:read("geometry/shared"), "first")
-  Assert.equal(cache:read("maps/72/complete"), "ready")
-
-  local clashing = stages.new(stageOptions("map", "73", generation, 1, "shared-clash", cache))
-  clashing:stageFs():write("geometry/shared", "different")
-  clashing:addSharedFile("geometry/shared")
-  clashing:stageFs():write("maps/73/complete", "ready")
-  clashing:addOwnedRoot("maps/73")
-  -- Worker-side reconciliation seals shared proof before success: the
-  -- contradiction fails here, never reaching controller publication.
-  local conflict = Assert.throws(function()
-    clashing:finishSuccess({ marker = "complete" })
-  end)
-  Assert.isTrue(
-    tostring(conflict):find("PREPARED_SHARED_CONFLICT", 1, true) ~= nil,
-    "the worker seals the shared contradiction"
-  )
-  clashing:abort()
-  Assert.equal(cache:read("geometry/shared"), "first", "a shared conflict must keep the live bytes")
-  Assert.isFalse(cache:exists("maps/73/complete"), "a shared conflict must not expose the staged family")
-end
-
-function T.publish_checks_each_identity_field_before_live_mutation()
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("identity-check producer"))
-  local otherGeneration = generationIdFor(Sha256.hex("identity-check rival"))
-  local cache = newCache()
-  cache:recoverPublication()
-  local artifact = stages.new(stageOptions("map", "74", generation, 1, "identity-check", cache))
-  artifact:stageFs():write("maps/74/complete", "ready")
-  artifact:addOwnedRoot("maps/74")
-  artifact:finishSuccess({ marker = "complete" })
-  local candidates = {
-    expectedOf("map", "74", otherGeneration, 1),
-    expectedOf("map", "74", generation, 2),
-    expectedOf("map", "75", generation, 1),
-  }
-  local wrongJob = expectedOf("map", "74", generation, 1)
-  wrongJob.jobKey = "map:75"
-  candidates[#candidates + 1] = wrongJob
-  for _, expected in ipairs(candidates) do
-    Assert.throws(function()
-      artifact:publish(expected)
-    end)
-  end
-  Assert.isFalse(cache:exists("maps/74/complete"), "a rejected identity must leave live bytes untouched")
-  Assert.isTrue(artifact:isAbortable(), "a stage rejected before publication stays abortable")
-  artifact:publish(expectedOf("map", "74", generation, 1))
-  Assert.equal(cache:read("maps/74/complete"), "ready")
-end
-
-function T.reopened_stage_publishes_through_the_controller_path()
-  local receipts = requireReceipts()
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("reopen producer"))
-  local cache = newCache()
-  cache:recoverPublication()
-  local worker = stages.new(stageOptions("map", "75", generation, 1, "reopen-stage", cache))
-  worker:stageFs():write("maps/75/complete", "ready")
-  worker:addOwnedRoot("maps/75")
-  worker:finishSuccess({ marker = "complete" })
-
-  Assert.throws(function()
-    stages.open(stageOptions("map", "75", generation, 2, "reopen-stage", cache))
-  end, "a retired epoch must not reopen a stage")
-  local controller = stages.open(stageOptions("map", "75", generation, 1, "reopen-stage", cache))
-  Assert.equal(controller:manifest().result.marker, "complete")
-  controller:publish(expectedOf("map", "75", generation, 1))
-  Assert.equal(cache:read("maps/75/complete"), "ready")
-  local receipt = receipts.read(cache, generation, "map", "75")
-  Assert.notNil(receipt, "a controller publication must leave the current receipt")
-  assert(receipt, "a controller-published receipt is a record")
-  Assert.equal(receipt.marker, "complete")
-end
-
--- Shared reconciliation compares decoded logical bytes: a restaged copy
--- carrying the same logical content in wrapped physical form reuses the
--- live file instead of conflicting with it.
-function T.shared_reconciliation_compares_decoded_logical_bytes()
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("shared-envelope producer"))
-  local backend = FakeCache.new()
-  CacheEnvelope.attachHostCodecs(backend)
-  local cache = newCache(backend)
-  cache:recoverPublication()
-  local logical = string.rep("shared-mesh-block;", 200)
-  Assert.isTrue(#logical >= 1024, "the shared fixture must clear the wrap threshold")
-
-  local first = stages.new(stageOptions("map", "81", generation, 1, "shared-raw", cache))
-  first:stageFs():write("geometry/shared-mesh.g4mesh", logical)
-  first:addSharedFile("geometry/shared-mesh.g4mesh")
-  first:stageFs():write("maps/81/complete", "ready")
-  first:addOwnedRoot("maps/81")
-  first:finishSuccess({ marker = "complete" })
-  first:publish(expectedOf("map", "81", generation, 1))
-  Assert.equal(cache:read("geometry/shared-mesh.g4mesh"), logical)
-
-  local second = stages.new(stageOptions("map", "82", generation, 1, "shared-wrapped", cache))
-  second:stageFs():write("geometry/shared-mesh.g4mesh", logical)
-  backend:write(
-    second:stageFs():resolve("geometry/shared-mesh.g4mesh"),
-    CacheEnvelope.build(CacheEnvelope.CODEC_LZ4, logical)
-  )
-  second:addSharedFile("geometry/shared-mesh.g4mesh")
-  second:stageFs():write("maps/82/complete", "ready")
-  second:addOwnedRoot("maps/82")
-  second:finishSuccess({ marker = "complete" })
-  Assert.deepEqual(second:manifest().sharedReused, { "geometry/shared-mesh.g4mesh" })
-  second:publish(expectedOf("map", "82", generation, 1))
-  Assert.equal(cache:read("geometry/shared-mesh.g4mesh"), logical)
-  Assert.equal(cache:read("maps/82/complete"), "ready")
-end
-
--- A replacement commit carries the family output and one receipt: the
--- receipt commits last, so a replacement can only supersede the previous
--- generation atomically and a crash before commit always leaves the prior
--- generation readable.
--- Shared PNGs are addressed by source hash while their bytes embed the host
--- zlib's deflate output: a toolchain change contradicts byte-identical
--- pixels. Decode-identical PNGs reinstall the staged copy (healing the
--- drift permanently and converging on the current encoder); any other
--- contradiction still fails loudly.
-local function pngChunks(png)
-  local chunks = {}
-  local pos = 9
-  while pos <= #png do
-    local b1, b2, b3, b4 = string.byte(png, pos, pos + 3)
-    assert(b1 ~= nil, "the fixture png stays well-formed")
-    local length = ((b1 * 256 + b2) * 256 + b3) * 256 + b4
-    local ctype = png:sub(pos + 4, pos + 7)
-    local data = png:sub(pos + 8, pos + 7 + length)
-    chunks[#chunks + 1] = { ctype = ctype, data = data }
-    pos = pos + 12 + length
-  end
-  return chunks
-end
-
-local function crc32(bytes)
-  local bit = require("bit")
-  local table_ = {}
-  for i = 0, 255 do
-    local c = i
-    for _ = 1, 8 do
-      if bit.band(c, 1) ~= 0 then
-        c = bit.bxor(0xEDB88320, bit.rshift(c, 1))
-      else
-        c = bit.rshift(c, 1)
-      end
-    end
-    table_[i] = c
-  end
-  local crc = 0xFFFFFFFF
-  for i = 1, #bytes do
-    crc = bit.bxor(table_[bit.band(bit.bxor(crc, string.byte(bytes, i)), 0xFF)], bit.rshift(crc, 8))
-  end
-  crc = bit.bxor(crc, 0xFFFFFFFF)
-  local function byteAt(shift)
-    return bit.band(bit.rshift(crc, shift), 0xFF)
-  end
-  return string.char(byteAt(24), byteAt(16), byteAt(8), byteAt(0))
-end
-
--- Rewraps the single IDAT of a fixture PNG into two IDAT chunks: different
--- bytes, one valid zlib stream, identical decoded pixels. CRCs are
--- recomputed so the fixture stays a well-formed PNG.
-local function splitPngIdat(png)
-  local out = { png:sub(1, 8) }
-  local split = false
-  for _, chunk in ipairs(pngChunks(png)) do
-    if chunk.ctype == "IDAT" and not split and #chunk.data > 2 then
-      split = true
-      local half = math.floor(#chunk.data / 2)
-      for _, part in ipairs({ chunk.data:sub(1, half), chunk.data:sub(half + 1) }) do
-        local length = #part
-        local b1 = math.floor(length / 16777216) % 256
-        local b2 = math.floor(length / 65536) % 256
-        local b3 = math.floor(length / 256) % 256
-        out[#out + 1] = string.char(b1, b2, b3, length % 256) .. "IDAT" .. part .. crc32("IDAT" .. part)
-      end
-    else
-      local length = #chunk.data
-      local b1 = math.floor(length / 16777216) % 256
-      local b2 = math.floor(length / 65536) % 256
-      local b3 = math.floor(length / 256) % 256
-      out[#out + 1] = string.char(b1, b2, b3, length % 256)
-        .. chunk.ctype
-        .. chunk.data
-        .. crc32(chunk.ctype .. chunk.data)
-    end
-  end
-  assert(split, "the fixture png carries a splittable IDAT")
-  return table.concat(out)
-end
-
-function T.png_encoder_drift_reinstalls_decode_identical_pixels()
-  local PngEncoder = require("romdump.src.digest.PngEncoder")
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("png drift producer"))
-  local cache = newCache()
-  cache:recoverPublication()
-  local rgba = string.char(255, 0, 0, 255, 0, 255, 0, 255)
-  local firstBytes = PngEncoder.encode(2, 1, rgba)
-  local driftedBytes = splitPngIdat(firstBytes)
-  Assert.isTrue(firstBytes ~= driftedBytes, "the drifted fixture must differ byte-wise")
-  local path = "assets/generated/maps/textures/drifted.png"
-  local first = stages.new(stageOptions("map", "91", generation, 1, "png-first", cache))
-  first:stageFs():write(path, firstBytes)
-  first:addSharedFile(path)
-  first:stageFs():write("maps/91/complete", "ready")
-  first:addOwnedRoot("maps/91")
-  first:finishSuccess({ marker = "complete" })
-  first:publish(expectedOf("map", "91", generation, 1))
-  Assert.equal(cache:read(path), firstBytes)
-  local second = stages.new(stageOptions("map", "92", generation, 1, "png-drifted", cache))
-  second:stageFs():write(path, driftedBytes)
-  second:addSharedFile(path)
-  second:stageFs():write("maps/92/complete", "ready")
-  second:addOwnedRoot("maps/92")
-  second:finishSuccess({ marker = "complete" })
-  Assert.deepEqual(second:manifest().sharedInstall, { path }, "decode-identical pixels reinstall instead of conflicting")
-  Assert.deepEqual(second:manifest().sharedReused, {}, "no reuse is claimed for replaced bytes")
-  second:publish(expectedOf("map", "92", generation, 1))
-  Assert.equal(cache:read(path), driftedBytes, "the current encoder wins the live bytes")
-  local third = stages.new(stageOptions("map", "93", generation, 1, "png-converged", cache))
-  third:stageFs():write(path, driftedBytes)
-  third:addSharedFile(path)
-  third:stageFs():write("maps/93/complete", "ready")
-  third:addOwnedRoot("maps/93")
-  third:finishSuccess({ marker = "complete" })
-  Assert.deepEqual(third:manifest().sharedReused, { path }, "the healed bytes reuse by identity afterwards")
-  third:publish(expectedOf("map", "93", generation, 1))
-  Assert.equal(cache:read(path), driftedBytes)
-end
-
-function T.png_pixel_differences_still_conflict()
-  local PngEncoder = require("romdump.src.digest.PngEncoder")
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("png pixels producer"))
-  local cache = newCache()
-  cache:recoverPublication()
-  local path = "assets/generated/maps/textures/pixels.png"
-  local first = stages.new(stageOptions("map", "94", generation, 1, "png-live", cache))
-  first:stageFs():write(path, PngEncoder.encode(2, 1, string.char(255, 0, 0, 255, 0, 255, 0, 255)))
-  first:addSharedFile(path)
-  first:stageFs():write("maps/94/complete", "ready")
-  first:addOwnedRoot("maps/94")
-  first:finishSuccess({ marker = "complete" })
-  first:publish(expectedOf("map", "94", generation, 1))
-  local clashing = stages.new(stageOptions("map", "95", generation, 1, "png-clash", cache))
-  clashing:stageFs():write(path, PngEncoder.encode(2, 1, string.char(0, 0, 255, 255, 0, 255, 0, 255)))
-  clashing:addSharedFile(path)
-  clashing:stageFs():write("maps/95/complete", "ready")
-  clashing:addOwnedRoot("maps/95")
-  local conflict = Assert.throws(function()
-    clashing:finishSuccess({ marker = "complete" })
-  end)
-  Assert.isTrue(
-    tostring(conflict):find("PREPARED_SHARED_CONFLICT", 1, true) ~= nil,
-    "different pixels still fail loudly"
-  )
-  Assert.equal(conflict.code, "PREPARED_SHARED_CONFLICT", "the conflict keeps its code")
-  Assert.equal(conflict.context.path, path, "the conflict names its path")
-  clashing:abort()
-  Assert.isFalse(cache:exists("maps/95/complete"), "a pixel conflict must not expose the staged family")
-end
-
-function T.png_garbage_bytes_still_conflict()
-  local PngEncoder = require("romdump.src.digest.PngEncoder")
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("png garbage producer"))
-  local cache = newCache()
-  cache:recoverPublication()
-  local path = "assets/generated/maps/textures/garbage.png"
-  local first = stages.new(stageOptions("map", "96", generation, 1, "png-plain", cache))
-  first:stageFs():write(path, "not a png")
-  first:addSharedFile(path)
-  first:stageFs():write("maps/96/complete", "ready")
-  first:addOwnedRoot("maps/96")
-  first:finishSuccess({ marker = "complete" })
-  first:publish(expectedOf("map", "96", generation, 1))
-  local clashing = stages.new(stageOptions("map", "97", generation, 1, "png-garbage", cache))
-  clashing:stageFs():write(path, PngEncoder.encode(2, 1, string.char(255, 0, 0, 255, 0, 255, 0, 255)))
-  clashing:addSharedFile(path)
-  clashing:stageFs():write("maps/97/complete", "ready")
-  clashing:addOwnedRoot("maps/97")
-  local conflict = Assert.throws(function()
-    clashing:finishSuccess({ marker = "complete" })
-  end)
-  Assert.isTrue(
-    tostring(conflict):find("PREPARED_SHARED_CONFLICT", 1, true) ~= nil,
-    "unparseable bytes still fail loudly instead of crashing the worker"
-  )
-  clashing:abort()
-end
-
-function T.replacement_roots_commit_atomically_and_drop_the_previous_generation()
-  local receipts = requireReceipts()
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("replacement producer"))
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
-  cache:recoverPublication()
-  local meshPath = "assets/generated/maps/geometry/" .. string.rep("c", 40) .. ".g4mesh"
-  local meshLogical = string.rep("mesh-block;", 200)
-  local receiptPath = receipts.path("map", "83")
-
-  local bare = stages.new(stageOptions("map", "84", generation, 1, "commit-empty", cache))
-  bare:stageFs():write("maps/84/complete", "ready")
-  bare:addOwnedRoot("maps/84")
-  bare:finishSuccess({ marker = "complete" })
-  Assert.deepEqual(bare:manifest().ownedRoots, { "maps/84", receipts.path("map", "84") }, "the receipt commits last")
-  bare:publish(expectedOf("map", "84", generation, 1))
-
-  local first = stages.new(stageOptions("map", "83", generation, 1, "commit-first", cache))
-  first:stageFs():write(meshPath, meshLogical)
-  first:addSharedFile(meshPath)
-  first:stageFs():write("maps/83/complete", "first")
-  first:addOwnedRoot("maps/83")
-  first:finishSuccess({ marker = "round-a" })
-  local firstManifest = first:manifest()
-  Assert.deepEqual(firstManifest.ownedRoots, { "maps/83", receiptPath }, "the receipt commits last after the payload")
-  Assert.deepEqual(firstManifest.sharedFiles, { meshPath })
-  Assert.deepEqual(firstManifest.sharedInstall, { meshPath }, "a staged shared file is installed by the controller")
-  Assert.deepEqual(firstManifest.sharedReused, {})
-  first:publish(expectedOf("map", "83", generation, 1))
-  Assert.equal(cache:read(meshPath), meshLogical)
-
-  local replacement = stages.new(stageOptions("map", "83", generation, 1, "commit-replacement", cache))
-  replacement:stageFs():write(meshPath, meshLogical)
-  replacement:addSharedFile(meshPath)
-  replacement:stageFs():write("maps/83/complete", "second")
-  replacement:addOwnedRoot("maps/83")
-  replacement:finishSuccess({ marker = "round-b" })
-  Assert.deepEqual(replacement:manifest().sharedReused, { meshPath }, "byte-identical shared bytes reuse the live file")
-  Assert.equal(
-    cache:read("maps/83/complete"),
-    "first",
-    "the previous generation stays live until the replacement commits"
-  )
-  local originalReplace = backend.replace
-  backend.replace = function(self, sourcePath, destinationPath)
-    if destinationPath:find(".__g4next", 1, true) then
-      return false, "injected replacement publication failure"
-    end
-    return originalReplace(self, sourcePath, destinationPath)
-  end
-  Assert.throws(function()
-    replacement:publish(expectedOf("map", "83", generation, 1))
-  end)
-  backend.replace = originalReplace
-  cache:recoverPublication()
-  Assert.equal(cache:read("maps/83/complete"), "first", "a failed commit rolls back to the prior generation")
-  local rolledBack = receipts.read(cache, generation, "map", "83")
-  Assert.notNil(rolledBack)
-  assert(rolledBack, "the prior receipt survives a failed replacement")
-  Assert.equal(rolledBack.marker, "round-a")
-  replacement:publish(expectedOf("map", "83", generation, 1))
-  Assert.equal(cache:read("maps/83/complete"), "second")
-  local receipt = receipts.read(cache, generation, "map", "83")
-  Assert.notNil(receipt)
-  assert(receipt, "the replacement receipt is a record")
-  Assert.equal(receipt.marker, "round-b")
-  for path in pairs(backend.files) do
-    Assert.isFalse(path:find(".__g4old", 1, true) ~= nil, "committed old roots leave no backup behind: " .. path)
-    Assert.isFalse(
-      path:find("staging/heartgold/commit-replacement", 1, true) ~= nil,
-      "the consumed replacement stage leaves no residue: " .. path
-    )
-  end
-end
-
--- A failed job stages only its failure manifest: no receipt and no shared
--- decision is durable, and the failure can never publish.
-function T.failed_jobs_stage_only_a_failure_manifest()
-  local receipts = requireReceipts()
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("failed stage producer"))
-  local cache = newCache()
-  cache:recoverPublication()
-  local artifact = stages.new(stageOptions("map", "85", generation, 1, "failed-stage", cache))
-  artifact:stageFs():write("maps/85/complete", "ready")
-  artifact:addOwnedRoot("maps/85")
-  artifact:finishFailure({ message = "worker failed" })
-  local manifest = artifact:manifest()
-  Assert.equal(manifest.status, "failure")
-  Assert.deepEqual(manifest.ownedRoots, { "maps/85" }, "a failed job stages no receipt")
-  Assert.deepEqual(manifest.sharedInstall, {})
-  Assert.deepEqual(manifest.sharedReused, {})
-  Assert.isFalse(
-    artifact:stageFs():exists(receipts.path("map", "85")),
-    "a failed job stages no receipt file"
-  )
-  Assert.throws(function()
-    artifact:publish(expectedOf("map", "85", generation, 1))
-  end, "a failed job cannot publish")
-  artifact:abort()
-end
-
--- The worker resolves its cache through the host filesystem, so pointing the
--- host at the in-memory store a publication already used lets a warm run drive
--- the real worker loop instead of a reconstruction of it.
-local function withHostBackend(backend, fn)
-  local host = assert(rawget(_G, "love"), "the suite runs under the host runtime")
-  local previous = rawget(_G, "love")
-  rawset(_G, "love", {
-    filesystem = {
-      write = function(path, data)
-        return backend:write(path, data)
-      end,
-      read = function(path)
-        return backend:read(path)
-      end,
-      getInfo = function(path)
-        return backend:getInfo(path)
-      end,
-      createDirectory = function(path)
-        return backend:createDirectory(path)
-      end,
-      remove = function(path)
-        return backend:remove(path)
-      end,
-      getDirectoryItems = function(path)
-        return backend:getDirectoryItems(path)
-      end,
-    },
-    timer = {
-      getTime = function()
-        return 0
-      end,
-    },
-    data = host.data,
-  })
-  local ok, result = pcall(fn)
-  rawset(_G, "love", previous)
-  if not ok then
-    error(result, 0)
-  end
-  return result
-end
-
-local function scriptedChannel(messages)
-  local pending = {}
-  for _, message in ipairs(messages) do
-    pending[#pending + 1] = message
-  end
-  local channel = {}
-  function channel:push(value)
-    pending[#pending + 1] = value
-    return true
-  end
-  function channel:demand()
-    local value = table.remove(pending, 1)
-    assert(value ~= nil, "the worker demanded beyond its scripted controls")
-    return value
-  end
-  function channel:getCount()
-    return #pending
-  end
-  return channel
-end
-
--- A finished job's durable footprint is its payload, the shared assets it
--- references, and one current receipt: no parallel reference record, no
--- retained cleanup memo, and no reclamation of unreferenced shared bytes.
--- The same tree then satisfies the real worker loop from those receipts alone
--- — both jobs report reuse without opening source, reading a payload, or
--- enumerating a directory.
-function T.finished_jobs_keep_one_receipt_and_reuse_without_touching_payloads()
-  local receipts = requireReceipts()
-  local stages = requireStages()
-  local generation = generationIdFor(Sha256.hex("single proof producer"))
-  local backend = FakeCache.new()
-  CacheEnvelope.attachHostCodecs(backend)
-  local cache = newCache(backend)
-  cache:recoverPublication()
-
-  local meshPath = "assets/generated/maps/geometry/" .. string.rep("a", 40) .. ".g4mesh"
-  local meshLogical = string.rep("shared-mesh-block;", 300)
-  local unreferencedPath = "assets/generated/maps/geometry/" .. string.rep("b", 40) .. ".g4mesh"
-  local unreferencedLogical = string.rep("unreferenced-mesh;", 300)
-  cache:write(unreferencedPath, unreferencedLogical)
-
-  local keys = { "7", "9" }
-  for _, key in ipairs(keys) do
-    local artifact = stages.new(stageOptions("map", key, generation, 1, "single-proof-" .. key, cache))
-    artifact:stageFs():write(meshPath, meshLogical)
-    artifact:addSharedFile(meshPath)
-    artifact:stageFs():write("maps/" .. key .. "/complete", "ready-" .. key)
-    artifact:addOwnedRoot("maps/" .. key)
-    artifact:finishSuccess({ marker = "complete" })
-    artifact:publish(expectedOf("map", key, generation, 1))
-  end
-
-  for _, key in ipairs(keys) do
-    local receipt = receipts.read(cache, generation, "map", key)
-    Assert.notNil(receipt, "a published job keeps its current receipt: map " .. key)
-    assert(receipt, "a published job receipt is a record")
-    Assert.equal(receipt.marker, "complete")
-    Assert.equal(cache:read("maps/" .. key .. "/complete"), "ready-" .. key)
-  end
-  local jobFiles = {}
-  for path in pairs(backend.files) do
-    if path:find("data/generated/jobs/", 1, true) ~= nil then
-      jobFiles[#jobFiles + 1] = path
-    end
-  end
-  table.sort(jobFiles)
-  Assert.deepEqual(jobFiles, {
-    "heartgold/data/generated/jobs/map/7.lua",
-    "heartgold/data/generated/jobs/map/9.lua",
-  }, "each job owns exactly its own receipt as a completion proof")
-  Assert.isFalse(cache:exists("data/generated/jobs-shared"), "a finished job records no shared-reference sidecar")
-  Assert.isFalse(cache:exists("data/generated/retention.lua"), "a finished job records no retention memo")
-  Assert.equal(cache:read(meshPath), meshLogical, "the shared asset stays readable by every job that names it")
-  Assert.equal(cache:read(unreferencedPath), unreferencedLogical, "publication reclaims no unreferenced shared bytes")
-
-  -- Warm reuse: the production worker loop, against the same cache tree.
-  local reads = {}
-  local enumerations = 0
-  local readFile = backend.read
-  backend.read = function(self, path)
-    reads[#reads + 1] = path
-    return readFile(self, path)
-  end
-  local listDirectory = backend.getDirectoryItems
-  backend.getDirectoryItems = function(self, path)
-    enumerations = enumerations + 1
-    return listDirectory(self, path)
-  end
-  local RomFs = require("romdump.src.source.RomFs")
-  local CompilerWorker = require("romdump.src.build.CompilerWorker")
-  local realOpen = RomFs.open
-  local sourceOpens = 0
-  RomFs.open = function()
-    sourceOpens = sourceOpens + 1
-    error("warm reuse must not open ROM source", 0)
-  end
-  local reported = {}
-  local warmOk, warmErr = pcall(withHostBackend, backend, function()
-    local jobs = {}
-    for _, key in ipairs(keys) do
-      jobs[#jobs + 1] = {
-        kind = "map",
-        key = key,
-        jobKey = "map:" .. key,
-        versionId = "heartgold",
-        generationId = generation,
-        epoch = 1,
-        stageName = "warm-" .. key,
-        sizeClass = "normal",
-        payload = {},
-        producerFingerprint = "producer",
-      }
-    end
-    jobs[#jobs + 1] = { kind = "stop" }
-    local resultChannel = scriptedChannel({})
-    local push = resultChannel.push
-    function resultChannel:push(value)
-      reported[#reported + 1] = value
-      return push(self, value)
-    end
-    CompilerWorker.run(1, scriptedChannel(jobs), resultChannel)
-  end)
-  RomFs.open = realOpen
-  backend.read = readFile
-  backend.getDirectoryItems = listDirectory
-  Assert.isTrue(warmOk, "the driven worker loop resolves: " .. tostring(warmErr))
-
-  Assert.equal(#reported, #keys, "every warm job reports exactly once")
-  for index, packet in ipairs(reported) do
-    Assert.equal(packet.status, "reused", "a current receipt settles the warm job: " .. keys[index])
-  end
-  Assert.equal(sourceOpens, 0, "warm reuse opens no ROM source")
-  Assert.equal(enumerations, 0, "warm reuse enumerates no cache directory")
-  Assert.isTrue(#reads > 0, "warm reuse reads its current receipts")
-  for _, path in ipairs(reads) do
-    Assert.isTrue(
-      path:find("data/generated/jobs/map/", 1, true) ~= nil,
-      "warm reuse reads only receipts, saw " .. path
-    )
-  end
+    artifact:finishSuccess({ marker = "" })
+  end, "an empty marker cannot seal")
 end
 
 return { tests = T }

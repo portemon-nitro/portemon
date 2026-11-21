@@ -9,7 +9,7 @@
 -- to contribute nothing at the machine.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
@@ -117,7 +117,7 @@ function T.starter_balls_render_on_the_machine_in_the_real_lab_frame(scope)
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
       local expected = expectedBallCentres(versionId)
-      local cache = CacheFs.forVersion(versionId)
+      local cache = GeneratedCacheFixture.reader(versionId)
       local scene = assert(cache:loadLua(MapAssetCache.mapDir(MAP_ID) .. "/scene.lua"))
       local group = assert(scene.runtimeProps and scene.runtimeProps.starter_balls)
 

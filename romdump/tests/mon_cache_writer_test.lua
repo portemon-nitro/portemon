@@ -12,6 +12,7 @@ local FakeCache = require("tests.support.FakeCache")
 local MonCache = require("libs.assets.src.MonCache")
 local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -129,7 +130,7 @@ local function provenance()
   return { schema = "g4-mon-provenance-v1", source = "test-source", rom = { version = "heartgold", sha1 = "abc" } }
 end
 
-local function newArtifact(cache, kind, key, stageName)
+local function newArtifact(cache, kind, key)
   return PreparedArtifact.new({
     cacheFs = cache,
     generationId = "test-generation",
@@ -137,41 +138,65 @@ local function newArtifact(cache, kind, key, stageName)
     kind = kind,
     key = key,
     jobKey = kind .. ":" .. key,
-    stageName = stageName,
   })
+end
+
+-- Publish one family stage through the production artifact path: the stage
+-- writes its private output, the artifact seals it, and the sealed bytes are
+-- mirrored into the caller's cache so readiness assertions read the real
+-- produced payload.
+local function publish(cache, kind, key, stage)
+  return ResidentArtifactFixture.publish(cache, kind, key, stage)
 end
 
 local function publishArtifact(artifact, kind, key, marker)
   artifact:finishSuccess({ marker = marker })
-  artifact:publish({
-    generationId = "test-generation",
-    epoch = 1,
-    kind = kind,
-    key = key,
-    jobKey = kind .. ":" .. key,
-  })
+  ResidentArtifactFixture.materialize(artifact)
 end
 
 function T.writes_each_stage_and_reports_staged_readiness()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local catalogMarker = MonCacheWriter.catalogMarker("abc", catalog())
-  Assert.equal(MonCacheWriter.writeCatalog(cache, catalog(), catalogMarker), catalogMarker)
+  Assert.equal(
+    publish(cache, "mon-catalog", "global", function(artifact)
+      return MonCacheWriter.stageCatalog(artifact, { catalog = catalog(), marker = catalogMarker })
+    end),
+    catalogMarker
+  )
   Assert.isTrue(MonCache.isCatalogReady(cache, catalogMarker), "catalog reads ready after its own stage")
   Assert.isFalse(MonCache.isLayoutReady(cache, "no-layout"), "layout stays unread before its own stage")
   local layoutMarker = MonCacheWriter.layoutMarker("abc", icons(), portraits())
   Assert.equal(
-    MonCacheWriter.writeLayout(cache, icons(), portraits(), layoutMarker, pagePlans(), "test-generation"),
+    publish(cache, "mon-layout", "global", function(artifact)
+      return MonCacheWriter.stageLayout(artifact, {
+        icons = icons(),
+        portraits = portraits(),
+        marker = layoutMarker,
+        pagePlans = pagePlans(),
+        generationId = "test-generation",
+      })
+    end),
     layoutMarker
   )
   Assert.isTrue(MonCache.isLayoutReady(cache, layoutMarker), "layout reads ready after its own stage")
   local iconMarker = MonCacheWriter.pageMarker("abc", "icons", 0, icons())
-  Assert.equal(MonCacheWriter.writePage(cache, pageBundle("icons", 0, 256, 128, iconMarker)), iconMarker)
+  Assert.equal(
+    publish(cache, "mon-icon-page", "0", function(artifact)
+      return MonCacheWriter.stagePage(artifact, pageBundle("icons", 0, 256, 128, iconMarker))
+    end),
+    iconMarker
+  )
   Assert.isTrue(MonCache.isPageReady(cache, "icons", 0, iconMarker), "the staged icon page reads ready")
   Assert.isFalse(MonCache.isIconSetReady(cache, {}), "an empty marker selection never reads as the icon set")
   Assert.isTrue(MonCache.isIconSetReady(cache, { [0] = iconMarker }), "the staged icon set reads ready")
   Assert.isFalse(MonCache.isReady(cache, "no-summary"), "icons without portraits never read as a complete family")
   local portraitMarker = MonCacheWriter.pageMarker("abc", "portraits", 0, portraits())
-  Assert.equal(MonCacheWriter.writePage(cache, pageBundle("portraits", 0, 640, 320, portraitMarker)), portraitMarker)
+  Assert.equal(
+    publish(cache, "mon-portrait-page", "0", function(artifact)
+      return MonCacheWriter.stagePage(artifact, pageBundle("portraits", 0, 640, 320, portraitMarker))
+    end),
+    portraitMarker
+  )
   local index = MonCacheWriter.buildIndex(
     { id = "heartgold", language = "english" },
     string.rep("a", 40),
@@ -179,14 +204,19 @@ function T.writes_each_stage_and_reports_staged_readiness()
     { portraitMarker }
   )
   local summaryMarker = MonCacheWriter.summaryMarker(index)
-  Assert.equal(MonCacheWriter.writeSummary(cache, index, provenance()), summaryMarker)
+  Assert.equal(
+    publish(cache, "mon-summary", "global", function(artifact)
+      return MonCacheWriter.stageSummary(artifact, index, provenance())
+    end),
+    summaryMarker
+  )
   Assert.isTrue(MonCache.isReady(cache, summaryMarker), "the covered family reads ready after its summary")
 end
 
 function T.stages_through_prepared_artifacts_without_touching_live_before_publish()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local catalogMarker = MonCacheWriter.catalogMarker("abc", catalog())
-  local catalogStage = newArtifact(cache, "mon-catalog", "global", "mon-catalog-stage")
+  local catalogStage = newArtifact(cache, "mon-catalog", "global")
   Assert.equal(
     MonCacheWriter.stageCatalog(catalogStage, { catalog = catalog(), marker = catalogMarker }),
     catalogMarker
@@ -195,7 +225,7 @@ function T.stages_through_prepared_artifacts_without_touching_live_before_publis
   publishArtifact(catalogStage, "mon-catalog", "global", catalogMarker)
   Assert.isTrue(MonCache.isCatalogReady(cache, catalogMarker), "the published catalog reads ready")
   local layoutMarker = MonCacheWriter.layoutMarker("abc", icons(), portraits())
-  local layoutStage = newArtifact(cache, "mon-layout", "global", "mon-layout-stage")
+  local layoutStage = newArtifact(cache, "mon-layout", "global")
   Assert.equal(
     MonCacheWriter.stageLayout(layoutStage, {
       icons = icons(),
@@ -236,7 +266,7 @@ function T.rejects_a_malformed_page_without_publishing()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local broken = pageBundle("icons", 0, 256, 128, "broken-marker")
   broken.pixels = "short"
-  local artifact = newArtifact(cache, "mon-icon-page", "0", "mon-icon-page-broken")
+  local artifact = newArtifact(cache, "mon-icon-page", "0")
   local err = Assert.throws(function()
     MonCacheWriter.stagePage(artifact, broken)
   end)
@@ -246,7 +276,9 @@ function T.rejects_a_malformed_page_without_publishing()
   local badKind = pageBundle("icons", 0, 256, 128, "bad-kind-marker")
   badKind.kind = "sprites"
   Assert.throws(function()
-    MonCacheWriter.writePage(cache, badKind)
+    publish(cache, "mon-icon-page", "0", function(artifact)
+    return MonCacheWriter.stagePage(artifact, badKind)
+  end)
   end)
   Assert.isFalse(MonCache.isPageReady(cache, "icons", 0, "bad-kind-marker"), "a mislabeled page never stages")
 end
@@ -258,12 +290,16 @@ function T.failed_rebuild_preserves_the_previous_artifact()
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
   local firstMarker = MonCacheWriter.pageMarker("abc", "icons", 0, icons())
-  MonCacheWriter.writePage(cache, pageBundle("icons", 0, 256, 128, firstMarker))
+  publish(cache, "mon-icon-page", "0", function(artifact)
+    return MonCacheWriter.stagePage(artifact, pageBundle("icons", 0, 256, 128, firstMarker))
+  end)
   local broken = pageBundle("icons", 0, 256, 128, MonCacheWriter.pageMarker("abc", "icons", 0, icons()))
   broken.catalog = nil
   broken.pixels = "short"
   Assert.throws(function()
-    MonCacheWriter.writePage(cache, broken)
+    publish(cache, "mon-icon-page", "0", function(artifact)
+    return MonCacheWriter.stagePage(artifact, broken)
+  end)
   end)
   Assert.isTrue(MonCache.isPageReady(cache, "icons", 0, firstMarker), "the previous page remains ready")
   Assert.equal(
@@ -271,20 +307,21 @@ function T.failed_rebuild_preserves_the_previous_artifact()
     firstMarker,
     "the new marker never reached the live tree"
   )
-  Assert.isNil(backend:getInfo("staging/heartgold/mons"), "the stage is cleaned on failure")
 end
 
 function T.summary_refuses_incomplete_page_coverage()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local iconMarker = MonCacheWriter.pageMarker("abc", "icons", 0, icons())
-  MonCacheWriter.writePage(cache, pageBundle("icons", 0, 256, 128, iconMarker))
+  publish(cache, "mon-icon-page", "0", function(artifact)
+    return MonCacheWriter.stagePage(artifact, pageBundle("icons", 0, 256, 128, iconMarker))
+  end)
   local index = MonCacheWriter.buildIndex(
     { id = "heartgold", language = "english" },
     string.rep("a", 40),
     { iconMarker },
     { "stale-portrait-marker" }
   )
-  local complete = newArtifact(cache, "mon-summary", "global", "mon-summary-incomplete")
+  local complete = newArtifact(cache, "mon-summary", "global")
   local ok, summaryErr = pcall(MonCacheWriter.stageSummary, complete, index, provenance())
   Assert.isFalse(ok, "a summary without every declared page must not stage")
   Assert.isTrue(Errors.is(summaryErr), "the refusal stays diagnosable")
@@ -320,7 +357,15 @@ end
 function T.layout_staging_round_trips_its_private_handoff()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local layoutMarker = MonCacheWriter.layoutMarker("abc", icons(), portraits())
-  MonCacheWriter.writeLayout(cache, icons(), portraits(), layoutMarker, pagePlans(), "test-generation")
+  publish(cache, "mon-layout", "global", function(artifact)
+    return MonCacheWriter.stageLayout(artifact, {
+      icons = icons(),
+      portraits = portraits(),
+      marker = layoutMarker,
+      pagePlans = pagePlans(),
+      generationId = "test-generation",
+    })
+  end)
   local ready, reason = MonCacheWriter.isLayoutSourceReady(cache, "test-generation", layoutMarker)
   Assert.isTrue(ready, "the staged handoff reads ready: " .. tostring(reason))
   local plan, loadReason = MonCacheWriter.loadPagePlan(cache, "test-generation", "icons", 0, layoutMarker)
@@ -335,7 +380,15 @@ end
 function T.private_handoff_rejects_foreign_generation_and_layout()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local layoutMarker = MonCacheWriter.layoutMarker("abc", icons(), portraits())
-  MonCacheWriter.writeLayout(cache, icons(), portraits(), layoutMarker, pagePlans(), "test-generation")
+  publish(cache, "mon-layout", "global", function(artifact)
+    return MonCacheWriter.stageLayout(artifact, {
+      icons = icons(),
+      portraits = portraits(),
+      marker = layoutMarker,
+      pagePlans = pagePlans(),
+      generationId = "test-generation",
+    })
+  end)
   local ready, _ = MonCacheWriter.isLayoutSourceReady(cache, "other-generation", layoutMarker)
   Assert.isFalse(ready, "a foreign generation never reads ready")
   local readyMarker, _ = MonCacheWriter.isLayoutSourceReady(cache, "test-generation", "other-marker")
@@ -350,11 +403,27 @@ function T.failed_layout_handoff_preserves_the_previous_layout()
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
   local firstMarker = MonCacheWriter.layoutMarker("abc", icons(), portraits())
-  MonCacheWriter.writeLayout(cache, icons(), portraits(), firstMarker, pagePlans(), "test-generation")
+  publish(cache, "mon-layout", "global", function(artifact)
+    return MonCacheWriter.stageLayout(artifact, {
+      icons = icons(),
+      portraits = portraits(),
+      marker = firstMarker,
+      pagePlans = pagePlans(),
+      generationId = "test-generation",
+    })
+  end)
   local bad = pagePlans()
   bad.iconPages[0].combos = {}
   local ok, stageErr =
-    pcall(MonCacheWriter.writeLayout, cache, icons(), portraits(), firstMarker, bad, "test-generation")
+    pcall(publish, cache, "mon-layout", "global", function(artifact)
+      return MonCacheWriter.stageLayout(artifact, {
+        icons = icons(),
+        portraits = portraits(),
+        marker = firstMarker,
+        pagePlans = bad,
+        generationId = "test-generation",
+      })
+    end)
   Assert.isFalse(ok, "an empty page record must not stage: " .. tostring(stageErr))
   Assert.isTrue(MonCache.isLayoutReady(cache, firstMarker), "the previous layout remains ready")
   local ready, _ = MonCacheWriter.isLayoutSourceReady(cache, "test-generation", firstMarker)
@@ -380,7 +449,9 @@ function T.portrait_sidecars_gate_page_readiness()
   local marker = MonCacheWriter.pageMarker("abc", "portraits", 0, portraits())
   local bundle = pageBundle("portraits", 0, 640, 320, marker)
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  MonCacheWriter.writePage(cache, bundle)
+  publish(cache, "mon-portrait-page", "0", function(artifact)
+    return MonCacheWriter.stagePage(artifact, bundle)
+  end)
   Assert.isTrue(MonCache.isPageReady(cache, "portraits", 0, marker), "the published portrait page reads ready")
   local indexPath = MonCache.portraitIndexPagePath(0)
   local palettePath = MonCache.portraitPalettePagePath(0)
@@ -416,7 +487,9 @@ end
 function T.published_truncation_with_intact_marker_reads_cold()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = MonCacheWriter.pageMarker("abc", "icons", 0, icons())
-  MonCacheWriter.writePage(cache, pageBundle("icons", 0, 256, 128, marker))
+  publish(cache, "mon-icon-page", "0", function(artifact)
+    return MonCacheWriter.stagePage(artifact, pageBundle("icons", 0, 256, 128, marker))
+  end)
   local valid = cache:read(MonCache.pageImagePath("icons", 0))
   Assert.notNil(valid, "the published page bytes are available")
   assert(valid ~= nil, "the published page bytes are available")
@@ -440,13 +513,17 @@ function T.published_damage_repairs_through_the_page_writer()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = MonCacheWriter.pageMarker("abc", "portraits", 0, portraits())
   local bundle = pageBundle("portraits", 0, 640, 320, marker)
-  MonCacheWriter.writePage(cache, bundle)
+  publish(cache, "mon-portrait-page", "0", function(artifact)
+    return MonCacheWriter.stagePage(artifact, bundle)
+  end)
   local valid = cache:read(MonCache.pageImagePath("portraits", 0))
   Assert.notNil(valid, "the published portrait bytes are available")
   assert(valid ~= nil, "the published portrait bytes are available")
   cache:write(MonCache.pageImagePath("portraits", 0), valid:sub(1, math.floor(#valid / 2)))
   Assert.isFalse(MonCache.isPageReady(cache, "portraits", 0, marker), "a damaged portrait reads cold before repair")
-  MonCacheWriter.writePage(cache, bundle)
+  publish(cache, "mon-portrait-page", "0", function(artifact)
+    return MonCacheWriter.stagePage(artifact, bundle)
+  end)
   Assert.equal(
     cache:read(MonCache.pageImagePath("portraits", 0)),
     valid,

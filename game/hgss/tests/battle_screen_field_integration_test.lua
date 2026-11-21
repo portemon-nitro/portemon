@@ -17,7 +17,7 @@ local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local NavigationFacts = require("tests.rom.support.NavigationFacts")
 local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local BattleTask = require("libs.hgss.src.script.tasks.BattleTask")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
@@ -30,6 +30,11 @@ local T = {
     capabilities = { "rom_dump", "derived_assets" },
     derivedAssets = {
       "field-runtime",
+      "audio-bank:721",
+      "mon-portrait-page:30",
+      "mon-portrait-page:34",
+      "mon-icon-page:0",
+      "audio-bank:720",
       "map-data:31",
       "map-data:33",
       "map-data:34",
@@ -433,7 +438,7 @@ local function bindEnvelope(game, versionId, measurement, overrides)
   local doubles = { audio = recordingAudio(), windows = recordingWindows(), text = recordingText() }
   local options = {
     splRandomState = { state = 0 },
-    cacheFs = CacheFs.forVersion(versionId),
+    cacheFs = GeneratedCacheFixture.reader(versionId),
     graphics = uploadCapableGraphics(),
     imagePool = scriptedPool(),
     windows = doubles.windows,
@@ -676,7 +681,7 @@ end
 ---@param versionId string ready game version under test driving
 ---@return unknown generated rival trainer identity resolving without story state
 local function weakestRivalKey(versionId)
-  local compiled = BattleDataCache.loadTrainers(CacheFs.forVersion(versionId))
+  local compiled = BattleDataCache.loadTrainers(GeneratedCacheFixture.reader(versionId))
   assert(type(compiled) == "table" and type(compiled.trainers) == "table", "generated trainers carry records")
   local keys = {}
   for key in pairs(compiled.trainers) do
@@ -709,7 +714,7 @@ local function routeFacts(versionId)
   local RomSourcePath = require("tests.rom.support.RomSourcePath")
   local romFs, romSource = RomSourcePath.openReader(versionId)
   assert(romFs, tostring(romSource))
-  local ok, facts = pcall(NavigationFacts.discover, CacheFs.forVersion(versionId), romFs)
+  local ok, facts = pcall(NavigationFacts.discover, GeneratedCacheFixture.reader(versionId), romFs)
   romFs:close()
   romSource:release()
   if not ok then
@@ -1585,7 +1590,7 @@ function T.tests.pending_facade_forwards_completion_through_the_live_screen()
   local CacheFs = require("libs.storage.src.CacheFs")
   local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
   local versionId = AcceptanceHarness.defaultVersion()
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local manifest = BattlePresentationCache.load(cacheFs)
   Assert.isTrue(
     type(manifest) == "table" and type(manifest.scenes) == "table" and #manifest.scenes > 0,

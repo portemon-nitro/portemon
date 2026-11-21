@@ -1,6 +1,7 @@
 -- Draws the production Storage child through FieldPresentationResources with
 -- compiled PC graphics over each supported display arrangement.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -93,7 +94,10 @@ end
 
 function T.production_storage_draws_with_real_pc_graphics_across_layouts(scope)
   local record, derivedAssets = savedField()
-  local state = FieldState.new(record, { derivedAssets = derivedAssets })
+  local state = FieldState.new(record, {
+    derivedAssets = derivedAssets,
+    cacheFs = GeneratedCacheFixture.reader(AcceptanceHarness.defaultVersion()),
+  })
   local runtime = state.runtime
   local host = assert(runtime.pcApplicationHost, "the production runtime owns the PC child host")
   local handle = host:open({ app = "storage", mode = 0 })

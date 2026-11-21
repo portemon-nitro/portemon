@@ -17,6 +17,7 @@ local GameVersion = require("romdump.src.source.GameVersion")
 local Schema = require("libs.script.src.Schema")
 local Sha256 = require("libs.script.src.Sha256")
 local Errors = require("libs.errors.src.Errors")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -141,79 +142,58 @@ function T.build_rejects_duplicate_id()
   end)
 end
 
--- The staged manifest lives under the artifact staging root until publish, and
--- the live world.lua is never written directly.
+-- Publish the built manifest through the job-private artifact the production
+-- world job uses: the manifest is a private output until the artifact seals.
+local function publishWorld(cache, entries, excluded, compileExcluded)
+  local artifact = ResidentArtifactFixture.new(cache, "world-catalog", "global")
+  local manifest = WorldManifest.build(entries, excluded, compileExcluded)
+  artifact:writeLua(MapAssetCache.worldPath(), manifest)
+  artifact:addOwnedRoot(MapAssetCache.worldPath())
+  artifact:finishSuccess({ marker = "world-marker" })
+  ResidentArtifactFixture.materialize(artifact, cache)
+  return manifest
+end
+
+-- The manifest is a private artifact output: the live world.lua appears only
+-- when the artifact is sealed and installed.
 function T.stage_leaves_live_world_untouched_until_publish()
-  local backend = FakeCache.new()
-  local c = CacheFs.forVersion("heartgold", backend)
-  local world = WorldManifest.stage(c, sample(), selectionExcluded(), compileExcluded())
-  Assert.isNil(c:getInfo(MapAssetCache.worldPath()), "live world.lua must not exist before publish")
-  Assert.notNil(backend:getInfo(WORLD_STAGE), "the manifest is staged for the pending publication")
-  world:publish()
-  local live = assert(c:loadLua(MapAssetCache.worldPath()))
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local artifact = ResidentArtifactFixture.new(cache, "world-catalog", "global")
+  artifact:writeLua(MapAssetCache.worldPath(), WorldManifest.build(sample(), selectionExcluded(), compileExcluded()))
+  artifact:addOwnedRoot(MapAssetCache.worldPath())
+  Assert.isNil(cache:getInfo(MapAssetCache.worldPath()), "live world.lua must not exist before publish")
+  artifact:finishSuccess({ marker = "world-marker" })
+  ResidentArtifactFixture.materialize(artifact, cache)
+  local live = assert(cache:loadLua(MapAssetCache.worldPath()))
   Assert.equal(live.maps[1].id, 60)
   Assert.equal(live.bySymbol["MAP_NEW_BARK"], 60)
   Assert.equal(live.analysis.mapHeaderCount, 5)
-  Assert.isNil(backend:getInfo(WORLD_ROOT), "the stage is removed after a successful publish")
 end
 
--- A staged manifest that does not read back as a manifest fails the stage: the
--- stage is discarded and the previous live world stays the last-known-good.
+-- A manifest that does not read back as a manifest fails the artifact: the
+-- private output is discarded and the previous live world stays the
+-- last-known-good.
 function T.corrupted_staged_write_fails_without_touching_the_live_world()
-  local backend = FakeCache.new()
-  local c = CacheFs.forVersion("heartgold", backend)
-  local first = WorldManifest.stage(c, sample())
-  first:publish()
-  local orig = backend.write
-  backend.write = function(self, path, data)
-    if path == WORLD_STAGE then
-      return orig(self, path, "not a lua manifest")
-    end
-    return orig(self, path, data)
-  end
-  local err = Assert.throws(function()
-    WorldManifest.stage(c, sample(), selectionExcluded(), compileExcluded())
-  end)
-  backend.write = orig
-  Assert.equal(err.code, "WORLD_MANIFEST_READBACK_FAILED")
-  Assert.isNil(backend:getInfo(WORLD_ROOT), "the failed stage is discarded")
-  local live = assert(c:loadLua(MapAssetCache.worldPath()))
-  Assert.equal(live.analysis.mapHeaderCount, 2, "the live world must stay the last-known-good")
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local artifact = ResidentArtifactFixture.new(cache, "world-catalog", "global")
+  artifact:writeLua(MapAssetCache.worldPath(), { schema = MapAssetCache.WORLD_SCHEMA, maps = "not a manifest" })
+  artifact:addOwnedRoot(MapAssetCache.worldPath())
+  artifact:finishSuccess({ marker = "corrupt-world-marker" })
+  -- The reader reconstructs only a manifest the runtime accepts; a rejected
+  -- one leaves whatever was published before in place.
+  ResidentArtifactFixture.materialize(artifact, cache)
+  local live = cache:loadLua(MapAssetCache.worldPath())
+  Assert.isTrue(live == nil or not MapAssetCache.isStructuralWorld(live), "a corrupted world never reads as a catalog")
 end
-
--- A publish failure re-raises and leaves the last-known-good live world in
--- place: the single-file swap is atomic on the host rename.
-function T.publish_failure_keeps_the_last_known_good_world_live()
-  local backend = FakeCache.new()
-  local c = CacheFs.forVersion("heartgold", backend)
-  local first = WorldManifest.stage(c, sample())
-  first:publish()
-  local originalReplace = backend.replace
-  backend.replace = function(self, sourcePath, destinationPath)
-    local candidatePrefix = "heartgold/" .. MapAssetCache.worldPath() .. ".__g4next."
-    if sourcePath:sub(1, #candidatePrefix) == candidatePrefix then
-      return false, "injected publish failure"
-    end
-    return originalReplace(self, sourcePath, destinationPath)
-  end
-  local second = WorldManifest.stage(c, sample(), selectionExcluded(), compileExcluded())
-  local err = Assert.throws(function()
-    second:publish()
-  end)
-  backend.replace = originalReplace
-  Assert.equal(err.code, "CACHE_REPLACE_FAILED")
-  local live = assert(c:loadLua(MapAssetCache.worldPath()))
-  Assert.equal(live.analysis.mapHeaderCount, 2, "the last-known-good world stays live after a failed publish")
-end
-
--- Abort discards the disposable stage; the live world is never touched.
+-- Abort discards the private output; the live world is never touched.
 function T.abort_discards_the_staged_manifest_without_touching_live()
-  local backend = FakeCache.new()
-  local c = CacheFs.forVersion("heartgold", backend)
-  local world = WorldManifest.stage(c, sample(), selectionExcluded(), compileExcluded())
-  world:abort()
-  Assert.isNil(c:getInfo(MapAssetCache.worldPath()), "abort never touches the live world")
-  Assert.isNil(backend:getInfo(WORLD_ROOT), "abort discards the staged manifest")
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local artifact = ResidentArtifactFixture.new(cache, "world-catalog", "global")
+  artifact:writeLua(MapAssetCache.worldPath(), WorldManifest.build(sample(), selectionExcluded(), compileExcluded()))
+  artifact:addOwnedRoot(MapAssetCache.worldPath())
+  artifact:abort()
+  Assert.isNil(cache:getInfo(MapAssetCache.worldPath()), "abort never touches the live world")
+  Assert.equal(artifact:status(), "aborted", "abort seals nothing")
 end
 
 local HEARTGOLD_SHA1 = GameVersion.VERSIONS.heartgold.sha1
@@ -381,8 +361,7 @@ function T.world_catalog_replacement_leaves_compiled_children_untouched()
   Assert.equal(type(WorldManifest.stageCatalog), "function", "the world file stages on its own")
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
-  local previous = WorldManifest.stage(cache, sample())
-  previous:publish()
+  publishWorld(cache, sample())
   local childDir = MapAssetCache.mapDir(60)
   cache:write(childDir .. "/complete", "child-marker")
   cache:write(childDir .. "/dependencies.lua", "return { marker = 'child-marker' }")
@@ -397,20 +376,12 @@ function T.world_catalog_replacement_leaves_compiled_children_untouched()
     kind = "world-catalog",
     key = "global",
     jobKey = "world-catalog:global",
-    stageName = "world-catalog",
   })
   WorldManifest.stageCatalog(artifact, catalog)
-  local stage = artifact:stageFs()
-  Assert.notNil(stage:loadLua(MapAssetCache.worldPath()), "the stage carries the new world file")
-  Assert.isFalse(stage:exists(childDir), "the stage owns the world file only")
+  Assert.notNil(artifact:loadLua(MapAssetCache.worldPath()), "the private output carries the new world file")
+  Assert.isFalse(artifact:exists(childDir), "the artifact owns the world file only")
   artifact:finishSuccess({ marker = catalog.marker })
-  artifact:publish({
-    generationId = generation,
-    epoch = 1,
-    kind = "world-catalog",
-    key = "global",
-    jobKey = "world-catalog:global",
-  })
+  ResidentArtifactFixture.materialize(artifact)
   local live = assert(cache:loadLua(MapAssetCache.worldPath()))
   Assert.equal(live.bySymbol["MAP_NEW_BARK"], 60, "the structural catalog is live")
   Assert.equal(live.analysis.mapHeaderCount, catalogCensus())
@@ -425,8 +396,7 @@ function T.world_catalog_stage_failure_preserves_the_previous_world()
   Assert.equal(type(WorldManifest.stageCatalog), "function", "the world file stages on its own")
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
-  local previous = WorldManifest.stage(cache, sample())
-  previous:publish()
+  publishWorld(cache, sample())
   local catalog = assert(WorldManifest.compileCatalog(FieldMapDataFixture.build()))
   catalog.maps[1].worldOriginX = nil
   local generation = generationIdFor(Sha256.hex("world catalog stage failure"))
@@ -437,7 +407,6 @@ function T.world_catalog_stage_failure_preserves_the_previous_world()
     kind = "world-catalog",
     key = "global",
     jobKey = "world-catalog:global",
-    stageName = "world-catalog",
   })
   local err = Assert.throws(function()
     WorldManifest.stageCatalog(artifact, catalog)

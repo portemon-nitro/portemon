@@ -12,6 +12,7 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FakeCache = require("tests.support.FakeCache")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
@@ -21,6 +22,7 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local RomImporter = require("romdump.src.source.RomImporter")
 local RomSourcePath = require("tests.rom.support.RomSourcePath")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -153,13 +155,7 @@ local function stageBundle(cache, kind, jobKey, stageFn, bundle)
   stageFn(artifact, bundle)
   artifact:finishSuccess({ marker = "editor-presentation-smoke" })
   Assert.isTrue(
-    artifact:publish({
-      generationId = "test-generation",
-      epoch = 1,
-      kind = kind,
-      key = "global",
-      jobKey = jobKey,
-    }),
+    ResidentArtifactFixture.materialize(artifact),
     "the " .. kind .. " scope publishes its isolated generation"
   )
 end
@@ -241,7 +237,7 @@ local function openScreen(scope, versionId, topologyName, request)
   local manifest = Cache.loadManifest(cache)
   local catalog = Catalog.new(assert(catalogData))
   local images = realizeImages(scope, cache, assert(manifest))
-  local fontCache = CacheFs.forVersion(versionId)
+  local fontCache = GeneratedCacheFixture.reader(versionId)
   local uiManifest = assert(fontCache:loadLua(FieldUiAssetCache.manifestPath()))
 
   local topology, width, height = makeTopology(topologyName)

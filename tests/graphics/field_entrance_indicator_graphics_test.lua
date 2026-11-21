@@ -4,7 +4,7 @@
 
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldStaticEffectRenderer = require("libs.hgss.src.presentation.FieldStaticEffectRenderer")
@@ -42,7 +42,7 @@ function T.canonical_indicator_preserves_bright_background(scope, context)
     context:skip("canonical field-effect model is unavailable")
     return
   end
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   if not cache:exists(FieldEffectAssetCache.indexPath()) then
     context:skip("canonical field-effect model is unavailable")
     return

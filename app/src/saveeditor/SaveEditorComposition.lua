@@ -3,7 +3,6 @@
 -- the save itself loads through store normalization without a
 -- whole-record validation pass.
 
-local CacheFs = require("libs.storage.src.CacheFs")
 local Errors = require("libs.errors.src.Errors")
 local SaveFs = require("libs.storage.src.SaveFs")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
@@ -41,7 +40,9 @@ function SaveEditorComposition.open(options)
   assert(type(options) == "table", "save editor composition options are required")
   local versionId = assert(options.versionId)
   local saveId = assert(options.saveId)
-  local cacheFs = CacheFs.forVersion(versionId)
+  -- One reader per selected epoch: the editor's generated catalogs and the
+  -- renderers it composes all read the same installed view.
+  local cacheFs = assert(options.cacheFs, "the save editor needs the selected epoch's installed generated view")
   -- The field-UI manifest is a trusted published artifact: presence through
   -- the ready cache path is sufficient, and the producer pipeline plus
   -- explicit audit own whole-manifest validation.

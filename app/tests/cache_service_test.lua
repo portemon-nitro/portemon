@@ -1309,4 +1309,534 @@ function T.rejected_offer_fails_the_boot_gate_permanently()
   service:shutdown()
 end
 
+-- The generated corpus a selected epoch compiles lives in memory: the
+-- controller installs bytes (and the small completion facts) through ordered
+-- packets, and the game thread exposes one stable reader only once the
+-- installation commit has landed. These records name only the locked
+-- transport, so a service that still mirrors scalar readiness has no reader to
+-- hand out.
+
+local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+
+local function probeIdentity()
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  return assert(DerivedCacheState.currentForSelection({
+    versionId = "heartgold",
+    romSha1 = string.rep("a", 40),
+    producerId = "r7",
+  }))
+end
+
+local function residentEntry(identity, path, text)
+  return {
+    path = path,
+    data = assert(hostLove.data.newByteData(text), "the probe needs a real Data buffer"),
+    size = #text,
+    sourceId = "base:" .. identity.generationId,
+    contentId = identity.generationId .. "\0" .. path,
+  }
+end
+
+-- One installation sequence as the controller publishes it: private begin,
+-- bounded entry parts, then the commit carrying only the small semantic facts.
+local function pushInstallation(service, spec)
+  service:injectReply({
+    op = "cache-install-begin",
+    epoch = spec.epoch,
+    generationId = spec.identity.generationId,
+    sequence = spec.sequence,
+    initial = spec.initial == true,
+    identity = spec.identity,
+    entryCount = #spec.entries,
+  })
+  local part, index = 1, 1
+  while index <= #spec.entries do
+    local slice = {}
+    for position = index, math.min(index + 127, #spec.entries) do
+      slice[#slice + 1] = spec.entries[position]
+    end
+    service:injectReply({
+      op = "cache-install-entries",
+      epoch = spec.epoch,
+      generationId = spec.identity.generationId,
+      sequence = spec.sequence,
+      part = part,
+      entries = slice,
+    })
+    index = index + #slice
+    part = part + 1
+  end
+  service:injectReply({
+    op = "cache-install-commit",
+    epoch = spec.epoch,
+    generationId = spec.identity.generationId,
+    sequence = spec.sequence,
+    milestones = spec.milestones or {},
+    firstPlay = spec.firstPlay == true,
+    complete = spec.complete == true,
+  })
+end
+
+local function requireInstalledReader(service, epoch)
+  Assert.isTrue(
+    type(service.getCacheFs) == "function",
+    "the service hands out no installed generated reader, so gameplay reads physical generated files"
+  )
+  local reader = service:getCacheFs(epoch)
+  Assert.notNil(reader, "an installed epoch exposes one stable generated reader")
+  Assert.isTrue(service:getCacheFs(epoch) == reader, "the epoch's reader is one stable view across frames")
+  return reader
+end
+
+-- A bounded wait on a real channel: a missing packet must fail the record
+-- instead of parking the whole run.
+local function awaitValue(channel, seconds)
+  local deadline = hostLove.timer.getTime() + (seconds or 10)
+  while hostLove.timer.getTime() < deadline do
+    local value = channel:pop()
+    if value ~= nil then
+      return value
+    end
+    hostLove.timer.sleep(0.002)
+  end
+  return nil
+end
+
+-- Stop a test-owned Lua state without ever joining it unconditionally: a
+-- publisher parked on its gate would otherwise park the run with it.
+local function stopThread(thread)
+  for _ = 1, 400 do
+    if not thread:isRunning() then
+      return
+    end
+    hostLove.timer.sleep(0.005)
+  end
+  thread:kill("the recording publisher did not stop")
+  thread:wait()
+end
+
+-- A terminal observation carries the sequence whose bytes it vouches for.
+-- Until that sequence is installed the game thread observes nothing, and once
+-- it is installed the reader lends the very buffers the controller published.
+function T.an_observation_waits_for_installed_bytes_and_the_reader_shares_them()
+  local Service = requireService()
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local epoch = assert(service:select({ versionId = "heartgold", development = true }))
+  local identity = probeIdentity()
+  local scene = residentEntry(identity, "data/generated/field/30/scene.lua", "return { mapId = 30 }\n")
+  local atlas = residentEntry(identity, "assets/generated/field/30/atlas.png", "PNGDATA")
+  local requestId = assert(service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" }))
+  service:update()
+
+  -- The controller's terminal answer for the second publication arrives before
+  -- the bytes it refers to have been installed on this thread.
+  service:injectReply({
+    op = "request-result",
+    epoch = epoch,
+    requestId = requestId,
+    state = "ready",
+    requiredSequence = 2,
+  })
+  pushInstallation(service, {
+    epoch = epoch,
+    identity = identity,
+    sequence = 1,
+    initial = true,
+    entries = { scene },
+    milestones = { "bootstrap" },
+  })
+  service:update()
+  local early = service:observe(epoch, { requestKind = "milestone", name = "bootstrap" })
+  Assert.isNil(early, "a terminal observation never outruns the bytes it requires")
+
+  -- The installation the observation waited for: one more entry, and the fact
+  -- that first play is now recorded for that same captured sequence.
+  pushInstallation(service, {
+    epoch = epoch,
+    identity = identity,
+    sequence = 2,
+    entries = { atlas },
+    milestones = { "bootstrap" },
+    firstPlay = true,
+  })
+  service:update()
+  local ready = service:observe(epoch, { requestKind = "milestone", name = "bootstrap" })
+  Assert.isTrue(ready, "the buffered observation lands once its sequence is installed")
+
+  local reader = requireInstalledReader(service, epoch)
+  local borrowed = assert(reader:readData(atlas.path), "the installed reader lends the freshly installed bytes")
+  Assert.isTrue(borrowed == atlas.data, "the reader lends the published buffer rather than a serialized copy")
+  Assert.equal(borrowed:getString(), "PNGDATA", "the lent buffer carries the committed payload")
+  local resolved = assert(reader:resolveAsset(scene.path), "the installed reader resolves the earlier entry")
+  Assert.equal(resolved.size, scene.size, "the resolved reference reports the payload size")
+  Assert.isTrue(reader:readData(scene.path) == scene.data, "earlier entries keep lending their own buffers")
+
+  local identitySeen = service:cacheIdentity(epoch)
+  Assert.notNil(identitySeen, "the installed epoch exposes its full cache identity")
+  Assert.deepEqual(identitySeen, identity, "the installed identity is the controller's generation identity")
+  Assert.isTrue(service:firstPlayReady(epoch), "first play is only reported after its captured closure installed")
+  local duplicated = service:recordFirstPlay(epoch)
+  Assert.isTrue(duplicated ~= false, "recording an already recorded first play stays a no-op")
+  service:retire(epoch)
+  Assert.isNil(service:getCacheFs(epoch), "a retired epoch hands out no reader")
+  Assert.isNil(service:cacheIdentity(epoch), "a retired epoch exposes no identity")
+  Assert.equal(borrowed:getString(), "PNGDATA", "blocks a consumer already borrowed stay readable after retirement")
+  service:shutdown()
+end
+
+-- A sequence is a stream position, not a count of entries: a fresh empty
+-- installation establishes sequence 1 with no payload at all, and a hydrated
+-- snapshot may open the stream at any later sequence and continue from there.
+-- A zero-file job settles through its completion fact alone, and a gap is a
+-- protocol violation rather than a miss.
+function T.installation_sequences_open_empty_or_from_a_hydrated_snapshot()
+  local Service = requireService()
+  local identity = probeIdentity()
+  local empty = assert(Service.new({ thread = newChannelHost() }))
+  local emptyEpoch = assert(empty:select({ versionId = "heartgold", development = true }))
+  local emptyRequest = assert(empty:request(emptyEpoch, {
+    requestKind = "milestone",
+    name = "bootstrap",
+    urgency = "required",
+  }))
+  empty:update()
+  empty:injectReply({
+    op = "request-result",
+    epoch = emptyEpoch,
+    requestId = emptyRequest,
+    state = "ready",
+    requiredSequence = 1,
+  })
+  pushInstallation(empty, {
+    epoch = emptyEpoch,
+    identity = identity,
+    sequence = 1,
+    initial = true,
+    entries = {},
+    milestones = { "bootstrap" },
+  })
+  empty:update()
+  Assert.isTrue(
+    empty:observe(emptyEpoch, { requestKind = "milestone", name = "bootstrap" }),
+    "a job with no payload settles through its completion fact"
+  )
+  local emptyReader = requireInstalledReader(empty, emptyEpoch)
+  Assert.isNil(
+    emptyReader:resolveAsset("data/generated/field/30/scene.lua"),
+    "an empty installation exposes an empty store, not a missing reader"
+  )
+  empty:shutdown()
+
+  -- A second selection starts from a snapshot this process did not write.
+  local reloaded = assert(Service.new({ thread = newChannelHost() }))
+  local epoch = assert(reloaded:select({ versionId = "heartgold", development = true }))
+  local scene = residentEntry(identity, "data/generated/field/40/scene.lua", "hydrated")
+  local requestId = assert(reloaded:request(epoch, {
+    requestKind = "milestone",
+    name = "bootstrap",
+    urgency = "required",
+  }))
+  reloaded:update()
+  pushInstallation(reloaded, {
+    epoch = epoch,
+    identity = identity,
+    sequence = 42,
+    initial = true,
+    entries = { scene },
+    milestones = { "bootstrap" },
+  })
+  reloaded:update()
+  Assert.isTrue(
+    reloaded:observe(epoch, { requestKind = "milestone", name = "bootstrap" }),
+    "a hydrated snapshot's own sequence satisfies the observations it captured"
+  )
+  local reader = requireInstalledReader(reloaded, epoch)
+  Assert.equal(reader:readData(scene.path):getString(), "hydrated", "the hydrated payload is readable in place")
+  local resumed = residentEntry(identity, "data/generated/field/40/actors.lua", "compiled")
+  reloaded:injectReply({
+    op = "request-result",
+    epoch = epoch,
+    requestId = requestId,
+    state = "ready",
+    requiredSequence = 43,
+  })
+  pushInstallation(reloaded, {
+    epoch = epoch,
+    identity = identity,
+    sequence = 43,
+    entries = { resumed },
+    milestones = { "bootstrap" },
+  })
+  reloaded:update()
+  Assert.equal(
+    reader:readData(resumed.path):getString(),
+    "compiled",
+    "the stream continues at the hydrated sequence instead of restarting"
+  )
+
+  pushInstallation(reloaded, {
+    epoch = epoch,
+    identity = identity,
+    sequence = 45,
+    entries = {},
+  })
+  Assert.throws(function()
+    reloaded:update()
+  end, "an out-of-order installation sequence is a protocol violation, not an ordinary miss")
+  reloaded:shutdown()
+end
+
+-- The installation stream is a protocol, not a hint: an identical replay of an
+-- already installed part changes nothing, while a differently addressed part
+-- with the same identity is a programming error instead of a silent overwrite.
+function T.a_duplicate_part_must_match_the_installed_bytes()
+  local Service = requireService()
+  local service = assert(Service.new({ thread = newChannelHost() }))
+  local epoch = assert(service:select({ versionId = "heartgold", development = true }))
+  local identity = probeIdentity()
+  local scene = residentEntry(identity, "data/generated/field/30/scene.lua", "stable")
+  pushInstallation(service, {
+    epoch = epoch,
+    identity = identity,
+    sequence = 1,
+    initial = true,
+    entries = { scene },
+  })
+  service:update()
+  local reader = requireInstalledReader(service, epoch)
+  local stable = assert(reader:resolveAsset(scene.path), "the installed entry resolves")
+
+  service:injectReply({
+    op = "cache-install-entries",
+    epoch = epoch,
+    generationId = identity.generationId,
+    sequence = 1,
+    part = 1,
+    entries = { scene },
+  })
+  service:update()
+  Assert.isTrue(reader:resolveAsset(scene.path) == stable, "an identical part replay leaves the reader alone")
+
+  local shadow = residentEntry(identity, scene.path, "shadow")
+  service:injectReply({
+    op = "cache-install-entries",
+    epoch = epoch,
+    generationId = identity.generationId,
+    sequence = 1,
+    part = 1,
+    entries = { shadow },
+  })
+  Assert.throws(function()
+    service:update()
+  end, "a duplicate part with different bytes under one content identity is a protocol violation")
+  service:shutdown()
+end
+
+-- Retiring the live epoch and selecting another must strand everything the old
+-- selection still had in flight: late bytes, late terminal facts, and late
+-- first-play facts land nowhere.
+function T.a_retired_epochs_traffic_never_reaches_the_live_view()
+  local Service = requireService()
+  local service = assert(Service.new({ thread = newChannelHost() }))
+  local identity = probeIdentity()
+  local staleEpoch = assert(service:select({ versionId = "heartgold", development = true }))
+  local scene = residentEntry(identity, "data/generated/field/30/scene.lua", "stale")
+  pushInstallation(service, {
+    epoch = staleEpoch,
+    identity = identity,
+    sequence = 1,
+    initial = true,
+    entries = { scene },
+  })
+  service:update()
+  requireInstalledReader(service, staleEpoch)
+
+  service:retire(staleEpoch)
+  local liveEpoch = assert(service:select({ versionId = "heartgold", development = true }))
+  service:update()
+  pushInstallation(service, {
+    epoch = staleEpoch,
+    identity = identity,
+    sequence = 2,
+    entries = { residentEntry(identity, "data/generated/field/30/late.lua", "late") },
+    firstPlay = true,
+  })
+  service:injectReply({
+    op = "request-result",
+    epoch = staleEpoch,
+    requestId = 1,
+    state = "ready",
+    requiredSequence = 2,
+  })
+  service:update()
+  Assert.isNil(service:getCacheFs(liveEpoch), "a retired epoch's installation publishes no live reader")
+  Assert.isNil(service:cacheIdentity(liveEpoch), "a retired epoch's installation publishes no live identity")
+  Assert.isFalse(service:firstPlayReady(liveEpoch), "a stale first-play fact cannot become the live epoch's fact")
+
+  local current = residentEntry(identity, "data/generated/field/31/scene.lua", "current")
+  pushInstallation(service, {
+    epoch = liveEpoch,
+    identity = identity,
+    sequence = 1,
+    initial = true,
+    entries = { current },
+  })
+  service:update()
+  local live = requireInstalledReader(service, liveEpoch)
+  Assert.equal(live:readData(current.path):getString(), "current", "the live epoch installs its own bytes")
+  Assert.isNil(
+    live:readData("data/generated/field/30/late.lua"),
+    "the retired epoch's payload never enters the live epoch's store"
+  )
+  service:shutdown()
+end
+
+-- A publisher in another Lua state hands its packets over through real thread
+-- channels while this thread is already trying to observe readiness: a partial
+-- installation stays invisible until the part it was waiting for arrives, and
+-- the bytes cross by reference rather than as a serialized copy.
+local PUBLISHER_THREAD = [[
+local data = (rawget(_G, "love") and love.data) or require("love.data")
+local reply, arrived, gate, hold, spec = ...
+local function entry(row)
+  return {
+    path = row.path,
+    data = assert(data.newByteData(row.text)),
+    size = #row.text,
+    sourceId = spec.sourceId,
+    contentId = spec.contentIdPrefix .. row.path,
+  }
+end
+for _, row in ipairs(spec.head) do
+  reply:push(row)
+end
+for _, row in ipairs(spec.headEntries) do
+  reply:push({ op = "cache-install-entries", epoch = spec.epoch, generationId = spec.generationId,
+    sequence = spec.sequence, part = row.part, entries = { entry(row) } })
+end
+arrived:push("head")
+gate:demand()
+for _, row in ipairs(spec.tailEntries) do
+  reply:push({ op = "cache-install-entries", epoch = spec.epoch, generationId = spec.generationId,
+    sequence = spec.sequence, part = row.part, entries = { entry(row) } })
+end
+reply:push({ op = "cache-install-commit", epoch = spec.epoch, generationId = spec.generationId,
+  sequence = spec.sequence, milestones = spec.milestones, firstPlay = false, complete = false })
+arrived:push("tail")
+hold:demand()
+]]
+
+function T.a_real_thread_installs_every_part_before_readiness_is_observed()
+  local Service = requireService()
+  local host = assert(hostLove.thread, "the scenario needs real thread channels")
+  local command = assert(host.newChannel())
+  local reply = assert(host.newChannel())
+  -- The controller itself is not the subject here; its channel endpoints are
+  -- real so a second Lua state can install the packets it would send.
+  local idleController = { alive = true }
+  function idleController:start()
+    return true
+  end
+  function idleController:wait()
+    return true
+  end
+  function idleController:isRunning()
+    return self.alive
+  end
+  function idleController:getError()
+    return nil
+  end
+  local minted = 0
+  local service = assert(Service.new({
+    thread = {
+      newChannel = function()
+        minted = minted + 1
+        if minted == 1 then
+          return command
+        end
+        return reply
+      end,
+      newThread = function()
+        return idleController
+      end,
+    },
+  }))
+  local arrived = assert(host.newChannel())
+  local gate = assert(host.newChannel())
+  local hold = assert(host.newChannel())
+  local identity = probeIdentity()
+  local epoch = assert(service:select({ versionId = "heartgold", development = true }))
+  local requestId = assert(service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" }))
+  service:update()
+
+  local thread = assert(host.newThread(PUBLISHER_THREAD))
+  local started, startError = pcall(function()
+    thread:start(reply, arrived, gate, hold, {
+      epoch = epoch,
+      generationId = identity.generationId,
+      sequence = 2,
+      sourceId = "base:" .. identity.generationId,
+      contentIdPrefix = identity.generationId .. "\0",
+      milestones = { "bootstrap" },
+      head = {
+        { op = "request-result", epoch = epoch, requestId = requestId, state = "ready", requiredSequence = 2 },
+        {
+          op = "cache-install-begin",
+          epoch = epoch,
+          generationId = identity.generationId,
+          sequence = 2,
+          initial = true,
+          identity = identity,
+          entryCount = 2,
+        },
+      },
+      headEntries = {
+        { part = 1, path = "data/generated/field/30/scene.lua", text = "return { mapId = 30 }\n" },
+      },
+      tailEntries = {
+        { part = 2, path = "assets/generated/field/30/atlas.png", text = "PNGDATA" },
+      },
+    })
+  end)
+  Assert.isTrue(started, "the publisher Lua state starts: " .. tostring(startError))
+
+  local ok, err = pcall(function()
+    Assert.equal(awaitValue(arrived, 20), "head", "the publisher sends the terminal fact and a first part")
+    service:update()
+    Assert.isNil(
+      service:observe(epoch, { requestKind = "milestone", name = "bootstrap" }),
+      "no readiness is exposed before the installation commit"
+    )
+    Assert.isNil(
+      type(service.getCacheFs) == "function" and service:getCacheFs(epoch) or nil,
+      "no reader is exposed before the installation commit"
+    )
+
+    gate:push(true)
+    Assert.equal(awaitValue(arrived, 20), "tail", "the publisher sends the remaining part and the commit")
+    service:update()
+    Assert.isTrue(
+      service:observe(epoch, { requestKind = "milestone", name = "bootstrap" }),
+      "the closure is playable once every part is installed"
+    )
+    local reader = requireInstalledReader(service, epoch)
+    local borrowed = assert(reader:readData("assets/generated/field/30/atlas.png"), "the installed bytes are readable")
+    Assert.equal(borrowed:getString(), "PNGDATA", "bytes published from another Lua state arrive intact")
+    Assert.isTrue(
+      reader:readData("data/generated/field/30/scene.lua") ~= nil,
+      "the earlier part's bytes are still installed"
+    )
+  end)
+  pcall(function()
+    gate:push(true)
+    hold:push(true)
+  end)
+  stopThread(thread)
+  service:shutdown()
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return { tests = T }

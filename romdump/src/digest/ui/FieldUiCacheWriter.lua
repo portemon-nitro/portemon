@@ -10,8 +10,6 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
-local PngEncoder = require("romdump.src.digest.PngEncoder")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 
 local FieldUiCacheWriter = {}
 
@@ -19,27 +17,10 @@ function FieldUiCacheWriter.isReady(cacheFs, marker)
   return FieldUiAssetCache.isReady(cacheFs, marker)
 end
 
----@param stage table<string, unknown>
----@param path string
----@param asset string|{ width: integer, height: integer, pixels: string }
-local function writeAsset(stage, path, asset)
-  if type(asset) == "table" then
-    stage:write(path, PngEncoder.encode(asset.width, asset.height, asset.pixels))
-  else
-    stage:write(path, asset)
-  end
-end
-
-local function stageAssets(stage, bundle)
-  for path, asset in pairs(bundle.assets) do
-    writeAsset(stage, path, asset)
-  end
-end
-
 -- The staged copy of an image record is not written yet: its continuation owns
 -- that file, so readback accepts the pending registration instead.
 local function deferAssets(artifact, bundle)
-  local stage = artifact:stageFs()
+  local stage = artifact
   for path, asset in pairs(bundle.assets) do
     if type(asset) == "table" then
       artifact:deferImage(path, asset.width, asset.height, asset.pixels)
@@ -78,38 +59,16 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function FieldUiCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "field-ui staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "field-ui staging requires a PreparedArtifact")
   assert(bundle and bundle.marker and bundle.manifest and bundle.assets, "stage requires a UI bundle")
   assert(bundle.manifest.schema == FieldUiAssetCache.SCHEMA, "ui manifest schema mismatch")
   artifact:addOwnedRoot(FieldUiAssetCache.assetDir())
   artifact:addOwnedRoot(FieldUiAssetCache.dir())
   deferAssets(artifact, bundle)
-  finishStage(artifact:stageFs(), bundle, function(image)
-    return artifact:hasDeferredImage(image) or artifact:stageFs():exists(image, "file")
+  finishStage(artifact, bundle, function(image)
+    return artifact:hasDeferredImage(image) or artifact:exists(image, "file")
   end)
   return bundle.marker
-end
-
-function FieldUiCacheWriter.write(cacheFs, bundle)
-  assert(bundle and bundle.marker and bundle.manifest and bundle.assets, "write requires a UI bundle")
-  assert(bundle.manifest.schema == FieldUiAssetCache.SCHEMA, "ui manifest schema mismatch")
-  local tx = ArtifactPublisher.begin(cacheFs, "field-ui", {
-    FieldUiAssetCache.assetDir(),
-    FieldUiAssetCache.dir(),
-  })
-  local stage = tx.stage
-  local ok, err = pcall(function()
-    stageAssets(stage, bundle)
-    finishStage(stage, bundle, function(image)
-      return stage:exists(image, "file")
-    end)
-  end)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
-  return true
 end
 
 return FieldUiCacheWriter

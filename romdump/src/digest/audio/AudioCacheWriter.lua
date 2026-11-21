@@ -20,7 +20,6 @@ local AudioCache = require("libs.assets.src.audio.AudioCache")
 local AudioCacheValidator = require("libs.assets.src.audio.AudioCacheValidator")
 local AudioCompiler = require("romdump.src.digest.audio.AudioCompiler")
 local AudioErrors = require("libs.assets.src.audio.AudioErrors")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local Hashing = require("romdump.src.digest.Hashing")
 
 local AudioCacheWriter = {}
@@ -97,7 +96,7 @@ end
 -- bundle (the batch spelling collects one bank). Readback replays the closure
 -- scope the explicit audit runs, so a staged closure always proves its bank,
 -- sequences, and referenced samples before anything publishes.
----@param stage CacheFs
+---@param stage PreparedArtifact
 ---@param compiled AudioCompiler.BankBundle
 ---@return string
 local function persistBank(stage, compiled)
@@ -137,9 +136,9 @@ end
 ---@param bankPlan AudioCompiler.BankPlan
 ---@return string
 function AudioCacheWriter.stageBank(artifact, source, bankPlan)
-  assert(artifact and artifact.stageFs and artifact.cacheFs, "bank staging requires a PreparedArtifact")
+  assert(artifact and artifact.write and artifact.cacheFs, "bank staging requires a PreparedArtifact")
   local ownedPlan = checkBankPlan(bankPlan)
-  local stage = artifact:stageFs()
+  local stage = artifact
   artifact:addOwnedRoot(AudioCache.bankPath(ownedPlan.bankId))
   for _, sequenceId in ipairs(ownedPlan.sequenceIds) do
     artifact:addOwnedRoot(AudioCache.sequencePath(sequenceId))
@@ -167,62 +166,6 @@ function AudioCacheWriter.stageBank(artifact, source, bankPlan)
     error(assert(err), 0)
   end
   return persistBank(stage, bundle)
-end
-
--- Stage one bank closure straight into the live cache for the batch build:
--- the closure compiles into job-local memory (one bank only, discarded after
--- staging) and publishes through a transaction owning exactly its files. A
--- compilation failure returns its structured error for the per-version
--- report; a staging failure raises like every other writer boundary.
----@param cacheFs CacheFs
----@param romFs RomFs
----@param bankPlan AudioCompiler.BankPlan
----@return string?|nil
----@return Errors.Error?|nil
-function AudioCacheWriter.writeBank(cacheFs, romFs, bankPlan)
-  local ownedPlan = checkBankPlan(bankPlan)
-  local identity, identityErr = AudioCompiler.soundIdentity(romFs)
-  if identity == nil then
-    return nil, assert(identityErr) --[[@as Errors.Error]]
-  end
-  -- The standalone caller owns a bounded one-shot session at its existing
-  -- lifetime boundary: one acquisition serves the single closure.
-  local session, sessionErr = AudioCompiler.openSession(romFs, identity)
-  if session == nil then
-    return nil, assert(sessionErr) --[[@as Errors.Error]]
-  end
-  local collected = {}
-  local collectedMetadata = {}
-  local bundle, err = session:compileBank(ownedPlan, function(key, metadata, pcm)
-    if collected[key] == nil then
-      collected[key] = pcm
-      collectedMetadata[key] = metadata
-    end
-  end)
-  session:close()
-  if bundle == nil then
-    return nil, assert(err) --[[@as Errors.Error]]
-  end
-  bundle.samples = collected
-  bundle.sampleMetadata = collectedMetadata
-  local roots = {
-    AudioCache.bankPath(ownedPlan.bankId),
-  }
-  for _, sequenceId in ipairs(ownedPlan.sequenceIds) do
-    roots[#roots + 1] = AudioCache.sequencePath(sequenceId)
-  end
-  for key in pairs(collected) do
-    roots[#roots + 1] = AudioCache.samplePath(key)
-    roots[#roots + 1] = AudioCache.sampleMetadataPath(key)
-  end
-  local tx = ArtifactPublisher.begin(cacheFs, "audio-bank-" .. ownedPlan.bankId, roots)
-  local ok, result = pcall(persistBank, tx.stage, bundle)
-  if not ok then
-    tx:abort()
-    error(result, 0)
-  end
-  tx:publish()
-  return result
 end
 
 -- The deterministic family summary marker: the cache format, the covered
@@ -275,7 +218,7 @@ end
 -- runtime index lands in the stage, readback replays catalog validation
 -- there, and only then does the caller publish. No bank, sequence, or sample
 -- payload is staged here.
----@param stage CacheFs
+---@param stage PreparedArtifact
 ---@param plan { index: table<string, unknown>, bankPlans: table<integer, { bankId: integer, sequenceIds: integer[] }> }
 ---@param soundIdentity { romSha1: string, sdatSha1: string, sdatFileId: integer }
 ---@return string
@@ -297,32 +240,11 @@ end
 ---@param soundIdentity { romSha1: string, sdatSha1: string, sdatFileId: integer }
 ---@return string
 function AudioCacheWriter.stageCatalog(artifact, plan, soundIdentity)
-  assert(artifact and artifact.stageFs and artifact.cacheFs, "catalog staging requires a PreparedArtifact")
+  assert(artifact and artifact.write and artifact.cacheFs, "catalog staging requires a PreparedArtifact")
   local owned = checkCatalogPlan(plan)
   local identity = checkSoundIdentity(soundIdentity)
   artifact:addOwnedRoot(AudioCache.indexPath())
-  return persistCatalog(artifact:stageFs(), owned, identity)
-end
-
--- Publish the runtime catalog straight into the live cache for the batch
--- build. Raises like every other writer boundary.
----@param cacheFs CacheFs
----@param plan { index: table<string, unknown>, bankPlans: table<integer, { bankId: integer, sequenceIds: integer[] }> }
----@param soundIdentity { romSha1: string, sdatSha1: string, sdatFileId: integer }
----@return string
-function AudioCacheWriter.writeCatalog(cacheFs, plan, soundIdentity)
-  local owned = checkCatalogPlan(plan)
-  local identity = checkSoundIdentity(soundIdentity)
-  local tx = ArtifactPublisher.begin(cacheFs, "audio-catalog", {
-    AudioCache.indexPath(),
-  })
-  local ok, result = pcall(persistCatalog, tx.stage, owned, identity)
-  if not ok then
-    tx:abort()
-    error(result, 0)
-  end
-  tx:publish()
-  return result
+  return persistCatalog(artifact, owned, identity)
 end
 
 -- Stage the family summary through a caller-owned prepared artifact. A
@@ -335,55 +257,8 @@ end
 ---@param catalogMarker string current audio-catalog receipt marker
 ---@return string
 function AudioCacheWriter.stageSummary(artifact, plan, catalogMarker)
-  assert(artifact and artifact.stageFs and artifact.cacheFs, "summary staging requires a PreparedArtifact")
+  assert(artifact and artifact.write and artifact.cacheFs, "summary staging requires a PreparedArtifact")
   return AudioCacheWriter.summaryMarker(checkCatalogPlan(plan), catalogMarker)
-end
-
-local function stageBundle(tx, bundle)
-  local stage = tx.stage
-  stage:writeLua(AudioCache.indexPath(), bundle.index)
-  for id, _ in pairs(bundle.index.sequences) do
-    local sequence = bundle.sequences[id]
-    assert(sequence, "bundle is missing sequence " .. tostring(id))
-    stage:writeLua(AudioCache.sequencePath(id), sequence)
-  end
-  for id, _ in pairs(bundle.index.banks) do
-    local bank = bundle.banks[id]
-    assert(bank, "bundle is missing bank " .. tostring(id))
-    stage:writeLua(AudioCache.bankPath(id), bank)
-  end
-  for key, bytes in pairs(bundle.samples) do
-    assert(bundle.sampleMetadata[key] ~= nil, "bundle is missing sample metadata for " .. tostring(key))
-    stage:write(AudioCache.samplePath(key), bytes)
-    stage:writeLua(AudioCache.sampleMetadataPath(key), bundle.sampleMetadata[key])
-  end
-  -- Readback is the same authoritative cross-file walk the explicit audit
-  -- runs; a problem fails the staged write before anything is published.
-  local problem = AudioCacheValidator.validate(stage)
-  if problem ~= nil then
-    raiseReadback(problem, {})
-  end
-end
-
-function AudioCacheWriter.write(cacheFs, bundle)
-  assert(bundle, "write requires an audio bundle")
-  assert(bundle.marker, "marker is a required bundle section")
-  assert(bundle.index, "index is a required bundle section")
-  assert(bundle.sequences, "sequences is a required bundle section")
-  assert(bundle.banks, "banks is a required bundle section")
-  assert(bundle.samples, "samples is a required bundle section")
-  assert(bundle.sampleMetadata, "sampleMetadata is a required bundle section")
-  assert(type(bundle.index.sequences) == "table", "index.sequences is a required bundle section")
-  assert(type(bundle.index.banks) == "table", "index.banks is a required bundle section")
-  assert(bundle.index.schema == AudioCache.INDEX_SCHEMA, "bundle index schema mismatch")
-  local tx = ArtifactPublisher.begin(cacheFs, "audio", { AudioCache.dir() })
-  local ok, err = pcall(stageBundle, tx, bundle)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
-  return true
 end
 
 return AudioCacheWriter

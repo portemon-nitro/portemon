@@ -15,6 +15,7 @@
 -- user-owned dump and skips loudly without one. No proximity scoring, no
 -- recursive reachability, no second audio thread.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local AudioBank = require("libs.assets.src.audio.AudioBank")
@@ -327,6 +328,17 @@ local function fakeCacheFs()
     resolve = function(_, relativePath)
       return "confined/" .. relativePath
     end,
+    -- The queue resolves one immutable payload reference per request; this
+    -- probe states only that shape, and a main-thread byte read stays an error.
+    resolveAsset = function(_, relativePath)
+      return {
+        path = relativePath,
+        sourceId = "base:near-ram-probe",
+        contentId = "near-ram-probe\0" .. relativePath,
+        size = 2,
+        data = love.data.newByteData("{}"),
+      }
+    end,
     read = function()
       error("the preparation queue must not read cache bytes on the main thread", 0)
     end,
@@ -598,7 +610,7 @@ function T.tests.predicted_near_sounds_and_images_rest_in_ram_before_first_use(c
   Assert.isTrue(fieldOk, "the live comparison needs published field records: " .. tostring(FieldMapDataCache))
   local scriptOk, ScriptCache = pcall(require, "libs.assets.src.ScriptCache")
   Assert.isTrue(scriptOk, "the live comparison needs the published script index: " .. tostring(ScriptCache))
-  local cacheFs = CacheFs.forVersion(readyVersion)
+  local cacheFs = GeneratedCacheFixture.reader(readyVersion)
   local audioIndex = cacheFs:loadLua(AudioCache.indexPath())
   Assert.notNil(audioIndex, "the live cache carries its audio index")
   local liveProvider = AudioAssetProvider.new(cacheFs)
@@ -1281,6 +1293,18 @@ local function assetNeedsRuntime(spec)
     resources = resources,
   }
   runtime.cacheFs = {
+    versionId = "heartgold",
+    -- The prediction runtime resolves each demanded payload as one immutable
+    -- reference, the same shape an installed epoch serves.
+    resolveAsset = function(_, path)
+      return {
+        path = path,
+        sourceId = "base:prediction-fixture",
+        contentId = "prediction-fixture\0" .. path,
+        size = 2,
+        data = love.data.newByteData("{}"),
+      }
+    end,
     read = function(_, path)
       if path == ScriptCache.memberPath(generation, 0) then
         return "return {}\n"

@@ -4,6 +4,7 @@
 -- stage with no selection. The scene paints every pixel of the drawable and
 -- keeps animating; no outlined card or generic headline is ever composed.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local PngWriter = require("tests.support.PngEncoder")
@@ -601,6 +602,7 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
     local state = StartupTitleState.new({
       versionId = "heartgold",
       epoch = 7,
+      cacheFs = GeneratedCacheFixture.reader("heartgold"),
       derivedAssets = host,
       stageMenu = function()
         return menu

@@ -9,9 +9,7 @@
 -- map are never touched.
 
 local Errors = require("libs.errors.src.Errors")
-local PngWriter = require("romdump.src.digest.PngEncoder")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 
 local FieldActorCacheWriter = {}
 
@@ -75,35 +73,16 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function FieldActorCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "actor staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "actor staging requires a PreparedArtifact")
   assert(type(bundle) == "table" and bundle.marker, "invalid actor bundle")
   artifact:addOwnedRoot(FieldActorCache.assetDir())
   artifact:addOwnedRoot(FieldActorCache.dir())
-  local stage = artifact:stageFs()
+  local stage = artifact
   return persist(stage, bundle, function(path, atlas)
     artifact:deferImage(path, atlas.width, atlas.height, atlas.pixels)
   end, function(path)
     return artifact:hasDeferredImage(path) or stage:exists(path, "file")
   end)
-end
-
-function FieldActorCacheWriter.write(cacheFs, bundle)
-  assert(cacheFs and type(bundle) == "table" and bundle.marker, "invalid actor bundle")
-  local tx = ArtifactPublisher.begin(cacheFs, "field-actors", {
-    FieldActorCache.assetDir(),
-    FieldActorCache.dir(),
-  })
-  local ok, result = pcall(persist, tx.stage, bundle, function(path, atlas)
-    tx.stage:write(path, PngWriter.encode(atlas.width, atlas.height, atlas.pixels))
-  end, function(path)
-    return tx.stage:exists(path, "file")
-  end)
-  if not ok then
-    tx:abort()
-    error(result, 0)
-  end
-  tx:publish()
-  return result
 end
 
 return FieldActorCacheWriter

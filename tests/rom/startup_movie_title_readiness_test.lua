@@ -13,6 +13,7 @@ local FakeCache = require("tests.support.FakeCache")
 local ArtifactState = require("romdump.src.build.ArtifactState")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local OPENING_SCHEMA = "g4-startup-opening-scene-v13"
 local SOURCE_TICK_RATE = 30
@@ -94,14 +95,7 @@ local function stageScene(cacheFs, bundle, sceneNumber)
   Assert.notNil(marker, "scene " .. sceneNumber .. " stages its numbered package: " .. tostring(err))
   artifact:finishSuccess({ marker = marker })
   Assert.isTrue(
-    artifact:publish({
-      generationId = JOURNEY_GENERATION,
-      epoch = 1,
-      kind = "opening-scene",
-      key = key,
-      jobKey = "opening-scene:" .. key,
-      stageName = "opening-scene-" .. key,
-    }),
+    ResidentArtifactFixture.materialize(artifact),
     "scene " .. sceneNumber .. " publishes its numbered package"
   )
 end
@@ -121,14 +115,7 @@ local function stageTitle(cacheFs, bundle)
   Assert.notNil(marker, "the title stages its package: " .. tostring(err))
   artifact:finishSuccess({ marker = marker })
   Assert.isTrue(
-    artifact:publish({
-      generationId = JOURNEY_GENERATION,
-      epoch = 1,
-      kind = "startup-title",
-      key = "global",
-      jobKey = "startup-title:global",
-      stageName = "startup-title",
-    }),
+    ResidentArtifactFixture.materialize(artifact),
     "the title publishes its package"
   )
 end

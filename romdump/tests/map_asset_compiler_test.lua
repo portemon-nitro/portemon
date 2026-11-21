@@ -48,6 +48,7 @@ local StarterLab = require("romdump.src.catalog.hgss.starter_lab")
 local TF = require("tests.support.TextureFixtures")
 local Tex0Fixture = require("tests.support.Tex0Fixture")
 local TerrainFixture = require("tests.support.TerrainFixture")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -67,7 +68,6 @@ local function stageMap(cacheFs, bundle)
     kind = "map",
     key = key,
     jobKey = "map:" .. key,
-    stageName = "map-" .. key,
   })
   local ok, stageErr = pcall(MapCacheWriter.stage, prepared, bundle)
   if not ok then
@@ -75,13 +75,7 @@ local function stageMap(cacheFs, bundle)
     error(stageErr, 0)
   end
   prepared:finishSuccess({ marker = bundle.marker })
-  prepared:publish({
-    generationId = "test-generation",
-    epoch = 1,
-    kind = "map",
-    key = key,
-    jobKey = "map:" .. key,
-  })
+  ResidentArtifactFixture.materialize(prepared)
   return bundle.marker
 end
 
@@ -175,14 +169,15 @@ local function publishPlannedCells(cacheFs, index, plan)
       modelKeyOf = {},
     }
   end
-  FieldCellCacheWriter.write(cacheFs, {
-    index = index,
-    cells = cells,
-    meshes = {},
-    textures = {},
-    models = {},
-    marker = "synthetic-field-cell-corpus",
-  })
+  local corpusMarker = "synthetic-field-cell-corpus"
+  local artifact = ResidentArtifactFixture.new(cacheFs, "field-cell-index", "global")
+  FieldCellCacheWriter.stageIndex(artifact, index)
+  for _, cell in pairs(cells) do
+    FieldCellCacheWriter.stageCell(artifact, cell.dependencies.descriptor, cell, cell.cellMarker)
+  end
+  FieldCellCacheWriter.stageComplete(artifact, corpusMarker)
+  artifact:finishSuccess({ marker = corpusMarker })
+  ResidentArtifactFixture.materialize(artifact, cacheFs)
 end
 
 -- ---- terrain-animation fixtures ----

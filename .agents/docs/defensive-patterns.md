@@ -42,6 +42,16 @@ remove the stage after a publish error.
 Filesystem wrappers must propagate failed write, remove, rename, and create
 operations. Reporting success after persistence failed violates publication.
 
+Rebuildable cache output is the deliberate exception to "validate the complete
+stage" for external input: a compiler validates the bytes it produces in
+memory, and the background archive that saves them is trusted once write,
+close, and replacement report success. That output is not reopened, unzipped,
+re-hashed, or semantically audited during play, because a damaged snapshot is
+detected by the next boot's normal input parsing and rebuilt from the verified
+source. This tolerance is scoped to generated cache persistence: saves,
+last-known-good user state, and bounded reads of external input keep the rules
+above.
+
 Stateful subsystems own busy and reentrancy rules. A protection or pin has one
 owner; shared protection needs explicit tokens/counting or a redesigned owner.
 When callbacks can mutate a dispatched collection, define whether that affects
@@ -64,6 +74,11 @@ deleting user state by construction.
 - Development producer-byte digests and explicit per-game release counters
   identify the immutable cache generation; persisted contract versions
   describe formats and APIs, not compiler revisions.
+- A generated-asset reader has one owner and one mode: a physical version root
+  for source binding and explicit tooling, or the selected generation's
+  resident view for gameplay. There is no automatic disk fallback, so a
+  missing generated artifact is a provisioner miss instead of an unnoticed
+  second source of truth.
 
 ## Strict data and recovery
 

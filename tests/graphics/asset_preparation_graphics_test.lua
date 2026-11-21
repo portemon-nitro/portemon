@@ -1,18 +1,17 @@
 -- The one real-thread/real-Data proof for the presentation preparation
--- worker: a real love.thread worker reads real save-directory cache bytes,
--- decodes/packs a mesh and decodes an image, and replies with LÖVE
--- Data/ImageData -- never a Mesh or Image. Every other queue behavior
--- (priority, cancellation, disposal) is covered deterministically with a
--- fake thread/channel in the component-layer queue tests; this suite proves
--- only that the real worker/Data path works and never touches love.graphics.
--- The real filesystem is required here (unlike the in-memory FakeCache used
--- elsewhere) because a worker Lua state cannot see this state's closures --
--- only the shared save directory and Channel-safe Variants cross the
--- boundary.
+-- worker: a real love.thread worker receives the resident generated payload
+-- the main thread resolved, decodes/packs a mesh and decodes an image, and
+-- replies with LÖVE Data/ImageData -- never a Mesh or Image. Every other
+-- queue behavior (priority, cancellation, disposal) is covered
+-- deterministically with a fake thread/channel in the component-layer queue
+-- tests; this suite proves only that the real worker/Data path works and
+-- never touches love.graphics. A real thread is required because a worker
+-- Lua state cannot see this state's closures: only channel-safe Data crosses
+-- the boundary.
 
 local Assert = require("tests.support.Assert")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local CacheFs = require("libs.storage.src.CacheFs")
+local ResidentCache = require("libs.storage.src.ResidentCache")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local PngWriter = require("tests.support.PngEncoder")
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
@@ -20,9 +19,12 @@ local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local T = {}
 
 local VERSION_ID = "asset-preparation-worker-test"
-local MESH_PATH = "geometry/prepared.g4mesh"
-local TEXTURE_PATH = "textures/prepared.png"
-local COMPRESSED_MESH_PATH = "geometry/compressed.g4mesh"
+local MESH_PATH = "data/generated/geometry/prepared.g4mesh"
+local TEXTURE_PATH = "assets/generated/textures/prepared.png"
+local COMPRESSED_MESH_PATH = "data/generated/geometry/compressed.g4mesh"
+local ICON_PAGE_PATH = "assets/generated/party/page-0.png"
+local DERIVATIVE_PATH = "assets/generated/textures/derivative.png"
+local SAMPLE_PATH = "data/generated/audio/sample.pcm16le"
 
 local function requireQueue()
   local ok, AssetPreparationQueue = pcall(require, "libs.hgss.src.presentation.AssetPreparationQueue")
@@ -51,11 +53,34 @@ local function triangleBatch()
   return { vertices = { v(0, 0), v(2, 0), v(0, 2) }, indices = { 0, 1, 2 } }
 end
 
+-- One resident generated view over the given logical payloads: the same
+-- reader object a selected epoch installs, so the worker receives immutable
+-- Data references instead of reading a physical cache file.
+local function residentCache(assets)
+  local sourceId = "base:" .. VERSION_ID
+  local store = ResidentCache.new(VERSION_ID, sourceId)
+  local entries = {}
+  local index = 0
+  for path, bytes in pairs(assets) do
+    local text = type(bytes) == "userdata" and bytes:getString() or bytes
+    index = index + 1
+    entries[index] = {
+      path = path,
+      data = assert(love.data.newByteData(text)),
+      size = #text,
+      sourceId = sourceId,
+      contentId = VERSION_ID .. "\0" .. path,
+    }
+  end
+  store:commit(store:prepare(entries))
+  return CacheFs.fromStore(store), store
+end
+
 local function preparedCache()
-  local cache = CacheFs.forVersion(VERSION_ID)
-  cache:write(MESH_PATH, MeshWriter.encode(triangleBatch()))
-  cache:write(TEXTURE_PATH, PngWriter.encode(2, 2, string.char(255, 0, 0, 255):rep(4)))
-  return cache
+  return residentCache({
+    [MESH_PATH] = MeshWriter.encode(triangleBatch()),
+    [TEXTURE_PATH] = PngWriter.encode(2, 2, string.char(255, 0, 0, 255):rep(4)),
+  })
 end
 
 function T.worker_prepares_mesh_and_image_payloads_without_touching_graphics()
@@ -86,7 +111,6 @@ function T.worker_prepares_mesh_and_image_payloads_without_touching_graphics()
   end)
 
   local statsAfter = love.graphics.getStats()
-  cache:removeTree("")
 
   if not ok then
     error(err, 0)
@@ -132,7 +156,6 @@ function T.packaged_worker_module_resolves_and_prepares_through_a_real_thread()
   end)
 
   local statsAfter = love.graphics.getStats()
-  cache:removeTree("")
 
   if not runOk then
     error(runErr, 0)
@@ -142,8 +165,10 @@ end
 
 function T.invalid_image_bytes_fail_preparation_without_hanging_the_worker()
   local AssetPreparationQueue = requireQueue()
-  local cache = preparedCache()
-  cache:write(TEXTURE_PATH, "not a png")
+  local cache = (residentCache({
+    [MESH_PATH] = MeshWriter.encode(triangleBatch()),
+    [TEXTURE_PATH] = "not a png",
+  }))
   local statsBefore = love.graphics.getStats()
 
   local meshAfterFailure = false
@@ -166,7 +191,6 @@ function T.invalid_image_bytes_fail_preparation_without_hanging_the_worker()
   end)
 
   local statsAfter = love.graphics.getStats()
-  cache:removeTree("")
 
   if not runOk then
     error(runErr, 0)
@@ -175,15 +199,13 @@ function T.invalid_image_bytes_fail_preparation_without_hanging_the_worker()
   Assert.equal(statsAfter.images, statsBefore.images, "preparation alone creates no GPU Image")
 end
 
--- A wrapped mesh still prepares to identical upload payloads: the stored
--- bytes carry the envelope, the worker decodes them off the main thread
--- through the versioned cache, and the prepared geometry matches a direct
--- decode of the logical bytes. The test itself never reads cache bytes on
--- the main thread, so matching geometry proves the decode happened in the
--- worker.
-function T.compressed_mesh_prepares_off_main_thread_through_the_versioned_cache()
+-- A stored mesh prepares to identical upload payloads: the worker decodes the
+-- cache bytes off the main thread through the versioned cache, and the
+-- prepared geometry matches a direct decode of the same logical bytes. The
+-- test itself never reads cache bytes on the main thread, so matching
+-- geometry proves the decode happened in the worker.
+function T.mesh_prepares_off_main_thread_through_the_versioned_cache()
   local AssetPreparationQueue = requireQueue()
-  local cache = CacheFs.forVersion(VERSION_ID)
   local vertices, indices = {}, {}
   for i = 0, 159 do
     local base = i * 3
@@ -210,13 +232,12 @@ function T.compressed_mesh_prepares_off_main_thread_through_the_versioned_cache(
     indices[#indices + 1] = base + 2
   end
   local logical = MeshWriter.encode({ vertices = vertices, indices = indices })
-  Assert.isTrue(#logical >= 1024, "the mesh fixture must clear the wrap threshold")
-  cache:write(COMPRESSED_MESH_PATH, logical)
-  local physical = love.filesystem.read(cache:resolve(COMPRESSED_MESH_PATH))
-  Assert.notNil(physical, "the stored mesh must be readable")
-  assert(type(physical) == "string", "stored mesh bytes must be a string")
-  Assert.equal(physical:sub(1, 4), "PDC1", "the stored mesh is wrapped")
-  Assert.isTrue(#physical < #logical, "the wrapped mesh saves space")
+  local cache, store = residentCache({ [COMPRESSED_MESH_PATH] = logical })
+  Assert.equal(
+    assert(store:readData(COMPRESSED_MESH_PATH)):getString(),
+    logical,
+    "the resident view keeps the generated bytes verbatim"
+  )
   local baseline = SceneMesh.prepareUpload(logical, COMPRESSED_MESH_PATH)
   local statsBefore = love.graphics.getStats()
 
@@ -246,7 +267,6 @@ function T.compressed_mesh_prepares_off_main_thread_through_the_versioned_cache(
   end)
 
   local statsAfter = love.graphics.getStats()
-  cache:removeTree("")
 
   if not runOk then
     error(runErr, 0)
@@ -259,17 +279,18 @@ end
 -- realizes exactly once, with no GPU object created by preparation itself.
 function T.icon_sized_image_decodes_through_the_real_worker_without_graphics()
   local AssetPreparationQueue = requireQueue()
-  local cache = CacheFs.forVersion(VERSION_ID)
   local pixels = {}
   for _ = 1, 256 * 128 do
     pixels[#pixels + 1] = string.char(40, 120, 200, 255)
   end
-  cache:write("party/page-0.png", PngWriter.encode(256, 128, table.concat(pixels)))
+  local cache = (residentCache({
+    [ICON_PAGE_PATH] = PngWriter.encode(256, 128, table.concat(pixels)),
+  }))
   local statsBefore = love.graphics.getStats()
 
   local runOk, runErr = pcall(function()
     local queue = AssetPreparationQueue.new(cache)
-    local token = queue:request("image", "party/page-0.png", "demand")
+    local token = queue:request("image", ICON_PAGE_PATH, "demand")
     local image = queue:wait(token)
     Assert.isNil(image.image, "the worker never realizes a love Image")
     Assert.notNil(image.imageData, "the worker replies with decoded ImageData")
@@ -279,7 +300,6 @@ function T.icon_sized_image_decodes_through_the_real_worker_without_graphics()
   end)
 
   local statsAfter = love.graphics.getStats()
-  cache:removeTree("")
 
   if not runOk then
     error(runErr, 0)
@@ -297,12 +317,11 @@ end
 -- repeating the replacement reuses its stored derivative.
 function T.image_prepares_through_the_real_worker_from_the_png_alone()
   local AssetPreparationQueue = requireQueue()
-  local cache = CacheFs.forVersion(VERSION_ID)
-  local logicalPath = "assets/generated/textures/derivative.png"
+  local logicalPath = DERIVATIVE_PATH
   local pngA = PngWriter.encode(2, 2, string.char(255, 0, 0, 255):rep(4))
   local pngB = PngWriter.encode(2, 2, string.char(0, 64, 255, 255):rep(4))
   Assert.isTrue(pngA ~= pngB, "the replacement fixture must carry distinct source bytes")
-  cache:write(logicalPath, pngA)
+  local cache, store = residentCache({ [logicalPath] = pngA })
   local statsBefore = love.graphics.getStats()
 
   local runOk, runErr = pcall(function()
@@ -314,9 +333,18 @@ function T.image_prepares_through_the_real_worker_from_the_png_alone()
     Assert.isTrue(first.kind == "r8" or first.kind == "rgba8", "the derivative classifies to a known layout")
     Assert.notNil(first.indexData, "the worker replies with packed index Data")
 
-    local publisher = ArtifactPublisher.begin(cache, "derivative-refresh", { logicalPath })
-    publisher.stage:write(logicalPath, pngB)
-    Assert.isTrue(publisher:publish(), "the replacement publication must succeed")
+    -- Replacing the generated bytes at the same logical path is what the
+    -- next request must observe: the queue resolves the replacement payload
+    -- afresh instead of reusing the earlier decode.
+    store:commit(store:prepare({
+      {
+        path = logicalPath,
+        data = assert(love.data.newByteData(pngB)),
+        size = #pngB,
+        sourceId = "base:" .. VERSION_ID,
+        contentId = VERSION_ID .. "\0replacement\0" .. logicalPath,
+      },
+    }))
 
     local secondToken = queue:request("image-derivative", logicalPath, "demand")
     local second = queue:wait(secondToken)
@@ -342,10 +370,7 @@ function T.image_prepares_through_the_real_worker_from_the_png_alone()
   end)
 
   local statsAfter = love.graphics.getStats()
-  cache:removeTree("")
-  pcall(function()
-    CacheFs.forArtifactStage(VERSION_ID, "derivative-refresh"):removeTree("")
-  end)
+  store:close()
 
   if not runOk then
     error(runErr, 0)
@@ -359,20 +384,19 @@ end
 -- audio-sample branch rides the same worker cache as meshes and images.
 function T.audio_sample_prepares_through_the_real_worker_as_transferable_bytes()
   local AssetPreparationQueue = requireQueue()
-  local cache = CacheFs.forVersion(VERSION_ID)
   local logical = string.rep("\1\2\3\4", 512)
-  cache:write("data/generated/audio/sample.pcm16le", logical)
+  local cache = (residentCache({ [SAMPLE_PATH] = logical }))
   local statsBefore = love.graphics.getStats()
 
   local runOk, runErr = pcall(function()
     local queue = AssetPreparationQueue.new(cache)
-    local token = queue:request("audio-sample", "data/generated/audio/sample.pcm16le", "demand")
+    local token = queue:request("audio-sample", SAMPLE_PATH, "demand")
     local prepared = queue:wait(token)
     Assert.equal(prepared.size, #logical, "the sample payload sizes the exact logical bytes")
     Assert.notNil(prepared.byteData, "the worker replies with transferable sample Data")
     Assert.equal(prepared.byteData:getString(), logical, "the sample bytes survive the worker round trip")
 
-    local repeatToken = queue:request("audio-sample", "data/generated/audio/sample.pcm16le", "demand")
+    local repeatToken = queue:request("audio-sample", SAMPLE_PATH, "demand")
     local repeated = queue:wait(repeatToken)
     Assert.equal(repeated.byteData:getString(), logical, "a repeat preparation decodes identical sample bytes")
 
@@ -380,7 +404,6 @@ function T.audio_sample_prepares_through_the_real_worker_as_transferable_bytes()
   end)
 
   local statsAfter = love.graphics.getStats()
-  cache:removeTree("")
 
   if not runOk then
     error(runErr, 0)
@@ -394,7 +417,7 @@ end
 -- unbroken span z in [0,4]; the fine neighbour breaks the same span at
 -- z=2, which is the T-junction the producer repair splices into the coarse
 -- side before the surface ever reaches the GPU.
-local TERRAIN_BANK_PATH = "geometry/terrain-bank.g4gx"
+local TERRAIN_BANK_PATH = "data/generated/geometry/terrain-bank.g4gx"
 
 local function gxU32(value)
   return string.char(
@@ -489,10 +512,9 @@ end
 -- the bank or repairs it twice.
 function T.terrain_bank_group_is_conformed_once_for_the_whole_bank_reply()
   local AssetPreparationQueue = requireQueue()
-  local cache = CacheFs.forVersion(VERSION_ID)
   local bank = terrainBank()
+  local cache = (residentCache({ [TERRAIN_BANK_PATH] = bank }))
   local runOk, runErr = pcall(function()
-    cache:write(TERRAIN_BANK_PATH, bank)
     local queue = AssetPreparationQueue.new(cache)
     local token = queue:request("g4gx", TERRAIN_BANK_PATH, "demand")
     local prepared = queue:wait(token)
@@ -505,7 +527,6 @@ function T.terrain_bank_group_is_conformed_once_for_the_whole_bank_reply()
     Assert.equal(fine.indexCount, 12, "the already-segmented neighbour keeps its four triangles")
     queue:release()
   end)
-  cache:removeTree("")
   if not runOk then
     error(runErr, 0)
   end

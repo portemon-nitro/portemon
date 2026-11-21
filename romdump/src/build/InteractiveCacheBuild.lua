@@ -16,7 +16,6 @@
 
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
-local CacheFs = require("libs.storage.src.CacheFs")
 local Errors = require("libs.errors.src.Errors")
 local StorageErrors = require("libs.storage.src.errors")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
@@ -94,7 +93,7 @@ local InteractiveCacheCompletion = require("romdump.src.build.InteractiveCacheCo
 ---@field interest InteractiveCacheBuild.Interest[]
 ---@field byKey table<string, InteractiveCacheBuild.Interest>
 ---@field milestones table<string, string>
----@field trustedMilestones table<string, boolean>
+---@field capturedMilestones table<string, boolean>
 ---@field recorded table<string, boolean>
 ---@field retired boolean
 ---@field sourceLoaded boolean worker inventory adopted
@@ -131,15 +130,6 @@ local buildCellIndex
 ---@field exhausted boolean
 ---@field worked boolean an admitted planning node ran during this pump
 
-local MILESTONE_FILES = {
-  bootstrap = "data/generated/bootstrap.lua",
-  ["new-game-intro"] = "data/generated/new-game-intro.lua",
-  ["field-planning"] = "data/generated/field-planning.lua",
-  ["field-runtime"] = "data/generated/field-runtime.lua",
-  ["startup-title"] = "data/generated/startup-title.lua",
-  ["startup-audio"] = "data/generated/startup-audio.lua",
-}
-
 -- Fixed status observation order. Bootstrap stays observable without an
 -- explicit milestone request; every other name is observed only while
 -- requested. This is a closed traversal list, not an extension registry.
@@ -151,40 +141,6 @@ local STATUS_MILESTONES = {
   "startup-title",
   "startup-audio",
 }
-
--- Restart trust: a persisted milestone record whose schema, generation,
--- and name match the selected session proves its fixed scope without
--- rebuilding it. The per-job marker list is retained for diagnostics but
--- never rechecked here. A missing, stale, or malformed record is absent;
--- only genuine backend failures propagate.
----@param cacheFs table<string, unknown>
----@param generationId string
----@param name string
----@return boolean
-local function loadTrustedMilestone(cacheFs, generationId, name)
-  local path = assert(MILESTONE_FILES[name], "milestone has no file: " .. name)
-  local ok, record, loadError = pcall(cacheFs.loadLua, cacheFs, path)
-  if not ok then
-    error(record, 0)
-  end
-  if record == nil then
-    if loadError ~= nil then
-      local code = type(loadError) == "table" and loadError.code or nil
-      if
-        code ~= StorageErrors.CACHE_FILE_MISSING
-        and code ~= StorageErrors.CACHE_LUA_PARSE_FAILED
-        and code ~= StorageErrors.CACHE_LUA_EVAL_FAILED
-      then
-        error(loadError, 0)
-      end
-    end
-    return false
-  end
-  return type(record) == "table"
-    and record.schema == ArtifactJobs.MILESTONE_SCHEMA
-    and record.generationId == generationId
-    and record.name == name
-end
 
 -- One update advances at most this many dependency/validation nodes, Urgent
 -- demand first; the remainder waits for the next update. A single metadata
@@ -259,19 +215,22 @@ function InteractiveCacheBuild.new(options)
   local clock = options.clock or nowSeconds
   assert(type(clock) == "function", "generation session clock must be a function")
 
-  local cacheFs = CacheFs.forVersion(versionId)
-  cacheFs:recoverPublication()
-  -- Trusted restart facts load once, only after publication recovery:
-  -- each matching persisted milestone answers its scope with no roster,
-  -- enrollment, or worker work.
-  local trustedMilestones = {}
-  for name in pairs(MILESTONE_FILES) do
-    if loadTrustedMilestone(cacheFs, generationId, name) then
-      trustedMilestones[name] = true
-    end
-  end
   assert(type(pool.selectGeneration) == "function", "generation session pool cannot select generations")
   pool:selectGeneration(identity, epoch)
+  -- Every generated read in this session goes through the pool's committed
+  -- resident view: the session never reconstructs a physical generated reader.
+  local cacheFs = assert(pool:cacheFs(), "generation session requires the committed resident view")
+  -- Milestone facts captured by an earlier cut answer their scopes with no
+  -- roster, enrollment, or worker work: the caller supplies them from the
+  -- snapshot it hydrated, never from a completion file.
+  local capturedMilestones = {}
+  if options.milestones ~= nil then
+    assert(type(options.milestones) == "table", "generation session milestone facts must be a list")
+    for _, name in ipairs(options.milestones) do
+      assert(type(name) == "string" and name ~= "", "a captured milestone fact needs its name")
+      capturedMilestones[name] = true
+    end
+  end
   -- Only source-static membership is known here: required message banks and
   -- supported field records derive from frozen catalogs without opening the
   -- dump. Everything else arrives with the worker inventory.
@@ -308,7 +267,7 @@ function InteractiveCacheBuild.new(options)
     interest = {},
     byKey = {},
     milestones = {},
-    trustedMilestones = trustedMilestones,
+    capturedMilestones = capturedMilestones,
     recorded = {},
     retired = false,
     sourceLoaded = false,
@@ -457,7 +416,8 @@ function InteractiveCacheBuild:_validate(kind, key, budget)
   if not self:_spendNode(budget) then
     return nil, nil
   end
-  local results = { ArtifactJobs.validate(self.cacheFs, self.generationId, kind, key, self:_plans(), self:_identity()) }
+  local facts = assert(self.pool:artifactFacts(), "generation session requires the committed facts")
+  local results = { ArtifactJobs.validate(self.cacheFs, facts, kind, key, self:_plans(), self:_identity()) }
   return results[1], results[2]
 end
 
@@ -795,9 +755,11 @@ function InteractiveCacheBuild:_promoteQueued(entry)
     return
   end
   -- The pool owns physical queueing, so a stronger urgency must reach the
-  -- queued record under its canonical identity; the lanes keep its FIFO sequence.
-  -- A repeated identical intent is a no-op. The returned acknowledgement
-  -- is interpreted through the shared observation path.
+  -- queued record under its canonical identity; the lanes keep its FIFO
+  -- sequence. A repeated identical intent is a no-op. A promotion carries the
+  -- closure the job was admitted with, exactly like a fresh submission. The
+  -- returned acknowledgement is interpreted through the shared observation
+  -- path.
   local state, details = self.pool:request({
     versionId = self.versionId,
     generationId = self.generationId,
@@ -807,6 +769,7 @@ function InteractiveCacheBuild:_promoteQueued(entry)
     jobKey = entry.jobKey,
     priority = entry.priority,
     sizeClass = ArtifactJobs.sizeClass(entry.kind),
+    dependencies = entry.finalDeps,
     payload = payload,
   })
   self:_observePoolState(entry, state, details)
@@ -1085,6 +1048,7 @@ function InteractiveCacheBuild:_submit(entry, budget)
     jobKey = entry.jobKey,
     priority = entry.priority,
     sizeClass = ArtifactJobs.sizeClass(entry.kind),
+    dependencies = entry.finalDeps,
     payload = payload,
   }
   -- A fresh submission speaks for pool ownership: epoch, shape and
@@ -1431,7 +1395,7 @@ function InteractiveCacheBuild:_retainedMilestoneAnswer(name)
   -- never a vacuous success. No construction, IO or validation here.
   -- A failed roster construction settles the scope with its cause.
   -- A trusted restart attestation answers ready without any roster.
-  if self.trustedMilestones[name] then
+  if self.capturedMilestones[name] then
     return true, nil
   end
   if self.rosterFailure[name] ~= nil then
@@ -1522,7 +1486,7 @@ function InteractiveCacheBuild:_buildPendingRosters()
   for name, _ in pairs(self.milestones) do
     -- Trusted restart attestations never build a roster: their readiness
     -- is already settled without enrollment or worker work.
-    if self.roster[name] == nil and not self.trustedMilestones[name] then
+    if self.roster[name] == nil and not self.capturedMilestones[name] then
       self:_enqueueControl("roster", 0, name)
     end
   end
@@ -1658,16 +1622,16 @@ function InteractiveCacheBuild:_needsSourceDemand()
   end
   -- Trusted restart attestations prove their scope without the worker
   -- inventory, so they never schedule its discovery.
-  if self.milestones["new-game-intro"] ~= nil and not self.trustedMilestones["new-game-intro"] then
+  if self.milestones["new-game-intro"] ~= nil and not self.capturedMilestones["new-game-intro"] then
     return true
   end
-  if self.milestones["startup-audio"] ~= nil and not self.trustedMilestones["startup-audio"] then
+  if self.milestones["startup-audio"] ~= nil and not self.capturedMilestones["startup-audio"] then
     return true
   end
-  if self.milestones["field-planning"] ~= nil and not self.trustedMilestones["field-planning"] then
+  if self.milestones["field-planning"] ~= nil and not self.capturedMilestones["field-planning"] then
     return true
   end
-  if self.milestones["field-runtime"] ~= nil and not self.trustedMilestones["field-runtime"] then
+  if self.milestones["field-runtime"] ~= nil and not self.capturedMilestones["field-runtime"] then
     return true
   end
   return false
@@ -1778,27 +1742,33 @@ function InteractiveCacheBuild:_publishMilestone(name)
       return
     end
   end
-  local jobs = {}
+  local facts = assert(self.pool:artifactFacts(), "milestone publication requires the committed facts")
   for _, member in ipairs(members) do
-    local receipt = self.cacheFs:loadLua(ArtifactState.path(member.kind, member.key))
-    if type(receipt) ~= "table" or type(receipt.marker) ~= "string" then
+    local fact = ArtifactState.read(facts, member.kind, member.key)
+    if type(fact) ~= "table" or type(fact.marker) ~= "string" then
       return
     end
-    jobs[#jobs + 1] = { identity = member.kind .. ":" .. member.key, marker = receipt.marker }
   end
-  table.sort(jobs, function(left, right)
-    return left.identity < right.identity
-  end)
-  local record = {
-    schema = ArtifactJobs.MILESTONE_SCHEMA,
-    generationId = self.generationId,
-    name = name,
-    jobs = jobs,
-  }
-  local path = assert(MILESTONE_FILES[name], "milestone has no file: " .. name)
-  self.cacheFs:writeLua(path .. ".new", record)
-  self.cacheFs:replace(path .. ".new", path)
   self.recorded[name] = true
+end
+
+-- The milestone facts this session has proven: the scopes a prior cut already
+-- captured plus the scopes whose whole roster this session proved ready. The
+-- controller captures them with the bytes they vouch for; there is no
+-- separate completion file and no file-based restart trust.
+---@return string[] sortedNames
+function InteractiveCacheBuild:milestoneFacts()
+  local names = {}
+  for name in pairs(self.recorded) do
+    names[#names + 1] = name
+  end
+  for name in pairs(self.capturedMilestones) do
+    if self.recorded[name] == nil then
+      names[#names + 1] = name
+    end
+  end
+  table.sort(names)
+  return names
 end
 
 ---@param entry InteractiveCacheBuild.Interest
@@ -1837,7 +1807,7 @@ function InteractiveCacheBuild:requestMilestone(name, urgency)
   -- A trusted restart attestation settles the request at once: urgency
   -- is still registered for status observation, but no source plan,
   -- roster, enrollment, or worker work is scheduled.
-  if self.trustedMilestones[name] then
+  if self.capturedMilestones[name] then
     return true, nil
   end
   -- Record new or stronger intent and answer from retained state: roster
@@ -3205,9 +3175,9 @@ function InteractiveCacheBuild:retire()
   self.retired = true
   -- Logical interest ends here; executing physical slots stay charged to the
   -- pool until their terminal reply or joined exit. Late old-epoch output
-  -- can no longer publish through this session. The session owns no source
-  -- reader, so retirement closes nothing itself. Background authorization
-  -- and its cursor end with the other logical interest.
+  -- can no longer publish through this session. Retirement revokes the
+  -- committed generated view: consumers stop before this point. Background
+  -- authorization and its cursor end with the other logical interest.
   self.pool:retireSelection(self.epoch)
   self.interest = {}
   self.byKey = {}

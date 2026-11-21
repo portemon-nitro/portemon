@@ -9,6 +9,11 @@ local FakeCache = require("tests.support.FakeCache")
 
 local T = {}
 
+-- Real Data buffers for prepared results: the harness swaps the global
+-- runtime for a controlled transport, so the host buffer factory is captured
+-- while the suite loads.
+local hostData = assert(rawget(_G, "love").data, "the suite runs under the host runtime")
+
 local REQUIRED = 0
 local NEAR = 10
 local SWEEP = 100
@@ -178,6 +183,7 @@ local function makeJob(options)
     jobKey = canonicalKey(options.kind, options.key),
     priority = options.priority,
     sizeClass = options.sizeClass,
+    dependencies = options.dependencies or {},
     payload = options.payload,
   }
 end
@@ -218,28 +224,38 @@ local function pushCompletion(host, message)
   resultChannel(host):push(message)
 end
 
+-- One sealed result as the compiler worker reports it: its output bytes plus
+-- the completion fact, addressed by the dispatch attempt it answers.
 local function preparedCompletion(options)
+  local generation = options.generation
+  local key = options.key
+  local path = options.path or ("data/generated/maps/" .. tostring(key) .. "/complete")
+  local text = options.text or "ready"
+  local data = assert(hostData.newByteData(text), "a result needs real Data buffers")
   return {
     workerId = options.workerId,
     epoch = options.epoch,
-    generationId = options.generation,
+    generationId = generation,
     kind = options.kind,
-    key = options.key,
-    jobKey = canonicalKey(options.kind, options.key),
-    stageName = options.stageName,
+    key = key,
+    jobKey = canonicalKey(options.kind, key),
+    dispatchId = options.dispatchId,
     status = "prepared",
+    marker = options.marker or ("marker-" .. tostring(key)),
+    ownedRoots = { path:match("^(.*)/[^/]+$") or path },
+    sharedPaths = {},
+    entries = { { path = path, data = data, size = data:getSize() } },
     compileSeconds = 1,
     stageSeconds = 1,
     stagedBytes = 8,
-    retiring = options.retiring or false,
   }
 end
 
-local function dispatchedStage(host, workerId, index)
+local function dispatchedDispatchId(host, workerId, index)
   local message = inputChannel(host, workerId).log[index]
   Assert.notNil(message, "expected a dispatched job for worker " .. tostring(workerId))
-  Assert.notNil(message.stageName, "dispatched work must carry its stage identity")
-  return message.stageName
+  Assert.notNil(message.dispatchId, "dispatched work must carry its dispatch identity")
+  return message.dispatchId
 end
 
 function T.promotion_reuses_a_single_queued_job()
@@ -410,7 +426,7 @@ function T.heavy_work_never_overlaps()
       generation = generation,
       kind = "map",
       key = "61",
-      stageName = dispatchedStage(host, 1, 1),
+      dispatchId = dispatchedDispatchId(host, 1, 1),
     })
   )
   updatePool(pool, host, 0)
@@ -470,7 +486,7 @@ function T.retired_interest_frees_no_phantom_worker()
       generation = generation,
       kind = "map",
       key = "60",
-      stageName = dispatchedStage(host, 1, 1),
+      dispatchId = dispatchedDispatchId(host, 1, 1),
     })
   )
   updatePool(pool, host, 0)
@@ -552,7 +568,7 @@ function T.drained_capacity_dispatches_the_waiting_jumbo()
       generation = generation,
       kind = "map",
       key = "61",
-      stageName = dispatchedStage(host, 1, 1),
+      dispatchId = dispatchedDispatchId(host, 1, 1),
     })
   )
   updatePool(pool, host, 0)
@@ -568,7 +584,7 @@ function T.drained_capacity_dispatches_the_waiting_jumbo()
       generation = generation,
       kind = "map",
       key = "62",
-      stageName = dispatchedStage(host, 2, 1),
+      dispatchId = dispatchedDispatchId(host, 2, 1),
     })
   )
   updatePool(pool, host, 0)
@@ -687,7 +703,7 @@ function T.prepared_results_hold_dispatch_slots()
       generation = generation,
       kind = "map",
       key = "60",
-      stageName = dispatchedStage(host, 1, 1),
+      dispatchId = dispatchedDispatchId(host, 1, 1),
     })
   )
   updatePool(pool, host, 0)
@@ -745,7 +761,7 @@ function T.prepared_completion_keeps_its_worker_without_replacement()
       generation = generation,
       kind = "map",
       key = "60",
-      stageName = dispatchedStage(host, 1, 1),
+      dispatchId = dispatchedDispatchId(host, 1, 1),
     })
   )
   updatePool(pool, host, 0)
@@ -774,7 +790,7 @@ function T.prepared_completion_keeps_its_worker_without_replacement()
     })
   )
   updatePool(pool, host)
-  Assert.equal(poolStatus(pool, host, "map:60"), "failed", "draining settles the unstaged harness result")
+  Assert.equal(poolStatus(pool, host, "map:60"), "ready", "draining commits the prepared in-memory result")
   Assert.equal(#inputChannel(host, 1).log, 2, "the settled worker takes new work itself")
   Assert.equal(inputChannel(host, 1).log[2].jobKey, "map:62")
   Assert.equal(#host.threads, 2, "settling never replaces the worker")
@@ -824,7 +840,7 @@ function T.stale_completion_cannot_settle_new_interest()
       generation = generation,
       kind = "map",
       key = "7",
-      stageName = dispatchedStage(host, 1, 1),
+      dispatchId = dispatchedDispatchId(host, 1, 1),
     })
   )
   updatePool(pool, host, 0)
@@ -942,7 +958,7 @@ function T.promotion_while_blocked_keeps_one_queued_job()
   shutdownPool(pool, host)
 end
 
-function T.mismatched_stage_stops_admission_visibly()
+function T.a_completion_for_another_job_identity_stops_admission_visibly()
   local host = newThreadHost(4)
   local pool = openPool(host, "interactive")
   local generation = "test-generation-stage-mismatch"
@@ -962,6 +978,8 @@ function T.mismatched_stage_stops_admission_visibly()
   )
   updatePool(pool, host)
   Assert.equal(poolStatus(pool, host, "map:61"), "running")
+  -- The live attempt's dispatch identity with another job's identity is a
+  -- contradictory completion, not a stale result from an earlier attempt.
   pushCompletion(
     host,
     preparedCompletion({
@@ -969,8 +987,8 @@ function T.mismatched_stage_stops_admission_visibly()
       epoch = 1,
       generation = generation,
       kind = "map",
-      key = "61",
-      stageName = "not-the-dispatched-stage",
+      key = "62",
+      dispatchId = dispatchedDispatchId(host, 1, 1),
     })
   )
   local first = pcall(function()
@@ -978,7 +996,7 @@ function T.mismatched_stage_stops_admission_visibly()
       pool:update(0)
     end)
   end)
-  Assert.isFalse(first, "a stage mismatch is a terminal protocol failure")
+  Assert.isFalse(first, "a contradictory identity is a terminal protocol failure")
   local second = pcall(function()
     withLove(host.love, function()
       pool:update(0)
@@ -1010,14 +1028,14 @@ function T.failed_work_settles_once_and_retries_explicitly()
   )
   updatePool(pool, host)
   Assert.equal(poolStatus(pool, host, "map:61"), "running")
-  local stage = dispatchedStage(host, 1, 1)
+  local stage = dispatchedDispatchId(host, 1, 1)
   local failed = preparedCompletion({
     workerId = 1,
     epoch = 1,
     generation = generation,
     kind = "map",
     key = "61",
-    stageName = stage,
+    dispatchId = stage,
   })
   failed.status = "failed"
   pushCompletion(host, failed)
@@ -1064,7 +1082,7 @@ function T.dropped_prepared_output_frees_its_worker_slot()
       generation = generation,
       kind = "script-member",
       key = "7",
-      stageName = dispatchedStage(host, 1, 1),
+      dispatchId = dispatchedDispatchId(host, 1, 1),
     })
   )
   updatePool(pool, host, 0)
@@ -1142,7 +1160,7 @@ function T.demanded_result_is_accepted_and_pinned()
           generation = generation,
           kind = "map",
           key = "60",
-          stageName = armed.stage,
+          dispatchId = armed.stage,
         })
       end
       if #values == 0 then
@@ -1168,7 +1186,7 @@ function T.demanded_result_is_accepted_and_pinned()
   )
   updatePool(pool, host)
   Assert.equal(poolStatus(pool, host, "map:60"), "running")
-  armed.stage = dispatchedStage(host, 1, 1)
+  armed.stage = dispatchedDispatchId(host, 1, 1)
   armed.ready = true
   -- waitForProgress consumes the demanded reply through the completion
   -- validator, then runs its bounded publication step. The controlled host
@@ -1209,7 +1227,7 @@ function T.delayed_arrival_is_accepted_exactly_once()
   )
   updatePool(pool, host)
   Assert.equal(poolStatus(pool, host, "map:60"), "running")
-  local stage = dispatchedStage(host, 1, 1)
+  local stage = dispatchedDispatchId(host, 1, 1)
   local channel = resultChannel(host)
   local push = channel.push
   local origPop = channel.pop
@@ -1225,7 +1243,7 @@ function T.delayed_arrival_is_accepted_exactly_once()
           generation = generation,
           kind = "map",
           key = "60",
-          stageName = stage,
+          dispatchId = stage,
         })
       )
       return nil
@@ -1300,7 +1318,7 @@ function T.quiesced_jumbo_closes_its_barrier_without_recycling()
   )
   updatePool(pool, host)
   Assert.equal(poolStatus(pool, host, "map:60"), "running")
-  local stage = dispatchedStage(host, 1, 1)
+  local stage = dispatchedDispatchId(host, 1, 1)
   quiescePool(pool, host)
   Assert.isFalse(poolQuiescent(pool, host), "the barrier stays open while the jumbo executes")
   pushCompletion(
@@ -1311,7 +1329,7 @@ function T.quiesced_jumbo_closes_its_barrier_without_recycling()
       generation = generation,
       kind = "map",
       key = "60",
-      stageName = stage,
+      dispatchId = stage,
     })
   )
   updatePool(pool, host, 0)
@@ -1371,7 +1389,7 @@ function T.executing_normal_job_closes_after_completion_during_quiescence()
     })
   )
   updatePool(pool, host)
-  local stage = dispatchedStage(host, 1, 1)
+  local stage = dispatchedDispatchId(host, 1, 1)
   quiescePool(pool, host)
   local idleClose = inputChannel(host, 2).log[1]
   Assert.notNil(idleClose, "the idle worker receives a close request")
@@ -1384,7 +1402,7 @@ function T.executing_normal_job_closes_after_completion_during_quiescence()
       generation = generation,
       kind = "map",
       key = "61",
-      stageName = stage,
+      dispatchId = stage,
     })
   )
   updatePool(pool, host, 0)
@@ -1593,7 +1611,7 @@ function T.retirement_cancels_interest_without_freeing_the_slot()
       generation = generation,
       kind = "script-member",
       key = "7",
-      stageName = dispatchedStage(host, 1, 1),
+      dispatchId = dispatchedDispatchId(host, 1, 1),
     })
   )
   updatePool(pool, host, 0)
@@ -1711,7 +1729,7 @@ function T.independent_jobs_overlap_and_settle_without_worker_replacement()
       generation = generation,
       kind = "map",
       key = "60",
-      stageName = dispatchedStage(host, 1, 1),
+      dispatchId = dispatchedDispatchId(host, 1, 1),
     })
   )
   pushCompletion(
@@ -1722,7 +1740,7 @@ function T.independent_jobs_overlap_and_settle_without_worker_replacement()
       generation = generation,
       kind = "map",
       key = "61",
-      stageName = dispatchedStage(host, 2, 1),
+      dispatchId = dispatchedDispatchId(host, 2, 1),
     })
   )
   updatePool(pool, host, 0)
@@ -1848,7 +1866,7 @@ function T.non_required_work_keeps_a_single_interactive_slot()
           generation = generation,
           kind = "map",
           key = "60",
-          stageName = dispatchedStage(host, 1, 1),
+          dispatchId = dispatchedDispatchId(host, 1, 1),
         })
       )
       updatePool(pool, host, 0)

@@ -1,3 +1,4 @@
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local ParticlesFixture = require("tests.support.BattleEncounterParticlesFixture")
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
@@ -1106,27 +1107,27 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
   local sceneKey = "general/grass/day"
   local sceneImagePath = BattlePresentationCache.sceneImagePath(sceneKey)
   local artPaths = {
-    command = "battle-staging/command.png",
-    moves = "battle-staging/moves.png",
-    target = "battle-staging/target.png",
-    twoOption = "battle-staging/two-option.png",
-    lower = "battle-staging/lower.png",
-    enemyHud = "battle-staging/hud-enemy.png",
-    playerHud = "battle-staging/hud-player.png",
-    playerLeft = "battle-staging/hud-player-left.png",
-    playerRight = "battle-staging/hud-player-right.png",
-    enemyLeft = "battle-staging/hud-enemy-left.png",
-    enemyRight = "battle-staging/hud-enemy-right.png",
-    arrow = "battle-staging/arrow.png",
-    gauge0 = "battle-staging/gauge-0.png",
-    gauge1 = "battle-staging/gauge-1.png",
-    cursor = "battle-staging/cursor.png",
-    pulseMask = "battle-staging/pulse-mask.png",
+    command = "assets/generated/battle-staging/command.png",
+    moves = "assets/generated/battle-staging/moves.png",
+    target = "assets/generated/battle-staging/target.png",
+    twoOption = "assets/generated/battle-staging/two-option.png",
+    lower = "assets/generated/battle-staging/lower.png",
+    enemyHud = "assets/generated/battle-staging/hud-enemy.png",
+    playerHud = "assets/generated/battle-staging/hud-player.png",
+    playerLeft = "assets/generated/battle-staging/hud-player-left.png",
+    playerRight = "assets/generated/battle-staging/hud-player-right.png",
+    enemyLeft = "assets/generated/battle-staging/hud-enemy-left.png",
+    enemyRight = "assets/generated/battle-staging/hud-enemy-right.png",
+    arrow = "assets/generated/battle-staging/arrow.png",
+    gauge0 = "assets/generated/battle-staging/gauge-0.png",
+    gauge1 = "assets/generated/battle-staging/gauge-1.png",
+    cursor = "assets/generated/battle-staging/cursor.png",
+    pulseMask = "assets/generated/battle-staging/pulse-mask.png",
   }
   local fontPaths = {
-    narration = "battle-staging/font-narration.fnt",
-    menu = "battle-staging/font-menu.fnt",
-    hud = "battle-staging/font-hud.fnt",
+    narration = "assets/generated/battle-staging/font-narration.fnt",
+    menu = "assets/generated/battle-staging/font-menu.fnt",
+    hud = "assets/generated/battle-staging/font-hud.fnt",
   }
   local function artPng(seed)
     local pixel = string.char(seed % 256, (seed + 40) % 256, (seed + 90) % 256, 255)
@@ -1385,7 +1386,10 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
     end
     return image
   end
-  local pool = ImageAssetPool.new(cache, { graphics = graphics })
+  -- The staged probe payloads become one resident view: the pool and the
+  -- envelope resolve immutable references, exactly like an installed epoch.
+  local residentView = GeneratedCacheFixture.fromCache(cache)
+  local pool = ImageAssetPool.new(residentView.reader, { graphics = graphics })
   local savedLove = rawget(_G, "love")
   local realNewImageData = savedLove.image.newImageData
   local decodeForms = {}
@@ -1415,7 +1419,7 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
   local ok, err = pcall(function()
     local audioPlays = {}
     local envelope = FieldBattlePresentation.new({
-      cacheFs = cache,
+      cacheFs = residentView.reader,
       windows = {},
       text = {},
       measureDisplay = function()

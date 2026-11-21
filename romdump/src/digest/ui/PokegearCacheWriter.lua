@@ -5,7 +5,6 @@
 -- preserves the live family.
 
 local Errors = require("libs.errors.src.Errors")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
 local PokegearCache = require("libs.assets.src.PokegearCache")
 
@@ -51,13 +50,12 @@ local function validateBundle(bundle)
   end
 end
 
----@param tx table<string, unknown>
+---@param stage PreparedArtifact the artifact's private output owner
 ---@param bundle table<string, unknown>
----@param cacheFs CacheFs
-local function stageBundle(tx, bundle, cacheFs)
+---@param cacheFs table<string, unknown> read-only dependency reader
+local function stageBundle(stage, bundle, cacheFs)
   local assets = bundle.assets ~= nil and bundle.assets or bundle.files
   assert(type(assets) == "table", "pokegear bundle assets are validated before staging")
-  local stage = tx.stage
   for _, path in ipairs(PokegearCache.referencedPaths(bundle.manifest)) do
     stage:write(path, assets[path])
   end
@@ -72,6 +70,9 @@ local function stageBundle(tx, bundle, cacheFs)
       {}
     )
   end
+  -- Errors.raise always throws but carries no noreturn annotation, so the
+  -- invalid-readback guard alone does not narrow; reaching here proves a table.
+  assert(manifest ~= nil, "pokegear manifest readback is present after the invalid guard")
   for _, path in ipairs(PokegearCache.referencedPaths(manifest)) do
     local present = stage:exists(path, "file") or cacheFs:exists(path, "file")
     if not present then
@@ -89,28 +90,12 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function PokegearCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "pokegear staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "pokegear staging requires a PreparedArtifact")
   validateBundle(bundle)
   artifact:addOwnedRoot(PokegearCache.assetDir())
   artifact:addOwnedRoot(PokegearCache.dir())
-  stageBundle({ stage = artifact:stageFs() }, bundle, artifact:cacheFs())
+  stageBundle(artifact, bundle, artifact:cacheFs())
   return bundle.marker
-end
-
----@param cacheFs CacheFs
----@param bundle table<string, unknown>
----@return boolean
-function PokegearCacheWriter.write(cacheFs, bundle)
-  assert(cacheFs and bundle, "pokegear publication requires a cache and a bundle")
-  validateBundle(bundle)
-  local tx = ArtifactPublisher.begin(cacheFs, "pokegear", { PokegearCache.assetDir(), PokegearCache.dir() })
-  local ok, err = pcall(stageBundle, tx, bundle, cacheFs, cacheFs)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
-  return true
 end
 
 return PokegearCacheWriter

@@ -124,12 +124,12 @@ end
 ---@param data table<string, unknown> compiled catalog with its marker and provenance
 ---@return string
 function EasyChatCacheWriter.stageData(artifact, data)
-  assert(artifact and artifact.stageFs, "easy chat staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "easy chat staging requires a PreparedArtifact")
   validateDataBundle(data)
   artifact:addOwnedRoot(EasyChatCache.catalogPath())
   artifact:addOwnedRoot(EasyChatCache.provenancePath("data"))
   artifact:addOwnedRoot(EasyChatCache.dataMarkerPath())
-  local stage = artifact:stageFs()
+  local stage = artifact
   local record = {}
   for key, value in pairs(data) do
     if key ~= "marker" and key ~= "provenance" and key ~= "dependencyHash" then
@@ -147,14 +147,14 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function EasyChatCacheWriter.stagePresentation(artifact, bundle)
-  assert(artifact and artifact.stageFs, "easy chat staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "easy chat staging requires a PreparedArtifact")
   local liveFs = artifact:cacheFs()
   validatePresentationBundle(bundle)
   artifact:addOwnedRoot(EasyChatCache.manifestPath())
   artifact:addOwnedRoot(EasyChatCache.provenancePath("presentation"))
   artifact:addOwnedRoot(EasyChatCache.markerPath())
   artifact:addOwnedRoot(EasyChatCache.assetDir())
-  local stage = artifact:stageFs()
+  local stage = artifact
   for _, path in ipairs(EasyChatCache.referencedPaths(bundle.manifest)) do
     stage:write(path, bundle.assets[path])
   end

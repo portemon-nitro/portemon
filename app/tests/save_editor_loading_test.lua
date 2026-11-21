@@ -28,6 +28,7 @@ function T.tests.pending_or_failed_loader_art_does_not_change_editor_readiness_o
     status = "opening",
     message = "Preparing save data",
     versionId = "soulsilver",
+    cacheFs = {},
     startupPairIndex = 32,
     loading = presentation,
     loaderArtObserved = false,
@@ -73,6 +74,7 @@ function T.tests.throwing_loader_adoption_leaves_editor_opening_authoritative()
   local state = setmetatable({
     status = "opening",
     versionId = "heartgold",
+    cacheFs = {},
     startupPairIndex = 32,
     loading = presentation,
     loaderArtObserved = false,
@@ -130,6 +132,7 @@ function T.tests.pending_loader_art_stays_retryable_then_adopts_successfully_onc
   local state = setmetatable({
     status = "opening",
     versionId = "soulsilver",
+    cacheFs = {},
     startupPairIndex = 32,
     loading = presentation,
     loaderArtObserved = false,
@@ -175,6 +178,7 @@ function T.tests.adopted_loader_art_is_released_once_on_opening_error()
   local state = setmetatable({
     status = "opening",
     versionId = "heartgold",
+    cacheFs = {},
     startupPairIndex = 32,
     loading = presentation,
     loaderArtObserved = false,

@@ -5,7 +5,7 @@
 -- icon, queue, and text collaborators stay alive.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local MoveIconFixture = require("tests.support.MoveIconFixture")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
@@ -213,7 +213,7 @@ function T.preparation_leases_bound_portrait_demand_and_release_exactly_once()
     second:release()
     local poolInner = assert(setup.helper.poolInner, "the doubles carry the pool census")
     local fullChromeCount = #SummaryCache.referencedPaths(manifest)
-      + #MoveIconCache.referencedPaths(MoveIconCache.loadManifest(CacheFs.forVersion(versionId)))
+      + #MoveIconCache.referencedPaths(MoveIconCache.loadManifest(GeneratedCacheFixture.reader(versionId)))
     local chromeCount = fullChromeCount - deferredChromeCount(manifest) + #demand.chrome
     Assert.equal(
       poolInner:stats().outstandingLeases,
@@ -331,7 +331,7 @@ local function syntheticComposition(failures, versionId)
     helper = helper,
     newOptions = function()
       return {
-        cacheFs = SummaryAcceptanceFixture.withSyntheticVisuals(CacheFs.forVersion(versionId)),
+        cacheFs = SummaryAcceptanceFixture.withSyntheticVisuals(GeneratedCacheFixture.reader(versionId)),
         graphics = helper.graphics,
         text = helper.text,
         icons = helper.icons,

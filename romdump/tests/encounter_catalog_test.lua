@@ -7,6 +7,7 @@
 -- from the source layout; they are never produced by the compiler.
 
 local Assert = require("tests.support.Assert")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -339,7 +340,7 @@ end
 
 function T.successful_encounter_job_stages_publishes_and_reads_ready()
   local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
-  local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+  local ArtifactState = require("romdump.src.build.ArtifactState")
   local EncounterCatalogCompiler = require("romdump.src.digest.encounters.EncounterCatalogCompiler")
   local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
   local CacheFs = require("libs.storage.src.CacheFs")
@@ -366,38 +367,21 @@ function T.successful_encounter_job_stages_publishes_and_reads_ready()
     end,
   }
   local generationId = "encounter-success-generation"
-  local stageName = "encounter-success-stage"
   local cacheFs = CacheFs.forVersion("soulsilver", FakeCache.new())
-  local receipt = assert(ArtifactJobs.execute({
+  local facts = ArtifactState.new(generationId)
+  local outcome = assert(ArtifactJobs.execute({
     kind = "encounters",
     key = "global",
     generationId = generationId,
     producerFingerprint = "encounter-success-fixture",
-    stageName = stageName,
     epoch = 1,
+    artifactFacts = facts,
   }, { cacheFs = cacheFs, romFs = fakeRomFs, versionId = "soulsilver" }))
-  Assert.isTrue(type(receipt.result.marker) == "string", "execution seals a receipt marker")
-  local staged = PreparedArtifact.open({
-    cacheFs = cacheFs,
-    generationId = generationId,
-    epoch = 1,
-    kind = "encounters",
-    key = "global",
-    jobKey = "encounters:global",
-    stageName = stageName,
-  })
+  Assert.isTrue(type(outcome.sealed.marker) == "string", "execution seals a marker")
+  ResidentArtifactFixture.mirror(cacheFs, outcome.sealed)
+  ResidentArtifactFixture.commitFact(facts, outcome.sealed)
   Assert.isTrue(
-    staged:publish({
-      generationId = generationId,
-      epoch = 1,
-      kind = "encounters",
-      key = "global",
-      jobKey = "encounters:global",
-    }),
-    "the staged generation publishes"
-  )
-  Assert.isTrue(
-    ArtifactJobs.validate(cacheFs, generationId, "encounters", "global", {}, nil),
+    ArtifactJobs.validate(cacheFs, facts, "encounters", "global", {}, nil),
     "the published stage reads ready"
   )
   local expected = assert(EncounterCatalogCompiler.compile(nativeInput("soulsilver", { [0] = member })))

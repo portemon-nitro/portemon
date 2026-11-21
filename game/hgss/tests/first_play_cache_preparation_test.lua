@@ -23,6 +23,11 @@ local GLOBAL_BEDROOM = { x = 101, z = 202 }
 local function fakeHost(script)
   local calls = {}
   local host = {}
+  -- The selected epoch's installed generated view: the coordinator reads its
+  -- structural world and generated start location from this one reader.
+  host.getCacheFs = function()
+    return script.generatedView
+  end
   function host.requestMilestone(name, urgency)
     calls[#calls + 1] = { name = name, urgency = urgency }
     if script.failures[name] ~= nil then
@@ -85,10 +90,10 @@ end
 -- Records generated-location reads through the game-owned accessor seam.
 local function spyLocation()
   local original = NewGameInitialization.initialLocation
-  local state = { reads = 0, versionId = nil }
-  NewGameInitialization.initialLocation = function(versionId)
+  local state = { reads = 0, input = nil }
+  NewGameInitialization.initialLocation = function(input)
     state.reads = state.reads + 1
-    state.versionId = versionId
+    state.input = input
     return {
       mapSymbol = PLAYER_ROOM.mapSymbol,
       fieldX = PLAYER_ROOM.fieldX,
@@ -99,32 +104,38 @@ local function spyLocation()
   return state, original
 end
 
+-- The selected epoch's installed generated view for one component scenario:
+-- the same reader object a live epoch installs, recording what the closure
+-- asks of it instead of touching any physical generated root.
+local function fixtureView()
+  local view = { versionId = "heartgold", loads = {} }
+  function view:loadLua(path)
+    view.loads[#view.loads + 1] = path
+    if path == MapAssetCache.worldPath() then
+      return { schema = "fixture-world" }
+    end
+    return nil
+  end
+  function view:resolveAsset(_)
+    return nil
+  end
+  function view:readData(_)
+    return nil
+  end
+  return view
+end
+
 local function withSpies(script, fn)
   local loaderState, originalNew = spyLoader(script)
   local locationState, originalLocation = spyLocation()
-  -- The structural world manifest is a filesystem fixture the component
-  -- sandbox does not provide: stub the version-cache read so the
-  -- coordinator's CacheFs/worldPath load reaches the spied loader
-  -- constructor exactly as the production recipe prescribes. The stub
-  -- carries no milestone/location/loader semantics; every assertion below
-  -- observes the coordinator's own demand wiring.
-  local originalForVersion = CacheFs.forVersion
-  rawset(CacheFs, "forVersion", function(_)
-    local cacheFs = {}
-    function cacheFs.loadLua(_, path)
-      Assert.equal(path, MapAssetCache.worldPath())
-      return { schema = "fixture-world" }
-    end
-    return cacheFs
-  end)
+  script.generatedView = script.generatedView or fixtureView()
   local ok, err = xpcall(function()
-    fn(loaderState, locationState)
+    fn(loaderState, locationState, script.generatedView)
   end, function(failure)
     return failure
   end)
   FieldMapLoader.new = originalNew
   NewGameInitialization.initialLocation = originalLocation
-  rawset(CacheFs, "forVersion", originalForVersion)
   if not ok then
     error(err, 0)
   end
@@ -235,7 +246,10 @@ function T.bedroom_demand_uses_the_exact_runtime_location_closure()
     local ready, failure = preparation:poll()
     Assert.isNil(failure, "pending bedroom demand carries no failure")
     Assert.isFalse(ready == true, "preparation waits for the bedroom closure")
-    Assert.equal(locationState.versionId, "heartgold", "the generated location is read for the selected version")
+    Assert.isTrue(
+      locationState.input == script.generatedView,
+      "the generated location is read from the selected epoch's installed view"
+    )
     Assert.equal(#loaderState.constructions, 1, "one metadata-only planning loader serves the import")
     Assert.deepEqual(
       loaderState.conversions,
@@ -418,6 +432,107 @@ function T.near_warmup_uses_near_for_global_and_bedroom_demands()
     Assert.equal(loaderState.demands[1].urgency, "near", "bedroom warmup keeps the same priority")
     preparation:dispose()
   end)
+end
+
+-- A minimal resident generated view: the same reader object a selected epoch
+-- installs. It records what the closure asks of it instead of touching any
+-- physical generated root.
+local function installedView()
+  local view = { loads = {} }
+  function view:loadLua(path)
+    view.loads[#view.loads + 1] = path
+    if path == MapAssetCache.worldPath() then
+      return { schema = "fixture-world" }
+    end
+    return nil
+  end
+  function view:resolveAsset(path)
+    return { path = path, size = 0 }
+  end
+  function view:readData(_)
+    return nil
+  end
+  return view
+end
+
+-- The first-play closure is served by the selected epoch's installed generated
+-- view: the planning loader and the generated start location consume that same
+-- resident reader, and producing the closure opens no physical generated root.
+function T.first_play_closure_reads_through_the_installed_generated_view()
+  local script = {
+    ready = readySet({ "bootstrap", "new-game-intro", "field-planning", "field-runtime" }),
+    failures = {},
+    locationReady = false,
+  }
+  local view = installedView()
+  local host = fakeHost(script)
+  host.getCacheFs = function()
+    return view
+  end
+  local physicalOpens = 0
+  local originalForVersion = CacheFs.forVersion
+  rawset(CacheFs, "forVersion", function(_)
+    physicalOpens = physicalOpens + 1
+    return nil, "a physical generated root has no resident payloads"
+  end)
+  local originalLoaderNew = FieldMapLoader.new
+  local constructions = {}
+  FieldMapLoader.new = function(cacheFs, world, options)
+    constructions[#constructions + 1] = { cacheFs = cacheFs, world = world, options = options }
+    local loader = { released = 0 }
+    function loader:globalPosition()
+      return { x = GLOBAL_BEDROOM.x, z = GLOBAL_BEDROOM.z }
+    end
+    function loader:requestLocation()
+      return script.locationReady, nil
+    end
+    function loader:release()
+      loader.released = loader.released + 1
+    end
+    return loader
+  end
+  local originalLocation = NewGameInitialization.initialLocation
+  local locationInputs = {}
+  NewGameInitialization.initialLocation = function(input)
+    locationInputs[#locationInputs + 1] = input
+    return {
+      mapSymbol = PLAYER_ROOM.mapSymbol,
+      fieldX = PLAYER_ROOM.fieldX,
+      fieldZ = PLAYER_ROOM.fieldZ,
+      facing = PLAYER_ROOM.facing,
+    }
+  end
+  local ok, err = xpcall(function()
+    local preparation = newPreparation(host)
+    local ready, failure = preparation:poll()
+    Assert.equal(
+      physicalOpens,
+      0,
+      "the first-play closure must read the installed generated view instead of reopening a physical generated root"
+    )
+    Assert.isNil(failure, "a pending bedroom demand carries no failure")
+    Assert.isFalse(ready == true, "preparation waits for the bedroom closure")
+    Assert.equal(#constructions, 1, "one planning loader serves the first-play closure")
+    Assert.isTrue(
+      constructions[1].cacheFs == view,
+      "the planning loader consumes the selected epoch's installed generated view"
+    )
+    Assert.deepEqual(view.loads, { MapAssetCache.worldPath() }, "the structural world is read from the installed view")
+    Assert.equal(#locationInputs, 1, "the generated start location is read once")
+    Assert.isTrue(locationInputs[1] == view, "the generated start location reads the same installed view")
+    script.locationReady = true
+    local finalReady, finalFailure = preparation:poll()
+    Assert.isNil(finalFailure, "the joined closure carries no failure")
+    Assert.isTrue(finalReady == true, "the closure reports ready once its bedroom demand resolves")
+    Assert.equal(physicalOpens, 0, "reaching readiness never falls back to a physical generated root")
+    preparation:dispose()
+  end, debug.traceback)
+  FieldMapLoader.new = originalLoaderNew
+  NewGameInitialization.initialLocation = originalLocation
+  rawset(CacheFs, "forVersion", originalForVersion)
+  if not ok then
+    error(err, 0)
+  end
 end
 
 return { tests = T }

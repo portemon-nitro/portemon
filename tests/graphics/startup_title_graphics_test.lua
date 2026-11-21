@@ -2,6 +2,7 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -81,7 +82,7 @@ end
 local function renderEdition(scope, versionId)
   local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
   local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology("single") })
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local scene = HgssTitleScene.new({
     versionId = versionId,
     cacheFs = cacheFs,
@@ -175,7 +176,7 @@ end
 local function renderAvailableEditions(scope, context)
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       versions[#versions + 1] = versionId
     end
   end
@@ -190,7 +191,7 @@ end
 local function readyVersionsOrSkip(context)
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       versions[#versions + 1] = versionId
     end
   end
@@ -203,7 +204,7 @@ end
 local function openTitleScene(scope, versionId, width, height, kind)
   local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
   local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology(kind) })
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local scene = HgssTitleScene.new({
     versionId = versionId,
     cacheFs = cacheFs,
@@ -722,7 +723,7 @@ local function titleMissingSurfaceFailsCleanly(scope, context)
   local CacheFs = require("libs.storage.src.CacheFs")
   local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
   for _, versionId in ipairs(readyVersionsOrSkip(context)) do
-    local realFs = CacheFs.forVersion(versionId)
+    local realFs = GeneratedCacheFixture.reader(versionId)
     local hollowFs = {
       versionId = realFs.versionId,
       loadLua = function(_, path)

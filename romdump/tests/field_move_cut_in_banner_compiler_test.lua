@@ -3,8 +3,8 @@
 -- SoulSilver triple (members 3/4/5) render as 256x256 BG3 surfaces through
 -- the sixteen colors the retail loader places at hardware palette slot 12,
 -- the generated manifest carries only semantic keys, and the publication
--- matrix (stage write failure, stage validation failure) reuses
--- ArtifactPublisher through a FakeCache so the previous ready class stays
+-- matrix (stage write failure, stage validation failure) stages through a
+-- prepared artifact over a FakeCache so the previous ready class stays
 -- readable and the marker never claims an incomplete class.
 --
 -- Source basis: the retail ROM's field/move cut-in banner load steps
@@ -24,6 +24,7 @@ local PngReader = require("tests.support.PngReader")
 local Lz10 = require("romdump.src.digest.Lz10")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -408,7 +409,9 @@ function T.writer_commits_marker_last_and_reads_back()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(compile(romFs, sha1, hashLua))
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldMoveCutInBannerCacheWriter.write(cache, bundle)
+  ResidentArtifactFixture.publish(cache, "field-move-cut-in-banner", "global", function(artifact)
+      return FieldMoveCutInBannerCacheWriter.stage(artifact, bundle)
+    end)
   Assert.isTrue(FieldMoveCutInBannerAssetCache.isReady(cache, bundle.marker))
   Assert.isFalse(FieldMoveCutInBannerAssetCache.isReady(cache, bundle.marker .. "-stale"))
   local manifest = assert(cache:loadLua(FieldMoveCutInBannerAssetCache.manifestPath()))
@@ -420,7 +423,9 @@ function T.failed_rebuild_preserves_the_previous_class()
   local first = assert(compile(romFs, sha1, hashLua))
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
-  FieldMoveCutInBannerCacheWriter.write(cache, first)
+  ResidentArtifactFixture.publish(cache, "field-move-cut-in-banner", "global", function(artifact)
+      return FieldMoveCutInBannerCacheWriter.stage(artifact, first)
+    end)
   local originalWrite = backend.write
   backend.write = function(self, path, data)
     if path:find(FieldMoveCutInBannerAssetCache.assetDir(), 1, true) then
@@ -431,13 +436,17 @@ function T.failed_rebuild_preserves_the_previous_class()
   local second = assert(compile(romFs, sha1, hashLua))
   second.marker = FieldMoveCutInBannerAssetCache.marker("rom-sha", "new-dep-hash")
   Assert.throws(function()
-    FieldMoveCutInBannerCacheWriter.write(cache, second)
+    ResidentArtifactFixture.publish(cache, "field-move-cut-in-banner", "global", function(artifact)
+      return FieldMoveCutInBannerCacheWriter.stage(artifact, second)
+    end)
   end)
   Assert.isTrue(FieldMoveCutInBannerAssetCache.isReady(cache, first.marker), "the previous class remains ready")
   Assert.equal(cache:read(FieldMoveCutInBannerAssetCache.markerPath()), first.marker, "no new marker leaked")
   Assert.isNil(backend:getInfo("staging/heartgold/field-move-cut-in-banner"), "the stage is cleaned on failure")
   backend.write = originalWrite
-  FieldMoveCutInBannerCacheWriter.write(cache, second)
+  ResidentArtifactFixture.publish(cache, "field-move-cut-in-banner", "global", function(artifact)
+      return FieldMoveCutInBannerCacheWriter.stage(artifact, second)
+    end)
   Assert.isTrue(FieldMoveCutInBannerAssetCache.isReady(cache, second.marker), "a retry publishes the new class")
 end
 
@@ -445,12 +454,16 @@ function T.stage_validation_failure_is_typed_and_preserves_the_previous_class()
   local romFs, sha1, hashLua = fixture()
   local first = assert(compile(romFs, sha1, hashLua))
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldMoveCutInBannerCacheWriter.write(cache, first)
+  ResidentArtifactFixture.publish(cache, "field-move-cut-in-banner", "global", function(artifact)
+      return FieldMoveCutInBannerCacheWriter.stage(artifact, first)
+    end)
   local second = assert(compile(romFs, sha1, hashLua))
   second.manifest.paletteSlot = 0
   second.marker = FieldMoveCutInBannerAssetCache.marker("rom-sha", "new-dep-hash")
   Assert.throws(function()
-    FieldMoveCutInBannerCacheWriter.write(cache, second)
+    ResidentArtifactFixture.publish(cache, "field-move-cut-in-banner", "global", function(artifact)
+      return FieldMoveCutInBannerCacheWriter.stage(artifact, second)
+    end)
   end)
   Assert.isTrue(FieldMoveCutInBannerAssetCache.isReady(cache, first.marker), "the previous class remains ready")
   Assert.equal(cache:read(FieldMoveCutInBannerAssetCache.markerPath()), first.marker)
@@ -471,18 +484,11 @@ function T.stages_through_a_prepared_artifact_without_touching_live_before_publi
     kind = "field-move-cut-in-banner",
     key = "global",
     jobKey = "field-move-cut-in-banner:global",
-    stageName = "cut-in-banner-stage-test",
   })
   Assert.equal(FieldMoveCutInBannerCacheWriter.stage(artifact, bundle), bundle.marker)
   Assert.isFalse(FieldMoveCutInBannerAssetCache.isReady(cache, bundle.marker), "staging alone never reads ready")
   artifact:finishSuccess({ marker = bundle.marker })
-  artifact:publish({
-    generationId = "test-generation",
-    epoch = 1,
-    kind = "field-move-cut-in-banner",
-    key = "global",
-    jobKey = "field-move-cut-in-banner:global",
-  })
+  ResidentArtifactFixture.materialize(artifact)
   Assert.isTrue(FieldMoveCutInBannerAssetCache.isReady(cache, bundle.marker), "the published class reads ready")
 end
 

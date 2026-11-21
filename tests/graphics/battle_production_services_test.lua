@@ -12,6 +12,7 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 local FakeGraphics = require("tests.support.FakeGraphics")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
@@ -35,7 +36,7 @@ local DRIVE_BUDGET = 1200
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       versions[#versions + 1] = versionId
     end
   end
@@ -550,7 +551,7 @@ function T.presented_launch_renders_real_staged_frames(scope, context)
     context:skip("the production battle coverage needs a ready user-owned ROM with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local manifest = BattlePresentationCache.load(cacheFs)
     Assert.isTrue(manifest.verified == true, versionId .. " stages the verified battle manifest")
     local wildRole = assert(manifest.audioRoles.wild, versionId .. " stages its wild music role")
@@ -694,7 +695,7 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
   end
   local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local manifest = BattlePresentationCache.load(cacheFs)
     Assert.isTrue(manifest.verified == true, versionId .. " stages the verified battle manifest")
     local wildRole = assert(manifest.audioRoles.wild, versionId .. " stages its wild music role")
@@ -721,9 +722,22 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
       end
       return cacheFs:exists(path, expectedType)
     end
-    -- The session image owner resolves paths exactly like the versioned
-    -- cache: the hiding view delegates confinement while still hiding the
-    -- pending global/scene bytes above.
+    -- The session image owner resolves immutable references exactly like the
+    -- installed view. The pending global/scene *records* above are what hold the
+    -- reveal; payload references delegate, so a demand issued after the reveal
+    -- resolves its staged bytes.
+    function view.resolveAsset(_, relativePath)
+      return cacheFs:resolveAsset(relativePath)
+    end
+    function view.readData(_, relativePath)
+      return cacheFs:readData(relativePath)
+    end
+    function view.getDirectoryItems(_, relativePath)
+      return cacheFs:getDirectoryItems(relativePath)
+    end
+    function view.getInfo(_, relativePath)
+      return cacheFs:getInfo(relativePath)
+    end
     function view.resolve(_, relativePath)
       return cacheFs:resolve(relativePath)
     end
@@ -898,7 +912,7 @@ function T.native_steady_frames_reuse_resolved_images(scope, context)
     context:skip("the production battle coverage needs a ready user-owned ROM with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local text, windows = productionDrawServices(scope, cacheFs, versionId)
     local images = ImageAssetPool.new(cacheFs)
     scope:own({
@@ -977,7 +991,7 @@ function T.missing_scene_image_fails_closed_with_context(scope, context)
     context:skip("the production battle coverage needs a ready user-owned ROM with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = hidingCacheFs(CacheFs.forVersion(versionId), BattlePresentationCache.sceneImagePath(SAD_SCENE_KEY))
+    local cacheFs = hidingCacheFs(GeneratedCacheFixture.reader(versionId), BattlePresentationCache.sceneImagePath(SAD_SCENE_KEY))
     local envelope = FieldBattlePresentation.new({
       splRandomState = { state = 0 },
       cacheFs = cacheFs,
@@ -1063,7 +1077,7 @@ function T.idle_warmup_reuses_staged_scene_on_first_battle_entry(scope, context)
     "the battle envelope prewarms the predicted scene during idle field updates"
   )
   local versionId = versions[1]
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local record = BattlePresentationCache.loadScene(cacheFs, SCENE_KEY)
   local warmedPaths = {
     [BattlePresentationCache.sceneImagePath(SCENE_KEY)] = true,
@@ -1183,7 +1197,7 @@ function T.background_upload_uses_packed_pixels_without_per_pixel_setpixel()
   local CacheFs = require("libs.storage.src.CacheFs")
   local FakeCache = require("tests.support.FakeCache")
   local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
-  local cache = CacheFs.forVersion("probe-background-upload", FakeCache.new())
+  local staging = CacheFs.forVersion("probe-background-upload", FakeCache.new())
   local uploads = {}
   local graphics = {}
   function graphics.newImage(data)
@@ -1201,7 +1215,7 @@ function T.background_upload_uses_packed_pixels_without_per_pixel_setpixel()
   end
   local envelope = FieldBattlePresentation.new({
     splRandomState = { state = 0 },
-    cacheFs = cache,
+    cacheFs = GeneratedCacheFixture.fromCache(staging).reader,
     graphics = graphics,
     windows = {},
     text = text,

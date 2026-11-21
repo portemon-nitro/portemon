@@ -2,6 +2,7 @@
 
 local Assert = require("tests.support.Assert")
 local DisplayContext = require("libs.ui.src.DisplayContext")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local RomImporter = require("romdump.src.source.RomImporter")
 local SaveFs = require("libs.storage.src.SaveFs")
@@ -109,6 +110,7 @@ function T.tests.production_editor_saves_an_edit(context)
     state = State.new({
       versionId = fixture.initial.versionId,
       saveId = fixture.saveId,
+      cacheFs = GeneratedCacheFixture.reader(fixture.initial.versionId),
       startupPairIndex = 1,
       width = 640,
       height = 480,

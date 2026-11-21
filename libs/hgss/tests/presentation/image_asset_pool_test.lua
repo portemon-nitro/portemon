@@ -10,7 +10,7 @@
 
 local Assert = require("tests.support.Assert")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local PngWriter = require("tests.support.PngEncoder")
 
 local T = {}
@@ -96,15 +96,24 @@ end
 
 local cacheSerial = 0
 
-local function freshCache(tag)
+-- Fixture payloads live in one resident store the pool's queue reads through:
+-- the same reader shape a selected epoch installs, so an image request resolves
+-- an immutable reference instead of a physical generated file.
+local function freshView(tag)
   cacheSerial = cacheSerial + 1
-  return CacheFs.forVersion("shared-image-owner-" .. tag .. "-" .. cacheSerial)
+  return GeneratedCacheFixture.resident("shared-image-owner-" .. tag .. "-" .. cacheSerial, {})
 end
 
-local function newPool(cache, graphics)
+---@param relative string fixture file below the generated payload root
+---@return string logical generated path
+local function generated(relative)
+  return "assets/generated/" .. relative
+end
+
+local function newPool(cacheFs, graphics)
   -- These unit tests pin the historical evict-all cadence explicitly; the
   -- production default is the compiled first-pass idle budget.
-  return owner().new(cache, { graphics = graphics, idleByteLimit = 0 })
+  return owner().new(cacheFs, { graphics = graphics, idleByteLimit = 0 })
 end
 
 -- Drives one logical request to a terminal state using only the pool's own
@@ -139,40 +148,40 @@ local function liveImages(graphics)
 end
 
 local function withPool(tag, files, body)
-  local cache = freshCache(tag)
+  local view = freshView(tag)
   for path, bytes in pairs(files) do
-    cache:write(path, bytes)
+    GeneratedCacheFixture.put(view, path, bytes)
   end
   local graphics = fakeGraphics()
-  local pool = newPool(cache, graphics)
-  local ok, err = pcall(body, pool, graphics, cache)
+  local pool = newPool(view.reader, graphics)
+  local ok, err = pcall(body, pool, graphics, view.reader)
   local disposeOk, disposeErr = pcall(pool.dispose, pool)
-  local removeOk, removeErr = pcall(cache.removeTree, cache, "")
+  local closeOk, closeErr = pcall(GeneratedCacheFixture.close, view)
   if not ok then
     error(err, 0)
   end
   Assert.isTrue(disposeOk, "disposal after full release must succeed: " .. tostring(disposeErr))
-  Assert.isTrue(removeOk, "fixture cleanup must succeed: " .. tostring(removeErr))
+  Assert.isTrue(closeOk, "fixture cleanup must succeed: " .. tostring(closeErr))
 end
 
 -- Same lifecycle as the default pool setup, but with an explicit idle
 -- budget so a returned pair can stay resident across a revisit without an
 -- intervening prune. Synthetic PNGs only; no user ROM content.
 local function withIdlePool(tag, files, idleBytes, body)
-  local cache = freshCache(tag)
+  local view = freshView(tag)
   for path, bytes in pairs(files) do
-    cache:write(path, bytes)
+    GeneratedCacheFixture.put(view, path, bytes)
   end
   local graphics = fakeGraphics()
-  local pool = owner().new(cache, { graphics = graphics, idleByteLimit = idleBytes })
-  local ok, err = pcall(body, pool, graphics, cache)
+  local pool = owner().new(view.reader, { graphics = graphics, idleByteLimit = idleBytes })
+  local ok, err = pcall(body, pool, graphics, view.reader)
   local disposeOk, disposeErr = pcall(pool.dispose, pool)
-  local removeOk, removeErr = pcall(cache.removeTree, cache, "")
+  local closeOk, closeErr = pcall(GeneratedCacheFixture.close, view)
   if not ok then
     error(err, 0)
   end
   Assert.isTrue(disposeOk, "disposal after full release must succeed: " .. tostring(disposeErr))
-  Assert.isTrue(removeOk, "fixture cleanup must succeed: " .. tostring(removeErr))
+  Assert.isTrue(closeOk, "fixture cleanup must succeed: " .. tostring(closeErr))
 end
 
 -- Counts entries in a private owner table without caring about values.
@@ -274,15 +283,15 @@ end
 -- carries the same immutable resolved record.
 function T.compatible_paths_share_one_physical_image_while_mismatched_samplers_do_not()
   withPool("dedup", {
-    ["sprites/first.png"] = fixturePng(),
-    ["sprites/second.png"] = fixturePng(),
-    ["sprites/third.png"] = fixturePng(),
-    ["sprites/fourth.png"] = fixturePng(),
+    [generated("sprites/first.png")] = fixturePng(),
+    [generated("sprites/second.png")] = fixturePng(),
+    [generated("sprites/third.png")] = fixturePng(),
+    [generated("sprites/fourth.png")] = fixturePng(),
   }, function(pool, graphics)
-    local first = pool:acquire(requestReady(pool, "sprites/first.png", matchingSampler()))
-    local second = pool:acquire(requestReady(pool, "sprites/second.png", matchingSampler()))
-    local otherWrap = pool:acquire(requestReady(pool, "sprites/third.png", otherWrapSampler()))
-    local otherFilter = pool:acquire(requestReady(pool, "sprites/fourth.png", otherFilterSampler()))
+    local first = pool:acquire(requestReady(pool, generated("sprites/first.png"), matchingSampler()))
+    local second = pool:acquire(requestReady(pool, generated("sprites/second.png"), matchingSampler()))
+    local otherWrap = pool:acquire(requestReady(pool, generated("sprites/third.png"), otherWrapSampler()))
+    local otherFilter = pool:acquire(requestReady(pool, generated("sprites/fourth.png"), otherFilterSampler()))
 
     Assert.equal(first.image, second.image, "identical pixels with matching sampler state share one image")
     Assert.equal(first.palette, second.palette, "compatible leases resolve the same palette handle")
@@ -317,9 +326,9 @@ end
 -- image alive until the last borrower lets go, then frees it exactly once.
 function T.releasing_compatible_leases_in_either_order_frees_exactly_once_at_the_end()
   local png = fixturePng()
-  withPool("release-order", { ["sprites/a.png"] = png, ["sprites/b.png"] = png }, function(pool, graphics)
-    local first = pool:acquire(requestReady(pool, "sprites/a.png", matchingSampler()))
-    local second = pool:acquire(requestReady(pool, "sprites/b.png", matchingSampler()))
+  withPool("release-order", { [generated("sprites/a.png")] = png, [generated("sprites/b.png")] = png }, function(pool, graphics)
+    local first = pool:acquire(requestReady(pool, generated("sprites/a.png"), matchingSampler()))
+    local second = pool:acquire(requestReady(pool, generated("sprites/b.png"), matchingSampler()))
     Assert.equal(first.image, second.image, "the setup shares one physical image")
     pool:release(first)
     Assert.isFalse(first.image.released, "releasing one of two borrowers must not free the shared image")
@@ -327,9 +336,9 @@ function T.releasing_compatible_leases_in_either_order_frees_exactly_once_at_the
     Assert.isTrue(second.image.released, "the last release frees the shared image")
     Assert.equal(second.image.releaseCount, 1, "forward-order release frees exactly once")
   end)
-  withPool("release-reverse", { ["sprites/a.png"] = png, ["sprites/b.png"] = png }, function(pool, graphics)
-    local first = pool:acquire(requestReady(pool, "sprites/a.png", matchingSampler()))
-    local second = pool:acquire(requestReady(pool, "sprites/b.png", matchingSampler()))
+  withPool("release-reverse", { [generated("sprites/a.png")] = png, [generated("sprites/b.png")] = png }, function(pool, graphics)
+    local first = pool:acquire(requestReady(pool, generated("sprites/a.png"), matchingSampler()))
+    local second = pool:acquire(requestReady(pool, generated("sprites/b.png"), matchingSampler()))
     pool:release(second)
     Assert.isFalse(second.image.released, "release order must not matter while a borrower remains")
     pool:release(first)
@@ -345,12 +354,12 @@ function T.a_live_borrower_keeps_its_draw_source_usable_after_a_peer_release()
   local png = fixturePng()
   withPool(
     "live-draw",
-    { ["sprites/a.png"] = png, ["sprites/b.png"] = png, ["sprites/c.png"] = png },
+    { [generated("sprites/a.png")] = png, [generated("sprites/b.png")] = png, [generated("sprites/c.png")] = png },
     function(pool, graphics)
-      local first = pool:acquire(requestReady(pool, "sprites/a.png", matchingSampler()))
-      local second = pool:acquire(requestReady(pool, "sprites/b.png", matchingSampler()))
+      local first = pool:acquire(requestReady(pool, generated("sprites/a.png"), matchingSampler()))
+      local second = pool:acquire(requestReady(pool, generated("sprites/b.png"), matchingSampler()))
       pool:release(first)
-      local late = pool:acquire(requestReady(pool, "sprites/c.png", matchingSampler()))
+      local late = pool:acquire(requestReady(pool, generated("sprites/c.png"), matchingSampler()))
       Assert.equal(late.image, second.image, "new demand while a borrower lives reuses the live image")
       Assert.isFalse(late.image.released, "the live image stays usable after the peer release")
       Assert.equal(#liveImages(graphics), 2, "no duplicate physical image is built for live demand: one live pair")
@@ -365,8 +374,8 @@ end
 -- The pool reports its holdings through stats, pruning evicts only fully
 -- released images, and disposal after full release is idempotent.
 function T.idle_images_are_pruned_and_disposal_is_idempotent()
-  withPool("lifecycle", { ["sprites/a.png"] = fixturePng() }, function(pool, graphics)
-    local lease = pool:acquire(requestReady(pool, "sprites/a.png", matchingSampler()))
+  withPool("lifecycle", { [generated("sprites/a.png")] = fixturePng() }, function(pool, graphics)
+    local lease = pool:acquire(requestReady(pool, generated("sprites/a.png"), matchingSampler()))
     Assert.equal(type(pool:stats()), "table", "the pool reports its holdings through stats")
     pool:release(lease)
     Assert.isFalse(lease.image.released, "a released-but-unpruned image stays resident until pruning")
@@ -382,12 +391,12 @@ end
 -- lease falls back to straight RGBA with every source pixel -- including
 -- transparent RGB and fractional alpha -- recovered exactly.
 function T.devices_without_indexed_support_fall_back_to_straight_rgba()
-  local cache = freshCache("fallback")
-  cache:write("sprites/small.png", fixturePng())
+  local view = freshView("fallback")
+  GeneratedCacheFixture.put(view, generated("sprites/small.png"), fixturePng())
   local graphics = fakeGraphics({ formats = {} })
-  local pool = newPool(cache, graphics)
+  local pool = newPool(view.reader, graphics)
   local ok, err = pcall(function()
-    local lease = pool:acquire(requestReady(pool, "sprites/small.png", matchingSampler()))
+    local lease = pool:acquire(requestReady(pool, generated("sprites/small.png"), matchingSampler()))
     Assert.equal(lease.kind, "rgba8", "missing indexed support selects the straight representation")
     Assert.equal(lease.width, FIXTURE_WIDTH, "the fallback lease carries the decoded width")
     Assert.equal(lease.height, FIXTURE_HEIGHT, "the fallback lease carries the decoded height")
@@ -402,12 +411,12 @@ function T.devices_without_indexed_support_fall_back_to_straight_rgba()
     pool:prune()
   end)
   local disposeOk, disposeErr = pcall(pool.dispose, pool)
-  local removeOk, removeErr = pcall(cache.removeTree, cache, "")
+  local closeOk, closeErr = pcall(GeneratedCacheFixture.close, view)
   if not ok then
     error(err, 0)
   end
   Assert.isTrue(disposeOk, "disposal must succeed: " .. tostring(disposeErr))
-  Assert.isTrue(removeOk, "fixture cleanup must succeed: " .. tostring(removeErr))
+  Assert.isTrue(closeOk, "fixture cleanup must succeed: " .. tostring(closeErr))
 end
 
 -- A failed acquire releases only the objects its own stage created:
@@ -419,15 +428,15 @@ function T.a_failed_upload_releases_only_its_own_new_objects()
   local png = fixturePng()
   local fragilePng =
     PngWriter.encode(FIXTURE_WIDTH, FIXTURE_HEIGHT, string.char(201, 10, 20, 255) .. string.sub(fixturePixels(), 5))
-  local cache = freshCache("failed-upload")
-  cache:write("sprites/steady.png", png)
-  cache:write("sprites/fragile.png", fragilePng)
+  local view = freshView("failed-upload")
+  GeneratedCacheFixture.put(view, generated("sprites/steady.png"), png)
+  GeneratedCacheFixture.put(view, generated("sprites/fragile.png"), fragilePng)
   local graphics = fakeGraphics()
-  local pool = newPool(cache, graphics)
+  local pool = newPool(view.reader, graphics)
   local ok, err = pcall(function()
-    local steady = pool:acquire(requestReady(pool, "sprites/steady.png", matchingSampler()))
+    local steady = pool:acquire(requestReady(pool, generated("sprites/steady.png"), matchingSampler()))
     Assert.equal(#graphics.created, 2, "an indexed realization stages the source and palette pair")
-    local doomed = pool:request("sprites/fragile.png", matchingSampler())
+    local doomed = pool:request(generated("sprites/fragile.png"), matchingSampler())
     graphics.failOnCall = #graphics.created + 2
     local status = pool:poll(doomed)
     while status == "pending" do
@@ -447,8 +456,8 @@ function T.a_failed_upload_releases_only_its_own_new_objects()
       Assert.isTrue(image.released or held, "a failed stage leaves no orphaned GPU object behind")
     end
     graphics.failOnCall = nil
-    local retried = pool:acquire(requestReady(pool, "sprites/fragile.png", matchingSampler()))
-    local same = pool:acquire(requestReady(pool, "sprites/steady.png", matchingSampler()))
+    local retried = pool:acquire(requestReady(pool, generated("sprites/fragile.png"), matchingSampler()))
+    local same = pool:acquire(requestReady(pool, generated("sprites/steady.png"), matchingSampler()))
     Assert.equal(same.image, steady.image, "live leases survive the failed stage uncorrupted")
     pool:release(steady)
     pool:release(same)
@@ -456,21 +465,21 @@ function T.a_failed_upload_releases_only_its_own_new_objects()
     pool:prune()
   end)
   local disposeOk, disposeErr = pcall(pool.dispose, pool)
-  local removeOk, removeErr = pcall(cache.removeTree, cache, "")
+  local closeOk, closeErr = pcall(GeneratedCacheFixture.close, view)
   if not ok then
     error(err, 0)
   end
   Assert.isTrue(disposeOk, "disposal must succeed: " .. tostring(disposeErr))
-  Assert.isTrue(removeOk, "fixture cleanup must succeed: " .. tostring(removeErr))
+  Assert.isTrue(closeOk, "fixture cleanup must succeed: " .. tostring(closeErr))
 end
 
 -- Overlapping demand for one physical identity coalesces instead of
 -- building duplicates, and one borrower leaving never disturbs the other.
 function T.overlapping_demand_for_one_physical_image_coalesces()
   local png = fixturePng()
-  withPool("coalesce", { ["sprites/a.png"] = png, ["sprites/b.png"] = png }, function(pool, graphics)
-    local firstToken = pool:request("sprites/a.png", matchingSampler(), "prefetch")
-    local secondToken = pool:request("sprites/b.png", matchingSampler(), "demand")
+  withPool("coalesce", { [generated("sprites/a.png")] = png, [generated("sprites/b.png")] = png }, function(pool, graphics)
+    local firstToken = pool:request(generated("sprites/a.png"), matchingSampler(), "prefetch")
+    local secondToken = pool:request(generated("sprites/b.png"), matchingSampler(), "demand")
     awaitReady(pool, firstToken)
     awaitReady(pool, secondToken)
     local first = pool:acquire(firstToken)
@@ -490,47 +499,47 @@ end
 -- A pool that joined its borrowed worker on dispose would fail the final
 -- enrollment below.
 function T.a_borrowed_session_queue_outlives_the_pool_built_over_it()
-  local cache = freshCache("borrowed-queue")
-  cache:write("sprites/a.png", fixturePng())
+  local view = freshView("borrowed-queue")
+  GeneratedCacheFixture.put(view, generated("sprites/a.png"), fixturePng())
   local graphics = fakeGraphics()
-  local queue = AssetPreparationQueue.new(cache)
-  local pool = owner().new(cache, { graphics = graphics, queue = queue })
+  local queue = AssetPreparationQueue.new(view.reader)
+  local pool = owner().new(view.reader, { graphics = graphics, queue = queue })
   local ok, err = pcall(function()
-    local lease = pool:acquire(requestReady(pool, "sprites/a.png", matchingSampler()))
+    local lease = pool:acquire(requestReady(pool, generated("sprites/a.png"), matchingSampler()))
     Assert.isTrue(lease.image ~= nil, "borrowed-queue preparation resolves an image")
     pool:release(lease)
     pool:prune()
     pool:dispose()
-    local token = queue:request("image-derivative", "sprites/a.png", "demand")
+    local token = queue:request("image-derivative", generated("sprites/a.png"), "demand")
     queue:cancel(token)
   end)
   local queueOk, queueErr = pcall(queue.release, queue)
   local disposeOk, disposeErr = pcall(pool.dispose, pool)
-  local removeOk, removeErr = pcall(cache.removeTree, cache, "")
+  local closeOk, closeErr = pcall(GeneratedCacheFixture.close, view)
   if not ok then
     error(err, 0)
   end
   Assert.isTrue(queueOk, "session queue release must succeed: " .. tostring(queueErr))
   Assert.isTrue(disposeOk, "pool disposal must stay idempotent: " .. tostring(disposeErr))
-  Assert.isTrue(removeOk, "fixture cleanup must succeed: " .. tostring(removeErr))
+  Assert.isTrue(closeOk, "fixture cleanup must succeed: " .. tostring(closeErr))
 end
 
 -- Disposal cancels pending interest: a request that never resolved adopts
 -- nothing afterwards, publishes nothing, and builds no GPU object.
 function T.disposal_cancels_pending_interest_without_late_adoption()
-  local cache = freshCache("cancel-epoch")
-  cache:write("sprites/late.png", fixturePng())
+  local view = freshView("cancel-epoch")
+  GeneratedCacheFixture.put(view, generated("sprites/late.png"), fixturePng())
   local graphics = fakeGraphics()
-  local pool = newPool(cache, graphics)
-  local pending = pool:request("sprites/late.png", matchingSampler(), "prefetch")
+  local pool = newPool(view.reader, graphics)
+  local pending = pool:request(generated("sprites/late.png"), matchingSampler(), "prefetch")
   pool:dispose()
   Assert.throws(function()
     pool:acquire(pending)
   end, "a request cancelled by disposal must never adopt a lease")
   Assert.equal(#graphics.created, 0, "cancelled work builds no GPU object")
   pool:dispose()
-  local removeOk, removeErr = pcall(cache.removeTree, cache, "")
-  Assert.isTrue(removeOk, "fixture cleanup must succeed: " .. tostring(removeErr))
+  local closeOk, closeErr = pcall(GeneratedCacheFixture.close, view)
+  Assert.isTrue(closeOk, "fixture cleanup must succeed: " .. tostring(closeErr))
 end
 
 -- Cancelling unenrolled interest drops it before staging: the cancelled
@@ -539,14 +548,14 @@ end
 -- still resolves and an already-acquired token refuses cancellation
 -- because its outstanding lease owns the borrow.
 function T.cancelled_interest_never_stages_or_resurrects()
-  withPool("cancel", { ["sprites/a.png"] = fixturePng() }, function(pool, graphics, _)
-    local dropped = pool:request("sprites/a.png", matchingSampler(), "prefetch")
+  withPool("cancel", { [generated("sprites/a.png")] = fixturePng() }, function(pool, graphics, _)
+    local dropped = pool:request(generated("sprites/a.png"), matchingSampler(), "prefetch")
     Assert.isTrue(pool:cancel(dropped), "unenrolled interest cancels")
     Assert.isFalse(pool:cancel(dropped), "a dropped token cancels only once")
     Assert.throws(function()
       pool:poll(dropped)
     end, "a cancelled token never resolves")
-    local kept = requestReady(pool, "sprites/a.png", matchingSampler(), "demand")
+    local kept = requestReady(pool, generated("sprites/a.png"), matchingSampler(), "demand")
     local lease = pool:acquire(kept)
     Assert.isTrue(lease.image ~= nil, "a sibling request still resolves after a cancellation")
     Assert.isFalse(pool:cancel(kept), "an acquired token keeps its record for outstanding leases")
@@ -559,18 +568,13 @@ end
 -- A missing generated source fails exactly and loudly, and the pool keeps
 -- serving valid sources afterwards.
 function T.missing_sources_fail_without_poisoning_the_pool()
-  withPool("missing", { ["sprites/good.png"] = fixturePng() }, function(pool, _)
-    local missing = pool:request("sprites/absent.png", matchingSampler())
-    local status, _ = pool:poll(missing)
-    while status == "pending" do
-      love.timer.sleep(0.005)
-      status, _ = pool:poll(missing)
-    end
-    Assert.equal(status, "failed", "a missing source reports failure instead of substituting bytes")
+  withPool("missing", { [generated("sprites/good.png")] = fixturePng() }, function(pool, _)
+    -- The installed view answers no reference for an absent path, so the
+    -- request itself is refused instead of substituting bytes.
     Assert.throws(function()
-      pool:acquire(missing)
-    end, "a missing source must not produce a lease")
-    local recovered = pool:acquire(requestReady(pool, "sprites/good.png", matchingSampler()))
+      pool:request(generated("sprites/absent.png"), matchingSampler())
+    end, "a missing source is refused instead of substituted")
+    local recovered = pool:acquire(requestReady(pool, generated("sprites/good.png"), matchingSampler()))
     Assert.equal(recovered.width, FIXTURE_WIDTH, "the pool keeps serving valid sources after a failure")
     pool:release(recovered)
     pool:prune()
@@ -583,10 +587,10 @@ end
 -- upload. Synthetic PNG only; idle budget comfortably above the pair.
 function T.resident_revisit_borrows_without_worker_decode_or_upload()
   runWithDecodeCount(function(decodeCalls)
-    withIdlePool("resident-revisit", { ["sprites/icon.png"] = fixturePng() }, 1024 * 1024, function(pool, graphics)
+    withIdlePool("resident-revisit", { [generated("sprites/icon.png")] = fixturePng() }, 1024 * 1024, function(pool, graphics)
       local queueCalls = countQueueRequests(pool)
       local sampler = matchingSampler()
-      local first = pool:request("sprites/icon.png", sampler)
+      local first = pool:request(generated("sprites/icon.png"), sampler)
       awaitReady(pool, first)
       local queuedAfterCold = queueCalls()
       Assert.isTrue(queuedAfterCold >= 1, "the cold first pass classifies through the worker")
@@ -594,7 +598,7 @@ function T.resident_revisit_borrows_without_worker_decode_or_upload()
       pool:release(firstLease)
       local decodesAfterCold = decodeCalls()
       local uploadsAfterCold = #graphics.created
-      local second = pool:request("sprites/icon.png", sampler)
+      local second = pool:request(generated("sprites/icon.png"), sampler)
       local status = pool:poll(second)
       Assert.equal(status, "ready", "a resident revisit is ready without another worker roundtrip")
       Assert.equal(queueCalls(), queuedAfterCold, "the resident revisit files no new worker job")
@@ -615,10 +619,10 @@ end
 -- borrow the same objects.
 function T.concurrent_identical_content_publishes_a_single_physical_pair()
   local png = fixturePng()
-  withPool("single-upload", { ["sprites/a.png"] = png, ["sprites/b.png"] = png }, function(pool, graphics)
+  withPool("single-upload", { [generated("sprites/a.png")] = png, [generated("sprites/b.png")] = png }, function(pool, graphics)
     local sampler = matchingSampler()
-    local firstToken = pool:request("sprites/a.png", sampler)
-    local secondToken = pool:request("sprites/b.png", sampler)
+    local firstToken = pool:request(generated("sprites/a.png"), sampler)
+    local secondToken = pool:request(generated("sprites/b.png"), sampler)
     awaitReady(pool, firstToken)
     awaitReady(pool, secondToken)
     local first = pool:acquire(firstToken)
@@ -640,9 +644,9 @@ end
 -- same path misses cleanly and uploads a new pair. Tickets that are still
 -- held without an acquire are covered separately below.
 function T.evicted_entries_leave_no_stale_ready_tickets()
-  withPool("no-stale-ready", { ["sprites/icon.png"] = fixturePng() }, function(pool, graphics)
+  withPool("no-stale-ready", { [generated("sprites/icon.png")] = fixturePng() }, function(pool, graphics)
     local sampler = matchingSampler()
-    local token = requestReady(pool, "sprites/icon.png", sampler)
+    local token = requestReady(pool, generated("sprites/icon.png"), sampler)
     local lease = pool:acquire(token)
     local evictedImage = lease.image
     pool:release(lease)
@@ -653,7 +657,7 @@ function T.evicted_entries_leave_no_stale_ready_tickets()
     Assert.throws(function()
       pool:acquire(token)
     end, "a consumed ticket never produces a second lease")
-    local fresh = pool:request("sprites/icon.png", sampler)
+    local fresh = pool:request(generated("sprites/icon.png"), sampler)
     awaitReady(pool, fresh)
     local renewed = pool:acquire(fresh)
     Assert.isTrue(renewed.image ~= evictedImage, "reuse after eviction uploads a new physical image")
@@ -676,18 +680,18 @@ function T.a_released_resident_revisit_stays_borrowable_across_prune()
     { label = "straight", formats = {} },
   }
   for _, case in ipairs(cases) do
-    local cache = freshCache("held-ready-" .. case.label)
-    cache:write("sprites/icon.png", fixturePng())
+    local view = freshView("held-ready-" .. case.label)
+    GeneratedCacheFixture.put(view, generated("sprites/icon.png"), fixturePng())
     local graphics = fakeGraphics({ formats = case.formats })
-    local pool = owner().new(cache, { graphics = graphics, idleByteLimit = 0 })
+    local pool = owner().new(view.reader, { graphics = graphics, idleByteLimit = 0 })
     local ok, err = pcall(function()
       local sampler = matchingSampler()
-      local seed = pool:acquire(requestReady(pool, "sprites/icon.png", sampler))
+      local seed = pool:acquire(requestReady(pool, generated("sprites/icon.png"), sampler))
       local originalImage = seed.image
       local originalPalette = seed.palette
       local uploadsAfterSeed = #graphics.created
       pool:release(seed)
-      local revisit = pool:request("sprites/icon.png", sampler)
+      local revisit = pool:request(generated("sprites/icon.png"), sampler)
       Assert.equal(pool:poll(revisit), "ready", "a resident revisit is ready without new work")
       Assert.equal(#graphics.created, uploadsAfterSeed, "the revisit uploads nothing before prune")
       pool:prune()
@@ -709,12 +713,12 @@ function T.a_released_resident_revisit_stays_borrowable_across_prune()
       Assert.equal(#liveImages(graphics), 0, "no resident pair is left behind")
     end)
     local disposeOk, disposeErr = pcall(pool.dispose, pool)
-    local removeOk, removeErr = pcall(cache.removeTree, cache, "")
+    local closeOk, closeErr = pcall(GeneratedCacheFixture.close, view)
     if not ok then
       error(err, 0)
     end
     Assert.isTrue(disposeOk, "disposal must succeed: " .. tostring(disposeErr))
-    Assert.isTrue(removeOk, "fixture cleanup must succeed: " .. tostring(removeErr))
+    Assert.isTrue(closeOk, "fixture cleanup must succeed: " .. tostring(closeErr))
   end
 end
 
@@ -723,28 +727,28 @@ end
 -- ticket keeps it alive across a prune that would otherwise evict it. A
 -- later adopting ticket that is cancelled instead leaves no record behind.
 function T.a_worker_result_adopting_a_resident_pair_stays_borrowable_across_prune()
-  local cache = freshCache("adopt-resident")
+  local view = freshView("adopt-resident")
   local graphics = fakeGraphics()
   local function hashForPath(path)
-    if path == "sprites/first.png" or path == "sprites/second.png" then
+    if path == generated("sprites/first.png") or path == generated("sprites/second.png") then
       return "shared-adopted-pixels"
     end
     return "pixels-for-" .. path
   end
-  local pool = owner().new(cache, {
+  local pool = owner().new(view.reader, {
     graphics = graphics,
     queue = stubDerivativeQueue(hashForPath),
     idleByteLimit = 0,
   })
   local ok, err = pcall(function()
     local sampler = matchingSampler()
-    local seedToken = pool:request("sprites/first.png", sampler, "demand")
+    local seedToken = pool:request(generated("sprites/first.png"), sampler, "demand")
     Assert.equal(pool:poll(seedToken), "ready", "synchronous preparation resolves without blocking")
     local seed = pool:acquire(seedToken)
     local originalImage = seed.image
     local uploadsAfterSeed = #graphics.created
     pool:release(seed)
-    local adopter = pool:request("sprites/second.png", sampler, "demand")
+    local adopter = pool:request(generated("sprites/second.png"), sampler, "demand")
     Assert.equal(pool:poll(adopter), "ready", "adoption of the resident pair is ready without new work")
     Assert.equal(#graphics.created, uploadsAfterSeed, "adoption uploads no second pair")
     pool:prune()
@@ -758,7 +762,7 @@ function T.a_worker_result_adopting_a_resident_pair_stays_borrowable_across_prun
     pool:prune()
     Assert.isTrue(originalImage.released, "balanced release plus prune frees the adopted pair")
     Assert.equal(originalImage.releaseCount, 1, "the adopted pair is released exactly once")
-    local doomed = pool:request("sprites/second.png", sampler, "demand")
+    local doomed = pool:request(generated("sprites/second.png"), sampler, "demand")
     Assert.equal(pool:poll(doomed), "ready", "a second adoption resolves its pair")
     Assert.isTrue(pool:cancel(doomed), "the second adoption cancels")
     Assert.isFalse(pool:cancel(doomed), "a cancelled adoption cancels only once")
@@ -767,12 +771,12 @@ function T.a_worker_result_adopting_a_resident_pair_stays_borrowable_across_prun
     pool:prune()
   end)
   local disposeOk, disposeErr = pcall(pool.dispose, pool)
-  local removeOk, removeErr = pcall(cache.removeTree, cache, "")
+  local closeOk, closeErr = pcall(GeneratedCacheFixture.close, view)
   if not ok then
     error(err, 0)
   end
   Assert.isTrue(disposeOk, "disposal must succeed: " .. tostring(disposeErr))
-  Assert.isTrue(removeOk, "fixture cleanup must succeed: " .. tostring(removeErr))
+  Assert.isTrue(closeOk, "fixture cleanup must succeed: " .. tostring(closeErr))
 end
 
 -- Two ready tickets for one physical pair plus a live lease keep that
@@ -784,18 +788,18 @@ function T.two_ready_tickets_and_a_live_lease_balance_across_cancel_and_dispose(
   local otherPng =
     PngWriter.encode(FIXTURE_WIDTH, FIXTURE_HEIGHT, string.char(201, 10, 20, 255) .. string.sub(fixturePixels(), 5))
   withPool("held-pair-balance", {
-    ["sprites/shared.png"] = fixturePng(),
-    ["sprites/other.png"] = otherPng,
+    [generated("sprites/shared.png")] = fixturePng(),
+    [generated("sprites/other.png")] = otherPng,
   }, function(pool, graphics)
     local sampler = matchingSampler()
-    local seed = pool:acquire(requestReady(pool, "sprites/shared.png", sampler))
+    local seed = pool:acquire(requestReady(pool, generated("sprites/shared.png"), sampler))
     local originalImage = seed.image
     local uploadsAfterSeed = #graphics.created
-    local first = pool:request("sprites/shared.png", sampler)
+    local first = pool:request(generated("sprites/shared.png"), sampler)
     Assert.equal(pool:poll(first), "ready", "the first held ticket is ready without new work")
-    local second = pool:request("sprites/shared.png", sampler)
+    local second = pool:request(generated("sprites/shared.png"), sampler)
     Assert.equal(pool:poll(second), "ready", "the second held ticket is ready without new work")
-    local pending = pool:request("sprites/other.png", sampler, "prefetch")
+    local pending = pool:request(generated("sprites/other.png"), sampler, "prefetch")
     Assert.isTrue(pool:cancel(first), "the first held ticket cancels")
     Assert.isFalse(pool:cancel(first), "a cancelled ticket cancels only once")
     pool:release(seed)
@@ -824,23 +828,23 @@ end
 -- history: after every settled interval no completed record remains and
 -- ready/staged census counts are zero, independent of operation count.
 function T.long_sessions_retain_only_live_request_metadata()
-  local cache = freshCache("bounded-tickets")
+  local view = freshView("bounded-tickets")
   local graphics = fakeGraphics()
   local paths = {
-    "sprites/direct-a.png",
-    "sprites/direct-b.png",
-    "sprites/alias-a.png",
-    "sprites/alias-b.png",
-    "sprites/direct-c.png",
-    "sprites/direct-d.png",
+    generated("sprites/direct-a.png"),
+    generated("sprites/direct-b.png"),
+    generated("sprites/alias-a.png"),
+    generated("sprites/alias-b.png"),
+    generated("sprites/direct-c.png"),
+    generated("sprites/direct-d.png"),
   }
   local function hashForPath(path)
-    if path == "sprites/alias-a.png" or path == "sprites/alias-b.png" then
+    if path == generated("sprites/alias-a.png") or path == generated("sprites/alias-b.png") then
       return "shared-alias-pixels"
     end
     return "pixels-for-" .. path
   end
-  local pool = owner().new(cache, {
+  local pool = owner().new(view.reader, {
     graphics = graphics,
     queue = stubDerivativeQueue(hashForPath),
     idleByteLimit = 0,
@@ -882,12 +886,12 @@ function T.long_sessions_retain_only_live_request_metadata()
     pool:prune()
   end)
   local disposeOk, disposeErr = pcall(pool.dispose, pool)
-  local removeOk, removeErr = pcall(cache.removeTree, cache, "")
+  local closeOk, closeErr = pcall(GeneratedCacheFixture.close, view)
   if not ok then
     error(err, 0)
   end
   Assert.isTrue(disposeOk, "disposal after thousands of cycles must succeed: " .. tostring(disposeErr))
-  Assert.isTrue(removeOk, "fixture cleanup must succeed: " .. tostring(removeErr))
+  Assert.isTrue(closeOk, "fixture cleanup must succeed: " .. tostring(closeErr))
 end
 
 -- GPU upload belongs to the consuming acquire, never to the readiness
@@ -901,14 +905,14 @@ function T.upload_failures_surface_at_acquire_leaving_live_pairs_intact()
     PngWriter.encode(FIXTURE_WIDTH, FIXTURE_HEIGHT, string.char(201, 10, 20, 255) .. string.sub(fixturePixels(), 5))
   withIdlePool(
     "acquire-failure",
-    { ["sprites/steady.png"] = png, ["sprites/fragile.png"] = fragilePng },
+    { [generated("sprites/steady.png")] = png, [generated("sprites/fragile.png")] = fragilePng },
     1024 * 1024,
     function(pool, graphics)
       local sampler = matchingSampler()
-      local steady = pool:acquire(requestReady(pool, "sprites/steady.png", sampler))
+      local steady = pool:acquire(requestReady(pool, generated("sprites/steady.png"), sampler))
       local baseline = #graphics.created
       Assert.equal(baseline, 2, "an indexed realization stages one source and palette pair")
-      local doomed = pool:request("sprites/fragile.png", sampler)
+      local doomed = pool:request(generated("sprites/fragile.png"), sampler)
       graphics.failOnCall = baseline + 2
       local status = pool:poll(doomed)
       while status == "pending" do
@@ -931,7 +935,7 @@ function T.upload_failures_surface_at_acquire_leaving_live_pairs_intact()
       Assert.isFalse(steady.image.released, "the failure never evicts the unrelated live image")
       Assert.isFalse(steady.palette.released, "the failure never evicts the unrelated live palette")
       graphics.failOnCall = nil
-      local retried = pool:acquire(requestReady(pool, "sprites/fragile.png", sampler))
+      local retried = pool:acquire(requestReady(pool, generated("sprites/fragile.png"), sampler))
       Assert.isTrue(retried.image ~= steady.image, "retry uploads a fresh pair for its distinct content")
       Assert.isFalse(retried.image.released, "the retried distinct pair stays drawable")
       Assert.isFalse(steady.image.released, "the live pair stays drawable beside the retry")
@@ -947,9 +951,9 @@ end
 -- GPU object exists: the token never resolves afterwards, census counts
 -- stay clean, and a sibling request for the same path still resolves.
 function T.cancelling_prepared_interest_builds_no_gpu_objects()
-  withPool("cancel-prepared", { ["sprites/a.png"] = fixturePng() }, function(pool, graphics)
+  withPool("cancel-prepared", { [generated("sprites/a.png")] = fixturePng() }, function(pool, graphics)
     local uploadsBefore = #graphics.created
-    local token = pool:request("sprites/a.png", matchingSampler(), "prefetch")
+    local token = pool:request(generated("sprites/a.png"), matchingSampler(), "prefetch")
     awaitReady(pool, token)
     Assert.isTrue(pool:cancel(token), "prepared-but-unclaimed interest cancels")
     Assert.equal(#graphics.created, uploadsBefore, "cancelling prepared interest uploads nothing")
@@ -959,7 +963,7 @@ function T.cancelling_prepared_interest_builds_no_gpu_objects()
     local stats = pool:stats()
     Assert.equal(stats.ready, 0, "no ready record survives cancellation")
     Assert.equal(stats.staged, 0, "no staged payload survives cancellation")
-    local kept = requestReady(pool, "sprites/a.png", matchingSampler(), "demand")
+    local kept = requestReady(pool, generated("sprites/a.png"), matchingSampler(), "demand")
     local lease = pool:acquire(kept)
     Assert.isTrue(lease.image ~= nil, "a sibling request still resolves after a prepared cancellation")
     pool:release(lease)
@@ -1023,7 +1027,7 @@ function T.equal_colored_palette_slots_keep_distinct_texel_identity()
 end
 
 function T.indexed_requests_use_their_own_key_domain_and_sampler()
-  withPool("native-index-keys", { ["sprites/a.png"] = fixturePng() }, function(pool)
+  withPool("native-index-keys", { [generated("sprites/a.png")] = fixturePng() }, function(pool)
     Assert.isTrue(
       type(pool.requestIndexed) == "function",
       "the pool admits already-decoded native index planes through its prepared-token lifecycle"
@@ -1034,7 +1038,7 @@ function T.indexed_requests_use_their_own_key_domain_and_sampler()
     Assert.isTrue(lease.image ~= nil, "an indexed request resolves to a staged image")
     pool:release(lease)
     pool:prune()
-    local pathToken = requestReady(pool, "sprites/a.png", matchingSampler(), "demand")
+    local pathToken = requestReady(pool, generated("sprites/a.png"), matchingSampler(), "demand")
     local pathLease = pool:acquire(pathToken)
     Assert.isTrue(
       pathLease.image ~= lease.image,

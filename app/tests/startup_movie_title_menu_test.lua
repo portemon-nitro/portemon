@@ -7,7 +7,6 @@
 
 local Assert = require("tests.support.Assert")
 local App = require("app.src.App")
-local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
 local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
 local HgssGame = require("game.hgss.src.HgssGame")
@@ -135,9 +134,6 @@ local function withStartup(fn)
     pixelRatio = App.pixelRatio,
     loadingNew = HgssLoadingPresentation.new,
     menuNew = MainMenuComposition.new,
-    isCurrent = FirstPlayCompletion.isCurrent,
-    hasStored = FirstPlayCompletion.hasStored,
-    releaseGenerationId = FirstPlayCompletion.releaseGenerationId,
     graphicsDimensions = love.graphics.getDimensions,
     graphicsDpi = love.graphics.getDPIScale,
     graphicsSetColor = love.graphics.setColor,
@@ -224,6 +220,22 @@ local function withStartup(fn)
   function service:generationId(_)
     return "startup-test-generation"
   end
+  -- The selected epoch's installed generated view: these suites stub every
+  -- generated consumer, so one shared reader object stands in for it.
+  local generatedView = { versionId = "heartgold" }
+  function generatedView:resolveAsset(_)
+    return nil
+  end
+  function generatedView:loadLua(_)
+    return nil, "the startup harness carries no generated payloads"
+  end
+  function service:getCacheFs(_)
+    return generatedView
+  end
+  function service:firstPlayReady(_)
+    return active.firstPlayReady == true
+  end
+  function service:recordFirstPlay(_) end
   function service:shutdown() end
   function service:quiesce(_)
     return nil
@@ -370,15 +382,6 @@ local function withStartup(fn)
     return fakeTitleBuild(scene)
   end
   MainMenuComposition.new = fakeMenu
-  FirstPlayCompletion.isCurrent = function()
-    return false
-  end
-  FirstPlayCompletion.hasStored = function()
-    return false
-  end
-  FirstPlayCompletion.releaseGenerationId = function()
-    return "startup-test-generation"
-  end
   love.graphics.getDimensions = function()
     return 800, 600
   end
@@ -427,9 +430,6 @@ local function withStartup(fn)
   App.pixelRatio = saved.pixelRatio
   HgssLoadingPresentation.new = saved.loadingNew
   MainMenuComposition.new = saved.menuNew
-  FirstPlayCompletion.isCurrent = saved.isCurrent
-  FirstPlayCompletion.hasStored = saved.hasStored
-  FirstPlayCompletion.releaseGenerationId = saved.releaseGenerationId
   love.graphics.getDimensions = saved.graphicsDimensions
   love.graphics.getDPIScale = saved.graphicsDpi
   love.graphics.setColor = saved.graphicsSetColor

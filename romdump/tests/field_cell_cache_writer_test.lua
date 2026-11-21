@@ -9,6 +9,8 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local FieldCellCacheWriter = require("romdump.src.digest.field.FieldCellCacheWriter")
 
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
+
 local T = {}
 
 local function collision()
@@ -106,10 +108,37 @@ local function bundle(marker)
   }
 end
 
+-- Publish one complete field-cell class the way the production jobs do: the
+-- cell job stages its own cell with the shared model payloads, and the cell
+-- index job stages the index and the corpus marker. Both artifacts are sealed
+-- and their bytes mirrored into the caller's cache.
+local function publishClass(cache, b)
+  local descriptor = b.index.matrices[1].cells[1]
+  local cellKey = descriptor.matrixMemberId .. ":" .. descriptor.index
+  ResidentArtifactFixture.publish(cache, "field-cell", descriptor.matrixMemberId .. "-" .. descriptor.index, function(artifact)
+    FieldCellCacheWriter.stagePrepared(artifact, descriptor, {
+      cell = b.cells[cellKey],
+      meshes = b.meshes,
+      textures = b.textures,
+      models = b.models,
+    })
+    return b.cells[cellKey].cellMarker
+  end)
+  return ResidentArtifactFixture.publish(cache, "field-cell-index", "global", function(artifact)
+    FieldCellCacheWriter.stageIndex(artifact, b.index)
+    artifact:write(FieldCellCache.indexMarkerPath(), b.marker)
+    FieldCellCacheWriter.stageComplete(artifact, b.marker)
+    artifact:addOwnedRoot(FieldCellCache.indexPath())
+    artifact:addOwnedRoot(FieldCellCache.indexMarkerPath())
+    artifact:addOwnedRoot(FieldCellCache.markerPath())
+    return b.marker
+  end)
+end
+
 function T.writes_a_complete_field_cell_class()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local b = bundle("field-cell-cache-v2:one")
-  Assert.equal(FieldCellCacheWriter.write(cache, b), b.marker)
+  Assert.equal(publishClass(cache, b), b.marker)
   Assert.isTrue(FieldCellCacheWriter.isReady(cache, b.marker), "field-cell class is ready")
   Assert.isTrue(
     FieldCellCache.isCellReady(cache, b.index.matrices[1].cells[1], b.cells["4:1"].cellMarker),
@@ -119,23 +148,26 @@ function T.writes_a_complete_field_cell_class()
 end
 
 function T.failed_rebuild_preserves_the_previous_class()
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local first = bundle("field-cell-cache-v2:first")
-  FieldCellCacheWriter.write(cache, first)
+  publishClass(cache, first)
 
-  local original = backend.write
-  backend.write = function(self, path, data)
-    if path:find("terrain.lua", 1, true) then
-      error("injected field-cell write failure")
-    end
-    return original(self, path, data)
-  end
+  -- A rebuild whose cell cannot stage writes nothing: its private output is
+  -- discarded, so the previous class keeps both its marker and its payload.
   local second = bundle("field-cell-cache-v2:second")
+  local descriptor = second.index.matrices[1].cells[1]
+  second.cells["4:1"].dependencies.marker = "not-the-cell-marker"
+  local artifact = ResidentArtifactFixture.new(cache, "field-cell", "4-1")
   Assert.throws(function()
-    FieldCellCacheWriter.write(cache, second)
+    FieldCellCacheWriter.stagePrepared(artifact, descriptor, {
+      cell = second.cells["4:1"],
+      meshes = second.meshes,
+      textures = second.textures,
+      models = second.models,
+    })
   end)
-  backend.write = original
+  artifact:abort()
+  Assert.equal(artifact:status(), "aborted", "a rejected cell seals nothing")
 
   Assert.isTrue(FieldCellCacheWriter.isReady(cache, first.marker), "previous class remains ready")
   Assert.equal(cache:read(FieldCellCache.markerPath()), first.marker)

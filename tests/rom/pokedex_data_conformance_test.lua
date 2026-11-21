@@ -6,6 +6,7 @@
 -- manifest), cross-checked against independently decoded source members.
 -- No commercial bytes appear here; absent versions report blocked.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local MonCache = require("libs.assets.src.MonCache")
 local MonSources = require("romdump.src.config.MonSources")
@@ -779,7 +780,7 @@ function T.fixture_policy_identities_resolve_within_rom_bank_ranges(romFs, versi
   local monCatalog = DexFixture.makeCatalog()
   local CacheFs = require("libs.storage.src.CacheFs")
   local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   Assert.notNil(cacheFs, versionId .. " exposes its prepared cache")
   local provider = FieldMessageProvider.new(cacheFs)
   local bindings = assert(catalog.textBindings, versionId .. " binds its text roles")

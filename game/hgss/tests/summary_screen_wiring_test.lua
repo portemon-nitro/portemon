@@ -3,6 +3,7 @@
 -- wrapper borrows everything, publishes reorders through the owned
 -- preparation path, and returns the displayed member on close.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
@@ -598,7 +599,7 @@ local function openProductionPartyFlow(versionId, summaryManifest)
     },
     assets = {
       bagManifest = {},
-      partyManifest = PartyCache.loadManifest(CacheFs.forVersion(versionId)),
+      partyManifest = PartyCache.loadManifest(GeneratedCacheFixture.reader(versionId)),
       summaryManifest = summaryManifest,
       uiManifest = FieldUiFixture.manifest(),
       monCatalog = {
@@ -653,7 +654,7 @@ local function openProductionPartyFlow(versionId, summaryManifest)
     },
     assets = {
       bagManifest = {},
-      partyManifest = PartyCache.loadManifest(CacheFs.forVersion(versionId)),
+      partyManifest = PartyCache.loadManifest(GeneratedCacheFixture.reader(versionId)),
       summaryManifest = summaryManifest,
       uiManifest = FieldUiFixture.manifest(),
       monCatalog = {
@@ -998,7 +999,7 @@ end
 local function fprRuntime(versionId)
   local CacheFs = require("libs.storage.src.CacheFs")
   local runtime = {
-    cacheFs = CacheFs.forVersion(versionId),
+    cacheFs = GeneratedCacheFixture.reader(versionId),
     uiManifest = FieldUiFixture.manifest(),
     playerData = { options = { textFrame = 0 } },
     windowStyles = {},

@@ -15,7 +15,6 @@ local FieldMessageAsset = require("libs.assets.src.field.FieldMessageAsset")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local Hashing = require("romdump.src.digest.Hashing")
 local Validate = require("libs.assets.src.Validate")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 
 local FieldMessageCacheWriter = {}
 
@@ -47,7 +46,7 @@ end
 -- The one staging step every bank entry point shares: write exactly this
 -- bank's payload bytes into the given stage filesystem. Never touches a
 -- sibling bank and never reopens what it wrote.
----@param stage CacheFs
+---@param stage PreparedArtifact
 ---@param bundle FieldMessageCompiler.BankBundle
 ---@return string
 local function persistBank(stage, bundle)
@@ -63,24 +62,10 @@ end
 ---@param bundle FieldMessageCompiler.BankBundle
 ---@return string
 function FieldMessageCacheWriter.stageBank(artifact, bundle)
-  assert(artifact and artifact.stageFs, "bank staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "bank staging requires a PreparedArtifact")
   local owned = checkBankBundle(bundle)
   artifact:addOwnedRoot(FieldMessageCache.bankPath(owned.bankId))
-  return persistBank(artifact:stageFs(), owned)
-end
-
-function FieldMessageCacheWriter.writeBank(cacheFs, bundle)
-  local owned = checkBankBundle(bundle)
-  local tx = ArtifactPublisher.begin(cacheFs, "field-message-bank-" .. owned.bankId, {
-    FieldMessageCache.bankPath(owned.bankId),
-  })
-  local ok, result = pcall(persistBank, tx.stage, owned)
-  if not ok then
-    tx:abort()
-    error(result, 0)
-  end
-  tx:publish()
-  return result
+  return persistBank(artifact, owned)
 end
 
 ---@param index unknown
@@ -130,7 +115,7 @@ end
 -- bank's payload is readable in the live cache under its expected receipt
 -- marker, then write only the index into the stage. Bank children are never
 -- staged here, so the summary cannot erase them.
----@param stage CacheFs
+---@param stage PreparedArtifact
 ---@param liveFs CacheFs
 ---@param index FieldMessageCache.Index
 ---@param bankMarkers table<integer, string>
@@ -170,24 +155,10 @@ end
 ---@param bankMarkers table<integer, string>
 ---@return string
 function FieldMessageCacheWriter.stageSummary(artifact, index, bankMarkers)
-  assert(artifact and artifact.stageFs and artifact.cacheFs, "summary staging requires a PreparedArtifact")
+  assert(artifact and artifact.write and artifact.cacheFs, "summary staging requires a PreparedArtifact")
   local ownedIndex = checkIndex(index)
   artifact:addOwnedRoot(FieldMessageCache.indexPath())
-  return persistSummary(artifact:stageFs(), artifact:cacheFs(), ownedIndex, bankMarkers)
-end
-
-function FieldMessageCacheWriter.writeSummary(cacheFs, index, bankMarkers)
-  local ownedIndex = checkIndex(index)
-  local tx = ArtifactPublisher.begin(cacheFs, "field-messages", {
-    FieldMessageCache.indexPath(),
-  })
-  local ok, result = pcall(persistSummary, tx.stage, cacheFs, ownedIndex, bankMarkers)
-  if not ok then
-    tx:abort()
-    error(result, 0)
-  end
-  tx:publish()
-  return result
+  return persistSummary(artifact, artifact:cacheFs(), ownedIndex, bankMarkers)
 end
 
 return FieldMessageCacheWriter

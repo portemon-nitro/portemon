@@ -2,6 +2,7 @@
 -- resident physical cells before movement. The test uses only an in-memory
 -- save backend; generated maps and presentation assets remain production data.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
@@ -16,7 +17,7 @@ local T = {}
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       versions[#versions + 1] = versionId
     end
   end
@@ -34,7 +35,10 @@ local function boot(versionId)
   local ok, state = pcall(
     FieldState.new,
     freshGame(versionId),
-    { derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets }
+    {
+      derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+      cacheFs = GeneratedCacheFixture.reader(versionId),
+    }
   )
   if not ok then
     error(state, 0)

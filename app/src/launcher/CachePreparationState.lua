@@ -4,7 +4,6 @@
 -- transfers exactly once on readiness. A disposed or stale state never
 -- fires its completion callback.
 
-local CacheFs = require("libs.storage.src.CacheFs")
 local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local ImportState = require("app.src.launcher.ImportState")
 
@@ -217,14 +216,12 @@ function CachePreparationState.new(options)
     _receiptPainted = nil,
     _importView = nil,
   }, CachePreparationState)
+  -- The themed stage starts on its built-in art: the selected epoch's
+  -- installed view is adopted only once the controller has installed its
+  -- bytes, never through a physical generated root.
   if options.kind == "boot-source" and bootLoading ~= nil then
     if type(options.versionId) == "string" and options.versionId ~= "" and validPairIndex(options.pairIndex) then
-      pcall(function()
-        local cacheFs = CacheFs.forVersion(options.versionId)
-        pcall(function()
-          bootLoading:adoptGeneratedAssets(cacheFs)
-        end)
-      end)
+      self:_adoptInstalledArt()
     end
   end
   if options.kind == "boot-source" and self.freshImport then
@@ -299,15 +296,24 @@ end
 -- warm and cold boots treat the adopted pair as a handoff precondition:
 -- a pending job holds the transfer, and a failure latches visibly with a
 -- retry path instead of abandoning the sprites.
----@return boolean adopted
+---@return boolean? adopted nil while the epoch has installed no generated view yet
 ---@return unknown? failure
 function CachePreparationState:_adoptSelectedPair()
   local loading = assert(self.loading, "boot-source preparation owns its presentation")
-  local cacheOk, cacheFs = pcall(CacheFs.forVersion, self.versionId)
-  if not cacheOk then
-    return false, cacheFs
+  local cacheFs = self.service:getCacheFs(self.epoch)
+  if cacheFs == nil then
+    return nil
   end
   return loading:adoptGeneratedAssets(cacheFs)
+end
+
+-- Adopts the installed generated art as soon as this epoch has it: the
+-- themed stage is decorative, so an epoch that installed nothing keeps its
+-- built-in art instead of opening a physical generated root. This preview
+-- never latches: the first ready pair answer owns the visible adoption
+-- failure and its retry.
+function CachePreparationState:_adoptInstalledArt()
+  pcall(self._adoptSelectedPair, self)
 end
 
 function CachePreparationState:_pollWalker()
@@ -339,6 +345,11 @@ function CachePreparationState:_pollWalker()
     })
     if ready == true then
       local adopted, adoptFailure = self:_adoptSelectedPair()
+      if adopted == nil then
+        -- The pair is ready but this epoch installed no generated view yet:
+        -- the transfer waits instead of adopting a physical generated root.
+        return
+      end
       if adopted then
         self.walkerReady = true
         self.artFailure = nil

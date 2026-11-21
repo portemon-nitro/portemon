@@ -6,7 +6,7 @@
 -- fingerprints migrates by dropping only those fields.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local HgssScript = require("libs.hgss.src.script.Composition")
 local ScriptLoader = require("libs.script.src.ScriptLoader")
 local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
@@ -30,19 +30,40 @@ local function builtins()
 end
 
 -- Counts reads of generated member bundles: one readable bundle per nonempty
--- script archive member is the generated body unit.
+-- script archive member is the generated body unit. The counted reader is a
+-- thin per-test wrapper over the installed view, so the shared resident reader
+-- itself is never mutated.
+local READER_METHODS = {
+  "read",
+  "readData",
+  "loadLua",
+  "loadModule",
+  "exists",
+  "getInfo",
+  "getDirectoryItems",
+  "resolveAsset",
+}
+
+---@param cacheFs table<string, unknown> installed generated reader
+---@return table<string, unknown> counting reader
+---@return fun(): integer finished body read count
 local function countBodyReads(cacheFs)
   local reads = 0
-  local backend = assert(cacheFs.backend, "the cache exposes its backend")
-  local originalRead = assert(backend.read, "the backend reads by path")
-  backend.read = function(self, path)
-    if type(path) == "string" and path:find("/generations/", 1, true) ~= nil and path:sub(-4) == ".lua" then
-      reads = reads + 1
+  local reader = { versionId = cacheFs.versionId }
+  for _, name in ipairs(READER_METHODS) do
+    local method = cacheFs[name]
+    if type(method) == "function" then
+      reader[name] = function(_, path, ...)
+        if name == "read" and type(path) == "string" then
+          if path:find("/generations/", 1, true) ~= nil and path:sub(-4) == ".lua" then
+            reads = reads + 1
+          end
+        end
+        return method(cacheFs, path, ...)
+      end
     end
-    return originalRead(self, path)
   end
-  return function()
-    backend.read = originalRead
+  return reader, function()
     return reads
   end
 end
@@ -63,11 +84,10 @@ end
 -- Lazy construction reads no generated body; the first explicit base
 -- access then reads exactly its own member bundle.
 function T.lazy_build_reads_no_bodies_and_first_access_reads_only_its_resource(_, versionId)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs, finishedBodies = countBodyReads(GeneratedCacheFixture.reader(versionId))
   local fs = overrideFs()
-  local finishBuildReads = countBodyReads(cacheFs)
   local registry, selection = ScriptLoader.buildRegistry(cacheFs, fs, nil, { lazy = true, builtins = builtins() })
-  Assert.equal(finishBuildReads(), 0, "lazy construction reads no generated bodies")
+  Assert.equal(finishedBodies(), 0, "lazy construction reads no generated bodies")
   local builtinIds = {}
   for id in pairs(builtins().all()) do
     builtinIds[id] = true
@@ -80,14 +100,13 @@ function T.lazy_build_reads_no_bodies_and_first_access_reads_only_its_resource(_
     end
   end
   assert(firstId ~= nil, "the published corpus carries generated scripts")
-  local finishAccessReads = countBodyReads(cacheFs)
   local base = assert(registry:base(firstId))
   Assert.equal(base.id, firstId, "first access resolves the pinned resource")
-  Assert.equal(finishAccessReads(), 1, "first access reads exactly its own member bundle")
+  Assert.equal(finishedBodies(), 1, "first access reads exactly its own member bundle")
 end
 
 function T.current_save_bucket_validates_without_fingerprints(_, versionId)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local fs = overrideFs()
   ScriptLoader.buildRegistry(cacheFs, fs, nil, { lazy = true, builtins = builtins() })
   Assert.isNil(ScriptSave.validate(currentBucket(), {}), "a current bucket validates with no fingerprint context")

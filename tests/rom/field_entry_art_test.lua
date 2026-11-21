@@ -7,8 +7,9 @@
 -- char member 2*i, palette 2*i+1, source tiles 1..68 in a 17x4 grid) and
 -- map-preview graphic order (NARC150 triples base NCLR, base+1 NCGR, base+2 NSCR).
 
-local Assert = require("tests.support.Assert")
+local FakeCache = require("tests.support.FakeCache")
 local CacheFs = require("libs.storage.src.CacheFs")
+local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
 local FieldEntryAssetCompiler = require("romdump.src.digest.ui.FieldEntryAssetCompiler")
 local FieldEntryCacheWriter = require("romdump.src.digest.ui.FieldEntryCacheWriter")
@@ -19,6 +20,7 @@ local Lz10 = require("romdump.src.digest.Lz10")
 local Hashing = require("romdump.src.digest.Hashing")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local FieldEntryFixture = require("tests.support.FieldEntryFixture")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -85,7 +87,9 @@ end
 
 -- The compiled class is fully ready and deterministic against the real dump.
 function T.compiled_entry_assets_are_ready_and_stable(romFs, version)
-  local cache = CacheFs.forVersion(version)
+  -- The compiled bundle is published into a private fixture cache so the
+  -- readiness proof reads exactly the sealed bytes this test staged.
+  local cache = CacheFs.forVersion(version, FakeCache.new())
   local bundle = assert(FieldEntryAssetCompiler.compile(romFs))
   local marker = FieldEntryAssetCache.marker(romFs:metadata().sha1, Hashing.hashLua(bundle.dependencies))
   Assert.equal(bundle.marker, marker, "the marker is FORMAT:romSha1:depHash")
@@ -115,7 +119,9 @@ function T.compiled_entry_assets_are_ready_and_stable(romFs, version)
   -- Recompiling is deterministic and the published class is fully ready.
   local second = assert(FieldEntryAssetCompiler.compile(romFs))
   Assert.equal(second.marker, bundle.marker)
-  FieldEntryCacheWriter.write(cache, bundle)
+  ResidentArtifactFixture.publish(cache, "field-entry", "global", function(artifact)
+      return FieldEntryCacheWriter.stage(artifact, bundle)
+    end)
   Assert.isTrue(FieldEntryAssetCache.isReady(cache, bundle.marker), "every indexed file is ready after publication")
   Assert.isFalse(FieldEntryAssetCache.isReady(cache, bundle.marker .. "-stale"))
 end

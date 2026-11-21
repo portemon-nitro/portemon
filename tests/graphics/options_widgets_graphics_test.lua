@@ -10,8 +10,8 @@
 -- baseline.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
-local FakeCache = require("tests.support.FakeCache")
+local LuaWriter = require("libs.codec.src.LuaWriter")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -63,19 +63,20 @@ local function preparedQuadFor(manifest, chrome)
   end
 end
 
+-- The widget fixture's own manifest, chrome and slider thumb layered over the
+-- prepared snapshot: one resident reader serves the renderer's manifest and the
+-- pool worker's payload, and no shared prepared path is written.
+---@return GeneratedCacheFixture.ResidentView view
+---@return table<string, unknown> manifest
 local function optionsCache()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local manifest = FieldUiFixture.manifest()
   FieldUiFixture.addOptionsContract(manifest)
-  cache:writeLua(FieldUiAssetCache.manifestPath(), manifest)
-  -- The pool worker reads PNG bytes through the versioned love-backend
-  -- cache, never the test FakeCache: publish the fixture chrome and the
-  -- borrowed slider thumb at their fixture-specific paths so production
-  -- bytes are never confused.
-  CacheFs.forVersion("heartgold"):write(FieldUiFixture.OPTIONS_CHROME_PATH, FieldUiFixture.optionsChromeBytes())
-  CacheFs.forVersion("heartgold")
-    :write(FieldUiFixture.OPTIONS_SLIDER_THUMB_PATH, FieldUiFixture.optionsSliderThumbBytes())
-  return cache, manifest
+  local view = GeneratedCacheFixture.overlay("heartgold", {
+    [FieldUiAssetCache.manifestPath()] = assert(LuaWriter.encode(manifest)),
+    [FieldUiFixture.OPTIONS_CHROME_PATH] = FieldUiFixture.optionsChromeBytes(),
+    [FieldUiFixture.OPTIONS_SLIDER_THUMB_PATH] = FieldUiFixture.optionsSliderThumbBytes(),
+  })
+  return view, manifest
 end
 
 local function acquireChrome(scope, pool, manifest)
@@ -133,11 +134,12 @@ local function acquireThumb(scope, pool)
 end
 
 local function setup(scope)
-  local cache, manifest = optionsCache()
-  local pool = ImageAssetPool.new(cache)
+  local view, manifest = optionsCache()
+  local pool = ImageAssetPool.new(view.reader)
   scope:own({
     release = function()
       pool:dispose()
+      GeneratedCacheFixture.close(view)
     end,
   })
   local chrome = acquireChrome(scope, pool, manifest)
@@ -380,13 +382,9 @@ end
 
 function T.release_returns_pool_references_to_baseline(_scope)
   widgetsModule()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local manifest = FieldUiFixture.manifest()
-  FieldUiFixture.addOptionsContract(manifest)
-  cache:writeLua(FieldUiAssetCache.manifestPath(), manifest)
-  CacheFs.forVersion("heartgold"):write(FieldUiFixture.OPTIONS_CHROME_PATH, FieldUiFixture.optionsChromeBytes())
+  local view, manifest = optionsCache()
   local settledImages = love.graphics.getStats().images
-  local pool = ImageAssetPool.new(cache)
+  local pool = ImageAssetPool.new(view.reader)
   local entry = assert(manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_CHROME])
   local token = pool:request(entry.image, POOLED_SAMPLER, "demand")
   local chrome = nil
@@ -403,6 +401,7 @@ function T.release_returns_pool_references_to_baseline(_scope)
   Assert.notNil(chrome, "chrome resolves through its lease")
   pool:release(chrome)
   pool:dispose()
+  GeneratedCacheFixture.close(view)
   Assert.equal(love.graphics.getStats().images, settledImages, "disposing the pool releases its images")
 end
 

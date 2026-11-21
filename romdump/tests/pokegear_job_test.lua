@@ -9,12 +9,12 @@ local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 
 local T = {}
 
-function T.pokegear_family_receipt_uses_only_the_global_key()
-  local accepted, path = pcall(ArtifactState.path, "pokegear", "global")
-  Assert.isTrue(accepted, "the pokegear cache family must admit its global receipt")
-  Assert.equal(path, "data/generated/jobs/pokegear/global.lua")
+function T.pokegear_family_fact_uses_only_the_global_key()
+  local accepted, identity = pcall(ArtifactState.key, "pokegear", "global")
+  Assert.isTrue(accepted, "the pokegear cache family must admit its global fact")
+  Assert.equal(identity, "pokegear:global")
 
-  local acceptedNonGlobalKey = pcall(ArtifactState.path, "pokegear", "0")
+  local acceptedNonGlobalKey = pcall(ArtifactState.key, "pokegear", "0")
   Assert.isFalse(acceptedNonGlobalKey, "the pokegear cache family must reject non-global keys")
 end
 
@@ -63,7 +63,7 @@ function T.common_session_compiles_pokegear_through_the_single_dispatcher()
     key = "global",
     generationId = "test-generation",
     epoch = 1,
-    stageName = "pokegear-dispatch-test",
+    artifactFacts = ArtifactState.new("test-generation"),
   }, {
     romFs = {},
     versionId = "heartgold",
@@ -72,7 +72,7 @@ function T.common_session_compiles_pokegear_through_the_single_dispatcher()
   package.loaded[compilerPath] = savedCompiler
   package.loaded[writerPath] = savedWriter
   Assert.isTrue(ok, "the single dispatcher runs the pokegear family: " .. tostring(outcome))
-  Assert.equal(outcome.result.marker, compiled.marker)
+  Assert.equal(outcome.sealed.marker, compiled.marker)
   Assert.equal(stagedBundle, compiled, "the dispatcher stages the family compiler bundle")
   Assert.equal(ArtifactJobs.sizeClass("pokegear"), "normal")
   Assert.deepEqual(ArtifactJobs.dependencies("pokegear", "global", {}), {})

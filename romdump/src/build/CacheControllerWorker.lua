@@ -16,6 +16,7 @@
 
 local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
 local CompilerPool = require("romdump.src.build.CompilerPool")
+local CacheArchive = require("romdump.src.build.CacheArchive")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
 local GameVersion = require("romdump.src.source.GameVersion")
@@ -39,6 +40,24 @@ local LIVE_TICK_SECONDS = 0.005
 -- retained set cannot turn a controller step into an unbounded scan.
 local REQUEST_OBSERVATIONS_PER_STEP = 16
 
+-- One installation part carries at most this many committed references. Main
+-- mirrors the bound; the controller never sends a part it would refuse.
+local INSTALL_PART_ENTRIES = 128
+
+-- Snapshot scheduling: a dirty generation waits out one short debounce before
+-- its first capture so a burst of commits coalesces into one archive, a streak
+-- that keeps growing is still attempted by its forced deadline, and a failed
+-- attempt is not retried busily. Foreground readiness never consults any of
+-- these numbers.
+local SNAPSHOT_DEBOUNCE_SECONDS = 5
+local SNAPSHOT_FORCE_SECONDS = 30
+local SNAPSHOT_RETRY_SECONDS = 30
+
+-- The bounded first-play closure: the four global scopes the app observes
+-- together before it records first play. The controller proves them from
+-- captured milestone facts rather than trusting the caller.
+local FIRST_PLAY_MILESTONES = { "bootstrap", "new-game-intro", "field-planning", "field-runtime" }
+
 -- Fallback sleep when no LOVE timer is present. Named (not inline
 -- anonymous) per repository source policy; run's fallback semantics
 -- are unchanged.
@@ -58,6 +77,8 @@ end
 pcall(require, "love.thread")
 pcall(require, "love.timer")
 pcall(require, "love.system")
+pcall(require, "love.filesystem")
+pcall(require, "love.data")
 local Worker = require("romdump.src.build.CacheControllerWorker")
 Worker.run(controlChannel, replyChannel)
 ]]
@@ -95,6 +116,49 @@ local VALID_URGENCIES = { required = true, near = true, sweep = true }
 ---@field development boolean
 ---@field repositoryRoot string?
 
+-- One captured snapshot in flight and the latest pending dirty indication.
+-- The writer's identity-qualified acknowledgement is what advances
+-- persistedSequence; a failure only records a retry deadline.
+---@class CacheControllerSnapshot
+---@field thread table<string, function>|nil
+---@field control table<string, function>|nil
+---@field reply table<string, function>|nil
+---@field active { versionId: string, generationId: string, epoch: integer, sequence: integer }|nil
+---@field dirty boolean
+---@field dirtySince number|nil
+---@field firstDirtyAt number|nil
+---@field retryAt number|nil
+---@field persistedSequence integer
+---@field lastError table<string, unknown>|nil
+
+---@return CacheControllerSnapshot
+local function newSnapshotState()
+  return {
+    thread = nil,
+    control = nil,
+    reply = nil,
+    active = nil,
+    dirty = false,
+    dirtySince = nil,
+    firstDirtyAt = nil,
+    retryAt = nil,
+    persistedSequence = 0,
+    lastError = nil,
+  }
+end
+
+-- Monotonic seconds for the snapshot deadlines. The injected timer only
+-- sleeps; this clock is a separate read so tests can settle deadlines without
+-- waiting on the host.
+---@return number
+local function hostClock()
+  local host = rawget(_G, "love")
+  if host ~= nil and type(host.timer) == "table" and type(host.timer.getTime) == "function" then
+    return host.timer.getTime()
+  end
+  return os.clock()
+end
+
 local Worker = {}
 Worker.__index = Worker
 
@@ -128,8 +192,15 @@ function Worker.new(control, reply)
     exiting = false,
     selectedIdentity = nil,
     offerError = nil,
-    attestedFor = nil,
-    attestationNote = nil,
+    milestones = {},
+    firstPlay = false,
+    complete = false,
+    sequence = 0,
+    installedEpoch = nil,
+    installedFacts = {},
+    syncedPublication = 0,
+    snapshot = newSnapshotState(),
+    clock = hostClock,
   }, Worker)
 end
 
@@ -150,6 +221,10 @@ end
 ---@param observation table<string, unknown> terminal ready/failed observation
 function Worker:_emitRequestResult(epoch, requestId, observation)
   local packet = { op = "request-result", epoch = epoch, requestId = requestId, state = observation.state }
+  if self.installedEpoch == epoch then
+    -- Main may not expose this fact before the bytes it vouches for install.
+    packet.requiredSequence = self.sequence
+  end
   if observation.state == "failed" then
     packet.errorMessage = observation.errorMessage or ""
     packet.errorCode = observation.errorCode or ""
@@ -705,6 +780,517 @@ function Worker:_producerId(versionId, development, repositoryRoot)
   return producerId, nil
 end
 
+-- Captured milestone facts, sorted for the manifest and the installation
+-- packets that carry them.
+---@return string[] sortedNames
+function Worker:_milestoneFacts()
+  local names = {}
+  for name in pairs(self.milestones) do
+    names[#names + 1] = name
+  end
+  table.sort(names)
+  return names
+end
+
+-- The recoverable snapshot for the selected generation, if this boot may use
+-- one: a surviving backup is restored first, then the candidate is hydrated in
+-- full against the expected identity. A damaged or foreign candidate yields no
+-- hydration at all, so the selection takes the ordinary rebuild/source route.
+---@param identity table<string, unknown>
+---@return CacheArchive.Hydration|nil
+function Worker:_hydrateSnapshot(identity)
+  local versionId = assert(identity.versionId, "a hydrated selection names its version")
+  CacheArchive.restoreBackup(versionId)
+  local fileName = CacheArchive.recoverableFileName(versionId)
+  if fileName == nil then
+    return nil
+  end
+  local hydration, failure = CacheArchive.open(versionId, identity, fileName)
+  if hydration == nil then
+    self.snapshot.lastError = type(failure) == "table" and failure
+      or { code = "CACHE_ARCHIVE_UNREADABLE", message = tostring(failure) }
+    return nil
+  end
+  return hydration
+end
+
+-- One installation stream for main: the whole cut in parts of at most
+-- INSTALL_PART_ENTRIES references, then the completion facts of that same cut.
+-- Main exposes nothing before the matching commit.
+---@param epoch integer
+---@param generationId string
+---@param sequence integer
+---@param initial boolean
+---@param identity table<string, unknown>
+---@param entries { path: string, size: integer, sourceId: string, contentId: string, data: love.Data }[] sorted by path
+function Worker:_emitInstallStream(epoch, generationId, sequence, initial, identity, entries)
+  self.reply:push({
+    op = "cache-install-begin",
+    epoch = epoch,
+    generationId = generationId,
+    sequence = sequence,
+    initial = initial,
+    identity = identity,
+    entryCount = #entries,
+  })
+  local part = 0
+  local index = 1
+  while index <= #entries do
+    local slice = {}
+    local last = math.min(index + INSTALL_PART_ENTRIES - 1, #entries)
+    for position = index, last do
+      slice[#slice + 1] = entries[position]
+    end
+    part = part + 1
+    self.reply:push({
+      op = "cache-install-entries",
+      epoch = epoch,
+      generationId = generationId,
+      sequence = sequence,
+      part = part,
+      entries = slice,
+    })
+    index = last + 1
+  end
+  self.reply:push({
+    op = "cache-install-commit",
+    epoch = epoch,
+    generationId = generationId,
+    sequence = sequence,
+    milestones = self:_milestoneFacts(),
+    firstPlay = self.firstPlay,
+    complete = self.complete,
+  })
+  self.sequence = sequence
+  self.installedEpoch = epoch
+end
+
+-- The initial installation of a selection: the hydrated cut resumes at the
+-- sequence it persisted under, and a selection without a candidate starts an
+-- empty store at sequence 1 so the stream exists before any terminal
+-- observation.
+---@param identity table<string, unknown>
+---@param epoch integer
+---@param hydration CacheArchive.Hydration|nil
+function Worker:_emitInitialInstallation(identity, epoch, hydration)
+  local generationId = assert(identity.generationId, "a selection names its generation")
+  if hydration == nil then
+    self:_emitInstallStream(epoch, generationId, 1, true, identity, {})
+    return
+  end
+  local reader = assert(self.pool and self.pool:cacheFs(), "a hydrated selection needs its resident view")
+  local entries = {}
+  for _, entry in ipairs(hydration.entries) do
+    entries[#entries + 1] =
+      assert(reader:resolveAsset(entry.path), "a hydrated payload is missing from the committed store: " .. entry.path)
+  end
+  table.sort(entries, function(left, right)
+    return left.path < right.path
+  end)
+  self:_emitInstallStream(epoch, generationId, hydration.sequence, true, identity, entries)
+end
+
+-- Reset this selection's completion facts: a hydrated cut arrives with the
+-- milestones, first play, and completeness its own capture proved, and every
+-- other selection starts with none of them.
+---@param hydration CacheArchive.Hydration|nil
+function Worker:_resetSelectionFacts(hydration)
+  self.milestones = {}
+  self.firstPlay = false
+  self.complete = false
+  self.installedFacts = {}
+  self.sequence = 0
+  self.installedEpoch = nil
+  self.syncedPublication = self.pool ~= nil and self.pool:publicationSequence() or 0
+  local facts = self.pool ~= nil and self.pool:artifactFacts() or nil
+  if facts ~= nil then
+    for jobKey in pairs(facts.records) do
+      self.installedFacts[jobKey] = true
+    end
+  end
+  if hydration ~= nil then
+    for _, name in ipairs(hydration.milestones) do
+      self.milestones[name] = true
+    end
+    self.firstPlay = hydration.firstPlay == true
+    self.complete = hydration.complete == true
+  end
+  local snapshot = self.snapshot
+  snapshot.persistedSequence = hydration ~= nil and hydration.sequence or 0
+  snapshot.dirty = false
+  snapshot.dirtySince = nil
+  snapshot.firstDirtyAt = nil
+  snapshot.retryAt = nil
+end
+
+-- Mark that the resident cut moved past what a snapshot captured. Later
+-- commits only refresh this indication; the cut itself is taken once, when the
+-- writer can accept it.
+function Worker:_markSnapshotDirty()
+  local snapshot = self.snapshot
+  local now = self.clock()
+  snapshot.dirty = true
+  snapshot.dirtySince = now
+  if snapshot.firstDirtyAt == nil then
+    snapshot.firstDirtyAt = now
+  end
+end
+
+-- Refresh the completion facts this selection can prove right now: the
+-- milestone scopes the session has proven and the exhaustive corpus decision.
+-- A proven generation releases its boot hold at once; persistence is a
+-- separate observation and never appears here.
+---@return boolean changed a completion fact became true during this refresh
+function Worker:_refreshCompletionFacts()
+  local session = self.session
+  local pool = self.pool
+  local identity = self.selectedIdentity
+  local epoch = self.liveEpoch
+  if session == nil or pool == nil or identity == nil or epoch == nil then
+    return false
+  end
+  local changed = false
+  if type(session.milestoneFacts) == "function" then
+    local names = session:milestoneFacts()
+    for _, name in ipairs(names) do
+      if self.milestones[name] == nil then
+        self.milestones[name] = true
+        changed = true
+      end
+    end
+  end
+  if self.complete then
+    return changed
+  end
+  if type(session.generationId) == "string" and session.generationId ~= identity.generationId then
+    return changed
+  end
+  local statusOk, status = pcall(session.status, session)
+  if not statusOk or type(status) ~= "table" then
+    return changed
+  end
+  local exhausted = status.sweepState == "exhausted" and status.sweepFailure == nil
+  local settled = (status.failed or 0) == 0 and (status.queued or 0) == 0 and (status.running or 0) == 0
+  local opened = status.bootstrap == "ready"
+  if status.complete == true or (exhausted and settled and opened) then
+    self.complete = true
+    changed = true
+    if type(pool.releaseBootSourceHold) == "function" then
+      pcall(function()
+        pool:releaseBootSourceHold(epoch)
+      end)
+    end
+  end
+  return changed
+end
+
+-- Publish every newly committed artifact and every changed completion fact of
+-- this selection as one installation sequence. Bytes precede the facts that
+-- vouch for them, and the call is skipped entirely when nothing moved.
+---@param force boolean? publish a completion fact this call just recorded
+---@return boolean published
+function Worker:_publishInstallation(force)
+  local pool = self.pool
+  local identity = self.selectedIdentity
+  local epoch = self.liveEpoch
+  if pool == nil or identity == nil or epoch == nil or self.session == nil then
+    return false
+  end
+  local changedFacts = self:_refreshCompletionFacts()
+  local facts = pool:artifactFacts()
+  if facts == nil then
+    return false
+  end
+  if pool:publicationSequence() == self.syncedPublication and not changedFacts and force ~= true then
+    return false
+  end
+  local fresh = {}
+  for jobKey, fact in pairs(facts.records) do
+    if self.installedFacts[jobKey] == nil then
+      fresh[#fresh + 1] = fact
+    end
+  end
+  table.sort(fresh, function(left, right)
+    return left.kind .. ":" .. left.key < right.kind .. ":" .. right.key
+  end)
+  local reader = assert(pool:cacheFs(), "a publication needs the committed resident view")
+  local entries = {}
+  local seen = {}
+  for _, fact in ipairs(fresh) do
+    for _, path in ipairs(fact.files) do
+      if not seen[path] then
+        seen[path] = true
+        entries[#entries + 1] =
+          assert(reader:resolveAsset(path), "committed artifact file is missing from the store: " .. path)
+      end
+    end
+  end
+  table.sort(entries, function(left, right)
+    return left.path < right.path
+  end)
+  self:_emitInstallStream(epoch, identity.generationId, self.sequence + 1, false, identity, entries)
+  for _, fact in ipairs(fresh) do
+    self.installedFacts[fact.kind .. ":" .. fact.key] = true
+  end
+  self.syncedPublication = pool:publicationSequence()
+  self:_markSnapshotDirty()
+  return true
+end
+
+-- Start the one process-owned archive writer, on demand: a host without thread
+-- support keeps play working and simply never persists.
+---@return boolean available
+function Worker:_ensureArchiveWriter()
+  local snapshot = self.snapshot
+  if snapshot.thread ~= nil then
+    return true
+  end
+  if snapshot.unavailable ~= nil then
+    return false
+  end
+  local host = rawget(_G, "love")
+  local threadApi = type(host) == "table" and host.thread or nil
+  if
+    type(threadApi) ~= "table"
+    or type(threadApi.newChannel) ~= "function"
+    or type(threadApi.newThread) ~= "function"
+  then
+    snapshot.unavailable = "the snapshot writer requires love.thread"
+    return false
+  end
+  local ok, control, reply, thread = pcall(function()
+    local controlChannel = threadApi.newChannel()
+    local replyChannel = threadApi.newChannel()
+    local writerThread = threadApi.newThread(CacheArchive.bootstrap())
+    writerThread:start(controlChannel, replyChannel, package.path)
+    return controlChannel, replyChannel, writerThread
+  end)
+  if not ok or control == nil or reply == nil or thread == nil then
+    snapshot.unavailable = "the snapshot writer could not be started: " .. formatError(control)
+    return false
+  end
+  snapshot.control = control
+  snapshot.reply = reply
+  snapshot.thread = thread
+  return true
+end
+
+-- Capture the latest consistent cut for the writer: the committed bytes and
+-- facts of the installed sequence plus this selection's completion facts. Only
+-- when the writer can accept it, and at most one capture is ever in flight.
+---@return boolean captured
+function Worker:_captureSnapshot()
+  local snapshot = self.snapshot
+  local pool = self.pool
+  local identity = self.selectedIdentity
+  local epoch = self.liveEpoch
+  if pool == nil or identity == nil or epoch == nil or self.session == nil or snapshot.active ~= nil then
+    return false
+  end
+  if not self:_ensureArchiveWriter() then
+    -- A host that cannot host the writer keeps playing and stops asking: the
+    -- generated bytes stay resident-only for this process.
+    snapshot.dirty = false
+    snapshot.dirtySince = nil
+    snapshot.firstDirtyAt = nil
+    return false
+  end
+  local cut = pool:snapshotCut(identity, {
+    sequence = self.sequence,
+    milestones = self:_milestoneFacts(),
+    firstPlay = self.firstPlay,
+    complete = self.complete,
+  })
+  local pushed, pushError = pcall(function()
+    local control = assert(snapshot.control, "the snapshot writer owns its control channel")
+    control:push({
+      op = "snapshot",
+      versionId = cut.versionId,
+      generationId = identity.generationId,
+      epoch = epoch,
+      identity = cut.identity,
+      sequence = cut.sequence,
+      entries = cut.entries,
+      artifacts = cut.artifacts,
+      milestones = cut.milestones,
+      firstPlay = cut.firstPlay,
+      complete = cut.complete,
+    })
+  end)
+  if not pushed then
+    snapshot.lastError = { code = "CACHE_ARCHIVE_WRITE_FAILED", message = formatError(pushError) }
+    snapshot.retryAt = self.clock() + SNAPSHOT_RETRY_SECONDS
+    return false
+  end
+  snapshot.active = {
+    versionId = cut.versionId,
+    generationId = identity.generationId,
+    epoch = epoch,
+    sequence = cut.sequence,
+  }
+  snapshot.dirty = false
+  snapshot.dirtySince = nil
+  snapshot.firstDirtyAt = nil
+  return true
+end
+
+-- Settle one writer acknowledgement. Only the exact captured identity advances
+-- persistedSequence; a failure only arms the retry deadline and reports once.
+---@param packet table<string, unknown>
+function Worker:_settleSnapshotReply(packet)
+  local snapshot = self.snapshot
+  local active = snapshot.active
+  if active == nil then
+    return
+  end
+  if
+    packet.versionId ~= active.versionId
+    or packet.generationId ~= active.generationId
+    or packet.epoch ~= active.epoch
+    or packet.sequence ~= active.sequence
+  then
+    return
+  end
+  snapshot.active = nil
+  if packet.op == "snapshot-persisted" then
+    snapshot.lastError = nil
+    snapshot.retryAt = nil
+    if active.sequence > snapshot.persistedSequence then
+      snapshot.persistedSequence = active.sequence
+    end
+    return
+  end
+  local now = self.clock()
+  snapshot.lastError = type(packet.error) == "table" and packet.error
+    or { code = "CACHE_ARCHIVE_WRITE_FAILED", message = formatError(packet.error) }
+  snapshot.retryAt = now + SNAPSHOT_RETRY_SECONDS
+  -- The cut is still unpersisted, so it stays dirty; the retry deadline, not a
+  -- busy loop, decides when the newest cut is tried again.
+  if self.liveEpoch == active.epoch and self.session ~= nil then
+    snapshot.dirty = true
+    snapshot.dirtySince = now
+    if snapshot.firstDirtyAt == nil then
+      snapshot.firstDirtyAt = now
+    end
+  end
+  if self.liveEpoch == active.epoch then
+    self.reply:push({
+      op = "cache-persistence-failed",
+      versionId = active.versionId,
+      generationId = active.generationId,
+      epoch = active.epoch,
+      sequence = active.sequence,
+      error = snapshot.lastError,
+    })
+  end
+end
+
+-- Drain writer acknowledgements and start the next capture when the coalescing
+-- debounce, the forced deadline, and the retry gate all allow it. Play never
+-- waits here: a slow, failing, or absent writer only leaves the cut dirty.
+function Worker:_pumpSnapshot()
+  local snapshot = self.snapshot
+  if snapshot.reply ~= nil then
+    while true do
+      local packet = snapshot.reply:pop()
+      if type(packet) ~= "table" then
+        break
+      end
+      self:_settleSnapshotReply(packet)
+    end
+  end
+  -- A writer that stopped without answering settles its capture as a failure:
+  -- the controller never waits on a channel nobody will push to.
+  if snapshot.active ~= nil and snapshot.thread ~= nil and type(snapshot.thread.isRunning) == "function" then
+    local alive = true
+    local probeOk = pcall(function()
+      alive = snapshot.thread:isRunning() == true
+    end)
+    if probeOk and not alive then
+      self:_settleSnapshotReply({
+        op = "snapshot-failed",
+        versionId = snapshot.active.versionId,
+        generationId = snapshot.active.generationId,
+        epoch = snapshot.active.epoch,
+        sequence = snapshot.active.sequence,
+        error = { code = "CACHE_ARCHIVE_WRITE_FAILED", message = "the snapshot writer stopped unexpectedly" },
+      })
+    end
+  end
+  if snapshot.active ~= nil or not snapshot.dirty then
+    return
+  end
+  if self.session == nil or self.selectedIdentity == nil or self.pool == nil then
+    return
+  end
+  local now = self.clock()
+  if snapshot.retryAt ~= nil and now < snapshot.retryAt then
+    return
+  end
+  local debounceDue = snapshot.dirtySince == nil or now - snapshot.dirtySince >= SNAPSHOT_DEBOUNCE_SECONDS
+  local forceDue = snapshot.firstDirtyAt ~= nil and now - snapshot.firstDirtyAt >= SNAPSHOT_FORCE_SECONDS
+  if not debounceDue and not forceDue then
+    return
+  end
+  self:_captureSnapshot()
+end
+
+-- Retirement drops queued snapshot work and asks an active writer to stop
+-- before promotion. The writer settles on its own; no gameplay path waits.
+function Worker:_cancelSnapshot()
+  local snapshot = self.snapshot
+  snapshot.dirty = false
+  snapshot.dirtySince = nil
+  snapshot.firstDirtyAt = nil
+  if snapshot.active ~= nil and snapshot.control ~= nil then
+    pcall(function()
+      local control = assert(snapshot.control, "the snapshot writer owns its control channel")
+      control:push({ op = "cancel", sequence = snapshot.active.sequence })
+    end)
+  end
+end
+
+-- Terminal teardown joins the one archive writer. Nothing is deleted: a
+-- pending snapshot is simply not taken.
+function Worker:_closeArchiveWriter()
+  local snapshot = self.snapshot
+  local thread = snapshot.thread
+  if thread == nil then
+    return
+  end
+  if snapshot.control ~= nil then
+    pcall(function()
+      local control = assert(snapshot.control, "the snapshot writer owns its control channel")
+      control:push({ op = "stop" })
+    end)
+  end
+  pcall(thread.wait, thread)
+  snapshot.thread = nil
+  snapshot.control = nil
+  snapshot.reply = nil
+  snapshot.active = nil
+end
+
+-- Record first play for the live epoch: the fact exists only after the bounded
+-- first-play closure is proven from captured milestone facts, and it reaches
+-- main with its own installation sequence.
+---@param command table<string, unknown>
+function Worker:_applyRecordFirstPlay(command)
+  if command.epoch ~= self.liveEpoch or self.session == nil or self.selectedIdentity == nil then
+    return
+  end
+  if self.firstPlay then
+    return
+  end
+  for _, name in ipairs(FIRST_PLAY_MILESTONES) do
+    if self.milestones[name] == nil then
+      return
+    end
+  end
+  self.firstPlay = true
+  self:_publishInstallation(true)
+end
+
 ---@param command table<string, unknown>
 function Worker:_answerSelect(command)
   self.reply:push({
@@ -760,8 +1346,17 @@ function Worker:_applySelect(command)
     self:_answerSelect({ epoch = epoch, ok = false, errorMessage = "controller compiler pool is unavailable" })
     return
   end
+  local hydration = nil
   local selectOk, selectError = pcall(function()
-    self:_replaceSession(identity, epoch)
+    -- The candidate snapshot is hydrated before the session exists: its cut
+    -- seeds the committed generation and its completion facts seed boot and
+    -- first-play trust. A discarded candidate keeps its own diagnostic.
+    self.snapshot.lastError = nil
+    hydration = self:_hydrateSnapshot(identity)
+    self:_replaceSession(identity, epoch, hydration)
+    self.selectedIdentity = identity
+    self.liveEpoch = epoch
+    self:_resetSelectionFacts(hydration)
   end)
   if not selectOk then
     self:_fail("controller generation selection failed: " .. formatError(selectError))
@@ -770,17 +1365,22 @@ function Worker:_applySelect(command)
   end
   self.selectedVersionId = versionId
   self.selectedRomSha1 = info.sha1
-  self.selectedIdentity = identity
   self.offerError = nil
-  self.attestedFor = nil
-  self.attestationNote = nil
-  self.liveEpoch = epoch
   self.lastRetiredEpoch = nil
   self.lifecycle = "active"
   self.requests = {}
   self.pendingRequestIds = {}
   self.pendingRequestCursor = 1
   self:_answerSelect({ epoch = epoch, ok = true, generationId = identity.generationId })
+  -- The initial installation follows the accepted selection: main owns the
+  -- resident store before it observes any ready fact or constructs a
+  -- consumer from the epoch's reader.
+  local installOk, installError = pcall(function()
+    self:_emitInitialInstallation(identity, epoch, hydration)
+  end)
+  if not installOk then
+    self:_fail("controller generation installation failed: " .. formatError(installError))
+  end
 end
 
 ---@param repositoryRoot string?
@@ -803,7 +1403,8 @@ end
 
 ---@param identity table<string, unknown>
 ---@param epoch integer
-function Worker:_replaceSession(identity, epoch)
+---@param hydration CacheArchive.Hydration|nil
+function Worker:_replaceSession(identity, epoch, hydration)
   if self.session ~= nil then
     pcall(function()
       self.session:retire()
@@ -817,7 +1418,15 @@ function Worker:_replaceSession(identity, epoch)
   end
   local pool = assert(self.pool, "controller has no compiler pool")
   pool:selectGeneration(identity, epoch)
-  self.session = InteractiveCacheBuild.new({ identity = identity, epoch = epoch, pool = pool })
+  if hydration ~= nil then
+    pool:seedCommittedGeneration(hydration.entries, hydration.artifacts)
+  end
+  self.session = InteractiveCacheBuild.new({
+    identity = identity,
+    epoch = epoch,
+    pool = pool,
+    milestones = hydration ~= nil and hydration.milestones or nil,
+  })
 end
 
 ---@param command table<string, unknown>
@@ -1010,15 +1619,9 @@ function Worker:_applyCheckBootSource(command)
     answer("failed", { code = "SOURCE_OFFER_REJECTED", message = self.offerError })
     return
   end
-  local loadOk, stored = pcall(function()
-    return session.cacheFs:loadLua(DerivedCacheState.path)
-  end)
-  if not loadOk then
-    answer("failed", { code = "CACHE_BACKEND_FAILED", message = tostring(stored) })
-    return
-  end
-  local current = DerivedCacheState.matches(stored, identity)
-  if current then
+  -- Completeness is a fact of the captured cut this selection hydrated or
+  -- proved in this process, never a marker file beside the payloads.
+  if self.complete then
     pcall(function()
       pool:prepareBootSource(epoch, false)
     end)
@@ -1041,78 +1644,6 @@ function Worker:_applyCheckBootSource(command)
     return
   end
   answer("ready")
-end
-
--- Durable full-generation attestation after a genuinely exhaustive
--- successful sweep or an explicitly requested complete build: every
--- selected entry terminal, no failure, nothing queued or running, and the
--- opening closure ready. Failed, partial, or merely first-play-complete
--- states publish nothing. Publication is atomic and once per generation;
--- the boot hold releases once terminal work no longer needs it. A failed
--- write is non-destructive: no marker, assets untouched, the boot hold
--- still releases, retried on a later pump.
-function Worker:_maybeAttestCompletedGeneration()
-  local epoch = self.liveEpoch
-  local session = self.session
-  local pool = self.pool
-  local identity = self.selectedIdentity
-  if epoch == nil or session == nil or pool == nil or identity == nil then
-    return
-  end
-  if type(session.status) ~= "function" or type(session.cacheFs) ~= "table" then
-    return
-  end
-  local statusOk, status = pcall(function()
-    return session:status()
-  end)
-  if not statusOk or type(status) ~= "table" then
-    return
-  end
-  local exhausted = status.sweepState == "exhausted" and status.sweepFailure == nil
-  local settled = (status.failed or 0) == 0 and (status.queued or 0) == 0 and (status.running or 0) == 0
-  local opened = status.bootstrap == "ready"
-  local success = status.complete == true or (exhausted and settled and opened)
-  if not success then
-    return
-  end
-  local generationId = session.generationId
-  if type(generationId) ~= "string" or generationId ~= identity.generationId then
-    return
-  end
-  if self.attestedFor == generationId then
-    return
-  end
-  local storedOk, stored = pcall(function()
-    return session.cacheFs:loadLua(DerivedCacheState.path)
-  end)
-  if storedOk and DerivedCacheState.matches(stored, identity) then
-    self.attestedFor = generationId
-    if type(pool.releaseBootSourceHold) == "function" then
-      pcall(function()
-        pool:releaseBootSourceHold(epoch)
-      end)
-    end
-    return
-  end
-  local publishOk, publishErr = pcall(function()
-    DerivedCacheState.publish(session.cacheFs, identity)
-  end)
-  if not publishOk then
-    self.attestationNote = { generationId = generationId, error = tostring(publishErr) }
-    if type(pool.releaseBootSourceHold) == "function" then
-      pcall(function()
-        pool:releaseBootSourceHold(epoch)
-      end)
-    end
-    return
-  end
-  self.attestedFor = generationId
-  self.attestationNote = nil
-  if type(pool.releaseBootSourceHold) == "function" then
-    pcall(function()
-      pool:releaseBootSourceHold(epoch)
-    end)
-  end
 end
 
 ---@param command table<string, unknown>
@@ -1141,9 +1672,14 @@ function Worker:_applyRetire(command)
       pool:update()
     end)
   end
+  -- Retirement cancels queued snapshot work and asks an active writer to
+  -- settle before any later same-version capture may start. The barrier does
+  -- not wait for that writer; dirty progress may simply be dropped.
+  self:_cancelSnapshot()
   self.lastRetiredEpoch = command.epoch
   self.liveEpoch = nil
   self.selectedIdentity = nil
+  self.installedEpoch = nil
   self.offerError = nil
   self.requests = {}
   self.pendingRequestIds = {}
@@ -1167,6 +1703,7 @@ function Worker:_pumpQuiesce()
   end
   local ok, failure = pcall(function()
     pool:update()
+    self:_publishInstallation()
   end)
   if not ok then
     self:_fail("controller quiescence drain failed: " .. formatError(failure))
@@ -1298,6 +1835,13 @@ function Worker:_handle(command)
     if not ok then
       self:_fail("controller quiescence failed: " .. formatError(failure))
     end
+  elseif op == "record-first-play" then
+    local ok, failure = pcall(function()
+      self:_applyRecordFirstPlay(command)
+    end)
+    if not ok then
+      self:_fail("controller first-play recording failed: " .. formatError(failure))
+    end
   end
 end
 
@@ -1308,6 +1852,8 @@ end
 function Worker:_shutdown()
   local pool = self.pool
   self.exiting = true
+  self:_cancelSnapshot()
+  self:_closeArchiveWriter()
   if pool ~= nil then
     pcall(pool.shutdown, pool)
   end
@@ -1333,29 +1879,27 @@ function Worker:step()
   end
   if self.pendingQuiesce ~= nil then
     self:_pumpQuiesce()
+    self:_pumpSnapshot()
     return
   end
   if self.session ~= nil then
+    -- Bytes and facts install first: a terminal observation emitted below
+    -- names the sequence main must have before it may expose it.
     local ok, failure = pcall(function()
       self.session:update()
+      self:_publishInstallation()
     end)
     if not ok then
       self:_fail("controller session pump failed: " .. formatError(failure))
     else
       self:_flushTerminalRequests()
-      -- Sweep attestation never fails the controller: a backend fault
-      -- only records its diagnostic and retries on a later pump.
-      pcall(function()
-        self:_maybeAttestCompletedGeneration()
-      end)
     end
-    return
-  end
-  if self.pool ~= nil then
+  elseif self.pool ~= nil then
     pcall(function()
       self.pool:update()
     end)
   end
+  self:_pumpSnapshot()
 end
 
 -- One wait/drive decision: an already-queued command outranks every wait
@@ -1389,6 +1933,14 @@ function Worker:driveOnce(timer)
     return
   end
   if activity == "waiting" then
+    timer.sleep(LIVE_TICK_SECONDS)
+    self:step()
+    return
+  end
+  -- Persistence is a separate observation: a dirty cut or an outstanding
+  -- writer acknowledgement keeps one bounded poll cadence, never a gameplay
+  -- wait and never a busy loop.
+  if self.snapshot.active ~= nil or self.snapshot.dirty then
     timer.sleep(LIVE_TICK_SECONDS)
     self:step()
     return

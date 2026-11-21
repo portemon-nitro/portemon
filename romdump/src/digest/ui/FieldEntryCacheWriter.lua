@@ -8,7 +8,6 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldEntryAssetCache = require("libs.assets.src.field.FieldEntryAssetCache")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 
 local FieldEntryCacheWriter = {}
 
@@ -50,29 +49,13 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function FieldEntryCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "field-entry staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "field-entry staging requires a PreparedArtifact")
   assert(bundle and bundle.marker and bundle.manifest and bundle.assets, "stage requires an entry bundle")
   assert(bundle.manifest.schema == FieldEntryAssetCache.SCHEMA, "entry manifest schema mismatch")
   artifact:addOwnedRoot(FieldEntryAssetCache.assetDir())
   artifact:addOwnedRoot(FieldEntryAssetCache.dir())
-  stageBundle(artifact:stageFs(), bundle)
+  stageBundle(artifact, bundle)
   return bundle.marker
-end
-
-function FieldEntryCacheWriter.write(cacheFs, bundle)
-  assert(bundle and bundle.marker and bundle.manifest and bundle.assets, "write requires an entry bundle")
-  assert(bundle.manifest.schema == FieldEntryAssetCache.SCHEMA, "entry manifest schema mismatch")
-  local tx = ArtifactPublisher.begin(cacheFs, "field-entry", {
-    FieldEntryAssetCache.assetDir(),
-    FieldEntryAssetCache.dir(),
-  })
-  local ok, err = pcall(stageBundle, tx.stage, bundle)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
-  return true
 end
 
 return FieldEntryCacheWriter

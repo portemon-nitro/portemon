@@ -1,68 +1,86 @@
--- Owns a worker-private artifact stage and its controller-side publication.
--- A stage is sealed at construction with its generation, epoch, and canonical
--- job identity. A successful finish stages the family output together with
--- its generation receipt in one transaction; the controller publishes only
--- after the stage identity matches the current expectation. Owned roots may
--- be exact files or directories, but they may never overlap each other or
--- swallow a shared file. A staged shared file that contradicts live bytes is
--- a conflict, never a silent reuse. The single generation receipt commits
--- last among the owned roots and is the only readiness proof; a job with no
--- payload of its own (a summary over already published jobs) owns exactly
--- that receipt. The manifest exists only to hand the finished stage to the
--- controller.
+-- Job-private, in-memory output of one compiled artifact. A stage owns one
+-- writable map of logical generated paths to immutable bytes, the owned-root
+-- and shared-file declarations the controller reconciles at commit, and the
+-- deferred PNG rows its low-priority continuation encodes. Nothing here
+-- touches the host filesystem: the sealed entry list travels to the
+-- controller, which is the only owner that publishes bytes. The dependency
+-- reader supplied at construction is read-only and never written through.
+-- Owned roots may be exact files or directories, but they may never overlap
+-- each other or swallow a shared file.
 
 local ArtifactState = require("romdump.src.build.ArtifactState")
 local Errors = require("libs.errors.src.Errors")
-local CacheFs = require("libs.storage.src.CacheFs")
+local LuaWriter = require("libs.codec.src.LuaWriter")
+local ScopedFs = require("libs.storage.src.ScopedFs")
+local StorageErrors = require("libs.storage.src.errors")
 
----@class PreparedArtifact.Manifest
----@field schema string
----@field versionId string
----@field generationId string
----@field epoch integer
----@field kind string
----@field key string
----@field jobKey string
----@field stageName string
----@field status "success"|"failure"
----@field ownedRoots string[]
----@field sharedFiles string[]
----@field sharedInstall string[] worker-resolved shared paths the controller must install
----@field sharedReused string[] worker-resolved shared paths already live and byte-identical
----@field result table<string, unknown>?
----@field error table<string, unknown>?
+-- The CACHE_* codes a chunk load reports through the shared confined loader.
+local LOAD_ERRORS = {
+  PATH_INVALID = StorageErrors.CACHE_PATH_INVALID,
+  FILE_MISSING = StorageErrors.CACHE_FILE_MISSING,
+  READ_FAILED = StorageErrors.CACHE_READ_FAILED,
+  LUA_PARSE_FAILED = StorageErrors.CACHE_LUA_PARSE_FAILED,
+  LUA_EVAL_FAILED = StorageErrors.CACHE_LUA_EVAL_FAILED,
+}
+
 ---@class PreparedArtifact.DeferredImage
----@field relativePath string stage-relative PNG destination
+---@field relativePath string logical PNG destination
 ---@field width integer
 ---@field height integer
 ---@field rgba love.Data RGBA rows owned until the continuation writes them
+---@class PreparedArtifact.Sealed
+---@field kind string
+---@field key string
+---@field marker string
+---@field ownedRoots string[]
+---@field sharedPaths string[]
+---@field entries PreparedArtifact.Entry[]
+---@class PreparedArtifact.Entry
+---@field path string logical generated path
+---@field data love.Data immutable payload bytes
+---@field size integer
 ---@class PreparedArtifact
----@field private _cacheFs CacheFs
----@field private _stageFs CacheFs
+---@field private _cacheFs table<string, unknown> read-only dependency reader
+---@field private _facts table<string, unknown>? committed dependency facts for this job
 ---@field private _generationId string
 ---@field private _epoch integer
 ---@field private _kind string
 ---@field private _key string
 ---@field private _jobKey string
----@field private _stageName string
 ---@field private _ownedRoots table<string, boolean>
 ---@field private _sharedFiles table<string, boolean>
----@field private _sharedInstall string[]
----@field private _sharedReused string[]
+---@field private _entries table<string, love.Data>
 ---@field private _deferredImages table<string, PreparedArtifact.DeferredImage>
 ---@field private _deferredOrder PreparedArtifact.DeferredImage[]
 ---@field private _status string
----@field private _manifest PreparedArtifact.Manifest?
+---@field private _marker string?
+---@field private _sealed PreparedArtifact.Sealed?
 local PreparedArtifact = {}
 PreparedArtifact.__index = PreparedArtifact
 
-local MANIFEST_PATH = "_prepared/result.lua"
-local MANIFEST_SCHEMA = "g4-prepared-artifact-v3"
+-- The one module a generated chunk may require: the gen4 script DSL emitted
+-- by the script cache generator. Mirrors the generated-cache module allowlist;
+-- anything wider would let generated output reach process-wide package state.
+local ALLOWED_MODULES = { ["gen4.script"] = true }
 
-local function assertSafePath(cacheFs, path, label)
+local function moduleRequire(name)
+  assert(ALLOWED_MODULES[name], "generated modules may only require gen4.script")
+  return require(name)
+end
+
+-- Confined logical path: a cache-relative generated path with no alias,
+-- escape, or trailing separator. Real entry confinement is enforced again by
+-- the controller's byte store when the batch is prepared.
+local function assertSafePath(path, label)
   assert(type(path) == "string" and path ~= "", label .. " must be a non-empty path")
-  cacheFs:resolve(path)
-  assert(not path:match("/$"), label .. " must not end with a slash")
+  assert(not path:find("\0", 1, true), label .. " must not contain a NUL byte")
+  assert(path:sub(1, 1) ~= "/", label .. " must be relative")
+  assert(not path:find("\\", 1, true), label .. " must not contain a backslash")
+  assert(path:sub(-1) ~= "/", label .. " must not end with a slash")
+  assert(not path:find("//", 1, true), label .. " must be canonical")
+  for segment in path:gmatch("[^/]+") do
+    assert(segment ~= "." and segment ~= "..", label .. " must not traverse")
+  end
 end
 
 local function isPathUnder(path, root)
@@ -93,66 +111,28 @@ local function serializedError(value)
   return { message = tostring(value) }
 end
 
----@param manifest unknown
----@param expected { versionId: string, generationId: string, epoch: integer, kind: string, key: string, jobKey: string, stageName: string }
----@return PreparedArtifact.Manifest
-local function validateManifest(manifest, expected)
-  assert(type(manifest) == "table", "prepared artifact manifest must be a table")
-  assert(manifest.schema == MANIFEST_SCHEMA, "prepared artifact manifest schema mismatch")
-  assert(manifest.versionId == expected.versionId, "prepared artifact version mismatch")
-  assert(manifest.generationId == expected.generationId, "prepared artifact generation mismatch")
-  assert(manifest.epoch == expected.epoch, "prepared artifact epoch mismatch")
-  assert(manifest.kind == expected.kind, "prepared artifact kind mismatch")
-  assert(manifest.key == expected.key, "prepared artifact key mismatch")
-  assert(manifest.jobKey == expected.jobKey, "prepared artifact job mismatch")
-  assert(manifest.stageName == expected.stageName, "prepared artifact stage mismatch")
-  assert(manifest.status == "success" or manifest.status == "failure", "prepared artifact status is invalid")
-  assert(type(manifest.ownedRoots) == "table", "prepared artifact owned roots are missing")
-  assert(type(manifest.sharedFiles) == "table", "prepared artifact shared files are missing")
-  assert(type(manifest.sharedInstall) == "table", "prepared artifact shared installs are missing")
-  assert(type(manifest.sharedReused) == "table", "prepared artifact shared reuses are missing")
-  local classified = {}
-  for _, path in ipairs(manifest.sharedInstall) do
-    assert(type(path) == "string" and classified[path] == nil, "prepared artifact shared decision is invalid")
-    classified[path] = true
-  end
-  for _, path in ipairs(manifest.sharedReused) do
-    assert(type(path) == "string" and classified[path] == nil, "prepared artifact shared decision is invalid")
-    classified[path] = true
-  end
-  if manifest.status == "failure" then
+---@param stringOrData string|love.Data
+---@return love.Data bytes adopted as-is, or converted once from a string
+local function byteDataOf(stringOrData)
+  local bytes = stringOrData
+  if type(bytes) == "string" then
+    local host = rawget(_G, "love")
     assert(
-      #manifest.sharedInstall == 0 and #manifest.sharedReused == 0,
-      "failed prepared artifact carries shared decisions"
+      type(host) == "table" and type(host.data) == "table" and type(host.data.newByteData) == "function",
+      "artifact output requires love.data.newByteData"
     )
-  else
-    for _, path in ipairs(manifest.sharedFiles) do
-      assert(classified[path] == true, "prepared artifact shared file has no publication decision: " .. tostring(path))
-    end
+    bytes = host.data.newByteData(bytes)
   end
-  if manifest.status == "success" then
-    assert(#manifest.ownedRoots > 0, "prepared artifact has no owned roots")
-    assert(
-      type(manifest.result) == "table" and type(manifest.result.marker) == "string" and manifest.result.marker ~= "",
-      "prepared artifact result marker is required"
-    )
-    local receiptPath = ArtifactState.path(manifest.kind, manifest.key)
-    local ownsReceipt = false
-    for _, root in ipairs(manifest.ownedRoots) do
-      if root == receiptPath then
-        ownsReceipt = true
-      end
-    end
-    assert(ownsReceipt, "prepared artifact transaction is missing its receipt")
-  end
-  return manifest --[[@as PreparedArtifact.Manifest]]
+  assert(type(bytes) == "userdata", "artifact output must be a string or Data")
+  ---@cast bytes love.Data
+  return bytes
 end
 
 ---@param options table<string, unknown>
 ---@return PreparedArtifact
 local function newInstance(options)
   assert(type(options) == "table", "prepared artifact options are required")
-  assert(options.cacheFs and options.cacheFs.versionId, "prepared artifact requires a cache filesystem")
+  assert(options.cacheFs and options.cacheFs.versionId, "prepared artifact requires its dependency reader")
   local generationId = options.generationId
   assert(type(generationId) == "string" and generationId ~= "", "prepared artifact generation is required")
   local epoch = options.epoch
@@ -164,25 +144,21 @@ local function newInstance(options)
   local jobKey = options.jobKey
   assert(type(jobKey) == "string" and jobKey ~= "", "prepared artifact job key is required")
   assert(jobKey == kind .. ":" .. key, "prepared artifact job identity must match its kind and key")
-  local stageName = options.stageName
-  assert(type(stageName) == "string", "prepared artifact stage name is required")
-  assert(stageName:match("^[%w%-_]+$"), "prepared artifact stage name is unsafe")
-  ArtifactState.path(kind, key)
-
-  local stageFs = CacheFs.forArtifactStage(options.cacheFs.versionId, stageName, options.cacheFs.backend)
+  ArtifactState.validateKey(kind, key)
+  if options.facts ~= nil then
+    assert(type(options.facts) == "table", "prepared artifact dependency facts must be a record map")
+  end
   return setmetatable({
     _cacheFs = options.cacheFs,
-    _stageFs = stageFs,
+    _facts = options.facts,
     _generationId = generationId,
     _epoch = epoch,
     _kind = kind,
     _key = key,
     _jobKey = jobKey,
-    _stageName = stageName,
     _ownedRoots = {},
     _sharedFiles = {},
-    _sharedInstall = {},
-    _sharedReused = {},
+    _entries = {},
     _deferredImages = {},
     _deferredOrder = {},
     _status = "open",
@@ -192,55 +168,65 @@ end
 ---@param options table<string, unknown>
 ---@return PreparedArtifact
 function PreparedArtifact.new(options)
-  local artifact = newInstance(options)
-  assert(not artifact._stageFs:exists(""), "prepared artifact stage already exists: " .. artifact._stageName)
-  return artifact
+  return newInstance(options)
 end
 
----@param options table<string, unknown>
+-- The low-priority PNG continuation resumes the parent's authored output from
+-- the packet its own worker held: payload bytes, ownership declarations, and
+-- the remaining RGBA rows travel back by reference, so the continuation
+-- encodes into the same map and seals it exactly once.
+---@param packet { generationId: string, epoch: integer, kind: string, key: string, jobKey: string, entries: PreparedArtifact.Entry[], ownedRoots: string[], sharedPaths: string[], images: { relativePath: string, width: integer, height: integer, rgba: love.Data }[] }
+---@param options { cacheFs: table<string, unknown>, facts: table<string, unknown>? }
 ---@return PreparedArtifact
-function PreparedArtifact.open(options)
-  local artifact = newInstance(options)
-  local manifest = artifact._stageFs:loadLua(MANIFEST_PATH)
-  local validated = validateManifest(manifest, {
-    versionId = artifact._cacheFs.versionId,
-    generationId = artifact._generationId,
-    epoch = artifact._epoch,
-    kind = artifact._kind,
-    key = artifact._key,
-    jobKey = artifact._jobKey,
-    stageName = artifact._stageName,
+function PreparedArtifact.fromPending(packet, options)
+  assert(type(packet) == "table", "pending artifact packet is required")
+  assert(type(options) == "table" and options.cacheFs ~= nil, "pending artifact requires its dependency reader")
+  local artifact = newInstance({
+    cacheFs = options.cacheFs,
+    facts = options.facts,
+    generationId = packet.generationId,
+    epoch = packet.epoch,
+    kind = packet.kind,
+    key = packet.key,
+    jobKey = packet.jobKey,
   })
-  for _, path in ipairs(validated.ownedRoots) do
-    artifact:addOwnedRoot(path)
+  for _, root in ipairs(packet.ownedRoots) do
+    artifact:addOwnedRoot(root)
   end
-  for _, path in ipairs(validated.sharedFiles) do
+  for _, path in ipairs(packet.sharedPaths) do
     artifact:addSharedFile(path)
   end
-  artifact._sharedInstall = validated.sharedInstall
-  artifact._sharedReused = validated.sharedReused
-  artifact._status = validated.status == "success" and "finished" or "failed"
-  artifact._manifest = validated
+  for _, entry in ipairs(packet.entries) do
+    assertSafePath(entry.path, "pending artifact entry")
+    artifact._entries[entry.path] = byteDataOf(entry.data)
+  end
+  for _, image in ipairs(packet.images) do
+    artifact:deferImage(image.relativePath, image.width, image.height, image.rgba)
+  end
   return artifact
 end
 
-function PreparedArtifact:stageFs()
-  return self._stageFs
-end
-
+---@return table<string, unknown> read-only dependency reader
 function PreparedArtifact:cacheFs()
   return self._cacheFs
 end
 
----@return PreparedArtifact.Manifest
-function PreparedArtifact:manifest()
-  assert(self._manifest, "prepared artifact has not been finalized")
-  return self._manifest
+---@param kind string
+---@param key string
+---@return table<string, unknown>|nil committed dependency fact
+function PreparedArtifact:dependencyFact(kind, key)
+  assert(self._facts ~= nil, "prepared artifact carries no dependency facts")
+  return ArtifactState.read(self._facts, kind, key)
+end
+
+---@return string
+function PreparedArtifact:jobKey()
+  return self._jobKey
 end
 
 function PreparedArtifact:addOwnedRoot(path)
   assert(self._status == "open", "prepared artifact is already finalized")
-  assertSafePath(self._cacheFs, path, "owned root")
+  assertSafePath(path, "owned root")
   if self._ownedRoots[path] then
     return
   end
@@ -256,7 +242,7 @@ end
 
 function PreparedArtifact:addSharedFile(path)
   assert(self._status == "open", "prepared artifact is already finalized")
-  assertSafePath(self._cacheFs, path, "shared file")
+  assertSafePath(path, "shared file")
   if self._sharedFiles[path] then
     return
   end
@@ -267,34 +253,142 @@ function PreparedArtifact:addSharedFile(path)
   self._sharedFiles[path] = true
 end
 
+-- One private output file. A string becomes Data once here; a supplied Data is
+-- adopted without copying and must never be mutated after this call.
+---@param path string
+---@param contents string|love.Data
+function PreparedArtifact:write(path, contents)
+  assert(self._status == "open", "prepared artifact is already finalized")
+  assertSafePath(path, "artifact output")
+  self._entries[path] = byteDataOf(contents)
+end
+
+---@param path string
+---@param value table<string, unknown>
+function PreparedArtifact:writeLua(path, value)
+  assert(type(value) == "table", "artifact Lua output must be a table: " .. tostring(path))
+  self:write(path, LuaWriter.encode(value))
+end
+
+---@param path string
+---@return string|nil
+function PreparedArtifact:read(path)
+  local data = self._entries[path]
+  if data == nil then
+    return nil
+  end
+  return data:getString()
+end
+
+---@param path string
+---@return love.Data|nil
+function PreparedArtifact:readData(path)
+  return self._entries[path]
+end
+
+---@param path string
+---@param expectedType string?
+---@return boolean
+function PreparedArtifact:exists(path, expectedType)
+  if self._entries[path] ~= nil then
+    return expectedType == nil or expectedType == "file"
+  end
+  if expectedType == "file" then
+    return false
+  end
+  local prefix = path == "" and "" or path .. "/"
+  for entryPath in pairs(self._entries) do
+    if prefix == "" or entryPath:sub(1, #prefix) == prefix then
+      return true
+    end
+  end
+  return false
+end
+
+---@param path string
+---@return string[] sorted immediate child names
+function PreparedArtifact:getDirectoryItems(path)
+  local prefix = path == "" and "" or path .. "/"
+  local names = {}
+  local seen = {}
+  for entryPath in pairs(self._entries) do
+    if entryPath:sub(1, #prefix) == prefix then
+      local rest = entryPath:sub(#prefix + 1)
+      local name = rest:match("^([^/]+)")
+      if name ~= nil and not seen[name] then
+        seen[name] = true
+        names[#names + 1] = name
+      end
+    end
+  end
+  table.sort(names)
+  return names
+end
+
+---@return ScopedFs.Backend chunk-loading view over the private output map
+function PreparedArtifact:_chunkBackend()
+  local function entryInfo(_, path)
+    if self._entries[path] ~= nil then
+      return { type = "file" }
+    end
+    return nil
+  end
+  local function entryRead(_, path)
+    local data = self._entries[path]
+    if data == nil then
+      return nil, "no such artifact entry"
+    end
+    return data:getString()
+  end
+  return { getInfo = entryInfo, read = entryRead }
+end
+
+---@param path string
+---@return table<string, unknown>|nil
+---@return unknown? load failure
+function PreparedArtifact:loadLua(path)
+  local ok, result, loadErr = pcall(ScopedFs.loadChunk, self:_chunkBackend(), path, path, LOAD_ERRORS)
+  if ok then
+    return result, loadErr
+  end
+  if Errors.is(result) then
+    return nil, result
+  end
+  error(result, 0)
+end
+
+---@param path string
+---@return table<string, unknown>|nil
+---@return unknown? load failure
+function PreparedArtifact:loadModule(path)
+  local ok, result, loadErr = pcall(ScopedFs.loadChunk, self:_chunkBackend(), path, path, LOAD_ERRORS, {
+    require = moduleRequire,
+  })
+  if ok then
+    return result, loadErr
+  end
+  if Errors.is(result) then
+    return nil, result
+  end
+  error(result, 0)
+end
+
 -- A producer that already owns finished RGBA rows defers their PNG encode and
 -- write to the owning job's low-priority continuation instead of spending its
 -- source phase on compression. The stage stays open until every image is
--- written into it; _finish then validates and seals once. The pixels travel as
--- one immutable host buffer so the record crosses the worker round trip with
--- no RGBA file and no second persistence step.
----@param relativePath string stage-relative destination path
+-- written into it; finishSuccess then validates and seals once.
+---@param relativePath string logical PNG destination path
 ---@param width integer
 ---@param height integer
 ---@param rgba string|love.Data RGBA rows, width*height*4 bytes
 function PreparedArtifact:deferImage(relativePath, width, height, rgba)
   assert(self._status == "open", "prepared artifact is already finalized")
-  assertSafePath(self._cacheFs, relativePath, "deferred image")
+  assertSafePath(relativePath, "deferred image")
   assert(not self._deferredImages[relativePath], "deferred image is registered twice: " .. relativePath)
   assert(type(width) == "number" and width % 1 == 0 and width > 0, "deferred image width must be positive")
   assert(type(height) == "number" and height % 1 == 0 and height > 0, "deferred image height must be positive")
-  local bytes = rgba
-  if type(bytes) == "string" then
-    local host = rawget(_G, "love")
-    assert(
-      type(host) == "table" and type(host.data) == "table" and type(host.data.newByteData) == "function",
-      "deferred image encoding requires love.data"
-    )
-    bytes = host.data.newByteData(bytes)
-  end
-  local sized = bytes --[[@as { getSize: fun(self: table): integer }]]
-  assert(type(bytes) == "userdata" and type(sized.getSize) == "function", "deferred image requires its RGBA buffer")
-  assert(sized:getSize() == width * height * 4, "deferred image RGBA size does not match its dimensions")
+  local bytes = byteDataOf(rgba)
+  assert(bytes:getSize() == width * height * 4, "deferred image RGBA size does not match its dimensions")
   local record = { relativePath = relativePath, width = width, height = height, rgba = bytes }
   self._deferredImages[relativePath] = record
   self._deferredOrder[#self._deferredOrder + 1] = record
@@ -315,9 +409,9 @@ function PreparedArtifact:hasDeferredImage(relativePath)
   return self._deferredImages[relativePath] ~= nil
 end
 
--- Every deferred image must belong to the transaction that installs it and
--- must already be written by its continuation: publication seals complete
--- pixels only, and nothing may be staged outside the owned roots.
+-- Every deferred image must belong to the roots that install it and must
+-- already be written by its continuation: a sealed result carries complete
+-- pixels only, and nothing may be written outside the owned roots.
 function PreparedArtifact:_assertDeferredImagesStaged()
   for _, image in ipairs(self._deferredOrder) do
     local path = image.relativePath
@@ -330,20 +424,42 @@ function PreparedArtifact:_assertDeferredImagesStaged()
       end
     end
     assert(owned, "prepared artifact deferred image escapes its owned roots: " .. path)
-    assert(self._stageFs:exists(path, "file"), "prepared artifact deferred image was not staged: " .. path)
+    assert(self._entries[path] ~= nil, "prepared artifact deferred image was not staged: " .. path)
   end
   self._deferredImages = {}
   self._deferredOrder = {}
 end
 
--- Shared PNGs are addressed by source hash while their bytes embed the host
--- zlib's deflate output, so a host toolchain change contradicts
--- byte-identical pixels. The logical PNG identity below is the IHDR plus
--- every non-IDAT chunk plus the decompressed scanlines: two files sharing
--- it render the same pixels. A PNG whose live and staged copies share
--- that identity reinstalls the staged bytes (healing encoder drift
--- permanently and converging on the current encoder); every other
--- contradiction still fails before any success is sealed.
+---@param marker string? final result marker, absent for a marker-only job
+---@return PreparedArtifact.Sealed
+function PreparedArtifact:_seal(marker)
+  assert(type(marker) == "string" and marker ~= "", "prepared artifact result marker is required")
+  local entries = {}
+  for path, data in pairs(self._entries) do
+    entries[#entries + 1] = { path = path, data = data, size = data:getSize() }
+  end
+  table.sort(entries, function(left, right)
+    return left.path < right.path
+  end)
+  local sealed = {
+    kind = self._kind,
+    key = self._key,
+    marker = marker,
+    ownedRoots = sortedKeys(self._ownedRoots),
+    sharedPaths = sortedKeys(self._sharedFiles),
+    entries = entries,
+  }
+  self._sealed = sealed
+  self._marker = marker
+  return sealed
+end
+
+-- Shared PNGs are addressed by a content identity while their bytes embed the
+-- host zlib's deflate output, so a host toolchain change contradicts
+-- byte-identical pixels. The logical PNG identity below is the IHDR plus every
+-- non-IDAT chunk plus the decompressed scanlines: two files sharing it render
+-- the same pixels. The controller uses it while reconciling shared content so
+-- an encoder drift converges on the newer bytes instead of failing the job.
 local PNG_SIGNATURE = "\137PNG\r\n\26\n"
 
 ---@param bytes string raw file bytes
@@ -411,196 +527,94 @@ local function pngLogicalIdentity(bytes)
   return table.concat(rest, "\1") .. "\1IDAT\0" .. raw
 end
 
--- Worker-side shared-file proof, sealed before success: every staged
--- shared path must exist; a path absent from the live tree becomes an
--- install candidate, a byte-identical live path is marked reused and its
--- redundant staged copy removed, a PNG pairing with identical decoded
--- pixels reinstalls the staged copy, and any other contradiction fails
--- before any success is sealed. The controller later installs or reuses
--- from this classification without reading payload bytes. Shared paths must
--- be deterministic derivations of the generation source: the same path
--- always carries the same bytes, so concurrent producers cannot genuinely
--- conflict; a mismatch fails here and serialized controller publication
--- never overwrites live bytes on a race.
-function PreparedArtifact:_reconcileShared()
-  assert(self._status == "open", "prepared artifact is already finalized")
-  local install, reused = {}, {}
-  for path in pairs(self._sharedFiles) do
-    assert(self._stageFs:exists(path, "file"), "prepared shared file is missing: " .. path)
-    local live = self._cacheFs:read(path)
-    local staged = assert(self._stageFs:read(path), "prepared shared file is missing: " .. path)
-    if live == nil then
-      install[#install + 1] = path
-    elseif live == staged then
-      reused[#reused + 1] = path
-      self._stageFs:remove(path)
-    else
-      local liveIdentity, stagedIdentity = pngLogicalIdentity(live), pngLogicalIdentity(staged)
-      if liveIdentity ~= nil and liveIdentity == stagedIdentity then
-        install[#install + 1] = path
-      else
-        Errors.raise("PREPARED_SHARED_CONFLICT", "staged shared file contradicts the live artifact", { path = path })
-      end
-    end
+-- Whether two copies of one logical generated path carry the same content:
+-- exact bytes, or PNG files that render the same pixels.
+---@param path string logical path, used only to decide the comparison
+---@param first love.Data
+---@param second love.Data
+---@return boolean
+function PreparedArtifact.equalContent(path, first, second)
+  if type(first) ~= "userdata" or type(second) ~= "userdata" then
+    return false
   end
-  table.sort(install)
-  table.sort(reused)
-  self._sharedInstall = install
-  self._sharedReused = reused
+  ---@cast first love.Data
+  ---@cast second love.Data
+  local firstBytes, secondBytes = first:getString(), second:getString()
+  if firstBytes == secondBytes then
+    return true
+  end
+  if not path:lower():match("%.png$") then
+    return false
+  end
+  local firstIdentity, secondIdentity = pngLogicalIdentity(firstBytes), pngLogicalIdentity(secondBytes)
+  return firstIdentity ~= nil and firstIdentity == secondIdentity
 end
 
-function PreparedArtifact:_finish(status, result, failure)
-  assert(self._status == "open", "prepared artifact is already finalized")
-  if status == "success" then
-    self:_assertDeferredImagesStaged()
-    self:_reconcileShared()
-  else
-    self._sharedInstall = {}
-    self._sharedReused = {}
-    self._deferredImages = {}
-    self._deferredOrder = {}
-  end
-  local ownedRoots = sortedKeys(self._ownedRoots)
-  if status == "success" then
-    assert(type(result) == "table", "prepared artifact result must be a table")
-    assert(type(result.marker) == "string" and result.marker ~= "", "prepared artifact result marker is required")
-    local receiptPath = ArtifactState.path(self._kind, self._key)
-    for existing in pairs(self._ownedRoots) do
-      assert(not pathsOverlap(existing, receiptPath), "prepared artifact family root swallows its receipt")
-    end
-    self._stageFs:writeLua(receiptPath, {
-      schema = ArtifactState.RECEIPT_SCHEMA,
-      generationId = self._generationId,
-      kind = self._kind,
-      key = self._key,
-      marker = result.marker,
-    })
-    local familyRoots = sortedKeys(self._ownedRoots)
-    local orderedRoots = {}
-    for _, root in ipairs(familyRoots) do
-      if root ~= receiptPath then
-        orderedRoots[#orderedRoots + 1] = root
-      end
-    end
-    orderedRoots[#orderedRoots + 1] = receiptPath
-    ownedRoots = orderedRoots
-  end
-  local manifest = {
-    schema = MANIFEST_SCHEMA,
-    versionId = self._cacheFs.versionId,
-    generationId = self._generationId,
-    epoch = self._epoch,
-    kind = self._kind,
-    key = self._key,
-    jobKey = self._jobKey,
-    stageName = self._stageName,
-    status = status,
-    ownedRoots = ownedRoots,
-    sharedFiles = sortedKeys(self._sharedFiles),
-    sharedInstall = self._sharedInstall,
-    sharedReused = self._sharedReused,
-    result = result,
-    error = failure,
-  }
-  self._stageFs:writeLua(MANIFEST_PATH, manifest)
-  self._manifest = manifest
-  self._status = status == "success" and "finished" or "failed"
-  return true
-end
-
+---@param result table<string, unknown>|nil
+---@return PreparedArtifact.Sealed
 function PreparedArtifact:finishSuccess(result)
+  assert(self._status == "open", "prepared artifact is already finalized")
   assert(result == nil or type(result) == "table", "prepared artifact result must be a table")
-  return self:_finish("success", result, nil)
+  local marker = result and result.marker
+  self:_assertDeferredImagesStaged()
+  local sealed = self:_seal(marker)
+  self._status = "sealed"
+  return sealed
 end
 
+---@param failure unknown
+---@param traceback string|nil
+---@return table<string, unknown> serialized failure record
 function PreparedArtifact:finishFailure(failure, traceback)
+  assert(self._status == "open", "prepared artifact is already finalized")
   local errorRecord = serializedError(failure)
   if traceback then
     errorRecord.traceback = traceback
   end
-  return self:_finish("failure", nil, errorRecord)
-end
-
----@param expected { generationId: string, epoch: integer, kind: string, key: string, jobKey: string, stageName?: string }
----@return boolean
-function PreparedArtifact:publish(expected)
-  assert(self._status == "finished", "prepared artifact is not a successful result")
-  assert(type(expected) == "table", "publish requires the controller-supplied expected identity")
-  assert(expected.generationId == self._generationId, "prepared artifact generation mismatch")
-  assert(expected.epoch == self._epoch, "prepared artifact epoch mismatch")
-  assert(expected.kind == self._kind, "prepared artifact kind mismatch")
-  assert(expected.key == self._key, "prepared artifact key mismatch")
-  assert(expected.jobKey == self._jobKey, "prepared artifact job mismatch")
-  if expected.stageName ~= nil then
-    assert(expected.stageName == self._stageName, "prepared artifact stage mismatch")
-  end
-  local manifest = validateManifest(self._stageFs:loadLua(MANIFEST_PATH), {
-    versionId = self._cacheFs.versionId,
-    generationId = self._generationId,
-    epoch = self._epoch,
-    kind = self._kind,
-    key = self._key,
-    jobKey = self._jobKey,
-    stageName = self._stageName,
-  })
-  assert(manifest.status == "success", "failed prepared artifact cannot publish")
-
-  -- Shared publication follows the worker-resolved classification with
-  -- metadata checks and renames only: installs move the staged copy
-  -- into the live tree, reuses only require the live path to still
-  -- exist. No payload byte is read or copied here.
-  for _, path in ipairs(manifest.sharedInstall) do
-    assert(self._stageFs:exists(path, "file"), "prepared shared file is missing: " .. path)
-    local parent = path:match("^(.*)/[^/]+$")
-    if parent then
-      self._cacheFs:createDirectory(parent)
-    end
-    self._cacheFs:replaceAt(self._stageFs:resolve(path), self._cacheFs:resolve(path))
-  end
-  for _, path in ipairs(manifest.sharedReused) do
-    if not self._cacheFs:exists(path) then
-      Errors.raise("PREPARED_SHARED_CONFLICT", "reused shared file changed before publication", { path = path })
-    end
-  end
-
-  for _, root in ipairs(manifest.ownedRoots) do
-    assert(
-      self._stageFs:exists(root, "file") or self._stageFs:exists(root, "directory"),
-      "prepared owned root is missing: " .. root
-    )
-    local parent = root:match("^(.*)/[^/]+$")
-    if parent then
-      self._cacheFs:createDirectory(parent)
-      self._stageFs:createDirectory(parent)
-    end
-  end
-  -- A failed publication leaves the live tree on its last known good and
-  -- the stage intact for external journal recovery, so the artifact returns
-  -- to a finished, retryable or abortable result instead of stranding the
-  -- stage in a publishing state no later call can leave.
-  self._status = "publishing"
-  local ok, result = pcall(function()
-    return self._cacheFs:publishStaged(self._stageFs, manifest.ownedRoots, function()
-      self._stageFs:removeTree("")
-    end)
-  end)
-  if not ok then
-    self._status = "finished"
-    error(result, 0)
-  end
-  self._status = "published"
-  return result
+  self._entries = {}
+  self._deferredImages = {}
+  self._deferredOrder = {}
+  self._status = "failed"
+  return errorRecord
 end
 
 function PreparedArtifact:abort()
-  assert(self._status ~= "publishing" and self._status ~= "published", "cannot abort after publication begins")
-  self._stageFs:removeTree("")
+  assert(self._status == "open", "only an open artifact can be aborted")
+  self._entries = {}
+  self._deferredImages = {}
+  self._deferredOrder = {}
   self._status = "aborted"
   return true
 end
 
-function PreparedArtifact:isAbortable()
-  return self._status ~= "publishing" and self._status ~= "published" and self._status ~= "aborted"
+---@return string
+function PreparedArtifact:status()
+  return self._status
+end
+
+---@return PreparedArtifact.Sealed
+function PreparedArtifact:sealed()
+  assert(self._sealed ~= nil, "prepared artifact has not been sealed")
+  return self._sealed
+end
+
+-- The open output map and ownership declarations, published by reference so a
+-- deferred PNG continuation can resume the same artifact from its packet.
+---@return { ownedRoots: string[], sharedPaths: string[], entries: PreparedArtifact.Entry[] }
+function PreparedArtifact:captureOutput()
+  assert(self._status == "open", "prepared artifact is already finalized")
+  local entries = {}
+  for path, data in pairs(self._entries) do
+    entries[#entries + 1] = { path = path, data = data, size = data:getSize() }
+  end
+  table.sort(entries, function(left, right)
+    return left.path < right.path
+  end)
+  return {
+    ownedRoots = sortedKeys(self._ownedRoots),
+    sharedPaths = sortedKeys(self._sharedFiles),
+    entries = entries,
+  }
 end
 
 return PreparedArtifact

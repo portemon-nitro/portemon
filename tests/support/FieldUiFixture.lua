@@ -12,6 +12,7 @@
 -- a distinct color, so a misplacement or wrong rect is a pixel mismatch,
 -- never a wash.
 
+local LuaWriter = require("libs.codec.src.LuaWriter")
 local PngWriter = require("tests.support.PngEncoder")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
@@ -36,16 +37,27 @@ FieldUiFixture.TRAINER_CARD_PATH = "assets/generated/field/ui/trainer-card.png"
 
 ---@param cache CacheFs
 ---@param fontId integer
-function FieldUiFixture.writeFont(cache, fontId)
+-- One font's generated payloads by logical path: the definition as Lua text
+-- plus its atlas, mask and focus-indicator images.
+---@param fontId integer
+---@return table<string, string> payloads
+function FieldUiFixture.fontAssets(fontId)
   local source = FieldDialogueFixture.cacheWithFontId(fontId)
   local definitionPath = FieldFontCache.defPath(fontId)
-  cache:writeLua(definitionPath, source:loadLua(definitionPath))
+  local assets = { [definitionPath] = assert(LuaWriter.encode(source:loadLua(definitionPath))) }
   for _, path in ipairs({
     FieldFontCache.atlasPath(fontId),
     FieldFontCache.maskAtlasPath(fontId),
     FieldFontCache.focusIndicatorsPath(fontId),
   }) do
-    cache:write(path, assert(source:read(path), "font fixtures carry generated image assets"))
+    assets[path] = assert(source:read(path), "font fixtures carry generated image assets")
+  end
+  return assets
+end
+
+function FieldUiFixture.writeFont(cache, fontId)
+  for path, bytes in pairs(FieldUiFixture.fontAssets(fontId)) do
+    cache:write(path, bytes)
   end
 end
 

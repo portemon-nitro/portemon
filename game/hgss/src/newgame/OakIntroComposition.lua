@@ -4,7 +4,6 @@
 
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
-local CacheFs = require("libs.storage.src.CacheFs")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local DialogueLayout = require("libs.hgss.src.ui.DialogueLayout")
@@ -214,7 +213,7 @@ function OakIntroComposition.compose(options)
     )
   end
 
-  local cacheFs = CacheFs.forVersion(options.versionId)
+  local cacheFs = assert(options.cacheFs, "Oak intro composition needs the selected epoch's installed generated view")
   local introManifest = assert(cacheFs:loadLua(IntroAssetCache.manifestPath()))
   assert(
     type(introManifest) == "table" and introManifest.schemaVersion == IntroAssetCache.SCHEMA_VERSION,

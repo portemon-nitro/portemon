@@ -11,7 +11,7 @@
 -- passing.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
@@ -558,7 +558,7 @@ local function graphicsRig(versionId, pool, scope)
   local Renderer = requireRenderer("prepared graphics rigs")
   local Owner = requireOwner("prepared graphics rigs")
   local _ = Renderer
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   Assert.notNil(cacheFs, "the ready version exposes its prepared cache")
   local monCatalog, catalog = Fixture.catalogs()
   -- The runtime resolves type/shape editor positions through the
@@ -1892,7 +1892,7 @@ end
 function T.native_and_foreign_text_advances_match_their_banks(scope)
   requireRenderer("prepared font collaborators behind the text legs")
   local versionId = readyVersion()
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   Assert.notNil(cacheFs, "the ready version exposes its prepared cache")
   local provider = FieldMessageProvider.new(cacheFs)
   Assert.isTrue(provider:acquireBank(805), "the english flavor bank acquires")
@@ -2015,7 +2015,7 @@ function T.draw_performs_no_realization_work()
   end
   local monCatalog, catalog = Fixture.catalogs()
   local dexOwner = Fixture.ownerWithHistory(monCatalog, catalog)
-  local cacheFs = CacheFs.forVersion(readyVersion())
+  local cacheFs = GeneratedCacheFixture.reader(readyVersion())
   local censusPool = SharedImagePoolFake.new()
   local PokedexCache = require("libs.assets.src.PokedexCache")
   seedChromeFor(censusPool, cacheFs, PokedexCache.loadManifest(cacheFs), "grid")

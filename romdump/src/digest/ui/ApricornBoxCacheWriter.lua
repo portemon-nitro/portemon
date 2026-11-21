@@ -1,7 +1,6 @@
 -- Publishes a complete source-backed Apricorn Box pane bundle.
 
 local Errors = require("libs.errors.src.Errors")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 local Validate = require("libs.assets.src.Validate")
 local ApricornBoxSources = require("romdump.src.config.ApricornBoxSources")
@@ -113,29 +112,11 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function ApricornBoxCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "Apricorn Box staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "Apricorn Box staging requires a PreparedArtifact")
   validateBundle(bundle)
   artifact:addOwnedRoot(ApricornBoxAssetCache.assetDir())
   artifact:addOwnedRoot(ApricornBoxAssetCache.dir())
-  stageBundle(artifact:stageFs(), bundle)
-  return bundle.marker
-end
-
----@param cacheFs CacheFs
----@param bundle table<string, unknown>
----@return string
-function ApricornBoxCacheWriter.write(cacheFs, bundle)
-  validateBundle(bundle)
-  local tx = ArtifactPublisher.begin(cacheFs, "apricorn-box", {
-    ApricornBoxAssetCache.assetDir(),
-    ApricornBoxAssetCache.dir(),
-  })
-  local ok, err = pcall(stageBundle, tx.stage, bundle)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
+  stageBundle(artifact, bundle)
   return bundle.marker
 end
 

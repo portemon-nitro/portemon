@@ -7,7 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local MapResolver = require("romdump.src.digest.map.MapResolver")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
@@ -23,7 +23,7 @@ local function resolve(romFs)
 end
 
 function T.new_bark_physical_cell_is_complete_without_map_scene(_, versionId)
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   local index = FieldCellCache.loadIndex(cache)
   local descriptor = assert(FieldCellCache.find(index, 0, 21, 12))
   local cell = assert(cache:loadLua(descriptor.file))
@@ -75,7 +75,7 @@ function T.new_bark_physical_cell_is_complete_without_map_scene(_, versionId)
 end
 
 function T.new_bark_physical_cell_carries_area_texture_animation(romFs, versionId)
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   local index = FieldCellCache.loadIndex(cache)
   local descriptor = assert(FieldCellCache.find(index, 0, 21, 12))
   local cell = assert(cache:loadLua(descriptor.file))
@@ -112,7 +112,7 @@ function T.physical_cell_index_publishes_everywhere_neighbors(romFs, versionId)
     return rec and rec.areaDataMemberId or nil
   end)
 
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   local index = FieldCellCache.loadIndex(cache)
   for _, expected in ipairs(plan.cells) do
     local label = string.format("neighbor (%d,%d)", expected.x, expected.z)
@@ -167,7 +167,7 @@ function T.committed_coverage_includes_everywhere_neighbors(romFs, versionId)
     return rec and rec.areaDataMemberId or nil
   end)
 
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   local coverage = FieldCoverage.new({
     cacheFs = cache,
     index = FieldCellCache.loadIndex(cache),

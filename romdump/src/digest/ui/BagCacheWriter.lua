@@ -7,7 +7,6 @@
 -- begins the shared publisher owns rollback, recovery, and cleanup outcomes.
 
 local Errors = require("libs.errors.src.Errors")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local BagAssetSchema = require("libs.assets.src.BagAssetSchema")
 local BagCache = require("libs.assets.src.BagCache")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
@@ -62,18 +61,12 @@ local function validateBundle(bundle)
   end
 end
 
----@param tx table<string, unknown>
+---@param stage table<string, unknown> the artifact's private output owner
 ---@param bundle table<string, unknown>
----@param sharedFs table<string, unknown> destination for shared content-addressed blobs
----@param cacheFs CacheFs
-local function stageBundle(tx, bundle, sharedFs, cacheFs)
-  local stage = tx.stage
+---@param cacheFs table<string, unknown> read-only dependency reader
+local function stageBundle(stage, bundle, cacheFs)
   for _, path in ipairs(BagCache.referencedPaths(bundle.manifest)) do
-    if path:sub(1, #BagCache.assetDir()) == BagCache.assetDir() then
-      stage:write(path, bundle.assets[path])
-    else
-      sharedFs:write(path, bundle.assets[path])
-    end
+    stage:write(path, bundle.assets[path])
   end
   stage:writeLua(BagCache.provenancePath(), bundle.dependencies)
   stage:writeLua(BagCache.manifestPath(), bundle.manifest)
@@ -103,7 +96,7 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function BagCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "bag staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "bag staging requires a PreparedArtifact")
   validateBundle(bundle)
   artifact:addOwnedRoot(BagCache.assetDir())
   artifact:addOwnedRoot(BagCache.dir())
@@ -112,24 +105,8 @@ function BagCacheWriter.stage(artifact, bundle)
       artifact:addSharedFile(path)
     end
   end
-  stageBundle({ stage = artifact:stageFs() }, bundle, artifact:stageFs(), artifact:cacheFs())
+  stageBundle(artifact, bundle, artifact:cacheFs())
   return bundle.marker
-end
-
----@param cacheFs CacheFs
----@param bundle table<string, unknown>
----@return boolean
-function BagCacheWriter.write(cacheFs, bundle)
-  assert(cacheFs and bundle, "bag publication requires a cache and a bundle")
-  validateBundle(bundle)
-  local tx = ArtifactPublisher.begin(cacheFs, "bag", { BagCache.assetDir(), BagCache.dir() })
-  local ok, err = pcall(stageBundle, tx, bundle, cacheFs, cacheFs)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
-  return true
 end
 
 return BagCacheWriter

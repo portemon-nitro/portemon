@@ -80,6 +80,7 @@ local function openingState(overrides)
     status = "opening",
     message = "Preparing save data",
     versionId = VERSION_ID,
+    cacheFs = {},
     width = 480,
     height = 360,
     startupPairIndex = PAIR_INDEX,

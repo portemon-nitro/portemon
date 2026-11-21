@@ -14,6 +14,7 @@ local MonSources = require("romdump.src.config.MonSources")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local Lz10 = require("romdump.src.digest.Lz10")
 local RomSuite = require("tests.rom.support.RomSuite")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 local bundles = {}
@@ -53,7 +54,9 @@ function T.published_family_reads_back_ready(romFs)
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion(romFs:version(), backend)
   Assert.isFalse(MoveIconCache.isReady(cache, bundle.marker), "an empty cache is not ready")
-  MoveIconCacheWriter.write(cache, bundle)
+  ResidentArtifactFixture.publish(cache, "move-icons", "global", function(artifact)
+      return MoveIconCacheWriter.stage(artifact, bundle)
+    end)
   Assert.isTrue(MoveIconCache.isReady(cache, bundle.marker), "the published family is ready")
   local manifest = MoveIconCache.loadManifest(cache)
   Assert.deepEqual(manifest, bundle.manifest, "the manifest reads back unchanged")

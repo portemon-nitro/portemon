@@ -61,7 +61,7 @@ function BinaryView.fromString(bytes, label)
   return pointerView(bytes, bytes, #bytes, label)
 end
 
----@param data BinaryDataLike|userdata
+---@param data BinaryDataLike|love.Data|userdata
 ---@param label string?
 ---@return BinaryView
 function BinaryView.fromData(data, label)

@@ -138,7 +138,7 @@ local function checkRequirement(text, flag)
     return
   end
   local kind, key = text:match("^([^:]+):(.+)$")
-  local valid = kind ~= nil and pcall(ArtifactState.path, kind, key)
+  local valid = kind ~= nil and pcall(ArtifactState.validateKey, kind, key)
   if not valid then
     error("invalid " .. flag .. " '" .. text .. "'\n" .. Cli.USAGE)
   end
@@ -148,7 +148,7 @@ end
 ---@param text string
 local function checkRebuild(text)
   local kind, key = text:match("^([^:]+):(.+)$")
-  local valid = kind ~= nil and pcall(ArtifactState.path, kind, key)
+  local valid = kind ~= nil and pcall(ArtifactState.validateKey, kind, key)
   if not valid then
     error("invalid --rebuild '" .. text .. "'\n" .. Cli.USAGE)
   end

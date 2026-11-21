@@ -1,16 +1,15 @@
 -- One persistent presentation preparation worker behind a two-priority
--- request queue. Cache I/O, mesh decode/validation/upload packing, image
--- CPU decode, and private image-derivative classification run on the worker
--- thread; the main thread only resolves cache paths, polls non-blocking (or
--- waits where its caller already requires a synchronous result), and realizes
--- prepared payloads into GPU objects it owns. Demand requests dispatch ahead
--- of queued prefetch requests, but a running worker job is never preempted.
--- Channel messages stay flat; bulk memory crosses as love Data/ImageData
--- userdata.
+-- request queue. Mesh decode/validation/upload packing, image CPU decode, and
+-- private image-derivative classification run on the worker thread; the main
+-- thread only resolves the selected epoch's resident payload for one request,
+-- polls non-blocking (or waits where its caller already requires a synchronous
+-- result), and realizes prepared payloads into GPU objects it owns. Demand
+-- requests dispatch ahead of queued prefetch requests, but a running worker
+-- job is never preempted. Channel messages stay flat; bulk memory crosses as
+-- love Data/ImageData userdata.
 
 ---@class AssetPreparationQueue
 ---@field _cacheFs table<string, unknown>
----@field _versionId string
 ---@field _request table<string, unknown>
 ---@field _reply table<string, unknown>
 ---@field _worker table<string, unknown>
@@ -83,16 +82,17 @@ local WAIT_HEALTH_PROBE_SECONDS = 0.05
 ---@field workerSource unknown? worker entry point override, passed to the thread constructor
 ---@field readyPayloadByteLimit integer? ceiling for ready-but-unclaimed payload bytes
 
--- cacheFs resolves and confines every logical path on the main thread before
--- dispatch; the worker only ever sees the confined save-relative path.
+-- cacheFs is the selected epoch's resident reader: each request resolves its
+-- immutable payload reference on the main thread, and only that reference
+-- crosses to the worker.
 ---@param cacheFs table<string, unknown>
 ---@param options AssetPreparationQueueOptions?
 ---@return AssetPreparationQueue
 function AssetPreparationQueue.new(cacheFs, options)
-  assert(cacheFs and cacheFs.resolve, "AssetPreparationQueue requires a CacheFs-shaped object")
+  assert(cacheFs and cacheFs.resolveAsset, "AssetPreparationQueue requires a resident generated reader")
   assert(
     type(cacheFs.versionId) == "string" and cacheFs.versionId ~= "",
-    "AssetPreparationQueue requires a versioned CacheFs"
+    "AssetPreparationQueue requires a versioned generated reader"
   )
   options = options or {}
   local threadHost = options.thread or (love and love.thread)
@@ -111,7 +111,6 @@ function AssetPreparationQueue.new(cacheFs, options)
   )
   local self = setmetatable({
     _cacheFs = cacheFs,
-    _versionId = cacheFs.versionId,
     _request = requestChannel,
     _reply = replyChannel,
     _worker = worker,
@@ -171,8 +170,8 @@ function AssetPreparationQueue:_dispatch()
     token = token,
     kind = record.kind,
     path = record.path,
-    versionId = self._versionId,
     logicalPath = record.logicalPath,
+    data = record.data,
     selector = record.selector,
   })
 end
@@ -484,8 +483,14 @@ function AssetPreparationQueue:request(kind, logicalPath, priority)
   end
   local identity = requestIdentity(logicalPath)
   local file = type(logicalPath) == "table" and logicalPath.file or logicalPath
-  local resolved = self._cacheFs:resolve(file)
-  local key = kind .. "\0" .. resolved .. "\0" .. identity
+  -- The immutable resident reference is resolved before keying: identity is
+  -- the selected source's content identity, so a different epoch or a
+  -- replaced payload can never be served from an older decode.
+  local reference = assert(
+    self._cacheFs:resolveAsset(file),
+    "the generated artifact is absent from the installed view: " .. tostring(file)
+  )
+  local key = table.concat({ reference.sourceId, reference.contentId, kind, identity }, "\0")
   self._nextToken = self._nextToken + 1
   local token = self._nextToken
   -- An identical queued-or-running job runs once: the duplicate links to
@@ -498,7 +503,8 @@ function AssetPreparationQueue:request(kind, logicalPath, priority)
       kind = kind,
       logicalPath = file,
       selector = type(logicalPath) == "table" and logicalPath or nil,
-      path = resolved,
+      path = file,
+      data = reference.data,
       key = key,
       priority = priority,
       state = "linked",
@@ -514,7 +520,8 @@ function AssetPreparationQueue:request(kind, logicalPath, priority)
     kind = kind,
     logicalPath = file,
     selector = type(logicalPath) == "table" and logicalPath or nil,
-    path = resolved,
+    path = file,
+    data = reference.data,
     key = key,
     priority = priority,
     state = "queued",

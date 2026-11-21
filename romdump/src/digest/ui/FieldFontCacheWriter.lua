@@ -12,19 +12,11 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
-local PngEncoder = require("romdump.src.digest.PngEncoder")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 
 local FieldFontCacheWriter = {}
 
 function FieldFontCacheWriter.isReady(cacheFs, marker)
   return FieldFontCache.isReady(cacheFs, marker)
-end
-
----@param image { width: integer, height: integer, pixels: string }
----@return string
-local function encodeImage(image)
-  return PngEncoder.encode(image.width, image.height, image.pixels)
 end
 
 ---@param stage table<string, unknown>
@@ -80,7 +72,7 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function FieldFontCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "field-font staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "field-font staging requires a PreparedArtifact")
   assert(bundle and bundle.marker and bundle.fonts, "stage requires a font bundle")
   for _, fontId in ipairs(FieldFontCache.REQUIRED_FONT_IDS) do
     local font = assert(bundle.fonts[fontId], "font bundle is missing required font " .. fontId)
@@ -89,40 +81,10 @@ function FieldFontCacheWriter.stage(artifact, bundle)
   artifact:addOwnedRoot(FieldFontCache.assetDir())
   artifact:addOwnedRoot(FieldFontCache.dir())
   deferImages(artifact, bundle)
-  writeDefinitions(artifact:stageFs(), bundle, function(path)
-    return artifact:hasDeferredImage(path) or artifact:stageFs():exists(path, "file")
+  writeDefinitions(artifact, bundle, function(path)
+    return artifact:hasDeferredImage(path) or artifact:exists(path, "file")
   end)
   return bundle.marker
-end
-
-function FieldFontCacheWriter.write(cacheFs, bundle)
-  assert(bundle and bundle.marker and bundle.fonts, "write requires a font bundle")
-  for _, fontId in ipairs(FieldFontCache.REQUIRED_FONT_IDS) do
-    local font = assert(bundle.fonts[fontId], "font bundle is missing required font " .. fontId)
-    assert(font.font.schema == FieldFontCache.SCHEMA, "font def schema mismatch")
-  end
-  local tx = ArtifactPublisher.begin(cacheFs, "field-font", {
-    FieldFontCache.assetDir(),
-    FieldFontCache.dir(),
-  })
-  local stage = tx.stage
-  local ok, err = pcall(function()
-    for _, fontId in ipairs(FieldFontCache.REQUIRED_FONT_IDS) do
-      local font = assert(bundle.fonts[fontId], "font bundle is missing required font " .. fontId)
-      stage:write(FieldFontCache.atlasPath(fontId), encodeImage(font.atlas))
-      stage:write(FieldFontCache.maskAtlasPath(fontId), encodeImage(font.maskAtlas))
-      stage:write(FieldFontCache.focusIndicatorsPath(fontId), encodeImage(font.focusIndicators))
-    end
-    writeDefinitions(stage, bundle, function(path)
-      return stage:exists(path, "file")
-    end)
-  end)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
-  return true
 end
 
 return FieldFontCacheWriter

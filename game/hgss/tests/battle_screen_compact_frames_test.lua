@@ -8,7 +8,7 @@
 local Assert = require("tests.support.Assert")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local GameVersion = require("romdump.src.source.GameVersion")
@@ -79,8 +79,8 @@ local TEXT_ORIGINS = {
 local function readyVersions(context)
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
-      local cacheFs = CacheFs.forVersion(versionId)
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       local marker = cacheFs:read(FieldUiAssetCache.markerPath())
       if marker ~= nil and FieldUiAssetCache.isReady(cacheFs, marker) then
         versions[#versions + 1] = versionId
@@ -134,7 +134,7 @@ end
 -- carries the same boxes the shared border draws.
 function T.tests.every_selected_frame_addresses_the_compact_docks(context)
   for _, versionId in ipairs(readyVersions(context)) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local manifest = cacheFs:loadLua(FieldUiAssetCache.manifestPath())
     local frames = assert(manifest.dialogueFrames, "the field-UI manifest carries its dialogue frames: " .. versionId)
     Assert.equal(frames.count, 20, "the generated set carries all twenty frame styles: " .. versionId)

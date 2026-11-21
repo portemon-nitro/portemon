@@ -14,6 +14,7 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -33,13 +34,7 @@ local function compileInto(romFs, symbol)
   })
   MapCacheWriter.stage(prepared, bundle)
   prepared:finishSuccess({ marker = bundle.marker })
-  prepared:publish({
-    generationId = "test-generation",
-    epoch = 1,
-    kind = "map",
-    key = key,
-    jobKey = "map:" .. key,
-  })
+  ResidentArtifactFixture.materialize(prepared)
   return c, bundle
 end
 

@@ -1,7 +1,7 @@
 -- Synthetic field-bag compilation and cache publication: the 2D decode
 -- paths run against hand-built members, malformed source fails with the
 -- attributed protocol error, and the publication matrix (missing asset,
--- invalid bundle) reuses ArtifactPublisher through a FakeCache so the
+-- invalid bundle) stages through a prepared artifact over a FakeCache so the
 -- previous ready class stays readable. Hero 3D compilation is covered by
 -- the ROM conformance suite; no commercial bytes appear here.
 
@@ -16,6 +16,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local charmap = require("romdump.src.catalog.hgss.charmap")
 local BagPresentationFixture = require("tests.support.BagPresentationFixture")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -1277,7 +1278,9 @@ end
 function T.writer_publishes_the_class_and_reports_ready()
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   local bundle = syntheticBundle(BagCache.marker("rom", "deps"))
-  Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
+  Assert.isTrue(ResidentArtifactFixture.publish(cacheFs, "bag", "global", function(artifact)
+      return BagCacheWriter.stage(artifact, bundle)
+    end))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
   Assert.equal(loaded.schema, "g4-bag-assets-v21")
@@ -1333,7 +1336,9 @@ end
 function T.cache_readiness_requires_published_provenance()
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   local bundle = syntheticBundle(BagCache.marker("rom", "deps"))
-  Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
+  Assert.isTrue(ResidentArtifactFixture.publish(cacheFs, "bag", "global", function(artifact)
+      return BagCacheWriter.stage(artifact, bundle)
+    end))
   Assert.isTrue(BagCache.isReady(cacheFs, bundle.marker), "the complete published class is ready")
   cacheFs:remove(BagCache.provenancePath())
   Assert.isFalse(BagCache.isReady(cacheFs, bundle.marker), "a class without provenance is not ready")
@@ -1344,7 +1349,9 @@ function T.writer_rejects_a_bundle_without_dependencies()
   local bundle = syntheticBundle(BagCache.marker("rom", "deps"))
   bundle.dependencies = nil
   local err = Assert.throws(function()
-    BagCacheWriter.write(cacheFs, bundle)
+    ResidentArtifactFixture.publish(cacheFs, "bag", "global", function(artifact)
+      return BagCacheWriter.stage(artifact, bundle)
+    end)
   end, "a bundle without dependencies must not publish")
   Assert.isTrue(Errors.is(err), "the failure must be structured")
   Assert.equal(err.code, BagCacheWriter.ERROR.BUNDLE_INVALID)
@@ -1354,10 +1361,14 @@ end
 function T.writer_rejects_a_bundle_missing_a_referenced_asset()
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   local first = syntheticBundle(BagCache.marker("rom", "deps"))
-  Assert.isTrue(BagCacheWriter.write(cacheFs, first))
+  Assert.isTrue(ResidentArtifactFixture.publish(cacheFs, "bag", "global", function(artifact)
+      return BagCacheWriter.stage(artifact, first)
+    end))
   local second = syntheticBundle(BagCache.marker("rom", "deps2"))
   second.assets["assets/generated/bag/tabs-items.png"] = nil
-  local ok, err = pcall(BagCacheWriter.write, cacheFs, second)
+  local ok, err = pcall(ResidentArtifactFixture.publish, cacheFs, "bag", "global", function(artifact)
+    return BagCacheWriter.stage(artifact, second)
+  end)
   Assert.isFalse(ok, "a bundle missing a referenced asset must not publish")
   Assert.isTrue(Errors.is(err), "the failure must be structured")
   Assert.equal(cacheFs:read(BagCache.markerPath()), first.marker, "the previous marker must survive")
@@ -1368,72 +1379,12 @@ function T.writer_rejects_an_invalid_manifest_before_staging()
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   local bundle = syntheticBundle(BagCache.marker("rom", "deps"))
   bundle.manifest.interactive.pocketTabs.rects[8] = nil
-  local ok, err = pcall(BagCacheWriter.write, cacheFs, bundle)
+  local ok, err = pcall(ResidentArtifactFixture.publish, cacheFs, "bag", "global", function(artifact)
+    return BagCacheWriter.stage(artifact, bundle)
+  end)
   Assert.isFalse(ok, "an invalid manifest must not publish")
   Assert.isTrue(Errors.is(err), "the failure must be structured")
   Assert.isNil(cacheFs:read(BagCache.markerPath()), "no marker may leak from a rejected bundle")
-end
-
-function T.publication_rollback_failure_preserves_the_shared_error_and_recovery_material()
-  local backend = FakeCache.new()
-  local cacheFs = CacheFs.forVersion("heartgold", backend)
-  local first = syntheticBundle(BagCache.marker("rom", "deps"))
-  Assert.isTrue(BagCacheWriter.write(cacheFs, first))
-  local originalReplace = backend.replace
-  backend.replace = function(self, sourcePath, destinationPath)
-    local versionPrefix = "heartgold/"
-    if
-      sourcePath:sub(1, #versionPrefix) == versionPrefix
-      and (
-        sourcePath:find(".__g4next.", #versionPrefix + 1, true)
-        or sourcePath:find(".__g4old.", #versionPrefix + 1, true)
-      )
-    then
-      return false, "injected publish failure"
-    end
-    return originalReplace(self, sourcePath, destinationPath)
-  end
-  local second = syntheticBundle(BagCache.marker("rom", "deps2"))
-  local err = Assert.throws(function()
-    BagCacheWriter.write(cacheFs, second)
-  end, "a failed publish with a failed rollback must surface the shared error")
-  Assert.isTrue(Errors.is(err), "the failure must be structured")
-  Assert.equal(err.code, "CACHE_PUBLISH_ROLLBACK_INCOMPLETE")
-  Assert.notNil(backend:getInfo("staging/heartgold/bag"), "the stage is not removed once publish has begun")
-  local oldPrefix = "heartgold/" .. BagCache.dir() .. ".__g4old."
-  local oldMarker
-  for path, data in pairs(backend.files) do
-    if path:sub(1, #oldPrefix) == oldPrefix and path:sub(-#"/complete") == "/complete" then
-      oldMarker = data
-    end
-  end
-  Assert.equal(oldMarker, first.marker, "the last-known-good bag class stays in the stage as recovery material")
-end
-
-function T.cleanup_failure_after_success_reports_the_live_artifact()
-  local backend = FakeCache.new()
-  local cacheFs = CacheFs.forVersion("heartgold", backend)
-  local first = syntheticBundle(BagCache.marker("rom", "deps"))
-  Assert.isTrue(BagCacheWriter.write(cacheFs, first))
-  local originalRemove = backend.remove
-  backend.remove = function(self, path)
-    local stageRoot = "staging/heartgold/bag"
-    local inStage = path == stageRoot or path:sub(1, #stageRoot + 1) == stageRoot .. "/"
-    if inStage and backend:getInfo(stageRoot) ~= nil then
-      return false, "injected cleanup failure"
-    end
-    return originalRemove(self, path)
-  end
-  local second = syntheticBundle(BagCache.marker("rom", "deps2"))
-  local err = Assert.throws(function()
-    BagCacheWriter.write(cacheFs, second)
-  end, "a cleanup failure after success must surface the shared error")
-  Assert.isTrue(Errors.is(err), "the failure must be structured")
-  Assert.equal(err.code, "CACHE_PUBLISH_CLEANUP_FAILED")
-  Assert.equal(err.context.phase, "private-stage")
-  Assert.equal(cacheFs:read(BagCache.markerPath()), second.marker, "the new marker is live despite the cleanup failure")
-  Assert.isTrue(BagCacheWriter.isReady(cacheFs, second.marker), "the new class is ready despite the cleanup failure")
-  Assert.notNil(backend:getInfo("staging/heartgold/bag"), "stage cleanup remains incomplete")
 end
 
 function T.producer_declares_the_browse_and_framing_source_facts()

@@ -6,7 +6,7 @@
 -- this gate consumes the production cache the field runtime boots from.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
 local FieldScripts = require("tests.rom.support.FieldScripts")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
@@ -32,7 +32,7 @@ local function productionContext(catalog, cacheFs)
 end
 
 function T.ready_versions_build_valid_starter_capable_catalogs(romFs, versionId)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local root = MonCache.loadCatalog(cacheFs)
   Assert.equal(root.version.id, versionId, "the cache catalog is keyed to its version, never a shared fallback")
   local catalog = MonBucket.openCatalogs(versionId)

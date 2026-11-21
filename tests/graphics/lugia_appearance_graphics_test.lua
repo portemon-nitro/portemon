@@ -2,7 +2,7 @@
 -- the production field renderer.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
@@ -35,7 +35,7 @@ local function status(fields)
 end
 
 local function runVersion(scope)
-  local cache = CacheFs.forVersion("soulsilver")
+  local cache = GeneratedCacheFixture.reader("soulsilver")
   local index = assert(cache:loadLua(FieldEffectAssetCache.indexPath()))
   assert(index.effects.lugia_appearance, "the cache index publishes original Lugia reveal models")
   local images = ImageAssetPool.new(cache)

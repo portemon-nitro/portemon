@@ -17,7 +17,8 @@ local PngWriter = require("tests.support.PngEncoder")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GameVersion = require("romdump.src.source.GameVersion")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 
 local T = {}
@@ -441,7 +442,20 @@ function T.application_frame_side_art_reads_along_the_band(scope)
 end
 
 function T.real_frame_keying_removes_fill_but_preserves_patterned_overlay(scope, context)
-  local cache = CacheFs.forVersion("soulsilver")
+  -- The runner prepares exactly the selected source for its invocation, so the
+  -- real field-UI class is read from whichever prepared version carries it.
+  local versionId = nil
+  for _, candidate in ipairs(GameVersion.ORDER) do
+    if GeneratedCacheFixture.isPrepared(candidate) then
+      versionId = candidate
+      break
+    end
+  end
+  if versionId == nil then
+    context:skip("no prepared derived cache publishes a field-UI class")
+    return
+  end
+  local cache = GeneratedCacheFixture.reader(versionId)
   if cache:getInfo(FieldUiAssetCache.manifestPath()) == nil then
     context:skip("no field-UI class in the shared derived cache")
     return

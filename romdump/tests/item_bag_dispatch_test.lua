@@ -32,12 +32,13 @@ local function checkDispatch(compilerPath, writerPath, compiled, kind)
     end,
   }
   local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+  local ArtifactState = require("romdump.src.build.ArtifactState")
   local ok, outcome = pcall(ArtifactJobs.execute, {
     kind = kind,
     key = "global",
     generationId = "test-generation",
     epoch = 1,
-    stageName = kind .. "-dispatch-test",
+    artifactFacts = ArtifactState.new("test-generation"),
   }, {
     romFs = {},
     cacheFs = CacheFs.forVersion("heartgold", FakeCache.new()),
@@ -45,7 +46,7 @@ local function checkDispatch(compilerPath, writerPath, compiled, kind)
   package.loaded[compilerPath] = savedCompiler
   package.loaded[writerPath] = savedWriter
   Assert.isTrue(ok, "the single dispatcher runs the " .. kind .. " family: " .. tostring(outcome))
-  Assert.equal(outcome.result.marker, compiled.marker)
+  Assert.equal(outcome.sealed.marker, compiled.marker)
   Assert.equal(stagedBundle, compiled, "the dispatcher stages the family compiler bundle")
   Assert.equal(ArtifactJobs.sizeClass(kind), "normal")
   Assert.deepEqual(ArtifactJobs.dependencies(kind, "global", {}), {})

@@ -21,6 +21,7 @@ local Sbnk = require("libs.nds.src.nitro.sound.Sbnk")
 local Swar = require("libs.nds.src.nitro.sound.Swar")
 local Swav = require("libs.nds.src.nitro.sound.Swav")
 local SequenceLowering = require("romdump.src.digest.audio.SequenceLowering")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -234,7 +235,7 @@ local function versionCache(backend)
   return CacheFs.forVersion("heartgold", backend or FakeCache.new())
 end
 
-local function stageAndPublishBank(cache, romFs, bankPlan, stageName)
+local function stageAndPublishBank(cache, romFs, bankPlan)
   local key = tostring(bankPlan.bankId)
   local artifact = PreparedArtifact.new({
     cacheFs = cache,
@@ -243,18 +244,11 @@ local function stageAndPublishBank(cache, romFs, bankPlan, stageName)
     kind = "audio-bank",
     key = key,
     jobKey = "audio-bank:" .. key,
-    stageName = stageName,
   })
   local marker = AudioCacheWriter.stageBank(artifact, romFs, bankPlan)
   Assert.equal(type(marker), "string", "bank staging returns its closure marker")
   artifact:finishSuccess({ marker = marker })
-  artifact:publish({
-    generationId = GENERATION,
-    epoch = 1,
-    kind = "audio-bank",
-    key = key,
-    jobKey = "audio-bank:" .. key,
-  })
+  ResidentArtifactFixture.materialize(artifact)
   return marker
 end
 
@@ -584,7 +578,7 @@ function T.failed_bank_closure_blocks_only_the_family_summary()
     Assert.notNil(byId[7], "the failing bank is planned")
     local backend = FakeCache.new()
     local cache = versionCache(backend)
-    stageAndPublishBank(cache, romFs, byId[4], "audio-bank-4")
+    stageAndPublishBank(cache, romFs, byId[4])
     Assert.isNil(
       AudioCacheValidator.validateBankClosure(cache, 4, byId[4].sequenceIds),
       "the healthy bank closure validates without source decoding"
@@ -596,7 +590,6 @@ function T.failed_bank_closure_blocks_only_the_family_summary()
       kind = "audio-bank",
       key = "7",
       jobKey = "audio-bank:7",
-      stageName = "audio-bank-7",
     })
     local ok, failure = pcall(AudioCacheWriter.stageBank, failing, romFs, byId[7])
     failing:abort()
@@ -661,8 +654,8 @@ function T.prepare_repairs_only_the_damaged_bank_closure_and_summary()
     local byId = planById(plan)
     local backend = FakeCache.new()
     local cache = versionCache(backend)
-    stageAndPublishBank(cache, romFs, byId[4], "audio-bank-4")
-    stageAndPublishBank(cache, romFs, byId[7], "audio-bank-7")
+    stageAndPublishBank(cache, romFs, byId[4])
+    stageAndPublishBank(cache, romFs, byId[7])
     local catalogArtifact = PreparedArtifact.new({
       cacheFs = cache,
       generationId = GENERATION,
@@ -670,17 +663,10 @@ function T.prepare_repairs_only_the_damaged_bank_closure_and_summary()
       kind = "audio-catalog",
       key = "global",
       jobKey = "audio-catalog:global",
-      stageName = "audio-catalog",
     })
     local catalogMarker = AudioCacheWriter.stageCatalog(catalogArtifact, plan, identity)
     catalogArtifact:finishSuccess({ marker = catalogMarker })
-    catalogArtifact:publish({
-      generationId = GENERATION,
-      epoch = 1,
-      kind = "audio-catalog",
-      key = "global",
-      jobKey = "audio-catalog:global",
-    })
+    ResidentArtifactFixture.materialize(catalogArtifact)
     Assert.isNil(
       AudioCacheValidator.validateCatalog(cache:loadLua(AudioCache.indexPath())),
       "the published catalog validates before the summary"
@@ -692,18 +678,11 @@ function T.prepare_repairs_only_the_damaged_bank_closure_and_summary()
       kind = "audio-bank",
       key = "global",
       jobKey = "audio-bank:global",
-      stageName = "audio-summary",
     })
     local summaryMarker = AudioCacheWriter.stageSummary(summaryArtifact, plan, catalogMarker)
     Assert.equal(type(summaryMarker), "string", "the summary stages its marker")
     summaryArtifact:finishSuccess({ marker = summaryMarker })
-    summaryArtifact:publish({
-      generationId = GENERATION,
-      epoch = 1,
-      kind = "audio-bank",
-      key = "global",
-      jobKey = "audio-bank:global",
-    })
+    ResidentArtifactFixture.materialize(summaryArtifact)
     Assert.isNil(AudioCacheValidator.validate(cache), "full coverage publishes a complete audio family")
 
     local siblingBank = cache:read(AudioCache.bankPath(4))
@@ -729,7 +708,7 @@ function T.prepare_repairs_only_the_damaged_bank_closure_and_summary()
       return originalWrite(self, path, data)
     end
     local repairOk, repairErr = pcall(function()
-      stageAndPublishBank(cache, romFs, byId[7], "audio-bank-7-repair")
+      stageAndPublishBank(cache, romFs, byId[7])
       local repairSummary = PreparedArtifact.new({
         cacheFs = cache,
         generationId = GENERATION,
@@ -737,17 +716,10 @@ function T.prepare_repairs_only_the_damaged_bank_closure_and_summary()
         kind = "audio-bank",
         key = "global",
         jobKey = "audio-bank:global",
-        stageName = "audio-summary-repair",
       })
       local repairedMarker = AudioCacheWriter.stageSummary(repairSummary, plan, catalogMarker)
       repairSummary:finishSuccess({ marker = repairedMarker })
-      repairSummary:publish({
-        generationId = GENERATION,
-        epoch = 1,
-        kind = "audio-bank",
-        key = "global",
-        jobKey = "audio-bank:global",
-      })
+      ResidentArtifactFixture.materialize(repairSummary)
       Assert.equal(repairedMarker, summaryMarker, "the same generation repairs to the same summary")
     end)
     backend.write = originalWrite
@@ -956,8 +928,8 @@ function T.staging_a_bank_leaves_published_siblings_untouched()
     local byId = planById(plan)
     local backend = FakeCache.new()
     local cache = versionCache(backend)
-    stageAndPublishBank(cache, romFs, byId[4], "audio-bank-4")
-    stageAndPublishBank(cache, romFs, byId[7], "audio-bank-7")
+    stageAndPublishBank(cache, romFs, byId[4])
+    stageAndPublishBank(cache, romFs, byId[7])
     local siblingBank = cache:read(AudioCache.bankPath(4))
     local siblingSequence = cache:read(AudioCache.sequencePath(0))
     Assert.notNil(siblingBank, "sibling bank published")
@@ -969,7 +941,6 @@ function T.staging_a_bank_leaves_published_siblings_untouched()
       kind = "audio-bank",
       key = "7",
       jobKey = "audio-bank:7",
-      stageName = "audio-bank-7-untouched",
     })
     AudioCacheWriter.stageBank(restage, romFs, byId[7])
     restage:abort()
@@ -982,10 +953,11 @@ function T.staging_a_bank_leaves_published_siblings_untouched()
   end)
 end
 
--- The batch spelling publishes the same closures without prepared artifacts:
--- each bank stages its marker deterministically, and the summary completes
--- the family exactly once every closure is current.
-function T.batch_bank_and_summary_publication_matches_staged_closures()
+-- The staged spellings publish the same closures through prepared artifacts:
+-- each bank stages its marker deterministically, the catalog stages the
+-- runtime index, and the summary completes the family once every closure and
+-- the catalog are current.
+function T.staged_bank_and_summary_publication_matches_the_planned_closures()
   Assert.equal(type(AudioCompiler.plan), "function", "catalog planning must be a public compiler operation")
   withDecoderSeams(function()
     local romFs = fakeRomFs({})
@@ -1026,18 +998,37 @@ function T.batch_bank_and_summary_publication_matches_staged_closures()
     for _, bankPlan in ipairs(plan.bankPlans) do
       local expected = AudioCompiler.bankMarker(identity, bankPlan)
       Assert.equal(AudioCompiler.bankMarker(identity, bankPlan), expected, "closure markers are deterministic")
-      local marker, err = AudioCacheWriter.writeBank(cache, romFs, bankPlan)
-      Assert.notNil(marker, "the bank publishes: " .. tostring(err and Errors.format(err) or "no error"))
-      Assert.equal(marker, expected, "a published bank carries its planned marker")
+      local artifact = PreparedArtifact.new({
+        cacheFs = cache,
+        generationId = "audio-bank-generation",
+        epoch = 1,
+        kind = "audio-bank",
+        key = tostring(bankPlan.bankId),
+        jobKey = "audio-bank:" .. tostring(bankPlan.bankId),
+      })
+      local marker = AudioCacheWriter.stageBank(artifact, romFs, bankPlan)
+      artifact:finishSuccess({ marker = marker })
+      ResidentArtifactFixture.materialize(artifact, cache)
+      Assert.equal(marker, expected, "a staged bank carries its planned marker")
       Assert.isNil(
         AudioCacheValidator.validateBankClosure(cache, bankPlan.bankId, bankPlan.sequenceIds),
-        "the published bank closure validates"
+        "the staged bank closure validates"
       )
     end
-    local catalogMarker = AudioCacheWriter.writeCatalog(cache, plan, identity)
+    local catalogArtifact = PreparedArtifact.new({
+      cacheFs = cache,
+      generationId = "audio-bank-generation",
+      epoch = 1,
+      kind = "audio-catalog",
+      key = "global",
+      jobKey = "audio-catalog:global",
+    })
+    local catalogMarker = AudioCacheWriter.stageCatalog(catalogArtifact, plan, identity)
+    catalogArtifact:finishSuccess({ marker = catalogMarker })
+    ResidentArtifactFixture.materialize(catalogArtifact, cache)
     Assert.isNil(
       AudioCacheValidator.validateCatalog(cache:loadLua(AudioCache.indexPath())),
-      "the batch catalog validates before the summary"
+      "the staged catalog validates before the summary"
     )
     local summaryMarker = AudioCacheWriter.summaryMarker(plan, catalogMarker)
     Assert.equal(
@@ -1046,7 +1037,7 @@ function T.batch_bank_and_summary_publication_matches_staged_closures()
       "the family marker is deterministic"
     )
     Assert.isTrue(catalogMarker ~= summaryMarker, "the catalog and family markers name different selections")
-    Assert.isNil(AudioCacheValidator.validate(cache), "the batch family validates")
+    Assert.isNil(AudioCacheValidator.validate(cache), "the staged family validates")
     Assert.notNil(cache:read(AudioCache.bankPath(4)), "bank closures survive the family check")
     Assert.notNil(cache:read(AudioCache.bankPath(byId[7].bankId)), "every planned bank survives the family check")
   end)
@@ -1226,13 +1217,12 @@ function T.session_staged_bank_matches_direct_staged_bytes()
       kind = "audio-bank",
       key = "4",
       jobKey = "audio-bank:4",
-      stageName = "audio-bank-4-direct",
     })
     local directBundle = assert(AudioCompiler.compileBank(romFs, bankPlan, function(key, metadata, bytes)
       directSunk[key] = { metadata = metadata, pcm = bytes }
     end))
     local directMarker = AudioCacheWriter.stageBank(directArtifact, romFs, bankPlan)
-    local directStage = directArtifact:stageFs()
+    local directStage = directArtifact
     local session = assert(AudioCompiler.openSession(romFs, identity))
     local sessionSunk = {}
     local sessionCache = versionCache(FakeCache.new())
@@ -1243,13 +1233,12 @@ function T.session_staged_bank_matches_direct_staged_bytes()
       kind = "audio-bank",
       key = "4",
       jobKey = "audio-bank:4",
-      stageName = "audio-bank-4-session",
     })
     local sessionBundle = assert(session:compileBank(bankPlan, function(key, metadata, bytes)
       sessionSunk[key] = { metadata = metadata, pcm = bytes }
     end))
     local sessionMarker = AudioCacheWriter.stageBank(sessionArtifact, session, bankPlan)
-    local stagedStage = sessionArtifact:stageFs()
+    local stagedStage = sessionArtifact
     session:close()
     Assert.equal(
       LuaWriter.encode(sessionBundle.bank),
@@ -1325,7 +1314,7 @@ function T.failed_session_bank_stage_preserves_the_published_bank()
     local bankPlan = assert(planById(plan)[4], "the bank is planned")
     local backend = FakeCache.new()
     local cache = versionCache(backend)
-    stageAndPublishBank(cache, romFs, bankPlan, "audio-bank-4-live")
+    stageAndPublishBank(cache, romFs, bankPlan)
     Assert.isNil(
       AudioCacheValidator.validateBankClosure(cache, 4, bankPlan.sequenceIds),
       "the published bank closure validates"
@@ -1339,9 +1328,8 @@ function T.failed_session_bank_stage_preserves_the_published_bank()
       kind = "audio-bank",
       key = "4",
       jobKey = "audio-bank:4",
-      stageName = "audio-bank-4-failing",
     })
-    local stageBackend = failing:stageFs()
+    local stageBackend = failing
     local originalWrite = stageBackend.write
     stageBackend.write = function(self, path, data)
       if path:find(".pcm16le", 1, true) ~= nil then

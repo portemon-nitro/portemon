@@ -18,7 +18,7 @@ local OpeningMovieCacheWriter = {}
 ---@param sceneNumber integer
 ---@return string compiler marker for the receipt
 function OpeningMovieCacheWriter.stageScene(artifact, bundle, generationId, sceneNumber)
-  assert(artifact and type(artifact.stageFs) == "function", "opening scene staging requires a PreparedArtifact")
+  assert(artifact and type(artifact.write) == "function", "opening scene staging requires a PreparedArtifact")
   assert(
     type(sceneNumber) == "number" and sceneNumber % 1 == 0 and sceneNumber >= 1 and sceneNumber <= 5,
     "opening scene number must be an integer 1..5"
@@ -47,7 +47,7 @@ function OpeningMovieCacheWriter.stageScene(artifact, bundle, generationId, scen
       "opening scene files must be binary data under their numbered scene root"
     )
   end
-  local stage = artifact:stageFs()
+  local stage = artifact
   artifact:addOwnedRoot(manifestPath)
   artifact:addOwnedRoot(sceneRoot)
   for path, bytes in pairs(bundle.files) do

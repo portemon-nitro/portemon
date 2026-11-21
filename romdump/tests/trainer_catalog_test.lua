@@ -10,6 +10,7 @@
 -- are never produced by the compiler.
 
 local Assert = require("tests.support.Assert")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -383,6 +384,7 @@ function T.failed_trainer_emission_keeps_the_prior_generation_readable()
   local CacheFs = require("libs.storage.src.CacheFs")
   local FakeCache = require("tests.support.FakeCache")
   local generationId = "trainer-ready-generation"
+  local ArtifactState = require("romdump.src.build.ArtifactState")
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   -- A previous ready generation, staged through the compiler and the owned
   -- cache paths, stays byte-identical across the failed rebuild below.
@@ -403,13 +405,14 @@ function T.failed_trainer_emission_keeps_the_prior_generation_readable()
     end,
   })
   local context = { cacheFs = cacheFs, romFs = throwingRomFs, versionId = "heartgold" }
+  local facts = ArtifactState.new(generationId)
   local ok, failure = pcall(ArtifactJobs.execute, {
     kind = "trainers",
     key = "global",
     generationId = generationId,
     producerFingerprint = "trainer-emission-fixture",
-    stageName = "trainer-failure-stage",
     epoch = 1,
+    artifactFacts = facts,
   }, context)
   Assert.isFalse(ok, "a trainer emission that throws must fail the job")
   Assert.isTrue(
@@ -417,7 +420,8 @@ function T.failed_trainer_emission_keeps_the_prior_generation_readable()
     "the failure must preserve producer context, got: " .. tostring(failure)
   )
   Assert.equal(cacheFs:read(catalogPath), before, "the prior ready generation stays readable")
-  local readyCheck, readinessErr = ArtifactJobs.validate(cacheFs, generationId, "trainers", "global", {}, nil)
+  Assert.isNil(ArtifactState.read(facts, "trainers", "global"), "a failed emission commits no fact")
+  local readyCheck, readinessErr = ArtifactJobs.validate(cacheFs, facts, "trainers", "global", {}, nil)
   Assert.isFalse(readyCheck, "the incomplete stage must not read as ready: " .. tostring(readinessErr))
   local loaded = BattleDataCache.loadTrainers(cacheFs)
   Assert.deepEqual(loaded, ready, "the surviving generation still loads exactly")
@@ -520,7 +524,7 @@ end
 
 function T.successful_trainer_job_stages_publishes_and_reads_ready()
   local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
-  local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+  local ArtifactState = require("romdump.src.build.ArtifactState")
   local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
   local BattleDataSchema = require("libs.assets.src.battle.BattleDataSchema")
   local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
@@ -560,39 +564,22 @@ function T.successful_trainer_job_stages_publishes_and_reads_ready()
     end,
   }
   local generationId = "trainer-success-generation"
-  local stageName = "trainer-success-stage"
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
-  local receipt, executeErr = ArtifactJobs.execute({
+  local facts = ArtifactState.new(generationId)
+  local outcome, executeErr = ArtifactJobs.execute({
     kind = "trainers",
     key = "global",
     generationId = generationId,
     producerFingerprint = "trainer-success-fixture",
-    stageName = stageName,
     epoch = 1,
+    artifactFacts = facts,
   }, { cacheFs = cacheFs, romFs = fakeRomFs, versionId = "heartgold" })
-  Assert.isTrue(executeErr == nil, "the trainer job executes: " .. tostring(receipt))
-  Assert.isTrue(type(receipt.result.marker) == "string", "execution seals a receipt marker")
-  local staged = PreparedArtifact.open({
-    cacheFs = cacheFs,
-    generationId = generationId,
-    epoch = 1,
-    kind = "trainers",
-    key = "global",
-    jobKey = "trainers:global",
-    stageName = stageName,
-  })
+  Assert.isTrue(executeErr == nil, "the trainer job executes: " .. tostring(outcome))
+  Assert.isTrue(type(outcome.sealed.marker) == "string", "execution seals a marker")
+  ResidentArtifactFixture.mirror(cacheFs, outcome.sealed)
+  ResidentArtifactFixture.commitFact(facts, outcome.sealed)
   Assert.isTrue(
-    staged:publish({
-      generationId = generationId,
-      epoch = 1,
-      kind = "trainers",
-      key = "global",
-      jobKey = "trainers:global",
-    }),
-    "the staged generation publishes"
-  )
-  Assert.isTrue(
-    ArtifactJobs.validate(cacheFs, generationId, "trainers", "global", {}, nil),
+    ArtifactJobs.validate(cacheFs, facts, "trainers", "global", {}, nil),
     "the published stage reads ready"
   )
   local expected = assert(TrainerCatalogCompiler.compile(nativeInput({

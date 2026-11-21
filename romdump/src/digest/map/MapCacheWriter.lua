@@ -79,7 +79,7 @@ local function persist(prepared, bundle)
   local cacheFs = prepared:cacheFs()
   local mapId = bundle.mapId
   local dir = MapAssetCache.mapDir(mapId)
-  local stage = prepared:stageFs()
+  local stage = prepared
 
   local finalizedMeshes = validateBundle(bundle)
   prepared:addOwnedRoot(dir)
@@ -174,7 +174,7 @@ local function persist(prepared, bundle)
 end
 
 function MapCacheWriter.stage(prepared, bundle)
-  assert(prepared and prepared.stageFs, "stage requires a PreparedArtifact")
+  assert(prepared and prepared.write, "stage requires a PreparedArtifact")
   assert(type(bundle) == "table" and bundle.mapId and bundle.marker, "invalid bundle")
   local ok, result = pcall(persist, prepared, bundle)
   if not ok then

@@ -10,6 +10,7 @@ local RomImporter = require("romdump.src.source.RomImporter")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local App = require("app.src.App")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local LocalClock = require("game.src.LocalClock")
 local RecordingScriptHosts = require("tests.acceptance.support.RecordingScriptHosts")
 local AcceptanceScriptFs = require("tests.acceptance.support.AcceptanceScriptFs")
@@ -23,6 +24,7 @@ local FieldStatePresentationFixture = require("tests.support.FieldStatePresentat
 ---@field gameFactory fun(versionId: string, map: string|integer|nil): table
 ---@field saveNamespace fun(versionId: string, serial: integer): string
 ---@field removeSaveNamespace fun(namespace: string)
+---@field generatedView fun(versionId: string): table<string, unknown>? the selected epoch's installed generated reader
 ---@field primaryVersion fun(self: AcceptanceHarness): string
 ---@field defaultVersion fun(): string
 local AcceptanceHarness = {}
@@ -47,7 +49,7 @@ end
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       versions[#versions + 1] = versionId
     end
   end
@@ -228,6 +230,14 @@ function AcceptanceHarness:_newRuntime(game, namespace, faults, lifecycle, field
       return { year = 2000, month = 1, day = 1, hour = 12, minute = 0, second = 0 }
     end)
   runtimeOptions.derivedAssets = runtimeOptions.derivedAssets or FieldStatePresentationFixture.iconHost().derivedAssets
+  -- The selected version's installed generated view: the runner-prepared
+  -- snapshot hydrates once per process, exactly the reader a boot installs.
+  -- A harness booting a stub runtime that owns no generated consumer answers
+  -- no view, and that runtime must then construct none.
+  local generatedView = self.generatedView(versionId)
+  if generatedView ~= nil then
+    runtimeOptions.cacheFs = runtimeOptions.cacheFs or generatedView
+  end
   runtimeOptions.saveFs = SaveFs.forVersion(versionId, saveBackend(faults, lifecycle, namespace, versionId))
   if fieldOptions and fieldOptions.acceptanceScripts ~= nil then
     runtimeOptions.overrideFs =
@@ -1071,6 +1081,7 @@ function AcceptanceHarness.new(options)
     end,
     saveNamespace = options.saveNamespace or defaultNamespace,
     removeSaveNamespace = options.removeSaveNamespace or removeNamespace,
+    generatedView = options.generatedView or GeneratedCacheFixture.reader,
   }, AcceptanceHarness)
 end
 

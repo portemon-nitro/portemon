@@ -7,6 +7,7 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
@@ -33,17 +34,25 @@ local function buildClass(romFs, versionId, backend)
   local catalog = assert(MonCatalogCompiler.compileCatalog(romFs, { versionId = versionId }))
   local romSha1 = romFs:metadata().sha1
   local catalogMarker = MonCacheWriter.catalogMarker(romSha1, catalog)
-  MonCacheWriter.writeCatalog(cache, catalog, catalogMarker)
+  -- Every family artifact stages through its own prepared artifact and then
+  -- publishes into this build's owned backend.
+  local function publish(kind, key, stage)
+    ResidentArtifactFixture.publish(cache, kind, key, stage, "deterministic-build")
+  end
+  publish("mon-catalog", "global", function(artifact)
+    return MonCacheWriter.stageCatalog(artifact, { catalog = catalog, marker = catalogMarker })
+  end)
   local planned = assert(MonPresentationCompiler.plan(romFs, catalog))
   local layoutMarker = MonCacheWriter.layoutMarker(romSha1, planned.icons, planned.portraits)
-  MonCacheWriter.writeLayout(
-    cache,
-    planned.icons,
-    planned.portraits,
-    layoutMarker,
-    { iconPages = planned.iconPages, portraitPages = planned.portraitPages },
-    "deterministic-build"
-  )
+  publish("mon-layout", "global", function(artifact)
+    return MonCacheWriter.stageLayout(artifact, {
+      icons = planned.icons,
+      portraits = planned.portraits,
+      marker = layoutMarker,
+      pagePlans = { iconPages = planned.iconPages, portraitPages = planned.portraitPages },
+      generationId = "deterministic-build",
+    })
+  end)
   local iconMarkers, portraitMarkers = {}, {}
   for _, pageId in ipairs(planned.icons.pageIds) do
     local marker = MonCacheWriter.pageMarker(romSha1, "icons", pageId, planned.icons)
@@ -51,35 +60,41 @@ local function buildClass(romFs, versionId, backend)
     local compiled = assert(MonPresentationCompiler.compilePage(romFs, "icons", planned.iconPages[pageId]))
     -- compilePage returns pixels without a marker; the written bundle pairs
     -- the compiled page with its marker explicitly.
-    MonCacheWriter.writePage(cache, {
-      kind = "icons",
-      pageId = compiled.pageId,
-      width = compiled.width,
-      height = compiled.height,
-      pixels = compiled.pixels,
-      marker = marker,
-    })
+    publish("mon-icon-page", tostring(compiled.pageId), function(artifact)
+      return MonCacheWriter.stagePage(artifact, {
+        kind = "icons",
+        pageId = compiled.pageId,
+        width = compiled.width,
+        height = compiled.height,
+        pixels = compiled.pixels,
+        marker = marker,
+      })
+    end)
   end
   for _, pageId in ipairs(planned.portraits.pageIds) do
     local marker = MonCacheWriter.pageMarker(romSha1, "portraits", pageId, planned.portraits)
     portraitMarkers[pageId + 1] = marker
     local compiled = assert(MonPresentationCompiler.compilePage(romFs, "portraits", planned.portraitPages[pageId]))
-    MonCacheWriter.writePage(cache, {
-      kind = "portraits",
-      pageId = compiled.pageId,
-      width = compiled.width,
-      height = compiled.height,
-      pixels = compiled.pixels,
-      marker = marker,
-    })
+    publish("mon-portrait-page", tostring(compiled.pageId), function(artifact)
+      return MonCacheWriter.stagePage(artifact, {
+        kind = "portraits",
+        pageId = compiled.pageId,
+        width = compiled.width,
+        height = compiled.height,
+        pixels = compiled.pixels,
+        marker = marker,
+      })
+    end)
   end
   local index = MonCacheWriter.buildIndex(catalog.version, Hashing.hashLua(catalog), iconMarkers, portraitMarkers)
   local summaryMarker = MonCacheWriter.summaryMarker(index)
-  MonCacheWriter.writeSummary(cache, index, {
-    schema = "g4-mon-provenance-v1",
-    source = MonSources.provenance,
-    rom = { version = versionId, sha1 = romSha1 },
-  })
+  publish("mon-summary", "global", function(artifact)
+    return MonCacheWriter.stageSummary(artifact, index, {
+      schema = "g4-mon-provenance-v1",
+      source = MonSources.provenance,
+      rom = { version = versionId, sha1 = romSha1 },
+    })
+  end)
   return summaryMarker
 end
 

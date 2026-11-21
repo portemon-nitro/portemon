@@ -1,5 +1,6 @@
 -- Capture the real editor composition with its generated field font and save.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local AcceptanceFixture = require("app.tests.support.SaveEditorAcceptanceFixture")
@@ -113,6 +114,7 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
       width = width,
       height = height,
       derivedAssets = readyHost(),
+      cacheFs = GeneratedCacheFixture.reader(fixture.versionId),
       repositoryRoot = repositoryRoot,
       displayContext = displayContext,
       onResult = function() end,
@@ -566,6 +568,7 @@ function T.tests.production_party_uses_generic_selector_without_retail_manifest(
       width = 1280,
       height = 720,
       derivedAssets = readyHost(),
+      cacheFs = GeneratedCacheFixture.reader(fixture.versionId),
       repositoryRoot = repositoryRoot,
       displayContext = displayContext,
       onResult = function() end,

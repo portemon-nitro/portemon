@@ -1,5 +1,7 @@
--- Windowless inspector. Read generated logical bytes through CacheFs so
--- physical compression, checksums, and version confinement stay canonical.
+-- Windowless inspector. Opens the prepared snapshot into a private resident
+-- view and reads generated logical bytes from it, so the inspector sees
+-- exactly the members the next boot would hydrate; a generated root that only
+-- carries old loose files is not a cache and is refused.
 local function parse(argv)
   local opts = {}
   local valid = {
@@ -139,12 +141,46 @@ local function listAssets(cacheFs, directory)
   print("listed_files=" .. count)
 end
 
+-- The prepared snapshot as one private resident reader: the archive owner
+-- hydrates its declared members, and storage lends those immutable bytes
+-- through the same read view runtime consumers use. The tool trusts the
+-- snapshot's own identity, so no producer identity has to be reconstructed
+-- here.
+---@param versionId string
+---@param modules { CacheArchive: table, ResidentCache: table, CacheFs: table }
+---@return table<string, unknown> cacheFs
+local function openSnapshot(versionId, modules)
+  local candidate, failure = modules.CacheArchive.open(versionId)
+  if candidate == nil then
+    local reason = type(failure) == "table" and failure.message or failure
+    error("no prepared snapshot is readable for " .. versionId .. ": " .. tostring(reason))
+  end
+  local generationId = assert(candidate.identity.generationId, "the snapshot carries its generation identity")
+  local sourceId = "base:" .. generationId
+  local store = modules.ResidentCache.new(versionId, sourceId)
+  local entries = {}
+  for position, entry in ipairs(candidate.entries) do
+    entries[position] = {
+      path = entry.path,
+      data = entry.data,
+      size = entry.size,
+      sourceId = sourceId,
+      contentId = generationId .. "\0" .. entry.path,
+    }
+  end
+  store:commit(store:prepare(entries))
+  return modules.CacheFs.fromStore(store)
+end
+
 function love.load(argv)
   local ok, result = pcall(function()
     local opts = parse(argv)
     package.path = opts.root .. "/?.lua;" .. opts.root .. "/?/init.lua;" .. package.path
-    local CacheFs = require("libs.storage.src.CacheFs")
-    local cacheFs = CacheFs.forVersion(opts.version)
+    local cacheFs = openSnapshot(opts.version, {
+      CacheArchive = require("romdump.src.build.CacheArchive"),
+      ResidentCache = require("libs.storage.src.ResidentCache"),
+      CacheFs = require("libs.storage.src.CacheFs"),
+    })
     if opts.messageText then
       exportMessages(cacheFs, opts.messageText, opts.output, {
         FieldMessageCache = require("libs.assets.src.field.FieldMessageCache"),

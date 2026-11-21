@@ -1,4 +1,5 @@
 local Assert = require("tests.support.Assert")
+local ArtifactState = require("romdump.src.build.ArtifactState")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 
@@ -63,7 +64,8 @@ function T.audit_with_stale_weather_marker_requires_a_build()
     mapDataIds = {},
     mapIds = {},
   }
-  local available, reason = DerivedCacheAudit.isAvailable(cache, identity, plans)
+  local facts = ArtifactState.new(identity.generationId)
+  local available, reason = DerivedCacheAudit.isAvailable(cache, facts, identity, plans)
   Assert.isFalse(available, "a marker-only cache must make the cache unavailable")
   Assert.isTrue(reason ~= nil and reason ~= "", "a refused proof names its cause")
 end
@@ -92,7 +94,7 @@ function T.common_session_compiles_field_weather_through_the_single_dispatcher()
     key = "global",
     generationId = "test-generation",
     epoch = 1,
-    stageName = "weather-dispatch-test",
+    artifactFacts = ArtifactState.new("test-generation"),
   }, {
     romFs = {},
     cacheFs = CacheFs.forVersion("heartgold", FakeCache.new()),
@@ -100,7 +102,7 @@ function T.common_session_compiles_field_weather_through_the_single_dispatcher()
   package.loaded[compilerPath] = savedCompiler
   package.loaded[writerPath] = savedWriter
   Assert.isTrue(ok, "the single dispatcher runs the weather family: " .. tostring(outcome))
-  Assert.equal(outcome.result.marker, "weather-marker")
+  Assert.equal(outcome.sealed.marker, "weather-marker")
   Assert.equal(stagedBundle, compiled, "the dispatcher stages the family compiler bundle")
   Assert.equal(ArtifactJobs.sizeClass("field-weather"), "normal")
   Assert.deepEqual(ArtifactJobs.dependencies("field-weather", "global", {}), {})

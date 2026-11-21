@@ -1,5 +1,6 @@
 -- Production FieldState composition for adapted field Yes/No presentation.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
@@ -85,6 +86,7 @@ local function fieldStateWithAcceptanceScripts()
   local ok, stateOrError = xpcall(function()
     return FieldState.new(freshGame(readyVersion()), {
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+      cacheFs = GeneratedCacheFixture.reader(readyVersion()),
     })
   end, debug.traceback)
   FieldRuntime.new = originalNew
@@ -167,6 +169,7 @@ local function assertContextChoiceComposition(scope, width, height, safeRect, du
     state = FieldState.new(freshGame(readyVersion()), {
       topologyProvider = topologyProvider,
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+      cacheFs = GeneratedCacheFixture.reader(readyVersion()),
     })
     scope:own({
       release = function()
@@ -364,6 +367,7 @@ local function assertMenuComposition(scope, width, height, safeRect)
         return topology(width, height, safeRect)
       end,
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+      cacheFs = GeneratedCacheFixture.reader(readyVersion()),
     })
     scope:own({
       release = function()

@@ -2,7 +2,7 @@
 -- paths. The assertions inspect stable material identity and a real draw.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Contract = require("libs.assets.src.DerivedAssetContract")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
@@ -38,7 +38,7 @@ local function sceneRuntime()
 end
 
 local function runVersion(scope, versionId)
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   local index = assert(cache:loadLua(FieldEffectAssetCache.indexPath()))
   local assets = { effects = {} }
   for _, kind in ipairs({ "tall_grass", "very_tall_grass", "trainer_reveal" }) do
@@ -132,7 +132,7 @@ local function loadEffectAssets(cache)
 end
 
 local function composedEffects(scope, versionId)
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   local assets = loadEffectAssets(cache)
   local imagePool = ImageAssetPool.new(cache)
   scope:own({
@@ -159,7 +159,7 @@ end
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       versions[#versions + 1] = versionId
     end
   end
@@ -170,7 +170,7 @@ local T = GraphicsSmoke.suite({
   ["generated grass changes material and remains drawable at its held frame"] = function(scope)
     local versions = 0
     for _, versionId in ipairs(GameVersion.ORDER) do
-      if RomImporter.isReady(versionId) then
+      if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
         versions = versions + 1
         runVersion(scope, versionId)
       end

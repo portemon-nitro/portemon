@@ -20,7 +20,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local BoxCodec = require("libs.mons.src.gen4.BoxCodec")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
@@ -79,7 +79,7 @@ local function harness()
 end
 
 local function productionContext(service, versionId)
-  local fontDef = FieldFontLoader.load(CacheFs.forVersion(versionId))
+  local fontDef = FieldFontLoader.load(GeneratedCacheFixture.reader(versionId))
   return {
     catalog = service:catalog(),
     charmap = assert(fontDef.charmap, "production font carries the encoding charmap"),
@@ -679,7 +679,7 @@ end
 -- determinism rather than re-encoded output.
 function T.tests.preselection_trio_reproduces_through_the_public_creation_seam()
   local versionId = AcceptanceHarness.defaultVersion()
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local MonsSave = require("libs.mons.src.MonsSave")
   local catalog = MonBucket.openCatalogs(versionId)
   local service = HgssMonService.new({

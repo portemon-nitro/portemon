@@ -3,7 +3,7 @@
 -- field-actor visual contract. No separate follower draw path is introduced.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local RomImporter = require("romdump.src.source.RomImporter")
@@ -84,7 +84,7 @@ local function starter_portraits_follow_source_row_layout(_, context)
 
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
-      local cache = CacheFs.forVersion(versionId)
+      local cache = GeneratedCacheFixture.reader(versionId)
       local portraits =
         assert(cache:loadLua(MonCache.portraitManifestPath()), versionId .. " portrait manifest must load")
       local romFs, romSource = assert(RomSourcePath.openReader(versionId))
@@ -165,7 +165,7 @@ local function representative_selections_address_rendered_pixels(_, context)
   local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
-      local cache = CacheFs.forVersion(versionId)
+      local cache = GeneratedCacheFixture.reader(versionId)
       local icons = assert(cache:loadLua(MonCache.iconManifestPath()), versionId .. " icon manifest must load")
       local portraits =
         assert(cache:loadLua(MonCache.portraitManifestPath()), versionId .. " portrait manifest must load")

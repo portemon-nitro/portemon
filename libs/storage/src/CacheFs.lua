@@ -1,21 +1,21 @@
--- Version-scoped private cache. Every path is normalized and confined below the
--- version prefix; absolute paths, drive letters, NUL, and "."/".." components
--- are rejected so no operation can escape its version subtree. Roots are
--- structural (`<versionId>/`, `<versionId>.__g4next/`, and artifact staging): a version id is any safe
--- path component, and which ids exist is the ROM catalog's business, not this
--- package's. Confinement, backend handling, parent creation, and Lua loading
--- share the internal ScopedFs mechanics with SaveFs; the cache root, allowed
--- mutations (tree deletion, staged publication, module loading), and CACHE_*
--- error namespace stay its own. The backend is injectable: the default wraps
--- love.filesystem; tests inject an in-memory fake. Path/security logic is
--- love-free and testable under bare LuaJIT.
+-- Version-scoped private cache in one of two explicit modes. `forVersion` is
+-- the physical root: every path is normalized and confined below the version
+-- prefix, and source bindings, saves-adjacent metadata, and explicit tooling
+-- read and write it with the host backend. `fromStore` is the selected epoch's
+-- resident generated reader: it answers from compact in-memory bytes and never
+-- consults or writes a file. A version id is any safe path component, and which
+-- ids exist is the ROM catalog's business, not this package's. Confinement,
+-- backend handling, parent creation, and Lua loading share the internal
+-- ScopedFs mechanics with SaveFs; the cache root, allowed mutations (tree
+-- deletion, module loading), and CACHE_* error namespace stay its own. The
+-- backend is injectable: the default wraps love.filesystem; tests inject an
+-- in-memory fake. Path/security logic is love-free and testable under bare
+-- LuaJIT.
 --
 -- Failure convention: every mutating operation reports success only if the
 -- backend did; a falsy backend result is translated into a structured CACHE_*
 -- error that reaches the caller, and a backend that raises propagates. No
--- mutating method may silently return true after a backend failure, so
--- publication logic can rely on a raise meaning "nothing happened" (or, for
--- cleanup, "the failure surfaced").
+-- mutating method may silently return true after a backend failure.
 
 local Errors = require("libs.errors.src.Errors")
 local LuaWriter = require("libs.codec.src.LuaWriter")
@@ -39,6 +39,7 @@ local CACHE_ERRORS = {
 ---@field versionId string
 ---@field private _prefix string
 ---@field private _root string
+---@field private _resident ResidentCache?
 ---@field backend ScopedFs.Backend
 ---@field prefix fun(self: CacheFs): string
 ---@field resolve fun(self: CacheFs, relativePath: string): string
@@ -51,265 +52,10 @@ local CACHE_ERRORS = {
 ---@field replace fun(self: CacheFs, sourceRelativePath: string, destinationRelativePath: string): boolean
 ---@field replaceAt fun(self: CacheFs, sourcePath: string, destinationPath: string): boolean
 ---@field removeTree fun(self: CacheFs, relativePath: string): boolean
----@field removeStagedTree fun(self: CacheFs, stagingCache: CacheFs): boolean
----@field recoverPublication fun(self: CacheFs): boolean
----@field publishStaged fun(self: CacheFs, stageCache: CacheFs, roots: string[], cleanup: fun()): boolean
----@field publishFromStage fun(self: CacheFs, stagingCache: CacheFs): boolean
 ---@field writeLua fun(self: CacheFs, relativePath: string, value: table<string, unknown>): boolean
 ---@field loadLua fun(self: CacheFs, relativePath: string): table<string, unknown>?, Errors.Error?
 local CacheFs = {}
 CacheFs.__index = CacheFs
-
-local NEXT_SUFFIX = ".__g4next"
-local OLD_SUFFIX = ".__g4old"
-local PUBLICATION_MANIFEST_SUFFIX = ".__g4publish.lua"
-local PUBLICATION_MANIFEST_TEMP_SUFFIX = ".__g4publish.__g4next"
-local PUBLICATION_COMMIT_SUFFIX = ".__g4published"
-local PUBLICATION_MANIFEST_TEMP_PREFIX = ".__g4publish."
-local PUBLICATION_MANIFEST_TEMP_ATTEMPT_SUFFIX = ".__g4next"
-local PUBLICATION_SCHEMA = 2
-local LEGACY_PUBLICATION_SCHEMA = 1
-local PUBLICATION_COMMIT_CONTENT = "g4-cache-publish-v1"
-local PUBLICATION_COMMIT_PREFIX = "g4-cache-publish-v2:"
-
--- Transparent physical compression for generated cache bytes. Only this module
--- knows the envelope: writers wrap compressible families when the wrapped
--- form is strictly smaller, readers decode back to identical logical bytes.
--- Logical paths, schemas, receipt identity, and content hashes never see
--- these bytes. PNGs stay native so graphics file paths keep working, and
--- publication recovery metadata is never wrapped (the journal reads it raw).
-local ENVELOPE_MAGIC = "PDC1"
-local ENVELOPE_HEADER_SIZE = 29
-local ENVELOPE_CODEC_LZ4 = 1
-local ENVELOPE_CODEC_ZLIB = 2
-local WRAP_THRESHOLD_BYTES = 1024
--- Deterministic upper bound for one decoded generated file. An envelope
--- declaring more fails before any decompression buffer is allocated.
-local MAX_DECODED_BYTES = 64 * 1024 * 1024
-
----@param code string
----@param message string
----@param context Errors.Context
----@noreturn
-local function raiseFailure(code, message, context)
-  Errors.raise(code, message, context)
-end
-
--- Generated script bundles and field message banks are human-editable data:
--- their Lua source is the physical representation. These cache-relative roots
--- mirror the owning families' `dir()` paths (`ScriptCache`, `FieldMessageCache`)
--- so staged and live trees agree; storage cannot import the asset package, so
--- the normalized roots stay local to the codec owner.
-local PLAIN_LUA_ROOTS = {
-  "data/generated/script/",
-  "data/generated/field/messages/",
-}
-
----@param path string cache-relative path with '/' separators
----@return boolean
-local function isPlainLuaPath(path)
-  for _, root in ipairs(PLAIN_LUA_ROOTS) do
-    if path:sub(1, #root) == root then
-      return true
-    end
-  end
-  return false
-end
-
--- Compression policy by cache-relative logical path only. Lua and PCM use
--- zlib, geometry/collision use LZ4; PNG, generated script/message Lua, and
--- unrecognized extensions are always unwrapped. Not injectable: every producer
--- and consumer must agree on the physical form without consulting caller
--- state.
----@param relativePath string
----@return "lz4"|"zlib"|nil
-local function codecForPath(relativePath)
-  local path = relativePath:gsub("\\", "/")
-  if path:find("__g4publish", 1, true) or path:sub(1, 10) == "_prepared/" or path:find("/_prepared/", 1, true) then
-    return nil
-  end
-  if path:sub(-4) == ".png" then
-    return nil
-  end
-  if path:sub(-4) == ".lua" then
-    if isPlainLuaPath(path) then
-      return nil
-    end
-    return "zlib"
-  end
-  if path:sub(-8) == ".pcm16le" then
-    return "zlib"
-  end
-  if path:sub(-7) == ".g4mesh" then
-    return "lz4"
-  end
-  if path:sub(-12) == ".g4collision" then
-    return "lz4"
-  end
-  return nil
-end
-
----@param format "lz4"|"zlib"
----@return integer
-local function codecByte(format)
-  if format == "lz4" then
-    return ENVELOPE_CODEC_LZ4
-  end
-  return ENVELOPE_CODEC_ZLIB
-end
-
----@param value integer
----@return string
-local function encodeU32LE(value)
-  assert(value >= 0 and value < 2 ^ 32 and value % 1 == 0, "envelope length must fit in 32 bits")
-  local first = value % 256
-  local second = math.floor(value / 256) % 256
-  local third = math.floor(value / 65536) % 256
-  local fourth = math.floor(value / 16777216) % 256
-  return string.char(first, second, third, fourth)
-end
-
----@param bytes string
----@return integer
-local function decodeU32LE(bytes)
-  local a, b, c, d = bytes:byte(1, 4)
-  assert(a ~= nil and b ~= nil and c ~= nil and d ~= nil, "envelope length needs four bytes")
-  return a + b * 256 + c * 65536 + d * 16777216
-end
-
----@param backend ScopedFs.Backend
----@return boolean
-local function hasCodecs(backend)
-  return type(backend.compress) == "function"
-    and type(backend.decompress) == "function"
-    and type(backend.hashSha1) == "function"
-end
-
--- Canonical physical bytes for logical content: the versioned envelope when
--- the path family is compressible, the payload clears the size threshold,
--- and the envelope is strictly smaller than raw; otherwise the raw logical
--- bytes. A raw payload colliding with the envelope tag is always wrapped
--- (even at a size cost) so it can never be misread as an envelope.
----@param backend ScopedFs.Backend
----@param relativePath string
----@param logical string
----@return string
-local function encodePhysical(backend, relativePath, logical)
-  local format = codecForPath(relativePath)
-  if format == nil then
-    return logical
-  end
-  if #logical > MAX_DECODED_BYTES then
-    if logical:sub(1, #ENVELOPE_MAGIC) == ENVELOPE_MAGIC then
-      raiseFailure(
-        CACHE_ERRORS.WRITE_FAILED,
-        "generated bytes exceed the storage envelope capacity",
-        { path = relativePath }
-      )
-    end
-    return logical
-  end
-  local escapesMagic = logical:sub(1, 4) == ENVELOPE_MAGIC
-  if not hasCodecs(backend) then
-    if escapesMagic then
-      raiseFailure(
-        CACHE_ERRORS.WRITE_FAILED,
-        "generated bytes collide with the storage envelope and no codec is available",
-        { path = relativePath }
-      )
-    end
-    return logical
-  end
-  if #logical < WRAP_THRESHOLD_BYTES and not escapesMagic then
-    return logical
-  end
-  local compressOk, compressed = pcall(function()
-    return backend:compress(format, logical)
-  end)
-  if not compressOk or type(compressed) ~= "string" then
-    raiseFailure(CACHE_ERRORS.WRITE_FAILED, "host compression failed", { path = relativePath })
-  end
-  assert(type(compressed) == "string", "compressed envelope payload must be a string")
-  local hashOk, digest = pcall(function()
-    return backend:hashSha1(logical)
-  end)
-  if not hashOk or type(digest) ~= "string" or #digest ~= 20 then
-    raiseFailure(CACHE_ERRORS.WRITE_FAILED, "host hashing failed", { path = relativePath })
-  end
-  assert(type(digest) == "string" and #digest == 20, "envelope digest must be a 20-byte binary hash")
-  local envelope = ENVELOPE_MAGIC .. string.char(codecByte(format)) .. encodeU32LE(#logical) .. digest .. compressed
-  if not escapesMagic and #envelope >= #logical then
-    return logical
-  end
-  return envelope
-end
-
--- Logical bytes for stored physical content. Legacy raw files pass through
--- untouched; recognized envelopes are strictly validated (codec family,
--- declared length bound, decompression, exact length, checksum). Anything
--- malformed raises a structured decode failure: a corrupt envelope is never
--- a silent raw passthrough and never a cache miss.
----@param backend ScopedFs.Backend
----@param relativePath string
----@param physical string
----@return string
-local function decodePhysical(backend, relativePath, physical)
-  if type(physical) ~= "string" then
-    return physical
-  end
-  local format = codecForPath(relativePath)
-  if format == nil then
-    return physical
-  end
-  if physical:sub(1, 4) ~= ENVELOPE_MAGIC then
-    return physical
-  end
-  local context = { path = relativePath }
-  if #physical < ENVELOPE_HEADER_SIZE then
-    raiseFailure(StorageErrors.CACHE_DECODE_FAILED, "truncated storage envelope", context)
-  end
-  assert(#physical >= ENVELOPE_HEADER_SIZE, "envelope header must be present")
-  if physical:byte(5) ~= codecByte(format) then
-    raiseFailure(StorageErrors.CACHE_DECODE_FAILED, "storage envelope codec does not match the path family", context)
-  end
-  local length = decodeU32LE(physical:sub(6, 9))
-  if length > MAX_DECODED_BYTES then
-    raiseFailure(StorageErrors.CACHE_DECODE_FAILED, "storage envelope declares an excessive decoded length", context)
-  end
-  local expectedHash = physical:sub(10, 29)
-  local payload = physical:sub(30)
-  if not hasCodecs(backend) then
-    raiseFailure(StorageErrors.CACHE_DECODE_FAILED, "storage envelope codec is unavailable", context)
-  end
-  local decompressOk, decompressed = pcall(function()
-    return backend:decompress(format, payload)
-  end)
-  if not decompressOk or type(decompressed) ~= "string" then
-    raiseFailure(StorageErrors.CACHE_DECODE_FAILED, "storage envelope payload could not be decompressed", context)
-  end
-  assert(type(decompressed) == "string", "decompressed envelope payload must be a string")
-  if #decompressed ~= length then
-    raiseFailure(StorageErrors.CACHE_DECODE_FAILED, "storage envelope decoded length mismatch", context)
-  end
-  local hashOk, actualHash = pcall(function()
-    return backend:hashSha1(decompressed)
-  end)
-  if not hashOk or actualHash ~= expectedHash then
-    raiseFailure(StorageErrors.CACHE_DECODE_FAILED, "storage envelope checksum mismatch", context)
-  end
-  return decompressed
-end
-
-local nextAttemptNumber = 0
-local activeAttempts = setmetatable({}, { __mode = "k" })
-
-local function siblingPath(fullPath, suffix)
-  local parent, name = fullPath:match("^(.*)/([^/]+)$")
-  if parent then
-    return parent .. "/" .. name .. suffix
-  end
-  return fullPath .. suffix
-end
 
 ---@param versionId string
 ---@param backend table<string, unknown>|nil
@@ -324,78 +70,106 @@ function CacheFs.forVersion(versionId, backend)
   }, CacheFs)
 end
 
--- A CacheFs rooted at the disposable next sibling of the live version root.
--- Whole-version import writes here so publication can rename the completed tree
--- without copying it or crossing directory parents.
----@param versionId string
----@param backend table<string, unknown>|nil
----@return CacheFs
-function CacheFs.forStaging(versionId, backend)
-  ScopedFs.validateVersionId(versionId)
-  local prefix = versionId .. NEXT_SUFFIX .. "/"
-  return setmetatable({
-    versionId = versionId,
-    _prefix = prefix,
-    _root = prefix:gsub("/$", ""),
-    backend = backend or ScopedFs.loveBackend(),
-  }, CacheFs)
-end
-
--- A CacheFs rooted at the disposable `staging/<versionId>/<name>/` namespace,
--- mirroring the live cache-relative layout for one generated artifact. Used by
--- ArtifactPublisher for the staged publication of derived caches; like the ROM
--- staging root it is swept with the rest of `staging/<versionId>/` at the next
--- import. `name` must be a single safe path component.
----@param versionId string
----@param name string
----@param backend table<string, unknown>|nil
----@return CacheFs
-function CacheFs.forArtifactStage(versionId, name, backend)
-  ScopedFs.validateVersionId(versionId)
-  assert(name:match("^[%w%-_]+$"), "artifact name must be a single safe path component")
-  local prefix = "staging/" .. versionId .. "/" .. name .. "/"
-  return setmetatable({
-    versionId = versionId,
-    _prefix = prefix,
-    _root = prefix:gsub("/$", ""),
-    backend = backend or ScopedFs.loveBackend(),
-  }, CacheFs)
-end
-
 function CacheFs:prefix()
   return self._prefix
+end
+
+-- A reader over the selected epoch's resident generated bytes. The bytes are
+-- authoritative in memory, so this view performs no physical lookup and has no
+-- disk fallback: a path the store does not hold is simply absent. Runtime
+-- consumers resolve BlobRefs from it; the string/Lua accessors exist for the
+-- small metadata readers that still consume logical bytes as text.
+---@param store ResidentCache
+---@return CacheFs
+function CacheFs.fromStore(store)
+  assert(type(store) == "table" and type(store.versionId) == "string", "resident reader requires its byte store")
+  return setmetatable({
+    versionId = store.versionId,
+    _prefix = store.versionId .. "/",
+    _root = store.versionId,
+    _resident = store,
+  }, CacheFs)
+end
+
+---@return boolean
+function CacheFs:isResident()
+  return self._resident ~= nil
+end
+
+-- Resident Lua chunks are evaluated from their own bytes through the shared
+-- confined loader: the same parse/eval error codes, no physical backend.
+---@return ScopedFs.Backend
+function CacheFs:_residentBackend()
+  local store = assert(self._resident, "resident backend requires a resident store")
+  local function residentGetInfo(_, path)
+    return store:getInfo(path)
+  end
+  local function residentRead(_, path)
+    local data = store:readData(path)
+    if data == nil then
+      return nil, "no such resident entry"
+    end
+    return data:getString()
+  end
+  return { getInfo = residentGetInfo, read = residentRead }
 end
 
 -- Normalize and confine a relative path, returning the full save-dir path.
 -- Raises a structured error on any escape attempt. "" means the version root.
 function CacheFs:resolve(relativePath)
+  assert(self._resident == nil, "a resident generated reader is not a host path")
   return ScopedFs.resolve(self._root, relativePath, CACHE_ERRORS)
 end
 
-function CacheFs:write(relativePath, data)
-  local fullPath = self:resolve(relativePath)
-  local physical = data
-  if type(data) == "string" then
-    physical = encodePhysical(self.backend, relativePath, data)
+---@param path string
+---@return ResidentCache.BlobRef|nil
+function CacheFs:resolveAsset(path)
+  local store = self._resident
+  if store == nil then
+    return nil
   end
-  return ScopedFs.write(self.backend, fullPath, physical, CACHE_ERRORS)
+  return store:resolveAsset(path)
+end
+
+---@param path string
+---@return love.Data|nil
+function CacheFs:readData(path)
+  local store = self._resident
+  if store == nil then
+    return nil
+  end
+  return store:readData(path)
+end
+
+function CacheFs:write(relativePath, data)
+  assert(self._resident == nil, "resident generated bytes are immutable")
+  return ScopedFs.write(self.backend, self:resolve(relativePath), data, CACHE_ERRORS)
 end
 
 function CacheFs:read(relativePath)
-  local physical = self.backend:read(self:resolve(relativePath))
-  if physical == nil then
-    return nil
+  if self._resident ~= nil then
+    local data = self._resident:readData(relativePath)
+    if data == nil then
+      return nil
+    end
+    return data:getString()
   end
-  return decodePhysical(self.backend, relativePath, physical)
+  return self.backend:read(self:resolve(relativePath))
 end
 
 function CacheFs:getInfo(relativePath)
+  if self._resident ~= nil then
+    return self._resident:getInfo(relativePath)
+  end
   return self.backend:getInfo(self:resolve(relativePath))
 end
 
 -- Lists one directory and raises when the backend cannot answer. Cleanup code
 -- must distinguish an empty directory from a failed listing.
 function CacheFs:getDirectoryItems(relativePath)
+  if self._resident ~= nil then
+    return self._resident:getDirectoryItems(relativePath)
+  end
   local full = self:resolve(relativePath)
   local items, err = self.backend:getDirectoryItems(full)
   if items == nil then
@@ -405,6 +179,9 @@ function CacheFs:getDirectoryItems(relativePath)
 end
 
 function CacheFs:exists(relativePath, expectedType)
+  if self._resident ~= nil then
+    return self._resident:exists(relativePath, expectedType)
+  end
   local info = self.backend:getInfo(self:resolve(relativePath))
   if not info then
     return false
@@ -416,6 +193,7 @@ function CacheFs:exists(relativePath, expectedType)
 end
 
 function CacheFs:createDirectory(relativePath)
+  assert(self._resident == nil, "resident generated bytes are immutable")
   local full = self:resolve(relativePath)
   local ok, err = self.backend:createDirectory(full)
   return ScopedFs.ensureBackend(ok, err, CACHE_ERRORS.MKDIR_FAILED, "could not create directory", { path = full })
@@ -424,6 +202,7 @@ end
 -- Removing an absent path is a no-op; removing an existing path that the
 -- backend cannot remove raises CACHE_REMOVE_FAILED.
 function CacheFs:remove(relativePath)
+  assert(self._resident == nil, "resident generated bytes are immutable")
   return ScopedFs.remove(self.backend, self:resolve(relativePath), CACHE_ERRORS)
 end
 
@@ -436,15 +215,14 @@ function CacheFs:replace(sourceRelativePath, destinationRelativePath)
 end
 
 -- Backend rename at save-directory-absolute paths with the standard failure
--- convention (CACHE_REPLACE_FAILED on a falsy backend result). Used by
--- replace() and by the publish/rollback logic in this module and
--- ArtifactPublisher, so a backend that reports failure can never make
--- publication report success.
+-- convention (CACHE_REPLACE_FAILED on a falsy backend result), so a backend
+-- that reports failure can never make a caller report success.
 function CacheFs:replaceAt(sourcePath, destinationPath)
   return ScopedFs.replace(self.backend, sourcePath, destinationPath, CACHE_ERRORS)
 end
 
 function CacheFs:removeTree(relativePath)
+  assert(self._resident == nil, "resident generated bytes are immutable")
   self:_removeTreeAt(self:resolve(relativePath))
   return true
 end
@@ -473,655 +251,21 @@ function CacheFs:_removeTreeAt(fullPath)
   rec(fullPath)
 end
 
--- Discard staged output after recovering any journaled publication. An
--- unjournaled old sibling is removed only when the live root exists; otherwise
--- it may be the only last-known-good copy. The live root is never touched.
-function CacheFs:removeStagedTree(stagingCache)
-  self:recoverPublication()
-  self:_removeTreeAt(stagingCache:resolve(""))
-  local liveRoot = self:resolve("")
-  local oldRoot = siblingPath(liveRoot, OLD_SUFFIX)
-  if self.backend:getInfo(liveRoot) then
-    self:_removeTreeAt(oldRoot)
-  end
-  return true
-end
-
-local function renamePath(cacheFs, sourcePath, destinationPath)
-  assert(not cacheFs.backend:getInfo(destinationPath), "rename destination must be absent")
-  return cacheFs:replaceAt(sourcePath, destinationPath)
-end
-
-local function removeCandidates(cacheFs, candidates)
-  for _, path in ipairs(candidates) do
-    cacheFs:_removeTreeAt(path)
-  end
-end
-
--- Move one staged root into its adjacent candidate without reading or
--- writing payload bytes: directories are recreated and every file travels
--- by backend rename. Only files cross from the stage tree to the
--- candidate tree, so every directory rename stays within one parent.
-local function moveTree(cacheFs, sourcePath, destinationPath)
-  local backend = cacheFs.backend
-  local info = backend:getInfo(sourcePath)
-  if not info then
-    Errors.raise(CACHE_ERRORS.FILE_MISSING, "staged root is missing", { path = sourcePath })
-  end
-  assert(info, "staged root info must be available")
-  if info.type == "directory" then
-    local ok, err = backend:createDirectory(destinationPath)
-    ScopedFs.ensureBackend(ok, err, CACHE_ERRORS.MKDIR_FAILED, "could not create directory", {
-      path = destinationPath,
-    })
-    local items, listErr = backend:getDirectoryItems(sourcePath)
-    if not items then
-      Errors.raise(CACHE_ERRORS.READ_FAILED, listErr or "could not list directory", { path = sourcePath })
-    end
-    for _, name in ipairs(items) do
-      moveTree(cacheFs, sourcePath .. "/" .. name, destinationPath .. "/" .. name)
-    end
-    return info.type
-  end
-  if info.type ~= "file" then
-    Errors.raise(CACHE_ERRORS.READ_FAILED, "unsupported staged entry type", {
-      path = sourcePath,
-      type = info.type,
-    })
-  end
-  renamePath(cacheFs, sourcePath, destinationPath)
-  return info.type
-end
-
-local function hasSuffix(path, suffix)
-  return path:sub(-#suffix) == suffix
-end
-
-local function rootsOverlap(first, second)
-  if first == "" or second == "" then
-    return true
-  end
-  return first == second or first:sub(1, #second + 1) == second .. "/" or second:sub(1, #first + 1) == first .. "/"
-end
-
-local function validateRoots(cacheFs, stageCache, roots)
-  assert(stageCache.versionId == cacheFs.versionId, "publish caches must use the same version")
-  local normalizedRoots = {}
-  for index, root in ipairs(roots) do
-    assert(type(root) == "string", "publish roots must be strings")
-    local normalizedRoot = root:gsub("\\", "/")
-    assert(not hasSuffix(normalizedRoot, NEXT_SUFFIX), "publish roots may not use the next suffix")
-    assert(not hasSuffix(normalizedRoot, OLD_SUFFIX), "publish roots may not use the old suffix")
-    cacheFs:resolve(normalizedRoot)
-    stageCache:resolve(normalizedRoot)
-    for previousIndex = 1, index - 1 do
-      assert(not rootsOverlap(normalizedRoot, normalizedRoots[previousIndex]), "publish roots may not overlap")
-    end
-    normalizedRoots[index] = normalizedRoot
-  end
-  return normalizedRoots
-end
-
-local function rollbackIncomplete(cause, rollback)
-  Errors.raise(StorageErrors.CACHE_PUBLISH_ROLLBACK_INCOMPLETE, "publish failed and the rollback was incomplete", {
-    cause = tostring(cause),
-    rollback = tostring(rollback),
-  })
-end
-
-local function publicationPath(cacheFs, suffix)
-  return cacheFs.versionId .. suffix
-end
-
-local function publicationManifestTempPath(cacheFs, attemptId)
-  return publicationPath(
-    cacheFs,
-    PUBLICATION_MANIFEST_TEMP_PREFIX .. attemptId .. PUBLICATION_MANIFEST_TEMP_ATTEMPT_SUFFIX
-  )
-end
-
-local function isSafeAttemptId(attemptId)
-  return type(attemptId) == "string" and attemptId ~= "" and attemptId:match("^[%w%-_]+$") ~= nil
-end
-
-local function attemptRootPath(cacheFs, root, suffix, attemptId)
-  local livePath = cacheFs:resolve(root)
-  return siblingPath(livePath, suffix .. "." .. attemptId)
-end
-
-local function candidateRootPath(cacheFs, root, attemptId)
-  if root == "" then
-    return siblingPath(cacheFs:resolve(""), NEXT_SUFFIX)
-  end
-  return attemptRootPath(cacheFs, root, NEXT_SUFFIX, attemptId)
-end
-
-local function legacyRootPath(cacheFs, root, suffix)
-  return siblingPath(cacheFs:resolve(root), suffix)
-end
-
-local function rootScratchPaths(cacheFs, manifest, entry)
-  if manifest.schema == PUBLICATION_SCHEMA then
-    return candidateRootPath(cacheFs, entry.path, manifest.attemptId),
-      attemptRootPath(cacheFs, entry.path, OLD_SUFFIX, manifest.attemptId)
-  end
-  return legacyRootPath(cacheFs, entry.path, NEXT_SUFFIX), legacyRootPath(cacheFs, entry.path, OLD_SUFFIX)
-end
-
-local function manifestTempPath(cacheFs, manifest)
-  if manifest.schema == PUBLICATION_SCHEMA then
-    return publicationManifestTempPath(cacheFs, manifest.attemptId)
-  end
-  return publicationPath(cacheFs, PUBLICATION_MANIFEST_TEMP_SUFFIX)
-end
-
-local function publicationResourceIdentity(backend)
-  return rawget(backend, "_filesystem") or backend
-end
-
-local function activeAttempt(cacheFs)
-  local resource = publicationResourceIdentity(cacheFs.backend)
-  local versions = activeAttempts[resource]
-  return versions and versions[cacheFs.versionId]
-end
-
-local function registerAttempt(cacheFs, attemptId)
-  assert(not activeAttempt(cacheFs), "a publication is already active for this cache version")
-  local resource = publicationResourceIdentity(cacheFs.backend)
-  local versions = activeAttempts[resource]
-  if not versions then
-    versions = {}
-    activeAttempts[resource] = versions
-  end
-  versions[cacheFs.versionId] = attemptId
-end
-
-local function releaseAttempt(cacheFs, attemptId)
-  local resource = publicationResourceIdentity(cacheFs.backend)
-  local versions = activeAttempts[resource]
-  assert(versions and versions[cacheFs.versionId] == attemptId, "publication attempt ownership changed")
-  versions[cacheFs.versionId] = nil
-  if next(versions) == nil then
-    activeAttempts[resource] = nil
-  end
-end
-
-local function allocateAttemptId(cacheFs)
-  while true do
-    nextAttemptNumber = nextAttemptNumber + 1
-    local attemptId = "a" .. tostring(nextAttemptNumber)
-    if not cacheFs.backend:getInfo(publicationManifestTempPath(cacheFs, attemptId)) then
-      return attemptId
-    end
-  end
-end
-
-local function publicationMetadataError(message, context)
-  Errors.raise(StorageErrors.CACHE_PUBLISH_ROLLBACK_INCOMPLETE, message, context)
-end
-
-local function validateManifestRoot(cacheFs, root, index)
-  if type(root) ~= "table" then
-    publicationMetadataError("publication manifest root must be a table", { index = index })
-  end
-  local allowed = { path = true, hadLive = true }
-  for key in pairs(root) do
-    if not allowed[key] then
-      publicationMetadataError("publication manifest root has an unexpected field", { index = index })
-    end
-  end
-  if type(root.path) ~= "string" or root.path:gsub("\\", "/") ~= root.path then
-    publicationMetadataError("publication manifest root path is not normalized", { index = index })
-  end
-  if type(root.hadLive) ~= "boolean" then
-    publicationMetadataError("publication manifest root existence is not boolean", { index = index })
-  end
-  if hasSuffix(root.path, NEXT_SUFFIX) or hasSuffix(root.path, OLD_SUFFIX) then
-    publicationMetadataError("publication manifest root uses a reserved suffix", { index = index })
-  end
-  cacheFs:resolve(root.path)
-end
-
-local function validateManifest(cacheFs, manifest)
-  if type(manifest) ~= "table" then
-    publicationMetadataError("publication manifest must be a table")
-  end
-  local schema = manifest.schema
-  local allowed
-  if schema == LEGACY_PUBLICATION_SCHEMA then
-    allowed = { schema = true, roots = true }
-  elseif schema == PUBLICATION_SCHEMA then
-    allowed = { schema = true, attemptId = true, roots = true }
-    if not isSafeAttemptId(manifest.attemptId) then
-      publicationMetadataError("publication manifest attempt identity is invalid")
-    end
-  else
-    publicationMetadataError("publication manifest schema is invalid")
-  end
-  for key in pairs(manifest) do
-    if not allowed[key] then
-      publicationMetadataError("publication manifest has an unexpected field")
-    end
-  end
-  if type(manifest.roots) ~= "table" or #manifest.roots < 1 then
-    publicationMetadataError("publication manifest schema is invalid")
-  end
-  local seen = {}
-  local count = 0
-  for key in pairs(manifest.roots) do
-    if type(key) ~= "number" or key % 1 ~= 0 or key < 1 then
-      publicationMetadataError("publication manifest roots must be an ordered array")
-    end
-    count = count + 1
-  end
-  if count ~= #manifest.roots then
-    publicationMetadataError("publication manifest roots must be contiguous")
-  end
-  for index, root in ipairs(manifest.roots) do
-    validateManifestRoot(cacheFs, root, index)
-    if seen[root.path] then
-      publicationMetadataError("publication manifest roots must be unique", { path = root.path })
-    end
-    for previousIndex = 1, index - 1 do
-      if rootsOverlap(root.path, manifest.roots[previousIndex].path) then
-        publicationMetadataError("publication manifest roots may not overlap", { path = root.path })
-      end
-    end
-    seen[root.path] = true
-  end
-end
-
-local function readPublicationManifestAt(cacheFs, path)
-  if not cacheFs.backend:getInfo(path) then
-    return nil
-  end
-  local manifest, err = ScopedFs.loadChunk(cacheFs.backend, path, path, CACHE_ERRORS)
-  if not manifest then
-    if err then
-      error(err, 0)
-    end
-    publicationMetadataError("publication manifest must return a table")
-  end
-  validateManifest(cacheFs, manifest)
-  return manifest
-end
-
-local function readPublicationManifest(cacheFs)
-  return readPublicationManifestAt(cacheFs, publicationPath(cacheFs, PUBLICATION_MANIFEST_SUFFIX))
-end
-
-local function writePublicationManifestTemp(cacheFs, manifest)
-  validateManifest(cacheFs, manifest)
-  local tempPath = manifestTempPath(cacheFs, manifest)
-  local data = LuaWriter.encode(manifest)
-  local ok, err = cacheFs.backend:write(tempPath, data)
-  ScopedFs.ensureBackend(ok, err, CACHE_ERRORS.WRITE_FAILED, "could not write publication manifest", {
-    path = tempPath,
-  })
-end
-
-local function promotePublicationManifest(cacheFs, manifest)
-  local tempPath = manifestTempPath(cacheFs, manifest)
-  local manifestPath = publicationPath(cacheFs, PUBLICATION_MANIFEST_SUFFIX)
-  renamePath(cacheFs, tempPath, manifestPath)
-end
-
-local function writePublicationCommit(cacheFs, manifest)
-  local path = publicationPath(cacheFs, PUBLICATION_COMMIT_SUFFIX)
-  local content = manifest.schema == PUBLICATION_SCHEMA and PUBLICATION_COMMIT_PREFIX .. manifest.attemptId
-    or PUBLICATION_COMMIT_CONTENT
-  local ok, err = cacheFs.backend:write(path, content)
-  return ScopedFs.ensureBackend(ok, err, CACHE_ERRORS.WRITE_FAILED, "could not write publication commit marker", {
-    path = path,
-  })
-end
-
-local function removeNextRoots(cacheFs, manifest, preservedNextPath)
-  for _, entry in ipairs(manifest.roots) do
-    local nextPath = rootScratchPaths(cacheFs, manifest, entry)
-    if nextPath ~= preservedNextPath then
-      cacheFs:_removeTreeAt(nextPath)
-    end
-  end
-end
-
-local function validateRecoveryState(cacheFs, manifest, committed)
-  for _, entry in ipairs(manifest.roots) do
-    local livePath = cacheFs:resolve(entry.path)
-    local _, oldPath = rootScratchPaths(cacheFs, manifest, entry)
-    local liveExists = cacheFs.backend:getInfo(livePath) ~= nil
-    local oldExists = cacheFs.backend:getInfo(oldPath) ~= nil
-    if oldExists and not entry.hadLive then
-      publicationMetadataError("publication state contradicts the original root set", { path = entry.path })
-    end
-    if committed and not liveExists then
-      publicationMetadataError("committed publication root is missing", { path = entry.path })
-    end
-    if not committed and entry.hadLive and not liveExists and not oldExists then
-      rollbackIncomplete("original live root is missing", "no backup is available for " .. entry.path)
-    end
-  end
-end
-
-local function rollbackPublication(cacheFs, manifest, preservedNextPath)
-  validateRecoveryState(cacheFs, manifest, false)
-  for index = #manifest.roots, 1, -1 do
-    local entry = manifest.roots[index]
-    local livePath = cacheFs:resolve(entry.path)
-    local nextPath, oldPath = rootScratchPaths(cacheFs, manifest, entry)
-    if entry.hadLive then
-      if cacheFs.backend:getInfo(oldPath) then
-        if cacheFs.backend:getInfo(livePath) then
-          if nextPath == preservedNextPath then
-            renamePath(cacheFs, livePath, nextPath)
-          else
-            cacheFs:_removeTreeAt(livePath)
-          end
-        end
-        renamePath(cacheFs, oldPath, livePath)
-      end
-    elseif cacheFs.backend:getInfo(livePath) then
-      if nextPath == preservedNextPath then
-        renamePath(cacheFs, livePath, nextPath)
-      else
-        cacheFs:_removeTreeAt(livePath)
-      end
-    end
-  end
-  removeNextRoots(cacheFs, manifest, preservedNextPath)
-  cacheFs:_removeTreeAt(manifestTempPath(cacheFs, manifest))
-  cacheFs:_removeTreeAt(publicationPath(cacheFs, PUBLICATION_MANIFEST_SUFFIX))
-  return true
-end
-
-local function finishCommittedPublication(cacheFs, manifest)
-  validateRecoveryState(cacheFs, manifest, true)
-  for _, entry in ipairs(manifest.roots) do
-    local _, oldPath = rootScratchPaths(cacheFs, manifest, entry)
-    cacheFs:_removeTreeAt(oldPath)
-  end
-  removeNextRoots(cacheFs, manifest)
-  cacheFs:_removeTreeAt(manifestTempPath(cacheFs, manifest))
-  cacheFs:_removeTreeAt(publicationPath(cacheFs, PUBLICATION_MANIFEST_SUFFIX))
-  cacheFs:_removeTreeAt(publicationPath(cacheFs, PUBLICATION_COMMIT_SUFFIX))
-  return true
-end
-
-local function validatePublicationCommit(cacheFs, manifest)
-  if manifest.schema == LEGACY_PUBLICATION_SCHEMA then
-    return true
-  end
-  local path = publicationPath(cacheFs, PUBLICATION_COMMIT_SUFFIX)
-  local content, err = cacheFs.backend:read(path)
-  if content == nil then
-    publicationMetadataError("publication commit marker could not be read", { path = path, cause = tostring(err) })
-  end
-  if content ~= PUBLICATION_COMMIT_PREFIX .. manifest.attemptId then
-    publicationMetadataError("publication commit marker does not match the publication manifest", { path = path })
-  end
-  return true
-end
-
-local function recoverOrphanManifestTemps(cacheFs)
-  local items, err = cacheFs.backend:getDirectoryItems("")
-  if items == nil then
-    Errors.raise(CACHE_ERRORS.READ_FAILED, err or "could not list publication metadata", { path = "" })
-  end
-  assert(items, "publication metadata directory listing must be available")
-  local prefix = cacheFs.versionId .. PUBLICATION_MANIFEST_TEMP_PREFIX
-  local suffix = PUBLICATION_MANIFEST_TEMP_ATTEMPT_SUFFIX
-  for _, name in ipairs(items) do
-    if name == cacheFs.versionId .. PUBLICATION_MANIFEST_TEMP_SUFFIX then
-      cacheFs:_removeTreeAt(name)
-    elseif name:sub(1, #prefix) == prefix and name:sub(-#suffix) == suffix then
-      local attemptId = name:sub(#prefix + 1, -#suffix - 1)
-      if isSafeAttemptId(attemptId) then
-        local tempPath = publicationPath(cacheFs, PUBLICATION_MANIFEST_TEMP_PREFIX .. attemptId .. suffix)
-        local manifest = readPublicationManifestAt(cacheFs, tempPath)
-        if not manifest or manifest.schema ~= PUBLICATION_SCHEMA or manifest.attemptId ~= attemptId then
-          publicationMetadataError("publication temp manifest identity is invalid", { path = tempPath })
-        end
-        assert(manifest, "validated publication temp manifest must be available")
-        local roots = manifest.roots
-        assert(type(roots) == "table", "validated publication manifest roots must be a table")
-        for _, entry in ipairs(roots) do
-          if entry.path ~= "" then
-            local nextPath = rootScratchPaths(cacheFs, manifest, entry)
-            cacheFs:_removeTreeAt(nextPath)
-          end
-        end
-        cacheFs:_removeTreeAt(tempPath)
-      end
-    end
-  end
-end
-
-local function recoverPublicationState(cacheFs, preservedNextPath)
-  local manifest = readPublicationManifest(cacheFs)
-  local commitPath = publicationPath(cacheFs, PUBLICATION_COMMIT_SUFFIX)
-  local hasCommit = cacheFs.backend:getInfo(commitPath) ~= nil
-  if not manifest then
-    recoverOrphanManifestTemps(cacheFs)
-    if hasCommit then
-      cacheFs:_removeTreeAt(commitPath)
-    end
-    return true
-  end
-  if hasCommit then
-    validatePublicationCommit(cacheFs, manifest)
-    return finishCommittedPublication(cacheFs, manifest)
-  end
-  return rollbackPublication(cacheFs, manifest, preservedNextPath)
-end
-
-function CacheFs:recoverPublication()
-  if activeAttempt(self) then
-    return true
-  end
-  return recoverPublicationState(self, nil)
-end
-
--- Prepare adjacent next siblings, then perform same-parent move-aside and
--- move-in transitions. The caller's root order is preserved so completion
--- markers remain the final publication step.
----@param cacheFs CacheFs
----@param stageCache CacheFs
----@param roots string[]
----@param cleanup fun()
----@return boolean
-local function publishStagedRoots(cacheFs, stageCache, roots, cleanup)
-  local normalizedRoots = validateRoots(cacheFs, stageCache, roots)
-  cacheFs:recoverPublication()
-  local attemptId = allocateAttemptId(cacheFs)
-  registerAttempt(cacheFs, attemptId)
-
-  local ok, result = pcall(function()
-    local manifest = { schema = PUBLICATION_SCHEMA, attemptId = attemptId, roots = {} }
-    for _, root in ipairs(normalizedRoots) do
-      manifest.roots[#manifest.roots + 1] = {
-        path = root,
-        hadLive = cacheFs.backend:getInfo(cacheFs:resolve(root)) ~= nil,
-      }
-    end
-
-    local manifestOk, manifestErr = pcall(writePublicationManifestTemp, cacheFs, manifest)
-    if not manifestOk then
-      local cleanupOk, cleanupErr = pcall(function()
-        cacheFs:_removeTreeAt(manifestTempPath(cacheFs, manifest))
-      end)
-      if not cleanupOk then
-        rollbackIncomplete(manifestErr, cleanupErr)
-      end
-      error(manifestErr, 0)
-    end
-
-    local candidates = {}
-    local candidateOk, candidateErr = pcall(function()
-      for _, root in ipairs(normalizedRoots) do
-        local sourcePath = stageCache:resolve(root)
-        local sourceInfo = stageCache.backend:getInfo(sourcePath)
-        if not sourceInfo then
-          Errors.raise(CACHE_ERRORS.FILE_MISSING, "staged root is missing", { path = sourcePath })
-        end
-        assert(sourceInfo, "staged root info must be available")
-        local nextPath = candidateRootPath(cacheFs, root, attemptId)
-        if sourcePath ~= nextPath then
-          candidates[#candidates + 1] = nextPath
-          if cacheFs.backend:getInfo(nextPath) then
-            cacheFs:_removeTreeAt(nextPath)
-          end
-          assert(
-            publicationResourceIdentity(stageCache.backend) == publicationResourceIdentity(cacheFs.backend),
-            "staged publication requires a shared filesystem"
-          )
-          moveTree(cacheFs, sourcePath, nextPath)
-        end
-        local candidateInfo = cacheFs.backend:getInfo(nextPath)
-        assert(candidateInfo, "staged candidate info must be available")
-        assert(candidateInfo.type == sourceInfo.type, "staged candidate type changed")
-      end
-    end)
-    if not candidateOk then
-      local cleanupOk, cleanupErr = pcall(function()
-        removeCandidates(cacheFs, candidates)
-        cacheFs:_removeTreeAt(manifestTempPath(cacheFs, manifest))
-      end)
-      if not cleanupOk then
-        rollbackIncomplete(candidateErr, cleanupErr)
-      end
-      error(candidateErr, 0)
-    end
-
-    local promotionOk, promotionErr = pcall(promotePublicationManifest, cacheFs, manifest)
-    if not promotionOk then
-      local cleanupOk, cleanupErr = pcall(function()
-        removeCandidates(cacheFs, candidates)
-        cacheFs:_removeTreeAt(manifestTempPath(cacheFs, manifest))
-      end)
-      if not cleanupOk then
-        rollbackIncomplete(promotionErr, cleanupErr)
-      end
-      error(promotionErr, 0)
-    end
-
-    local phase1Ok, phase1Err = pcall(function()
-      for _, entry in ipairs(manifest.roots) do
-        if entry.hadLive then
-          local _, oldPath = rootScratchPaths(cacheFs, manifest, entry)
-          renamePath(cacheFs, cacheFs:resolve(entry.path), oldPath)
-        end
-      end
-    end)
-    if not phase1Ok then
-      local rollbackOk, rollbackErr = pcall(rollbackPublication, cacheFs, manifest, stageCache:resolve(""))
-      if not rollbackOk then
-        rollbackIncomplete(phase1Err, rollbackErr)
-      end
-      error(phase1Err, 0)
-    end
-
-    -- Phase 2: rename the adjacent candidates into place, in the given order.
-    local phase2Ok, phase2Err = pcall(function()
-      for _, entry in ipairs(manifest.roots) do
-        local nextPath = rootScratchPaths(cacheFs, manifest, entry)
-        renamePath(cacheFs, nextPath, cacheFs:resolve(entry.path))
-      end
-    end)
-    if not phase2Ok then
-      local rollbackOk, rollbackErr = pcall(rollbackPublication, cacheFs, manifest, stageCache:resolve(""))
-      if not rollbackOk then
-        rollbackIncomplete(phase2Err, rollbackErr)
-      end
-      error(phase2Err, 0)
-    end
-
-    local commitOk, commitErr = pcall(writePublicationCommit, cacheFs, manifest)
-    if not commitOk then
-      local rollbackOk, rollbackErr = pcall(rollbackPublication, cacheFs, manifest, stageCache:resolve(""))
-      if not rollbackOk then
-        rollbackIncomplete(commitErr, rollbackErr)
-      end
-      error(commitErr, 0)
-    end
-
-    -- The new artifact is already live; cleanup is a distinct outcome, never a
-    -- failed publication. The journal remains until every cleanup step succeeds.
-    local recoveryCleanupOk, recoveryCleanupErr = pcall(finishCommittedPublication, cacheFs, manifest)
-    if not recoveryCleanupOk then
-      Errors.raise(
-        StorageErrors.CACHE_PUBLISH_CLEANUP_FAILED,
-        "the new artifact is live but recovery material could not be removed",
-        {
-          phase = "recovery-material",
-          cause = tostring(recoveryCleanupErr),
-        }
-      )
-    end
-    local stageCleanupOk, stageCleanupErr = pcall(cleanup)
-    if not stageCleanupOk then
-      Errors.raise(
-        StorageErrors.CACHE_PUBLISH_CLEANUP_FAILED,
-        "the new artifact is live but its private stage could not be removed",
-        {
-          phase = "private-stage",
-          cause = tostring(stageCleanupErr),
-        }
-      )
-    end
-    return true
-  end)
-
-  releaseAttempt(cacheFs, attemptId)
-  if not ok then
-    error(result, 0)
-  end
-  return result
-end
-
--- Publish a set of staged roots (cache-relative paths mirrored under
--- `stageCache`) over the same live roots, with the shared move-aside /
--- move-in / rollback lifecycle. `cleanup` discards the recovery material once
--- every staged root is live. ArtifactPublisher uses this for per-artifact
--- staged publication; publishFromStage wraps it for the whole-version root.
--- The failure outcomes are those of the shared lifecycle.
-function CacheFs:publishStaged(stageCache, roots, cleanup)
-  assert(stageCache and stageCache.versionId, "publishStaged requires a staging CacheFs")
-  assert(type(roots) == "table" and #roots >= 1, "publishStaged requires at least one root")
-  assert(type(cleanup) == "function", "publishStaged requires a cleanup function")
-  return publishStagedRoots(self, stageCache, roots, cleanup)
-end
-
--- Publish a completed whole-version tree. Its staging root is already the
--- adjacent next sibling, so publication only moves that sibling into the live
--- root after moving any previous root to its adjacent old sibling.
-function CacheFs:publishFromStage(stagingCache)
-  return self:publishStaged(stagingCache, { "" }, function()
-    stagingCache:_removeTreeAt(stagingCache:resolve(""))
-  end)
-end
-
 function CacheFs:writeLua(relativePath, value)
   return self:write(relativePath, LuaWriter.encode(value))
 end
 
 -- Loads a generated/checked-in Lua data file in an empty environment. Must
--- never be pointed at raw ROM file contents. Wrapped physical files are
--- decoded before evaluation; a damaged envelope surfaces as the structured
--- decode failure rather than evaluating.
+-- never be pointed at raw ROM file contents.
 function CacheFs:loadLua(relativePath)
-  local fullPath = self:resolve(relativePath)
+  local fullPath = relativePath
   local backend = self.backend
-  local ok, result, loadErr = pcall(
-    ScopedFs.loadChunk,
-    backend,
-    fullPath,
-    relativePath,
-    CACHE_ERRORS,
-    nil,
-    function(physical)
-      return decodePhysical(backend, relativePath, physical)
-    end
-  )
+  if self._resident ~= nil then
+    backend = self:_residentBackend()
+  else
+    fullPath = self:resolve(relativePath)
+  end
+  local ok, result, loadErr = pcall(ScopedFs.loadChunk, backend, fullPath, relativePath, CACHE_ERRORS)
   if ok then
     return result, loadErr
   end
@@ -1148,13 +292,16 @@ end
 -- consume generated DSL modules. Must never be pointed at raw ROM file
 -- contents. A module requiring outside the allowlist fails to load.
 function CacheFs:loadModule(relativePath)
-  local fullPath = self:resolve(relativePath)
+  local fullPath = relativePath
   local backend = self.backend
+  if self._resident ~= nil then
+    backend = self:_residentBackend()
+  else
+    fullPath = self:resolve(relativePath)
+  end
   local ok, result, loadErr = pcall(ScopedFs.loadChunk, backend, fullPath, relativePath, CACHE_ERRORS, {
     require = moduleRequire,
-  }, function(physical)
-    return decodePhysical(backend, relativePath, physical)
-  end)
+  })
   if ok then
     return result, loadErr
   end

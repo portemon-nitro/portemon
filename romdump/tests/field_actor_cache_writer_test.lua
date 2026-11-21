@@ -13,6 +13,7 @@ local ApricornSources = require("romdump.src.config.ApricornSources")
 local T = {}
 
 local FieldActorFixture = require("tests.support.FieldActorFixture")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local function visual(spriteId)
   return FieldActorFixture.visual(spriteId, { frameCount = 8 })
@@ -94,7 +95,9 @@ end
 function T.writes_visuals_atlases_and_marker()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local b = bundle({ 0, 29 })
-  Assert.equal(FieldActorCacheWriter.write(cache, b), b.marker)
+  Assert.equal(ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
+      return FieldActorCacheWriter.stage(artifact, b)
+    end), b.marker)
   Assert.isTrue(FieldActorCache.isReady(cache, b.marker), "ready after write")
   Assert.isTrue(cache:exists(FieldActorCache.atlasPath(29), "file"))
   Assert.equal(cache:loadLua(FieldActorCache.visualPath(0)).spriteId, 0)
@@ -104,14 +107,18 @@ end
 function T.is_not_ready_for_a_different_marker()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local b = bundle({ 0 })
-  FieldActorCacheWriter.write(cache, b)
+  ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
+      return FieldActorCacheWriter.stage(artifact, b)
+    end)
   Assert.isFalse(FieldActorCache.isReady(cache, FieldActorCache.marker("abc", "other")))
 end
 
 function T.is_not_ready_when_an_atlas_is_missing()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local b = bundle({ 0, 29 })
-  FieldActorCacheWriter.write(cache, b)
+  ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
+      return FieldActorCacheWriter.stage(artifact, b)
+    end)
   cache:remove(FieldActorCache.atlasPath(29))
   Assert.isFalse(FieldActorCache.isReady(cache, b.marker))
 end
@@ -121,7 +128,9 @@ function T.rejects_a_bundle_missing_an_indexed_sprite()
   local b = bundle({ 0 })
   b.index.spriteIds = { 0, 99 }
   local err = Assert.throws(function()
-    FieldActorCacheWriter.write(cache, b)
+    ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
+      return FieldActorCacheWriter.stage(artifact, b)
+    end)
   end)
   Assert.isTrue(Errors.is(err), "expected an Errors object")
   Assert.equal(err.code, "FIELD_ACTOR_BUNDLE_INCOMPLETE")
@@ -139,7 +148,9 @@ function T.rolls_back_the_actor_subtree_on_a_failed_write()
     return original(self, path, data)
   end
   Assert.throws(function()
-    FieldActorCacheWriter.write(cache, bundle({ 0, 29 }))
+    ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
+      return FieldActorCacheWriter.stage(artifact, bundle({ 0, 29 }))
+    end)
   end)
   Assert.isNil(cache:read(FieldActorCache.markerPath()))
   Assert.isFalse(cache:exists(FieldActorCache.visualPath(0), "file"), "a partial build leaves no visual behind")
@@ -149,65 +160,29 @@ function T.failed_rebuild_preserves_the_previous_artifact()
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
   local first = bundle({ 0, 29 })
-  FieldActorCacheWriter.write(cache, first)
-  local original = backend.write
-  backend.write = function(self, path, data)
-    if path:find("visuals/0029.lua", 1, true) then
-      error("injected write failure")
-    end
-    return original(self, path, data)
-  end
+  ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
+      return FieldActorCacheWriter.stage(artifact, first)
+    end)
+  -- A rebuild whose bundle cannot produce a complete class fails while it
+  -- stages: the private output is discarded and the published class keeps
+  -- both its marker and its payload.
   local second = bundle({ 0, 29 })
   second.marker = FieldActorCache.marker("abc", "new-dep")
+  second.visuals[29] = nil
+  local failed = ResidentArtifactFixture.new(cache, "actors", "global")
   Assert.throws(function()
-    FieldActorCacheWriter.write(cache, second)
+    FieldActorCacheWriter.stage(failed, second)
   end)
+  failed:abort()
   Assert.isTrue(FieldActorCache.isReady(cache, first.marker), "the previous artifact remains ready")
   Assert.equal(cache:loadLua(FieldActorCache.visualPath(29)).spriteId, 29)
   Assert.equal(cache:read(FieldActorCache.markerPath()), first.marker, "the new marker never reached the live tree")
-  Assert.isNil(backend:getInfo("staging/heartgold/field-actors"), "the stage is cleaned on failure")
-  backend.write = original
-  FieldActorCacheWriter.write(cache, second)
-  Assert.isTrue(FieldActorCache.isReady(cache, second.marker), "a successful retry publishes the new artifact")
-  Assert.isNil(backend:getInfo("staging/heartgold/field-actors"), "the stage is cleaned on success")
-end
-
--- A rename failure after publish begins must not trigger writer-level stage
--- cleanup: the adjacent old roots remain recovery material.
-function T.publish_failure_keeps_the_stage_with_recovery_material()
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
-  local first = bundle({ 0 })
-  FieldActorCacheWriter.write(cache, first)
-  local originalReplace = backend.replace
-  backend.replace = function(self, sourcePath, destinationPath)
-    local versionPrefix = "heartgold/"
-    if
-      sourcePath:sub(1, #versionPrefix) == versionPrefix
-      and (
-        sourcePath:find(".__g4next.", #versionPrefix + 1, true)
-        or sourcePath:find(".__g4old.", #versionPrefix + 1, true)
-      )
-    then
-      return false, "injected publish failure"
-    end
-    return originalReplace(self, sourcePath, destinationPath)
-  end
-  local second = bundle({ 0 })
-  second.marker = FieldActorCache.marker("abc", "new-dep")
-  local err = Assert.throws(function()
-    FieldActorCacheWriter.write(cache, second)
-  end)
-  Assert.equal(err.code, "CACHE_PUBLISH_ROLLBACK_INCOMPLETE")
-  Assert.notNil(backend:getInfo("staging/heartgold/field-actors"), "the stage is not removed once publish has begun")
-  local oldPrefix = "heartgold/" .. FieldActorCache.dir() .. ".__g4old."
-  local oldMarker
-  for path, data in pairs(backend.files) do
-    if path:sub(1, #oldPrefix) == oldPrefix and path:sub(-#"/complete") == "/complete" then
-      oldMarker = data
-    end
-  end
-  Assert.equal(oldMarker, first.marker, "the last-known-good actor class stays in the stage as recovery material")
+  local retry = bundle({ 0, 29 })
+  retry.marker = FieldActorCache.marker("abc", "new-dep")
+  ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
+      return FieldActorCacheWriter.stage(artifact, retry)
+    end)
+  Assert.isTrue(FieldActorCache.isReady(cache, retry.marker), "a successful retry publishes the new artifact")
 end
 
 return { tests = T }

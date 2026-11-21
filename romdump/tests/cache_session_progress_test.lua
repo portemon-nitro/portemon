@@ -15,6 +15,7 @@ local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local SourcePlan = require("romdump.src.build.SourcePlan")
 local StorageErrors = require("libs.storage.src.errors")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -159,6 +160,30 @@ local function epochPool(workerCount)
   function pool:shutdown()
     return true
   end
+  function pool:cacheFs()
+    return self.cacheFsReader
+  end
+  function pool:artifactFacts()
+    return self.factsReader
+  end
+  -- The CLI path hydrates and captures through the pool it constructs; this
+  -- fixture serves neither a snapshot nor a persisted cut by default.
+  function pool:seedCommittedGeneration(entries, artifacts)
+    self.seeded = { entries = entries, artifacts = artifacts }
+  end
+  function pool:snapshotCut(identity, completion)
+    self.cut = {
+      versionId = identity.versionId,
+      identity = identity,
+      sequence = completion.sequence,
+      entries = {},
+      artifacts = {},
+      milestones = completion.milestones,
+      firstPlay = completion.firstPlay,
+      complete = completion.complete,
+    }
+    return self.cut
+  end
   -- Test driver operations below: hold and complete chosen physical jobs.
   function pool:startRunning(jobKey)
     local record = assert(self.records[jobKey], "unknown compiler job: " .. tostring(jobKey))
@@ -219,33 +244,29 @@ local function newEnv(generation, workerCount)
   local backend = FakeCache.new()
   local cacheFs = CacheFs.forVersion("heartgold", backend)
   local pool = epochPool(workerCount)
+  local facts = ArtifactState.new(generation)
+  -- The session reads committed bytes and artifact facts only through its
+  -- pool, exactly as it does in production: this fixture pool serves both
+  -- from the test's own cache and one mutable fact map.
+  pool.cacheFsReader = cacheFs
+  pool.factsReader = facts
   return {
     generation = generation,
     identity = { versionId = "heartgold", generationId = generation, producerId = PRODUCER_ID },
     epoch = 1,
     backend = backend,
     cacheFs = cacheFs,
+    facts = facts,
     pool = pool,
   }
 end
 
 local function openSession(env)
-  local realForVersion = CacheFs.forVersion
-  return withPatched({
-    {
-      target = CacheFs,
-      name = "forVersion",
-      replacement = function()
-        return realForVersion("heartgold", env.backend)
-      end,
-    },
-  }, function()
-    return InteractiveCacheBuild.new({
-      identity = env.identity,
-      epoch = env.epoch,
-      pool = env.pool,
-    })
-  end)
+  return InteractiveCacheBuild.new({
+    identity = env.identity,
+    epoch = env.epoch,
+    pool = env.pool,
+  })
 end
 
 local function pump(session, rounds)
@@ -416,63 +437,37 @@ local function stageSynthetic(env, scriptIds)
     kind = "source-plan",
     key = "global",
     jobKey = "source-plan:global",
-    stageName = "inventory-stage",
   })
   local marker = SourcePlan.stage(artifact, plan)
   Assert.equal(marker, SourcePlan.marker(env.generation), "staging returns the generation marker")
-  artifact:finishSuccess({ marker = marker })
-  artifact:publish({
-    generationId = env.generation,
-    epoch = env.epoch,
-    kind = "source-plan",
-    key = "global",
-    jobKey = "source-plan:global",
-  })
+  local sealed = artifact:finishSuccess({ marker = marker })
+  ResidentArtifactFixture.materialize(artifact)
+  ResidentArtifactFixture.commitFact(env.facts, sealed)
   return plan
 end
 
-local function writeReceipt(env, kind, key)
-  env.cacheFs:writeLua(ArtifactState.path(kind, key), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = env.generation,
+-- One committed completion fact standing in for a job the fixture pool
+-- reports ready: the controller's fact pair is what makes a key reuseable and
+-- publishable in a milestone roster.
+-- One committed completion fact standing in for a job the fixture pool
+-- reports ready: the controller's fact pair is what makes a key reuseable and
+-- publishable in a milestone roster. A repeated fixture publication replaces
+-- the record, exactly like re-writing the same key's payload file.
+local function recordFact(env, kind, key, marker)
+  env.facts.records[ArtifactState.key(kind, key)] = {
     kind = kind,
     key = key,
-    marker = FIXTURE_MARKER,
-  })
-end
-
--- Fixture-owned publication facts at the family validation boundary: jobs
--- with a staged fixture receipt validate ready without their payload
--- compilers running. Families without fixture facts use the real
--- validator. The session pump, status and outcomes are never stubbed.
-local function withFixtureFacts(env, fn)
-  local realValidate = ArtifactJobs.validate
-  return withPatched({
-    {
-      target = ArtifactJobs,
-      name = "validate",
-      replacement = function(cacheFs, generationId, kind, key, plans, identity)
-        if generationId == env.generation then
-          local receipt = ArtifactState.read(cacheFs, generationId, kind, key)
-          if receipt ~= nil and receipt.marker == FIXTURE_MARKER then
-            return true
-          end
-        end
-        return realValidate(cacheFs, generationId, kind, key, plans, identity)
-      end,
-    },
-  }, fn)
+    marker = marker or FIXTURE_MARKER,
+    dependencies = {},
+    ownedRoots = {},
+    sharedPaths = {},
+    files = {},
+  }
 end
 
 local function publishBank(env, bankId, marker)
   local FieldMessageFixture = require("tests.support.FieldMessageFixture")
-  env.cacheFs:writeLua(ArtifactState.path("message-bank", tostring(bankId)), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = env.generation,
-    kind = "message-bank",
-    key = tostring(bankId),
-    marker = marker,
-  })
+  recordFact(env, "message-bank", tostring(bankId), marker)
   FieldMessageFixture.write(env.cacheFs, bankId, { { FieldMessageFixture.eos() } })
 end
 
@@ -527,14 +522,12 @@ function T.held_source_work_leaves_local_planning_idle()
   Assert.isFalse(mapReady, "adopted map demand stays pending while cold")
   Assert.isNil(mapFailure, "adopted map demand reports no failure")
   pump(session, 10)
-  withFixtureFacts(env, function()
-    writeReceipt(env, "world-catalog", "global")
-    writeReceipt(env, "field-cell-index", "global")
-    env.pool:complete("world-catalog:global")
-    env.pool:complete("field-cell-index:global")
-    pump(session, 10)
-    Assert.isTrue(env.pool.calls["field-cell:11-0"] ~= nil, "adopted membership dispatches new demand")
-  end)
+  recordFact(env, "world-catalog", "global")
+  recordFact(env, "field-cell-index", "global")
+  env.pool:complete("world-catalog:global")
+  env.pool:complete("field-cell-index:global")
+  pump(session, 10)
+  Assert.isTrue(env.pool.calls["field-cell:11-0"] ~= nil, "adopted membership dispatches new demand")
 end
 
 -- A wide pending family cannot monopolize the pump: resumable expansion
@@ -591,32 +584,30 @@ end
 function T.running_promotion_forwards_urgency_without_resubmission()
   local env = newEnv("running-promotion-generation", 1)
   local session = openSession(env)
-  withFixtureFacts(env, function()
-    for _, kind in ipairs({ "mon-catalog", "items", "bag" }) do
-      session:requestJob(kind, "global", "sweep")
-    end
-    pump(session, 20)
-    for _, kind in ipairs({ "mon-catalog", "items", "bag" }) do
-      Assert.isTrue(env.pool.calls[kind .. ":global"] ~= nil, "every leaf submits without parking: " .. kind)
-    end
-    for _, kind in ipairs({ "mon-catalog", "items", "bag" }) do
-      writeReceipt(env, kind, "global")
-    end
-    env.pool:startRunning("mon-catalog:global")
-    local ready, failure = session:requestJob("mon-catalog", "global", "required")
-    Assert.isFalse(ready, "a running job stays pending")
-    Assert.isNil(failure, "promotion reports no failure")
-    pump(session, 20)
-    Assert.equal(env.pool.calls["mon-catalog:global"], 1, "a running job is never resubmitted")
-    env.pool:complete("mon-catalog:global")
-    env.pool:complete("items:global")
-    env.pool:complete("bag:global")
-    pump(session, 20)
-    for _, kind in ipairs({ "mon-catalog", "items", "bag" }) do
-      local done, _ = session:requestJob(kind, "global", "sweep")
-      Assert.isTrue(done, "every leaf settles: " .. kind)
-    end
-  end)
+  for _, kind in ipairs({ "mon-catalog", "items", "bag" }) do
+    session:requestJob(kind, "global", "sweep")
+  end
+  pump(session, 20)
+  for _, kind in ipairs({ "mon-catalog", "items", "bag" }) do
+    Assert.isTrue(env.pool.calls[kind .. ":global"] ~= nil, "every leaf submits without parking: " .. kind)
+  end
+  for _, kind in ipairs({ "mon-catalog", "items", "bag" }) do
+    recordFact(env, kind, "global")
+  end
+  env.pool:startRunning("mon-catalog:global")
+  local ready, failure = session:requestJob("mon-catalog", "global", "required")
+  Assert.isFalse(ready, "a running job stays pending")
+  Assert.isNil(failure, "promotion reports no failure")
+  pump(session, 20)
+  Assert.equal(env.pool.calls["mon-catalog:global"], 1, "a running job is never resubmitted")
+  env.pool:complete("mon-catalog:global")
+  env.pool:complete("items:global")
+  env.pool:complete("bag:global")
+  pump(session, 20)
+  for _, kind in ipairs({ "mon-catalog", "items", "bag" }) do
+    local done, _ = session:requestJob(kind, "global", "sweep")
+    Assert.isTrue(done, "every leaf settles: " .. kind)
+  end
 end
 
 local function zeroCurve()
@@ -714,29 +705,20 @@ end
 local function stageLayout(env, catalogMarker, layoutMarker)
   local MonCache = require("libs.assets.src.MonCache")
   local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
-  MonCacheWriter.writeCatalog(env.cacheFs, minimalCatalog(), catalogMarker)
-  env.cacheFs:writeLua(ArtifactState.path("mon-catalog", "global"), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = env.generation,
-    kind = "mon-catalog",
-    key = "global",
-    marker = catalogMarker,
-  })
-  MonCacheWriter.writeLayout(
-    env.cacheFs,
-    layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
-    layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
-    layoutMarker,
-    { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
-    env.generation
-  )
-  env.cacheFs:writeLua(ArtifactState.path("mon-layout", "global"), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = env.generation,
-    kind = "mon-layout",
-    key = "global",
-    marker = layoutMarker,
-  })
+  local _, catalogSealed = ResidentArtifactFixture.publish(env.cacheFs, "mon-catalog", "global", function(artifact)
+    return MonCacheWriter.stageCatalog(artifact, { catalog = minimalCatalog(), marker = catalogMarker })
+  end, env.generation)
+  ResidentArtifactFixture.commitFact(env.facts, catalogSealed)
+  local _, layoutSealed = ResidentArtifactFixture.publish(env.cacheFs, "mon-layout", "global", function(artifact)
+    return MonCacheWriter.stageLayout(artifact, {
+      icons = layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
+      portraits = layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
+      marker = layoutMarker,
+      pagePlans = { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
+      generationId = env.generation,
+    })
+  end, env.generation)
+  ResidentArtifactFixture.commitFact(env.facts, layoutSealed)
 end
 local function completeQueued(env)
   local completed = 0
@@ -749,7 +731,7 @@ local function completeQueued(env)
   end
   for _, jobKey in ipairs(queued) do
     local kind, key = jobKey:match("^([^:]+):(.+)$")
-    writeReceipt(env, kind, key)
+    recordFact(env, kind, key)
     env.pool:complete(jobKey)
     completed = completed + 1
   end
@@ -773,44 +755,87 @@ local function outcomeKeySet(session)
   end
   return set
 end
-function T.command_takes_physical_wait_for_delayed_completion()
-  local env = newEnv("command-wait-generation", 2)
+-- The CLI path composes its own pool and archive worker. These cases drive
+-- session progress, pool waits and failure reporting, so the process-owned
+-- pool is this fixture and the archive boundary offers no candidate while the
+-- explicit flush persists the captured cut in process.
+local function withCommand(env, fn)
   local savedPool = package.loaded["romdump.src.build.CompilerPool"]
   local savedBuilder = package.loaded["romdump.src.CacheBuilder"]
-  local realForVersion = CacheFs.forVersion
-  local CacheBuilder
-  local ok, err = pcall(function()
-    package.loaded["romdump.src.build.CompilerPool"] = {
-      new = function()
-        return env.pool
+  local CacheArchive = require("romdump.src.build.CacheArchive")
+  return withPatched({
+    {
+      target = CacheArchive,
+      name = "restoreBackup",
+      replacement = function()
+        return false
       end,
-    }
-    CacheFs.forVersion = function()
-      return realForVersion("heartgold", env.backend)
-    end
-    package.loaded["romdump.src.CacheBuilder"] = nil
-    CacheBuilder = require("romdump.src.CacheBuilder")
+    },
+    {
+      target = CacheArchive,
+      name = "recoverableFileName",
+      replacement = function()
+        return nil
+      end,
+    },
+    {
+      target = CacheArchive,
+      name = "run",
+      replacement = function(control, reply)
+        local packet = control:pop()
+        assert(type(packet) == "table" and packet.op == "snapshot", "the flush writes one captured cut")
+        reply:push({
+          op = "snapshot-persisted",
+          versionId = packet.versionId,
+          generationId = packet.generationId,
+          epoch = packet.epoch,
+          sequence = packet.sequence,
+        })
+        return true
+      end,
+    },
+    {
+      target = package.loaded,
+      name = "romdump.src.build.CompilerPool",
+      replacement = {
+        new = function()
+          return env.pool
+        end,
+      },
+    },
+    {
+      target = package.loaded,
+      name = "romdump.src.CacheBuilder",
+      replacement = nil,
+    },
+  }, function()
+    return fn(require("romdump.src.CacheBuilder"))
+  end)
+end
+
+function T.command_takes_physical_wait_for_delayed_completion()
+  local env = newEnv("command-wait-generation", 2)
+  local ok, err = pcall(function()
     env.pool.onWait = function(pool)
       if pool:status("message-bank:219") == "queued" then
         publishBank(env, 219, "command-marker")
         pool:complete("message-bank:219")
       end
     end
-    local report, reportErr = CacheBuilder.prepareVersion("heartgold", {
-      identity = env.identity,
-      requirements = { "message-bank:219" },
-      log = function() end,
-    })
-    Assert.isNil(reportErr, "the delayed scope must succeed")
-    assert(report ~= nil, "the command returns its report")
-    Assert.isTrue(report.requestedReady, "the waited scope proves ready")
-    Assert.isTrue(env.pool.waitCalls >= 1, "completion arrives through a physical wait")
-    Assert.equal(report.counts.successful, 1, "exactly the requested job succeeds")
-    Assert.equal(report.counts.failed, 0, "nothing fails")
+    withCommand(env, function(CacheBuilder)
+      local report, reportErr = CacheBuilder.prepareVersion("heartgold", {
+        identity = env.identity,
+        requirements = { "message-bank:219" },
+        log = function() end,
+      })
+      Assert.isNil(reportErr, "the delayed scope must succeed")
+      assert(report ~= nil, "the command returns its report")
+      Assert.isTrue(report.requestedReady, "the waited scope proves ready")
+      Assert.isTrue(env.pool.waitCalls >= 1, "completion arrives through a physical wait")
+      Assert.equal(report.counts.successful, 1, "exactly the requested job succeeds")
+      Assert.equal(report.counts.failed, 0, "nothing fails")
+    end)
   end)
-  package.loaded["romdump.src.build.CompilerPool"] = savedPool
-  package.loaded["romdump.src.CacheBuilder"] = savedBuilder
-  CacheFs.forVersion = realForVersion
   env.pool.onWait = nil
   Assert.isTrue(ok, tostring(err))
 end
@@ -863,13 +888,11 @@ function T.metadata_failure_reaches_scopes_without_success_wait()
     tostring(failure):find("source-plan:global", 1, true) ~= nil,
     "the failure names its canonical cause: " .. tostring(failure)
   )
-  withFixtureFacts(env, function()
-    writeReceipt(env, "field-font", "global")
-    env.pool:complete("field-font:global")
-    pump(session, 10)
-    local fontReady, fontFailure = session:requestJob("field-font", "global", "required")
-    Assert.isTrue(fontReady, "unrelated work still succeeds: " .. tostring(fontFailure))
-  end)
+  recordFact(env, "field-font", "global")
+  env.pool:complete("field-font:global")
+  pump(session, 10)
+  local fontReady, fontFailure = session:requestJob("field-font", "global", "required")
+  Assert.isTrue(fontReady, "unrelated work still succeeds: " .. tostring(fontFailure))
   local status = session:status()
   Assert.isTrue(#status.failures >= 1, "the failure stays visible")
   Assert.isFalse(status.complete, "failure never reports successful completion")
@@ -890,35 +913,33 @@ function T.finite_work_stays_fair_under_varied_completion_orders()
       runs = runs + 1
       local env = newEnv("fairness-generation-" .. tostring(runs), 2)
       local session = openSession(env)
-      withFixtureFacts(env, function()
-        for _, kind in ipairs(registerOrder) do
-          session:requestJob(kind, "global", "required")
+      for _, kind in ipairs(registerOrder) do
+        session:requestJob(kind, "global", "required")
+      end
+      pump(session, 30)
+      for _, kind in ipairs(completionOrder) do
+        local jobKey = kind .. ":global"
+        if env.pool.records[jobKey] ~= nil and env.pool.records[jobKey].state == "queued" then
+          recordFact(env, kind, "global")
+          env.pool:complete(jobKey)
+          pump(session, 5)
         end
-        pump(session, 30)
-        for _, kind in ipairs(completionOrder) do
-          local jobKey = kind .. ":global"
-          if env.pool.records[jobKey] ~= nil and env.pool.records[jobKey].state == "queued" then
-            writeReceipt(env, kind, "global")
-            env.pool:complete(jobKey)
-            pump(session, 5)
-          end
+      end
+      Assert.isTrue(drainLocal(session, 2000), "every order drains to idle")
+      local outcomes = session:outcomes()
+      local readySet = {}
+      for _, outcome in ipairs(outcomes) do
+        if outcome.state == "successful" then
+          readySet[outcome.jobKey] = true
         end
-        Assert.isTrue(drainLocal(session, 2000), "every order drains to idle")
-        local outcomes = session:outcomes()
-        local readySet = {}
-        for _, outcome in ipairs(outcomes) do
-          if outcome.state == "successful" then
-            readySet[outcome.jobKey] = true
-          end
-          Assert.isTrue(outcome.state ~= "failed", "no order fails finite work: " .. outcome.jobKey)
-        end
-        for _, kind in ipairs(leaves) do
-          Assert.isTrue(readySet[kind .. ":global"], "every order covers " .. kind)
-        end
-        for jobKey, calls in pairs(env.pool.calls) do
-          Assert.equal(calls, 1, "no order duplicates an admission: " .. jobKey)
-        end
-      end)
+        Assert.isTrue(outcome.state ~= "failed", "no order fails finite work: " .. outcome.jobKey)
+      end
+      for _, kind in ipairs(leaves) do
+        Assert.isTrue(readySet[kind .. ":global"], "every order covers " .. kind)
+      end
+      for jobKey, calls in pairs(env.pool.calls) do
+        Assert.equal(calls, 1, "no order duplicates an admission: " .. jobKey)
+      end
     end
   end
   Assert.equal(runs, 4, "the matrix covers both orders twice")
@@ -928,65 +949,39 @@ function T.exhaustive_intent_progresses_without_later_rescue()
   local env = newEnv("exhaustive-intent-generation", 4)
   local session = openSession(env)
   session:requestComplete("required")
-  withFixtureFacts(env, function()
-    pump(session, 10)
-    Assert.isTrue(env.pool.calls["source-plan:global"] ~= nil, "discovery starts from complete intent alone")
-    Assert.isFalse(session:status().settled, "an undiscovered corpus never settles")
-    stageSynthetic(env)
-    env.pool:complete("source-plan:global")
-    pump(session, 10)
-    local spins = 0
-    while env.pool.calls["mon-catalog:global"] == nil and spins < 200 do
-      pump(session, 5)
-      spins = spins + 1
-    end
-    stageLayout(env, "catalog-marker", "layout-marker")
-    env.pool:complete("mon-catalog:global")
-    pump(session, 30)
-    -- No controller reuse phase remains: the staged layout is worker
-    -- proof input, so the layout admits to the pool and succeeds once
-    -- the pool completion stands in for that worker decision.
-    local layoutReady, layoutFailure = session:requestJob("mon-layout", "global", "required")
-    Assert.isFalse(layoutReady, "the layout starts pending for worker proof")
-    Assert.isNil(layoutFailure, "the layout reports no failure")
-    pump(session, 10)
-    Assert.isTrue(env.pool.calls["mon-layout:global"] ~= nil, "the layout submits")
-    env.pool:complete("mon-layout:global")
-    pump(session, 10)
-    layoutReady, layoutFailure = session:requestJob("mon-layout", "global", "required")
-    Assert.isTrue(layoutReady, "worker-proved layout succeeds: " .. tostring(layoutFailure))
-    Assert.isTrue(finishCorpus(env, session, 8000), "enumeration finishes without a later caller rescue")
-    local final = session:status()
-    Assert.isTrue(final.settled, "the exhausted complete build settles")
-    Assert.isFalse(final.complete, "complete success without milestones claims no completion")
-  end)
+  pump(session, 10)
+  Assert.isTrue(env.pool.calls["source-plan:global"] ~= nil, "discovery starts from complete intent alone")
+  Assert.isFalse(session:status().settled, "an undiscovered corpus never settles")
+  stageSynthetic(env)
+  env.pool:complete("source-plan:global")
+  pump(session, 10)
+  local spins = 0
+  while env.pool.calls["mon-catalog:global"] == nil and spins < 200 do
+    pump(session, 5)
+    spins = spins + 1
+  end
+  stageLayout(env, "catalog-marker", "layout-marker")
+  env.pool:complete("mon-catalog:global")
+  pump(session, 30)
+  -- No controller reuse phase remains: the staged layout is worker
+  -- proof input, so the layout admits to the pool and succeeds once
+  -- the pool completion stands in for that worker decision.
+  local layoutReady, layoutFailure = session:requestJob("mon-layout", "global", "required")
+  Assert.isFalse(layoutReady, "the layout starts pending for worker proof")
+  Assert.isNil(layoutFailure, "the layout reports no failure")
+  pump(session, 10)
+  Assert.isTrue(env.pool.calls["mon-layout:global"] ~= nil, "the layout submits")
+  env.pool:complete("mon-layout:global")
+  pump(session, 10)
+  layoutReady, layoutFailure = session:requestJob("mon-layout", "global", "required")
+  Assert.isTrue(layoutReady, "worker-proved layout succeeds: " .. tostring(layoutFailure))
+  Assert.isTrue(finishCorpus(env, session, 8000), "enumeration finishes without a later caller rescue")
+  local final = session:status()
+  Assert.isTrue(final.settled, "the exhausted complete build settles")
+  Assert.isFalse(final.complete, "complete success without milestones claims no completion")
 end
 
 function T.command_proof_and_recorded_fatal_behavior()
-  local realForVersion = CacheFs.forVersion
-  local savedPool = package.loaded["romdump.src.build.CompilerPool"]
-  local savedBuilder = package.loaded["romdump.src.CacheBuilder"]
-  local function withCommand(env, fn)
-    package.loaded["romdump.src.build.CompilerPool"] = {
-      new = function()
-        return env.pool
-      end,
-    }
-    CacheFs.forVersion = function()
-      return realForVersion("heartgold", env.backend)
-    end
-    package.loaded["romdump.src.CacheBuilder"] = nil
-    local CacheBuilder = require("romdump.src.CacheBuilder")
-    local ok, first, second = pcall(fn, CacheBuilder)
-    package.loaded["romdump.src.build.CompilerPool"] = savedPool
-    package.loaded["romdump.src.CacheBuilder"] = savedBuilder
-    CacheFs.forVersion = realForVersion
-    env.pool.onWait = nil
-    if not ok then
-      error(first, 0)
-    end
-    return first, second
-  end
   -- A scope held in the pool fails after the wait reports its worker error.
   do
     local env = newEnv("pending-generation", 2)
@@ -1132,13 +1127,11 @@ function T.pool_retry_faults_propagate_without_replanning()
     error("unexpected boom: synthetic programming fault", 0)
   end
   local ok, err = pcall(function()
-    withFixtureFacts(env, function()
-      local repaired = session:retry("field-camera", "global", "required")
-      Assert.isFalse(repaired, "the retry starts pending")
-      for _ = 1, 50 do
-        session:update()
-      end
-    end)
+    local repaired = session:retry("field-camera", "global", "required")
+    Assert.isFalse(repaired, "the retry starts pending")
+    for _ = 1, 50 do
+      session:update()
+    end
   end)
   env.pool.retry = realRetry
   Assert.isFalse(ok, "an unmatched retry fault propagates instead of replanning")
@@ -1162,39 +1155,37 @@ function T.standalone_mon_scopes_need_no_source_inventory()
     error("mon preparation must not compile the source inventory", 0)
   end
   local ok, err = pcall(function()
-    withFixtureFacts(env, function()
-      writeReceipt(env, "mon-catalog", "global")
-      local ready, failure = session:requestJob("mon-catalog", "global", "required")
-      Assert.isFalse(ready, "the catalog starts pending")
-      Assert.isNil(failure, "the catalog reports no failure")
-      pump(session, 10)
-      Assert.isTrue(env.pool.calls["mon-catalog:global"] ~= nil, "the catalog submits")
-      -- The staged receipt is what the worker validates: the pool
-      -- completion below stands in for that worker reuse decision.
-      env.pool:complete("mon-catalog:global")
-      pump(session, 10)
-      ready, failure = session:requestJob("mon-catalog", "global", "required")
-      Assert.isTrue(ready, "worker-proved catalog succeeds: " .. tostring(failure))
-      ready, failure = session:requestJob("mon-layout", "global", "required")
-      Assert.isFalse(ready, "the layout starts pending")
-      Assert.isNil(failure, "the layout reports no failure")
-      pump(session, 10)
-      Assert.isTrue(env.pool.calls["mon-layout:global"] ~= nil, "the layout submits")
-      -- The staged receipt is what the worker validates: the pool
-      -- completion below stands in for that worker reuse decision.
-      writeReceipt(env, "mon-layout", "global")
-      env.pool:complete("mon-layout:global")
-      pump(session, 10)
-      ready, failure = session:requestJob("mon-layout", "global", "required")
-      Assert.isTrue(ready, "worker-proved layout succeeds: " .. tostring(failure))
-      Assert.isNil(env.pool.calls["source-plan:global"], "the source inventory is never admitted for mon scopes")
-      for jobKey in pairs(env.pool.calls) do
-        Assert.isTrue(
-          jobKey == "mon-layout:global" or jobKey == "mon-catalog:global",
-          "only the requested closure submits: " .. jobKey
-        )
-      end
-    end)
+    recordFact(env, "mon-catalog", "global")
+    local ready, failure = session:requestJob("mon-catalog", "global", "required")
+    Assert.isFalse(ready, "the catalog starts pending")
+    Assert.isNil(failure, "the catalog reports no failure")
+    pump(session, 10)
+    Assert.isTrue(env.pool.calls["mon-catalog:global"] ~= nil, "the catalog submits")
+    -- The staged receipt is what the worker validates: the pool
+    -- completion below stands in for that worker reuse decision.
+    env.pool:complete("mon-catalog:global")
+    pump(session, 10)
+    ready, failure = session:requestJob("mon-catalog", "global", "required")
+    Assert.isTrue(ready, "worker-proved catalog succeeds: " .. tostring(failure))
+    ready, failure = session:requestJob("mon-layout", "global", "required")
+    Assert.isFalse(ready, "the layout starts pending")
+    Assert.isNil(failure, "the layout reports no failure")
+    pump(session, 10)
+    Assert.isTrue(env.pool.calls["mon-layout:global"] ~= nil, "the layout submits")
+    -- The staged receipt is what the worker validates: the pool
+    -- completion below stands in for that worker reuse decision.
+    recordFact(env, "mon-layout", "global")
+    env.pool:complete("mon-layout:global")
+    pump(session, 10)
+    ready, failure = session:requestJob("mon-layout", "global", "required")
+    Assert.isTrue(ready, "worker-proved layout succeeds: " .. tostring(failure))
+    Assert.isNil(env.pool.calls["source-plan:global"], "the source inventory is never admitted for mon scopes")
+    for jobKey in pairs(env.pool.calls) do
+      Assert.isTrue(
+        jobKey == "mon-layout:global" or jobKey == "mon-catalog:global",
+        "only the requested closure submits: " .. jobKey
+      )
+    end
   end)
   SourcePlan.read, SourcePlan.compile = realRead, realCompile
   Assert.isTrue(ok, tostring(err))
@@ -1246,41 +1237,39 @@ function T.source_inventory_read_fault_stops_page_adoption()
   Assert.isFalse(ready, "the portrait starts pending")
   Assert.isNil(failure, "the portrait reports no failure")
 
-  withFixtureFacts(env, function()
-    writeReceipt(env, "mon-catalog", "global")
-    writeReceipt(env, "mon-layout", "global")
-    pump(session, 5)
-    env.pool:complete("source-plan:global")
-    env.pool:complete("mon-catalog:global")
-    pump(session, 5)
-    env.pool:complete("mon-layout:global")
+  recordFact(env, "mon-catalog", "global")
+  recordFact(env, "mon-layout", "global")
+  pump(session, 5)
+  env.pool:complete("source-plan:global")
+  env.pool:complete("mon-catalog:global")
+  pump(session, 5)
+  env.pool:complete("mon-layout:global")
 
-    local readFault = Errors.new(
-      StorageErrors.CACHE_READ_FAILED,
-      "synthetic source inventory read failure during page adoption",
-      { path = SourcePlan.PATH }
-    )
-    local ok, err = pcall(function()
-      withPatched({
-        {
-          target = SourcePlan,
-          name = "read",
-          replacement = function()
-            error(readFault, 0)
-          end,
-        },
-      }, function()
-        pump(session, 10)
-      end)
+  local readFault = Errors.new(
+    StorageErrors.CACHE_READ_FAILED,
+    "synthetic source inventory read failure during page adoption",
+    { path = SourcePlan.PATH }
+  )
+  local ok, err = pcall(function()
+    withPatched({
+      {
+        target = SourcePlan,
+        name = "read",
+        replacement = function()
+          error(readFault, 0)
+        end,
+      },
+    }, function()
+      pump(session, 10)
     end)
-    Assert.isFalse(ok, "a source inventory read fault escapes page adoption")
-    Assert.equal(err, readFault, "the adoption caller receives the original structured fault")
-    Assert.isFalse(session.pagesKnown, "a read fault never certifies page membership")
-    Assert.isFalse(
-      session:requestJob("mon-portrait-page", "0", "required"),
-      "a failed read never proves the waiting page ready"
-    )
   end)
+  Assert.isFalse(ok, "a source inventory read fault escapes page adoption")
+  Assert.equal(err, readFault, "the adoption caller receives the original structured fault")
+  Assert.isFalse(session.pagesKnown, "a read fault never certifies page membership")
+  Assert.isFalse(
+    session:requestJob("mon-portrait-page", "0", "required"),
+    "a failed read never proves the waiting page ready"
+  )
 end
 
 function T.both_milestone_rosters_enroll_their_scopes()
@@ -1302,53 +1291,51 @@ function T.both_milestone_rosters_enroll_their_scopes()
   stageLayout(env, "dual-catalog-marker", "dual-layout-marker")
   env.pool:complete("mon-catalog:global")
   pump(session, 30)
-  withFixtureFacts(env, function()
-    local milestoneReady, milestoneFailure = session:requestMilestone("bootstrap", "required")
-    Assert.isFalse(milestoneReady, "bootstrap starts pending")
-    Assert.isNil(milestoneFailure, "bootstrap reports no failure")
-    milestoneReady, milestoneFailure = session:requestMilestone("field-runtime", "required")
-    Assert.isFalse(milestoneReady, "field-runtime starts pending")
-    Assert.isNil(milestoneFailure, "field-runtime reports no failure")
-    -- The expected union comes from the authoritative milestone
-    -- membership functions over the session's adopted selections, never
-    -- from a frozen member list: inventory growth must not break this.
-    -- Recomputed every turn so roster refreshes observe the same
-    -- selections the session enrolls.
-    local function expectedUnion()
-      local union = {}
-      for _, job in ipairs(ArtifactJobs.bootstrapJobs()) do
-        union[#union + 1] = job.kind .. ":" .. job.key
-      end
-      for _, job in ipairs(ArtifactJobs.fieldRuntimeJobs()) do
-        union[#union + 1] = job.kind .. ":" .. job.key
-      end
-      return union
+  local milestoneReady, milestoneFailure = session:requestMilestone("bootstrap", "required")
+  Assert.isFalse(milestoneReady, "bootstrap starts pending")
+  Assert.isNil(milestoneFailure, "bootstrap reports no failure")
+  milestoneReady, milestoneFailure = session:requestMilestone("field-runtime", "required")
+  Assert.isFalse(milestoneReady, "field-runtime starts pending")
+  Assert.isNil(milestoneFailure, "field-runtime reports no failure")
+  -- The expected union comes from the authoritative milestone
+  -- membership functions over the session's adopted selections, never
+  -- from a frozen member list: inventory growth must not break this.
+  -- Recomputed every turn so roster refreshes observe the same
+  -- selections the session enrolls.
+  local function expectedUnion()
+    local union = {}
+    for _, job in ipairs(ArtifactJobs.bootstrapJobs()) do
+      union[#union + 1] = job.kind .. ":" .. job.key
     end
-    for _ = 1, 8000 do
-      completeQueued(env)
-      session:update()
-      local observed = outcomeKeySet(session)
-      local covered = true
-      for _, key in ipairs(expectedUnion()) do
-        if observed[key] == nil then
-          covered = false
-          break
-        end
-      end
-      if covered then
+    for _, job in ipairs(ArtifactJobs.fieldRuntimeJobs()) do
+      union[#union + 1] = job.kind .. ":" .. job.key
+    end
+    return union
+  end
+  for _ = 1, 8000 do
+    completeQueued(env)
+    session:update()
+    local observed = outcomeKeySet(session)
+    local covered = true
+    for _, key in ipairs(expectedUnion()) do
+      if observed[key] == nil then
+        covered = false
         break
       end
     end
-    local expected = expectedUnion()
-    Assert.isTrue(#expected > 0, "both scopes name a nonempty enrolled union")
-    local observed = outcomeKeySet(session)
-    for _, key in ipairs(expected) do
-      Assert.isTrue(observed[key] ~= nil, "both scopes enroll " .. key)
+    if covered then
+      break
     end
-    for jobKey, calls in pairs(env.pool.calls) do
-      Assert.equal(calls, 1, "no admission duplicates: " .. jobKey)
-    end
-  end)
+  end
+  local expected = expectedUnion()
+  Assert.isTrue(#expected > 0, "both scopes name a nonempty enrolled union")
+  local observed = outcomeKeySet(session)
+  for _, key in ipairs(expected) do
+    Assert.isTrue(observed[key] ~= nil, "both scopes enroll " .. key)
+  end
+  for jobKey, calls in pairs(env.pool.calls) do
+    Assert.equal(calls, 1, "no admission duplicates: " .. jobKey)
+  end
 end
 
 -- Readiness and progress keep their distinct answers without doing new
@@ -1367,48 +1354,46 @@ function T.readiness_and_progress_keep_distinct_answers_without_new_work()
   env.pool:complete("source-plan:global")
   pump(session, 10)
   Assert.isTrue(session.sourceLoaded, "the staged inventory adopts membership")
-  withFixtureFacts(env, function()
-    -- The planning closure resolves entirely inside the adopted synthetic
-    -- inventory, so its roster/count view and its enrollment/readiness
-    -- facts can be told apart without inventing membership.
-    local requested, requestFailure = session:requestMilestone("field-planning", "required")
-    Assert.isFalse(requested, "the scope stays pending until the pump runs")
-    Assert.isNil(requestFailure, "registration reports no failure")
-    local early = session:milestoneStatus("field-planning")
-    Assert.equal(early.state, "pending", "progress stays pending before the roster builds")
-    Assert.equal(early.ready, 0, "progress counts no ready members before the roster builds")
-    Assert.isNil(early.total, "progress reports no denominator before the roster builds")
-    Assert.isFalse(session:status().settled, "the unenrolled scope never settles")
-    Assert.isTrue(drainLocal(session), "local planning enrolls the roster")
-    local members = assert(session.roster["field-planning"], "the planning roster is retained")
-    Assert.equal(#members, #ArtifactJobs.fieldPlanningJobs(), "the retained roster covers the static membership")
-    Assert.isTrue(#members > 1, "the planning roster names more than one member")
-    local enrolled = session:milestoneStatus("field-planning")
-    Assert.equal(enrolled.state, "pending", "the enrolled-but-cold scope reports pending progress")
-    Assert.equal(enrolled.ready, 1, "only the adopted inventory member counts as ready")
-    Assert.equal(enrolled.total, #members, "the built roster carries its denominator")
-    local createdBefore = #env.pool.created
-    for _ = 1, 3 do
-      local polled, pollFailure = session:requestMilestone("field-planning", "required")
-      Assert.isFalse(polled, "repeated polls stay pending")
-      Assert.isNil(pollFailure, "repeated polls report no failure")
-      session:status()
-      session:milestoneStatus("field-planning")
-    end
-    Assert.equal(#env.pool.created, createdBefore, "observations admit no new work")
-    -- One proven member advances the count without certifying the scope:
-    -- the world catalog has no prerequisites, so its proof settles alone.
-    writeReceipt(env, "world-catalog", "global")
-    env.pool:complete("world-catalog:global")
-    pump(session, 10)
-    local partial = session:milestoneStatus("field-planning")
-    Assert.equal(partial.state, "pending", "one proven member leaves progress pending")
-    Assert.equal(partial.ready, 2, "progress counts the proven member")
-    Assert.equal(partial.total, #members, "the denominator survives partial progress")
-    local stillPending, stillFailure = session:requestMilestone("field-planning", "required")
-    Assert.isFalse(stillPending, "one proven member never certifies the scope")
-    Assert.isNil(stillFailure, "partial progress reports no failure")
-  end)
+  -- The planning closure resolves entirely inside the adopted synthetic
+  -- inventory, so its roster/count view and its enrollment/readiness
+  -- facts can be told apart without inventing membership.
+  local requested, requestFailure = session:requestMilestone("field-planning", "required")
+  Assert.isFalse(requested, "the scope stays pending until the pump runs")
+  Assert.isNil(requestFailure, "registration reports no failure")
+  local early = session:milestoneStatus("field-planning")
+  Assert.equal(early.state, "pending", "progress stays pending before the roster builds")
+  Assert.equal(early.ready, 0, "progress counts no ready members before the roster builds")
+  Assert.isNil(early.total, "progress reports no denominator before the roster builds")
+  Assert.isFalse(session:status().settled, "the unenrolled scope never settles")
+  Assert.isTrue(drainLocal(session), "local planning enrolls the roster")
+  local members = assert(session.roster["field-planning"], "the planning roster is retained")
+  Assert.equal(#members, #ArtifactJobs.fieldPlanningJobs(), "the retained roster covers the static membership")
+  Assert.isTrue(#members > 1, "the planning roster names more than one member")
+  local enrolled = session:milestoneStatus("field-planning")
+  Assert.equal(enrolled.state, "pending", "the enrolled-but-cold scope reports pending progress")
+  Assert.equal(enrolled.ready, 1, "only the adopted inventory member counts as ready")
+  Assert.equal(enrolled.total, #members, "the built roster carries its denominator")
+  local createdBefore = #env.pool.created
+  for _ = 1, 3 do
+    local polled, pollFailure = session:requestMilestone("field-planning", "required")
+    Assert.isFalse(polled, "repeated polls stay pending")
+    Assert.isNil(pollFailure, "repeated polls report no failure")
+    session:status()
+    session:milestoneStatus("field-planning")
+  end
+  Assert.equal(#env.pool.created, createdBefore, "observations admit no new work")
+  -- One proven member advances the count without certifying the scope:
+  -- the world catalog has no prerequisites, so its proof settles alone.
+  recordFact(env, "world-catalog", "global")
+  env.pool:complete("world-catalog:global")
+  pump(session, 10)
+  local partial = session:milestoneStatus("field-planning")
+  Assert.equal(partial.state, "pending", "one proven member leaves progress pending")
+  Assert.equal(partial.ready, 2, "progress counts the proven member")
+  Assert.equal(partial.total, #members, "the denominator survives partial progress")
+  local stillPending, stillFailure = session:requestMilestone("field-planning", "required")
+  Assert.isFalse(stillPending, "one proven member never certifies the scope")
+  Assert.isNil(stillFailure, "partial progress reports no failure")
   -- Two failure classes in roster order on the runtime scope: the adopted
   -- synthetic inventory carries no 750 closure, so enrollment excludes
   -- that member while a directly failed lead keeps its own class. Both
@@ -1425,40 +1410,38 @@ function T.readiness_and_progress_keep_distinct_answers_without_new_work()
   runtimeEnv.pool:complete("source-plan:global")
   pump(runtimeSession, 10)
   Assert.isTrue(runtimeSession.sourceLoaded, "the staged runtime inventory adopts membership")
-  withFixtureFacts(runtimeEnv, function()
-    local runtimeRequested, runtimeFailure = runtimeSession:requestMilestone("field-runtime", "required")
-    Assert.isFalse(runtimeRequested, "the runtime scope stays pending until the pump runs")
-    Assert.isNil(runtimeFailure, "registration reports no failure")
-    Assert.isTrue(drainLocal(runtimeSession), "local planning enrolls the runtime roster")
-    local runtimeMembers = assert(runtimeSession.roster["field-runtime"], "the runtime roster is retained")
-    local firstKey = runtimeMembers[1].kind .. ":" .. runtimeMembers[1].key
-    local closureEntry = assert(runtimeSession.byKey["audio-bank:750"], "the unknown closure stays retained")
-    Assert.equal(closureEntry.failureClass, "source-exclusion", "the unknown closure keeps its class")
-    Assert.isTrue(
-      tostring(closureEntry.failure):find("no such closure", 1, true) ~= nil,
-      "the unknown closure carries its cause: " .. tostring(closureEntry.failure)
-    )
-    runtimeEnv.pool:fail(firstKey, "synthetic lead failure")
-    pump(runtimeSession, 10)
-    local failedReady, failedFailure = runtimeSession:requestMilestone("field-runtime", "required")
-    Assert.isFalse(failedReady, "a failed scope never answers ready")
-    Assert.isTrue(
-      tostring(failedFailure):find("synthetic lead failure", 1, true) ~= nil,
-      "readiness carries the roster-first cause: " .. tostring(failedFailure)
-    )
-    local failedProgress = runtimeSession:milestoneStatus("field-runtime")
-    Assert.equal(failedProgress.state, "failed", "progress reports the failure")
-    Assert.isTrue(
-      tostring(failedProgress.failure):find("synthetic lead failure", 1, true) ~= nil,
-      "progress carries the roster-first cause: " .. tostring(failedProgress.failure)
-    )
-    local leadEntry = assert(runtimeSession.byKey[firstKey], "the failed lead stays retained")
-    Assert.equal(leadEntry.failureClass, "job", "the direct leaf failure keeps its class")
-    local failedStatus = runtimeSession:status()
-    Assert.isTrue(failedStatus.settled, "the terminally failed scope settles")
-    Assert.isFalse(failedStatus.complete, "a failure never attests completion")
-    Assert.isTrue(failedStatus.failed >= 2, "both failure classes stay visible")
-  end)
+  local runtimeRequested, runtimeFailure = runtimeSession:requestMilestone("field-runtime", "required")
+  Assert.isFalse(runtimeRequested, "the runtime scope stays pending until the pump runs")
+  Assert.isNil(runtimeFailure, "registration reports no failure")
+  Assert.isTrue(drainLocal(runtimeSession), "local planning enrolls the runtime roster")
+  local runtimeMembers = assert(runtimeSession.roster["field-runtime"], "the runtime roster is retained")
+  local firstKey = runtimeMembers[1].kind .. ":" .. runtimeMembers[1].key
+  local closureEntry = assert(runtimeSession.byKey["audio-bank:750"], "the unknown closure stays retained")
+  Assert.equal(closureEntry.failureClass, "source-exclusion", "the unknown closure keeps its class")
+  Assert.isTrue(
+    tostring(closureEntry.failure):find("no such closure", 1, true) ~= nil,
+    "the unknown closure carries its cause: " .. tostring(closureEntry.failure)
+  )
+  runtimeEnv.pool:fail(firstKey, "synthetic lead failure")
+  pump(runtimeSession, 10)
+  local failedReady, failedFailure = runtimeSession:requestMilestone("field-runtime", "required")
+  Assert.isFalse(failedReady, "a failed scope never answers ready")
+  Assert.isTrue(
+    tostring(failedFailure):find("synthetic lead failure", 1, true) ~= nil,
+    "readiness carries the roster-first cause: " .. tostring(failedFailure)
+  )
+  local failedProgress = runtimeSession:milestoneStatus("field-runtime")
+  Assert.equal(failedProgress.state, "failed", "progress reports the failure")
+  Assert.isTrue(
+    tostring(failedProgress.failure):find("synthetic lead failure", 1, true) ~= nil,
+    "progress carries the roster-first cause: " .. tostring(failedProgress.failure)
+  )
+  local leadEntry = assert(runtimeSession.byKey[firstKey], "the failed lead stays retained")
+  Assert.equal(leadEntry.failureClass, "job", "the direct leaf failure keeps its class")
+  local failedStatus = runtimeSession:status()
+  Assert.isTrue(failedStatus.settled, "the terminally failed scope settles")
+  Assert.isFalse(failedStatus.complete, "a failure never attests completion")
+  Assert.isTrue(failedStatus.failed >= 2, "both failure classes stay visible")
 end
 
 return { tests = T }

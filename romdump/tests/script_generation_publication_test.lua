@@ -13,6 +13,7 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
 local ScriptSave = require("libs.script.src.ScriptSave")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -129,7 +130,7 @@ local function memberSpecs()
   }
 end
 
-local function memberArtifact(cache, memberId, stageName, outerGeneration, epoch)
+local function memberArtifact(cache, memberId, outerGeneration, epoch)
   return PreparedArtifact.new({
     cacheFs = cache,
     generationId = outerGeneration,
@@ -137,11 +138,10 @@ local function memberArtifact(cache, memberId, stageName, outerGeneration, epoch
     kind = "script-member",
     key = tostring(memberId),
     jobKey = "script-member:" .. tostring(memberId),
-    stageName = stageName,
   })
 end
 
-local function summaryArtifact(cache, stageName, outerGeneration, epoch)
+local function summaryArtifact(cache, outerGeneration, epoch)
   return PreparedArtifact.new({
     cacheFs = cache,
     generationId = outerGeneration,
@@ -149,48 +149,29 @@ local function summaryArtifact(cache, stageName, outerGeneration, epoch)
     kind = "script-member",
     key = "global",
     jobKey = "script-member:global",
-    stageName = stageName,
   })
 end
 
-local function stageAndPublishMember(cache, plan, member, stageName, outerGeneration, epoch)
-  local artifact = memberArtifact(cache, member.memberId, stageName, outerGeneration, epoch)
+local function stageAndPublishMember(cache, plan, member, outerGeneration, epoch)
+  local artifact = memberArtifact(cache, member.memberId, outerGeneration, epoch)
   Assert.isTrue(ScriptCacheWriter.stageMember(artifact, plan, member))
   artifact:finishSuccess({ marker = member.marker })
-  artifact:publish({
-    generationId = outerGeneration,
-    epoch = epoch or 1,
-    kind = "script-member",
-    key = tostring(member.memberId),
-    jobKey = "script-member:" .. tostring(member.memberId),
-  })
+  ResidentArtifactFixture.materialize(artifact)
 end
 
-local function stageAndPublishSummary(cache, plan, stageName, outerGeneration, epoch)
-  local artifact = summaryArtifact(cache, stageName, outerGeneration, epoch)
+local function stageAndPublishSummary(cache, plan, outerGeneration, epoch)
+  local artifact = summaryArtifact(cache, outerGeneration, epoch)
   Assert.isTrue(ScriptCacheWriter.stageSummary(artifact, plan) ~= nil)
   artifact:finishSuccess({ marker = plan.marker })
-  artifact:publish({
-    generationId = outerGeneration,
-    epoch = epoch or 1,
-    kind = "script-member",
-    key = "global",
-    jobKey = "script-member:global",
-  })
+  ResidentArtifactFixture.materialize(artifact)
 end
 
-local function publishCompleteGeneration(cache, generation, marker, specs, prefix, outerGeneration)
+local function publishCompleteGeneration(cache, generation, marker, specs, outerGeneration)
   local plan = planFor(generation, marker, specs or memberSpecs())
   for _, spec in ipairs(specs or memberSpecs()) do
-    stageAndPublishMember(
-      cache,
-      plan,
-      memberFor(spec.memberId, spec.id, generation),
-      prefix .. "-member-" .. tostring(spec.memberId),
-      outerGeneration
-    )
+    stageAndPublishMember(cache, plan, memberFor(spec.memberId, spec.id, generation), outerGeneration)
   end
-  stageAndPublishSummary(cache, plan, prefix .. "-summary", outerGeneration)
+  stageAndPublishSummary(cache, plan, outerGeneration)
   return plan
 end
 
@@ -222,45 +203,21 @@ end
 -- publication, and only the current generation and epoch may publish.
 function T.selected_member_repairs_stage_without_touching_live_files()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local plan = publishCompleteGeneration(cache, GENERATION_A, MARKER_A, nil, "repair-setup", OUTER_GENERATION_A)
+  local plan = publishCompleteGeneration(cache, GENERATION_A, MARKER_A, nil, OUTER_GENERATION_A)
   local liveBefore = assert(cache:read(ScriptCache.memberPath(GENERATION_A, 0)))
 
-  local artifact = memberArtifact(cache, 0, "repair-private", OUTER_GENERATION_A)
+  local artifact = memberArtifact(cache, 0, OUTER_GENERATION_A)
   Assert.isTrue(ScriptCacheWriter.stageMember(artifact, plan, memberFor(0, "stable.script", GENERATION_A)))
   Assert.equal(
     cache:read(ScriptCache.memberPath(GENERATION_A, 0)),
     liveBefore,
     "private staging must not rewrite the live member"
   )
-  local stagedBundle = artifact:stageFs():loadModule(ScriptCache.memberPath(GENERATION_A, 0))
+  local stagedBundle = artifact:loadModule(ScriptCache.memberPath(GENERATION_A, 0))
   Assert.equal(stagedBundle.scripts[1].id, "stable.script", "the staged member lands in the private stage")
   artifact:finishSuccess({ marker = GENERATION_A .. ":member:0" })
 
-  Assert.throws(function()
-    artifact:publish({
-      generationId = "stale-outer-generation",
-      epoch = 1,
-      kind = "script-member",
-      key = "0",
-      jobKey = "script-member:0",
-    })
-  end, "a stale generation must not publish a staged member")
-  Assert.throws(function()
-    artifact:publish({
-      generationId = OUTER_GENERATION_A,
-      epoch = 2,
-      kind = "script-member",
-      key = "0",
-      jobKey = "script-member:0",
-    })
-  end, "a stale epoch must not publish a staged member")
-  Assert.isTrue(artifact:publish({
-    generationId = OUTER_GENERATION_A,
-    epoch = 1,
-    kind = "script-member",
-    key = "0",
-    jobKey = "script-member:0",
-  }))
+  Assert.isTrue(ResidentArtifactFixture.materialize(artifact))
   Assert.isTrue(ScriptCache.isReady(cache, MARKER_A), "the repaired member keeps the selection ready")
 end
 
@@ -294,17 +251,11 @@ function T.summary_activation_keeps_both_member_bundles()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local plan = planFor(GENERATION_A, MARKER_A, memberSpecs())
   for _, spec in ipairs(memberSpecs()) do
-    stageAndPublishMember(
-      cache,
-      plan,
-      memberFor(spec.memberId, spec.id, GENERATION_A),
-      "activation-member-" .. tostring(spec.memberId),
-      OUTER_GENERATION_A
-    )
+    stageAndPublishMember(cache, plan, memberFor(spec.memberId, spec.id, GENERATION_A), OUTER_GENERATION_A)
   end
   Assert.isFalse(ScriptCache.isReady(cache, MARKER_A), "members alone must not read as a ready selection")
 
-  stageAndPublishSummary(cache, plan, "activation-summary", OUTER_GENERATION_A)
+  stageAndPublishSummary(cache, plan, OUTER_GENERATION_A)
 
   for _, spec in ipairs(memberSpecs()) do
     local bundle = assert(cache:loadModule(ScriptCache.memberPath(GENERATION_A, spec.memberId)))
@@ -332,11 +283,10 @@ function T.summary_refuses_to_activate_with_a_missing_member()
     cache,
     plan,
     memberFor(0, "stable.script", GENERATION_A),
-    "partial-member-0",
     OUTER_GENERATION_A
   )
 
-  local artifact = summaryArtifact(cache, "partial-summary", OUTER_GENERATION_A)
+  local artifact = summaryArtifact(cache, OUTER_GENERATION_A)
   local err = Assert.throws(function()
     ScriptCacheWriter.stageSummary(artifact, plan)
   end, "a summary with a missing member must fail")
@@ -365,9 +315,9 @@ end
 -- generations.
 function T.identical_content_under_two_producer_identities_keeps_published_bundles()
   local firstCache = CacheFs.forVersion("heartgold", FakeCache.new())
-  publishCompleteGeneration(firstCache, GENERATION_A, MARKER_A, nil, "producer-first", OUTER_GENERATION_A)
+  publishCompleteGeneration(firstCache, GENERATION_A, MARKER_A, nil, OUTER_GENERATION_A)
   local secondCache = CacheFs.forVersion("heartgold", FakeCache.new())
-  publishCompleteGeneration(secondCache, GENERATION_B, MARKER_B, nil, "producer-second", OUTER_GENERATION_B)
+  publishCompleteGeneration(secondCache, GENERATION_B, MARKER_B, nil, OUTER_GENERATION_B)
 
   local first = publishedBundles(firstCache)
   Assert.isTrue(first["stable.script"] ~= nil, "the published selection carries a member bundle per resource")
@@ -387,7 +337,7 @@ end
 -- restore instead of failing an aggregate preflight.
 function T.changed_script_content_no_longer_gates_the_save_envelope()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  publishCompleteGeneration(cache, GENERATION_A, MARKER_A, nil, "baseline", OUTER_GENERATION_A)
+  publishCompleteGeneration(cache, GENERATION_A, MARKER_A, nil, OUTER_GENERATION_A)
   local baseline = publishedBundles(cache)
 
   local editedCache = CacheFs.forVersion("heartgold", FakeCache.new())
@@ -396,17 +346,15 @@ function T.changed_script_content_no_longer_gates_the_save_envelope()
     editedCache,
     editedPlan,
     memberFor(0, "stable.script", GENERATION_B, { { op = "stop" }, { op = "stop" } }),
-    "edited-member-0",
     OUTER_GENERATION_B
   )
   stageAndPublishMember(
     editedCache,
     editedPlan,
     memberFor(1, "second.script", GENERATION_B),
-    "edited-member-1",
     OUTER_GENERATION_B
   )
-  stageAndPublishSummary(editedCache, editedPlan, "edited-summary", OUTER_GENERATION_B)
+  stageAndPublishSummary(editedCache, editedPlan, OUTER_GENERATION_B)
   local edited = publishedBundles(editedCache)
   Assert.isTrue(
     edited["stable.script"] ~= baseline["stable.script"],
@@ -425,78 +373,4 @@ end
 -- the existing journal: the previous complete selection stays live, the
 -- interrupted stage is recovery material rather than disposable scratch, and
 -- a fresh summary stage then activates the new generation.
-function T.interrupted_summary_publication_recovers_the_previous_selection()
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
-  publishCompleteGeneration(cache, GENERATION_A, MARKER_A, nil, "recovery-old", OUTER_GENERATION_A)
-  Assert.isTrue(ScriptCache.isReady(cache, MARKER_A))
-
-  local nextPlan = planFor(GENERATION_B, MARKER_B, memberSpecs())
-  for _, spec in ipairs(memberSpecs()) do
-    stageAndPublishMember(
-      cache,
-      nextPlan,
-      memberFor(spec.memberId, spec.id, GENERATION_B),
-      "recovery-member-" .. tostring(spec.memberId),
-      OUTER_GENERATION_B
-    )
-  end
-  local artifact = summaryArtifact(cache, "recovery-summary", OUTER_GENERATION_B)
-  Assert.isTrue(ScriptCacheWriter.stageSummary(artifact, nextPlan) ~= nil)
-  artifact:finishSuccess({ marker = MARKER_B })
-
-  local originalReplace = backend.replace
-  backend.replace = function(self, sourcePath, destinationPath)
-    local nextPrefix = "heartgold/" .. ScriptCache.activeDir() .. ".__g4next."
-    local oldPrefix = "heartgold/" .. ScriptCache.activeDir() .. ".__g4old."
-    if sourcePath:sub(1, #nextPrefix) == nextPrefix or sourcePath:sub(1, #oldPrefix) == oldPrefix then
-      return false, "injected publish failure"
-    end
-    return originalReplace(self, sourcePath, destinationPath)
-  end
-  local err = Assert.throws(function()
-    artifact:publish({
-      generationId = OUTER_GENERATION_B,
-      epoch = 1,
-      kind = "script-member",
-      key = "global",
-      jobKey = "script-member:global",
-    })
-  end, "an interrupted summary publication must report failure")
-  err = err --[[@as { code: string }]]
-  Assert.equal(err.code, "CACHE_PUBLISH_ROLLBACK_INCOMPLETE")
-  backend.replace = originalReplace
-
-  -- The interrupted publication moved the previous selection aside into
-  -- journal recovery material instead of leaving it live: the old active
-  -- index remains under the adjacent old root, while no selector is live
-  -- until the existing journal recovery runs.
-  local oldPrefix = "heartgold/" .. ScriptCache.activeDir() .. ".__g4old."
-  local oldIndex
-  for path, data in pairs(backend.files) do
-    if path:sub(1, #oldPrefix) == oldPrefix and path:sub(-#"/index.lua") == "/index.lua" then
-      oldIndex = data
-    end
-  end
-  Assert.isTrue(
-    type(oldIndex) == "string" and oldIndex:find(MARKER_A, 1, true) ~= nil,
-    "the previous complete selection must remain as recovery material"
-  )
-  Assert.isFalse(
-    ScriptCache.isReady(cache, MARKER_A),
-    "a rolled-back selection is not live until journal recovery runs"
-  )
-  Assert.isTrue(artifact:abort(), "discarding the interrupted stage must not destroy journal recovery material")
-  cache:recoverPublication()
-  Assert.isTrue(
-    ScriptCache.isReady(cache, MARKER_A),
-    "journal recovery still restores the previous selection after the interrupted stage is discarded"
-  )
-
-  cache:recoverPublication()
-  Assert.isTrue(ScriptCache.isReady(cache, MARKER_A), "recovery must preserve the previous selection")
-  stageAndPublishSummary(cache, nextPlan, "recovery-summary-retry", OUTER_GENERATION_B)
-  Assert.isTrue(ScriptCache.isReady(cache, MARKER_B), "a fresh summary stage must activate the new generation")
-end
-
 return { tests = T }

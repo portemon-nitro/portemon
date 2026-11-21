@@ -3,7 +3,7 @@
 -- existing discontinuous building transition lifecycle.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local RomSourcePath = require("tests.rom.support.RomSourcePath")
 local NavigationFacts = require("tests.rom.support.NavigationFacts")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
@@ -68,7 +68,7 @@ local function withVersion(fn)
   local versionId = AcceptanceHarness.defaultVersion()
   local romFs, romSource = RomSourcePath.openReader(versionId)
   assert(romFs, tostring(romSource))
-  local facts = NavigationFacts.discover(CacheFs.forVersion(versionId), romFs)
+  local facts = NavigationFacts.discover(GeneratedCacheFixture.reader(versionId), romFs)
   romFs:close()
   romSource:release()
   local game = harness:boot({ versionId = versionId, map = "MAP_NEW_BARK", save = "fresh" })
@@ -295,7 +295,7 @@ function T.tests.route_29_physical_frontier_traversal_keeps_autonomous_actors_co
   local versionId = AcceptanceHarness.defaultVersion()
   local romFs, romSource = RomSourcePath.openReader(versionId)
   assert(romFs, tostring(romSource))
-  local facts = NavigationFacts.discover(CacheFs.forVersion(versionId), romFs)
+  local facts = NavigationFacts.discover(GeneratedCacheFixture.reader(versionId), romFs)
   romFs:close()
   romSource:release()
   local game = AcceptanceHarness.new():boot({

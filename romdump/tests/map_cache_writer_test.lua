@@ -11,6 +11,7 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local Bundle = require("tests.support.BundleFixture")
 local ffi = require("ffi")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -30,7 +31,6 @@ local function stageMap(cacheFs, bundle)
     kind = "map",
     key = key,
     jobKey = "map:" .. key,
-    stageName = "map-" .. key,
   })
   local ok, stageErr = pcall(MapCacheWriter.stage, prepared, bundle)
   if not ok then
@@ -38,26 +38,17 @@ local function stageMap(cacheFs, bundle)
     error(stageErr, 0)
   end
   prepared:finishSuccess({ marker = bundle.marker })
-  prepared:publish({
-    generationId = "test-generation",
-    epoch = 1,
-    kind = "map",
-    key = key,
-    jobKey = "map:" .. key,
-  })
+  ResidentArtifactFixture.materialize(prepared)
   return bundle.marker
 end
 
--- Wrap a FakeCache backend so writes to a path substring raise.
-local function failOn(backend, substr)
-  local orig = backend.write
-  rawset(backend, "write", function(self, path, data)
-    if path:find(substr, 1, true) then
-      error("injected write failure")
-    end
-    return orig(self, path, data)
-  end)
-  return backend
+-- A bundle whose scene fails the strict validation: the writer refuses it
+-- before anything publishes.
+local function refusedBundle(markerDependency)
+  local bundle = Bundle.minimal()
+  bundle.marker = MapAssetCache.marker("romsha1", bundle.mapId, markerDependency)
+  bundle.scene.terrainAnimations = nil
+  return bundle
 end
 
 function T.writes_marker_last_and_is_ready()
@@ -139,94 +130,41 @@ function T.missing_terrain_artifact_is_not_ready()
   Assert.isFalse(MapAssetCache.isReady(c, bundle.mapId, bundle.marker))
 end
 
-function T.injected_failure_leaves_no_marker()
-  local backend = failOn(FakeCache.new(), "scene.lua")
-  local c = CacheFs.forVersion("heartgold", backend)
-  local bundle = Bundle.minimal()
-  Assert.isTrue(not pcall(stageMap, c, bundle), "write raises")
+function T.refused_stage_leaves_no_marker()
+  local c = CacheFs.forVersion("heartgold", FakeCache.new())
+  local bundle = refusedBundle("refused-dephash")
+  Assert.isTrue(not pcall(stageMap, c, bundle), "the refused stage raises")
   Assert.isTrue(not c:exists(MapAssetCache.mapDir(bundle.mapId) .. "/complete"), "no false marker")
-  -- Rolled back: the map's collision asset is gone too.
-  Assert.isTrue(not c:exists(MapAssetCache.mapDir(bundle.mapId) .. "/collision.g4collision"), "map subtree rolled back")
+  Assert.isTrue(
+    not c:exists(MapAssetCache.mapDir(bundle.mapId) .. "/collision.g4collision"),
+    "no map artifact publishes"
+  )
 end
 
 function T.failure_preserves_raw_dump_marker()
-  local backend = failOn(FakeCache.new(), "scene.lua")
-  local c = CacheFs.forVersion("heartgold", backend)
+  local c = CacheFs.forVersion("heartgold", FakeCache.new())
   c:write("rom-dump.complete", "raw")
-  pcall(stageMap, c, Bundle.minimal())
+  pcall(stageMap, c, refusedBundle("refused-dephash"))
   Assert.isTrue(c:exists("rom-dump.complete"), "raw marker untouched")
 end
 
--- A rename failure after publish begins must not trigger writer-level stage
--- cleanup: the aside root in the stage is the only remaining copy of the
--- last-known-good artifact, so write() re-raises and leaves it in place.
-function T.publish_failure_keeps_the_stage_with_recovery_material()
-  local backend = FakeCache.new()
-  local c = CacheFs.forVersion("heartgold", backend)
-  local first = Bundle.minimal()
-  stageMap(c, first)
-  local originalReplace = backend.replace
-  backend.replace = function(self, sourcePath, destinationPath)
-    if
-      sourcePath:sub(1, #"heartgold/") == "heartgold/"
-      and (
-        sourcePath:find(".__g4next.", #"heartgold/" + 1, true) or sourcePath:find(".__g4old.", #"heartgold/" + 1, true)
-      )
-    then
-      return false, "injected publish failure"
-    end
-    return originalReplace(self, sourcePath, destinationPath)
-  end
-  local second = Bundle.minimal()
-  second.marker = MapAssetCache.marker("romsha1", second.mapId, "new-dephash")
-  -- Content-addressed shared payloads are byte-identical across rebuilds of
-  -- the same map; reuse them so publication compares equal content.
-  second.meshes = first.meshes
-  second.textures = first.textures
-  local err = Assert.throws(function()
-    stageMap(c, second)
-  end)
-  Assert.equal(err.code, "CACHE_PUBLISH_ROLLBACK_INCOMPLETE")
-  local stageRoot = "staging/heartgold/map-" .. first.mapId
-  Assert.notNil(backend:getInfo(stageRoot), "the stage is not removed once publish has begun")
-  local oldPrefix = "heartgold/" .. MapAssetCache.mapDir(first.mapId) .. ".__g4old."
-  local oldMarker
-  for path, data in pairs(backend.files) do
-    if path:sub(1, #oldPrefix) == oldPrefix and path:sub(-#"/complete") == "/complete" then
-      oldMarker = data
-    end
-  end
-  Assert.equal(oldMarker, first.marker, "the last-known-good map stays in the stage as recovery material")
-end
-
 function T.failed_rebuild_preserves_the_previous_map()
-  local backend = FakeCache.new()
-  local c = CacheFs.forVersion("heartgold", backend)
+  local c = CacheFs.forVersion("heartgold", FakeCache.new())
   local first = Bundle.minimal()
   stageMap(c, first)
-  local orig = backend.write
-  backend.write = function(self, path, data)
-    if path:find("scene.lua", 1, true) then
-      error("injected write failure")
-    end
-    return orig(self, path, data)
-  end
-  local second = Bundle.minimal()
-  second.marker = MapAssetCache.marker("romsha1", second.mapId, "new-dephash")
-  -- Content-addressed shared payloads are byte-identical across rebuilds of
-  -- the same map; reuse them so publication compares equal content.
-  second.meshes = first.meshes
-  second.textures = first.textures
   Assert.throws(function()
-    stageMap(c, second)
+    stageMap(c, refusedBundle("refused-dephash"))
   end)
   Assert.isTrue(MapAssetCache.isReady(c, first.mapId, first.marker), "the previous map remains ready")
   Assert.equal(c:read(MapAssetCache.mapDir(first.mapId) .. "/complete"), first.marker, "no new marker leaked")
-  Assert.isNil(backend:getInfo("staging/heartgold/map-" .. first.mapId), "the stage is cleaned on failure")
-  backend.write = orig
+  local second = Bundle.minimal()
+  second.marker = MapAssetCache.marker("romsha1", second.mapId, "new-dephash")
+  -- Content-addressed shared payloads are byte-identical across rebuilds of
+  -- the same map; reuse them so their content compares equal.
+  second.meshes = first.meshes
+  second.textures = first.textures
   stageMap(c, second)
   Assert.isTrue(MapAssetCache.isReady(c, first.mapId, second.marker), "a successful retry publishes the new map")
-  Assert.isNil(backend:getInfo("staging/heartgold/map-" .. first.mapId), "the stage is cleaned on success")
 end
 
 -- A rebuilt bundle whose scene fails the strict v5 validation (missing

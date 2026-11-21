@@ -6,19 +6,19 @@
 -- producer-validated before publication (NewGameInitCacheWriter readback),
 -- so runtime uses the published operations and initial location directly.
 
-local CacheFs = require("libs.storage.src.CacheFs")
 local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
 
 local NewGameInitialization = {}
 
-local function loadArtifact(versionId)
-  assert(type(versionId) == "string", "NewGameInitialization requires a versionId to load the startup artifact")
-  local cacheFs = CacheFs.forVersion(versionId)
+---@param cacheFs table<string, unknown> selected epoch's installed generated view
+---@return table<string, unknown> published startup initializer operations
+local function loadArtifact(cacheFs)
+  assert(type(cacheFs) == "table", "NewGameInitialization requires the installed generated view")
   local artifact = assert(
     cacheFs:loadLua(NewGameInitCache.path()),
-    "fresh-game startup initializer cache is cold -- run `scripts/buildcache.sh` first"
+    "fresh-game startup initializer is missing from the installed generated view"
   )
-  assert(type(artifact) == "table", "fresh-game startup initializer cache is cold")
+  assert(type(artifact) == "table", "fresh-game startup initializer is missing from the installed generated view")
   return artifact
 end
 
@@ -53,19 +53,22 @@ function NewGameInitialization.apply(candidate, artifactOrOptions)
 
   local artifact
   local randomU16
+  local cacheFs
   if artifactOrOptions ~= nil then
     if
-      type(artifactOrOptions) == "table" and (artifactOrOptions.artifact ~= nil or artifactOrOptions.randomU16 ~= nil)
+      type(artifactOrOptions) == "table"
+      and (artifactOrOptions.artifact ~= nil or artifactOrOptions.randomU16 ~= nil or artifactOrOptions.cacheFs ~= nil)
     then
       artifact = artifactOrOptions.artifact
       randomU16 = artifactOrOptions.randomU16
+      cacheFs = artifactOrOptions.cacheFs
     elseif
       type(artifactOrOptions) == "table" and (artifactOrOptions.operations ~= nil or artifactOrOptions.schema ~= nil)
     then
       artifact = artifactOrOptions
     end
   end
-  artifact = artifact or loadArtifact(candidate.versionId)
+  artifact = artifact or loadArtifact(assert(cacheFs, "applying the startup initializer requires the generated view"))
   assert(type(artifact.operations) == "table", "fresh-game startup initializer artifact has no operations")
 
   if randomU16 ~= nil then
@@ -88,12 +91,12 @@ end
 
 --- Reads the generated initial player-room location for a fresh New Game.
 --- Uses the published artifact record directly and returns a fresh
---- caller-owned copy of the location; stale or missing caches fail
---- loudly instead of falling back to a default location.
----@param versionId string
+--- caller-owned copy of the location; a missing artifact fails loudly
+--- instead of falling back to a default location.
+---@param cacheFs table<string, unknown> selected epoch's installed generated view
 ---@return table<string, string|integer> location
-function NewGameInitialization.initialLocation(versionId)
-  local artifact = loadArtifact(versionId)
+function NewGameInitialization.initialLocation(cacheFs)
+  local artifact = loadArtifact(cacheFs)
   local location = artifact.initialLocation
   assert(type(location) == "table", "fresh-game startup initializer cache has no initial location")
   return {

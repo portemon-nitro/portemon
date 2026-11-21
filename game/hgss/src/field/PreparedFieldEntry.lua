@@ -8,7 +8,6 @@
 -- already-resident entry instead of rebuilding the map behind a visible
 -- preparation state.
 
-local CacheFs = require("libs.storage.src.CacheFs")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
@@ -24,7 +23,7 @@ local POLL_WORK_UNITS = 8
 ---@field versionId string selected game version, carried for transfer validation
 ---@field location { mapSymbol: string, fieldX: integer, fieldZ: integer, facing: string } immutable opening identity
 ---@field _derivedAssets table<string, function> borrowed semantic derived-asset host
----@field _cacheFs table<string, unknown>? injected cache filesystem (production defaults to the version cache)
+---@field _cacheFs table<string, unknown> selected epoch's installed generated view
 ---@field _injectedQueue table<string, unknown>? adopted queue for fixture-driven tests (production builds its own)
 ---@field _imageAssets table<string, unknown>? session image owner adopted from options or built alongside the queue; moved exactly once on take
 ---@field _ownsImageAssets boolean true only when this entry built the image owner itself
@@ -40,7 +39,7 @@ local POLL_WORK_UNITS = 8
 local PreparedFieldEntry = {}
 PreparedFieldEntry.__index = PreparedFieldEntry
 
----@param options { versionId: string, derivedAssets: table<string, function>, location: table<string, unknown>, cacheFs?: table<string, unknown>, sceneLoader?: table<string, unknown>, neighborLoader?: table<string, unknown>, assetPreparation?: table<string, unknown>, imageAssets?: table<string, unknown> }
+---@param options { versionId: string, cacheFs: table<string, unknown>, derivedAssets: table<string, function>, location: table<string, unknown>, sceneLoader?: table<string, unknown>, neighborLoader?: table<string, unknown>, assetPreparation?: table<string, unknown>, imageAssets?: table<string, unknown> }
 ---@return PreparedFieldEntry
 function PreparedFieldEntry.new(options)
   assert(type(options) == "table", "prepared field entry requires its composition")
@@ -48,6 +47,8 @@ function PreparedFieldEntry.new(options)
   assert(type(versionId) == "string" and versionId ~= "", "prepared field entry requires its selected version")
   local derivedAssets = options.derivedAssets
   assert(type(derivedAssets) == "table", "prepared field entry requires its borrowed derived host")
+  local cacheFs = options.cacheFs
+  assert(cacheFs ~= nil, "prepared field entry requires the selected epoch's installed generated view")
   local location = options.location
   assert(type(location) == "table", "prepared field entry requires its opening location")
   assert(type(location.mapSymbol) == "string", "prepared field entry requires a mapped opening location")
@@ -68,7 +69,7 @@ function PreparedFieldEntry.new(options)
       facing = location.facing,
     },
     _derivedAssets = derivedAssets,
-    _cacheFs = options.cacheFs,
+    _cacheFs = cacheFs,
     _sceneLoader = options.sceneLoader,
     _neighborLoader = options.neighborLoader,
     _injectedQueue = options.assetPreparation,
@@ -114,15 +115,7 @@ function PreparedFieldEntry:_ensureLoader()
   if self._loader ~= nil then
     return true
   end
-  local cacheFs = self._cacheFs
-  if cacheFs == nil then
-    local okFs, fsOrError = pcall(CacheFs.forVersion, self.versionId)
-    if not okFs then
-      self._failure = fsOrError
-      return false
-    end
-    cacheFs = fsOrError
-  end
+  local cacheFs = assert(self._cacheFs, "prepared field entry lost its generated view")
   local okWorld, worldOrError = pcall(function()
     return assert(
       cacheFs:loadLua(MapAssetCache.worldPath()),

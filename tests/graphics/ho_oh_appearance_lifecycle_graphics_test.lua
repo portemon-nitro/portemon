@@ -4,7 +4,7 @@
 -- exactly once.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -79,7 +79,7 @@ local function snapshot(counts)
 end
 
 local function newRenderer(scope)
-  local cache = CacheFs.forVersion(VERSION)
+  local cache = GeneratedCacheFixture.reader(VERSION)
   local images = ImageAssetPool.new(cache)
   scope:own({
     release = function()

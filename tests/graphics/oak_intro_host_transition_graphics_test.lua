@@ -3,6 +3,7 @@
 -- one real draw presents the full-black frame before the next tick may
 -- finalize it.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local AssetNeedsRegistry = require("libs.hgss.src.field.AssetNeedsRegistry")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
@@ -59,6 +60,7 @@ local function compose(scope, versionId, width, height)
   local state = OakIntroComposition.compose({
     candidate = candidate(versionId),
     versionId = versionId,
+    cacheFs = GeneratedCacheFixture.reader(versionId),
     graphics = love.graphics,
     audioOutput = { audio = audio.audio, sound = audio.sound },
     clock = {

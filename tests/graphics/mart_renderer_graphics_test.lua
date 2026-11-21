@@ -1,7 +1,7 @@
 -- ROM-backed MartRenderer proof against its generated backgrounds and focus layers.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
@@ -24,8 +24,8 @@ local T = {}
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
-      local cacheFs = CacheFs.forVersion(versionId)
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       local marker = cacheFs:read(MartCache.markerPath())
       if
         marker ~= nil
@@ -271,7 +271,7 @@ function T.real_generated_backgrounds_and_focus_layers_reach_the_production_rend
     context:skip("the mart renderer smoke needs a ready user-owned ROM with derived assets")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local manifest = MartCache.loadManifest(cacheFs)
     Assert.isTrue(
       type(manifest.lower.focus) == "table",

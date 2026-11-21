@@ -1,7 +1,7 @@
 -- Production-composed graphics coverage for both Apricorn Box modes.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
@@ -47,8 +47,8 @@ end
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
-      local cacheFs = CacheFs.forVersion(versionId)
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       if cacheFs:exists(ApricornBoxAssetCache.manifestPath()) then
         versions[#versions + 1] = versionId
       end
@@ -339,7 +339,7 @@ function T.box_renderer_releases_prompt_and_source_images_once(_, context)
     context:skip("the Box smoke needs a ready user-owned ROM with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local manifest = ApricornBoxAssetCache.loadManifest(cacheFs)
     local uiManifest = assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()))
     local promptAssets = {}
@@ -459,7 +459,7 @@ function T.source_box_renders_browse_and_kurt_modes(scope, context)
   -- already pinned cheaply by the screen unit tests, so the GPU pass only
   -- proves the production composition draws visible pixels with its prompt.
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local manifest = ApricornBoxAssetCache.loadManifest(cacheFs)
     assertSourceLabels(cacheFs, manifest)
     local text = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs, graphics = love.graphics }))

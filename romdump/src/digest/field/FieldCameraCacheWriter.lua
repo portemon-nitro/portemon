@@ -7,7 +7,6 @@
 -- the last remaining copy of the previous artifact.
 
 local Errors = require("libs.errors.src.Errors")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
 
 local FieldCameraCacheWriter = {}
@@ -38,22 +37,10 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function FieldCameraCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "camera staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "camera staging requires a PreparedArtifact")
   assert(type(bundle) == "table" and bundle.marker, "invalid camera bundle")
   artifact:addOwnedRoot(FieldCameraCache.dir())
-  return persist(artifact:stageFs(), bundle)
-end
-
-function FieldCameraCacheWriter.write(cacheFs, bundle)
-  assert(cacheFs and type(bundle) == "table" and bundle.marker, "invalid camera bundle")
-  local tx = ArtifactPublisher.begin(cacheFs, "field-cameras", { FieldCameraCache.dir() })
-  local ok, result = pcall(persist, tx.stage, bundle)
-  if not ok then
-    tx:abort()
-    error(result, 0)
-  end
-  tx:publish()
-  return result
+  return persist(artifact, bundle)
 end
 
 return FieldCameraCacheWriter

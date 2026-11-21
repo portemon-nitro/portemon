@@ -8,6 +8,7 @@
 -- The final case integrates the real compiled encounter catalog as
 -- native-source evidence and runs wherever a source ROM is registered.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local Fixture = require("libs.hgss.tests.encounter_fixture")
@@ -626,7 +627,7 @@ function T.compiled_catalog_lookup_preserves_native_order(context)
   local RomImporter = require("romdump.src.source.RomImporter")
   local ready = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       ready[#ready + 1] = versionId
     end
   end

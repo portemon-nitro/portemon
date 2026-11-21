@@ -16,15 +16,27 @@ local function requireQueue()
 end
 
 local function fakeCacheFs()
+  local references = {}
   return {
-    -- The version identity the queue hands to its worker so the worker can
-    -- rebuild the same versioned cache off the main thread.
+    -- The selected epoch's resident reader: the version identity travels with
+    -- the dispatched job, and one immutable payload reference is what the
+    -- worker receives.
     versionId = "heartgold",
-    resolve = function(_, relativePath)
-      return "confined/" .. relativePath
-    end,
-    read = function()
-      error("the queue must not read cache bytes on the main thread")
+    resolveAsset = function(_, relativePath)
+      local reference = references[relativePath]
+      if reference == nil then
+        reference = {
+          path = relativePath,
+          sourceId = "base:test-generation",
+          contentId = "test-generation\0" .. relativePath,
+          size = 0,
+          data = { path = relativePath, getString = function()
+            return "resident:" .. relativePath
+          end },
+        }
+        references[relativePath] = reference
+      end
+      return reference
     end,
   }
 end
@@ -762,11 +774,15 @@ function T.queued_wait_reobserves_worker_death_through_bounded_demands()
   end)
 end
 
-function T.dispatched_requests_carry_version_identity_and_the_logical_path()
+-- A dispatched job carries the resolved resident payload, never a physical
+-- generated path: the main thread resolves the immutable reference and the
+-- worker decodes those bytes directly.
+function T.dispatched_requests_carry_the_resolved_resident_payload()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local cacheFs = fakeCacheFs()
+    local queue = AssetPreparationQueue.new(cacheFs)
     local token = queue:request("mesh", "geometry/a.g4mesh", "demand")
 
     local record = nil
@@ -779,9 +795,12 @@ function T.dispatched_requests_carry_version_identity_and_the_logical_path()
     end
     Assert.notNil(record, "the request must reach the worker input channel")
     assert(record, "the pushed request record must be available")
-    Assert.equal(record.versionId, "heartgold", "the worker rebuilds its versioned cache from this identity")
-    Assert.equal(record.logicalPath, "geometry/a.g4mesh", "the worker reads decoded bytes through the logical path")
-    Assert.equal(record.path, "confined/geometry/a.g4mesh", "the confined physical path still travels alongside")
+    local reference = assert(cacheFs:resolveAsset("geometry/a.g4mesh"), "the queue resolves the resident reference")
+    Assert.isTrue(record.data == reference.data, "the worker receives the resolved resident bytes themselves")
+    Assert.equal(record.path, "geometry/a.g4mesh", "the logical path still names the job for diagnostics")
+    Assert.equal(record.logicalPath, "geometry/a.g4mesh", "the logical path identifies the decoded payload")
+    Assert.isNil(record.versionId, "the worker builds no second versioned cache")
+    Assert.equal(record.data:getString(), "resident:geometry/a.g4mesh", "the payload carries the selected bytes")
     Assert.equal(queue:poll(token), "pending", "no reply was faked, so the token stays pending")
     queue:release()
   end)

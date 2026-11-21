@@ -9,6 +9,7 @@ local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
 local RomSuite = require("tests.rom.support.RomSuite")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -45,13 +46,7 @@ local function buildGeneration(romFs, plan, order, cache)
       "a completed member must stage only inside its own preparation"
     )
     artifact:finishSuccess({ marker = member.marker })
-    Assert.isTrue(artifact:publish({
-      generationId = "rom-outer-generation",
-      epoch = 1,
-      kind = "script-member",
-      key = tostring(memberId),
-      jobKey = "script-member:" .. tostring(memberId),
-    }))
+    Assert.isTrue(ResidentArtifactFixture.materialize(artifact))
   end
   local summary = PreparedArtifact.new({
     cacheFs = cache,
@@ -68,13 +63,7 @@ local function buildGeneration(romFs, plan, order, cache)
   )
   summary:finishSuccess({ marker = plan.marker })
   Assert.isTrue(
-    summary:publish({
-      generationId = "rom-outer-generation",
-      epoch = 1,
-      kind = "script-member",
-      key = "global",
-      jobKey = "script-member:global",
-    }),
+    ResidentArtifactFixture.materialize(summary),
     "the complete generation must activate"
   )
 end

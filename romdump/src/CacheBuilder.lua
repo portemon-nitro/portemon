@@ -1,14 +1,14 @@
 -- Exhaustive and targeted cache preparation through the common generation
 -- session. buildVersions prepares every listed version with the complete
 -- scope; prepareVersion prepares one version with a declared closure. Both
--- drive InteractiveCacheBuild jobs and validate the requested scope. A
--- matching complete attestation at data/generated/build.lua is trusted
--- for ordinary reuse without re-proving payloads; the attestation is
--- published after strict exhaustive success, and a targeted scope never
--- attests completeness no matter its exit status. The exhaustive audit
--- remains an explicit manual diagnostic and never runs here.
+-- hydrate the version's recoverable snapshot into the generation, drive
+-- InteractiveCacheBuild for the requested closure, and report success only
+-- after the captured cut is persisted: this explicit flush is the one place
+-- that waits for a snapshot, and a failed write is a nonzero preparation. A
+-- targeted scope never marks a snapshot complete no matter its exit status.
+-- The exhaustive audit remains an explicit manual diagnostic and never runs
+-- here.
 
-local CacheFs = require("libs.storage.src.CacheFs")
 local Errors = require("libs.errors.src.Errors")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
@@ -16,6 +16,7 @@ local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 local GameVersion = require("romdump.src.source.GameVersion")
 local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
 local ArtifactState = require("romdump.src.build.ArtifactState")
+local CacheArchive = require("romdump.src.build.CacheArchive")
 local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
 local CompilerPool = require("romdump.src.build.CompilerPool")
 local Schema = require("libs.script.src.Schema")
@@ -51,7 +52,7 @@ function CacheBuilder.parseRequirement(text)
     return { scope = text }
   end
   local kind, key = text:match("^([^:]+):(.+)$")
-  if kind == nil or not pcall(ArtifactState.path, kind, key) then
+  if kind == nil or not pcall(ArtifactState.validateKey, kind, key) then
     return nil, Errors.new("INVALID_CACHE_REQUIREMENT", "unknown cache requirement: " .. text, { requirement = text })
   end
   return { kind = kind, key = key, jobKey = kind .. ":" .. key }
@@ -321,9 +322,9 @@ end
 ---@field counts table<string, integer>
 ---@field failures string[]
 ---@field exclusions string[]
----@field needsAttestation boolean
----@field isCurrent boolean
----@field cacheFs table<string, unknown>|nil pending publication access
+---@field complete boolean the capture covers the whole generation
+---@field sequence integer|nil sequence persisted by this run, nil when none was written
+---@field isCurrent boolean the hydrated snapshot already answered the scope
 ---@field primaryError Errors.Error|string|nil handled drain failure preserved for the caller
 
 ---@param answers table<string, unknown>[] snapshot root answers in requested order
@@ -368,10 +369,97 @@ local function recognizedDrainFailure(pool, caught)
   return ok and type(diagnostics) == "table" and diagnostics.error ~= nil and diagnostics.error == caught
 end
 
+-- The recoverable snapshot of one version, hydrated against the exact
+-- generation it must belong to. A foreign, damaged, or absent candidate yields
+-- nothing: preparation then compiles the requested scope from its source.
+---@param versionId string
+---@param identity table<string, unknown>
+---@return CacheArchive.Hydration|nil
+local function hydrateVersion(versionId, identity)
+  CacheArchive.restoreBackup(versionId)
+  local fileName = CacheArchive.recoverableFileName(versionId)
+  if fileName == nil then
+    return nil
+  end
+  local hydration = CacheArchive.open(versionId, identity, fileName)
+  return hydration
+end
+
+---@return table<string, function> a bounded FIFO channel for the in-process writer
+local function newQueue()
+  local values = {}
+  local channel = {}
+  function channel:push(value)
+    values[#values + 1] = value
+    return true
+  end
+  function channel:pop()
+    if #values == 0 then
+      return nil
+    end
+    return table.remove(values, 1)
+  end
+  function channel:demand()
+    return channel:pop()
+  end
+  function channel:getCount()
+    return #values
+  end
+  return channel
+end
+
+-- Persist one captured cut before the caller reports success. The writer runs
+-- in this process with its explicit flush, so no debounce, pacing, or rate
+-- limit applies and the answer is the writer's own typed outcome.
+---@param cut table<string, unknown>
+---@return Errors.Error|nil failure
+local function persistCut(cut)
+  local control = newQueue()
+  local reply = newQueue()
+  control:push({
+    op = "snapshot",
+    versionId = cut.versionId,
+    generationId = cut.identity.generationId,
+    epoch = 1,
+    identity = cut.identity,
+    sequence = cut.sequence,
+    entries = cut.entries,
+    artifacts = cut.artifacts,
+    milestones = cut.milestones,
+    firstPlay = cut.firstPlay,
+    complete = cut.complete,
+    flush = true,
+  })
+  control:push({ op = "stop" })
+  local written, writeFailure = pcall(CacheArchive.run, control, reply)
+  if not written then
+    return Errors.new("CACHE_PREPARATION_FAILED", "the snapshot writer failed: " .. tostring(writeFailure), {
+      versionId = cut.versionId,
+    })
+  end
+  local packet = reply:pop()
+  if type(packet) ~= "table" then
+    return Errors.new("CACHE_PREPARATION_FAILED", "the snapshot writer answered nothing", {
+      versionId = cut.versionId,
+    })
+  end
+  if packet.op ~= "snapshot-persisted" then
+    local error = packet.error
+    if Errors.is(error) then
+      return error
+    end
+    local message = type(error) == "table" and tostring(error.message) or tostring(error)
+    return Errors.new("CACHE_PREPARATION_FAILED", "the snapshot was not persisted: " .. message, {
+      versionId = cut.versionId,
+    })
+  end
+  return nil
+end
+
 ---@param versionId string
 ---@param allowCompileExclusions boolean|nil
 ---@param developmentRepositoryRoot string|nil
----@param cacheFs table<string, unknown>
+---@param hydration CacheArchive.Hydration|nil
 ---@param identity table<string, unknown>
 ---@param parsed CacheBuilder.Requirement[]
 ---@param exhaustive boolean
@@ -382,36 +470,26 @@ local function collectVersionFacts(
   versionId,
   allowCompileExclusions,
   developmentRepositoryRoot,
-  cacheFs,
+  hydration,
   identity,
   parsed,
   exhaustive,
   rebuildJobs,
   log
 )
-  local stored = cacheFs:loadLua(DerivedCacheState.path)
-  local matched = exhaustive and #rebuildJobs == 0 and DerivedCacheState.matches(stored, identity)
-  if matched then
-    -- The trusted corpus covers only its canonical inventory, so an
-    -- explicitly requested identity reuses it only as a member. A pure
-    -- complete scope trusts attestation identity directly and never
-    -- enumerates the published inventory.
-    local uncovered = {}
+  -- A complete snapshot of this exact generation answers a pure complete
+  -- scope without re-proving anything. An explicitly requested job always
+  -- falls through to the session, which reuses the same hydrated cut and
+  -- settles the request from its committed facts.
+  local current = hydration ~= nil and hydration.complete == true and exhaustive and #rebuildJobs == 0
+  if current then
+    local explicit = nil
     for _, requirement in ipairs(parsed) do
       if requirement.jobKey ~= nil then
-        uncovered[requirement.jobKey] = true
+        explicit = requirement
       end
     end
-    if next(uncovered) ~= nil then
-      local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
-      local plans = ArtifactJobs.publishedPlans(cacheFs, identity)
-      if plans ~= nil then
-        for _, job in ipairs(ArtifactJobs.completeJobs(plans)) do
-          uncovered[job.jobKey] = nil
-        end
-      end
-    end
-    if next(uncovered) == nil then
+    if explicit == nil then
       return {
         versionId = versionId,
         identity = identity,
@@ -419,24 +497,11 @@ local function collectVersionFacts(
         counts = { planned = 0, successful = 0, failed = 0, cancelled = 0, excluded = 0 },
         failures = {},
         exclusions = {},
-        needsAttestation = false,
+        complete = true,
         isCurrent = true,
-        cacheFs = nil,
         primaryError = nil,
       }
     end
-    -- A trusted attestation survives an uncovered explicit request:
-    -- the extra identity falls through to the normal session below
-    -- without invalidating the attestation first.
-  else
-    -- Only stale or explicitly rebuilt state is removed before
-    -- replacement work.
-    if exhaustive or #rebuildJobs > 0 then
-      DerivedCacheState.invalidate(cacheFs)
-    end
-  end
-  for _, job in ipairs(rebuildJobs) do
-    cacheFs:remove(ArtifactState.path(job.kind, job.key))
   end
   epochCounter = epochCounter + 1
   local epoch = epochCounter
@@ -469,10 +534,17 @@ local function collectVersionFacts(
   end
   local drainOk, drainResult = pcall(function()
     pool = CompilerPool.new({ mode = "batch", developmentRepositoryRoot = developmentRepositoryRoot })
+    -- The hydrated cut becomes the generation's starting content: covered
+    -- artifacts are reused and only genuine misses reach a worker.
+    pool:selectGeneration(identity, epoch)
+    if hydration ~= nil then
+      pool:seedCommittedGeneration(hydration.entries, hydration.artifacts)
+    end
     session = InteractiveCacheBuild.new({
       identity = identity,
       epoch = epoch,
       pool = pool,
+      milestones = hydration ~= nil and hydration.milestones or nil,
     })
     if exhaustive then
       session:requestComplete("required")
@@ -520,9 +592,8 @@ local function collectVersionFacts(
         counts = counts,
         failures = failures,
         exclusions = exclusions,
-        needsAttestation = false,
+        complete = false,
         isCurrent = false,
-        cacheFs = nil,
         primaryError = drainErr,
       }
     end
@@ -545,26 +616,54 @@ local function collectVersionFacts(
     "the generation session owns its completion facts"
   )
   local counts, failures, exclusions = classifyExactOutcomes(snapshot.outcomes, pool, allowCompileExclusions)
+  -- Capture the cut while the pool still owns it: the sequence advances once
+  -- per preparation over whatever the hydrated snapshot already persisted,
+  -- and the completion facts it carries are the ones this session can prove.
+  local nextSequence = (hydration ~= nil and hydration.sequence or 0) + 1
+  local complete = (hydration ~= nil and hydration.complete == true)
+    or (exhaustive and counts.failed == 0 and counts.cancelled == 0 and counts.excluded == 0)
+  local cut = pool:snapshotCut(identity, {
+    sequence = nextSequence,
+    milestones = session:milestoneFacts(),
+    firstPlay = hydration ~= nil and hydration.firstPlay == true,
+    complete = complete,
+  })
   local shutdownError = teardown()
   local scopeError = verifyOriginalRequirements(snapshot.answers, versionId)
   local requestedReady = counts.failed == 0 and counts.cancelled == 0 and counts.excluded == 0
   if scopeError ~= nil then
     requestedReady = false
   end
-  local needsAttestation = exhaustive and counts.failed == 0 and counts.cancelled == 0 and counts.excluded == 0
-  -- An unproved pool closure fails the build before attestation: no new
-  -- full marker is published from this run.
+  -- An unproved pool closure fails the build before it persists anything.
   if shutdownError ~= nil then
     requestedReady = false
-    needsAttestation = false
+    complete = false
     if scopeError == nil then
       scopeError = shutdownError
     end
   end
-  -- A strictly successful exhaustive session publishes its attestation
-  -- directly: successful publication is the proof, so no second
-  -- exhaustive audit runs on the ordinary path.
-  local pendingFs = needsAttestation and cacheFs or nil
+  -- The explicit flush: success means this exact sequence is on disk for the
+  -- next process. A write failure keeps the resident result and fails the run.
+  -- A run with tolerated exclusions still produced committed work worth
+  -- reusing, so it persists an honest partial cut; a run with a real failure
+  -- or a cancelled key changes nothing.
+  local persistedSequence = nil
+  local persistable = scopeError == nil
+    and counts.failed == 0
+    and counts.cancelled == 0
+    and (counts.excluded == 0 or allowCompileExclusions == true)
+  if persistable then
+    local persistError = persistCut(cut)
+    if persistError ~= nil then
+      requestedReady = false
+      complete = false
+      if scopeError == nil then
+        scopeError = persistError
+      end
+    else
+      persistedSequence = cut.sequence
+    end
+  end
   return {
     versionId = versionId,
     identity = identity,
@@ -572,9 +671,9 @@ local function collectVersionFacts(
     counts = counts,
     failures = failures,
     exclusions = exclusions,
-    needsAttestation = needsAttestation,
+    complete = requestedReady and complete,
+    sequence = persistedSequence,
     isCurrent = false,
-    cacheFs = pendingFs,
     primaryError = scopeError,
   }
 end
@@ -586,6 +685,7 @@ local function makeRecordReport(record, complete)
   return {
     requestedReady = record.requestedReady,
     complete = complete,
+    sequence = record.sequence,
     exclusions = record.exclusions,
     failures = record.failures,
     counts = {
@@ -607,10 +707,7 @@ local function logRecordOutcomes(record, log)
   end
 end
 
-local function interpretTargetedOutcome(record, attestationPublished, publishError)
-  if record.isCurrent then
-    return { complete = true }
-  end
+local function interpretTargetedOutcome(record)
   if record.primaryError ~= nil then
     return { complete = false, error = record.primaryError }
   end
@@ -624,21 +721,7 @@ local function interpretTargetedOutcome(record, attestationPublished, publishErr
       ),
     }
   end
-  if record.needsAttestation then
-    if attestationPublished then
-      return { complete = true }
-    end
-    local failure = publishError
-    if not Errors.is(failure) then
-      failure = Errors.new(
-        "CACHE_PREPARATION_FAILED",
-        "cache preparation failed: " .. tostring(failure),
-        { versionId = record.versionId }
-      )
-    end
-    return { complete = false, error = failure }
-  end
-  return { complete = false }
+  return { complete = record.complete == true }
 end
 
 ---@param versionId string
@@ -671,13 +754,13 @@ function CacheBuilder.prepareVersion(versionId, options)
       exhaustive = true
     end
   end
-  local cacheFs = CacheFs.forVersion(versionId)
+  local hydration = hydrateVersion(versionId, identity)
   local collectOk, record = pcall(
     collectVersionFacts,
     versionId,
     options.allowCompileExclusions,
     options.developmentRepositoryRoot,
-    cacheFs,
+    hydration,
     identity,
     parsed,
     exhaustive,
@@ -691,24 +774,14 @@ function CacheBuilder.prepareVersion(versionId, options)
   if not record.isCurrent then
     logRecordOutcomes(record, log)
   end
-  local attestationPublished = false
-  local publishError = nil
-  if not record.isCurrent and record.primaryError == nil and record.needsAttestation then
-    local publishOk, publishErr = pcall(DerivedCacheState.publish, cacheFs, identity)
-    if publishOk then
-      attestationPublished = true
-    else
-      publishError = publishErr
-    end
-  end
-  local outcome = interpretTargetedOutcome(record, attestationPublished, publishError)
+  local outcome = interpretTargetedOutcome(record)
   if outcome.error ~= nil then
     return nil, outcome.error
   end
   local report = makeRecordReport(record, outcome.complete)
   if record.isCurrent then
     log(string.format("build-cache: %s current", versionId))
-  elseif attestationPublished then
+  elseif record.complete then
     log(string.format("build-cache: %s complete (%d jobs)", versionId, record.counts.successful))
   elseif exhaustive then
     log(
@@ -784,7 +857,6 @@ function CacheBuilder.buildVersions(versionIds, options)
   local allOk = true
   for _, version in ipairs(versionIds) do
     local ok, result, failureErr = pcall(function()
-      local cacheFs = CacheFs.forVersion(version)
       local identity, identityErr = versionIdentity(version, options.dev, producerFingerprint)
       if identity == nil then
         assert(Errors.is(identityErr), "source-data stage failure must be a structured error")
@@ -797,7 +869,7 @@ function CacheBuilder.buildVersions(versionIds, options)
         version,
         options.allowCompileExclusions,
         options.developmentRepositoryRoot,
-        cacheFs,
+        hydrateVersion(version, identity),
         identity,
         parsed,
         true,
@@ -842,27 +914,9 @@ function CacheBuilder.buildVersions(versionIds, options)
   for _, record in ipairs(records) do
     exclusionCount = exclusionCount + record.counts.excluded
   end
-  -- Collection gates pass before publication begins. A publication failure
-  -- preserves earlier effects and stops later publication attempts.
-  local tailFailed = not allOk
-  if allOk then
-    local publishFailed = false
-    for _, record in ipairs(records) do
-      if record.needsAttestation and not record.isCurrent then
-        if not publishFailed then
-          local ok, err = pcall(DerivedCacheState.publish, assert(record.cacheFs), record.identity)
-          if not ok then
-            publishFailed = true
-            log("build-cache: " .. record.versionId .. " failed: " .. Errors.format(err))
-          end
-        end
-      end
-    end
-    if publishFailed then
-      tailFailed = true
-    end
-  end
-  if tailFailed then
+  -- Each record already persisted its own cut before it was accepted here, so
+  -- a later failure never leaves this run's success unpersisted.
+  if not allOk then
     if not allOk and exclusionCount > 0 and not options.allowCompileExclusions then
       log("build-cache: compile exclusions remain; rerun with --allow-compile-exclusions to accept them")
     end

@@ -7,7 +7,7 @@
 -- (scripts/test.sh --full-corpus-census).
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local MonBucket = require("tests.support.MonBucket")
 local RomSuite = require("tests.rom.support.RomSuite")
@@ -24,7 +24,7 @@ local function bundleSprites(cacheFs)
 end
 
 T["starter and gendered follower visuals resolve to compiled actor visuals"] = function(_, versionId)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local catalog = MonBucket.openCatalogs(versionId)
   local known = bundleSprites(cacheFs)
   local representatives = { "CHIKORITA", "CYNDAQUIL", "TOTODILE", "PIKACHU" }

@@ -4,8 +4,18 @@ local FakeCache = require("tests.support.FakeCache")
 local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache")
 local Writer = require("romdump.src.digest.actor.FieldActorEmoteCacheWriter")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = { tests = {} }
+
+---@param cacheFs table<string, unknown>
+---@param bundle table<string, unknown>
+---@return string marker
+local function publish(cacheFs, bundle)
+  return (ResidentArtifactFixture.publish(cacheFs, "field-emotes", "global", function(artifact)
+    return Writer.stage(artifact, bundle)
+  end))
+end
 
 local MESH_BANK = "G4GX-bank-bytes"
 local TEXTURE_BANK = "G4TX-bank-bytes"
@@ -59,7 +69,7 @@ T.tests["publishes field-emote descriptor and referenced assets under owned root
     meshes = { ["mesh-key"] = MESH_BANK },
     textures = { ["texture-key"] = TEXTURE_BANK },
   }
-  local ok, err = pcall(Writer.write, cache, bundle)
+  local ok, err = pcall(publish, cache, bundle)
   Assert.isTrue(ok, tostring(err))
   Assert.isTrue(cache:exists(FieldEmoteAssetCache.exclamationDescriptorPath(), "file"))
   Assert.equal(cache:read(FieldEmoteAssetCache.markerPath()), bundle.marker)
@@ -69,7 +79,7 @@ end
 
 T.tests["aborts before publication when the canonical descriptor is invalid"] = function()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local ok = pcall(Writer.write, cache, {
+  local ok = pcall(publish, cache, {
     marker = "field-emotes-cache-v4:rom:dep",
     model = { schema = "g4-field-emote-v3", model = {} },
     meshes = {},

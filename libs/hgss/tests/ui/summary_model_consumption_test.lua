@@ -5,7 +5,7 @@
 -- no committed commercial payloads, only relationships and source facts.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
@@ -28,8 +28,8 @@ local T = {
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
-      local cacheFs = CacheFs.forVersion(versionId)
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       local marker = cacheFs:read(SummaryCache.markerPath())
       if marker ~= nil and SummaryCache.isReady(cacheFs, marker) then
         versions[#versions + 1] = versionId
@@ -172,7 +172,7 @@ function T.tests.prepared_native_family_drives_facts(context)
     error("summary consumption needs a ready versioned cache", 0)
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local manifest = SummaryCache.loadManifest(cacheFs)
     local service = openService()
     give(service, "CHIKORITA", 5, 7)

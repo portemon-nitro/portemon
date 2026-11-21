@@ -6,7 +6,7 @@
 -- failures, and resume rebuilds from value-only focus.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Errors = require("libs.errors.src.Errors")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -35,8 +35,8 @@ end
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
-      local cacheFs = CacheFs.forVersion(versionId)
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       local marker = cacheFs:read(PartyCache.markerPath())
       if marker ~= nil and PartyCache.isReady(cacheFs, marker) then
         versions[#versions + 1] = versionId
@@ -93,7 +93,7 @@ end
 
 local function openHost(versionId, service, request)
   local Host = requireHost()
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local manifest = PartyCache.loadManifest(cacheFs)
   local host = Host.new({
     service = service,
@@ -174,7 +174,7 @@ function T.tests.pointer_selects_through_hit_geometry(context)
     local plan = assert(status.presentation, "an open selection carries its plan")
     local pane = assert(plan.panes and plan.panes[1], "the native pane is placed")
     local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local layout = PartyScreenLayout.resolve({ manifest = PartyCache.loadManifest(cacheFs), cancellable = true })
     local rect = assert(layout.slotRects[2], "the production layout carries the second slot rect")
     local hx, hy = LayoutGeometry.logicalToHost(
@@ -255,7 +255,7 @@ function T.tests.empty_party_without_cancel_is_invalid(context)
   for _, versionId in ipairs(versions) do
     local service = openService()
     local Host = requireHost()
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local host = Host.new({
       service = service,
       manifest = PartyCache.loadManifest(cacheFs),

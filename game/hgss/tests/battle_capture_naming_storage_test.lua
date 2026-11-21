@@ -6,6 +6,7 @@
 -- once; the battle side delegates to that mechanism instead of a
 -- substitute prompt.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local ItemFixture = require("libs.items.tests.item_fixture")
@@ -948,7 +949,7 @@ function T.versioned_species_replay_the_capture_naming_and_storage_flow(context)
     context:skip("the versioned capture flow needs a ready user-owned dump with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local root = MonCache.loadCatalog(cacheFs)
     Assert.equal(root.version.id, versionId, "the owned catalog names its own version, never a shared fallback")
     local items = ItemCatalog.new(ItemCache.loadCatalog(cacheFs))

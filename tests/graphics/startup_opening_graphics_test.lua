@@ -6,7 +6,7 @@
 -- every other real-source scenario runs against whichever edition is ready.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Contract = require("libs.assets.src.DerivedAssetContract")
 local PngWriter = require("tests.support.PngEncoder")
 local DisplayContext = require("libs.ui.src.DisplayContext")
@@ -67,7 +67,7 @@ end
 local function loadScenes(versionId)
   local scenes = {}
   for sceneNumber = 1, 5 do
-    local loaded, err = StartupAssetCache.loadOpeningScene(CacheFs.forVersion(versionId), sceneNumber, versionId)
+    local loaded, err = StartupAssetCache.loadOpeningScene(GeneratedCacheFixture.reader(versionId), sceneNumber, versionId)
     Assert.notNil(loaded, "scene " .. sceneNumber .. " reads back as a ready bundle: " .. tostring(err))
     scenes[sceneNumber] = loaded
   end
@@ -87,7 +87,7 @@ local function openMovie(scope, versionId, width, height, kind)
     versionId = versionId,
     splRandomState = { state = 0 },
     scenes = loadScenes(versionId),
-    cacheFs = CacheFs.forVersion(versionId),
+    cacheFs = GeneratedCacheFixture.reader(versionId),
     width = width,
     height = height,
     displayContext = context,
@@ -1104,7 +1104,7 @@ end
 ---@param fillerIndexes integer[] retail scene positions to substitute
 ---@return table[] scenes, table cacheFs strict five-scene pack with staged art
 local function loadRomPackWithFillers(versionId, fillerIndexes)
-  local baseFs = CacheFs.forVersion(versionId)
+  local baseFs = GeneratedCacheFixture.reader(versionId)
   local probe = {}
   for sceneNumber = 1, 5 do
     local loaded, err = StartupAssetCache.loadOpeningScene(baseFs, sceneNumber, versionId)
@@ -1648,7 +1648,7 @@ end
 local function soulsilver_town_texture_failure_aborts_with_a_typed_error(scope, context)
   local versionId = selectedVersionId(context)
   local baseline = love.graphics.getStats()
-  local baseFs = CacheFs.forVersion(versionId)
+  local baseFs = GeneratedCacheFixture.reader(versionId)
   local scenes = loadScenes(versionId)
   -- The first town keeps every texture it needs, so its model and textures
   -- are genuinely acquired before the injected failure; only textures owned
@@ -1712,7 +1712,7 @@ local function soulsilver_town_clip_failure_aborts_with_a_typed_error(scope, con
   end
   third.models = models
   local swapped = { scenes[1], scenes[2], third, scenes[4], scenes[5] }
-  local movie, failure = driveMovieCatching(scope, swapped, CacheFs.forVersion(versionId), versionId)
+  local movie, failure = driveMovieCatching(scope, swapped, GeneratedCacheFixture.reader(versionId), versionId)
   if failure == nil then
     Assert.isTrue(movie ~= nil and movie:isFinished(), "without a failure the movie plays the clipless town as success")
   end
@@ -1749,7 +1749,7 @@ local function soulsilver_town_model_failure_aborts_with_a_typed_error(scope, co
   end
   third.models = models
   local swapped = { scenes[1], scenes[2], third, scenes[4], scenes[5] }
-  local movie, failure = driveMovieCatching(scope, swapped, CacheFs.forVersion(versionId), versionId)
+  local movie, failure = driveMovieCatching(scope, swapped, GeneratedCacheFixture.reader(versionId), versionId)
   if failure == nil then
     Assert.isTrue(
       movie ~= nil and movie:isFinished(),
@@ -6410,7 +6410,7 @@ local function openTitleScene(scope, versionId)
   -- The title builds through the presentation preparation worker: the scope
   -- owns the worker its model banks were prepared with.
   local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local queue = AssetPreparationQueue.new(cacheFs)
   scope:own({
     release = function()

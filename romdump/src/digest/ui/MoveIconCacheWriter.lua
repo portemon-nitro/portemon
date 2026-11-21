@@ -1,7 +1,6 @@
 -- Publishes a complete move-icons bundle through the shared staged-artifact
 -- transaction. The family marker is written after payload readback succeeds.
 
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local Errors = require("libs.errors.src.Errors")
 local MoveIconAssetSchema = require("libs.assets.src.MoveIconAssetSchema")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
@@ -81,26 +80,11 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function MoveIconCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "move icon staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "move icon staging requires a PreparedArtifact")
   validateBundle(bundle)
   artifact:addOwnedRoot(MoveIconCache.assetDir())
   artifact:addOwnedRoot(MoveIconCache.dir())
-  stageBundle(artifact:stageFs(), bundle)
-  return bundle.marker
-end
-
----@param cacheFs CacheFs
----@param bundle table<string, unknown>
----@return string
-function MoveIconCacheWriter.write(cacheFs, bundle)
-  validateBundle(bundle)
-  local tx = ArtifactPublisher.begin(cacheFs, "move-icons", { MoveIconCache.assetDir(), MoveIconCache.dir() })
-  local ok, err = pcall(stageBundle, tx.stage, bundle)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
+  stageBundle(artifact, bundle)
   return bundle.marker
 end
 

@@ -15,6 +15,7 @@ local FieldUiCacheWriter = require("romdump.src.digest.ui.FieldUiCacheWriter")
 local FakeCache = require("tests.support.FakeCache")
 local CacheFs = require("libs.storage.src.CacheFs")
 local RomSuite = require("tests.rom.support.RomSuite")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -561,7 +562,9 @@ function T.field_ui_compilation_publishes_ready_options(romFs, versionId)
   Assert.isTrue(bundle.manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_CHROME] ~= nil, "the chrome atlas is indexed")
   Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest), "the extended class still validates")
   local cache = CacheFs.forVersion(versionId, FakeCache.new())
-  FieldUiCacheWriter.write(cache, bundle)
+  ResidentArtifactFixture.publish(cache, "field-ui", "global", function(artifact)
+      return FieldUiCacheWriter.stage(artifact, bundle)
+    end)
   Assert.isTrue(FieldUiAssetCache.isReady(cache, bundle.marker), "every indexed file is ready after publication")
   local broken = assert(FieldUiCompiler.compile(romFs))
   broken.manifest.options = nil

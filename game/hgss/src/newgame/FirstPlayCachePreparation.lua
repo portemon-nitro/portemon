@@ -4,12 +4,13 @@
 -- This object composes those existing semantic requests but owns no
 -- production mechanism: milestone membership stays with the milestone
 -- owners, bedroom dependency policy stays with FieldMapLoader, and the
--- generated start location stays with NewGameInitialization. Created
+-- generated start location stays with NewGameInitialization. Every read
+-- goes through the selected epoch's installed generated view, borrowed
+-- from the derived host; no physical generated root is opened. Created
 -- through HgssGame.newFirstPlayCachePreparation and polled by the
 -- launcher first-play state; the same provisioner epoch then hands the
 -- compiled output to the game.
 
-local CacheFs = require("libs.storage.src.CacheFs")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
@@ -102,11 +103,15 @@ function FirstPlayCachePreparation:_buildTarget()
   -- the caller observes both before building. Everything below converts
   -- a loud cache/preparation defect into a visible failure, never a
   -- default location or a retried probe.
-  local okFs, cacheFsOrError = pcall(CacheFs.forVersion, self.versionId)
-  if not okFs then
+  local host = assert(self.derivedAssets, "first-play preparation requires its borrowed derived host")
+  local okView, cacheFsOrError = pcall(host.getCacheFs)
+  if not okView then
     return false, cacheFsOrError
   end
   local cacheFs = cacheFsOrError
+  if type(cacheFs) ~= "table" then
+    return false, "first-play preparation has no installed generated view"
+  end
   local okWorld, worldOrError = pcall(function()
     return assert(
       cacheFs:loadLua(MapAssetCache.worldPath()),
@@ -116,13 +121,12 @@ function FirstPlayCachePreparation:_buildTarget()
   if not okWorld then
     return false, worldOrError
   end
-  local host = assert(self.derivedAssets, "first-play preparation requires its borrowed derived host")
   local okLoader, loaderOrError = pcall(FieldMapLoader.new, cacheFs, worldOrError, { derivedAssets = host })
   if not okLoader then
     return false, loaderOrError
   end
   local loader = loaderOrError
-  local okLocation, locationOrError = pcall(NewGameInitialization.initialLocation, self.versionId)
+  local okLocation, locationOrError = pcall(NewGameInitialization.initialLocation, cacheFs)
   if not okLocation then
     return false, locationOrError
   end

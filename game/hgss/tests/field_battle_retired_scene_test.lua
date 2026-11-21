@@ -4,7 +4,7 @@
 -- released leases on the next launch at the retired scene.
 local Assert = require("tests.support.Assert")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
 local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -153,7 +153,7 @@ local function readyVersions()
   local GameVersion = require("romdump.src.source.GameVersion")
   local RomImporter = require("romdump.src.source.RomImporter")
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       return { versionId }
     end
   end
@@ -174,7 +174,7 @@ end
 
 function T.retired_scene_layer_reacquires_before_its_next_launch()
   for _, versionId in ipairs(readyVersions()) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local graphics = stubGraphics()
     local pool = ImageAssetPool.new(cacheFs, { graphics = graphics, queue = stubQueue() })
     local envelope = FieldBattlePresentation.new({

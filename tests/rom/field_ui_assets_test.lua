@@ -4,8 +4,9 @@
 -- deterministic. Asserts only non-copyright structural facts.
 -- Yes/No frame extraction follows the retail ROM's user-frame graphics loading.
 
-local Assert = require("tests.support.Assert")
+local FakeCache = require("tests.support.FakeCache")
 local CacheFs = require("libs.storage.src.CacheFs")
+local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
 local FieldUiCompiler = require("romdump.src.digest.ui.FieldUiCompiler")
 local FieldUiCacheWriter = require("romdump.src.digest.ui.FieldUiCacheWriter")
@@ -14,6 +15,7 @@ local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local Lz10 = require("romdump.src.digest.Lz10")
 local Hashing = require("romdump.src.digest.Hashing")
 local manifestConfig = require("romdump.src.config.FieldUiAssets")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -62,7 +64,9 @@ function T.source_geometry_matches_the_strict_validation_rules(romFs, _)
 end
 
 function T.compiled_ui_assets_are_ready_and_stable(romFs, version)
-  local cache = CacheFs.forVersion(version)
+  -- The compiled bundle is published into a private fixture cache so the
+  -- readiness proof reads exactly the sealed bytes this test staged.
+  local cache = CacheFs.forVersion(version, FakeCache.new())
   local bundle = assert(FieldUiCompiler.compile(romFs))
   local marker = FieldUiAssetCache.marker(romFs:metadata().sha1, Hashing.hashLua(bundle.dependencies))
   Assert.equal(bundle.marker, marker, "the marker is FORMAT:romSha1:depHash")
@@ -94,7 +98,9 @@ function T.compiled_ui_assets_are_ready_and_stable(romFs, version)
   -- Recompiling is deterministic and the published class is fully ready.
   local second = assert(FieldUiCompiler.compile(romFs))
   Assert.equal(second.marker, bundle.marker)
-  FieldUiCacheWriter.write(cache, bundle)
+  ResidentArtifactFixture.publish(cache, "field-ui", "global", function(artifact)
+      return FieldUiCacheWriter.stage(artifact, bundle)
+    end)
   Assert.isTrue(FieldUiAssetCache.isReady(cache, bundle.marker), "every indexed file is ready after publication")
   Assert.isFalse(FieldUiAssetCache.isReady(cache, bundle.marker .. "-stale"))
 end
@@ -403,8 +409,12 @@ function T.two_row_prompt_resources_compile_to_semantic_button_states(romFs, ver
   end
   scan(prompt, "yesNoPrompt")
 
-  local cache = CacheFs.forVersion(version)
-  FieldUiCacheWriter.write(cache, bundle)
+  -- The compiled bundle is published into a private fixture cache so the
+  -- readiness proof reads exactly the sealed bytes this test staged.
+  local cache = CacheFs.forVersion(version, FakeCache.new())
+  ResidentArtifactFixture.publish(cache, "field-ui", "global", function(artifact)
+      return FieldUiCacheWriter.stage(artifact, bundle)
+    end)
   Assert.isTrue(FieldUiAssetCache.isReady(cache, bundle.marker), "every prompt file is ready after publication")
 end
 

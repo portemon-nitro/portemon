@@ -5,7 +5,7 @@
 -- suite proves the exact resources are renderable.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
@@ -42,7 +42,7 @@ local function runtimeMap()
 end
 
 local function runVersion(scope, versionId)
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   local index = assert(cache:loadLua(FieldEffectAssetCache.indexPath()))
   local entry = assert(index.effects.follower_transition, "the generated index must carry the transition effect")
   local compiled = assert(cache:loadLua(entry.path), "the generated transition definition must load")

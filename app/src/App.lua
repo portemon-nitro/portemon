@@ -3,7 +3,8 @@
 local WindowConfig = require("game.src.WindowConfig")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
-local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
+local DerivedCacheState = require("romdump.src.DerivedCacheState")
+local CacheArchive = require("romdump.src.build.CacheArchive")
 local CacheService = require("app.src.CacheService")
 local AudioPreferences = require("app.src.AudioPreferences")
 local HgssGame = require("game.hgss.src.HgssGame")
@@ -53,20 +54,15 @@ local App = {}
 
 -- Version registration only lists candidates for the boot gate: every
 -- selection waits for source readiness before the menu, first play, or
--- retail. A current complete derived cache keeps its offline fast path
--- without any source access; an incomplete cache stays blocked until its
--- exact ROM is verified, even when its bounded opening closure is ready.
--- Neither check opens or hashes the ROM on the fast path.
+-- retail. A registered source, or a derived-cache snapshot on disk, makes a
+-- version a candidate; neither fact proves the cache usable, so the
+-- controller still decides the boot route. Neither check opens or hashes
+-- the ROM.
 local function readyVersions()
   local out = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) or CacheArchive.recoverableFileName(versionId) ~= nil then
       out[#out + 1] = versionId
-    else
-      local ok, generation = pcall(FirstPlayCompletion.releaseGenerationId, versionId)
-      if ok and FirstPlayCompletion.isCurrent(versionId, generation) then
-        out[#out + 1] = versionId
-      end
     end
   end
   return out
@@ -109,8 +105,12 @@ function App._cancelImport()
 end
 
 -- Retires the selected source interest without joining controller work.
--- The process service is reused; stale results cannot publish afterwards.
+-- Consumers stop before their reader is revoked: the installed view is
+-- retired only after the presented state, the startup audio and the
+-- warmup have released what they borrowed from it. The process service is
+-- reused; stale results cannot publish afterwards.
 function App._retireSelection()
+  App.setState(nil)
   App._swallowedPointers = {}
   App.pairIndex = nil
   App.splRandomState = nil
@@ -170,6 +170,18 @@ local function startupAudioReady()
   return ready == true
 end
 
+-- The selected epoch's installed generated view, or nil while the
+-- controller has not installed its bytes yet. Consumers are never
+-- constructed before it exists; no physical generated root stands in.
+---@return CacheFs?
+function App._generatedView()
+  local provisioner = App.provisioner
+  if provisioner == nil or type(provisioner.getCacheFs) ~= "function" then
+    return nil
+  end
+  return provisioner:getCacheFs()
+end
+
 ---@param versionId string
 ---@param epoch integer
 ---@return StartupAudioSession|nil
@@ -195,7 +207,7 @@ function App._ensureStartupAudio(versionId, epoch, titleRecord)
   local ok, sessionOrError = pcall(function()
     return StartupAudioSession.new({
       versionId = versionId,
-      cacheFs = CacheFs.forVersion(versionId),
+      cacheFs = assert(App._generatedView(), "startup audio needs the installed generated view"),
       titleRecord = titleRecord,
     })
   end)
@@ -304,8 +316,11 @@ end
 ---@return table<string, unknown> staged MainMenuState
 local function stageMenu(versionId)
   local audio = App.epoch ~= nil and startupAudioBorrow(versionId, App.epoch) or nil
+  local cacheFs = App._generatedView()
+  assert(cacheFs ~= nil, "the Main Menu needs the selected epoch's installed generated view")
   local ok, menuOrError = pcall(MainMenuComposition.new, {
     versionId = versionId,
+    cacheFs = cacheFs,
     width = App.drawableWidth,
     height = App.drawableHeight,
     audio = audio,
@@ -318,6 +333,7 @@ local function stageMenu(versionId)
         local provisioner = assert(App.provisioner, "save editing needs the selected provisioner")
         local ok, stateOrError = pcall(SaveEditorState.new, {
           versionId = versionId,
+          cacheFs = assert(App._generatedView(), "save editing needs the installed generated view"),
           saveId = assert(result.saveId),
           startupPairIndex = selectedPairIndex(),
           width = App.drawableWidth,
@@ -413,15 +429,14 @@ function App._launchMenuWithProvisioner(versionId, stagedMenu)
 end
 
 -- Optional near-priority preparation runs beside the startup presentation;
--- only the coordinator's complete answer can publish its durable receipt.
+-- first play becomes the installed epoch's fact once the closure settled.
 ---@param versionId string
 ---@param epoch integer
 function App._maybeStartFirstPlayWarmup(versionId, epoch)
   if App._startupWarmup ~= nil or App.epoch ~= epoch or App.selectedVersionId ~= versionId then
     return
   end
-  local generation = App._firstPlayGeneration(versionId)
-  if generation ~= nil and FirstPlayCompletion.isCurrent(versionId, generation) then
+  if App.service ~= nil and App.service:firstPlayReady(epoch) then
     return
   end
   local provisioner = App.provisioner
@@ -431,7 +446,7 @@ function App._maybeStartFirstPlayWarmup(versionId, epoch)
   local ok, preparation = pcall(HgssGame.newFirstPlayCachePreparation, {
     versionId = versionId,
     derivedAssets = provisioner:gameHost(),
-    completion = App._firstPlayGateway(versionId),
+    completion = App._firstPlayGateway(epoch),
     urgency = "near",
   })
   if not ok then
@@ -457,7 +472,7 @@ function App._updateStartupWarmup()
     warmup.preparation:dispose()
     App._startupWarmup = nil
   elseif ready then
-    App._publishFirstPlay(warmup.versionId)
+    App._publishFirstPlay(warmup.versionId, warmup.epoch)
     warmup.preparation:dispose()
     App._startupWarmup = nil
   end
@@ -479,6 +494,7 @@ function App._launchGameWithProvisioner(versionId, entry)
   App._releaseStartupAudio()
   local ok, gameOrError = pcall(HgssGame.new, {
     versionId = versionId,
+    cacheFs = assert(App._generatedView(), "the retail entry needs the installed generated view"),
     startupPairIndex = selectedPairIndex(),
     entry = entry,
     audioPreferences = App.audioPreferences,
@@ -556,10 +572,11 @@ function App._waitForQuiescence(versionId, options)
   return true
 end
 
--- Durable first-play generation for one selection: the controller-derived
--- token when known, else the synchronous release identity (pure constants,
--- no producer scan). Development selections without a controller answer yet
--- report unknown; the caller prepares again.
+-- First-play generation for one selection: the controller-derived token
+-- when known, else the synchronous release identity (pure constants, no
+-- producer scan). Development selections without a controller answer yet
+-- report unknown; the caller prepares again. Never reads or writes cache
+-- files: first play is a captured fact of the installed epoch.
 ---@param versionId string newly selected game version
 ---@return string?
 function App._firstPlayGeneration(versionId)
@@ -573,27 +590,29 @@ function App._firstPlayGeneration(versionId)
   if App.opts.dev == true then
     return nil
   end
-  local ok, generation = pcall(FirstPlayCompletion.releaseGenerationId, versionId)
+  local ok, generation = pcall(DerivedCacheState.releaseGenerationId, versionId)
   if ok then
     return generation
   end
   return nil
 end
 
--- Gateway handed to first-play preparation on the ordinary selection path:
--- durable attestation answers owned by the import orchestration boundary.
--- It captures the selecting provisioner, so the generation answer follows
--- the selection epoch without reaching the game-facing host surface.
----@param versionId string newly selected game version
+-- Gateway handed to first-play preparation: the answers come from the
+-- selected epoch's installed facts, so a boot that already captured first
+-- play transfers without demanding the closure again. It captures the
+-- epoch, so a stale gateway never reports another selection's progress.
+---@param epoch integer selected controller epoch
 ---@return table<string, function>
-function App._firstPlayGateway(versionId)
+function App._firstPlayGateway(epoch)
   local provisioner = App.provisioner
+  local function installed()
+    local service = App.service
+    return service ~= nil and App.epoch == epoch and service:firstPlayReady(epoch) == true
+  end
   return {
-    hasStored = function()
-      return FirstPlayCompletion.hasStored(versionId)
-    end,
-    isCurrent = function(generationId)
-      return FirstPlayCompletion.isCurrent(versionId, generationId)
+    hasStored = installed,
+    isCurrent = function(_)
+      return installed()
     end,
     currentGeneration = function()
       if provisioner == nil or type(provisioner.generationId) ~= "function" then
@@ -604,18 +623,21 @@ function App._firstPlayGateway(versionId)
   }
 end
 
--- Publish the generation-scoped first-play completion after the closure
--- succeeded, keeping the same provisioner epoch for the menu. A failed
--- publication still launches: the closure is ready and only its
--- attestation is missing, so the next boot prepares again. Failure and
--- cancellation paths never reach this function, so they never publish.
+-- Record first play as a fact of the selection that proved the closure. The
+-- controller captures it with that closure's own sequence, so a failed or
+-- partial persistence never turns into a false completion. Failure and
+-- cancellation paths never reach this function, so they never record it.
 ---@param versionId string newly selected game version
-function App._publishFirstPlay(versionId)
-  local generation = App._firstPlayGeneration(versionId)
-  if generation == nil then
+---@param epoch integer selected controller epoch
+function App._publishFirstPlay(versionId, epoch)
+  if App.epoch ~= epoch or App.selectedVersionId ~= versionId then
     return
   end
-  pcall(FirstPlayCompletion.publish, versionId, generation)
+  local service = App.service
+  if service == nil then
+    return
+  end
+  pcall(service.recordFirstPlay, service, epoch)
 end
 
 -- Whether the version already carries a persisted source registration.
@@ -721,6 +743,7 @@ function App._continueSelectedVersion(versionId, options)
   App.setState(StartupTitleState.new({
     versionId = versionId,
     epoch = epoch,
+    cacheFs = assert(App._generatedView(), "the startup title needs the installed generated view"),
     derivedAssets = provisioner:gameHost(),
     splRandomState = App.splRandomState,
     width = width,

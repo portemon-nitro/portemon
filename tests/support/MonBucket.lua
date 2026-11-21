@@ -3,7 +3,7 @@
 -- generated catalog at runtime. Fakes build the required bucket through
 -- this helper instead of synthesizing one.
 
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local MonCache = require("libs.assets.src.MonCache")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local ItemCache = require("libs.assets.src.ItemCache")
@@ -18,7 +18,7 @@ local MonBucket = {}
 ---@param versionId string
 ---@return MonCatalog, ItemCatalog
 function MonBucket.openCatalogs(versionId)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local items = ItemCatalog.new(ItemCache.loadCatalog(cacheFs))
   return MonCatalog.new(MonCache.loadCatalog(cacheFs), items), items
 end

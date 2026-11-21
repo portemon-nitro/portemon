@@ -12,7 +12,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local RomSourcePath = require("tests.rom.support.RomSourcePath")
 local NavigationFacts = require("tests.rom.support.NavigationFacts")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
@@ -71,7 +71,7 @@ local function withGame(fn, map)
   local versionId = AcceptanceHarness.defaultVersion()
   local romFs, romSource = RomSourcePath.openReader(versionId)
   assert(romFs, tostring(romSource))
-  local facts = NavigationFacts.discover(CacheFs.forVersion(versionId), romFs)
+  local facts = NavigationFacts.discover(GeneratedCacheFixture.reader(versionId), romFs)
   romFs:close()
   romSource:release()
   -- Route 46 boots fresh at its own default spawn a short walk from the
@@ -184,7 +184,7 @@ end
 local function liveWorld(game, warpsOverride, effects)
   local runtime = game.runtime
   local versionId = AcceptanceHarness.defaultVersion()
-  local spawnCache = CacheFs.forVersion(versionId)
+  local spawnCache = GeneratedCacheFixture.reader(versionId)
   local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
   local spawns = {
     destinationFor = function(_, spawnKey)
@@ -503,7 +503,7 @@ local function openPartyFlow(game, checkDouble)
   local bag = assert(runtime.bagService, "live bag service required")
   local profile = assert(runtime.playerData and runtime.playerData.profile, "live profile required")
   local mailbox = assert(runtime.mailbox, "live Mailbox required")
-  local pcManifest = PcCache.loadManifest(CacheFs.forVersion(AcceptanceHarness.defaultVersion()))
+  local pcManifest = PcCache.loadManifest(GeneratedCacheFixture.reader(AcceptanceHarness.defaultVersion()))
   local actions = PartyActions.new({ mons = mons, bag = bag })
   local mailActions = MailActions.new({ mons = mons, mailbox = mailbox, bag = bag, manifest = pcManifest })
   return PartyMenuFlow.new({
@@ -524,7 +524,7 @@ local function openPartyFlow(game, checkDouble)
     fieldMoves = checkDouble,
     assets = {
       bagManifest = {},
-      partyManifest = PartyCache.loadManifest(CacheFs.forVersion(AcceptanceHarness.defaultVersion())),
+      partyManifest = PartyCache.loadManifest(GeneratedCacheFixture.reader(AcceptanceHarness.defaultVersion())),
       uiManifest = FieldUiFixture.manifest(),
       monCatalog = {
         moveByNativeId = function()

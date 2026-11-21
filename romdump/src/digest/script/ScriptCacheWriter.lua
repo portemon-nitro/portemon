@@ -13,7 +13,6 @@
 
 local AssetNeeds = require("libs.script.src.AssetNeeds")
 local ScriptCache = require("libs.assets.src.ScriptCache")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local Coverage = require("romdump.src.digest.script.Coverage")
 local Errors = require("libs.errors.src.Errors")
 local LuaEmitter = require("romdump.src.digest.script.LuaEmitter")
@@ -271,7 +270,7 @@ end
 local function assertArtifact(artifact, operation)
   if
     type(artifact) ~= "table"
-    or type(artifact.stageFs) ~= "function"
+    or type(artifact.write) ~= "function"
     or type(artifact.cacheFs) ~= "function"
     or type(artifact.addOwnedRoot) ~= "function"
   then
@@ -286,7 +285,6 @@ end
 local function persistMember(stage, plan, member)
   validateMember(plan, member)
   local path = ScriptCache.memberPath(plan.generationKey, member.memberId)
-  stage:removeTree(path)
   stage:write(path, LuaEmitter.emitMember(member))
   local bundle = stage:loadModule(path)
   local valid, reason = checkMemberBundle(plan, member.memberId, bundle)
@@ -309,7 +307,7 @@ function ScriptCacheWriter.stageMember(artifact, plan, member)
   assertArtifact(artifact, "stageMember")
   assert(type(plan) == "table" and type(member) == "table", "stageMember requires a plan and member")
   artifact:addOwnedRoot(ScriptCache.memberPath(plan.generationKey, member.memberId))
-  return persistMember(artifact:stageFs(), plan, member)
+  return persistMember(artifact, plan, member)
 end
 
 local function orderedMembers(plan)
@@ -567,28 +565,7 @@ function ScriptCacheWriter.stageSummary(artifact, plan)
   assertArtifact(artifact, "stageSummary")
   assert(type(plan) == "table", "stageSummary requires a generation plan")
   artifact:addOwnedRoot(ScriptCache.activeDir())
-  return persistSummary(artifact:stageFs(), artifact:cacheFs(), plan)
-end
-
--- Publish the generation summary straight into the live cache for the batch
--- build. Refuses while any planned member is unpublished; raises like every
--- other writer boundary.
----@param cacheFs CacheFs
----@param plan { generationKey: string, marker: string, version: string, sourcePath: string, romSha1: string, dependencies: table<string, unknown>, memberCount: integer, members: unknown[], resources: unknown[], skippedMembers: integer[]|nil, index: table<string, unknown>|nil }
----@return string
-function ScriptCacheWriter.writeSummary(cacheFs, plan)
-  assert(cacheFs and cacheFs.writeLua, "writeSummary requires a cache")
-  assert(type(plan) == "table" and type(plan.generationKey) == "string", "writeSummary requires a generation plan")
-  local tx = ArtifactPublisher.begin(cacheFs, "scripts", {
-    ScriptCache.activeDir(),
-  })
-  local ok, result = pcall(persistSummary, tx.stage, cacheFs, plan)
-  if not ok then
-    tx:abort()
-    error(result, 0)
-  end
-  tx:publish()
-  return result
+  return persistSummary(artifact, artifact:cacheFs(), plan)
 end
 
 return ScriptCacheWriter

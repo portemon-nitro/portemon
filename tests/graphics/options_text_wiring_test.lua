@@ -10,6 +10,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -19,31 +20,35 @@ local T = {
   tests = {},
 }
 
--- Private worker-readable namespace for this suite's synthetic option art.
--- Never a real game version: the pool worker resolves every image through
--- this version's love-backend root, and teardown removes only this root
--- after pool disposal, so suites never share staged bytes or touch ROM
--- derived files.
+-- Private fixture namespace for this suite's synthetic option art. Never a
+-- real game version: the art is staged into a fixture cache root and installed
+-- as one resident view, so suites never share staged bytes, never write under
+-- a game version's prepared root, and the pool worker resolves every image the
+-- way an installed epoch serves it.
 local ISOLATED_VERSION = "test-options-wiring"
 
-local function ownPool(scope, pool)
+local function ownPool(scope, pool, view)
   scope:own({
     release = function()
       pcall(function()
         pool:dispose()
       end)
-      CacheFs.forVersion(ISOLATED_VERSION):removeTree("")
+      GeneratedCacheFixture.close(view)
     end,
   })
 end
 
+-- Fixture art is staged into a private fixture cache root and then installed
+-- as one resident view: the pool worker resolves every image through the same
+-- immutable references an epoch installs, and nothing is written under a game
+-- version's prepared root.
 local function optionsCache()
-  local cache = CacheFs.forVersion(ISOLATED_VERSION, FakeCache.new())
+  local staging = CacheFs.forVersion(ISOLATED_VERSION, FakeCache.new())
   local manifest = FieldUiFixture.manifest()
   FieldUiFixture.addOptionsContract(manifest)
-  cache:writeLua(FieldUiAssetCache.manifestPath(), manifest)
-  FieldUiFixture.writeOptionsPngs(CacheFs.forVersion(ISOLATED_VERSION))
-  return cache, manifest
+  staging:writeLua(FieldUiAssetCache.manifestPath(), manifest)
+  FieldUiFixture.writeOptionsPngs(staging)
+  return GeneratedCacheFixture.fromCache(staging), manifest
 end
 
 local function measurement()
@@ -110,9 +115,10 @@ end
 
 local function preparedWiring(scope)
   local Resources = require("game.hgss.src.field.FieldPresentationResources")
-  local cache, manifest = optionsCache()
+  local view, manifest = optionsCache()
+  local cache = view.reader
   local pool = ImageAssetPool.new(cache)
-  ownPool(scope, pool)
+  ownPool(scope, pool, view)
   local palettes = {}
   local drawnLines = {}
   local tokenLines = {}
@@ -278,9 +284,10 @@ end
 
 local function preparedSourceWiring(scope)
   local Resources = require("game.hgss.src.field.FieldPresentationResources")
-  local cache, manifest = optionsCache()
+  local view, manifest = optionsCache()
+  local cache = view.reader
   local pool = ImageAssetPool.new(cache)
-  ownPool(scope, pool)
+  ownPool(scope, pool, view)
   local stub = recordingSourceText()
   local stubWindow = {}
   function stubWindow:drawWindow(_, _, _) end
@@ -516,9 +523,10 @@ end
 -- sees preview glyphs.
 function T.tests.menu_preview_prints_through_the_dedicated_preview_font_path(scope)
   local Resources = require("game.hgss.src.field.FieldPresentationResources")
-  local cache, manifest = optionsCache()
+  local view, manifest = optionsCache()
+  local cache = view.reader
   local pool = ImageAssetPool.new(cache)
-  ownPool(scope, pool)
+  ownPool(scope, pool, view)
   local menuText = recordingSourceText()
   local previewText = recordingSourceText()
   local stubWindow = {}
@@ -670,9 +678,10 @@ end
 -- route to the Font1 renderer with the preview triple.
 function T.tests.menu_and_preview_measures_use_their_own_font_advances(scope)
   local Resources = require("game.hgss.src.field.FieldPresentationResources")
-  local cache, manifest = optionsCache()
+  local view, manifest = optionsCache()
+  local cache = view.reader
   local pool = ImageAssetPool.new(cache)
-  ownPool(scope, pool)
+  ownPool(scope, pool, view)
   local function fontWith(advance, selected, shadow, background)
     return {
       glyphs = { [65] = { advance = advance }, [0] = { advance = advance } },
@@ -795,15 +804,15 @@ end
 -- shell bands, preview, strip, and row plates) where the pool worker
 -- reads them, and never equals a real game version.
 function T.tests.stages_a_private_complete_image_set(scope)
-  local workerVisible = CacheFs.forVersion(ISOLATED_VERSION)
-  workerVisible:removeTree("")
+  local fresh = GeneratedCacheFixture.fromCache(CacheFs.forVersion(ISOLATED_VERSION, FakeCache.new()))
   Assert.isNil(
-    workerVisible:read(FieldUiFixture.OPTIONS_HEADER_BACKGROUND_PATH),
+    fresh.reader:read(FieldUiFixture.OPTIONS_HEADER_BACKGROUND_PATH),
     "the private namespace starts clean without another suite running first"
   )
-  local cache, manifest = optionsCache()
+  local view, manifest = optionsCache()
+  local cache = view.reader
   local pool = ImageAssetPool.new(cache)
-  ownPool(scope, pool)
+  ownPool(scope, pool, view)
   Assert.equal(cache.versionId, ISOLATED_VERSION, "the staged cache carries the private namespace")
   Assert.isTrue(ISOLATED_VERSION ~= "heartgold", "the private namespace is not the HeartGold cache")
   Assert.isTrue(ISOLATED_VERSION ~= "soulsilver", "the private namespace is not the SoulSilver cache")
@@ -824,7 +833,7 @@ function T.tests.stages_a_private_complete_image_set(scope)
     FieldUiFixture.OPTIONS_ROW_FRAME_PATH,
     FieldUiFixture.OPTIONS_SLIDER_THUMB_PATH,
   }) do
-    Assert.notNil(workerVisible:read(path), "the worker-readable namespace stages " .. path)
+    Assert.notNil(cache:read(path), "the resident fixture view stages " .. path)
   end
   local overlay =
     assert(manifest.assets[FieldUiFixture.optionsSelectionOverlayKey()], "the selected-row strip asset is indexed")
@@ -839,9 +848,10 @@ end
 -- painting clipped text.
 function T.tests.slider_values_measure_in_font_advances_and_overflow_fails_loudly(scope)
   local Resources = require("game.hgss.src.field.FieldPresentationResources")
-  local cache, manifest = optionsCache()
+  local view, manifest = optionsCache()
+  local cache = view.reader
   local pool = ImageAssetPool.new(cache)
-  ownPool(scope, pool)
+  ownPool(scope, pool, view)
   local advanceByChar = { ["0"] = 5, ["%"] = 9, ["1"] = 4, ["x"] = 7, ["2"] = 6, ["4"] = 6, ["8"] = 6 }
   local glyphs = { [0] = { advance = 8 } }
   local charmap = {}

@@ -16,7 +16,7 @@ local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentation
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
 local BattleTimelineFixture = require("game.hgss.tests.support.BattleTimelineFixture")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
@@ -57,7 +57,7 @@ local NATIVE_DOUBLES_HUD_ORIGINS = {
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       versions[#versions + 1] = versionId
     end
   end
@@ -1931,7 +1931,7 @@ function T.sleep_and_burn_render_distinct_native_and_compact_status_pixels(scope
     context:skip("status pixel comparison needs a ready user-owned ROM with staged battle assets")
   end
   do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     assertStatusSourceFamilies(cacheFs, versionId)
     assertStatusStripPixels(scope, cacheFs, versionId)
     local native = captureScreen(scope, cacheFs, versionId, dualMeasurement())
@@ -1981,7 +1981,7 @@ function T.compact_command_view_uses_real_scene_text_frames_and_hud(scope, conte
     context:skip("the battle captures need a ready user-owned ROM with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local screen, _, portraitCells = captureScreen(scope, cacheFs, versionId, compactMeasurement())
     driveToCommand(screen, versionId)
     local plan = livePlan(screen, versionId)
@@ -2483,7 +2483,7 @@ function T.native_doubles_draws_the_four_staged_source_hud_cells(scope, context)
     context:skip("native doubled HUD pixel checks need a ready user-owned ROM with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local screen = captureScreen(scope, cacheFs, versionId, dualMeasurement())
     drivePacketToCommand(screen, versionId, doubledBattlePacket(), "trainer")
     local plan = livePlan(screen, versionId)
@@ -2661,7 +2661,7 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
   end
 
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local measurement = compactMeasurement()
     local screen, images, portraitCells = captureScreen(scope, cacheFs, versionId, measurement, {
       monCatalog = {
@@ -3244,7 +3244,7 @@ function T.compact_fight_view_prints_real_move_text(scope, context)
     context:skip("the battle captures need a ready user-owned ROM with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local screen = captureScreen(scope, cacheFs, versionId, compactMeasurement())
     driveToCommand(screen, versionId)
     screen:input({ { type = "confirm" } })
@@ -3290,7 +3290,7 @@ function T.native_command_view_composes_real_scene_menu_and_narration(scope, con
     context:skip("the battle captures need a ready user-owned ROM with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local screen, _, _, services = captureScreen(scope, cacheFs, versionId, dualMeasurement())
     driveToCommand(screen, versionId)
     local iconKey = MonCache.iconSelector(LEAD_SPECIES, 0, false)
@@ -3582,7 +3582,7 @@ function T.native_fight_view_prints_real_move_text(scope, context)
     context:skip("the battle captures need a ready user-owned ROM with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local screen = captureScreen(scope, cacheFs, versionId, dualMeasurement())
     driveToCommand(screen, versionId)
     screen:input({ { type = "confirm" } })
@@ -3738,7 +3738,7 @@ function T.compact_child_return_repaints_the_parent_command(scope, context)
     context:skip("the battle captures need a ready user-owned ROM with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local screen = captureScreen(scope, cacheFs, versionId, compactMeasurement())
     driveToCommand(screen, versionId)
     local plan = livePlan(screen, versionId)
@@ -3789,7 +3789,7 @@ function T.compact_settled_return_shows_the_result_word(scope, context)
     context:skip("the battle captures need a ready user-owned ROM with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local screen = captureScreen(scope, cacheFs, versionId, compactMeasurement())
     driveToCommand(screen, versionId)
     local port = screen:presentationPort()
@@ -3892,7 +3892,7 @@ function T.drawable_keys_resolve_to_their_staged_source_images(scope, context)
     context:skip("the battle captures need a ready user-owned ROM with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local manifest = BattlePresentationCache.load(cacheFs)
     local services = captureServices(scope, cacheFs, versionId)
     for _, entry in ipairs({
@@ -3966,7 +3966,7 @@ function T.compact_active_lead_draws_its_exact_canonical_portrait(scope, context
   local femaleBack = MonCache.portraitSelector(leadSpecies, 0, "female", false, "back")
   local foeSelector = MonCache.portraitSelector(FOE_SPECIES, 0, "male", false)
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local portraits =
       assert(cacheFs:loadLua(MonCache.portraitManifestPath()), versionId .. " carries its portrait manifest")
     local femaleEntry =
@@ -4355,7 +4355,7 @@ function T.trainer_intro_draws_c02_frames_and_releases_throw_assets(scope, conte
   if versionId == nil then
     context:skip("trainer intro capture needs a ready user-owned ROM with staged battle assets")
   end
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   -- The capture names its exact selected leaves: the player backpic
   -- carries the source throw anchors and the foe front carries the
   -- multi-frame sequence the intro throw plays.
@@ -4475,7 +4475,7 @@ function T.intro_scene_draws_indexed_pool_art_through_its_palette(scope, context
   if versionId == nil then
     context:skip("intro palette capture needs staged battle assets")
   end
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local record = assert(BattlePresentationCache.loadScene(cacheFs, SCENE_KEY), "intro scene staged")
   local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
   local pool = ImageAssetPool.new(cacheFs, { graphics = love.graphics })

@@ -5,7 +5,7 @@
 -- asserted or printed.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local DialogueLayout = require("libs.hgss.src.ui.DialogueLayout")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
@@ -17,7 +17,7 @@ local T = {}
 ---@param version string
 ---@return FieldFontDef
 local function fontDef(version)
-  local def = assert(CacheFs.forVersion(version):loadLua("data/generated/field/font/font-0.lua"))
+  local def = assert(GeneratedCacheFixture.reader(version):loadLua("data/generated/field/font/font-0.lua"))
   assert(def.schema == FieldFontCache.SCHEMA, "field font cache is cold")
   return def --[[@as FieldFontDef]]
 end
@@ -27,7 +27,7 @@ end
 -- completion result.
 local function runMessage(version, bankId, messageId)
   local def = fontDef(version)
-  local cache = CacheFs.forVersion(version)
+  local cache = GeneratedCacheFixture.reader(version)
   local provider = assert(FieldMessageProvider.new(cache))
   local bank = provider:acquireBank(bankId)
   assert(bank, "message bank cache is cold")
@@ -104,7 +104,7 @@ function T.page_break_retains_the_prior_bottom_line(_, version)
   -- the ROM token -> layout -> controller path must scroll one line and
   -- retain the prior bottom line instead of clearing the page.
   local def = fontDef(version)
-  local cache = CacheFs.forVersion(version)
+  local cache = GeneratedCacheFixture.reader(version)
   local provider = assert(FieldMessageProvider.new(cache))
   assert(provider:acquireBank(542), "message bank cache is cold")
   local template = assert(provider:get(542, 18))
@@ -215,7 +215,7 @@ end
 
 function T.target_lines_stay_inside_the_reference_text_width(_, version)
   local def = fontDef(version)
-  local cache = CacheFs.forVersion(version)
+  local cache = GeneratedCacheFixture.reader(version)
   local provider = assert(FieldMessageProvider.new(cache))
   local metrics = FieldDialogueTheme.fontMetrics(def)
   local widths = {}

@@ -8,6 +8,7 @@
 -- the HeartGold leg reports blocked while its dump stays unavailable.
 -- No renderer is ever attached.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
@@ -21,9 +22,15 @@ local T = {}
 local SERVICE_MODULE = "game.hgss.src.pokedex.PokedexScriptService"
 local MAP = "MAP_NEW_BARK_PLAYER_HOUSE_2F"
 
-local function runtimeOptions()
+---@param versionId string
+---@return table<string, unknown> headless runtime options over the produced corpus
+local function runtimeOptions(versionId)
   local Fixture = require("tests.support.FieldStatePresentationFixture")
-  return { presentation = false, derivedAssets = Fixture.iconHost().derivedAssets }
+  return {
+    presentation = false,
+    derivedAssets = Fixture.iconHost().derivedAssets,
+    cacheFs = GeneratedCacheFixture.reader(versionId),
+  }
 end
 
 local function validEntry(versionId)
@@ -75,7 +82,7 @@ end
 local function continueBoot(snapshot, versionId)
   local runtime = nil
   local ok, err = xpcall(function()
-    runtime = FieldRuntime.new(snapshot, runtimeOptions())
+    runtime = FieldRuntime.new(snapshot, runtimeOptions(versionId))
   end, debug.traceback)
   Assert.isTrue(ok, versionId .. " Continue boots its saved record: " .. tostring(err))
   assert(runtime ~= nil, "a successful Continue owns its runtime")
@@ -139,7 +146,7 @@ local function requireScriptService()
 end
 
 local function runReceiptJourney(versionId)
-  local first = FieldRuntime.new(validEntry(versionId), runtimeOptions())
+  local first = FieldRuntime.new(validEntry(versionId), runtimeOptions(versionId))
   local ok, err = xpcall(function()
     local monService = assert(first.monService, "the runtime composes its mon service")
     local owner = assert(first.dexKnowledge, "the runtime composes the single dex owner")

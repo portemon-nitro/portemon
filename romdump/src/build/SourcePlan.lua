@@ -627,12 +627,12 @@ end
 ---@param plan table<string, unknown>
 ---@return string
 function SourcePlan.stage(artifact, plan)
-  assert(artifact and artifact.stageFs, "source inventory staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "source inventory staging requires a PreparedArtifact")
   assert(type(plan) == "table", "source inventory staging requires its inventory")
   local generationId = plan.generationId
   assert(type(generationId) == "string" and generationId ~= "", "source inventory staging needs its generation")
   artifact:addOwnedRoot(SourcePlan.PATH)
-  local stage = artifact:stageFs()
+  local stage = artifact
   stage:writeLua(SourcePlan.PATH, plan)
   local readback = stage:loadLua(SourcePlan.PATH)
   assert(type(readback) == "table", "staged source inventory did not read back")

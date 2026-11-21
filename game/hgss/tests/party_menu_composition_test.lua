@@ -9,7 +9,7 @@
 local Assert = require("tests.support.Assert")
 local BadgeSets = require("tests.support.BadgeSets")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldMoveContext = require("game.hgss.src.field.FieldMoveContext")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -444,8 +444,8 @@ end
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
-      local cacheFs = CacheFs.forVersion(versionId)
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       local marker = cacheFs:read(PartyCache.markerPath())
       if marker ~= nil and PartyCache.isReady(cacheFs, marker) then
         versions[#versions + 1] = versionId
@@ -465,7 +465,7 @@ function T.tests.flow_factories_open_through_the_borrowed_manifests(context)
   end
   for _, versionId in ipairs(versions) do
     local Composition = requireComposition()
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local deps = dependencies({
       bagManifest = require("libs.assets.src.BagCache").loadManifest(cacheFs),
       partyManifest = PartyCache.loadManifest(cacheFs),
@@ -492,7 +492,7 @@ function T.tests.box_summary_moves_publish_to_the_selected_box(context)
     error("box summary moves need a ready versioned cache", 0)
   end
   local versionId = versions[1]
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local mons = openMons(0xC00517)
   Assert.isTrue(
     mons:giveMon({

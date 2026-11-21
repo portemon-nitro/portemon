@@ -1,6 +1,5 @@
 -- Owns the app's selected-edition title and menu audio lifetime.
 
-local CacheFs = require("libs.storage.src.CacheFs")
 local GameAudio = require("game.hgss.src.audio.GameAudio")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 
@@ -31,7 +30,7 @@ local TITLE_THEME = "SEQ_GS_POKEMON_THEME"
 local MENU_SELECT = "SEQ_SE_DP_SELECT"
 local FADE_TICKS = 60
 
----@param options { versionId: string, cacheFs: CacheFs?, audioComposition: StartupAudioComposition?, titleRecord: { crySpeciesId: integer }? }
+---@param options { versionId: string, cacheFs: table<string, unknown>?, audioComposition: StartupAudioComposition?, titleRecord: { crySpeciesId: integer }? } cacheFs is the selected epoch's installed generated view
 ---@return StartupAudioSession
 function StartupAudioSession.new(options)
   assert(type(options) == "table", "startup audio requires options")
@@ -44,8 +43,10 @@ function StartupAudioSession.new(options)
     "startup title audio needs its normalized cry species"
   )
   if composition == nil then
-    cacheFs = cacheFs or CacheFs.forVersion(options.versionId)
-    composition = GameAudio.compose({ cacheFs = cacheFs, outputRate = 32768 }) --[[@as StartupAudioComposition]]
+    composition = GameAudio.compose({
+      cacheFs = assert(cacheFs, "startup audio needs the selected epoch's installed generated view"),
+      outputRate = 32768,
+    }) --[[@as StartupAudioComposition]]
   end
   assert(type(composition) == "table" and type(composition.sound) == "table", "startup audio composition is invalid")
   local sound = composition.sound

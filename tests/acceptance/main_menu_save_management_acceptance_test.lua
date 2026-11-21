@@ -4,6 +4,7 @@
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local SaveFs = require("libs.storage.src.SaveFs")
@@ -166,6 +167,7 @@ local function withMenu(count, width, height, options, fn)
   local menuOk, menuOrError = xpcall(function()
     return MainMenuComposition.new({
       versionId = templateRecord.versionId,
+      cacheFs = GeneratedCacheFixture.reader(templateRecord.versionId),
       onResult = function(result)
         results[#results + 1] = result
       end,

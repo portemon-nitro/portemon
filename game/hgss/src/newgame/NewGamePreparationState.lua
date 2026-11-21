@@ -19,11 +19,11 @@
 -- intro gate, and one genuine loader draw is required before an otherwise
 -- ready transfer so interactive entry always paints its stage.
 
-local CacheFs = require("libs.storage.src.CacheFs")
 local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 
 ---@class NewGamePreparationOptions
 ---@field versionId string selected game version, carried for the decorative stage
+---@field cacheFs table<string, unknown> selected epoch's installed generated view
 ---@field startupPairIndex integer selected 1..32 walking pair, decorative only
 ---@field derivedAssets table<string, function> semantic derived-asset host
 ---@field onReady fun() compose the New Game candidate and Oak intro
@@ -32,6 +32,7 @@ local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentatio
 
 ---@class NewGamePreparationState
 ---@field versionId string
+---@field cacheFs table<string, unknown> selected epoch's installed generated view
 ---@field startupPairIndex integer
 ---@field derivedAssets table<string, function>
 ---@field onReady fun()?
@@ -66,6 +67,7 @@ function NewGamePreparationState.new(options)
   end
   return setmetatable({
     versionId = options.versionId,
+    cacheFs = options.cacheFs,
     startupPairIndex = options.startupPairIndex,
     derivedAssets = options.derivedAssets,
     onReady = options.onReady,
@@ -117,7 +119,7 @@ function NewGamePreparationState:_pollLoaderArt()
     return
   end
   local adopted, adoptedResult, adoptionError = pcall(function()
-    return self.loading:adoptGeneratedAssets(CacheFs.forVersion(self.versionId))
+    return self.loading:adoptGeneratedAssets(assert(self.cacheFs, "New Game preparation lost its generated view"))
   end)
   self.loaderArtObserved = true
   if not adopted then

@@ -2,7 +2,7 @@
 -- ApplicationPresentation plan across each supported surface arrangement.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
@@ -34,8 +34,8 @@ end
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
-      local cacheFs = CacheFs.forVersion(versionId)
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       local marker = cacheFs:read(PcCache.markerPath())
       if
         marker ~= nil
@@ -281,7 +281,7 @@ end
 
 function T.source_modes_keep_distinct_storage_geometry_and_live_hit_regions(scope)
   for _, versionId in ipairs(readyVersions()) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local manifest = PcCache.loadManifest(cacheFs)
     local wallpaperMap = manifest.storage.geometry.wallpaperMap
     Assert.deepEqual(wallpaperMap, {
@@ -347,7 +347,7 @@ end
 
 function T.actual_wallpaper_and_window_art_draw_through_each_paired_layout(scope)
   for _, versionId in ipairs(readyVersions()) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local manifest = PcCache.loadManifest(cacheFs)
     local session = ApplicationPresentation.new(StorageInterface.defaults(manifest))
     for _, configuration in ipairs({ "nativeLike", "wide", "tall", "dualDisplay" }) do

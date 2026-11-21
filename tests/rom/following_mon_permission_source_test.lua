@@ -6,7 +6,7 @@
 -- restriction reachable with real data.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MonCache = require("libs.assets.src.MonCache")
 local MonBucket = require("tests.support.MonBucket")
@@ -31,7 +31,7 @@ local TOWER_FLOORS = {
 local VALID_MODES = { ALLOW = true, HEIGHT_RESTRICT = true, PREVENT = true }
 
 function T.tower_floors_resolve_with_valid_map_modes(_, versionId)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local world = assert(cacheFs:loadLua(MapAssetCache.worldPath()), "the generated world manifest must load")
   local allowed = 0
   for _, symbol in ipairs(TOWER_FLOORS) do
@@ -47,7 +47,7 @@ function T.tower_floors_resolve_with_valid_map_modes(_, versionId)
 end
 
 function T.burrower_and_large_followers_carry_usable_size_facts(_, versionId)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local catalog = MonBucket.openCatalogs(versionId)
   for _, species in ipairs({ "DIGLETT", "DUGTRIO" }) do
     local descriptor =

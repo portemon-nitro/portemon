@@ -272,17 +272,10 @@ end
 -- A re-import that fails validation must leave the previous binding,
 -- derived receipts, and saves untouched, and the version stays ready.
 function T.failed_reimport_preserves_prior_binding_and_saves()
-  local ArtifactState = require("romdump.src.build.ArtifactState")
+  local CacheArchive = require("romdump.src.build.CacheArchive")
   local h = harness()
   local cache = CacheFs.forVersion("heartgold", h.backend)
-  local generation = "failed-rebind-generation"
-  cache:writeLua(ArtifactState.path("field-font", "global"), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = generation,
-    kind = "field-font",
-    key = "global",
-    marker = "prior-receipt",
-  })
+  cache:write(CacheArchive.ARCHIVE_NAME, "prior snapshot bytes")
   SaveFs.forVersion("heartgold", h.backend):write("field-session.lua", "SAVE-DATA")
   h.importer:startSource(RomSource.fromString(h.data))
   runToTerminal(h.importer)
@@ -308,9 +301,10 @@ function T.failed_reimport_preserves_prior_binding_and_saves()
   Assert.equal(again:status().errorCode, "NDS_UNKNOWN_ROM", "the failure names its cause")
   Assert.isNil(again:takeVerifiedSource(), "a failed import offers no handoff")
   Assert.deepEqual(cache:loadLua("rom-source.lua"), binding, "a failed re-import keeps its prior binding")
-  Assert.notNil(
-    cache:loadLua(ArtifactState.path("field-font", "global")),
-    "a failed re-import keeps its prior receipts"
+  Assert.equal(
+    cache:read(CacheArchive.ARCHIVE_NAME),
+    "prior snapshot bytes",
+    "a failed re-import keeps its prior snapshot"
   )
   Assert.equal(
     SaveFs.forVersion("heartgold", h.backend):read("field-session.lua"),
@@ -518,22 +512,14 @@ end
 function T.same_rom_reimport_keeps_prior_derived_work()
   local h = harness()
   local cache = CacheFs.forVersion("heartgold", h.backend)
-  local ArtifactState = require("romdump.src.build.ArtifactState")
-  local generation = "rebind-generation"
-  cache:writeLua(ArtifactState.path("field-font", "global"), {
-    schema = ArtifactState.RECEIPT_SCHEMA,
-    generationId = generation,
-    kind = "field-font",
-    key = "global",
-    marker = "prior-receipt",
-  })
+  local CacheArchive = require("romdump.src.build.CacheArchive")
+  cache:write(CacheArchive.ARCHIVE_NAME, "prior snapshot bytes")
   cache:write("maps/60/complete", "ready")
   SaveFs.forVersion("heartgold", h.backend):write("field-session.lua", "SAVE-DATA")
   h.importer:startSource(RomSource.fromString(h.data, "hg.nds"))
   runToTerminal(h.importer)
   Assert.equal(h.importer.state, "complete")
-  local receipt = cache:loadLua(ArtifactState.path("field-font", "global"))
-  Assert.notNil(receipt, "the same-ROM rebind keeps its prior receipts")
+  Assert.equal(cache:read(CacheArchive.ARCHIVE_NAME), "prior snapshot bytes", "the same-ROM rebind keeps its snapshot")
   Assert.equal(cache:read("maps/60/complete"), "ready", "the same-ROM rebind keeps its owned assets")
   Assert.equal(
     SaveFs.forVersion("heartgold", h.backend):read("field-session.lua"),

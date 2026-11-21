@@ -6,7 +6,7 @@
 -- ROM and graphics capabilities required; stops at pixel reads.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
@@ -40,8 +40,8 @@ local T = {}
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
-      local cacheFs = CacheFs.forVersion(versionId)
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       local marker = cacheFs:read(PartyCache.markerPath())
       if marker ~= nil and PartyCache.isReady(cacheFs, marker) then
         versions[#versions + 1] = versionId
@@ -91,7 +91,7 @@ function T.open_selection_paints_native_chrome(scope)
     give(service, "CHIKORITA")
     give(service, "TOTODILE")
     local Host = assert(require(HOST_MODULE))
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local host = Host.new({
       service = service,
       manifest = PartyCache.loadManifest(cacheFs),

@@ -1,6 +1,7 @@
 -- App-selected startup audio lifetime and source-frame timing.
 
 local Assert = require("tests.support.Assert")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local StartupAudioSession = require("app.src.audio.StartupAudioSession")
 
@@ -206,6 +207,12 @@ function T.tests.movie_first_borrowed_session_plays_one_edition_cry_without_inve
       App.epoch = 41
       App.selectedVersionId = case.versionId
       App.provisioner = {
+        -- The session is built against the epoch's installed generated view;
+        -- this fixture answers one resident reader over no payloads because
+        -- GameAudio.compose is stubbed above and reads nothing from it.
+        getCacheFs = function()
+          return GeneratedCacheFixture.resident(case.versionId, {}).reader
+        end,
         gameHost = function()
           return {
             requestMilestone = function()

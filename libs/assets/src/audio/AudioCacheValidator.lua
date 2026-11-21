@@ -262,7 +262,7 @@ end
 -- Returns nil when the closure is valid or a problem message otherwise,
 -- never raises. The family summary replays the complete walk over the
 -- combined on-disk graph; this scope never claims family integrity.
----@param assetFs CacheFs
+---@param assetFs table<string, unknown> CacheFs-shaped staged-asset or physical cache
 ---@param bankId integer
 ---@param sequenceIds integer[]
 ---@return string|nil

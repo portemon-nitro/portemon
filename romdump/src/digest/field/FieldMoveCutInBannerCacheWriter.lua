@@ -8,7 +8,6 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldMoveCutInBannerAssetCache = require("libs.assets.src.field.FieldMoveCutInBannerAssetCache")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 
 local FieldMoveCutInBannerCacheWriter = {}
 
@@ -54,29 +53,13 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function FieldMoveCutInBannerCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "banner staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "banner staging requires a PreparedArtifact")
   assert(bundle and bundle.marker and bundle.manifest and bundle.assets, "stage requires a banner bundle")
   assert(bundle.manifest.schema == FieldMoveCutInBannerAssetCache.SCHEMA, "banner manifest schema mismatch")
   artifact:addOwnedRoot(FieldMoveCutInBannerAssetCache.assetDir())
   artifact:addOwnedRoot(FieldMoveCutInBannerAssetCache.dir())
-  stageBundle(artifact:stageFs(), bundle)
+  stageBundle(artifact, bundle)
   return bundle.marker
-end
-
-function FieldMoveCutInBannerCacheWriter.write(cacheFs, bundle)
-  assert(bundle and bundle.marker and bundle.manifest and bundle.assets, "write requires a banner bundle")
-  assert(bundle.manifest.schema == FieldMoveCutInBannerAssetCache.SCHEMA, "banner manifest schema mismatch")
-  local tx = ArtifactPublisher.begin(cacheFs, "field-move-cut-in-banner", {
-    FieldMoveCutInBannerAssetCache.assetDir(),
-    FieldMoveCutInBannerAssetCache.dir(),
-  })
-  local ok, err = pcall(stageBundle, tx.stage, bundle)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
-  return true
 end
 
 return FieldMoveCutInBannerCacheWriter

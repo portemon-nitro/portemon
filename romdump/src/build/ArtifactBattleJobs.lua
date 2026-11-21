@@ -38,7 +38,7 @@ local function executeBattleFamily(artifact, context, job, family, compile, payl
     error(family .. " emission failed for generation " .. job.generationId .. ": " .. tostring(compileErr), 0)
   end
   assert(compiled ~= nil, family .. " emission produced no payload")
-  local stage = artifact:stageFs()
+  local stage = artifact
   artifact:addOwnedRoot(payloadPath)
   artifact:addOwnedRoot(markerPath)
   stage:writeLua(payloadPath, compiled)

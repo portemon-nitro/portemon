@@ -5,7 +5,6 @@ local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 local ApricornBoxAssetCompiler = require("romdump.src.digest.ui.ApricornBoxAssetCompiler")
 local ApricornBoxCacheWriter = require("romdump.src.digest.ui.ApricornBoxCacheWriter")
 local ApricornBoxSources = require("romdump.src.config.ApricornBoxSources")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
@@ -128,22 +127,18 @@ end
 
 local function invalidBeforeStagingAndPublication(bundle)
   local staging = { writes = 0, roots = 0 }
-  local stageFs = {}
-  function stageFs:write()
-    staging.writes = staging.writes + 1
-  end
-  function stageFs:writeLua()
-    staging.writes = staging.writes + 1
-  end
-  function stageFs:loadLua()
-    return nil
-  end
-  function stageFs:exists()
-    return false
-  end
   local artifact = {
-    stageFs = function()
-      return stageFs
+    write = function()
+      staging.writes = staging.writes + 1
+    end,
+    writeLua = function()
+      staging.writes = staging.writes + 1
+    end,
+    loadLua = function()
+      return nil
+    end,
+    exists = function()
+      return false
     end,
     addOwnedRoot = function()
       staging.roots = staging.roots + 1
@@ -154,18 +149,6 @@ local function invalidBeforeStagingAndPublication(bundle)
   Assert.equal(err.code, ApricornBoxCacheWriter.ERROR.BUNDLE_INVALID)
   Assert.equal(staging.roots, 0, "invalid bundles are rejected before artifact ownership changes")
   Assert.equal(staging.writes, 0, "invalid bundles are rejected before stage writes")
-
-  local beginCount = 0
-  local begin = ArtifactPublisher.begin
-  ArtifactPublisher.begin = function()
-    beginCount = beginCount + 1
-    error("publication started before bundle validation")
-  end
-  local writeOk, writeErr = pcall(ApricornBoxCacheWriter.write, {}, bundle)
-  ArtifactPublisher.begin = begin
-  Assert.isFalse(writeOk, "the write path rejects invalid source provenance")
-  Assert.equal(writeErr.code, ApricornBoxCacheWriter.ERROR.BUNDLE_INVALID)
-  Assert.equal(beginCount, 0, "invalid bundles are rejected before publication begins")
 end
 
 function T.compiler_emits_source_panes_rows_and_the_action_menu_atlas(romFs, versionId)

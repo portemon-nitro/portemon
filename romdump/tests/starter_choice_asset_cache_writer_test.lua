@@ -9,6 +9,8 @@ local Assert = require("tests.support.Assert")
 local BagCache = require("libs.assets.src.BagCache")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local ArtifactState = require("romdump.src.build.ArtifactState")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local DerivedCacheAudit = require("romdump.src.DerivedCacheAudit")
@@ -83,6 +85,24 @@ local function publishedCache(versionId)
   return cacheFs
 end
 
+-- Publish one compiled bundle through the production stage function: the
+-- starter-choice job owns its asset root and shares the referenced blobs, so a
+-- fixture publishes exactly what the worker seals.
+---@param cacheFs table<string, unknown>
+---@param bundle table<string, unknown>
+---@return string marker
+local function publish(cacheFs, bundle)
+  return ResidentArtifactFixture.publish(cacheFs, "starter-choice", "global", function(artifact)
+    return writer().stage(artifact, bundle)
+  end)
+end
+
+---@param generationId string
+---@return ArtifactState facts committed artifacts of one generation
+local function factsFor(generationId)
+  return ArtifactState.new(generationId)
+end
+
 local function referencedImage(bundle)
   local backgrounds = assert(bundle.manifest.backgrounds, "background roles are present")
   local entry = assert(backgrounds.info.base, "info artwork entry is present")
@@ -116,11 +136,14 @@ function T.published_bundle_is_ready_but_never_sufficient_alone(romFs, versionId
   local bundle = assert(compiler().compile(romFs))
   local cacheFs = publishedCache(versionId)
 
-  Assert.isTrue(writer().write(cacheFs, bundle), "publication succeeds")
+  local marker, sealed = publish(cacheFs, bundle)
+  Assert.isTrue(marker, "publication succeeds")
   Assert.isTrue(cache().isReady(cacheFs, bundle.marker), "the published family reads ready")
-  -- One published family is not a usable corpus: without current receipts
-  -- for the complete inventory the audit refuses the marker-only cache.
-  local available, reason = DerivedCacheAudit.isAvailable(cacheFs, auditIdentity(versionId), minimalPlans())
+  -- One committed family is not a usable corpus: the audit walks the whole
+  -- canonical inventory and refuses at the first job without a committed fact.
+  local facts = factsFor(auditIdentity(versionId).generationId)
+  ResidentArtifactFixture.commitFact(facts, sealed, {})
+  local available, reason = DerivedCacheAudit.isAvailable(cacheFs, facts, auditIdentity(versionId), minimalPlans())
   Assert.isFalse(available, "a single family never proves the whole corpus")
   Assert.isTrue(reason ~= nil and reason ~= "", "a refused proof names its cause")
 end
@@ -130,18 +153,23 @@ function T.missing_reference_or_stale_marker_is_not_ready(romFs, versionId)
   local bundle = assert(compiler().compile(romFs))
 
   local cacheFs = CacheFs.forVersion(versionId, FakeCache.new())
-  Assert.isTrue(writer().write(cacheFs, bundle))
+  Assert.isTrue(publish(cacheFs, bundle))
   Assert.isTrue(starter.isReady(cacheFs, bundle.marker), "the complete family reads ready first")
 
   cacheFs:remove(referencedImage(bundle))
   Assert.isFalse(starter.isReady(cacheFs, bundle.marker), "a missing referenced file is not ready")
 
   local fresh = CacheFs.forVersion(versionId, FakeCache.new())
-  Assert.isTrue(writer().write(fresh, bundle))
+  Assert.isTrue(publish(fresh, bundle))
   Assert.isFalse(starter.isReady(fresh, "stale-marker"), "a stale marker is not ready")
 
   local audited = publishedCache(versionId)
-  local available, reason = DerivedCacheAudit.isAvailable(audited, auditIdentity(versionId), minimalPlans())
+  local available, reason = DerivedCacheAudit.isAvailable(
+    audited,
+    factsFor(auditIdentity(versionId).generationId),
+    auditIdentity(versionId),
+    minimalPlans()
+  )
   Assert.isFalse(available, "the audit requires the complete inventory, not markers")
   Assert.isTrue(reason ~= nil and reason ~= "", "a refused proof names its cause")
 end
@@ -163,17 +191,17 @@ function T.failed_publication_preserves_the_previous_ready_family(romFs, version
   }
 
   local pristine = CacheFs.forVersion(versionId, FakeCache.new())
-  local pristineOk = pcall(writer().write, pristine, broken)
+  local pristineOk = pcall(publish, pristine, broken)
   Assert.isFalse(pristineOk, "publication with a missing reference must fail")
   Assert.isFalse(starter.isReady(pristine, broken.marker), "a partial family never reads ready")
 
   local live = CacheFs.forVersion(versionId, FakeCache.new())
-  Assert.isTrue(writer().write(live, bundle))
+  Assert.isTrue(publish(live, bundle))
   local liveMarker = live:read(starter.markerPath())
   local liveManifest = live:read(starter.manifestPath())
   Assert.isTrue(starter.isReady(live, bundle.marker), "the previous family reads ready first")
 
-  local replacementOk = pcall(writer().write, live, broken)
+  local replacementOk = pcall(publish, live, broken)
   Assert.isFalse(replacementOk, "a failed replacement must reach the caller")
   Assert.equal(live:read(starter.markerPath()), liveMarker, "the previous marker survives")
   Assert.equal(live:read(starter.manifestPath()), liveManifest, "the previous manifest survives")

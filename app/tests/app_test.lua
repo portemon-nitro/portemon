@@ -8,7 +8,6 @@
 
 local Assert = require("tests.support.Assert")
 local RomImporter = require("romdump.src.source.RomImporter")
-local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
 local HgssGame = require("game.hgss.src.HgssGame")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
@@ -19,30 +18,6 @@ local defaultCheckoutBackend = ProducerFingerprint.checkoutBackend
 local App
 local ImportState
 local VersionSelectState
-
--- Scope the harness attestation answers to one installed version. The
--- harness flags answer for every version, which would mark the sibling
--- version current too and boot into the version selector; tests that boot
--- a single installed menu gate currency to that version instead. The
--- harness teardown restores the pre-harness module functions, so no test
--- leaks this scoping into the next.
----@param versionId string the single installed version
-local function currentOnlyFor(versionId)
-  local harnessIsCurrent = FirstPlayCompletion.isCurrent
-  local harnessHasStored = FirstPlayCompletion.hasStored
-  FirstPlayCompletion.isCurrent = function(candidateId, generationId)
-    if candidateId ~= versionId then
-      return false
-    end
-    return harnessIsCurrent(candidateId, generationId)
-  end
-  FirstPlayCompletion.hasStored = function(candidateId, cacheFs)
-    if candidateId ~= versionId then
-      return false
-    end
-    return harnessHasStored(candidateId, cacheFs)
-  end
-end
 
 local function loadShellModules()
   local ok, appOrError = pcall(require, "app.src.App")
@@ -121,9 +96,8 @@ end
 ---@field warmups integer
 ---@field cannedGeneration string? controller-derived generation token answered for the selection
 ---@field service table scripted process cache service behind the selection
----@field firstPlayCurrent boolean scripted durable attestation currency
----@field firstPlayStored boolean scripted durable attestation presence
----@field firstPlayPublished table[] recorded attestation publications
+---@field firstPlayReady boolean scripted installed first-play fact for the selected epoch
+---@field firstPlayPublished table[] recorded first-play facts, one entry per recorded epoch
 ---@param opts table|nil
 ---@param ready fun(id: string): boolean
 ---@param fn fun(result: AppStateHarness)
@@ -135,6 +109,8 @@ local function withAppHarness(opts, ready, fn)
   local originalOpts = App.opts
   local originalIsReady = RomImporter.isReady
   local originalIsRegistered = RomImporter.isRegistered
+  local CacheArchive = require("romdump.src.build.CacheArchive")
+  local originalRecoverable = CacheArchive.recoverableFileName
   local originalNew = HgssGame.new
   local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
   local originalMenuNew = MainMenuComposition.new
@@ -173,8 +149,7 @@ local function withAppHarness(opts, ready, fn)
     provisionerDisposals = 0,
     warmups = 0,
     cannedGeneration = "test-generation",
-    firstPlayCurrent = true,
-    firstPlayStored = true,
+    firstPlayReady = true,
     alreadyRegistered = false,
     firstPlayPublished = {},
   }
@@ -242,6 +217,27 @@ local function withAppHarness(opts, ready, fn)
     return false, "unacknowledged"
   end
   function service:shutdown() end
+  -- The selected epoch's installed generated view: the harness models an
+  -- epoch that installed its bytes, so compositions receive one shared
+  -- reader object instead of opening a physical generated root. Every
+  -- generated consumer is stubbed at this boundary, so the view holds no
+  -- payloads.
+  result.generatedView = { versionId = "heartgold" }
+  function result.generatedView:resolveAsset(_)
+    return nil
+  end
+  function result.generatedView:loadLua(_)
+    return nil, "the harness view carries no generated payloads"
+  end
+  function service:getCacheFs(_)
+    return result.generatedView
+  end
+  function service:firstPlayReady(_)
+    return result.firstPlayReady == true
+  end
+  function service:recordFirstPlay(epoch)
+    result.firstPlayPublished[#result.firstPlayPublished + 1] = { epoch = epoch }
+  end
   result.service = service
   local unownedOption = {}
   App.opts = setmetatable(opts or { dev = false }, {
@@ -254,20 +250,14 @@ local function withAppHarness(opts, ready, fn)
   })
   App.service = service
   RomImporter.isReady = ready
+  -- Candidate registration is scripted per test: the shared save root may
+  -- carry a real snapshot, which must not widen the harness's shelf.
+  CacheArchive.recoverableFileName = function(versionId)
+    local present = result.snapshotVersions
+    return present ~= nil and present[versionId] == true and "cache.zip" or nil
+  end
   RomImporter.isRegistered = function(_, _)
     return result.alreadyRegistered
-  end
-  local originalIsCurrent = FirstPlayCompletion.isCurrent
-  local originalHasStored = FirstPlayCompletion.hasStored
-  local originalPublish = FirstPlayCompletion.publish
-  FirstPlayCompletion.isCurrent = function(_, _)
-    return result.firstPlayCurrent
-  end
-  FirstPlayCompletion.hasStored = function()
-    return result.firstPlayStored
-  end
-  FirstPlayCompletion.publish = function(versionId, generationId)
-    result.firstPlayPublished[#result.firstPlayPublished + 1] = { versionId = versionId, generationId = generationId }
   end
   HgssGame.new = function(options)
     result.launches[#result.launches + 1] = options
@@ -395,9 +385,7 @@ local function withAppHarness(opts, ready, fn)
   App.opts = originalOpts
   RomImporter.isReady = originalIsReady
   RomImporter.isRegistered = originalIsRegistered
-  FirstPlayCompletion.isCurrent = originalIsCurrent
-  FirstPlayCompletion.hasStored = originalHasStored
-  FirstPlayCompletion.publish = originalPublish
+  CacheArchive.recoverableFileName = originalRecoverable
   HgssGame.new = originalNew
   HgssOpeningMovie.new = originalMovieNew
   StartupAssetCache.loadOpeningScene = originalLoadOpeningScene
@@ -835,8 +823,7 @@ function T.boot_existing_with_no_ready_version_starts_an_import()
     return false
   end, function(result)
     -- Nothing is installed or bound: no current attestation anywhere.
-    result.firstPlayCurrent = false
-    result.firstPlayStored = false
+    result.firstPlayReady = false
     App._bootExisting()
     Assert.notNil(App.importer)
     Assert.equal(getmetatable(App.state).__index, ImportState)
@@ -861,7 +848,6 @@ function T.boot_falls_back_when_the_persisted_edition_is_not_ready()
   end, function()
     local wrote = love.filesystem.write("app-edition.lua", 'return { schema = 1, versionId = "soulsilver" }\n')
     Assert.isTrue(wrote)
-    currentOnlyFor("heartgold")
     App._bootExisting()
     Assert.equal(App.selectedVersionId, "heartgold", "an unavailable preference falls back to the first ready edition")
   end)
@@ -901,8 +887,7 @@ function T.native_picker_path_waits_for_quiescence_before_importing()
     withAppHarness({}, function()
       return false
     end, function(result)
-      result.firstPlayCurrent = false
-      result.firstPlayStored = false
+    result.firstPlayReady = false
       App._bootExisting()
       result.service.barrierStatus = function()
         return "ready"
@@ -941,8 +926,7 @@ function T.picker_cancel_does_not_start_a_barrier_or_import()
     withAppHarness({}, function()
       return false
     end, function(result)
-      result.firstPlayCurrent = false
-      result.firstPlayStored = false
+    result.firstPlayReady = false
       App._bootExisting()
       App.state:mousepressed(400, 300, 1)
       Assert.equal(App.state.onImportAttempt, nil)
@@ -962,7 +946,6 @@ function T.last_played_preference_changes_only_after_successful_game_install()
   withAppHarness({ dev = false }, function(versionId)
     return versionId == "heartgold"
   end, function()
-    currentOnlyFor("heartgold")
     App._bootExisting()
     App.update(0.016)
     Assert.isNil(EditionPreference.read(), "selecting the installed edition is only a preview")
@@ -976,7 +959,6 @@ function T.failed_game_composition_does_not_change_last_played_preference()
   withAppHarness({ dev = false }, function(versionId)
     return versionId == "heartgold"
   end, function()
-    currentOnlyFor("heartgold")
     App._bootExisting()
     App.update(0.016)
     local originalNew = HgssGame.new
@@ -995,7 +977,6 @@ function T.boot_existing_with_one_ready_version_stages_the_menu_under_startup_ti
     return id == "heartgold"
   end, function(result)
     -- Only heartgold is installed and current; the sibling stays out.
-    currentOnlyFor("heartgold")
     App._bootExisting()
     -- The boot gate answers first; startup then stages the menu behind its title.
     App.update(0.016)
@@ -1013,7 +994,6 @@ function T.cancelled_retail_entries_restore_the_product_menu_on_the_same_selecti
     return id == "heartgold"
   end, function(result)
     -- Only heartgold is installed and current; the sibling stays out.
-    currentOnlyFor("heartgold")
     local compositionPath = "app.src.mainmenu.MainMenuComposition"
     local previousComposition = package.loaded[compositionPath]
     local MainMenuComposition = previousComposition or {}
@@ -1175,7 +1155,6 @@ function T.release_startup_passes_the_release_counter_without_reading_producer_s
       return id == "heartgold"
     end, function(result)
       -- Only heartgold is installed and current; the sibling stays out.
-      currentOnlyFor("heartgold")
       App._bootExisting()
       -- The boot gate answers first: readiness continues into the menu.
       App.update(0.016)
@@ -1208,7 +1187,6 @@ function T.release_startup_selects_the_per_game_release_counter()
       return id == "soulsilver"
     end, function(result)
       -- Only soulsilver is installed and current; the sibling stays out.
-      currentOnlyFor("soulsilver")
       App._bootExisting()
       -- The boot gate answers first: readiness continues into the menu.
       App.update(0.016)
@@ -1254,7 +1232,6 @@ function T.development_startup_passes_frozen_checkout_selectors_without_scanning
         return id == "heartgold"
       end, function(result)
         -- Only heartgold is installed and current; the sibling stays out.
-        currentOnlyFor("heartgold")
         App._bootExisting()
         -- The boot gate answers first: readiness continues into the menu.
         App.update(0.016)
@@ -1372,8 +1349,7 @@ function T.cold_import_startup_hold_transfers_the_adopted_presenter()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
-    result.firstPlayCurrent = false
-    result.firstPlayStored = false
+    result.firstPlayReady = false
     result.walkerReady = false
     App._onImported("heartgold")
     local wait = assert(App.state, "the cold import waits visibly")
@@ -1423,8 +1399,7 @@ function T.existing_selection_with_no_completion_stages_the_menu_under_title()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
-    result.firstPlayCurrent = false
-    result.firstPlayStored = false
+    result.firstPlayReady = false
     local script = { ready = false }
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
@@ -1447,14 +1422,13 @@ function T.existing_selection_with_no_completion_stages_the_menu_under_title()
   end)
 end
 
--- A stale receipt has no effect on menu admission; readiness still starts
--- only after the title has loaded.
-function T.existing_selection_with_a_stale_completion_stages_before_warmup()
+-- A missing installed first-play fact has no effect on menu admission;
+-- readiness still starts only after the title has loaded.
+function T.existing_selection_without_an_installed_completion_stages_before_warmup()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
-    result.firstPlayCurrent = false
-    result.firstPlayStored = true
+    result.firstPlayReady = false
     local script = { ready = false }
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
@@ -1462,7 +1436,7 @@ function T.existing_selection_with_a_stale_completion_stages_before_warmup()
       -- The boot gate answers first while title assets remain pending.
       App.update(0.016)
       assertStagedStartupMenu(result)
-      Assert.equal(script.constructions, nil, "stale receipt does not bypass title readiness")
+      Assert.equal(script.constructions, nil, "a missing fact does not bypass title readiness")
       result.startupTitleReady = true
       App.update(0.016)
     end)
@@ -1471,7 +1445,7 @@ function T.existing_selection_with_a_stale_completion_stages_before_warmup()
       error(err, 0)
     end
     Assert.equal(#result.launches, 0, "title startup does not launch retail")
-    Assert.equal(script.constructions, 1, "stale completion enters optional near preparation")
+    Assert.equal(script.constructions, 1, "a missing completion enters optional near preparation")
   end)
 end
 
@@ -1482,7 +1456,6 @@ function T.current_completion_waits_for_title_without_duplicate_warmup()
     return id == "heartgold"
   end, function(result)
     -- Only heartgold carries the current completion; the sibling stays out.
-    currentOnlyFor("heartgold")
     local factoryCalls = 0
     local original = HgssGame.newFirstPlayCachePreparation
     if original ~= nil then
@@ -1537,8 +1510,7 @@ function T.first_play_near_completion_publishes_only_on_success()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
-    result.firstPlayCurrent = false
-    result.firstPlayStored = false
+    result.firstPlayReady = false
     local script = { ready = false }
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
@@ -1556,8 +1528,8 @@ function T.first_play_near_completion_publishes_only_on_success()
       Assert.equal(#result.menus, 1)
       Assert.deepEqual(
         result.firstPlayPublished,
-        { { versionId = "heartgold", generationId = "test-generation" } },
-        "success publishes the current generation exactly once"
+        { { epoch = App.epoch } },
+        "success records first play once for the selected epoch"
       )
       Assert.equal(getmetatable(App.state).__index, require("app.src.launcher.StartupTitleState"))
       finishStartupTitle(result)
@@ -1569,68 +1541,82 @@ function T.first_play_near_completion_publishes_only_on_success()
   end)
 end
 
--- Unknown generation leaves the title usable and gates only the first-play
--- coordinator: speculative closure demands still issue at title entry, and
--- a later validated generation lets the near coordinator publish.
-function T.unknown_generation_gates_first_play_but_not_speculative_demands()
+-- An unknown controller generation never becomes first play by itself: only
+-- the selected epoch's installed fact can prove it, so the near coordinator
+-- starts demanding while the title stays usable and the speculative entry
+-- demands issue unchanged.
+function T.unknown_generation_never_fabricates_first_play()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
     result.cannedGeneration = nil
-    result.firstPlayCurrent = false
-    result.firstPlayStored = true
+    result.firstPlayReady = false
+    local script = { ready = false }
+    local original = installFirstPlayFactory(script)
     local requests = {}
-    result.service.request = function(_, _, selector)
+    local baseRequest = result.service.request
+    result.service.request = function(_, epoch, selector)
       if selector.name == "new-game-intro" or selector.name == "field-planning" or selector.name == "field-runtime" or selector.requestKind == "battle-presentation" then
         requests[#requests + 1] = selector
       end
+      return baseRequest(_, epoch, selector)
     end
-    App._bootExisting()
-    App.update(0.016)
-    assertStagedStartupMenu(result)
-    Assert.equal(#result.launches, 0, "title startup does not launch retail")
-    local entryNames, entryUrgencies = requestedMilestones(requests)
-    Assert.deepEqual(
-      entryNames,
-      { "field-planning", "field-runtime", "new-game-intro" },
-      "title entry issues the speculative intro and field closures without waiting on the generation"
-    )
-    for _, name in ipairs(entryNames) do
-      Assert.equal(entryUrgencies[name], "near", "title entry demand stays speculative for " .. name)
-    end
-    result.startupTitleReady = true
-    App.update(0.016)
-    Assert.equal(getmetatable(App.state).__index, require("app.src.launcher.StartupTitleState"))
-    result.cannedGeneration = "test-generation"
-    result.firstPlayCurrent = true
-    App.update(0.016)
-    Assert.equal(#result.menus, 1, "the title keeps its staged product menu")
-    Assert.deepEqual(
-      result.firstPlayPublished,
-      { { versionId = "heartgold", generationId = "test-generation" } },
-      "the near coordinator publishes the validated generation"
-    )
-    finishStartupTitle(result)
-    local names, urgencies = requestedMilestones(requests)
-    Assert.deepEqual(
-      names,
-      { "field-planning", "field-runtime", "new-game-intro" },
-      "transfer adds no closure demand beyond the title entry set"
-    )
-    for _, name in ipairs(names) do
-      Assert.equal(urgencies[name], "near", "transfer demand stays speculative for " .. name)
-    end
-    local battleDemands = {}
-    for _, selector in ipairs(requests) do
-      if selector.requestKind == "battle-presentation" then
-        battleDemands[#battleDemands + 1] = selector
+    local ok, err = pcall(function()
+      App._bootExisting()
+      App.update(0.016)
+      assertStagedStartupMenu(result)
+      Assert.equal(#result.launches, 0, "title startup does not launch retail")
+      local entryNames, entryUrgencies = requestedMilestones(requests)
+      Assert.deepEqual(
+        entryNames,
+        { "field-planning", "field-runtime", "new-game-intro" },
+        "title entry issues the speculative intro and field closures without waiting on the generation"
+      )
+      for _, name in ipairs(entryNames) do
+        Assert.equal(entryUrgencies[name], "near", "title entry demand stays speculative for " .. name)
       end
+      result.startupTitleReady = true
+      App.update(0.016)
+      Assert.equal(getmetatable(App.state).__index, require("app.src.launcher.StartupTitleState"))
+      Assert.equal(script.constructions, 1, "the near coordinator runs while the generation is unknown")
+      Assert.equal(#result.firstPlayPublished, 0, "an unknown generation proves no first play")
+      result.cannedGeneration = "test-generation"
+      App.update(0.016)
+      Assert.equal(#result.menus, 1, "the title keeps its staged product menu")
+      Assert.equal(#result.firstPlayPublished, 0, "a known generation alone proves no first play")
+      script.ready = true
+      App.update(0.016)
+      Assert.deepEqual(
+        result.firstPlayPublished,
+        { { epoch = App.epoch } },
+        "the completed closure records first play for the selected epoch"
+      )
+      finishStartupTitle(result)
+      local names, urgencies = requestedMilestones(requests)
+      Assert.deepEqual(
+        names,
+        { "field-planning", "field-runtime", "new-game-intro" },
+        "transfer adds no closure demand beyond the title entry set"
+      )
+      for _, name in ipairs(names) do
+        Assert.equal(urgencies[name], "near", "transfer demand stays speculative for " .. name)
+      end
+      local battleDemands = {}
+      for _, selector in ipairs(requests) do
+        if selector.requestKind == "battle-presentation" then
+          battleDemands[#battleDemands + 1] = selector
+        end
+      end
+      Assert.deepEqual(
+        battleDemands,
+        { { requestKind = "battle-presentation", urgency = "near" } },
+        "transfer demands the shared battle catalog once at near urgency"
+      )
+    end)
+    HgssGame.newFirstPlayCachePreparation = original
+    if not ok then
+      error(err, 0)
     end
-    Assert.deepEqual(
-      battleDemands,
-      { { requestKind = "battle-presentation", urgency = "near" } },
-      "transfer demands the shared battle catalog once at near urgency"
-    )
   end)
 end
 
@@ -1639,8 +1625,7 @@ function T.failed_first_play_warmup_does_not_block_title()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
-    result.firstPlayCurrent = false
-    result.firstPlayStored = false
+    result.firstPlayReady = false
     local script = { ready = false, failure = "intro milestone failed in the fixture" }
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
@@ -1668,8 +1653,7 @@ function T.fresh_import_menu_reuses_the_near_warmup_epoch()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
-    result.firstPlayCurrent = false
-    result.firstPlayStored = false
+    result.firstPlayReady = false
     local script = { ready = false }
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
@@ -1710,8 +1694,7 @@ function T.fresh_import_defers_near_work_until_title_and_sweeps_from_title_entry
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
-    result.firstPlayCurrent = false
-    result.firstPlayStored = false
+    result.firstPlayReady = false
     local requests = recordServiceRequests(result)
     local script = { ready = false }
     local original = installFirstPlayFactory(script)
@@ -1773,7 +1756,6 @@ function T.menu_installation_requests_intro_and_field_closures_at_near_urgency()
     return id == "heartgold"
   end, function(result)
     -- Only heartgold is installed and current; the sibling stays out.
-    currentOnlyFor("heartgold")
     local requests = recordServiceRequests(result)
     App._bootExisting()
     -- The boot gate answers first: readiness continues into the menu.
@@ -1803,9 +1785,10 @@ function T.menu_installation_requests_intro_and_field_closures_at_near_urgency()
   end)
 end
 
--- A version whose derived cache is current boots without its ROM: a moved
--- or missing source file never blocks an installed game, prompts no
--- import, and causes zero ROM file activity on the startup path.
+-- A version whose derived-cache snapshot is present boots without its ROM:
+-- the archive makes it a boot candidate, the controller decides the route, a
+-- moved or missing source file never blocks an installed game, and the
+-- startup path performs zero ROM file activity.
 function T.boot_existing_with_a_current_cache_and_no_source_skips_the_import()
   local RomFs = require("romdump.src.source.RomFs")
   local RomSource = require("romdump.src.source.RomSource")
@@ -1824,12 +1807,10 @@ function T.boot_existing_with_a_current_cache_and_no_source_skips_the_import()
     withAppHarness({ dev = false }, function(_)
       return false
     end, function(result)
-      result.firstPlayCurrent = true
-      result.firstPlayStored = true
-      -- The scenario covers one installed version: scope the harness
-      -- attestation answers to heartgold so the sibling stays uninstalled
-      -- and boot selects exactly one version without source work.
-      currentOnlyFor("heartgold")
+      -- The scenario covers one installed version: only heartgold carries a
+      -- snapshot, so the sibling stays off the shelf and boot selects exactly
+      -- one candidate without source work.
+      result.snapshotVersions = { heartgold = true }
       App._bootExisting()
       -- The boot gate answers first: readiness continues into the menu.
       App.update(0.016)
@@ -1886,8 +1867,7 @@ local function withPristineImport(fn)
   withAppHarness({}, function()
     return false
   end, function(result)
-    result.firstPlayCurrent = false
-    result.firstPlayStored = false
+    result.firstPlayReady = false
     App._bootExisting()
     Assert.equal(getmetatable(App.state).__index, ImportState, "an empty shelf boots into the import card")
     fn(result)
@@ -2008,8 +1988,7 @@ function T.fresh_import_reaches_title_through_the_boot_gate_without_an_intermedi
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
-    result.firstPlayCurrent = false
-    result.firstPlayStored = false
+    result.firstPlayReady = false
     local GameVersion = require("romdump.src.source.GameVersion")
     local StartupTitleState = require("app.src.launcher.StartupTitleState")
     local controlOps = {}
@@ -2485,8 +2464,7 @@ function T.registered_reimport_stays_warm_while_true_first_import_stays_cold()
       return id == "soulsilver"
     end, function(result)
       result.alreadyRegistered = true
-      result.firstPlayCurrent = true
-      result.firstPlayStored = true
+    result.firstPlayReady = true
       App._rebindVersionId = nil
       App.importer = completeImporter("soulsilver")
       App._onImported("soulsilver")
@@ -2514,8 +2492,7 @@ function T.registered_reimport_stays_warm_while_true_first_import_stays_cold()
     withAppHarness({ dev = false }, function()
       return false
     end, function(result)
-      result.firstPlayCurrent = false
-      result.firstPlayStored = false
+    result.firstPlayReady = false
       App.importer = completeImporter("heartgold")
       App._onImported("heartgold")
       Assert.equal(

@@ -175,7 +175,6 @@ function T.cache_writer_boundary_names_its_owner()
   local ok, writer = pcall(require, "romdump.src.digest.ui.SummaryCacheWriter")
   Assert.isTrue(ok, "the summary cache writer is missing: the family has no marker-last staging owner")
   Assert.equal(type(writer.stage), "function", "the summary cache writer exposes its staging entrypoint")
-  Assert.equal(type(writer.write), "function", "the summary cache writer exposes its direct-write entrypoint")
 end
 
 -- The consumer cache owns the family roots: generated records live under

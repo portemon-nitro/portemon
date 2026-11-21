@@ -4,7 +4,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local BagCache = require("libs.assets.src.BagCache")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
@@ -191,7 +191,7 @@ function T.tests.bag_cancel_pointer_closes_through_the_host()
     local placement = assert(interactive.placement, "the interactive pane must carry its placement")
     local frame = assert(placement.frame, "the interactive placement must expose its host frame")
     local scale = assert(placement.scale, "the interactive placement must expose its scale")
-    local manifest = BagCache.loadManifest(CacheFs.forVersion(AcceptanceHarness.defaultVersion()))
+    local manifest = BagCache.loadManifest(GeneratedCacheFixture.reader(AcceptanceHarness.defaultVersion()))
     local cancelGeometry = assert(
       manifest.interactive and manifest.interactive.cancel,
       "the generated manifest must carry its cancel geometry"

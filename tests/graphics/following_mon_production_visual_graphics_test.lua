@@ -9,7 +9,7 @@
 
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldActorAssetProvider = require("libs.hgss.src.presentation.FieldActorAssetProvider")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldActorDraw = require("libs.hgss.src.presentation.FieldActorDraw")
@@ -37,7 +37,7 @@ local PARTNER_ACTOR_ID = "field:partner"
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       versions[#versions + 1] = versionId
     end
   end
@@ -48,7 +48,7 @@ end
 -- same insertion the starter and field-script paths use, so the follower the
 -- runtime installs on map entry is a real starter rather than a fixture.
 local function giftedGame(versionId)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local catalog = MonBucket.openCatalogs(versionId)
   local fontDef = FieldFontLoader.load(cacheFs)
   local service = HgssMonService.new({
@@ -277,12 +277,15 @@ function T.stationary_follower_idles_without_player_input(scope)
   local versions = readyVersions()
   Assert.isTrue(#versions > 0, "a ready imported game version is required")
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local catalog = MonBucket.openCatalogs(versionId)
     local descriptor =
       assert(catalog:followerSelection({ species = "CYNDAQUIL", form = 0 }), "cyndaquil carries a follower descriptor")
     local state = assert(
-      FieldState.new(giftedGame(versionId), { derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets })
+      FieldState.new(giftedGame(versionId), {
+        derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+        cacheFs = GeneratedCacheFixture.reader(versionId),
+      })
     )
     local ok, err = xpcall(function()
       local runtime = assert(state.runtime, "field state owns its runtime")
@@ -382,12 +385,15 @@ function T.real_starter_follower_trails_east_then_south_with_directional_walk_fr
   local versions = readyVersions()
   Assert.isTrue(#versions > 0, "a ready imported game version is required")
   for _, versionId in ipairs(versions) do
-    local cacheFs = CacheFs.forVersion(versionId)
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
     local catalog = MonBucket.openCatalogs(versionId)
     local descriptor =
       assert(catalog:followerSelection({ species = "CYNDAQUIL", form = 0 }), "cyndaquil carries a follower descriptor")
     local state = assert(
-      FieldState.new(giftedGame(versionId), { derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets })
+      FieldState.new(giftedGame(versionId), {
+        derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+        cacheFs = GeneratedCacheFixture.reader(versionId),
+      })
     )
     local ok, err = xpcall(function()
       local runtime = assert(state.runtime, "field state owns its runtime")
@@ -473,7 +479,10 @@ function T.follower_moves_while_the_player_step_is_in_flight()
   Assert.isTrue(#versions > 0, "a ready imported game version is required")
   for _, versionId in ipairs(versions) do
     local state = assert(
-      FieldState.new(giftedGame(versionId), { derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets })
+      FieldState.new(giftedGame(versionId), {
+        derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+        cacheFs = GeneratedCacheFixture.reader(versionId),
+      })
     )
     local ok, err = xpcall(function()
       local runtime = assert(state.runtime, "field state owns its runtime")

@@ -6,7 +6,6 @@
 -- cleanup outcomes.
 
 local Errors = require("libs.errors.src.Errors")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local PartyAssetSchema = require("libs.assets.src.PartyAssetSchema")
 local PartyCache = require("libs.assets.src.PartyCache")
 
@@ -50,17 +49,12 @@ local function validateBundle(bundle)
   end
 end
 
----@param tx table<string, unknown>
+---@param stage table<string, unknown> the artifact's private output owner
 ---@param bundle table<string, unknown>
----@param cacheFs CacheFs
-local function stageBundle(tx, bundle, cacheFs)
-  local stage = tx.stage
+---@param cacheFs table<string, unknown> read-only dependency reader
+local function stageBundle(stage, bundle, cacheFs)
   for _, path in ipairs(PartyCache.referencedPaths(bundle.manifest)) do
-    if path:sub(1, #PartyCache.assetDir()) == PartyCache.assetDir() then
-      stage:write(path, bundle.assets[path])
-    else
-      cacheFs:write(path, bundle.assets[path])
-    end
+    stage:write(path, bundle.assets[path])
   end
   stage:writeLua(PartyCache.provenancePath(), bundle.dependencies)
   stage:writeLua(PartyCache.manifestPath(), bundle.manifest)
@@ -94,7 +88,7 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function PartyCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "party staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "party staging requires a PreparedArtifact")
   validateBundle(bundle)
   artifact:addOwnedRoot(PartyCache.assetDir())
   artifact:addOwnedRoot(PartyCache.dir())
@@ -103,24 +97,8 @@ function PartyCacheWriter.stage(artifact, bundle)
       artifact:addSharedFile(path)
     end
   end
-  stageBundle({ stage = artifact:stageFs() }, bundle, artifact:cacheFs())
+  stageBundle(artifact, bundle, artifact:cacheFs())
   return bundle.marker
-end
-
----@param cacheFs CacheFs
----@param bundle table<string, unknown>
----@return boolean
-function PartyCacheWriter.write(cacheFs, bundle)
-  assert(cacheFs and bundle, "party publication requires a cache and a bundle")
-  validateBundle(bundle)
-  local tx = ArtifactPublisher.begin(cacheFs, "party", { PartyCache.assetDir(), PartyCache.dir() })
-  local ok, err = pcall(stageBundle, tx, bundle, cacheFs)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
-  return true
 end
 
 return PartyCacheWriter

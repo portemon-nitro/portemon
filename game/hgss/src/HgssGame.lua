@@ -13,7 +13,6 @@ local PreparedFieldEntry = require("game.hgss.src.field.PreparedFieldEntry")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
-local CacheFs = require("libs.storage.src.CacheFs")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
@@ -24,6 +23,7 @@ local ItemCatalog = require("libs.items.src.ItemCatalog")
 
 ---@class HgssGameOptions
 ---@field versionId string
+---@field cacheFs table<string, unknown> selected epoch's installed generated view
 ---@field startupPairIndex integer selected 1..32 walking pair, forwarded to entry loading stages
 ---@field entry HgssGameEntry
 ---@field onExit fun(result: table<string, unknown>|nil)
@@ -49,6 +49,7 @@ local HgssGame = {}
 local function fieldStateOptions(options, saveStore, extra, shared)
   local fieldOptions = {
     development = options.development == true,
+    cacheFs = options.cacheFs,
     saveStore = saveStore,
     derivedAssets = options.derivedAssets,
     martStockResolver = options.martStockResolver,
@@ -68,13 +69,12 @@ local function fieldStateOptions(options, saveStore, extra, shared)
   return fieldOptions
 end
 
-local function newGameCandidate(saveStore, versionId)
+local function newGameCandidate(saveStore, versionId, cacheFs)
   -- The domain catalog behind the unpublished mons bucket resolves lazily
   -- inside candidate construction, so application routing never touches
   -- cache IO: the catalog gates bucket creation while the bucket itself
   -- carries no catalog identity.
   local function loadMonCatalog()
-    local cacheFs = CacheFs.forVersion(versionId)
     return MonCatalog.new(MonCache.loadCatalog(cacheFs), ItemCatalog.new(ItemCache.loadCatalog(cacheFs)))
   end
   return NewGame.createCandidate({
@@ -82,7 +82,7 @@ local function newGameCandidate(saveStore, versionId)
     versionId = versionId,
     eventState = FieldEventState.new(),
     scriptSymbols = FieldScriptSymbols,
-    mapIdentity = NewGameInitialization.initialLocation(versionId),
+    mapIdentity = NewGameInitialization.initialLocation(cacheFs),
     catalogLoader = loadMonCatalog,
     nowSeconds = os.time(),
   })
@@ -124,6 +124,7 @@ local function installRoutes(options, game, saveStore, versionId)
   local displayContext = DisplayContext.new({ topologyProvider = options.topologyProvider })
   local presentationOverrides = copyPresentationOverrides(options.presentationOverrides)
   local derivedAssets = assert(options.derivedAssets, "HgssGame requires the derived-asset host")
+  local cacheFs = assert(options.cacheFs, "HgssGame requires the selected epoch's installed generated view")
   local oakPrepared -- forward: the Oak lifetime owns the staged bedroom entry
   local function returnToMainMenu()
     game:exit({ kind = "main_menu" })
@@ -144,7 +145,6 @@ local function installRoutes(options, game, saveStore, versionId)
     if options.fieldMapLoader ~= nil then
       return assert(options.fieldMapLoader)
     end
-    local cacheFs = CacheFs.forVersion(versionId)
     -- This factory runs once entry planning is ready, so a missing
     -- manifest is a required-artifact integrity failure that raises
     -- directly instead of entering the field.
@@ -168,6 +168,7 @@ local function installRoutes(options, game, saveStore, versionId)
       saveId = preparationOptions.saveId,
       candidate = preparationOptions.candidate,
       versionId = versionId,
+      cacheFs = cacheFs,
       startupPairIndex = startupPairIndex,
       derivedAssets = derivedAssets,
       saveStore = saveStore,
@@ -190,7 +191,7 @@ local function installRoutes(options, game, saveStore, versionId)
     -- Initialization applies exactly once to the finalized candidate before
     -- the staged bedroom transfers into the field; waiting updates never
     -- apply it again.
-    local finalized = NewGameInitialization.apply(result)
+    local finalized = NewGameInitialization.apply(result, { cacheFs = cacheFs })
     -- The bedroom was staged for the candidate opening: a diverging
     -- finalized location is a route/data invariant failure, never a silent
     -- rebuild behind a second preparation screen.
@@ -212,7 +213,7 @@ local function installRoutes(options, game, saveStore, versionId)
   end
 
   local function bootOakIntro()
-    local candidate = newGameCandidate(saveStore, versionId)
+    local candidate = newGameCandidate(saveStore, versionId, cacheFs)
     -- The actual opening bedroom stages while the intro plays: the Oak
     -- state polls the entry every update and the final black handoff waits
     -- for its readiness, so the handoff transfers resident resources
@@ -221,6 +222,7 @@ local function installRoutes(options, game, saveStore, versionId)
     -- half-built staging escapes.
     local prepared = PreparedFieldEntry.new({
       versionId = versionId,
+      cacheFs = cacheFs,
       derivedAssets = derivedAssets,
       location = candidate.location,
     })
@@ -229,6 +231,7 @@ local function installRoutes(options, game, saveStore, versionId)
     local ok, stateOrError = pcall(OakIntroComposition.compose, {
       candidate = candidate,
       versionId = versionId,
+      cacheFs = cacheFs,
       onComplete = onOakComplete,
       displayContext = displayContext,
       namingOverrides = presentationOverrides ~= nil and presentationOverrides.naming or nil,
@@ -250,6 +253,7 @@ local function installRoutes(options, game, saveStore, versionId)
     -- partial cache shows preparation instead of missing-asset failure.
     game:setState(NewGamePreparationState.new({
       versionId = versionId,
+      cacheFs = cacheFs,
       startupPairIndex = startupPairIndex,
       derivedAssets = derivedAssets,
       onReady = bootOakIntro,

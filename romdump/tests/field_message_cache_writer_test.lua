@@ -17,6 +17,7 @@ local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local GameVersion = require("romdump.src.source.GameVersion")
 local Schema = require("libs.script.src.Schema")
 local Sha256 = require("libs.script.src.Sha256")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -77,7 +78,7 @@ local function generationIdFor(producerBody)
   return assert(identity.generationId)
 end
 
-local function publishBank(cache, generation, bankId, bundle, stageName)
+local function publishBank(cache, generation, bankId, bundle)
   local key = tostring(bankId)
   local artifact = PreparedArtifact.new({
     cacheFs = cache,
@@ -86,17 +87,10 @@ local function publishBank(cache, generation, bankId, bundle, stageName)
     kind = "message-bank",
     key = key,
     jobKey = "message-bank:" .. key,
-    stageName = stageName,
   })
   FieldMessageCacheWriter.stageBank(artifact, bundle)
   artifact:finishSuccess({ marker = bundle.marker })
-  artifact:publish({
-    generationId = generation,
-    epoch = 1,
-    kind = "message-bank",
-    key = key,
-    jobKey = "message-bank:" .. key,
-  })
+  ResidentArtifactFixture.materialize(artifact)
 end
 
 -- A published bank proves ready without touching source decoding: with member
@@ -120,10 +114,9 @@ function T.published_bank_readiness_needs_no_source_decode()
     kind = "message-bank",
     key = key,
     jobKey = "message-bank:" .. key,
-    stageName = "message-bank-542",
   })
   FieldMessageCacheWriter.stageBank(artifact, one)
-  local stage = artifact:stageFs()
+  local stage = artifact
   Assert.equal(
     stage:read(FieldMessageCache.bankPath(542)),
     one.data:getString(),
@@ -131,13 +124,7 @@ function T.published_bank_readiness_needs_no_source_decode()
   )
   Assert.isFalse(stage:exists(FieldMessageCache.bankPath(543)), "no sibling bank is staged")
   artifact:finishSuccess({ marker = one.marker })
-  artifact:publish({
-    generationId = generation,
-    epoch = 1,
-    kind = "message-bank",
-    key = key,
-    jobKey = "message-bank:" .. key,
-  })
+  ResidentArtifactFixture.materialize(artifact)
   local decode = FieldMessageBank.decode
   local tokenize = FieldMessageTokenizer.tokenize
   FieldMessageBank.decode = function()
@@ -166,7 +153,7 @@ function T.family_summary_attests_coverage_without_erasing_children()
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
   local generation = generationIdFor(Sha256.hex("message summary stage"))
-  publishBank(cache, generation, 542, first, "message-bank-542")
+  publishBank(cache, generation, 542, first)
   local index = {
     schema = FieldMessageCache.INDEX_SCHEMA,
     version = "heartgold",
@@ -180,13 +167,12 @@ function T.family_summary_attests_coverage_without_erasing_children()
     kind = "message-bank",
     key = "global",
     jobKey = "message-bank:global",
-    stageName = "message-summary-partial",
   })
   local ok, summaryErr = pcall(FieldMessageCacheWriter.stageSummary, partial, index, bankMarkers)
   Assert.isFalse(ok, "the summary must refuse incomplete coverage: " .. tostring(summaryErr))
   partial:abort()
   Assert.isFalse(FieldMessageCache.isReady(cache), "an unpublished summary leaves the family incomplete")
-  publishBank(cache, generation, 543, second, "message-bank-543")
+  publishBank(cache, generation, 543, second)
   local complete = PreparedArtifact.new({
     cacheFs = cache,
     generationId = generation,
@@ -194,18 +180,11 @@ function T.family_summary_attests_coverage_without_erasing_children()
     kind = "message-bank",
     key = "global",
     jobKey = "message-bank:global",
-    stageName = "message-summary",
   })
   local summaryMarker = FieldMessageCacheWriter.stageSummary(complete, index, bankMarkers)
   Assert.equal(type(summaryMarker), "string", "the summary stages its completion marker")
   complete:finishSuccess({ marker = summaryMarker })
-  complete:publish({
-    generationId = generation,
-    epoch = 1,
-    kind = "message-bank",
-    key = "global",
-    jobKey = "message-bank:global",
-  })
+  ResidentArtifactFixture.materialize(complete)
   Assert.isTrue(FieldMessageCache.isReady(cache), "full coverage publishes a ready family")
   for _, bankId in ipairs({ 542, 543 }) do
     local bytes = assert(cache:read(FieldMessageCache.bankPath(bankId)), "bank " .. bankId .. " survives its summary")

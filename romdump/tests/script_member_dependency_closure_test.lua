@@ -175,7 +175,8 @@ function T.transitive_closures_survive_sidecar_removal()
   publishMembers(cache, plan)
   removeLegacySidecars(cache)
 
-  Assert.equal(ScriptCacheWriter.writeSummary(cache, plan), MARKER)
+  ScriptCacheBuildFixture.publishSummary(cache, OUTER_GENERATION, plan, "summary")
+  Assert.equal(assert(ScriptCache.loadActive(cache)).marker, MARKER, "the published summary activates its generation")
 
   local active = assert(ScriptCache.loadActive(cache))
   Assert.deepEqual(
@@ -212,7 +213,7 @@ function T.unknown_script_target_fails_the_summary()
   ScriptCacheBuildFixture.publishMember(cache, OUTER_GENERATION, plan, member0, "unknown-target-member-0")
   ScriptCacheBuildFixture.publishMember(cache, OUTER_GENERATION, plan, chainMember1(), "unknown-target-member-1")
 
-  local ok, err = pcall(ScriptCacheWriter.writeSummary, cache, plan)
+  local ok, err = pcall(ScriptCacheBuildFixture.publishSummary, cache, OUTER_GENERATION, plan, "unknown-target-summary")
   Assert.isFalse(ok, "a summary with an unresolvable script target must fail")
   err = err --[[@as { code: string, context: table }]]
   Assert.equal(err.code, "SCRIPT_SUMMARY_INCOMPLETE")

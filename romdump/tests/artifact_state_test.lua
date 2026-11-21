@@ -1,440 +1,297 @@
--- Generation-scoped artifact readiness and controller-owned publication: a
--- cheap per-artifact receipt proves the current generation, while the family
--- payload and its validator stay authoritative. Workers only stage; the
--- controller alone publishes after checking generation, epoch, and job
--- identity, and any publication failure keeps recovery-owned material instead
--- of reporting readiness.
+-- Committed artifact facts and the private artifact output they certify: the
+-- canonical job identity owns one in-memory record, the record travels with
+-- the bytes it describes, and a candidate fact is validated against the
+-- already committed dependency closure before anything becomes visible.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
-local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
-local DerivedCacheState = require("romdump.src.DerivedCacheState")
-local FakeCache = require("tests.support.FakeCache")
-local GameVersion = require("romdump.src.source.GameVersion")
-local Schema = require("libs.script.src.Schema")
-local Sha256 = require("libs.script.src.Sha256")
+local ArtifactState = require("romdump.src.build.ArtifactState")
+local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 
 local T = {}
 
-local HEARTGOLD_SHA1 = GameVersion.VERSIONS.heartgold.sha1
-local RECEIPT_SCHEMA = "g4-derived-receipt-v1"
+local GENERATION = "artifact-facts-test-generation"
+local EPOCH = 1
 
-local function requireReceipts()
-  local ok, receipts = pcall(require, "romdump.src.build.ArtifactState")
-  Assert.isTrue(ok, "the generation-scoped receipt boundary is missing")
-  return receipts
+local function newFacts()
+  return ArtifactState.new(GENERATION)
 end
 
-local function requireStages()
-  local ok, stages = pcall(require, "romdump.src.build.PreparedArtifact")
-  Assert.isTrue(ok, "the production staged-artifact boundary is missing")
-  return assert(stages)
+local function commitMarkerFact(facts, kind, key, marker, dependencies)
+  local record = ArtifactState.prepareFact({
+    kind = kind,
+    key = key,
+    marker = marker,
+    ownedRoots = {},
+    sharedPaths = {},
+    entries = {},
+  }, dependencies or {}, facts)
+  ArtifactState.commitFact(facts, record)
+  return record
 end
 
-local function generationIdFor(producerBody)
-  local identity = DerivedCacheState.current({
-    versionId = "heartgold",
-    romSha1 = HEARTGOLD_SHA1,
-    mode = "development",
-    producerId = "d" .. producerBody,
-    assetRevision = DerivedAssetContract.revision,
-    scriptApi = Schema.API_VERSION,
-  })
-  return assert(identity.generationId)
+-- The canonical key vocabulary is the only way a fact is addressed: a global
+-- family, a decimal member selector, and the field-cell pair are all valid,
+-- while an unknown kind, a bare integer cell, or a path-shaped key is not.
+function T.canonical_keys_are_the_only_fact_identity()
+  Assert.equal(ArtifactState.key("field-camera", "global"), "field-camera:global", "a global family keys by name")
+  Assert.equal(ArtifactState.key("message-bank", "219"), "message-bank:219", "a bank keys by its decimal id")
+  Assert.equal(ArtifactState.key("field-cell", "11-4"), "field-cell:11-4", "a cell keeps its matrix/index pair")
+
+  Assert.isTrue(pcall(ArtifactState.validateKey, "battle-ball", "POKE_BALL"), "a ball keeps its class key")
+  Assert.isFalse(pcall(ArtifactState.validateKey, "battle-ball", "poke_ball"), "a ball key is upper case")
+  Assert.isFalse(pcall(ArtifactState.validateKey, "field-cell", "4"), "a bare integer never addresses a cell")
+  Assert.isFalse(pcall(ArtifactState.validateKey, "message-bank", "../escape"), "a key is never a path")
+  Assert.isFalse(pcall(ArtifactState.validateKey, "not-a-family", "global"), "an unknown kind is refused")
+  Assert.isFalse(pcall(ArtifactState.validateKey, "pc", "4"), "pc artifacts own only the global key")
 end
 
-local function twoGenerations()
-  return generationIdFor(Sha256.hex("first producer tree")), generationIdFor(Sha256.hex("second producer tree"))
+-- A fresh map carries its generation and no records; a foreign generation is
+-- a different map, so the same key never reads across generations.
+function T.maps_are_generation_scoped()
+  local first = newFacts()
+  local second = ArtifactState.new("another-generation")
+  Assert.equal(first.generationId, GENERATION)
+  commitMarkerFact(first, "field-camera", "global", "camera-ready")
+  Assert.notNil(ArtifactState.read(first, "field-camera", "global"), "the committing map holds its record")
+  Assert.isNil(ArtifactState.read(second, "field-camera", "global"), "another generation sees nothing")
+  Assert.isNil(ArtifactState.read(first, "field-weather", "global"), "an uncommitted job reads absent")
 end
 
--- The closed kind vocabulary is owned by the receipt module; fall back to the
--- established worker kind only while that module does not exist yet, so the
--- staging-only scenarios still exercise the current publication behavior.
-local function probeKind()
-  local ok, receipts = pcall(require, "romdump.src.build.ArtifactState")
-  if ok and type(receipts.KINDS) == "table" then
-    local names = {}
-    for name in pairs(receipts.KINDS) do
-      names[#names + 1] = name
-    end
-    table.sort(names)
-    if #names > 0 and receipts.KINDS["map"] == nil then
-      return names[1]
-    end
-  end
-  return "map"
+-- Committing is order-insensitive for independent jobs but never invents a
+-- dependency: a parent whose declared prerequisite is uncommitted is refused
+-- before any record changes.
+function T.preparation_requires_the_committed_dependency_closure()
+  local facts = newFacts()
+  Assert.throws(function()
+    ArtifactState.prepareFact({
+      kind = "message-summary",
+      key = "global",
+      marker = "summary-ready",
+      ownedRoots = {},
+      sharedPaths = {},
+      entries = {},
+    }, { "message-bank:219" }, facts)
+  end, "a parent cannot commit before its declared child")
+
+  commitMarkerFact(facts, "message-bank", "219", "bank-ready")
+  local record = ArtifactState.prepareFact({
+    kind = "message-summary",
+    key = "global",
+    marker = "summary-ready",
+    ownedRoots = { "data/generated/messages" },
+    sharedPaths = {},
+    entries = { { path = "data/generated/messages/index.lua" } },
+  }, { "message-bank:219" }, facts)
+  Assert.deepEqual(record.dependencies, { "message-bank:219" }, "the closure is recorded sorted")
+  Assert.deepEqual(record.ownedRoots, { "data/generated/messages" }, "owned roots are recorded sorted")
+  Assert.deepEqual(record.files, { "data/generated/messages/index.lua" }, "payload files are recorded sorted")
+
+  ArtifactState.commitFact(facts, record)
+  Assert.equal(
+    ArtifactState.read(facts, "message-summary", "global").marker,
+    "summary-ready",
+    "the committed record is the one the lookup returns"
+  )
+  Assert.throws(function()
+    ArtifactState.commitFact(facts, record)
+  end, "a committed identity is never written twice")
 end
 
-local function newCache(backend)
-  return CacheFs.forVersion("heartgold", backend or FakeCache.new())
+-- A zero-file artifact is legal (a summary over committed jobs owns no payload
+-- of its own), and duplicate entries are a preparation failure.
+function T.zero_file_artifacts_are_legal_and_duplicates_are_not()
+  local facts = newFacts()
+  local record = commitMarkerFact(facts, "audio-summary", "global", "audio-ready")
+  Assert.deepEqual(record.files, {}, "a completion-only artifact carries no files")
+  Assert.throws(function()
+    ArtifactState.prepareFact({
+      kind = "party",
+      key = "global",
+      marker = "party-ready",
+      ownedRoots = {},
+      sharedPaths = {},
+      entries = { { path = "data/generated/party/manifest.lua" }, { path = "data/generated/party/manifest.lua" } },
+    }, {}, facts)
+  end, "one path cannot be listed twice")
+  Assert.throws(function()
+    ArtifactState.prepareFact({
+      kind = "party",
+      key = "global",
+      marker = "",
+      ownedRoots = {},
+      sharedPaths = {},
+      entries = {},
+    }, {}, facts)
+  end, "a fact without a marker proves nothing")
 end
 
-local function stageIdentity(kind, key, generation, epoch, stageName)
-  return {
-    generationId = generation,
-    epoch = epoch,
+local function newArtifact(kind, key, facts)
+  return PreparedArtifact.new({
+    cacheFs = { versionId = "heartgold", resolveAsset = function() end },
+    facts = facts,
+    generationId = GENERATION,
+    epoch = EPOCH,
     kind = kind,
     key = key,
     jobKey = kind .. ":" .. key,
-    stageName = stageName,
+  })
+end
+
+-- The private output map is the producer's whole working surface: writes stay
+-- invisible to every other owner until the artifact seals, and the seal
+-- carries exactly those bytes under the job's ownership declarations.
+function T.private_output_seals_into_the_transported_entries()
+  local artifact = newArtifact("party", "global", newFacts())
+  artifact:addOwnedRoot("data/generated/party")
+  artifact:addSharedFile("assets/generated/shared/panel.png")
+  artifact:write("data/generated/party/manifest.lua", "return {}\n")
+  artifact:writeLua("data/generated/party/provenance.lua", { schema = "provenance" })
+  artifact:write("assets/generated/shared/panel.png", "PNGDATA")
+
+  Assert.equal(artifact:read("data/generated/party/manifest.lua"), "return {}\n", "a written string reads back")
+  Assert.deepEqual(
+    artifact:loadLua("data/generated/party/provenance.lua"),
+    { schema = "provenance" },
+    "a written Lua record loads back"
+  )
+  Assert.isTrue(artifact:exists("data/generated/party", "directory"), "a written file implies its directory")
+  Assert.deepEqual(
+    artifact:getDirectoryItems("data/generated/party"),
+    { "manifest.lua", "provenance.lua" },
+    "immediate children list sorted"
+  )
+
+  local sealed = artifact:finishSuccess({ marker = "party-ready" })
+  Assert.equal(sealed.marker, "party-ready", "the seal carries the marker")
+  Assert.deepEqual(sealed.ownedRoots, { "data/generated/party" }, "owned roots travel with the seal")
+  Assert.deepEqual(sealed.sharedPaths, { "assets/generated/shared/panel.png" }, "shared paths travel with the seal")
+  local paths = {}
+  for index, entry in ipairs(sealed.entries) do
+    paths[index] = entry.path
+    Assert.equal(entry.size, entry.data:getSize(), "each entry reports its own size")
+  end
+  Assert.deepEqual(paths, {
+    "assets/generated/shared/panel.png",
+    "data/generated/party/manifest.lua",
+    "data/generated/party/provenance.lua",
+  }, "entries are sorted by logical path")
+  Assert.throws(function()
+    artifact:write("data/generated/party/late.lua", "return 1\n")
+  end, "a sealed artifact accepts no further output")
+end
+
+-- Ownership declarations stay disjoint: roots never overlap, a shared file is
+-- never owned, and a shared file never hides under an owned root.
+function T.ownership_declarations_stay_disjoint()
+  local artifact = newArtifact("field-camera", "global", newFacts())
+  artifact:addOwnedRoot("data/generated/field")
+  artifact:addOwnedRoot("data/generated/field")
+  Assert.throws(function()
+    artifact:addOwnedRoot("data/generated/field/30")
+  end, "an overlapping root is refused")
+  Assert.throws(function()
+    artifact:addSharedFile("data/generated/field/30/atlas.png")
+  end, "a shared file may not hide inside an owned root")
+  artifact:addSharedFile("assets/generated/shared/atlas.png")
+  Assert.throws(function()
+    artifact:addOwnedRoot("assets/generated/shared")
+  end, "an owned root may not swallow a shared file")
+end
+
+-- A deferred image keeps the artifact open: sealing without it fails, sealing
+-- with an image outside the owned roots fails, and abort publishes nothing.
+function T.deferred_images_must_be_staged_inside_the_owned_roots()
+  local artifact = newArtifact("items", "global", newFacts())
+  artifact:addOwnedRoot("assets/generated/item")
+  artifact:deferImage("assets/generated/item/icons.png", 2, 2, string.rep("r", 2 * 2 * 4))
+  Assert.equal(#artifact:pendingImages(), 1, "the pending image waits for its continuation")
+  Assert.isTrue(artifact:hasDeferredImage("assets/generated/item/icons.png"), "the image is registered by path")
+  Assert.throws(function()
+    artifact:finishSuccess({ marker = "items-ready" })
+  end, "an unwritten deferred image cannot seal")
+
+  local escaping = newArtifact("items", "global", newFacts())
+  escaping:addOwnedRoot("assets/generated/item")
+  escaping:deferImage("assets/generated/other/icons.png", 2, 2, string.rep("r", 2 * 2 * 4))
+  escaping:write("assets/generated/other/icons.png", "PNGDATA")
+  Assert.throws(function()
+    escaping:finishSuccess({ marker = "items-ready" })
+  end, "a deferred image outside the owned roots cannot seal")
+
+  local aborted = newArtifact("items", "global", newFacts())
+  aborted:write("data/generated/item/marker.lua", "return 1\n")
+  Assert.isTrue(aborted:abort(), "abort drops the private output")
+  Assert.isNil(aborted:read("data/generated/item/marker.lua"), "aborted output is gone")
+  Assert.throws(function()
+    aborted:finishSuccess({ marker = "items-ready" })
+  end, "an aborted artifact cannot seal")
+end
+
+-- A failure record crosses the transport as plain data, and a failed artifact
+-- publishes nothing: its private output is released and no marker exists.
+function T.failure_seals_a_transport_record_and_drops_output()
+  local artifact = newArtifact("party", "global", newFacts())
+  artifact:write("data/generated/party/manifest.lua", "return {}\n")
+  local Errors = require("libs.errors.src.Errors")
+  local record = artifact:finishFailure(
+    Errors.new("PARTY_CACHE_BUNDLE_INVALID", "bad bundle", { path = "manifest" }),
+    "trace"
+  )
+  Assert.equal(record.code, "PARTY_CACHE_BUNDLE_INVALID", "a typed cause keeps its code")
+  Assert.equal(record.traceback, "trace", "the throw-site trace rides along")
+  Assert.isNil(artifact:read("data/generated/party/manifest.lua"), "failed output is released")
+  Assert.equal(artifact:status(), "failed", "the artifact records its failure")
+  Assert.throws(function()
+    artifact:finishSuccess({ marker = "party-ready" })
+  end, "a failed artifact cannot seal success")
+end
+
+-- The pending PNG handoff resumes the same output: the continuation rebuilds
+-- the artifact from its packet, writes the images, and seals once.
+function T.pending_packets_resume_the_same_output()
+  local artifact = newArtifact("items", "global", newFacts())
+  artifact:addOwnedRoot("assets/generated/item")
+  artifact:write("data/generated/item/manifest.lua", "return {}\n")
+  artifact:deferImage("assets/generated/item/icons.png", 2, 2, string.rep("r", 2 * 2 * 4))
+  local captured = artifact:captureOutput()
+  local packet = {
+    generationId = GENERATION,
+    epoch = EPOCH,
+    kind = "items",
+    key = "global",
+    jobKey = "items:global",
+    marker = "items-ready",
+    ownedRoots = captured.ownedRoots,
+    sharedPaths = captured.sharedPaths,
+    entries = captured.entries,
+    images = artifact:pendingImages(),
   }
-end
 
-local function countWrites(backend)
-  local calls = 0
-  local original = backend.write
-  backend.write = function(self, path, data)
-    calls = calls + 1
-    return original(self, path, data)
-  end
-  return function()
-    backend.write = original
-    return calls
-  end
-end
-
-local function table_merge(base, extra)
-  local merged = {}
-  for key, value in pairs(base) do
-    merged[key] = value
-  end
-  for key, value in pairs(extra) do
-    merged[key] = value
-  end
-  return merged
-end
-
-function T.receipt_without_matching_family_payload_is_not_ready()
-  local receipts = requireReceipts()
-  local backend = FakeCache.new()
-  local cache = newCache(backend)
-  local generation = generationIdFor(Sha256.hex("receipt-only producer"))
-  local kind = probeKind()
-  cache:writeLua(receipts.path(kind, "61"), {
-    schema = RECEIPT_SCHEMA,
-    generationId = generation,
-    kind = kind,
-    key = "61",
-    marker = "complete",
+  local resumed = PreparedArtifact.fromPending(packet, {
+    cacheFs = { versionId = "heartgold" },
+    facts = newFacts(),
   })
-  local stopCounting = countWrites(backend)
-  local receipt = receipts.read(cache, generation, kind, "61")
-  Assert.notNil(receipt, "a staged current-generation receipt must be readable")
-  Assert.equal(stopCounting(), 0, "a readiness check must not compile or write anything")
-  local familyPayloadPresent = cache:exists("families/" .. kind .. "/61/payload", "file")
+  Assert.equal(resumed:read("data/generated/item/manifest.lua"), "return {}\n", "the resumed output keeps its bytes")
+  Assert.equal(#resumed:pendingImages(), 1, "the resumed artifact still owns its pending image")
+  resumed:write("assets/generated/item/icons.png", "PNGDATA")
+  local sealed = resumed:finishSuccess({ marker = packet.marker })
+  Assert.equal(sealed.marker, "items-ready", "the continuation seals the parent result")
+end
+
+-- A shared PNG whose bytes differ only in their encoder's deflate output is
+-- the same content; any other difference is a real contradiction.
+function T.shared_pngs_compare_by_decoded_content()
+  local host = love
+  local function png(compressed)
+    return host.data.newByteData(compressed)
+  end
+  local left = png("same")
+  local right = png("same")
+  Assert.isTrue(PreparedArtifact.equalContent("assets/generated/a.png", left, right), "equal bytes compare equal")
   Assert.isFalse(
-    receipt ~= nil and familyPayloadPresent,
-    "a receipt alone must not report readiness while its family payload is missing"
+    PreparedArtifact.equalContent("assets/generated/a.png", png("left"), png("right")),
+    "non-PNG bytes compare literally"
   )
-end
-
-function T.previous_generation_receipt_is_cold()
-  local receipts = requireReceipts()
-  local cache = newCache()
-  local oldGeneration, currentGeneration = twoGenerations()
-  local kind = probeKind()
-  cache:writeLua(receipts.path(kind, "62"), {
-    schema = RECEIPT_SCHEMA,
-    generationId = oldGeneration,
-    kind = kind,
-    key = "62",
-    marker = "complete",
-  })
-  cache:write("families/" .. kind .. "/62/marker", "complete")
-  local receipt, reason = receipts.read(cache, currentGeneration, kind, "62")
-  Assert.isNil(receipt, "an old-generation receipt must read as cold under a new generation")
-  Assert.notNil(reason, "a cold receipt must name its reason")
-end
-
--- A message bank receipt stamped by the previous asset revision cannot be
--- reused: the release identity mixes that revision, so a receipt written
--- before the compact message representation reads as cold even when the
--- version, ROM identity, and release producer identity are unchanged.
-function T.previous_asset_revision_message_receipt_is_cold()
-  local receipts = requireReceipts()
-  local cache = newCache()
-  local producerId = "r3"
-  local previous = DerivedCacheState.current({
-    versionId = "heartgold",
-    romSha1 = HEARTGOLD_SHA1,
-    mode = "release",
-    producerId = producerId,
-    assetRevision = 18,
-    scriptApi = Schema.API_VERSION,
-  })
-  local current = DerivedCacheState.currentForSelection({
-    versionId = "heartgold",
-    romSha1 = HEARTGOLD_SHA1,
-    producerId = producerId,
-  })
-  Assert.isTrue(
-    previous.generationId ~= current.generationId,
-    "the asset revision alone must move the release generation"
-  )
-  cache:writeLua(receipts.path("message-bank", "219"), {
-    schema = RECEIPT_SCHEMA,
-    generationId = previous.generationId,
-    kind = "message-bank",
-    key = "219",
-    marker = "field-message-cache-v5:rom-sha:dependency-sha",
-  })
-  local receipt, reason = receipts.read(cache, assert(current.generationId), "message-bank", "219")
-  Assert.isNil(receipt, "a previous-revision message receipt must read as cold")
-  Assert.notNil(reason, "a cold receipt must name its reason")
-end
-
-function T.late_completion_cannot_publish()
-  local stages = requireStages()
-  local backend = FakeCache.new()
-  local cache = newCache(backend)
-  cache:recoverPublication()
-  local kind = probeKind()
-  local oldGeneration, currentGeneration = twoGenerations()
-  local artifact = stages.new(table_merge(stageIdentity(kind, "63", oldGeneration, 1, "late-completion"), {
-    cacheFs = cache,
-  }))
-  artifact:stageFs():write("maps/63/complete", "ready")
-  artifact:addOwnedRoot("maps/63")
-  artifact:finishSuccess({ marker = "complete" })
-  local ok, err = pcall(function()
-    artifact:publish({
-      generationId = currentGeneration,
-      epoch = 2,
-      kind = kind,
-      key = "63",
-      jobKey = kind .. ":63",
-    })
-  end)
-  Assert.isFalse(ok, "a late completion from a retired generation and epoch must not publish: " .. tostring(err))
-  Assert.isFalse(cache:exists("maps/63/complete"), "a rejected late stage must leave live bytes untouched")
-  Assert.isTrue(artifact:isAbortable(), "an unpublished late stage must stay safely abortable")
-  artifact:abort()
-  Assert.isFalse(cache:exists("maps/63/complete"), "aborting a late stage must not touch live data")
-end
-
-function T.replacing_an_index_file_leaves_children_untouched()
-  local stages = requireStages()
-  local cache = newCache()
-  cache:recoverPublication()
-  local kind = probeKind()
-  local generation = generationIdFor(Sha256.hex("index-file producer"))
-  local function publishDirectory(key, payload)
-    local artifact = stages.new(table_merge(stageIdentity(kind, key, generation, 1, "child-" .. key), {
-      cacheFs = cache,
-    }))
-    artifact:stageFs():write("catalog/children/" .. key .. "/payload", payload)
-    artifact:addOwnedRoot("catalog/children/" .. key)
-    artifact:finishSuccess({ marker = "complete" })
-    artifact:publish({
-      generationId = generation,
-      epoch = 1,
-      kind = kind,
-      key = key,
-      jobKey = kind .. ":" .. key,
-    })
-  end
-  publishDirectory("70", "first child")
-  publishDirectory("71", "second child")
-  local beforeFirst = cache:read("catalog/children/70/payload")
-  local beforeSecond = cache:read("catalog/children/71/payload")
-
-  local index = stages.new(table_merge(stageIdentity(kind, "global", generation, 1, "index-replacement"), {
-    cacheFs = cache,
-  }))
-  index:stageFs():write("catalog/index.lua", "return { children = { 70, 71 } }")
-  index:addOwnedRoot("catalog/index.lua")
-  index:finishSuccess({ marker = "complete" })
-  local ok, err = pcall(function()
-    index:publish({
-      generationId = generation,
-      epoch = 1,
-      kind = kind,
-      key = "global",
-      jobKey = kind .. ":global",
-    })
-  end)
-  Assert.isTrue(ok, "an exact index file must publish as its own root: " .. tostring(err))
-  Assert.equal(
-    cache:read("catalog/children/70/payload"),
-    beforeFirst,
-    "publishing an index file must not erase its children"
-  )
-  Assert.equal(
-    cache:read("catalog/children/71/payload"),
-    beforeSecond,
-    "publishing an index file must not alter its children"
-  )
-  Assert.equal(cache:read("catalog/index.lua"), "return { children = { 70, 71 } }")
-end
-
-function T.failed_publication_keeps_recovery_material_and_reports_not_ready()
-  local receipts = requireReceipts()
-  local stages = requireStages()
-  local backend = FakeCache.new()
-  local cache = newCache(backend)
-  cache:recoverPublication()
-  local kind = probeKind()
-  local generation = generationIdFor(Sha256.hex("recovery producer"))
-  local first = stages.new(table_merge(stageIdentity(kind, "64", generation, 1, "recovery-first"), {
-    cacheFs = cache,
-  }))
-  first:stageFs():write("maps/64/complete", "first")
-  first:addOwnedRoot("maps/64")
-  first:finishSuccess({ marker = "complete" })
-  first:publish({
-    generationId = generation,
-    epoch = 1,
-    kind = kind,
-    key = "64",
-    jobKey = kind .. ":64",
-  })
-
-  local second = stages.new(table_merge(stageIdentity(kind, "64", generation, 1, "recovery-second"), {
-    cacheFs = cache,
-  }))
-  second:stageFs():write("maps/64/complete", "second")
-  second:addOwnedRoot("maps/64")
-  second:finishSuccess({ marker = "complete" })
-  local originalReplace = backend.replace
-  backend.replace = function()
-    error("injected rename failure", 0)
-  end
-  local ok = pcall(function()
-    second:publish({
-      generationId = generation,
-      epoch = 1,
-      kind = kind,
-      key = "64",
-      jobKey = kind .. ":64",
-    })
-  end)
-  backend.replace = originalReplace
-  Assert.isFalse(ok, "a publication whose rename fails must report failure, not readiness")
-  cache:recoverPublication()
-  Assert.equal(cache:read("maps/64/complete"), "first", "a failed publication must preserve the prior ready artifact")
-  local receipt = receipts.read(cache, generation, kind, "64")
-  Assert.notNil(receipt, "the prior successful receipt must survive the failed replacement")
-  assert(receipt, "a surviving receipt is a record")
-  Assert.equal(receipt.marker, "complete")
-  Assert.isTrue(second:abort(), "after journal recovery the failed stage is disposable worker scratch again")
-  Assert.equal(cache:read("maps/64/complete"), "first", "aborting a recovered stage must not touch the live artifact")
-end
-
-function T.conflicting_shared_bytes_are_reported()
-  local stages = requireStages()
-  local cache = newCache()
-  cache:recoverPublication()
-  local kind = probeKind()
-  local generation = generationIdFor(Sha256.hex("shared-conflict producer"))
-  local first = stages.new(table_merge(stageIdentity(kind, "65", generation, 1, "conflict-first"), {
-    cacheFs = cache,
-  }))
-  first:stageFs():write("geometry/shared", "first")
-  first:addSharedFile("geometry/shared")
-  first:stageFs():write("maps/65/complete", "ready")
-  first:addOwnedRoot("maps/65")
-  first:finishSuccess({ marker = "complete" })
-  first:publish({
-    generationId = generation,
-    epoch = 1,
-    kind = kind,
-    key = "65",
-    jobKey = kind .. ":65",
-  })
-
-  local second = stages.new(table_merge(stageIdentity(kind, "66", generation, 1, "conflict-second"), {
-    cacheFs = cache,
-  }))
-  second:stageFs():write("geometry/shared", "different")
-  second:addSharedFile("geometry/shared")
-  second:stageFs():write("maps/66/complete", "ready")
-  second:addOwnedRoot("maps/66")
-  -- Worker-side reconciliation seals shared proof before success: the
-  -- contradiction fails here, never reaching controller publication.
-  local ok, failure = pcall(function()
-    second:finishSuccess({ marker = "complete" })
-  end)
-  Assert.isFalse(
-    ok,
-    "a staged shared file that contradicts live bytes is corruption and must fail before any reference is exposed"
-  )
-  Assert.isTrue(
-    tostring(failure):find("PREPARED_SHARED_CONFLICT", 1, true) ~= nil,
-    "the worker reports the shared contradiction"
-  )
-  second:abort()
-  Assert.equal(cache:read("geometry/shared"), "first", "a shared conflict must not silently reuse either byte sequence")
-end
-
-function T.published_outputs_and_receipt_appear_together()
-  local receipts = requireReceipts()
-  local stages = requireStages()
-  local cache = newCache()
-  cache:recoverPublication()
-  local kind = probeKind()
-  local generation = generationIdFor(Sha256.hex("atomic-publish producer"))
-  local artifact = stages.new(table_merge(stageIdentity(kind, "67", generation, 1, "atomic-publish"), {
-    cacheFs = cache,
-  }))
-  artifact:stageFs():write("geometry/shared67", "shared")
-  artifact:addSharedFile("geometry/shared67")
-  artifact:stageFs():write("maps/67/complete", "ready")
-  artifact:stageFs():write("maps/67/scene.lua", "return {}")
-  artifact:addOwnedRoot("maps/67")
-  artifact:finishSuccess({ marker = "complete" })
-  local before = receipts.read(cache, generation, kind, "67")
-  Assert.isNil(before, "nothing may read as ready before its publication completes")
-  artifact:publish({
-    generationId = generation,
-    epoch = 1,
-    kind = kind,
-    key = "67",
-    jobKey = kind .. ":67",
-  })
-  Assert.equal(cache:read("maps/67/complete"), "ready")
-  Assert.equal(cache:read("maps/67/scene.lua"), "return {}")
-  Assert.equal(cache:read("geometry/shared67"), "shared")
-  local receipt = receipts.read(cache, generation, kind, "67")
-  Assert.notNil(receipt, "a successful publication must leave a matching current-generation receipt")
-  assert(receipt, "a published receipt is a record")
-  Assert.equal(receipt.generationId, generation)
-  Assert.equal(receipt.kind, kind)
-  Assert.equal(receipt.key, "67")
-  Assert.equal(receipt.marker, "complete")
-end
-
-function T.colliding_stage_name_is_rejected_before_deletion()
-  local stages = requireStages()
-  local cache = newCache()
-  cache:recoverPublication()
-  local kind = probeKind()
-  local generation = generationIdFor(Sha256.hex("stage-collision producer"))
-  local first = stages.new(table_merge(stageIdentity(kind, "68", generation, 1, "collision"), {
-    cacheFs = cache,
-  }))
-  first:stageFs():write("maps/68/complete", "staged")
-  local ok, err = pcall(function()
-    stages.new(table_merge(stageIdentity(kind, "69", generation, 1, "collision"), {
-      cacheFs = cache,
-    }))
-  end)
-  Assert.isFalse(ok, "a new stage must reject a colliding stage name instead of clearing it: " .. tostring(err))
-  Assert.equal(
-    first:stageFs():read("maps/68/complete"),
-    "staged",
-    "rejecting a collision must leave the existing staged material alone"
-  )
-  cache:recoverPublication()
-  first:addOwnedRoot("maps/68")
-  first:finishSuccess({ marker = "complete" })
-  first:publish({
-    generationId = generation,
-    epoch = 1,
-    kind = kind,
-    key = "68",
-    jobKey = kind .. ":68",
-  })
-  Assert.equal(cache:read("maps/68/complete"), "staged", "the surviving stage must still publish normally")
 end
 
 return { tests = T }

@@ -28,13 +28,13 @@ local function writeFiles(stage, files, root)
 end
 
 local function stageFamily(artifact, family, bundle, generationId)
-  assert(artifact and type(artifact.stageFs) == "function", "startup staging requires a PreparedArtifact")
+  assert(artifact and type(artifact.write) == "function", "startup staging requires a PreparedArtifact")
   assert(type(bundle) == "table" and type(bundle.manifest) == "table", "startup compiler bundle is invalid")
   assert(type(generationId) == "string" and generationId ~= "", "startup generation identity is required")
   local manifest = copyManifest(bundle.manifest, generationId)
   local assetRoot = "assets/generated/startup/" .. family
   local manifestPath = StartupAssetCache.titlePath()
-  local stage = artifact:stageFs()
+  local stage = artifact
 
   artifact:addOwnedRoot(manifestPath)
   artifact:addOwnedRoot(assetRoot)
@@ -68,7 +68,7 @@ end
 ---@param generationId string
 ---@return string
 function StartupCacheWriter.stageLoader(artifact, bundle, generationId)
-  assert(artifact and type(artifact.stageFs) == "function", "startup staging requires a PreparedArtifact")
+  assert(artifact and type(artifact.write) == "function", "startup staging requires a PreparedArtifact")
   assert(type(bundle) == "table" and type(bundle.manifest) == "table", "loader bundle requires its manifest")
   assert(type(bundle.atlases) == "table", "loader bundle requires compiled atlases")
   assert(type(generationId) == "string" and generationId ~= "", "startup generation identity is required")
@@ -94,7 +94,7 @@ function StartupCacheWriter.stageLoader(artifact, bundle, generationId)
     count = count + 1
   end
   assert(count == 18, "one shared catalog stages exactly eighteen atlases")
-  local stage = artifact:stageFs()
+  local stage = artifact
   artifact:addOwnedRoot(manifestPath)
   artifact:addOwnedRoot(assetRoot)
   writeFiles(stage, files, assetRoot)

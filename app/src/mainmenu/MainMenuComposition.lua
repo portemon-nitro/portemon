@@ -1,6 +1,5 @@
 -- Constructs the app-owned Main Menu and transfers its renderer resources.
 
-local CacheFs = require("libs.storage.src.CacheFs")
 local SaveFs = require("libs.storage.src.SaveFs")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
@@ -11,6 +10,7 @@ local MainMenuState = require("app.src.mainmenu.MainMenuState")
 
 ---@class MainMenuCompositionOptions
 ---@field versionId string
+---@field cacheFs table<string, unknown> selected epoch's installed generated view
 ---@field onResult fun(result: table<string, unknown>)
 ---@field width number?
 ---@field height number?
@@ -24,10 +24,10 @@ function MainMenuComposition.new(options)
   assert(type(options) == "table", "Main Menu composition needs options")
   assert(type(options.versionId) == "string" and options.versionId ~= "", "Main Menu needs a selected version")
   assert(type(options.onResult) == "function", "Main Menu needs a result handler")
+  local versionCacheFs = assert(options.cacheFs, "Main Menu needs the selected epoch's installed generated view")
 
   local displayContext = DisplayContext.new({})
   local saveStore = GameSaveStore.new(SaveFs.global())
-  local versionCacheFs = CacheFs.forVersion(options.versionId)
   -- The menu stages its own standalone image owner: the menu lifetime
   -- never overlaps field ownership, so no pool is shared or handed off.
   -- A cache no pool can serve (headless or test doubles) keeps the

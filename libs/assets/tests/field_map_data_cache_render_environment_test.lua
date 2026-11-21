@@ -11,6 +11,7 @@ local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMapDataCacheWriter = require("romdump.src.digest.field.FieldMapDataCacheWriter")
 local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
 local Fixture = require("tests.support.FieldMapDataFixture")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 local HgssFieldEdgeColors = require("romdump.src.digest.field.HgssFieldEdgeColors")
 local HgssFieldFog = require("romdump.src.digest.field.HgssFieldFog")
 
@@ -46,7 +47,9 @@ local function publishedWith(mutator)
   local bundle = compile()
   mutator(bundle.field)
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldMapDataCacheWriter.write(cache, bundle)
+  ResidentArtifactFixture.publish(cache, "map-data", tostring(bundle.mapId), function(artifact)
+    return FieldMapDataCacheWriter.stage(artifact, bundle)
+  end)
   return cache, bundle
 end
 
@@ -120,7 +123,9 @@ end
 function T.previous_schema_record_fails_readiness()
   local bundle = compile()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldMapDataCacheWriter.write(cache, bundle)
+  ResidentArtifactFixture.publish(cache, "map-data", tostring(bundle.mapId), function(artifact)
+    return FieldMapDataCacheWriter.stage(artifact, bundle)
+  end)
   -- A leftover previous-schema artifact on disk never reads as current:
   -- the writer itself refuses to publish one, so place the stale bytes
   -- directly and prove readiness still rejects them.

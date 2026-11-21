@@ -21,7 +21,7 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local LocalClock = require("game.src.LocalClock")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local MonCache = require("libs.assets.src.MonCache")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local ItemCache = require("libs.assets.src.ItemCache")
@@ -67,7 +67,7 @@ local PROGRESS_40FE = FieldScriptSymbols.variablesByName.VAR_UNK_40FE
 -- shrine's EVENT_CELEBI trigger reads. Level and met details never enter
 -- the trigger contract.
 local function leadBucket(versionId, species, fateful)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local monRoot = MonCache.loadCatalog(cacheFs)
   local itemCatalog = ItemCatalog.new(ItemCache.loadCatalog(cacheFs))
   local monCatalog = MonCatalog.new(monRoot, itemCatalog)

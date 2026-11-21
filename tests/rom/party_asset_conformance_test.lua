@@ -22,6 +22,7 @@ local RgbaImage = require("romdump.src.digest.ui.RgbaImage")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local RomSuite = require("tests.rom.support.RomSuite")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -285,7 +286,9 @@ function T.failed_publication_preserves_the_prior_family(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion(versionId, backend)
-  Assert.isTrue(PartyCacheWriter.write(cache, bundle), "the real bundle publishes")
+  Assert.isTrue(ResidentArtifactFixture.publish(cache, "party", "global", function(artifact)
+      return PartyCacheWriter.stage(artifact, bundle)
+    end), "the real bundle publishes")
   Assert.isTrue(PartyCache.isReady(cache, bundle.marker), "the real family reads as ready")
   local broken = {
     marker = bundle.marker .. "-broken",
@@ -299,7 +302,9 @@ function T.failed_publication_preserves_the_prior_family(romFs, versionId)
   local victim = PartyCache.referencedPaths(bundle.manifest)[1]
   broken.assets[victim] = nil
   Assert.throws(function()
-    PartyCacheWriter.write(cache, broken)
+    ResidentArtifactFixture.publish(cache, "party", "global", function(artifact)
+      return PartyCacheWriter.stage(artifact, broken)
+    end)
   end)
   Assert.isTrue(PartyCache.isReady(cache, bundle.marker), "the prior family remains valid")
 end
@@ -345,7 +350,9 @@ function T.party_markers_bind_rom_identity_and_content(romFs, versionId)
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion(versionId, backend)
   local PartyCacheWriter = require("romdump.src.digest.ui.PartyCacheWriter")
-  Assert.isTrue(PartyCacheWriter.write(cache, bundle), "the real bundle publishes")
+  Assert.isTrue(ResidentArtifactFixture.publish(cache, "party", "global", function(artifact)
+      return PartyCacheWriter.stage(artifact, bundle)
+    end), "the real bundle publishes")
   Assert.isTrue(PartyCache.isReady(cache, bundle.marker), "the true marker reads as ready")
   local forged = PartyCache.FORMAT .. ":" .. string.rep("0", 40) .. ":" .. depHash
   Assert.isFalse(PartyCache.isReady(cache, forged), "a marker with a foreign ROM identity never reads as ready")

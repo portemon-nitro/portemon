@@ -4,7 +4,7 @@
 -- every emote billboard composites in the sprite layer.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldActorEmote = require("libs.hgss.src.actors.FieldActorEmote")
 local FieldActorEmoteRenderer = require("libs.hgss.src.presentation.FieldActorEmoteRenderer")
 local FieldActorEmoteRuntime = require("game.hgss.src.field.FieldActorEmoteRuntime")
@@ -47,7 +47,7 @@ local function assertSpriteItems(items, label)
 end
 
 local function runVersion(scope, versionId)
-  local cache = CacheFs.forVersion(versionId)
+  local cache = GeneratedCacheFixture.reader(versionId)
   local fieldEffects = FieldEntranceIndicatorRuntime.load(cache)
   local models, reactionTicks = FieldActorEmoteRuntime.load(cache, fieldEffects.effects)
   local imagePool = ImageAssetPool.new(cache)

@@ -4,9 +4,9 @@
 -- roles, the 228-member preview archive deduplicates to the 76 selected
 -- triples with their decoded palette/flip geometry, the generated manifest
 -- carries only semantic keys, and the publication matrix (stage write
--- failure, stage validation failure, first/second publish rename failure)
--- reuses ArtifactPublisher through a FakeCache so the previous ready class
--- stays readable and the marker never claims an incomplete class.
+-- failure, stage validation failure) stages through a prepared artifact over a
+-- FakeCache so the previous ready class stays readable and the marker never
+-- claims an incomplete class.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -22,6 +22,7 @@ local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
 local FieldEntryFixture = require("tests.support.FieldEntryFixture")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
 
@@ -598,7 +599,9 @@ function T.writer_commits_marker_last_and_reads_back()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(compile(romFs, sha1, hashLua))
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldEntryCacheWriter.write(cache, bundle)
+  ResidentArtifactFixture.publish(cache, "field-entry", "global", function(artifact)
+      return FieldEntryCacheWriter.stage(artifact, bundle)
+    end)
   Assert.isTrue(FieldEntryAssetCache.isReady(cache, bundle.marker))
   Assert.isFalse(FieldEntryAssetCache.isReady(cache, bundle.marker .. "-stale"))
   local manifest = assert(cache:loadLua(FieldEntryAssetCache.manifestPath()))
@@ -610,7 +613,9 @@ function T.failed_rebuild_preserves_the_previous_class()
   local first = assert(compile(romFs, sha1, hashLua))
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
-  FieldEntryCacheWriter.write(cache, first)
+  ResidentArtifactFixture.publish(cache, "field-entry", "global", function(artifact)
+      return FieldEntryCacheWriter.stage(artifact, first)
+    end)
   local originalWrite = backend.write
   backend.write = function(self, path, data)
     if path:find(FieldEntryAssetCache.assetDir(), 1, true) then
@@ -621,13 +626,17 @@ function T.failed_rebuild_preserves_the_previous_class()
   local second = assert(compile(romFs, sha1, hashLua))
   second.marker = FieldEntryAssetCache.marker("rom-sha", "new-dep-hash")
   Assert.throws(function()
-    FieldEntryCacheWriter.write(cache, second)
+    ResidentArtifactFixture.publish(cache, "field-entry", "global", function(artifact)
+      return FieldEntryCacheWriter.stage(artifact, second)
+    end)
   end)
   Assert.isTrue(FieldEntryAssetCache.isReady(cache, first.marker), "the previous class remains ready")
   Assert.equal(cache:read(FieldEntryAssetCache.markerPath()), first.marker, "no new marker leaked")
   Assert.isNil(backend:getInfo("staging/heartgold/field-entry"), "the stage is cleaned on failure")
   backend.write = originalWrite
-  FieldEntryCacheWriter.write(cache, second)
+  ResidentArtifactFixture.publish(cache, "field-entry", "global", function(artifact)
+      return FieldEntryCacheWriter.stage(artifact, second)
+    end)
   Assert.isTrue(FieldEntryAssetCache.isReady(cache, second.marker), "a retry publishes the new class")
 end
 
@@ -635,64 +644,18 @@ function T.stage_validation_failure_is_typed_and_preserves_the_previous_class()
   local romFs, sha1, hashLua = fixture()
   local first = assert(compile(romFs, sha1, hashLua))
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldEntryCacheWriter.write(cache, first)
+  ResidentArtifactFixture.publish(cache, "field-entry", "global", function(artifact)
+      return FieldEntryCacheWriter.stage(artifact, first)
+    end)
   local second = assert(compile(romFs, sha1, hashLua))
   second.manifest.bannerStyles[8] = nil
   second.marker = FieldEntryAssetCache.marker("rom-sha", "new-dep-hash")
   Assert.throws(function()
-    FieldEntryCacheWriter.write(cache, second)
+    ResidentArtifactFixture.publish(cache, "field-entry", "global", function(artifact)
+      return FieldEntryCacheWriter.stage(artifact, second)
+    end)
   end)
   Assert.isTrue(FieldEntryAssetCache.isReady(cache, first.marker), "the previous class remains ready")
-  Assert.equal(cache:read(FieldEntryAssetCache.markerPath()), first.marker)
-end
-
-function T.first_publish_rename_failure_rolls_back()
-  local romFs, sha1, hashLua = fixture()
-  local first = assert(compile(romFs, sha1, hashLua))
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
-  FieldEntryCacheWriter.write(cache, first)
-  local originalReplace = backend.replace
-  local calls = 0
-  backend.replace = function(self, source, destination)
-    calls = calls + 1
-    if calls == 1 then
-      error("injected rename failure")
-    end
-    return originalReplace(self, source, destination)
-  end
-  local second = assert(compile(romFs, sha1, hashLua))
-  second.marker = FieldEntryAssetCache.marker("rom-sha", "new-dep-hash")
-  Assert.throws(function()
-    FieldEntryCacheWriter.write(cache, second)
-  end)
-  backend.replace = originalReplace
-  Assert.isTrue(FieldEntryAssetCache.isReady(cache, first.marker), "the previous class remains ready after rollback")
-  Assert.equal(cache:read(FieldEntryAssetCache.markerPath()), first.marker)
-end
-
-function T.second_publish_rename_failure_rolls_back_both_roots()
-  local romFs, sha1, hashLua = fixture()
-  local first = assert(compile(romFs, sha1, hashLua))
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
-  FieldEntryCacheWriter.write(cache, first)
-  local originalReplace = backend.replace
-  local calls = 0
-  backend.replace = function(self, source, destination)
-    calls = calls + 1
-    if calls == 2 then
-      error("injected second rename failure")
-    end
-    return originalReplace(self, source, destination)
-  end
-  local second = assert(compile(romFs, sha1, hashLua))
-  second.marker = FieldEntryAssetCache.marker("rom-sha", "new-dep-hash")
-  Assert.throws(function()
-    FieldEntryCacheWriter.write(cache, second)
-  end)
-  backend.replace = originalReplace
-  Assert.isTrue(FieldEntryAssetCache.isReady(cache, first.marker), "the previous class remains ready after rollback")
   Assert.equal(cache:read(FieldEntryAssetCache.markerPath()), first.marker)
 end
 
@@ -711,18 +674,11 @@ function T.stages_through_a_prepared_artifact_without_touching_live_before_publi
     kind = "field-entry",
     key = "global",
     jobKey = "field-entry:global",
-    stageName = "field-entry-stage-test",
   })
   Assert.equal(FieldEntryCacheWriter.stage(artifact, bundle), bundle.marker)
   Assert.isFalse(FieldEntryAssetCache.isReady(cache, bundle.marker), "staging alone never reads ready")
   artifact:finishSuccess({ marker = bundle.marker })
-  artifact:publish({
-    generationId = "test-generation",
-    epoch = 1,
-    kind = "field-entry",
-    key = "global",
-    jobKey = "field-entry:global",
-  })
+  ResidentArtifactFixture.materialize(artifact)
   Assert.isTrue(FieldEntryAssetCache.isReady(cache, bundle.marker), "the published class reads ready")
 end
 

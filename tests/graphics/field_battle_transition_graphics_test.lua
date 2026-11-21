@@ -5,7 +5,7 @@ local Assert = require("tests.support.Assert")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattleEncounterSelector = require("libs.hgss.src.transition.BattleEncounterSelector")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldState = require("game.hgss.src.field.FieldState")
 local LocalClock = require("game.src.LocalClock")
@@ -35,7 +35,7 @@ local function readyVersion()
 end
 
 local function freshGame(versionId, location)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local catalog = MonBucket.openCatalogs(versionId)
   local fontDef = FieldFontLoader.load(cacheFs)
   local monService = HgssMonService.new({
@@ -104,6 +104,7 @@ local function assertPresentedRoute(scope, versionId, cacheFs, case)
   local state = FieldState.new(freshGame(versionId, case.location), {
     splRandomState = { state = 0 },
     derivedAssets = derivedAssets,
+    cacheFs = cacheFs,
     localClock = LocalClock.new(function()
       return { year = 2000, month = 1, day = 1, hour = 12, minute = 0, second = 0 }
     end),
@@ -188,7 +189,7 @@ end
 
 function T.field_transition_composes_selected_native_frames_before_battle_intro(scope)
   local versionId = readyVersion()
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local romFs, romSource = RomSourcePath.openReader(versionId)
   assert(romFs, tostring(romSource))
   local okFacts, facts = pcall(NavigationFacts.discover, cacheFs, romFs)

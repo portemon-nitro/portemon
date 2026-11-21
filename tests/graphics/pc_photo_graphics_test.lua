@@ -5,6 +5,7 @@ local Assert = require("tests.support.Assert")
 local BadgeSets = require("tests.support.BadgeSets")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
 local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local CollisionFixture = require("tests.support.CollisionFixture")
 local FakeCache = require("tests.support.FakeCache")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
@@ -281,7 +282,7 @@ local function fixture(versionId, loaderOverrides)
   }
   local cells = { physicalCell(0, 3), physicalCell(1, 4) }
   local synthetic = CacheFs.forVersion(versionId, FakeCache.new())
-  local sourceCache = CacheFs.forVersion(versionId)
+  local sourceCache = GeneratedCacheFixture.reader(versionId)
   local files = {
     [MapAssetCache.worldPath()] = world,
     [MapAssetCache.mapDir(41) .. "/scene.lua"] = scene,
@@ -605,7 +606,7 @@ function T.photo_owner_prepares_source_view_and_private_coverage_before_render(s
     rendered:release()
     Assert.isTrue(changedPixels > 0, "the saved follower produces visible pixels through FieldRenderer and GxRenderer")
 
-    local versionCache = CacheFs.forVersion(versionId)
+    local versionCache = GeneratedCacheFixture.reader(versionId)
     local albumManifest = PcCache.loadManifest(versionCache)
     local messageBank = assert(albumManifest.text.banks[0], "the Photo Album uses compiled source message bank zero")
     local sourceActions = { messageBank[1], messageBank[2], messageBank[3], messageBank[4] }
@@ -1032,7 +1033,7 @@ function T.production_album_viewer_borrows_the_live_loader_and_its_image_owner(s
     local album = PhotoAlbum.new()
     local stored = assert(album:prepareChanges(0, { { slot = 0, value = photo } }))
     stored.publish()
-    local versionCache = CacheFs.forVersion(versionId)
+    local versionCache = GeneratedCacheFixture.reader(versionId)
     local composition = PartyMenuComposition.create({
       mons = {
         partyCount = function()

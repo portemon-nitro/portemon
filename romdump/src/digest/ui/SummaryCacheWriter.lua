@@ -6,7 +6,6 @@
 -- recovery, and cleanup outcomes.
 
 local Errors = require("libs.errors.src.Errors")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local SummaryAssetSchema = require("libs.assets.src.SummaryAssetSchema")
 local SummaryCache = require("libs.assets.src.SummaryCache")
 
@@ -57,19 +56,12 @@ local function validateBundle(bundle)
   end
 end
 
----@param tx table<string, unknown>
+---@param stage table<string, unknown> the artifact's private output owner
 ---@param bundle table<string, unknown>
----@param cacheFs CacheFs
-local function stageBundle(tx, bundle, cacheFs)
-  local stage = tx.stage
-  stage:createDirectory(SummaryCache.assetDir())
-  stage:createDirectory(SummaryCache.dir())
+---@param cacheFs table<string, unknown> read-only dependency reader
+local function stageBundle(stage, bundle, cacheFs)
   for _, path in ipairs(SummaryCache.referencedPaths(bundle.manifest)) do
-    if path:sub(1, #SummaryCache.assetDir()) == SummaryCache.assetDir() then
-      stage:write(path, bundle.assets[path])
-    else
-      cacheFs:write(path, bundle.assets[path])
-    end
+    stage:write(path, bundle.assets[path])
   end
   stage:writeLua(SummaryCache.provenancePath(), bundle.dependencies)
   stage:writeLua(SummaryCache.manifestPath(), bundle.manifest)
@@ -107,7 +99,7 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function SummaryCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "summary staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "summary staging requires a PreparedArtifact")
   validateBundle(bundle)
   artifact:addOwnedRoot(SummaryCache.assetDir())
   artifact:addOwnedRoot(SummaryCache.dir())
@@ -116,24 +108,8 @@ function SummaryCacheWriter.stage(artifact, bundle)
       artifact:addSharedFile(path)
     end
   end
-  stageBundle({ stage = artifact:stageFs() }, bundle, artifact:cacheFs())
+  stageBundle(artifact, bundle, artifact:cacheFs())
   return bundle.marker
-end
-
----@param cacheFs CacheFs
----@param bundle table<string, unknown>
----@return boolean
-function SummaryCacheWriter.write(cacheFs, bundle)
-  assert(cacheFs and bundle, "summary publication requires a cache and a bundle")
-  validateBundle(bundle)
-  local tx = ArtifactPublisher.begin(cacheFs, "summary", { SummaryCache.assetDir(), SummaryCache.dir() })
-  local ok, err = pcall(stageBundle, tx, bundle, cacheFs)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
-  return true
 end
 
 return SummaryCacheWriter

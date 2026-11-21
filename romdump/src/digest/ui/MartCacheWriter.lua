@@ -2,7 +2,6 @@
 -- transaction. The family marker is written after payload readback succeeds.
 
 local Errors = require("libs.errors.src.Errors")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local MartAssetSchema = require("libs.assets.src.MartAssetSchema")
 local MartCache = require("libs.assets.src.MartCache")
 
@@ -105,27 +104,11 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function MartCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "mart staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "mart staging requires a PreparedArtifact")
   validateBundle(bundle)
   artifact:addOwnedRoot(MartCache.assetDir())
   artifact:addOwnedRoot(MartCache.dir())
-  stageBundle(artifact:stageFs(), bundle)
-  return bundle.marker
-end
-
----@param cacheFs CacheFs
----@param bundle table<string, unknown>
----@return string
-function MartCacheWriter.write(cacheFs, bundle)
-  assert(cacheFs and bundle, "mart publication requires a cache and a bundle")
-  validateBundle(bundle)
-  local tx = ArtifactPublisher.begin(cacheFs, "mart", { MartCache.assetDir(), MartCache.dir() })
-  local ok, err = pcall(stageBundle, tx.stage, bundle)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
+  stageBundle(artifact, bundle)
   return bundle.marker
 end
 

@@ -31,6 +31,7 @@ local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local MonsSave = require("libs.mons.src.MonsSave")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 
+
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
@@ -44,6 +45,10 @@ local T = {
       "map-data:64",
       "map-data:60",
       "map-data:61",
+      -- The New Bark door warp destination: the player's house (map 63) and
+      -- the one cell its interior occupies.
+      "map-data:63",
+      "field-cell:71-0",
       "map:31",
       "map:33",
       "map:47",
@@ -51,6 +56,13 @@ local T = {
       "map:64",
       "map:60",
       "map:61",
+      "map:63",
+      -- The friend-house sign reads the counterpart-name and house-label
+      -- banks, and the lab welcome scene reads its own script bank, all
+      -- directly from the installed view.
+      "message-bank:445",
+      "message-bank:542",
+      "message-bank:543",
     },
     tags = { "cache", "lifecycle", "application" },
   },
@@ -106,6 +118,40 @@ local function seedRecord(saveId, versionId)
   }
 end
 
+-- The selected epoch's installed generated view for a scenario that drives
+-- production composition directly: the members of the runner-prepared
+-- snapshot become one private resident reader, exactly the view a boot
+-- installs. No loose generated file is consulted.
+local preparedReader = nil
+
+local function preparedGeneratedView(versionId)
+  if preparedReader ~= nil then
+    return preparedReader
+  end
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local ResidentCache = require("libs.storage.src.ResidentCache")
+  local SnapshotArchive = require("tests.support.SnapshotArchive")
+  local index, members = SnapshotArchive.read(versionId)
+  Assert.notNil(index, "the scoped preparation must leave one snapshot archive this process can read")
+  local generationId = assert(index.identity.generationId, "the snapshot carries its generation identity")
+  local sourceId = "base:" .. generationId
+  local store = ResidentCache.new(versionId, sourceId)
+  local entries = {}
+  for position, path in ipairs(SnapshotArchive.memberPaths(index)) do
+    local bytes = assert(members[path], "a declared snapshot member must be readable: " .. path)
+    entries[position] = {
+      path = path,
+      data = assert(love.data.newByteData(bytes)),
+      size = #bytes,
+      sourceId = sourceId,
+      contentId = generationId .. "\0" .. path,
+    }
+  end
+  store:commit(store:prepare(entries))
+  preparedReader = CacheFs.fromStore(store)
+  return preparedReader
+end
+
 local function isolatedStore()
   return GameSaveStore.new(SaveFs.global(FakeCache.new()))
 end
@@ -131,9 +177,9 @@ end
 local function withApplySpy(fn)
   local original = NewGameInitialization.apply
   local calls = {}
-  rawset(NewGameInitialization, "apply", function(candidate)
+  rawset(NewGameInitialization, "apply", function(candidate, ...)
     calls[#calls + 1] = candidate
-    return original(candidate)
+    return original(candidate, ...)
   end)
   local ok, err = pcall(fn, calls)
   rawset(NewGameInitialization, "apply", original)
@@ -253,6 +299,7 @@ function T.tests.continue_loads_early_and_overlaps_geometry_before_transfer()
     local stopCounting, loaderBuilds = countLoaderBuilds()
     local game = HgssGame.new({
       versionId = versionId,
+      cacheFs = preparedGeneratedView(versionId),
       startupPairIndex = 1,
       entry = { kind = "continue", saveId = saveId },
       onExit = function() end,
@@ -492,6 +539,7 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
         end
         local game = HgssGame.new({
           versionId = versionId,
+          cacheFs = preparedGeneratedView(versionId),
           startupPairIndex = 1,
           entry = { kind = "new_game" },
           onExit = function() end,
@@ -763,7 +811,11 @@ function T.tests.warp_waits_under_cover_then_commits_once()
     versionId = versionId,
     map = "MAP_NEW_BARK",
     save = "fresh",
-    fieldOptions = { derivedAssets = host, recordingScriptHosts = true },
+    fieldOptions = {
+      derivedAssets = host,
+      cacheFs = preparedGeneratedView(versionId),
+      recordingScriptHosts = true,
+    },
   })
   local ok, err = xpcall(function()
     game:waitForFieldEntry()
@@ -978,7 +1030,11 @@ function T.tests.actual_candidate_pages_are_demand_loaded_and_close_drops_intere
   local game = labHarness():boot({
     versionId = versionId,
     save = "fresh",
-    fieldOptions = { derivedAssets = host, recordingScriptHosts = true },
+    fieldOptions = {
+      derivedAssets = host,
+      cacheFs = preparedGeneratedView(versionId),
+      recordingScriptHosts = true,
+    },
   })
   local ok, err = xpcall(function()
     local chooser = openLabChooser(game)
@@ -1043,6 +1099,253 @@ function T.tests.actual_candidate_pages_are_demand_loaded_and_close_drops_intere
     -- proved by the graphics-capable preparation suites instead.
   end, debug.traceback)
   game:close()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- The selected epoch's resident bytes carry the whole playable closure while
+-- the background snapshot writer cannot persist anything: the existing New
+-- Game closure becomes ready, first play is recorded as an installed fact, the
+-- prepared New Bark field loads, and its friend-house sign reads generated
+-- message text through production message composition. Only host boundaries
+-- are faked (save-root location, script/audio hosts, clock, random), the cache
+-- service/controller/graph and the field are production composition, nothing
+-- renders, and the main thread performs no generated write.
+local SNAPSHOT_OUTPUT = "heartgold/cache.zip.new"
+
+-- The writer's own output path, occupied by a directory that holds one file:
+-- a real filesystem condition no Lua state can remove, so the block reaches the
+-- controller's writer as well as this process.
+local function occupySnapshotOutput()
+  love.filesystem.createDirectory(SNAPSHOT_OUTPUT)
+  Assert.isTrue(
+    love.filesystem.write(SNAPSHOT_OUTPUT .. "/held", "the snapshot writer cannot open its output"),
+    "the scenario occupies the snapshot writer's output path"
+  )
+end
+
+local function releaseSnapshotOutput()
+  love.filesystem.remove(SNAPSHOT_OUTPUT .. "/held")
+  love.filesystem.remove(SNAPSHOT_OUTPUT)
+end
+
+local function generatedWritesSince(size, writes)
+  local found = 0
+  for index = size + 1, #writes do
+    local path = writes[index]
+    if type(path) == "string" and path:sub(1, #"heartgold") == "heartgold" and path:sub(1, #SNAPSHOT_OUTPUT) ~= SNAPSHOT_OUTPUT then
+      found = found + 1
+    end
+  end
+  return found
+end
+
+local SIGN_TEXT_SCRIPT = "vanilla.hgss.scr_seq.0842.script_016"
+local TOWN = "MAP_NEW_BARK"
+
+local function signpostGlyphText(game)
+  local parts = {}
+  for _, line in ipairs(game.runtime.signpost:status().visibleLines) do
+    for _, token in ipairs(line) do
+      if token.kind == "glyph" then
+        parts[#parts + 1] = token.text
+      end
+    end
+  end
+  return table.concat(parts)
+end
+
+function T.tests.first_play_and_field_dialogue_hold_while_snapshot_persistence_is_blocked()
+  local versionId = AcceptanceHarness.defaultVersion()
+  local CacheService = require("app.src.CacheService")
+  local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
+  local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
+  local writes = {}
+  local realWrite = love.filesystem.write
+  love.filesystem.write = function(path, ...)
+    writes[#writes + 1] = path
+    return realWrite(path, ...)
+  end
+  occupySnapshotOutput()
+  local service = assert(CacheService.new({ thread = love.thread }), "the composed service owns one controller thread")
+  local provisioner = DerivedAssetProvisioner.new({
+    service = service,
+    versionId = versionId,
+    development = true,
+    developmentRepositoryRoot = love.filesystem.getSourceBaseDirectory(),
+  })
+  local preparation = nil
+  local game = nil
+  local ok, err = xpcall(function()
+    preparation = assert(HgssGame.newFirstPlayCachePreparation({
+      versionId = versionId,
+      derivedAssets = provisioner:gameHost(),
+    }))
+    local ready = false
+    local deadline = love.timer.getTime() + 900
+    while love.timer.getTime() < deadline do
+      service:update()
+      local settled, failure = preparation:poll()
+      Assert.isNil(
+        failure,
+        "the New Game closure reports no failure while persistence is blocked: " .. tostring(failure)
+      )
+      if settled then
+        ready = true
+        break
+      end
+      love.timer.sleep(0.01)
+    end
+    Assert.isTrue(ready, "the New Game closure becomes ready while the snapshot writer cannot persist")
+    Assert.equal(
+      type(provisioner.getCacheFs),
+      "function",
+      "the selected epoch exposes no installed generated view, so playable assets can only come from generated disk files"
+    )
+    local reader = assert(provisioner:getCacheFs(), "the ready epoch exposes its installed generated view")
+    service:recordFirstPlay(provisioner.epoch)
+    local firstPlayRecorded = false
+    local firstPlayDeadline = love.timer.getTime() + 120
+    while love.timer.getTime() < firstPlayDeadline do
+      service:update()
+      if service:firstPlayReady(provisioner.epoch) then
+        firstPlayRecorded = true
+        break
+      end
+      love.timer.sleep(0.01)
+    end
+    Assert.isTrue(firstPlayRecorded, "first play is recorded while the snapshot writer remains blocked")
+    local host = provisioner:gameHost()
+    -- The boot below installs the field directly, so its required location and
+    -- cell closures are demanded and awaited here, exactly as the production
+    -- preparation states do before the field takes over.
+    local function awaitRequired(request, label)
+      local deadline = love.timer.getTime() + 300
+      while love.timer.getTime() < deadline do
+        service:update()
+        local ok, ready, failure = pcall(request)
+        Assert.isTrue(ok, label .. " demand is accepted: " .. tostring(ready))
+        Assert.isNil(failure, label .. " reports no failure: " .. tostring(failure))
+        if ready == true then
+          return true
+        end
+        love.timer.sleep(0.01)
+      end
+      return false
+    end
+    local entryHost = {}
+    for key, value in pairs(host) do
+      entryHost[key] = value
+    end
+    function entryHost.ensureField(mapId)
+      Assert.isTrue(
+        awaitRequired(function()
+          return host.requestField(mapId, "required")
+        end, "field " .. tostring(mapId)),
+        "the destination field becomes ready from the resident closure"
+      )
+      return true
+    end
+    function entryHost.ensureCell(descriptor)
+      Assert.isTrue(
+        awaitRequired(function()
+          return host.requestCell(descriptor, "required")
+        end, "cell " .. tostring(descriptor.matrixMemberId) .. ":" .. tostring(descriptor.index)),
+        "the probed field cell becomes ready from the resident closure"
+      )
+      return true
+    end
+    local mark = #writes
+    local harness = AcceptanceHarness.new()
+    game = harness:boot({
+      versionId = versionId,
+      map = TOWN,
+      save = "fresh",
+      fieldOptions = {
+        derivedAssets = entryHost,
+        cacheFs = reader,
+        recordingScriptHosts = true,
+      },
+    })
+    game:startScript(SIGN_TEXT_SCRIPT)
+    local printed = false
+    for _ = 1, 480 do
+      game:step()
+      service:update()
+      if #game:recordsForScript(SIGN_TEXT_SCRIPT, "script.error") > 0 then
+        break
+      end
+      local status = game.runtime.signpost:status()
+      if status.active and status.printDone then
+        printed = true
+        break
+      end
+    end
+    local faults = game:recordsForScript(SIGN_TEXT_SCRIPT, "script.error")
+    Assert.equal(
+      #faults,
+      0,
+      "the signpost script resolves its generated text from the resident view; got "
+        .. (faults[1] and faults[1].payload.code or "no record")
+    )
+    Assert.isTrue(printed, "the signpost completes its typed print from resident message bytes")
+    local provider = assert(FieldMessageProvider.new(reader), "the production message provider reads the installed view")
+    assert(provider:acquireBank(445), "the installed view carries the counterpart name bank")
+    assert(provider:acquireBank(542), "the installed view carries the house-label bank")
+    local nameTemplate = assert(provider:get(445, game.runtime.playerData.profile.gender == 0 and 1 or 0))
+    local houseTemplate = assert(provider:get(542, 35))
+    provider:releaseBank(445)
+    provider:releaseBank(542)
+    local label = assert(houseTemplate.text:match("^%b{}(.*)$"), "the house label carries one substitution")
+    Assert.equal(
+      signpostGlyphText(game),
+      nameTemplate.text .. label,
+      "the signpost names the counterpart's house from the resident message banks"
+    )
+    Assert.isTrue(
+      reader:readData("data/generated/field/messages/banks/0445.g4msg") ~= nil,
+      "every exposed asset is readable from the installed view as soon as the epoch is ready"
+    )
+    local dismissed = false
+    for _ = 1, 480 do
+      game.runtime:pressAction()
+      game:step()
+      service:update()
+      game.runtime:releaseAction()
+      if not game:snapshot().fieldLocked and not game.runtime.signpost:status().active then
+        dismissed = true
+        break
+      end
+    end
+    Assert.isTrue(dismissed, "the signpost dismisses through normal confirmation on resident bytes")
+    Assert.equal(game:renderAttempts(), 0, "the flow stops before GPU rendering")
+    Assert.equal(
+      generatedWritesSince(mark, writes),
+      0,
+      "play performs no main-thread generated write while persistence is blocked"
+    )
+    Assert.notNil(
+      love.filesystem.getInfo(SNAPSHOT_OUTPUT .. "/held"),
+      "no snapshot succeeded while the flow played from resident bytes"
+    )
+  end, debug.traceback)
+  love.filesystem.write = realWrite
+  if game ~= nil then
+    game:close()
+  end
+  if preparation ~= nil then
+    pcall(function()
+      preparation:dispose()
+    end)
+  end
+  pcall(function()
+    provisioner:dispose()
+  end)
+  pcall(function()
+    service:shutdown()
+  end)
+  releaseSnapshotOutput()
   if not ok then
     error(err, 0)
   end

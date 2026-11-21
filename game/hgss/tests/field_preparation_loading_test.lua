@@ -5,6 +5,7 @@
 -- The New Game field handoff owns the same selected stage.
 
 local Assert = require("tests.support.Assert")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
 
 local T = {}
@@ -259,6 +260,7 @@ function T.product_entry_forwards_the_selected_pair_into_continue_preparation()
     entry = { kind = "continue", saveId = "save-00000002" },
     onExit = function() end,
     derivedAssets = {},
+    cacheFs = GeneratedCacheFixture.resident(VERSION_ID, {}).reader,
     startupPairIndex = PAIR_INDEX,
   })
   rawset(FieldPreparationState, "new", originalPreparationNew)

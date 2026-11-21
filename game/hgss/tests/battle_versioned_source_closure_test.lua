@@ -7,6 +7,7 @@
 -- that evidence. Needs a ready user-owned HeartGold dump with a
 -- prepared derived cache, otherwise the HeartGold legs skip.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 
 local T = {}
@@ -18,7 +19,7 @@ local function readyVersions(context)
   local RomImporter = require("romdump.src.source.RomImporter")
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       versions[#versions + 1] = versionId
     end
   end
@@ -50,7 +51,7 @@ function T.heartgold_manifest_carries_its_versioned_identity(context)
   end
   local CacheFs = require("libs.storage.src.CacheFs")
   local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-  local cacheFs = CacheFs.forVersion("heartgold")
+  local cacheFs = GeneratedCacheFixture.reader("heartgold")
   local manifest = BattlePresentationCache.load(cacheFs)
   Assert.equal(manifest.schema, BattlePresentationCache.MANIFEST_SCHEMA, "heartgold stages the current catalog schema")
   Assert.equal(manifest.version.id, "heartgold", "the staged manifest names its own version")
@@ -65,7 +66,7 @@ function T.heartgold_stages_slot_hud_and_picture_inventories(context)
   end
   local CacheFs = require("libs.storage.src.CacheFs")
   local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-  local manifest = BattlePresentationCache.load(CacheFs.forVersion("heartgold"))
+  local manifest = BattlePresentationCache.load(GeneratedCacheFixture.reader("heartgold"))
   Assert.equal(#manifest.battlefield.slots, 6, "heartgold stages all six source slot geometries")
   local sideTypes = {}
   for _, row in ipairs(manifest.battlefield.slots) do
@@ -99,7 +100,7 @@ function T.heartgold_scenes_load_exactly_and_missing_keys_fail_closed(context)
   local CacheFs = require("libs.storage.src.CacheFs")
   local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
   local Sources = require("romdump.src.config.BattlePresentationSources")
-  local cacheFs = CacheFs.forVersion("heartgold")
+  local cacheFs = GeneratedCacheFixture.reader("heartgold")
   local record, loadErr = BattlePresentationCache.loadScene(cacheFs, "general/grass/day")
   Assert.notNil(record, "heartgold stages its ordinary grass scene: " .. tostring(loadErr))
   Assert.equal(record.key, "general/grass/day", "the staged scene names exactly its requested key")
@@ -132,7 +133,7 @@ function T.soulsilver_closure_stays_blocked_without_its_dump(context)
   end
   local CacheFs = require("libs.storage.src.CacheFs")
   local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-  local manifest = BattlePresentationCache.load(CacheFs.forVersion("soulsilver"))
+  local manifest = BattlePresentationCache.load(GeneratedCacheFixture.reader("soulsilver"))
   Assert.equal(manifest.version.id, "soulsilver", "the staged manifest names its own version")
 end
 

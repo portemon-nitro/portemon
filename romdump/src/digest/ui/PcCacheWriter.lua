@@ -10,7 +10,7 @@ local PcCacheWriter = {}
 ---@return string
 function PcCacheWriter.stage(artifact, bundle)
   assert(
-    artifact and artifact.stageFs and artifact.cacheFs and artifact.addOwnedRoot,
+    artifact and artifact.write and artifact.cacheFs and artifact.addOwnedRoot,
     "PC staging requires PreparedArtifact"
   )
   assert(type(bundle) == "table" and type(bundle.manifest) == "table", "PC bundle carries a manifest")
@@ -31,7 +31,7 @@ function PcCacheWriter.stage(artifact, bundle)
   end
   artifact:addOwnedRoot(PcCache.assetDir())
   artifact:addOwnedRoot(PcCache.dir())
-  local stage = artifact:stageFs()
+  local stage = artifact
   for _, path in ipairs(paths) do
     stage:write(path, bundle.assets[path])
   end

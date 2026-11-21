@@ -21,8 +21,30 @@ local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local GameVersion = require("romdump.src.source.GameVersion")
 local Schema = require("libs.script.src.Schema")
 local Sha256 = require("libs.script.src.Sha256")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
+
+-- A structural copy of a compiled bundle so one case can mutate it without
+-- touching the compiled record.
+local function deepCopy(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local copy = {}
+  for key, entry in pairs(value) do
+    copy[key] = deepCopy(entry)
+  end
+  return copy
+end
+
+-- Publish one compiled field record through its real stage function.
+local function publishFieldRecord(cache, bundle)
+  local marker = ResidentArtifactFixture.publish(cache, "map-data", tostring(bundle.mapId), function(artifact)
+    return FieldMapDataCacheWriter.stage(artifact, bundle)
+  end)
+  return marker
+end
 
 local function fixture()
   local member = Builder.build({
@@ -501,11 +523,11 @@ function T.map_header_message_and_script_banks_are_emitted()
   Assert.equal(elmsLab.field.scriptBankId, 843)
 end
 
-function T.writer_commits_marker_last_and_inspector_is_stable()
+function T.writer_commits_its_marker_and_inspector_is_stable()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  Assert.equal(FieldMapDataCacheWriter.write(cache, bundle), bundle.marker)
+  Assert.equal(publishFieldRecord(cache, bundle), bundle.marker)
   Assert.isTrue(FieldMapDataCache.isReady(cache, 60, bundle.marker))
   Assert.isFalse(FieldMapDataCache.isReady(cache, 60, bundle.marker .. "-old"))
 
@@ -516,21 +538,16 @@ function T.writer_commits_marker_last_and_inspector_is_stable()
   Assert.equal(lines[2], "warp\tmap=60\tindex=0\tx=684\tz=393\ty=0\tdestination=61:0")
 end
 
-function T.writer_failure_rolls_back_only_its_map()
+function T.writer_failure_publishes_nothing_for_its_map()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
-  local backend = FakeCache.new()
-  local originalWrite = backend.write
-  backend.write = function(self, path, data)
-    if path:find("dependencies.lua", 1, true) then
-      error("injected")
-    end
-    return originalWrite(self, path, data)
-  end
-  local cache = CacheFs.forVersion("heartgold", backend)
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   cache:write("rom-dump.complete", "raw")
+  -- A bundle the stage refuses publishes neither payload nor marker.
+  local refused = deepCopy(bundle)
+  refused.field = nil
   Assert.throws(function()
-    FieldMapDataCacheWriter.write(cache, bundle)
+    publishFieldRecord(cache, refused)
   end)
   Assert.isFalse(cache:exists(FieldMapDataCache.mapDir(60)))
   Assert.isTrue(cache:exists("rom-dump.complete"))
@@ -539,26 +556,18 @@ end
 function T.failed_rebuild_preserves_the_previous_record()
   local romFs, sha1, hashLua = fixture()
   local first = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
-  FieldMapDataCacheWriter.write(cache, first)
-  local originalWrite = backend.write
-  backend.write = function(self, path, data)
-    if path:find("field.lua", 1, true) then
-      error("injected")
-    end
-    return originalWrite(self, path, data)
-  end
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  publishFieldRecord(cache, first)
   local second = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
   second.marker = FieldMapDataCache.marker(sha1, 60, "new-dep-hash")
+  local refused = deepCopy(second)
+  refused.field.schema = "g4-field-map-v0"
   Assert.throws(function()
-    FieldMapDataCacheWriter.write(cache, second)
+    publishFieldRecord(cache, refused)
   end)
   Assert.isTrue(FieldMapDataCache.isReady(cache, 60, first.marker), "the previous record remains ready")
   Assert.equal(cache:read(FieldMapDataCache.markerPath(60)), first.marker, "no new marker leaked")
-  Assert.isNil(backend:getInfo("staging/heartgold/field-map-data-60"), "the stage is cleaned on failure")
-  backend.write = originalWrite
-  FieldMapDataCacheWriter.write(cache, second)
+  publishFieldRecord(cache, second)
   Assert.isTrue(FieldMapDataCache.isReady(cache, 60, second.marker), "a retry publishes the new record")
 end
 
@@ -640,10 +649,9 @@ function T.field_map_data_stage_writes_exactly_its_own_map_record()
     kind = "map-data",
     key = "60",
     jobKey = "map-data:60",
-    stageName = "map-data-60",
   })
   FieldMapDataCacheWriter.stage(artifact, bundle)
-  local stage = artifact:stageFs()
+  local stage = artifact
   Assert.deepEqual(stage:loadLua(FieldMapDataCache.fieldPath(60)), bundle.field, "the staged record matches")
   Assert.deepEqual(
     stage:loadLua(FieldMapDataCache.dependenciesPath(60)),
@@ -653,13 +661,7 @@ function T.field_map_data_stage_writes_exactly_its_own_map_record()
   Assert.equal(stage:read(FieldMapDataCache.markerPath(60)), bundle.marker, "the marker stages with the record")
   Assert.isFalse(stage:exists(FieldMapDataCache.mapDir(61)), "no sibling map record is staged")
   artifact:finishSuccess({ marker = bundle.marker })
-  artifact:publish({
-    generationId = generation,
-    epoch = 1,
-    kind = "map-data",
-    key = "60",
-    jobKey = "map-data:60",
-  })
+  ResidentArtifactFixture.materialize(artifact)
   Assert.isTrue(FieldMapDataCache.isReady(cache, 60, bundle.marker), "the staged record publishes ready")
 
   local malformed = {
@@ -675,7 +677,6 @@ function T.field_map_data_stage_writes_exactly_its_own_map_record()
     kind = "map-data",
     key = "60",
     jobKey = "map-data:60",
-    stageName = "field-map-data-60-retry",
   })
   local ok, stageErr = pcall(FieldMapDataCacheWriter.stage, retry, malformed)
   Assert.isFalse(ok, "a malformed record fails its stage: " .. tostring(stageErr))

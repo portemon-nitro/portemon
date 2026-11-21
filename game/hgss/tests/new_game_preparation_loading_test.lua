@@ -4,6 +4,7 @@
 -- blocks the semantic intro gate, and the stage is released exactly once.
 
 local Assert = require("tests.support.Assert")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local NewGamePreparationState = require("game.hgss.src.newgame.NewGamePreparationState")
 
 local T = {}
@@ -216,6 +217,7 @@ function T.product_entry_forwards_the_selected_pair_into_new_game_preparation()
     entry = { kind = "new_game" },
     onExit = function() end,
     derivedAssets = {},
+    cacheFs = GeneratedCacheFixture.resident(VERSION_ID, {}).reader,
     startupPairIndex = PAIR_INDEX,
   })
   rawset(NewGamePreparationState, "new", original)

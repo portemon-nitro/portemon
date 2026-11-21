@@ -3,7 +3,7 @@
 
 local Assert = require("tests.support.Assert")
 local CollisionGrid = require("libs.hgss.src.world.CollisionGrid")
-local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local FieldPlayer = require("libs.hgss.src.actors.FieldPlayer")
 local FieldRegion = require("libs.hgss.src.world.FieldRegion")
@@ -90,7 +90,7 @@ function T.new_bark_crosses_into_route_29_and_rejects_route_27_water(romFs, vers
   -- Generated-cache region: the logical loader entry deliberately owns no
   -- representative collision or terrain. The session-owned physical
   -- coverage is the public path for the traversable cached region.
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local world = assert(cacheFs:loadLua(MapAssetCache.worldPath()))
   local loader = FieldMapLoader.new(cacheFs, world)
   local logical = loader:load(60)

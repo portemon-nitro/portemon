@@ -23,6 +23,7 @@ local Errors = require("libs.errors.src.Errors")
 local GameVersion = require("romdump.src.source.GameVersion")
 local Hashing = require("romdump.src.digest.Hashing")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
+local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
 local Schema = require("libs.script.src.Schema")
 
 local DerivedCacheState = {}
@@ -162,6 +163,28 @@ function DerivedCacheState.currentForSelection(inputs)
     assetRevision = DerivedAssetContract.revision,
     scriptApi = Schema.API_VERSION,
   })
+end
+
+-- The release generation token for a version: the accepted ROM SHA-1, the
+-- explicit per-game release counter, the asset-contract revision, and the
+-- script API version only. Release callers derive it on the game thread
+-- without a producer scan; development identity is never derived here.
+---@param versionId string
+---@return string generationId
+function DerivedCacheState.releaseGenerationId(versionId)
+  local info = GameVersion.info(versionId)
+  assert(type(info) == "table" and type(info.sha1) == "string", "unknown version: " .. tostring(versionId))
+  local counter = DerivedCacheVersions[versionId]
+  assert(
+    type(counter) == "number" and counter % 1 == 0 and counter >= 1,
+    "release counter must be a positive integer for version: " .. tostring(versionId)
+  )
+  local identity = DerivedCacheState.currentForSelection({
+    versionId = versionId,
+    romSha1 = info.sha1,
+    producerId = "r" .. tostring(counter),
+  })
+  return assert(identity.generationId, "selection identity carries no generation token")
 end
 
 -- The current identity for the given inputs: either the strict schema-2

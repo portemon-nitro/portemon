@@ -10,6 +10,7 @@
 -- expectations compare resolved tables and provider outcomes, never the
 -- implementation as its own oracle.
 
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
@@ -328,7 +329,7 @@ function T.tests.live_broadcast_music_changes_land_encounters_until_stopped(cont
   local RomImporter = require("romdump.src.source.RomImporter")
   local ready = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
+    if RomImporter.isReady(versionId) and GeneratedCacheFixture.isPrepared(versionId) then
       ready[#ready + 1] = versionId
     end
   end

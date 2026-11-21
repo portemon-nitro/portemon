@@ -1,12 +1,11 @@
 -- Transactional writer for the normalized directional entrance field effect.
 
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local Writer = {}
 
----@param stage CacheFs
+---@param stage PreparedArtifact
 ---@param bundle table<string, unknown>
 local function persist(stage, bundle)
   for key, bank in pairs(bundle.meshes) do
@@ -42,24 +41,12 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function Writer.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "field-effects staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "field-effects staging requires a PreparedArtifact")
   assert(type(bundle) == "table" and bundle.marker, "invalid field-effects bundle")
   artifact:addOwnedRoot("assets/generated/field/effects")
   artifact:addOwnedRoot("data/generated/field/effects")
-  persist(artifact:stageFs(), bundle)
+  persist(artifact, bundle)
   return bundle.marker
 end
 
-function Writer.write(cacheFs, bundle)
-  local tx = ArtifactPublisher.begin(cacheFs, "field-effects", {
-    "assets/generated/field/effects",
-    "data/generated/field/effects",
-  })
-  local ok, err = pcall(persist, tx.stage, bundle)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
-end
 return Writer
