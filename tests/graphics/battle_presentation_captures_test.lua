@@ -17,6 +17,7 @@ local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
 local BattleTimelineFixture = require("game.hgss.tests.support.BattleTimelineFixture")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
@@ -1425,7 +1426,9 @@ local function hardwareReference(source)
       else
         local function channel(v)
           local c5 = math.floor(v * 31 + 0.5)
-          if c5 <= 0 then return 0 end
+          if c5 <= 0 then
+            return 0
+          end
           return (2 * c5 + 1) / 63
         end
         out:setPixel(x, y, channel(r), channel(g), channel(b), a)
@@ -1447,8 +1450,10 @@ end
 ---@return number native left edge in lattice pixels
 ---@return number native top edge in lattice pixels
 local function settledPortraitOrigin(row, probe, versionId)
-  local speciesHeight =
-    assert(type(probe.sourceHeight) == "number" and probe.sourceHeight, versionId .. " publishes settled species heights")
+  local speciesHeight = assert(
+    type(probe.sourceHeight) == "number" and probe.sourceHeight,
+    versionId .. " publishes settled species heights"
+  )
   local centerX = row.settledX + (probe.entryDx or 0) + (probe.shakeDx or 0)
   local centerY = row.settledY + speciesHeight + (probe.entryDy or 0)
   local left = centerX - 40 + (probe.pictureXOffset or 0)
@@ -1756,7 +1761,18 @@ end
 ---@param gaugeExperience table<integer, { tile: integer, sourceTile: integer }>? staged gauge-task experience patches overriding the static fills
 ---@return fun(x: integer, y: integer): integer?, integer?, integer? locator naming the strip tile and texel, nil outside the cell
 ---@return table<integer, { src: integer, half: string }> printer source behind each overwritten destination tile
-local function scaledCellLookup(strip, section, box, patchSpans, sideType, battler, playerBox, wildEnemy, offsetY, gaugeExperience)
+local function scaledCellLookup(
+  strip,
+  section,
+  box,
+  patchSpans,
+  sideType,
+  battler,
+  playerBox,
+  wildEnemy,
+  offsetY,
+  gaugeExperience
+)
   local frame = assert(section.animation.frames[1], "the staged HUD animation has an initial frame")
   local cell = assert(section.cells[frame.cell + 1], "the initial HUD frame selects a cell")
   local objects = cell.objs
@@ -1791,9 +1807,7 @@ local function scaledCellLookup(strip, section, box, patchSpans, sideType, battl
     sources[patch.tile] = { src = componentBase + patch.sourceTile, half = "full" }
   end
   local caught = wildEnemy and battler.caught or nil
-  for _, patch in ipairs(
-    BattleScene.hudIconPatchTiles(patchSpans, sideType, battler.condition, battler.gender, caught)
-  ) do
+  for _, patch in ipairs(BattleScene.hudIconPatchTiles(patchSpans, sideType, battler.condition, battler.gender, caught)) do
     sources[patch.tile] = { src = componentBase + patch.sourceTile, half = "full" }
   end
   local function printerTile(character)
@@ -1808,8 +1822,7 @@ local function scaledCellLookup(strip, section, box, patchSpans, sideType, battl
     for row = 0, 1 do
       local leading = window[row + 1]
       for column = 0, 7 do
-        local tile = column < leading.count and leading.tile + column
-          or window[row + 3].tile + column - leading.count
+        local tile = column < leading.count and leading.tile + column or window[row + 3].tile + column - leading.count
         sources[tile] = { src = digitBase + 10, half = "full" }
       end
     end
@@ -1842,8 +1855,7 @@ local function scaledCellLookup(strip, section, box, patchSpans, sideType, battl
     if type(battler.level) == "number" and battler.level >= 100 then
       into, span = 0, 0
     end
-    local expPatches = gaugeExperience
-      or BattleScene.expPatchTiles(patchSpans, BattleScene.expTileFills(into, span))
+    local expPatches = gaugeExperience or BattleScene.expPatchTiles(patchSpans, BattleScene.expTileFills(into, span))
     for _, patch in ipairs(expPatches) do
       sources[patch.tile] = { src = componentBase + patch.sourceTile, half = "full" }
     end
@@ -2186,7 +2198,10 @@ function T.compact_command_view_uses_real_scene_text_frames_and_hud(scope, conte
           end
           error(versionId .. " resolves its compact battler", 0)
         end
-        for _, spec in ipairs({ { key = "mon:" .. MonCache.portraitSelector(FOE_SPECIES, 0, "male", false), sideType = 1 }, { key = "mon:" .. MonCache.portraitSelector(LEAD_SPECIES, 0, "male", false, "back"), sideType = 0 } }) do
+        for _, spec in ipairs({
+          { key = "mon:" .. MonCache.portraitSelector(FOE_SPECIES, 0, "male", false), sideType = 1 },
+          { key = "mon:" .. MonCache.portraitSelector(LEAD_SPECIES, 0, "male", false, "back"), sideType = 0 },
+        }) do
           local cell = assert(portraitCells[spec.key], versionId .. " crops " .. spec.key)
           local row = settledRow(spec.sideType)
           local probe = settledBattler(spec.sideType)
@@ -2314,8 +2329,7 @@ function T.compact_command_view_uses_real_scene_text_frames_and_hud(scope, conte
               -- the layout rectangle; the settled command view carries
               -- no backdrop state, so padding stays opaque black.
               local red, green, blue, alpha = pixel[1], pixel[2], pixel[3], pixel[4]
-              sourced = quantize(red) == 0 and quantize(green) == 0 and quantize(blue) == 0
-                and quantize(alpha) == 255
+              sourced = quantize(red) == 0 and quantize(green) == 0 and quantize(blue) == 0 and quantize(alpha) == 255
             end
           end
           if not sourced then
@@ -2432,12 +2446,19 @@ function T.compact_command_view_uses_real_scene_text_frames_and_hud(scope, conte
     end
     for _, spec in ipairs({
       { sideType = 1, key = "mon:" .. MonCache.portraitSelector(FOE_SPECIES, 0, "male", false), label = "foe" },
-      { sideType = 0, key = "mon:" .. MonCache.portraitSelector(LEAD_SPECIES, 0, "male", false, "back"), label = "lead" },
+      {
+        sideType = 0,
+        key = "mon:" .. MonCache.portraitSelector(LEAD_SPECIES, 0, "male", false, "back"),
+        label = "lead",
+      },
     }) do
       local ref = fittedPortraitFor(spec.sideType, spec.key)
       local x0, y0 = math.floor(ref.fx), math.floor(ref.fy)
       local x1, y1 = math.ceil(ref.fx + 80 * ref.scale) - 1, math.ceil(ref.fy + 80 * ref.scale) - 1
-      Assert.isTrue(x0 >= sceneBox.x and y0 >= sceneBox.y, versionId .. " keeps its " .. spec.label .. " portrait on the scene")
+      Assert.isTrue(
+        x0 >= sceneBox.x and y0 >= sceneBox.y,
+        versionId .. " keeps its " .. spec.label .. " portrait on the scene"
+      )
       Assert.isTrue(
         x1 < sceneBox.x + sceneBox.width and y1 < 120,
         versionId .. " keeps its " .. spec.label .. " portrait above the earliest dock"
@@ -2463,7 +2484,9 @@ function T.compact_command_view_uses_real_scene_text_frames_and_hud(scope, conte
       Assert.isTrue(
         matches / occupied > 0.9,
         versionId
-          .. " draws its " .. spec.label .. " portrait at its exact settled placement ("
+          .. " draws its "
+          .. spec.label
+          .. " portrait at its exact settled placement ("
           .. tostring(matches)
           .. "/"
           .. tostring(occupied)
@@ -2827,258 +2850,285 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
         }
       end
 
-        -- Panel cover at host coordinates: shifted boxes with exact
-        -- regions, bars and frame bands. Panels draw after the world, so
-        -- panel-covered portrait texels show panel art. Text and frame
-        -- bands carry no staged pixel oracle: each such texel is proven
-        -- covered by its exact region instead of pixel-verified, and
-        -- that gap is documented with its evidence in the census counts.
-        local frameInsets = FieldDialogueTheme.applicationFrameInsets()
-        local fillProbe = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs }))
-        local fillRGB = fillProbe:windowBackgroundColor()
-        local fillByte = {
-          math.floor(fillRGB[1] * 255 + 0.5),
-          math.floor(fillRGB[2] * 255 + 0.5),
-          math.floor(fillRGB[3] * 255 + 0.5),
+      -- Panel cover at host coordinates: shifted boxes with exact
+      -- regions, bars and frame bands. Panels draw after the world, so
+      -- panel-covered portrait texels show panel art. Text and frame
+      -- bands carry no staged pixel oracle: each such texel is proven
+      -- covered by its exact region instead of pixel-verified, and
+      -- that gap is documented with its evidence in the census counts.
+      local frameInsets = FieldDialogueTheme.applicationFrameInsets()
+      local fillProbe = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs }))
+      local fillRGB = fillProbe:windowBackgroundColor()
+      local fillByte = {
+        math.floor(fillRGB[1] * 255 + 0.5),
+        math.floor(fillRGB[2] * 255 + 0.5),
+        math.floor(fillRGB[3] * 255 + 0.5),
+      }
+      local panelCovers = {}
+      for _, box in ipairs(boxes) do
+        local owner = nil
+        for _, battler in ipairs(liveDoubles.battlers) do
+          if battler.position == box.position then
+            owner = battler
+            break
+          end
+        end
+        local shiftScale = math.min(box.width / 128, box.height / 64)
+        local shiftX = ((owner ~= nil and owner.hudOffsetX or 0) or 0) * shiftScale
+        local shiftY = ((owner ~= nil and owner.hudOffsetY or 0) or 0) * shiftScale
+        local shifted = {
+          x = frame.x + box.x + shiftX,
+          y = frame.y + box.y + shiftY,
+          width = box.width,
+          height = box.height,
         }
-        local panelCovers = {}
-        for _, box in ipairs(boxes) do
-          local owner = nil
-          for _, battler in ipairs(liveDoubles.battlers) do
-            if battler.position == box.position then
-              owner = battler
-              break
-            end
-          end
-          local shiftScale = math.min(box.width / 128, box.height / 64)
-          local shiftX = ((owner ~= nil and owner.hudOffsetX or 0) or 0) * shiftScale
-          local shiftY = ((owner ~= nil and owner.hudOffsetY or 0) or 0) * shiftScale
-          local shifted = {
-            x = frame.x + box.x + shiftX,
-            y = frame.y + box.y + shiftY,
-            width = box.width,
-            height = box.height,
+        local regions = {}
+        for _, region in ipairs(box.regions or {}) do
+          regions[#regions + 1] = {
+            id = region.id,
+            text = region.text,
+            x = shifted.x + (region.x - box.x),
+            y = shifted.y + (region.y - box.y),
+            width = region.width,
+            height = region.height,
           }
-          local regions = {}
-          for _, region in ipairs(box.regions or {}) do
-            regions[#regions + 1] = {
-              id = region.id,
-              text = region.text,
-              x = shifted.x + (region.x - box.x),
-              y = shifted.y + (region.y - box.y),
-              width = region.width,
-              height = region.height,
-            }
-          end
-          local bar = nil
-          if box.bar ~= nil then
-            bar = {
-              x = shifted.x + (box.bar.x - box.x),
-              y = shifted.y + (box.bar.y - box.y),
-              width = box.bar.width,
-              height = box.bar.height,
-              fraction = box.bar.fraction,
-            }
-          end
-          local content = {
-            x = shifted.x + frameInsets.left,
-            y = shifted.y + frameInsets.top + 1,
-            width = shifted.width - frameInsets.left - frameInsets.right,
-            height = shifted.height - frameInsets.top - frameInsets.bottom - 2,
+        end
+        local bar = nil
+        if box.bar ~= nil then
+          bar = {
+            x = shifted.x + (box.bar.x - box.x),
+            y = shifted.y + (box.bar.y - box.y),
+            width = box.bar.width,
+            height = box.bar.height,
+            fraction = box.bar.fraction,
           }
-          panelCovers[#panelCovers + 1] = { box = shifted, regions = regions, bar = bar, content = content }
         end
-        local function barByteRGB(fraction)
-          if fraction > 0.5 then
-            return { 51, 204, 51 }
-          elseif fraction > 0.2 then
-            return { 230, 204, 51 }
-          end
-          return { 230, 51, 51 }
+        local content = {
+          x = shifted.x + frameInsets.left,
+          y = shifted.y + frameInsets.top + 1,
+          width = shifted.width - frameInsets.left - frameInsets.right,
+          height = shifted.height - frameInsets.top - frameInsets.bottom - 2,
+        }
+        panelCovers[#panelCovers + 1] = { box = shifted, regions = regions, bar = bar, content = content }
+      end
+      local function barByteRGB(fraction)
+        if fraction > 0.5 then
+          return { 51, 204, 51 }
+        elseif fraction > 0.2 then
+          return { 230, 204, 51 }
         end
-        local function inRect(x, y, rect)
-          return x >= rect.x and x < rect.x + rect.width and y >= rect.y and y < rect.y + rect.height
-        end
-        -- Topmost panel cover at one host pixel: text regions first
-        -- (drawn over fill), then the bar, then the frame band outside
-        -- the content rectangle, else the flat fill interior.
-        ---@return string? cover kind, nil outside every panel
-        ---@return table? cover detail behind bar fills
-        local function panelCoverAt(x, y)
-          for _, cover in ipairs(panelCovers) do
-            if inRect(x, y, cover.box) then
-              for _, region in ipairs(cover.regions) do
-                if type(region.text) == "string" and region.text ~= "" and inRect(x, y, region) then
-                  return "text", region, cover
-                end
+        return { 230, 51, 51 }
+      end
+      local function inRect(x, y, rect)
+        return x >= rect.x and x < rect.x + rect.width and y >= rect.y and y < rect.y + rect.height
+      end
+      -- Topmost panel cover at one host pixel: text regions first
+      -- (drawn over fill), then the bar, then the frame band outside
+      -- the content rectangle, else the flat fill interior.
+      ---@return string? cover kind, nil outside every panel
+      ---@return table? cover detail behind bar fills
+      local function panelCoverAt(x, y)
+        for _, cover in ipairs(panelCovers) do
+          if inRect(x, y, cover.box) then
+            for _, region in ipairs(cover.regions) do
+              if type(region.text) == "string" and region.text ~= "" and inRect(x, y, region) then
+                return "text", region, cover
               end
-              if cover.bar ~= nil and inRect(x, y, cover.bar) then
-                return "bar", cover.bar, cover
-              end
-              if not inRect(x, y, cover.content) then
-                return "frame", cover.box, cover
-              end
-              return "fill", cover.box, cover
             end
+            if cover.bar ~= nil and inRect(x, y, cover.bar) then
+              return "bar", cover.bar, cover
+            end
+            if not inRect(x, y, cover.content) then
+              return "frame", cover.box, cover
+            end
+            return "fill", cover.box, cover
           end
-          return nil
         end
-        for _, item in ipairs(fitted) do
-          local rect, fx, fy, reference = item.rect, item.fx, item.fy, item.reference
-          local occupied, visibleMismatch, fillMismatch, barMismatch, winnerMismatch = 0, 0, 0, 0, 0
-          local textCovered, frameCovered, boundaryOk, tieGap = 0, 0, 0, 0
-          for y = rect.y, rect.y + rect.height - 1 do
-            for x = rect.x, rect.x + rect.width - 1 do
-              local fu = ((x + 0.5) - fx) / fitDoubles.scale
-              local fv = ((y + 0.5) - fy) / fitDoubles.scale
-              local u, v = math.floor(fu), math.floor(fv)
-              if u >= 0 and v >= 0 and u < reference:getWidth() and v < reference:getHeight() then
-                local r2, g2, b2, a2 = reference:getPixel(u, v)
-                if a2 > 0.5 and x >= 0 and y >= 0 and x < first:getWidth() and y < first:getHeight() then
-                  occupied = occupied + 1
-                  local r1, g1, b1, a1 = first:getPixel(x, y)
-                  local kind, detail, cover = panelCoverAt(x, y)
-                  if kind == "text" or kind == "frame" then
-                    -- Proven covered by panel wording or frame art: the
-                    -- exact region is the evidence, with no staged pixel
-                    -- oracle behind font and frame ink (documented gap).
-                    if kind == "text" then
-                      textCovered = textCovered + 1
-                    else
-                      frameCovered = frameCovered + 1
-                    end
-                  elseif kind == "bar" then
-                    local want = barByteRGB(detail.fraction)
-                    if not (quantize(r1) == want[1] and quantize(g1) == want[2] and quantize(b1) == want[3]) then
-                      -- The bar rect can sit under the frame band where
-                      -- staged frame art has no pixel oracle: those
-                      -- texels join the proven frame cover instead of
-                      -- failing as bar art.
-                      if cover ~= nil and not inRect(x, y, cover.content) then
-                        frameCovered = frameCovered + 1
-                      else
-                        barMismatch = barMismatch + 1
-                      end
-                    end
-                  elseif kind == "fill" then
-                    if not (quantize(r1) == fillByte[1] and quantize(g1) == fillByte[2] and quantize(b1) == fillByte[3]) then
-                      fillMismatch = fillMismatch + 1
-                    end
+        return nil
+      end
+      for _, item in ipairs(fitted) do
+        local rect, fx, fy, reference = item.rect, item.fx, item.fy, item.reference
+        local occupied, visibleMismatch, fillMismatch, barMismatch, winnerMismatch = 0, 0, 0, 0, 0
+        local textCovered, frameCovered, boundaryOk, tieGap = 0, 0, 0, 0
+        for y = rect.y, rect.y + rect.height - 1 do
+          for x = rect.x, rect.x + rect.width - 1 do
+            local fu = ((x + 0.5) - fx) / fitDoubles.scale
+            local fv = ((y + 0.5) - fy) / fitDoubles.scale
+            local u, v = math.floor(fu), math.floor(fv)
+            if u >= 0 and v >= 0 and u < reference:getWidth() and v < reference:getHeight() then
+              local r2, g2, b2, a2 = reference:getPixel(u, v)
+              if a2 > 0.5 and x >= 0 and y >= 0 and x < first:getWidth() and y < first:getHeight() then
+                occupied = occupied + 1
+                local r1, g1, b1, a1 = first:getPixel(x, y)
+                local kind, detail, cover = panelCoverAt(x, y)
+                if kind == "text" or kind == "frame" then
+                  -- Proven covered by panel wording or frame art: the
+                  -- exact region is the evidence, with no staged pixel
+                  -- oracle behind font and frame ink (documented gap).
+                  if kind == "text" then
+                    textCovered = textCovered + 1
                   else
-                    -- Portraits depth-resolve on the shared target: the
-                    -- larger native depth wins, transparent winner texels
-                    -- fall through to this portrait.
-                    local winner, wu, wv = nil, 0, 0
-                    for _, other in ipairs(fitted) do
-                      if other ~= item and other.depth > item.depth then
-                        local ou = math.floor(((x + 0.5) - other.fx) / fitDoubles.scale)
-                        local ov = math.floor(((y + 0.5) - other.fy) / fitDoubles.scale)
-                        if ou >= 0 and ov >= 0 and ou < other.reference:getWidth() and ov < other.reference:getHeight() then
-                          local _, _, _, oa = other.reference:getPixel(ou, ov)
-                          if oa > 0.5 and (winner == nil or other.depth > winner.depth) then
-                            winner, wu, wv = other, ou, ov
+                    frameCovered = frameCovered + 1
+                  end
+                elseif kind == "bar" then
+                  local want = barByteRGB(detail.fraction)
+                  if not (quantize(r1) == want[1] and quantize(g1) == want[2] and quantize(b1) == want[3]) then
+                    -- The bar rect can sit under the frame band where
+                    -- staged frame art has no pixel oracle: those
+                    -- texels join the proven frame cover instead of
+                    -- failing as bar art.
+                    if cover ~= nil and not inRect(x, y, cover.content) then
+                      frameCovered = frameCovered + 1
+                    else
+                      barMismatch = barMismatch + 1
+                    end
+                  end
+                elseif kind == "fill" then
+                  if
+                    not (quantize(r1) == fillByte[1] and quantize(g1) == fillByte[2] and quantize(b1) == fillByte[3])
+                  then
+                    fillMismatch = fillMismatch + 1
+                  end
+                else
+                  -- Portraits depth-resolve on the shared target: the
+                  -- larger native depth wins, transparent winner texels
+                  -- fall through to this portrait.
+                  local winner, wu, wv = nil, 0, 0
+                  for _, other in ipairs(fitted) do
+                    if other ~= item and other.depth > item.depth then
+                      local ou = math.floor(((x + 0.5) - other.fx) / fitDoubles.scale)
+                      local ov = math.floor(((y + 0.5) - other.fy) / fitDoubles.scale)
+                      if
+                        ou >= 0
+                        and ov >= 0
+                        and ou < other.reference:getWidth()
+                        and ov < other.reference:getHeight()
+                      then
+                        local _, _, _, oa = other.reference:getPixel(ou, ov)
+                        if oa > 0.5 and (winner == nil or other.depth > winner.depth) then
+                          winner, wu, wv = other, ou, ov
+                        end
+                      end
+                    end
+                  end
+                  -- Exact-boundary ties admit neighbor verification:
+                  -- fractional origins that land a host pixel center
+                  -- mathematically on a texel boundary let the shared
+                  -- rasterizer sample either neighbor, and either side
+                  -- must verify exactly. A tie that verifies through
+                  -- neither neighbor nor the scene behind a transparent
+                  -- sample joins the proven-tie documented gap instead
+                  -- of failing as a placed texel.
+                  local nearInt = function(f)
+                    local frac = f - math.floor(f)
+                    return frac < 1e-6 or frac > 1 - 1e-6
+                  end
+                  local function neighborVerified(ref, uu, vv, wu, wv)
+                    local aus = { uu }
+                    local avs = { vv }
+                    if nearInt(wu) then
+                      aus[#aus + 1] = uu - 1
+                      aus[#aus + 1] = uu + 1
+                    end
+                    if nearInt(wv) then
+                      avs[#avs + 1] = vv - 1
+                      avs[#avs + 1] = vv + 1
+                    end
+                    for _, au in ipairs(aus) do
+                      for _, av in ipairs(avs) do
+                        if au >= 0 and av >= 0 and au < ref:getWidth() and av < ref:getHeight() then
+                          local ar, ag, ab, aa = ref:getPixel(au, av)
+                          if aa > 0.5 and sameHardwarePixel(r1, g1, b1, a1, ar, ag, ab) then
+                            return true
                           end
                         end
                       end
                     end
-                    -- Exact-boundary ties admit neighbor verification:
-                    -- fractional origins that land a host pixel center
-                    -- mathematically on a texel boundary let the shared
-                    -- rasterizer sample either neighbor, and either side
-                    -- must verify exactly. A tie that verifies through
-                    -- neither neighbor nor the scene behind a transparent
-                    -- sample joins the proven-tie documented gap instead
-                    -- of failing as a placed texel.
-                    local nearInt = function(f)
-                      local frac = f - math.floor(f)
-                      return frac < 1e-6 or frac > 1 - 1e-6
+                    return false
+                  end
+                  local function sceneVerified()
+                    local tx = math.floor(((x + 0.5) - (frame.x + fitDoubles.offsetX)) / fitDoubles.scale)
+                    local ty = math.floor(((y + 0.5) - (frame.y + fitDoubles.offsetY)) / fitDoubles.scale)
+                    if tx >= 0 and ty >= 0 and tx < 256 and ty < 192 then
+                      local sr, sg, sb = sceneSource:getPixel(tx, ty)
+                      return sameHardwarePixel(r1, g1, b1, a1, sr, sg, sb)
                     end
-                    local function neighborVerified(ref, uu, vv, wu, wv)
-                      local aus = { uu }
-                      local avs = { vv }
-                      if nearInt(wu) then
-                        aus[#aus + 1] = uu - 1
-                        aus[#aus + 1] = uu + 1
-                      end
-                      if nearInt(wv) then
-                        avs[#avs + 1] = vv - 1
-                        avs[#avs + 1] = vv + 1
-                      end
-                      for _, au in ipairs(aus) do
-                        for _, av in ipairs(avs) do
-                          if au >= 0 and av >= 0 and au < ref:getWidth() and av < ref:getHeight() then
-                            local ar, ag, ab, aa = ref:getPixel(au, av)
-                            if aa > 0.5 and sameHardwarePixel(r1, g1, b1, a1, ar, ag, ab) then
-                              return true
-                            end
-                          end
-                        end
-                      end
-                      return false
-                    end
-                    local function sceneVerified()
-                      local tx = math.floor(((x + 0.5) - (frame.x + fitDoubles.offsetX)) / fitDoubles.scale)
-                      local ty = math.floor(((y + 0.5) - (frame.y + fitDoubles.offsetY)) / fitDoubles.scale)
-                      if tx >= 0 and ty >= 0 and tx < 256 and ty < 192 then
-                        local sr, sg, sb = sceneSource:getPixel(tx, ty)
-                        return sameHardwarePixel(r1, g1, b1, a1, sr, sg, sb)
-                      end
-                      return false
-                    end
-                    if winner ~= nil then
-                      local wr, wg, wb = winner.reference:getPixel(wu, wv)
-                      local wfu = ((x + 0.5) - winner.fx) / fitDoubles.scale
-                      local wfv = ((y + 0.5) - winner.fy) / fitDoubles.scale
-                      local winnerTie = nearInt(wfu) or nearInt(wfv)
-                      if sameHardwarePixel(r1, g1, b1, a1, wr, wg, wb) then
-                        -- Covered texel matches the depth-winning portrait.
-                      elseif winnerTie and neighborVerified(winner.reference, wu, wv, wfu, wfv) then
-                        boundaryOk = boundaryOk + 1
-                      elseif winnerTie and sceneVerified() then
-                        boundaryOk = boundaryOk + 1
-                      elseif winnerTie then
-                        tieGap = tieGap + 1
-                      else
-                        winnerMismatch = winnerMismatch + 1
-                      end
-                    elseif sameHardwarePixel(r1, g1, b1, a1, r2, g2, b2) then
-                      -- Visible texel matches its exact six-bit identity.
-                    elseif (nearInt(fu) or nearInt(fv)) and neighborVerified(reference, u, v, fu, fv) then
+                    return false
+                  end
+                  if winner ~= nil then
+                    local wr, wg, wb = winner.reference:getPixel(wu, wv)
+                    local wfu = ((x + 0.5) - winner.fx) / fitDoubles.scale
+                    local wfv = ((y + 0.5) - winner.fy) / fitDoubles.scale
+                    local winnerTie = nearInt(wfu) or nearInt(wfv)
+                    if sameHardwarePixel(r1, g1, b1, a1, wr, wg, wb) then
+                      -- Covered texel matches the depth-winning portrait.
+                    elseif winnerTie and neighborVerified(winner.reference, wu, wv, wfu, wfv) then
                       boundaryOk = boundaryOk + 1
-                    elseif (nearInt(fu) or nearInt(fv)) and sceneVerified() then
+                    elseif winnerTie and sceneVerified() then
                       boundaryOk = boundaryOk + 1
-                    elseif nearInt(fu) or nearInt(fv) then
+                    elseif winnerTie then
                       tieGap = tieGap + 1
                     else
-                      visibleMismatch = visibleMismatch + 1
+                      winnerMismatch = winnerMismatch + 1
                     end
+                  elseif sameHardwarePixel(r1, g1, b1, a1, r2, g2, b2) then
+                    -- Visible texel matches its exact six-bit identity.
+                  elseif (nearInt(fu) or nearInt(fv)) and neighborVerified(reference, u, v, fu, fv) then
+                    boundaryOk = boundaryOk + 1
+                  elseif (nearInt(fu) or nearInt(fv)) and sceneVerified() then
+                    boundaryOk = boundaryOk + 1
+                  elseif nearInt(fu) or nearInt(fv) then
+                    tieGap = tieGap + 1
+                  else
+                    visibleMismatch = visibleMismatch + 1
                   end
                 end
               end
             end
           end
-          Assert.isTrue(occupied > 100, versionId .. " has visible source pixels for " .. item.selector)
-          Assert.equal(
-            visibleMismatch,
-            0,
-            versionId .. " resolves every visible texel of " .. item.selector .. " (" .. tostring(visibleMismatch) .. " mismatches)"
-          )
-          Assert.equal(
-            barMismatch,
-            0,
-            versionId .. " resolves every bar-covered texel of " .. item.selector .. " (" .. tostring(barMismatch) .. " mismatches)"
-          )
-          Assert.equal(
-            fillMismatch,
-            0,
-            versionId .. " resolves every fill-covered texel of " .. item.selector .. " (" .. tostring(fillMismatch) .. " mismatches)"
-          )
-          Assert.equal(
-            winnerMismatch,
-            0,
-            versionId .. " resolves every portrait-covered texel of " .. item.selector .. " (" .. tostring(winnerMismatch) .. " mismatches)"
-          )
         end
+        Assert.isTrue(occupied > 100, versionId .. " has visible source pixels for " .. item.selector)
+        Assert.equal(
+          visibleMismatch,
+          0,
+          versionId
+            .. " resolves every visible texel of "
+            .. item.selector
+            .. " ("
+            .. tostring(visibleMismatch)
+            .. " mismatches)"
+        )
+        Assert.equal(
+          barMismatch,
+          0,
+          versionId
+            .. " resolves every bar-covered texel of "
+            .. item.selector
+            .. " ("
+            .. tostring(barMismatch)
+            .. " mismatches)"
+        )
+        Assert.equal(
+          fillMismatch,
+          0,
+          versionId
+            .. " resolves every fill-covered texel of "
+            .. item.selector
+            .. " ("
+            .. tostring(fillMismatch)
+            .. " mismatches)"
+        )
+        Assert.equal(
+          winnerMismatch,
+          0,
+          versionId
+            .. " resolves every portrait-covered texel of "
+            .. item.selector
+            .. " ("
+            .. tostring(winnerMismatch)
+            .. " mismatches)"
+        )
+      end
 
       local sources = {
         { asset = assert(manifest.hud.enemy, versionId .. " stages enemy HUD strip") },
@@ -4111,7 +4161,12 @@ function T.compact_active_lead_draws_its_exact_canonical_portrait(scope, context
     local exactFemale, exactMale = exactAt(femaleScaled), exactAt(maleScaled)
     Assert.isTrue(
       exactFemale > exactMale,
-      versionId .. " draws the live lead selector instead of the first-slot male portrait (" .. tostring(exactFemale) .. " vs " .. tostring(exactMale) .. ")"
+      versionId
+        .. " draws the live lead selector instead of the first-slot male portrait ("
+        .. tostring(exactFemale)
+        .. " vs "
+        .. tostring(exactMale)
+        .. ")"
     )
   end
 end
@@ -4478,7 +4533,14 @@ function T.intro_scene_draws_indexed_pool_art_through_its_palette(scope, context
   local cacheFs = GeneratedCacheFixture.reader(versionId)
   local record = assert(BattlePresentationCache.loadScene(cacheFs, SCENE_KEY), "intro scene staged")
   local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
-  local pool = ImageAssetPool.new(cacheFs, { graphics = love.graphics })
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
+  local pool = ImageAssetPool.new(cacheFs, {
+    graphics = love.graphics,
+    queue = runtime.preparationQueue,
+    decoded = runtime.decoded,
+  })
   scope:own({
     release = function()
       pcall(function()

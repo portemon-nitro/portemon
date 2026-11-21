@@ -85,8 +85,22 @@ local function timelineBundle()
   return bundle
 end
 
+-- The selected runtime's resident bytes and its source-acquisition boundary:
+-- every composition below borrows these and returns each acquisition with the
+-- voice that sounded it.
 local function composeAt(rate)
-  local composed = AudioRuntime.compose({ cacheFs = AudioFixture.readyCache(timelineBundle()), outputRate = rate })
+  local cache = AudioFixture.residentCache(timelineBundle())
+  local composed = AudioRuntime.compose({
+    cacheFs = cache,
+    outputRate = rate,
+    acquireSource = function(reference)
+      local lease = { value = reference.data }
+      function lease:release()
+        self.value = nil
+      end
+      return lease
+    end,
+  })
   Assert.notNil(composed.sound, "the composition owns the semantic facade at " .. rate .. " Hz")
   Assert.notNil(composed.renderer, "the composition owns the rendering engine at " .. rate .. " Hz")
   return composed.sound, composed.renderer
@@ -244,17 +258,26 @@ function T.a_fade_out_runs_its_ticks_and_leaves_the_music_silent()
   end
 end
 
--- The composed voices borrow their samples: after every provider-side
--- reference is released and collected, the sounding voice still renders
--- its exact trace, and the mixer tracks the borrowing until the voice
--- is stopped.
+-- Each composed voice owns its sample acquisition: once every caller-side
+-- reference and the provider are released and collected, the sounding voice
+-- still renders its exact trace, and the mixer tracks the ownership until the
+-- voice is stopped.
 function T.sounding_voices_keep_their_borrowed_sample_after_provider_release()
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache(timelineBundle()))
-  local sample = provider:loadSample(AudioFixture.key(1))
-  local borrowed = sample.pcm
-  local function startBorrowedVoice(mixer)
+  local cache = AudioFixture.residentCache(timelineBundle())
+  local provider = AudioAssetProvider.new(cache, {
+    acquireSource = function(reference)
+      local lease = { value = reference.data }
+      function lease:release()
+        self.value = nil
+      end
+      return lease
+    end,
+  })
+  local function startBorrowedVoice(mixer, lease)
+    local borrowed = assert(lease.value).pcm
     local handle = mixer:noteOn({
       generator = { kind = "sample", sample = AudioFixture.key(1) },
+      sampleLease = lease,
       pcm = borrowed,
       baseTimer = 8006,
       loopEnabled = true,
@@ -272,20 +295,19 @@ function T.sounding_voices_keep_their_borrowed_sample_after_provider_release()
       channelPriority = 64,
     })
     mixer:controlStep()
-    return handle
+    return handle, borrowed
   end
   local voice = VoiceMixer.new({ sampleRate = 48000 })
-  local handle = startBorrowedVoice(voice)
+  local handle, borrowed = startBorrowedVoice(voice, provider:acquireSample(AudioFixture.key(1)))
   local firstHalf = voice:render(250)
-  -- Only the voice still reaches the borrowed sample: the provider and
-  -- its memo wrapper are released before the collection below.
+  local twin = VoiceMixer.new({ sampleRate = 48000 })
+  startBorrowedVoice(twin, provider:acquireSample(AudioFixture.key(1)))
+  -- Only the sounding voices still reach their acquisitions: the provider is
+  -- released before the collection below.
   provider = nil
-  sample = nil
   collectgarbage("collect")
   Assert.isTrue(voice:isVoiceAlive(handle), "the sounding voice outlives the released provider")
   local secondHalf = voice:render(250)
-  local twin = VoiceMixer.new({ sampleRate = 48000 })
-  startBorrowedVoice(twin)
   Assert.deepEqual(firstHalf, twin:render(250), "the pre-collection span renders its exact trace")
   Assert.deepEqual(secondHalf, twin:render(250), "collection changes nothing in the rendered trace")
   Assert.equal(

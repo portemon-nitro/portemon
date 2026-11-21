@@ -9,6 +9,8 @@ local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local FieldMessageCacheWriter = require("romdump.src.digest.ui.FieldMessageCacheWriter")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
+local CacheFs = require("libs.storage.src.CacheFs")
+local ResidentCache = require("libs.storage.src.ResidentCache")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local ScriptCacheBuildFixture = require("tests.support.ScriptCacheBuildFixture")
@@ -181,11 +183,45 @@ function T.published_bank_is_one_lean_compact_file()
   end
 end
 
+-- The provider consumes the installed resident view and borrows each bank's
+-- bytes through the selected acquirer: install the published banks the test just
+-- wrote and serve them from that view.
+---@param cache CacheFs
+---@param bankIds integer[]
+---@return FieldMessageProvider
+local function residentProvider(cache, bankIds)
+  local sourceId = "base:message-provider-test"
+  local store = ResidentCache.new("heartgold", sourceId)
+  local entries = {}
+  for _, bankId in ipairs(bankIds) do
+    local path = FieldMessageCache.bankPath(bankId)
+    local bytes = assert(cache:read(path), "published bank " .. tostring(bankId))
+    entries[#entries + 1] = {
+      path = path,
+      data = assert(love.data.newByteData(bytes)),
+      size = #bytes,
+      sourceId = sourceId,
+      contentId = "heartgold\0" .. path,
+    }
+  end
+  store:commit(store:prepare(entries))
+  local reader = CacheFs.fromStore(store)
+  return assert(FieldMessageProvider.new(reader, {
+    acquireSource = function(reference)
+      local lease = { value = assert(reference).data }
+      function lease:release()
+        self.value = nil
+      end
+      return lease
+    end,
+  }))
+end
+
 function T.provider_keeps_control_semantics_from_the_compact_bank()
   local cache, source = publishBank()
   Assert.deepEqual(source.readMemberIds, { BANK_ID }, "one bank job reads no sibling bank")
 
-  local provider = assert(FieldMessageProvider.new(cache))
+  local provider = residentProvider(cache, { BANK_ID })
   assert(provider:acquireBank(BANK_ID))
   local template = assert(provider:get(BANK_ID, 0))
   Assert.equal(template.bankId, BANK_ID)

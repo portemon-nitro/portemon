@@ -26,6 +26,7 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
 local CacheFs = require("libs.storage.src.CacheFs")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FakeCache = require("tests.support.FakeCache")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
@@ -228,10 +229,14 @@ end
 ---@return table<string, unknown> headless runtime options over the produced corpus
 local function runtimeOptions(versionId)
   local Fixture = require("tests.support.FieldStatePresentationFixture")
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
+  -- A headless runtime still borrows the selected epoch's CPU owners; compact
+  -- acquisition needs no worker, so the borrowed queue starts no thread.
   return {
     presentation = false,
     derivedAssets = Fixture.iconHost().derivedAssets,
-    cacheFs = GeneratedCacheFixture.reader(versionId),
+    cacheFs = cacheFs,
+    assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs),
   }
 end
 
@@ -266,10 +271,7 @@ local function selectedLeafHost()
   function derived.requestBattleTrainerPicture(selector, urgency)
     assert(
       type(selector) == "string"
-        and (
-          selector:match("^front:[A-Z][A-Z0-9_]*$") ~= nil
-          or selector:match("^back:[A-Z][A-Z0-9_]*$") ~= nil
-        ),
+        and (selector:match("^front:[A-Z][A-Z0-9_]*$") ~= nil or selector:match("^back:[A-Z][A-Z0-9_]*$") ~= nil),
       "battle trainer picture demand carries its front:CLASS or back:CLASS selector"
     )
     return answer("battle-trainer-picture", selector, urgency)
@@ -738,7 +740,8 @@ end
 ---@return table sound semantic facade under test driving
 ---@return table player engine player behind rendering
 local function composeCaseEngine(selectSymbol)
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache(caseBundle(selectSymbol)))
+  local cache = AudioFixture.residentCache(caseBundle(selectSymbol))
+  local provider = AudioAssetProvider.new(cache, { acquireSource = AudioFixture.acquireSource() })
   ---@cast provider AudioAssetProvider
   local mixer = VoiceMixer.new({ sampleRate = SAMPLE_RATE })
   local player = SequencePlayer.new({ sampleRate = SAMPLE_RATE, mixer = mixer, provider = provider })
@@ -1055,7 +1058,8 @@ function T.heard_battle_cases_trace_their_cues_and_render_audible_samples()
     -- Native program voices name shared sequence symbols: only symbols no
     -- staged index resolves still count as unknown, exactly like the quiet
     -- journey below.
-    local stagedProvider = AudioAssetProvider.new(GeneratedCacheFixture.reader(versionId))
+    local stagedProvider =
+      AudioAssetProvider.new(GeneratedCacheFixture.reader(versionId), { acquireSource = AudioFixture.acquireSource() })
     local faintSequence = stagedProvider:sequence(BattleAudio.SINK_SOUNDS.faint)
     local faintBankReady = pcall(function()
       stagedProvider:bank(faintSequence.bankId)
@@ -1579,11 +1583,7 @@ function T.every_outcome_hands_music_back_exactly_once_without_retiring_the_engi
         runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
         runtime:update(1 / 30)
         envelope:updateFixed(TICK)
-        check(
-          problems,
-          trace.suspends == 0,
-          "admission itself leaves the field policy active on " .. versionId
-        )
+        check(problems, trace.suspends == 0, "admission itself leaves the field policy active on " .. versionId)
         local ticks = 0
         while runtime.battleCoordinator:activeBattle() == nil and ticks < 1500 do
           runtime:update(1 / 30)
@@ -1745,7 +1745,8 @@ function T.quiet_visual_modes_keep_the_mandatory_cues_and_no_substitutes()
     -- voices the quiet path keeps) are mandatory-adjacent cues, not
     -- invented substitutes: only symbols no staged index resolves still
     -- count as unknown.
-    local stagedProvider = AudioAssetProvider.new(GeneratedCacheFixture.reader(versionId))
+    local stagedProvider =
+      AudioAssetProvider.new(GeneratedCacheFixture.reader(versionId), { acquireSource = AudioFixture.acquireSource() })
     local function stagedSymbol(symbol)
       return (pcall(function()
         return stagedProvider:sequence(symbol)

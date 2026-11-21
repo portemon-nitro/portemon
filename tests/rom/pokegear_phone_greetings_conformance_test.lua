@@ -11,6 +11,7 @@
 local Assert = require("tests.support.Assert")
 local RomSuite = require("tests.rom.support.RomSuite")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local PokegearSources = require("romdump.src.config.PokegearSources")
 
@@ -37,10 +38,21 @@ end
 -- real reference as the shared lease token. Production owner:
 -- FieldRuntime._composePokegearFeature.
 ---@param catalog table<string, unknown>
+-- The message provider a selected session installs over the prepared cache:
+-- every open bank borrows the selected runtime's resident source branch.
+---@param cacheFs table<string, unknown>
+---@return table<string, unknown> provider
+local function messageProvider(cacheFs)
+  local runtime = SelectedAssetRuntimeFixture.new(cacheFs)
+  return assert(
+    FieldMessageProvider.new(cacheFs, { acquireSource = SelectedAssetRuntimeFixture.acquireSource(runtime) })
+  )
+end
+
 ---@return table<string, unknown>
 local function greetingMessages(catalog, versionId)
   local messages = {}
-  local provider = assert(FieldMessageProvider.new(GeneratedCacheFixture.reader(versionId)))
+  local provider = messageProvider(GeneratedCacheFixture.reader(versionId))
   local resolvers = {}
   local firstRef = nil
   local byKey = {}
@@ -171,7 +183,7 @@ end
 -- bank. This is the producer provisioning proof for the phone banks.
 function T.greeting_banks_are_demandable(romFs, versionId)
   local catalog = compileCatalog(romFs, versionId)
-  local provider = assert(FieldMessageProvider.new(GeneratedCacheFixture.reader(versionId)))
+  local provider = messageProvider(GeneratedCacheFixture.reader(versionId))
   local seen = {}
   for _, record in ipairs(catalog.contacts) do
     local contact = record --[[@as table<string, unknown>]]
@@ -202,7 +214,7 @@ function T.greeting_entries_report_their_standing(romFs, versionId)
   local catalog = compileCatalog(romFs, versionId)
   local def = fontDef(versionId)
   local resolvers = nameResolvers(def)
-  local provider = assert(FieldMessageProvider.new(GeneratedCacheFixture.reader(versionId)))
+  local provider = messageProvider(GeneratedCacheFixture.reader(versionId))
   local clean, unresolved, unmapped, faulted = 0, {}, {}, {}
   for _, record in ipairs(catalog.contacts) do
     local contact = record --[[@as table<string, unknown>]]
@@ -358,7 +370,7 @@ function T.outgoing_call_completes_with_real_greeting_refs(romFs, versionId)
   messages.dispose(messages)
   -- The frozen lease token resolves through the same bank pipeline: the
   -- provider serves the referenced bank and entry with real tokens.
-  local provider = assert(FieldMessageProvider.new(GeneratedCacheFixture.reader(versionId)))
+  local provider = messageProvider(GeneratedCacheFixture.reader(versionId))
   local bank, entry = messages.greeting:match("^msg%.hgss%.(%d+)%.(%d+)$")
   Assert.notNil(bank, "the lease token stays a bank reference")
   Assert.notNil(provider:acquireBank(tonumber(bank)))
@@ -467,7 +479,7 @@ function T.scripted_call_completes_through_the_real_task_and_host(romFs, version
   Assert.isTrue(done, "the scripted call completes through its task and host")
   Assert.isFalse(host:isActive(), "completion releases the feature lease")
   messages.dispose(messages)
-  local provider = assert(FieldMessageProvider.new(GeneratedCacheFixture.reader(versionId)))
+  local provider = messageProvider(GeneratedCacheFixture.reader(versionId))
   local elmBank = assert(provider:acquireBank(716))
   Assert.equal(elmBank.messageCount, 45, "the elm bank holds entries 0..44")
   local template = assert(provider:get(716, 1))

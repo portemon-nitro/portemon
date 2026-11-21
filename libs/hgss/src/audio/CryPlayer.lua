@@ -87,7 +87,10 @@ function CryPlayer.new(opts)
   }, CryPlayer) --[[@as CryPlayer]]
 end
 
-local function sampleForBank(provider, bank)
+-- The cry sample key of one species bank: the pattern's wave actions each
+-- acquire their own lease over it when they start, so nothing long-lived is
+-- resolved here.
+local function sampleKeyForBank(bank)
   local instrument = bank.instruments and bank.instruments[0]
   local voice = instrument and InstrumentSelector.selectVoice(instrument, 60)
   local generator = voice and voice.generator
@@ -97,7 +100,7 @@ local function sampleForBank(provider, bank)
   local generatorTable = generator --[[@as table]]
   local sampleKey = rawget(generatorTable, "sample")
   assert(type(sampleKey) == "string", "cry sample key must be a string")
-  return provider:loadSample(sampleKey)
+  return sampleKey
 end
 
 function CryPlayer:_resetHandle(handle)
@@ -205,12 +208,12 @@ function CryPlayer:play(species, pattern, form, pan, volume, pitch)
   -- Resolve every asset before replacing the currently valid request.
   local bank = self._provider:bank(CryPlayer.bankFor(species, form))
   local sequence
-  local sample
+  local sampleKey
   if descriptor.primary ~= nil or descriptor.secondary ~= nil then
     sequence = self._provider:sequence(STANDARD_CRY_SEQUENCE_ID)
   end
   if descriptor.waveOut ~= nil then
-    sample = sampleForBank(self._provider, bank)
+    sampleKey = sampleKeyForBank(bank)
     if self._waveOut == nil then
       unavailable(species, pattern, "no WaveOut subsystem is available")
     end
@@ -253,13 +256,21 @@ function CryPlayer:play(species, pattern, form, pan, volume, pitch)
       for _, action in ipairs(descriptor.waveOut) do
         local wavePan = pan >= 0 and math.floor(pan / 2) or math.ceil(pan / 2)
         local waveVolume = action.channel == 15 and math.max(1, volume - 30) or volume
-        local handle = self._waveOut:start(action.channel, sample, {
+        -- Each wave action is one physical voice, so each takes its own
+        -- acquisition of the same sample; the voice owns it once started.
+        local sampleLease = self._provider:acquireSample(sampleKey --[[@as string]])
+        local started, handle = pcall(self._waveOut.start, self._waveOut, action.channel, sampleLease, {
           volume = waveVolume,
           pan = math.max(0, math.min(127, 64 + wavePan)),
           speed = action.speed,
           reverse = true,
         })
+        if not started then
+          sampleLease:release()
+          error(handle, 0)
+        end
         if handle == nil then
+          sampleLease:release()
           unavailable(species, pattern, "the direct-wave cry was rejected by the audio player")
         end
         owned.waveOut[#owned.waveOut + 1] = handle

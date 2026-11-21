@@ -76,11 +76,29 @@ local function fakeImage()
 end
 
 ---@return SharedImagePoolFake
-function SharedImagePoolFake.new()
-  return setmetatable(
-    { uploads = 0, _requests = {}, _nextToken = 0, _physicals = {}, _failAfter = nil },
-    SharedImagePoolFake
-  )
+---@param opts { preparation: { queue: table, decoded: table } }?
+---@return SharedImagePoolFake
+function SharedImagePoolFake.new(opts)
+  opts = opts or {}
+  return setmetatable({
+    uploads = 0,
+    _requests = {},
+    _nextToken = 0,
+    _physicals = {},
+    _failAfter = nil,
+    -- The borrowed CPU preparation a real session image owner exposes to the
+    -- scene GPU pool. Texture-only fixtures never read through it; a suite
+    -- that realizes prepared geometry injects its own pair, and otherwise the
+    -- pair exists so construction runs the same required capability.
+    _preparation = opts.preparation or { queue = {}, decoded = {} },
+  }, SharedImagePoolFake)
+end
+
+-- The stable borrowed CPU-owner record the scene GPU pool resolves when it
+-- has no explicit pair.
+---@return { queue: table, decoded: table }
+function SharedImagePoolFake:preparation()
+  return self._preparation
 end
 
 -- Fail staged requests once the pool has published `count` physical images:
@@ -106,10 +124,7 @@ end
 ---@param _priority string?
 ---@return integer
 function SharedImagePoolFake:request(logicalPath, sampler, _priority)
-  assert(
-    type(logicalPath) == "string" or type(logicalPath) == "table",
-    "shared image reference is required"
-  )
+  assert(type(logicalPath) == "string" or type(logicalPath) == "table", "shared image reference is required")
   assert(
     type(sampler) == "table" and type(sampler.wrapX) == "string" and type(sampler.wrapY) == "string",
     "shared image request needs an immutable sampler state"

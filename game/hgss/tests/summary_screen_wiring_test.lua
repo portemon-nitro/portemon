@@ -1019,6 +1019,15 @@ local function fprRuntime(versionId)
   -- reads dimensions off borrows) honest without staging anything.
   runtime.imageAssets = SummaryAcceptanceFixture.sizedImagePool()
   runtime.assetPreparation = FakePreparationQueue.new()
+  -- The bag hero borrows the selected decoded owner for the leases it takes
+  -- back from the preparation worker; the stub pair keeps that capability
+  -- present without a second CPU owner beside the injected worker double.
+  runtime.decoded = {
+    returnLease = function()
+      return true
+    end,
+    trim = function() end,
+  }
   runtime.derivedAssets = {}
   runtime.bindPartyIconPreparation = function(_, _, _)
     return 1

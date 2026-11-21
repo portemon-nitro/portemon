@@ -119,7 +119,7 @@ local bit = require("bit")
 
 ---@class NdsSoundProvider
 ---@field player fun(self: NdsSoundProvider, id: integer): table<string, unknown>
----@field loadSample fun(self: NdsSoundProvider, key: string): { metadata: table<string, unknown>, pcm: Pcm16 }
+---@field acquireSample fun(self: NdsSoundProvider, key: string): VoiceMixerSampleLease one acquisition per newly allocated sample voice
 
 ---@class SequencePlayer
 ---@field private _sampleRate integer
@@ -574,7 +574,8 @@ end
 -- transposed key: it drives the bank leaf selection (SND_ReadInstData) and
 -- rides the spec as the voice's key, and the pitch is the selected voice's
 -- (midiKey - rootMidiKey) * 0x40 in the mixer -- never the source note key.
--- The voice spec carries the decoded PCM and loop window from the provider,
+-- The voice spec carries one sample acquisition -- the mixer's opaque
+-- metadata/PCM lease it owns from installation until physical removal -- and
 -- the raw track pan offset, the channel/track priorities and channel mask
 -- from the sequence's player record (nothing is folded into the track
 -- volume), the TrackInit userPitch 0, the TrackPlayNote sweep fields (the
@@ -602,8 +603,14 @@ local function startNote(provider, mixer, instance, track, midiKey, velocity, le
     return nil
   end
   local spec = { generator = voice.generator }
+  local sampleLease = nil
   if voice.generator.kind == "sample" then
-    local sample = provider:loadSample(voice.generator.sample)
+    -- One acquisition per newly allocated sample voice: the note holds it until
+    -- the mixer returns a non-nil handle, and the installed voice owns it from
+    -- then on until physical removal.
+    sampleLease = provider:acquireSample(voice.generator.sample --[[@as string]])
+    local sample = assert(sampleLease.value, "a sample acquisition exposes its metadata and PCM")
+    spec.sampleLease = sampleLease
     spec.baseTimer = sample.metadata.baseTimer
     spec.pcm = sample.pcm
     spec.sampleRef = sample.pcm
@@ -652,7 +659,20 @@ local function startNote(provider, mixer, instance, track, midiKey, velocity, le
     speed = track.mod.speed,
     delay = track.mod.delay,
   }
-  return mixer:noteOn(spec), indefinite
+  -- A rejected or failed voice creation leaves the acquisition with this note,
+  -- which returns it before the failure propagates; a successful handle
+  -- transfers it to the installed voice.
+  local ok, handle = pcall(mixer.noteOn, mixer, spec)
+  if not ok then
+    if sampleLease ~= nil then
+      sampleLease:release()
+    end
+    error(handle, 0)
+  end
+  if handle == nil and sampleLease ~= nil then
+    sampleLease:release()
+  end
+  return handle, indefinite
 end
 
 local function observeNote(self, instance, track, key, velocity, length)

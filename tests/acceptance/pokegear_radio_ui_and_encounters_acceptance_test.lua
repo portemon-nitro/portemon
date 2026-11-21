@@ -619,8 +619,8 @@ function T.tests.special_music_query_reads_the_retained_audio_latch_until_the_so
   }
   bundle.samples = { [keyA] = AudioFixture.pcm16le({ 1000, 2000, 3000, 4000 }) }
   bundle.sampleMetadata = { [keyA] = AudioFixture.sampleMetadata(keyA, { frames = 4 }) }
-  local cacheFs = AudioFixture.readyCache(bundle)
-  local provider = AudioAssetProvider.new(cacheFs)
+  local cacheFs = AudioFixture.residentCache(bundle)
+  local provider = AudioAssetProvider.new(cacheFs, { acquireSource = AudioFixture.acquireSource() })
   local mixer = VoiceMixer.new({ sampleRate = sampleRate })
   local player = SequencePlayer.new({ sampleRate = sampleRate, mixer = mixer, provider = provider })
   local sound = GameSound.new({

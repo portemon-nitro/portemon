@@ -1,6 +1,7 @@
 -- Production FieldState composition for adapted field Yes/No presentation.
 
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local Assert = require("tests.support.Assert")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
@@ -87,6 +88,7 @@ local function fieldStateWithAcceptanceScripts()
     return FieldState.new(freshGame(readyVersion()), {
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
       cacheFs = GeneratedCacheFixture.reader(readyVersion()),
+      assetRuntime = SelectedAssetRuntimeFixture.new(GeneratedCacheFixture.reader(readyVersion()), scope),
     })
   end, debug.traceback)
   FieldRuntime.new = originalNew
@@ -166,10 +168,15 @@ local function assertContextChoiceComposition(scope, width, height, safeRect, du
         return topology(width, height, safeRect)
       end
     end
+    local cacheFs = GeneratedCacheFixture.reader(readyVersion())
+    -- The presented runtime borrows the selected epoch's CPU owners for the
+    -- boot; the scope releases them after the state disposes.
+    local assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
     state = FieldState.new(freshGame(readyVersion()), {
       topologyProvider = topologyProvider,
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
-      cacheFs = GeneratedCacheFixture.reader(readyVersion()),
+      cacheFs = cacheFs,
+      assetRuntime = assetRuntime,
     })
     scope:own({
       release = function()
@@ -362,12 +369,17 @@ local function assertMenuComposition(scope, width, height, safeRect)
   local resolvedYesNoInputs
   local resolvedDialoguePresentation
   local ok, err = xpcall(function()
+    local cacheFs = GeneratedCacheFixture.reader(readyVersion())
+    -- The presented runtime borrows the selected epoch's CPU owners for the
+    -- boot; the scope releases them after the state disposes.
+    local assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
     state = FieldState.new(freshGame(readyVersion()), {
       topologyProvider = function()
         return topology(width, height, safeRect)
       end,
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
-      cacheFs = GeneratedCacheFixture.reader(readyVersion()),
+      cacheFs = cacheFs,
+      assetRuntime = assetRuntime,
     })
     scope:own({
       release = function()

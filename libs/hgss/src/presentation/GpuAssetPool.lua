@@ -16,10 +16,12 @@
 -- acquire outside a build releases only the object that failed acquisition
 -- itself created, never the resources a live scene is drawing. The pool knows
 -- nothing about maps, neighbors, materials, or transforms; those stay in
--- the loaders.
+-- the loaders. CPU-side, the pool borrows the selected session's preparation
+-- queue and decoded owner: a geometry acquisition that needs worker decode
+-- takes its own kernel lease, realizes the GPU object, and hands the lease back
+-- at once, so no scene retains a decoded bank.
 
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
-local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 local SynchronousWait = require("libs.hgss.src.presentation.SynchronousWait")
 local VertexFormat = require("libs.assets.src.model.VertexFormat")
@@ -31,7 +33,6 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@class GpuAssetPool.Image: love.Image
 ---@class GpuAssetPool.Graphics
 ---@field newImage fun(data: unknown): GpuAssetPool.Image
----@alias GpuAssetPool.MeshBuilder fun(decoded: table<string, unknown>): GpuAssetPool.Mesh
 -- The sampling handle one texture borrow resolves to: exactly the material
 -- shape ImageSampling.sendMaterialSampling consumes (bound image, exact
 -- palette for indexed sources, and the indexed flag that selects the
@@ -45,15 +46,14 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@class GpuAssetPool
 ---@field cacheFs table<string, unknown>
 ---@field graphics GpuAssetPool.Graphics|love.graphics
----@field meshBuilder GpuAssetPool.MeshBuilder
 ---@field meshes GpuAssetPool.Mesh[]
 ---@field triangles integer
 ---@field _imageAssets table<string, unknown>? session-scoped shared image owner every texture is borrowed from
 ---@field _imageLeases table<string, unknown>[] leases this scene borrowed from the shared owner, in acquisition order
 ---@field _pooledByKey table<string, GpuAssetPool.SamplingHandle> borrowed sampling handle by scene-local path/wrap identity
 ---@field _imageTokens table<string, integer> outstanding shared image request by scene-local path/wrap identity, from the request until its lease replaces it
----@field _nativeDecoded table<string, table<string, unknown>> decoded native model bank by bank file, synchronous path
----@field _nativePrepared table<string, table<string, unknown>> prepared native model bank by bank file, worker path
+---@field _queue table<string, unknown>? borrowed selected preparation queue
+---@field _decoded table<string, unknown>? borrowed selected decoded CPU owner
 local GpuAssetPool = {}
 GpuAssetPool.__index = GpuAssetPool
 
@@ -109,8 +109,53 @@ end
 
 ---@class GpuAssetPoolOptions
 ---@field graphics? unknown -- injectable graphics namespace (nil keeps love.graphics)
----@field meshBuilder? GpuAssetPool.MeshBuilder -- replaces SceneMesh.build (headless tests)
 ---@field imageAssets? table<string, unknown> -- session-scoped shared GPU image owner; required for every texture acquisition, which borrows a lease instead of owning an Image
+---@field assetPreparation? table<string, unknown> -- selected preparation queue, paired with decoded
+---@field decoded? table<string, unknown> -- selected decoded CPU owner, paired with assetPreparation
+
+-- The CPU owners a scene's geometry preparation borrows. An explicit pair wins
+-- and must agree with the image owner's own capability; otherwise the session
+-- image owner's required preparation accessor supplies it, so a cutscene or
+-- actor constructor that already holds the image owner needs no new argument. A
+-- pool that supplies only one of the pair is a programming error, and a pool
+-- with neither source is a programming error too: there is no private owner
+-- fallback.
+---@param opts GpuAssetPoolOptions
+---@return table<string, unknown> queue
+---@return table<string, unknown> decoded
+local function resolvePreparation(opts)
+  local queue = opts.assetPreparation
+  local decoded = opts.decoded
+  assert((queue == nil) == (decoded == nil), "GpuAssetPool needs the preparation queue and the decoded owner together")
+  local images = opts.imageAssets
+  local fromImageOwner = nil
+  if images ~= nil then
+    assert(
+      type(images.preparation) == "function",
+      "GpuAssetPool requires the session image owner's CPU preparation accessor"
+    )
+    fromImageOwner = images:preparation()
+    assert(
+      type(fromImageOwner) == "table" and fromImageOwner.queue ~= nil and fromImageOwner.decoded ~= nil,
+      "the session image owner exposes no CPU preparation"
+    )
+  end
+  if queue ~= nil then
+    if fromImageOwner ~= nil then
+      assert(
+        fromImageOwner.queue == queue and fromImageOwner.decoded == decoded,
+        "explicit CPU owners must be the session image owner's own preparation"
+      )
+    end
+    ---@cast decoded -nil
+    return queue, decoded
+  end
+  assert(
+    fromImageOwner ~= nil,
+    "GpuAssetPool requires the selected CPU preparation or a session image owner that exposes one"
+  )
+  return fromImageOwner.queue, fromImageOwner.decoded
+end
 
 -- cacheFs: a CacheFs-shaped reader (read(path) returns raw bytes or nil); see
 -- GpuAssetPoolOptions for the injectable mesh seam. Textures are never owned
@@ -129,10 +174,10 @@ function GpuAssetPool.new(cacheFs, opts)
   end
   assert(graphics and graphics.newImage, "GpuAssetPool requires love.graphics")
   ---@cast graphics GpuAssetPool.Graphics|love.graphics
+  local queue, decoded = resolvePreparation(opts)
   return setmetatable({
     cacheFs = cacheFs,
     graphics = graphics,
-    meshBuilder = opts.meshBuilder or SceneMesh.build,
     meshes = {},
     triangles = 0,
     _meshCache = {},
@@ -143,40 +188,45 @@ function GpuAssetPool.new(cacheFs, opts)
     _imageLeases = {},
     _pooledByKey = {},
     _imageTokens = {},
-    -- Native model banks are acquired as one bank-scoped transaction (one
-    -- read, one replay per decode context, one terrain repair), so the pool
-    -- holds the bank result for the scene build and drops each draw's payload
-    -- once it is realized. Nothing expanded outlives the pool.
-    _nativeDecoded = {},
-    _nativePrepared = {},
+    _queue = queue,
+    _decoded = decoded,
   }, GpuAssetPool)
 end
 
--- One draw's decoded geometry out of its bank, decoding the bank once per
--- scene build. The bank operation replays every draw of the bank exactly once
--- and repairs the terrain group once, so later draws of the same bank cost no
--- source replay; each draw's result is dropped after this hand-off.
----@param pool GpuAssetPool
+-- One selected draw out of a decoded native bank payload. The payload is
+-- shared by every consumer of the same identity, so a draw is picked, never
+-- consumed: the rest of the bank stays intact for its own readers.
+---@param payload table<string, unknown>
 ---@param reference ModelAsset.GeometryReference
----@return SceneMesh.NativeDecoded
-local function takeNativeDraw(pool, reference)
-  local file = ModelAsset.geometryFile(reference)
-  local bank = pool._nativeDecoded[file]
-  if bank == nil then
-    bank = SceneMesh.decodeNativeBank(assert(pool.cacheFs:read(file), "missing model bank " .. file), file)
-    pool._nativeDecoded[file] = bank
-  end
+---@return SceneMesh.PreparedMesh
+local function nativeDraw(payload, reference)
+  local draws = payload.draws
   local drawIndex = assert(reference.drawIndex)
-  local decoded = bank.draws[drawIndex + 1]
-  if decoded == nil then
+  local prepared = type(draws) == "table" and draws[drawIndex + 1] or nil
+  if prepared == nil then
     Errors.raise("SCENE_MESH_NATIVE_DRAW_MISSING", "native model bank has no draw " .. tostring(drawIndex), {
-      file = file,
+      file = ModelAsset.geometryFile(reference),
       drawIndex = drawIndex,
     })
   end
-  bank.draws[drawIndex + 1] = nil
-  ---@cast decoded SceneMesh.NativeDecoded
-  return decoded
+  ---@cast prepared SceneMesh.PreparedMesh
+  return prepared
+end
+
+-- The decoded payload one awaited preparation value carries, optionally
+-- narrowed to a native bank draw.
+---@param lease table<string, unknown>
+---@param reference string|ModelAsset.GeometryReference
+---@return SceneMesh.PreparedMesh
+local function preparedPayload(lease, reference)
+  local value = lease.value
+  local payload = value and value.payload
+  assert(type(payload) == "table", "the awaited preparation lease carries no decoded payload")
+  if type(reference) == "table" then
+    return nativeDraw(payload, reference)
+  end
+  ---@cast payload SceneMesh.PreparedMesh
+  return payload
 end
 
 -- Acquire (or fetch) the shared Mesh for a content-addressed geometry path.
@@ -192,35 +242,51 @@ end
 function GpuAssetPool:meshFor(reference)
   local key = assetKey(reference)
   local entry = self._meshCache[key]
-  if not entry then
-    guarded(self, function()
-      local decoded
-      if type(reference) == "table" then
-        decoded = takeNativeDraw(self, reference)
-      else
-        decoded = SceneMesh.decode(assert(self.cacheFs:read(reference), "missing mesh " .. reference), reference)
-      end
-      local mesh = self.meshBuilder(decoded)
-      -- Record ownership before the failure-capable geometry step: a later
-      -- failure (e.g. an empty mesh) pops and releases exactly this mesh
-      -- instead of orphaning it.
-      self.meshes[#self.meshes + 1] = mesh
-      local geometry = SceneDescriptor.meshGeometry(decoded.vertices)
-      local triangleCount = decoded.indexCount / 3
-      ---@cast triangleCount integer
-      entry = { mesh = mesh, triangles = triangleCount, center = geometry.center, bounds = geometry.bounds }
-      self._meshCache[key] = entry
-      self.triangles = self.triangles + entry.triangles
-    end)
+  if entry ~= nil then
+    return entry
   end
-  return entry
+  -- Every geometry source is a worker transaction on the selected queue: a
+  -- procedural batch requests its packed upload, a native bank requests the
+  -- whole bank, and the pool realizes the one payload it needs, then returns
+  -- the decoded lease at once so no scene retains decoded bytes after upload.
+  local queue = assert(self._queue, "geometry acquisition requires the selected preparation queue")
+  local kind = "mesh"
+  local source = reference
+  if type(reference) == "table" then
+    kind = "g4gx"
+    source = ModelAsset.geometryFile(reference)
+  end
+  local lease = queue:wait(queue:request(kind, source, "demand"))
+  local ok, realized = pcall(function()
+    return self:meshFromPrepared(reference, preparedPayload(lease, reference))
+  end)
+  self:_returnPrepared(lease)
+  if not ok then
+    error(realized, 0)
+  end
+  return realized --[[@as table]]
+end
+
+-- Return one borrowed decoded lease after its GPU objects exist. A pool that
+-- owns no decoded owner never borrowed one.
+---@param lease table<string, unknown>?
+function GpuAssetPool:_returnPrepared(lease)
+  if lease == nil then
+    return
+  end
+  local decoded = assert(self._decoded, "a prepared lease needs the selected decoded owner")
+  decoded:returnLease(lease)
+  decoded:trim()
 end
 
 -- Acquire one geometry reference through the preparation queue: CPU decoding
 -- and upload packing already happened on the worker, so only the LÖVE Mesh is
 -- realized here. `await(kind, path)` ("mesh" for a procedural batch, "g4gx"
--- for a whole native bank) is the staged caller's cooperative wait; a native
--- bank is awaited once per scene build and each draw then realizes from it.
+-- for a whole native bank) is the staged caller's cooperative wait and yields
+-- the kernel lease it took; the pool reads that lease's shared value and leaves
+-- the lease with the caller, who returns it once the build realizes the draw. A
+-- shared bank payload is never consumed: realizing one draw keeps every other
+-- draw intact for its own consumer.
 ---@param reference string|ModelAsset.GeometryReference
 ---@param await fun(kind: string, path: string): table<string, unknown>
 ---@return { mesh: GpuAssetPool.Mesh, triangles: integer, center: number[], bounds: { minX: number, maxX: number, minY: number, maxY: number, minZ: number, maxZ: number } }
@@ -231,29 +297,13 @@ function GpuAssetPool:preparedMesh(reference, await)
   if entry ~= nil then
     return entry
   end
-  local prepared
   if type(reference) == "table" then
-    local file = ModelAsset.geometryFile(reference)
-    local bank = self._nativePrepared[file]
-    if bank == nil then
-      bank = await("g4gx", file)
-      assert(type(bank) == "table" and type(bank.draws) == "table", "prepared native bank payload is malformed")
-      self._nativePrepared[file] = bank
-    end
-    local drawIndex = assert(reference.drawIndex)
-    prepared = bank.draws[drawIndex + 1]
-    if prepared == nil then
-      Errors.raise("SCENE_MESH_NATIVE_DRAW_MISSING", "native model bank has no draw " .. tostring(drawIndex), {
-        file = file,
-        drawIndex = drawIndex,
-      })
-    end
-    bank.draws[drawIndex + 1] = nil
-  else
-    ---@cast reference string
-    prepared = await("mesh", reference)
+    local lease = await("g4gx", ModelAsset.geometryFile(reference))
+    return self:meshFromPrepared(reference, preparedPayload(lease, reference))
   end
-  return self:meshFromPrepared(reference, prepared --[[@as SceneMesh.PreparedMesh]])
+  ---@cast reference string
+  local lease = await("mesh", reference)
+  return self:meshFromPrepared(reference, preparedPayload(lease, reference))
 end
 
 -- The immutable sampler state a shared-owner texture request carries. The
@@ -534,7 +584,6 @@ function GpuAssetPool:release()
     assert(#self._imageLeases == 0, "GpuAssetPool requires a session image owner for textures")
   end
   self._imageLeases, self._pooledByKey, self._imageTokens = {}, {}, {}
-  self._nativeDecoded, self._nativePrepared = {}, {}
   self.meshes = {}
   self._meshCache = {}
   self.triangles = 0

@@ -90,7 +90,8 @@ local function engineBundle()
 end
 
 local function newComposition()
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache(engineBundle()))
+  local cache = AudioFixture.residentCache(engineBundle())
+  local provider = AudioAssetProvider.new(cache, { acquireSource = AudioFixture.acquireSource() })
   local mixer = VoiceMixer.new({ sampleRate = SAMPLE_RATE })
   local player = SequencePlayer.new({
     sampleRate = SAMPLE_RATE,
@@ -191,7 +192,8 @@ local function brokenBundle()
 end
 
 function T.radio_start_with_a_missing_bank_fails_without_changing_playback()
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache(brokenBundle()))
+  local broken = AudioFixture.residentCache(brokenBundle())
+  local provider = AudioAssetProvider.new(broken, { acquireSource = AudioFixture.acquireSource() })
   local mixer = VoiceMixer.new({ sampleRate = SAMPLE_RATE })
   local player = SequencePlayer.new({
     sampleRate = SAMPLE_RATE,

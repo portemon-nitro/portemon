@@ -105,6 +105,11 @@ local function spec(overrides)
   if type(s.pcm) == "table" and s.pcm.frames == nil then
     s.pcm = AudioFixture.packed(s.pcm)
   end
+  if s.generator.kind == "sample" then
+    -- Every sounding sample voice owns one opaque acquisition; the helper
+    -- leases the packed backing the spec already carries.
+    s.sampleLease = AudioFixture.sampleLease(s.pcm)
+  end
   return s
 end
 

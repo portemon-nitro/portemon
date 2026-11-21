@@ -18,6 +18,10 @@ local AudioCache = require("libs.assets.src.audio.AudioCache")
 local AudioFixture = require("tests.support.AudioFixture")
 local FakeCache = require("tests.support.FakeCache")
 local AudioAssetProvider = require("libs.hgss.src.audio.AudioAssetProvider")
+local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+local CacheFs = require("libs.storage.src.CacheFs")
+local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+local ResidentCache = require("libs.storage.src.ResidentCache")
 
 local T = {}
 
@@ -27,32 +31,28 @@ local function throwsCode(code, fn)
   Assert.equal(err.code, code)
 end
 
-local function provider(bundle)
-  local cache = AudioFixture.readyCache(bundle)
-  return AudioAssetProvider.new(cache), cache
+-- The selected runtime's base source boundary: one lease roots the store's own
+-- bytes, and its release clears that reference.
+---@param cacheFs CacheFs
+---@return { acquireSource: fun(reference: table): table }
+local function sourceAcquirer(cacheFs)
+  return {
+    acquireSource = function(reference)
+      local lease = { value = reference.data }
+      function lease:release()
+        self.value = nil
+      end
+      return lease
+    end,
+  }
 end
 
--- A backend proxy counting every read by version-relative path (the backend
--- sees version-prefixed full paths, but the assertions count with
--- AudioCache's relative paths), so lazy+memoized loading is observable: an
--- asset is read exactly once no matter how often it is asked for, and never
--- read until it is asked for.
-local function countingBackend(backend)
-  local reads = {}
-  local proxy = setmetatable({}, {
-    __index = function(_, key)
-      if key == "read" then
-        return function(_, path)
-          local relative = path:gsub("^[^/]+/", "")
-          reads[relative] = (reads[relative] or 0) + 1
-          return backend:read(path)
-        end
-      end
-      return backend[key]
-    end,
-  })
-  proxy.reads = reads
-  return proxy
+---@param bundle AudioFixture.Bundle?
+---@return AudioAssetProvider provider
+---@return CacheFs reader
+local function provider(bundle)
+  local cache, store = AudioFixture.residentCache(bundle)
+  return AudioAssetProvider.new(cache, sourceAcquirer(cache)), cache, store
 end
 
 function T.constructs_from_a_ready_cache_and_resolves_ids_and_symbols()
@@ -106,7 +106,8 @@ end
 function T.samples_load_by_content_key_with_metadata_and_decoded_pcm()
   local p = provider(AudioFixture.bundle())
   local key = AudioFixture.key(1)
-  local sample = p:loadSample(key)
+  local lease = p:acquireSample(key)
+  local sample = assert(lease.value)
   Assert.equal(sample.metadata.key, key)
   Assert.equal(sample.metadata.schema, AudioCache.SAMPLE_SCHEMA)
   Assert.equal(sample.pcm.frames, 4, "the packed sample counts frames, not array length")
@@ -115,31 +116,35 @@ function T.samples_load_by_content_key_with_metadata_and_decoded_pcm()
     frames[#frames + 1] = sample.pcm:read(index)
   end
   Assert.deepEqual(frames, { 1000, 2000, 3000, 4000 }, "the provider hands over the packed PCM sample")
+  Assert.isTrue(lease:release(), "the acquisition returns once")
+  Assert.isNil(lease.value, "a returned acquisition keeps no sample")
 end
 
 function T.unknown_sample_keys_and_missing_payloads_fail()
-  local bundle = AudioFixture.bundle()
-  local p, cache = provider(bundle)
+  local missingPayload = AudioFixture.bundle()
+  missingPayload.samples[AudioFixture.key(1)] = nil
+  local p = provider(missingPayload)
   throwsCode("AUDIO_PROVIDER_SAMPLE_UNKNOWN", function()
-    p:loadSample(AudioFixture.key(99))
+    p:acquireSample(AudioFixture.key(99))
   end)
-  cache:remove(AudioCache.samplePath(AudioFixture.key(1)))
   throwsCode("AUDIO_PROVIDER_SAMPLE_UNKNOWN", function()
-    p:loadSample(AudioFixture.key(1))
+    p:acquireSample(AudioFixture.key(1))
   end)
+  Assert.equal(p:status().activeSamples, 0, "a failed acquisition installs no active record")
 end
 
 function T.loading_is_lazy_and_memoized()
-  local backend = countingBackend(FakeCache.new())
-  local counted = AudioFixture.readyCache(AudioFixture.bundle(), backend)
-  local baseline = {}
-  for path, reads in pairs(backend.reads) do
-    baseline[path] = reads
+  local bundle = AudioFixture.bundle()
+  local cache = AudioFixture.residentCache(bundle)
+  local loads = {}
+  local loadLuaOnReader = cache.loadLua
+  function cache:loadLua(path)
+    loads[path] = (loads[path] or 0) + 1
+    return loadLuaOnReader(self, path)
   end
-  local p = AudioAssetProvider.new(counted)
-  local reads = backend.reads
+  local p = AudioAssetProvider.new(cache, sourceAcquirer(cache))
   local function count(path)
-    return (reads[path] or 0) - (baseline[path] or 0)
+    return loads[path] or 0
   end
   Assert.equal(count(AudioCache.indexPath()), 1, "the index loads once, eagerly")
   local sequence = p:sequence(0)
@@ -151,68 +156,53 @@ function T.loading_is_lazy_and_memoized()
   Assert.equal(p:bank(12), bank)
   Assert.equal(count(AudioCache.bankPath(12)), 1)
   local key = AudioFixture.key(1)
-  local first = p:loadSample(key)
-  local second = p:loadSample(key)
-  Assert.equal(type(first.pcm), "table", "the provider packs the payload once")
-  Assert.isTrue(second.pcm == first.pcm, "the decoded array is shared; loading twice decodes once")
+  local firstLease = p:acquireSample(key)
+  local secondLease = p:acquireSample(key)
+  local first = assert(firstLease.value)
+  Assert.equal(type(first.pcm), "table", "the provider packs the resident payload once")
+  Assert.isTrue(secondLease.value.pcm == first.pcm, "a repeated acquisition shares the decoded backing")
   Assert.equal(count(AudioCache.sampleMetadataPath(key)), 1, "sample metadata is read once")
-  Assert.equal(count(AudioCache.samplePath(key)), 1, "the PCM payload is read once")
   Assert.equal(count(AudioCache.sequencePath(37)), 0, "unrequested assets are never read")
   Assert.equal(count(AudioCache.bankPath(12)), 1)
+  firstLease:release()
+  secondLease:release()
 end
 
 function T.missing_or_malformed_index_fails_construction()
   throwsCode("AUDIO_PROVIDER_INDEX_UNAVAILABLE", function()
-    local cache = AudioFixture.readyCache(AudioFixture.bundle())
-    cache:remove(AudioCache.indexPath())
-    AudioAssetProvider.new(cache)
+    local empty = CacheFs.forVersion("heartgold", FakeCache.new())
+    AudioAssetProvider.new(empty, sourceAcquirer(empty))
   end)
   throwsCode("AUDIO_PROVIDER_INDEX_UNAVAILABLE", function()
     local bundle = AudioFixture.bundle()
     bundle.index.schema = "g4-audio-index-wrong"
-    AudioAssetProvider.new(AudioFixture.readyCache(bundle))
+    local cache = AudioFixture.residentCache(bundle)
+    AudioAssetProvider.new(cache, sourceAcquirer(cache))
   end)
 end
 
--- Idle retention for decoded samples: the shared lease kernel holds one entry
--- per sample key at its real packed byte cost, the mixer liveness query
--- shields the sounding sample through a zero-byte idle budget, and the
--- shielded voice still renders its exact frames. Stopping the voice lifts the
--- shield so the next trim takes the sample, while the provider keeps serving
--- its one packed backing per key instead of decoding a duplicate. The kernel
--- module is required lazily so this scenario fails on the missing ownership
--- behavior rather than failing the suite load.
-function T.active_samples_survive_a_zero_idle_budget_and_reload_after_stop()
-  local ok, ResidentAssetCache = pcall(require, "libs.hgss.src.field.ResidentAssetCache")
-  Assert.isTrue(
-    ok and type(ResidentAssetCache) == "table",
-    "bounded sample retention needs the shared idle lease kernel"
-  )
+-- Sample ownership follows physical voice lifetime: an acquired sample stays
+-- active while its voice sounds, the voice's physical death returns exactly
+-- that acquisition, and a later acquisition of the same key borrows the same
+-- resident backing instead of decoding a duplicate.
+function T.active_samples_follow_voice_lifetime_and_share_one_backing()
   local VoiceMixer = require("libs.nds.src.nitro.sound.VoiceMixer")
   local p = provider(AudioFixture.bundle())
   local firstKey = AudioFixture.key(1)
   local secondKey = AudioFixture.key(2)
-  local first = p:loadSample(firstKey)
-  local second = p:loadSample(secondKey)
-  Assert.isNil(first.pcm[1], "a retained sample is a packed buffer, never a one-based frame table")
+  local firstLease = p:acquireSample(firstKey)
+  local secondLease = p:acquireSample(secondKey)
+  local first = assert(firstLease.value)
+  local second = assert(secondLease.value)
+  Assert.isNil(first.pcm[1], "an active sample is a packed buffer, never a one-based frame table")
   Assert.equal(first.pcm.frames, 4, "the first fixture sample carries four packed frames")
   Assert.equal(second.pcm.frames, 2, "the second fixture sample carries two packed frames")
+  Assert.equal(p:status().activeSamples, 2, "each acquired key is one active record")
 
-  local released = {}
   local mixer = VoiceMixer.new({ sampleRate = 16756991 })
-  local retained = ResidentAssetCache.new({
-    idleByteLimit = 0,
-    release = function(value)
-      released[#released + 1] = value
-    end,
-    busy = function(value)
-      return mixer:isSampleActive(value.pcm)
-    end,
-  })
-  retained:publish(firstKey, first, first.pcm.frames * 2)
-  retained:publish(secondKey, second, second.pcm.frames * 2)
   local handle = mixer:noteOn({
     generator = { kind = "sample", sample = firstKey },
+    sampleLease = firstLease,
     pcm = first.pcm,
     baseTimer = first.metadata.baseTimer,
     loop = first.metadata.loop,
@@ -229,24 +219,166 @@ function T.active_samples_survive_a_zero_idle_budget_and_reload_after_stop()
     trackPriority = 64,
     channelPriority = 64,
   })
-  Assert.notNil(handle, "the guard voice starts on the first sample")
+  Assert.notNil(handle, "the sounding voice starts on the first sample")
   mixer:controlStep()
-  retained:trim()
-  Assert.equal(#released, 1, "a zero idle budget releases only the sample no voice sounds")
-  Assert.isTrue(released[1] == second, "the released sample is the idle one")
-  Assert.isTrue(retained:find(firstKey) == first, "the sounding sample survives the trim")
-  Assert.isTrue(mixer:isSampleActive(first.pcm), "the mixer still sounds the surviving sample")
+  Assert.isTrue(mixer:isSampleActive(first.pcm), "the mixer sounds the acquired sample")
   local out = mixer:render(2)
-  Assert.deepEqual(out, { 1000, 0, 1000, 0 }, "the surviving voice renders its exact packed frames")
+  Assert.deepEqual(out, { 1000, 0, 1000, 0 }, "the sounding voice renders its exact packed frames")
+
+  secondLease:release()
+  Assert.equal(p:status().activeSamples, 1, "returning an idle acquisition drops only its own record")
+  Assert.notNil(firstLease.value, "the sounding acquisition stays valid beside the returned one")
+
   mixer:stopVoice(handle)
+  Assert.isNil(firstLease.value, "the physical voice's death returns its acquisition")
   Assert.isFalse(mixer:isSampleActive(first.pcm), "the stopped voice drops the sample")
-  retained:trim()
-  Assert.equal(#released, 2, "the stopped sample becomes evictable")
-  Assert.isTrue(released[2] == first, "the evicted sample is the stopped one")
-  Assert.isNil(retained:find(firstKey), "the evicted sample leaves the retention set")
-  local again = p:loadSample(firstKey)
-  Assert.isTrue(again == first, "the provider still serves one memoized sample per key")
-  Assert.isTrue(again.pcm == first.pcm, "no duplicate backing appears for the reloaded key")
+  Assert.equal(p:status().activeSamples, 0, "no active record survives the final return")
+
+  local again = p:acquireSample(firstKey)
+  Assert.isTrue(assert(again.value).pcm.data == first.pcm.data, "a later acquisition borrows the same backing")
+  again:release()
+  p:dispose()
+end
+
+-- The compiled audio bundle as the selected epoch's resident bytes: every
+-- logical path the provider resolves already lives in one immutable store, so
+-- PCM acquisition can borrow the exact Data the store owns.
+local function residentAudioCache(bundle)
+  local version = "heartgold"
+  local sourceId = "base:audio-fixture"
+  local physical = AudioFixture.readyCache(bundle)
+  local files = assert(physical.backend.files, "the audio fixture writes through a FakeCache backend")
+  local prefix = version .. "/"
+  local entries = {}
+  for fullPath, value in pairs(files) do
+    local text = type(value) == "string" and value or value:getString()
+    local path = fullPath:sub(#prefix + 1)
+    entries[#entries + 1] = {
+      path = path,
+      data = assert(love.data.newByteData(text)),
+      size = #text,
+      sourceId = sourceId,
+      contentId = version .. "\0" .. path,
+    }
+  end
+  local store = ResidentCache.new(version, sourceId)
+  store:commit(store:prepare(entries))
+  return CacheFs.fromStore(store), store
+end
+
+-- The production provider over its selected queue: sample acquisition borrows
+-- the resident source through acquireSource, that is the same capability the
+-- composition injects, so a lease the provider hands out is accountable to the
+-- shared owner rather than to a private sample cache.
+local function sharedProvider(bundle)
+  local cache, store = residentAudioCache(bundle)
+  local decoded = ResidentAssetCache.new({ idleByteLimit = 0, release = function() end })
+  local queue = AssetPreparationQueue.new(cache, { decoded = decoded })
+  local provider = AudioAssetProvider.new(cache, {
+    acquireSource = function(reference)
+      return queue:acquireSource(reference)
+    end,
+  })
+  return provider, { queue = queue, decoded = decoded, store = store, cache = cache }
+end
+
+local function sampleVoiceSpec(lease, key)
+  return {
+    generator = { kind = "sample", sample = key },
+    sampleLease = lease,
+    pcm = lease.value.pcm,
+    baseTimer = lease.value.metadata.baseTimer,
+    loop = lease.value.metadata.loop,
+    loopEnabled = lease.value.metadata.loopEnabled,
+    key = 60,
+    originalKey = 60,
+    velocity = 127,
+    trackVolume = 127,
+    expression = 127,
+    sequenceVolume = 127,
+    envelope = { attack = 127, decay = 127, sustain = 127, release = 127 },
+    pan = 0,
+    channelMask = 0xFFFF,
+    trackPriority = 64,
+    channelPriority = 64,
+  }
+end
+
+-- Two independent mixers sound one resident sample: the acquisition leases
+-- share one decoded backing (the store's own bytes), one voice's stop leaves
+-- the other sounding, and each physical voice returns exactly one acquisition
+-- on its own death. A rejected voice leaves its acquisition with the caller.
+function T.two_mixers_share_one_sample_and_return_their_acquisitions_once()
+  local VoiceMixer = require("libs.nds.src.nitro.sound.VoiceMixer")
+  local bundle = AudioFixture.bundle()
+  local key = AudioFixture.key(1)
+  bundle.sampleMetadata[key] = AudioFixture.sampleMetadata(key, { frames = 4, loopEnabled = false })
+  local provider, runtime = sharedProvider(bundle)
+  local resident = assert(runtime.store:readData(AudioCache.samplePath(key)), "the bundle publishes its PCM bytes")
+
+  Assert.equal(
+    type(provider.acquireSample),
+    "function",
+    "sample acquisition must hand out an accountable lease instead of an unleased sample object"
+  )
+  local first = provider:acquireSample(key)
+  local second = provider:acquireSample(key)
+  Assert.notNil(first, "the provider hands out a sample lease")
+  Assert.notNil(second, "a repeated acquisition hands out its own lease")
+  Assert.isTrue(first ~= second, "every acquisition is an independent lease")
+  Assert.isTrue(first.value.pcm == second.value.pcm, "both acquisitions share one decoded sample")
+  Assert.isTrue(
+    first.value.pcm.data == resident,
+    "the shared PCM backing is the resident sample bytes, not a second copy"
+  )
+  local status = provider:status()
+  Assert.equal(status.activeSamples, 1, "one active sample record backs both acquisitions")
+  Assert.equal(status.activeSourceBytes, resident:getSize(), "active source bytes attribute the resident PCM once")
+  Assert.equal(status.acquisitions, 2, "acquisitions count every successful lease")
+  Assert.equal(status.misses, 1, "misses count the first active-record construction only")
+
+  local mixerA = VoiceMixer.new({ sampleRate = 16756991 })
+  local mixerB = VoiceMixer.new({ sampleRate = 16756991 })
+  local handleA = assert(mixerA:noteOn(sampleVoiceSpec(first, key)), "the first mixer starts the sample")
+  local handleB = assert(mixerB:noteOn(sampleVoiceSpec(second, key)), "the second mixer starts the same sample")
+  Assert.isTrue(mixerA:isVoiceAlive(handleA) and mixerB:isVoiceAlive(handleB), "both voices sound")
+
+  mixerA:stopVoice(handleA)
+  Assert.isFalse(mixerA:isVoiceAlive(handleA), "the stopped voice is physically gone")
+  Assert.isNil(first.value, "the stopped voice returned its acquisition")
+  Assert.notNil(second.value, "the other mixer keeps its own acquisition")
+  Assert.isTrue(mixerB:isVoiceAlive(handleB), "one mixer cannot invalidate another")
+  mixerB:controlStep()
+  local rendered = mixerB:render(2)
+  Assert.equal(#rendered, 4, "the surviving voice renders its frames")
+  Assert.equal(provider:status().activeSamples, 1, "the shared sample record stays active for the survivor")
+
+  mixerB:noteOff(handleB)
+  for _ = 1, 64 do
+    mixerB:controlStep()
+    mixerB:render(1)
+    if not mixerB:isVoiceAlive(handleB) then
+      break
+    end
+  end
+  Assert.isFalse(mixerB:isVoiceAlive(handleB), "the release tail ends at physical death within its budget")
+  Assert.isNil(second.value, "physical death returns the remaining acquisition")
+  local settled = provider:status()
+  Assert.equal(settled.activeSamples, 0, "no active sample record survives the final acquisition")
+  Assert.equal(settled.activeSourceBytes, 0, "no resident source bytes stay attributed after the final return")
+
+  local rejected = provider:acquireSample(key)
+  local ok = pcall(function()
+    mixerA:noteOn({ generator = { kind = "sample", sample = key }, sampleLease = rejected })
+  end)
+  Assert.isFalse(ok, "a rejected voice construction fails loudly")
+  Assert.notNil(rejected.value, "a rejected voice leaves its acquisition with the caller")
+  rejected:release()
+  Assert.isNil(rejected.value, "the caller returns the rejected acquisition")
+  Assert.equal(provider:status().activeSamples, 0, "the returned rejection leaves no active record")
+
+  provider:dispose()
+  runtime.queue:release()
 end
 
 return { tests = T }

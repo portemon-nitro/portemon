@@ -2,6 +2,7 @@
 
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
@@ -37,8 +38,12 @@ local function stock(manifest)
 end
 
 local function messageProvider(cacheFs)
-  local provider = require("libs.hgss.src.interaction.FieldMessageProvider").new(cacheFs)
-  return provider
+  -- The box labels resolve through the selected runtime's compact source branch,
+  -- so the provider borrows each open bank from the resident view.
+  local selectedRuntime = SelectedAssetRuntimeFixture.new(cacheFs)
+  return require("libs.hgss.src.interaction.FieldMessageProvider").new(cacheFs, {
+    acquireSource = SelectedAssetRuntimeFixture.acquireSource(selectedRuntime),
+  })
 end
 
 -- Versions with an imported ROM and a prepared Apricorn Box manifest:
@@ -241,7 +246,10 @@ end
 local function assertSourceLabels(cacheFs, manifest)
   local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
   local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
-  local provider = FieldMessageProvider.new(cacheFs)
+  local selectedRuntime = SelectedAssetRuntimeFixture.new(cacheFs)
+  local provider = FieldMessageProvider.new(cacheFs, {
+    acquireSource = SelectedAssetRuntimeFixture.acquireSource(selectedRuntime),
+  })
   Assert.isTrue(cacheFs:exists(FieldMessageCache.bankPath(21)), "the focused Box import publishes bank 21")
   local bank = assert(provider:acquireBank(manifest.messageBankId))
   Assert.equal(bank.bankId, 21)
@@ -330,7 +338,13 @@ local function trackingGraphics(failAt, failFilterAt)
 end
 
 local function textStub()
-  return { drawText = function() end, drawTextWithPalette = function() end, textWidth = function() return 0 end }
+  return {
+    drawText = function() end,
+    drawTextWithPalette = function() end,
+    textWidth = function()
+      return 0
+    end,
+  }
 end
 
 function T.box_renderer_releases_prompt_and_source_images_once(_, context)

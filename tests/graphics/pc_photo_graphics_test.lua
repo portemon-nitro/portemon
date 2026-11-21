@@ -6,6 +6,7 @@ local BadgeSets = require("tests.support.BadgeSets")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
 local CacheFs = require("libs.storage.src.CacheFs")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local CollisionFixture = require("tests.support.CollisionFixture")
 local FakeCache = require("tests.support.FakeCache")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
@@ -308,7 +309,9 @@ local function fixture(versionId, loaderOverrides)
   for path, value in pairs(bytes) do
     synthetic:write(path, value)
   end
+  local pending = {}
   local cacheFs = {
+    versionId = versionId,
     loadLua = function(_, path)
       local value = synthetic:loadLua(path)
       if value ~= nil then
@@ -325,6 +328,27 @@ local function fixture(versionId, loaderOverrides)
     end,
     exists = function(_, path, kind)
       return synthetic:exists(path, kind) or sourceCache:exists(path, kind)
+    end,
+    -- Collision loads borrow the selected resident payload instead of a string
+    -- copy, so the hybrid view resolves its fixture bytes the same way the
+    -- installed source resolves the real ones.
+    resolveAsset = function(_, path)
+      local value = synthetic:read(path)
+      if value == nil then
+        return sourceCache:resolveAsset(path)
+      end
+      local reference = pending[path]
+      if reference == nil then
+        reference = {
+          path = path,
+          sourceId = "base:pc-photo-fixture",
+          contentId = "pc-photo-fixture\0" .. path,
+          size = #value,
+          data = assert(love.data.newByteData(value)),
+        }
+        pending[path] = reference
+      end
+      return reference
     end,
   }
   local derivedAssets = {
@@ -364,7 +388,16 @@ local function fixture(versionId, loaderOverrides)
       }
     end,
   }
-  local loaderOptions = { derivedAssets = derivedAssets, sceneLoader = sceneLoader }
+  -- The photo field borrows the selected runtime's compact source acquirer for
+  -- its private collision coverage; no presentation worker starts here.
+  local selectedRuntime = SelectedAssetRuntimeFixture.new(cacheFs)
+  local loaderOptions = {
+    derivedAssets = derivedAssets,
+    sceneLoader = sceneLoader,
+    assetPreparation = selectedRuntime.preparationQueue,
+    decoded = selectedRuntime.decoded,
+    acquireSource = SelectedAssetRuntimeFixture.acquireSource(selectedRuntime),
+  }
   if loaderOverrides ~= nil then
     for key, value in pairs(loaderOverrides) do
       loaderOptions[key] = value

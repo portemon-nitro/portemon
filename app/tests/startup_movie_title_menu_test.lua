@@ -518,11 +518,7 @@ function T.tests.startup_demands_all_five_opening_scenes_and_keeps_one_menu_thro
     -- The transferred boot presentation is the one startup presentation:
     -- no second loader is constructed on the way into the cinematic.
     Assert.equal(#active.loaders, 1, "the boot presentation transfers without a replacement loader")
-    Assert.equal(
-      state.loading,
-      active.loaders[1],
-      "the startup state adopts the exact transferred presentation"
-    )
+    Assert.equal(state.loading, active.loaders[1], "the startup state adopts the exact transferred presentation")
 
     -- The cinematic journey is demanded as five numbered scenes, scene 1
     -- required first with the rest promoted before playback starts.
@@ -820,10 +816,7 @@ function T.tests.accepted_title_input_proceeds_once_and_latches_until_the_staged
     active.bootstrapReady = true
     App.update(SourceTick.DT)
     Assert.equal(#active.menus, 1, "bootstrap readiness stages the menu once under the latched skip")
-    Assert.isTrue(
-      state.phase == "fadeOut" or state.phase == "fadeIn",
-      "the latched skip starts the fade automatically"
-    )
+    Assert.isTrue(state.phase == "fadeOut" or state.phase == "fadeIn", "the latched skip starts the fade automatically")
     App.keypressed("return", "return", false)
     Assert.equal(active.scenes[1].proceeds, 1, "a second press never replays the proceed reveal")
     for _ = 1, 100 do
@@ -842,11 +835,7 @@ function T.tests.opening_and_title_music_follow_their_stages_with_one_late_cry()
   withStartup(function()
     local state = startSelection()
     Assert.notNil(state.audio, "the startup state borrows semantic audio callbacks")
-    Assert.equal(
-      type(state.audio.openingReady),
-      "function",
-      "the borrowed audio covers the movie stage opening cue"
-    )
+    Assert.equal(type(state.audio.openingReady), "function", "the borrowed audio covers the movie stage opening cue")
 
     -- Audio ready during the movie starts the opening track exactly once.
     active.audioReady = true
@@ -976,10 +965,7 @@ function T.tests.opening_and_title_music_follow_their_stages_with_one_late_cry()
     Assert.equal(#active.audioSessions, 1, "the skip with absent audio constructs no additional session")
     active.bootstrapReady = true
     App.update(SourceTick.DT)
-    Assert.isTrue(
-      state.phase == "fadeOut" or state.phase == "fadeIn",
-      "the latched skip starts the fade without audio"
-    )
+    Assert.isTrue(state.phase == "fadeOut" or state.phase == "fadeIn", "the latched skip starts the fade without audio")
     active.audioReady = true
     for _ = 1, 100 do
       if App.state ~= state then
@@ -1023,10 +1009,7 @@ function T.tests.opening_music_starts_once_at_movie_entry_when_audio_is_ready()
       return count
     end
     Assert.equal(openings(), 1, "ready audio starts the opening track once at movie entry")
-    Assert.isTrue(
-      state.movie.ticks <= 1,
-      "the opening decision lands on the entry update before the movie advances"
-    )
+    Assert.isTrue(state.movie.ticks <= 1, "the opening decision lands on the entry update before the movie advances")
     for _ = 1, 30 do
       App.update(SourceTick.DT)
     end
@@ -1114,6 +1097,7 @@ function T.tests.startup_audio_composes_directly_without_the_game_root_wrapper()
   local ok, sessionOrError = pcall(StartupAudioSession.new, {
     versionId = "heartgold",
     cacheFs = {},
+    assetRuntime = { cacheFs = {}, decoded = {}, preparationQueue = {} },
     titleRecord = { crySpeciesId = 250 },
   })
   GameAudio.compose = savedCompose
@@ -1217,11 +1201,7 @@ function T.tests.late_audio_checkpoints_play_only_the_current_stage_cue()
     pumpUntilMovie(state)
     Assert.equal(state.phase, "movie", "readiness admits the staged movie")
     Assert.equal(#active.audioSessions, 1, "admission constructs one session")
-    Assert.deepEqual(
-      active.audioSessions[1].events,
-      { "opening" },
-      "admission starts only the opening track"
-    )
+    Assert.deepEqual(active.audioSessions[1].events, { "opening" }, "admission starts only the opening track")
 
     -- Checkpoint 2: title entry adds the title track on the same session.
     while state.movie ~= nil and not state.movie:isFinished() do
@@ -1245,11 +1225,7 @@ function T.tests.late_audio_checkpoints_play_only_the_current_stage_cue()
     -- Checkpoint 4: the staged-menu fade starts the music fade once.
     active.bootstrapReady = true
     App.update(SourceTick.DT)
-    Assert.deepEqual(
-      session.events,
-      { "opening", "title", "cry", "fade" },
-      "the fade starts once at handoff"
-    )
+    Assert.deepEqual(session.events, { "opening", "title", "cry", "fade" }, "the fade starts once at handoff")
 
     -- Checkpoint 5: the transferred menu keeps the session for cues only.
     for _ = 1, 100 do
@@ -1417,10 +1393,7 @@ function T.tests.failed_opening_scene_is_a_visible_error_and_retirement_disposes
     App._selectVersion("soulsilver")
     Assert.equal(movie.disposed, 1, "edition retirement disposes the active movie exactly once")
     Assert.equal(active.loaders[1].disposals, 1, "edition retirement disposes the retained loader exactly once")
-    Assert.isTrue(
-      active.retired ~= nil and #active.retired == 1,
-      "retirement retires exactly the selected cache epoch"
-    )
+    Assert.isTrue(active.retired ~= nil and #active.retired == 1, "retirement retires exactly the selected cache epoch")
   end)
 end
 

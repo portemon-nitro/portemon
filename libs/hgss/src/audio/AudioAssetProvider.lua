@@ -8,13 +8,17 @@
 -- walk the cache writer's staged readback runs), so load-time re-validation
 -- is deliberately absent -- there is no runtime mod-injection path that
 -- bypasses the builder. Missing or unreadable artifacts are still structured
--- failures, never silence. Samples arrive as metadata plus the
--- packed PCM16 sample, packed exactly once per key and shared across
--- consumers: they live in a byte-budgeted idle kernel keyed by content key
--- at two bytes per frame, while sequence, bank, and index metadata stay
--- memoized for the process lifetime. A sample a mixer voice still sounds is
--- never evicted for budget. The completion marker is not consulted (there
--- is no expected marker value at runtime; readiness is the cache builder's
+-- failures, never silence.
+--
+-- Samples are acquired, never retained privately: `acquireSample` resolves one
+-- content key to an active record holding one resident source lease over the
+-- compact packed PCM16 bytes, the immutable playback metadata and a reference
+-- count. Every acquisition hands out a distinct lease, and the last return
+-- drops the record and gives the source back, so packed PCM lives exactly as
+-- long as a physical voice sounds it and no sample outlives its leases.
+-- Sequence, bank, and instrument-closure metadata stay memoized for the
+-- provider lifetime. The completion marker is not consulted (there is no
+-- expected marker value at runtime; readiness is the cache builder's
 -- business).
 
 local Errors = require("libs.errors.src.Errors")
@@ -23,77 +27,66 @@ local AssetErrors = require("libs.assets.src.audio.AudioErrors")
 local AudioBank = require("libs.assets.src.audio.AudioBank")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local Pcm16 = require("libs.nds.src.nitro.sound.Pcm16")
-local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
-
--- First-pass idle budget for decoded samples: 32 MiB of unborrowed PCM.
--- Sounding samples are never evicted for budget; overflow stays visible in
--- status until a later pass admits or trims it.
-local DEFAULT_IDLE_SAMPLE_BYTES = 32 * 1024 * 1024
 
 ---@class AudioAssetSample
 ---@field metadata table<string, unknown>
 ---@field pcm Pcm16
 
+---@class AudioAssetSampleLease
+---@field value AudioAssetSample? cleared on release, so a returned lease cannot retain PCM
+---@field release fun(self: AudioAssetSampleLease): boolean
+
+---@class AudioAssetProviderSourceLease
+---@field value love.Data? resident compact bytes, cleared on release
+---@field release fun(self: AudioAssetProviderSourceLease)
+
 ---@class AudioAssetProviderOptions
----@field idleByteLimit number?
----@field busy (fun(sample: AudioAssetSample): boolean)?
----@field queue table<string, unknown>? shared background preparation queue for sample payloads (nil keeps synchronous loads)
+---@field acquireSource fun(reference: ResidentCache.BlobRef): AudioAssetProviderSourceLease resident source acquirer of the selected epoch
+---@field assetPreparation table<string, unknown>? shared preparation queue this provider's payload interest routes through
+
+---@class AudioAssetProvider.SampleRecord
+---@field sourceLease AudioAssetProviderSourceLease one resident source interest over the compact PCM
+---@field sourceId string resident source identity of the backing bytes
+---@field contentId string resident content identity of the backing bytes
+---@field metadata table<string, unknown> immutable playback metadata
+---@field pcm Pcm16 packed PCM16 over the borrowed bytes
+---@field byteSize integer compact backing bytes attributed to this record
+---@field references integer outstanding acquisitions
 
 ---@class AudioAssetStatus
----@field uniqueSamples integer
----@field retainedPcmFrames integer
----@field retainedPcmBytes integer
----@field misses integer
----@field reloads integer
----@field activePinnedBytes integer
----@field overBudgetBytes number
----@field predictedBytes integer distinct predicted sample bytes enrolled so far
----@field warmedBytes integer predicted bytes currently resident in RAM
----@field uncoveredBytes integer predicted bytes not currently resident
+---@field activeSamples integer active sample records backed by one or more acquisitions
+---@field activeSourceBytes integer distinct active resident backing bytes attributed within this provider
+---@field acquisitions integer successful SampleLease acquisitions
+---@field misses integer first active-record constructions, not disk reads
 
 ---@class AudioAssetProvider
 ---@field private _cacheFs CacheFs
 ---@field private _index table<string, unknown>
+---@field private _acquireSource fun(reference: ResidentCache.BlobRef): AudioAssetProviderSourceLease
+---@field private _queue table<string, unknown>?
 ---@field private _sequences table<integer, table<string, unknown>>
 ---@field private _banks table<integer, table<string, unknown>>
----@field private _samples ResidentAssetCache
----@field private _idleByteLimit number
----@field private _busyPredicate (fun(sample: AudioAssetSample): boolean)?
----@field private _queue table<string, unknown>?
----@field private _pendingAudio table<string, { token: integer, generation: integer }>
+---@field private _activeSamples table<string, AudioAssetProvider.SampleRecord>
 ---@field private _bankKeysMemo table<string, string[]>
 ---@field private _bankKeysOrder string[]
----@field private _predictedSizes table<string, integer>
----@field private _predictedBytes integer
----@field private _seenKeys table<string, boolean>
----@field private _demands table<string, integer>
+---@field private _acquisitions integer
 ---@field private _misses integer
----@field private _reloads integer
----@field private _retainedSamples integer
----@field private _retainedFrames integer
----@field private _retainedBytes integer
----@field private _busyBytes integer
----@field new fun(cacheFs: CacheFs, opts?: AudioAssetProviderOptions): AudioAssetProvider
+---@field new fun(cacheFs: CacheFs, opts: AudioAssetProviderOptions): AudioAssetProvider
 ---@field sequence fun(self: AudioAssetProvider, idOrSymbol: integer|string): table<string, unknown>
 ---@field bank fun(self: AudioAssetProvider, idOrSymbol: integer|string): table<string, unknown>
 ---@field player fun(self: AudioAssetProvider, id: integer): table<string, unknown>
----@field loadSample fun(self: AudioAssetProvider, key: string): AudioAssetSample
----@field warmSample fun(self: AudioAssetProvider, key: string): AudioAssetSample
+---@field acquireSample fun(self: AudioAssetProvider, key: string): AudioAssetSampleLease
 ---@field prewarmBank fun(self: AudioAssetProvider, idOrSymbol: integer|string): AudioAssetSample[]
----@field requestSample fun(self: AudioAssetProvider, key: string): integer
----@field adoptSample fun(self: AudioAssetProvider, key: string, generation: integer?, data: Pcm16Data|userdata): boolean
----@field setBusyPredicate fun(self: AudioAssetProvider, predicate: (fun(sample: AudioAssetSample): boolean)?)
----@field bindQueue fun(self: AudioAssetProvider, queue: table<string, unknown>?)
 ---@field prewarmBankBackground fun(self: AudioAssetProvider, idOrSymbol: integer|string): integer
+---@field bindQueue fun(self: AudioAssetProvider, queue: table<string, unknown>?)
 ---@field drainReadySamples fun(self: AudioAssetProvider): integer
----@field notePredictedSamples fun(self: AudioAssetProvider, keys: string[])
----@field cancelUnpredicted fun(self: AudioAssetProvider, predictedSet: table<string, boolean>)
----@field trim fun(self: AudioAssetProvider, keepKeys: table<string, boolean>|string[]|nil): integer
----@field predictedKeySet fun(self: AudioAssetProvider): string[]
+---@field cancelUnpredicted fun(self: AudioAssetProvider, predictedSet: table<string, boolean>): integer
 ---@field status fun(self: AudioAssetProvider): AudioAssetStatus
----@field private _decodeSample fun(self: AudioAssetProvider, key: string): AudioAssetSample
----@field private _admit fun(self: AudioAssetProvider, key: string, sample: AudioAssetSample): AudioAssetSample
----@field private _enforceBudget fun(self: AudioAssetProvider)
+---@field dispose fun(self: AudioAssetProvider)
+---@field private _closureKeys fun(self: AudioAssetProvider, idOrSymbol: integer|string): string[]
+---@field private _openSample fun(self: AudioAssetProvider, key: string): AudioAssetProvider.SampleRecord
+---@field private _leaseSample fun(self: AudioAssetProvider, key: string, record: AudioAssetProvider.SampleRecord): AudioAssetSampleLease
+---@field private _returnSample fun(self: AudioAssetProvider, key: string, record: AudioAssetProvider.SampleRecord)
 
 local AudioAssetProvider = {}
 AudioAssetProvider.__index = AudioAssetProvider
@@ -102,74 +95,30 @@ local function unavailable(path)
   Errors.raise(AudioErrors.AUDIO_PROVIDER_INDEX_UNAVAILABLE, "no usable audio cache index at " .. path, { path = path })
 end
 
--- The kernel's exact-once release hook: drops the evicted sample's share of
--- the retained census. Sounding voices hold their own packed reference, so
--- eviction never frees bytes a voice still reads.
-local function forgetSample(provider, sample)
-  provider._retainedSamples = provider._retainedSamples - 1
-  provider._retainedFrames = provider._retainedFrames - sample.pcm.frames
-  provider._retainedBytes = provider._retainedBytes - sample.pcm.frames * 2
-end
-
--- Answers whether a retained sample still sounds, through the composer
--- supplied predicate (a mixer liveness query). Unset while headless: with
--- no predicate nothing counts as busy.
-local function sampleIsBusy(provider, sample)
-  local predicate = provider._busyPredicate
-  if predicate == nil then
-    return false
-  end
-  return predicate(sample) == true
-end
-
 ---@param cacheFs CacheFs
----@param opts AudioAssetProviderOptions?
+---@param opts AudioAssetProviderOptions
 ---@return AudioAssetProvider
 function AudioAssetProvider.new(cacheFs, opts)
   assert(cacheFs, "AudioAssetProvider requires a CacheFs")
-  opts = opts or {}
+  assert(type(opts) == "table", "AudioAssetProvider requires its selected source acquirer")
+  assert(type(opts.acquireSource) == "function", "AudioAssetProvider requires the resident source acquirer")
   local index = cacheFs:loadLua(AudioCache.indexPath())
   if type(index) ~= "table" or index.schema ~= AudioCache.INDEX_SCHEMA then
     unavailable(AudioCache.indexPath())
   end
-  local limit = opts.idleByteLimit or DEFAULT_IDLE_SAMPLE_BYTES
-  assert(type(limit) == "number" and limit >= 0, "audio sample idle budget must be a non-negative byte count")
-  ---@type AudioAssetProvider
-  local provider
-  local function onSampleRelease(sample)
-    forgetSample(provider, sample)
-  end
-  local function isBusy(sample)
-    return sampleIsBusy(provider, sample)
-  end
-  provider = setmetatable({
+  return setmetatable({
     _cacheFs = cacheFs,
     _index = index,
+    _acquireSource = opts.acquireSource,
+    _queue = opts.assetPreparation,
     _sequences = {},
     _banks = {},
-    _samples = ResidentAssetCache.new({
-      idleByteLimit = limit,
-      release = onSampleRelease,
-      busy = isBusy,
-    }),
-    _idleByteLimit = limit,
-    _busyPredicate = opts.busy,
-    _queue = opts.queue,
-    _pendingAudio = {},
+    _activeSamples = {},
     _bankKeysMemo = {},
     _bankKeysOrder = {},
-    _predictedSizes = {},
-    _predictedBytes = 0,
-    _seenKeys = {},
-    _demands = {},
+    _acquisitions = 0,
     _misses = 0,
-    _reloads = 0,
-    _retainedSamples = 0,
-    _retainedFrames = 0,
-    _retainedBytes = 0,
-    _busyBytes = 0,
   }, AudioAssetProvider) --[[@as AudioAssetProvider]]
-  return provider
 end
 
 -- Resolves a numeric id or a per-class symbol-map name to a numeric id in
@@ -265,71 +214,8 @@ function AudioAssetProvider:player(id)
   return player
 end
 
--- Replaces the mixer liveness predicate the idle kernel consults on trim
--- passes. Set once by the audio composition after the mixer exists.
----@param predicate (fun(sample: AudioAssetSample): boolean)?
-function AudioAssetProvider:setBusyPredicate(predicate)
-  assert(predicate == nil or type(predicate) == "function", "sample busy predicate must be a function")
-  self._busyPredicate = predicate
-end
-
--- Stages a sample's metadata and packed PCM16 sample by content key,
--- without publishing: a failed stage never enters the kernel. Both files
--- must exist and the payload must hold a non-empty even byte count; a
--- missing, unreadable, or malformed artifact is
--- AUDIO_PROVIDER_SAMPLE_UNKNOWN. The packed sample is created once per
--- admission and shared (consumers borrow it; they must not mutate it).
----@param key string
----@return AudioAssetSample
-function AudioAssetProvider:_decodeSample(key)
-  local metadata = self._cacheFs:loadLua(AudioCache.sampleMetadataPath(key))
-  if type(metadata) ~= "table" then
-    Errors.raise(AudioErrors.AUDIO_PROVIDER_SAMPLE_UNKNOWN, "no audio sample metadata for key " .. key, { key = key })
-  end
-  local bytes = self._cacheFs:read(AudioCache.samplePath(key))
-  if type(bytes) ~= "string" or #bytes == 0 or #bytes % 2 ~= 0 then
-    Errors.raise(AudioErrors.AUDIO_PROVIDER_SAMPLE_UNKNOWN, "no audio sample payload for key " .. key, { key = key })
-  end
-  local pcm = Pcm16.fromBytes(bytes --[[@as string]])
-  assert(metadata.frames == pcm.frames, "sample metadata frame count must match the packed payload")
-  return {
-    metadata = metadata,
-    pcm = pcm,
-  }
-end
-
--- Records one predicted candidate's byte size for the admission census.
--- Distinct keys enroll once; re-enrollment keeps the first size so the
--- predicted total stays deterministic across rounds.
----@param key string
----@param byteSize integer
-function AudioAssetProvider:_notePredicted(key, byteSize)
-  if self._predictedSizes[key] ~= nil then
-    return
-  end
-  assert(type(byteSize) == "number" and byteSize > 0, "predicted sample size must be a positive byte count")
-  self._predictedSizes[key] = byteSize
-  self._predictedBytes = self._predictedBytes + byteSize
-end
-
--- Enrolls predicted sample keys for admission accounting without loading
--- them: every candidate is counted, only affordable ones stay resident.
--- Sizes come from the trusted sample metadata frame counts.
----@param keys string[]
-function AudioAssetProvider:notePredictedSamples(keys)
-  assert(type(keys) == "table", "predicted sample keys are required")
-  for _, key in ipairs(keys) do
-    if self._predictedSizes[key] == nil then
-      local metadata = self._cacheFs:loadLua(AudioCache.sampleMetadataPath(key))
-      if type(metadata) == "table" and type(metadata.frames) == "number" and metadata.frames > 0 then
-        self:_notePredicted(key, metadata.frames * 2)
-      end
-    end
-  end
-end
-
 -- The memoized instrument-closure walk for one bank: closure order is the
--- admission order, and the memo stays bounded so repeated prediction
+-- prediction order, and the memo stays bounded so repeated prediction
 -- rounds never accumulate an unbounded bank history.
 ---@param idOrSymbol integer|string
 ---@return string[]
@@ -359,368 +245,201 @@ function AudioAssetProvider:_closureKeys(idOrSymbol)
   return keys
 end
 
--- Admits a fully staged sample unless it alone exceeds the idle budget: an
--- oversize candidate is still decoded and usable for its caller, but it is
--- never published over fitting residents, so one large prediction cannot
--- evict the current set only to be evicted itself on the next pass. The
--- caller counts the decode miss; this marks the reload when seen before and
--- enrolls the predicted bytes, keeping the admission gap explicit.
+-- Stages one sample's active record: playback metadata first, then one
+-- resident source interest over the compact packed PCM16 bytes, then the
+-- packed-frame check that must hold before anything becomes reachable. A
+-- malformed or unreadable artifact (including an odd byte count or a frame
+-- count the metadata contradicts) is AUDIO_PROVIDER_SAMPLE_UNKNOWN, and a
+-- staged source interest is always returned before the failure propagates.
 ---@param key string
----@param sample AudioAssetSample
----@return AudioAssetSample
-function AudioAssetProvider:_admitOrSkip(key, sample)
-  local byteSize = sample.pcm.frames * 2
-  self:_notePredicted(key, byteSize)
-  if byteSize > self._idleByteLimit then
-    if self._seenKeys[key] == true then
-      self._reloads = self._reloads + 1
-    end
-    self._seenKeys[key] = true
-    return sample
-  end
-  return self:_admit(key, sample)
-end
-
--- Publishes a fully staged sample under its content key at its real packed
--- byte cost (two bytes per frame), then enforces the idle budget.
--- Internal: prefer _admitOrSkip so oversize candidates skip retention.
----@param key string
----@param sample AudioAssetSample
----@return AudioAssetSample
-function AudioAssetProvider:_admit(key, sample)
-  local reload = self._seenKeys[key] == true
-  self._samples:publish(key, sample, sample.pcm.frames * 2)
-  self._seenKeys[key] = true
-  self._retainedSamples = self._retainedSamples + 1
-  self._retainedFrames = self._retainedFrames + sample.pcm.frames
-  self._retainedBytes = self._retainedBytes + sample.pcm.frames * 2
-  if reload then
-    self._reloads = self._reloads + 1
-  end
-  self:_enforceBudget()
-  return sample
-end
-
--- Enforces the idle byte budget now; the busy-shielded bytes observed by
--- the pass feed status until the next trim. Admission-time only, never in
--- the mix loop.
-function AudioAssetProvider:_enforceBudget()
-  local _, busyBytes = self._samples:trim()
-  self._busyBytes = busyBytes
-end
-
--- Loads a sample's metadata and packed PCM16 sample by content key. A hit
--- returns the one memoized backing for the key; a miss stages and counts
--- itself (a miss for a previously evicted key also counts as a reload), so
--- a disk reload after eviction is an ordinary cache miss. A sample larger
--- than the whole idle budget is decoded for the caller but never retained
--- over fitting residents; demand correctness never depends on retention.
-function AudioAssetProvider:loadSample(key)
-  local hit = self._samples:find(key)
-  if hit ~= nil then
-    return hit --[[@as AudioAssetSample]]
-  end
-  self:_drainAudioReady()
-  local retried = self._samples:find(key)
-  if retried ~= nil then
-    return retried --[[@as AudioAssetSample]]
-  end
-  self._misses = self._misses + 1
-  return self:_admitOrSkip(key, self:_decodeSample(key))
-end
-
--- Admits a sample to the resident set, loading it synchronously on a miss:
--- the admission half of prewarm. Background scheduling arrives later; the
--- call itself never blocks on a worker.
----@param key string
----@return AudioAssetSample
-function AudioAssetProvider:warmSample(key)
-  return self:loadSample(key)
-end
-
--- Admits every sample a bank's instrument closure references, in closure
--- order, reusing the shared bank reference walk instead of a second
--- instrument grammar. With a bound background queue, missing samples
--- enroll as background prefetch work and only already-ready completions
--- adopt synchronously, so the call never decodes on the audio path;
--- without one the bank warms synchronously as before.
----@param idOrSymbol integer|string
----@return AudioAssetSample[]
-function AudioAssetProvider:prewarmBank(idOrSymbol)
-  local keys = self:_closureKeys(idOrSymbol)
-  for _, key in ipairs(keys) do
-    self:_enrollKeySize(key)
-  end
-  if self._queue ~= nil then
-    self:_enqueueMissing(keys)
-    self:_drainAudioReady()
-    local warmed = {} ---@type AudioAssetSample[]
-    for _, key in ipairs(keys) do
-      local hit = self._samples:find(key)
-      if hit ~= nil then
-        warmed[#warmed + 1] = hit
-      end
-    end
-    return warmed
-  end
-  local warmed = {} ---@type AudioAssetSample[]
-  for _, key in ipairs(keys) do
-    warmed[#warmed + 1] = self:warmSample(key)
-  end
-  return warmed
-end
-
--- Enrolls one bank's closure as background prefetch work without decoding:
--- missing samples enqueue at prefetch priority and only already-ready
--- completions adopt. Without a bound queue this enrolls sizes only and
--- decodes nothing, so map entry never pays a synchronous decode on the
--- audio path; the explicit prewarm path stays the synchronous admission.
----@param idOrSymbol integer|string
----@return integer enrolled key count
-function AudioAssetProvider:prewarmBankBackground(idOrSymbol)
-  local keys = self:_closureKeys(idOrSymbol)
-  for _, key in ipairs(keys) do
-    self:_enrollKeySize(key)
-  end
-  if self._queue ~= nil then
-    self:_enqueueMissing(keys)
-  end
-  return #keys
-end
-
--- Binds (or unbinds) the shared background preparation queue. With a queue,
--- bank prewarming enrolls sample payloads as background work and adopts
--- only already-ready completions; without one every prewarm warms
--- synchronously. Headless audio stays queue-free and synchronous-safe.
----@param queue table<string, unknown>?
-function AudioAssetProvider:bindQueue(queue)
-  assert(queue == nil or type(queue.request) == "function", "sample queue must offer the preparation request shape")
-  self._queue = queue
-  if queue == nil then
-    self._pendingAudio = {}
-  end
-end
-
--- Enrolls one key's predicted size from its trusted metadata when not yet
--- enrolled. Resident keys enroll without rereading payloads.
----@param key string
-function AudioAssetProvider:_enrollKeySize(key)
-  if self._predictedSizes[key] ~= nil then
-    return
-  end
-  local metadata = self._cacheFs:loadLua(AudioCache.sampleMetadataPath(key))
-  if type(metadata) == "table" and type(metadata.frames) == "number" and metadata.frames > 0 then
-    self:_notePredicted(key, metadata.frames * 2)
-  end
-end
-
--- Enrolls every missing closure key as one background sample payload at
--- prefetch priority. Already-resident and already-pending keys enroll
--- nothing new; each enrollment takes a fresh demand generation so a newer
--- round invalidates work already in flight.
----@param keys string[]
-function AudioAssetProvider:_enqueueMissing(keys)
-  local queue = assert(self._queue, "sample background enrollment requires its queue")
-  for _, key in ipairs(keys) do
-    if self._samples:find(key) == nil and self._pendingAudio[key] == nil then
-      local generation = self:requestSample(key)
-      local ok, token = pcall(function()
-        return queue:request("audio-sample", AudioCache.samplePath(key), "prefetch")
-      end)
-      if ok and type(token) == "number" then
-        self._pendingAudio[key] = { token = token, generation = generation }
-      else
-        self._pendingAudio[key] = nil
-      end
-    end
-  end
-end
-
--- Adopts every already-ready background sample payload without blocking:
--- a matching generation publishes its ByteData as packed PCM with no copy,
--- a stale or failed delivery is discarded and its interest dropped. Late
--- replies for cancelled interest never publish.
----@return integer adopted count
-function AudioAssetProvider:drainReadySamples()
-  return self:_drainAudioReady()
-end
-
----@return integer
-function AudioAssetProvider:_drainAudioReady()
-  local queue = self._queue
-  if queue == nil then
-    return 0
-  end
-  local adopted = 0
-  for key, pending in pairs(self._pendingAudio) do
-    local record = pending --[[@as { token: integer, generation: integer } ]]
-    local ok, status = pcall(function()
-      return queue:poll(record.token)
-    end)
-    if ok and status == "ready" then
-      local takeOk, payload = pcall(function()
-        return queue:take(record.token)
-      end)
-      self._pendingAudio[key] = nil
-      if takeOk and type(payload) == "table" then
-        local data = payload.byteData
-        if data ~= nil and self:adoptSample(key, record.generation, data) then
-          adopted = adopted + 1
-        end
-      end
-    elseif ok and status == "failed" then
-      self._pendingAudio[key] = nil
-      pcall(function()
-        queue:take(record.token)
-      end)
-    end
-  end
-  return adopted
-end
-
--- Drops background interest for keys outside the current predicted set.
--- Running worker jobs are never preempted; their late replies simply find
--- no pending interest and publish nothing.
----@param predictedSet table<string, boolean>
-function AudioAssetProvider:cancelUnpredicted(predictedSet)
-  local queue = self._queue
-  for key, pending in pairs(self._pendingAudio) do
-    if predictedSet[key] ~= true then
-      self._pendingAudio[key] = nil
-      if queue ~= nil then
-        pcall(function()
-          queue:cancel(pending.token)
-        end)
-      end
-    end
-  end
-end
-
--- The distinct predicted sample keys enrolled so far, in stable sorted
--- order. A read-only copy for admission-aware trimming; the driver applies
--- its own current-first priority on top when it trims.
----@return string[]
-function AudioAssetProvider:predictedKeySet()
-  local ordered = {} ---@type string[]
-  for key in pairs(self._predictedSizes) do
-    ordered[#ordered + 1] = key
-  end
-  table.sort(ordered)
-  return ordered
-end
-
--- Records demand for a sample key and hands the background schedule its
--- generation token: only an adoption carrying the current generation
--- lands, so a newer demand invalidates work already in flight.
----@param key string
----@return integer
-function AudioAssetProvider:requestSample(key)
-  local generation = (self._demands[key] or 0) + 1
-  self._demands[key] = generation
-  return generation
-end
-
--- Adopts a worker-prepared Data beside its read pointer without copying,
--- but only for the current demand generation and only when the key is not
--- already resident: stale and duplicate deliveries report false and keep
--- no second backing. A staged failure never enters the kernel.
----@param key string
----@param generation integer?
----@param data Pcm16Data|userdata
----@return boolean
-function AudioAssetProvider:adoptSample(key, generation, data)
-  if generation ~= self._demands[key] then
-    return false
-  end
-  if self._samples:find(key) ~= nil then
-    return false
-  end
+---@return AudioAssetProvider.SampleRecord
+function AudioAssetProvider:_openSample(key)
   local metadata = self._cacheFs:loadLua(AudioCache.sampleMetadataPath(key))
   if type(metadata) ~= "table" then
     Errors.raise(AudioErrors.AUDIO_PROVIDER_SAMPLE_UNKNOWN, "no audio sample metadata for key " .. key, { key = key })
   end
-  local pcm = Pcm16.fromData(data)
-  assert(metadata.frames == pcm.frames, "sample metadata frame count must match the packed payload")
-  self:_notePredicted(key, pcm.frames * 2)
-  if pcm.frames * 2 > self._idleByteLimit then
-    if self._seenKeys[key] == true then
-      self._reloads = self._reloads + 1
-    end
-    self._seenKeys[key] = true
-    self._misses = self._misses + 1
-    return true
+  local path = AudioCache.samplePath(key)
+  local reference = self._cacheFs:resolveAsset(path)
+  if reference == nil then
+    Errors.raise(AudioErrors.AUDIO_PROVIDER_SAMPLE_UNKNOWN, "no audio sample payload for key " .. key, { key = key })
   end
-  self._misses = self._misses + 1
-  self:_admit(key, {
-    metadata = metadata,
-    pcm = pcm,
-  })
-  return true
-end
-
--- Enforces the idle byte budget now and reports the evicted count; the
--- busy-shielded bytes observed by the pass feed status until the next trim.
--- With a keep set, predicted keys are refreshed to most-recently-used
--- first, so the pass trims the non-predicted idle tail before touching
--- predicted entries. An array expresses protection priority in order: its
--- first key is touched last and stays most-recently-used. Live and busy
--- entries are never freed either way.
----@param keepKeys table<string, boolean>|string[]|nil
----@return integer
-function AudioAssetProvider:trim(keepKeys)
-  if keepKeys ~= nil then
-    local function refresh(key)
-      if type(key) == "string" then
-        pcall(function()
-          self._samples:find(key)
-        end)
-      end
-    end
-    if keepKeys[1] ~= nil then
-      local ordered = keepKeys --[[@as string[] ]]
-      for index = #ordered, 1, -1 do
-        refresh(ordered[index])
-      end
+  ---@cast reference -nil
+  local sourceLease = self._acquireSource(reference)
+  local source = sourceLease.value
+  local pcm, openError
+  if source == nil then
+    openError = "the staged source lease carries no bytes"
+  else
+    local opened, decoded = pcall(Pcm16.fromData, source)
+    if not opened then
+      openError = decoded
+    elseif metadata.frames ~= decoded.frames then
+      openError = "sample metadata frame count does not match the packed payload"
     else
-      for key in
-        pairs(keepKeys --[[@as table<string, boolean> ]])
-      do
-        refresh(key)
-      end
+      pcm = decoded
     end
   end
-  local evicted, busyBytes = self._samples:trim()
-  self._busyBytes = busyBytes
-  return evicted
-end
-
--- Current census: retained distinct samples with their packed frame and
--- byte totals, cumulative misses and post-eviction reloads, the
--- busy-shielded bytes observed by the most recent trim, and the idle bytes
--- over budget right now.
----@return AudioAssetStatus
-function AudioAssetProvider:status()
-  local resident = self._samples:stats()
-  local over = resident.idleBytes - self._idleByteLimit
-  if over < 0 then
-    over = 0
-  end
-  local uncovered = self._predictedBytes - self._retainedBytes
-  if uncovered < 0 then
-    uncovered = 0
+  if pcm == nil then
+    sourceLease:release()
+    Errors.raise(
+      AudioErrors.AUDIO_PROVIDER_SAMPLE_UNKNOWN,
+      "unreadable audio sample payload for key " .. key .. ": " .. tostring(openError),
+      { key = key }
+    )
   end
   return {
-    uniqueSamples = self._retainedSamples,
-    retainedPcmFrames = self._retainedFrames,
-    retainedPcmBytes = self._retainedBytes,
-    misses = self._misses,
-    reloads = self._reloads,
-    activePinnedBytes = self._busyBytes,
-    overBudgetBytes = over,
-    predictedBytes = self._predictedBytes,
-    warmedBytes = self._retainedBytes,
-    uncoveredBytes = uncovered,
+    sourceLease = sourceLease,
+    sourceId = reference.sourceId,
+    contentId = reference.contentId,
+    metadata = metadata,
+    pcm = pcm,
+    byteSize = reference.data:getSize(),
+    references = 0,
   }
+end
+
+-- One distinct lease over an active sample record. The lease exposes the
+-- immutable metadata/PCM pair while it is outstanding and clears it on the
+-- first return, so a returned lease can never keep PCM alive by accident.
+---@param key string
+---@param record AudioAssetProvider.SampleRecord
+---@return AudioAssetSampleLease
+function AudioAssetProvider:_leaseSample(key, record)
+  local provider = self
+  local lease = {
+    value = { metadata = record.metadata, pcm = record.pcm },
+  }
+  ---@cast lease AudioAssetSampleLease
+  function lease:release()
+    if self.value == nil then
+      return false
+    end
+    self.value = nil
+    provider:_returnSample(key, record)
+    return true
+  end
+  return lease
+end
+
+-- Returns one acquisition. The last return drops the active record and gives
+-- the resident source back, so no private sample backing survives its
+-- sounding voices.
+---@param key string
+---@param record AudioAssetProvider.SampleRecord
+function AudioAssetProvider:_returnSample(key, record)
+  record.references = record.references - 1
+  if record.references > 0 then
+    return
+  end
+  if self._activeSamples[key] == record then
+    self._activeSamples[key] = nil
+  end
+  local sourceLease = record.sourceLease
+  record.sourceLease = nil
+  record.metadata = nil
+  record.pcm = nil
+  record.byteSize = 0
+  sourceLease:release()
+end
+
+-- Borrows one active sample record by content key. Repeated acquisitions of a
+-- key share that record's single decoded backing while each acquisition stays
+-- an independent lease; the first acquisition of a key constructs the record
+-- and counts as this provider's miss.
+---@param key string
+---@return AudioAssetSampleLease
+function AudioAssetProvider:acquireSample(key)
+  assert(type(key) == "string" and key ~= "", "sample acquisition requires a content key")
+  local record = self._activeSamples[key]
+  if record == nil then
+    record = self:_openSample(key)
+    self._activeSamples[key] = record
+    self._misses = self._misses + 1
+  end
+  record.references = record.references + 1
+  self._acquisitions = self._acquisitions + 1
+  return self:_leaseSample(key, record)
+end
+
+-- Resolves every sample a bank's instrument closure references, in closure
+-- order, reusing the shared bank reference walk instead of a second
+-- instrument grammar. The base resident store already holds the compact PCM,
+-- so prediction creates no PCM buffer, holds no lease, and schedules no
+-- payload work of its own; the disk source form extends this same entry.
+---@param idOrSymbol integer|string
+---@return AudioAssetSample[]
+function AudioAssetProvider:prewarmBank(idOrSymbol)
+  self:_closureKeys(idOrSymbol)
+  return {}
+end
+
+-- Resolves one bank's closure for prediction without decoding anything: the
+-- reported count is the predicted key count, never a scheduled payload job.
+---@param idOrSymbol integer|string
+---@return integer predicted key count
+function AudioAssetProvider:prewarmBankBackground(idOrSymbol)
+  return #self:_closureKeys(idOrSymbol)
+end
+
+-- Binds (or unbinds) the shared preparation queue this provider's payload
+-- interest routes through; the selected runtime supplies the same queue that
+-- answers its source acquisition.
+---@param queue table<string, unknown>?
+function AudioAssetProvider:bindQueue(queue)
+  assert(queue == nil or type(queue.request) == "function", "sample queue must offer the preparation request shape")
+  self._queue = queue
+end
+
+-- Base prewarm copies nothing and schedules no source job, so nothing is in
+-- flight to adopt; prepared package source work arrives with selected sources.
+---@return integer adopted count
+function AudioAssetProvider:drainReadySamples()
+  return 0
+end
+
+-- Base prewarm holds no predicted source interest to drop: the caller's key
+-- set stays its own; prepared package source work arrives with selected sources.
+---@return integer cancelled count
+function AudioAssetProvider:cancelUnpredicted(_)
+  return 0
+end
+
+-- Active sample interests only: how many records are backed by outstanding
+-- acquisitions, the distinct resident backing bytes they attribute within this
+-- provider, and the cumulative acquisition/miss counts. Shared residency is
+-- the selected CPU owner's business, not this provider's.
+---@return AudioAssetStatus
+function AudioAssetProvider:status()
+  local activeSamples = 0
+  local attributed = {} ---@type table<string, integer>
+  for _, record in pairs(self._activeSamples) do
+    activeSamples = activeSamples + 1
+    attributed[record.sourceId .. "\0" .. record.contentId] = record.byteSize
+  end
+  local activeSourceBytes = 0
+  for _, byteSize in pairs(attributed) do
+    activeSourceBytes = activeSourceBytes + byteSize
+  end
+  return {
+    activeSamples = activeSamples,
+    activeSourceBytes = activeSourceBytes,
+    acquisitions = self._acquisitions,
+    misses = self._misses,
+  }
+end
+
+-- Releases the provider's metadata memos. Disposal requires every sounder
+-- stopped: the composition disposes its mixer first, which returns each
+-- physical voice's acquisition, so no active sample record may remain here.
+function AudioAssetProvider:dispose()
+  assert(
+    next(self._activeSamples) == nil,
+    "audio sample provider disposal requires every sample voice stopped and returned"
+  )
+  self._sequences = {}
+  self._banks = {}
+  self._bankKeysMemo = {}
+  self._bankKeysOrder = {}
 end
 
 return AudioAssetProvider

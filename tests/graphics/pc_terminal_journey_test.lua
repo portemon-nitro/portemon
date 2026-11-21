@@ -2,6 +2,7 @@
 -- compiled PC graphics over each supported display arrangement.
 
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -94,9 +95,14 @@ end
 
 function T.production_storage_draws_with_real_pc_graphics_across_layouts(scope)
   local record, derivedAssets = savedField()
+  local cacheFs = GeneratedCacheFixture.reader(AcceptanceHarness.defaultVersion())
+  -- The presented runtime borrows the selected epoch's CPU owners for the boot;
+  -- the scope releases them after the state disposes.
+  local assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
   local state = FieldState.new(record, {
     derivedAssets = derivedAssets,
-    cacheFs = GeneratedCacheFixture.reader(AcceptanceHarness.defaultVersion()),
+    cacheFs = cacheFs,
+    assetRuntime = assetRuntime,
   })
   local runtime = state.runtime
   local host = assert(runtime.pcApplicationHost, "the production runtime owns the PC child host")

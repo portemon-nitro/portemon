@@ -2,8 +2,10 @@
 -- sample per content key instead of a per-key Lua number array. A packed
 -- sample carries its frame count, keeps its single byte backing beside the
 -- read pointer, and answers every frame through a zero-based indexed read,
--- so the mixer never indexes a Lua array and retained bytes always come
--- from frame counts. Synthetic bytes only; nothing here touches a ROM.
+-- so the mixer never indexes a Lua array and accounted bytes always come
+-- from frame counts. Every acquisition is one release-capable lease over the
+-- resident backing, and a sounding voice owns its lease until physical
+-- removal. Synthetic bytes only; nothing here touches a ROM.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -36,6 +38,33 @@ local function bundleWithEdgeSamples()
   bundle.samples[endianKey] = AudioFixture.pcm16le(ENDIAN_VALUES)
   bundle.sampleMetadata[endianKey] = AudioFixture.sampleMetadata(endianKey, { frames = #ENDIAN_VALUES })
   return bundle
+end
+
+-- The production provider over one resident store, with the base source
+-- acquisition capability a selected runtime injects: a lease roots the store's
+-- own bytes and its release clears that reference.
+---@param bundle table
+---@return AudioAssetProvider
+local function residentProvider(bundle)
+  local cache = AudioFixture.residentCache(bundle)
+  return AudioAssetProvider.new(cache, {
+    acquireSource = function(reference)
+      local lease = { value = reference.data }
+      function lease:release()
+        self.value = nil
+      end
+      return lease
+    end,
+  })
+end
+
+---@param provider AudioAssetProvider
+---@param key string
+---@return table lease
+---@return AudioAssetSample sample
+local function acquire(provider, key)
+  local lease = provider:acquireSample(key)
+  return lease, assert(lease.value)
 end
 
 local function sampleValue(pcm, index)
@@ -75,8 +104,8 @@ local function fingerprint16(values)
 end
 
 function T.loads_edge_values_into_one_packed_backing_of_twice_the_frame_count()
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache(bundleWithEdgeSamples()))
-  local sample = provider:loadSample(AudioFixture.key(EDGE_KEY_NUMBER))
+  local provider = residentProvider(bundleWithEdgeSamples())
+  local _, sample = acquire(provider, AudioFixture.key(EDGE_KEY_NUMBER))
   Assert.equal(sample.metadata.frames, #EDGE_VALUES, "the fixture carries five frames")
   Assert.equal(sample.pcm.frames, #EDGE_VALUES, "the packed sample counts frames, not array length")
   Assert.isNil(sample.pcm[1], "a packed sample is not a one-based Lua array")
@@ -84,7 +113,7 @@ function T.loads_edge_values_into_one_packed_backing_of_twice_the_frame_count()
   for index, expected in ipairs(EDGE_VALUES) do
     Assert.equal(sampleValue(sample.pcm, index - 1), expected, "edge value at zero-based frame " .. (index - 1))
   end
-  local endian = provider:loadSample(AudioFixture.key(ENDIAN_KEY_NUMBER))
+  local _, endian = acquire(provider, AudioFixture.key(ENDIAN_KEY_NUMBER))
   Assert.equal(sampleValue(endian.pcm, 0), 4660, "little-endian bytes read in host order")
   Assert.equal(sampleValue(endian.pcm, 1), -4661, "little-endian bytes read in host order")
   Assert.equal(backingBytes(endian.pcm), 2 * #ENDIAN_VALUES, "every key owns exactly one backing")
@@ -98,28 +127,29 @@ function T.rejects_odd_and_empty_payloads_under_the_provider_error_contract()
   local emptyKey = AudioFixture.key(12)
   bundle.samples[emptyKey] = ""
   bundle.sampleMetadata[emptyKey] = AudioFixture.sampleMetadata(emptyKey, { frames = 0 })
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache(bundle))
+  local provider = residentProvider(bundle)
   local odd = Assert.throws(function()
-    provider:loadSample(oddKey)
+    provider:acquireSample(oddKey)
   end)
   Assert.isTrue(Errors.is(odd), "a malformed payload stays a structured audio failure")
   Assert.equal(odd.code, "AUDIO_PROVIDER_SAMPLE_UNKNOWN", "a malformed payload keeps the sample error identity")
   local empty = Assert.throws(function()
-    provider:loadSample(emptyKey)
+    provider:acquireSample(emptyKey)
   end)
   Assert.isTrue(Errors.is(empty), "an empty payload stays a structured audio failure")
-  Assert.equal(empty.code, "AUDIO_PROVIDER_SAMPLE_UNKNOWN", "an empty payload keeps the sample error identity")
+  Assert.equal(empty.code, "AUDIO_PROVIDER_SAMPLE_UNKNOWN", "an absent (empty) payload keeps the sample error identity")
 end
 
 -- The mixer plays the packed backing bit-identically: a deterministic
 -- voice over the edge sample renders every edge value at its exact frame
 -- through the whole loop window, with the untouched channel silent.
 function T.plays_every_packed_frame_through_a_deterministic_voice()
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache(bundleWithEdgeSamples()))
-  local sample = provider:loadSample(AudioFixture.key(EDGE_KEY_NUMBER))
+  local provider = residentProvider(bundleWithEdgeSamples())
+  local lease, sample = acquire(provider, AudioFixture.key(EDGE_KEY_NUMBER))
   local mixer = VoiceMixer.new({ sampleRate = 16756991 })
   mixer:noteOn({
     generator = { kind = "sample", sample = AudioFixture.key(EDGE_KEY_NUMBER) },
+    sampleLease = lease,
     pcm = sample.pcm,
     baseTimer = 16,
     loopEnabled = true,
@@ -158,14 +188,30 @@ function T.plays_every_packed_frame_through_a_deterministic_voice()
   Assert.equal(fingerprint16(out), 1270087696, "the deterministic voice renders its exact trace")
 end
 
-function T.counts_retained_bytes_from_frame_counts_with_shared_loads()
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache(bundleWithEdgeSamples()))
-  local edge = provider:loadSample(AudioFixture.key(EDGE_KEY_NUMBER))
-  local plain = provider:loadSample(AudioFixture.key(1))
+function T.counts_retained_bytes_from_frame_counts_with_shared_acquisitions()
+  local provider = residentProvider(bundleWithEdgeSamples())
+  local edgeLease, edge = acquire(provider, AudioFixture.key(EDGE_KEY_NUMBER))
+  local plainLease, plain = acquire(provider, AudioFixture.key(1))
   Assert.equal(edge.pcm.frames, #EDGE_VALUES, "frame totals come from the packed count, not array length")
   Assert.equal(plain.pcm.frames, 4, "every key carries its own frame total")
-  Assert.equal(edge.pcm.frames * 2 + plain.pcm.frames * 2, 18, "retained bytes count two bytes per packed frame")
-  Assert.isTrue(provider:loadSample(AudioFixture.key(EDGE_KEY_NUMBER)) == edge, "a repeated key shares one backing")
+  local status = provider:status()
+  Assert.equal(
+    status.activeSourceBytes,
+    edge.pcm.frames * 2 + plain.pcm.frames * 2,
+    "active source bytes count two bytes per packed frame"
+  )
+  Assert.equal(status.activeSamples, 2, "each acquired key is one active sample record")
+  local sharedLease, shared = acquire(provider, AudioFixture.key(EDGE_KEY_NUMBER))
+  Assert.isTrue(shared.pcm == edge.pcm, "a repeated key shares one backing")
+  Assert.equal(provider:status().activeSamples, 2, "a repeated acquisition adds no active record")
+  Assert.equal(provider:status().acquisitions, 3, "every successful acquisition is counted")
+  sharedLease:release()
+  Assert.notNil(edgeLease.value, "one return leaves the other acquisition valid")
+  edgeLease:release()
+  plainLease:release()
+  Assert.equal(provider:status().activeSamples, 0, "returning every acquisition drops the active records")
+  Assert.equal(provider:status().activeSourceBytes, 0, "no resident source bytes stay attributed")
+  provider:dispose()
 end
 
 -- A live voice owns its backing: releasing the provider and collecting
@@ -173,12 +219,13 @@ end
 -- borrowed sample live until the voice is stopped.
 function T.voices_retain_their_sample_after_provider_release_and_collection()
   local function playOnce(rate)
-    local provider = AudioAssetProvider.new(AudioFixture.readyCache(bundleWithEdgeSamples()))
-    local sample = provider:loadSample(AudioFixture.key(EDGE_KEY_NUMBER))
+    local provider = residentProvider(bundleWithEdgeSamples())
+    local lease, sample = acquire(provider, AudioFixture.key(EDGE_KEY_NUMBER))
     local pcm = sample.pcm
     local mixer = VoiceMixer.new({ sampleRate = rate })
     local handle = mixer:noteOn({
       generator = { kind = "sample", sample = AudioFixture.key(EDGE_KEY_NUMBER) },
+      sampleLease = lease,
       pcm = pcm,
       baseTimer = 16,
       loopEnabled = true,
@@ -272,6 +319,7 @@ function T.rendering_never_resolves_the_backing_pointer()
   local mixer = VoiceMixer.new({ sampleRate = 16756991 })
   mixer:noteOn({
     generator = { kind = "sample", sample = "adopted" },
+    sampleLease = AudioFixture.sampleLease(adopted),
     pcm = adopted,
     baseTimer = 16,
     loopEnabled = true,

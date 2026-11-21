@@ -185,8 +185,10 @@ end
 ---@field _state string "active", "ready", "transferred", "released", or "failed"
 ---@field _poolReleased boolean
 ---@field _queue table<string, unknown>? borrowed preparation queue
+---@field _decoded table<string, unknown>? borrowed selected decoded CPU owner
 ---@field _outstanding integer? preparation token the suspended coroutine waits on
----@field _stashed table<integer, table<string, unknown>>? waited payloads by token, consumed by the resumed coroutine
+---@field _transfer table<string, unknown>? kernel lease a take or wait transferred but the build has not consumed
+---@field _stashed table<integer, table<string, unknown>>? waited leases by token, consumed by the resumed coroutine
 ---@field _finishing boolean the explicit synchronous caller blocks instead of yielding
 ---@field _result table<string, unknown>?
 ---@field _failed unknown?
@@ -205,6 +207,7 @@ local function failBuildTask(task, err)
       -- already be gone when unwinding through layered releases).
       pcall(task._queue.cancel, task._queue, token)
     end
+    task:returnPreparedLeases()
     if not task._poolReleased then
       task._poolReleased = true
       task._pool:release()
@@ -324,9 +327,34 @@ function NeighborBuildTask:release()
     -- Release stays infallible even if the queue is already gone.
     pcall(self._queue.cancel, self._queue, token)
   end
+  self:returnPreparedLeases()
   if not self._poolReleased then
     self._poolReleased = true
     self._pool:release()
+  end
+end
+
+-- Return every decoded lease this task transferred out of the queue but whose
+-- GPU realization has not consumed it yet: the in-flight transfer and any
+-- lease the finishing wait stashed for a build that never resumed.
+function NeighborBuildTask:returnPreparedLeases()
+  local decoded = self._decoded
+  if decoded == nil then
+    return
+  end
+  local transfer = self._transfer
+  self._transfer = nil
+  if transfer ~= nil then
+    decoded:returnLease(transfer)
+    decoded:trim()
+  end
+  local stashed = self._stashed
+  self._stashed = nil
+  if stashed ~= nil then
+    for _, lease in pairs(stashed) do
+      decoded:returnLease(lease)
+      decoded:trim()
+    end
   end
 end
 
@@ -340,7 +368,7 @@ end
 -- scene build.
 ---@param cacheFs table<string, unknown>
 ---@param descriptors table[]
----@param opts { graphics?: GpuAssetPool.Graphics, textureSrt?: table<string, unknown>|false, imageAssets?: table<string, unknown>, assetPreparation?: table<string, unknown> }?
+---@param opts { graphics?: GpuAssetPool.Graphics, textureSrt?: table<string, unknown>|false, imageAssets?: table<string, unknown>, assetPreparation?: table<string, unknown>, decoded?: table<string, unknown> }?
 ---@return NeighborRing.BuildTask
 function NeighborRing.begin(cacheFs, descriptors, opts)
   opts = opts or {}
@@ -372,13 +400,15 @@ function NeighborRing.begin(cacheFs, descriptors, opts)
         local stashed = task._stashed[token]
         task._stashed[token] = nil
         task._outstanding = nil
+        task._transfer = stashed
         return stashed
       end
       local status, failure = prepareQueue:poll(token)
       if status == "ready" then
-        local payload = prepareQueue:take(token)
+        local lease = prepareQueue:take(token)
         task._outstanding = nil
-        return payload
+        task._transfer = lease
+        return lease
       end
       if status == "failed" then
         error("prepared asset " .. tostring(path) .. " (" .. kind .. ") failed: " .. tostring(failure), 0)
@@ -390,7 +420,15 @@ function NeighborRing.begin(cacheFs, descriptors, opts)
     local entry = meshEntries[geometry]
     if entry == nil then
       if queue ~= nil then
-        entry = pool:preparedMesh(geometry, awaitPrepared)
+        -- The pool borrows the awaited lease's shared value for the upload;
+        -- the task returns that lease immediately afterwards, on success or
+        -- failure.
+        local realizedOk, realized = pcall(pool.preparedMesh, pool, geometry, awaitPrepared)
+        task:returnPreparedLeases()
+        if not realizedOk then
+          error(realized, 0)
+        end
+        entry = realized
       else
         entry = pool:meshFor(geometry)
       end
@@ -404,7 +442,9 @@ function NeighborRing.begin(cacheFs, descriptors, opts)
     _state = "active",
     _poolReleased = false,
     _queue = queue,
+    _decoded = opts.decoded,
     _outstanding = nil,
+    _transfer = nil,
     _stashed = nil,
     _finishing = false,
     _result = nil,
@@ -447,7 +487,7 @@ end
 -- acquired before the error propagates.
 ---@param cacheFs table<string, unknown>
 ---@param descriptors table[]
----@param opts { graphics?: GpuAssetPool.Graphics, textureSrt?: table<string, unknown>|false, imageAssets?: table<string, unknown>, assetPreparation?: table<string, unknown> }?
+---@param opts { graphics?: GpuAssetPool.Graphics, textureSrt?: table<string, unknown>|false, imageAssets?: table<string, unknown>, assetPreparation?: table<string, unknown>, decoded?: table<string, unknown> }?
 ---@return table<string, unknown>
 function NeighborRing.load(cacheFs, descriptors, opts)
   return NeighborRing.begin(cacheFs, descriptors, opts):finish()

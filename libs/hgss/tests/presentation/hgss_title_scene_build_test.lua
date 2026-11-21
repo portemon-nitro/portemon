@@ -199,6 +199,39 @@ local function requireTitle()
   return assert(mod)
 end
 
+-- The build consumes kernel leases: this proxy wraps the fake queue's raw
+-- payloads in the shared decoded value shape while delegating every recorded
+-- operation to the test's queue.
+local function leaseQueue(queue)
+  local proxy = setmetatable({}, {
+    __index = function(_, key)
+      local value = queue[key]
+      if type(value) == "function" then
+        return function(_, ...)
+          return value(queue, ...)
+        end
+      end
+      return value
+    end,
+  })
+  function proxy:take(token)
+    return { value = { payload = queue:take(token) } }
+  end
+  function proxy:wait(token)
+    return { value = { payload = queue:wait(token) } }
+  end
+  return proxy
+end
+
+local function decodedOwner()
+  return {
+    returnLease = function()
+      return true
+    end,
+    trim = function() end,
+  }
+end
+
 -- One title build over `queue`, with the queue's cancellation recorded beside
 -- the scene disposals so an exit can prove what it did first.
 ---@param queue FakePreparationQueue
@@ -224,8 +257,14 @@ local function beginTitleBuild(queue, log)
     },
     width = 256,
     height = 192,
-    graphics = { newImage = function() end, getImageFormats = function() return {} end },
-    assetPreparation = queue,
+    graphics = {
+      newImage = function() end,
+      getImageFormats = function()
+        return {}
+      end,
+    },
+    assetPreparation = leaseQueue(queue),
+    decoded = decodedOwner(),
   })
 end
 
@@ -388,14 +427,24 @@ function T.title_build_borrows_every_material_texture_before_readiness()
       },
       width = 256,
       height = 192,
-      graphics = { newImage = function() end, getImageFormats = function() return {} end },
-      assetPreparation = queue,
+      graphics = {
+        newImage = function() end,
+        getImageFormats = function()
+          return {}
+        end,
+      },
+      assetPreparation = leaseQueue(queue),
+      decoded = decodedOwner(),
     })
     Assert.equal(build:advance(1), 0, "a cold material texture yields the frame budget instead of charging work")
     Assert.isFalse(build:isReady(), "the title build is not ready while a material texture is pending")
     local owner = assert(rec.imageAssets[1], "the title build owns the image owner its textures borrow from")
     Assert.equal(#owner.requests, 1, "the staged build requests the model's base texture first")
-    Assert.equal(owner.requests[1].path, "assets/generated/title/legend.png", "the base texture is what the model draws")
+    Assert.equal(
+      owner.requests[1].path,
+      "assets/generated/title/legend.png",
+      "the base texture is what the model draws"
+    )
 
     owner:publish()
     Assert.equal(build:advance(1), 1, "the borrowed base texture charges one realized work unit")

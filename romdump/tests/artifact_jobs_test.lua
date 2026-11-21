@@ -23,6 +23,8 @@ local SseqFixture = require("tests.support.SseqFixture")
 local SbnkFixture = require("tests.support.SbnkFixture")
 local SwarFixture = require("tests.support.SwarFixture")
 local Swav = require("libs.nds.src.nitro.sound.Swav")
+local AudioFixture = require("tests.support.AudioFixture")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 
 local T = {}
@@ -336,7 +338,8 @@ function T.field_move_cut_in_banner_runs_as_a_standalone_global_route()
   Assert.isTrue(complete, "the standalone banner route plans without prerequisites")
   Assert.deepEqual(deps, {}, "the standalone banner route carries no child edges")
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local ready = ArtifactJobs.validate(cache, ArtifactState.new("route-generation"), "field-move-cut-in-banner", "global", {})
+  local ready =
+    ArtifactJobs.validate(cache, ArtifactState.new("route-generation"), "field-move-cut-in-banner", "global", {})
   Assert.isFalse(ready, "an absent banner receipt is a normal cache miss")
 end
 
@@ -1284,6 +1287,11 @@ function T.cache_read_faults_escape_artifact_and_child_readiness()
   }
   local directCache = {
     versionId = "heartgold",
+    -- Resident readiness probes borrow the payload first, so the fixture
+    -- reader exposes the same capability and fails at the same boundary.
+    readData = function()
+      error(fault, 0)
+    end,
     read = function()
       error(fault, 0)
     end,
@@ -1314,6 +1322,12 @@ function T.cache_read_faults_escape_artifact_and_child_readiness()
   }
   local childCache = {
     versionId = "heartgold",
+    readData = function(_, path)
+      if path == FieldMessageCache.bankPath(219) then
+        error(fault, 0)
+      end
+      return nil
+    end,
     read = function(_, path)
       if path == FieldMessageCache.bankPath(219) then
         error(fault, 0)
@@ -1459,10 +1473,7 @@ function T.audio_family_readiness_trusts_current_job_facts()
   local facts = ArtifactState.new(generation)
 
   executeAndPublish(cacheFs, facts, context, identity, "audio-catalog", "global")
-  Assert.notNil(
-    ArtifactState.read(facts, "audio-catalog", "global"),
-    "the catalog job commits its current fact"
-  )
+  Assert.notNil(ArtifactState.read(facts, "audio-catalog", "global"), "the catalog job commits its current fact")
   for _, bankId in ipairs({ 0, 7 }) do
     local key = tostring(bankId)
     executeAndPublish(cacheFs, facts, context, identity, "audio-bank", key)
@@ -1477,10 +1488,7 @@ function T.audio_family_readiness_trusts_current_job_facts()
     0,
     "the family summary never rereads sample payloads: " .. table.concat(summaryReads, ", ")
   )
-  Assert.notNil(
-    ArtifactState.read(facts, "audio-summary", "global"),
-    "the summary job publishes its current receipt"
-  )
+  Assert.notNil(ArtifactState.read(facts, "audio-summary", "global"), "the summary job publishes its current receipt")
   Assert.isTrue(
     ArtifactJobs.validate(cacheFs, facts, "audio-summary", "global", plans),
     "the published family reads ready from current receipts"
@@ -1519,10 +1527,7 @@ function T.audio_family_readiness_trusts_current_job_facts()
     audioFamilyAudit(cacheFs, facts, generation, plans),
     "the explicit audit reports the corrupt sample payload"
   )
-  Assert.isTrue(
-    ArtifactJobs.validate(cacheFs, facts, "audio-bank", "0", plans),
-    "warm bank readiness stays fact-based"
-  )
+  Assert.isTrue(ArtifactJobs.validate(cacheFs, facts, "audio-bank", "0", plans), "warm bank readiness stays fact-based")
   Assert.isTrue(
     ArtifactJobs.validate(cacheFs, facts, "audio-summary", "global", plans),
     "warm family readiness is not an exhaustive payload walk"
@@ -1544,10 +1549,7 @@ function T.audio_family_readiness_trusts_current_job_facts()
     ArtifactJobs.validate(cacheFs, facts, "audio-summary", "global", plans),
     "the family summary requires every current bank fact"
   )
-  Assert.isFalse(
-    ArtifactJobs.validate(cacheFs, facts, "audio-bank", "7", plans),
-    "a missing bank fact is not ready"
-  )
+  Assert.isFalse(ArtifactJobs.validate(cacheFs, facts, "audio-bank", "7", plans), "a missing bank fact is not ready")
 end
 
 -- A bank stage failure publishes no fact and no partial quiet state: the
@@ -1585,10 +1587,7 @@ function T.failed_audio_bank_stage_keeps_siblings_and_retry_restores_playback()
   end)
   AudioCacheWriter.stageBank = realStageBank
   Assert.isFalse(ok, "the rejected bank stage fails the bank job")
-  Assert.isNil(
-    ArtifactState.read(facts, "audio-bank", "7"),
-    "a failed bank job commits no current fact"
-  )
+  Assert.isNil(ArtifactState.read(facts, "audio-bank", "7"), "a failed bank job commits no current fact")
   Assert.isFalse(ArtifactJobs.validate(cacheFs, facts, "audio-bank", "7", plans), "the failed bank is not ready")
   Assert.equal(
     assert(ArtifactState.read(facts, "audio-bank", "0")).marker,
@@ -1608,7 +1607,10 @@ function T.failed_audio_bank_stage_keeps_siblings_and_retry_restores_playback()
   Assert.isTrue(ArtifactJobs.validate(cacheFs, facts, "audio-bank", "7", plans), "the retried bank reads ready")
 
   local AudioAssetProvider = require("libs.hgss.src.audio.AudioAssetProvider")
-  local provider = AudioAssetProvider.new(cacheFs)
+  -- The installed epoch's resident view over the just-published stage: the
+  -- runtime provider reads the retried closure exactly as gameplay does.
+  local resident = GeneratedCacheFixture.fromCache(cacheFs)
+  local provider = AudioAssetProvider.new(resident.reader, { acquireSource = AudioFixture.acquireSource() })
   local bank = provider:bank(7)
   Assert.equal(bank.id, 7, "the runtime provider reads the retried bank")
   Assert.equal(provider:sequence(1).bankId, 7, "the retried closure publishes its sequence")
@@ -1623,7 +1625,8 @@ function T.failed_audio_bank_stage_keeps_siblings_and_retry_restores_playback()
   local decoded = assert(Swav.decode(loopingMember, "fixture"))
   local sampleKey = instrument.voice.generator.sample
   Assert.equal(type(sampleKey), "string", "the runtime bank names its sample")
-  local sample = provider:loadSample(sampleKey)
+  local sampleLease = provider:acquireSample(sampleKey)
+  local sample = assert(sampleLease.value)
   Assert.equal(sample.metadata.frames, decoded.frames, "the runtime sample keeps the decoded frame count")
   Assert.equal(sample.metadata.baseTimer, decoded.baseTimer, "the runtime sample keeps the source base timer")
   Assert.equal(sample.metadata.loopEnabled, decoded.loopEnabled, "the runtime sample keeps the loop flag")
@@ -1637,9 +1640,11 @@ function T.failed_audio_bank_stage_keeps_siblings_and_retry_restores_playback()
     )
   end
   local missingOk = pcall(function()
-    provider:loadSample("0" .. string.rep("0", 39))
+    provider:acquireSample("0" .. string.rep("0", 39))
   end)
   Assert.isFalse(missingOk, "a missing sample is a failure, never silence")
+  sampleLease:release()
+  GeneratedCacheFixture.close(resident)
 end
 
 return { metadata = { capabilities = {} }, tests = T }

@@ -3,9 +3,11 @@
 -- leases, an owner-supplied busy check for natively held resources, and
 -- exact-once physical release. Only unborrowed entries the busy check does
 -- not claim are ever evicted; borrowed entries stay findable but leave the
--- idle queue until their last lease returns. The small fixed-capacity
--- message and actor owners keep their own domain lifetimes; this kernel
--- serves the byte-budgeted audio and image pools.
+-- idle queue until their last lease returns. Every borrow exposes the entry
+-- value it pins, so competing consumers reason about one immutable payload
+-- while each holds its own lease. The small fixed-capacity message and actor
+-- owners keep their own domain lifetimes; this kernel serves the shared
+-- decoded CPU residency, the GPU image pool and the audio pools.
 
 ---@class ResidentAssetCacheEntry
 ---@field key string
@@ -16,6 +18,7 @@
 ---@field next ResidentAssetCacheEntry?
 
 ---@class ResidentAssetCacheLease
+---@field value table<string, unknown>? entry value while the lease is live; cleared on its first return
 ---@field _owner ResidentAssetCache
 ---@field _key string
 ---@field _returned boolean
@@ -156,9 +159,10 @@ function ResidentAssetCache:publish(key, value, weight)
   self._idleBytes = self._idleBytes + weight
 end
 
--- Borrows an entry through one opaque single-use lease per acquisition:
--- competing borrows of one key hold distinct leases over the shared value.
--- The first borrow of an entry moves its bytes from idle to borrowed.
+-- Borrows an entry through one single-use lease per acquisition:
+-- competing borrows of one key hold distinct leases over the shared value,
+-- and each lease exposes that value until its own return. The first borrow of
+-- an entry moves its bytes from idle to borrowed.
 ---@param key string
 ---@return ResidentAssetCacheLease
 function ResidentAssetCache:borrow(key)
@@ -172,11 +176,12 @@ function ResidentAssetCache:borrow(key)
     self._pinnedBytes = self._pinnedBytes + entry.weight
   end
   entry.leases = entry.leases + 1
-  return { _owner = self, _key = key, _returned = false }
+  return { value = entry.value, _owner = self, _key = key, _returned = false }
 end
 
--- Returns a lease to its owning cache. The first return drops one borrow
--- reference and reports true; repeating it reports false without side
+-- Returns a lease to its owning cache. The first return clears the exposed
+-- value so a returned lease cannot retain the payload by accident, drops one
+-- borrow reference and reports true; repeating it reports false without side
 -- effects. A lease from another cache, or any non-lease, fails loudly.
 ---@param lease ResidentAssetCacheLease
 ---@return boolean
@@ -188,6 +193,7 @@ function ResidentAssetCache:returnLease(lease)
     return false
   end
   lease._returned = true
+  lease.value = nil
   local entry = self._byKey[lease._key]
   assert(entry ~= nil, "resident cache entry vanished under its borrower")
   assert(entry.leases > 0, "resident cache lease count went negative")

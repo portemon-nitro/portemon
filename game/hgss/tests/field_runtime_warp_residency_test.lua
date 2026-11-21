@@ -458,11 +458,17 @@ local function warpSceneCache()
     loadLua = function(_, _)
       return nil
     end,
+    resolveAsset = function(_, path)
+      if path ~= collisionFile then
+        return nil
+      end
+      return { data = assert(love.data.newByteData(blob[path])) }
+    end,
   }
   return cache, geomPath, texPath, stagedTexPath, collisionFile
 end
 
-local function fakeSceneGraphics()
+local function fakeSceneGraphics(meshes)
   local images = {}
   local graphics = {
     images = images,
@@ -476,8 +482,41 @@ local function fakeSceneGraphics()
       images[#images + 1] = image
       return image
     end,
+    newMesh = function()
+      local mesh = { released = false }
+      mesh.setVertices = function() end
+      mesh.setVertexMap = function() end
+      mesh.release = function()
+        mesh.released = true
+      end
+      if meshes ~= nil then
+        meshes[#meshes + 1] = mesh
+      end
+      return mesh
+    end,
   }
   return graphics
+end
+
+-- Synchronous stand-in for the selected preparation worker over the fixture
+-- cache: probes realize the same upload shape the worker publishes.
+local function scenePreparation(cache)
+  local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
+  local queue = {}
+  function queue:request(kind, path, priority)
+    return { kind = kind, path = path, priority = priority }
+  end
+  function queue:wait(request)
+    local bytes = assert(cache:read(request.path), "missing fixture geometry " .. tostring(request.path))
+    local payload = request.kind == "g4gx" and SceneMesh.prepareNativeBank(bytes) or SceneMesh.prepareUpload(bytes)
+    return { value = { kind = request.kind, payload = payload } }
+  end
+  local decoded = {}
+  function decoded:returnLease()
+    return true
+  end
+  function decoded:trim() end
+  return queue, decoded
 end
 
 local function trackedMeshes(store)
@@ -512,13 +551,16 @@ local CLAMP_SAMPLER = { wrapX = "clamp", wrapY = "clamp" }
 -- failed destination publishes no phantom physical image, and only the
 -- staged coverage is disposed.
 function T.failed_staged_warp_cancels_only_staged_image_leases()
-  local pool = SharedImagePoolFake.new()
   local cache, geomPath, texPath, stagedTexPath, collisionFile = warpSceneCache()
+  local queue, decoded = scenePreparation(cache)
+  local pool = SharedImagePoolFake.new({ preparation = { queue = queue, decoded = decoded } })
   local currentMeshes = {}
   local current = MapSceneLoader.load(cache, warpScene(1, geomPath, texPath, collisionFile), {
-    graphics = fakeSceneGraphics(),
-    meshBuilder = trackedMeshes(currentMeshes),
+    graphics = fakeSceneGraphics(currentMeshes),
     imageAssets = pool,
+    acquireSource = function(reference)
+      return { value = reference.data, release = function() end }
+    end,
   })
   Assert.equal(pool.uploads, 1, "the current scene borrows its texture from the shared owner")
   local liveImage = materialImage(current.mapDraws[1].material)
@@ -548,8 +590,10 @@ function T.failed_staged_warp_cancels_only_staged_image_leases()
   local stagedTask =
     MapSceneLoader.begin(cache, warpScene(2, "missing-geometry.g4mesh", stagedTexPath, collisionFile), {
       graphics = fakeSceneGraphics(),
-      meshBuilder = trackedMeshes({}),
       imageAssets = pool,
+      acquireSource = function(reference)
+        return { value = reference.data, release = function() end }
+      end,
     })
   local okScene = pcall(function()
     return stagedTask:finish()

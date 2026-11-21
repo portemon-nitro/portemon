@@ -32,6 +32,30 @@ local function readyVersions()
   return versions
 end
 
+-- The selected-epoch CPU runtime the field boot borrows; presentation is off,
+-- so no image owner or worker starts here.
+local function runtimeOptions(versionId)
+  local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
+  local decoded = ResidentAssetCache.new({
+    idleByteLimit = 64 * 1024 * 1024,
+    release = function(value)
+      value:release()
+    end,
+  })
+  return {
+    derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+    presentation = false,
+    cacheFs = cacheFs,
+    assetRuntime = {
+      cacheFs = cacheFs,
+      decoded = decoded,
+      preparationQueue = AssetPreparationQueue.new(cacheFs, { decoded = decoded }),
+    },
+  }
+end
+
 local function validEntry(versionId, withBuckets)
   local entry = {
     saveId = "save-00000001",
@@ -82,11 +106,7 @@ function T.tests.boot_builds_and_teardown_releases_the_host(context)
     error("party host boot needs a ready versioned cache", 0)
   end
   for _, versionId in ipairs(versions) do
-    local runtime = FieldRuntime.new(validEntry(versionId), {
-      derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
-      presentation = false,
-      cacheFs = GeneratedCacheFixture.reader(versionId),
-    })
+    local runtime = FieldRuntime.new(validEntry(versionId), runtimeOptions(versionId))
     local host = assert(runtime.partySelection, "boot constructs the script party host")
     Assert.equal(runtime.fashionCase:quantity(0), 0, "boot keeps the live Fashion Case state")
     Assert.isNil(host:status(), "a fresh boot owns no open selection")
@@ -112,11 +132,7 @@ function T.tests.manifest_failure_fails_boot_loudly(context)
       end,
     }
     local ok, err = pcall(function()
-      FieldRuntime.new(validEntry(versionId), {
-        derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
-        presentation = false,
-        cacheFs = GeneratedCacheFixture.reader(versionId),
-      })
+      FieldRuntime.new(validEntry(versionId), runtimeOptions(versionId))
     end)
     package.loaded["libs.assets.src.PartyCache"] = saved
     Assert.isFalse(ok, "a missing party manifest fails the boot loudly")

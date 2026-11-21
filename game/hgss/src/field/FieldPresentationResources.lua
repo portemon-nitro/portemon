@@ -62,6 +62,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field cacheFs CacheFs
 ---@field imageAssets table<string, unknown>? the runtime-owned shared image owner borrowed by menu chrome
 ---@field assetPreparation table<string, unknown>? the runtime-owned preparation worker borrowed by scene owners
+---@field decoded table<string, unknown>? the selected decoded CPU owner borrowed by scene owners
 ---@field derivedAssets table<string, function>? semantic derived-asset host in presented composition
 ---@field bindPartyIconPreparation fun(runtime: FieldPresentationResourcesRuntime, prepare: PartyIconPrepare, cancel: PartyIconCancel): integer? runtime party preparation binding in presented composition
 ---@field unbindPartyIconPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer)? runtime preparation unbinding in presented composition
@@ -702,6 +703,7 @@ function FieldPresentationResources.new(runtime)
       manifest = bagManifest,
       imageAssets = sharedImages,
       assetPreparation = assert(runtime.assetPreparation, "the bag hero borrows the runtime preparation worker"),
+      decoded = assert(runtime.decoded, "the bag hero borrows the selected decoded CPU owner"),
     })
     self.bagRenderer = BagRenderer.new({
       cacheFs = runtime.cacheFs,

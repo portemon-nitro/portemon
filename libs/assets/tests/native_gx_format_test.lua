@@ -176,6 +176,84 @@ local function assertRejected(Format, bytes, label)
   Assert.isTrue(not ok or err ~= nil, "a rejected bank reports why: " .. label)
 end
 
+-- Runtime model replay borrows the draw command spans out of the caller's own
+-- bank bytes: two draws that share one stored stream also share one parsed
+-- span, distinct streams stay distinct, and every span addresses the source
+-- buffer rather than a copied command string. The authoring reader keeps its
+-- string payload for the tooling consumers that still expect it.
+function T.view_borrows_command_spans_from_the_source_bytes()
+  local Format = nativeFormat()
+  Assert.equal(type(Format.view), "function", "runtime model replay must borrow command spans instead of copying them")
+  local shared = triangleCommands({ { 0, 0, 0 }, { 2, 0, 0 }, { 0, 0, 6 } })
+  local other = triangleCommands({ { 0, 3, 0 }, { 2, 3, 0 }, { 0, 3, 6 } })
+  local encoded = rawBytes(Format.encode({
+    draws = {
+      { commands = shared, nodeIndex = 0, materialIndex = 0, shapeIndex = 0, transformMode = "static" },
+      { commands = shared, nodeIndex = 0, materialIndex = 1, shapeIndex = 0, transformMode = "static" },
+    },
+  }))
+  local source = assert(love.data.newByteData(encoded), "published bank bytes must be admissible as Data")
+  local bank = assert(Format.view(source))
+  Assert.equal(bank.drawCount, 2, "a borrowed bank keeps both draws")
+  local first, second = bank.draws[1], bank.draws[2]
+  Assert.notNil(first, "draw records stay addressable by their zero-based draw index")
+  Assert.notNil(second, "draw records stay addressable by their zero-based draw index")
+  Assert.isTrue(first.commands == second.commands, "two draws of one stored stream share one parsed span")
+  Assert.equal(first.materialIndex, 0, "borrowing a stream never merges per-draw state")
+  Assert.equal(second.materialIndex, 1, "borrowing a stream never merges per-draw state")
+
+  local BinaryView = require("libs.codec.src.BinaryView")
+  local ffi = require("ffi")
+  local whole = BinaryView.fromData(source, "bank")
+  local function assertBorrowed(span, expected, label)
+    Assert.equal(type(span.pointer), "function", label .. " is a bounded view, not a copied command string")
+    Assert.equal(span:toString(), expected, label .. " carries the same bytes")
+    local offset = ffi.cast("const char *", span:pointer()) - ffi.cast("const char *", whole:pointer())
+    Assert.isTrue(offset >= 0, label .. " addresses the source buffer instead of a copy")
+    Assert.isTrue(offset + span:length() <= source:getSize(), label .. " stays inside the source buffer")
+  end
+  assertBorrowed(first.commands, shared, "the shared command span")
+
+  local distinctSource = assert(love.data.newByteData(rawBytes(Format.encode({
+    draws = {
+      { commands = shared, nodeIndex = 0, materialIndex = 0, shapeIndex = 0 },
+      { commands = other, nodeIndex = 0, materialIndex = 1, shapeIndex = 0 },
+    },
+  }))))
+  local distinct = assert(Format.view(distinctSource))
+  Assert.isFalse(
+    distinct.draws[1].commands == distinct.draws[2].commands,
+    "distinct stored streams keep distinct spans"
+  )
+
+  -- Pose and binding metadata are unchanged by borrowing, and the authoring
+  -- reader still hands out copied command strings for its own consumers.
+  local matrix = { 8, 0, 0, 0, 0, 8, 0, 0, 0, 0, 8, 0, 1, 2, 3, 1 }
+  local posed = assert(Format.view(assert(love.data.newByteData(rawBytes(Format.encode({
+    draws = {
+      {
+        commands = shared,
+        nodeIndex = 1,
+        materialIndex = 2,
+        shapeIndex = 1,
+        transformMode = "billboard",
+        segmentIndex = 2,
+        positionScale = 0.0625,
+        matrix = matrix,
+      },
+    },
+  }))))))
+  local posedDraw = assert(posed.draws[1])
+  Assert.equal(posedDraw.transformMode, "billboard", "the borrowed draw keeps its transform mode")
+  Assert.equal(posedDraw.segmentIndex, 2, "the borrowed draw keeps its pose segment")
+  Assert.near(posedDraw.positionScale, 0.0625, 1e-9, "the borrowed draw keeps its position scale")
+  Assert.deepEqual(posedDraw.matrix, matrix, "the borrowed draw keeps its baked matrix")
+
+  local readBank = assert(Format.read(encoded))
+  Assert.equal(type(readBank.draws[1].commands), "string", "the authoring reader keeps its string payload")
+  Assert.equal(readBank.draws[1].commands, shared, "the authoring reader reads the same bytes")
+end
+
 function T.malformed_banks_are_rejected()
   local Format = nativeFormat()
   local valid = rawBytes(Format.encode({

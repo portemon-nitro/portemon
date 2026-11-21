@@ -92,7 +92,11 @@ function T.new_bark_crosses_into_route_29_and_rejects_route_27_water(romFs, vers
   -- coverage is the public path for the traversable cached region.
   local cacheFs = GeneratedCacheFixture.reader(versionId)
   local world = assert(cacheFs:loadLua(MapAssetCache.worldPath()))
-  local loader = FieldMapLoader.new(cacheFs, world)
+  local loader = FieldMapLoader.new(cacheFs, world, {
+    acquireSource = function(reference)
+      return { value = reference.data, release = function() end }
+    end,
+  })
   local logical = loader:load(60)
   Assert.isNil(logical.collision)
   Assert.isNil(logical.terrain)

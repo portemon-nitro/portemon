@@ -60,6 +60,13 @@
 -- control state itself. Output is interleaved stereo int16; mixing sums and
 -- saturates at +-32767/+-32768; per-voice host gains round with
 -- floor(x+0.5).
+-- A sounding sample voice owns exactly one opaque sample acquisition
+-- (spec.sampleLease): the caller keeps its lease until a non-nil handle comes
+-- back, and the installed voice holds it until physical removal -- natural
+-- death, a steal, stopVoice or dispose. Removal detaches the voice and clears
+-- its cached pointers before returning the lease, so no reachable record keeps
+-- reading bytes a returned acquisition no longer roots. The release tail of a
+-- note-off keeps that ownership: noteOff never returns a lease.
 
 local bit = require("bit")
 local ffi = require("ffi")
@@ -67,15 +74,21 @@ local NnsSoundMath = require("libs.nds.src.nitro.sound.NnsSoundMath")
 
 assert(ffi.abi("le"), "mixed PCM output requires a little-endian host")
 
+---@class VoiceMixerSampleLease
+---@field value { metadata: table<string, unknown>, pcm: Pcm16 }? cleared on release
+---@field release fun(self: VoiceMixerSampleLease): boolean
+
 ---@class VoiceMixer
 ---@field private _outputRate integer
 ---@field private _channels table<integer, table<string, unknown>>
 ---@field private _channelGeneration table<integer, integer>
+---@field private _disposed boolean
 ---@field new fun(opts: { sampleRate: integer, observer: table<string, unknown>? }): VoiceMixer
 ---@field noteOn fun(self: VoiceMixer, spec: table<string, unknown>): { channel: integer, generation: integer } | nil
 ---@field waveOn fun(self: VoiceMixer, spec: table<string, unknown>): { channel: integer, generation: integer } | nil
 ---@field noteOff fun(self: VoiceMixer, handle: { channel: integer, generation: integer }, releaseOverride: integer?)
 ---@field stopVoice fun(self: VoiceMixer, handle: { channel: integer, generation: integer })
+---@field dispose fun(self: VoiceMixer)
 ---@field updateVoice fun(self: VoiceMixer, handle: { channel: integer, generation: integer }, partial: table<string, unknown>)
 ---@field advanceTrackTick fun(self: VoiceMixer, handle: { channel: integer, generation: integer })
 ---@field retargetTiedVoice fun(self: VoiceMixer, handle: { channel: integer, generation: integer }, spec: table<string, unknown>)
@@ -336,6 +349,7 @@ local function newVoice(spec)
     -- borrows it through the pre-cast pointer and never decodes payload
     -- bytes. The base timer and the calculated channel timer drive the
     -- phase; no source sample rate is involved.
+    voice.sampleLease = assert(spec.sampleLease, "sample voice requires the acquisition it sounds")
     voice.sampleRef = spec.sampleRef or spec.pcm
     voice.samplePtr = spec.pcm.ptr
     voice.sampleFrames = spec.sampleFrames or spec.pcm.frames
@@ -585,6 +599,29 @@ local function sampleAt(voice)
   return sample
 end
 
+-- The one physical-removal path for every voice death -- natural end,
+-- steal, stopVoice and dispose. The voice leaves the channel table first, so
+-- nothing reachable keeps reading the packed PCM, and its acquisition is
+-- returned exactly once afterwards. A raising release propagates to the
+-- caller, which has already lost the record: no invalid voice stays reachable.
+---@param channel integer
+local function removeVoice(self, channel)
+  local voice = self._channels[channel]
+  if voice == nil then
+    return
+  end
+  self._channels[channel] = nil
+  voice.dead = true
+  local lease = voice.sampleLease
+  voice.sampleLease = nil
+  voice.samplePtr = nil
+  voice.sampleRef = nil
+  voice.sampleFrames = 0
+  if lease ~= nil then
+    lease:release()
+  end
+end
+
 -- ---------------------------------------------------------------------------
 -- Mixer
 
@@ -599,6 +636,7 @@ function VoiceMixer.new(opts)
     -- generation while an old handle may still exist (doubles hold the
     -- count exactly; no wrap is needed).
     _channelGeneration = {},
+    _disposed = false,
   }, VoiceMixer)
 end
 
@@ -608,6 +646,7 @@ end
 ---@param spec table<string, unknown>
 ---@return { channel: integer, generation: integer } | nil
 function VoiceMixer:noteOn(spec)
+  assert(not self._disposed, "a disposed mixer accepts no new voices")
   assert(spec and spec.generator and spec.envelope, "voice spec requires a generator and envelope")
   assert(
     spec.key ~= nil and spec.velocity ~= nil and spec.channelPriority ~= nil and spec.channelMask ~= nil,
@@ -643,6 +682,17 @@ function VoiceMixer:noteOn(spec)
       "sample voice spec requires a packed PCM16 sample"
     )
     assert(type(spec.loopEnabled) == "boolean", "sample voice spec requires the wave's loop flag")
+    local lease = spec.sampleLease
+    assert(
+      type(lease) == "table" and type(lease.release) == "function",
+      "sample voice spec requires the sample acquisition it sounds"
+    )
+    local leased = lease.value
+    assert(type(leased) == "table" and leased.pcm == spec.pcm, "the sample acquisition must back the spec's PCM")
+    assert(
+      spec.metadata == nil or leased.metadata == spec.metadata,
+      "the sample acquisition must carry the spec's metadata"
+    )
   end
   local voice = newVoice(spec)
   voice._outputRate = self._outputRate
@@ -656,29 +706,43 @@ function VoiceMixer:noteOn(spec)
   -- envelope, LFO, or sweep time. The scheduler owns the first elapsed step.
   applyPending(voice)
   syncRegisters(voice)
+  -- A replaced voice is detached and its acquisition returned before the new
+  -- voice is installed: if that return raises, the caller still owns the new
+  -- acquisition and no invalid victim stays reachable.
+  removeVoice(self, channel)
   self._channels[channel] = voice
   return { channel = channel, generation = voice.generation }
 end
 
 -- Starts a raw WaveOut-style sample on a fixed channel through the same
--- generation/liveness table used by sequence voices.
----@param spec { channel: integer, pcm: Pcm16, metadata: table<string, unknown>, volume: integer, pan: integer, speed: integer, reverse: boolean? }
+-- generation/liveness table used by sequence voices. The acquisition is read
+-- for its metadata/PCM and transferred only when the voice is installed; a
+-- rejected channel leaves it with the caller.
+---@param spec { channel: integer, sampleLease: VoiceMixerSampleLease, volume: integer, pan: integer, speed: integer, reverse: boolean? }
 ---@return { channel: integer, generation: integer } | nil
 function VoiceMixer:waveOn(spec)
   assert(spec and (spec.channel == 14 or spec.channel == 15), "WaveOut channel must be 14 or 15")
-  assert(spec.pcm ~= nil and type(spec.metadata) == "table", "WaveOut requires sample data")
+  local lease = spec.sampleLease
+  assert(
+    type(lease) == "table" and type(lease.release) == "function" and type(lease.value) == "table",
+    "WaveOut requires the sample acquisition it sounds"
+  )
+  local sample = assert(lease.value, "WaveOut requires the sample acquisition's decoded value")
+  assert(sample.pcm ~= nil and type(sample.metadata) == "table", "WaveOut requires sample data")
   assert(spec.volume >= 0 and spec.volume <= 127 and spec.volume % 1 == 0, "WaveOut volume must be 0..127")
   assert(spec.pan >= 0 and spec.pan <= 127 and spec.pan % 1 == 0, "WaveOut pan must be 0..127")
   assert(spec.speed > 0 and spec.speed <= 0xFFFF and spec.speed % 1 == 0, "WaveOut speed must be a timer")
-  local loop = spec.metadata.loop
+  local loop = sample.metadata.loop
   assert(loop and loop.startFrame ~= nil and loop.endFrame ~= nil, "WaveOut sample requires loop bounds")
   return self:noteOn({
     fixedChannel = spec.channel,
     fixedTimer = spec.speed,
     generator = { kind = "sample", sample = "waveout" },
-    pcm = spec.pcm,
-    sampleRef = spec.pcm,
-    sampleFrames = spec.pcm.frames,
+    sampleLease = lease,
+    metadata = sample.metadata,
+    pcm = sample.pcm,
+    sampleRef = sample.pcm,
+    sampleFrames = sample.pcm.frames,
     reverse = spec.reverse == true,
     baseTimer = spec.speed,
     loop = loop,
@@ -736,7 +800,7 @@ end
 function VoiceMixer:stopVoice(handle)
   local voice = self._channels[handle.channel]
   if voice ~= nil and voice.generation == handle.generation then
-    self._channels[handle.channel] = nil
+    removeVoice(self, handle.channel)
   end
 end
 
@@ -879,7 +943,7 @@ function VoiceMixer:controlStep(ordinal)
         controlStep(voice, true)
       end
       if voice.dead then
-        self._channels[channel] = nil
+        removeVoice(self, channel)
       end
     end
   end
@@ -998,6 +1062,43 @@ function VoiceMixer:render(frames)
   local out = {}
   self:renderInto(out, frames)
   return out
+end
+
+-- Releases every sounding physical voice at shutdown: each record is detached
+-- from its channel first, then its acquisition is returned exactly once, so a
+-- raising release cannot leave a reachable voice pointing at bytes its owner
+-- already took back. Idempotent, and every acquisition is attempted even when
+-- an earlier return fails; the first failure propagates afterwards.
+function VoiceMixer:dispose()
+  if self._disposed then
+    return
+  end
+  self._disposed = true
+  local leases = {}
+  for channel = 0, CHANNEL_COUNT - 1 do
+    local voice = self._channels[channel]
+    if voice ~= nil then
+      self._channels[channel] = nil
+      voice.dead = true
+      if voice.sampleLease ~= nil then
+        leases[#leases + 1] = voice.sampleLease
+      end
+      voice.sampleLease = nil
+      voice.samplePtr = nil
+      voice.sampleRef = nil
+      voice.sampleFrames = 0
+    end
+  end
+  local failure
+  for _, lease in ipairs(leases) do
+    local ok, err = pcall(lease.release, lease)
+    if not ok and failure == nil then
+      failure = err
+    end
+  end
+  if failure ~= nil then
+    error(failure, 0)
+  end
 end
 
 return VoiceMixer

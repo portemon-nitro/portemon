@@ -96,12 +96,12 @@ end
 ---@field width integer
 ---@field height integer
 ---@field color0Transparent boolean
----@field texels string byte-exact encoded texels
----@field indexData string|nil the 4x4-compressed index region
+---@field texels string|BinaryView byte-exact encoded texels
+---@field indexData string|BinaryView|nil the 4x4-compressed index region
 
 ---@class NativeTextureBank.Palette
 ---@field name string
----@field data string byte-exact palette payload
+---@field data string|BinaryView byte-exact palette payload
 
 -- Deterministic, bounded encoding: fixed header, both record tables, then the
 -- names and payloads. Record order is the caller's input order, so an
@@ -244,7 +244,10 @@ function NativeTextureBank.encode(record)
 end
 
 -- The reader hands back read-only descriptions pinned to the source bytes;
--- an unknown name resolves nothing.
+-- an unknown name resolves nothing. read() copies each payload into a string
+-- for authoring consumers; view() keeps every payload as a bounded BinaryView
+-- into the caller's own bytes, so runtime texture acquisition costs no second
+-- native buffer.
 ---@class NativeTextureBank.Bank
 ---@field textureCount integer
 ---@field paletteCount integer
@@ -279,14 +282,14 @@ local function readName(reader, offset, length, label)
   return name
 end
 
--- Read one G4TX bank. Version, counts, table offsets and every name/payload
--- span are validated before any record is returned, so a malformed bank is
--- rejected whole instead of partially decoded.
----@param bytes string|love.Data
+-- One G4TX parse over any binary source. `span(offset, length)` decides whether
+-- each payload is copied into a string (authoring read) or borrowed as a bounded
+-- view (runtime view); format validation is identical either way.
+---@param reader BinaryReader
+---@param span fun(offset: integer, length: integer): string|BinaryView
 ---@return NativeTextureBank.Bank|nil bank
 ---@return Errors.Error|nil error
-function NativeTextureBank.read(bytes)
-  local reader = BinaryReader.new(bytes, "g4tx")
+local function parse(reader, span)
   local length = reader:length()
   if length < HEADER_SIZE then
     fail("NATIVE_TEX_BAD_LENGTH", "native texture bank is shorter than its header", { size = length })
@@ -358,8 +361,8 @@ function NativeTextureBank.read(bytes)
       width = width,
       height = height,
       color0Transparent = bit.band(flags, FLAG_COLOR0_TRANSPARENT) ~= 0,
-      texels = reader:bytes(texelsOffset, texelsLength),
-      indexData = indexLength > 0 and reader:bytes(indexOffset, indexLength) or nil,
+      texels = span(texelsOffset, texelsLength),
+      indexData = indexLength > 0 and span(indexOffset, indexLength) or nil,
     }
     byTextureName[name] = texture
   end
@@ -378,7 +381,7 @@ function NativeTextureBank.read(bytes)
     if byPaletteName[name] ~= nil then
       fail("NATIVE_TEX_DUPLICATE_NAME", "two palettes share one name: " .. name, { name = name })
     end
-    local palette = { name = name, data = reader:bytes(dataOffset, dataLength) }
+    local palette = { name = name, data = span(dataOffset, dataLength) }
     byPaletteName[name] = palette
   end
 
@@ -389,6 +392,31 @@ function NativeTextureBank.read(bytes)
     _palettes = byPaletteName,
   }, Bank),
     nil
+end
+
+-- Read one G4TX bank, copying each payload into a string for authoring and
+-- tooling consumers.
+---@param bytes string|love.Data|BinaryView
+---@return NativeTextureBank.Bank|nil bank
+---@return Errors.Error|nil error
+function NativeTextureBank.read(bytes)
+  local reader = BinaryReader.new(bytes, "g4tx")
+  return parse(reader, function(offset, length)
+    return reader:bytes(offset, length)
+  end)
+end
+
+-- Read one G4TX bank as bounded views into the caller's own bytes: runtime
+-- texture acquisition borrows the stored texel, index and palette spans instead
+-- of copying them. The returned bank roots its source for as long as it lives.
+---@param data string|love.Data|BinaryView
+---@return NativeTextureBank.Bank|nil bank
+---@return Errors.Error|nil error
+function NativeTextureBank.view(data)
+  local reader = BinaryReader.new(data, "g4tx")
+  return parse(reader, function(offset, length)
+    return reader:view(offset, length, "g4tx payload")
+  end)
 end
 
 return NativeTextureBank

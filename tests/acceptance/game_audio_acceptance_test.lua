@@ -55,6 +55,9 @@ function T.tests.core_and_field_audio_share_the_production_stack()
       cacheFs = game.runtime.cacheFs,
       outputRate = 32768,
       outputHost = { audio = coreOutput.audio, sound = coreOutput.sound },
+      -- The selected field runtime owns the resident bytes and the source
+      -- boundary; the independent core composition borrows the same one.
+      acquireSource = game.runtime.acquireSource,
     })
     Assert.notNil(core.sound, "core composition must provide GameSound")
     Assert.notNil(core.renderer, "core composition must provide the shared audio renderer")
@@ -72,8 +75,8 @@ function T.tests.core_and_field_audio_share_the_production_stack()
     Assert.notNil(game.runtime.audio, "field audio must retain its field-policy service")
     Assert.equal(game:renderAttempts(), 0, "audio acceptance must stop before GPU rendering")
   end, debug.traceback)
-  if core and core.sink then
-    core.sink:release()
+  if core ~= nil then
+    pcall(core.dispose, core)
   end
   game:close()
   if not ok then

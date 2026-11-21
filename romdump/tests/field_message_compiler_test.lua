@@ -11,6 +11,7 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local CacheFs = require("libs.storage.src.CacheFs")
+local ResidentCache = require("libs.storage.src.ResidentCache")
 local FakeCache = require("tests.support.FakeCache")
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
@@ -271,6 +272,40 @@ function T.source_references_form_one_sorted_bank_set()
   Assert.deepEqual(repeated, required)
 end
 
+-- The provider consumes the installed resident view and borrows each bank's
+-- bytes through the selected acquirer: install the published banks the test just
+-- wrote and serve them from that view.
+---@param cache CacheFs
+---@param bankIds integer[]
+---@return FieldMessageProvider
+local function residentProvider(cache, bankIds)
+  local sourceId = "base:message-provider-test"
+  local store = ResidentCache.new("heartgold", sourceId)
+  local entries = {}
+  for _, bankId in ipairs(bankIds) do
+    local path = FieldMessageCache.bankPath(bankId)
+    local bytes = assert(cache:read(path), "published bank " .. tostring(bankId))
+    entries[#entries + 1] = {
+      path = path,
+      data = assert(love.data.newByteData(bytes)),
+      size = #bytes,
+      sourceId = sourceId,
+      contentId = "heartgold\0" .. path,
+    }
+  end
+  store:commit(store:prepare(entries))
+  local reader = CacheFs.fromStore(store)
+  return assert(FieldMessageProvider.new(reader, {
+    acquireSource = function(reference)
+      local lease = { value = assert(reference).data }
+      function lease:release()
+        self.value = nil
+      end
+      return lease
+    end,
+  }))
+end
+
 function T.route_29_bank_is_published_and_served_by_the_provider()
   local route29 = MapCatalog.require("MAP_ROUTE_29")
   Assert.equal(route29.messageMemberId, 373)
@@ -287,7 +322,7 @@ function T.route_29_bank_is_published_and_served_by_the_provider()
 
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   publishBundle(cache, bundle)
-  local provider = assert(FieldMessageProvider.new(cache))
+  local provider = residentProvider(cache, bundle.index.bankIds)
   local bank, err = provider:acquireBank(route29.messageMemberId)
   Assert.notNil(bank, err and err.message or "Route 29 message bank must be generated")
   Assert.equal(assert(bank).schema, FieldMessageCache.SCHEMA)
@@ -309,13 +344,19 @@ function T.writer_publishes_each_bank_payload_and_the_family_index()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMessageCompiler.compile(romFs, sha1, hashLua))
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  Assert.equal(publishBundle(cache, bundle), FieldMessageCacheWriter.summaryMarker(bundle.index, (function()
-    local markers = {}
-    for _, bankId in ipairs(bundle.index.bankIds) do
-      markers[bankId] = FieldMessageCache.marker("rom-sha", "dependency-sha-" .. tostring(bankId))
-    end
-    return markers
-  end)()))
+  Assert.equal(
+    publishBundle(cache, bundle),
+    FieldMessageCacheWriter.summaryMarker(
+      bundle.index,
+      (function()
+        local markers = {}
+        for _, bankId in ipairs(bundle.index.bankIds) do
+          markers[bankId] = FieldMessageCache.marker("rom-sha", "dependency-sha-" .. tostring(bankId))
+        end
+        return markers
+      end)()
+    )
+  )
   Assert.isTrue(FieldMessageCache.isReady(cache))
   for _, bankId in ipairs(bundle.index.bankIds) do
     local bytes = assert(cache:read(FieldMessageCache.bankPath(bankId)))
@@ -375,7 +416,7 @@ function T.compact_publication_serves_dialogue_and_preserves_the_previous_bank()
   Assert.equal(assert(cache:read(bankPath)), payload:getString(), "publication writes the encoded bytes unchanged")
   Assert.isTrue(FieldMessageCache.isBankReady(cache, 542), "the published bank reads ready")
 
-  local provider = assert(FieldMessageProvider.new(cache))
+  local provider = residentProvider(cache, { 542 })
   assert(provider:acquireBank(542))
   local glyphMessage = assert(provider:get(542, 0))
   local firstText = glyphMessage.text

@@ -111,7 +111,7 @@ local function stubQueue()
   function queue:request(kind, path, _)
     assert(kind == "image-derivative", "the stub queue serves image derivatives only")
     nextJob = nextJob + 1
-    jobs[nextJob] = { state = "pending", polls = 0, path = path }
+    jobs[nextJob] = { state = "pending", polls = 0, path = path, kind = kind }
     return nextJob
   end
   function queue:poll(job)
@@ -139,7 +139,9 @@ local function stubQueue()
     local record = assert(jobs[job], "unknown preparation token")
     assert(record.state == "ready", "preparation result is not ready")
     jobs[job] = nil
-    return record.payload
+    -- The stub worker publishes an already-classified payload, so its take
+    -- hands back the kernel lease shape the session owner returns through.
+    return { value = { kind = record.kind, payload = record.payload } }
   end
   function queue:cancel(job)
     assert(jobs[job], "unknown preparation token")
@@ -147,6 +149,18 @@ local function stubQueue()
   end
   function queue:release() end
   return queue
+end
+
+-- The selected decoded owner paired with the stub worker: the stub serves its
+-- already-classified payload directly, so the owner only accepts the lease the
+-- pool returns once the image is uploaded.
+local function stubDecoded()
+  return {
+    returnLease = function()
+      return true
+    end,
+    trim = function() end,
+  }
 end
 
 local function readyVersions()
@@ -176,7 +190,7 @@ function T.retired_scene_layer_reacquires_before_its_next_launch()
   for _, versionId in ipairs(readyVersions()) do
     local cacheFs = GeneratedCacheFixture.reader(versionId)
     local graphics = stubGraphics()
-    local pool = ImageAssetPool.new(cacheFs, { graphics = graphics, queue = stubQueue() })
+    local pool = ImageAssetPool.new(cacheFs, { graphics = graphics, queue = stubQueue(), decoded = stubDecoded() })
     local envelope = FieldBattlePresentation.new({
       cacheFs = cacheFs,
       windows = recordingWindows(),
@@ -212,19 +226,22 @@ function T.retired_scene_layer_reacquires_before_its_next_launch()
       for _ = 1, 60 do
         envelope:advanceWarmup(SCENE_B, 1)
       end
-      Assert.isNil(
-        envelope._warmPinned["scene-intro:" .. SCENE_A],
-        "warmup retires the superseded scene group"
-      )
+      Assert.isNil(envelope._warmPinned["scene-intro:" .. SCENE_A], "warmup retires the superseded scene group")
       Assert.notNil(envelope._warmPinned["scene-intro:" .. SCENE_B], "warmup completes the successor group")
       -- The next launch at the retired scene re-acquires instead of
       -- drawing released leases through the stale memo.
       Assert.isTrue(services.prepare(demandFor("second", SCENE_A)), "the retired scene prepares again")
       local secondLayer = assert(services.sceneLayer(), "the second launch stages its layer")
-      local introOk, introErr = pcall(secondLayer.introLayer.drawable.draw, secondLayer.introLayer.drawable, graphics, 0, 0)
+      local introOk, introErr =
+        pcall(secondLayer.introLayer.drawable.draw, secondLayer.introLayer.drawable, graphics, 0, 0)
       Assert.isTrue(introOk, "the re-acquired intro draws: " .. tostring(introErr))
-      local playerOk, playerErr =
-        pcall(secondLayer.terrainSprites.player.drawable.draw, secondLayer.terrainSprites.player.drawable, graphics, 0, 0)
+      local playerOk, playerErr = pcall(
+        secondLayer.terrainSprites.player.drawable.draw,
+        secondLayer.terrainSprites.player.drawable,
+        graphics,
+        0,
+        0
+      )
       Assert.isTrue(playerOk, "the re-acquired player terrain draws: " .. tostring(playerErr))
       local foeOk, foeErr =
         pcall(secondLayer.terrainSprites.foe.drawable.draw, secondLayer.terrainSprites.foe.drawable, graphics, 0, 0)

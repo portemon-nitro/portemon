@@ -55,6 +55,49 @@ return {
       Assert.isFalse(c:getLocal(0, 0).blocked)
     end,
 
+    ["a compact view backs the same collision decisions and defers cell records"] = function()
+      local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
+      Assert.equal(
+        type(CollisionGridAsset.open),
+        "function",
+        "runtime collision must read the compact cell bytes instead of a normalized expansion"
+      )
+      local reference = CollisionFixture.grid32({ { x = 1, z = 2 }, { x = 7, z = 9 } })
+      local bytes = CollisionFixture.asset(32, 32, { { x = 1, z = 2 }, { x = 7, z = 9 } })
+      local source = assert(love.data.newByteData(bytes), "the compact collision bytes must be admissible as Data")
+      local releaseCount = 0
+      local sourceLease = { value = source }
+      function sourceLease:release()
+        if self.value == nil then
+          return
+        end
+        self.value = nil
+        releaseCount = releaseCount + 1
+      end
+      local view = assert(CollisionGridAsset.open(source, { path = "map/collision.g4cl" }))
+      local c = CollisionGrid.new(view, { worldOriginX = 100, worldOriginZ = 200, sourceLease = sourceLease })
+      Assert.equal(c.width, 32, "a view-backed wrapper keeps the grid width")
+      Assert.equal(c.height, 32, "a view-backed wrapper keeps the grid height")
+      for z = 0, 31 do
+        for x = 0, 31 do
+          local expected = reference.cells[z * 32 + x + 1]
+          Assert.equal(c:isBlockedLocal(x, z), expected.blocked)
+          Assert.equal(c:isBlockedGlobal(x + 100, z + 200), expected.blocked)
+        end
+      end
+      local record = c:getLocal(1, 2)
+      record.blocked = false
+      record.behavior = 99
+      Assert.isTrue(c:getLocal(1, 2).blocked, "a returned cell record is defensive, not the shared backing")
+      Assert.equal(c:getLocal(1, 2).behavior, reference.cells[2 * 32 + 2].behavior)
+      c:dispose()
+      c:dispose()
+      Assert.equal(releaseCount, 1, "the wrapper returns its borrowed source interest exactly once")
+      Assert.throws(function()
+        return c:isBlockedLocal(0, 0)
+      end, "a disposed wrapper rejects further reads")
+    end,
+
     ["contains rejects out-of-range and fractional coordinates"] = function()
       local c = CollisionGrid.new(CollisionFixture.grid32(), {})
       Assert.isTrue(c:containsLocal(0, 0))

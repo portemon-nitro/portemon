@@ -20,6 +20,12 @@ local StartupTitleState = require("app.src.launcher.StartupTitleState")
 local StartupAudioSession = require("app.src.audio.StartupAudioSession")
 local CacheFs = require("libs.storage.src.CacheFs")
 local SaveFs = require("libs.storage.src.SaveFs")
+local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+
+-- Idle retention for the selected epoch's decoded CPU owner: charged, shared
+-- decoded results, never the resident base bytes themselves.
+local ASSET_RUNTIME_IDLE_BYTES = 64 * 1024 * 1024
 
 ---@class App
 ---@field opts AppOptions
@@ -40,6 +46,7 @@ local SaveFs = require("libs.storage.src.SaveFs")
 ---@field _startupWarmup { epoch: integer, versionId: string, preparation: table<string, function> }?|nil
 ---@field startupWarmupError string? background first-play diagnostic, never a menu gate
 ---@field startupAudioSession StartupAudioSession?|nil optional selected-version title/menu audio owner
+---@field _assetRuntime AppAssetRuntime?|nil one selected-epoch CPU runtime shared by every composition
 ---@field startupAudioError string?|nil non-gating audio diagnostic
 ---@field audioPreferences table<string, function>?|nil process-owned app-wide volume port, retained across saves and versions
 ---@field _swallowedPointers table<string, boolean> pointer releases owned by startup during a transfer
@@ -51,6 +58,12 @@ local App = {}
 ---@class AppOptions
 ---@field test boolean?
 ---@field dev boolean?
+
+---@class AppAssetRuntime
+---@field epoch integer selected controller epoch the runtime was installed for
+---@field cacheFs table<string, unknown> selected epoch's installed generated reader
+---@field decoded ResidentAssetCache shared decoded CPU owner
+---@field preparationQueue AssetPreparationQueue shared preparation queue
 
 -- Version registration only lists candidates for the boot gate: every
 -- selection waits for source readiness before the menu, first play, or
@@ -106,9 +119,9 @@ end
 
 -- Retires the selected source interest without joining controller work.
 -- Consumers stop before their reader is revoked: the installed view is
--- retired only after the presented state, the startup audio and the
--- warmup have released what they borrowed from it. The process service is
--- reused; stale results cannot publish afterwards.
+-- retired only after the presented state, the startup audio, the warmup and
+-- the shared decoded owner have released what they borrowed from it. The
+-- process service is reused; stale results cannot publish afterwards.
 function App._retireSelection()
   App.setState(nil)
   App._swallowedPointers = {}
@@ -122,11 +135,75 @@ function App._retireSelection()
   if warmup ~= nil then
     warmup.preparation:dispose()
   end
+  App._releaseAssetRuntime()
   local provisioner = App.provisioner
   App.provisioner = nil
   if provisioner then
     provisioner:dispose()
   end
+end
+
+-- The selected epoch's one decoded CPU runtime. It exists only while the
+-- controller has installed a reader for the live epoch: the shared queue is
+-- released (draining and joining any started worker) before the decoded kernel
+-- clears, because running work still roots decoded backing. Every consumer
+-- composes over this record; none owns or releases it.
+function App._releaseAssetRuntime()
+  local record = App._assetRuntime
+  App._assetRuntime = nil
+  if record == nil then
+    return
+  end
+  local failure
+  local ok, err = pcall(record.preparationQueue.release, record.preparationQueue)
+  if not ok then
+    failure = err
+  end
+  local cleared, clearErr = pcall(record.decoded.clear, record.decoded)
+  if not cleared and failure == nil then
+    failure = clearErr
+  end
+  if failure ~= nil then
+    error(failure, 0)
+  end
+end
+
+-- One tenancy per live selected epoch: the same record answers every
+-- composition until the selection retires. Construction publishes only after
+-- both owners exist, so a failed construction leaves no half-installed runtime.
+---@param epoch integer
+---@return AppAssetRuntime?
+function App._ensureAssetRuntime(epoch)
+  if epoch == nil or App.epoch ~= epoch then
+    return nil
+  end
+  local existing = App._assetRuntime
+  if existing ~= nil and existing.epoch == epoch then
+    return existing
+  end
+  local cacheFs = App._generatedView()
+  if cacheFs == nil then
+    return nil
+  end
+  local decoded = ResidentAssetCache.new({
+    idleByteLimit = ASSET_RUNTIME_IDLE_BYTES,
+    release = function(value)
+      value:release()
+    end,
+  })
+  local ok, queueOrError = pcall(AssetPreparationQueue.new, cacheFs, { decoded = decoded })
+  if not ok then
+    pcall(decoded.clear, decoded)
+    error(queueOrError, 0)
+  end
+  local record = {
+    epoch = epoch,
+    cacheFs = cacheFs,
+    decoded = decoded,
+    preparationQueue = queueOrError,
+  }
+  App._assetRuntime = record
+  return record
 end
 
 function App._releaseStartupAudio()
@@ -208,6 +285,7 @@ function App._ensureStartupAudio(versionId, epoch, titleRecord)
     return StartupAudioSession.new({
       versionId = versionId,
       cacheFs = assert(App._generatedView(), "startup audio needs the installed generated view"),
+      assetRuntime = assert(App._ensureAssetRuntime(epoch), "startup audio needs the selected CPU runtime"),
       titleRecord = titleRecord,
     })
   end)
@@ -321,6 +399,7 @@ local function stageMenu(versionId)
   local ok, menuOrError = pcall(MainMenuComposition.new, {
     versionId = versionId,
     cacheFs = cacheFs,
+    assetRuntime = assert(App._ensureAssetRuntime(App.epoch), "the Main Menu needs the selected CPU runtime"),
     width = App.drawableWidth,
     height = App.drawableHeight,
     audio = audio,
@@ -334,6 +413,7 @@ local function stageMenu(versionId)
         local ok, stateOrError = pcall(SaveEditorState.new, {
           versionId = versionId,
           cacheFs = assert(App._generatedView(), "save editing needs the installed generated view"),
+          assetRuntime = assert(App._ensureAssetRuntime(App.epoch), "save editing needs the selected CPU runtime"),
           saveId = assert(result.saveId),
           startupPairIndex = selectedPairIndex(),
           width = App.drawableWidth,
@@ -495,6 +575,7 @@ function App._launchGameWithProvisioner(versionId, entry)
   local ok, gameOrError = pcall(HgssGame.new, {
     versionId = versionId,
     cacheFs = assert(App._generatedView(), "the retail entry needs the installed generated view"),
+    assetRuntime = assert(App._ensureAssetRuntime(App.epoch), "the retail entry needs the selected CPU runtime"),
     startupPairIndex = selectedPairIndex(),
     entry = entry,
     audioPreferences = App.audioPreferences,
@@ -744,6 +825,7 @@ function App._continueSelectedVersion(versionId, options)
     versionId = versionId,
     epoch = epoch,
     cacheFs = assert(App._generatedView(), "the startup title needs the installed generated view"),
+    assetRuntime = assert(App._ensureAssetRuntime(epoch), "the startup title needs the selected CPU runtime"),
     derivedAssets = provisioner:gameHost(),
     splRandomState = App.splRandomState,
     width = width,
@@ -801,6 +883,7 @@ function App.load(opts)
   App.startupWarmupError = nil
   App.startupAudioSession = nil
   App.startupAudioError = nil
+  App._assetRuntime = nil
   App.setState(nil)
   love.graphics.setBackgroundColor(unpack(WindowConfig.BACKGROUND_COLOR))
   App.saveDir = love.filesystem.getSaveDirectory()

@@ -2,8 +2,10 @@
 -- resident payload the main thread resolved for one request: mesh upload
 -- buffers, image data, or private image derivatives, replying with flat
 -- records carrying love Data/ImageData. The payload crosses as its own
--- immutable Data reference, so this state opens no generated file. Never
--- touches love.graphics: GPU realization stays on the main thread.
+-- immutable Data reference, so this state opens no generated file, keeps no
+-- parsed bank or asset corpus between jobs, and hands every job's temporary
+-- views back after it replies. Never touches love.graphics: GPU realization
+-- stays on the main thread.
 --
 -- The module is resolved through the packaged require path by a small
 -- literal bootstrap: the queue starts its thread from that bootstrap, which
@@ -45,33 +47,8 @@ function Worker.run(requestChannel, replyChannel)
   -- rewrites the palette storage it needs, so successive jobs can share it.
   local textureScratch = TextureDecoder.newScratch()
 
-  -- One parsed native texture bank, keyed by its versioned logical path. The
-  -- queue identifies texture work by bank file plus selected names, so several
-  -- selections of one bank arrive as separate jobs; they reuse this parse
-  -- instead of reading and parsing the whole bank again. A different path
-  -- replaces the entry, so the worker holds at most one parsed bank. Generated
-  -- banks are content-addressed, so a path's bytes are stable for one worker
-  -- lifetime. Never persisted and never accompanied by a derivative.
-  local parsedBankPath = nil
-  local parsedBank = nil
-  ---@param data love.Data
-  ---@param logicalPath string
-  ---@return NativeTextureBank.Bank
-  local function nativeBankFor(data, logicalPath)
-    if parsedBankPath == logicalPath then
-      return parsedBank --[[@as NativeTextureBank.Bank]]
-    end
-    local bank, bankError = NativeTextureBank.read(data:getString())
-    if bank == nil then
-      error(bankError, 0)
-    end
-    parsedBankPath = logicalPath
-    parsedBank = bank
-    return bank
-  end
-
   local function prepareMesh(token, data, path)
-    local ok, prepared = pcall(SceneMesh.prepareUpload, payloadData(data):getString(), path)
+    local ok, prepared = pcall(SceneMesh.prepareUpload, payloadData(data), path)
     if not ok then
       fail(token, "mesh", path, prepared)
       return
@@ -138,7 +115,7 @@ function Worker.run(requestChannel, replyChannel)
   -- ROM source and no GPU object.
   local function prepareNativeBank(token, data, path)
     local function work()
-      return SceneMesh.prepareNativeBank(payloadData(data):getString(), path)
+      return SceneMesh.prepareNativeBank(payloadData(data), path)
     end
     local ok, prepared = pcall(work)
     if not ok then
@@ -160,13 +137,18 @@ function Worker.run(requestChannel, replyChannel)
   -- name, never baked into the perspective of one material. The decoded RGBA
   -- bytes go to the classifier as the ByteData the decoder filled, so no
   -- intermediate ImageData is created.
-  local function prepareNativeTexture(token, data, logicalPath, path, selector)
+  local function prepareNativeTexture(token, data, path, selector)
     local function work()
       assert(
         type(selector) == "table" and type(selector.textureName) == "string",
         "native texture preparation requires a named texture"
       )
-      local bank = nativeBankFor(data, logicalPath)
+      -- Each job parses the bank out of its own resident bytes: the borrowed
+      -- spans live only for this reply, and nothing parsed survives the job.
+      local bank, bankError = NativeTextureBank.view(payloadData(data))
+      if bank == nil then
+        error(bankError, 0)
+      end
       local texture = bank:texture(selector.textureName)
       if texture == nil then
         error("texture bank has no texture " .. tostring(selector.textureName) .. ": " .. tostring(path), 0)
@@ -217,31 +199,6 @@ function Worker.run(requestChannel, replyChannel)
     })
   end
 
-  -- Sample payloads travel as one transferable ByteData built from the
-  -- resident PCM16LE bytes, without assembling Lua sample tables and
-  -- without touching graphics.
-  local function prepareAudioSample(token, data, path)
-    local function work()
-      local bytes = payloadData(data):getString()
-      if #bytes == 0 or #bytes % 2 ~= 0 then
-        error("unreadable audio sample payload: " .. tostring(path), 0)
-      end
-      local byteData = love.data.newByteData(bytes)
-      replyChannel:push({
-        token = token,
-        ok = true,
-        kind = "audio-sample",
-        path = path,
-        byteData = byteData,
-        size = #bytes,
-      })
-    end
-    local ok, err = pcall(work)
-    if not ok then
-      fail(token, "audio-sample", path, err)
-    end
-  end
-
   -- Plain images decode from the same resident payload reference as every
   -- other job kind, so the PNG decode and the reply shape stay exactly as
   -- before.
@@ -287,12 +244,7 @@ function Worker.run(requestChannel, replyChannel)
         fail(job.token, job.kind, job.path, err)
       end
     elseif job.op == "prepare" and job.kind == "g4tx" then
-      local ok, err = pcall(prepareNativeTexture, job.token, job.data, job.logicalPath, job.path, job.selector)
-      if not ok then
-        fail(job.token, job.kind, job.path, err)
-      end
-    elseif job.op == "prepare" and job.kind == "audio-sample" then
-      local ok, err = pcall(prepareAudioSample, job.token, job.data, job.path)
+      local ok, err = pcall(prepareNativeTexture, job.token, job.data, job.path, job.selector)
       if not ok then
         fail(job.token, job.kind, job.path, err)
       end

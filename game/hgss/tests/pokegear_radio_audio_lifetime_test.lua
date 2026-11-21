@@ -108,7 +108,8 @@ local function engineBundle()
 end
 
 local function newComposition()
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache(engineBundle()))
+  local cache = AudioFixture.residentCache(engineBundle())
+  local provider = AudioAssetProvider.new(cache, { acquireSource = AudioFixture.acquireSource() })
   local mixer = VoiceMixer.new({ sampleRate = SAMPLE_RATE })
   local player = SequencePlayer.new({
     sampleRate = SAMPLE_RATE,

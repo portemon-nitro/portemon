@@ -30,7 +30,7 @@ local TITLE_THEME = "SEQ_GS_POKEMON_THEME"
 local MENU_SELECT = "SEQ_SE_DP_SELECT"
 local FADE_TICKS = 60
 
----@param options { versionId: string, cacheFs: table<string, unknown>?, audioComposition: StartupAudioComposition?, titleRecord: { crySpeciesId: integer }? } cacheFs is the selected epoch's installed generated view
+---@param options { versionId: string, cacheFs: table<string, unknown>?, assetRuntime: table<string, unknown>, audioComposition: StartupAudioComposition?, titleRecord: { crySpeciesId: integer }? } cacheFs is the selected epoch's installed generated view; assetRuntime is the borrowed selected CPU runtime
 ---@return StartupAudioSession
 function StartupAudioSession.new(options)
   assert(type(options) == "table", "startup audio requires options")
@@ -43,9 +43,14 @@ function StartupAudioSession.new(options)
     "startup title audio needs its normalized cry species"
   )
   if composition == nil then
+    local assetRuntime = assert(options.assetRuntime, "startup audio needs the selected CPU runtime")
     composition = GameAudio.compose({
       cacheFs = assert(cacheFs, "startup audio needs the selected epoch's installed generated view"),
       outputRate = 32768,
+      assetPreparation = assetRuntime.preparationQueue,
+      acquireSource = function(reference)
+        return assetRuntime.preparationQueue:acquireSource(reference)
+      end,
     }) --[[@as StartupAudioComposition]]
   end
   assert(type(composition) == "table" and type(composition.sound) == "table", "startup audio composition is invalid")

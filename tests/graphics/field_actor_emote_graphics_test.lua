@@ -5,6 +5,7 @@
 
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldActorEmote = require("libs.hgss.src.actors.FieldActorEmote")
 local FieldActorEmoteRenderer = require("libs.hgss.src.presentation.FieldActorEmoteRenderer")
 local FieldActorEmoteRuntime = require("game.hgss.src.field.FieldActorEmoteRuntime")
@@ -50,7 +51,11 @@ local function runVersion(scope, versionId)
   local cache = GeneratedCacheFixture.reader(versionId)
   local fieldEffects = FieldEntranceIndicatorRuntime.load(cache)
   local models, reactionTicks = FieldActorEmoteRuntime.load(cache, fieldEffects.effects)
-  local imagePool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test lifetime, released after the pool.
+  local imagePoolRuntime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local imagePool =
+    ImageAssetPool.new(cache, { queue = imagePoolRuntime.preparationQueue, decoded = imagePoolRuntime.decoded })
   scope:own({
     release = function()
       imagePool:dispose()

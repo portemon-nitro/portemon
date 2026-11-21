@@ -1,4 +1,5 @@
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local Assert = require("tests.support.Assert")
 local ParticlesFixture = require("tests.support.BattleEncounterParticlesFixture")
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
@@ -1312,10 +1313,7 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
   stageSourceIndices(battleManifest.menus)
   stageSourceIndices(battleManifest.hud)
   for _, side in ipairs({ "player", "foe" }) do
-    cache:write(
-      BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, side),
-      string.rep("\0", 80 * 80 * 4)
-    )
+    cache:write(BattlePresentationCache.sceneTerrainSourceIndexPath(sceneKey, side), string.rep("\0", 80 * 80 * 4))
   end
   local paletteWords = {}
   for index = 1, 16 do
@@ -1389,7 +1387,12 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
   -- The staged probe payloads become one resident view: the pool and the
   -- envelope resolve immutable references, exactly like an installed epoch.
   local residentView = GeneratedCacheFixture.fromCache(cache)
-  local pool = ImageAssetPool.new(residentView.reader, { graphics = graphics })
+  local selectedRuntime = SelectedAssetRuntimeFixture.new(residentView.reader)
+  local pool = ImageAssetPool.new(residentView.reader, {
+    graphics = graphics,
+    queue = selectedRuntime.preparationQueue,
+    decoded = selectedRuntime.decoded,
+  })
   local savedLove = rawget(_G, "love")
   local realNewImageData = savedLove.image.newImageData
   local decodeForms = {}

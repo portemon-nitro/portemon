@@ -158,11 +158,21 @@ local function countTaskReferences(taskLog, target)
   return count
 end
 
+-- The selected runtime's compact source acquirer in its base form.
+local function baseSourceAcquirer(reference)
+  local lease = { value = assert(reference).data }
+  function lease:release()
+    self.value = nil
+  end
+  return lease
+end
+
 local function cacheCoverage(loads)
   local cells = {}
   local cellFiles = {}
   local terrainFiles = {}
   local collision = CollisionFixture.asset(32, 32)
+  local residentCollision = assert(love.data.newByteData(collision))
   for z = 0, 2 do
     for x = 0, 2 do
       local index = z * 3 + x
@@ -217,7 +227,19 @@ local function cacheCoverage(loads)
       read = function()
         return collision
       end,
+      -- Runtime collision borrows the resident compact bytes: one immutable
+      -- reference per generated payload, served by the installed reader.
+      resolveAsset = function(_, path)
+        return {
+          path = path,
+          sourceId = "base:field-coverage-test",
+          contentId = "field-coverage-test\0" .. path,
+          size = #collision,
+          data = residentCollision,
+        }
+      end,
     },
+    acquireSource = baseSourceAcquirer,
     anchorX = 1,
     anchorZ = 1,
   })

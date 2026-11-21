@@ -9,6 +9,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 
 local T = {
@@ -82,7 +83,12 @@ function T.tests.friend_house_signpost_prints_the_counterpart_name_and_dismisses
     -- house-label template with its substitution marker removed.
     local cache = GeneratedCacheFixture.reader(versionId)
     local gender = game.runtime.playerData.profile.gender
-    local provider = assert(FieldMessageProvider.new(cache))
+    -- The provider borrows each open bank through the selected runtime's
+    -- resident source branch.
+    local selectedRuntime = SelectedAssetRuntimeFixture.new(cache)
+    local provider = assert(FieldMessageProvider.new(cache, {
+      acquireSource = SelectedAssetRuntimeFixture.acquireSource(selectedRuntime),
+    }))
     assert(provider:acquireBank(445), "generated name bank 445 is required")
     local nameTemplate = assert(provider:get(445, gender == 0 and 1 or 0), "counterpart name is required")
     assert(provider:acquireBank(542), "generated bank 542 is required")

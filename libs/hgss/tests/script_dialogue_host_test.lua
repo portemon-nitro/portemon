@@ -10,10 +10,7 @@ local Errors = require("libs.errors.src.Errors")
 local ScriptDialogueHost = require("libs.hgss.src.script.ScriptDialogueHost")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
 local FieldMessageFixture = require("tests.support.FieldMessageFixture")
-local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local FieldYesNoController = require("libs.hgss.src.ui.FieldYesNoController")
-local CacheFs = require("libs.storage.src.CacheFs")
-local FakeCache = require("tests.support.FakeCache")
 
 local T = {}
 
@@ -57,21 +54,11 @@ local function twoSlotBankMessages()
   }
 end
 
-local function cacheWith(banks)
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  for bankId, messages in pairs(banks) do
-    FieldMessageFixture.write(cache, bankId, messages)
-  end
-  return cache
-end
-
 local function host(opts)
   opts = opts or {}
   local provider = opts.provider
     or assert(
-      FieldMessageProvider.new(
-        cacheWith({ [542] = substitutionBankMessages(), [445] = nameBankMessages("Ethan", "Lyra") })
-      )
+      FieldMessageFixture.provider({ [542] = substitutionBankMessages(), [445] = nameBankMessages("Ethan", "Lyra") })
     )
   local controller = {
     open = function(self, request)
@@ -263,7 +250,7 @@ function T.same_control_at_two_slots_resolves_each_from_its_own_slot()
       return id == "VAR_A" and 1 or 2
     end,
   }
-  local provider = assert(FieldMessageProvider.new(cacheWith({ [543] = twoSlotBankMessages() })))
+  local provider = assert(FieldMessageFixture.provider({ [543] = twoSlotBankMessages() }))
   local h = host({ world = world, provider = provider })
   local formatted = h:resolveMessage("msg.hgss.0543.00000", {
     [0] = { text = "integer", value = { value = "var", id = "VAR_A" } },
@@ -337,10 +324,10 @@ end
 -- original fault reaches the caller: here the counterpart name carries a
 -- character with no field glyph, so substitution parsing fails.
 function T.failed_friend_name_read_releases_the_name_bank()
-  local provider = assert(FieldMessageProvider.new(cacheWith({
+  local provider = assert(FieldMessageFixture.provider({
     [542] = substitutionBankMessages(),
     [445] = nameBankMessages("Ethan", "Lyr~"),
-  })))
+  }))
   local h = host({ provider = provider, gender = 0 })
   local before = provider:stats().references
   local err = Assert.throws(function()
@@ -470,7 +457,7 @@ local function monsHost()
   local withMons = ScriptDialogueHost.new({
     controller = controller,
     yesNoController = FieldYesNoController.new(),
-    provider = assert(FieldMessageProvider.new(cacheWith({ [542] = substitutionBankMessages() }))),
+    provider = assert(FieldMessageFixture.provider({ [542] = substitutionBankMessages() })),
     layout = function(formatted)
       return formatted
     end,
@@ -598,7 +585,7 @@ local function itemTextHost(opts)
   }
   hostOptions.controller = controller
   hostOptions.yesNoController = FieldYesNoController.new()
-  hostOptions.provider = assert(FieldMessageProvider.new(cacheWith({ [542] = substitutionBankMessages() })))
+  hostOptions.provider = assert(FieldMessageFixture.provider({ [542] = substitutionBankMessages() }))
   local withItems = ScriptDialogueHost.new(hostOptions)
   return withItems, catalog
 end
@@ -705,7 +692,7 @@ end
 -- Capitalize wrapper applying the source first-character rule before
 -- glyph parsing.
 local function trainerTextHost(banks, world)
-  local provider = assert(FieldMessageProvider.new(cacheWith(banks)))
+  local provider = assert(FieldMessageFixture.provider(banks))
   local controller = {
     open = function(self, request)
       self.request = request
@@ -835,7 +822,7 @@ end
 -- two-glyph message the host resolves; the controller layout decides the
 -- boundary shape under test.
 local function productionHostWithPages(pages)
-  local provider = assert(FieldMessageProvider.new(cacheWith({ [901] = nameBankMessages("AB", "AB") })))
+  local provider = assert(FieldMessageFixture.provider({ [901] = nameBankMessages("AB", "AB") }))
   local controller = FieldDialogueController.new({
     audio = { play = function() end },
     layout = function()

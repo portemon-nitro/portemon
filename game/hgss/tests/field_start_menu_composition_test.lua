@@ -6,10 +6,7 @@
 -- carries the live profile name instead.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
-local FakeCache = require("tests.support.FakeCache")
 local FieldMessageFixture = require("tests.support.FieldMessageFixture")
-local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
@@ -46,7 +43,9 @@ local function manifestWithIcons()
   return manifest
 end
 
-local function seedLabelBank(cache)
+-- The source label bank: one entry per static start-menu label, addressed by
+-- message id exactly as the compiled bank is.
+local function labelMessages()
   local messages = {}
   for messageId = 0, 14 do
     messages[messageId + 1] = {}
@@ -57,15 +56,13 @@ local function seedLabelBank(cache)
       FieldMessageFixture.eos(),
     }
   end
-  FieldMessageFixture.write(cache, SOURCE_LABEL_BANK, messages)
+  return messages
 end
 
 -- The shared provider with the source label bank acquired, mirroring the
 -- runtime boot pinning the bank for the field-runtime lifetime.
 local function providerWithLabels()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  seedLabelBank(cache)
-  local provider = FieldMessageProvider.new(cache)
+  local provider = assert(FieldMessageFixture.provider({ [SOURCE_LABEL_BANK] = labelMessages() }))
   local bank, err = provider:acquireBank(SOURCE_LABEL_BANK)
   assert(bank ~= nil, err and err.message or "the source label bank must acquire")
   return provider
@@ -310,8 +307,7 @@ function T.tests.source_gated_actions_are_never_drawn()
 end
 
 function T.tests.composition_without_the_source_label_bank_fails_instead_of_leaving_icons_unlabeled()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local self = composeSelf({ messageProvider = FieldMessageProvider.new(cache) })
+  local self = composeSelf({ messageProvider = FieldMessageFixture.provider({}) })
   local err = Assert.throws(function()
     composeStartMenu(self)
   end)
@@ -322,10 +318,7 @@ end
 -- the provider down clears it with no extra cleanup step, and tearing it
 -- down twice stays a no-op.
 function T.tests.pinned_source_label_bank_needs_no_bespoke_cleanup()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  seedLabelBank(cache)
-  local provider = FieldMessageProvider.new(cache)
-  assert(provider:acquireBank(SOURCE_LABEL_BANK))
+  local provider = providerWithLabels()
   composeStartMenu(composeSelf({ messageProvider = provider }))
   provider:dispose()
   provider:dispose()

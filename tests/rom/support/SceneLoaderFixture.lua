@@ -34,13 +34,15 @@ local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 local RomRuntimeMap = require("tests.support.RomRuntimeMap")
+local ScenePreparationFixture = require("tests.support.ScenePreparationFixture")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 local CompiledAsset = require("tests.rom.support.CompiledAsset")
 
 local SceneLoaderFixture = {}
 
 -- The cache facade over the in-memory backend: loadLua reads and evals in an
--- empty environment, like CacheFs.loadLua.
+-- empty environment, like CacheFs.loadLua, and a collision load resolves one
+-- immutable resident reference per payload exactly like an installed epoch.
 local function luaCache(backend)
   local function loadLua(path)
     local data = assert(backend:read(path), "missing cache file " .. path)
@@ -50,14 +52,41 @@ local function luaCache(backend)
     assert(ok, result)
     return result
   end
+  local references = {}
   local result = {
+    versionId = "heartgold",
     read = function(_, path)
       return backend:read(path)
     end,
     loadLua = function(_, path)
       return loadLua(path)
     end,
+    resolveAsset = function(_, path)
+      local payload = backend:read(path)
+      if type(payload) ~= "string" then
+        return nil
+      end
+      local reference = references[path]
+      if reference == nil then
+        reference = {
+          path = path,
+          sourceId = "base:scene-loader-fixture",
+          contentId = "scene-loader-fixture\0" .. path,
+          size = #payload,
+          data = assert(love.data.newByteData(payload)),
+        }
+        references[path] = reference
+      end
+      return reference
+    end,
   }
+  function result.acquireSource(reference)
+    local lease = { value = assert(reference).data }
+    function lease:release()
+      self.value = nil
+    end
+    return lease
+  end
   ---@cast result CacheFs
   return result
 end
@@ -110,9 +139,17 @@ function SceneLoaderFixture.loadScene(romFs, symbol, opts)
   writeBundle(backend, assets)
   local cache = luaCache(backend)
   local scene = assert(cache:loadLua(MapAssetCache.mapDir(assets.scene.mapId) .. "/scene.lua"))
+  -- The staged build borrows the selected CPU pair: the fixture worker serves
+  -- the same packed upload shape the real worker publishes, and the shared image
+  -- owner reports that same pair to the GPU pool.
+  local assetPreparation, decoded = ScenePreparationFixture.new(cache)
+  local images = SharedImagePoolFake.new({ preparation = { queue = assetPreparation, decoded = decoded } })
   local runtime = MapSceneLoader.load(cache, scene, {
     meshBuilder = fakeMeshBuilder,
-    imageAssets = SharedImagePoolFake.new(),
+    imageAssets = images,
+    assetPreparation = assetPreparation,
+    decoded = decoded,
+    acquireSource = cache.acquireSource,
   })
   local map = RomRuntimeMap.compile(romFs, symbol, assets)
   map.sceneRuntime = runtime

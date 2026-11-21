@@ -180,7 +180,18 @@ function T.runtime_assets_phase_trusts_published_catalogs_without_revalidating()
     presentation = false,
     derivedAssets = {},
   }, FieldRuntime)
-  local ok, phaseErr = pcall(FieldRuntime._loadRuntimeAssets, runtime, {}, { cacheFs = cache })
+  local ok, phaseErr = pcall(FieldRuntime._loadRuntimeAssets, runtime, {}, {
+    cacheFs = cache,
+    assetRuntime = {
+      cacheFs = cache,
+      decoded = {},
+      preparationQueue = {
+        acquireSource = function()
+          error("the trusted-catalog phase acquires no compact source")
+        end,
+      },
+    },
+  })
   rawset(FieldFontLoader, "load", originals.fontLoad)
   rawset(FieldWeatherCache, "validateCatalog", originals.weatherValidate)
   rawset(FollowerInteractionCache, "validateCatalog", originals.followerValidate)

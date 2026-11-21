@@ -60,6 +60,8 @@ local FieldLightProfile = require("libs.assets.src.field.FieldLightProfile")
 ---@field neighborLoader table<string, unknown>|nil presentation-only finite neighbor-ring loader
 ---@field sceneOptions table<string, unknown>|nil options passed to physical-cell presentation loading
 ---@field assetPreparation table<string, unknown>|nil preparation queue forwarded into scene-loader options
+---@field decoded table<string, unknown>|nil decoded CPU owner forwarded into scene-loader options
+---@field acquireSource fun(reference: ResidentCache.BlobRef): AssetPreparationQueueSourceLease selected runtime's compact source acquirer
 ---@field imageAssets table<string, unknown>|nil session-scoped shared image owner borrowed into scene-loader options
 ---@field derivedAssets table<string, function>|nil semantic derived-asset host
 ---@field fieldCellIndex table<string, unknown>?
@@ -170,6 +172,10 @@ local function loadFieldCellIndex(cacheFs)
   error("unreachable after field cell index error", 0)
 end
 
+-- Assigned once the collision lifecycle helpers below exist; release paths run
+-- long after module load.
+local releaseMapCollision
+
 local function releaseAggregate(runtimeMap)
   if runtimeMap.released then
     return
@@ -181,6 +187,7 @@ local function releaseAggregate(runtimeMap)
   if runtimeMap.sceneRuntime then
     runtimeMap.sceneRuntime:release()
   end
+  releaseMapCollision(runtimeMap)
 end
 
 -- Shared structural validation for both semantic and full acquisition: the
@@ -297,33 +304,75 @@ local function requireTerrainSource(artifact, context)
   end
 end
 
--- Decode a collision asset into a runtime grid at a cell origin. Malformed
--- or missing generated collision data fails the load loudly -- a map with a
--- half-decoded grid must never move the player. `missingCode` names the
--- structured failure for the caller's artifact class.
-local function loadCollision(cacheFs, descriptor, missingCode, context)
-  local bytes = cacheFs:read(descriptor.file)
-  if type(bytes) ~= "string" then
-    Errors.raise(missingCode, "collision asset is unavailable", { path = descriptor.file, mapId = context.mapId })
+-- Dispose every collision wrapper one composed region owns, exactly once. A
+-- region composes its central cell plus every neighboring cell it loaded.
+---@param region table<string, unknown>?
+local function releaseRegionCollision(region)
+  if region == nil then
+    return
   end
-  ---@cast bytes string
-  local grid, decodeErr = CollisionGridAsset.decode(bytes, { mapId = context.mapId, path = descriptor.file })
-  if not grid then
-    error(decodeErr)
+  for _, cell in ipairs(region.cells or {}) do
+    local collision = cell.collision
+    if collision ~= nil and type(collision.dispose) == "function" then
+      collision:dispose()
+    end
   end
-  return CollisionGrid.new(grid, {
+end
+
+-- Dispose the collision wrapper a runtime map owns outside a composed region.
+---@param runtimeMap table<string, unknown>
+function releaseMapCollision(runtimeMap)
+  releaseRegionCollision(runtimeMap.fieldRegion)
+  if runtimeMap.fieldRegion == nil and runtimeMap.collision ~= nil then
+    local collision = runtimeMap.collision
+    if type(collision.dispose) == "function" then
+      collision:dispose()
+    end
+  end
+end
+
+-- One collision wrapper over the resident compact bytes at a cell origin: the
+-- map borrows its source through the selected runtime, opens the compact view
+-- and keeps that interest until the wrapper is disposed. Malformed or missing
+-- generated collision data fails the load loudly -- a map with a half-decoded
+-- grid must never move the player -- and a failed open returns its staged
+-- source interest. `missingCode` names the structured failure for the caller's
+-- artifact class.
+---@param loader FieldMapLoader
+---@param descriptor { file: string }
+---@param missingCode string
+---@param context table<string, unknown>
+---@return CollisionGrid
+local function loadCollision(loader, descriptor, missingCode, context)
+  local sourcePath = descriptor.file
+  local reference = loader.cacheFs:resolveAsset(sourcePath)
+  if reference == nil then
+    Errors.raise(missingCode, "collision asset is unavailable", { path = sourcePath, mapId = context.mapId })
+  end
+  local acquireSource =
+    assert(loader.acquireSource, "loading runtime collision requires the selected runtime's source acquirer")
+  ---@cast reference ResidentCache.BlobRef
+  local sourceLease = acquireSource(reference)
+  local view, openErr = CollisionGridAsset.open(sourceLease.value, { mapId = context.mapId, path = sourcePath })
+  if view == nil then
+    sourceLease:release()
+    error(openErr, 0)
+  end
+  return CollisionGrid.new(view, {
     worldOriginX = context.worldOriginX or 0,
     worldOriginZ = context.worldOriginZ or 0,
+    sourceLease = sourceLease,
   })
 end
 
----@param cacheFs CacheFs
+---@param loader FieldMapLoader
 ---@param scene table<string, unknown>
 ---@param centralCollision table<string, unknown>
 ---@param centralTerrain table<string, unknown>
 ---@param checkpoint fun()? cooperative yield invoked once per neighbor element when staging
 ---@return table<string, unknown> composite region
-local function loadNeighborRegion(cacheFs, scene, centralCollision, centralTerrain, checkpoint)
+local function loadNeighborRegion(loader, scene, centralCollision, centralTerrain, checkpoint)
+  local cacheFs = loader.cacheFs
   local neighbors = {}
   for _, descriptor in ipairs(scene.neighbors) do
     if not descriptor.collision or not descriptor.terrain then
@@ -344,7 +393,7 @@ local function loadNeighborRegion(cacheFs, scene, centralCollision, centralTerra
       offsetTilesX = descriptor.offsetTilesX,
       offsetTilesY = descriptor.offsetTilesY,
       offsetTilesZ = descriptor.offsetTilesZ,
-      collision = loadCollision(cacheFs, descriptor.collision, FieldErrors.FIELD_MAP_NEIGHBOR_CACHE_MISSING, {
+      collision = loadCollision(loader, descriptor.collision, FieldErrors.FIELD_MAP_NEIGHBOR_CACHE_MISSING, {
         mapId = scene.mapId,
       }),
       terrain = TerrainSurface.new(terrainArtifact),
@@ -464,6 +513,8 @@ function FieldMapLoader.new(cacheFs, world, options)
     neighborLoader = options.neighborLoader,
     sceneOptions = options.sceneOptions,
     assetPreparation = options.assetPreparation,
+    decoded = options.decoded,
+    acquireSource = options.acquireSource,
     imageAssets = options.imageAssets,
     derivedAssets = options.derivedAssets,
     fieldCellIndex = nil,
@@ -817,7 +868,7 @@ local function prepareLoad(loader, record, checkpoint)
         { mapId = record.id }
       )
     end
-    centralCollision = loadCollision(loader.cacheFs, scene.collision, FieldErrors.FIELD_MAP_COLLISION_CACHE_MISSING, {
+    centralCollision = loadCollision(loader, scene.collision, FieldErrors.FIELD_MAP_COLLISION_CACHE_MISSING, {
       mapId = record.id,
       worldOriginX = scene.matrix.worldOriginX,
       worldOriginZ = scene.matrix.worldOriginZ,
@@ -871,7 +922,12 @@ local function startScene(loader, ctx)
   if loader.sceneLoader == nil then
     return nil, nil
   end
-  local options = { mapProps = ctx.mapProps, assetPreparation = loader.assetPreparation }
+  local options = {
+    mapProps = ctx.mapProps,
+    assetPreparation = loader.assetPreparation,
+    decoded = loader.decoded,
+    acquireSource = loader.acquireSource,
+  }
   if loader.imageAssets ~= nil then
     options.imageAssets = loader.imageAssets
   end
@@ -900,6 +956,8 @@ local function startNeighbor(loader, ctx)
   local neighborOptions = {
     textureSrt = ctx.scene.terrainAnimations.textureSrt,
     assetPreparation = loader.assetPreparation,
+    decoded = loader.decoded,
+    acquireSource = loader.acquireSource,
   }
   if loader.imageAssets ~= nil then
     neighborOptions.imageAssets = loader.imageAssets
@@ -931,6 +989,8 @@ local function assembleComplete(loader, ctx, sceneRuntime, checkpoint, outerBox)
       local neighborOptions = {
         textureSrt = scene.terrainAnimations.textureSrt,
         assetPreparation = loader.assetPreparation,
+        decoded = loader.decoded,
+        acquireSource = loader.acquireSource,
       }
       if loader.imageAssets ~= nil then
         neighborOptions.imageAssets = loader.imageAssets
@@ -947,7 +1007,8 @@ local function assembleComplete(loader, ctx, sceneRuntime, checkpoint, outerBox)
       if checkpoint then
         checkpoint()
       end
-      region = loadNeighborRegion(loader.cacheFs, scene, ctx.centralCollision, centralTerrain, checkpoint)
+      region = loadNeighborRegion(loader, scene, ctx.centralCollision, centralTerrain, checkpoint)
+      box.region = region
     end
     local runtimeMap = {
       mapId = record.id,
@@ -1056,6 +1117,7 @@ local function assembleComplete(loader, ctx, sceneRuntime, checkpoint, outerBox)
       if sceneRuntime then
         sceneRuntime:release()
       end
+      releaseRegionCollision(box.region)
       error(result, 0)
     end
     loader:_evict(record.id)
@@ -1168,6 +1230,8 @@ end
 ---@param err unknown
 local function failDriver(task, box, err)
   task._driver = nil
+  releaseRegionCollision(box.region)
+  box.region = nil
   if box.neighborRuntime ~= nil then
     local doomed = box.neighborRuntime
     box.neighborRuntime = nil
@@ -1902,6 +1966,8 @@ local function physicalCoverageOptions(loader, runtimeMap, position)
       end
     end
     merged.assetPreparation = loader.assetPreparation
+    merged.decoded = loader.decoded
+    merged.acquireSource = loader.acquireSource
     sceneOptions = merged
   end
   -- The session image owner rides the same scene options as the worker
@@ -1959,6 +2025,9 @@ local function physicalCoverageOptions(loader, runtimeMap, position)
     cacheFs = loader.cacheFs,
     index = fieldCellIndex,
     matrixMemberId = matrixMemberId,
+    -- Physical cells borrow their compact collision through the same selected
+    -- runtime as the logical map, so one source interest per live cell owner.
+    acquireSource = loader.acquireSource,
     anchorX = math.floor(position.fieldX / 32),
     anchorZ = math.floor(position.fieldZ / 32),
     mapPropsFactory = mapPropsFactory,

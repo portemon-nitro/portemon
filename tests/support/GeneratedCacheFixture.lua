@@ -51,7 +51,9 @@ local function build(versionId)
   local sourceId = "base:" .. generationId
   local store = ResidentCache.new(versionId, sourceId)
   local entries = {}
-  for position, entry in ipairs(hydrated.entries --[[@as table[] ]]) do
+  for position, entry in
+    ipairs(hydrated.entries --[[@as table[] ]])
+  do
     entries[position] = {
       path = entry.path,
       data = entry.data,
@@ -98,7 +100,9 @@ end
 ---@return ResidentCache.BatchEntry[]
 local function baseEntries(base)
   local entries = {}
-  for position, committed in ipairs(base.candidate.entries --[[@as table[] ]]) do
+  for position, committed in
+    ipairs(base.candidate.entries --[[@as table[] ]])
+  do
     entries[position] = {
       path = committed.path,
       data = committed.data,
@@ -223,6 +227,50 @@ end
 ---@param view GeneratedCacheFixture.ResidentView
 function GeneratedCacheFixture.close(view)
   view.store:close()
+end
+
+-- A physical fixture cache read the way an installed epoch is read: each
+-- payload resolves one immutable resident reference, while loadLua/read/exists
+-- forward to the fixture backend. A producer fixture root holds paths outside
+-- the generated roots, so the reference is created directly instead of through
+-- a resident store.
+---@param cacheFs table<string, unknown> versioned fixture cache
+---@param sourceTag string? reference-source tag for the fixture payloads
+---@return table<string, unknown> resident-shaped reader
+function GeneratedCacheFixture.residentReader(cacheFs, sourceTag)
+  assert(cacheFs and cacheFs.versionId, "a fixture reader names its version")
+  local sourceId = "base:" .. (sourceTag or "fixture") .. ":" .. cacheFs.versionId
+  local references = {}
+  return {
+    versionId = cacheFs.versionId,
+    read = function(_, path)
+      return cacheFs:read(path)
+    end,
+    loadLua = function(_, path)
+      return cacheFs:loadLua(path)
+    end,
+    exists = function(_, path, kind)
+      return cacheFs:exists(path, kind)
+    end,
+    resolveAsset = function(_, path)
+      local bytes = cacheFs:read(path)
+      if bytes == nil then
+        return nil
+      end
+      local reference = references[path]
+      if reference == nil then
+        reference = {
+          path = path,
+          sourceId = sourceId,
+          contentId = sourceId .. "\0" .. path,
+          size = #bytes,
+          data = assert(love.data.newByteData(bytes)),
+        }
+        references[path] = reference
+      end
+      return reference
+    end,
+  }
 end
 
 ---@param versionId string

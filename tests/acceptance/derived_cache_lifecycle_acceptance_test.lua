@@ -31,7 +31,6 @@ local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local MonsSave = require("libs.mons.src.MonsSave")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 
-
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
@@ -150,6 +149,25 @@ local function preparedGeneratedView(versionId)
   store:commit(store:prepare(entries))
   preparedReader = CacheFs.fromStore(store)
   return preparedReader
+end
+
+-- The selected CPU runtime the route borrows, over the same installed view.
+local function selectedRuntime(versionId)
+  local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+  local cacheFs = preparedGeneratedView(versionId)
+  local decoded = ResidentAssetCache.new({
+    idleByteLimit = 64 * 1024 * 1024,
+    release = function(value)
+      value:release()
+    end,
+  })
+  return cacheFs,
+    {
+      cacheFs = cacheFs,
+      decoded = decoded,
+      preparationQueue = AssetPreparationQueue.new(cacheFs, { decoded = decoded }),
+    }
 end
 
 local function isolatedStore()
@@ -297,9 +315,11 @@ function T.tests.continue_loads_early_and_overlaps_geometry_before_transfer()
     return entered
   end, function()
     local stopCounting, loaderBuilds = countLoaderBuilds()
+    local cacheFs, assetRuntime = selectedRuntime(versionId)
     local game = HgssGame.new({
       versionId = versionId,
-      cacheFs = preparedGeneratedView(versionId),
+      cacheFs = cacheFs,
+      assetRuntime = assetRuntime,
       startupPairIndex = 1,
       entry = { kind = "continue", saveId = saveId },
       onExit = function() end,
@@ -537,9 +557,11 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
         local function preparationCalls()
           return preparationBuilds
         end
+        local cacheFs, assetRuntime = selectedRuntime(versionId)
         local game = HgssGame.new({
           versionId = versionId,
-          cacheFs = preparedGeneratedView(versionId),
+          cacheFs = cacheFs,
+          assetRuntime = assetRuntime,
           startupPairIndex = 1,
           entry = { kind = "new_game" },
           onExit = function() end,
@@ -708,6 +730,7 @@ local function pumpDemand(game, host)
   local ok, err = pcall(function()
     starter:advancePresentationPreparation({
       assetPreparation = game.runtime.assetPreparation,
+      decoded = assert(game.runtime.decoded, "the chooser presentation borrows the selected decoded owner"),
       gxRenderer = {},
       derivedAssets = host,
     }, 1)
@@ -1134,7 +1157,11 @@ local function generatedWritesSince(size, writes)
   local found = 0
   for index = size + 1, #writes do
     local path = writes[index]
-    if type(path) == "string" and path:sub(1, #"heartgold") == "heartgold" and path:sub(1, #SNAPSHOT_OUTPUT) ~= SNAPSHOT_OUTPUT then
+    if
+      type(path) == "string"
+      and path:sub(1, #"heartgold") == "heartgold"
+      and path:sub(1, #SNAPSHOT_OUTPUT) ~= SNAPSHOT_OUTPUT
+    then
       found = found + 1
     end
   end
@@ -1290,7 +1317,14 @@ function T.tests.first_play_and_field_dialogue_hold_while_snapshot_persistence_i
         .. (faults[1] and faults[1].payload.code or "no record")
     )
     Assert.isTrue(printed, "the signpost completes its typed print from resident message bytes")
-    local provider = assert(FieldMessageProvider.new(reader), "the production message provider reads the installed view")
+    local provider = assert(
+      FieldMessageProvider.new(reader, {
+        acquireSource = function(reference)
+          return { value = reference.data, release = function() end }
+        end,
+      }),
+      "the production message provider reads the installed view"
+    )
     assert(provider:acquireBank(445), "the installed view carries the counterpart name bank")
     assert(provider:acquireBank(542), "the installed view carries the house-label bank")
     local nameTemplate = assert(provider:get(445, game.runtime.playerData.profile.gender == 0 and 1 or 0))

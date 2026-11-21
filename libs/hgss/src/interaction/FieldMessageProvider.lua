@@ -2,17 +2,33 @@
 -- derived class. Banks are compiled into compact indexed payloads at import
 -- time (FieldMessageCompiler); this module owns active bank lifetime
 -- (acquire/release), selected-message expansion through FieldMessageAsset, and
--- substitution formatting that never mutates the template. Pure module:
--- CacheFs-shaped IO only, no love dependency.
+-- substitution formatting that never mutates the template. Each active bank
+-- holds one interest in the resident source bytes behind it, taken through the
+-- selected runtime's source acquirer and returned on the final release, so an
+-- open bank never copies or re-retains its compact bytes. Pure module:
+-- CacheFs-shaped IO and an injected source acquirer only, no love dependency.
 
 local Errors = require("libs.errors.src.Errors")
 local FieldMessageAsset = require("libs.assets.src.field.FieldMessageAsset")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 
+---@class FieldMessageProvider.SourceLease
+---@field value unknown borrowed resident bytes behind one bank
+---@field release fun(self: FieldMessageProvider.SourceLease)
+
+---@class FieldMessageProvider.BankRecord
+---@field bank FieldMessageAsset.View
+---@field references integer
+---@field sourceLease FieldMessageProvider.SourceLease
+
+---@class FieldMessageProviderOptions
+---@field acquireSource fun(reference: ResidentCache.BlobRef): FieldMessageProvider.SourceLease
+
 ---@class FieldMessageProvider
 ---@field private _cacheFs CacheFs
----@field private _banks table<integer, { bank: FieldMessageAsset.View, references: integer }>
+---@field private _acquireSource fun(reference: ResidentCache.BlobRef): FieldMessageProvider.SourceLease
+---@field private _banks table<integer, FieldMessageProvider.BankRecord>
 ---@field private _stats table<string, unknown>
 local FieldMessageProvider = {}
 FieldMessageProvider.__index = FieldMessageProvider
@@ -58,13 +74,16 @@ local COLOR_SWAP = 0xFF
 local SIZE_NORMAL = 100
 local SIZE_STRETCHED = 200
 
----@param cacheFs table<string, unknown> CacheFs-shaped
+---@param cacheFs table<string, unknown> CacheFs-shaped resident reader
+---@param opts FieldMessageProviderOptions
 ---@return FieldMessageProvider
-function FieldMessageProvider.new(cacheFs)
-  assert(cacheFs and cacheFs.read, "provider requires a CacheFs-shaped object")
+function FieldMessageProvider.new(cacheFs, opts)
+  assert(cacheFs and cacheFs.resolveAsset, "provider requires the selected resident reader")
+  assert(type(opts) == "table" and type(opts.acquireSource) == "function", "provider requires a source acquirer")
   return setmetatable({
     _cacheFs = cacheFs,
-    _banks = {}, -- bankId -> { bank = compact view, references = n }
+    _acquireSource = opts.acquireSource,
+    _banks = {}, -- bankId -> { bank = compact view, references = n, sourceLease = resident interest }
     _stats = { loads = 0, hits = 0, disposals = 0 },
   }, FieldMessageProvider)
 end
@@ -84,9 +103,11 @@ function FieldMessageProvider:stats()
   return stats
 end
 
--- Opens the bank's compact payload once and pins it. Returns the compact bank
--- view or (nil, err) with MESSAGE_BANK_MISSING on an absent or recognized
--- malformed payload; a failed acquisition installs no record.
+-- Opens the bank's compact payload once, over one interest in the resident
+-- source bytes, and pins both while any consumer holds the bank. Returns the
+-- compact bank view or (nil, err) with MESSAGE_BANK_MISSING on an absent or
+-- recognized malformed payload; a failed acquisition installs no record and
+-- returns its staged source interest.
 function FieldMessageProvider:acquireBank(bankId)
   local entry = self._banks[bankId]
   if entry then
@@ -94,12 +115,13 @@ function FieldMessageProvider:acquireBank(bankId)
     self._stats.hits = self._stats.hits + 1
     return entry.bank
   end
-  local bytes = self._cacheFs:read(FieldMessageCache.bankPath(bankId))
+  local reference = self._cacheFs:resolveAsset(FieldMessageCache.bankPath(bankId))
+  local sourceLease = reference ~= nil and self._acquireSource(reference) or nil
   local bank = nil ---@type FieldMessageAsset.View?
   ---@type string|Errors.Error
   local loadError = "the compact payload is absent"
-  if bytes ~= nil then
-    local opened, view = pcall(FieldMessageAsset.open, bytes, bankId)
+  if sourceLease ~= nil then
+    local opened, view = pcall(FieldMessageAsset.open, sourceLease.value, bankId)
     if opened then
       bank = view --[[@as FieldMessageAsset.View]]
     else
@@ -107,11 +129,15 @@ function FieldMessageProvider:acquireBank(bankId)
       if Errors.is(failure) and failure.code == FieldMessageAsset.MESSAGE_ASSET_INVALID then
         loadError = failure
       else
+        sourceLease:release()
         error(failure, 0)
       end
     end
   end
   if bank == nil then
+    if sourceLease ~= nil then
+      sourceLease:release()
+    end
     local context = { bankId = bankId, loadError = loadError }
     ---@cast context Errors.Context
     return nil,
@@ -121,7 +147,8 @@ function FieldMessageProvider:acquireBank(bankId)
         context
       )
   end
-  self._banks[bankId] = { bank = bank, references = 1 }
+  local lease = assert(sourceLease, "an acquired message bank holds its source interest")
+  self._banks[bankId] = { bank = bank, references = 1, sourceLease = lease }
   self._stats.loads = self._stats.loads + 1
   return bank
 end
@@ -141,6 +168,7 @@ function FieldMessageProvider:releaseBank(bankId)
   assert(entry.references >= 0, "message bank reference count went negative")
   if entry.references == 0 then
     self._banks[bankId] = nil
+    entry.sourceLease:release()
     self._stats.disposals = self._stats.disposals + 1
   end
 end
@@ -384,7 +412,12 @@ function FieldMessageProvider:format(template, context, resolvers)
   }
 end
 
+-- Return every still-active bank's source interest exactly once and drop the
+-- records. Templates already returned to a caller stay usable.
 function FieldMessageProvider:dispose()
+  for _, entry in pairs(self._banks) do
+    entry.sourceLease:release()
+  end
   self._banks = {}
   self._stats = { loads = 0, hits = 0, disposals = 0 }
 end

@@ -111,12 +111,34 @@ local function fixture(mapCount)
     world.bySymbol[symbol] = mapId
   end
   local releases = {}
+  local references = {}
+  local sourceId = "base:field-map-loader-test"
   local cache = {
     loadLua = function(_, path)
       return files[path]
     end,
     read = function(_, path)
       return files[path]
+    end,
+    -- Runtime collision borrows its compact bytes from the installed reader, so
+    -- the fixture serves one immutable reference per generated payload.
+    resolveAsset = function(_, path)
+      local payload = files[path]
+      if type(payload) ~= "string" then
+        return nil
+      end
+      local reference = references[path]
+      if reference == nil then
+        reference = {
+          path = path,
+          sourceId = sourceId,
+          contentId = "field-map-loader-test\0" .. path,
+          size = #payload,
+          data = assert(love.data.newByteData(payload)),
+        }
+        references[path] = reference
+      end
+      return reference
     end,
   }
   local sceneLoader = {
@@ -130,6 +152,24 @@ local function fixture(mapCount)
     end,
   }
   return cache, world, sceneLoader, releases, files
+end
+
+-- The selected runtime's compact source acquirer in its base form: root the
+-- reader's own bytes and clear the reference on release.
+local function acquireSource(reference)
+  local lease = { value = assert(reference).data }
+  function lease:release()
+    self.value = nil
+  end
+  return lease
+end
+
+-- Every loader in this suite borrows compact collision through the selected
+-- acquirer; the fixture's resident reader supplies the bytes.
+local function newLoader(cache, world, options)
+  options = options or {}
+  options.acquireSource = options.acquireSource or acquireSource
+  return FieldMapLoader.new(cache, world, options)
 end
 
 local function outdoorCacheFixture(indexState)
@@ -147,10 +187,14 @@ local function outdoorCacheFixture(indexState)
     return realLoadLua(cache, path)
   end
   cache.read = function(_, path)
+    return realRead(cache, path)
+  end
+  local realResolveAsset = cache.resolveAsset
+  cache.resolveAsset = function(_, path)
     if path == collisionPath then
       calls.collision = calls.collision + 1
     end
-    return realRead(cache, path)
+    return realResolveAsset(cache, path)
   end
   cache.exists = function(_, path)
     return indexState ~= "missing" and path == FieldCellCache.indexPath()
@@ -173,7 +217,7 @@ function T.requires_physical_cells_for_outdoor_maps_but_keeps_indoor_aggregate_l
     { state = "invalid", code = "FIELD_CELL_CACHE_INVALID" },
   }) do
     local cache, world, sceneLoader, calls = outdoorCacheFixture(case.state)
-    local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+    local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
     local ok, err = pcall(loader.load, loader, 0)
     if ok then
       failures[#failures + 1] = case.state .. " cache was accepted"
@@ -198,7 +242,7 @@ function T.requires_physical_cells_for_outdoor_maps_but_keeps_indoor_aggregate_l
   local cache, world, sceneLoader, calls = outdoorCacheFixture("missing")
   local scene = cache:loadLua("data/generated/maps/0000/scene.lua")
   scene.type = nil
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   local map = loader:load(0)
   Assert.notNil(map.terrain)
   Assert.notNil(map.collision)
@@ -224,7 +268,7 @@ function T.map_placement_resolves_without_reading_generated_assets()
     reads = reads + 1
     return realRead(cache, path)
   end
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, capacity = 4 })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader, capacity = 4 })
   local bySymbol = loader:mapPlacement("MAP_1")
   Assert.equal(bySymbol.id, 1)
   Assert.equal(bySymbol.originX, 32)
@@ -242,7 +286,7 @@ end
 
 function T.loads_visual_field_collision_and_terrain_into_one_aggregate()
   local cache, world, sceneLoader = fixture(1)
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, capacity = 4 })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader, capacity = 4 })
   local map = loader:load("MAP_0")
   Assert.equal(map.mapId, 0)
   Assert.equal(map.sceneRuntime.scene.mapSymbol, "MAP_0")
@@ -264,7 +308,7 @@ end
 
 function T.demands_transition_environment_without_loading_a_scene()
   local cache, world, sceneLoader = fixture(1)
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   Assert.deepEqual({ loader:requestTransitionEnvironment(0) }, { true, "outdoors" })
   Assert.equal(loader:residentCount(), 0)
   loader:release()
@@ -315,7 +359,7 @@ function T.carries_the_generated_compat_identity_onto_the_runtime_map()
   world.maps[1].mapSection = "NEW_BARK_TOWN"
   world.maps[1].mapSectionNativeId = 126
   world.maps[1].followMode = "HEIGHT_RESTRICT"
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   local map = loader:load(0)
   Assert.equal(map.mapSection, "NEW_BARK_TOWN")
   Assert.equal(map.mapSectionNativeId, 126)
@@ -336,7 +380,7 @@ function T.rejects_world_records_with_missing_or_malformed_compat_fields()
     world.maps[1].mapSectionNativeId = case.nativeId
     world.maps[1].followMode = case.followMode
     local err = Assert.throws(function()
-      FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+      newLoader(cache, world, { sceneLoader = sceneLoader })
     end, case.label .. " must fail the loader boundary")
     Assert.isTrue(
       Errors.is(err) and err.code == "FIELD_MAP_WORLD_INVALID",
@@ -349,7 +393,7 @@ function T.rejects_missing_or_unknown_transition_environment_at_runtime_load()
   for _, case in ipairs({ { value = nil }, { value = "unknown" } }) do
     local cache, world, sceneLoader, _, files = fixture(1)
     files["data/generated/field/maps/0000/field.lua"].transitionEnvironment = case.value
-    local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+    local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
     local err = Assert.throws(function()
       loader:load(0)
     end)
@@ -405,7 +449,7 @@ function T.outdoor_logical_load_does_not_acquire_physical_or_representative_geom
     source = { bdhcSha1 = "cell-0" },
     plates = {},
   }
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
 
   local map = loader:load(0)
 
@@ -421,7 +465,7 @@ end
 
 function T.evicts_the_least_recently_used_unprotected_map()
   local cache, world, sceneLoader, releases = fixture(3)
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, capacity = 2 })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader, capacity = 2 })
   loader:load(0)
   loader:load(1)
   loader:load(0)
@@ -435,7 +479,7 @@ end
 
 function T.protection_defers_eviction_and_release_is_exactly_once()
   local cache, world, sceneLoader, releases = fixture(2)
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, capacity = 1 })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader, capacity = 1 })
   local first = loader:load(0)
   loader:protectMap(0, true)
   loader:load(1)
@@ -452,7 +496,7 @@ end
 
 function T.round_trip_reuses_both_resident_map_aggregates()
   local cache, world, sceneLoader, releases = fixture(2)
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, capacity = 4 })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader, capacity = 4 })
   local first = loader:load(0)
   local second = loader:load(1)
   for _ = 1, 10 do
@@ -479,7 +523,7 @@ function T.required_cache_file_failure_preserves_the_underlying_cause_message()
     end
     return realLoadLua(cache, path)
   end
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   local err = Assert.throws(function()
     loader:load(0)
   end)
@@ -527,7 +571,7 @@ function T.composes_neighbor_collision_and_terrain_into_runtime_map()
       return { draws = {}, release = function() end }
     end,
   }
-  local loader = FieldMapLoader.new(cache, world, { neighborLoader = neighborLoader })
+  local loader = newLoader(cache, world, { neighborLoader = neighborLoader })
   local map = loader:load(0)
   Assert.equal(map.terrainDependencyHash, "g4-composite-terrain-v1|0:0:0:central-0|32:0.5:0:east")
   Assert.isTrue(map.collision:containsLocal(32, 4))
@@ -554,7 +598,7 @@ function T.failed_neighbor_load_releases_the_scene_runtime()
       error("injected neighbor failure")
     end,
   }
-  local loader = FieldMapLoader.new(cache, world, {
+  local loader = newLoader(cache, world, {
     sceneLoader = sceneLoader,
     neighborLoader = neighborLoader,
   })
@@ -588,7 +632,7 @@ function T.failed_central_collision_decode_releases_scene_and_neighbor()
       }
     end,
   }
-  local loader = FieldMapLoader.new(cache, world, {
+  local loader = newLoader(cache, world, {
     sceneLoader = sceneLoader,
     neighborLoader = neighborLoader,
   })
@@ -627,7 +671,7 @@ function T.failed_terrain_construction_releases_scene_and_neighbor()
       }
     end,
   }
-  local loader = FieldMapLoader.new(cache, world, {
+  local loader = newLoader(cache, world, {
     sceneLoader = sceneLoader,
     neighborLoader = neighborLoader,
   })
@@ -648,7 +692,7 @@ end
 function T.map_without_a_neighbors_record_fails_to_load()
   local cache, world, sceneLoader, _, files = fixture(1)
   files["data/generated/maps/0000/scene.lua"].neighbors = nil
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   Assert.throws(function()
     loader:load(0)
   end)
@@ -661,7 +705,7 @@ end
 function T.map_without_a_collision_descriptor_fails_to_load()
   local cache, world, sceneLoader, _, files = fixture(1)
   files["data/generated/maps/0000/scene.lua"].collision = nil
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   local err = Assert.throws(function()
     loader:load(0)
   end)
@@ -681,7 +725,7 @@ function T.map_without_object_events_fails_to_load()
     warps = {},
     coordinates = {},
   }
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   local err = Assert.throws(function()
     loader:load(0)
   end)
@@ -695,7 +739,7 @@ end
 function T.map_without_a_terrain_artifact_source_fails_to_load()
   local cache, world, sceneLoader, _, files = fixture(1)
   files["data/generated/maps/0000/terrain.lua"] = { schema = "g4-terrain-surfaces-v1", plates = {} }
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   Assert.throws(function()
     loader:load(0)
   end)
@@ -712,7 +756,7 @@ function T.map_without_a_terrain_source_sha1_fails_to_load()
     plates = {},
     source = {},
   }
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   Assert.throws(function()
     loader:load(0)
   end)
@@ -750,7 +794,7 @@ function T.map_without_a_neighbor_terrain_source_fails_to_load()
       }
     end,
   }
-  local loader = FieldMapLoader.new(cache, world, {
+  local loader = newLoader(cache, world, {
     sceneLoader = sceneLoader,
     neighborLoader = neighborLoader,
   })
@@ -794,7 +838,7 @@ function T.failed_neighbor_collision_decode_releases_scene_and_neighbor()
       }
     end,
   }
-  local loader = FieldMapLoader.new(cache, world, {
+  local loader = newLoader(cache, world, {
     sceneLoader = sceneLoader,
     neighborLoader = neighborLoader,
   })
@@ -850,7 +894,7 @@ function T.runtime_map_update_animated_advances_scene_and_neighbor_exactly_once(
       }
     end,
   }
-  local loader = FieldMapLoader.new(cache, world, {
+  local loader = newLoader(cache, world, {
     sceneLoader = sceneLoader,
     neighborLoader = neighborLoader,
   })
@@ -870,7 +914,7 @@ end
 -- behavior preserved).
 function T.simulation_only_runtime_exposes_a_safe_update_animated()
   local cache, world = fixture(1)
-  local loader = FieldMapLoader.new(cache, world)
+  local loader = newLoader(cache, world)
   local map = loader:load(0)
   Assert.isTrue(
     type(map.updateAnimated) == "function",
@@ -884,7 +928,7 @@ end
 function T.exposes_loaded_map_transition_environment()
   local cache, world, _, _, files = fixture(1)
   files["data/generated/field/maps/0000/field.lua"].transitionEnvironment = "cave"
-  local loader = FieldMapLoader.new(cache, world)
+  local loader = newLoader(cache, world)
   Assert.deepEqual({ loader:requestTransitionEnvironment(0) }, { true, "cave" })
   loader:release()
 end
@@ -927,7 +971,7 @@ function T.neighbor_loader_receives_the_central_scene_texture_srt_clip()
       return { draws = {}, release = function() end }
     end,
   }
-  local loader = FieldMapLoader.new(cache, world, { neighborLoader = neighborLoader })
+  local loader = newLoader(cache, world, { neighborLoader = neighborLoader })
   loader:load(0)
   Assert.notNil(received, "the neighbor loader receives the central scene's textureSrt clip")
   Assert.equal(received.textureSrt, clip, "the passed clip is the central scene's terrain animation")
@@ -974,7 +1018,7 @@ function T.headless_runtime_map_exposes_semantic_doors_with_no_scene_runtime()
     { index = 0, x = doorTile.x, z = doorTile.z, destinationMapId = 1, destinationWarpId = 0 },
   }
 
-  local loader = FieldMapLoader.new(cache, world)
+  local loader = newLoader(cache, world)
   local map = loader:load(0)
   Assert.isNil(map.sceneRuntime, "a non-presentation loader creates no scene runtime")
   Assert.notNil(map.mapProps, "every runtime map exposes the semantic door resolver")
@@ -987,7 +1031,7 @@ end
 -- reusing stale playback state across the aggregate's lifetime.
 function T.reloading_an_evicted_map_builds_a_fresh_map_props()
   local cache, world = fixture(2)
-  local loader = FieldMapLoader.new(cache, world, { capacity = 1 })
+  local loader = newLoader(cache, world, { capacity = 1 })
   local first = loader:load(0)
   loader:load(1)
   Assert.isNil(loader:get(0), "the first map was evicted")
@@ -1057,7 +1101,7 @@ function T.logical_load_publishes_semantic_fields_without_visual_assets()
     end,
   }
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, {
+  local loader = newLoader(cache, world, {
     sceneLoader = sceneLoader,
     derivedAssets = readinessHost(calls, {}),
   })
@@ -1114,7 +1158,7 @@ function T.logical_load_owns_a_fresh_environment_without_visual_assets()
     end,
   }
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, {
+  local loader = newLoader(cache, world, {
     sceneLoader = sceneLoader,
     derivedAssets = readinessHost(calls, {}),
   })
@@ -1158,7 +1202,7 @@ end
 function T.logical_load_rejects_unknown_and_malformed_records()
   local cache, world, sceneLoader = fixture(1)
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, {
+  local loader = newLoader(cache, world, {
     sceneLoader = sceneLoader,
     derivedAssets = readinessHost(calls, {}),
   })
@@ -1179,7 +1223,7 @@ function T.logical_load_rejects_unknown_and_malformed_records()
     caseWorld.maps[1].mapSectionNativeId = case.nativeId
     caseWorld.maps[1].followMode = case.followMode
     local err = Assert.throws(function()
-      FieldMapLoader.new(caseCache, caseWorld, { sceneLoader = caseSceneLoader })
+      newLoader(caseCache, caseWorld, { sceneLoader = caseSceneLoader })
     end, case.label)
     Assert.isTrue(
       Errors.is(err) and err.code == "FIELD_MAP_WORLD_INVALID",
@@ -1234,7 +1278,7 @@ function T.logical_load_rejects_unknown_and_malformed_records()
   for _, case in ipairs(fieldCases) do
     local caseCache, caseWorld, caseSceneLoader, _, caseFiles = fixture(1)
     case.mutate(caseFiles["data/generated/field/maps/0000/field.lua"])
-    local caseLoader = FieldMapLoader.new(caseCache, caseWorld, { sceneLoader = caseSceneLoader })
+    local caseLoader = newLoader(caseCache, caseWorld, { sceneLoader = caseSceneLoader })
     local err = Assert.throws(function()
       caseLoader:loadLogical(0)
     end, case.label)
@@ -1252,7 +1296,7 @@ end
 function T.visual_readiness_failure_does_not_block_semantic_acquisition()
   local cache, world, sceneLoader = fixture(32)
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, {
+  local loader = newLoader(cache, world, {
     sceneLoader = sceneLoader,
     derivedAssets = readinessHost(calls, { fullFailsFor = { [31] = true } }),
   })
@@ -1280,7 +1324,7 @@ function T.full_load_still_demands_visual_scene_assets()
   local cache, world, sceneLoader, _, files = fixture(1)
   files["data/generated/maps/0000/scene.lua"] = nil
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, {
+  local loader = newLoader(cache, world, {
     sceneLoader = sceneLoader,
     derivedAssets = readinessHost(calls, {}),
   })
@@ -1302,7 +1346,7 @@ end
 function T.logical_load_propagates_an_unready_semantic_closure()
   local cache, world, sceneLoader = fixture(1)
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, {
+  local loader = newLoader(cache, world, {
     sceneLoader = sceneLoader,
     derivedAssets = readinessHost(calls, { logicalFailsFor = { [0] = true } }),
   })
@@ -1333,7 +1377,7 @@ function T.outdoor_semantic_map_does_not_own_physical_coverage()
     end,
   }
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, {
+  local loader = newLoader(cache, world, {
     sceneLoader = sceneLoader,
     derivedAssets = readinessHost(calls, {}),
   })
@@ -1444,7 +1488,7 @@ function T.loader_construction_rejects_worlds_without_structural_origins()
     case.mutate(world)
     Assert.isFalse(MapAssetCache.isStructuralWorld(world), case.label .. " is not a structural world")
     local err = Assert.throws(function()
-      FieldMapLoader.new(cache, world, {})
+      newLoader(cache, world, {})
     end, case.label .. " must fail loader construction")
     Assert.isTrue(
       Errors.is(err) and err.code == "FIELD_MAP_WORLD_INVALID",
@@ -1468,7 +1512,7 @@ function T.global_position_converts_local_coordinates_through_structural_origins
   -- matrix so a visual fallback could never answer the same coordinates.
   world.maps[2].worldOriginX = 100
   world.maps[2].worldOriginZ = 200
-  local loader = FieldMapLoader.new(cache, world, {})
+  local loader = newLoader(cache, world, {})
   local converted = loader:globalPosition("MAP_1", 3, 4)
   Assert.deepEqual(converted, { x = 103, z = 204 })
   local origin = loader:globalPosition(0, 3, 4)
@@ -1480,7 +1524,7 @@ end
 function T.request_location_demands_the_logical_map_and_committed_footprint()
   local cache, world = outdoorPlanningFixture()
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(calls, false, true) })
+  local loader = newLoader(cache, world, { derivedAssets = planningHost(calls, false, true) })
   local ready, failure = loader:requestLocation(0, 695, 397, "required")
   Assert.isFalse(ready, "a pending logical map holds the location")
   Assert.isNil(failure)
@@ -1499,7 +1543,7 @@ function T.request_location_demands_the_logical_map_and_committed_footprint()
   Assert.deepEqual(kinds, { "field:required", "logical:required", "cell:required" })
 
   local readyCalls = {}
-  local readyLoader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(readyCalls, true, true) })
+  local readyLoader = newLoader(cache, world, { derivedAssets = planningHost(readyCalls, true, true) })
   Assert.isTrue(readyLoader:requestLocation("MAP_0", 695, 397, "required"))
   Assert.equal(#readyCalls, 3, "the ready closure requests destination logic alongside the map and cell")
   readyLoader:release()
@@ -1508,7 +1552,7 @@ end
 
 function T.request_location_without_a_host_is_immediately_ready()
   local cache, world = outdoorPlanningFixture()
-  local loader = FieldMapLoader.new(cache, world, {})
+  local loader = newLoader(cache, world, {})
   Assert.isTrue(loader:requestLocation(0, 695, 397, "required"))
   Assert.isTrue(loader:requestWarp({ mapId = 0 }, { destinationMapId = 0, destinationWarpId = 0 }))
   loader:release()
@@ -1551,7 +1595,7 @@ function T.request_warp_plans_indexed_and_direct_destinations_as_required()
     return realLoadLua(cache, path)
   end
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(calls, true, true) })
+  local loader = newLoader(cache, world, { derivedAssets = planningHost(calls, true, true) })
   local ready, failure = loader:requestWarp({ mapId = 1 }, {
     index = 0,
     x = 4,
@@ -1593,7 +1637,7 @@ function T.request_warp_pends_while_the_destination_record_is_absent()
     return realLoadLua(cache, path)
   end
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(calls, true, true) })
+  local loader = newLoader(cache, world, { derivedAssets = planningHost(calls, true, true) })
   local ready, failure = loader:requestWarp({ mapId = 0 }, {
     index = 0,
     x = 4,
@@ -1621,7 +1665,7 @@ function T.request_warp_fails_while_a_corrupt_destination_record_reports_an_erro
     return nil
   end
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(calls, true, true) })
+  local loader = newLoader(cache, world, { derivedAssets = planningHost(calls, true, true) })
   local ready, failure = loader:requestWarp({ mapId = 0 }, {
     index = 0,
     x = 4,
@@ -1751,7 +1795,7 @@ function T.request_location_demands_one_logical_closure_per_represented_neighbor
     demandCell(21, 13, 7),
   })
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, { derivedAssets = demandHost(calls, {}) })
+  local loader = newLoader(cache, world, { derivedAssets = demandHost(calls, {}) })
   local ready, failure = loader:requestLocation(0, 695, 397, "required")
   Assert.isTrue(ready, "a fully demanded closure releases the destination")
   Assert.isNil(failure)
@@ -1825,7 +1869,7 @@ function T.request_location_enrolls_warp_destination_logical_closures()
     return realLoadLua(cache, path)
   end
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, { derivedAssets = demandHost(calls, {}) })
+  local loader = newLoader(cache, world, { derivedAssets = demandHost(calls, {}) })
   local ready, failure = loader:requestLocation(0, 695, 397, "required")
   Assert.isTrue(ready, "warp exit demand never blocks its destination")
   Assert.isNil(failure)
@@ -1846,7 +1890,7 @@ function T.request_location_leaves_filler_headers_without_demand()
     demandCell(20, 12, 7),
   })
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, { derivedAssets = demandHost(calls, {}) })
+  local loader = newLoader(cache, world, { derivedAssets = demandHost(calls, {}) })
   local ready, failure = loader:requestLocation(0, 695, 397, "required")
   Assert.isTrue(ready, "filler cells never hold a destination")
   Assert.isNil(failure)
@@ -1862,7 +1906,7 @@ function T.request_location_warms_neighbor_visuals_as_near_without_blocking()
     demandCell(20, 12, 1),
   })
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, { derivedAssets = demandHost(calls, { field = { [1] = false } }) })
+  local loader = newLoader(cache, world, { derivedAssets = demandHost(calls, { field = { [1] = false } }) })
   local ready, failure = loader:requestLocation(0, 695, 397, "required")
   Assert.isTrue(ready, "a pending neighbor visual prefetch never blocks its destination")
   Assert.isNil(failure)
@@ -1878,7 +1922,7 @@ function T.request_location_waits_for_a_pending_neighbor_logical_closure()
     demandCell(20, 12, 1),
   })
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, { derivedAssets = demandHost(calls, { logical = { [1] = false } }) })
+  local loader = newLoader(cache, world, { derivedAssets = demandHost(calls, { logical = { [1] = false } }) })
   local ready, failure = loader:requestLocation(0, 695, 397, "required")
   Assert.isFalse(ready, "a pending neighbor logical closure holds the destination")
   Assert.isNil(failure)
@@ -1891,11 +1935,8 @@ function T.request_location_fails_when_a_neighbor_logical_closure_fails()
     demandCell(20, 12, 1),
   })
   local calls = {}
-  local loader = FieldMapLoader.new(
-    cache,
-    world,
-    { derivedAssets = demandHost(calls, { logical = { [1] = "neighbor bank missing" } }) }
-  )
+  local loader =
+    newLoader(cache, world, { derivedAssets = demandHost(calls, { logical = { [1] = "neighbor bank missing" } }) })
   local ready, failure = loader:requestLocation(0, 695, 397, "required")
   Assert.isFalse(ready, "a failed neighbor logical closure fails the destination")
   Assert.equal(failure, "neighbor bank missing", "the underlying logical cause surfaces")
@@ -1908,11 +1949,8 @@ function T.request_location_ignores_a_failed_neighbor_visual_prefetch()
     demandCell(20, 12, 1),
   })
   local calls = {}
-  local loader = FieldMapLoader.new(
-    cache,
-    world,
-    { derivedAssets = demandHost(calls, { field = { [1] = "neighbor visual broken" } }) }
-  )
+  local loader =
+    newLoader(cache, world, { derivedAssets = demandHost(calls, { field = { [1] = "neighbor visual broken" } }) })
   -- The near visual prefetch for map 1 fails while its required logical
   -- closure stays ready: only the near enrollment observes the failure.
   local ready, failure = loader:requestLocation(0, 695, 397, "required")
@@ -1927,7 +1965,7 @@ function T.near_location_demand_enrolls_everything_as_near()
     demandCell(20, 12, 1),
   })
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, { derivedAssets = demandHost(calls, {}) })
+  local loader = newLoader(cache, world, { derivedAssets = demandHost(calls, {}) })
   local ready, failure = loader:requestLocation(0, 695, 397, "near")
   Assert.isTrue(ready, "a fully prefetched halo releases its own demand")
   Assert.isNil(failure)
@@ -1987,7 +2025,7 @@ end
 function T.staged_load_completes_and_matches_synchronous_identity()
   local cache, world = fixture(1)
   local sceneLoader, builds = stagedSceneLoader(2)
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   local task = loader:beginLoad(0)
   Assert.isFalse(task:isReady(), "a staged load is pending until its scene completes")
   Assert.isNil(loader:get(0), "no entry is published before completion")
@@ -2009,7 +2047,7 @@ end
 function T.staged_load_publishes_nothing_before_completion()
   local cache, world = fixture(1)
   local sceneLoader, _ = stagedSceneLoader(100)
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   local task = loader:beginLoad(0)
   task:advance(0)
   Assert.isFalse(task:isReady(), "a zero-unit advance makes no progress")
@@ -2023,7 +2061,7 @@ end
 function T.staged_load_cancel_before_completion_releases_the_scene_build()
   local cache, world = fixture(1)
   local sceneLoader, builds = stagedSceneLoader(100)
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   local task = loader:beginLoad(0)
   task:advance(1)
   Assert.isFalse(task:isReady(), "the scene is still pending")
@@ -2036,7 +2074,7 @@ end
 function T.staged_load_failure_releases_partial_scene_and_stays_loud()
   local cache, world = fixture(1)
   local sceneLoader, builds = stagedSceneLoader(100)
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   builds.failAdvance = true
   local task = loader:beginLoad(0)
   local buildTask = builds[1].task
@@ -2056,7 +2094,7 @@ end
 function T.synchronous_load_delegates_to_the_staged_transaction()
   local cache, world = fixture(1)
   local sceneLoader, builds = stagedSceneLoader(0)
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   local map = loader:load("MAP_0")
   Assert.equal(map.mapId, 0, "synchronous load still resolves by symbol")
   Assert.equal(#builds, 1, "synchronous load builds the scene exactly once")
@@ -2078,7 +2116,7 @@ function T.map_symbol_resolves_known_ids_and_symbols_without_acquiring_assets()
   cache.read = function(_, path)
     error("symbol resolution reads no generated asset: " .. tostring(path), 0)
   end
-  local loader = FieldMapLoader.new(cache, world)
+  local loader = newLoader(cache, world)
   Assert.equal(loader:mapSymbol(1), "MAP_1")
   Assert.equal(loader:mapSymbol("MAP_1"), "MAP_1")
   Assert.equal(loader:residentCount(), 0, "symbol resolution caches no map")
@@ -2088,7 +2126,7 @@ end
 
 function T.map_symbol_rejects_unknown_ids_and_symbols_loudly()
   local cache, world = fixture(1)
-  local loader = FieldMapLoader.new(cache, world)
+  local loader = newLoader(cache, world)
   local byId = Assert.throws(function()
     loader:mapSymbol(999)
   end)
@@ -2107,7 +2145,7 @@ function T.numeric_new_bark_id_resolves_to_the_spawn_index_symbol()
   local cache, world = fixture(61)
   world.maps[61].symbol = "MAP_NEW_BARK"
   world.bySymbol["MAP_NEW_BARK"] = 60
-  local loader = FieldMapLoader.new(cache, world)
+  local loader = newLoader(cache, world)
   Assert.equal(loader:mapSymbol(60), "MAP_NEW_BARK")
   Assert.equal(loader:mapSymbol("MAP_NEW_BARK"), "MAP_NEW_BARK")
   loader:release()
@@ -2116,7 +2154,7 @@ end
 function T.begin_load_on_a_resident_entry_returns_it_ready()
   local cache, world = fixture(1)
   local sceneLoader, builds = stagedSceneLoader(0)
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   local map = loader:load(0)
   local task = loader:beginLoad(0)
   Assert.isTrue(task:isReady(), "a resident entry is immediately ready")
@@ -2229,7 +2267,7 @@ function T.physical_cell_doors_share_one_semantic_owner_between_timing_and_prese
       return task
     end,
   }
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   local map = loader:load(1)
   local coverage = loader:createPhysicalCoverage(map, { fieldX = doorGlobal.x, fieldZ = doorGlobal.z })
 
@@ -2298,7 +2336,7 @@ function T.unknown_nonzero_physical_header_fails_semantic_acquisition()
   cache.exists = function(_, path)
     return path == FieldCellCache.indexPath()
   end
-  local loader = FieldMapLoader.new(cache, world)
+  local loader = newLoader(cache, world)
   local map = loader:load(1)
   local ok, err = pcall(loader.createPhysicalCoverage, loader, map, { fieldX = 80, fieldZ = 48 })
   Assert.isFalse(ok, "an unknown non-zero header must not stage a resolver-less logical cell")
@@ -2321,7 +2359,7 @@ function T.headless_begin_defers_generated_materialization_until_budgeted_advanc
     readCalls = readCalls + 1
     return realRead(cache, path)
   end
-  local loader = FieldMapLoader.new(cache, world)
+  local loader = newLoader(cache, world)
   local task = loader:beginLoad(0)
   Assert.equal(loadLuaCalls, 0, "beginning a headless load reads no generated Lua before advance")
   Assert.equal(readCalls, 0, "beginning a headless load reads no generated bytes before advance")
@@ -2358,7 +2396,7 @@ function T.headless_advance_reports_bounded_work_and_publishes_atomically()
     }
     files[collisionPath] = CollisionFixture.asset(32, 32)
   end
-  local loader = FieldMapLoader.new(cache, world)
+  local loader = newLoader(cache, world)
   local task = loader:beginLoad(0)
   Assert.equal(task:advance(0), 0, "a zero budget consumes no work")
   Assert.isFalse(task:isReady(), "a zero budget publishes no map")
@@ -2394,7 +2432,7 @@ end
 function T.headless_failure_surfaces_on_advance_without_partial_publication()
   local cache, world, _, _, files = fixture(1)
   files["data/generated/maps/0000/terrain.lua"] = { schema = "g4-terrain-surfaces-v1", plates = {} }
-  local loader = FieldMapLoader.new(cache, world)
+  local loader = newLoader(cache, world)
   local okBegin, taskOrErr = pcall(loader.beginLoad, loader, 0)
   Assert.isTrue(okBegin, "begin returns a pending task instead of materializing the failure")
   local task = assert(okBegin and taskOrErr)
@@ -2413,7 +2451,7 @@ function T.headless_failure_surfaces_on_advance_without_partial_publication()
   loader:release()
 
   local liveCache, liveWorld = fixture(1)
-  local liveLoader = FieldMapLoader.new(liveCache, liveWorld)
+  local liveLoader = newLoader(liveCache, liveWorld)
   local pending = liveLoader:beginLoad(0)
   pending:release()
   pending:release()
@@ -2426,7 +2464,7 @@ end
 -- indoor aggregate synchronously and reuses the resident identity.
 function T.blocking_load_returns_a_complete_map_with_resident_identity()
   local cache, world = fixture(1)
-  local loader = FieldMapLoader.new(cache, world)
+  local loader = newLoader(cache, world)
   local map = loader:load(0)
   Assert.equal(map.mapId, 0, "the blocking load resolves the requested map")
   Assert.notNil(map.collision, "the complete map owns its collision")
@@ -2455,7 +2493,7 @@ function T.request_map_assets_demands_only_destination_field_and_logical_assets(
     return realLoadLua(self, path)
   end
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(calls, true, true) })
+  local loader = newLoader(cache, world, { derivedAssets = planningHost(calls, true, true) })
   local ready, failure = loader:requestMapAssets(0, "required")
   Assert.isTrue(ready, "a ready destination closure reports ready")
   Assert.isNil(failure, "a ready destination closure reports no failure")
@@ -2477,14 +2515,14 @@ end
 function T.request_map_assets_shares_the_demand_readiness_convention()
   local cache, world = outdoorPlanningFixture()
   local pendingCalls = {}
-  local pendingLoader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(pendingCalls, false, true) })
+  local pendingLoader = newLoader(cache, world, { derivedAssets = planningHost(pendingCalls, false, true) })
   local ready, failure = pendingLoader:requestMapAssets(0, "required")
   Assert.isFalse(ready, "a pending destination asset holds readiness")
   Assert.isNil(failure, "a pending destination asset reports no failure")
   Assert.equal(#pendingCalls, 2, "pending demand still enrolls both destination assets")
   pendingLoader:release()
 
-  local failingLoader = FieldMapLoader.new(cache, world, {
+  local failingLoader = newLoader(cache, world, {
     derivedAssets = {
       requestField = function()
         return false, "field 0 is unavailable"
@@ -2502,14 +2540,14 @@ function T.request_map_assets_shares_the_demand_readiness_convention()
   Assert.equal(failedFailure, "field 0 is unavailable", "the asset failure propagates with its own message")
   failingLoader:release()
 
-  local hostless = FieldMapLoader.new(cache, world, {})
+  local hostless = newLoader(cache, world, {})
   Assert.isTrue(hostless:requestMapAssets(0, "required"), "no host stays immediately ready")
   hostless:release()
 end
 
 function T.map_cell_domain_advances_by_descriptor_and_excludes_adjacent_map_cells()
   local cache, world = fixture(2)
-  local loader = FieldMapLoader.new(cache, world)
+  local loader = newLoader(cache, world)
   loader.fieldCellIndex = {
     matrices = {
       {
@@ -2543,7 +2581,7 @@ end
 
 function T.map_cell_domain_defers_large_matrix_lookup_into_bounded_advances()
   local cache, world = fixture(2)
-  local loader = FieldMapLoader.new(cache, world)
+  local loader = newLoader(cache, world)
   local matrices = {}
   for index = 1, 512 do
     matrices[index] = { matrixMemberId = 1000 + index, cells = {} }
@@ -2577,7 +2615,7 @@ end
 
 function T.logical_metadata_task_defers_work_and_transfers_its_result_once()
   local cache, world = fixture(1)
-  local loader = FieldMapLoader.new(cache, world)
+  local loader = newLoader(cache, world)
   local task = loader:beginLogicalMetadata(0)
   Assert.equal(task:advance(0), 0, "a zero budget does not acquire semantic metadata")
   Assert.isFalse(task:isReady(), "metadata stays unavailable until a positive update budget")
@@ -2608,7 +2646,7 @@ function T.logical_metadata_task_bounds_large_event_validation_across_advances()
       yRange = 0,
     }
   end
-  local loader = FieldMapLoader.new(cache, world)
+  local loader = newLoader(cache, world)
   local task = loader:beginLogicalMetadata(0)
 
   Assert.equal(task:advance(1), 1, "metadata acquisition stays within the one-unit budget")
@@ -2700,7 +2738,7 @@ function T.outdoor_loads_across_two_maps_share_one_trusted_cell_index()
     end
     return realLoadLua(cache, path)
   end
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   local firstMap = loader:load(0)
   Assert.equal(firstMap.mapId, 0)
   local secondMap = loader:load(1)
@@ -2716,7 +2754,7 @@ end
 -- loudly instead of falling back to another map.
 function T.cell_index_and_field_record_failures_keep_typed_errors_without_map_fallback()
   local cache, world, sceneLoader = outdoorCacheFixture("missing")
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   local absent = Assert.throws(function()
     loader:load(0)
   end)
@@ -2727,7 +2765,7 @@ function T.cell_index_and_field_record_failures_keep_typed_errors_without_map_fa
   loader:release()
 
   local badCache, badWorld, badSceneLoader = outdoorCacheFixture("invalid")
-  local badLoader = FieldMapLoader.new(badCache, badWorld, { sceneLoader = badSceneLoader })
+  local badLoader = newLoader(badCache, badWorld, { sceneLoader = badSceneLoader })
   local malformed = Assert.throws(function()
     badLoader:load(0)
   end)
@@ -2753,7 +2791,7 @@ function T.cell_index_and_field_record_failures_keep_typed_errors_without_map_fa
 
   local fieldCache, fieldWorld, fieldSceneLoader, _, fieldFiles = fixture(1)
   fieldFiles[FieldMapDataCache.fieldPath(0)] = nil
-  local fieldLoader = FieldMapLoader.new(fieldCache, fieldWorld, { sceneLoader = fieldSceneLoader })
+  local fieldLoader = newLoader(fieldCache, fieldWorld, { sceneLoader = fieldSceneLoader })
   local missingSemantic = Assert.throws(function()
     fieldLoader:loadLogical(0)
   end)
@@ -2858,7 +2896,7 @@ function T.staged_load_with_cold_neighbor_stays_pending_without_publishing()
   withNeighborCell(files, 1)
   local sceneLoader, _ = stagedSceneLoader(1)
   local neighborLoader, neighborBuilds = stagedNeighborLoader()
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
   local task = loader:beginLoad(1)
   Assert.equal(task:advance(0), 0, "a zero budget does no work")
   Assert.isFalse(task:isReady(), "nothing is ready before any budgeted advance")
@@ -2884,7 +2922,7 @@ function T.staged_load_cancel_releases_scene_and_neighbor_stages_without_publish
   withNeighborCell(files, 1)
   local sceneLoader, sceneBuilds = stagedSceneLoader(100)
   local neighborLoader, neighborBuilds = stagedNeighborLoader()
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
   local task = loader:beginLoad(1)
   task:advance(1)
   Assert.isFalse(task:isReady(), "both stages are still pending")
@@ -2908,7 +2946,7 @@ function T.staged_load_neighbor_failure_keeps_prior_map_and_stays_loud()
   withNeighborCell(files, 1)
   local sceneLoader, sceneBuilds = stagedSceneLoader(1)
   local neighborLoader, neighborBuilds = stagedNeighborLoader()
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
   local first = loader:load(0)
   Assert.equal(#neighborBuilds, 0, "a map without neighbors starts no neighbor stage")
   local task = loader:beginLoad(1)
@@ -2933,7 +2971,7 @@ function T.staged_load_neighbor_failure_keeps_prior_map_and_stays_loud()
   local healthyScene, _ = stagedSceneLoader(1)
   local healthyNeighbor, _ = stagedNeighborLoader()
   local healthyLoader =
-    FieldMapLoader.new(healthyCache, healthyWorld, { sceneLoader = healthyScene, neighborLoader = healthyNeighbor })
+    newLoader(healthyCache, healthyWorld, { sceneLoader = healthyScene, neighborLoader = healthyNeighbor })
   local healthy = healthyLoader:load(1)
   Assert.notNil(healthy.neighborRuntime, "an independent load still attaches its neighbor ring")
   healthyLoader:release()
@@ -2958,7 +2996,7 @@ function T.staged_begin_neighbor_failure_releases_pending_scene_task_without_pub
     end
     return healthyNeighbor.begin(cacheFs, descriptors, options)
   end
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
   local ok, err = pcall(loader.beginLoad, loader, 1)
   Assert.isFalse(ok, "a throwing neighbor constructor fails the staged begin")
   Assert.equal(tostring(err), "injected neighbor begin failure", "the original neighbor failure propagates")
@@ -2982,7 +3020,7 @@ function T.staged_begin_neighbor_failure_releases_ready_scene_runtime_without_pu
   function neighborLoader.begin()
     error("injected neighbor begin failure", 0)
   end
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
   local ok, err = pcall(loader.beginLoad, loader, 1)
   Assert.isFalse(ok, "a throwing neighbor constructor fails the staged begin")
   Assert.equal(tostring(err), "injected neighbor begin failure", "the original neighbor failure propagates")
@@ -2995,7 +3033,7 @@ function T.staged_begin_neighbor_failure_releases_ready_scene_runtime_without_pu
   local healthyCache, healthyWorld, healthyScene, healthyReleases, healthyFiles = fixture(2)
   withNeighborCell(healthyFiles, 1)
   local healthyNeighbor, healthyBuilds = stagedNeighborLoader()
-  local healthyLoader = FieldMapLoader.new(healthyCache, healthyWorld, {
+  local healthyLoader = newLoader(healthyCache, healthyWorld, {
     sceneLoader = healthyScene,
     neighborLoader = healthyNeighbor,
   })
@@ -3034,7 +3072,7 @@ function T.staged_begin_neighbor_failure_preserves_cause_when_scene_release_thro
   function neighborLoader.begin()
     error("injected neighbor begin failure", 0)
   end
-  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
   local ok, err = pcall(loader.beginLoad, loader, 1)
   Assert.isFalse(ok, "the neighbor constructor failure still fails the staged begin")
   Assert.equal(
@@ -3091,20 +3129,12 @@ function T.request_location_warms_ring_cells_as_near_without_blocking()
     demandCell(19, 12, 1),
   })
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, { derivedAssets = ringCellHost(calls, false) })
+  local loader = newLoader(cache, world, { derivedAssets = ringCellHost(calls, false) })
   local ready, failure = loader:requestLocation(0, 695, 397, "required")
   Assert.isTrue(ready, "a pending ring cell never blocks its destination by default")
   Assert.isNil(failure)
-  Assert.equal(
-    ringCellUrgency(calls, 19, 12),
-    "near",
-    "the ring cell enrolls as a near prefetch by default"
-  )
-  Assert.equal(
-    ringCellUrgency(calls, 21, 12),
-    "required",
-    "committed cells keep the caller urgency"
-  )
+  Assert.equal(ringCellUrgency(calls, 19, 12), "near", "the ring cell enrolls as a near prefetch by default")
+  Assert.equal(ringCellUrgency(calls, 21, 12), "required", "committed cells keep the caller urgency")
   loader:release()
 end
 
@@ -3115,15 +3145,11 @@ function T.request_location_waits_for_pending_ring_cells_when_required()
     demandCell(19, 12, 1),
   })
   local calls = {}
-  local loader = FieldMapLoader.new(cache, world, { derivedAssets = ringCellHost(calls, false) })
+  local loader = newLoader(cache, world, { derivedAssets = ringCellHost(calls, false) })
   local ready, failure = loader:requestLocation(0, 695, 397, "required", { neighborUrgency = "required" })
   Assert.isFalse(ready, "a pending ring cell holds the destination when neighbors are required")
   Assert.isNil(failure)
-  Assert.equal(
-    ringCellUrgency(calls, 19, 12),
-    "required",
-    "the ring cell enrolls at the neighbor urgency"
-  )
+  Assert.equal(ringCellUrgency(calls, 19, 12), "required", "the ring cell enrolls at the neighbor urgency")
   loader:release()
 end
 
@@ -3134,11 +3160,7 @@ function T.request_location_fails_when_a_required_ring_cell_fails()
     demandCell(19, 12, 1),
   })
   local calls = {}
-  local loader = FieldMapLoader.new(
-    cache,
-    world,
-    { derivedAssets = ringCellHost(calls, "neighbor cell missing") }
-  )
+  local loader = newLoader(cache, world, { derivedAssets = ringCellHost(calls, "neighbor cell missing") })
   local ready, failure = loader:requestLocation(0, 695, 397, "required", { neighborUrgency = "required" })
   Assert.isFalse(ready, "a failed ring cell fails the destination when neighbors are required")
   Assert.equal(failure, "neighbor cell missing", "the underlying ring cause surfaces")

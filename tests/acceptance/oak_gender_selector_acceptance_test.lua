@@ -2,6 +2,7 @@
 
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
@@ -40,10 +41,12 @@ end
 
 local function compose(versionId, width, height)
   local audio = FakeAudioOutput.new()
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   return OakIntroComposition.compose({
     candidate = candidate(versionId),
     versionId = versionId,
-    cacheFs = GeneratedCacheFixture.reader(versionId),
+    cacheFs = cacheFs,
+    assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs),
     graphics = love.graphics,
     audioOutput = { audio = audio.audio, sound = audio.sound },
     clock = {

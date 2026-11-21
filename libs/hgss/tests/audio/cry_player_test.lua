@@ -214,6 +214,7 @@ local function newPatternRecordingCry()
     waveHandles = {},
     sequenceStarts = {},
     waveStarts = {},
+    sampleLeases = {},
     faderWrites = {},
     sourceSample = sample,
   }
@@ -227,9 +228,19 @@ local function newPatternRecordingCry()
       Assert.equal(id, 183, "the cry resolves the requested species bank")
       return bank
     end,
-    loadSample = function(_, key)
+    acquireSample = function(_, key)
       Assert.equal(key, sampleKey, "direct-wave playback uses the species bank sample")
-      return sample
+      local lease = { value = sample, returns = 0 }
+      function lease:release()
+        if self.value == nil then
+          return false
+        end
+        self.value = nil
+        self.returns = self.returns + 1
+        return true
+      end
+      state.sampleLeases[#state.sampleLeases + 1] = lease
+      return lease
     end,
   }
   ---@cast provider AudioAssetProvider
@@ -277,14 +288,16 @@ local function newPatternRecordingCry()
   ---@cast player SequencePlayer
 
   local waveOut = {
-    -- The recording WaveOut mirrors the production borrow contract: the
-    -- provider sample passes through unchanged and reversal rides the
-    -- logical flag, never a second buffer.
-    start = function(_, channel, resolvedSample, options)
+    -- The recording WaveOut mirrors the production acquisition contract: the
+    -- action's own sample lease passes through to the handling voice, which
+    -- owns it from the successful start until physical removal, and reversal
+    -- rides the logical flag instead of a second buffer.
+    start = function(_, channel, lease, options)
       local handle = {
         kind = "wave",
         channel = channel,
-        sample = resolvedSample,
+        sample = assert(lease.value),
+        lease = lease,
         volume = options.volume,
         pan = options.pan,
         speed = options.speed,
@@ -301,6 +314,9 @@ local function newPatternRecordingCry()
     stop = function(_, handle)
       handle.playing = false
       handle.stopCount = (handle.stopCount or 0) + 1
+      if handle.lease ~= nil then
+        handle.lease:release()
+      end
     end,
     setVolume = function(_, handle, volume)
       handle.volume = volume
@@ -385,6 +401,7 @@ function T.complex_patterns_keep_their_source_voice_families_and_controls()
         kind = "wave",
         channel = 14,
         sample = state.waveStarts[1].sample,
+        lease = state.waveStarts[1].lease,
         volume = 100,
         pan = 64,
         speed = 0x8600,
@@ -395,6 +412,7 @@ function T.complex_patterns_keep_their_source_voice_families_and_controls()
         kind = "wave",
         channel = 15,
         sample = state.waveStarts[2].sample,
+        lease = state.waveStarts[2].lease,
         volume = 70,
         pan = 64,
         speed = 0x8600,
@@ -404,6 +422,10 @@ function T.complex_patterns_keep_their_source_voice_families_and_controls()
     }, "pattern 4 uses both fixed WaveOut channels with reversed samples")
     Assert.isTrue(state.waveStarts[1].sample == state.sourceSample, "pattern 4 borrows the provider sample")
     Assert.isTrue(state.waveStarts[2].sample == state.sourceSample, "every wave shares the one borrowed sample")
+    Assert.isTrue(
+      state.waveStarts[1].lease ~= state.waveStarts[2].lease,
+      "each direct-wave action takes its own acquisition of the shared backing"
+    )
     local stored = {}
     for index = 0, state.sourceSample.pcm.frames - 1 do
       stored[#stored + 1] = state.sourceSample.pcm:read(index)
@@ -420,6 +442,10 @@ function T.complex_patterns_keep_their_source_voice_families_and_controls()
     Assert.equal(state.waveStarts[1].pan, 64)
     Assert.equal(state.waveStarts[1].volume, 100)
     Assert.isTrue(state.waveStarts[1].reverse, "pattern 9 reverses its private sample")
+    for _ = 1, 13 do
+      cry:update()
+    end
+    Assert.equal(state.waveStarts[1].lease.returns, 1, "the cleanup tick returns the owned acquisition once")
   end)
 
   recordPatternFailure(failures, 13, function()
@@ -465,18 +491,26 @@ end
 function T.partial_direct_wave_construction_releases_the_first_channel()
   local cry, state = newPatternRecordingCry()
   local first = state.waveHandles
+  local leases = {}
   local waveOut = {
-    start = function(_, channel, sample, options)
+    start = function(_, channel, lease, options)
       if channel == 15 then
         return nil
       end
-      local handle = { channel = channel, sample = sample, options = options, playing = true }
+      local handle = {
+        channel = channel,
+        sample = assert(lease.value),
+        lease = lease,
+        options = options,
+        playing = true,
+      }
       first[#first + 1] = handle
       return handle
     end,
     stop = function(_, handle)
       handle.playing = false
       handle.stopCount = (handle.stopCount or 0) + 1
+      handle.lease:release()
     end,
     isPlaying = function(_, handle)
       return handle.playing
@@ -502,8 +536,19 @@ function T.partial_direct_wave_construction_releases_the_first_channel()
         },
       }
     end,
-    loadSample = function()
-      return { metadata = { loop = { startFrame = 0, endFrame = 4 } }, pcm = { 1, 2, 3, 4 } }
+    acquireSample = function()
+      local lease =
+        { value = { metadata = { loop = { startFrame = 0, endFrame = 4 } }, pcm = { 1, 2, 3, 4 } }, returns = 0 }
+      function lease:release()
+        if self.value == nil then
+          return false
+        end
+        self.value = nil
+        self.returns = self.returns + 1
+        return true
+      end
+      leases[#leases + 1] = lease
+      return lease
     end,
   }
   ---@cast provider AudioAssetProvider
@@ -518,6 +563,8 @@ function T.partial_direct_wave_construction_releases_the_first_channel()
   Assert.isTrue(Errors.is(err) or type(err) == "string", "the failed construction remains diagnosable")
   Assert.equal(#first, 1, "the first direct-wave resource was acquired before the failure")
   Assert.equal(first[1].stopCount, 1, "partial direct-wave construction releases channel 14")
+  Assert.isNil(first[1].lease.value, "the stopped first channel returns its acquisition")
+  Assert.equal(leases[2].returns, 1, "the rejected action returns its own acquisition to the caller")
   Assert.isTrue(cry:isFinished(), "a failed direct-wave construction leaves no active cry")
 end
 

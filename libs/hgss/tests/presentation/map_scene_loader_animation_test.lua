@@ -25,6 +25,7 @@ local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local TextureSrtEvaluator = require("libs.hgss.src.presentation.TextureSrtEvaluator")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 local ControllableImageOwner = require("tests.support.ControllableImageOwner")
+local ScenePreparationFixture = require("tests.support.ScenePreparationFixture")
 
 local T = {}
 
@@ -99,6 +100,14 @@ local function luaCache(backend)
     assert(ok, result)
     return result
   end
+  local references = {}
+  local function acquireSource(reference)
+    local lease = { value = assert(reference).data }
+    function lease:release()
+      self.value = nil
+    end
+    return lease
+  end
   local result = {
     read = function(_, path)
       return backend:read(path)
@@ -106,9 +115,50 @@ local function luaCache(backend)
     loadLua = function(_, path)
       return loadLua(path)
     end,
+    -- Presented collision borrows the resident compact bytes instead of a
+    -- string copy, so the reader lends one immutable reference per payload.
+    resolveAsset = function(_, path)
+      local payload = backend:read(path)
+      if type(payload) ~= "string" then
+        return nil
+      end
+      local reference = references[path]
+      if reference == nil then
+        reference = {
+          path = path,
+          sourceId = "base:map-scene-animation-test",
+          contentId = "map-scene-animation-test\0" .. path,
+          size = #payload,
+          data = assert(love.data.newByteData(payload)),
+        }
+        references[path] = reference
+      end
+      return reference
+    end,
+    acquireSource = acquireSource,
   }
   ---@cast result CacheFs
   return result
+end
+
+-- Every staged build in this suite borrows the selected CPU pair: the fixture
+-- worker realizes the same packed upload shape the real worker publishes for
+-- these fixture bytes, and the shared image owner reports that same pair to the
+-- GPU pool. Compact collision borrows through the fixture's source acquirer.
+local function beginScene(cache, scene, opts)
+  opts = opts or {}
+  opts.acquireSource = opts.acquireSource or cache.acquireSource
+  if opts.assetPreparation == nil then
+    opts.assetPreparation, opts.decoded = ScenePreparationFixture.new(cache)
+    if opts.imageAssets ~= nil then
+      opts.imageAssets._preparation = { queue = opts.assetPreparation, decoded = opts.decoded }
+    end
+  end
+  return MapSceneLoader.begin(cache, scene, opts)
+end
+
+local function loadScene(cache, scene, opts)
+  return beginScene(cache, scene, opts):finish()
 end
 
 -- The 2x2-tile quad in tile space (MeshWriter vertex shape).
@@ -683,7 +733,7 @@ function T.animated_building_loads_advances_and_renders()
   backend:write(dir .. "/collision.g4collision", collisionGrid({ x = 4, z = 14 }))
 
   local cache = luaCache(backend)
-  local runtime = MapSceneLoader.load(cache, scene)
+  local runtime = loadScene(cache, scene)
   Assert.equal(runtime.stats.animatedInstances, 1)
   Assert.equal(#runtime.animatedInstances, 1)
 
@@ -826,11 +876,8 @@ function T.shared_definitions_share_resources_and_isolate_state()
       transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5, 0, 0, 1 },
     },
   }, { [desc.key] = desc })
-  local runtime = MapSceneLoader.load(
-    cache,
-    assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
-    { meshBuilder = fakeMeshBuilder }
-  )
+  local runtime =
+    loadScene(cache, assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")), { meshBuilder = fakeMeshBuilder })
   Assert.equal(runtime.stats.animatedInstances, 2)
   Assert.equal(runtime.stats.animatedModelCount, 1, "one definition serves both placements")
 
@@ -872,11 +919,8 @@ function T.banded_model_plays_its_time_band_and_swaps()
       transform = identityMatrix(),
     },
   }, { [desc.key] = desc })
-  local runtime = MapSceneLoader.load(
-    cache,
-    assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
-    { meshBuilder = fakeMeshBuilder }
-  )
+  local runtime =
+    loadScene(cache, assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")), { meshBuilder = fakeMeshBuilder })
 
   -- Noon is the default field time: the day band plays at load.
   local instance = runtime.animatedInstances[1]
@@ -932,11 +976,8 @@ function T.update_advances_the_pose_driven_draw_items()
       transform = doorTransform(),
     },
   }, { [desc.key] = desc }, { { x = 4, z = 14 } })
-  local runtime = MapSceneLoader.load(
-    cache,
-    assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
-    { meshBuilder = fakeMeshBuilder }
-  )
+  local runtime =
+    loadScene(cache, assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")), { meshBuilder = fakeMeshBuilder })
   local door = assert(runtime.mapProps:doorAt(doorMapFor(runtime, 4, 14), 4, 14))
   door:open()
   runtime:updateAnimated()
@@ -979,7 +1020,7 @@ function T.dynamic_scene_ticks_after_staged_build()
       transform = doorTransform(),
     },
   }, { [desc.key] = desc }, { { x = 4, z = 14 } })
-  local task = MapSceneLoader.begin(
+  local task = beginScene(
     cache,
     assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
     { meshBuilder = fakeMeshBuilder }
@@ -1018,11 +1059,8 @@ function T.draw_items_refresh_only_on_the_scene_tick()
       transform = doorTransform(),
     },
   }, { [desc.key] = desc }, { { x = 4, z = 14 } })
-  local runtime = MapSceneLoader.load(
-    cache,
-    assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
-    { meshBuilder = fakeMeshBuilder }
-  )
+  local runtime =
+    loadScene(cache, assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")), { meshBuilder = fakeMeshBuilder })
   local instance = runtime.animatedInstances[1]
   -- The load-time build already produced the frame-0 draw list; a control
   -- op between ticks marks nothing: the cached list stays until the scene
@@ -1054,11 +1092,8 @@ function T.fixed_tick_does_not_copy_the_static_building_list()
       transform = doorTransform(),
     },
   }, { [staticDesc.key] = staticDesc, [animatedDesc.key] = animatedDesc }, { { x = 4, z = 14 } })
-  local runtime = MapSceneLoader.load(
-    cache,
-    assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
-    { meshBuilder = fakeMeshBuilder }
-  )
+  local runtime =
+    loadScene(cache, assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")), { meshBuilder = fakeMeshBuilder })
 
   Assert.equal(#runtime.staticBuildingDraws, 1, "the static building loads once")
   Assert.equal(#runtime.animatedBuildingDraws, 1, "the animated building's frame-0 item loads once")
@@ -1103,11 +1138,8 @@ function T.ambient_clip_advances_once_per_session_tick_and_through_dialogue()
       transform = identityMatrix(),
     },
   }, { [desc.key] = desc })
-  local runtime = MapSceneLoader.load(
-    cache,
-    assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
-    { meshBuilder = fakeMeshBuilder }
-  )
+  local runtime =
+    loadScene(cache, assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")), { meshBuilder = fakeMeshBuilder })
   local instance = runtime.animatedInstances[1]
   Assert.isTrue(#instance.animationState:attachments("joint") == 1, "the ambient clip autoplays at load")
 
@@ -1396,11 +1428,8 @@ function T.same_named_ambient_clips_both_autoplay_at_load()
       transform = identityMatrix(),
     },
   }, { [desc.key] = desc })
-  local runtime = MapSceneLoader.load(
-    cache,
-    assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
-    { meshBuilder = fakeMeshBuilder }
-  )
+  local runtime =
+    loadScene(cache, assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")), { meshBuilder = fakeMeshBuilder })
   local instance = runtime.animatedInstances[1]
   Assert.equal(#instance.animationState:attachments("material"), 2, "both same-named ambient clips autoplay")
   runtime:release()
@@ -1415,11 +1444,12 @@ function T.load_rejects_an_unknown_initial_band()
       transform = identityMatrix(),
     },
   }, { [desc.key] = desc })
+  local assetPreparation, decoded = ScenePreparationFixture.new(cache)
   local ok, err = pcall(
     MapSceneLoader.load,
     cache,
     assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
-    { meshBuilder = fakeMeshBuilder, timeBand = "bogus" }
+    { meshBuilder = fakeMeshBuilder, timeBand = "bogus", assetPreparation = assetPreparation, decoded = decoded }
   )
   Assert.isFalse(ok)
   assert(tostring(err):find("unknown time-of-day band", 1, true) ~= nil, tostring(err))
@@ -1438,7 +1468,7 @@ function T.animated_material_resolves_its_image_with_the_material_wrap()
     },
   }, { [desc.key] = desc })
   local images = SharedImagePoolFake.new()
-  local runtime = MapSceneLoader.load(
+  local runtime = loadScene(
     cache,
     assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
     { meshBuilder = fakeMeshBuilder, imageAssets = images }
@@ -1476,7 +1506,7 @@ function T.animated_variant_texture_uses_the_material_wrap()
     },
   }, { [desc.key] = desc })
   local images = SharedImagePoolFake.new()
-  local runtime = MapSceneLoader.load(
+  local runtime = loadScene(
     cache,
     assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
     { meshBuilder = fakeMeshBuilder, imageAssets = images }
@@ -1527,7 +1557,7 @@ function T.cold_pattern_variant_is_borrowed_before_the_staged_build_transfers()
   }, { [desc.key] = desc })
   local images = ControllableImageOwner.new({ held = false })
   images:withhold(variantTexture)
-  local task = MapSceneLoader.begin(
+  local task = beginScene(
     cache,
     assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
     { meshBuilder = fakeMeshBuilder, imageAssets = images }
@@ -1578,7 +1608,7 @@ function T.untextured_animated_materials_never_request_an_image()
     },
   }, { [desc.key] = desc })
   local images = SharedImagePoolFake.new()
-  local runtime = MapSceneLoader.load(
+  local runtime = loadScene(
     cache,
     assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
     { meshBuilder = fakeMeshBuilder, imageAssets = images }
@@ -1605,7 +1635,7 @@ end
 function T.all_swap_frames_are_acquired_inside_the_load_transaction()
   local cache, scene = terrainScene({ swapMaterial(0, "flower01", "base.png", flowerSteps()) }, false)
   local images = SharedImagePoolFake.new()
-  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
+  local runtime = loadScene(cache, scene, { imageAssets = images })
   Assert.equal(
     runtime.stats.textureCount,
     4,
@@ -1631,7 +1661,7 @@ function T.same_path_and_wrap_dedup_through_the_pool()
   }
   local cache, scene = terrainScene(materials, false)
   local images = SharedImagePoolFake.new()
-  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
+  local runtime = loadScene(cache, scene, { imageAssets = images })
   Assert.equal(images.uploads, 4, "one shared image per unique path/wrap across the group")
   Assert.equal(runtime.stats.textureCount, 4)
   runtime:release()
@@ -1663,7 +1693,7 @@ function T.central_map_material_with_flip_resolves_to_mirrored_repeat()
   }
   local cache, scene = terrainScene({ material }, false)
   local images = SharedImagePoolFake.new()
-  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
+  local runtime = loadScene(cache, scene, { imageAssets = images })
   Assert.notNil(
     images:findPhysical("ground.png", { wrapX = "mirroredrepeat", wrapY = "repeat" }),
     "a flipped repeat axis must reach the shared owner as the resolved mirrored-repeat sampler, not raw repeat"
@@ -1688,7 +1718,7 @@ function T.clamp_with_flip_remains_clamp_through_the_loader()
   }
   local cache, scene = terrainScene({ material }, false)
   local images = SharedImagePoolFake.new()
-  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
+  local runtime = loadScene(cache, scene, { imageAssets = images })
   Assert.notNil(
     images:findPhysical("wall.png", { wrapX = "clamp", wrapY = "clamp" }),
     "a flipped clamp axis stays clamp"
@@ -1724,7 +1754,7 @@ function T.same_texture_under_different_resolved_wraps_stays_separately_pooled()
   }
   local cache, scene = terrainScene(materials, false)
   local images = SharedImagePoolFake.new()
-  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
+  local runtime = loadScene(cache, scene, { imageAssets = images })
   Assert.equal(images.uploads, 2, "distinct resolved wraps over the same path stay separately shared")
   Assert.notNil(images:findPhysical("shared.png", { wrapX = "mirroredrepeat", wrapY = "repeat" }))
   Assert.notNil(images:findPhysical("shared.png", { wrapX = "repeat", wrapY = "repeat" }))
@@ -1749,7 +1779,7 @@ function T.terrain_swap_replacement_images_share_the_resolved_mirrored_repeat_wr
   }
   local cache, scene = terrainScene({ material }, false)
   local images = SharedImagePoolFake.new()
-  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
+  local runtime = loadScene(cache, scene, { imageAssets = images })
   Assert.equal(images.uploads, 4, "base plus the three unique replacement steps")
   local resolved = { wrapX = "mirroredrepeat", wrapY = "repeat" }
   for _, path in ipairs({ "base.png", "a.png", "b.png", "c.png" }) do
@@ -1782,7 +1812,7 @@ function T.terrain_frame_and_matrix_mutate_in_place_without_rebuilding_draws()
   }
   local cache, scene = terrainScene(materials, clip)
   local images = SharedImagePoolFake.new()
-  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
+  local runtime = loadScene(cache, scene, { imageAssets = images })
   local draws = runtime.mapDraws
   local flower = draws[1].material
   local water = draws[2].material
@@ -1826,7 +1856,7 @@ function T.failure_on_an_alternate_frame_creation_releases_resources_exactly_onc
   local images = SharedImagePoolFake.new()
   images:failAfterUploads(2, "injected alternate-image failure")
   local err = Assert.throws(function()
-    MapSceneLoader.load(cache, scene, { imageAssets = images })
+    loadScene(cache, scene, { imageAssets = images })
   end)
   Assert.isTrue(tostring(err):find("injected alternate-image failure", 1, true) ~= nil, "the frame failure propagates")
   Assert.equal(images.uploads, 2, "base and step 1 borrowed before the failing step 2")
@@ -1840,7 +1870,7 @@ end
 function T.release_after_a_successful_load_releases_every_image_exactly_once()
   local cache, scene = terrainScene({ swapMaterial(0, "flower01", "base.png", flowerSteps()) }, false)
   local images = SharedImagePoolFake.new()
-  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
+  local runtime = loadScene(cache, scene, { imageAssets = images })
   local physicals = {}
   for _, path in ipairs({ "base.png", "a.png", "b.png", "c.png" }) do
     physicals[#physicals + 1] = images:findPhysical(path, REPEAT_SAMPLER)
@@ -1869,7 +1899,7 @@ function T.no_animation_scenes_update_safely()
     },
   }, false)
   local images = SharedImagePoolFake.new()
-  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
+  local runtime = loadScene(cache, scene, { imageAssets = images })
   local draws = runtime.mapDraws
   runtime:updateAnimated()
   Assert.equal(runtime.mapDraws, draws, "a no-animation scene tick leaves the draws untouched")
@@ -1902,7 +1932,7 @@ function T.static_only_terrain_srt_is_initialized_by_the_loader()
     srt = srt,
   }
   local cache, scene = terrainScene({ material }, false)
-  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = SharedImagePoolFake.new() })
+  local runtime = loadScene(cache, scene, { imageAssets = SharedImagePoolFake.new() })
   local matrix = runtime.mapDraws[1].material.texMatrix
   Assert.near(matrix[7], -1 / 16, 1e-9, "the static srt matrix is non-identity")
   local expected = TextureSrtEvaluator.matrix(material, nil)
@@ -1951,7 +1981,7 @@ function T.static_building_draw_materials_carry_a_tex_matrix()
     { { placementIndex = 0, modelKey = "building:wall", transform = identityMatrix() } },
     { desc }
   )
-  local runtime = MapSceneLoader.load(
+  local runtime = loadScene(
     cache,
     assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
     { meshBuilder = fakeMeshBuilder, imageAssets = SharedImagePoolFake.new() }
@@ -1986,7 +2016,7 @@ end
 function T.load_forwards_the_scenes_resolved_fog_preset()
   local cache, scene = terrainScene({}, false)
   scene.fog = fogPresetFixture()
-  local runtime = MapSceneLoader.load(cache, scene)
+  local runtime = loadScene(cache, scene)
   Assert.deepEqual(runtime.fog, fogPresetFixture(), "the runtime carries the scene's resolved fog preset")
   runtime:release()
 end
@@ -1999,7 +2029,7 @@ function T.load_requires_the_scenes_fog_preset()
   local cache, scene = terrainScene({}, false)
   scene.fog = nil
   Assert.throws(function()
-    MapSceneLoader.load(cache, scene)
+    loadScene(cache, scene)
   end)
 end
 
@@ -2016,11 +2046,8 @@ function T.animated_aggregation_reuses_one_outer_list()
       transform = doorTransform(),
     },
   }, { [desc.key] = desc }, { { x = 4, z = 14 } })
-  local runtime = MapSceneLoader.load(
-    cache,
-    assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
-    { meshBuilder = fakeMeshBuilder }
-  )
+  local runtime =
+    loadScene(cache, assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")), { meshBuilder = fakeMeshBuilder })
   Assert.equal(#runtime.animatedBuildingDraws, 1, "frame-0 animated items exist right after load")
   local draws = runtime.animatedBuildingDraws
   local instance = runtime.animatedInstances[1]

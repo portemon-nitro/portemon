@@ -7,6 +7,7 @@
 -- No commercial bytes appear here; absent versions report blocked.
 
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local Assert = require("tests.support.Assert")
 local MonCache = require("libs.assets.src.MonCache")
 local MonSources = require("romdump.src.config.MonSources")
@@ -782,7 +783,10 @@ function T.fixture_policy_identities_resolve_within_rom_bank_ranges(romFs, versi
   local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
   local cacheFs = GeneratedCacheFixture.reader(versionId)
   Assert.notNil(cacheFs, versionId .. " exposes its prepared cache")
-  local provider = FieldMessageProvider.new(cacheFs)
+  local selectedRuntime = SelectedAssetRuntimeFixture.new(cacheFs)
+  local provider = FieldMessageProvider.new(cacheFs, {
+    acquireSource = SelectedAssetRuntimeFixture.acquireSource(selectedRuntime),
+  })
   local bindings = assert(catalog.textBindings, versionId .. " binds its text roles")
   local native = assert(bindings.entryByLanguage.native, versionId .. " binds its native entry banks")
   local base = assert(bindings.measureByProfile.base, versionId .. " binds its base measure banks")

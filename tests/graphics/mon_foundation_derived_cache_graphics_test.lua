@@ -6,6 +6,7 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
@@ -182,9 +183,14 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
           return { bootstrap = "ready" }
         end,
       }
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
+      -- The presented runtime borrows the selected epoch's CPU owners for the
+      -- boot; the scope releases them after the state disposes.
+      local assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
       local state = assert(FieldState.new(game, {
         derivedAssets = readyHost,
-        cacheFs = GeneratedCacheFixture.reader(versionId),
+        cacheFs = cacheFs,
+        assetRuntime = assetRuntime,
       }))
       local ok, err = xpcall(function()
         local runtime = assert(state.runtime)

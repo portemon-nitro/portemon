@@ -7,6 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
@@ -36,7 +37,10 @@ local T = {}
 ---@param cacheFs CacheFs version cache the pool classifies from
 ---@return table<string, unknown> session image owner disposed with the scope
 local function versionPool(scope, cacheFs)
-  local pool = ImageAssetPool.new(cacheFs)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
+  local pool = ImageAssetPool.new(cacheFs, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   scope:own({
     release = function()
       pool:dispose()

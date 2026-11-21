@@ -6,6 +6,7 @@
 
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local DialogueLayout = require("libs.hgss.src.ui.DialogueLayout")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
@@ -25,10 +26,19 @@ end
 -- Runs one real bank message through format -> layout -> controller and
 -- drives it to completion with Action. Returns the page count and the
 -- completion result.
+-- The message provider a selected session installs over the prepared cache:
+-- every open bank borrows the selected runtime's resident source branch.
+local function messageProvider(cache)
+  local runtime = SelectedAssetRuntimeFixture.new(cache)
+  return assert(FieldMessageProvider.new(cache, {
+    acquireSource = SelectedAssetRuntimeFixture.acquireSource(runtime),
+  }))
+end
+
 local function runMessage(version, bankId, messageId)
   local def = fontDef(version)
   local cache = GeneratedCacheFixture.reader(version)
-  local provider = assert(FieldMessageProvider.new(cache))
+  local provider = messageProvider(cache)
   local bank = provider:acquireBank(bankId)
   assert(bank, "message bank cache is cold")
   local template = assert(provider:get(bankId, messageId))
@@ -105,7 +115,7 @@ function T.page_break_retains_the_prior_bottom_line(_, version)
   -- retain the prior bottom line instead of clearing the page.
   local def = fontDef(version)
   local cache = GeneratedCacheFixture.reader(version)
-  local provider = assert(FieldMessageProvider.new(cache))
+  local provider = messageProvider(cache)
   assert(provider:acquireBank(542), "message bank cache is cold")
   local template = assert(provider:get(542, 18))
   local formatted = provider:format(template, { playerName = "GOLD" }, {
@@ -216,7 +226,7 @@ end
 function T.target_lines_stay_inside_the_reference_text_width(_, version)
   local def = fontDef(version)
   local cache = GeneratedCacheFixture.reader(version)
-  local provider = assert(FieldMessageProvider.new(cache))
+  local provider = messageProvider(cache)
   local metrics = FieldDialogueTheme.fontMetrics(def)
   local widths = {}
   assert(provider:acquireBank(543))

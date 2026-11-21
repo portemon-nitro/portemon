@@ -8,6 +8,7 @@ local LuaWriter = require("libs.codec.src.LuaWriter")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
+local ScenePreparationFixture = require("tests.support.ScenePreparationFixture")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 
@@ -97,6 +98,7 @@ local function loadRuntime(descriptors, runtimeProps)
       backend:write(batch.geometry, MeshWriter.encode(quad()))
     end
   end
+  local references = {}
   local cache = {
     read = function(_, path)
       return backend:read(path)
@@ -109,9 +111,44 @@ local function loadRuntime(descriptors, runtimeProps)
       assert(ok, result)
       return result
     end,
+    -- Presented collision borrows the resident compact bytes instead of a
+    -- string copy, so the reader lends one immutable reference per payload.
+    resolveAsset = function(_, path)
+      local payload = backend:read(path)
+      if type(payload) ~= "string" then
+        return nil
+      end
+      local reference = references[path]
+      if reference == nil then
+        reference = {
+          path = path,
+          sourceId = "base:map-scene-static-props-test",
+          contentId = "map-scene-static-props-test\0" .. path,
+          size = #payload,
+          data = assert(love.data.newByteData(payload)),
+        }
+        references[path] = reference
+      end
+      return reference
+    end,
+    acquireSource = function(reference)
+      local lease = { value = assert(reference).data }
+      function lease:release()
+        self.value = nil
+      end
+      return lease
+    end,
   }
   ---@cast cache CacheFs
-  return MapSceneLoader.load(cache, scene, { meshBuilder = fakeMeshBuilder })
+  -- The staged build borrows the selected CPU pair: the fixture worker realizes
+  -- the same packed upload shape the real worker publishes for these bytes.
+  local assetPreparation, decoded = ScenePreparationFixture.new(cache)
+  return MapSceneLoader.load(cache, scene, {
+    meshBuilder = fakeMeshBuilder,
+    acquireSource = cache.acquireSource,
+    assetPreparation = assetPreparation,
+    decoded = decoded,
+  })
 end
 
 function T.replacement_resolves_each_owner_model_and_leaves_other_owners_untouched()

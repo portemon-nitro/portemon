@@ -1,5 +1,6 @@
--- Message provider tests over a FakeCache: active bank lifetime, immutable
--- templates, and substitution formatting.
+-- Message provider tests over a resident bank store and the selected runtime's
+-- source acquirer: active bank lifetime, immutable templates, substitution
+-- formatting, and the resident source interest behind each open bank.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -7,7 +8,10 @@ local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProv
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local FieldMessageFixture = require("tests.support.FieldMessageFixture")
 local CacheFs = require("libs.storage.src.CacheFs")
-local FakeCache = require("tests.support.FakeCache")
+local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+local ResidentCache = require("libs.storage.src.ResidentCache")
 
 local T = {}
 
@@ -24,18 +28,34 @@ local function bankMessages(messageCount)
   return messages
 end
 
-local function cacheWithBackend(banks)
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
-  for bankId, messageCount in pairs(banks) do
-    FieldMessageFixture.write(cache, bankId, bankMessages(messageCount))
+-- The resident bank store a selected session would have installed: the provider
+-- reads these bytes directly, so no test copies a bank payload.
+---@param counts table<integer, integer>
+local function cacheWith(counts)
+  local banks = {}
+  for bankId, messageCount in pairs(counts) do
+    banks[bankId] = bankMessages(messageCount)
   end
-  return cache, backend
+  return FieldMessageFixture.resident("heartgold", banks).reader
 end
 
-local function cacheWith(banks)
-  local cache = cacheWithBackend(banks)
-  return cache
+-- A selected preparation queue over the resident reader; compact acquisition
+-- needs no worker, so the fake thread host stays unused.
+local function selectedQueue(cache)
+  return AssetPreparationQueue.new(cache, {
+    decoded = ResidentAssetCache.new({ idleByteLimit = 0, release = function() end }),
+  })
+end
+
+-- The provider with the selected queue's base source branch behind it.
+local function providerWith(cache, acquireSource)
+  local queue = selectedQueue(cache)
+  local provider = assert(FieldMessageProvider.new(cache, {
+    acquireSource = acquireSource or function(reference)
+      return queue:acquireSource(reference)
+    end,
+  }))
+  return provider
 end
 
 local function glyph(code, text)
@@ -71,16 +91,15 @@ end
 -- of leaving an idle copy behind, and a returned template never depends on the
 -- record that produced it.
 function T.release_ends_the_active_acquisition_without_invalidating_returned_templates()
-  local cache, backend = cacheWithBackend({ [542] = 2, [543] = 2 })
+  local cache = cacheWith({ [542] = 2, [543] = 2 })
   local openedReads = 0
-  local storedRead = backend.read
-  backend.read = function(self, path)
-    if path:find("banks/0542", 1, true) then
+  local queue = selectedQueue(cache)
+  local provider = assert(FieldMessageProvider.new(cache, {
+    acquireSource = function(reference)
       openedReads = openedReads + 1
-    end
-    return storedRead(self, path)
-  end
-  local provider = assert(FieldMessageProvider.new(cache))
+      return queue:acquireSource(reference)
+    end,
+  }))
 
   local bank = assert(provider:acquireBank(542))
   Assert.equal(bank.bankId, 542)
@@ -134,8 +153,77 @@ function T.release_ends_the_active_acquisition_without_invalidating_returned_tem
   Assert.equal(provider:format(template, {}).text, "1", "disposal never invalidates a returned template")
 end
 
+-- A bank is borrowed from the selected resident source: acquisition takes one
+-- interest over the bytes the resident store already owns, the returned
+-- template is self-contained, and the final release (or a failed open) returns
+-- that interest exactly once instead of leaving an idle compact copy behind.
+function T.bank_acquisition_borrows_the_resident_source_and_returns_it_once()
+  local version = "heartgold"
+  local sourceId = "base:message-provider-source"
+  local banks = { [542] = FieldMessageFixture.encode(FieldMessageFixture.bank(542, bankMessages(2))) }
+  banks[543] = assert(love.data.newByteData("G4MS not a readable bank"))
+  local store = ResidentCache.new(version, sourceId)
+  local entries = {}
+  for bankId, data in pairs(banks) do
+    local path = FieldMessageCache.bankPath(bankId)
+    entries[#entries + 1] = {
+      path = path,
+      data = data,
+      size = data:getSize(),
+      sourceId = sourceId,
+      contentId = version .. "\0" .. path,
+    }
+  end
+  store:commit(store:prepare(entries))
+  local cache = CacheFs.fromStore(store)
+
+  local acquisitions, releases, borrowed = 0, 0, {}
+  local function acquireSource(reference)
+    Assert.notNil(reference, "a compact bank must resolve its resident reference before it is borrowed")
+    acquisitions = acquisitions + 1
+    borrowed[#borrowed + 1] = reference.data
+    local lease = { value = reference.data }
+    function lease:release()
+      if self.value == nil then
+        return
+      end
+      self.value = nil
+      releases = releases + 1
+    end
+    return lease
+  end
+
+  local provider = assert(FieldMessageProvider.new(cache, { acquireSource = acquireSource }))
+  local bank = assert(provider:acquireBank(542), "an acquired resident bank yields its compact view")
+  Assert.equal(bank.messageCount, 2, "the borrowed bank keeps its message count")
+  Assert.equal(acquisitions, 1, "acquiring a bank takes exactly one resident source interest")
+  Assert.isTrue(borrowed[1] == banks[542], "the bank is opened over the bytes the resident store owns")
+
+  local template = assert(provider:get(542, 1))
+  Assert.equal(template.text, "1", "the selected message still formats from the borrowed bank")
+  provider:acquireBank(542)
+  Assert.equal(acquisitions, 1, "a repeated acquisition reuses the active bank interest")
+  provider:releaseBank(542)
+  Assert.equal(releases, 0, "one remaining reference keeps the resident interest alive")
+  provider:releaseBank(542)
+  Assert.equal(releases, 1, "the final bank release returns its source interest exactly once")
+  Assert.equal(provider:stats().live, 0, "no idle compact bank copy survives the final release")
+  Assert.equal(provider:format(template, {}).text, template.text, "a returned template outlives its bank source")
+
+  local malformed, malformedErr = provider:acquireBank(543)
+  Assert.isNil(malformed, "an unreadable bank yields no view")
+  Assert.equal(assert(malformedErr).code, "MESSAGE_BANK_MISSING")
+  Assert.equal(acquisitions, 2, "a malformed bank still acquires its staged source")
+  Assert.equal(releases, 2, "a failed open returns the staged source interest immediately")
+  Assert.equal(provider:stats().live, 0, "a failed open installs no bank record")
+
+  assert(provider:acquireBank(542))
+  provider:dispose()
+  Assert.equal(releases, 3, "disposal returns every still-active source interest exactly once")
+end
+
 function T.get_returns_immutable_templates_and_bounds_errors()
-  local provider = assert(FieldMessageProvider.new(cacheWith({ [543] = 3 })))
+  local provider = providerWith(cacheWith({ [543] = 3 }))
   provider:acquireBank(543)
   local firstTemplate = assert(provider:get(543, 1))
   Assert.equal(firstTemplate.bankId, 543)
@@ -154,7 +242,7 @@ function T.get_returns_immutable_templates_and_bounds_errors()
 end
 
 function T.missing_bank_artifact_is_typed()
-  local provider = assert(FieldMessageProvider.new(cacheWith({})))
+  local provider = providerWith(cacheWith({}))
   local bank, err = provider:acquireBank(542)
   Assert.isNil(bank)
   Assert.isTrue(Errors.is(err))
@@ -162,7 +250,7 @@ function T.missing_bank_artifact_is_typed()
 end
 
 function T.format_substitutes_before_wrapping_and_never_mutates()
-  local provider = assert(FieldMessageProvider.new(cacheWith({ [542] = 1 })))
+  local provider = providerWith(cacheWith({ [542] = 1 }))
   provider:acquireBank(542)
   local formattedTemplate = assert(provider:get(542, 0))
   local context = { playerName = "GOLD" }
@@ -205,7 +293,7 @@ function T.format_substitutes_before_wrapping_and_never_mutates()
 end
 
 function T.unresolved_substitution_stays_visible_and_traced()
-  local provider = assert(FieldMessageProvider.new(cacheWith({ [542] = 1 })))
+  local provider = providerWith(cacheWith({ [542] = 1 }))
   local tokens = {
     { kind = "substitution", control = 0x0103, args = { 0, 0 }, raw = { 0xFFFE, 0x0103, 0x0002, 0, 0 } },
     { kind = "eos", raw = { 0xFFFF } },
@@ -232,14 +320,14 @@ function T.ascii_glyph_tokens_cover_the_demo_name()
 end
 
 function T.dispose_releases_everything()
-  local provider = assert(FieldMessageProvider.new(cacheWith({ [542] = 1 })))
+  local provider = providerWith(cacheWith({ [542] = 1 }))
   provider:acquireBank(542)
   provider:dispose()
   Assert.equal(provider:stats().live, 0)
 end
 
 function T.prepared_glyphs_carry_the_default_color()
-  local provider = assert(FieldMessageProvider.new(cacheWith({})))
+  local provider = providerWith(cacheWith({}))
   local formatted = provider:format(template(4, { glyph(0x0121, "A"), eos() }), {})
   Assert.equal(#formatted.tokens, 2)
   Assert.equal(formatted.tokens[1].kind, "glyph")
@@ -247,7 +335,7 @@ function T.prepared_glyphs_carry_the_default_color()
 end
 
 function T.prepared_glyphs_follow_ordinary_color_spans()
-  local provider = assert(FieldMessageProvider.new(cacheWith({})))
+  local provider = providerWith(cacheWith({}))
   local formatted = provider:format(
     template(5, {
       glyph(0x0121, "A"),
@@ -277,7 +365,7 @@ function T.prepared_glyphs_follow_ordinary_color_spans()
 end
 
 function T.substitution_replacement_glyphs_inherit_the_active_color()
-  local provider = assert(FieldMessageProvider.new(cacheWith({})))
+  local provider = providerWith(cacheWith({}))
   local fontDef = { charmap = { ["X"] = 0x0121 } }
   local formatted = provider:format(
     template(6, {
@@ -303,7 +391,7 @@ function T.substitution_replacement_glyphs_inherit_the_active_color()
 end
 
 function T.color_save_and_swap_follow_source_state()
-  local provider = assert(FieldMessageProvider.new(cacheWith({})))
+  local provider = providerWith(cacheWith({}))
   local formatted = provider:format(
     template(7, {
       color({ 2 }),
@@ -334,7 +422,7 @@ function T.color_save_and_swap_follow_source_state()
 end
 
 function T.valid_indicator_fields_survive_as_zero_width_tokens()
-  local provider = assert(FieldMessageProvider.new(cacheWith({})))
+  local provider = providerWith(cacheWith({}))
   local formatted = provider:format(
     template(9, {
       yesno({ 0 }),
@@ -357,7 +445,7 @@ function T.valid_indicator_fields_survive_as_zero_width_tokens()
 end
 
 function T.invalid_indicator_arguments_are_typed()
-  local provider = assert(FieldMessageProvider.new(cacheWith({})))
+  local provider = providerWith(cacheWith({}))
   for _, spec in ipairs({
     { args = {}, label = "missing argument" },
     { args = { 0, 1 }, label = "extra arguments" },
@@ -377,7 +465,7 @@ function T.invalid_indicator_arguments_are_typed()
 end
 
 function T.invalid_color_arguments_are_typed()
-  local provider = assert(FieldMessageProvider.new(cacheWith({})))
+  local provider = providerWith(cacheWith({}))
   for _, spec in ipairs({
     { args = {}, label = "missing argument" },
     { args = { 1, 2 }, label = "extra arguments" },
@@ -399,7 +487,7 @@ function T.invalid_color_arguments_are_typed()
 end
 
 function T.unsupported_printer_controls_are_typed_rejections()
-  local provider = assert(FieldMessageProvider.new(cacheWith({})))
+  local provider = providerWith(cacheWith({}))
   local cases = {
     { kind = "wait", control = 0x0202, name = "WAIT", args = {}, raw = { 0xFFFE, 0x0202, 0 }, label = "PAUSE/WAIT" },
     {
@@ -455,7 +543,7 @@ end
 
 -- SIZE 200 stretches the glyphs after it until SIZE 100 restores them.
 function T.size_controls_toggle_glyph_stretching()
-  local provider = assert(FieldMessageProvider.new(cacheWith({})))
+  local provider = providerWith(cacheWith({}))
   local formatted = provider:format(
     template(14, {
       glyph(0x0121, "A"),
@@ -477,7 +565,7 @@ function T.size_controls_toggle_glyph_stretching()
 end
 
 function T.size_controls_reject_unknown_arguments()
-  local provider = assert(FieldMessageProvider.new(cacheWith({})))
+  local provider = providerWith(cacheWith({}))
   for _, args in ipairs({ {}, { 150 }, { 100, 1 } }) do
     local err = Assert.throws(function()
       provider:format(template(15, { size(args), glyph(0x0121, "A"), eos() }), {})
@@ -487,7 +575,7 @@ function T.size_controls_reject_unknown_arguments()
 end
 
 function T.formatting_is_immutable_across_reuse()
-  local provider = assert(FieldMessageProvider.new(cacheWith({})))
+  local provider = providerWith(cacheWith({}))
   local source = template(13, {
     color({ 1 }),
     { kind = "substitution", control = 0x0103, args = { 0, 0 }, raw = { 0xFFFE, 0x0103, 0x0002, 0, 0 } },

@@ -3,6 +3,7 @@
 -- save backend; generated maps and presentation assets remain production data.
 
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local Assert = require("tests.support.Assert")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
@@ -31,24 +32,25 @@ local function freshGame(versionId)
   return FinalizedGameFixture.build(versionId)
 end
 
-local function boot(versionId)
-  local ok, state = pcall(
-    FieldState.new,
-    freshGame(versionId),
-    {
-      derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
-      cacheFs = GeneratedCacheFixture.reader(versionId),
-    }
-  )
+local function boot(scope, versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
+  -- The presented runtime borrows the selected epoch's CPU owners for the
+  -- duration of the boot; the scope releases them after the state disposes.
+  local assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
+  local ok, state = pcall(FieldState.new, freshGame(versionId), {
+    derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+    cacheFs = cacheFs,
+    assetRuntime = assetRuntime,
+  })
   if not ok then
     error(state, 0)
   end
   return state
 end
 
-function T.fresh_outdoor_boot_exposes_adjacent_physical_parts(_)
+function T.fresh_outdoor_boot_exposes_adjacent_physical_parts(scope)
   for _, versionId in ipairs(readyVersions()) do
-    local state = boot(versionId)
+    local state = boot(scope, versionId)
     local ok, err = xpcall(function()
       local runtime = assert(state.runtime)
       local coverage = assert(runtime.runtimeMap.coverage)
@@ -89,9 +91,9 @@ function T.fresh_outdoor_boot_exposes_adjacent_physical_parts(_)
   end
 end
 
-function T.outdoor_presentation_keeps_the_committed_world_while_halo_work_is_bounded()
+function T.outdoor_presentation_keeps_the_committed_world_while_halo_work_is_bounded(scope)
   for _, versionId in ipairs(readyVersions()) do
-    local state = boot(versionId)
+    local state = boot(scope, versionId)
     local ok, err = xpcall(function()
       local runtime = assert(state.runtime)
       local coverage = assert(runtime.runtimeMap.coverage)
@@ -137,9 +139,9 @@ function T.outdoor_presentation_keeps_the_committed_world_while_halo_work_is_bou
   end
 end
 
-function T.everywhere_north_south_cells_draw_real_terrain(_)
+function T.everywhere_north_south_cells_draw_real_terrain(scope)
   for _, versionId in ipairs(readyVersions()) do
-    local state = boot(versionId)
+    local state = boot(scope, versionId)
     local ok, err = xpcall(function()
       local runtime = assert(state.runtime)
       local coverage = assert(runtime.runtimeMap.coverage)
@@ -179,9 +181,9 @@ function T.everywhere_north_south_cells_draw_real_terrain(_)
   end
 end
 
-function T.trainer_reveal_draws_through_the_production_effect_composition()
+function T.trainer_reveal_draws_through_the_production_effect_composition(scope)
   for _, versionId in ipairs(readyVersions()) do
-    local state = boot(versionId)
+    local state = boot(scope, versionId)
     local ok, err = xpcall(function()
       local runtime = assert(state.runtime)
       local player = assert(runtime.player)

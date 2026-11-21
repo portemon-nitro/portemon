@@ -22,7 +22,7 @@ local MoveIconFixture = require("tests.support.MoveIconFixture")
 local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
-local FakePreparationQueue = require("tests.support.FakePreparationQueue")
+local ScenePreparationFixture = require("tests.support.ScenePreparationFixture")
 local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
 
 local T = {}
@@ -33,6 +33,12 @@ local T = {}
 local function stubPresentationRuntime(cache)
   cache = cache or FieldStatePresentationFixture.cache()
   local effects = FieldStatePresentationFixture.terrainEffects(cache)
+  -- The bag hero and the staged effect builds borrow the selected CPU pair from
+  -- the session image owner and receive the same pair explicitly, exactly like
+  -- the production runtime. The fixture worker realizes the produced geometry
+  -- synchronously, so the real pool consumes the same upload shape a worker
+  -- publishes.
+  local assetPreparation, decoded = ScenePreparationFixture.new(cache)
   return setmetatable({
     monNaming = InactiveMonNaming.new(),
     monService = {
@@ -44,8 +50,9 @@ local function stubPresentationRuntime(cache)
     cacheFs = cache or FieldStatePresentationFixture.cache(),
     assetNeeds = AssetNeedsRegistry.new(),
     derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
-    imageAssets = SummaryAcceptanceFixture.sizedImagePool(),
-    assetPreparation = FakePreparationQueue.new(),
+    imageAssets = SummaryAcceptanceFixture.sizedImagePool({ queue = assetPreparation, decoded = decoded }),
+    assetPreparation = assetPreparation,
+    decoded = decoded,
     uiManifest = FieldUiFixture.fieldStateManifest(),
     itemCatalog = ItemFixture.makeCatalog(),
     monCatalog = CatalogFixture.makeCatalog(),

@@ -467,6 +467,8 @@ local function movieGraphics(fakeOpts)
   graphics.meshes = {}
   graphics.newMesh = function()
     local mesh = { released = false, releaseCount = 0 }
+    mesh.setVertices = function() end
+    mesh.setVertexMap = function() end
     mesh.release = function()
       mesh.released = true
       mesh.releaseCount = mesh.releaseCount + 1
@@ -481,6 +483,30 @@ end
 ---@param cacheFs table
 ---@param graphics table
 ---@return table player
+-- The selected CPU pair an opening movie composes over: fixture bytes realize
+-- through the same upload shape the worker publishes.
+local function withPreparation(options)
+  local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
+  local cacheFs = options.cacheFs
+  local queue = {}
+  function queue:request(kind, path, priority)
+    return { kind = kind, path = path, priority = priority }
+  end
+  function queue:wait(request)
+    local bytes = assert(cacheFs:read(request.path), "missing fixture geometry " .. tostring(request.path))
+    local payload = request.kind == "g4gx" and SceneMesh.prepareNativeBank(bytes) or SceneMesh.prepareUpload(bytes)
+    return { value = { kind = request.kind, payload = payload } }
+  end
+  local decoded = {}
+  function decoded:returnLease()
+    return true
+  end
+  function decoded:trim() end
+  options.assetPreparation = options.assetPreparation or queue
+  options.decoded = options.decoded or decoded
+  return requireMovie().new(options)
+end
+
 local function openMovie(scenes, cacheFs, graphics)
   local context = DisplayContext.new({
     graphics = graphics,
@@ -492,8 +518,7 @@ local function openMovie(scenes, cacheFs, graphics)
       }
     end,
   })
-  local Movie = requireMovie()
-  return Movie.new({
+  return withPreparation({
     versionId = VERSION_ID,
     splRandomState = { state = 0 },
     scenes = scenes,
@@ -899,11 +924,7 @@ function T.started_wipe_effects_hold_the_close_step_for_their_authored_ticks()
     closeTicks = closeTicks + 1
   end
   Assert.equal(holdProbe:sceneNumber(), 3, "the probe reaches scene 3")
-  Assert.equal(
-    closeTicks,
-    25 + 10 + 1,
-    "the close step holds exactly the wipe's ten authored ticks plus the exit call"
-  )
+  Assert.equal(closeTicks, 25 + 10 + 1, "the close step holds exactly the wipe's ten authored ticks plus the exit call")
   holdProbe:dispose()
   movie:dispose()
   Assert.equal(liveHandles(graphics), 0, "the wipe step leaves no handle behind")

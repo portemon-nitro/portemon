@@ -11,6 +11,54 @@ local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local ListSurface = require("libs.ui.src.ListSurface")
 local ScrollViewport = require("libs.ui.src.ScrollViewport")
 
+-- The borrowed selected CPU pair the editor renderer composes over. The
+-- layout fixtures stub pooled requests, so one inert pair is enough.
+local function newRenderer(options)
+  options.assetPreparation = options.assetPreparation
+    or {
+      request = function()
+        return 0
+      end,
+      poll = function()
+        return "failed", "the layout fixture carries no prepared image"
+      end,
+      take = function()
+        error("the layout fixture carries no prepared image")
+      end,
+      cancel = function() end,
+      promote = function() end,
+      acquireSource = function()
+        error("the layout fixture carries no resident source")
+      end,
+    }
+  options.decoded = options.decoded
+    or {
+      returnLease = function()
+        return true
+      end,
+      trim = function() end,
+    }
+  options.imagePool = options.imagePool
+    or {
+      request = function()
+        return 0
+      end,
+      poll = function()
+        return "failed", "the layout fixture carries no prepared image"
+      end,
+      acquire = function()
+        error("the layout fixture carries no prepared image")
+      end,
+      cancel = function() end,
+      release = function() end,
+      dispose = function() end,
+      prune = function()
+        return 0
+      end,
+    }
+  return Renderer.new(options)
+end
+
 local T = { tests = {} }
 local function computeLayout(view, width, height)
   if view.flagRows ~= nil and view.flagModel == nil then
@@ -2857,12 +2905,12 @@ function T.tests.painting_follows_resolved_geometry_without_recomputing_layout()
   local firstOps, secondOps = {}, {}
   local ok, drawError = pcall(function()
     local renderer =
-      Renderer.new({ text = layoutPaintText(), graphics = layoutPaintGraphics(firstOps), versionId = "heartgold" })
+      newRenderer({ text = layoutPaintText(), graphics = layoutPaintGraphics(firstOps), versionId = "heartgold" })
     renderer:draw(view, plan)
     renderer:dispose()
     saveRect.x = saveRect.x + 7
     local shifted =
-      Renderer.new({ text = layoutPaintText(), graphics = layoutPaintGraphics(secondOps), versionId = "heartgold" })
+      newRenderer({ text = layoutPaintText(), graphics = layoutPaintGraphics(secondOps), versionId = "heartgold" })
     shifted:draw(view, plan)
     shifted:dispose()
   end)

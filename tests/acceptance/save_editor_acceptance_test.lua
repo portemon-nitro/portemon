@@ -106,11 +106,25 @@ function T.tests.production_editor_saves_an_edit(context)
     return fixture.saveFs
   end
 
+  local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+  local cacheFs = GeneratedCacheFixture.reader(fixture.initial.versionId)
+  local decoded = ResidentAssetCache.new({
+    idleByteLimit = 64 * 1024 * 1024,
+    release = function(value)
+      value:release()
+    end,
+  })
   local ok, err = xpcall(function()
     state = State.new({
       versionId = fixture.initial.versionId,
       saveId = fixture.saveId,
-      cacheFs = GeneratedCacheFixture.reader(fixture.initial.versionId),
+      cacheFs = cacheFs,
+      assetRuntime = {
+        cacheFs = cacheFs,
+        decoded = decoded,
+        preparationQueue = AssetPreparationQueue.new(cacheFs, { decoded = decoded }),
+      },
       startupPairIndex = 1,
       width = 640,
       height = 480,

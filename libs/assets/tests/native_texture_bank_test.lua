@@ -135,6 +135,51 @@ local function assertRejected(Bank, value, label)
   Assert.isTrue(not ok or encoded == nil, "a malformed texture bank is rejected: " .. label)
 end
 
+-- Runtime texture acquisition borrows the source bank's spans instead of
+-- copying each payload string: view() resolves the same named textures and
+-- palettes, and every returned span addresses the caller's own generated
+-- bytes, so one selected texture costs no second native buffer.
+function T.view_borrows_texel_and_palette_spans_from_the_source_bytes()
+  local Bank = nativeBank()
+  Assert.equal(
+    type(Bank.view),
+    "function",
+    "runtime texture acquisition must borrow bank spans instead of copying each payload"
+  )
+  local bytes = rawBytes(Bank.encode(record()))
+  local source = assert(love.data.newByteData(bytes), "published bank bytes must be admissible as Data")
+  local bank = assert(Bank.view(source))
+  Assert.equal(bank.textureCount, 3, "a borrowed bank keeps every texture of its source pack")
+  Assert.equal(bank.paletteCount, 2, "a borrowed bank keeps every palette of its source pack")
+  local indexed = assert(bank:texture("flower01"), "textures resolve by their source name over borrowed spans")
+  Assert.equal(indexed.formatRaw, 3, "the borrowed record keeps its DS texture format")
+  Assert.equal(indexed.width, 8, "the borrowed record keeps its width")
+  Assert.equal(indexed.height, 8, "the borrowed record keeps its height")
+  Assert.isTrue(indexed.color0Transparent, "the borrowed record keeps colour-0 transparency")
+  local direct = assert(bank:texture("sky"))
+  local compressed = assert(bank:texture("cloud"))
+  local firstPalette = assert(bank:palette("map_pal"))
+  local secondPalette = assert(bank:palette("dusk_pal"))
+  Assert.isNil(bank:texture("missing"), "an unknown texture name still resolves nothing")
+
+  local BinaryView = require("libs.codec.src.BinaryView")
+  local ffi = require("ffi")
+  local whole = BinaryView.fromData(source, "bank")
+  local function assertBorrowed(span, expected, label)
+    Assert.equal(type(span.pointer), "function", label .. " is a bounded view, not a copied payload")
+    Assert.equal(span:toString(), expected, label .. " carries the same bytes")
+    local offset = ffi.cast("const char *", span:pointer()) - ffi.cast("const char *", whole:pointer())
+    Assert.isTrue(offset >= 0, label .. " addresses the source buffer instead of a copy")
+    Assert.isTrue(offset + span:length() <= source:getSize(), label .. " stays inside the source buffer")
+  end
+  assertBorrowed(indexed.texels, INDEXED_TEXELS, "the indexed texel span")
+  assertBorrowed(direct.texels, DIRECT_TEXELS, "the direct-colour texel span")
+  assertBorrowed(compressed.texels, COMPRESSED_TEXELS, "the compressed texel span")
+  assertBorrowed(compressed.indexData, COMPRESSED_INDEX, "the 4x4 index span")
+  assertBorrowed(firstPalette.data, PALETTE_ONE, "the first palette span")
+  assertBorrowed(secondPalette.data, PALETTE_TWO, "the second palette span")
+end
+
 function T.malformed_banks_and_duplicate_names_are_rejected()
   local Bank = nativeBank()
 

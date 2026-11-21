@@ -12,6 +12,7 @@
 
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
@@ -554,6 +555,16 @@ end
 ---@param pool table shared image pool double under test
 ---@param scope table<string, unknown> graphics ownership scope
 ---@return table rig { cacheFs, monCatalog, catalog, owner, manifest, provider, body }
+-- The message provider a selected session installs: every open bank borrows
+-- the selected runtime's compact source branch over the resident view.
+---@param cacheFs table<string, unknown> resident generated reader
+---@param scope table<string, unknown> graphics ownership scope owning the runtime
+---@return table<string, unknown> provider
+local function messageProvider(cacheFs, scope)
+  local runtime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
+  return FieldMessageProvider.new(cacheFs, { acquireSource = SelectedAssetRuntimeFixture.acquireSource(runtime) })
+end
+
 local function graphicsRig(versionId, pool, scope)
   local Renderer = requireRenderer("prepared graphics rigs")
   local Owner = requireOwner("prepared graphics rigs")
@@ -583,7 +594,7 @@ local function graphicsRig(versionId, pool, scope)
   -- source bank, so the rig borrows the real message provider and the
   -- real body font renderer exactly like the field owner does; the
   -- header font stays owner-lazy behind font4 windows.
-  local provider = FieldMessageProvider.new(cacheFs)
+  local provider = messageProvider(cacheFs, scope)
   local body = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs }))
   local owner = Owner.new({
     imagePool = pool,
@@ -1894,7 +1905,7 @@ function T.native_and_foreign_text_advances_match_their_banks(scope)
   local versionId = readyVersion()
   local cacheFs = GeneratedCacheFixture.reader(versionId)
   Assert.notNil(cacheFs, "the ready version exposes its prepared cache")
-  local provider = FieldMessageProvider.new(cacheFs)
+  local provider = messageProvider(cacheFs, scope)
   Assert.isTrue(provider:acquireBank(805), "the english flavor bank acquires")
   Assert.isTrue(provider:acquireBank(806), "the french flavor bank acquires")
   local english = provider:get(805, 158)
@@ -1994,7 +2005,7 @@ function T.indexed_and_rgba_handles_compose_identical_pixels(scope)
   Assert.equal(mismatched, 0, "indexed and RGBA output match under the same normalization")
 end
 
-function T.draw_performs_no_realization_work()
+function T.draw_performs_no_realization_work(scope)
   local Renderer = requireRenderer("headless serial draws")
   local Interface = requireInterface("paired native layout resolution")
   local Owner = requireOwner("headless preparation bounds")
@@ -2031,7 +2042,7 @@ function T.draw_performs_no_realization_work()
     cacheFs = cacheFs,
     graphics = graphics,
     text = FieldTextRenderer.new({ cacheFs = cacheFs, graphics = graphics }),
-    messages = FieldMessageProvider.new(cacheFs),
+    messages = messageProvider(cacheFs, scope),
     derivedAssets = {
       requestPokedex = function(_)
         return true

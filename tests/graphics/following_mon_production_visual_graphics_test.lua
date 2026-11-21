@@ -10,6 +10,7 @@
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldActorAssetProvider = require("libs.hgss.src.presentation.FieldActorAssetProvider")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldActorDraw = require("libs.hgss.src.presentation.FieldActorDraw")
@@ -281,12 +282,11 @@ function T.stationary_follower_idles_without_player_input(scope)
     local catalog = MonBucket.openCatalogs(versionId)
     local descriptor =
       assert(catalog:followerSelection({ species = "CYNDAQUIL", form = 0 }), "cyndaquil carries a follower descriptor")
-    local state = assert(
-      FieldState.new(giftedGame(versionId), {
-        derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
-        cacheFs = GeneratedCacheFixture.reader(versionId),
-      })
-    )
+    local state = assert(FieldState.new(giftedGame(versionId), {
+      derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+      cacheFs = cacheFs,
+      assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope),
+    }))
     local ok, err = xpcall(function()
       local runtime = assert(state.runtime, "field state owns its runtime")
       runtime.scripts.worldState:setVar(FieldScriptSymbols.variablesByName.VAR_SCENE_PLAYERS_HOUSE_1F, 1)
@@ -389,12 +389,11 @@ function T.real_starter_follower_trails_east_then_south_with_directional_walk_fr
     local catalog = MonBucket.openCatalogs(versionId)
     local descriptor =
       assert(catalog:followerSelection({ species = "CYNDAQUIL", form = 0 }), "cyndaquil carries a follower descriptor")
-    local state = assert(
-      FieldState.new(giftedGame(versionId), {
-        derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
-        cacheFs = GeneratedCacheFixture.reader(versionId),
-      })
-    )
+    local state = assert(FieldState.new(giftedGame(versionId), {
+      derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+      cacheFs = cacheFs,
+      assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope),
+    }))
     local ok, err = xpcall(function()
       local runtime = assert(state.runtime, "field state owns its runtime")
       -- Skip the source opening scene the way unrelated field scenarios do:
@@ -478,12 +477,12 @@ function T.follower_moves_while_the_player_step_is_in_flight()
   local versions = readyVersions()
   Assert.isTrue(#versions > 0, "a ready imported game version is required")
   for _, versionId in ipairs(versions) do
-    local state = assert(
-      FieldState.new(giftedGame(versionId), {
-        derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
-        cacheFs = GeneratedCacheFixture.reader(versionId),
-      })
-    )
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
+    local state = assert(FieldState.new(giftedGame(versionId), {
+      derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+      cacheFs = cacheFs,
+      assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope),
+    }))
     local ok, err = xpcall(function()
       local runtime = assert(state.runtime, "field state owns its runtime")
       runtime.scripts.worldState:setVar(FieldScriptSymbols.variablesByName.VAR_SCENE_PLAYERS_HOUSE_1F, 1)

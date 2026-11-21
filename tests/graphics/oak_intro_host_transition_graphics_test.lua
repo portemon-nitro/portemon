@@ -4,6 +4,7 @@
 -- finalize it.
 
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local AssetNeedsRegistry = require("libs.hgss.src.field.AssetNeedsRegistry")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
@@ -57,10 +58,12 @@ end
 
 local function compose(scope, versionId, width, height)
   local audio = FakeAudioOutput.new()
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local state = OakIntroComposition.compose({
     candidate = candidate(versionId),
     versionId = versionId,
-    cacheFs = GeneratedCacheFixture.reader(versionId),
+    cacheFs = cacheFs,
+    assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope),
     graphics = love.graphics,
     audioOutput = { audio = audio.audio, sound = audio.sound },
     clock = {
@@ -192,7 +195,6 @@ local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
-local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -235,9 +237,48 @@ end
 -- poll, borrowed as leases shaped like pool leases ({image, palette,
 -- kind}). Request/poll/acquire/release/cancel match the borrowing
 -- contract pooled renderers code against; nothing classifies off-thread.
-local function stubImageOwner(cache)
+-- Synchronous stand-in for the selected preparation worker over the fixture's
+-- physical bytes: the stub runtime's consumers realize the same upload shapes
+-- the worker would publish.
+local function stubPreparation(cache)
+  local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
+  local queue = {}
+  function queue:release() end
+  function queue:acquireSource(reference)
+    return { value = reference.data, release = function() end }
+  end
+  function queue:request(kind, path, priority)
+    return { kind = kind, path = path, priority = priority }
+  end
+  function queue:wait(request)
+    local bytes = assert(cache:read(request.path), "missing fixture geometry " .. tostring(request.path))
+    local payload = request.kind == "g4gx" and SceneMesh.prepareNativeBank(bytes) or SceneMesh.prepareUpload(bytes)
+    return { value = { kind = request.kind, payload = payload } }
+  end
+  function queue:poll()
+    return "ready"
+  end
+  function queue:take(token)
+    return { value = { kind = token.kind, payload = token.payload } }
+  end
+  function queue:cancel() end
+  function queue:promote() end
+  local decoded = {}
+  function decoded:returnLease()
+    return true
+  end
+  function decoded:trim() end
+  return { preparationQueue = queue, decoded = decoded }
+end
+
+local function stubImageOwner(cache, selectedRuntime)
   local images = {}
-  local owner = {}
+  local owner = {
+    _preparation = selectedRuntime and {
+      queue = selectedRuntime.preparationQueue,
+      decoded = selectedRuntime.decoded,
+    },
+  }
   function owner:request(path, _, _)
     assert(type(path) == "string", "stub image requests need their texture path")
     return path
@@ -254,6 +295,9 @@ local function stubImageOwner(cache)
   function owner:acquire(path)
     local image = assert(images[path], "stub image lease borrows a polled texture")
     return { image = image, palette = nil, kind = "rgba8" }
+  end
+  function owner:preparation()
+    return assert(owner._preparation, "the stub image owner exposes its borrowed CPU preparation")
   end
   function owner:release(_) end
   function owner:cancel(_)
@@ -285,13 +329,9 @@ local function bootCoveredField(scope)
   -- is still borrowed because non-nil image ownership switches resource
   -- construction to it; both are test-owned and disposed after the field
   -- state returns its leases.
-  local assetPreparation = AssetPreparationQueue.new(cache)
-  scope:own({
-    release = function()
-      assetPreparation:release()
-    end,
-  })
-  local imageAssets = stubImageOwner(cache)
+  local selectedRuntime = stubPreparation(cache)
+  local assetPreparation = selectedRuntime.preparationQueue
+  local imageAssets = stubImageOwner(cache, selectedRuntime)
   scope:own({
     release = function()
       imageAssets:dispose()
@@ -331,6 +371,7 @@ local function bootCoveredField(scope)
       easyChatCatalog = EasyChatCatalog.new(assert(EasyChatCache.loadCatalog(cache))),
       assetNeeds = AssetNeedsRegistry.new(),
       assetPreparation = assetPreparation,
+      decoded = selectedRuntime.decoded,
       imageAssets = imageAssets,
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
       uiManifest = FieldUiFixture.fieldStateManifest(),

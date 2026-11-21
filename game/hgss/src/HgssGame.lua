@@ -24,6 +24,7 @@ local ItemCatalog = require("libs.items.src.ItemCatalog")
 ---@class HgssGameOptions
 ---@field versionId string
 ---@field cacheFs table<string, unknown> selected epoch's installed generated view
+---@field assetRuntime { cacheFs: table<string, unknown>, decoded: table<string, unknown>, preparationQueue: table<string, unknown> } borrowed selected CPU runtime
 ---@field startupPairIndex integer selected 1..32 walking pair, forwarded to entry loading stages
 ---@field entry HgssGameEntry
 ---@field onExit fun(result: table<string, unknown>|nil)
@@ -50,6 +51,7 @@ local function fieldStateOptions(options, saveStore, extra, shared)
   local fieldOptions = {
     development = options.development == true,
     cacheFs = options.cacheFs,
+    assetRuntime = options.assetRuntime,
     saveStore = saveStore,
     derivedAssets = options.derivedAssets,
     martStockResolver = options.martStockResolver,
@@ -125,6 +127,8 @@ local function installRoutes(options, game, saveStore, versionId)
   local presentationOverrides = copyPresentationOverrides(options.presentationOverrides)
   local derivedAssets = assert(options.derivedAssets, "HgssGame requires the derived-asset host")
   local cacheFs = assert(options.cacheFs, "HgssGame requires the selected epoch's installed generated view")
+  local assetRuntime = assert(options.assetRuntime, "HgssGame requires the selected CPU runtime")
+  assert(assetRuntime.cacheFs == cacheFs, "HgssGame requires the selected runtime over the installed generated view")
   local oakPrepared -- forward: the Oak lifetime owns the staged bedroom entry
   local function returnToMainMenu()
     game:exit({ kind = "main_menu" })
@@ -152,7 +156,15 @@ local function installRoutes(options, game, saveStore, versionId)
       cacheFs:loadLua(MapAssetCache.worldPath()),
       "field world metadata is unavailable although entry planning is ready"
     )
-    return FieldMapLoader.new(cacheFs, world, { derivedAssets = derivedAssets })
+    local function acquireResidentSource(reference)
+      return assetRuntime.preparationQueue:acquireSource(reference)
+    end
+    return FieldMapLoader.new(cacheFs, world, {
+      derivedAssets = derivedAssets,
+      assetPreparation = assetRuntime.preparationQueue,
+      decoded = assetRuntime.decoded,
+      acquireSource = acquireResidentSource,
+    })
   end
   local startupPairIndex = options.startupPairIndex
   assert(
@@ -225,6 +237,7 @@ local function installRoutes(options, game, saveStore, versionId)
       cacheFs = cacheFs,
       derivedAssets = derivedAssets,
       location = candidate.location,
+      assetRuntime = assetRuntime,
     })
     oakPrepared = prepared
     prepared:poll()
@@ -232,6 +245,7 @@ local function installRoutes(options, game, saveStore, versionId)
       candidate = candidate,
       versionId = versionId,
       cacheFs = cacheFs,
+      assetRuntime = assetRuntime,
       onComplete = onOakComplete,
       displayContext = displayContext,
       namingOverrides = presentationOverrides ~= nil and presentationOverrides.naming or nil,

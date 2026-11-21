@@ -41,15 +41,30 @@ function FieldMessageCache.marker(romSha1, depHash)
   return string.format("%s:%s:%s", FieldMessageCache.FORMAT, romSha1, depHash)
 end
 
+-- One bank's payload bytes for a bounded readiness probe: a resident reader
+-- lends the store's own buffer, so a runtime check copies no bank string, while a
+-- producer or validator reader that holds no resident payload reads its file.
+---@param cacheFs CacheFs
+---@param path string
+---@return string|love.Data|nil
+local function probeBytes(cacheFs, path)
+  local data = cacheFs:readData(path)
+  if data ~= nil then
+    return data
+  end
+  return cacheFs:read(path)
+end
+
 -- True when the bank file carries one bounded compact payload with the current
 -- identity. Reads the header and section arithmetic only: a runtime readiness
--- poll never walks the whole token stream. Absent and recognized malformed
--- payloads are not ready; unrelated storage failures propagate.
+-- poll never walks the whole token stream and never materializes the payload as
+-- a string. Absent and recognized malformed payloads are not ready; unrelated
+-- storage failures propagate.
 ---@param cacheFs CacheFs
 ---@param bankId integer
 ---@return boolean
 function FieldMessageCache.isBankReady(cacheFs, bankId)
-  local bytes = cacheFs:read(FieldMessageCache.bankPath(bankId))
+  local bytes = probeBytes(cacheFs, FieldMessageCache.bankPath(bankId))
   if bytes == nil then
     return false
   end

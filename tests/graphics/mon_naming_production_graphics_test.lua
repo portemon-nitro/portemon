@@ -2,6 +2,7 @@
 -- runtime and presentation ownership.
 
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
@@ -377,10 +378,15 @@ end
 
 local function verifyVersion(scope, versionId)
   local audioOutput = FakeAudioOutput.new()
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
+  -- The presented runtime borrows the selected epoch's CPU owners for the boot;
+  -- the scope releases them after the state disposes.
+  local assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
   local state = assert(FieldState.new(newGame(versionId), {
     audioOutput = { audio = audioOutput.audio, sound = audioOutput.sound },
     derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
-    cacheFs = GeneratedCacheFixture.reader(versionId),
+    cacheFs = cacheFs,
+    assetRuntime = assetRuntime,
   }))
   scope:own({
     release = function()

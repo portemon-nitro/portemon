@@ -5,6 +5,7 @@
 
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local MapAnalysis = require("romdump.src.digest.map.MapAnalysis")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
@@ -61,7 +62,12 @@ function T.elm_lab_world_record_carries_source_exact_section_identity(romFs, ver
   Assert.equal(entry.symbol, "MAP_NEW_BARK_ELMS_LAB_1F")
   assertElmLabTriple(entry.mapSection, entry.mapSectionNativeId, entry.followMode, "the generated world entry")
 
-  local loader = FieldMapLoader.new(cacheFs, world)
+  -- The loader borrows collision through the selected runtime's compact source
+  -- branch; the headless runtime starts no worker.
+  local selectedRuntime = SelectedAssetRuntimeFixture.new(cacheFs)
+  local loader = FieldMapLoader.new(cacheFs, world, {
+    acquireSource = SelectedAssetRuntimeFixture.acquireSource(selectedRuntime),
+  })
   local runtimeMap = loader:load(61)
   assertElmLabTriple(
     runtimeMap.mapSection,

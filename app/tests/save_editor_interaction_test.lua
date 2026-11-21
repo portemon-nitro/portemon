@@ -19,6 +19,54 @@ local Fixture = require("app.tests.support.SaveEditorFixture")
 local Session = require("app.src.saveeditor.SaveEditorSession")
 local LocationService = require("app.src.saveeditor.SaveEditorLocationService")
 
+-- The borrowed selected CPU pair the editor renderer composes over. These
+-- interaction suites stub every pooled request, so one inert pair is enough.
+local function newRenderer(options)
+  options.assetPreparation = options.assetPreparation
+    or {
+      request = function()
+        return 0
+      end,
+      poll = function()
+        return "failed", "the interaction fixture carries no prepared image"
+      end,
+      take = function()
+        error("the interaction fixture carries no prepared image")
+      end,
+      cancel = function() end,
+      promote = function() end,
+      acquireSource = function()
+        error("the interaction fixture carries no resident source")
+      end,
+    }
+  options.decoded = options.decoded
+    or {
+      returnLease = function()
+        return true
+      end,
+      trim = function() end,
+    }
+  options.imagePool = options.imagePool
+    or {
+      request = function()
+        return 0
+      end,
+      poll = function()
+        return "failed", "the interaction fixture carries no prepared image"
+      end,
+      acquire = function()
+        error("the interaction fixture carries no prepared image")
+      end,
+      cancel = function() end,
+      release = function() end,
+      dispose = function() end,
+      prune = function()
+        return 0
+      end,
+    }
+  return Renderer.new(options)
+end
+
 local T = { tests = {} }
 local livePartyHarness
 
@@ -28,6 +76,18 @@ local function stateHarness(fields)
   fields.inputTick = fields.inputTick or 0
   fields.tickRemainder = fields.tickRemainder or 0
   fields.locationPreviewMemory = fields.locationPreviewMemory or {}
+  fields.assetRuntime = fields.assetRuntime
+    or {
+      decoded = {},
+      preparationQueue = {
+        acquireSource = function(reference)
+          return {
+            value = reference.data,
+            release = function() end,
+          }
+        end,
+      },
+    }
   local state = setmetatable(fields, State)
   state:_syncScope()
   return state
@@ -7560,7 +7620,7 @@ local function paintLeaveDecisionView()
 end
 
 local function drawPaintView(view, width, height, graphics, text, cacheReads)
-  local renderer = Renderer.new({ text = text.object, graphics = graphics, versionId = "heartgold" })
+  local renderer = newRenderer({ text = text.object, graphics = graphics, versionId = "heartgold" })
   renderer._windowRenderer = { drawApplicationFrame = function() end, release = function() end }
   local plan = paintPlanFor(view, width, height)
   local cacheFs = {
@@ -7698,7 +7758,7 @@ function T.tests.repeated_and_failing_draws_keep_observation_and_graphics_state_
     end,
   })
   local failingGraphics = recordingPaintGraphics()
-  local failingRenderer = Renderer.new({
+  local failingRenderer = newRenderer({
     text = failingText.object,
     graphics = failingGraphics,
     versionId = "heartgold",

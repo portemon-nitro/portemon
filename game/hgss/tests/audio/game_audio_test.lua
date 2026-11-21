@@ -11,7 +11,7 @@ local LoveAudioSink = require("game.src.audio.LoveAudioSink")
 local T = {}
 
 function T.a_failure_after_sink_creation_releases_the_sink_once()
-  local cacheFs = AudioFixture.readyCache()
+  local cacheFs = AudioFixture.residentCache()
   local originalCompose = AudioRuntime.compose
   local originalSinkNew = LoveAudioSink.new
   local releaseCalls = 0
@@ -46,14 +46,31 @@ function T.a_failure_after_sink_creation_releases_the_sink_once()
   )
 end
 
+-- The selected runtime's resident reader and its source-acquisition boundary.
+local function residentRuntime()
+  local cache = AudioFixture.residentCache()
+  return cache,
+    function(reference)
+      local lease = { value = reference.data }
+      function lease:release()
+        self.value = nil
+      end
+      return lease
+    end
+end
+
 function T.core_composition_exposes_the_hgss_facade_and_renderer()
+  local cache, acquireSource = residentRuntime()
   local core = GameAudio.compose({
-    cacheFs = AudioFixture.readyCache(),
+    cacheFs = cache,
     outputRate = 32768,
+    acquireSource = acquireSource,
   })
   Assert.notNil(core.sound)
   Assert.notNil(core.renderer)
   Assert.isNil(core.sink)
+  core:dispose()
+  core:dispose()
 end
 
 return { tests = T }

@@ -14,6 +14,54 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 local ItemCatalog = require("libs.items.src.ItemCatalog")
 local ItemFixture = require("libs.items.tests.item_fixture")
 
+-- The borrowed selected CPU pair the editor renderer composes over. These
+-- rendering suites stub every pooled request, so one inert pair is enough.
+local function newRenderer(options)
+  options.assetPreparation = options.assetPreparation
+    or {
+      request = function()
+        return 0
+      end,
+      poll = function()
+        return "failed", "the rendering fixture carries no prepared image"
+      end,
+      take = function()
+        error("the rendering fixture carries no prepared image")
+      end,
+      cancel = function() end,
+      promote = function() end,
+      acquireSource = function()
+        error("the rendering fixture carries no resident source")
+      end,
+    }
+  options.decoded = options.decoded
+    or {
+      returnLease = function()
+        return true
+      end,
+      trim = function() end,
+    }
+  options.imagePool = options.imagePool
+    or {
+      request = function()
+        return 0
+      end,
+      poll = function()
+        return "failed", "the interaction fixture carries no prepared image"
+      end,
+      acquire = function()
+        error("the interaction fixture carries no prepared image")
+      end,
+      cancel = function() end,
+      release = function() end,
+      dispose = function() end,
+      prune = function()
+        return 0
+      end,
+    }
+  return require("app.src.saveeditor.SaveEditorRenderer").new(options)
+end
+
 local T = {}
 
 local function modalStackWith(kind)
@@ -527,7 +575,7 @@ function T.visible_party_rows_prepare_only_their_icon_keys()
 
   local pool = SharedImagePoolFake.new()
   local ok, err = xpcall(function()
-    local renderer = Renderer.new({ text = {}, graphics = {}, versionId = "heartgold", imagePool = pool })
+    local renderer = newRenderer({ text = {}, graphics = {}, versionId = "heartgold", imagePool = pool })
     renderer:prepareVisibleIcons({ section = "Party" }, {
       content = {
         layout = {
@@ -1342,8 +1390,7 @@ function T.move_overlay_refreshes_its_title_after_the_draft_move_changes()
   local record = factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 5 }))
   record.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
   local Draft = require("app.src.saveeditor.SaveEditorMonDraft")
-  local draft =
-    Draft.new({ mode = "edit", slot0 = 0, basePartyRevision = 0, record = record, context = draftContext })
+  local draft = Draft.new({ mode = "edit", slot0 = 0, basePartyRevision = 0, record = record, context = draftContext })
   local overlayState = setmetatable({
     pendingMoveSlot = nil,
     modalLayerSequence = 0,

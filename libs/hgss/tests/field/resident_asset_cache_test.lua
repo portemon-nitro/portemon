@@ -6,9 +6,10 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local CacheFs = require("libs.storage.src.CacheFs")
-local FakeCache = require("tests.support.FakeCache")
+local ResidentCache = require("libs.storage.src.ResidentCache")
 local FieldMessageFixture = require("tests.support.FieldMessageFixture")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
+local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 
 local T = {}
 
@@ -218,12 +219,39 @@ function T.busy_entries_survive_a_zero_budget_until_they_go_quiet()
   Assert.equal(stats.idleBytes, 0, "no resident bytes remain after the final trim")
 end
 
+-- The resident message banks a selected session would have installed, plus the
+-- base source branch the provider borrows them through.
 local function messageCacheWith(ids)
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local sourceId = "base:resident-cache-test"
+  local store = ResidentCache.new("heartgold", sourceId)
+  local entries = {}
   for _, bankId in ipairs(ids) do
-    FieldMessageFixture.write(cache, bankId, { { FieldMessageFixture.glyph(0x0141, "A"), FieldMessageFixture.eos() } })
+    local path = FieldMessageCache.bankPath(bankId)
+    local data = FieldMessageFixture.encode(FieldMessageFixture.bank(bankId, {
+      { FieldMessageFixture.glyph(0x0141, "A"), FieldMessageFixture.eos() },
+    }))
+    entries[#entries + 1] = {
+      path = path,
+      data = data,
+      size = data:getSize(),
+      sourceId = sourceId,
+      contentId = "heartgold\0" .. path,
+    }
   end
-  return cache
+  store:commit(store:prepare(entries))
+  return CacheFs.fromStore(store)
+end
+
+-- The provider's required source acquirer in its base form: root the store's own
+-- bytes, charge nothing to the decoded kernel, and clear on release.
+local function baseAcquirer()
+  return function(reference)
+    local lease = { value = assert(reference).data }
+    function lease:release()
+      self.value = nil
+    end
+    return lease
+  end
 end
 
 function T.borrowed_entries_survive_pressure_like_message_banks()
@@ -231,7 +259,7 @@ function T.borrowed_entries_survive_pressure_like_message_banks()
   -- redirected: a repeated acquire shares one compact view, and a matched
   -- release pair ends the active record exactly as the borrowed entry below
   -- ends when its borrower lets go.
-  local messages = assert(FieldMessageProvider.new(messageCacheWith({ 7, 8 })))
+  local messages = assert(FieldMessageProvider.new(messageCacheWith({ 7, 8 }), { acquireSource = baseAcquirer() }))
   local bank = assert(messages:acquireBank(7))
   Assert.isTrue(messages:acquireBank(7) == bank, "a second acquire shares the compact bank view")
   Assert.equal(messages:stats().references, 2)

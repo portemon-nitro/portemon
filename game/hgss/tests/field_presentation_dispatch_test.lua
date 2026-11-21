@@ -440,7 +440,17 @@ local function compositionRuntime()
     -- without a second worker beside them.
     imageAssets = SharedImagePoolFake.new(),
     assetPreparation = FakePreparationQueue.new(),
+    decoded = {
+      returnLease = function()
+        return true
+      end,
+      trim = function() end,
+    },
   }
+  runtime.imageAssets._preparation = { queue = runtime.assetPreparation, decoded = runtime.decoded }
+  function runtime.imageAssets:preparation()
+    return self._preparation
+  end
   runtime.iconDemands = {}
   runtime.derivedAssets = {
     requestIconPage = function(pageId, urgency)
@@ -1928,6 +1938,10 @@ function T.bag_renderer_borrows_the_shared_image_owner_without_a_second_queue()
   local disposed = 0
   function pool:dispose()
     disposed = disposed + 1
+  end
+  pool._preparation = { queue = runtime.assetPreparation, decoded = runtime.decoded }
+  function pool:preparation()
+    return self._preparation
   end
   runtime.imageAssets = pool
   withProductionComposition(sink, calls, runtime, function(resources)

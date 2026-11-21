@@ -15,6 +15,8 @@ local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local CollisionFixture = require("tests.support.CollisionFixture")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local HgssFieldEdgeColors = require("romdump.src.digest.field.HgssFieldEdgeColors")
 local HgssFieldFog = require("romdump.src.digest.field.HgssFieldFog")
 
@@ -320,8 +322,16 @@ local function indoorCache()
   return cache
 end
 
+-- The staged fixture cache read the way an installed epoch is read: the
+-- private field load borrows its collision payload instead of copying it.
+local function residentReader(cache)
+  return GeneratedCacheFixture.residentReader(cache, "pc-photo-fixture")
+end
+
 local function indoorLoader(cache, pool)
-  return FieldMapLoader.new(cache, world(), {
+  local reader = residentReader(cache)
+  local selectedRuntime = SelectedAssetRuntimeFixture.new(reader)
+  return FieldMapLoader.new(reader, world(), {
     derivedAssets = readyDerivedAssets(),
     sceneLoader = {
       load = function(_, scene)
@@ -332,6 +342,9 @@ local function indoorLoader(cache, pool)
       end,
     },
     imageAssets = pool,
+    assetPreparation = selectedRuntime.preparationQueue,
+    decoded = selectedRuntime.decoded,
+    acquireSource = SelectedAssetRuntimeFixture.acquireSource(selectedRuntime),
   })
 end
 

@@ -133,11 +133,13 @@ end
 ---@param cacheFs table<string, unknown> versioned derived cache behind the intro manifest
 ---@param graphics table<string, unknown> host graphics namespace behind GPU realization
 ---@param manifest table<string, unknown> validated intro manifest
+---@param queue table<string, unknown> borrowed selected preparation queue
+---@param decoded table<string, unknown> borrowed selected decoded CPU owner
 ---@return table<string, unknown> intro-owned shared image owner
 ---@return table<string, unknown>[] borrow records behind every loader borrow, in order
 ---@return fun(path: string): unknown generated-image loader resolving pooled borrows
-local function pooledImageLoader(cacheFs, graphics, manifest)
-  local pool = ImageAssetPool.new(cacheFs, { graphics = graphics })
+local function pooledImageLoader(cacheFs, graphics, manifest, queue, decoded)
+  local pool = ImageAssetPool.new(cacheFs, { graphics = graphics, queue = queue, decoded = decoded })
   -- Every manifest-declared intro image enrolls before the first
   -- readiness wait so independent classifications run concurrently.
   local samplers = {}
@@ -214,6 +216,8 @@ function OakIntroComposition.compose(options)
   end
 
   local cacheFs = assert(options.cacheFs, "Oak intro composition needs the selected epoch's installed generated view")
+  local assetRuntime = assert(options.assetRuntime, "Oak intro composition needs the selected CPU runtime")
+  assert(assetRuntime.cacheFs == cacheFs, "Oak intro composition needs the selected runtime over its generated view")
   local introManifest = assert(cacheFs:loadLua(IntroAssetCache.manifestPath()))
   assert(
     type(introManifest) == "table" and introManifest.schemaVersion == IntroAssetCache.SCHEMA_VERSION,
@@ -229,7 +233,10 @@ function OakIntroComposition.compose(options)
   end
   local playerDataContext = { charmap = fontDef.charmap, frameIndexes = frameIndexes }
 
-  local provider = FieldMessageProvider.new(cacheFs)
+  local function acquireSource(reference)
+    return assetRuntime.preparationQueue:acquireSource(reference)
+  end
+  local provider = FieldMessageProvider.new(cacheFs, { acquireSource = acquireSource })
   local bankAcquired = false
   local audio
   local audioLifetime
@@ -253,15 +260,15 @@ function OakIntroComposition.compose(options)
       cacheFs = cacheFs,
       outputRate = 32768,
       outputHost = options.audioOutput,
+      assetPreparation = assetRuntime.preparationQueue,
+      acquireSource = acquireSource,
     })
     local function disposeAudio(self)
       if self.disposed then
         return
       end
       self.disposed = true
-      if audio.sink then
-        audio.sink:release()
-      end
+      audio:dispose()
     end
     audioLifetime = {
       dispose = disposeAudio,
@@ -275,7 +282,8 @@ function OakIntroComposition.compose(options)
     -- injected loader keeps its own ownership and builds no pool here, so
     -- the eager text below keeps its direct construction on that seam.
     if options.imageLoader == nil then
-      imagePool, imageLeases, pooledLoader = pooledImageLoader(cacheFs, graphics, introManifest)
+      imagePool, imageLeases, pooledLoader =
+        pooledImageLoader(cacheFs, graphics, introManifest, assetRuntime.preparationQueue, assetRuntime.decoded)
     end
     textRenderer = FieldTextRenderer.new({ cacheFs = cacheFs, graphics = graphics, imagePool = imagePool })
     choiceText = FieldTextRenderer.new({ cacheFs = cacheFs, fontId = 4, graphics = graphics, imagePool = imagePool })

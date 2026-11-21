@@ -136,15 +136,29 @@ end
 -- The selected epoch's installed generated view: the composition spies stub
 -- every generated consumer, so one shared reader object stands in for the
 -- epoch's resident bytes.
+local sharedView
 local function generatedView()
-  local view = { versionId = READY_VERSION }
-  function view:resolveAsset(_)
-    return nil
+  if sharedView == nil then
+    local view = { versionId = READY_VERSION }
+    function view:resolveAsset(_)
+      return nil
+    end
+    function view:loadLua(_)
+      return nil, "the composition harness carries no generated payloads"
+    end
+    sharedView = view
   end
-  function view:loadLua(_)
-    return nil, "the composition harness carries no generated payloads"
+  return sharedView
+end
+
+-- The selected CPU runtime every route borrows: the harness stubs every
+-- consumer that would read through it, so identity is the contract here.
+local sharedRuntime
+local function selectedRuntime()
+  if sharedRuntime == nil then
+    sharedRuntime = { cacheFs = generatedView(), decoded = {}, preparationQueue = {} }
   end
-  return view
+  return sharedRuntime
 end
 
 local function disposableState(kind)
@@ -292,6 +306,7 @@ function T.explicit_entries_start_retail_preparation_and_reject_invalid_intents(
         development = false,
         derivedAssets = readyHost(),
         cacheFs = generatedView(),
+        assetRuntime = selectedRuntime(),
         fieldMapLoader = planningLoader(),
       }
       if entry ~= false then
@@ -358,6 +373,7 @@ function T.cold_new_game_waits_for_its_intro_milestone_before_oak()
       onExit = function() end,
       derivedAssets = host,
       cacheFs = generatedView(),
+      assetRuntime = selectedRuntime(),
       fieldMapLoader = planningLoader(),
     })
     Assert.equal(getmetatable(game.state).__index, NewGamePreparationState, "cold New Game enters preparation")
@@ -470,6 +486,7 @@ function T.cold_continue_defers_world_read_until_field_planning_is_ready()
           onExit = function() end,
           derivedAssets = host,
           cacheFs = observation.cacheFs,
+          assetRuntime = { cacheFs = observation.cacheFs, decoded = {}, preparationQueue = {} },
         })
         Assert.equal(observation.worldReads, 0, "selecting Continue reads no world metadata")
         Assert.equal(observation.loaderBuilds, 0, "selecting Continue builds no planning loader")
@@ -513,6 +530,7 @@ function T.oak_completion_with_a_diverging_location_fails_without_field()
       onExit = function() end,
       derivedAssets = readyHost(),
       cacheFs = generatedView(),
+      assetRuntime = selectedRuntime(),
       fieldMapLoader = planningLoader(),
     })
     settle(game)
@@ -570,6 +588,7 @@ function T.failed_field_construction_releases_the_unclaimed_transfer()
       onExit = function() end,
       derivedAssets = readyHost(),
       cacheFs = generatedView(),
+      assetRuntime = selectedRuntime(),
       fieldMapLoader = planningLoader(),
     })
     settle(game)
@@ -608,6 +627,7 @@ function T.missing_world_after_readiness_throws_the_original_cause()
         onExit = function() end,
         derivedAssets = readyHost(),
         cacheFs = observation.cacheFs,
+        assetRuntime = { cacheFs = observation.cacheFs, decoded = {}, preparationQueue = {} },
       })
       Assert.equal(observation.worldReads, 0, "selecting Continue reads no world metadata")
       local ok, err = pcall(settle, game)
@@ -653,6 +673,7 @@ function T.field_receives_the_shared_display_context_and_copied_overrides()
       onExit = function() end,
       derivedAssets = readyHost(),
       cacheFs = generatedView(),
+      assetRuntime = selectedRuntime(),
       fieldMapLoader = planningLoader(),
       presentationOverrides = overrides,
       martStockResolver = stockResolver,
@@ -681,6 +702,7 @@ function T.field_receives_the_shared_display_context_and_copied_overrides()
       onExit = function() end,
       derivedAssets = readyHost(),
       cacheFs = generatedView(),
+      assetRuntime = selectedRuntime(),
       fieldMapLoader = planningLoader(),
     })
     settle(plain)
@@ -707,6 +729,7 @@ function T.invalid_presentation_overrides_fail_game_construction()
       onExit = function() end,
       derivedAssets = readyHost(),
       cacheFs = generatedView(),
+      assetRuntime = selectedRuntime(),
       fieldMapLoader = planningLoader(),
       presentationOverrides = {
         start_menu = {
@@ -722,6 +745,7 @@ function T.invalid_presentation_overrides_fail_game_construction()
       onExit = function() end,
       derivedAssets = readyHost(),
       cacheFs = generatedView(),
+      assetRuntime = selectedRuntime(),
       fieldMapLoader = planningLoader(),
       presentationOverrides = {
         start_menu = { wide = "not-a-function" },
@@ -750,6 +774,7 @@ function T.cancelling_field_preparation_exits_to_the_product_menu_without_publis
       end,
       derivedAssets = host,
       cacheFs = generatedView(),
+      assetRuntime = selectedRuntime(),
       fieldMapLoader = planningLoader(),
     })
     settle(game)
@@ -795,6 +820,7 @@ function T.oak_boot_stages_the_bedroom_entry_without_waiting_for_it()
       onExit = function() end,
       derivedAssets = readyHost(),
       cacheFs = generatedView(),
+      assetRuntime = selectedRuntime(),
       fieldMapLoader = planningLoader(),
     })
     settle(game)
@@ -836,6 +862,7 @@ function T.oak_boot_survives_preparation_demand_failure()
       onExit = function() end,
       derivedAssets = host,
       cacheFs = generatedView(),
+      assetRuntime = selectedRuntime(),
       fieldMapLoader = planningLoader(),
     })
     settle(game)
@@ -898,6 +925,7 @@ function T.oak_completion_enters_the_prepared_field_directly()
       onExit = function() end,
       derivedAssets = readyHost(),
       cacheFs = generatedView(),
+      assetRuntime = selectedRuntime(),
       fieldMapLoader = planningLoader(),
     })
     settle(game)

@@ -14,6 +14,7 @@ local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSch
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
@@ -169,10 +170,14 @@ end
 local function runtimeOptions(versionId)
   local Fixture = require("tests.support.FieldStatePresentationFixture")
   local LocalClock = require("game.src.LocalClock")
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
+  -- A headless runtime still borrows the selected epoch's CPU owners; compact
+  -- acquisition needs no worker, so the borrowed queue starts no thread.
   return {
     presentation = false,
     derivedAssets = Fixture.iconHost().derivedAssets,
-    cacheFs = GeneratedCacheFixture.reader(versionId),
+    cacheFs = cacheFs,
+    assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs),
     localClock = LocalClock.new(function()
       return { year = 2024, month = 6, day = 1, hour = 12, minute = 0, second = 0 }
     end),

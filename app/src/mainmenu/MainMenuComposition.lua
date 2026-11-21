@@ -11,6 +11,7 @@ local MainMenuState = require("app.src.mainmenu.MainMenuState")
 ---@class MainMenuCompositionOptions
 ---@field versionId string
 ---@field cacheFs table<string, unknown> selected epoch's installed generated view
+---@field assetRuntime { decoded: table<string, unknown>, preparationQueue: table<string, unknown> } borrowed selected CPU runtime
 ---@field onResult fun(result: table<string, unknown>)
 ---@field width number?
 ---@field height number?
@@ -25,20 +26,17 @@ function MainMenuComposition.new(options)
   assert(type(options.versionId) == "string" and options.versionId ~= "", "Main Menu needs a selected version")
   assert(type(options.onResult) == "function", "Main Menu needs a result handler")
   local versionCacheFs = assert(options.cacheFs, "Main Menu needs the selected epoch's installed generated view")
+  local assetRuntime = assert(options.assetRuntime, "Main Menu needs the selected CPU runtime")
 
   local displayContext = DisplayContext.new({})
   local saveStore = GameSaveStore.new(SaveFs.global())
-  -- The menu stages its own standalone image owner: the menu lifetime
-  -- never overlaps field ownership, so no pool is shared or handed off.
-  -- A cache no pool can serve (headless or test doubles) keeps the
-  -- direct text path; those paths never reach pooled draws.
-  local imagePool
-  do
-    local poolOk, poolOrError = pcall(ImageAssetPool.new, versionCacheFs, {})
-    if poolOk then
-      imagePool = poolOrError
-    end
-  end
+  -- The menu stages its own standalone GPU image owner over the shared CPU
+  -- runtime: the menu lifetime never overlaps field ownership, so no GPU pool
+  -- is shared or handed off, while the decoded residency stays selected-owned.
+  local imagePool = ImageAssetPool.new(versionCacheFs, {
+    queue = assetRuntime.preparationQueue,
+    decoded = assetRuntime.decoded,
+  })
   local text = FieldTextRenderer.new({ cacheFs = versionCacheFs, imagePool = imagePool })
   local rendererOk, rendererOrError = pcall(MainMenuRenderer.new, {
     text = text,

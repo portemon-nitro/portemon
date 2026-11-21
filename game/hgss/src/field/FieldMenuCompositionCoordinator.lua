@@ -983,11 +983,15 @@ function FieldMenuCompositionCoordinator:composeAudio(cacheFs, restoredAudio)
       traversal = readAvatarTraversal,
       outputHost = runtime.audioOutput,
       channelMode = channelMode,
-      -- The presented field shares its preparation worker with the scene
-      -- and image owners; headless runtimes pass no queue and stay on the
-      -- synchronous-safe sample path.
+      -- The presented field shares its preparation queue and its resident
+      -- source boundary with the scene, image, message and collision owners;
+      -- headless runtimes borrow neither.
       assetPreparation = runtime.assetPreparation,
+      acquireSource = runtime.acquireSource,
     })
+    -- The composition itself owns the sink and the teardown of every voice and
+    -- active sample record, so the runtime keeps it beside the service.
+    runtime.audioComposition = audio
     runtime.audio = audio.service
     runtime.audioSink = audio.sink
     if audioService == nil then

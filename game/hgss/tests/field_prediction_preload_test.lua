@@ -1,103 +1,28 @@
--- Near-map working-set preloading and idle-trim behavior for the field.
+-- Near-map working-set prediction for the field.
 --
 -- The field predicts the current map plus its one-hop neighbors (adjacent
 -- outdoor coverage and indoor warp destinations) from the already computed
--- residency/loader membership: published day/night music, flag and
--- traversal overrides, soundplates, and the transitive script-audio closure
--- resolve to audio banks whose sample payloads must already sit in RAM as
--- packed buffers (never Lua tables, never bare disk receipts), while scene
--- and menu images resolve through the one shared image owner. A new
--- prediction round supersedes the previous one: stale background work is
--- discarded, live music and radio survive, and the idle trim evicts only
--- the oldest unleased entries under explicit byte budgets, reporting the
--- predicted-but-unadmitted gap instead of churning. Synthetic fixtures only;
--- the single live leg below compares against the producer closure on a
--- user-owned dump and skips loudly without one. No proximity scoring, no
--- recursive reachability, no second audio thread.
+-- residency/loader membership: published day/night music, flag and traversal
+-- overrides, soundplates, and the transitive script-audio closure resolve to
+-- audio banks whose sample keys the selected resident store already carries,
+-- while scene and menu images resolve through the one shared image owner. A
+-- new prediction round supersedes the previous one, live music and radio
+-- survive, and prediction itself retains no PCM: every sounding sample holds
+-- one accountable acquisition over the resident bytes. Synthetic fixtures
+-- only; the single live leg below compares against the producer closure on a
+-- user-owned dump and skips loudly without one. No proximity scoring and no
+-- recursive reachability.
 
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local AudioBank = require("libs.assets.src.audio.AudioBank")
 local AudioFixture = require("tests.support.AudioFixture")
-local FakeCache = require("tests.support.FakeCache")
-local AssetMemoryTrace = require("tests.support.AssetMemoryTrace")
 local AudioAssetProvider = require("libs.hgss.src.audio.AudioAssetProvider")
 local FieldAudioController = require("libs.hgss.src.audio.FieldAudioController")
 local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
-local VoiceMixer = require("libs.nds.src.nitro.sound.VoiceMixer")
 
 local T = { tests = {} }
-
--- Whole-process ceiling and safety margin for the idle-budget calibration:
--- the combined idle allowance is what remains after the measured non-idle
--- high-water and the margin, split between audio and image demand by share.
-local WHOLE_PROCESS_CEILING = 1024 * 1024 * 1024
-local SAFETY_MARGIN = 128 * 1024 * 1024
-
--- Splits a combined idle allowance between predicted audio and image bytes
--- by demand share. Both limits are zero when there is no predicted demand.
----@param allowance integer combined idle bytes available for prediction
----@param audioBytes integer distinct predicted idle audio bytes
----@param imageBytes integer distinct predicted idle image bytes
----@return integer, integer audio limit and image limit in bytes
-local function splitIdleAllowance(allowance, audioBytes, imageBytes)
-  local total = audioBytes + imageBytes
-  if total <= 0 then
-    return 0, 0
-  end
-  local audioLimit = math.floor(allowance * audioBytes / total)
-  return audioLimit, allowance - audioLimit
-end
-
--- Derives the idle allowance from a measured non-idle high-water plus the
--- predicted audio/image demand totals for the same replay.
----@param highWater integer measured process high-water with zero idle retention
----@param audioBytes integer distinct predicted idle audio bytes
----@param imageBytes integer distinct predicted idle image bytes
----@return table calibration record with allowance and per-family limits
-local function calibrateIdleLimits(highWater, audioBytes, imageBytes)
-  local allowance = WHOLE_PROCESS_CEILING - highWater - SAFETY_MARGIN
-  if allowance < 0 then
-    allowance = 0
-  end
-  local audioLimit, imageLimit = splitIdleAllowance(allowance, audioBytes, imageBytes)
-  return {
-    ceiling = WHOLE_PROCESS_CEILING,
-    safetyMargin = SAFETY_MARGIN,
-    highWater = highWater,
-    predictedAudioBytes = audioBytes,
-    predictedImageBytes = imageBytes,
-    allowance = allowance,
-    audioLimit = audioLimit,
-    imageLimit = imageLimit,
-    -- Target-device high-water and compiled limits stay pending: a record
-    -- produced on a software-rasterized host must never be presented as
-    -- device calibration. The release gate re-measures them on hardware.
-    deviceCalibration = "pending",
-  }
-end
-
--- Counts every backend read by version-relative path so lazy, memoized, and
--- prewarmed loading is observable: a resident asset is read exactly once no
--- matter how often it is used, and a prewarmed asset causes no read at all.
-local function countingBackend(backend)
-  local reads = {}
-  local proxy = setmetatable({}, {
-    __index = function(_, key)
-      if key == "read" then
-        return function(_, path)
-          local relative = path:gsub("^[^/]+/", "")
-          reads[relative] = (reads[relative] or 0) + 1
-          return backend:read(path)
-        end
-      end
-      return backend[key]
-    end,
-  })
-  proxy.reads = reads
-  return proxy
-end
 
 local KEY_A = AudioFixture.key(1)
 local KEY_B = AudioFixture.key(2)
@@ -176,22 +101,14 @@ local function predictionBundle()
   return bundle
 end
 
-local function readyProvider(bundle, idleByteLimit)
-  local backend = countingBackend(FakeCache.new())
-  local cache = AudioFixture.readyCache(bundle or predictionBundle(), backend)
-  local opts = nil
-  if idleByteLimit ~= nil then
-    opts = { idleByteLimit = idleByteLimit }
-  end
-  local provider = AudioAssetProvider.new(cache, opts)
-  local baseline = {}
-  for path, reads in pairs(backend.reads) do
-    baseline[path] = reads
-  end
-  local function readsSinceBaseline(path)
-    return (backend.reads[path] or 0) - (baseline[path] or 0)
-  end
-  return provider, readsSinceBaseline
+-- The provider over the selected epoch's resident bytes: prediction resolves
+-- bank metadata only, and an acquisition borrows the store's own compact PCM.
+---@param bundle table?
+---@return AudioAssetProvider provider
+---@return ResidentCache store
+local function readyProvider(bundle)
+  local reader, store = AudioFixture.residentCache(bundle or predictionBundle())
+  return AudioAssetProvider.new(reader, { acquireSource = AudioFixture.acquireSource() }), store
 end
 
 local function outdoorFieldData()
@@ -345,12 +262,22 @@ local function fakeCacheFs()
   }
 end
 
-local function preparationQueue()
+-- The selected CPU owners a scene image owner or the prediction queue borrows:
+-- one decoded kernel with no idle retention and one queue over the probe reader.
+---@param host table the injected thread host
+---@return table queue
+---@return table decoded
+local function sessionPreparation(host)
   local ok, mod = pcall(require, "libs.hgss.src.presentation.AssetPreparationQueue")
   Assert.isTrue(ok, "background preparation needs its shared queue boundary: " .. tostring(mod))
+  local decoded = ResidentAssetCache.new({ idleByteLimit = 0, release = function() end })
+  return mod.new(fakeCacheFs(), { decoded = decoded, thread = host.love.thread }), decoded
+end
+
+local function preparationQueue()
   local host = fakeThreadHost()
-  local queue = mod.new(fakeCacheFs(), { thread = host.love.thread })
-  return queue, host
+  local queue, decoded = sessionPreparation(host)
+  return queue, host, decoded
 end
 
 -- The reply channel is the queue's second created channel; the first carries
@@ -412,7 +339,8 @@ end
 local function imagePool(graphics, host)
   local ok, mod = pcall(require, "libs.hgss.src.presentation.ImageAssetPool")
   Assert.isTrue(ok, "scene and menu images need the one shared image owner: " .. tostring(mod))
-  return mod.new(fakeCacheFs(), { graphics = graphics, thread = host.love.thread })
+  local queue, decoded = sessionPreparation(host)
+  return mod.new(fakeCacheFs(), { graphics = graphics, queue = queue, decoded = decoded })
 end
 
 -- A shared image owner with an explicit idle budget for budget-trim
@@ -422,62 +350,17 @@ end
 local function budgetedImagePool(graphics, host, idleByteLimit)
   local ok, mod = pcall(require, "libs.hgss.src.presentation.ImageAssetPool")
   Assert.isTrue(ok, "scene and menu images need the one shared image owner: " .. tostring(mod))
+  local queue, decoded = sessionPreparation(host)
   return mod.new(fakeCacheFs(), {
     graphics = graphics,
-    thread = host.love.thread,
+    queue = queue,
+    decoded = decoded,
     idleByteLimit = idleByteLimit,
   })
 end
 
 local function matchingSampler()
   return { wrapX = "repeat", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
-end
-
--- The predicted-vs-admitted gap must be explicit in the provider census:
--- every candidate is enrolled, only affordable ones stay resident, and the
--- uncovered remainder is reported instead of silently dropped.
-local function assertAdmissionGap(status)
-  Assert.isTrue(
-    type(status.predictedBytes) == "number",
-    "prediction must report its enrolled predicted bytes so over-budget sets stay visible"
-  )
-  Assert.isTrue(
-    type(status.warmedBytes) == "number",
-    "prediction must report its actually resident warmed bytes beside the prediction"
-  )
-  Assert.isTrue(
-    type(status.uncoveredBytes) == "number",
-    "prediction must report uncovered bytes instead of relabeling an over-budget set as success"
-  )
-end
-
-local function soundingVoice(provider, mixer, key)
-  local sample = provider:loadSample(key)
-  provider:setBusyPredicate(function(candidate)
-    return mixer:isSampleActive(candidate.pcm)
-  end)
-  local handle = mixer:noteOn({
-    generator = { kind = "sample", sample = key },
-    pcm = sample.pcm,
-    baseTimer = sample.metadata.baseTimer,
-    loop = sample.metadata.loop,
-    loopEnabled = sample.metadata.loopEnabled,
-    key = 60,
-    originalKey = 60,
-    velocity = 127,
-    trackVolume = 127,
-    expression = 127,
-    sequenceVolume = 127,
-    envelope = { attack = 127, decay = 127, sustain = 127, release = 127 },
-    pan = 0,
-    channelMask = 0xFFFF,
-    trackPriority = 64,
-    channelPriority = 64,
-  })
-  Assert.notNil(handle, "the guard voice starts on the predicted sample")
-  mixer:controlStep()
-  Assert.isTrue(mixer:isSampleActive(sample.pcm), "the mixer sounds the guarded sample")
-  return handle, sample
 end
 
 -- Scenario 1: nearby predicted sounds and images rest in RAM before first
@@ -488,7 +371,7 @@ end
 -- through the single shared owner. The live leg compares the same predicted
 -- bank set against the producer closure on a user-owned dump.
 function T.tests.predicted_near_sounds_and_images_rest_in_ram_before_first_use(context)
-  local provider, payloadReads = readyProvider()
+  local provider, store = readyProvider()
   local sound = stubSound()
   local night = { value = false }
   local controller = predictionController(provider, sound, {
@@ -519,25 +402,33 @@ function T.tests.predicted_near_sounds_and_images_rest_in_ram_before_first_use(c
   end
   Assert.equal(#predictedBanks, 2, "day/plate share one bank beside the night bank")
 
-  -- Advance prefetch while gameplay continues: outdoor day, outdoor night,
-  -- then the indoor warp destination. Every predicted key must already be
-  -- a packed RAM buffer afterwards.
+  -- Advance prediction while gameplay continues: outdoor day, outdoor night,
+  -- then the indoor warp destination. Prediction enrolls bank metadata and
+  -- sample keys only, so it pins no PCM; the first use of a predicted key
+  -- borrows the resident bytes instead of decoding a private copy.
   controller:prewarmMapMusic({ fieldData = outdoorFieldData() })
   night.value = true
   controller:prewarmMapMusic({ fieldData = outdoorFieldData() })
   controller:prewarmMapMusic({ fieldData = indoorFieldData() })
+  Assert.equal(provider:status().activeSamples, 0, "prediction retains no PCM of its own")
   for _, key in ipairs({ KEY_A, KEY_B, KEY_C }) do
     local missesBefore = provider:status().misses
-    local sample = provider:loadSample(key)
+    local lease = provider:acquireSample(key)
+    local sample = assert(lease.value)
     Assert.equal(
       provider:status().misses,
-      missesBefore,
-      "predicted sample " .. key .. " was not prewarmed to RAM; first use would decode synchronously"
+      missesBefore + 1,
+      "predicted sample " .. key .. " becomes one active record on first use"
     )
     Assert.isNil(sample.pcm[1], "a resident sample is a packed buffer, never a per-frame Lua table")
     Assert.isTrue(sample.pcm.frames > 0, "a resident sample carries its packed frames")
+    Assert.isTrue(
+      sample.pcm.data == store:readData(AudioCache.samplePath(key)),
+      "the acquisition borrows the resident sample bytes instead of copying them"
+    )
+    lease:release()
   end
-  Assert.equal(payloadReads(AudioCache.samplePath(KEY_A)), 1, "the shared day/flag sample is never re-read")
+  Assert.equal(provider:status().activeSamples, 0, "returning every acquisition retains no PCM again")
 
   -- Bank sizes and key sharing stay profiled through the census: the flag
   -- bank reuses the day sample, so the predicted set counts it once.
@@ -612,8 +503,10 @@ function T.tests.predicted_near_sounds_and_images_rest_in_ram_before_first_use(c
   Assert.isTrue(scriptOk, "the live comparison needs the published script index: " .. tostring(ScriptCache))
   local cacheFs = GeneratedCacheFixture.reader(readyVersion)
   local audioIndex = cacheFs:loadLua(AudioCache.indexPath())
-  Assert.notNil(audioIndex, "the live cache carries its audio index")
-  local liveProvider = AudioAssetProvider.new(cacheFs)
+  if audioIndex == nil then
+    context:skip("the prepared scope carries no audio artifacts; synthetic prediction coverage ran above")
+  end
+  local liveProvider = AudioAssetProvider.new(cacheFs, { acquireSource = AudioFixture.acquireSource() })
   local mapId = nil
   local fieldRecord = nil
   for candidate = 1, 64 do
@@ -643,26 +536,33 @@ function T.tests.predicted_near_sounds_and_images_rest_in_ram_before_first_use(c
     end
   end
   Assert.isTrue(#referenceBanks > 0, "the producer closure names audio banks for the live map")
+  -- Only banks the prepared scope actually carries can be compared: a scope
+  -- prepared for another suite leaves a bank out, and naming it is not this
+  -- suite's failure.
+  local compared = 0
   for _, bankId in ipairs(referenceBanks) do
-    liveProvider:prewarmBank(bankId)
-    local keys = AudioBank.sampleKeys(liveProvider:bank(bankId)) or {}
-    for _, key in ipairs(keys) do
-      local missesBefore = liveProvider:status().misses
-      liveProvider:loadSample(key)
-      Assert.equal(
-        liveProvider:status().misses,
-        missesBefore,
-        "affordable predicted sample for bank " .. tostring(bankId) .. " was not RAM resident"
-      )
+    if cacheFs:resolveAsset(AudioCache.bankPath(bankId)) ~= nil then
+      compared = compared + 1
+      liveProvider:prewarmBank(bankId)
+      local keys = AudioBank.sampleKeys(liveProvider:bank(bankId)) or {}
+      for _, key in ipairs(keys) do
+        local lease = liveProvider:acquireSample(key)
+        Assert.isTrue(
+          assert(lease.value).pcm.data == cacheFs:readData(AudioCache.samplePath(key)),
+          "the predicted sample for bank " .. tostring(bankId) .. " is borrowed from the installed bytes"
+        )
+        lease:release()
+      end
     end
   end
+  Assert.isTrue(compared > 0, "the prepared scope must carry at least one predicted audio bank for comparison")
 end
 
--- Scenario 2: new predictions supersede stale audio work without dropping
--- live sound. A time/flag/override change plus a warp walk issues a new
--- prediction round while earlier background work is still pending: the new
--- current bank takes demand priority, stale replies never publish, and the
--- sounding music plus latched radio survive until their own stop.
+-- Scenario 2: new predictions supersede stale preparation work without
+-- dropping live sound. A time/flag/override change plus a warp walk issues a
+-- new prediction round while earlier background work is still pending: the
+-- new current work takes demand priority, stale replies never publish, and
+-- the sounding music plus latched radio survive until their own stop.
 function T.tests.new_predictions_supersede_stale_audio_work_without_dropping_live_sound(_)
   local provider = readyProvider()
   local sound, soundState = stubSound()
@@ -680,31 +580,32 @@ function T.tests.new_predictions_supersede_stale_audio_work_without_dropping_liv
   controller:enterMap({ fieldData = outdoorFieldData() }, { play = true })
   Assert.equal(soundState.plays, playsAfterEntry, "a surviving radio is never restarted behind unchanged music")
 
-  -- Demand generations order background sample work: a newer round
-  -- invalidates deliveries from the previous one, which the provider
-  -- refuses instead of publishing.
-  local staleGeneration = provider:requestSample(KEY_A)
-  local currentGeneration = provider:requestSample(KEY_A)
-  Assert.equal(currentGeneration, staleGeneration + 1, "each prediction round takes a fresh demand generation")
-  local workerBytes = love.data.newByteData(AudioFixture.pcm16le({ 1000, 2000, 3000, 4000 }))
-  Assert.isFalse(
-    provider:adoptSample(KEY_A, staleGeneration, workerBytes),
-    "a stale background delivery never publishes over a newer prediction round"
-  )
+  -- Prediction resolves the closure of every predicted bank without holding
+  -- a payload; repeated acquisitions of one key share the single backing.
+  for _, bankId in ipairs(controller:predictedBankIds()) do
+    Assert.equal(provider:prewarmBankBackground(bankId), #(AudioBank.sampleKeys(provider:bank(bankId)) or {}))
+  end
+  Assert.equal(provider:status().activeSamples, 0, "a superseding round holds no sample payload")
+  local firstAcquisition = provider:acquireSample(KEY_A)
+  local secondAcquisition = provider:acquireSample(KEY_A)
   Assert.isTrue(
-    provider:adoptSample(KEY_A, currentGeneration, workerBytes),
-    "the current round adopts its matching background delivery without copying"
+    secondAcquisition.value.pcm == firstAcquisition.value.pcm,
+    "one key keeps one backing across acquisitions"
   )
-  Assert.isTrue(provider:loadSample(KEY_A).pcm == provider:loadSample(KEY_A).pcm, "one key keeps one backing")
+  Assert.equal(provider:status().activeSamples, 1, "repeated acquisitions share one active record")
+  firstAcquisition:release()
+  secondAcquisition:release()
 
-  -- An unpredicted radio tune stays pinnable on demand: playback outside
-  -- the field prediction still loads exact samples through the normal path.
-  local radioSample = provider:loadSample(KEY_D)
+  -- An unpredicted radio tune stays acquirable on demand: playback outside
+  -- the field prediction reads exact samples through the same path.
+  local radioLease = provider:acquireSample(KEY_D)
+  local radioSample = assert(radioLease.value)
   Assert.equal(radioSample.pcm.frames, 2, "the on-demand radio sample carries its packed frames")
   local first = radioSample.pcm:read(0)
   local second = radioSample.pcm:read(1)
   Assert.equal(first, 15000, "the on-demand radio sample renders its exact first frame")
   Assert.equal(second, 16000, "the on-demand radio sample renders its exact second frame")
+  radioLease:release()
 
   -- Walking across the warp under a flag plus persisted override changes
   -- the effective track; the radio latch still governs the transition.
@@ -717,7 +618,7 @@ function T.tests.new_predictions_supersede_stale_audio_work_without_dropping_liv
   -- The new round's work travels as background demand ahead of leftover
   -- prefetch: demand dispatches before queued prefetch, cancelled stale
   -- work never transfers, and the current round takes exactly its payload.
-  local queue, host = preparationQueue()
+  local queue, host, decoded = preparationQueue()
   local prefetchToken = queue:request("image-derivative", "gen/field/stale.png", "prefetch")
   local demandToken = queue:request("image-derivative", "gen/audio/current.png", "demand")
   local firstDispatched = nil
@@ -735,223 +636,16 @@ function T.tests.new_predictions_supersede_stale_audio_work_without_dropping_liv
   Assert.equal(queue:poll(demandToken), "pending", "the freed worker slot dispatches the demand round")
   replyTo(host, demandToken, imageDerivativeReply(3, 1, "current"))
   Assert.equal(queue:poll(demandToken), "ready", "the current round completes once the worker frees")
-  local payload = queue:take(demandToken)
+  local lease = queue:take(demandToken)
+  local payload = assert(lease.value).payload
   Assert.equal(payload.width, 3, "the current round takes exactly its own payload")
   Assert.equal(payload.pixelHash, "pixels-current", "a stale reply never overwrites the current payload")
   Assert.isFalse(pcall(queue.take, queue, prefetchToken), "cancelled stale work never transfers a payload")
-
-  -- Predicted sample PCM itself travels the same background path: the
-  -- queue needs an audio-sample kind so gameplay never decodes on the
-  -- audio path.
-  local admitted, audioToken = pcall(queue.request, queue, "audio-sample", AudioCache.samplePath(KEY_B), "prefetch")
-  Assert.isTrue(
-    admitted,
-    "predicted sample prewarm needs a background audio-sample preparation kind (got " .. tostring(audioToken) .. ")"
-  )
+  Assert.isTrue(decoded:returnLease(lease), "the current round returns its decoded interest")
+  decoded:trim()
+  queue:release()
 end
 
--- Scenario 3: idle trim evicts only unleased work and reports pinned
--- overflow. Under small fixed budgets, with a sounding loop, a held chrome
--- lease, and idle sampled resources, repeated prediction rounds plus prune
--- passes evict only the oldest unleased entries: audio never cuts, draws
--- never go invalid, failed or stale preparation never resurrects, and bytes
--- the trim cannot free stay visible instead of churning.
-function T.tests.idle_trim_evicts_only_unleased_work_and_reports_pinned_overflow(_)
-  -- Kernel unit leg: oldest-idle eviction, hard borrowed protection, and
-  -- exact-once single-use leases.
-  local released = {}
-  local kernel = ResidentAssetCache.new({
-    idleByteLimit = 12,
-    release = function(value)
-      released[#released + 1] = value
-    end,
-  })
-  local chrome = { name = "held-chrome" }
-  kernel:publish("old-idle", { name = "old-idle" }, 8)
-  kernel:publish("chrome", chrome, 4)
-  kernel:publish("new-idle", { name = "new-idle" }, 8)
-  local chromeLease = kernel:borrow("chrome")
-  local evicted, busyBytes = kernel:trim()
-  Assert.equal(evicted, 1, "one trim pass frees exactly the oldest unleased entry")
-  Assert.equal(busyBytes, 0, "no native voice shields kernel entries in this leg")
-  Assert.equal(#released, 1, "exactly one physical release runs for the evicted entry")
-  Assert.equal(released[1].name, "old-idle", "the oldest unleased entry leaves first")
-  Assert.isTrue(kernel:find("chrome") == chrome, "the held chrome lease survives the trim")
-  Assert.isTrue(kernel:find("new-idle") ~= nil, "newer unleased work survives a fitting trim")
-  Assert.isTrue(kernel:returnLease(chromeLease), "the chrome lease returns once")
-  Assert.isFalse(kernel:returnLease(chromeLease), "repeating the return changes nothing")
-
-  -- Provider integration leg: under budget pressure the oldest unleased
-  -- sample yields while the sounding loop is never cut, and demand stays
-  -- exact afterwards.
-  local provider = readyProvider(nil, 20)
-  local mixer = VoiceMixer.new({ sampleRate = 16756991 })
-  local handle, sample = soundingVoice(provider, mixer, KEY_B)
-  Assert.isNil(sample.pcm[1], "the guarded voice borrows the packed buffer")
-  provider:loadSample(KEY_A)
-  provider:loadSample(KEY_C)
-  local residentMisses = provider:status().misses
-  provider:loadSample(KEY_C)
-  Assert.equal(provider:status().misses, residentMisses, "the newest sample survives budget pressure")
-  provider:loadSample(KEY_B)
-  Assert.equal(provider:status().misses, residentMisses, "the sounding sample is never evicted for budget")
-  mixer:controlStep()
-  local rendered = mixer:render(2)
-  Assert.equal(rendered[1], 5000, "the surviving voice renders its exact packed frames after admission churn")
-  local census = provider:status()
-  Assert.equal(census.retainedPcmBytes, 20, "the census counts every retained packed byte")
-  mixer:stopVoice(handle)
-  Assert.isFalse(mixer:isSampleActive(sample.pcm), "the stopped voice drops the sample")
-  -- Refresh the newest entry so the stopped sample is the oldest unleased
-  -- one: every resident read above already retouched its entry.
-  provider:loadSample(KEY_C)
-  provider:loadSample(KEY_A)
-  local afterDemand = provider:status().misses
-  provider:loadSample(KEY_B)
-  Assert.equal(
-    provider:status().misses,
-    afterDemand + 1,
-    "the stopped sample yields its budget to newer demand instead of pinning it"
-  )
-  local reloaded = provider:loadSample(KEY_B)
-  Assert.equal(reloaded.pcm.frames, 2, "reloaded demand still carries its packed frames")
-  Assert.equal(reloaded.pcm:read(0), 5000, "reloaded demand still renders its exact frames")
-
-  -- Pinned overflow stays visible: with a budget that fits only the
-  -- sounding sample, the trim reports its shielded bytes instead of
-  -- cutting audio or churning, and further demand cannot dislodge it.
-  local tight = readyProvider(nil, 4)
-  local tightMixer = VoiceMixer.new({ sampleRate = 16756991 })
-  soundingVoice(tight, tightMixer, KEY_B)
-  Assert.equal(tight:trim(), 0, "a zero budget frees nothing while a voice sounds")
-  local tightStatus = tight:status()
-  Assert.isTrue(tightStatus.activePinnedBytes > 0, "shielded sounding bytes stay visible under a fitting-only budget")
-  local tightMisses = tightStatus.misses
-  tight:loadSample(KEY_B)
-  Assert.equal(tight:status().misses, tightMisses, "the shielded sample serves demand without a reload")
-
-  -- Failed and stale preparation never resurrect: cancelling queued work
-  -- drops its interest, and a late reply for it publishes nothing while
-  -- live work completes normally.
-  local queue, host = preparationQueue()
-  local staleToken = queue:request("image", "gen/field/abandoned.png", "prefetch")
-  queue:cancel(staleToken)
-  replyTo(host, staleToken, { ok = true, marker = "late" })
-  local liveToken = queue:request("image", "gen/field/live.png", "demand")
-  Assert.equal(queue:poll(liveToken), "pending", "live work dispatches once the stale slot frees")
-  replyTo(host, liveToken, { ok = true, vertexData = "live-bytes" })
-  Assert.equal(queue:poll(liveToken), "ready", "live work completes after a stale reply is discarded")
-  Assert.equal(queue:take(liveToken).vertexData, "live-bytes", "live work takes exactly its own payload")
-  Assert.isFalse(pcall(queue.take, queue, staleToken), "cancelled work never transfers a late payload")
-
-  -- Shared image leg: a borrowed pair survives prune passes (no invalid
-  -- draw), and leases stay single-use.
-  local graphics = fakeGraphics()
-  local poolHost = fakeThreadHost()
-  local pool = imagePool(graphics, poolHost)
-  local token = pool:request("gen/menu/chrome.png", matchingSampler(), "demand")
-  local job = requestedJobToken(poolHost, "image-derivative")
-  Assert.notNil(job, "chrome interest enrolls classification work")
-  replyTo(poolHost, job, imageDerivativeReply(2, 1, "chrome"))
-  Assert.equal(pool:poll(token), "ready", "chrome stages without blocking")
-  local lease = pool:acquire(token)
-  Assert.equal(pool:prune(), 0, "a borrowed pair survives prune passes")
-  Assert.isTrue(pool:release(lease), "the chrome lease returns once")
-  Assert.isFalse(pool:release(lease), "repeating the return changes nothing")
-  pool:dispose()
-
-  -- The admission gap is explicit per round: enrolled, resident, and
-  -- uncovered bytes are all reported.
-  assertAdmissionGap(provider:status())
-end
-
--- Scenario 4: over-cap predictions report their gap without churn or demand
--- failures. When the predicted set totals more than the soft budget -- and
--- one sample alone exceeds it -- enqueuing the full set and polling over
--- several steps causes no ready-payload spike, no load/evict oscillation,
--- and no demand failure: uncovered bytes are reported and on-demand loads
--- stay exact. The zero-idle control plus the allowance record run honestly
--- on this host and never pose as device calibration.
-function T.tests.over_cap_predictions_report_their_gap_without_churn_or_demand_failures(_)
-  local budget = 12
-  local provider = readyProvider(nil, budget)
-
-  -- The day bank fits exactly; the night sample alone exceeds the budget,
-  -- so it can never stay resident no matter what leaves first.
-  local warmed = provider:prewarmBank(12)
-  Assert.equal(#warmed, 2, "the fitting bank warms both its samples")
-  provider:prewarmBank(13)
-  local missesAfterOverflow = provider:status().misses
-  provider:loadSample(KEY_C)
-  Assert.equal(
-    provider:status().misses,
-    missesAfterOverflow + 1,
-    "the oversize sample never stays resident under the budget"
-  )
-
-  -- No load/evict oscillation: re-requesting the fitting set after the
-  -- overflow must not pay reloads for work that never stopped being
-  -- predicted.
-  local reloadsBefore = provider:status().reloads
-  provider:prewarmBank(12)
-  Assert.equal(provider:status().reloads, reloadsBefore, "re-predicting the fitting set reloads nothing")
-
-  -- The gap is explicit: enrolled, resident, and uncovered bytes reported.
-  assertAdmissionGap(provider:status())
-
-  -- Actual demand correctness is preserved through the churn: the oversize
-  -- sample still loads exact frames on demand.
-  local oversize = provider:loadSample(KEY_C)
-  Assert.equal(oversize.pcm.frames, 8, "the oversize demand carries its packed frames")
-  Assert.equal(oversize.pcm:read(0), 7000, "the oversize demand renders its exact first frame")
-  Assert.equal(oversize.pcm:read(7), 14000, "the oversize demand renders its exact last frame")
-
-  -- Zero-idle control: with no idle retention every prewarm is admitted
-  -- then released, so repeated rounds reload instead of retaining. The
-  -- control records that honestly instead of claiming a fitted budget.
-  local control = readyProvider(nil, 0)
-  control:prewarmBank(12)
-  control:prewarmBank(12)
-  Assert.isTrue(control:status().reloads > 0, "the zero-idle control visibly retains nothing")
-
-  -- Allowance record: the formula pins the split on synthetic replay
-  -- totals, and missing graphics stay explicitly unavailable.
-  local mebibyte = 1024 * 1024
-  local record = calibrateIdleLimits(600 * mebibyte, 100 * mebibyte, 200 * mebibyte)
-  Assert.equal(record.allowance, 296 * mebibyte, "the allowance subtracts high-water and margin from the ceiling")
-  Assert.equal(record.audioLimit + record.imageLimit, record.allowance, "the family limits partition the allowance")
-  Assert.equal(record.audioLimit, math.floor(record.allowance / 3), "audio takes its demand share of the allowance")
-  Assert.equal(record.deviceCalibration, "pending", "host records never pose as device calibration")
-  local emptyRecord = calibrateIdleLimits(600 * mebibyte, 0, 0)
-  Assert.equal(emptyRecord.audioLimit, 0, "no predicted demand means no audio allowance")
-  Assert.equal(emptyRecord.imageLimit, 0, "no predicted demand means no image allowance")
-  local fullRecord = calibrateIdleLimits(WHOLE_PROCESS_CEILING, 100 * mebibyte, 100 * mebibyte)
-  Assert.equal(fullRecord.allowance, 0, "a full high-water leaves no idle allowance")
-  local luaKb = AssetMemoryTrace.luaKilobytes()
-  Assert.isTrue(type(luaKb) == "number", "the control observes its own heap honestly")
-  local noGraphics = AssetMemoryTrace.rendererIdentity(nil)
-  Assert.isFalse(noGraphics.available, "missing graphics stay explicitly unavailable, never zero-filled")
-
-  -- The predicted set travels bounded background admission: sample payloads
-  -- need the audio-sample preparation kind so an over-cap prediction cannot
-  -- spike ready payloads outside the allowance.
-  local queue = preparationQueue()
-  local admitted, audioToken = pcall(queue.request, queue, "audio-sample", AudioCache.samplePath(KEY_A), "prefetch")
-  Assert.isTrue(
-    admitted,
-    "over-cap sample admission needs a bounded background audio-sample kind (got " .. tostring(audioToken) .. ")"
-  )
-end
-
--- Scenario 5: the shared image owner trims oldest-idle first under an
--- explicit budget while request-time reuse shields the predicted tail.
--- Each fixture image weighs 10 bytes (two indexed pixels plus two palette
--- slots), so a 25-byte budget holds two idle images: the trim evicts
--- exactly the oldest unleased entry, re-requesting a resident path refreshes
--- it as semantic reuse (so the historical tail leaves first even when it is
--- not the newest), a different sampler state refreshes nothing, borrowed
--- pairs never leave, an oversize candidate is evicted singly without churn,
--- and live and pinned bytes stay visible through the pool census.
 function T.tests.image_idle_budget_trims_oldest_first_and_reuse_shields_the_predicted_tail(_)
   local graphics = fakeGraphics()
   local host = fakeThreadHost()
@@ -1082,7 +776,7 @@ local ScriptCache = require("libs.assets.src.ScriptCache")
 -- method and counters for background demand actions.
 local function holdPredictionRuntime(initialHold)
   local hold = { value = initialHold }
-  local counters = { holdCalls = 0, prewarms = 0, trims = 0, drains = 0, prunes = 0 }
+  local counters = { holdCalls = 0, prewarms = 0, drains = 0, prunes = 0 }
   local audio = {
     effectiveMusic = function()
       return 42
@@ -1101,9 +795,6 @@ local function holdPredictionRuntime(initialHold)
     end,
     bankSampleKeys = function()
       return {}
-    end,
-    trimIdleSamples = function()
-      counters.trims = counters.trims + 1
     end,
     cancelUnpredictedSamples = function() end,
   }
@@ -1168,19 +859,17 @@ function T.tests.foreground_hold_transitions_drive_prediction_epochs_without_spu
   assertHoldMarker(driver.fingerprint, "h0", "a hold sensor returning false records the released marker")
   Assert.equal(driver.epoch, 1, "the first prediction round commits one epoch")
   Assert.isTrue(counters.holdCalls > 0, "the fingerprint consults the hold sensor")
-  local prewarms, trims = counters.prewarms, counters.trims
+  local prewarms = counters.prewarms
 
   runtime:_refreshPrediction()
   Assert.equal(driver.epoch, 1, "an unchanged released hold commits no new epoch")
   Assert.equal(counters.prewarms, prewarms, "a steady hold enrolls no new background demand")
-  Assert.equal(counters.trims, trims, "a steady hold trims no idle bytes again")
 
   hold.value = true
   runtime:_refreshPrediction()
   assertHoldMarker(driver.fingerprint, "h1", "a hold sensor returning true records the held marker")
   Assert.equal(driver.epoch, 2, "entering the hold commits exactly one epoch")
   Assert.equal(counters.prewarms, prewarms + 1, "entering the hold re-enrolls background demand once")
-  Assert.equal(counters.trims, trims + 1, "entering the hold trims once")
 
   runtime:_refreshPrediction()
   Assert.equal(driver.epoch, 2, "an unchanged held state commits no new epoch")
@@ -1193,7 +882,6 @@ function T.tests.foreground_hold_transitions_drive_prediction_epochs_without_spu
 
   runtime:_refreshPrediction()
   Assert.equal(driver.epoch, 3, "settling back to released commits no further epoch")
-  Assert.equal(counters.trims, trims + 2, "only real transitions trim")
   Assert.equal(counters.prunes, driver.epoch, "every committed epoch prunes idle images exactly once")
 end
 

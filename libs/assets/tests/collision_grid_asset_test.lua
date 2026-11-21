@@ -98,6 +98,52 @@ function T.rejects_a_header_shorter_than_the_format_prefix()
   Assert.equal(decodeErr("G4C").code, "COLLISION_BAD_SIZE")
 end
 
+-- Runtime collision reads the compact bytes instead of materializing the
+-- normalized grid: open() validates the same header/extent/blocked domain and
+-- answers single cells from the borrowed source, so a map never retains one
+-- table per tile. Parity with decode() is checked over every cell.
+function T.open_answers_cells_from_the_borrowed_bytes_without_materializing_cells()
+  Assert.equal(
+    type(CollisionGridAsset.open),
+    "function",
+    "runtime collision reading must borrow the compact cell bytes instead of expanding one table per cell"
+  )
+  local g = grid(32, 32, true)
+  local bytes = CollisionGridAsset.encode(g)
+  local source = assert(love.data.newByteData(bytes), "the compact collision bytes must be admissible as Data")
+  local view = assert(CollisionGridAsset.open(source, { path = "map/collision.g4cl" }))
+  Assert.equal(view.width, 32, "the view reports the stored width")
+  Assert.equal(view.height, 32, "the view reports the stored height")
+  Assert.isNil(view.cells, "a collision view keeps no per-cell table array")
+  local blocked = assert(view:cell(1 * 32 + 1), "a view answers a zero-based cell index")
+  Assert.equal(blocked.behavior, 3, "the borrowed cell keeps its behavior byte")
+  Assert.equal(blocked.terrainResponseId, 6, "the borrowed cell keeps its terrain response byte")
+  Assert.isTrue(blocked.blocked, "the borrowed cell keeps its blocked flag")
+  Assert.isFalse(view:cell(0).blocked, "a passable cell reads as unblocked")
+  for index = 0, 32 * 32 - 1 do
+    local cell = view:cell(index)
+    local decoded = g.cells[index + 1]
+    Assert.equal(cell.behavior, decoded.behavior)
+    Assert.equal(cell.terrainResponseId, decoded.terrainResponseId)
+    Assert.equal(cell.blocked, decoded.blocked)
+  end
+end
+
+-- Bounded reading rejects a short or malformed asset before any cell is
+-- indexed, with the same format error identities the normalized reader uses.
+function T.open_rejects_malformed_compact_bytes_before_reading_cells()
+  Assert.equal(type(CollisionGridAsset.open), "function", "runtime collision reading must borrow the compact bytes")
+  local bytes = CollisionGridAsset.encode(grid(4, 4, true))
+  local short = assert(love.data.newByteData(bytes:sub(1, #bytes - 1)))
+  local view, err = CollisionGridAsset.open(short, nil)
+  Assert.isNil(view, "a truncated collision asset must not produce a view")
+  Assert.equal(assert(err).code, "COLLISION_BAD_SIZE", "a truncated asset reports its exact extent failure")
+  local corrupted = bytes:sub(1, 12) .. string.char(2) .. bytes:sub(14)
+  local corruptedView, corruptedErr = CollisionGridAsset.open(assert(love.data.newByteData(corrupted)), nil)
+  Assert.isNil(corruptedView, "a bad blocked byte must not produce a view")
+  Assert.equal(assert(corruptedErr).code, "COLLISION_BAD_BLOCKED", "the blocked-byte domain is validated up front")
+end
+
 function T.encode_rejects_malformed_grids()
   Assert.throws(function()
     CollisionGridAsset.encode({ width = 2, height = 2, cells = { { blocked = false } } })

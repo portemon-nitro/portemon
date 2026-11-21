@@ -73,6 +73,65 @@ local function fakeCacheFs()
   }
 end
 
+-- The selected CPU-owner pair a geometry-only pool borrows: the preparation
+-- queue answers one worker-shaped lease over the packed upload for the
+-- requested procedural batch, and the decoded owner returns it exactly once.
+-- Texture-only pools resolve the same capability from their image owner.
+local function meshPreparation()
+  local returned = 0
+  local source = fakeCacheFs()
+  local queue = {}
+  function queue:request(kind, path, priority)
+    return { kind = kind, path = path, priority = priority }
+  end
+  function queue:wait(request)
+    if request.path == EMPTY_GEOM_PATH then
+      -- The worker already rejects an empty batch during upload packing; the
+      -- pool's own rollback is exercised with the well-formed zero-vertex
+      -- packet it would realize.
+      return {
+        value = {
+          kind = request.kind,
+          payload = {
+            vertexData = love.data.newByteData(1),
+            indexData = love.data.newByteData(1),
+            vertexCount = 0,
+            indexCount = 0,
+            indexType = "uint16",
+          },
+        },
+      }
+    end
+    local bytes = assert(source.read(nil, request.path), "missing mesh " .. tostring(request.path))
+    return { value = { kind = request.kind, payload = SceneMesh.prepareUpload(bytes) } }
+  end
+  local decoded = {
+    returns = function()
+      return returned
+    end,
+  }
+  function decoded:returnLease(lease)
+    lease.value = nil
+    returned = returned + 1
+    return true
+  end
+  function decoded:trim() end
+  return { assetPreparation = queue, decoded = decoded }
+end
+
+-- Construct a pool through the suite's one geometry preparation pair unless
+-- the test supplies explicit owners or a session image owner (whose own
+-- preparation capability is the required source).
+local function newPool(cacheFs, opts)
+  opts = opts or {}
+  if opts.assetPreparation == nil and opts.decoded == nil and opts.imageAssets == nil then
+    local preparation = meshPreparation()
+    opts.assetPreparation = preparation.assetPreparation
+    opts.decoded = preparation.decoded
+  end
+  return GpuAssetPool.new(cacheFs, opts)
+end
+
 -- Injected graphics namespace for pool construction. Image construction
 -- itself always borrows from the injected shared owner, so this namespace
 -- only stands in for the Mesh side's graphics requirement headless.
@@ -92,7 +151,7 @@ local REPEAT_SAMPLER = { wrapX = "repeat", wrapY = "clamp" }
 
 function T.rejects_a_missing_graphics_namespace()
   local err = Assert.throws(function()
-    GpuAssetPool.new(fakeCacheFs(), { graphics = false })
+    newPool(fakeCacheFs(), { graphics = false })
   end)
   Assert.isTrue(tostring(err):find("GpuAssetPool requires love.graphics", 1, true) ~= nil)
 end
@@ -100,7 +159,7 @@ end
 -- Texture acquisition without the session shared owner is a programming
 -- error and fails loudly instead of building a private image.
 function T.texture_acquisition_without_a_session_pool_fails_loudly()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics() })
+  local pool = newPool(fakeCacheFs(), { graphics = fakeGraphics() })
   local err = Assert.throws(function()
     pool:imageFor(TEX_PATH, "clamp", "clamp")
   end)
@@ -119,7 +178,7 @@ function T.texture_acquisition_without_a_session_pool_fails_loudly()
 end
 
 function T.unknown_wrap_modes_are_rejected()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = SharedImagePoolFake.new() })
+  local pool = newPool(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = SharedImagePoolFake.new() })
   local err = Assert.throws(function()
     pool:imageFor(TEX_PATH, "mirror", "clamp")
   end)
@@ -129,7 +188,7 @@ end
 
 function T.image_identity_includes_the_wrap_pair()
   local images = SharedImagePoolFake.new()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local pool = newPool(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local repeatX = pool:imageFor(TEX_PATH, "repeat", "clamp")
   local clampX = pool:imageFor(TEX_PATH, "clamp", "clamp")
   Assert.isTrue(repeatX ~= clampX, "different wrap pairs must not alias one borrowed image")
@@ -140,7 +199,7 @@ end
 
 function T.same_path_and_wrap_dedup_to_one_borrowed_lease()
   local images = SharedImagePoolFake.new()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local pool = newPool(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local first = pool:imageFor(TEX_PATH, "repeat", "clamp")
   local second = pool:imageFor(TEX_PATH, "repeat", "clamp")
   Assert.equal(first, second)
@@ -153,7 +212,7 @@ end
 -- The handle is stable per path/wrap identity, like the lease it describes.
 function T.sharedImage_propagates_the_sampling_handle()
   local images = SharedImagePoolFake.new()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local pool = newPool(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local first = pool:sharedImage(TEX_PATH, "repeat", "clamp")
   local second = pool:sharedImage(TEX_PATH, "repeat", "clamp")
   Assert.equal(first, second, "repeated borrows share one stable handle")
@@ -165,7 +224,7 @@ function T.sharedImage_propagates_the_sampling_handle()
 end
 
 function T.untextured_materials_get_no_image()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics() })
+  local pool = newPool(fakeCacheFs(), { graphics = fakeGraphics() })
   Assert.isNil(pool:imageFor(nil, "clamp", "clamp"))
   Assert.isNil(pool:imageFromPrepared(nil, "clamp", "clamp", { imageData = {} }))
   Assert.equal(pool:textureCount(), 0)
@@ -177,7 +236,7 @@ end
 -- partially failed construction never keeps a borrowed texture.
 function T.build_returns_every_borrowed_lease_when_a_later_borrow_fails()
   local images = SharedImagePoolFake.new()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local pool = newPool(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local first = pool:imageFor(TEX_PATH, "clamp", "clamp")
   images:failAfterUploads(1, "injected shared image failure")
   local err = Assert.throws(function()
@@ -203,7 +262,7 @@ end
 -- construction keeps its leases and returns the builder's value.
 function T.build_keeps_borrowed_leases_and_returns_the_value_on_success()
   local images = SharedImagePoolFake.new()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local pool = newPool(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local result = pool:build(function()
     pool:imageFor(TEX_PATH, "clamp", "clamp")
     return "built"
@@ -219,7 +278,7 @@ end
 -- held, and the failed sampler state is borrowable again afterwards.
 function T.failed_single_borrow_keeps_the_live_scene_leases()
   local images = SharedImagePoolFake.new()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local pool = newPool(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local first = pool:imageFor(TEX_PATH, "clamp", "clamp")
   images:failAfterUploads(1, "injected shared image failure")
   local err = Assert.throws(function()
@@ -245,7 +304,7 @@ end
 -- unreachable request (and no ready payload) charged to the session.
 function T.a_failed_prefetched_texture_cancels_its_shared_ticket()
   local images = ControllableImageOwner.new()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local pool = newPool(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   pool:prefetchShared(TEX_PATH, "clamp", "clamp")
   local token = assert(images.requests[1], "prefetching enrolls one shared ticket").token
   images:failNow("injected shared image failure")
@@ -266,7 +325,7 @@ end
 -- owner recovers borrows normally: the failure drops only its own ticket.
 function T.a_failed_demand_texture_cancels_its_ticket_and_a_retry_succeeds()
   local images = ControllableImageOwner.new()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local pool = newPool(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   images:failNow("injected shared image failure")
   Assert.throws(function()
     pool:imageFor(TEX_PATH, "repeat", "clamp")
@@ -290,7 +349,7 @@ end
 function T.releasing_a_scene_cancels_its_pending_demand_texture_ticket()
   local images = ControllableImageOwner.new({ held = false, payloadBytes = 2048 })
   images:withhold(TEX_PATH)
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local pool = newPool(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local leaseThread = coroutine.create(function()
     return pool:sharedImage(TEX_PATH, "clamp", "clamp", function()
       coroutine.yield("wait")
@@ -319,7 +378,7 @@ end
 -- without a wait path.
 function T.heldImage_answers_only_already_borrowed_textures()
   local images = ControllableImageOwner.new({ held = false })
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local pool = newPool(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local borrowed = pool:sharedImage(TEX_PATH, "clamp", "clamp")
   Assert.equal(pool:heldImage(TEX_PATH, "clamp", "clamp"), borrowed, "the held lookup answers the borrowed handle")
   Assert.equal(#images.requests, 1, "the held lookup starts no additional request")
@@ -337,7 +396,7 @@ end
 
 function T.release_returns_leases_and_prune_reclaims_exactly_once()
   local images = SharedImagePoolFake.new()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local pool = newPool(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local clampImage = pool:imageFor(TEX_PATH, "clamp", "clamp")
   local repeatImage = pool:imageFor(TEX_PATH, "repeat", "clamp")
   pool:release()
@@ -350,7 +409,7 @@ function T.release_returns_leases_and_prune_reclaims_exactly_once()
 end
 
 function T.mesh_entries_dedup_and_accumulate_triangles_once()
-  local pool = GpuAssetPool.new(fakeCacheFs())
+  local pool = newPool(fakeCacheFs())
   local first = pool:meshFor(GEOM_PATH)
   local second = pool:meshFor(GEOM_PATH)
   Assert.equal(first.mesh, second.mesh)
@@ -365,27 +424,6 @@ end
 -- mesh object the builder created before that step must already be owned by
 -- the pool, so the guarded acquire pops and releases it exactly once --
 -- never an orphaned love Mesh.
-function T.empty_mesh_fails_and_releases_the_created_mesh()
-  local created = {}
-  local pool = GpuAssetPool.new(fakeCacheFs(), {
-    graphics = fakeGraphics(),
-    meshBuilder = function()
-      local mesh = { released = false }
-      mesh.release = function()
-        mesh.released = true
-      end
-      created[#created + 1] = mesh
-      return mesh --[[@as GpuAssetPool.Mesh]]
-    end,
-  })
-  local err = Assert.throws(function()
-    pool:meshFor(EMPTY_GEOM_PATH)
-  end)
-  Assert.isTrue(Errors.is(err) and err.code == ErrorCodes.SCENE_DESC_EMPTY_MESH, "raises SCENE_DESC_EMPTY_MESH")
-  Assert.equal(#created, 1, "the builder created the mesh before the geometry step")
-  Assert.equal(created[1].released, true, "the failed acquisition's own mesh is released")
-  Assert.equal(#pool.meshes, 0, "the pool owns no mesh after the failed acquire")
-end
 
 -- The per-mesh geometry cache: the entry exposes the model-space
 -- bounding-box center and AABB, computed ONCE per content-addressed path and
@@ -394,7 +432,7 @@ end
 -- per draw/placement. The values live on the shared entry, so repeated
 -- acquires return the same precomputed tables.
 function T.mesh_entries_expose_cached_center_and_aabb()
-  local pool = GpuAssetPool.new(fakeCacheFs())
+  local pool = newPool(fakeCacheFs())
   local entry = pool:meshFor(GEOM_PATH)
   -- The triangle fixture spans x[0,2], y=0, z[0,2].
   Assert.deepEqual(entry.center, { 1, 0, 1 }, "the pool mesh entry exposes the cached model-space center")
@@ -445,6 +483,18 @@ local function fakeMeshGraphics(opts)
   }
 end
 
+function T.empty_mesh_fails_and_releases_the_created_mesh()
+  local graphics = fakeMeshGraphics()
+  local pool = newPool(fakeCacheFs(), { graphics = graphics })
+  local err = Assert.throws(function()
+    pool:meshFor(EMPTY_GEOM_PATH)
+  end)
+  Assert.isTrue(Errors.is(err) and err.code == ErrorCodes.SCENE_DESC_EMPTY_MESH, "raises SCENE_DESC_EMPTY_MESH")
+  Assert.equal(#graphics.created, 1, "the prepared realization created the mesh before the geometry step")
+  Assert.equal(graphics.created[1].released, true, "the failed acquisition's own mesh is released")
+  Assert.equal(#pool.meshes, 0, "the pool owns no mesh after the failed acquire")
+end
+
 local function preparedMeshPayload()
   return SceneMesh.prepareUpload(MeshWriter.encode(triangleBatch()))
 end
@@ -452,11 +502,11 @@ end
 -- Equivalence: a prepared realization must dedup, geometry-fold, and stat
 -- exactly like the synchronous path for the same content-addressed path.
 function T.meshFromPrepared_matches_meshFor_geometry_for_equivalent_content()
-  local syncPool = GpuAssetPool.new(fakeCacheFs())
+  local syncPool = newPool(fakeCacheFs())
   local syncEntry = syncPool:meshFor(GEOM_PATH)
 
   local graphics = fakeMeshGraphics()
-  local preparedPool = GpuAssetPool.new(fakeCacheFs(), { graphics = graphics })
+  local preparedPool = newPool(fakeCacheFs(), { graphics = graphics })
   local preparedEntry = preparedPool:meshFromPrepared(GEOM_PATH, preparedMeshPayload())
 
   Assert.equal(preparedEntry.triangles, syncEntry.triangles)
@@ -473,12 +523,7 @@ end
 -- point must not be rebuilt through the other.
 function T.meshFromPrepared_dedups_with_a_prior_synchronous_acquire()
   local graphics = fakeMeshGraphics()
-  local pool = GpuAssetPool.new(fakeCacheFs(), {
-    graphics = graphics,
-    meshBuilder = function()
-      return { release = function() end }
-    end,
-  })
+  local pool = newPool(fakeCacheFs(), { graphics = graphics })
   local synchronous = pool:meshFor(GEOM_PATH)
   local prepared = pool:meshFromPrepared(GEOM_PATH, preparedMeshPayload())
   Assert.equal(prepared, synchronous, "the prepared path returns the already-realized entry, never a duplicate")
@@ -490,7 +535,7 @@ end
 -- tables/counters exactly as before the failed call.
 function T.meshFromPrepared_rolls_back_the_partial_mesh_on_publish_failure()
   local graphics = fakeMeshGraphics({ failSetVertexMap = true })
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = graphics })
+  local pool = newPool(fakeCacheFs(), { graphics = graphics })
   local err = Assert.throws(function()
     pool:meshFromPrepared(GEOM_PATH, preparedMeshPayload())
   end)
@@ -500,7 +545,7 @@ function T.meshFromPrepared_rolls_back_the_partial_mesh_on_publish_failure()
   Assert.equal(graphics.created[1].released, true, "the partially-constructed mesh is released")
 
   local retryGraphics = fakeMeshGraphics()
-  local retryPool = GpuAssetPool.new(fakeCacheFs(), { graphics = retryGraphics })
+  local retryPool = newPool(fakeCacheFs(), { graphics = retryGraphics })
   local retried = retryPool:meshFromPrepared(GEOM_PATH, preparedMeshPayload())
   Assert.notNil(retried, "the prepared path is usable again after a rolled-back failure")
   retryPool:release()
@@ -511,7 +556,7 @@ end
 -- so both entry points resolve one physical image and one scene lease.
 function T.imageFromPrepared_delegates_to_the_shared_borrow()
   local images = SharedImagePoolFake.new()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local pool = newPool(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local prepared = { imageData = { fakeImageData = true } }
   local fromPrepared = pool:imageFromPrepared(TEX_PATH, "clamp", "clamp", prepared)
   local fromSync = pool:imageFor(TEX_PATH, "clamp", "clamp")
@@ -525,7 +570,7 @@ end
 -- are superseded: callers must stage before borrowing.
 function T.imageFromPrepared_still_requires_its_staged_payload()
   local images = SharedImagePoolFake.new()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local pool = newPool(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local err = Assert.throws(function()
     pool:imageFromPrepared(TEX_PATH, "clamp", "clamp", nil)
   end)
@@ -536,7 +581,6 @@ function T.imageFromPrepared_still_requires_its_staged_payload()
   Assert.equal(images.uploads, 0, "no borrow happens without a staged payload")
   pool:release()
 end
-
 
 -- The engine-owned model bank under test: one draw list, two draws with
 -- distinct extents, so a selector's draw index is observable in the acquired
@@ -612,71 +656,73 @@ local function twoDrawBank()
   }))
 end
 
--- The pool decodes a shared model bank once: repeated acquisition of the same
--- draw reuses the resident resource, every other draw of that bank realizes
--- from the same bank operation (no second GX replay), each draw is its own
--- resident resource, and the pool disposes each once on release.
-function T.native_bank_selectors_decode_once_and_share_one_resident_mesh()
+-- A native model bank is one decoded worker payload shared by every selected
+-- draw: the pool asks the selected queue for the bank, realizes only the draw it
+-- needs, returns that decoded lease immediately and keeps no bank of its own.
+-- Repeated demand reuses the resident GPU mesh, each draw is its own GPU
+-- resource, and release disposes each exactly once.
+function T.native_bank_selectors_realize_from_the_shared_decoded_bank()
   local bytes = twoDrawBank()
-  local created = {}
   local cacheFs = {
-    read = function(_, path)
-      if path == BANK_PATH then
-        return bytes
-      end
+    read = function()
       return nil
     end,
   }
-  local realDecodeBank = SceneMesh.decodeNativeBank
-  local bankDecodes = 0
-  SceneMesh.decodeNativeBank = function(...)
-    bankDecodes = bankDecodes + 1
-    return realDecodeBank(...)
-  end
-  local ok, err = pcall(function()
-    local pool = GpuAssetPool.new(cacheFs, {
-      graphics = fakeGraphics(),
-      meshBuilder = function()
-        local mesh = { released = 0 }
-        function mesh:release()
-          self.released = self.released + 1
-        end
-        created[#created + 1] = mesh
-        return mesh --[[@as GpuAssetPool.Mesh]]
-      end,
-    })
+  local created = {}
+  local bankRequests, returnedLeases = 0, 0
+  local shared = SceneMesh.prepareNativeBank(bytes, "shared-bank")
+  local queue = {
+    request = function(_, kind, path, priority)
+      Assert.equal(kind, "g4gx", "a native bank request is a whole-bank g4gx job")
+      bankRequests = bankRequests + 1
+      return { path = path, priority = priority }
+    end,
+    wait = function()
+      return { value = { kind = "g4gx", payload = shared } }
+    end,
+  }
+  local decoded = {
+    returnLease = function(_, lease)
+      lease.value = nil
+      returnedLeases = returnedLeases + 1
+      return true
+    end,
+    trim = function() end,
+  }
+  local pool = newPool(cacheFs, {
+    graphics = fakeMeshGraphics(),
+    assetPreparation = queue,
+    decoded = decoded,
+  })
 
-    local first = pool:meshFor({ file = BANK_PATH, drawIndex = 0 })
-    Assert.equal(bankDecodes, 1, "first demand decodes the whole bank once")
-    Assert.equal(first.triangles, 1, "the selected draw reports its triangle count")
-    Assert.deepEqual(first.center, { 1, 0, 3 }, "the selected draw reports its own model-space center")
-    Assert.deepEqual(
-      first.bounds,
-      { minX = 0, maxX = 2, minY = 0, maxY = 0, minZ = 0, maxZ = 6 },
-      "the selected draw reports its own bounds"
-    )
+  local first = pool:meshFor({ file = BANK_PATH, drawIndex = 0 })
+  Assert.equal(first.triangles, 1, "the selected draw reports its triangle count")
+  Assert.deepEqual(first.center, { 1, 0, 3 }, "the selected draw reports its own model-space center")
+  Assert.deepEqual(
+    first.bounds,
+    { minX = 0, maxX = 2, minY = 0, maxY = 0, minZ = 0, maxZ = 6 },
+    "the selected draw reports its own bounds"
+  )
+  Assert.equal(returnedLeases, 1, "the decoded bank lease returns once its GPU mesh exists")
+  Assert.equal(bankRequests, 1, "the first demand asks the queue for the whole bank")
 
-    local again = pool:meshFor({ file = BANK_PATH, drawIndex = 0 })
-    Assert.equal(again, first, "the same selected draw resolves the resident entry")
-    Assert.equal(again.mesh, first.mesh, "repeated demand reuses the resident GPU mesh")
-    Assert.equal(bankDecodes, 1, "repeated demand performs no second bank decode")
+  local again = pool:meshFor({ file = BANK_PATH, drawIndex = 0 })
+  Assert.equal(again, first, "the same selected draw resolves the resident entry")
+  Assert.equal(again.mesh, first.mesh, "repeated demand reuses the resident GPU mesh")
+  Assert.equal(bankRequests, 1, "repeated demand asks the session for nothing new")
 
-    local second = pool:meshFor({ file = BANK_PATH, drawIndex = 1 })
-    Assert.isTrue(second.mesh ~= first.mesh, "another draw of the same bank is its own GPU resource")
-    Assert.deepEqual(second.center, { -5, 0, 1.5 }, "the second draw reports its own center")
-    Assert.equal(bankDecodes, 1, "another draw of the same bank realizes from the same bank decode")
-    Assert.equal(#pool.meshes, 2, "the pool owns one mesh per selected draw")
+  local second = pool:meshFor({ file = BANK_PATH, drawIndex = 1 })
+  Assert.isTrue(second.mesh ~= first.mesh, "another draw of the same bank is its own GPU resource")
+  Assert.deepEqual(second.center, { -5, 0, 1.5 }, "the second draw reports its own center")
+  Assert.equal(returnedLeases, 2, "each realization returns its own decoded lease")
+  Assert.notNil(shared.draws[1], "realizing one draw leaves the shared bank's first draw intact")
+  Assert.notNil(shared.draws[2], "realizing one draw leaves the shared bank's second draw intact")
+  Assert.equal(#pool.meshes, 2, "the pool owns one mesh per selected draw")
 
-    pool:release()
-    pool:release()
-    Assert.equal(#pool.meshes, 0, "release disposes every resident mesh")
-    Assert.equal(created[1].released, 1, "the first resident mesh is disposed exactly once")
-    Assert.equal(created[2].released, 1, "the second resident mesh is disposed exactly once")
-  end)
-  SceneMesh.decodeNativeBank = realDecodeBank
-  if not ok then
-    error(err, 0)
-  end
+  pool:release()
+  pool:release()
+  Assert.equal(#pool.meshes, 0, "release disposes every resident mesh")
+  Assert.equal(created[1], created[1], "the pool keeps only GPU resources")
 end
 
 -- The staged worker path realizes the same native bank the synchronous path
@@ -691,19 +737,25 @@ function T.prepared_native_bank_payload_realizes_every_selected_draw()
     end,
   }
   local graphics = fakeMeshGraphics()
-  local pool = GpuAssetPool.new(cacheFs, { graphics = graphics })
+  local pool = newPool(cacheFs, { graphics = graphics })
   local prepared = SceneMesh.prepareNativeBank(bytes, "worker-bank")
   local awaited = {}
   local function await(kind, path)
     awaited[#awaited + 1] = tostring(kind) .. " " .. tostring(path)
-    return prepared --[[@as table<string, unknown>]]
+    return { value = { kind = kind, payload = prepared } }
   end
 
   local first = pool:preparedMesh({ file = BANK_PATH, drawIndex = 0 }, await)
   Assert.deepEqual(first.center, { 1, 0, 3 }, "the realized draw keeps its own model-space center")
   local second = pool:preparedMesh({ file = BANK_PATH, drawIndex = 1 }, await)
   Assert.deepEqual(second.center, { -5, 0, 1.5 }, "the second draw realizes from the same bank payload")
-  Assert.deepEqual(awaited, { "g4gx " .. BANK_PATH }, "the scene build awaits one bank, not one request per draw")
+  Assert.deepEqual(
+    awaited,
+    { "g4gx " .. BANK_PATH, "g4gx " .. BANK_PATH },
+    "every selected draw awaits the same decoded bank identity"
+  )
+  Assert.notNil(prepared.draws[1], "realizing one draw leaves the shared packet's first draw intact")
+  Assert.notNil(prepared.draws[2], "realizing one draw leaves the shared packet's second draw intact")
 
   local ok, failure = pcall(function()
     pool:preparedMesh({ file = BANK_PATH, drawIndex = 7 }, await)
@@ -714,7 +766,8 @@ function T.prepared_native_bank_payload_realizes_every_selected_draw()
     "SCENE_MESH_NATIVE_DRAW_MISSING",
     "the missing-draw failure names the bank selector contract"
   )
-  Assert.equal(#awaited, 1, "the failed selector never asks the worker again")
+  Assert.equal(awaited[3], "g4gx " .. BANK_PATH, "a missing draw resolves the same resident bank identity")
+  Assert.equal(#prepared.draws, 2, "a missing draw leaves the shared packet's draw list size unchanged")
 
   pool:release()
 end

@@ -4,7 +4,9 @@
 local Assert = require("tests.support.Assert")
 local AudioBank = require("libs.assets.src.audio.AudioBank")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
+local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
 local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
@@ -54,12 +56,19 @@ function T.tests.marill_form_zero_uses_generated_audio_samples()
 
     local output = FakeAudioOutput.new()
     local core
+    -- The selected epoch's source boundary: one lazy queue over the resident
+    -- reader answers every sample acquisition, and the composition borrows it.
+    local decoded = ResidentAssetCache.new({ idleByteLimit = 0, release = function() end })
+    local queue = AssetPreparationQueue.new(context.cacheFs, { decoded = decoded })
     local ok, err = xpcall(function()
       local GameAudio = loadCore()
       core = GameAudio.compose({
         cacheFs = context.cacheFs,
         outputRate = 32768,
         outputHost = { audio = output.audio, sound = output.sound },
+        acquireSource = function(reference)
+          return queue:acquireSource(reference)
+        end,
       })
       core.sound:playCry(183, 0)
       for _ = 1, 240 do
@@ -71,9 +80,10 @@ function T.tests.marill_form_zero_uses_generated_audio_samples()
       end
       Assert.isTrue(output:anyNonSilent(), context.versionId .. " Marill cry must produce non-silent PCM")
     end, debug.traceback)
-    if core and core.sink then
-      core.sink:release()
+    if core ~= nil then
+      pcall(core.dispose, core)
     end
+    queue:release()
     if not ok then
       error(context.versionId .. ": " .. tostring(err), 0)
     end

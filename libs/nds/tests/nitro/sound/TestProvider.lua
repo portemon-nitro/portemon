@@ -8,7 +8,8 @@ local TestProvider = {}
 ---@return table
 function TestProvider.new(bundle)
   assert(bundle and bundle.index and bundle.sequences and bundle.banks and bundle.samples and bundle.sampleMetadata)
-  return {
+  local active = {}
+  local provider = {
     sequence = function(_, id)
       return assert(bundle.sequences[id])
     end,
@@ -18,13 +19,36 @@ function TestProvider.new(bundle)
     player = function(_, id)
       return assert(bundle.index.players[id])
     end,
-    loadSample = function(_, key)
-      return {
+  }
+  -- One packed backing per key, shared by every live acquisition and dropped
+  -- with the last return: the release capability the sequence player hands to
+  -- the sounding voice.
+  function provider:acquireSample(key)
+    local record = active[key]
+    if record == nil then
+      record = {
         metadata = assert(bundle.sampleMetadata[key]),
         pcm = Pcm16.fromBytes(assert(bundle.samples[key])),
+        references = 0,
       }
-    end,
-  }
+      active[key] = record
+    end
+    record.references = record.references + 1
+    local lease = { value = { metadata = record.metadata, pcm = record.pcm } }
+    function lease:release()
+      if self.value == nil then
+        return false
+      end
+      self.value = nil
+      record.references = record.references - 1
+      if record.references == 0 and active[key] == record then
+        active[key] = nil
+      end
+      return true
+    end
+    return lease
+  end
+  return provider
 end
 
 return TestProvider

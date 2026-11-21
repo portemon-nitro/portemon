@@ -11,6 +11,7 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local RomImporter = require("romdump.src.source.RomImporter")
 
@@ -22,10 +23,14 @@ local MAP = "MAP_NEW_BARK_PLAYER_HOUSE_2F"
 ---@return table<string, unknown> headless runtime options over the produced corpus
 local function runtimeOptions(versionId)
   local Fixture = require("tests.support.FieldStatePresentationFixture")
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
+  -- A headless runtime still borrows the selected epoch's CPU owners; compact
+  -- acquisition needs no worker, so the borrowed queue starts no thread.
   return {
     presentation = false,
     derivedAssets = Fixture.iconHost().derivedAssets,
-    cacheFs = GeneratedCacheFixture.reader(versionId),
+    cacheFs = cacheFs,
+    assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs),
   }
 end
 
@@ -340,8 +345,7 @@ local function syntheticRuntimeWithAudio(current)
   function audio:moveSequenceVolume(sequence, volume, frames)
     self.moves[#self.moves + 1] = { sequence = sequence, volume = volume, frames = frames }
   end
-  function audio:play(sequence)
-  end
+  function audio:play(sequence) end
   local lease = { prepared = {}, released = 0 }
   function lease:prepare(demand)
     assert(type(demand) == "table" and demand.key ~= nil, "the screen prepares keyed demands")

@@ -118,6 +118,14 @@ local function cacheFs()
     [texPath] = PngWriter.encode(1, 1, string.char(255, 0, 0, 255)),
     [MapAssetCache.collisionPath(1)] = CollisionGridAsset.encode({ width = 32, height = 32, cells = cells }),
   }
+  local references = {}
+  local function acquireSource(reference)
+    local lease = { value = assert(reference).data }
+    function lease:release()
+      self.value = nil
+    end
+    return lease
+  end
   local result = {
     read = function(_, path)
       return blob[path]
@@ -125,6 +133,27 @@ local function cacheFs()
     loadLua = function(_, path)
       return luaFiles[path]
     end,
+    -- Presented collision borrows the resident compact bytes: one immutable
+    -- reference per generated payload, taken through the acquirer below.
+    resolveAsset = function(_, path)
+      local payload = blob[path]
+      if type(payload) ~= "string" then
+        return nil
+      end
+      local reference = references[path]
+      if reference == nil then
+        reference = {
+          path = path,
+          sourceId = "base:map-scene-loader-test",
+          contentId = "map-scene-loader-test\0" .. path,
+          size = #payload,
+          data = assert(love.data.newByteData(payload)),
+        }
+        references[path] = reference
+      end
+      return reference
+    end,
+    acquireSource = acquireSource,
   }
   ---@cast result CacheFs
   return result, geomPath, texPath, luaFiles, blob
@@ -147,6 +176,15 @@ local function fakeGraphics()
       end
       images[#images + 1] = image
       return image
+    end,
+    newMesh = function()
+      local mesh = { released = false }
+      mesh.setVertices = function() end
+      mesh.setVertexMap = function() end
+      mesh.release = function()
+        mesh.released = true
+      end
+      return mesh
     end,
   }
   ---@cast graphics SceneFakeGraphics
@@ -232,11 +270,14 @@ local function fakeAssetPreparationQueue(cache, opts)
     end
     return "ready"
   end
+  -- A take transfers one kernel lease over the shared decoded value, exactly
+  -- like the selected queue: the caller owns it and returns it through the
+  -- decoded owner below.
   function queue:take(token)
     local record = assert(records[token], "unknown token")
     local payload = assert(record.payload, "take before ready")
     records[token] = nil
-    return payload
+    return { value = { kind = record.kind, payload = payload } }
   end
   function queue:promote(token, priority)
     local record = assert(records[token], "unknown token")
@@ -267,7 +308,51 @@ local function fakeAssetPreparationQueue(cache, opts)
     return total
   end
   function queue:release() end
+  -- The borrowed decoded CPU owner these leases return through.
+  queue.decoded = {
+    leased = 0,
+    returned = 0,
+    trims = 0,
+    returnLease = function(self, lease)
+      if lease == nil then
+        return false
+      end
+      lease.value = nil
+      self.returned = self.returned + 1
+      return true
+    end,
+    trim = function(self)
+      self.trims = self.trims + 1
+      return 0
+    end,
+  }
+  queue.decoded.leased = 0
   return queue
+end
+
+-- Every staged build in this suite borrows compact collision through the
+-- fixture's selected acquirer, so its options carry the same capability the
+-- production composition injects.
+local function beginScene(cache, scene, opts)
+  opts = opts or {}
+  opts.acquireSource = opts.acquireSource or cache.acquireSource
+  if opts.imageAssets ~= nil and opts.assetPreparation == nil then
+    local queue = fakeAssetPreparationQueue(cache)
+    opts.assetPreparation = queue
+    opts.decoded = queue.decoded
+  end
+  if opts.imageAssets ~= nil and opts.assetPreparation ~= nil and opts.decoded ~= nil then
+    local images = opts.imageAssets
+    images._preparation = { queue = opts.assetPreparation, decoded = opts.decoded }
+    function images:preparation()
+      return self._preparation
+    end
+  end
+  return MapSceneLoader.begin(cache, scene, opts)
+end
+
+local function loadScene(cache, scene, opts)
+  return beginScene(cache, scene, opts):finish()
 end
 
 function T.same_texture_with_different_wraps_gets_independent_images()
@@ -276,7 +361,7 @@ function T.same_texture_with_different_wraps_gets_independent_images()
     scene({ material(0, texPath, { x = "clamp", y = "clamp" }), material(1, texPath, { x = "repeat", y = "repeat" }) })
   s.mapBatches = { batch(geomPath, 0), batch(geomPath, 1) }
   local images = SharedImagePoolFake.new()
-  local runtime = MapSceneLoader.load(cache, s, { imageAssets = images })
+  local runtime = loadScene(cache, s, { imageAssets = images })
   local clampImage = runtime.mapDraws[1].material.image
   local repeatImage = runtime.mapDraws[2].material.image
   Assert.isTrue(clampImage ~= repeatImage, "shared pixels with different wraps must not alias")
@@ -294,7 +379,7 @@ function T.same_texture_and_wrap_share_one_image()
     material(1, texPath, { x = "repeat", y = "clamp" }),
   })
   s.mapBatches = { batch(geomPath, 0), batch(geomPath, 1) }
-  local runtime = MapSceneLoader.load(cache, s, { imageAssets = SharedImagePoolFake.new() })
+  local runtime = loadScene(cache, s, { imageAssets = SharedImagePoolFake.new() })
   Assert.equal(runtime.mapDraws[1].material.image, runtime.mapDraws[2].material.image)
   Assert.equal(runtime.stats.textureCount, 1)
   runtime:release()
@@ -319,7 +404,7 @@ function T.scene_and_building_descriptor_samplers_stay_independent()
     batches = { batch(geomPath, 0) },
     materials = { material(0, texPath, { x = "repeat", y = "repeat" }) },
   }
-  local runtime = MapSceneLoader.load(cache, s, { imageAssets = SharedImagePoolFake.new() })
+  local runtime = loadScene(cache, s, { imageAssets = SharedImagePoolFake.new() })
   Assert.equal(runtime.stats.textureCount, 2)
   local sceneImage = runtime.mapDraws[1].material.image
   local buildingImage = runtime.staticBuildingDraws[1].material.image
@@ -331,7 +416,7 @@ function T.unknown_wrap_modes_fail_loudly()
   local cache, geomPath, texPath = cacheFs()
   local s = scene({ material(0, texPath, { x = "mirror", y = "clamp" }) })
   s.mapBatches = { batch(geomPath, 0) }
-  local ok, err = pcall(MapSceneLoader.load, cache, s)
+  local ok, err = pcall(MapSceneLoader.load, cache, s, { imageAssets = SharedImagePoolFake.new() })
   Assert.isTrue(
     not ok and Errors.is(err) and err.code == "SCENE_DESC_BAD_WRAP",
     "raises SCENE_DESC_BAD_WRAP: " .. tostring(err.code)
@@ -346,7 +431,7 @@ function T.failed_mesh_load_releases_acquired_images()
   s.mapBatches = { { geometry = "missing-geometry.g4mesh", material = 0 } }
   local images = SharedImagePoolFake.new()
   local err = Assert.throws(function()
-    MapSceneLoader.load(cache, s, { graphics = fakeGraphics(), imageAssets = images })
+    loadScene(cache, s, { graphics = fakeGraphics(), imageAssets = images })
   end)
   Assert.isTrue(tostring(err):find("missing mesh missing-geometry.g4mesh", 1, true) ~= nil, "mesh failure propagates")
   Assert.equal(images.uploads, 1, "the scene material image was borrowed")
@@ -382,7 +467,7 @@ function T.one_mesh_center_serves_every_consumer_and_placement()
     batches = { batch(geomPath, 0) },
     materials = { material(0, texPath, { x = "clamp", y = "clamp" }) },
   }
-  local runtime = MapSceneLoader.load(cache, s, { imageAssets = SharedImagePoolFake.new() })
+  local runtime = loadScene(cache, s, { imageAssets = SharedImagePoolFake.new() })
   local expectedCenter = { 1, 0, 1 }
   Assert.deepEqual(runtime.mapDraws[1].center, expectedCenter, "the terrain draw carries the mesh center")
   Assert.deepEqual(runtime.staticBuildingDraws[1].center, expectedCenter, "placement 0 carries the same mesh center")
@@ -414,7 +499,7 @@ function T.failed_descriptor_load_releases_acquired_images()
   s.buildingInstances = { { modelKey = "missing", transform = IDENTITY } }
   local images = SharedImagePoolFake.new()
   local err = Assert.throws(function()
-    MapSceneLoader.load(cache, s, { graphics = fakeGraphics(), imageAssets = images })
+    loadScene(cache, s, { graphics = fakeGraphics(), imageAssets = images })
   end)
   Assert.isTrue(tostring(err):find("missing model missing", 1, true) ~= nil, "descriptor failure propagates")
   Assert.equal(images.uploads, 1, "the scene material image was borrowed")
@@ -435,7 +520,7 @@ function T.unknown_wrap_in_a_building_descriptor_releases_acquired_images()
   }
   local images = SharedImagePoolFake.new()
   local err = Assert.throws(function()
-    MapSceneLoader.load(cache, s, { graphics = fakeGraphics(), imageAssets = images })
+    loadScene(cache, s, { graphics = fakeGraphics(), imageAssets = images })
   end)
   Assert.isTrue(Errors.is(err) and err.code == "SCENE_DESC_BAD_WRAP", "raises SCENE_DESC_BAD_WRAP")
   Assert.equal(images.uploads, 1, "the scene image was borrowed before the descriptor failed")
@@ -450,7 +535,17 @@ function T.failed_transform_mode_releases_acquired_gpu_objects()
   local s = scene({ material(0, texPath, { x = "clamp", y = "clamp" }) })
   s.mapBatches = { { geometry = geomPath, material = 0, transformMode = "spooky" } }
   local images = SharedImagePoolFake.new()
-  local ok, err = pcall(MapSceneLoader.load, cache, s, { graphics = fakeGraphics(), imageAssets = images })
+  local queue = fakeAssetPreparationQueue(cache)
+  images._preparation = { queue = queue, decoded = queue.decoded }
+  function images:preparation()
+    return self._preparation
+  end
+  local ok, err = pcall(MapSceneLoader.load, cache, s, {
+    graphics = fakeGraphics(),
+    imageAssets = images,
+    assetPreparation = queue,
+    decoded = queue.decoded,
+  })
   Assert.isTrue(
     not ok and Errors.is(err) and err.code == "MAP_SCENE_UNSUPPORTED_TRANSFORM_MODE",
     "raises the transform-mode error"
@@ -469,7 +564,7 @@ function T.staged_scene_build_advances_one_atomic_operation_per_work_unit()
   })
   s.mapBatches = { batch(geomPath, 0), batch(geomPath, 1) }
   local meshAcquisitions = 0
-  local task = MapSceneLoader.begin(cache, s, {
+  local task = beginScene(cache, s, {
     graphics = fakeGraphics(),
     imageAssets = SharedImagePoolFake.new(),
     meshBuilder = function()
@@ -487,7 +582,7 @@ function T.staged_scene_build_advances_one_atomic_operation_per_work_unit()
   Assert.isTrue(meshAcquisitions <= 2, "two work units perform at most two atomic mesh acquisitions")
 
   local staged = task:finish()
-  local synchronous = MapSceneLoader.load(cache, s, {
+  local synchronous = loadScene(cache, s, {
     graphics = fakeGraphics(),
     imageAssets = SharedImagePoolFake.new(),
     meshBuilder = fakeMesh,
@@ -512,7 +607,8 @@ function T.build_task_waits_without_consuming_budget_until_prepared_assets_are_r
   local s = scene({ material(0, texPath, { x = "clamp", y = "clamp" }) })
   s.mapBatches = { batch(geomPath, 0) }
   local queue = fakeAssetPreparationQueue(cache, { pendingPolls = 2 })
-  local task = MapSceneLoader.begin(cache, s, { assetPreparation = queue, imageAssets = SharedImagePoolFake.new() })
+  local task =
+    beginScene(cache, s, { assetPreparation = queue, decoded = queue.decoded, imageAssets = SharedImagePoolFake.new() })
 
   local guard = 0
   while not task:isReady() and guard < 100 do
@@ -531,7 +627,7 @@ function T.build_task_waits_without_consuming_budget_until_prepared_assets_are_r
   )
 
   local runtime = task:takeResult()
-  local synchronous = MapSceneLoader.load(cache, s, { imageAssets = SharedImagePoolFake.new() })
+  local synchronous = loadScene(cache, s, { imageAssets = SharedImagePoolFake.new() })
   Assert.equal(#runtime.mapDraws, 1, "the frame-0 scene still assembles once preparation completes")
   Assert.deepEqual(
     runtime.mapDraws[1].center,
@@ -554,7 +650,7 @@ function T.ready_prepared_resources_still_respect_the_per_call_work_budget()
   s.mapBatches = { batch(geomPath, 0), batch(geomPath, 1) }
   local queue = fakeAssetPreparationQueue(cache, { pendingPolls = 0 })
   local images = SharedImagePoolFake.new()
-  local task = MapSceneLoader.begin(cache, s, { assetPreparation = queue, imageAssets = images })
+  local task = beginScene(cache, s, { assetPreparation = queue, decoded = queue.decoded, imageAssets = images })
 
   Assert.equal(task:advance(1), 1, "one ready resource realization is charged as one work unit")
   Assert.isFalse(task:isReady(), "a multi-resource scene is not ready after one work unit")
@@ -577,7 +673,7 @@ function T.synchronous_finish_blocks_on_a_cold_texture_without_hot_polling()
   local images = ControllableImageOwner.new()
   local probe = SynchronousWaitProbe.new(images, { publishAfterSleeps = 2 })
   probe:install()
-  local ok, runtimeOrFailure = pcall(MapSceneLoader.load, cache, s, { imageAssets = images })
+  local ok, runtimeOrFailure = pcall(loadScene, cache, s, { imageAssets = images })
   probe:restore()
   Assert.isTrue(ok, "the blocking scene load completes: " .. tostring(runtimeOrFailure))
   Assert.isTrue(probe.sleeps >= 1, "the blocking wait handed the CPU to the worker instead of polling it")
@@ -600,7 +696,11 @@ function T.synchronous_finish_propagates_preparation_wait_failure_and_releases_r
     waitFailureMessage = "injected preparation wait failure",
   })
   local images = SharedImagePoolFake.new()
-  local task = MapSceneLoader.begin(cache, s, { graphics = graphics, assetPreparation = queue, imageAssets = images })
+  local task = beginScene(
+    cache,
+    s,
+    { graphics = graphics, assetPreparation = queue, decoded = queue.decoded, imageAssets = images }
+  )
 
   Assert.equal(task:advance(1), 1, "the first work unit borrows the texture")
   Assert.isFalse(task:isReady(), "the scene is not ready while the mesh preparation is pending")
@@ -645,7 +745,7 @@ function T.terminal_preparation_failure_cancels_the_outstanding_ticket()
     pollFailureMessage = "injected GX failure",
   })
   local images = SharedImagePoolFake.new()
-  local task = MapSceneLoader.begin(cache, s, { assetPreparation = queue, imageAssets = images })
+  local task = beginScene(cache, s, { assetPreparation = queue, decoded = queue.decoded, imageAssets = images })
 
   Assert.equal(task:advance(1), 1, "the first work unit borrows the texture")
   local err = Assert.throws(function()
@@ -705,12 +805,12 @@ function T.overlapping_neighbor_scenes_share_one_physical_image()
   sceneB.mapBatches = { batch(geomPath, 0) }
   local pool = SharedImagePoolFake.new()
   local meshesA, meshesB = {}, {}
-  local runtimeA = MapSceneLoader.load(cache, sceneA, {
+  local runtimeA = loadScene(cache, sceneA, {
     graphics = fakeGraphics(),
     meshBuilder = trackedMeshes(meshesA),
     imageAssets = pool,
   })
-  local runtimeB = MapSceneLoader.load(cache, sceneB, {
+  local runtimeB = loadScene(cache, sceneB, {
     graphics = fakeGraphics(),
     meshBuilder = trackedMeshes(meshesB),
     imageAssets = pool,

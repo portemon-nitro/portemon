@@ -228,9 +228,16 @@ function HgssLoadingPresentation:_frameIndex(subject)
 end
 
 function HgssLoadingPresentation:_loadImage(cacheFs, path)
-  local bytes = assert(cacheFs:read(path), "generated loading image is missing: " .. path)
-  local fileData = love.filesystem.newFileData(bytes, path)
-  return self.graphics.newImage(fileData)
+  local data = assert(cacheFs:readData(path), "generated loading image is missing: " .. path)
+  -- LÖVE accepts the encoded resident Data directly: the private ImageData is
+  -- the only copy created, and it is released once the GPU image exists.
+  local imageData = love.image.newImageData(data)
+  local ok, image = pcall(self.graphics.newImage, imageData)
+  imageData:release()
+  if not ok then
+    error(image, 0)
+  end
+  return image
 end
 
 function HgssLoadingPresentation:_ensureCaptionFont()

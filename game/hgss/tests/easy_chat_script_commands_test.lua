@@ -192,7 +192,13 @@ local function providerWith(banks)
   for bankId, messages in pairs(banks) do
     FieldMessageFixture.write(cache, bankId, messages)
   end
-  return assert(FieldMessageProvider.new(cache))
+  local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+  local resident = GeneratedCacheFixture.fromCache(cache)
+  return assert(FieldMessageProvider.new(resident.reader, {
+    acquireSource = function(reference)
+      return { value = reference.data, release = function() end }
+    end,
+  }))
 end
 
 ---@return table provider with the fixed-phrase pair

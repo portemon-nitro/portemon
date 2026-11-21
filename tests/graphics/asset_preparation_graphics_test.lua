@@ -24,7 +24,6 @@ local TEXTURE_PATH = "assets/generated/textures/prepared.png"
 local COMPRESSED_MESH_PATH = "data/generated/geometry/compressed.g4mesh"
 local ICON_PAGE_PATH = "assets/generated/party/page-0.png"
 local DERIVATIVE_PATH = "assets/generated/textures/derivative.png"
-local SAMPLE_PATH = "data/generated/audio/sample.pcm16le"
 
 local function requireQueue()
   local ok, AssetPreparationQueue = pcall(require, "libs.hgss.src.presentation.AssetPreparationQueue")
@@ -76,6 +75,20 @@ local function residentCache(assets)
   return CacheFs.fromStore(store), store
 end
 
+-- The selected decoded CPU owner the queue requires: a generous idle budget
+-- keeps each test's decoded values findable, and every return trims.
+local function decodedOwner()
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+  return ResidentAssetCache.new({
+    idleByteLimit = 32 * 1024 * 1024,
+    release = function(value)
+      if type(value.release) == "function" then
+        value:release()
+      end
+    end,
+  })
+end
+
 local function preparedCache()
   return residentCache({
     [MESH_PATH] = MeshWriter.encode(triangleBatch()),
@@ -89,11 +102,11 @@ function T.worker_prepares_mesh_and_image_payloads_without_touching_graphics()
   local statsBefore = love.graphics.getStats()
 
   local ok, err = pcall(function()
-    local queue = AssetPreparationQueue.new(cache)
+    local queue = AssetPreparationQueue.new(cache, { decoded = decodedOwner() })
     local meshToken = queue:request("mesh", MESH_PATH, "demand")
     local imageToken = queue:request("image", TEXTURE_PATH, "demand")
 
-    local mesh = queue:wait(meshToken)
+    local mesh = assert(queue:wait(meshToken)).value.payload
     Assert.equal(mesh.vertexCount, 3)
     Assert.equal(mesh.indexCount, 3)
     Assert.equal(mesh.indexType, "uint16")
@@ -101,7 +114,7 @@ function T.worker_prepares_mesh_and_image_payloads_without_touching_graphics()
     Assert.notNil(mesh.vertexData, "the worker replies with packed vertex Data")
     Assert.notNil(mesh.indexData, "the worker replies with packed index Data")
 
-    local image = queue:wait(imageToken)
+    local image = assert(queue:wait(imageToken)).value.payload
     Assert.isNil(image.image, "the worker never realizes a love Image")
     Assert.notNil(image.imageData, "the worker replies with decoded ImageData")
     Assert.equal(image.imageData:getWidth(), 2)
@@ -139,15 +152,15 @@ function T.packaged_worker_module_resolves_and_prepares_through_a_real_thread()
   local statsBefore = love.graphics.getStats()
 
   local runOk, runErr = pcall(function()
-    local queue = AssetPreparationQueue.new(cache)
+    local queue = AssetPreparationQueue.new(cache, { decoded = decodedOwner() })
     local meshToken = queue:request("mesh", MESH_PATH, "demand")
     local imageToken = queue:request("image", TEXTURE_PATH, "demand")
 
-    local mesh = queue:wait(meshToken)
+    local mesh = assert(queue:wait(meshToken)).value.payload
     Assert.notNil(mesh.vertexData, "the packaged worker replies with packed vertex Data")
     Assert.notNil(mesh.indexData, "the packaged worker replies with packed index Data")
 
-    local image = queue:wait(imageToken)
+    local image = assert(queue:wait(imageToken)).value.payload
     Assert.notNil(image.imageData, "the packaged worker replies with decoded ImageData")
     Assert.equal(image.imageData:getWidth(), 2)
     Assert.equal(image.imageData:getHeight(), 2)
@@ -165,15 +178,17 @@ end
 
 function T.invalid_image_bytes_fail_preparation_without_hanging_the_worker()
   local AssetPreparationQueue = requireQueue()
-  local cache = (residentCache({
-    [MESH_PATH] = MeshWriter.encode(triangleBatch()),
-    [TEXTURE_PATH] = "not a png",
-  }))
+  local cache = (
+    residentCache({
+      [MESH_PATH] = MeshWriter.encode(triangleBatch()),
+      [TEXTURE_PATH] = "not a png",
+    })
+  )
   local statsBefore = love.graphics.getStats()
 
   local meshAfterFailure = false
   local runOk, runErr = pcall(function()
-    local queue = AssetPreparationQueue.new(cache)
+    local queue = AssetPreparationQueue.new(cache, { decoded = decodedOwner() })
     local badToken = queue:request("image", TEXTURE_PATH, "demand")
     local waitOk, waitErr = pcall(queue.wait, queue, badToken)
     Assert.isFalse(waitOk, "undecodable image bytes fail instead of hanging the waiter")
@@ -183,7 +198,7 @@ function T.invalid_image_bytes_fail_preparation_without_hanging_the_worker()
     )
 
     local meshToken = queue:request("mesh", MESH_PATH, "demand")
-    local mesh = queue:wait(meshToken)
+    local mesh = assert(queue:wait(meshToken)).value.payload
     Assert.notNil(mesh.vertexData, "the worker loop survives a failed image decode")
     meshAfterFailure = true
 
@@ -242,9 +257,9 @@ function T.mesh_prepares_off_main_thread_through_the_versioned_cache()
   local statsBefore = love.graphics.getStats()
 
   local runOk, runErr = pcall(function()
-    local queue = AssetPreparationQueue.new(cache)
+    local queue = AssetPreparationQueue.new(cache, { decoded = decodedOwner() })
     local meshToken = queue:request("mesh", COMPRESSED_MESH_PATH, "demand")
-    local prepared = queue:wait(meshToken)
+    local prepared = assert(queue:wait(meshToken)).value.payload
     Assert.isNil(prepared.mesh, "the worker never realizes a love Mesh")
     Assert.equal(prepared.vertexCount, baseline.vertexCount)
     Assert.equal(prepared.indexCount, baseline.indexCount)
@@ -289,9 +304,9 @@ function T.icon_sized_image_decodes_through_the_real_worker_without_graphics()
   local statsBefore = love.graphics.getStats()
 
   local runOk, runErr = pcall(function()
-    local queue = AssetPreparationQueue.new(cache)
+    local queue = AssetPreparationQueue.new(cache, { decoded = decodedOwner() })
     local token = queue:request("image", ICON_PAGE_PATH, "demand")
-    local image = queue:wait(token)
+    local image = assert(queue:wait(token)).value.payload
     Assert.isNil(image.image, "the worker never realizes a love Image")
     Assert.notNil(image.imageData, "the worker replies with decoded ImageData")
     Assert.equal(image.imageData:getWidth(), 256)
@@ -325,9 +340,9 @@ function T.image_prepares_through_the_real_worker_from_the_png_alone()
   local statsBefore = love.graphics.getStats()
 
   local runOk, runErr = pcall(function()
-    local queue = AssetPreparationQueue.new(cache)
+    local queue = AssetPreparationQueue.new(cache, { decoded = decodedOwner() })
     local firstToken = queue:request("image-derivative", logicalPath, "demand")
-    local first = queue:wait(firstToken)
+    local first = assert(queue:wait(firstToken)).value.payload
     Assert.equal(first.width, 2)
     Assert.equal(first.height, 2)
     Assert.isTrue(first.kind == "r8" or first.kind == "rgba8", "the derivative classifies to a known layout")
@@ -347,11 +362,8 @@ function T.image_prepares_through_the_real_worker_from_the_png_alone()
     }))
 
     local secondToken = queue:request("image-derivative", logicalPath, "demand")
-    local second = queue:wait(secondToken)
-    Assert.isTrue(
-      second.pixelHash ~= first.pixelHash,
-      "the replacement pixels must differ from the earlier payload"
-    )
+    local second = assert(queue:wait(secondToken)).value.payload
+    Assert.isTrue(second.pixelHash ~= first.pixelHash, "the replacement pixels must differ from the earlier payload")
     Assert.equal(second.width, 2)
     Assert.equal(second.height, 2)
     Assert.isTrue(
@@ -361,7 +373,7 @@ function T.image_prepares_through_the_real_worker_from_the_png_alone()
     Assert.notNil(second.indexData, "the worker replies with packed index Data")
 
     local thirdToken = queue:request("image-derivative", logicalPath, "demand")
-    local third = queue:wait(thirdToken)
+    local third = assert(queue:wait(thirdToken)).value.payload
     Assert.equal(third.pixelHash, second.pixelHash, "the repeat preparation reads the same PNG to the same pixels")
     Assert.equal(third.width, second.width)
     Assert.equal(third.height, second.height)
@@ -378,39 +390,6 @@ function T.image_prepares_through_the_real_worker_from_the_png_alone()
   Assert.equal(statsAfter.images, statsBefore.images, "preparation alone creates no GPU Image")
   Assert.equal(statsAfter.canvases, statsBefore.canvases, "preparation alone creates no GPU Canvas")
 end
-
--- A generated PCM sample prepares through the real worker as one
--- transferable ByteData holding the exact logical bytes, proving the
--- audio-sample branch rides the same worker cache as meshes and images.
-function T.audio_sample_prepares_through_the_real_worker_as_transferable_bytes()
-  local AssetPreparationQueue = requireQueue()
-  local logical = string.rep("\1\2\3\4", 512)
-  local cache = (residentCache({ [SAMPLE_PATH] = logical }))
-  local statsBefore = love.graphics.getStats()
-
-  local runOk, runErr = pcall(function()
-    local queue = AssetPreparationQueue.new(cache)
-    local token = queue:request("audio-sample", SAMPLE_PATH, "demand")
-    local prepared = queue:wait(token)
-    Assert.equal(prepared.size, #logical, "the sample payload sizes the exact logical bytes")
-    Assert.notNil(prepared.byteData, "the worker replies with transferable sample Data")
-    Assert.equal(prepared.byteData:getString(), logical, "the sample bytes survive the worker round trip")
-
-    local repeatToken = queue:request("audio-sample", SAMPLE_PATH, "demand")
-    local repeated = queue:wait(repeatToken)
-    Assert.equal(repeated.byteData:getString(), logical, "a repeat preparation decodes identical sample bytes")
-
-    queue:release()
-  end)
-
-  local statsAfter = love.graphics.getStats()
-
-  if not runOk then
-    error(runErr, 0)
-  end
-  Assert.equal(statsAfter.images, statsBefore.images, "preparation alone creates no GPU Image")
-end
-
 
 -- The engine-owned model bank under test: two terrain-eligible draws of one
 -- source model that share the boundary x=0. The coarse draw carries the
@@ -515,9 +494,9 @@ function T.terrain_bank_group_is_conformed_once_for_the_whole_bank_reply()
   local bank = terrainBank()
   local cache = (residentCache({ [TERRAIN_BANK_PATH] = bank }))
   local runOk, runErr = pcall(function()
-    local queue = AssetPreparationQueue.new(cache)
+    local queue = AssetPreparationQueue.new(cache, { decoded = decodedOwner() })
     local token = queue:request("g4gx", TERRAIN_BANK_PATH, "demand")
-    local prepared = queue:wait(token)
+    local prepared = assert(queue:wait(token)).value.payload
     Assert.equal(#prepared.draws, 2, "one bank reply carries one upload packet per draw")
     local coarse = prepared.draws[1]
     Assert.equal(coarse.indexCount, 9, "the coarse draw adopts the neighbour's boundary breakpoint")
@@ -530,6 +509,88 @@ function T.terrain_bank_group_is_conformed_once_for_the_whole_bank_reply()
   if not runOk then
     error(runErr, 0)
   end
+end
+
+-- One prepared native bank is shared by independent consumers: the resident
+-- kernel charges it once, a repeat request is ready without another worker
+-- roundtrip, and realizing one draw through the scene GPU owner leaves every
+-- other draw of that shared packet intact for its own consumer. Releasing the
+-- two leases in reverse order returns the whole bank exactly once.
+function T.shared_native_bank_leases_survive_single_draw_uploads()
+  local AssetPreparationQueue = requireQueue()
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+  local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
+  local bank = terrainBank()
+  local cache = (residentCache({ [TERRAIN_BANK_PATH] = bank }))
+  local released = {}
+  local decoded = ResidentAssetCache.new({
+    idleByteLimit = 8 * 1024 * 1024,
+    release = function(value)
+      released[#released + 1] = value
+      if type(value.release) == "function" then
+        value:release()
+      end
+    end,
+  })
+  local pool
+  local runOk, runErr = pcall(function()
+    local queue = AssetPreparationQueue.new(cache, { decoded = decoded })
+    local firstToken = queue:request("g4gx", TERRAIN_BANK_PATH, "demand")
+    local firstLease = queue:wait(firstToken)
+    Assert.notNil(
+      firstLease.value,
+      "wait must transfer a lease over the decoded bank instead of the raw prepared payload"
+    )
+    local prepared = firstLease.value.payload
+    Assert.equal(#prepared.draws, 2, "the shared bank packet carries every draw of the source model")
+    Assert.isTrue(firstLease.value.nativeBytes > 0, "the bank's own upload buffers carry the native charge")
+    local charge = firstLease.value.nativeBytes + firstLease.value.metadataChargeBytes
+    Assert.equal(decoded:stats().pinnedBytes, charge, "the shared bank value is charged once")
+
+    local secondToken = queue:request("g4gx", TERRAIN_BANK_PATH, "demand")
+    Assert.equal(queue:poll(secondToken), "ready", "a resident bank identity is ready without another worker roundtrip")
+    local secondLease = queue:take(secondToken)
+    Assert.isTrue(secondLease.value == firstLease.value, "both consumers share one immutable bank value")
+
+    pool = GpuAssetPool.new(cache, {
+      graphics = love.graphics,
+      assetPreparation = queue,
+      decoded = decoded,
+    })
+    local triangles = 0
+    for drawIndex = 0, 1 do
+      local lease = drawIndex == 0 and firstLease or secondLease
+      local entry = pool:preparedMesh({ file = TERRAIN_BANK_PATH, drawIndex = drawIndex }, function()
+        return lease
+      end)
+      Assert.notNil(entry.mesh, "draw " .. drawIndex .. " realizes its own GPU mesh")
+      Assert.isTrue(entry.triangles > 0, "draw " .. drawIndex .. " reports its triangle count")
+      triangles = triangles + entry.triangles
+    end
+    Assert.isTrue(triangles > 0, "both draws realize real geometry")
+    for drawIndex, draw in ipairs(prepared.draws) do
+      Assert.notNil(draw, "uploading a draw preserves draw " .. drawIndex .. " of the shared packet")
+    end
+    Assert.equal(#prepared.draws, 2, "the shared packet keeps its complete draw list after uploads")
+
+    Assert.isTrue(decoded:returnLease(secondLease), "the second lease returns")
+    Assert.isTrue(decoded:returnLease(firstLease), "the first lease returns after it")
+    Assert.isNil(firstLease.value, "a returned lease clears its exposed value")
+    Assert.equal(decoded:stats().pinnedBytes, 0, "no bank bytes stay pinned after both returns")
+    Assert.equal(decoded:stats().idleBytes, charge, "the shared bank rests idle at its single charge")
+    decoded:clear()
+    Assert.equal(#released, 1, "the shared bank value is freed exactly once")
+    queue:release()
+  end)
+  local disposeOk, disposeErr = pcall(function()
+    if pool ~= nil then
+      pool:release()
+    end
+  end)
+  if not runOk then
+    error(runErr, 0)
+  end
+  Assert.isTrue(disposeOk, "the scene GPU owner must release its meshes: " .. tostring(disposeErr))
 end
 
 return {

@@ -274,18 +274,23 @@ local function assertAudible(frames, what)
   Assert.isTrue(nonzero, what .. " renders audible output")
 end
 
--- Unique PCM keys hold one shared array each: a repeated load returns the
--- identical table, and retained-byte accounting counts each unique key
--- once at two bytes per frame. Duplicate references never inflate the
--- census the trace reports.
+-- Unique PCM keys hold one shared resident backing each: every acquisition is
+-- an independent lease over that backing, and active-source accounting counts
+-- each unique key once at two bytes per frame. Repeated acquisitions never
+-- inflate the census the trace reports.
 function T.tests.audio_retained_bytes_count_unique_sample_keys_once()
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache())
+  local cache = AudioFixture.residentCache()
+  local provider = AudioAssetProvider.new(cache, { acquireSource = AudioFixture.acquireSource() })
   local keyA, keyB = AudioFixture.key(1), AudioFixture.key(2)
-  local firstA = provider:loadSample(keyA)
-  local sampleB = provider:loadSample(keyB)
-  local secondA = provider:loadSample(keyA)
-  Assert.isTrue(firstA ~= sampleB, "distinct content keys load distinct sample objects")
-  Assert.isTrue(secondA == firstA, "a repeated key shares the packed sample instead of packing twice")
+  local firstLease = provider:acquireSample(keyA)
+  local secondKeyLease = provider:acquireSample(keyB)
+  local repeatLease = provider:acquireSample(keyA)
+  local firstA = assert(firstLease.value)
+  local sampleB = assert(secondKeyLease.value)
+  local secondA = assert(repeatLease.value)
+  Assert.isTrue(firstLease ~= repeatLease, "every acquisition is an independent lease")
+  Assert.isTrue(firstA ~= sampleB, "distinct content keys hold distinct samples")
+  Assert.isTrue(secondA.pcm == firstA.pcm, "a repeated key shares the packed sample instead of packing twice")
   Assert.equal(firstA.pcm.frames, firstA.metadata.frames, "frame totals come from the packed count")
   Assert.equal(firstA.metadata.frames, 4, "the first fixture sample holds four frames")
   Assert.isTrue(firstA.metadata.loopEnabled, "the first fixture sample is the looped representative")
@@ -295,16 +300,20 @@ function T.tests.audio_retained_bytes_count_unique_sample_keys_once()
   end
   Assert.deepEqual(secondFrames, { 5000, 6000 }, "the second fixture sample packs exactly")
   Assert.equal(sampleB.pcm.frames, sampleB.metadata.frames, "every key carries its own frame total")
-  local seen, uniqueFrames, uniqueBytes = {}, 0, 0
-  for _, sample in ipairs({ firstA, sampleB, secondA }) do
-    if not seen[sample] then
-      seen[sample] = true
-      uniqueFrames = uniqueFrames + sample.pcm.frames
-      uniqueBytes = uniqueBytes + sample.pcm.frames * 2
-    end
-  end
-  Assert.equal(uniqueFrames, 6, "two unique keys hold six frames despite three loads")
-  Assert.equal(uniqueBytes, 12, "retained PCM bytes count unique keys once at two bytes per frame")
+  local status = provider:status()
+  Assert.equal(status.activeSamples, 2, "two unique keys back three acquisitions")
+  Assert.equal(
+    status.activeSourceBytes,
+    (firstA.pcm.frames + sampleB.pcm.frames) * 2,
+    "active source bytes count unique keys once at two bytes per frame"
+  )
+  firstLease:release()
+  repeatLease:release()
+  Assert.equal(provider:status().activeSamples, 1, "the second key stays active beside the returns")
+  secondKeyLease:release()
+  Assert.equal(provider:status().activeSamples, 0, "returning every acquisition drops both records")
+  Assert.equal(provider:status().activeSourceBytes, 0, "no resident source bytes stay attributed")
+  provider:dispose()
 end
 
 -- Pre-change storage fingerprints: the exact decoded int16 arrays for a
@@ -317,9 +326,12 @@ function T.tests.provider_decoded_pcm_fingerprints_pin_the_pre_change_storage()
   local oneShotKey = AudioFixture.key(3)
   bundle.samples[oneShotKey] = AudioFixture.pcm16le({ 7000, -8000, 9000, -10000 })
   bundle.sampleMetadata[oneShotKey] = AudioFixture.sampleMetadata(oneShotKey, { frames = 4, loopEnabled = false })
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache(bundle))
-  local looped = provider:loadSample(AudioFixture.key(1))
-  local oneShot = provider:loadSample(oneShotKey)
+  local cache = AudioFixture.residentCache(bundle)
+  local provider = AudioAssetProvider.new(cache, { acquireSource = AudioFixture.acquireSource() })
+  local loopedLease = provider:acquireSample(AudioFixture.key(1))
+  local oneShotLease = provider:acquireSample(oneShotKey)
+  local looped = assert(loopedLease.value)
+  local oneShot = assert(oneShotLease.value)
   local oneShotFrames = {}
   for index = 0, oneShot.pcm.frames - 1 do
     oneShotFrames[#oneShotFrames + 1] = oneShot.pcm:read(index)
@@ -336,13 +348,14 @@ function T.tests.provider_decoded_pcm_fingerprints_pin_the_pre_change_storage()
   local mixer = VoiceMixer.new({ sampleRate = 48000 })
   local wave = WaveOutPlayer.new({ mixer = mixer })
   local forwardOptions = { volume = 127, pan = 64, speed = 8006, reverse = false }
-  local forward = wave:start(14, looped, forwardOptions)
+  local forward = wave:start(14, loopedLease, forwardOptions)
   Assert.notNil(forward, "the forward cry starts on its fixed channel")
-  Assert.isTrue(forward.sample == looped, "the forward path borrows the stored array without copying")
-  local backwardHandle = wave:start(15, looped, { volume = 127, pan = 64, speed = 8006, reverse = true })
+  Assert.isNil(forward.sample, "the handle keeps channel/generation identity only")
+  local backwardLease = provider:acquireSample(AudioFixture.key(1))
+  local backwardHandle = wave:start(15, backwardLease, { volume = 127, pan = 64, speed = 8006, reverse = true })
   Assert.notNil(backwardHandle, "the reversed cry starts on its fixed channel")
-  local backward = backwardHandle.sample
-  Assert.isTrue(backward == looped, "the reversed cry borrows the stored sample without copying")
+  local backward = assert(backwardLease.value)
+  Assert.isTrue(backward.pcm == looped.pcm, "the reversed cry sounds the same resident backing")
   local expectedReverse = {}
   for index = looped.pcm.frames - 1, 0, -1 do
     expectedReverse[#expectedReverse + 1] = looped.pcm:read(index)
@@ -362,8 +375,10 @@ function T.tests.provider_decoded_pcm_fingerprints_pin_the_pre_change_storage()
   Assert.equal(fingerprint16(overlap), 2798788608, "overlapping-voices mixer fingerprint")
   local mixer2 = VoiceMixer.new({ sampleRate = 48000 })
   local wave2 = WaveOutPlayer.new({ mixer = mixer2 })
-  wave2:start(14, looped, forwardOptions)
-  wave2:start(15, looped, { volume = 127, pan = 64, speed = 8006, reverse = true })
+  local secondForward = provider:acquireSample(AudioFixture.key(1))
+  local secondReverse = provider:acquireSample(AudioFixture.key(1))
+  wave2:start(14, secondForward, forwardOptions)
+  wave2:start(15, secondReverse, { volume = 127, pan = 64, speed = 8006, reverse = true })
   mixer2:controlStep()
   Assert.equal(fingerprint16(mixer2:render(64)), fingerprint16(overlap), "the overlapping render is deterministic")
 end
@@ -446,9 +461,13 @@ local function streamBundle()
 end
 
 local function composeStreams()
-  local cacheFs = AudioFixture.readyCache(streamBundle())
-  local runtime = AudioRuntime.compose({ cacheFs = cacheFs, outputRate = 48000 })
-  return runtime.sound, runtime.renderer
+  local cache = AudioFixture.residentCache(streamBundle())
+  local runtime = AudioRuntime.compose({
+    cacheFs = cache,
+    outputRate = 48000,
+    acquireSource = AudioFixture.acquireSource(),
+  })
+  return runtime.sound, runtime.renderer, runtime
 end
 
 local function renderSpan(sound, player, frames)
@@ -697,6 +716,7 @@ function T.tests.scripted_travel_reports_attributed_memory_at_state_boundaries(c
   local ok, err = xpcall(function()
     local state = hostCallbacks(game)
     game:waitForFieldEntry()
+    local decoded = assert(game.runtime.decoded, "the presented field runtime borrows the selected decoded CPU owner")
     captureCheckpoint(game, tracer, context, "field-entry")
 
     stockTwoPockets(game)
@@ -715,6 +735,7 @@ function T.tests.scripted_travel_reports_attributed_memory_at_state_boundaries(c
       end
     end
     Assert.isTrue(bagOffered, "the unlocked bag must offer its start menu action")
+    local pinnedBeforeApplication = decoded:stats().pinnedBytes
     navigateTo(game, state, "vanilla.bag")
     confirm(game)
     game:advanceUntil("bag application opens over the retained menu", function()
@@ -913,9 +934,10 @@ end
 -- derivative may rebuild; absent trusted bytes never become a quiet
 -- success on the release path.
 function T.tests.missing_trusted_audio_inputs_fail_loudly_instead_of_rendering_silence()
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache())
+  local cache = AudioFixture.residentCache()
+  local provider = AudioAssetProvider.new(cache, { acquireSource = AudioFixture.acquireSource() })
   local sampleError = Assert.throws(function()
-    provider:loadSample("no-such-sample-key")
+    provider:acquireSample("no-such-sample-key")
   end, "an unknown sample key must fail")
   Assert.isTrue(
     tostring(sampleError):find("no-such-sample-key", 1, true) ~= nil,
@@ -928,6 +950,182 @@ function T.tests.missing_trusted_audio_inputs_fail_loudly_instead_of_rendering_s
     tostring(bankError):find("no-such-bank", 1, true) ~= nil,
     "the bank failure names the missing reference"
   )
+end
+
+-- Headless compact consumption borrows the resident bytes on the calling
+-- thread: a selected queue whose thread host refuses construction still serves
+-- base message, collision and PCM acquisition, because only an actual
+-- graphical decode needs the worker. Nothing here opens a worker or charges
+-- borrowed base bytes to the decoded CPU owner.
+function T.tests.headless_compact_acquisition_borrows_resident_bytes_without_a_worker()
+  local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+  local ResidentCache = require("libs.storage.src.ResidentCache")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local Pcm16 = require("libs.nds.src.nitro.sound.Pcm16")
+
+  local version = "headless-compact"
+  local sourceId = "base:headless-compact"
+  local pcmPath = "data/generated/audio/headless-sample.pcm16le"
+  local pcmBytes = string.rep(string.char(0x10, 0x27), 8) -- eight frames of 10000
+  local store = ResidentCache.new(version, sourceId)
+  store:commit(store:prepare({
+    {
+      path = pcmPath,
+      data = assert(love.data.newByteData(pcmBytes)),
+      size = #pcmBytes,
+      sourceId = sourceId,
+      contentId = version .. "\0" .. pcmPath,
+    },
+  }))
+  local cache = CacheFs.fromStore(store)
+
+  local threadConstructions = 0
+  local threadHost = {
+    newChannel = function()
+      error("headless compact acquisition must not create a worker channel", 0)
+    end,
+    newThread = function()
+      threadConstructions = threadConstructions + 1
+      error("headless compact acquisition must not start a worker", 0)
+    end,
+  }
+  local decoded = ResidentAssetCache.new({ idleByteLimit = 64, release = function() end })
+  local queue = AssetPreparationQueue.new(cache, { decoded = decoded, thread = threadHost })
+  Assert.equal(threadConstructions, 0, "constructing the selected queue starts no worker")
+  Assert.equal(
+    type(queue.acquireSource),
+    "function",
+    "compact consumers must borrow base sources through the selected runtime"
+  )
+
+  local reference = assert(cache:resolveAsset(pcmPath), "the resident store resolves its own sample bytes")
+  local lease = queue:acquireSource(reference)
+  Assert.isTrue(lease.value == reference.data, "base source acquisition roots the store's own bytes")
+  Assert.equal(
+    decoded:stats().idleBytes + decoded:stats().pinnedBytes,
+    0,
+    "a borrowed base source is never charged to the decoded CPU owner"
+  )
+  local pcm = Pcm16.fromData(lease.value)
+  Assert.equal(pcm.frames, 8, "the borrowed bytes read as packed PCM16 in place")
+  Assert.equal(pcm:read(0), 10000, "the borrowed frame values are the resident ones")
+  Assert.equal(pcm:read(7), 10000, "every borrowed frame reads inside the store's buffer")
+
+  lease:release()
+  Assert.isNil(lease.value, "a returned source lease clears its reference")
+  lease:release()
+  Assert.isTrue(store:readData(pcmPath) == reference.data, "the base backing outlives the returned source lease")
+  queue:release()
+  Assert.equal(threadConstructions, 0, "compact use and its release never start or join a worker")
+end
+
+-- One selected CPU runtime serves every field composition: the same
+-- preparation queue and decoded owner are shared by the menu, an application
+-- screen and the field, a screen's disposal never closes them, and the
+-- runtime's own teardown drains every interest. Booted through production
+-- composition with its prepared prerequisites.
+function T.tests.selected_asset_runtime_survives_screen_transitions_and_drains(context)
+  if not context:hasCapability("rom_dump") then
+    context:skip("requires a ready user-owned ROM dump and prepared derived assets")
+  end
+  local game = AcceptanceHarness.new():boot({
+    versionId = AcceptanceHarness.defaultVersion(),
+    map = "MAP_BURNED_TOWER_1F",
+    save = "fresh",
+  })
+  local ok, err = xpcall(function()
+    local state = hostCallbacks(game)
+    game:waitForFieldEntry()
+    local runtime = game.runtime
+    Assert.equal(
+      type(runtime.assetPreparation),
+      "table",
+      "the presented field runtime borrows the selected preparation queue"
+    )
+    local queue = runtime.assetPreparation
+    local decoded = assert(runtime.decoded, "the presented field runtime borrows the selected decoded CPU owner")
+    local pinnedBeforeApplication = decoded:stats().pinnedBytes
+
+    -- Record one real resident preparation access so the shared queue can be
+    -- exercised again after the screen that borrowed it has been disposed.
+    -- A headless field borrows compact sources instead of scene geometry; a
+    -- presented field records the scene request here.
+    local innerRequest = queue.request
+    local innerAcquireSource = queue.acquireSource
+    local sceneRequest = nil
+    local sourceAccess = nil
+    queue.request = function(self, kind, path, level)
+      sceneRequest = sceneRequest or { kind = kind, path = path }
+      return innerRequest(self, kind, path, level)
+    end
+    queue.acquireSource = function(self, reference)
+      sourceAccess = sourceAccess or reference
+      return innerAcquireSource(self, reference)
+    end
+
+    stockTwoPockets(game)
+    game:setWorldState({ flag = FLAG_GOT_BAG })
+
+    openStartMenu(game)
+    closeStartMenu(game)
+    Assert.isTrue(runtime.assetPreparation == queue, "the start menu shares the selected preparation queue")
+    Assert.isTrue(runtime.decoded == decoded, "the start menu shares the selected decoded owner")
+
+    openStartMenu(game)
+    navigateTo(game, state, "vanilla.bag")
+    confirm(game)
+    game:advanceUntil("bag application opens over the retained menu", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.application
+    end, 120)
+    game:advanceUntil("the Bag opening settles", function()
+      return bagView(game).phase == "interactive"
+    end, 120)
+    pressCancel(game)
+    game:advanceUntil("bag closes back to the start menu", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.menu
+    end, 120)
+    closeStartMenu(game)
+
+    Assert.isTrue(runtime.assetPreparation == queue, "a disposed application never closes the selected queue")
+    Assert.isTrue(runtime.decoded == decoded, "a disposed application never replaces the selected decoded owner")
+    Assert.equal(
+      decoded:stats().pinnedBytes,
+      pinnedBeforeApplication,
+      "the disposed application returned every CPU interest it borrowed"
+    )
+    local MapAssetCache = require("libs.assets.src.MapAssetCache")
+    if sourceAccess == nil and sceneRequest == nil then
+      -- A headless field stages no GPU scene: exercise the same selected
+      -- runtime with a real installed resident payload instead, then probe the
+      -- queue again below after the application that borrowed it is gone.
+      local reference = assert(runtime.cacheFs:resolveAsset(MapAssetCache.worldPath()))
+      local lease = queue:acquireSource(reference)
+      lease:release()
+      sourceAccess = reference
+    end
+    Assert.isTrue(
+      sceneRequest ~= nil or sourceAccess ~= nil,
+      "the field composed real resident preparation through the selected queue"
+    )
+    local probe = queue:request(
+      sceneRequest ~= nil and sceneRequest.kind or "mesh",
+      sceneRequest ~= nil and sceneRequest.path or MapAssetCache.worldPath(),
+      "prefetch"
+    )
+    Assert.notNil(queue:poll(probe), "the shared queue still answers work after the application disposed")
+    queue:cancel(probe)
+    Assert.isTrue(runtime.assetPreparation == queue, "cancelling preparation never closes the shared queue")
+    Assert.equal(game:renderAttempts(), 0, "the replay must stop before GPU rendering")
+  end, debug.traceback)
+  local decodedAfterClose = game.runtime.decoded
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
+  if decodedAfterClose ~= nil then
+    Assert.equal(decodedAfterClose:stats().pinnedBytes, 0, "runtime teardown leaves no decoded interest pinned")
+  end
 end
 
 return T

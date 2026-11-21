@@ -11,6 +11,7 @@ local FakeCache = require("tests.support.FakeCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -117,7 +118,10 @@ local function preparedWiring(scope)
   local Resources = require("game.hgss.src.field.FieldPresentationResources")
   local view, manifest = optionsCache()
   local cache = view.reader
-  local pool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test's lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local pool = ImageAssetPool.new(cache, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   ownPool(scope, pool, view)
   local palettes = {}
   local drawnLines = {}
@@ -212,7 +216,6 @@ local function joinGlyphs(tokens)
   return table.concat(out)
 end
 
-
 -- Presented source labels carry a reversible diagnostic serialization beside
 -- their glyph stream. The presenter must paint only the glyphs: a footer
 -- record with a centering prefix and one with a cursor prefix exercise the
@@ -239,7 +242,6 @@ local function recordingSourceText()
   end
   return stub
 end
-
 
 local function headlessSourceView(overrides)
   local ScreenState = require("game.hgss.src.options.OptionsScreenState")
@@ -281,12 +283,14 @@ local function headlessSourceView(overrides)
   return state:status()
 end
 
-
 local function preparedSourceWiring(scope)
   local Resources = require("game.hgss.src.field.FieldPresentationResources")
   local view, manifest = optionsCache()
   local cache = view.reader
-  local pool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test's lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local pool = ImageAssetPool.new(cache, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   ownPool(scope, pool, view)
   local stub = recordingSourceText()
   local stubWindow = {}
@@ -334,7 +338,6 @@ local function preparedSourceWiring(scope)
   return resources, stub
 end
 
-
 local function drawSourceView(scope, renderer, view)
   local Interface = require("game.hgss.src.options.OptionsInterface")
   local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
@@ -356,7 +359,6 @@ local function drawSourceView(scope, renderer, view)
   return plan
 end
 
-
 local function findTokenDraw(draws, word)
   for _, draw in ipairs(draws) do
     if joinGlyphs(draw.tokens) == word then
@@ -365,7 +367,6 @@ local function findTokenDraw(draws, word)
   end
   return nil
 end
-
 
 function T.tests.labels_paint_a_single_source_palette_pass(scope)
   local resources, palettes, _, drawnLines = preparedWiring(scope)
@@ -525,7 +526,10 @@ function T.tests.menu_preview_prints_through_the_dedicated_preview_font_path(sco
   local Resources = require("game.hgss.src.field.FieldPresentationResources")
   local view, manifest = optionsCache()
   local cache = view.reader
-  local pool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test's lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local pool = ImageAssetPool.new(cache, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   ownPool(scope, pool, view)
   local menuText = recordingSourceText()
   local previewText = recordingSourceText()
@@ -680,7 +684,10 @@ function T.tests.menu_and_preview_measures_use_their_own_font_advances(scope)
   local Resources = require("game.hgss.src.field.FieldPresentationResources")
   local view, manifest = optionsCache()
   local cache = view.reader
-  local pool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test's lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local pool = ImageAssetPool.new(cache, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   ownPool(scope, pool, view)
   local function fontWith(advance, selected, shadow, background)
     return {
@@ -811,7 +818,10 @@ function T.tests.stages_a_private_complete_image_set(scope)
   )
   local view, manifest = optionsCache()
   local cache = view.reader
-  local pool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test's lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local pool = ImageAssetPool.new(cache, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   ownPool(scope, pool, view)
   Assert.equal(cache.versionId, ISOLATED_VERSION, "the staged cache carries the private namespace")
   Assert.isTrue(ISOLATED_VERSION ~= "heartgold", "the private namespace is not the HeartGold cache")
@@ -850,7 +860,10 @@ function T.tests.slider_values_measure_in_font_advances_and_overflow_fails_loudl
   local Resources = require("game.hgss.src.field.FieldPresentationResources")
   local view, manifest = optionsCache()
   local cache = view.reader
-  local pool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test's lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local pool = ImageAssetPool.new(cache, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   ownPool(scope, pool, view)
   local advanceByChar = { ["0"] = 5, ["%"] = 9, ["1"] = 4, ["x"] = 7, ["2"] = 6, ["4"] = 6, ["8"] = 6 }
   local glyphs = { [0] = { advance = 8 } }
@@ -959,10 +972,7 @@ function T.tests.slider_values_measure_in_font_advances_and_overflow_fails_loudl
   love.graphics.setCanvas()
   Assert.isFalse(drawn, "an over-wide slider value must fail the draw")
   Assert.isTrue(tostring(drawErr):find("volume", 1, true) ~= nil, "the layout failure names its row")
-  Assert.isTrue(
-    tostring(drawErr):find("88888888%", 1, true) ~= nil,
-    "the layout failure names its value"
-  )
+  Assert.isTrue(tostring(drawErr):find("88888888%", 1, true) ~= nil, "the layout failure names its value")
 end
 
 return GraphicsSmoke.suite(T.tests)

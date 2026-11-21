@@ -5,6 +5,7 @@
 
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local NewGamePreparationState = require("game.hgss.src.newgame.NewGamePreparationState")
 
 local T = {}
@@ -113,10 +114,7 @@ end
 
 local function assertNoLegacyGlobalMilestone(calls)
   for _, call in ipairs(calls.milestones) do
-    Assert.isTrue(
-      call.name ~= "startup-loader",
-      "the legacy global loader milestone is never demanded"
-    )
+    Assert.isTrue(call.name ~= "startup-loader", "the legacy global loader milestone is never demanded")
   end
 end
 
@@ -212,22 +210,22 @@ function T.product_entry_forwards_the_selected_pair_into_new_game_preparation()
     seen[#seen + 1] = options
     return original(options)
   end)
+  -- The product entry borrows the selected epoch's CPU owners; the headless
+  -- entry preparation starts no worker.
+  local cacheFs = GeneratedCacheFixture.resident(VERSION_ID, {}).reader
   local ok, gameOrError = pcall(HgssGame.new, {
     versionId = VERSION_ID,
     entry = { kind = "new_game" },
     onExit = function() end,
     derivedAssets = {},
-    cacheFs = GeneratedCacheFixture.resident(VERSION_ID, {}).reader,
+    cacheFs = cacheFs,
+    assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs),
     startupPairIndex = PAIR_INDEX,
   })
   rawset(NewGamePreparationState, "new", original)
   Assert.isTrue(ok, "the product entry composes: " .. tostring(gameOrError))
   Assert.equal(#seen, 1, "new-game entry builds exactly one pending preparation")
-  Assert.equal(
-    seen[1].startupPairIndex,
-    PAIR_INDEX,
-    "the product entry forwards its selected pair without reselection"
-  )
+  Assert.equal(seen[1].startupPairIndex, PAIR_INDEX, "the product entry forwards its selected pair without reselection")
 end
 
 return { tests = T }

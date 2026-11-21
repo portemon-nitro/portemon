@@ -5,6 +5,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local SaveFs = require("libs.storage.src.SaveFs")
@@ -164,10 +165,15 @@ local function withMenu(count, width, height, options, fn)
     removeTree(namespace)
     error("the app-owned Main Menu composition is unavailable", 0)
   end
+  -- The menu borrows the selected epoch's CPU owners; the test releases them
+  -- after the menu disposed.
+  local cacheFs = GeneratedCacheFixture.reader(templateRecord.versionId)
+  local assetRuntime, releaseAssetRuntime = SelectedAssetRuntimeFixture.new(cacheFs)
   local menuOk, menuOrError = xpcall(function()
     return MainMenuComposition.new({
       versionId = templateRecord.versionId,
-      cacheFs = GeneratedCacheFixture.reader(templateRecord.versionId),
+      cacheFs = cacheFs,
+      assetRuntime = assetRuntime,
       onResult = function(result)
         results[#results + 1] = result
       end,
@@ -178,6 +184,7 @@ local function withMenu(count, width, height, options, fn)
   SaveFs.global = originalGlobal
   if not menuOk then
     removeTree(namespace)
+    releaseAssetRuntime()
     error(menuOrError, 0)
   end
   local menu = menuOrError
@@ -189,6 +196,7 @@ local function withMenu(count, width, height, options, fn)
   local disposeOk, disposeError = pcall(function()
     menu:dispose()
   end)
+  releaseAssetRuntime()
   removeTree(namespace)
   if not ok then
     error(err, 0)

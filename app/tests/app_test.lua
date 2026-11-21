@@ -449,7 +449,11 @@ local function finishStartupTitle(result)
   Assert.equal(
     App.state,
     result.menus[#result.menus],
-    "skip transfers the same staged menu (phase " .. tostring(App.state.phase) .. ", frame " .. tostring(App.state.fadeFrame) .. ")"
+    "skip transfers the same staged menu (phase "
+      .. tostring(App.state.phase)
+      .. ", frame "
+      .. tostring(App.state.fadeFrame)
+      .. ")"
   )
 end
 
@@ -887,7 +891,7 @@ function T.native_picker_path_waits_for_quiescence_before_importing()
     withAppHarness({}, function()
       return false
     end, function(result)
-    result.firstPlayReady = false
+      result.firstPlayReady = false
       App._bootExisting()
       result.service.barrierStatus = function()
         return "ready"
@@ -926,7 +930,7 @@ function T.picker_cancel_does_not_start_a_barrier_or_import()
     withAppHarness({}, function()
       return false
     end, function(result)
-    result.firstPlayReady = false
+      result.firstPlayReady = false
       App._bootExisting()
       App.state:mousepressed(400, 300, 1)
       Assert.equal(App.state.onImportAttempt, nil)
@@ -1080,7 +1084,7 @@ function T.boot_existing_with_two_ready_versions_uses_the_deterministic_first_ed
     Assert.equal(App.selectedVersionId, "heartgold")
     -- The boot gate answers first: readiness continues into the menu.
     App.update(0.016)
-      finishStartupTitle(result)
+    finishStartupTitle(result)
     Assert.equal(#result.launches, 0, "selecting a version installs the product menu")
     Assert.equal(result.menus[1].options.versionId, "heartgold")
     Assert.equal(App.state, result.menus[1])
@@ -1353,11 +1357,7 @@ function T.cold_import_startup_hold_transfers_the_adopted_presenter()
     result.walkerReady = false
     App._onImported("heartgold")
     local wait = assert(App.state, "the cold import waits visibly")
-    Assert.equal(
-      getmetatable(wait).__index,
-      CachePreparationState,
-      "the pending pair keeps the boot wait installed"
-    )
+    Assert.equal(getmetatable(wait).__index, CachePreparationState, "the pending pair keeps the boot wait installed")
     Assert.isTrue(wait.freshImport, "the fresh import holds its card")
     local chosen = assert(App.pairIndex, "the selection chooses one walking pair")
     Assert.isTrue(chosen >= 1 and chosen <= 32, "the chosen pair index names one of 32 pairs")
@@ -1504,6 +1504,103 @@ function T.cancelled_title_retires_selection_without_publishing()
   end)
 end
 
+-- One selected-epoch CPU aggregate: an installed epoch owns exactly one decoded
+-- kernel and one lazy preparation queue, every composition of that epoch
+-- borrows that same aggregate, a stale epoch sees none, and retirement drains
+-- the aggregate before the installed read view is retired.
+local function suppliesAggregate(options, record)
+  local queueFound, decodedFound = false, false
+  local function scan(value, depth)
+    if value == record then
+      queueFound, decodedFound = true, true
+      return
+    end
+    if value == record.preparationQueue then
+      queueFound = true
+      return
+    end
+    if value == record.decoded then
+      decodedFound = true
+      return
+    end
+    if depth == 0 or type(value) ~= "table" or value == record.cacheFs then
+      return
+    end
+    for key, nested in pairs(value) do
+      if key ~= "isCurrent" and key ~= "onResult" and key ~= "stageMenu" and key ~= "onExit" then
+        scan(nested, depth - 1)
+      end
+    end
+  end
+  scan(options, 2)
+  return queueFound and decodedFound
+end
+
+function T.selected_epoch_owns_one_shared_asset_runtime_that_drains_before_retirement()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    App._bootExisting()
+    App.update(0.016)
+    finishStartupTitle(result)
+    local epoch = assert(App.epoch, "the selection installed an epoch")
+    Assert.equal(type(App._ensureAssetRuntime), "function", "the App must own one selected-epoch CPU asset runtime")
+    local record = App._ensureAssetRuntime(epoch)
+    Assert.notNil(record, "an installed epoch owns one shared CPU asset runtime")
+    Assert.isTrue(record.cacheFs == result.generatedView, "the runtime borrows the installed read view")
+    Assert.notNil(record.preparationQueue, "the runtime owns one preparation queue")
+    Assert.notNil(record.decoded, "the runtime owns one decoded CPU owner")
+    Assert.isTrue(App._ensureAssetRuntime(epoch) == record, "the aggregate is stable for its live epoch")
+    Assert.isNil(App._ensureAssetRuntime(epoch - 1), "a stale epoch has no live aggregate")
+    local queue = record.preparationQueue
+    local decoded = record.decoded
+
+    Assert.equal(#result.menus, 1, "the selection installed one product menu")
+    Assert.isTrue(
+      suppliesAggregate(result.menus[1].options, record),
+      "the menu composition borrows the selected CPU owners"
+    )
+
+    result.menus[1].options.onResult({ kind = "new_game" })
+    local gameOptions = assert(result.launches[1], "New Game enters the retail application")
+    Assert.isTrue(suppliesAggregate(gameOptions, record), "the game composition borrows the selected CPU owners")
+    gameOptions.onExit({ kind = "main_menu" })
+    Assert.equal(#result.menus, 2, "the cancelled game installs a fresh product menu")
+    Assert.isTrue(
+      suppliesAggregate(result.menus[2].options, record),
+      "the screen replacing the game still borrows the same selected CPU owners"
+    )
+    Assert.isTrue(App._ensureAssetRuntime(epoch) == record, "an ordinary screen transition keeps one aggregate")
+
+    local atRetire
+    local service = result.service
+    local retire = service.retire
+    service.retire = function(self, retiredEpoch)
+      local accepted = pcall(function()
+        queue:request("mesh", "data/generated/geometry/retirement-probe.g4mesh", "prefetch")
+      end)
+      atRetire = {
+        epoch = retiredEpoch,
+        idle = decoded:stats().idleBytes,
+        pinned = decoded:stats().pinnedBytes,
+        queueClosed = not accepted,
+      }
+      return retire(self, retiredEpoch)
+    end
+    local ok, err = pcall(App._retireSelection)
+    service.retire = retire
+    if not ok then
+      error(err, 0)
+    end
+    Assert.notNil(atRetire, "retiring the selection retires its installed read view")
+    Assert.equal(atRetire.epoch, epoch, "the retired read view is the selected one")
+    Assert.equal(atRetire.idle, 0, "retirement clears idle decoded entries before the read view retires")
+    Assert.equal(atRetire.pinned, 0, "retirement leaves no decoded interest pinned before the read view retires")
+    Assert.isTrue(atRetire.queueClosed, "the shared preparation queue is released before the read view retires")
+    Assert.isNil(App._ensureAssetRuntime(epoch), "a retired epoch exposes no live aggregate")
+  end)
+end
+
 -- The optional near coordinator publishes only after its complete result;
 -- the title remains usable while the coordinator is pending.
 function T.first_play_near_completion_publishes_only_on_success()
@@ -1556,7 +1653,12 @@ function T.unknown_generation_never_fabricates_first_play()
     local requests = {}
     local baseRequest = result.service.request
     result.service.request = function(_, epoch, selector)
-      if selector.name == "new-game-intro" or selector.name == "field-planning" or selector.name == "field-runtime" or selector.requestKind == "battle-presentation" then
+      if
+        selector.name == "new-game-intro"
+        or selector.name == "field-planning"
+        or selector.name == "field-runtime"
+        or selector.requestKind == "battle-presentation"
+      then
         requests[#requests + 1] = selector
       end
       return baseRequest(_, epoch, selector)
@@ -2192,10 +2294,7 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
           copy:find("File received", 1, true) ~= nil,
           "the first painted frame names the receipt, got: " .. copy
         )
-        Assert.isTrue(
-          copy:find(".nds", 1, true) ~= nil,
-          "the painted receipt keeps the file kind, got: " .. copy
-        )
+        Assert.isTrue(copy:find(".nds", 1, true) ~= nil, "the painted receipt keeps the file kind, got: " .. copy)
         for _, premature in ipairs({ "verified", "complete" }) do
           Assert.isTrue(
             copy:lower():find(premature, 1, true) == nil,
@@ -2259,10 +2358,7 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
       local copy = captureCopy(function()
         App.draw()
       end)
-      Assert.isTrue(
-        copy:find("File received", 1, true) ~= nil,
-        "the first painted frame names the drop, got: " .. copy
-      )
+      Assert.isTrue(copy:find("File received", 1, true) ~= nil, "the first painted frame names the drop, got: " .. copy)
       Assert.isTrue(
         copy:find("soulsilver.nds", 1, true) ~= nil,
         "the painted receipt names the dropped file, got: " .. copy
@@ -2350,32 +2446,19 @@ function T.superseded_import_completion_never_replaces_the_current_selection()
     Assert.equal(App.state.targetVersion, "soulsilver", "the current card targets its edition")
     App._onImported("heartgold")
     Assert.equal(#selections, 0, "a superseded completion never selects its stale version")
-    Assert.isTrue(
-      App.importer == currentImporter,
-      "a superseded completion never releases the current importer"
-    )
+    Assert.isTrue(App.importer == currentImporter, "a superseded completion never releases the current importer")
     currentImporter:filedropped({
       getFilename = function()
         return "photo.png"
       end,
     })
-    Assert.equal(
-      currentImporter.state,
-      RomImporter.STATES.ERROR,
-      "the bad file fails the current session"
-    )
+    Assert.equal(currentImporter.state, RomImporter.STATES.ERROR, "the bad file fails the current session")
     Assert.equal(#selections, 0, "a failed current import still selects nothing")
     local shown = captureCopy(function()
       App.draw()
     end)
-    Assert.isTrue(
-      shown:find("photo.png", 1, true) ~= nil,
-      "the current failure names its file, got: " .. shown
-    )
-    Assert.isTrue(
-      shown:find("File received", 1, true) == nil,
-      "a rejected file is never acknowledged as received"
-    )
+    Assert.isTrue(shown:find("photo.png", 1, true) ~= nil, "the current failure names its file, got: " .. shown)
+    Assert.isTrue(shown:find("File received", 1, true) == nil, "a rejected file is never acknowledged as received")
   end, debug.traceback)
   App._selectVersion = originalSelect
   fresh()
@@ -2408,8 +2491,7 @@ function T.registered_reimport_stays_warm_while_true_first_import_stays_cold()
           byteData = function()
             return nil
           end,
-          release = function()
-          end,
+          release = function() end,
         }
       end,
     }
@@ -2431,10 +2513,8 @@ function T.registered_reimport_stays_warm_while_true_first_import_stays_cold()
     graphics.getWidth = function()
       return 800
     end
-    graphics.setColor = function()
-    end
-    graphics.rectangle = function()
-    end
+    graphics.setColor = function() end
+    graphics.rectangle = function() end
     graphics.print = function(value)
       copy[#copy + 1] = tostring(value)
     end
@@ -2464,7 +2544,7 @@ function T.registered_reimport_stays_warm_while_true_first_import_stays_cold()
       return id == "soulsilver"
     end, function(result)
       result.alreadyRegistered = true
-    result.firstPlayReady = true
+      result.firstPlayReady = true
       App._rebindVersionId = nil
       App.importer = completeImporter("soulsilver")
       App._onImported("soulsilver")
@@ -2492,14 +2572,10 @@ function T.registered_reimport_stays_warm_while_true_first_import_stays_cold()
     withAppHarness({ dev = false }, function()
       return false
     end, function(result)
-    result.firstPlayReady = false
+      result.firstPlayReady = false
       App.importer = completeImporter("heartgold")
       App._onImported("heartgold")
-      Assert.equal(
-        getmetatable(App.state).__index,
-        CachePreparationState,
-        "the first import holds its card"
-      )
+      Assert.equal(getmetatable(App.state).__index, CachePreparationState, "the first import holds its card")
       Assert.isTrue(App.state.freshImport, "a genuinely new ROM takes the first-import path")
       local copy = captureCopy(function()
         App.state:draw()

@@ -25,6 +25,8 @@ local ProductMenuSkin = require("app.src.ui.ProductMenuSkin")
 ---@field _bagImages table<string, love.Image> drawable quantity and pocket visuals by path
 ---@field _bagLeases table<string, table<string, unknown>> shared-owner borrows behind the pooled visuals
 ---@field _imagePool table<string, unknown>? session-local shared generated-image owner
+---@field _assetPreparation table<string, unknown> borrowed selected preparation queue
+---@field _decoded table<string, unknown> borrowed selected decoded CPU owner
 ---@field _ownsImagePool boolean true once this renderer built the session image owner itself
 ---@field _poolUnusable boolean true once pooling proved unusable for the session caches
 ---@field _pendingIconPreparation { cacheFs: table<string, unknown>, derivedAssets: table<string, unknown> }?
@@ -133,6 +135,8 @@ function Renderer.new(options)
     _bagImages = {},
     _bagLeases = {},
     _imagePool = options.imagePool,
+    _assetPreparation = assert(options.assetPreparation, "the save editor renderer needs the selected queue"),
+    _decoded = assert(options.decoded, "the save editor renderer needs the selected decoded owner"),
     _ownsImagePool = false,
     _poolUnusable = false,
     _pendingIconPreparation = nil,
@@ -143,26 +147,21 @@ end
 
 -- The session-local shared generated-image owner behind editor visuals:
 -- borrowed when the composer lends one, otherwise built here for the
--- editor lifetime and disposed with it. Caches the composer can only
--- serve on the main thread (test doubles) cannot back the pool worker,
--- so a pool that cannot be built simply answers nil and those paths
--- keep their direct construction. The editor never reaches field runtime
--- internals for images and never starts a second image thread beside
--- the pool's own worker.
+-- editor lifetime and disposed with it. Either way it borrows the selected
+-- epoch's one CPU runtime: the editor never creates a private queue/kernel or
+-- reaches field runtime internals for images.
 ---@param cacheFs table<string, unknown>
----@return table<string, unknown>? usable session image owner, nil when no pool backs this cache
+---@return table<string, unknown>
 function Renderer:_poolFor(cacheFs)
   if self._imagePool ~= nil then
     return self._imagePool
   end
-  if self._poolUnusable then
-    return nil
-  end
-  local ok, pool = pcall(ImageAssetPool.new, cacheFs, { graphics = self.graphics })
-  if not ok then
-    self._poolUnusable = true
-    return nil
-  end
+  assert(not self._poolUnusable, "the save editor image owner is unavailable for this cache")
+  local pool = ImageAssetPool.new(cacheFs, {
+    graphics = self.graphics,
+    queue = self._assetPreparation,
+    decoded = self._decoded,
+  })
   self._imagePool = pool
   self._ownsImagePool = true
   return pool

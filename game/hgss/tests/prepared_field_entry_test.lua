@@ -100,12 +100,24 @@ local function bedroomFixture()
   files[MapAssetCache.worldPath()] = world
   files[require("libs.assets.src.field.FieldCellCache").indexPath()] =
     { schema = require("libs.assets.src.field.FieldCellCache").INDEX_SCHEMA, matrices = {} }
+  local collisionPath = scene.collision.file
   local cache = {
+    versionId = "heartgold",
     loadLua = function(_, path)
       return files[path]
     end,
     read = function(_, path)
       return files[path]
+    end,
+    -- Runtime collision loads resolve the resident reference and borrow its
+    -- exact bytes; the fixture answers its own collision payload.
+    resolveAsset = function(_, path)
+      if path ~= collisionPath then
+        return nil
+      end
+      return {
+        data = assert(love.data.newByteData(assert(files[collisionPath]))),
+      }
     end,
   }
   return cache
@@ -197,20 +209,37 @@ local function fakeQueue(log)
     self.releases = self.releases + 1
     log[#log + 1] = "queue"
   end
+  function queue:acquireSource(reference)
+    return { value = reference.data, release = function() end }
+  end
   return queue
+end
+
+local function fakeDecoded()
+  local decoded = {}
+  function decoded:returnLease()
+    return true
+  end
+  function decoded:trim() end
+  return decoded
 end
 
 local function stagedEntry(log, hostScript, extra)
   local sceneLoader, builds = stagedSceneLoader(log)
   local host = derivedHost(hostScript)
   local queue = fakeQueue(log)
+  local cacheFs = bedroomFixture()
+  local assetRuntime = { cacheFs = cacheFs, decoded = fakeDecoded(), preparationQueue = queue }
   local options = {
     versionId = "heartgold",
     derivedAssets = host,
     location = OPENING,
-    cacheFs = bedroomFixture(),
+    cacheFs = cacheFs,
+    assetRuntime = assetRuntime,
     sceneLoader = sceneLoader,
-    assetPreparation = queue,
+    acquireSource = function(reference)
+      return { value = reference.data, release = function() end }
+    end,
   }
   if extra ~= nil then
     for key, value in pairs(extra) do
@@ -279,12 +308,12 @@ function T.derived_failure_is_terminal_and_releases_owned_resources()
   local readyAgain, failureAgain = entry:poll()
   Assert.isFalse(readyAgain, "the failure is sticky")
   Assert.equal(failureAgain, "bedroom bank missing", "the same cause surfaces again")
-  Assert.equal(queue.releases, 1, "the owned queue is released exactly once")
+  Assert.equal(queue.releases, 0, "the borrowed selected queue is never released by the entry")
   entry:dispose()
-  Assert.equal(queue.releases, 1, "dispose after failure releases nothing again")
+  Assert.equal(queue.releases, 0, "dispose releases no selected owner")
 end
 
-function T.take_transfers_the_prepared_loader_and_queue_exactly_once()
+function T.take_transfers_the_prepared_loader_and_borrowed_queue_exactly_once()
   local log = {}
   local entry, builds, _, queue = stagedEntry(log)
   Assert.isTrue(pollUntilReady(entry, builds), "the bedroom must stage to ready")
@@ -325,12 +354,13 @@ end
 
 function T.dispose_before_take_releases_the_loader_then_the_queue()
   local log = {}
-  local entry, builds = stagedEntry(log)
+  local entry, builds, _, queue = stagedEntry(log)
   Assert.isTrue(pollUntilReady(entry, builds), "the bedroom must stage to ready")
   entry:dispose()
-  Assert.deepEqual(log, { "scene", "queue" }, "dispose releases the loader before the queue exactly once")
+  Assert.deepEqual(log, { "scene" }, "dispose releases the entry-owned loader exactly once")
+  Assert.equal(queue.releases, 0, "the selected queue stays alive for its owner")
   entry:dispose()
-  Assert.deepEqual(log, { "scene", "queue" }, "a repeated dispose releases nothing again")
+  Assert.deepEqual(log, { "scene" }, "a repeated dispose releases nothing again")
 end
 
 function T.dispose_after_take_releases_no_transferred_resources()

@@ -19,7 +19,7 @@ local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEf
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
-local FakePreparationQueue = require("tests.support.FakePreparationQueue")
+local ScenePreparationFixture = require("tests.support.ScenePreparationFixture")
 local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
 
 local T = {}
@@ -60,6 +60,10 @@ local function boot(withCover)
   local dims = { width = hostWidth, height = hostHeight }
   local cache = FieldStatePresentationFixture.cache()
   local terrain = FieldStatePresentationFixture.terrainEffects(cache)
+  -- The staged effect builds realize produced geometry through the selected
+  -- CPU pair: the fixture worker serves the same upload shape a worker
+  -- publishes, and the paired owner accepts the returned lease.
+  local assetPreparation, decoded = ScenePreparationFixture.new(cache)
   local originalNew = FieldRuntime.new
   FieldRuntime.new = function(_, _)
     return setmetatable({
@@ -70,8 +74,9 @@ local function boot(withCover)
       -- icons, Summary, and PC visuals: the sized pool keeps real
       -- consumers (font quads read dimensions off borrows) honest without
       -- a second worker beside the stub.
-      imageAssets = SummaryAcceptanceFixture.sizedImagePool(),
-      assetPreparation = FakePreparationQueue.new(),
+      imageAssets = SummaryAcceptanceFixture.sizedImagePool({ queue = assetPreparation, decoded = decoded }),
+      assetPreparation = assetPreparation,
+      decoded = decoded,
       uiManifest = FieldUiFixture.fieldStateManifest(),
       itemCatalog = ItemFixture.makeCatalog(),
       monCatalog = CatalogFixture.makeCatalog(),

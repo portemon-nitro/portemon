@@ -1,6 +1,5 @@
 -- Holds the selected edition's loader/title while the existing Main Menu is staged.
 
-local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local HgssOpeningMovie = require("libs.hgss.src.presentation.HgssOpeningMovie")
 local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
@@ -50,7 +49,7 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 ---@field titleEntry integer remaining retail title start-up calls before its theme starts
 ---@field titleAnimating boolean true once the adopted title has run its first animation call
 ---@field titleBuild HgssTitleScene.Build? staged title construction in progress
----@field titleAssets table<string, unknown>? owned preparation worker for the title build
+---@field assetRuntime { cacheFs: table<string, unknown>, decoded: table<string, unknown>, preparationQueue: table<string, unknown> } borrowed selected CPU runtime
 ---@field menuError unknown?
 ---@field titleError unknown?
 ---@field bootstrapError unknown?
@@ -116,6 +115,7 @@ local OPENING_SCENE_COUNT = 5
 ---@field versionId string
 ---@field epoch integer
 ---@field cacheFs table<string, unknown> selected epoch's installed generated view
+---@field assetRuntime { cacheFs: table<string, unknown>, decoded: table<string, unknown>, preparationQueue: table<string, unknown> } borrowed selected CPU runtime
 ---@field derivedAssets table<string, function> selected epoch host
 ---@field stageMenu fun(): table<string, unknown> constructs the actual product menu
 ---@field onFinished fun(menu: table<string, unknown>) transfers the staged menu
@@ -141,6 +141,14 @@ function StartupTitleState.new(options)
   assert(type(options.epoch) == "number" and options.epoch % 1 == 0, "startup title requires its selected epoch")
   assert(type(options.derivedAssets) == "table", "startup title requires the selected derived host")
   assert(options.cacheFs ~= nil, "startup title requires the selected epoch's installed generated view")
+  local assetRuntime = options.assetRuntime
+  assert(
+    type(assetRuntime) == "table"
+      and assetRuntime.cacheFs == options.cacheFs
+      and assetRuntime.preparationQueue ~= nil
+      and assetRuntime.decoded ~= nil,
+    "startup title requires the selected epoch's CPU runtime"
+  )
   -- Production collaborators are required: the five-scene opening selector
   -- is part of the locked movie-first journey, never an optional feature
   -- with a title-only fallback.
@@ -178,6 +186,7 @@ function StartupTitleState.new(options)
     versionId = options.versionId,
     epoch = options.epoch,
     cacheFs = options.cacheFs,
+    assetRuntime = assetRuntime,
     derivedAssets = options.derivedAssets,
     stageMenu = options.stageMenu,
     onFinished = options.onFinished,
@@ -210,7 +219,6 @@ function StartupTitleState.new(options)
     titleEntry = 0,
     titleAnimating = false,
     titleBuild = nil,
-    titleAssets = nil,
     menuError = nil,
     titleError = nil,
     bootstrapError = nil,
@@ -383,6 +391,7 @@ function StartupTitleState:_adoptMovie()
     self.phase = "error"
     return
   end
+  local runtime = self.assetRuntime
   local ok, movie = pcall(HgssOpeningMovie.new, {
     versionId = self.versionId,
     scenes = scenes,
@@ -390,6 +399,8 @@ function StartupTitleState:_adoptMovie()
     splRandomState = self.splRandomState,
     width = self.width,
     height = self.height,
+    assetPreparation = runtime.preparationQueue,
+    decoded = runtime.decoded,
   })
   if not ok then
     self.sceneError = movie
@@ -506,24 +517,14 @@ function StartupTitleState:_beginTitleBuild()
   if self.titleBuild ~= nil or self.title ~= nil or self.titleError ~= nil then
     return
   end
-  local cacheFs = self.cacheFs
-  local queue = self.titleAssets
-  if queue == nil then
-    local okQueue, queueOrError = pcall(AssetPreparationQueue.new, cacheFs)
-    if not okQueue then
-      self.titleError = queueOrError
-      self.phase = "error"
-      return
-    end
-    queue = queueOrError
-    self.titleAssets = queue
-  end
+  local runtime = self.assetRuntime
   local ok, build = pcall(HgssTitleScene.begin, {
     versionId = self.versionId,
-    cacheFs = cacheFs,
+    cacheFs = self.cacheFs,
     width = self.width,
     height = self.height,
-    assetPreparation = queue,
+    assetPreparation = runtime.preparationQueue,
+    decoded = runtime.decoded,
   })
   if not ok then
     self.titleError = build
@@ -756,6 +757,7 @@ function StartupTitleState:_reenterMovie()
     title:dispose()
   end
   local cacheFs = self.cacheFs
+  local runtime = self.assetRuntime
   local ok, movie = pcall(HgssOpeningMovie.new, {
     versionId = self.versionId,
     scenes = self.movieScenes,
@@ -763,6 +765,8 @@ function StartupTitleState:_reenterMovie()
     splRandomState = self.splRandomState,
     width = self.width,
     height = self.height,
+    assetPreparation = runtime.preparationQueue,
+    decoded = runtime.decoded,
   })
   if not ok then
     self.sceneError = movie
@@ -1191,9 +1195,10 @@ function StartupTitleState:dispose()
   end
   self.disposed = true
   local menu, title, movie, loading = self.stagedMenu, self.title, self.movie, self.loading
-  local titleBuild, titleAssets = self.titleBuild, self.titleAssets
+  local titleBuild = self.titleBuild
   self.stagedMenu, self.title, self.movie, self.loading = nil, nil, nil, nil
-  self.titleBuild, self.titleAssets = nil, nil
+  self.titleBuild = nil
+  self.assetRuntime = nil
   self.derivedAssets = nil
   self.audio = nil
   if menu ~= nil then
@@ -1210,10 +1215,6 @@ function StartupTitleState:dispose()
   end
   if loading ~= nil then
     loading:dispose()
-  end
-  -- The title's preparation worker outlives each build but never this state.
-  if titleAssets ~= nil then
-    titleAssets:release()
   end
 end
 

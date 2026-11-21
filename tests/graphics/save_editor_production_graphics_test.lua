@@ -39,6 +39,26 @@ local T = {
   tests = {},
 }
 
+-- One selected-epoch CPU runtime over the fixture's installed view, matching
+-- the App-owned composition the editor borrows in production.
+local function selectedRuntime(versionId)
+  local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
+  local decoded = ResidentAssetCache.new({
+    idleByteLimit = 64 * 1024 * 1024,
+    release = function(value)
+      value:release()
+    end,
+  })
+  return cacheFs,
+    {
+      cacheFs = cacheFs,
+      decoded = decoded,
+      preparationQueue = AssetPreparationQueue.new(cacheFs, { decoded = decoded }),
+    }
+end
+
 local function readyHost()
   local function ready()
     return true
@@ -107,6 +127,7 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
         return topology
       end,
     })
+    local cacheFs, assetRuntime = selectedRuntime(fixture.versionId)
     state = State.new({
       versionId = fixture.versionId,
       saveId = fixture.saveId,
@@ -114,7 +135,8 @@ function T.tests.real_state_uses_the_editor_palette_and_saves_a_capture(scope)
       width = width,
       height = height,
       derivedAssets = readyHost(),
-      cacheFs = GeneratedCacheFixture.reader(fixture.versionId),
+      cacheFs = cacheFs,
+      assetRuntime = assetRuntime,
       repositoryRoot = repositoryRoot,
       displayContext = displayContext,
       onResult = function() end,
@@ -561,6 +583,7 @@ function T.tests.production_party_uses_generic_selector_without_retail_manifest(
         return topology
       end,
     })
+    local cacheFs, assetRuntime = selectedRuntime(fixture.versionId)
     state = State.new({
       versionId = fixture.versionId,
       saveId = fixture.saveId,
@@ -568,7 +591,8 @@ function T.tests.production_party_uses_generic_selector_without_retail_manifest(
       width = 1280,
       height = 720,
       derivedAssets = readyHost(),
-      cacheFs = GeneratedCacheFixture.reader(fixture.versionId),
+      cacheFs = cacheFs,
+      assetRuntime = assetRuntime,
       repositoryRoot = repositoryRoot,
       displayContext = displayContext,
       onResult = function() end,

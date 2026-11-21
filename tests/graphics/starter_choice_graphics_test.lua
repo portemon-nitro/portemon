@@ -10,6 +10,7 @@ local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 
 local T = {}
 
@@ -94,13 +95,25 @@ local function preparationQueue(cacheFs)
     local record = assert(records[token], "unknown preparation token")
     local payload = assert(record.payload, "preparation result is not ready")
     records[token] = nil
-    return payload
+    return { value = { kind = record.kind, payload = payload } }
   end
   function queue:cancel(token)
     records[token] = nil
   end
+  function queue:acquireSource(reference)
+    return { value = reference.data, release = function() end }
+  end
   function queue:release() end
   return queue
+end
+
+local function preparationDecoded()
+  local decoded = {}
+  function decoded:returnLease()
+    return true
+  end
+  function decoded:trim() end
+  return decoded
 end
 
 -- Prepares the production chooser through the field-owned composition seam:
@@ -110,19 +123,34 @@ local function prepareHost(host, cacheFs, scope)
   local GxRenderer = requireModule("libs.nds.src.love.GxRenderer", "the field graphics backend owns the shader suite")
   local backend = GxRenderer.new()
   local queue = preparationQueue(cacheFs)
+  local decoded = preparationDecoded()
+  -- Texture classification still runs through the real selected worker; the
+  -- deterministic fake queue serves the chooser's plan/mesh path.
+  local imageRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
   -- Real staged pixels draw through the session image owner: the real pool
   -- classifies through its own worker while the deterministic fake queue
   -- above keeps serving the mesh/plan path, so no second worker starts
   -- beside the session one. Precedent: the starter-ball, map-renderer, and
   -- bag graphics suites own a real pool the same way.
-  local images = ImageAssetPool.new(cacheFs)
+  local images = ImageAssetPool.new(cacheFs, {
+    queue = imageRuntime.preparationQueue,
+    decoded = imageRuntime.decoded,
+  })
+  -- The chooser's GPU pool sees one borrowed CPU pair: the deterministic plan
+  -- queue it realizes meshes from, which the image owner now reports too.
+  images._preparation = { queue = queue, decoded = decoded }
   scope:own({
     release = function()
       images:dispose()
     end,
   })
   for _ = 1, 4096 do
-    host:advancePresentationPreparation({ assetPreparation = queue, gxRenderer = backend, imageAssets = images }, 1)
+    host:advancePresentationPreparation({
+      assetPreparation = queue,
+      decoded = decoded,
+      gxRenderer = backend,
+      imageAssets = images,
+    }, 1)
     if host:isPresentationReady() then
       return backend
     end

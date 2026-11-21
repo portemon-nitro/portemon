@@ -137,9 +137,34 @@ local function descriptors(geomPath, texPath, wraps)
   return { cell(32, 0, 1), cell(-32, -32, 2) }
 end
 
+-- Synchronous stand-in for the selected preparation worker over the fixture
+-- bytes: the ring realizes the same upload shapes the worker publishes.
+local function scenePreparation(cacheFs)
+  local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
+  local queue = {}
+  function queue:request(kind, path, priority)
+    return { kind = kind, path = path, priority = priority }
+  end
+  function queue:wait(request)
+    local bytes = assert(cacheFs:read(request.path), "missing fixture geometry " .. tostring(request.path))
+    local payload = request.kind == "g4gx" and SceneMesh.prepareNativeBank(bytes) or SceneMesh.prepareUpload(bytes)
+    return { value = { kind = request.kind, payload = payload } }
+  end
+  local decoded = {}
+  function decoded:returnLease()
+    return true
+  end
+  function decoded:trim() end
+  return { queue = queue, decoded = decoded }
+end
+
 function T.builds_one_draw_per_cell_batch_with_offset_in_transform()
   local cacheFs, geomPath, texPath = fakeCacheFs()
-  local ring = NeighborRing.load(cacheFs, descriptors(geomPath, texPath), { imageAssets = SharedImagePoolFake.new() })
+  local ring = NeighborRing.load(
+    cacheFs,
+    descriptors(geomPath, texPath),
+    { imageAssets = SharedImagePoolFake.new({ preparation = scenePreparation(cacheFs) }) }
+  )
 
   Assert.equal(#ring.draws, 2) -- one batch per cell
   Assert.equal(ring.stats.cellCount, 2)
@@ -200,7 +225,7 @@ function T.sorts_translucent_neighbors_using_projected_screen_y_extents()
   local ring = NeighborRing.load(
     cacheFs,
     translucentDescriptors(geomPath, elevatedGeomPath, texPath),
-    { imageAssets = SharedImagePoolFake.new() }
+    { imageAssets = SharedImagePoolFake.new({ preparation = scenePreparation(cacheFs) }) }
   )
 
   -- Both draws carry the cached model-space AABB of their geometry path
@@ -242,7 +267,11 @@ end
 
 function T.dedups_shared_geometry_into_one_owned_mesh()
   local cacheFs, geomPath, texPath = fakeCacheFs()
-  local ring = NeighborRing.load(cacheFs, descriptors(geomPath, texPath), { imageAssets = SharedImagePoolFake.new() })
+  local ring = NeighborRing.load(
+    cacheFs,
+    descriptors(geomPath, texPath),
+    { imageAssets = SharedImagePoolFake.new({ preparation = scenePreparation(cacheFs) }) }
+  )
   -- Both cells reference the same geometry/texture path, so only one mesh and
   -- one image are built and owned.
   Assert.equal(ring.stats.meshCount, 1)
@@ -255,7 +284,7 @@ end
 -- image, never one mutated sampler whose state depends on load order.
 function T.same_texture_with_different_wraps_gets_independent_images()
   local cacheFs, geomPath, texPath = fakeCacheFs()
-  local images = SharedImagePoolFake.new()
+  local images = SharedImagePoolFake.new({ preparation = scenePreparation(cacheFs) })
   local ring = NeighborRing.load(
     cacheFs,
     descriptors(geomPath, texPath, { { x = "clamp", y = "clamp" }, { x = "repeat", y = "repeat" } }),
@@ -291,7 +320,7 @@ function T.failed_cell_acquire_releases_earlier_cells_images()
       },
     }
   end
-  local images = SharedImagePoolFake.new()
+  local images = SharedImagePoolFake.new({ preparation = scenePreparation(cacheFs) })
   local err = Assert.throws(function()
     NeighborRing.load(cacheFs, {
       cell(32, { x = "clamp", y = "clamp" }),
@@ -328,7 +357,7 @@ function T.malformed_cell_descriptor_releases_earlier_cells_images()
     materials = {},
   }
   local graphics = fakeGraphics()
-  local images = SharedImagePoolFake.new()
+  local images = SharedImagePoolFake.new({ preparation = scenePreparation(cacheFs) })
   local ok, err = pcall(NeighborRing.load, cacheFs, { first, second }, { graphics = graphics, imageAssets = images })
   Assert.isFalse(ok, "a descriptor without a batches array fails the load: " .. tostring(err))
   Assert.equal(images.uploads, 1, "the first cell's image was borrowed")
@@ -450,7 +479,7 @@ end
 function T.neighbor_swap_frames_are_acquired_and_update_in_place()
   local cacheFs, geomPath, _ = fakeCacheFs()
   local clip = terrainSrtClip(4, { 0x0, 0x1000, 0x2000, 0x3000 })
-  local images = SharedImagePoolFake.new()
+  local images = SharedImagePoolFake.new({ preparation = scenePreparation(cacheFs) })
   local ring = NeighborRing.load(
     cacheFs,
     { animatedCell(32, 0, geomPath, "f"), animatedCell(-32, -32, geomPath, "f") },
@@ -507,7 +536,7 @@ end
 -- keeps them in phase, each switching to its own image at the same tick.
 function T.same_name_neighbor_cells_stay_in_phase_with_distinct_paths()
   local cacheFs, geomPath, _ = fakeCacheFs()
-  local images = SharedImagePoolFake.new()
+  local images = SharedImagePoolFake.new({ preparation = scenePreparation(cacheFs) })
   local ring = NeighborRing.load(
     cacheFs,
     { animatedCell(32, 0, geomPath, "a"), animatedCell(-32, -32, geomPath, "b") },
@@ -542,7 +571,7 @@ end
 -- rebuilt.
 function T.empty_neighbor_ring_updates_safely()
   local cacheFs, _, _ = fakeCacheFs()
-  local images = SharedImagePoolFake.new()
+  local images = SharedImagePoolFake.new({ preparation = scenePreparation(cacheFs) })
   local ring = NeighborRing.load(cacheFs, {}, { imageAssets = images, textureSrt = false })
   Assert.equal(#ring.draws, 0)
   ring:updateAnimated()

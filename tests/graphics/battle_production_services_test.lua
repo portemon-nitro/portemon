@@ -13,6 +13,7 @@ local FakeGraphics = require("tests.support.FakeGraphics")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local CacheFs = require("libs.storage.src.CacheFs")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
@@ -560,7 +561,11 @@ function T.presented_launch_renders_real_staged_frames(scope, context)
     -- pool classifies through its own worker, following the migrated
     -- starter-ball/map-renderer/bag precedent (fake leases can never reach
     -- the real GPU backend or satisfy staged-pixel assertions).
-    local images = ImageAssetPool.new(cacheFs)
+    -- Real staged pixels draw through the selected session image owner:
+    -- one worker and one decoded budget per test, released after the pool.
+    local imagesRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
+    local images =
+      ImageAssetPool.new(cacheFs, { queue = imagesRuntime.preparationQueue, decoded = imagesRuntime.decoded })
     scope:own({
       release = function()
         images:dispose()
@@ -780,7 +785,11 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
       -- Real staged pixels draw through the session image owner (see the
       -- presented launch above); the hiding view still governs cache
       -- reads for the pending/ready progression.
-      local images = ImageAssetPool.new(view)
+      -- Real staged pixels draw through the selected session image owner:
+      -- one worker and one decoded budget per test, released after the pool.
+      local imagesRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
+      local images =
+        ImageAssetPool.new(view, { queue = imagesRuntime.preparationQueue, decoded = imagesRuntime.decoded })
       scope:own({
         release = function()
           images:dispose()
@@ -914,7 +923,11 @@ function T.native_steady_frames_reuse_resolved_images(scope, context)
   for _, versionId in ipairs(versions) do
     local cacheFs = GeneratedCacheFixture.reader(versionId)
     local text, windows = productionDrawServices(scope, cacheFs, versionId)
-    local images = ImageAssetPool.new(cacheFs)
+    -- Real staged pixels draw through the selected session image owner:
+    -- one worker and one decoded budget per test, released after the pool.
+    local imagesRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
+    local images =
+      ImageAssetPool.new(cacheFs, { queue = imagesRuntime.preparationQueue, decoded = imagesRuntime.decoded })
     scope:own({
       release = function()
         images:dispose()
@@ -991,7 +1004,8 @@ function T.missing_scene_image_fails_closed_with_context(scope, context)
     context:skip("the production battle coverage needs a ready user-owned ROM with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = hidingCacheFs(GeneratedCacheFixture.reader(versionId), BattlePresentationCache.sceneImagePath(SAD_SCENE_KEY))
+    local cacheFs =
+      hidingCacheFs(GeneratedCacheFixture.reader(versionId), BattlePresentationCache.sceneImagePath(SAD_SCENE_KEY))
     local envelope = FieldBattlePresentation.new({
       splRandomState = { state = 0 },
       cacheFs = cacheFs,
@@ -1116,7 +1130,11 @@ function T.idle_warmup_reuses_staged_scene_on_first_battle_entry(scope, context)
     return acquired
   end
   local text, windows = productionDrawServices(scope, cacheFs, versionId)
-  local warmImages = ImageAssetPool.new(cacheFs)
+  -- Real staged pixels draw through the selected session image owner:
+  -- one worker and one decoded budget per test, released after the pool.
+  local warmImagesRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
+  local warmImages =
+    ImageAssetPool.new(cacheFs, { queue = warmImagesRuntime.preparationQueue, decoded = warmImagesRuntime.decoded })
   scope:own({
     release = function()
       warmImages:dispose()

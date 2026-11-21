@@ -5,6 +5,7 @@ local Contract = require("libs.assets.src.DerivedAssetContract")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local Presentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local DisplayContext = require("libs.ui.src.DisplayContext")
+local PngWriter = require("tests.support.PngEncoder")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
@@ -60,8 +61,8 @@ local function cache(versionId, _)
     exists = function()
       return true
     end,
-    read = function(_, path)
-      return path
+    readData = function(_, path)
+      return assert(love.data.newByteData(PngWriter.encode(1, 1, string.char(0, 0, 0, 0)))), path
     end,
   }
 end
@@ -576,9 +577,9 @@ local function startupPairCacheFs(pairIndex, versionId, heroWidth, heroHeight, f
     exists = function()
       return true
     end,
-    read = function(_, path)
+    readData = function(_, path)
       reads[#reads + 1] = path
-      return path
+      return assert(love.data.newByteData(PngWriter.encode(1, 1, string.char(0, 0, 0, 0)))), path
     end,
   }
 end
@@ -736,11 +737,7 @@ function T.startup_captions_open_on_a_random_line_and_keep_the_stage_moving()
   presentationA:update(1 / 60)
   mark = #hostA.rectangles
   presentationA:draw()
-  Assert.equal(
-    hostA.draws[#hostA.draws].quad.x,
-    adoptedFrame,
-    "the walk frame is held across one host tick"
-  )
+  Assert.equal(hostA.draws[#hostA.draws].quad.x, adoptedFrame, "the walk frame is held across one host tick")
   Assert.isTrue(
     startupStageGeometry(hostA, mark) ~= preGeometry,
     "the scenery keeps moving behind the held sprite frame"
@@ -753,10 +750,7 @@ function T.startup_captions_open_on_a_random_line_and_keep_the_stage_moving()
   presentationA:update(4)
   hostA.printfCalls = {}
   presentationA:draw()
-  Assert.isTrue(
-    hostA.printfCalls[1].text ~= secondCaption,
-    "successive flavor lines never repeat adjacently"
-  )
+  Assert.isTrue(hostA.printfCalls[1].text ~= secondCaption, "successive flavor lines never repeat adjacently")
   presentationA:dispose()
   presentationB:dispose()
 end
@@ -794,8 +788,8 @@ local function generationCacheFs(pairIndex, versionId, generationId, heroWidth, 
     exists = function()
       return true
     end,
-    read = function(_, path)
-      return path
+    readData = function(_, path)
+      return assert(love.data.newByteData(PngWriter.encode(1, 1, string.char(0, 0, 0, 0)))), path
     end,
   }
 end
@@ -844,11 +838,7 @@ function T.catalog_refresh_reuses_same_images_and_swaps_newer_catalog_atomically
   local adopted, failure = presentation:adoptGeneratedAssets(brokenCache)
   Assert.isFalse(adopted, "a failed refresh never reports success")
   Assert.notNil(failure, "a failed refresh carries its diagnosis")
-  Assert.equal(
-    presentation.hero.visual.render.frameWidth,
-    20,
-    "a failed refresh keeps the previous hero visible"
-  )
+  Assert.equal(presentation.hero.visual.render.frameWidth, 20, "a failed refresh keeps the previous hero visible")
   Assert.equal(#host.images, 5, "the failed refresh stages before releasing")
   Assert.equal(host.images[5].releaseCount, 1, "the failed staged image releases exactly once")
   presentation:dispose()

@@ -49,6 +49,7 @@ local BagCache = require("libs.assets.src.BagCache")
 ---@field _pool GpuAssetPool?
 ---@field _imageAssets table<string, unknown>? borrowed session image owner behind hero textures
 ---@field _assetPreparation table<string, unknown> borrowed presentation preparation worker
+---@field _decoded table<string, unknown> borrowed selected decoded CPU owner
 ---@field _renderer FieldRenderer?
 ---@field _realized table<string, BagHeroRealization>
 ---@field _builds table<string, BagHeroBuild> staged realization per gender
@@ -261,6 +262,7 @@ end
 ---@field graphics unknown? injectable graphics namespace (nil keeps love.graphics at realization)
 ---@field imageAssets table<string, unknown>? borrowed session image owner; nil fails loudly at the first texture acquisition (mesh-only and headless stand-in paths carry no textures)
 ---@field assetPreparation table<string, unknown> borrowed presentation preparation worker the hero's model bank decodes through
+---@field decoded table<string, unknown> borrowed selected decoded CPU owner the taken leases return through
 
 ---@param opts BagHeroRenderer.Options
 ---@return BagHeroRenderer
@@ -294,12 +296,14 @@ function BagHeroRenderer.new(opts)
       and type(assetPreparation.wait) == "function",
     "the bag hero renderer requires a preparation queue"
   )
+  local decoded = assert(opts.decoded, "the bag hero renderer requires the selected decoded owner")
   return setmetatable({
     _cacheFs = cacheFs,
     _manifest = manifest,
     _graphics = opts.graphics,
     _imageAssets = opts.imageAssets,
     _assetPreparation = assetPreparation,
+    _decoded = decoded,
     _modelCanvas = nil,
     _cameraFacts = cameraFacts,
     _transformFacts = transformFacts,
@@ -420,6 +424,7 @@ end
 ---@field queue table<string, unknown> borrowed presentation preparation queue
 ---@field imageAssets table<string, unknown>? borrowed session image owner behind hero textures
 ---@field token integer? preparation token the suspended coroutine waits on
+---@field transfer table<string, unknown>? kernel lease a take or wait transferred but the upload has not consumed
 ---@field imageToken integer? shared-image ticket the suspended coroutine waits on
 ---@field finishing boolean the explicit synchronous caller blocks instead of yielding
 ---@field failure unknown?
@@ -459,9 +464,10 @@ local BAG_HERO_WAIT = {}
 ---@param self BagHeroRenderer
 ---@param gender string
 ---@param awaitPrepared fun(kind: string, path: string): table<string, unknown>
+---@param returnPrepared fun() returns the awaited lease to the selected decoded owner
 ---@param waitForImage fun()
 ---@param trackImageToken fun(token: integer?)
-function BagHeroRenderer:_realizeGender(gender, awaitPrepared, waitForImage, trackImageToken)
+function BagHeroRenderer:_realizeGender(gender, awaitPrepared, returnPrepared, waitForImage, trackImageToken)
   if self._realized[gender] ~= nil then
     return
   end
@@ -481,7 +487,12 @@ function BagHeroRenderer:_realizeGender(gender, awaitPrepared, waitForImage, tra
       local graphics = graphicsFor(self)
       -- Hero textures borrow the session image owner instead of private
       -- ownership; a composition without one keeps the private textures.
-      pool = GpuAssetPool.new(self._cacheFs, { graphics = graphics, imageAssets = self._imageAssets })
+      pool = GpuAssetPool.new(self._cacheFs, {
+        graphics = graphics,
+        imageAssets = self._imageAssets,
+        assetPreparation = self._assetPreparation,
+        decoded = self._decoded,
+      })
       self._pool = pool
     end
     local descriptor = genderDescriptor(self, gender)
@@ -489,7 +500,11 @@ function BagHeroRenderer:_realizeGender(gender, awaitPrepared, waitForImage, tra
     local definition = ModelDefinition.fromNitroDescriptor(nitroDescriptor, { key = "bag-hero:" .. gender })
     local renderMeshes = {}
     for _, mesh in ipairs(definition.meshes) do
-      local resource = pool:preparedMesh(mesh.geometry, awaitPrepared)
+      local realizedOk, resource = pcall(pool.preparedMesh, pool, mesh.geometry, awaitPrepared)
+      returnPrepared()
+      if not realizedOk then
+        error(resource, 0)
+      end
       renderMeshes[mesh.id] = resource.mesh
       mesh.center = resource.center
       coroutine["yield"](1)
@@ -582,21 +597,23 @@ function BagHeroRenderer:_startBuild(gender)
     while true do
       local status, failure = queue:poll(token)
       if status == "ready" then
-        local payload = queue:take(token)
+        local lease = queue:take(token)
         build.token = nil
-        return payload
+        build.transfer = lease
+        return lease
       end
       if status == "failed" then
         -- The failed ticket is never claimed; the failure exit cancels it.
         error("hero asset " .. tostring(path) .. " (" .. kind .. ") failed: " .. tostring(failure), 0)
       end
       if build.finishing then
-        local waitOk, payload = pcall(queue.wait, queue, token)
+        local waitOk, lease = pcall(queue.wait, queue, token)
         if not waitOk then
-          error(payload, 0)
+          error(lease, 0)
         end
         build.token = nil
-        return payload
+        build.transfer = lease
+        return lease
       end
       coroutine["yield"](BAG_HERO_WAIT)
     end
@@ -614,14 +631,25 @@ function BagHeroRenderer:_startBuild(gender)
   local function trackImageToken(token)
     build.imageToken = token
   end
+  -- Return the lease a take or wait transferred out of the queue but whose
+  -- upload did not consume it: a failed realization, a build failure or a
+  -- release returns it exactly once through the selected decoded owner.
+  local function returnPrepared()
+    local lease = build.transfer
+    build.transfer = nil
+    if lease ~= nil then
+      selfRef:_returnLease(lease)
+    end
+  end
   build = {
     thread = coroutine.create(function()
-      selfRef:_realizeGender(gender, awaitPrepared, waitForImage, trackImageToken)
+      selfRef:_realizeGender(gender, awaitPrepared, returnPrepared, waitForImage, trackImageToken)
     end),
     state = "active",
     queue = queue,
     imageAssets = self._imageAssets,
     token = nil,
+    transfer = nil,
     imageToken = nil,
     finishing = false,
     failure = nil,
@@ -630,10 +658,11 @@ function BagHeroRenderer:_startBuild(gender)
   return build
 end
 
+---@param owner BagHeroRenderer
 ---@param build BagHeroBuild
 ---@param maxWorkUnits integer
 ---@return integer consumed main-thread work units
-local function advanceBuild(build, maxWorkUnits)
+local function advanceBuild(owner, build, maxWorkUnits)
   if build.failure ~= nil then
     error(build.failure, 0)
   end
@@ -646,6 +675,11 @@ local function advanceBuild(build, maxWorkUnits)
     if not ok then
       build.state = "failed"
       cancelBuildTokens(build)
+      local lease = build.transfer
+      if lease ~= nil then
+        build.transfer = nil
+        owner:_returnLease(lease)
+      end
       build.failure = yielded
       error(yielded, 0)
     end
@@ -674,7 +708,7 @@ function BagHeroRenderer:prepare(gender, maxWorkUnits)
     return true
   end
   local build = self:_startBuild(gender)
-  advanceBuild(build, maxWorkUnits or 1)
+  advanceBuild(self, build, maxWorkUnits or 1)
   return self._realized[gender] ~= nil
 end
 
@@ -695,7 +729,7 @@ function BagHeroRenderer:_ensureGender(gender)
   local build = self:_startBuild(gender)
   build.finishing = true
   while build.state == "active" do
-    advanceBuild(build, 1)
+    advanceBuild(self, build, 1)
   end
 end
 
@@ -913,6 +947,15 @@ function BagHeroRenderer:draw(gender, heroStatus, heroPlacement)
   drawCanonicalModel(self, realized, heroPlacement)
 end
 
+-- Return one kernel lease through the selected decoded owner and trim idle
+-- residency, matching every other prepared consumer.
+---@param lease table<string, unknown>
+function BagHeroRenderer:_returnLease(lease)
+  local decoded = assert(self._decoded, "the bag hero renderer lost its selected decoded owner")
+  decoded:returnLease(lease)
+  decoded:trim()
+end
+
 -- Idempotent release of the owned pool and renderer. Borrowed manifest data
 -- and per-gender instances (whose GPU objects the pool owns) need no further
 -- disposal; sampling borrows return to the session owner with the
@@ -938,6 +981,11 @@ function BagHeroRenderer:release()
   -- discarded.
   for _, build in pairs(self._builds) do
     cancelBuildTokens(build)
+    local lease = build.transfer
+    if lease ~= nil then
+      build.transfer = nil
+      self:_returnLease(lease)
+    end
   end
   self._builds = {}
   self._realized = {}

@@ -10,6 +10,8 @@ local RomImporter = require("romdump.src.source.RomImporter")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local App = require("app.src.App")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
+local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local LocalClock = require("game.src.LocalClock")
 local RecordingScriptHosts = require("tests.acceptance.support.RecordingScriptHosts")
@@ -32,6 +34,43 @@ AcceptanceHarness.__index = AcceptanceHarness
 
 local serial = 0
 local TRACE_LIMIT = 32
+
+-- The selected epoch's one CPU runtime, exactly as the product App owns it:
+-- a 64 MiB idle decoded owner plus the lazy preparation queue over the
+-- installed generated view. A harness runtime borrows it for its lifetime; the
+-- harness releases it after the runtime teardown so screen disposal never
+-- closes the shared queue.
+---@param generatedView table<string, unknown>
+---@return table<string, unknown> record
+local function selectedAssetRuntime(generatedView)
+  local decoded = ResidentAssetCache.new({
+    idleByteLimit = 64 * 1024 * 1024,
+    release = function(value)
+      value:release()
+    end,
+  })
+  local queue = AssetPreparationQueue.new(generatedView, { decoded = decoded })
+  return { cacheFs = generatedView, decoded = decoded, preparationQueue = queue }
+end
+
+---@param record table<string, unknown>?
+local function releaseAssetRuntime(record)
+  if record == nil then
+    return
+  end
+  local failure
+  local ok, err = pcall(record.preparationQueue.release, record.preparationQueue)
+  if not ok then
+    failure = err
+  end
+  local cleared, clearErr = pcall(record.decoded.clear, record.decoded)
+  if not cleared and failure == nil then
+    failure = clearErr
+  end
+  if failure ~= nil then
+    error(failure, 0)
+  end
+end
 
 -- A parallel `scripts/test.sh` worker exports this as a private, run-unique
 -- and worker-unique token so concurrent workers never choose the same
@@ -204,6 +243,7 @@ end
 ---@field hosts table
 ---@field closed boolean?
 ---@field runtimeDisposed boolean?
+---@field assetRuntime table<string, unknown>? borrowed selected CPU runtime released after the runtime
 ---@field disposeErr any
 ---@field lifecycle { saveWrites: integer, saveReads: integer, runtimeDisposals: integer }
 ---@field worldProbe { flags: table<integer, boolean>, variables: table<integer, integer> }
@@ -235,8 +275,11 @@ function AcceptanceHarness:_newRuntime(game, namespace, faults, lifecycle, field
   -- A harness booting a stub runtime that owns no generated consumer answers
   -- no view, and that runtime must then construct none.
   local generatedView = self.generatedView(versionId)
+  local assetRuntime
   if generatedView ~= nil then
     runtimeOptions.cacheFs = runtimeOptions.cacheFs or generatedView
+    assetRuntime = runtimeOptions.assetRuntime or selectedAssetRuntime(assert(runtimeOptions.cacheFs))
+    runtimeOptions.assetRuntime = assetRuntime
   end
   runtimeOptions.saveFs = SaveFs.forVersion(versionId, saveBackend(faults, lifecycle, namespace, versionId))
   if fieldOptions and fieldOptions.acceptanceScripts ~= nil then
@@ -259,7 +302,12 @@ function AcceptanceHarness:_newRuntime(game, namespace, faults, lifecycle, field
     runtimeOptions.overrideFs =
       AcceptanceScriptFs.new(RepoFs.new(love.filesystem.getSourceBaseDirectory()), fieldOptions.acceptanceScripts)
   end
-  return self.runtimeFactory(game, runtimeOptions)
+  local ok, runtime = pcall(self.runtimeFactory, game, runtimeOptions)
+  if not ok then
+    releaseAssetRuntime(assetRuntime)
+    error(runtime, 0)
+  end
+  return runtime, assetRuntime
 end
 
 local function gameFor(
@@ -272,10 +320,12 @@ local function gameFor(
   fieldOptions,
   faults,
   lifecycle,
-  ownsNamespace
+  ownsNamespace,
+  assetRuntime
 )
   return setmetatable({
     runtime = runtime,
+    assetRuntime = assetRuntime,
     saveNamespace = namespace,
     removeSaveNamespace = harness.removeSaveNamespace,
     trap = trap,
@@ -307,8 +357,16 @@ function Game:_disposeRuntime()
     runtime:dispose()
   end)
   self.saveStatus = runtime.saveStatus or self.saveStatus
+  -- The selected CPU runtime outlives the screen that borrowed it: the
+  -- harness releases it only after the runtime's own teardown, in queue then
+  -- kernel order.
+  local assetRuntime = self.assetRuntime
+  self.assetRuntime = nil
+  local released, releaseErr = pcall(releaseAssetRuntime, assetRuntime)
   if not ok then
     self.disposeErr = err
+  elseif not released then
+    self.disposeErr = releaseErr
   end
 end
 
@@ -320,7 +378,7 @@ function Game:restart(options)
     error(self.disposeErr, 0)
   end
   local previousSaveStatus = self.saveStatus
-  local ok, runtime = pcall(
+  local ok, runtime, assetRuntime = pcall(
     self.harness._newRuntime,
     self.harness,
     game,
@@ -338,6 +396,7 @@ function Game:restart(options)
     "acceptance restart runtime boot failed: " .. tostring(runtime and runtime.errorText)
   )
   self.runtime = runtime --[[@as FieldRuntime]]
+  self.assetRuntime = assetRuntime
   self.map = options.map or self.map
   self.hosts = runtime.scriptHosts or {}
   self.runtimeDisposed = false
@@ -985,7 +1044,7 @@ function Game:replaceApplicationState()
   end
 
   local activeLifecycle = { saveWrites = 0, saveReads = 0, runtimeDisposals = 0 }
-  local ok, runtime = pcall(
+  local ok, runtime, assetRuntime = pcall(
     self.harness._newRuntime,
     self.harness,
     assert(self.runtime:captureGameSave(), "application replacement requires a stable captured game"),
@@ -1012,7 +1071,8 @@ function Game:replaceApplicationState()
     self.fieldOptions,
     self.faults,
     activeLifecycle,
-    false
+    false,
+    assetRuntime
   )
   activeState.dispose = function()
     active:_disposeRuntime()
@@ -1114,13 +1174,15 @@ function AcceptanceHarness:boot(options)
   local faults = {}
   local lifecycle = { saveWrites = 0, saveReads = 0, runtimeDisposals = 0 }
   local game = self.gameFactory(options.versionId, options.map)
-  local ok, runtime = pcall(self._newRuntime, self, game, namespace, faults, lifecycle, options.fieldOptions, true)
+  local ok, runtime, assetRuntime =
+    pcall(self._newRuntime, self, game, namespace, faults, lifecycle, options.fieldOptions, true)
   if not ok then
     abortBoot(nil, trap, self.removeSaveNamespace, namespace)
     error("acceptance runtime boot failed: " .. tostring(runtime), 0)
   end
   if not runtime or type(runtime.captureGameSave) ~= "function" then
     local errorText = runtime and runtime.errorText
+    releaseAssetRuntime(assetRuntime)
     abortBoot(runtime, trap, self.removeSaveNamespace, namespace)
     error("acceptance runtime boot failed: " .. tostring(errorText), 0)
   end
@@ -1134,7 +1196,8 @@ function AcceptanceHarness:boot(options)
     options.fieldOptions,
     faults,
     lifecycle,
-    true
+    true,
+    assetRuntime
   )
 end
 

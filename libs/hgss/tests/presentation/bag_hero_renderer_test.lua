@@ -214,6 +214,21 @@ local function fakePreparationQueue()
   return FakePreparationQueue.new()
 end
 
+-- The selected decoded owner the renderer returns its taken leases through.
+local function decodedOwner()
+  return {
+    returnLease = function()
+      return true
+    end,
+    trim = function() end,
+  }
+end
+
+local function newHero(options)
+  options.decoded = options.decoded or decodedOwner()
+  return assert(require(HERO_MODULE)).new(options)
+end
+
 local function stubCache()
   return {
     read = function(_)
@@ -461,33 +476,58 @@ function T.construction_accepts_the_generated_manifest_and_rejects_gaps()
   withDoubles(function()
     local Hero = requireHero()
     local graphics = FakeGraphics({})
-    local renderer = Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = validManifest(), graphics = graphics })
+    local renderer = newHero({
+      assetPreparation = fakePreparationQueue(),
+      cacheFs = stubCache(),
+      manifest = validManifest(),
+      graphics = graphics,
+    })
     renderer:release()
     Assert.throws(function()
-      Hero.new({ manifest = validManifest(), graphics = graphics })
+      newHero({ manifest = validManifest(), graphics = graphics })
     end, "construction without asset access fails")
     Assert.throws(function()
-      Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), graphics = graphics })
+      newHero({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), graphics = graphics })
     end, "construction without the manifest fails")
     local missingModel = validManifest()
     missingModel.hero.model = nil
     Assert.throws(function()
-      Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = missingModel, graphics = graphics })
+      newHero({
+        assetPreparation = fakePreparationQueue(),
+        cacheFs = stubCache(),
+        manifest = missingModel,
+        graphics = graphics,
+      })
     end, "construction without hero models fails")
     local missingAnimations = validManifest()
     missingAnimations.hero.animations = nil
     Assert.throws(function()
-      Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = missingAnimations, graphics = graphics })
+      newHero({
+        assetPreparation = fakePreparationQueue(),
+        cacheFs = stubCache(),
+        manifest = missingAnimations,
+        graphics = graphics,
+      })
     end, "construction without hero animation states fails")
     local missingPresentation = validManifest()
     missingPresentation.hero.presentation = nil
     Assert.throws(function()
-      Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = missingPresentation, graphics = graphics })
+      newHero({
+        assetPreparation = fakePreparationQueue(),
+        cacheFs = stubCache(),
+        manifest = missingPresentation,
+        graphics = graphics,
+      })
     end, "construction without hero presentation fails")
     local missingVectors = validManifest()
     missingVectors.hero.presentation.lights.vectors = nil
     Assert.throws(function()
-      Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = missingVectors, graphics = graphics })
+      newHero({
+        assetPreparation = fakePreparationQueue(),
+        cacheFs = stubCache(),
+        manifest = missingVectors,
+        graphics = graphics,
+      })
     end, "construction without hero light vectors fails")
   end)
 end
@@ -499,7 +539,7 @@ function T.rejects_non_four_light_counts()
       local invalid = validManifest()
       invalid.hero.presentation.lights.count = count
       Assert.throws(function()
-        Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = invalid })
+        newHero({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = invalid })
       end, "the hero rejects light count " .. count)
     end
   end)
@@ -518,7 +558,12 @@ function T.scene_registers_come_from_the_manifest_materials()
       specular = { r = 7, g = 8, b = 9 },
       emission = { r = 10, g = 11, b = 12 },
     }
-    local renderer = Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = manifest, graphics = FakeGraphics({}) })
+    local renderer = newHero({
+      assetPreparation = fakePreparationQueue(),
+      cacheFs = stubCache(),
+      manifest = manifest,
+      graphics = FakeGraphics({}),
+    })
     local record = assert(renderer._sceneRuntime.lighting.records[1], "the scene carries its lighting record")
     Assert.equal(record.diffuseRgb555, 1 + 32 * 2 + 1024 * 3, "diffuse follows the manifest")
     Assert.equal(record.ambientRgb555, 4 + 32 * 5 + 1024 * 6, "ambient follows the manifest")
@@ -528,7 +573,12 @@ function T.scene_registers_come_from_the_manifest_materials()
     local missingMaterials = validManifest()
     missingMaterials.hero.presentation.materials = nil
     Assert.throws(function()
-      Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = missingMaterials, graphics = FakeGraphics({}) })
+      newHero({
+        assetPreparation = fakePreparationQueue(),
+        cacheFs = stubCache(),
+        manifest = missingMaterials,
+        graphics = FakeGraphics({}),
+      })
     end, "construction without hero material registers fails")
   end)
 end
@@ -537,7 +587,12 @@ function T.first_draw_realizes_only_the_requested_gender()
   withDoubles(function(rec)
     local Hero = requireHero()
     local manifest = validManifest()
-    local renderer = Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = manifest, graphics = FakeGraphics({}) })
+    local renderer = newHero({
+      assetPreparation = fakePreparationQueue(),
+      cacheFs = stubCache(),
+      manifest = manifest,
+      graphics = FakeGraphics({}),
+    })
     renderer:draw("male", heroStatus("items", 0), heroPlacement())
     Assert.equal(#rec.descriptors, 1, "the first draw realizes one gender model")
     Assert.isTrue(rec.descriptors[1] == manifest.hero.model.male, "the male draw realizes the male descriptor")
@@ -554,7 +609,12 @@ function T.semantic_clips_resolve_to_descriptor_clips_and_reject_unknown_state()
   withDoubles(function(rec)
     local Hero = requireHero()
     local manifest = validManifest()
-    local renderer = Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = manifest, graphics = FakeGraphics({}) })
+    local renderer = newHero({
+      assetPreparation = fakePreparationQueue(),
+      cacheFs = stubCache(),
+      manifest = manifest,
+      graphics = FakeGraphics({}),
+    })
     renderer:draw("male", heroStatus("balls", 0), heroPlacement())
     local instance = activeInstance(rec)
     local playedIds = {}
@@ -583,7 +643,12 @@ end
 function T.frame_zero_starts_without_extra_advancement()
   withDoubles(function(rec)
     local Hero = requireHero()
-    local renderer = Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = validManifest(), graphics = FakeGraphics({}) })
+    local renderer = newHero({
+      assetPreparation = fakePreparationQueue(),
+      cacheFs = stubCache(),
+      manifest = validManifest(),
+      graphics = FakeGraphics({}),
+    })
     renderer:draw("female", heroStatus("medicine", 0), heroPlacement())
     Assert.deepEqual(playerCounts(activeInstance(rec)), { 0, 0, 0 }, "frame zero plays without fast-forward")
     renderer:release()
@@ -593,7 +658,12 @@ end
 function T.frame_advance_catches_up_by_the_exact_delta_and_repeated_draws_hold()
   withDoubles(function(rec)
     local Hero = requireHero()
-    local renderer = Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = validManifest(), graphics = FakeGraphics({}) })
+    local renderer = newHero({
+      assetPreparation = fakePreparationQueue(),
+      cacheFs = stubCache(),
+      manifest = validManifest(),
+      graphics = FakeGraphics({}),
+    })
     renderer:draw("male", heroStatus("items", 0), heroPlacement())
     Assert.deepEqual(playerCounts(activeInstance(rec)), { 0, 0, 0 }, "the opening frame holds")
     renderer:draw("male", heroStatus("items", 3), heroPlacement())
@@ -617,7 +687,12 @@ end
 function T.pocket_change_restarts_clips_without_retaining_old_state()
   withDoubles(function(rec)
     local Hero = requireHero()
-    local renderer = Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = validManifest(), graphics = FakeGraphics({}) })
+    local renderer = newHero({
+      assetPreparation = fakePreparationQueue(),
+      cacheFs = stubCache(),
+      manifest = validManifest(),
+      graphics = FakeGraphics({}),
+    })
     renderer:draw("male", heroStatus("items", 4), heroPlacement())
     local first = activeInstance(rec)
     Assert.deepEqual(playerCounts(first), { 4, 4, 4 }, "the opening pocket catches up")
@@ -639,7 +714,12 @@ end
 function T.backward_frame_restarts_and_catches_up_instead_of_running_backward()
   withDoubles(function(rec)
     local Hero = requireHero()
-    local renderer = Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = validManifest(), graphics = FakeGraphics({}) })
+    local renderer = newHero({
+      assetPreparation = fakePreparationQueue(),
+      cacheFs = stubCache(),
+      manifest = validManifest(),
+      graphics = FakeGraphics({}),
+    })
     renderer:draw("male", heroStatus("items", 5), heroPlacement())
     Assert.deepEqual(playerCounts(activeInstance(rec)), { 5, 5, 5 }, "the opening frame catches up")
     renderer:draw("male", heroStatus("items", 2), heroPlacement())
@@ -653,7 +733,12 @@ end
 function T.draw_leaves_the_presenter_owned_status_record_untouched()
   withDoubles(function(rec)
     local Hero = requireHero()
-    local renderer = Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = validManifest(), graphics = FakeGraphics({}) })
+    local renderer = newHero({
+      assetPreparation = fakePreparationQueue(),
+      cacheFs = stubCache(),
+      manifest = validManifest(),
+      graphics = FakeGraphics({}),
+    })
     local status = heroStatus("tmhm", 2)
     renderer:draw("male", status, heroPlacement())
     renderer:draw("male", status, heroPlacement())
@@ -667,7 +752,12 @@ end
 function T.realization_failure_unwinds_acquired_resources_exactly_once()
   withDoubles(function(rec)
     local Hero = requireHero()
-    local renderer = Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = validManifest(), graphics = FakeGraphics({}) })
+    local renderer = newHero({
+      assetPreparation = fakePreparationQueue(),
+      cacheFs = stubCache(),
+      manifest = validManifest(),
+      graphics = FakeGraphics({}),
+    })
     rec.failMesh = true
     Assert.throws(function()
       renderer:draw("male", heroStatus("items", 0), heroPlacement())
@@ -697,7 +787,7 @@ end
 function T.target_creation_failure_leaves_realization_teardown_safe()
   withDoubles(function(rec)
     local Hero = requireHero()
-    local renderer = Hero.new({
+    local renderer = newHero({
       assetPreparation = fakePreparationQueue(),
       cacheFs = stubCache(),
       manifest = validManifest(),
@@ -721,7 +811,12 @@ end
 function T.repeated_release_stays_a_safe_no_op()
   withDoubles(function(rec)
     local Hero = requireHero()
-    local renderer = Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = validManifest(), graphics = FakeGraphics({}) })
+    local renderer = newHero({
+      assetPreparation = fakePreparationQueue(),
+      cacheFs = stubCache(),
+      manifest = validManifest(),
+      graphics = FakeGraphics({}),
+    })
     renderer:draw("male", heroStatus("items", 0), heroPlacement())
     renderer:release()
     local releases = 0
@@ -762,7 +857,12 @@ function T.renders_through_a_reused_private_canonical_target()
       color = { 0.2, 0.3, 0.4, 0.5 },
       scissor = { 3, 4, 50, 60 },
     })
-    local renderer = Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = validManifest(), graphics = graphics })
+    local renderer = newHero({
+      assetPreparation = fakePreparationQueue(),
+      cacheFs = stubCache(),
+      manifest = validManifest(),
+      graphics = graphics,
+    })
     local placement = {
       frame = { x = 12, y = 20, width = 512, height = 384 },
       scale = 2,
@@ -815,7 +915,12 @@ end
 function T.framing_only_change_moves_the_view_and_base_height()
   withDoubles(function()
     local Hero = requireHero()
-    local renderer = Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = validManifest(), graphics = FakeGraphics({}) })
+    local renderer = newHero({
+      assetPreparation = fakePreparationQueue(),
+      cacheFs = stubCache(),
+      manifest = validManifest(),
+      graphics = FakeGraphics({}),
+    })
     local placement = heroPlacement()
     local firstFraming = { angleXDegrees = 328.4, angleYDegrees = 28.3, distance = 339.9, modelY = -45 }
     local secondFraming = { angleXDegrees = 10, angleYDegrees = 350, distance = 200, modelY = 5 }
@@ -872,7 +977,12 @@ function T.scene_edge_colors_come_from_the_generated_records()
       { r = 0, g = 0, b = 0 },
       { r = 0, g = 0, b = 0 },
     }
-    local renderer = Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = manifest, graphics = FakeGraphics({}) })
+    local renderer = newHero({
+      assetPreparation = fakePreparationQueue(),
+      cacheFs = stubCache(),
+      manifest = manifest,
+      graphics = FakeGraphics({}),
+    })
     local edgeColors = assert(renderer._sceneRuntime.edgeColors, "the scene carries its edge table")
     local records = assert(manifest.hero.presentation.edgeColors, "the manifest carries its edge records")
     for index = 0, 7 do
@@ -889,7 +999,12 @@ function T.scene_edge_colors_come_from_the_generated_records()
     missing.schema = "g4-bag-assets-v21"
     missing.hero.presentation.edgeColors = nil
     Assert.throws(function()
-      Hero.new({ assetPreparation = fakePreparationQueue(), cacheFs = stubCache(), manifest = missing, graphics = FakeGraphics({}) })
+      newHero({
+        assetPreparation = fakePreparationQueue(),
+        cacheFs = stubCache(),
+        manifest = missing,
+        graphics = FakeGraphics({}),
+      })
     end, "construction without generated edge colors fails instead of rendering unlit edges")
   end)
 end
@@ -902,7 +1017,7 @@ function T.staged_preparation_realizes_the_hero_before_the_first_draw()
   withDoubles(function(rec)
     local Hero = requireHero()
     local queue = FakePreparationQueue.new({ pending = true })
-    local renderer = Hero.new({
+    local renderer = newHero({
       assetPreparation = queue,
       cacheFs = stubCache(),
       manifest = validManifest(),
@@ -974,7 +1089,7 @@ local function assertPendingTicketDroppedOnExit(source, exitPath)
     else
       queue = FakePreparationQueue.new({ deferred = true, payloadBytes = 2048 })
     end
-    local renderer = Hero.new({
+    local renderer = newHero({
       assetPreparation = queue,
       cacheFs = stubCache(),
       manifest = owner ~= nil and texturedManifest() or validManifest(),
@@ -1028,7 +1143,7 @@ function T.blocking_draw_waits_for_a_cold_texture_without_hot_polling()
   withDoubles(function(rec)
     local Hero = requireHero()
     local owner = ControllableImageOwner.new()
-    local renderer = Hero.new({
+    local renderer = newHero({
       assetPreparation = fakePreparationQueue(),
       cacheFs = stubCache(),
       manifest = texturedManifest(),
@@ -1101,7 +1216,7 @@ function T.native_texture_references_borrow_through_the_shared_owner()
       end,
       cancel = function(_, _) end,
     }
-    local renderer = Hero.new({
+    local renderer = newHero({
       assetPreparation = fakePreparationQueue(),
       cacheFs = stubCache(),
       manifest = manifest,

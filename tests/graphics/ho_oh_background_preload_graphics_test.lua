@@ -4,6 +4,7 @@
 -- whose scripts declare nothing prepare nothing.
 
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local Assert = require("tests.support.Assert")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
@@ -40,9 +41,14 @@ local function countingLoads()
 end
 
 local function boot(scope, location)
+  local cacheFs = GeneratedCacheFixture.reader(VERSION)
+  -- The presented runtime borrows the selected epoch's CPU owners for the boot;
+  -- the scope releases them after the state disposes.
+  local assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
   local state = FieldState.new(freshGame(location), {
     derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
-    cacheFs = GeneratedCacheFixture.reader(VERSION),
+    cacheFs = cacheFs,
+    assetRuntime = assetRuntime,
   })
   scope:own({
     release = function()

@@ -35,7 +35,9 @@ local MapCacheWriter = require("romdump.src.digest.map.MapCacheWriter")
 local MapCompilePlan = require("romdump.src.digest.map.MapCompilePlan")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local MapResolver = require("romdump.src.digest.map.MapResolver")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
+local ScenePreparationFixture = require("tests.support.ScenePreparationFixture")
 local MapRomFixture = require("tests.support.MapRomFixture")
 local MapUnits = require("romdump.src.digest.map.MapUnits")
 local PcSources = require("romdump.src.config.PcSources")
@@ -990,11 +992,22 @@ function T.animated_bundle_round_trips_through_writer_readiness_and_loader()
   Assert.isTrue(model.key:match("^indoor:%d+:[0-9a-f]+$") ~= nil, "key embeds the descriptor hash")
 
   -- The loader builds one animated instance from the written descriptor.
-  local scene = assert(c:loadLua(MapAssetCache.mapDir(bundle.mapId) .. "/scene.lua"))
+  local reader = GeneratedCacheFixture.residentReader(c, "map-asset-compiler")
+  local scene = assert(reader:loadLua(MapAssetCache.mapDir(bundle.mapId) .. "/scene.lua"))
   local meshBuilder = function()
     return { release = function() end }
   end
-  local runtime = MapSceneLoader.load(c, scene, { meshBuilder = meshBuilder, imageAssets = SharedImagePoolFake.new() })
+  local assetPreparation, decoded = ScenePreparationFixture.new(reader)
+  local images = SharedImagePoolFake.new({ preparation = { queue = assetPreparation, decoded = decoded } })
+  local runtime = MapSceneLoader.load(reader, scene, {
+    meshBuilder = meshBuilder,
+    imageAssets = images,
+    assetPreparation = assetPreparation,
+    decoded = decoded,
+    acquireSource = function(reference)
+      return assetPreparation:acquireSource(reference)
+    end,
+  })
   Assert.equal(runtime.stats.animatedInstances, 1)
   local instance = runtime.animatedInstances[1]
   -- The door clip is scripted (door role, not ambient): the play handle

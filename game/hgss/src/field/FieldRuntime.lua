@@ -60,7 +60,6 @@ local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
-local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local NeighborRing = require("libs.hgss.src.presentation.NeighborRing")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
@@ -330,9 +329,6 @@ function PredictionDriver:_commit(runtime, currentId, orderedIds)
   for _, bankId in ipairs(nearBanks) do
     noteKeys(bankId)
   end
-  pcall(function()
-    audio:trimIdleSamples(keep)
-  end)
   local keepSet = {} ---@type table<string, boolean>
   for _, key in ipairs(keep) do
     keepSet[key] = true
@@ -540,6 +536,7 @@ end
 ---@field audioPreferences table<string, function>? borrowed app-wide volume port (never serialized)
 ---@field derivedAssets table<string, function>? semantic derived-asset host
 ---@field cacheFs table<string, unknown> selected epoch's installed generated view
+---@field assetRuntime { cacheFs: table<string, unknown>, decoded: table<string, unknown>, preparationQueue: table<string, unknown> } borrowed selected CPU runtime
 ---@field localClock LocalClock? injectable host-local civil-time boundary
 ---@field weatherClock table<string, unknown>? injectable host boundary { today()->{month,day}, hasPenalty()->boolean }
 ---@field saveStore FieldRuntimeSaveStore? global publication owner
@@ -660,6 +657,8 @@ end
 ---@field mapMusicDayNight (fun(): string)? production-composed day/night band source for the map-music lookup (present whenever the production composition exists)
 ---@field assetNeeds AssetNeedsRegistry the script-declared asset preparation registry
 ---@field audioSink LoveAudioSink? production-composed LÖVE output sink (absent without an audio-output host)
+---@field audioComposition table<string, unknown>? field-owned audio composition (sink plus voices plus provider)
+---@field acquireSource fun(reference: ResidentCache.BlobRef): table<string, unknown>? resident source acquirer of the borrowed selected runtime
 ---@field screenFade FieldScriptScreenFade the production semantic script screen-fade controller (fade_screen/wait_fade); always composed, advanced once after each field tick
 ---@field scentTint FieldScentTint the Honey/Sweet Scent screen tint; always composed, advanced once after each field tick
 ---@field localClock LocalClock the shared host-local civil-time boundary
@@ -675,7 +674,8 @@ end
 ---@field pokemonCenterHealDefinition table<string, unknown>? generated healing-ball asset definition
 ---@field physicalCoverage FieldCoverage?
 ---@field residency FieldResidencyCoordinator?
----@field assetPreparation AssetPreparationQueue? presentation-only preparation worker owner (nil when headless)
+---@field assetPreparation AssetPreparationQueue borrowed selected preparation queue
+---@field decoded table<string, unknown> borrowed selected decoded CPU owner
 ---@field _predictionDriver table<string, unknown>? soft current/near working-set epoch owner
 ---@field imageAssets ImageAssetPool? presentation-only session image owner borrowed by every field scene (nil when headless)
 local FieldRuntime = {}
@@ -944,33 +944,43 @@ end
 ---@param world table<string, unknown>
 ---@param loadOptions FieldRuntimeOptions?
 ---@return FieldMapLoader mapLoader
----@return table<string, unknown>? assetPreparation
+---@return table<string, unknown> assetPreparation
 ---@return ImageAssetPool? imageAssets
+---@return table<string, unknown> decoded
 local function acquireMapLoader(runtime, cacheFs, world, loadOptions)
-  local preparedTransfer = loadOptions ~= nil and loadOptions.preparedEntry or nil
+  assert(loadOptions and loadOptions.assetRuntime, "the field runtime requires the selected CPU runtime")
+  local assetRuntime = loadOptions.assetRuntime
+  assert(assetRuntime.cacheFs == cacheFs, "the field runtime requires the selected runtime over its generated view")
+  local preparedTransfer = loadOptions.preparedEntry
   if preparedTransfer ~= nil then
     local opening = assert(runtime.game.location, "a prepared field entry requires a finalized new-game location")
     local claimed = preparedTransfer:claim({ versionId = runtime.versionId, mapSymbol = opening.mapSymbol })
     return assert(claimed.mapLoader, "a prepared field entry carries its loader"),
       assert(claimed.assetPreparation, "a prepared field entry carries its queue"),
-      claimed.imageAssets
+      claimed.imageAssets,
+      assert(claimed.decoded, "a prepared field entry carries its decoded owner")
   end
-  local queue
+  local queue = assetRuntime.preparationQueue
+  local decoded = assetRuntime.decoded
   local imageAssets
   if runtime.presentation then
-    queue = AssetPreparationQueue.new(cacheFs)
-    -- The session image owner borrows the runtime worker above: one
-    -- presented session runs exactly one background worker.
-    imageAssets = ImageAssetPool.new(cacheFs, { queue = queue })
+    -- The session image owner borrows the selected queue and decoded owner:
+    -- one presented session realizes GPU images, never a second CPU owner.
+    imageAssets = ImageAssetPool.new(cacheFs, { queue = queue, decoded = decoded })
+  end
+  local function acquireResidentSource(reference)
+    return queue:acquireSource(reference)
   end
   local loader = FieldMapLoader.new(cacheFs, world, {
     sceneLoader = runtime.presentation and MapSceneLoader or nil,
     neighborLoader = runtime.presentation and NeighborRing or nil,
     assetPreparation = queue,
+    decoded = decoded,
+    acquireSource = acquireResidentSource,
     imageAssets = imageAssets,
     derivedAssets = runtime.derivedAssets,
   })
-  return loader, queue, imageAssets
+  return loader, queue, imageAssets, decoded
 end
 
 -- The six `_load` boot phases below are ordinary FieldRuntime methods rather
@@ -1090,8 +1100,16 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
   -- nil and starts no thread); they are constructed before the map loader
   -- so scene loading can route mesh CPU work and texture ownership
   -- through them.
-  self.mapLoader, self.assetPreparation, self.imageAssets =
+  self.mapLoader, self.assetPreparation, self.imageAssets, self.decoded =
     acquireMapLoader(self, boot.cacheFs, boot.world, loadOptions)
+  -- The borrowable form of the selected runtime's source boundary: every
+  -- compact runtime reader of this field (audio, messages, collision) borrows
+  -- resident bytes through it.
+  local preparation = assert(self.assetPreparation, "the field runtime requires the selected preparation queue")
+  local function acquireSource(reference)
+    return preparation:acquireSource(reference)
+  end
+  self.acquireSource = acquireSource
   local function mapMatrixMemberId(logicalMap)
     local mapIndex = assert(self.mapLoader.world.byId[logicalMap.mapId], "outdoor map catalog record is required")
     local mapRecord = assert(self.mapLoader.world.maps[mapIndex], "outdoor map catalog record is missing")
@@ -1417,7 +1435,7 @@ function FieldRuntime:_composeFieldUi(boot)
   -- objects on a logical map that is not the active actor map; bound
   -- interactions run through the script client and the binding audit
   -- guarantees every interactable event is bound.
-  self.messageProvider = FieldMessageProvider.new(boot.cacheFs)
+  self.messageProvider = FieldMessageProvider.new(boot.cacheFs, { acquireSource = self.acquireSource })
   -- Pin the Start Menu label bank for the field-runtime lifetime so menu
   -- composition stays deterministic and I/O-free after a successful boot.
   -- A missing bank fails the boot with the provider's typed error.
@@ -5192,6 +5210,15 @@ function FieldRuntime:_releaseAll()
   if self.physicalCoverage then
     self.physicalCoverage:release()
   end
+  -- The field-owned audio composition is disposed as a whole: the sink stops,
+  -- the mixer returns every physical voice's sample acquisition, then the
+  -- provider's active records are released -- all before the map, GPU and
+  -- message borrowers below. The shared preparation queue and its resident
+  -- bytes belong to the selected runtime and stay alive.
+  if self.audioComposition then
+    self.audioComposition:dispose()
+    self.audioComposition = nil
+  end
   if self.mapLoader then
     self.mapLoader:release()
   end
@@ -5205,15 +5232,14 @@ function FieldRuntime:_releaseAll()
   -- The preparation worker is released after every presentation scene
   -- consumer and pending task above, so no outstanding prepared token can
   -- outlive its queue.
-  if self.assetPreparation then
-    self.assetPreparation:release()
-  end
+  -- The selected preparation queue and its decoded owner belong to the
+  -- selected runtime; field teardown releases only this runtime's own image
+  -- owner above and drops the borrowed references here.
   self.assetPreparation = nil
-  if self.audioSink then
-    self.audioSink:release()
-  end
+  self.decoded = nil
+  self.acquireSource = nil
   self.actors, self.actorAssets, self.mapLoader = nil, nil, nil
-  self.audio, self.audioSink, self.mapMusicDayNight = nil, nil, nil
+  self.audio, self.audioSink, self.audioComposition, self.mapMusicDayNight = nil, nil, nil, nil
   self._predictionDriver = nil
   self.session, self.saveStore, self.scripts = nil, nil, nil
   self.transition, self.camera, self.player, self.runtimeMap, self.physicalCoverage = nil, nil, nil, nil, nil

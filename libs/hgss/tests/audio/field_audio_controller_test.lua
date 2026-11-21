@@ -118,7 +118,18 @@ local function providerFor(sequences, banks)
     [keyA] = AudioFixture.sampleMetadata(keyA, { frames = 4 }),
     [keyB] = AudioFixture.sampleMetadata(keyB, { frames = 2 }),
   }
-  return AudioAssetProvider.new(AudioFixture.readyCache(bundle) --[[@as CacheFs]])
+  local cache = AudioFixture.residentCache(bundle --[[@as CacheFs]])
+  -- The selected runtime's base source boundary: an acquisition roots the
+  -- store's own packed bytes and hands that reference back on release.
+  return AudioAssetProvider.new(cache, {
+    acquireSource = function(reference)
+      local lease = { value = reference.data }
+      function lease:release()
+        self.value = nil
+      end
+      return lease
+    end,
+  })
 end
 
 ---@param provider AudioAssetProvider
@@ -212,9 +223,9 @@ local function prewarmProvider()
     calls.banks[#calls.banks + 1] = id
     return { id = id }
   end
-  function provider:loadSample()
+  function provider:acquireSample()
     calls.samples = calls.samples + 1
-    error("prewarm must not load PCM samples", 0)
+    error("prewarm must not acquire PCM samples", 0)
   end
   return provider, calls
 end
@@ -1205,8 +1216,10 @@ local function traversalScenario(soundplates)
     seq(11, "SEQ_GS_NAMINORI", 12, 1, { { op = "note", key = 62, velocity = 127, duration = 1 }, { op = "end" } })
   local ambient =
     seq(13, "SEQ_SE_TEST_AMBIENT", 12, 1, { { op = "note", key = 64, velocity = 127, duration = 1 }, { op = "end" } })
-  local provider =
-    providerFor({ [10] = header, [11] = surf, [13] = ambient }, { [12] = bankWithSamples(12, "BANK_A", keyA) })
+  local provider = providerFor(
+    { [10] = header, [11] = surf, [13] = ambient },
+    { [12] = bankWithSamples(12, "BANK_A", keyA) }
+  )
   local mixer = VoiceMixer.new({ sampleRate = SAMPLE_RATE })
   local player = newSequencePlayer({ sampleRate = SAMPLE_RATE, mixer = mixer, provider = provider })
   local sound = GameSound.new({ provider = provider, player = player })

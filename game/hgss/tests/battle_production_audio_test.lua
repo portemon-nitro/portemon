@@ -31,7 +31,7 @@ local PngWriter = require("tests.support.PngEncoder")
 local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
-local FakePreparationQueue = require("tests.support.FakePreparationQueue")
+local ScenePreparationFixture = require("tests.support.ScenePreparationFixture")
 
 local T = {}
 
@@ -230,8 +230,7 @@ local function stageBattlePresentation(cache)
   -- so the bytes stage with the manifest and leaves they describe.
   stageSourceIndexMaps(staged, cache)
   cache:writeLua(BattlePresentationCache.manifestPath(), staged)
-  local trainerRecord =
-    BattlePresentationManifestFixture.trainerPictureRecord("back:PKMN_TRAINER_ETHAN")
+  local trainerRecord = BattlePresentationManifestFixture.trainerPictureRecord("back:PKMN_TRAINER_ETHAN")
   stageSourceIndexMaps(trainerRecord, cache)
   cache:writeLua(BattlePresentationCache.trainerPicturePath("back:PKMN_TRAINER_ETHAN"), trainerRecord)
   local ballRecord = BattlePresentationManifestFixture.ballRecord("ball:POKE_BALL")
@@ -347,33 +346,33 @@ local function stageBattlePresentation(cache)
         width = 80,
         height = 80,
         origin = { x = -40, y = -40 },
-          sourceIndices = {
-            path = BattlePresentationCache.sceneTerrainSourceIndexPath(SCENE_KEY, "player"),
-            format = "source-index-rgba8",
-            plane = "mainObj",
-            width = 80,
-            height = 80,
-          },
+        sourceIndices = {
+          path = BattlePresentationCache.sceneTerrainSourceIndexPath(SCENE_KEY, "player"),
+          format = "source-index-rgba8",
+          plane = "mainObj",
+          width = 80,
+          height = 80,
+        },
       },
       foe = {
         image = BattlePresentationCache.sceneTerrainSpritePath(SCENE_KEY, "foe"),
         width = 80,
         height = 80,
         origin = { x = -40, y = -40 },
-          sourceIndices = {
-            path = BattlePresentationCache.sceneTerrainSourceIndexPath(SCENE_KEY, "foe"),
-            format = "source-index-rgba8",
-            plane = "mainObj",
-            width = 80,
-            height = 80,
-          },
+        sourceIndices = {
+          path = BattlePresentationCache.sceneTerrainSourceIndexPath(SCENE_KEY, "foe"),
+          format = "source-index-rgba8",
+          plane = "mainObj",
+          width = 80,
+          height = 80,
+        },
       },
     },
-      paletteSource = {
-        key = "battle-scene/general-grass-day/native-palettes",
-        path = nativePalettePath,
-        format = "native-encounter-palettes-v1",
-      },
+    paletteSource = {
+      key = "battle-scene/general-grass-day/native-palettes",
+      path = nativePalettePath,
+      format = "native-encounter-palettes-v1",
+    },
     encounterParticles = ParticlesFixture.sets(SCENE_KEY),
   })
   cache:write(BattlePresentationCache.sceneImagePath(SCENE_KEY), solidPng(512, 256))
@@ -467,6 +466,10 @@ local function stubPresentationRuntime(cache, audio, itemCatalog, monCatalog)
   local effects = FieldStatePresentationFixture.terrainEffects(cache)
   local measurement = dualMeasurement()
   local FieldInput = require("libs.hgss.src.field.FieldInput")
+  -- The staged effect builds realize produced geometry through the selected CPU
+  -- pair: the fixture worker serves the same upload shape a worker publishes,
+  -- and the paired owner accepts the returned lease.
+  local assetPreparation, decoded = ScenePreparationFixture.new(cache)
   return setmetatable({
     monNaming = InactiveMonNaming.new(),
     monService = {
@@ -489,8 +492,9 @@ local function stubPresentationRuntime(cache, audio, itemCatalog, monCatalog)
     -- battle envelope and menu chrome: the sized pool keeps real
     -- consumers (font quads read dimensions off borrows) honest without
     -- a second worker beside the stub.
-    imageAssets = SummaryAcceptanceFixture.sizedImagePool(),
-    assetPreparation = FakePreparationQueue.new(),
+    imageAssets = SummaryAcceptanceFixture.sizedImagePool({ queue = assetPreparation, decoded = decoded }),
+    assetPreparation = assetPreparation,
+    decoded = decoded,
     uiManifest = FieldUiFixture.fieldStateManifest(),
     audio = audio,
     itemCatalog = itemCatalog,

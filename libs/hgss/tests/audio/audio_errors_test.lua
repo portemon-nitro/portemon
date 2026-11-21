@@ -41,7 +41,8 @@ end
 function T.provider_raises_the_shared_codes()
   local AudioErrors = HgssAudioErrors
   local AudioAssetProvider = require("libs.hgss.src.audio.AudioAssetProvider")
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache())
+  local cache = AudioFixture.residentCache()
+  local provider = AudioAssetProvider.new(cache, { acquireSource = AudioFixture.acquireSource() })
   throwsCode(AudioErrors.AUDIO_PROVIDER_SEQUENCE_UNKNOWN, function()
     provider:sequence(99)
   end)

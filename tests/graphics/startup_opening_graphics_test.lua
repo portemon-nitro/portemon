@@ -67,7 +67,8 @@ end
 local function loadScenes(versionId)
   local scenes = {}
   for sceneNumber = 1, 5 do
-    local loaded, err = StartupAssetCache.loadOpeningScene(GeneratedCacheFixture.reader(versionId), sceneNumber, versionId)
+    local loaded, err =
+      StartupAssetCache.loadOpeningScene(GeneratedCacheFixture.reader(versionId), sceneNumber, versionId)
     Assert.notNil(loaded, "scene " .. sceneNumber .. " reads back as a ready bundle: " .. tostring(err))
     scenes[sceneNumber] = loaded
   end
@@ -75,6 +76,44 @@ local function loadScenes(versionId)
 end
 
 ---@param scope table
+-- The borrowed selected CPU pair an opening movie composes over. Real
+-- generated readers get the production kernel/queue; synthetic canvas-only
+-- movies carry a named empty pair because they stage no prepared geometry.
+GraphicsSmoke.moviePreparation = function(scope, cacheFs)
+  if cacheFs ~= nil and type(cacheFs.resolveAsset) == "function" and type(cacheFs.versionId) == "string" then
+    local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+    local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+    local decoded = ResidentAssetCache.new({
+      idleByteLimit = 64 * 1024 * 1024,
+      release = function(value)
+        value:release()
+      end,
+    })
+    local queue = AssetPreparationQueue.new(cacheFs, { decoded = decoded })
+    scope:own({
+      release = function()
+        queue:release()
+        decoded:clear()
+      end,
+    })
+    return queue, decoded
+  end
+  -- Composite fixtures carry their geometry bytes directly: the stand-in
+  -- queue packs the requested batch synchronously, exactly the worker's
+  -- upload shape, so the movie realizes meshes through the same pool path.
+  local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
+  local queue = {}
+  function queue:request(kind, path, priority)
+    return { kind = kind, path = path, priority = priority }
+  end
+  function queue:wait(request)
+    local bytes = assert(cacheFs:read(request.path), "synthetic opening movie has no geometry " .. request.path)
+    local payload = request.kind == "g4gx" and SceneMesh.prepareNativeBank(bytes) or SceneMesh.prepareUpload(bytes)
+    return { value = { kind = request.kind, payload = payload } }
+  end
+  return queue, { returnLease = function() end, trim = function() end }
+end
+
 ---@param versionId string
 ---@param width integer
 ---@param height integer
@@ -83,14 +122,18 @@ end
 local function openMovie(scope, versionId, width, height, kind)
   local Movie = requireMovie()
   local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology(kind) })
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
+  local queue, decoded = GraphicsSmoke.moviePreparation(scope, cacheFs)
   local movie = Movie.new({
     versionId = versionId,
     splRandomState = { state = 0 },
     scenes = loadScenes(versionId),
-    cacheFs = GeneratedCacheFixture.reader(versionId),
+    cacheFs = cacheFs,
     width = width,
     height = height,
     displayContext = context,
+    assetPreparation = queue,
+    decoded = decoded,
   })
   scope:own({
     release = function()
@@ -219,11 +262,7 @@ end
 local function advanceToSceneStep(movie, sceneNumber, stepId, budget)
   local elapsed = 0
   while elapsed < budget and not movie:isFinished() do
-    if
-      movie:sceneNumber() == sceneNumber
-      and currentStepId(movie) == stepId
-      and movie.current.handoff == nil
-    then
+    if movie:sceneNumber() == sceneNumber and currentStepId(movie) == stepId and movie.current.handoff == nil then
       return
     end
     movie:updateFixed()
@@ -683,6 +722,7 @@ end
 local function openCompositeMovie(scope, scenes, cacheFs, width, height, kind)
   local Movie = requireMovie()
   local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology(kind) })
+  local queue, decoded = GraphicsSmoke.moviePreparation(scope, cacheFs)
   local movie = Movie.new({
     versionId = "soulsilver",
     splRandomState = { state = 0 },
@@ -691,6 +731,8 @@ local function openCompositeMovie(scope, scenes, cacheFs, width, height, kind)
     width = width,
     height = height,
     displayContext = context,
+    assetPreparation = queue,
+    decoded = decoded,
   })
   scope:own({
     release = function()
@@ -1551,6 +1593,7 @@ end
 local function openMovieWithCache(scope, scenes, cacheFs, versionId, width, height, kind)
   local Movie = requireMovie()
   local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology(kind) })
+  local queue, decoded = GraphicsSmoke.moviePreparation(scope, cacheFs)
   local movie = Movie.new({
     versionId = versionId,
     splRandomState = { state = 0 },
@@ -1559,6 +1602,8 @@ local function openMovieWithCache(scope, scenes, cacheFs, versionId, width, heig
     width = width,
     height = height,
     displayContext = context,
+    assetPreparation = queue,
+    decoded = decoded,
   })
   scope:own({
     release = function()
@@ -1661,6 +1706,7 @@ local function soulsilver_town_texture_failure_aborts_with_a_typed_error(scope, 
   Assert.isTrue(poisonedCount > 0, "the later towns own textures the first town never reads")
   local state = { poisonedReads = 0 }
   local cacheFs = {
+    versionId = baseFs.versionId,
     loadLua = function(_, path)
       return baseFs:loadLua(path)
     end,
@@ -1673,6 +1719,11 @@ local function soulsilver_town_texture_failure_aborts_with_a_typed_error(scope, 
         error("injected town texture failure: " .. tostring(path))
       end
       return baseFs:read(path)
+    end,
+    -- Geometry still resolves through the selected runtime; only the town's
+    -- synchronous texture reads are poisoned.
+    resolveAsset = function(_, path)
+      return baseFs:resolveAsset(path)
     end,
   }
   local movie, failure = driveMovieCatching(scope, scenes, cacheFs, versionId)
@@ -6410,11 +6461,19 @@ local function openTitleScene(scope, versionId)
   -- The title builds through the presentation preparation worker: the scope
   -- owns the worker its model banks were prepared with.
   local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
   local cacheFs = GeneratedCacheFixture.reader(versionId)
-  local queue = AssetPreparationQueue.new(cacheFs)
+  local decoded = ResidentAssetCache.new({
+    idleByteLimit = 64 * 1024 * 1024,
+    release = function(value)
+      value:release()
+    end,
+  })
+  local queue = AssetPreparationQueue.new(cacheFs, { decoded = decoded })
   scope:own({
     release = function()
       queue:release()
+      decoded:clear()
     end,
   })
   local scene = HgssTitleScene.new({
@@ -6424,6 +6483,7 @@ local function openTitleScene(scope, versionId)
     height = TITLE_NATIVE_HEIGHT,
     displayContext = context,
     assetPreparation = queue,
+    decoded = decoded,
   })
   scope:own({
     release = function()
@@ -6729,59 +6789,51 @@ local function conjunctive_effect_guard_holds_mutation_until_both_effects_finish
   local sub = root .. "layers/guard-sub.png"
   local mainLayer = compositeLayer(0, base, 256, 192)
   mainLayer.variants = { { image = rocket, width = 256, height = 192 } }
-  local custom = compositeScene(
-    1,
-    { mainLayer },
-    { compositeLayer(0, sub, 256, 192) },
-    {},
-    { emitters = {} },
+  local custom = compositeScene(1, { mainLayer }, { compositeLayer(0, sub, 256, 192) }, {}, { emitters = {} }, {
+    { id = "start-scrolls", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 1 } },
     {
-      { id = "start-scrolls", events = { 1, 2 }, ["until"] = { kind = "duration", ticks = 1 } },
-      {
-        id = "guarded-retile",
-        events = {},
-        onCompleteEvents = { 3 },
-        ["until"] = { kind = "effects", effects = { "scroll-a", "scroll-b" } },
-      },
-      { id = "follow", events = { 4, 5 }, ["until"] = { kind = "duration", ticks = 2 } },
+      id = "guarded-retile",
+      events = {},
+      onCompleteEvents = { 3 },
+      ["until"] = { kind = "effects", effects = { "scroll-a", "scroll-b" } },
+    },
+    { id = "follow", events = { 4, 5 }, ["until"] = { kind = "duration", ticks = 2 } },
+  }, {
+    {
+      op = "setScroll",
+      stepId = "start-scrolls",
+      atStepTick = 0,
+      engine = "main",
+      bgSlot = 0,
+      dx = 8,
+      dy = 0,
+      ticks = 3,
+      effect = "scroll-a",
     },
     {
-      {
-        op = "setScroll",
-        stepId = "start-scrolls",
-        atStepTick = 0,
-        engine = "main",
-        bgSlot = 0,
-        dx = 8,
-        dy = 0,
-        ticks = 3,
-        effect = "scroll-a",
-      },
-      {
-        op = "setScroll",
-        stepId = "start-scrolls",
-        atStepTick = 0,
-        engine = "sub",
-        bgSlot = 0,
-        dx = 8,
-        dy = 0,
-        ticks = 5,
-        effect = "scroll-b",
-      },
-      {
-        op = "setLayer",
-        stepId = "guarded-retile",
-        atStepTick = 0,
-        engine = "main",
-        bgSlot = 0,
-        image = rocket,
-        visible = true,
-        priority = 0,
-      },
-      { op = "waitTicks", stepId = "follow", atStepTick = 0, ticks = 2 },
-      { op = "enableSkip", stepId = "follow", atStepTick = 1 },
-    }
-  )
+      op = "setScroll",
+      stepId = "start-scrolls",
+      atStepTick = 0,
+      engine = "sub",
+      bgSlot = 0,
+      dx = 8,
+      dy = 0,
+      ticks = 5,
+      effect = "scroll-b",
+    },
+    {
+      op = "setLayer",
+      stepId = "guarded-retile",
+      atStepTick = 0,
+      engine = "main",
+      bgSlot = 0,
+      image = rocket,
+      visible = true,
+      priority = 0,
+    },
+    { op = "waitTicks", stepId = "follow", atStepTick = 0, ticks = 2 },
+    { op = "enableSkip", stepId = "follow", atStepTick = 1 },
+  })
   local art = { [base] = gray16, [rocket] = solidPng(16, 16, 200, 40, 40), [sub] = gray16 }
   local scenes, cacheFs = compositePackAt(custom, 1, art, gray16)
   local movie = openCompositeMovie(scope, scenes, cacheFs, 512, 384, "single")
@@ -7970,21 +8022,13 @@ function OcclusionCases.scene(withBlend)
   for index = 1, #events do
     owned[#owned + 1] = index
   end
-  local custom = compositeScene(
-    2,
-    {
-      compositeLayer(1, backImage, 256, 192),
-      compositeLayer(0, frontImage, 256, 192),
-    },
-    { compositeLayer(0, groundImage, 256, 192) },
-    {
-      compositeClip(midClip, { compositeFrame(0, 0, 64, 64, 0, 0, 1) }),
-      compositeClip(tieClip, { compositeFrame(0, 0, 64, 64, 0, 0, 1) }),
-    },
-    { emitters = {} },
-    { { id = "hold", events = owned, ["until"] = { kind = "duration", ticks = 40 } } },
-    events
-  )
+  local custom = compositeScene(2, {
+    compositeLayer(1, backImage, 256, 192),
+    compositeLayer(0, frontImage, 256, 192),
+  }, { compositeLayer(0, groundImage, 256, 192) }, {
+    compositeClip(midClip, { compositeFrame(0, 0, 64, 64, 0, 0, 1) }),
+    compositeClip(tieClip, { compositeFrame(0, 0, 64, 64, 0, 0, 1) }),
+  }, { emitters = {} }, { { id = "hold", events = owned, ["until"] = { kind = "duration", ticks = 40 } } }, events)
   return custom, art
 end
 

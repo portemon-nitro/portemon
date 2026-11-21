@@ -15,6 +15,20 @@ local OakIntroMessages = require("game.hgss.src.newgame.OakIntroMessages")
 local OakIntroState = require("game.hgss.src.newgame.OakIntroState")
 local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
 
+-- The borrowed selected runtime Oak composes over; these cases stub every
+-- consumer that would read through it.
+local function fakeAssetRuntime(cacheFs)
+  return {
+    cacheFs = cacheFs,
+    decoded = {},
+    preparationQueue = {
+      acquireSource = function()
+        return { value = {}, release = function() end }
+      end,
+    },
+  }
+end
+
 local T = { tests = {} }
 
 function T.tests.message_ids_have_one_semantic_mapping()
@@ -154,6 +168,7 @@ function T.tests.composition_trusts_published_intro_manifest_without_revalidatin
     candidate = {},
     versionId = "heartgold",
     cacheFs = fakeCache,
+    assetRuntime = fakeAssetRuntime(fakeCache),
     clock = {},
     randomU32 = function()
       return 1
@@ -257,7 +272,13 @@ function T.tests.composition_releases_font_zero_when_font_four_acquisition_fails
     return fakePool
   end)
   rawset(GameAudio, "compose", function()
-    return { sound = {}, sink = sink }
+    return {
+      sound = {},
+      sink = sink,
+      dispose = function()
+        sink:release()
+      end,
+    }
   end)
   rawset(FieldTextRenderer, "new", function(options)
     calls[#calls + 1] = options.fontId or 0
@@ -271,7 +292,12 @@ function T.tests.composition_releases_font_zero_when_font_four_acquisition_fails
   end)
 
   local ok, failure = pcall(function()
-    OakIntroComposition.compose({ candidate = {}, versionId = "heartgold", cacheFs = fakeCache })
+    OakIntroComposition.compose({
+      candidate = {},
+      versionId = "heartgold",
+      cacheFs = fakeCache,
+      assetRuntime = fakeAssetRuntime(fakeCache),
+    })
   end)
 
   rawset(FieldFontLoader, "load", modules.fontLoad)

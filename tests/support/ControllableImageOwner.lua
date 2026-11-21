@@ -74,7 +74,17 @@ function ControllableImageOwner.new(opts)
     _nextToken = 0,
     _tickets = {},
     _physicals = {},
+    -- The borrowed CPU preparation a real session image owner exposes to the
+    -- scene GPU pool; texture-only fixtures never read through it.
+    _preparation = { queue = {}, decoded = {} },
   }, ControllableImageOwner)
+end
+
+-- The stable borrowed CPU-owner record the scene GPU pool resolves when it
+-- has no explicit pair.
+---@return { queue: table, decoded: table }
+function ControllableImageOwner:preparation()
+  return self._preparation
 end
 
 -- One worker result becomes a ready payload exactly once: the budget charge

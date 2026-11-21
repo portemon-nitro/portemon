@@ -3,6 +3,7 @@
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
@@ -111,9 +112,14 @@ local T = GraphicsSmoke.suite({
   ["FieldState captures its composed world, legend, and billboards"] = function(scope)
     local versionId = readyVersions()[1]
     Assert.notNil(versionId, "a ready imported game version is required")
+    local cacheFs = GeneratedCacheFixture.reader(versionId)
+    -- The presented runtime borrows the selected epoch's CPU owners for the
+    -- boot; the scope releases them after the state disposes.
+    local assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
     local state = FieldState.new(freshGame(versionId), {
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
-      cacheFs = GeneratedCacheFixture.reader(versionId),
+      cacheFs = cacheFs,
+      assetRuntime = assetRuntime,
     })
     local scene = state.runtime.celebiTimeTravelScene
     local originalSceneStatus = scene.status
@@ -218,7 +224,11 @@ local T = GraphicsSmoke.suite({
       local srt = assert(definition:animation("celebi.srt"))
       Assert.equal(pattern.name, joint.name, "pattern clip retains the shared Nitro dictionary name")
       Assert.equal(srt.name, joint.name, "SRT clip retains the shared Nitro dictionary name")
-      local imageAssets = ImageAssetPool.new(cache)
+      -- The session image owner borrows the selected CPU pair: one worker and
+      -- one decoded budget for the test lifetime, released after the pool.
+      local imageRuntime = SelectedAssetRuntimeFixture.new(cache, scope)
+      local imageAssets =
+        ImageAssetPool.new(cache, { queue = imageRuntime.preparationQueue, decoded = imageRuntime.decoded })
       scope:own({
         release = function()
           imageAssets:dispose()

@@ -2,6 +2,7 @@
 
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
@@ -29,7 +30,10 @@ local function runVersion(scope, versionId)
   local cache = GeneratedCacheFixture.reader(versionId)
   local index = assert(cache:loadLua(FieldEffectAssetCache.indexPath()))
   assert(index.effects.ho_oh_appearance, "the cache index publishes original Ho-Oh models")
-  local images = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test lifetime, released after the pool.
+  local imagesRuntime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local images = ImageAssetPool.new(cache, { queue = imagesRuntime.preparationQueue, decoded = imagesRuntime.decoded })
   local function releaseImages()
     images:dispose()
   end
@@ -283,7 +287,10 @@ end
 local function testLeafOverlayFollowsTheFieldViewport(scope, context)
   skipWithoutHeartGold(context)
   local cache = GeneratedCacheFixture.reader("heartgold")
-  local images = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test lifetime, released after the pool.
+  local imagesRuntime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local images = ImageAssetPool.new(cache, { queue = imagesRuntime.preparationQueue, decoded = imagesRuntime.decoded })
   scope:own({
     release = function()
       images:dispose()
@@ -343,7 +350,10 @@ end
 local function testLeafOverlayCoversExpandedViewports(scope, context)
   skipWithoutHeartGold(context)
   local cache = GeneratedCacheFixture.reader("heartgold")
-  local images = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test lifetime, released after the pool.
+  local imagesRuntime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local images = ImageAssetPool.new(cache, { queue = imagesRuntime.preparationQueue, decoded = imagesRuntime.decoded })
   scope:own({
     release = function()
       images:dispose()

@@ -10,6 +10,7 @@ local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local NativeTextureBank = require("libs.assets.src.model.NativeTextureBank")
 local PngWriter = require("tests.support.PngEncoder")
+local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
 local TextureDecoder = require("libs.nds.src.gx.TextureDecoder")
 
 local T = {}
@@ -124,12 +125,20 @@ local function generated(relative)
   return "assets/generated/" .. relative
 end
 
+-- The selected decoded CPU owner and preparation queue this suite exercises.
+---@param reader CacheFs selected generated reader
+---@return table preparation queue borrowed over its own decoded owner
+local function newQueue(reader)
+  local decoded = ResidentAssetCache.new({ idleByteLimit = 32 * 1024 * 1024, release = function() end })
+  return requireQueue().new(reader, { decoded = decoded })
+end
+
 ---@param queue table
 ---@param logicalPath string
 ---@return table payload transferred exactly once
 local function demandImage(queue, logicalPath)
   local token = queue:request("image-derivative", logicalPath, "demand")
-  return queue:wait(token)
+  return assert(queue:wait(token)).value.payload
 end
 
 function T.small_palettes_pack_to_indexed_payloads_with_first_seen_order()
@@ -207,7 +216,6 @@ function T.full_256_color_image_stays_indexed_while_257_colors_fall_back_to_rgba
 end
 
 function T.oversized_icon_like_image_classifies_to_rgba_through_the_worker()
-  local AssetPreparationQueue = requireQueue()
   local tuples = {}
   for index = 0, 299 do
     tuples[#tuples + 1] = pixel(index % 256, math.floor(index / 256), 9, 255)
@@ -216,10 +224,10 @@ function T.oversized_icon_like_image_classifies_to_rgba_through_the_worker()
   local view = fixtureView("image-derivative-icon-test")
   local runOk, runErr = pcall(function()
     GeneratedCacheFixture.put(view, generated("icons/crowded.png"), encodePng(48, 48, pixels))
-    local queue = AssetPreparationQueue.new(view.reader)
+    local queue = newQueue(view.reader)
     local first = demandImage(queue, generated("icons/crowded.png"))
     queue:release()
-    local later = AssetPreparationQueue.new(view.reader)
+    local later = newQueue(view.reader)
     local second = demandImage(later, generated("icons/crowded.png"))
     later:release()
     Assert.equal(first.kind, "rgba8", "an icon-sized image past 256 tuples classifies to straight RGBA")
@@ -238,7 +246,6 @@ function T.oversized_icon_like_image_classifies_to_rgba_through_the_worker()
 end
 
 function T.edited_sources_reclassify_while_untouched_sources_keep_their_derivatives()
-  local AssetPreparationQueue = requireQueue()
   local firstPng = encodePng(4, 4, cycledPixels(4, 4, { pixel(255, 0, 0, 255), pixel(0, 0, 255, 0) }))
   local editedPng =
     encodePng(4, 4, cycledPixels(4, 4, { pixel(255, 0, 0, 255), pixel(0, 255, 0, 128), pixel(0, 0, 0, 0) }))
@@ -248,14 +255,14 @@ function T.edited_sources_reclassify_while_untouched_sources_keep_their_derivati
   local runOk, runErr = pcall(function()
     GeneratedCacheFixture.put(view, generated("sprites/a.png"), firstPng)
     GeneratedCacheFixture.put(view, generated("sprites/b.png"), firstPng)
-    local queue = AssetPreparationQueue.new(view.reader)
+    local queue = newQueue(view.reader)
     local aBefore = demandImage(queue, generated("sprites/a.png"))
     local bBefore = demandImage(queue, generated("sprites/b.png"))
     queue:release()
     Assert.equal(aBefore.kind, "r8", "two-color sources pack as indexed")
     Assert.equal(unpackRecord(aBefore), firstPixels, "the first source reads back exactly")
     GeneratedCacheFixture.put(view, generated("sprites/a.png"), editedPng)
-    local later = AssetPreparationQueue.new(view.reader)
+    local later = newQueue(view.reader)
     local aAfter = demandImage(later, generated("sprites/a.png"))
     local bAfter = demandImage(later, generated("sprites/b.png"))
     later:release()
@@ -276,17 +283,16 @@ function T.edited_sources_reclassify_while_untouched_sources_keep_their_derivati
 end
 
 function T.unreadable_sources_fail_loudly_without_substitution()
-  local AssetPreparationQueue = requireQueue()
   local view = fixtureView("image-derivative-failure-test")
   local runOk, runErr = pcall(function()
     GeneratedCacheFixture.put(view, generated("sprites/good.png"), encodePng(2, 2, pixel(9, 9, 9, 255):rep(4)))
     GeneratedCacheFixture.put(view, generated("sprites/garbage.png"), "not-a-png")
-    local queue = AssetPreparationQueue.new(view.reader)
+    local queue = newQueue(view.reader)
     local garbageToken = queue:request("image-derivative", generated("sprites/garbage.png"), "demand")
     -- A path the installed view does not carry is refused when it is
     -- requested: the queue resolves its immutable reference before any job.
-    local missingOk, missingErr = pcall(queue.request, queue, "image-derivative", generated("sprites/absent.png"),
-      "demand")
+    local missingOk, missingErr =
+      pcall(queue.request, queue, "image-derivative", generated("sprites/absent.png"), "demand")
     Assert.isFalse(missingOk, "missing sources fail instead of substituting bytes")
     Assert.isTrue(
       tostring(missingErr):find(generated("sprites/absent.png"), 1, true) ~= nil,
@@ -315,19 +321,18 @@ function T.unreadable_sources_fail_loudly_without_substitution()
 end
 
 function T.derivative_requests_share_queue_lifecycle_and_leave_no_gpu_objects()
-  local AssetPreparationQueue = requireQueue()
   local pixels = cycledPixels(3, 2, { pixel(11, 22, 33, 255), pixel(44, 55, 66, 0) })
   local view = fixtureView("image-derivative-lifecycle-test")
   local runOk, runErr = pcall(function()
     GeneratedCacheFixture.put(view, generated("sprites/lifecycle.png"), encodePng(3, 2, pixels))
-    local queue = AssetPreparationQueue.new(view.reader)
+    local queue = newQueue(view.reader)
     local background = queue:request("image-derivative", generated("sprites/lifecycle.png"), "prefetch")
     queue:promote(background, "demand")
     local cancelled = queue:request("image-derivative", generated("sprites/lifecycle.png"), "prefetch")
     queue:cancel(cancelled)
     local status = queue:poll(background)
     Assert.isTrue(status ~= nil, "promoted derivative work reports a lifecycle state")
-    local payload = queue:wait(background)
+    local payload = assert(queue:wait(background)).value.payload
     Assert.equal(unpackRecord(payload), pixels, "promoted work still delivers exact pixels")
     local watched = queue:request("image-derivative", generated("sprites/lifecycle.png"), "demand")
     local watchStatus = queue:poll(watched)
@@ -372,15 +377,18 @@ end
 -- private image-derivative file behind, so a later worker generation reads the
 -- same PNG again instead of trusting a second on-disk copy.
 function T.warm_png_preparation_persists_no_image_derivative()
-  local AssetPreparationQueue = requireQueue()
   local pixels = cycledPixels(4, 3, { pixel(200, 10, 20, 255), pixel(10, 200, 30, 0), pixel(5, 6, 7, 128) })
   local sourcePng = encodePng(4, 3, pixels)
   local view = fixtureView("image-derivative-warm-png-test")
   local runOk, runErr = pcall(function()
     GeneratedCacheFixture.put(view, generated("sprites/warm.png"), sourcePng)
-    Assert.deepEqual(listCacheFiles(view.reader, ""), { generated("sprites/warm.png") }, "the cache starts with its PNG only")
+    Assert.deepEqual(
+      listCacheFiles(view.reader, ""),
+      { generated("sprites/warm.png") },
+      "the cache starts with its PNG only"
+    )
 
-    local firstQueue = AssetPreparationQueue.new(view.reader)
+    local firstQueue = newQueue(view.reader)
     local first = demandImage(firstQueue, generated("sprites/warm.png"))
     firstQueue:release()
     Assert.equal(unpackRecord(first), pixels, "the warm PNG alone yields the exact GPU-upload pixels")
@@ -390,7 +398,7 @@ function T.warm_png_preparation_persists_no_image_derivative()
       "preparing a PNG writes no persistent image derivative beside it"
     )
 
-    local secondQueue = AssetPreparationQueue.new(view.reader)
+    local secondQueue = newQueue(view.reader)
     local second = demandImage(secondQueue, generated("sprites/warm.png"))
     secondQueue:release()
     Assert.equal(unpackRecord(second), pixels, "a later worker generation reads the same PNG to the same pixels")
@@ -400,7 +408,11 @@ function T.warm_png_preparation_persists_no_image_derivative()
       { generated("sprites/warm.png") },
       "repeated preparation keeps the PNG as the only persistent image asset"
     )
-    Assert.equal(view.reader:read(generated("sprites/warm.png")), sourcePng, "preparation never rewrites the generated PNG")
+    Assert.equal(
+      view.reader:read(generated("sprites/warm.png")),
+      sourcePng,
+      "preparation never rewrites the generated PNG"
+    )
   end)
   GeneratedCacheFixture.close(view)
   if not runOk then
@@ -454,15 +466,14 @@ local function decodeSelection(bank, textureName, paletteName)
   return decoded.pixels
 end
 
--- The queue identifies native texture work by bank file plus selected names, so
--- several selections of one bank arrive as separate worker jobs. Each job must
--- reuse the worker's parse of that bank rather than reading and decoding the
--- whole bank again, and a selection must never be served from another bank's
--- parse. The rewritten bank makes a fresh read visible: its bytes cannot occur
--- at a content-addressed path in production, which is exactly why reusing the
--- first parse is safe.
-function T.native_texture_selections_reuse_the_workers_parse_of_their_bank()
-  local AssetPreparationQueue = requireQueue()
+-- The queue identifies native texture work by source identity plus selected
+-- names, so several selections of one bank arrive as separate worker jobs. Each
+-- job parses the bytes of the identity it resolved, the worker keeps no parsed
+-- bank between jobs, and a selection is never served from another bank's parse.
+-- Replacing the bank's payload changes its content identity, so the next
+-- selection resolves and parses the replacement instead of reusing the earlier
+-- parse.
+function T.native_texture_selections_parse_only_their_own_resolved_bank()
   local bankPath = "assets/generated/textures/selection-bank.g4tx"
   local otherPath = "assets/generated/textures/replacement-bank.g4tx"
   local view = fixtureView("image-derivative-native-texture-bank-test")
@@ -502,25 +513,28 @@ function T.native_texture_selections_reuse_the_workers_parse_of_their_bank()
       "the rewritten bank decodes to different texels, so a fresh read would be visible"
     )
 
-    local queue = AssetPreparationQueue.new(view.reader)
-    local first =
+    local queue = newQueue(view.reader)
+    local first = assert(
       queue:wait(queue:request("g4tx", { file = bankPath, textureName = "t0", paletteName = "p0" }, "demand"))
+    ).value.payload
     Assert.equal(unpackRecord(first), decodeSelection(firstBank, "t0", "p0"), "a selection yields its own texels")
     Assert.equal(first.width, 8, "the selection reports its texture width")
     Assert.equal(first.height, 8, "the selection reports its texture height")
 
     GeneratedCacheFixture.put(view, bankPath, rewrittenBytes)
-    local second =
+    local second = assert(
       queue:wait(queue:request("g4tx", { file = bankPath, textureName = "t1", paletteName = "p1" }, "demand"))
+    ).value.payload
     Assert.equal(
       unpackRecord(second),
-      expectedSecond,
-      "another selection of the same bank reuses the parse of the original bytes"
+      decodeSelection(assert(NativeTextureBank.read(rewrittenBytes)), "t1", "p1"),
+      "a later selection parses the bank bytes of the identity it resolved"
     )
     Assert.isTrue(second.pixelHash ~= first.pixelHash, "each selection keeps its own pixel identity")
 
-    local other =
+    local other = assert(
       queue:wait(queue:request("g4tx", { file = otherPath, textureName = "t0", paletteName = "p0" }, "demand"))
+    ).value.payload
     Assert.equal(
       unpackRecord(other),
       decodeSelection(assert(NativeTextureBank.read(otherBytes)), "t0", "p0"),

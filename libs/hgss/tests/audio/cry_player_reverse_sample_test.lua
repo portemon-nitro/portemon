@@ -37,6 +37,22 @@ local function cryBundle()
   return bundle
 end
 
+-- The production provider over the selected epoch's resident bytes: every
+-- direct-wave action acquires its own release-capable lease over the store's
+-- single compact PCM backing.
+local function residentProvider()
+  local cache = AudioFixture.residentCache(cryBundle())
+  return AudioAssetProvider.new(cache, {
+    acquireSource = function(reference)
+      local lease = { value = reference.data }
+      function lease:release()
+        self.value = nil
+      end
+      return lease
+    end,
+  })
+end
+
 local function reverseOptions(speed)
   return { volume = 127, pan = 0, speed = speed or 8006, reverse = true }
 end
@@ -75,12 +91,15 @@ end
 -- backwards, not the shorter loop window. A second reversed start shares
 -- the same borrowed object, and the provider sample is never rewritten.
 function T.reversed_playback_borrows_the_whole_buffer_not_the_loop_window()
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache(cryBundle()))
-  local source = provider:loadSample(AudioFixture.key(CRY_KEY_NUMBER))
+  local provider = residentProvider()
+  local key = AudioFixture.key(CRY_KEY_NUMBER)
+  local firstLease = provider:acquireSample(key)
+  local secondLease = provider:acquireSample(key)
+  local source = assert(firstLease.value)
   local mixer = VoiceMixer.new({ sampleRate = 48000 })
   local player = WaveOutPlayer.new({ mixer = mixer })
-  local handle = assert(player:start(14, source, reverseOptions()))
-  local second = assert(player:start(15, source, reverseOptions()))
+  local handle = assert(player:start(14, firstLease, reverseOptions()))
+  local second = assert(player:start(15, secondLease, reverseOptions()))
   mixer:controlStep()
   local out = mixer:render(64)
   Assert.equal(#out, 128, "one interleaved stereo span per rendered frame")
@@ -88,8 +107,9 @@ function T.reversed_playback_borrows_the_whole_buffer_not_the_loop_window()
   Assert.equal(out[2], 0, "the untouched channel stays silent")
   Assert.equal(fingerprint16(out), 4072570224, "the reversed trace matches the exact old reversal")
   Assert.deepEqual(storedValues(source.pcm), CRY_VALUES, "reversal never rewrites the provider sample")
-  Assert.isTrue(handle.sample == source, "a reversed start borrows the provider sample without copying")
-  Assert.isTrue(second.sample == source, "every reversed start shares the one borrowed sample")
+  Assert.isNil(handle.sample, "a handle keeps only channel/generation identity")
+  Assert.isNil(second.sample, "a handle keeps only channel/generation identity")
+  Assert.equal(provider:status().activeSamples, 1, "both voices share one active sample record")
   Assert.isTrue(player:isPlaying(handle), "the first reversed voice stays live beside the second")
   Assert.isTrue(player:isPlaying(second), "the second reversed voice stays live")
 end
@@ -99,8 +119,10 @@ end
 -- the mixer stops reporting the sample once no voice borrows it, and the
 -- provider bytes are intact throughout.
 function T.stealing_and_stopping_keep_the_borrowed_backing_intact()
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache(cryBundle()))
-  local source = provider:loadSample(AudioFixture.key(CRY_KEY_NUMBER))
+  local provider = residentProvider()
+  local key = AudioFixture.key(CRY_KEY_NUMBER)
+  local sourceLease = provider:acquireSample(key)
+  local source = assert(sourceLease.value)
   local mixer = VoiceMixer.new({ sampleRate = 48000 })
   Assert.equal(
     type(mixer.isSampleActive),
@@ -108,11 +130,15 @@ function T.stealing_and_stopping_keep_the_borrowed_backing_intact()
     "the mixer answers whether a borrowed sample still sounds on any of its 16 channels"
   )
   local player = WaveOutPlayer.new({ mixer = mixer })
-  local first = assert(player:start(14, source, reverseOptions()))
-  local replacement = assert(player:start(14, source, reverseOptions()))
+  local firstVoiceLease = provider:acquireSample(key)
+  local first = assert(player:start(14, firstVoiceLease, reverseOptions()))
+  local secondVoiceLease = provider:acquireSample(key)
+  local replacement = assert(player:start(14, secondVoiceLease, reverseOptions()))
   Assert.isFalse(player:isPlaying(first), "a fixed-channel replacement retires the stolen generation")
+  Assert.isNil(firstVoiceLease.value, "the stolen generation returns its own acquisition")
   Assert.isTrue(player:isPlaying(replacement), "the replacement generation is live")
   player:stop(replacement)
+  Assert.isNil(secondVoiceLease.value, "the stopped generation returns its own acquisition")
   Assert.isFalse(player:isPlaying(replacement), "stopping a reversed voice removes its live resource")
   mixer:controlStep()
   Assert.deepEqual(storedValues(source.pcm), CRY_VALUES, "steals and stops never rewrite the provider sample")
@@ -122,11 +148,15 @@ function T.stealing_and_stopping_keep_the_borrowed_backing_intact()
     "the mixer answers whether a borrowed sample still sounds on any of its 16 channels"
   )
   Assert.isFalse(mixer:isSampleActive(source.pcm), "the stopped sample reports no borrowers")
-  local live = assert(player:start(14, source, reverseOptions()))
+  local liveLease = provider:acquireSample(key)
+  local live = assert(player:start(14, liveLease, reverseOptions()))
   Assert.isTrue(mixer:isSampleActive(source.pcm), "a new start borrows the sample again")
   player:stop(live)
   mixer:controlStep()
   Assert.isFalse(mixer:isSampleActive(source.pcm), "no voice borrows the sample after the stop")
+  Assert.isNil(liveLease.value, "the stopped voice returned its acquisition")
+  Assert.notNil(sourceLease.value, "the caller's own acquisition stays valid")
+  sourceLease:release()
 end
 
 -- The retail reversed-cry pattern sounds the borrowed sample through the
@@ -134,14 +164,20 @@ end
 -- provider object, the overlap renders its exact trace, and completion
 -- follows the voices instead of stranding the borrowing.
 function T.special_cries_sound_the_borrowed_reversed_sample_through_the_retail_pattern()
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache(cryBundle()))
-  local source = provider:loadSample(AudioFixture.key(CRY_KEY_NUMBER))
+  local provider = residentProvider()
+  local sourceLease = provider:acquireSample(AudioFixture.key(CRY_KEY_NUMBER))
+  local source = assert(sourceLease.value)
   local mixer = VoiceMixer.new({ sampleRate = 48000 })
   local engine = SequencePlayer.new({ sampleRate = 48000, mixer = mixer, provider = provider })
   local wave = WaveOutPlayer.new({ mixer = mixer })
   local cry = CryPlayer.new({ player = engine, provider = provider, waveOut = wave })
   cry:play(CRY_BANK_ID, 4)
   Assert.isFalse(cry:isFinished(), "the reversed cry is busy while both fixed channels sound")
+  Assert.equal(
+    provider:status().acquisitions,
+    3,
+    "each direct-wave action took its own acquisition beside the caller's keeper"
+  )
   mixer:controlStep()
   local out = mixer:render(64)
   Assert.equal(fingerprint16(out), 1503969280, "the cry overlap renders its exact reversed trace")
@@ -167,7 +203,11 @@ function T.special_cries_sound_the_borrowed_reversed_sample_through_the_retail_p
     mixer:controlStep()
     replaySteps = replaySteps + 1
   end
-  Assert.isFalse(mixer:isSampleActive(source.pcm), "completion releases the borrowed sample")
+  Assert.isFalse(mixer:isSampleActive(source.pcm), "completion returns every voice's acquisition")
+  Assert.equal(provider:status().activeSamples, 1, "only the caller's keeper acquisition remains")
+  Assert.notNil(sourceLease.value, "the sounding actions never took the caller's acquisition")
+  sourceLease:release()
+  provider:dispose()
 end
 
 return { tests = T }

@@ -9,6 +9,7 @@
 -- No renderer is ever attached.
 
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local Assert = require("tests.support.Assert")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
@@ -26,10 +27,14 @@ local MAP = "MAP_NEW_BARK_PLAYER_HOUSE_2F"
 ---@return table<string, unknown> headless runtime options over the produced corpus
 local function runtimeOptions(versionId)
   local Fixture = require("tests.support.FieldStatePresentationFixture")
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
+  -- A headless runtime still borrows the selected epoch's CPU owners; compact
+  -- acquisition needs no worker, so the borrowed queue starts no thread.
   return {
     presentation = false,
     derivedAssets = Fixture.iconHost().derivedAssets,
-    cacheFs = GeneratedCacheFixture.reader(versionId),
+    cacheFs = cacheFs,
+    assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs),
   }
 end
 

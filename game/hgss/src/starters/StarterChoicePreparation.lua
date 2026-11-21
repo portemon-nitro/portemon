@@ -14,7 +14,8 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field portraits table[]
 ---@field pool GpuAssetPool?
 ---@field _sessionImages table<string, unknown>? borrowed session image owner behind leased 2D draws; nil fails loudly at the first texture acquisition (mesh-only and headless stand-in paths carry no textures)
----@field prepareQueue table<string, unknown>? borrowed queue
+---@field prepareQueue table<string, unknown>? borrowed selected preparation queue
+---@field decoded table<string, unknown>? borrowed selected decoded CPU owner
 ---@field plan table<string, unknown>[]?
 ---@field planIndex integer
 ---@field outstanding table<integer, boolean>
@@ -160,6 +161,7 @@ end
 
 ---@class StarterChoicePrepContext
 ---@field assetPreparation table<string, unknown>? borrowed preparation queue; nil prepares synchronously from the cache
+---@field decoded table<string, unknown>? borrowed decoded CPU owner the realized steps borrow through
 ---@field imageAssets table<string, unknown>? borrowed session image owner; nil fails loudly at the first texture acquisition (mesh-only and headless stand-in paths carry no textures)
 ---@field gxRenderer table<string, unknown> borrowed field graphics backend for the renderer wrapper
 ---@field derivedAssets table<string, function>? borrowed semantic host gating actual portrait pages
@@ -526,8 +528,13 @@ function StarterChoicePreparation:advance(context, maxWorkUnits)
     -- borrow the same identities directly, landing on the identical
     -- physical pair through the matching sampler below.
     self._sessionImages = context.imageAssets
-    self.pool = GpuAssetPool.new(self.cacheFs, { imageAssets = context.imageAssets })
-    self.prepareQueue = context.assetPreparation
+    self.prepareQueue = assert(context.assetPreparation, "starter preparation requires the selected queue")
+    self.decoded = assert(context.decoded, "starter preparation requires the selected decoded owner")
+    self.pool = GpuAssetPool.new(self.cacheFs, {
+      imageAssets = context.imageAssets,
+      assetPreparation = self.prepareQueue,
+      decoded = self.decoded,
+    })
     self.pageHost = context.derivedAssets
     local plan = {}
     for _, step in ipairs(meshSteps) do
@@ -652,11 +659,12 @@ function StarterChoicePreparation:_advancePlanStep()
         0
       )
     end
-    -- The queue consumed the ticket, so the step owns it no longer.
-    local payload = queue:take(token)
+    -- The queue consumed the ticket, so the step owns it no longer; the
+    -- transferred lease carries the shared decoded value.
+    local lease = queue:take(token)
     step.token = nil
     self.outstanding[token] = nil
-    self:_realizePrepared(step, payload)
+    self:_realizePrepared(step, lease)
     self.planIndex = self.planIndex + 1
     self:_submitWindow()
     return true
@@ -715,11 +723,34 @@ local function borrowImageLease(self, path, wrapX, wrapY)
   end
 end
 
--- Realizes one taken payload through the owned pool. A payload without
+-- Realizes one taken preparation lease through the owned pool and returns the
+-- shared borrow afterwards: the step never retains decoded bytes past upload.
+---@param step StarterChoicePrepStep
+---@param lease table<string, unknown>
+function StarterChoicePreparation:_realizePrepared(step, lease)
+  assert(type(lease) == "table" and type(lease.value) == "table", "starter preparation step took no decoded lease")
+  local payload = assert(lease.value.payload, "starter preparation lease carries no decoded payload")
+  local ok, failure = pcall(self._realizePreparedPayload, self, step, payload)
+  self:_returnLease(lease)
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+-- Return one kernel lease through the selected decoded owner and trim its idle
+-- residency, matching every other prepared consumer.
+---@param lease table<string, unknown>
+function StarterChoicePreparation:_returnLease(lease)
+  local decoded = assert(self.decoded, "starter preparation lost its selected decoded owner")
+  decoded:returnLease(lease)
+  decoded:trim()
+end
+
+-- Realizes one decoded payload through the owned pool. A payload without
 -- upload buffers is malformed and fails instead of rendering a blank scene.
 ---@param step StarterChoicePrepStep
 ---@param payload table<string, unknown>
-function StarterChoicePreparation:_realizePrepared(step, payload)
+function StarterChoicePreparation:_realizePreparedPayload(step, payload)
   local pool = assert(self.pool, "starter preparation owns no pool")
   local path = assert(step.path, "starter preparation step carries no path")
   if step.kind == "mesh" then

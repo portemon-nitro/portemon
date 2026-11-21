@@ -22,6 +22,7 @@ local Matrix4 = require("libs.math.src.Matrix4")
 ---@field versionId string
 ---@field cacheFs table<string, function>
 ---@field graphics table<string, function>
+---@field decoded table<string, unknown> borrowed selected decoded CPU owner
 ---@field displayContext DisplayContext
 ---@field width number
 ---@field height number
@@ -273,7 +274,15 @@ local function buildModel(self, descriptor, clips, key, await)
   local definition = ModelDefinition.fromNitroDescriptor(copyWithAnimations(descriptor, clips), { key = key })
   local meshes = {}
   for _, mesh in ipairs(definition.meshes) do
-    local resource = self.pool:preparedMesh(mesh.geometry, await)
+    local lease
+    local realizedOk, resource = pcall(self.pool.preparedMesh, self.pool, mesh.geometry, function(kind, path)
+      lease = await(kind, path)
+      return lease
+    end)
+    self:_returnLease(lease)
+    if not realizedOk then
+      error(resource, 0)
+    end
     mesh.center = resource.center
     meshes[mesh.id] = resource.mesh
     coroutine["yield"](1)
@@ -448,15 +457,25 @@ end
 ---@param self HgssTitleScene
 ---@param await fun(kind: string, path: string): table<string, unknown>
 ---@param queue table<string, unknown> session preparation worker the title borrows
-local function buildScene(self, await, queue)
+---@param decoded table<string, unknown> session decoded owner the borrowed leases return through
+local function buildScene(self, await, queue, decoded)
   local bundle = StartupAssetCache.loadTitle(self.cacheFs, self.versionId)
   assert(bundle, "validated title assets are unavailable")
   self.bundle = bundle
   -- The title owns its texture cache, borrowing the session preparation worker
   -- so no second worker thread runs beside it. Material textures are borrowed
   -- through this owner, which is why their decode never lands on a draw.
-  self.imageAssets = ImageAssetPool.new(self.cacheFs, { graphics = self.graphics, queue = queue })
-  self.pool = GpuAssetPool.new(self.cacheFs, { graphics = self.graphics, imageAssets = self.imageAssets })
+  self.imageAssets = ImageAssetPool.new(self.cacheFs, {
+    graphics = self.graphics,
+    queue = queue,
+    decoded = decoded,
+  })
+  self.pool = GpuAssetPool.new(self.cacheFs, {
+    graphics = self.graphics,
+    imageAssets = self.imageAssets,
+    assetPreparation = queue,
+    decoded = decoded,
+  })
   self.renderer = FieldRenderer.new({ clearColor = { 0, 0, 0, 0 }, graphics = self.graphics })
   -- The start prompt prints with the ROM field font (font 0, the printer the
   -- decomp selects). The title milestone always carries the font beside the
@@ -481,6 +500,19 @@ local function buildScene(self, await, queue)
   initCameraState(self)
   self:resize(self.width, self.height)
   assert(self.canvas ~= nil, "title canvas allocation failed")
+end
+
+-- Return one preparation lease the build took out of the selected queue after
+-- its upload consumed the shared payload: the kernel borrow and its idle trim
+-- belong to the caller, never to the shared queue or a scene cache.
+---@param lease table<string, unknown>?
+function HgssTitleScene:_returnLease(lease)
+  if lease == nil then
+    return
+  end
+  local decoded = assert(self.decoded, "a title preparation lease needs the selected decoded owner")
+  decoded:returnLease(lease)
+  decoded:trim()
 end
 
 -- A title build in progress. The build owns the growing scene until a
@@ -609,19 +641,21 @@ end
 -- packets and borrows the textures across as many frames as the caller grants.
 -- The caller keeps ownership of `options.assetPreparation` for its whole
 -- lifetime.
----@param options { versionId: string, cacheFs: table<string, unknown>, width: number, height: number, graphics?: table<string, unknown>, displayContext?: DisplayContext, assetPreparation: table<string, unknown> }
+---@param options { versionId: string, cacheFs: table<string, unknown>, width: number, height: number, graphics?: table<string, unknown>, displayContext?: DisplayContext, assetPreparation: table<string, unknown>, decoded: table<string, unknown> }
 ---@return HgssTitleScene.Build
 function HgssTitleScene.begin(options)
   assert(type(options) == "table", "title scene requires composition options")
   assert(options.versionId == "heartgold" or options.versionId == "soulsilver", "title scene edition is invalid")
   assert(options.cacheFs and type(options.cacheFs.loadLua) == "function", "title scene requires generated cache access")
   local queue = assert(options.assetPreparation, "title scene requires the presentation preparation queue")
+  local decoded = assert(options.decoded, "title scene requires the selected decoded CPU owner")
   local graphics = options.graphics or love.graphics
   local displayContext = options.displayContext or DisplayContext.new({ graphics = graphics })
   local self = setmetatable({
     versionId = options.versionId,
     cacheFs = options.cacheFs,
     graphics = graphics,
+    decoded = decoded,
     displayContext = displayContext,
     width = options.width,
     height = options.height,
@@ -682,7 +716,7 @@ function HgssTitleScene.begin(options)
   build = setmetatable({
     _scene = self,
     _thread = coroutine.create(function()
-      buildScene(self, awaitPrepared, queue)
+      buildScene(self, awaitPrepared, queue, decoded)
       return self
     end),
     _state = "active",
@@ -695,7 +729,7 @@ function HgssTitleScene.begin(options)
   return build
 end
 
----@param options { versionId: string, cacheFs: table<string, unknown>, width: number, height: number, graphics?: table<string, unknown>, displayContext?: DisplayContext, assetPreparation: table<string, unknown> }
+---@param options { versionId: string, cacheFs: table<string, unknown>, width: number, height: number, graphics?: table<string, unknown>, displayContext?: DisplayContext, assetPreparation: table<string, unknown>, decoded: table<string, unknown> }
 ---@return HgssTitleScene
 function HgssTitleScene.new(options)
   return HgssTitleScene.begin(options):finish()

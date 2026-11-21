@@ -48,6 +48,7 @@ local POKEGEAR_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "linear
 ---@field displayContext DisplayContext? shared actual-display measurement owner (defaults to a state-owned context)
 ---@field localClock LocalClock? injectable host-local civil-time boundary
 ---@field cacheFs table<string, unknown>? selected epoch's installed generated view
+---@field assetRuntime { cacheFs: table<string, unknown>, decoded: table<string, unknown>, preparationQueue: table<string, unknown> }? borrowed selected CPU runtime
 ---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
 ---@field saveStore table<string, unknown>? global GameSaveStore
 ---@field audioOutput table<string, unknown>? audio-output host namespace for deterministic runtime audio
@@ -194,6 +195,7 @@ function FieldState.new(game, options)
     fieldScaleConfig = options.fieldScaleConfig,
     presentation = true,
     cacheFs = options.cacheFs,
+    assetRuntime = options.assetRuntime,
     preparedEntry = options.preparedEntry,
     saveStore = options.saveStore,
     audioOutput = options.audioOutput,
@@ -615,6 +617,7 @@ function FieldState:_advanceStarterPreparation()
   local fieldRenderer = assert(resources.renderer, "field renderer is unavailable")
   starter:advancePresentationPreparation({
     assetPreparation = runtime.assetPreparation,
+    decoded = runtime.decoded,
     imageAssets = runtime.imageAssets,
     gxRenderer = assert(fieldRenderer.gxRenderer, "field graphics backend is unavailable"),
     derivedAssets = runtime.derivedAssets,

@@ -6,6 +6,7 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 local BattleEncounterSelector = require("libs.hgss.src.transition.BattleEncounterSelector")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local FieldState = require("game.hgss.src.field.FieldState")
 local LocalClock = require("game.src.LocalClock")
@@ -101,10 +102,14 @@ local function assertPresentedRoute(scope, versionId, cacheFs, case)
     )
     return true
   end
+  -- The presented runtime borrows the selected epoch's CPU owners for the
+  -- boot; the scope releases them after the state disposes.
+  local assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
   local state = FieldState.new(freshGame(versionId, case.location), {
     splRandomState = { state = 0 },
     derivedAssets = derivedAssets,
     cacheFs = cacheFs,
+    assetRuntime = assetRuntime,
     localClock = LocalClock.new(function()
       return { year = 2000, month = 1, day = 1, hour = 12, minute = 0, second = 0 }
     end),

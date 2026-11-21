@@ -224,7 +224,10 @@ function T.startBattle_commits_trick_held_item_exchange_to_the_party()
   local request = { id = "launch-trick-items", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
   local scenario = ScenarioFactory.fromEncounter(
     request.payload,
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
+    {
+      party = party,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    }
   )
   local portRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle =
@@ -254,7 +257,10 @@ function T.startBattle_runs_the_owned_lifetime_to_commit_and_return()
   -- identity the resolution suites use.
   local scenario = ScenarioFactory.fromEncounter(
     request.payload,
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
+    {
+      party = party,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    }
   )
   local battle = runtime:startBattle({
     request = request,
@@ -1258,9 +1264,11 @@ function T.scenarios_carry_the_follower_slot_for_send_outs()
   }
   local absent = runtime:buildBattleScenario(request)
   Assert.isNil(absent.followMonSlot, "no follower out means send-outs keep their ball")
-  local slotless = fakeRuntime({ monService = { partyCount = function()
-    return 1
-  end } })
+  local slotless = fakeRuntime({ monService = {
+    partyCount = function()
+      return 1
+    end,
+  } })
   Assert.isNil(
     slotless:buildBattleScenario(request).followMonSlot,
     "a party without a lead slot never lends a follower slot"
@@ -1299,9 +1307,10 @@ function T.committed_steps_name_the_live_party_lead_facts()
       return 0
     end,
   }
-  local catalog = { species = function(_)
-    return { genderRatio = 31 }
-  end,
+  local catalog = {
+    species = function(_)
+      return { genderRatio = 31 }
+    end,
   }
   local runtime, _, captured = leadStepRuntime({
     monService = monService,
@@ -1352,9 +1361,10 @@ function T.committed_steps_map_magnet_pull_and_static_onto_the_vocabulary()
         return 0
       end,
     }
-    local catalog = { species = function(_)
-      return { genderRatio = 31 }
-    end,
+    local catalog = {
+      species = function(_)
+        return { genderRatio = 31 }
+      end,
     }
     local runtime, _, captured = leadStepRuntime({ monService = monService, monCatalog = catalog })
     runtime:_consumeCommittedStep()
@@ -1601,7 +1611,7 @@ function T.field_moves_carry_the_lead_without_repel()
   Assert.equal(context.environment.weather, "none", "a map without snow reads none")
 end
 
-function T.egg_leads_arrive_without_an_ability()  -- An egg slot-0 lead maps to no ability while the record still rides
+function T.egg_leads_arrive_without_an_ability() -- An egg slot-0 lead maps to no ability while the record still rides
   -- for its level.
   local lead = {
     species = "TOTODILE",
@@ -2088,10 +2098,24 @@ end
 ---@return table<string, unknown> headless runtime options over the produced corpus
 local function runtimeOptions(versionId)
   local Fixture = require("tests.support.FieldStatePresentationFixture")
+  local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
+  local decoded = ResidentAssetCache.new({
+    idleByteLimit = 64 * 1024 * 1024,
+    release = function(value)
+      value:release()
+    end,
+  })
   return {
     presentation = false,
     derivedAssets = Fixture.iconHost().derivedAssets,
-    cacheFs = GeneratedCacheFixture.reader(versionId),
+    cacheFs = cacheFs,
+    assetRuntime = {
+      cacheFs = cacheFs,
+      decoded = decoded,
+      preparationQueue = AssetPreparationQueue.new(cacheFs, { decoded = decoded }),
+    },
   }
 end
 
@@ -2274,7 +2298,10 @@ function T.owned_battle_interval_stays_suppressed_through_return()
     { id = "launch-owned-interval", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
   local scenario = ScenarioFactory.fromEncounter(
     request.payload,
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
+    {
+      party = party,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    }
   )
   local battle = runtime:startBattle({
     request = request,

@@ -503,6 +503,11 @@ local function buildRealOutdoorService(hooks)
   function cacheFs:read(_)
     return collisionBytes
   end
+  -- Runtime collision loads borrow the resident reference for their cell
+  -- bytes; the staged fixture answers its own collision payload.
+  function cacheFs:resolveAsset(_)
+    return { data = assert(love.data.newByteData(collisionBytes)) }
+  end
   local function alwaysReady()
     return true
   end
@@ -521,6 +526,9 @@ local function buildRealOutdoorService(hooks)
       ensureCell = alwaysReady,
     },
     savedObjects = { actors = {} },
+    acquireSource = function(reference)
+      return { value = reference.data, release = function() end }
+    end,
   })
   local trackedLoader = service.loader
   local function trackTask(task)

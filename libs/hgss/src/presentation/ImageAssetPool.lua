@@ -13,19 +13,20 @@
 -- order: a pair with a single logical owner rests resident until the prune
 -- pass, while a pair shared by several owners is swept with its last
 -- returned lease. Borrowed pairs stay alive either way.
--- The pool borrows the session preparation worker instead of starting its
--- own, so one presented session runs exactly one background worker. Only
--- use without a session queue (headless or test fixtures) builds a
--- pool-owned fallback worker through the thread option. Disposal cancels
--- pending interest, drops unclaimed payloads, frees retained pairs exactly
--- once, and joins the worker only when the pool owns its fallback worker,
--- so late payloads never publish after their owner left.
+-- The pool borrows the selected session's preparation queue and decoded CPU
+-- owner instead of starting its own: one presented session runs exactly one
+-- background worker and one decoded budget. Each worker take is a kernel lease
+-- over an immutable decoded payload; the pool returns that lease as soon as the
+-- pixels are uploaded (or the identity is already resident, or the request is
+-- cancelled/failed), so a live scene holds GPU resources only. Disposal cancels
+-- pending interest, drops unclaimed payloads, frees retained pairs exactly once
+-- and never closes the borrowed owners, so late payloads publish nothing after
+-- their owner left and the session keeps working.
 
 local ffi = require("ffi")
 
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
-local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local ImageSampling = require("libs.nds.src.love.ImageSampling")
 
 -- First-pass idle budget for unborrowed physical pairs: 64 MiB of idle
@@ -51,8 +52,8 @@ local DEFAULT_IDLE_IMAGE_BYTES = 64 * 1024 * 1024
 
 ---@class ImageAssetPoolOptions
 ---@field graphics ImageAssetPoolGraphics|love.graphics|nil injectable graphics namespace (nil keeps love.graphics)
----@field queue AssetPreparationQueue? borrowed session preparation worker (nil builds a pool-owned fallback worker; production always passes the live session queue)
----@field thread table<string, unknown>? injectable love.thread-shaped namespace for the pool-owned fallback worker only (nil keeps love.thread)
+---@field queue AssetPreparationQueue the selected session's preparation queue
+---@field decoded ResidentAssetCache the selected session's decoded CPU owner
 ---@field idleByteLimit number? maximum unborrowed resident bytes retained across prunes (nil keeps the compiled first-pass budget)
 
 ---@class ImageAssetPoolRequest
@@ -63,6 +64,7 @@ local DEFAULT_IDLE_IMAGE_BYTES = 64 * 1024 * 1024
 ---@field job integer? preparation queue token while the request is still queued
 ---@field state "queued"|"prepared"|"cached"|"failed"
 ---@field payload ImageAssetPoolPayload? unuploaded worker result held only by a prepared ticket
+---@field cpuLease ResidentAssetCacheLease? decoded lease held with that payload until it is realized, cancelled, or dropped
 ---@field physicalKey string?
 ---@field indexedSingle boolean? true while the prepared ticket realizes a single indexed payload
 ---@field failure string?
@@ -115,8 +117,9 @@ local DEFAULT_IDLE_IMAGE_BYTES = 64 * 1024 * 1024
 ---@field _cacheFs CacheFs
 ---@field _graphics ImageAssetPoolGraphics
 ---@field _indexed boolean true while the device reports indexed texture support
----@field _queue AssetPreparationQueue borrowed session worker, or the pool-owned fallback worker when no session queue was passed
----@field _ownsQueue boolean true only when the pool built its fallback worker itself
+---@field _queue AssetPreparationQueue borrowed selected preparation queue
+---@field _decoded ResidentAssetCache borrowed selected decoded CPU owner
+---@field _preparation { queue: AssetPreparationQueue, decoded: ResidentAssetCache } stable borrowed CPU-owner record
 ---@field _images ResidentAssetCache
 ---@field _requests table<integer, ImageAssetPoolRequest>
 ---@field _residentByLogical table<string, string> private logical identity to live physical identity
@@ -662,20 +665,21 @@ function ImageAssetPool.new(cacheFs, opts)
   ---@cast graphics ImageAssetPoolGraphics
   local formats = graphics.getImageFormats()
   local indexed = type(formats) == "table" and formats.r8 == true
-  -- Production borrows the already-live session worker so the pool never
-  -- starts a second thread beside it. The fallback below exists only for
-  -- headless or test use where no session queue exists.
+  -- The selected session owns both CPU owners; the pool only borrows them, so
+  -- it never starts a second worker or a private decoded budget.
   local queue = opts.queue
-  local ownsQueue = false
-  if queue == nil then
-    queue = AssetPreparationQueue.new(cacheFs, { thread = opts.thread })
-    ownsQueue = true
-  else
-    assert(
-      type(queue.request) == "function" and type(queue.poll) == "function" and type(queue.take) == "function",
-      "ImageAssetPool requires its borrowed session queue to provide request, poll, and take"
-    )
-  end
+  assert(
+    type(queue) == "table"
+      and type(queue.request) == "function"
+      and type(queue.poll) == "function"
+      and type(queue.take) == "function",
+    "ImageAssetPool requires the selected session preparation queue"
+  )
+  local decoded = opts.decoded
+  assert(
+    type(decoded) == "table" and type(decoded.returnLease) == "function" and type(decoded.trim) == "function",
+    "ImageAssetPool requires the selected session decoded owner"
+  )
   local pool
   local function onPhysicalRelease(entry)
     releasePhysical(pool, entry --[[@as ImageAssetPoolPhysical]])
@@ -685,7 +689,8 @@ function ImageAssetPool.new(cacheFs, opts)
     _graphics = graphics,
     _indexed = indexed,
     _queue = queue,
-    _ownsQueue = ownsQueue,
+    _decoded = decoded,
+    _preparation = { queue = queue, decoded = decoded },
     -- Idle entries accumulate until the owner prunes: unborrowed pairs
     -- beyond the idle budget leave oldest-first while borrowed pairs stay
     -- alive. Resident logical aliases resolve while their physical entry
@@ -703,6 +708,27 @@ function ImageAssetPool.new(cacheFs, opts)
     _disposed = false,
   }, ImageAssetPool) --[[@as ImageAssetPool]]
   return pool
+end
+
+-- The CPU owners this pool borrowed, in the shape its scene GPU owner consumes.
+-- The record is created once and never replaced, so a scene that already holds
+-- the image owner needs no new constructor argument to share the same work.
+---@return { queue: AssetPreparationQueue, decoded: ResidentAssetCache }
+function ImageAssetPool:preparation()
+  return self._preparation
+end
+
+-- Drop a decoded lease held with an unrealized payload: return it to the shared
+-- owner and trim its idle entries.
+---@param request ImageAssetPoolRequest
+function ImageAssetPool:_dropCpuLease(request)
+  local lease = request.cpuLease
+  if lease == nil then
+    return
+  end
+  request.cpuLease = nil
+  self._decoded:returnLease(lease)
+  self._decoded:trim()
 end
 
 -- Record logical interest in one generated PNG under one immutable sampler
@@ -753,20 +779,30 @@ function ImageAssetPool:request(logicalPath, sampler, priority)
     end
     dropStaleAlias(self, logicalKey, mapped)
   end
-  local job
-  if type(logicalPath) == "table" then
-    job = self._queue:request("g4tx", logicalPath, level)
-  else
-    job = self._queue:request("image-derivative", logicalPath, level)
-  end
+  local kind = type(logicalPath) == "table" and "g4tx" or "image-derivative"
+  -- A generated source the installed view cannot resolve is a provisioning
+  -- miss: the ticket reports it instead of substituting bytes, and the pool
+  -- keeps serving every other source.
+  local enrolled, jobOrFailure = pcall(self._queue.request, self._queue, kind, logicalPath, level)
   self._nextToken = self._nextToken + 1
   local token = self._nextToken
+  if not enrolled then
+    self._requests[token] = {
+      logicalKey = logicalKey,
+      logicalPath = logicalPath,
+      sampler = samplerCopy,
+      priority = level,
+      state = "failed",
+      failure = tostring(jobOrFailure),
+    }
+    return token
+  end
   self._requests[token] = {
     logicalKey = logicalKey,
     logicalPath = logicalPath,
     sampler = samplerCopy,
     priority = level,
-    job = job,
+    job = jobOrFailure,
     state = "queued",
   }
   return token
@@ -908,10 +944,13 @@ function ImageAssetPool:poll(token)
     request.failure = cause
     return "failed", cause
   end
-  local payload = self._queue:take(assert(request.job, "queued image request has no worker job"))
+  local lease = self._queue:take(assert(request.job, "queued image request has no worker job"))
   request.job = nil
+  local payload = assert(lease.value and lease.value.payload, "prepared image carries no decoded payload")
   local keyOk, physicalKey = pcall(keyForPayload, self, payload --[[@as ImageAssetPoolPayload]], request.sampler)
   if not keyOk then
+    self._decoded:returnLease(lease)
+    self._decoded:trim()
     request.state = "failed"
     request.failure = tostring(physicalKey)
     return "failed", tostring(physicalKey)
@@ -922,6 +961,10 @@ function ImageAssetPool:poll(token)
     local reservationOk, reservationOrErr = pcall(function()
       return self._images:borrow(physicalKey)
     end)
+    -- The pixels are already resident: the decoded payload is superseded and
+    -- its lease returns before the ticket can be consumed.
+    self._decoded:returnLease(lease)
+    self._decoded:trim()
     if not reservationOk then
       request.payload = nil
       request.physicalKey = nil
@@ -935,6 +978,7 @@ function ImageAssetPool:poll(token)
     return "ready"
   end
   request.payload = payload --[[@as ImageAssetPoolPayload]]
+  request.cpuLease = lease
   request.physicalKey = physicalKey
   request.state = "prepared"
   return "ready"
@@ -963,6 +1007,10 @@ function ImageAssetPool:acquire(token)
   if found ~= nil then
     local physical = found --[[@as ImageAssetPoolPhysical]]
     request.payload = nil
+    -- Another ticket published this physical pair after this one prepared:
+    -- the CPU payload is superseded, so its lease returns before the resident
+    -- borrow replaces it.
+    self:_dropCpuLease(request)
     local borrowed = request.residentReservation
     request.residentReservation = nil
     if borrowed == nil then
@@ -992,6 +1040,7 @@ function ImageAssetPool:acquire(token)
     local reservation = request.residentReservation
     request.residentReservation = nil
     request.payload = nil
+    self:_dropCpuLease(request)
     self._requests[token] = nil
     if reservation ~= nil then
       pcall(function()
@@ -1006,6 +1055,7 @@ function ImageAssetPool:acquire(token)
   local decodeOk, realized = pcall(realize, self, payload)
   if not decodeOk then
     request.payload = nil
+    self:_dropCpuLease(request)
     self._requests[token] = nil
     error(realized, 0)
   end
@@ -1019,6 +1069,7 @@ function ImageAssetPool:acquire(token)
       pcall(releaseStagedObject, object)
     end
     request.payload = nil
+    self:_dropCpuLease(request)
     self._requests[token] = nil
     error(image, 0)
   end
@@ -1043,6 +1094,7 @@ function ImageAssetPool:acquire(token)
       pcall(releaseStagedObject, palette)
     end
     request.payload = nil
+    self:_dropCpuLease(request)
     self._requests[token] = nil
     error(publishErr, 0)
   end
@@ -1050,6 +1102,9 @@ function ImageAssetPool:acquire(token)
   local borrowed = self._images:borrow(key)
   registerAlias(self, request.logicalKey, key)
   request.payload = nil
+  -- The upload owns nothing CPU-side: the decoded lease returns and the shared
+  -- value becomes evictable again.
+  self:_dropCpuLease(request)
   self._requests[token] = nil
   return setmetatable({
     image = physical.image,
@@ -1086,6 +1141,7 @@ function ImageAssetPool:cancel(token)
   local reservation = request.residentReservation
   request.residentReservation = nil
   request.payload = nil
+  self:_dropCpuLease(request)
   self._requests[token] = nil
   if reservation ~= nil then
     self._images:returnLease(reservation)
@@ -1151,15 +1207,13 @@ function ImageAssetPool:dispose()
       request.residentReservation = nil
     end
     request.payload = nil
+    self:_dropCpuLease(request)
   end
   self._requests = {}
   self._residentByLogical = {}
   self._logicalByPhysical = {}
-  -- Only the pool-owned fallback worker is joined here; a borrowed
-  -- session worker stays live for its owner.
-  if self._ownsQueue then
-    self._queue:release()
-  end
+  -- The borrowed queue and decoded owner belong to the selected session and
+  -- stay live for every other consumer.
   self._images:clear()
 end
 

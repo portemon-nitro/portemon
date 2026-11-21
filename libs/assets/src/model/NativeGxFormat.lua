@@ -136,7 +136,8 @@ local function restoreSlots(draw)
 end
 
 ---@class NativeGxFormat.Draw
----@field commands string display-list command bytes
+---@field commands string|BinaryView display-list command bytes
+---@field commandSpanId string|nil bank-local identity of the stored command stream the draw replays
 ---@field nodeIndex integer node the model binds this draw to
 ---@field materialIndex integer material the draw is submitted with
 ---@field shapeIndex integer source shape the commands came from
@@ -339,7 +340,16 @@ local function readMatrix(reader, offset)
   return values
 end
 
-local function readDraw(reader, recordOffset, commandCache)
+-- One draw record. `span(offset, length)` decides whether the command stream is
+-- copied into a string (authoring read) or borrowed as a bounded view (runtime
+-- replay); the span cache is bank-local, so draws that share one stored stream
+-- share one parse and one `commandSpanId`.
+---@param reader BinaryReader
+---@param recordOffset integer
+---@param commandCache table<string, string|BinaryView>
+---@param span fun(offset: integer, length: integer): string|BinaryView
+---@return NativeGxFormat.Draw
+local function readDraw(reader, recordOffset, commandCache, span)
   local commandsOffset = reader:u32le(recordOffset)
   local commandsLength = reader:u32le(recordOffset + 4)
   local poseOffset = reader:u32le(recordOffset + 8)
@@ -366,11 +376,12 @@ local function readDraw(reader, recordOffset, commandCache)
   local spanKey = commandsOffset .. ":" .. commandsLength
   local commands = commandCache[spanKey]
   if commands == nil then
-    commands = reader:bytes(commandsOffset, commandsLength)
+    commands = span(commandsOffset, commandsLength)
     commandCache[spanKey] = commands
   end
   local draw = {
     commands = commands,
+    commandSpanId = spanKey,
     nodeIndex = nodeIndex,
     materialIndex = materialIndex,
     shapeIndex = shapeIndex,
@@ -441,14 +452,15 @@ local function readDraw(reader, recordOffset, commandCache)
   return draw
 end
 
--- Read one G4GX bank into bounded draw records pinned to the source bytes.
--- Any malformed header, count, or span rejects the whole bank; no partially
--- decoded bank is ever returned.
----@param bytes string|love.Data
+-- One G4GX parse over any binary source: every header, count and span check is
+-- shared, while `span` decides whether command streams are copied (read) or
+-- borrowed from the caller's bytes (view). Any malformed field rejects the whole
+-- bank; no partially decoded bank is ever returned.
+---@param reader BinaryReader
+---@param span fun(offset: integer, length: integer): string|BinaryView
 ---@return NativeGxFormat.Bank|nil bank
 ---@return Errors.Error|nil error
-function NativeGxFormat.read(bytes)
-  local reader = BinaryReader.new(bytes, "g4gx")
+local function parse(reader, span)
   local length = reader:length()
   if length < HEADER_SIZE then
     fail("NATIVE_GX_BAD_LENGTH", "native model bank is shorter than its header", { size = length })
@@ -487,9 +499,35 @@ function NativeGxFormat.read(bytes)
   local draws = {}
   local commandCache = {}
   for index = 1, drawCount do
-    draws[index] = readDraw(reader, drawTableOffset + (index - 1) * DRAW_RECORD_SIZE, commandCache)
+    draws[index] = readDraw(reader, drawTableOffset + (index - 1) * DRAW_RECORD_SIZE, commandCache, span)
   end
   return { drawCount = drawCount, draws = draws }, nil
+end
+
+-- Read one G4GX bank into bounded draw records, copying each command stream for
+-- the authoring and tooling consumers that expect strings.
+---@param bytes string|love.Data|BinaryView
+---@return NativeGxFormat.Bank|nil bank
+---@return Errors.Error|nil error
+function NativeGxFormat.read(bytes)
+  local reader = BinaryReader.new(bytes, "g4gx")
+  return parse(reader, function(offset, length)
+    return reader:bytes(offset, length)
+  end)
+end
+
+-- Read one G4GX bank with every command stream borrowed from the caller's own
+-- bytes, so runtime replay costs no second native buffer. The parsed draw keeps
+-- a bank-local `commandSpanId` for replay grouping; it is never persisted and
+-- says nothing about another bank.
+---@param data string|love.Data|BinaryView
+---@return NativeGxFormat.Bank|nil bank
+---@return Errors.Error|nil error
+function NativeGxFormat.view(data)
+  local reader = BinaryReader.new(data, "g4gx")
+  return parse(reader, function(offset, length)
+    return reader:view(offset, length, "g4gx commands")
+  end)
 end
 
 return NativeGxFormat

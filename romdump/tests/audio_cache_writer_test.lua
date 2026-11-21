@@ -129,7 +129,10 @@ T["stageCatalog publishes the runtime index before any bank closure"] = function
   )
   Assert.notNil(AudioCacheValidator.validate(stage), "a catalog alone is never a complete audio family")
   local AudioAssetProvider = require("libs.hgss.src.audio.AudioAssetProvider")
-  Assert.notNil(AudioAssetProvider.new(stage), "the runtime provider constructs from the catalog stage")
+  Assert.notNil(
+    AudioAssetProvider.new(stage, { acquireSource = AudioFixture.acquireSource() }),
+    "the runtime provider constructs from the catalog stage"
+  )
   artifact:abort()
 end
 

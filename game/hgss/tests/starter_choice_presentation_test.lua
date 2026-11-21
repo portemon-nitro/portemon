@@ -303,10 +303,8 @@ function T.preparation_failure_disposes_acquired_resources_and_pending_tokens_on
       return "pending"
     end,
     take = function(_, token)
-      if kinds[token] == "image" then
-        return { imageData = {} }
-      end
-      return { vertexData = {}, indexData = {} }
+      local payload = kinds[token] == "image" and { imageData = {} } or { vertexData = {}, indexData = {} }
+      return { value = { kind = kinds[token], payload = payload } }
     end,
     cancel = function(_, token)
       cancellations[token] = (cancellations[token] or 0) + 1
@@ -317,6 +315,7 @@ function T.preparation_failure_disposes_acquired_resources_and_pending_tokens_on
   local ok, failure = pcall(function()
     local first = presentation:advancePreparation({
       assetPreparation = queue,
+      decoded = { returnLease = function() end, trim = function() end },
       gxRenderer = {
         release = function()
           backendReleases = backendReleases + 1
@@ -328,6 +327,7 @@ function T.preparation_failure_disposes_acquired_resources_and_pending_tokens_on
     Assert.isTrue(requests >= 3, "the bounded worker window advances after one payload is consumed")
     local advanced, reason = pcall(presentation.advancePreparation, presentation, {
       assetPreparation = queue,
+      decoded = { returnLease = function() end, trim = function() end },
       gxRenderer = { release = function() end },
     }, 1)
     Assert.isFalse(advanced, "the next resource failure aborts preparation")

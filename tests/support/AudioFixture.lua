@@ -12,6 +12,7 @@
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local ResidentCache = require("libs.storage.src.ResidentCache")
 local Pcm16 = require("libs.nds.src.nitro.sound.Pcm16")
 
 local AudioFixture = {}
@@ -315,6 +316,46 @@ function AudioFixture.bundle()
   return bundle
 end
 
+-- The base resident source acquisition capability a selected runtime injects
+-- into the audio composition: a lease roots the store's own bytes and its
+-- release clears that reference, exactly like the selected queue's base source
+-- lease. Nothing is charged and no eviction entry is created.
+---@return fun(reference: table): { value: love.Data?, release: fun(self: table) }
+function AudioFixture.acquireSource()
+  return function(reference)
+    local lease = { value = reference.data }
+    function lease:release()
+      self.value = nil
+    end
+    return lease
+  end
+end
+
+-- One mixer-shaped sample acquisition over an already packed PCM backing: the
+-- voice that sounds it owns the lease until physical removal, so tests that
+-- only render never return it by hand. The released lease clears its value like
+-- every production acquisition does.
+---@param pcm Pcm16
+---@param metadata table<string, unknown>?
+---@return { value: table<string, unknown>?, release: fun(self: table<string, unknown>): boolean }
+function AudioFixture.sampleLease(pcm, metadata)
+  local lease = {
+    value = {
+      metadata = metadata
+        or { baseTimer = 8006, loop = { startFrame = 0, endFrame = pcm.frames }, loopEnabled = false },
+      pcm = pcm,
+    },
+  }
+  function lease:release()
+    if self.value == nil then
+      return false
+    end
+    self.value = nil
+    return true
+  end
+  return lease
+end
+
 -- Writes a bundle into a fresh FakeCache-backed CacheFs at AudioCache's
 -- canonical paths, mirroring the writer's layout without using the writer.
 ---@param bundle AudioFixture.Bundle?
@@ -335,6 +376,46 @@ function AudioFixture.readyCache(bundle, backend)
     cache:writeLua(AudioCache.sampleMetadataPath(key), bundle.sampleMetadata[key])
   end
   return cache
+end
+
+-- The same bundle as one resident store: the reader shape a selected epoch
+-- installs, so a provider borrows the exact compact PCM bytes the store owns
+-- instead of reading a physical fixture file. Compiled Lua assets and packed
+-- payloads become one entry each.
+---@param bundle AudioFixture.Bundle?
+---@return CacheFs reader
+---@return ResidentCache store
+function AudioFixture.residentCache(bundle)
+  local physical = AudioFixture.readyCache(bundle)
+  local versionId = physical.versionId
+  local sourceId = "base:audio-fixture"
+  local function collect(relative, entries)
+    for _, name in ipairs(physical:getDirectoryItems(relative)) do
+      local child = relative == "" and name or relative .. "/" .. name
+      local info = physical:getInfo(child)
+      if info ~= nil and info.type == "directory" then
+        collect(child, entries)
+      elseif info ~= nil then
+        local bytes = assert(physical:read(child), "an audio fixture payload must be readable: " .. child)
+        -- A resident store holds real payload bytes only, so an empty fixture
+        -- payload is simply absent from the installed view.
+        if #bytes > 0 then
+          entries[#entries + 1] = {
+            path = child,
+            data = assert(love.data.newByteData(bytes)),
+            size = #bytes,
+            sourceId = sourceId,
+            contentId = versionId .. "\0" .. child,
+          }
+        end
+      end
+    end
+  end
+  local entries = {}
+  collect("", entries)
+  local store = ResidentCache.new(versionId, sourceId)
+  store:commit(store:prepare(entries))
+  return CacheFs.fromStore(store), store
 end
 
 return AudioFixture

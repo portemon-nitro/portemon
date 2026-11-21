@@ -757,6 +757,8 @@ function T.menu_installation_starts_no_prefetch_or_warmup()
   local originalState = App.state
   local originalProvisioner = App.provisioner
   local originalOpts = App.opts
+  local originalEpoch = App.epoch
+  App.epoch = 1
   App.opts = { dev = false }
   local events = {}
   local menu = { dispose = function() end }
@@ -801,6 +803,7 @@ function T.menu_installation_starts_no_prefetch_or_warmup()
   App.state = originalState
   App.provisioner = originalProvisioner
   App.opts = originalOpts
+  App.epoch = originalEpoch
   if not ok then
     error(err, 0)
   end
@@ -832,6 +835,8 @@ function T.menu_installation_starts_no_background_warmup()
   local originalState = App.state
   local originalProvisioner = App.provisioner
   local originalOpts = App.opts
+  local originalEpoch = App.epoch
+  App.epoch = 1
   App.opts = { dev = false }
   local events = {}
   local enabled = 0
@@ -867,6 +872,7 @@ function T.menu_installation_starts_no_background_warmup()
   App.state = originalState
   App.provisioner = originalProvisioner
   App.opts = originalOpts
+  App.epoch = originalEpoch
   if not ok then
     error(err, 0)
   end
@@ -2368,16 +2374,12 @@ function T.incomplete_cache_with_a_ready_first_play_closure_stays_in_the_boot_wa
       -- selected pair answers: reply to the keyed walker demand before
       -- expecting the title bootstrap.
       pumpBootGate(App, 2)
-      local walkerId = assert(
-        walkerRequestId(context, second),
-        "the admitted wait requests exactly the selected walking pair"
-      )
+      local walkerId =
+        assert(walkerRequestId(context, second), "the admitted wait requests exactly the selected walking pair")
       context.service:injectReply({ op = "request-result", epoch = second, requestId = walkerId, state = "ready" })
       pumpBootGate(App, 3)
-      local bootstrapId = assert(
-        milestoneRequestId(context, second, "bootstrap"),
-        "the title requests ordinary bootstrap readiness"
-      )
+      local bootstrapId =
+        assert(milestoneRequestId(context, second, "bootstrap"), "the title requests ordinary bootstrap readiness")
       context.service:injectReply({ op = "request-result", epoch = second, requestId = bootstrapId, state = "ready" })
       pumpBootGate(App, 2)
       Assert.equal(#context.menus, 1, "a complete cache reaches its menu without its original file")
@@ -2464,10 +2466,8 @@ function T.fresh_import_offer_reaches_the_controller_before_the_boot_check_on_on
       pumpBootGate(App, 1)
       local held = assert(App.state, "the cold card survives the demand flush")
       Assert.equal(held.kind, "boot-source", "the pair demand alone never completes the handoff")
-      local walkerId = assert(
-        walkerRequestId(context, epoch),
-        "the cold wait requests exactly the selected walking pair"
-      )
+      local walkerId =
+        assert(walkerRequestId(context, epoch), "the cold wait requests exactly the selected walking pair")
       context.service:injectReply({ op = "request-result", epoch = epoch, requestId = walkerId, state = "ready" })
       -- One pump absorbs the pair answer and transfers to the title, one
       -- queues its bootstrap demand, and one flushes that demand on stream.
@@ -2522,13 +2522,9 @@ function T.fresh_import_offer_reaches_the_controller_before_the_boot_check_on_on
       -- selected pair answers: reply to the keyed walker demand before
       -- expecting the title bootstrap.
       pumpBootGate(App, 2)
-      local thirdWalkerId = assert(
-        walkerRequestId(context, third),
-        "the attested wait requests exactly the selected walking pair"
-      )
-      context.service:injectReply(
-        { op = "request-result", epoch = third, requestId = thirdWalkerId, state = "ready" }
-      )
+      local thirdWalkerId =
+        assert(walkerRequestId(context, third), "the attested wait requests exactly the selected walking pair")
+      context.service:injectReply({ op = "request-result", epoch = third, requestId = thirdWalkerId, state = "ready" })
       pumpBootGate(App, 3)
       local bootstrapId = assert(
         milestoneRequestId(context, third, "bootstrap"),
@@ -2554,140 +2550,133 @@ end
 -- for the retired epoch is ignored, and the matching source resumes into
 -- the menu without a destructive import.
 function T.blocked_boot_refuses_a_wrong_version_and_ignores_stale_replies()
-  withBootGateApp(
-    { firstPlayCurrent = false, readyVersions = { "heartgold", "soulsilver" } },
-    function(App, context)
-      local GameVersion = require("romdump.src.source.GameVersion")
-      App._selectVersion(VERSION)
-      local first = assert(App.epoch, "selection must borrow a controller epoch")
-      pumpBootGate(App, 1)
-      local waiting = assert(App.state, "selection must wait visibly")
-      Assert.equal(waiting.kind, "boot-source", "the incomplete selection waits on its source gate")
-      context.service:injectReply({
-        op = "boot-source-result",
-        epoch = first,
-        state = "source-required",
-        detail = { code = "ROM_SOURCE_REQUIRED", message = "synthetic heartgold missing" },
-      })
-      pumpBootGate(App, 2)
-      local blocked = assert(App.state, "the missing source keeps the wait alive")
-      Assert.equal(blocked.kind, "boot-source", "the original game stays blocked")
-      local wrongInfo = GameVersion.info("soulsilver")
-      local wrongBuffer = love.data.newByteData("synthetic-wrong-version-bytes")
-      App.importer = {
-        status = function()
-          return {
-            state = "complete",
-            versionId = "soulsilver",
-            displayName = "SoulSilver",
-            sourceName = "wrong.nds",
-            progress = 1,
-          }
-        end,
-        takeVerifiedSource = function()
-          return {
-            byteData = function()
-              return wrongBuffer
-            end,
-            release = function() end,
-          }
-        end,
-      }
-      App._onImported("soulsilver")
-      pumpBootGate(App, 1)
-      Assert.equal(App.selectedVersionId, VERSION, "a wrong ROM never switches the blocked selection")
-      Assert.equal(#context.menus, 0, "a wrong ROM never installs a menu")
-      Assert.equal(#context.games, 0, "a wrong ROM never starts retail")
-      local stillBlocked = assert(App.state, "the original game stays waiting")
-      Assert.equal(stillBlocked.kind, "boot-source", "the wrong ROM keeps the original boot blocked")
-      Assert.deepEqual(context.firstPlayPublished, {}, "the wrong ROM fabricates no attestation")
-      Assert.equal(wrongInfo.sha1, GameVersion.info("soulsilver").sha1, "the wrong offer keeps its own identity")
-      context.prints = {}
-      stillBlocked:draw()
-      local shown = drawnText(context)
-      Assert.isTrue(
-        shown:find("silver", 1, true) ~= nil
-          or shown:find("mismatch", 1, true) ~= nil
-          or shown:find("wrong", 1, true) ~= nil
-          or shown:find("match", 1, true) ~= nil,
-        "the blocked boot surfaces the version mismatch"
-      )
-      stillBlocked:keypressed("escape", nil, nil)
-      Assert.equal(getmetatable(App.state).__index, VersionSelectState, "cancel returns to the version selector")
-      Assert.equal(#context.menus, 0, "cancel never installs a menu")
-      Assert.equal(#context.games, 0, "cancel never starts retail")
-      local mark = logMark(context)
-      App._selectVersion(VERSION)
-      local second = assert(App.epoch, "reselection must borrow a fresh epoch")
-      Assert.isTrue(second > first, "reselection mints a fresh epoch")
-      context.service:injectReply({ op = "boot-source-result", epoch = first, state = "ready" })
-      pumpBootGate(App, 2)
-      Assert.equal(
-        context.service:bootSourceStatus(second),
-        "pending",
-        "a stale ready reply never satisfies the new gate"
-      )
-      Assert.equal(#context.menus, 0, "the stale reply never installs a menu")
-      Assert.deepEqual(
-        emittedOpsForEpochSince(context, mark, second),
-        { "select", "check-boot-source", "request" },
-        "reselection queues a fresh gate without a late offer"
-      )
-      local info = GameVersion.info(VERSION)
-      local buffer = love.data.newByteData("synthetic-heartgold-bytes")
-      App.importer = {
-        status = function()
-          return {
-            state = "complete",
-            versionId = VERSION,
-            displayName = "HeartGold",
-            sourceName = "hg.nds",
-            progress = 1,
-          }
-        end,
-        takeVerifiedSource = function()
-          return {
-            byteData = function()
-              return buffer
-            end,
-            release = function() end,
-          }
-        end,
-      }
-      local repairMark = logMark(context)
-      App._onImported(VERSION)
-      local third = assert(App.epoch, "the matching source must borrow a fresh epoch")
-      Assert.isTrue(third > second, "the matching source mints a fresh epoch")
-      pumpBootGate(App, 1)
-      Assert.deepEqual(
-        emittedOpsForEpochSince(context, repairMark, third),
-        { "select", "offer-source", "check-boot-source" },
-        "the matching source offer waits behind selection and ahead of the fresh gate"
-      )
-      local offer = assert(latestControlPacket(context, "offer-source"), "the matching offer crosses to the controller")
-      Assert.isTrue(offer.byteData == buffer, "the matching offer hands the identical buffer by reference")
-      Assert.equal(offer.romSha1, info.sha1, "the matching offer carries the canonical ROM identity")
-      context.service:injectReply({ op = "boot-source-result", epoch = third, state = "ready" })
-      context.prepScript.ready = true
-      pumpBootGate(App, 2)
-      -- A cold repair holds its card until the selected pair adopts: answer
-      -- the keyed walker demand before expecting the title bootstrap.
-      local walkerId = assert(
-        walkerRequestId(context, third),
-        "the matching source requests exactly the selected walking pair"
-      )
-      context.service:injectReply({ op = "request-result", epoch = third, requestId = walkerId, state = "ready" })
-      pumpBootGate(App, 3)
-      local bootstrapId = assert(
-        milestoneRequestId(context, third, "bootstrap"),
-        "the matching source reaches the title bootstrap request"
-      )
-      context.service:injectReply({ op = "request-result", epoch = third, requestId = bootstrapId, state = "ready" })
-      pumpBootGate(App, 2)
-      Assert.equal(#context.menus, 1, "the matching source resumes preparation into the menu")
-      Assert.equal(#context.games, 0, "recovery installs the menu without launching retail by itself")
-    end
-  )
+  withBootGateApp({ firstPlayCurrent = false, readyVersions = { "heartgold", "soulsilver" } }, function(App, context)
+    local GameVersion = require("romdump.src.source.GameVersion")
+    App._selectVersion(VERSION)
+    local first = assert(App.epoch, "selection must borrow a controller epoch")
+    pumpBootGate(App, 1)
+    local waiting = assert(App.state, "selection must wait visibly")
+    Assert.equal(waiting.kind, "boot-source", "the incomplete selection waits on its source gate")
+    context.service:injectReply({
+      op = "boot-source-result",
+      epoch = first,
+      state = "source-required",
+      detail = { code = "ROM_SOURCE_REQUIRED", message = "synthetic heartgold missing" },
+    })
+    pumpBootGate(App, 2)
+    local blocked = assert(App.state, "the missing source keeps the wait alive")
+    Assert.equal(blocked.kind, "boot-source", "the original game stays blocked")
+    local wrongInfo = GameVersion.info("soulsilver")
+    local wrongBuffer = love.data.newByteData("synthetic-wrong-version-bytes")
+    App.importer = {
+      status = function()
+        return {
+          state = "complete",
+          versionId = "soulsilver",
+          displayName = "SoulSilver",
+          sourceName = "wrong.nds",
+          progress = 1,
+        }
+      end,
+      takeVerifiedSource = function()
+        return {
+          byteData = function()
+            return wrongBuffer
+          end,
+          release = function() end,
+        }
+      end,
+    }
+    App._onImported("soulsilver")
+    pumpBootGate(App, 1)
+    Assert.equal(App.selectedVersionId, VERSION, "a wrong ROM never switches the blocked selection")
+    Assert.equal(#context.menus, 0, "a wrong ROM never installs a menu")
+    Assert.equal(#context.games, 0, "a wrong ROM never starts retail")
+    local stillBlocked = assert(App.state, "the original game stays waiting")
+    Assert.equal(stillBlocked.kind, "boot-source", "the wrong ROM keeps the original boot blocked")
+    Assert.deepEqual(context.firstPlayPublished, {}, "the wrong ROM fabricates no attestation")
+    Assert.equal(wrongInfo.sha1, GameVersion.info("soulsilver").sha1, "the wrong offer keeps its own identity")
+    context.prints = {}
+    stillBlocked:draw()
+    local shown = drawnText(context)
+    Assert.isTrue(
+      shown:find("silver", 1, true) ~= nil
+        or shown:find("mismatch", 1, true) ~= nil
+        or shown:find("wrong", 1, true) ~= nil
+        or shown:find("match", 1, true) ~= nil,
+      "the blocked boot surfaces the version mismatch"
+    )
+    stillBlocked:keypressed("escape", nil, nil)
+    Assert.equal(getmetatable(App.state).__index, VersionSelectState, "cancel returns to the version selector")
+    Assert.equal(#context.menus, 0, "cancel never installs a menu")
+    Assert.equal(#context.games, 0, "cancel never starts retail")
+    local mark = logMark(context)
+    App._selectVersion(VERSION)
+    local second = assert(App.epoch, "reselection must borrow a fresh epoch")
+    Assert.isTrue(second > first, "reselection mints a fresh epoch")
+    context.service:injectReply({ op = "boot-source-result", epoch = first, state = "ready" })
+    pumpBootGate(App, 2)
+    Assert.equal(
+      context.service:bootSourceStatus(second),
+      "pending",
+      "a stale ready reply never satisfies the new gate"
+    )
+    Assert.equal(#context.menus, 0, "the stale reply never installs a menu")
+    Assert.deepEqual(
+      emittedOpsForEpochSince(context, mark, second),
+      { "select", "check-boot-source", "request" },
+      "reselection queues a fresh gate without a late offer"
+    )
+    local info = GameVersion.info(VERSION)
+    local buffer = love.data.newByteData("synthetic-heartgold-bytes")
+    App.importer = {
+      status = function()
+        return {
+          state = "complete",
+          versionId = VERSION,
+          displayName = "HeartGold",
+          sourceName = "hg.nds",
+          progress = 1,
+        }
+      end,
+      takeVerifiedSource = function()
+        return {
+          byteData = function()
+            return buffer
+          end,
+          release = function() end,
+        }
+      end,
+    }
+    local repairMark = logMark(context)
+    App._onImported(VERSION)
+    local third = assert(App.epoch, "the matching source must borrow a fresh epoch")
+    Assert.isTrue(third > second, "the matching source mints a fresh epoch")
+    pumpBootGate(App, 1)
+    Assert.deepEqual(
+      emittedOpsForEpochSince(context, repairMark, third),
+      { "select", "offer-source", "check-boot-source" },
+      "the matching source offer waits behind selection and ahead of the fresh gate"
+    )
+    local offer = assert(latestControlPacket(context, "offer-source"), "the matching offer crosses to the controller")
+    Assert.isTrue(offer.byteData == buffer, "the matching offer hands the identical buffer by reference")
+    Assert.equal(offer.romSha1, info.sha1, "the matching offer carries the canonical ROM identity")
+    context.service:injectReply({ op = "boot-source-result", epoch = third, state = "ready" })
+    context.prepScript.ready = true
+    pumpBootGate(App, 2)
+    -- A cold repair holds its card until the selected pair adopts: answer
+    -- the keyed walker demand before expecting the title bootstrap.
+    local walkerId =
+      assert(walkerRequestId(context, third), "the matching source requests exactly the selected walking pair")
+    context.service:injectReply({ op = "request-result", epoch = third, requestId = walkerId, state = "ready" })
+    pumpBootGate(App, 3)
+    local bootstrapId =
+      assert(milestoneRequestId(context, third, "bootstrap"), "the matching source reaches the title bootstrap request")
+    context.service:injectReply({ op = "request-result", epoch = third, requestId = bootstrapId, state = "ready" })
+    pumpBootGate(App, 2)
+    Assert.equal(#context.menus, 1, "the matching source resumes preparation into the menu")
+    Assert.equal(#context.games, 0, "recovery installs the menu without launching retail by itself")
+  end)
 end
 
 function T.terminal_walker_record_keeps_its_identity_across_epochs()
@@ -2780,10 +2769,8 @@ function T.selected_consumers_share_the_installed_view_and_first_play_is_an_inst
       local walkerId = assert(walkerRequestId(context, epoch), "the admitted wait requests the selected pair")
       context.service:injectReply({ op = "request-result", epoch = epoch, requestId = walkerId, state = "ready" })
       pumpBootGate(App, 3)
-      local bootstrapId = assert(
-        milestoneRequestId(context, epoch, "bootstrap"),
-        "the title requests ordinary bootstrap readiness"
-      )
+      local bootstrapId =
+        assert(milestoneRequestId(context, epoch, "bootstrap"), "the title requests ordinary bootstrap readiness")
       context.service:injectReply({ op = "request-result", epoch = epoch, requestId = bootstrapId, state = "ready" })
       pumpBootGate(App, 2)
       Assert.equal(#context.menus, 1, "the admitted boot installs its menu")
@@ -2815,11 +2802,7 @@ function T.selected_consumers_share_the_installed_view_and_first_play_is_an_inst
         context.games[1].launchOptions.cacheFs == installed,
         "the retail entry receives the same installed view"
       )
-      Assert.equal(
-        context.service:firstPlayReady(epoch),
-        true,
-        "first play is a cached fact of the installed epoch"
-      )
+      Assert.equal(context.service:firstPlayReady(epoch), true, "first play is a cached fact of the installed epoch")
       App._publishFirstPlay(VERSION)
       Assert.equal(
         #context.firstPlayPublished,

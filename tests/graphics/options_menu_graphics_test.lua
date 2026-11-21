@@ -14,6 +14,7 @@ local FakeCache = require("tests.support.FakeCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -264,13 +265,14 @@ local function assertSameState(before, after, label)
   Assert.equal(after.lineWidth, before.lineWidth, label .. " restores its line width")
 end
 
-
-
 function T.tests.preparing_renderer_paints_and_returns_leases_to_baseline(scope)
   local _, Renderer = modules()
   local view, manifest = optionsCache()
   local cache = view.reader
-  local pool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test's lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local pool = ImageAssetPool.new(cache, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   ownPool(scope, pool, view)
   local before = pool:stats()
   local renderer = Renderer.new({
@@ -316,9 +318,6 @@ function T.tests.preparing_renderer_paints_and_returns_leases_to_baseline(scope)
   Assert.equal(after.pinnedBytes, before.pinnedBytes, "disposal returns every lease to the pool")
 end
 
-
-
-
 local function drawPlan(scope, renderer, view, plan, width, height, prepaint)
   local canvas = scope:own(love.graphics.newCanvas(width, height))
   love.graphics.setCanvas(canvas)
@@ -338,7 +337,10 @@ local function preparedPlacedPainter(scope)
   local _, Renderer = modules()
   local view, manifest = optionsCache()
   local cache = view.reader
-  local pool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test's lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local pool = ImageAssetPool.new(cache, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   ownPool(scope, pool, view)
   local text = recordingPlacedText()
   local window = recordingWindow()
@@ -505,15 +507,15 @@ end
 -- footer or arrow chrome lingering at the old broad rectangles once the
 -- native anchors move in.
 
-
-
-
 function T.tests.pane_backing_stays_opaque_while_host_pixels_outside_stay_untouched(scope)
   local Interface, Renderer = modules()
   local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
   local view, manifest = optionsCache()
   local cache = view.reader
-  local pool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test's lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local pool = ImageAssetPool.new(cache, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   ownPool(scope, pool, view)
   local renderer = Renderer.new({
     cacheFs = cache,
@@ -555,14 +557,16 @@ function T.tests.pane_backing_stays_opaque_while_host_pixels_outside_stay_untouc
   renderer:dispose()
 end
 
-
 function T.tests.prepared_art_is_reused_across_draws_and_failures_release_everything(scope)
   local Interface, Renderer = modules()
   local measurements = topologies()
   local resolvers = Interface.defaults()
   local view, manifest = optionsCache()
   local cache = view.reader
-  local pool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test's lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local pool = ImageAssetPool.new(cache, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   ownPool(scope, pool, view)
   local baseline = pool:stats()
   local realNewQuad = love.graphics.newQuad
@@ -631,7 +635,8 @@ function T.tests.prepared_art_is_reused_across_draws_and_failures_release_everyt
   Assert.isTrue(ok, "the reuse check runs: " .. tostring(err))
   local view2, manifest2 = optionsCache()
   local cache2 = view2.reader
-  local pool2 = ImageAssetPool.new(cache2)
+  local runtime2 = SelectedAssetRuntimeFixture.new(cache2, scope)
+  local pool2 = ImageAssetPool.new(cache2, { queue = runtime2.preparationQueue, decoded = runtime2.decoded })
   scope:own({
     release = function()
       pool2:dispose()
@@ -712,10 +717,8 @@ function T.tests.prepared_art_is_reused_across_draws_and_failures_release_everyt
   Assert.equal(resettled.pinnedBytes, baseline2.pinnedBytes, "the fresh renderer releases its leases")
 end
 
-
 -- A failed open hands its pooled renderer back: the retained per-open
 -- owner clears, every lease returns, and a fresh open paints normally.
-
 
 -- A failed open hands its pooled renderer back: the retained per-open
 -- owner clears, every lease returns, and a fresh open paints normally.
@@ -725,7 +728,10 @@ function T.tests.failed_open_returns_the_pooled_renderer_for_a_fresh_open(scope)
   local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
   local view, manifest = optionsCache()
   local cache = view.reader
-  local pool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test's lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local pool = ImageAssetPool.new(cache, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   ownPool(scope, pool, view)
   local stubText = {
     fontDef = {
@@ -865,7 +871,6 @@ end
 -- shell bands, preview, strip, and row plates) where the pool worker
 -- reads them, and never equals a real game version.
 
-
 -- Every suite stages its own complete synthetic image set under its own
 -- disposable namespace: the namespace starts clean without another suite
 -- having run first, carries every required role (chrome, header/footer
@@ -879,7 +884,10 @@ function T.tests.stages_a_private_complete_image_set(scope)
   )
   local view, manifest = optionsCache()
   local cache = view.reader
-  local pool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test's lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local pool = ImageAssetPool.new(cache, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   ownPool(scope, pool, view)
   Assert.equal(cache.versionId, ISOLATED_VERSION, "the staged cache carries the private namespace")
   Assert.isTrue(ISOLATED_VERSION ~= "heartgold", "the private namespace is not the HeartGold cache")
@@ -917,7 +925,6 @@ end
 -- A rejected confirmation paints a bounded failure note in the reserved
 -- header band beside the intact title, suppresses the migration note,
 -- and disappears once the retry succeeds.
-
 
 -- A rejected confirmation paints a bounded failure note in the reserved
 -- header band beside the intact title, suppresses the migration note,
@@ -961,7 +968,6 @@ end
 -- its header origin, all seven row labels inside their bands, distinct
 -- footer actions, the frame value and its sample only when revealed, the
 -- bounded failure note when set, and no diagnostic marker text.
-
 
 -- The full corrected screen reads clean on every layout: the title at
 -- its header origin, all seven row labels inside their bands, distinct
@@ -1090,7 +1096,10 @@ function T.tests.options_composition_gate_uses_real_window_and_source_art(scope)
   local view, manifest = optionsCache()
   local cache = view.reader
   GeneratedCacheFixture.put(view, FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
-  local pool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test's lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local pool = ImageAssetPool.new(cache, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   ownPool(scope, pool, view)
   local text = tokenRecordingText()
   local window = scope:own(FieldWindowRenderer.new({ cacheFs = cache, manifest = manifest }))
@@ -1375,11 +1384,7 @@ function T.tests.options_composition_gate_uses_real_window_and_source_art(scope)
       { footR, footG, footB, 255 },
       "the footer shell keeps its band over the hostile base"
     )
-    Assert.deepEqual(
-      at(data, placement, 50, 36),
-      { oddR, oddG, oddB, 255 },
-      "the list plates cover the hostile base"
-    )
+    Assert.deepEqual(at(data, placement, 50, 36), { oddR, oddG, oddB, 255 }, "the list plates cover the hostile base")
     for ly = 24, 167, 4 do
       for lx = 0, 255, 8 do
         local sampled = at(data, placement, lx, ly)
@@ -1409,7 +1414,6 @@ end
 -- rects start at x112, so the divider samples only pass when each band
 -- paints its own ink at the laid-out boundary. Stock fixture plates keep
 -- this test honest: no custom art carries the divider.
-
 
 -- The label/control divider follows the layout instead of baked pixels:
 -- every row paints its band's audited divider ink at the control

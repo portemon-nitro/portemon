@@ -12,6 +12,7 @@
 
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
@@ -70,13 +71,22 @@ end
 local function runVersion(scope, versionId)
   local cache = GeneratedCacheFixture.reader(versionId)
   local scene = assert(cache:loadLua(MapAssetCache.mapDir(NEW_BARK_MAP_ID) .. "/scene.lua"))
-  local imagePool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test lifetime, released after the pool.
+  local imagePoolRuntime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local imagePool =
+    ImageAssetPool.new(cache, { queue = imagePoolRuntime.preparationQueue, decoded = imagePoolRuntime.decoded })
   scope:own({
     release = function()
       imagePool:dispose()
     end,
   })
-  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = imagePool })
+  local runtime = MapSceneLoader.load(cache, scene, {
+    imageAssets = imagePool,
+    assetPreparation = imagePoolRuntime.preparationQueue,
+    decoded = imagePoolRuntime.decoded,
+    acquireSource = SelectedAssetRuntimeFixture.acquireSource(imagePoolRuntime),
+  })
   scope:own({
     release = function()
       runtime:release()

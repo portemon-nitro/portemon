@@ -174,6 +174,9 @@ function T.committed_coverage_includes_everywhere_neighbors(romFs, versionId)
     matrixMemberId = r.matrixMemberId,
     anchorX = r.matrixX,
     anchorZ = r.matrixZ,
+    acquireSource = function(reference)
+      return { value = reference.data, release = function() end }
+    end,
   })
   local ok, err = pcall(function()
     local status = coverage:status()

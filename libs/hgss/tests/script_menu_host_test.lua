@@ -4,11 +4,8 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local FieldMessageFixture = require("tests.support.FieldMessageFixture")
-local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local ScriptMenuHost = require("libs.hgss.src.script.ScriptMenuHost")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
-local CacheFs = require("libs.storage.src.CacheFs")
-local FakeCache = require("tests.support.FakeCache")
 
 local T = {}
 
@@ -20,10 +17,10 @@ local function labelledMessages(text)
 end
 
 local function host()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldMessageFixture.write(cache, MenuProtocol.STANDARD_MESSAGE_BANK, labelledMessages("Standard"))
-  FieldMessageFixture.write(cache, 2, labelledMessages("Script"))
-  local provider = assert(FieldMessageProvider.new(cache))
+  local provider = assert(FieldMessageFixture.provider({
+    [MenuProtocol.STANDARD_MESSAGE_BANK] = labelledMessages("Standard"),
+    [2] = labelledMessages("Script"),
+  }))
   local h = ScriptMenuHost.new({
     provider = provider,
     substitutionResolvers = function()
@@ -232,17 +229,17 @@ end
 -- Source menu labels such as "<PLAYER>'s PC" expand against the running
 -- script's buffered text, like dialogue.
 function T.builder_items_expand_buffered_script_text()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldMessageFixture.write(cache, MenuProtocol.STANDARD_MESSAGE_BANK, {
-    {
-      FIELD.control(0x0100, { 0 }),
-      FIELD.glyph(0x0453, "'s PC"),
-      FIELD.eos(),
-    },
-  })
   local seen
   local h = ScriptMenuHost.new({
-    provider = assert(FieldMessageProvider.new(cache)),
+    provider = assert(FieldMessageFixture.provider({
+      [MenuProtocol.STANDARD_MESSAGE_BANK] = {
+        {
+          FIELD.control(0x0100, { 0 }),
+          FIELD.glyph(0x0453, "'s PC"),
+          FIELD.eos(),
+        },
+      },
+    })),
     substitutionResolvers = function(_, textArgs)
       seen = textArgs
       return {

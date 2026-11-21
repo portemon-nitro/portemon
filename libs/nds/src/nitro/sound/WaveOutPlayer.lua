@@ -7,13 +7,12 @@ WaveOutPlayer.__index = WaveOutPlayer
 ---@field channel integer
 ---@field generation integer
 ---@field mixerHandle { channel: integer, generation: integer }
----@field sample { metadata: table<string, unknown>, pcm: Pcm16 }
 
 ---@class WaveOutPlayer
 ---@field private _mixer VoiceMixer
 ---@field private _handles table<WaveOutHandle, WaveOutHandle>
 ---@field new fun(opts: { mixer: VoiceMixer }): WaveOutPlayer
----@field start fun(self: WaveOutPlayer, channel: integer, sample: { metadata: table<string, unknown>, pcm: Pcm16 }, options: { volume: integer, pan: integer, speed: integer, reverse: boolean }): WaveOutHandle?
+---@field start fun(self: WaveOutPlayer, channel: integer, sampleLease: VoiceMixerSampleLease, options: { volume: integer, pan: integer, speed: integer, reverse: boolean }): WaveOutHandle?
 ---@field isPlaying fun(self: WaveOutPlayer, handle: WaveOutHandle): boolean
 ---@field setVolume fun(self: WaveOutPlayer, handle: WaveOutHandle, volume: integer)
 ---@field setPan fun(self: WaveOutPlayer, handle: WaveOutHandle, pan: integer)
@@ -29,16 +28,22 @@ function WaveOutPlayer.new(opts)
   return setmetatable({ _mixer = opts.mixer, _handles = {} }, WaveOutPlayer) --[[@as WaveOutPlayer]]
 end
 
-function WaveOutPlayer:start(channel, sample, options)
+-- Starts one fixed-channel wave voice from an opaque sample acquisition. The
+-- acquisition is transferred only when the mixer installs the voice; a
+-- rejected channel, or a raising start, leaves it with the caller. The
+-- returned handle keeps channel/generation identity only -- the sounding
+-- voice owns the acquisition -- and reversal stays a logical direction over
+-- the original PCM, never a second buffer.
+function WaveOutPlayer:start(channel, sampleLease, options)
   assert(channel == 14 or channel == 15, "WaveOut channel must be 14 or 15")
-  assert(sample and sample.metadata and sample.pcm, "WaveOut requires a sample")
+  assert(
+    sampleLease ~= nil and sampleLease.value ~= nil and sampleLease.value.pcm ~= nil,
+    "WaveOut requires a sample acquisition"
+  )
   assert(options and options.reverse ~= nil, "WaveOut options are required")
-  -- The provider sample is borrowed unchanged: reversal is a logical
-  -- voice flag indexing the whole buffer backwards, never a second copy.
   local mixerHandle = self._mixer:waveOn({
     channel = channel,
-    pcm = sample.pcm,
-    metadata = sample.metadata,
+    sampleLease = sampleLease,
     volume = options.volume,
     pan = options.pan,
     speed = options.speed,
@@ -51,7 +56,6 @@ function WaveOutPlayer:start(channel, sample, options)
     channel = mixerHandle.channel,
     generation = mixerHandle.generation,
     mixerHandle = mixerHandle,
-    sample = sample,
   } ---@type WaveOutHandle
   self._handles[handle] = handle
   return handle
@@ -89,6 +93,8 @@ function WaveOutPlayer:setSpeed(handle, speed)
   end
 end
 
+-- Stops the physical voice; the mixer returns that voice's acquisition. A
+-- dead handle (natural end, steal, or shutdown) returns nothing here.
 function WaveOutPlayer:stop(handle)
   if validHandle(self, handle) then
     self._mixer:stopVoice(handle.mixerHandle)

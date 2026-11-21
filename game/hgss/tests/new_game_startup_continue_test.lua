@@ -19,6 +19,35 @@ local OakIntroState = require("game.hgss.src.newgame.OakIntroState")
 
 local T = {}
 
+-- The selected epoch's shared CPU runtime every route borrows. The composition
+-- spies stub the field/title consumers, so one resident reader plus one
+-- kernel/queue pair answers every construction in this suite.
+local sharedCacheFs, sharedRuntime
+local function residentCacheFs()
+  if sharedCacheFs == nil then
+    sharedCacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader
+  end
+  return sharedCacheFs
+end
+local function residentAssetRuntime()
+  if sharedRuntime == nil then
+    local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+    local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+    local decoded = ResidentAssetCache.new({
+      idleByteLimit = 64 * 1024 * 1024,
+      release = function(value)
+        value:release()
+      end,
+    })
+    sharedRuntime = {
+      cacheFs = residentCacheFs(),
+      decoded = decoded,
+      preparationQueue = AssetPreparationQueue.new(residentCacheFs(), { decoded = decoded }),
+    }
+  end
+  return sharedRuntime
+end
+
 local function controllerFor(candidate)
   local controller = { phase = "opening_wait", started = 0, disposed = 0 }
   function controller:start()
@@ -272,7 +301,8 @@ local function newGame(context, candidate)
     entry = { kind = "new_game" },
     onExit = function() end,
     derivedAssets = readyHost(),
-    cacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader,
+    cacheFs = residentCacheFs(),
+    assetRuntime = residentAssetRuntime(),
     fieldMapLoader = planningLoader(),
   })
   return game, controller
@@ -344,7 +374,8 @@ function T.continue_never_reapplies_fresh_startup_initialization()
       entry = { kind = "continue", saveId = clearedFlagGame.saveId },
       onExit = function() end,
       derivedAssets = derivedAssets,
-      cacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader,
+      cacheFs = residentCacheFs(),
+      assetRuntime = residentAssetRuntime(),
       fieldMapLoader = planningLoader(),
     })
     settle(game)
@@ -416,7 +447,8 @@ function T.continue_enters_the_field_without_the_covered_entry()
       entry = { kind = "continue", saveId = clearedFlagGame.saveId },
       onExit = function() end,
       derivedAssets = readyHost(),
-      cacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader,
+      cacheFs = residentCacheFs(),
+      assetRuntime = residentAssetRuntime(),
       fieldMapLoader = planningLoader(),
     })
     settle(game)
@@ -697,7 +729,8 @@ function T.presented_oak_black_draw_precedes_field_construction()
       entry = { kind = "new_game" },
       onExit = function() end,
       derivedAssets = readyHost(),
-      cacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader,
+      cacheFs = residentCacheFs(),
+      assetRuntime = residentAssetRuntime(),
       fieldMapLoader = planningLoader(),
     })
     settle(game)
@@ -772,7 +805,8 @@ function T.continue_constructs_the_field_without_the_oak_handoff()
       entry = { kind = "continue", saveId = clearedFlagGame.saveId },
       onExit = function() end,
       derivedAssets = readyHost(),
-      cacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader,
+      cacheFs = residentCacheFs(),
+      assetRuntime = residentAssetRuntime(),
       fieldMapLoader = planningLoader(),
     })
     settle(game)
@@ -798,7 +832,8 @@ function T.continue_enters_field_when_optional_loading_art_throws()
     -- The decorative cover adopts the epoch's installed pair art; these
     -- scenarios stub or complete that adoption, so an empty resident view is
     -- the whole generated surface they read.
-    cacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader,
+    cacheFs = residentCacheFs(),
+    assetRuntime = residentAssetRuntime(),
     derivedAssets = {
       requestStartupWalker = function(urgency)
         artRequests = artRequests + 1
@@ -880,7 +915,8 @@ function T.continue_pending_loader_art_never_blocks_transfer_and_is_never_adopte
     -- The decorative cover adopts the epoch's installed pair art; these
     -- scenarios stub or complete that adoption, so an empty resident view is
     -- the whole generated surface they read.
-    cacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader,
+    cacheFs = residentCacheFs(),
+    assetRuntime = residentAssetRuntime(),
     derivedAssets = {
       requestStartupWalker = function(urgency)
         artRequests = artRequests + 1
@@ -984,7 +1020,8 @@ function T.continue_malformed_loader_art_latches_once_and_cancel_releases_cover_
     -- The decorative cover adopts the epoch's installed pair art; these
     -- scenarios stub or complete that adoption, so an empty resident view is
     -- the whole generated surface they read.
-    cacheFs = GeneratedCacheFixture.resident("heartgold", {}).reader,
+    cacheFs = residentCacheFs(),
+    assetRuntime = residentAssetRuntime(),
     derivedAssets = {
       requestStartupWalker = function(urgency)
         artRequests = artRequests + 1

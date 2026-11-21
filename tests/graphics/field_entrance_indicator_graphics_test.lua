@@ -5,6 +5,7 @@
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldStaticEffectRenderer = require("libs.hgss.src.presentation.FieldStaticEffectRenderer")
@@ -54,7 +55,11 @@ function T.canonical_indicator_preserves_bright_background(scope, context)
   local model = assert(definition.model)
   local cameraProfiles = assert(cache:loadLua("data/generated/field/camera/profiles.lua"))
   local fieldCamera = FieldCamera.new(cameraProfiles.profiles[0], { canonicalAspect = 4 / 3 })
-  local imagePool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test lifetime, released after the pool.
+  local imagePoolRuntime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local imagePool =
+    ImageAssetPool.new(cache, { queue = imagePoolRuntime.preparationQueue, decoded = imagePoolRuntime.decoded })
   scope:own({
     release = function()
       imagePool:dispose()

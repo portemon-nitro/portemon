@@ -6,6 +6,7 @@
 
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
 
 local T = {}
@@ -120,10 +121,7 @@ end
 
 local function assertNoLegacyGlobalMilestone(calls)
   for _, call in ipairs(calls.milestones) do
-    Assert.isTrue(
-      call.name ~= "startup-loader",
-      "the legacy global loader milestone is never demanded"
-    )
+    Assert.isTrue(call.name ~= "startup-loader", "the legacy global loader milestone is never demanded")
   end
 end
 
@@ -139,11 +137,7 @@ function T.draws_one_loader_frame_before_an_otherwise_ready_continue_transfer()
   local host, calls = keyedHost(behavior)
   local state, counts = continueEntry(host, {})
   Assert.notNil(state.loading, "continue entry owns its themed loading stage from creation")
-  Assert.equal(
-    state.loading.pairIndex,
-    PAIR_INDEX,
-    "the continue stage names the selected pair"
-  )
+  Assert.equal(state.loading.pairIndex, PAIR_INDEX, "the continue stage names the selected pair")
   local watch = watchStage(state)
   state:update(1 / 60)
   Assert.equal(counts.transfers, 0, "an otherwise-ready entry never transfers before its first loader draw")
@@ -210,11 +204,7 @@ function T.newgame_field_handoff_owns_the_same_selected_stage()
     onCancel = function() end,
   })
   Assert.notNil(state.loading, "the new-game field handoff owns its themed loading stage from creation")
-  Assert.equal(
-    state.loading.pairIndex,
-    PAIR_INDEX,
-    "the handoff stage names the same selected pair"
-  )
+  Assert.equal(state.loading.pairIndex, PAIR_INDEX, "the handoff stage names the same selected pair")
   state:dispose()
 end
 
@@ -255,23 +245,23 @@ function T.product_entry_forwards_the_selected_pair_into_continue_preparation()
       end,
     }
   end)
+  -- The product entry borrows the selected epoch's CPU owners; the headless
+  -- entry preparation starts no worker.
+  local cacheFs = GeneratedCacheFixture.resident(VERSION_ID, {}).reader
   local ok, gameOrError = pcall(HgssGame.new, {
     versionId = VERSION_ID,
     entry = { kind = "continue", saveId = "save-00000002" },
     onExit = function() end,
     derivedAssets = {},
-    cacheFs = GeneratedCacheFixture.resident(VERSION_ID, {}).reader,
+    cacheFs = cacheFs,
+    assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs),
     startupPairIndex = PAIR_INDEX,
   })
   rawset(FieldPreparationState, "new", originalPreparationNew)
   rawset(GameSaveStore, "new", originalStoreNew)
   Assert.isTrue(ok, "the product entry composes: " .. tostring(gameOrError))
   Assert.equal(#seen, 1, "continue entry builds exactly one pending preparation")
-  Assert.equal(
-    seen[1].startupPairIndex,
-    PAIR_INDEX,
-    "the product entry forwards its selected pair without reselection"
-  )
+  Assert.equal(seen[1].startupPairIndex, PAIR_INDEX, "the product entry forwards its selected pair without reselection")
 end
 
 return { tests = T }

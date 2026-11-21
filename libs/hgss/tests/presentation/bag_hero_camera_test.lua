@@ -165,6 +165,12 @@ local function newHero(Hero, value)
     manifest = value,
     graphics = FakeGraphics({}),
     assetPreparation = fakePreparationQueue(),
+    decoded = {
+      returnLease = function()
+        return true
+      end,
+      trim = function() end,
+    },
   })
 end
 

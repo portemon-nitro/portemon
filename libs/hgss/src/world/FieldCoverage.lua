@@ -25,6 +25,7 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field index table<string, unknown>
 ---@field matrixMemberId integer
 ---@field loadCell fun(descriptor: table<string, unknown>): table<string, unknown>
+---@field acquireSource fun(reference: ResidentCache.BlobRef): AssetPreparationQueueSourceLease selected runtime's compact source acquirer
 ---@field mapPropsFactory (fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?)?
 ---@field presentationLoader fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?
 ---@field presentationTaskFactory fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?
@@ -146,26 +147,55 @@ local function ownPresentation(runtime, presentation)
   return runtime
 end
 
+-- One cell's collision wrapper over the resident compact bytes, with the source
+-- interest it must return when the cell dies. The bytes are borrowed through the
+-- selected runtime's acquirer, so a coverage cell costs no expanded cell array
+-- and no second native buffer.
+---@param self FieldCoverage
+---@param descriptor { file: string }
+---@return CollisionGrid collision, fun()
+local function acquireCellCollision(self, descriptor)
+  local collisionPath = assert(descriptor.file, "field cell descriptor names no collision asset")
+  local reference = assert(self.cacheFs:resolveAsset(collisionPath), "field cell collision is unavailable")
+  local acquireSource =
+    assert(self.acquireSource, "loading field cell collision requires the selected runtime's source acquirer")
+  local sourceLease = acquireSource(reference)
+  local view, openErr = CollisionGridAsset.open(sourceLease.value, { path = collisionPath })
+  if view == nil then
+    sourceLease:release()
+    error(openErr, 0)
+  end
+  local collision = CollisionGrid.new(view, { sourceLease = sourceLease })
+  local released = false
+  local function releaseCollision()
+    if released then
+      return
+    end
+    released = true
+    collision:dispose()
+  end
+  return collision, releaseCollision
+end
+
 local function runtimeFromDescriptor(self, descriptor, acquirePresentation)
   local runtime
   if self.loadCell then
     runtime = self.loadCell(descriptor)
   else
     local cell = assert(self.cacheFs:loadLua(descriptor.file), "field cell descriptor is missing")
-    local collisionBytes = assert(self.cacheFs:read(cell.collision.file), "field cell collision is missing")
-    local collision = assert(CollisionGridAsset.decode(collisionBytes))
+    local collisionPath = assert(cell.collision.file, "field cell descriptor names no collision asset")
+    local collision, releaseCollision = acquireCellCollision(self, { file = collisionPath })
     local terrainArtifact = assert(self.cacheFs:loadLua(cell.terrain.file), "field cell terrain is missing")
-    local function release() end
     runtime = {
       key = key(cell.x, cell.z),
       x = cell.x,
       z = cell.z,
       altitude = cell.altitude,
       origin = cell.origin,
-      collision = CollisionGrid.new(collision),
+      collision = collision,
       terrain = TerrainSurface.new(terrainArtifact),
       descriptor = cell,
-      release = release,
+      release = releaseCollision,
     }
   end
   runtime = assert(runtime, "field cell loader returned no runtime")
@@ -231,6 +261,12 @@ local function releasePending(pending)
       runtime:release()
     end
   end
+  -- A staged cell that never reached a runtime still holds its source interest.
+  local sourceLease = pending.sourceLease
+  if sourceLease ~= nil then
+    pending.sourceLease = nil
+    sourceLease:release()
+  end
 end
 
 local function publishPending(pending, presentation)
@@ -263,12 +299,23 @@ local function advancePending(self, pending, maxWorkUnits)
       pending.phase = "readCollision"
       consumed = consumed + 1
     elseif pending.phase == "readCollision" then
-      pending.collisionBytes =
-        assert(self.cacheFs:read(assert(pending.cell).collision.file), "field cell collision is missing")
+      local collisionPath = assert(assert(pending.cell).collision.file, "field cell descriptor names no collision")
+      local reference = assert(self.cacheFs:resolveAsset(collisionPath), "field cell collision is unavailable")
+      local acquireSource =
+        assert(self.acquireSource, "loading field cell collision requires the selected runtime's source acquirer")
+      pending.sourceLease = acquireSource(reference)
+      pending.collisionPath = collisionPath
       pending.phase = "decodeCollision"
       consumed = consumed + 1
     elseif pending.phase == "decodeCollision" then
-      pending.collision = assert(CollisionGridAsset.decode(assert(pending.collisionBytes)))
+      local sourceLease = assert(pending.sourceLease, "a staged cell carries no collision source")
+      local view, openErr = CollisionGridAsset.open(sourceLease.value, { path = pending.collisionPath })
+      if view == nil then
+        pending.sourceLease = nil
+        sourceLease:release()
+        error(openErr, 0)
+      end
+      pending.collision = view
       pending.phase = "readTerrain"
       consumed = consumed + 1
     elseif pending.phase == "readTerrain" then
@@ -278,14 +325,24 @@ local function advancePending(self, pending, maxWorkUnits)
       consumed = consumed + 1
     elseif pending.phase == "buildRuntime" then
       local cell = assert(pending.cell)
-      local function release() end
+      local sourceLease = assert(pending.sourceLease, "a staged cell carries no collision source")
+      local collision = CollisionGrid.new(assert(pending.collision), { sourceLease = sourceLease })
+      pending.sourceLease = nil
+      local released = false
+      local function release()
+        if released then
+          return
+        end
+        released = true
+        collision:dispose()
+      end
       pending.runtime = {
         key = pending.cellKey,
         x = cell.x,
         z = cell.z,
         altitude = cell.altitude,
         origin = cell.origin,
-        collision = CollisionGrid.new(assert(pending.collision)),
+        collision = collision,
         terrain = TerrainSurface.new(assert(pending.terrainArtifact)),
         descriptor = cell,
         release = release,
@@ -521,6 +578,7 @@ local function blankCoverage(options, index)
     index = index,
     matrixMemberId = options.matrixMemberId,
     loadCell = options.loadCell,
+    acquireSource = options.acquireSource,
     mapPropsFactory = options.mapPropsFactory,
     presentationLoader = options.presentationLoader,
     presentationTaskFactory = options.presentationTaskFactory,

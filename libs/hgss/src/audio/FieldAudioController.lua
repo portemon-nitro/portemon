@@ -267,27 +267,12 @@ end
 -- Adopts already-ready background sample payloads without blocking.
 ---@return integer adopted count
 function FieldAudioController:drainBackgroundSamples()
-  if type(self._provider.drainReadySamples) ~= "function" then
-    return 0
-  end
   return self._provider:drainReadySamples()
-end
-
--- Trims idle samples oldest-first, shielding the keep set and every live
--- voice. Reports the evicted count; adverse budget overflow stays visible
--- in the provider census instead of cutting audio.
----@param keepKeys string[]|nil current-first protection priority
----@return integer
-function FieldAudioController:trimIdleSamples(keepKeys)
-  return self._provider:trim(keepKeys)
 end
 
 -- Drops background sample interest outside the current predicted set.
 ---@param predictedSet table<string, boolean>
 function FieldAudioController:cancelUnpredictedSamples(predictedSet)
-  if type(self._provider.cancelUnpredicted) ~= "function" then
-    return
-  end
   self._provider:cancelUnpredicted(predictedSet)
 end
 

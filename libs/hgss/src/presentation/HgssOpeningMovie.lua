@@ -26,6 +26,8 @@ local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 ---@field versionId string
 ---@field cacheFs table<string, unknown>
 ---@field graphics table<string, unknown>
+---@field assetPreparation table<string, unknown> borrowed selected preparation queue
+---@field decoded table<string, unknown> borrowed selected decoded CPU owner
 ---@field displayContext DisplayContext
 ---@field width number
 ---@field height number
@@ -591,7 +593,11 @@ end
 ---@param self HgssOpeningMovie
 ---@param slot OpeningMovieSlot scene slot gaining the town stage
 local function buildTownStage(self, slot)
-  local pool = GpuAssetPool.new(self.cacheFs, { graphics = self.graphics })
+  local pool = GpuAssetPool.new(self.cacheFs, {
+    graphics = self.graphics,
+    assetPreparation = self.assetPreparation,
+    decoded = self.decoded,
+  })
   slot.pool = pool
   -- Movie-local 3x raster scale: the shared GxRenderer final resolve
   -- (edge marking, fog, AA) runs on the higher-resolution world raster.
@@ -2226,13 +2232,14 @@ vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) 
 }
 ]]
 
----@param options { versionId: string, scenes: table<string, unknown>[], cacheFs: table<string, unknown>, width: number, height: number, graphics?: table<string, unknown>, displayContext?: DisplayContext, splRandomState: table<string, integer>? }
+---@param options { versionId: string, scenes: table<string, unknown>[], cacheFs: table<string, unknown>, width: number, height: number, graphics?: table<string, unknown>, displayContext?: DisplayContext, splRandomState: table<string, integer>?, assetPreparation: table<string, unknown>, decoded: table<string, unknown> }
 ---@return HgssOpeningMovie
 function HgssOpeningMovie.new(options)
   assert(type(options) == "table", "opening movie requires composition options")
   assert(options.versionId == "heartgold" or options.versionId == "soulsilver", "opening movie edition is invalid")
   assert(type(options.scenes) == "table", "opening movie requires five validated scene bundles")
   assert(options.cacheFs and type(options.cacheFs.read) == "function", "opening movie requires generated cache access")
+  assert(options.assetPreparation ~= nil and options.decoded ~= nil, "opening movie requires the selected CPU runtime")
   assert(
     type(options.width) == "number" and options.width > 0 and type(options.height) == "number" and options.height > 0,
     "opening movie dimensions must be positive"
@@ -2265,6 +2272,8 @@ function HgssOpeningMovie.new(options)
     versionId = options.versionId,
     cacheFs = options.cacheFs,
     graphics = graphics,
+    assetPreparation = options.assetPreparation,
+    decoded = options.decoded,
     displayContext = displayContext,
     width = options.width,
     height = options.height,

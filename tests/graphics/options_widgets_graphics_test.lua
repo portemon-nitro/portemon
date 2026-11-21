@@ -12,6 +12,7 @@
 local Assert = require("tests.support.Assert")
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -135,7 +136,10 @@ end
 
 local function setup(scope)
   local view, manifest = optionsCache()
-  local pool = ImageAssetPool.new(view.reader)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test's lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(view.reader, scope)
+  local pool = ImageAssetPool.new(view.reader, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   scope:own({
     release = function()
       pool:dispose()
@@ -236,7 +240,6 @@ function T.choice_and_pressed_states_sample_their_compiled_frames(scope)
   end)
   Assert.deepEqual(pixel(pressed, 34, 42), { 200, 200, 90, 255 }, "an aged footer press samples its second frame")
 end
-
 
 -- The slider thumb is the borrowed 32x24 bag visual drawn centered on
 -- the track value: the caller prepares the full-image viewport once and
@@ -380,11 +383,12 @@ function T.missing_art_fails_without_touching_graphics_state(scope)
   assertSameState(before, graphicsState(), "failed quad lookup painting")
 end
 
-function T.release_returns_pool_references_to_baseline(_scope)
+function T.release_returns_pool_references_to_baseline(scope)
   widgetsModule()
   local view, manifest = optionsCache()
   local settledImages = love.graphics.getStats().images
-  local pool = ImageAssetPool.new(view.reader)
+  local runtime = SelectedAssetRuntimeFixture.new(view.reader, scope)
+  local pool = ImageAssetPool.new(view.reader, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   local entry = assert(manifest.assets[FieldUiAssetCache.ASSET.OPTIONS_CHROME])
   local token = pool:request(entry.image, POOLED_SAMPLER, "demand")
   local chrome = nil

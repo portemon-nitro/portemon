@@ -6,6 +6,7 @@
 
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
@@ -49,7 +50,14 @@ local function runVersion(scope, versionId)
   Assert.isTrue(type(compiled.models) == "table", "the transition definition carries its source models")
   Assert.isTrue(type(compiled.placementOffset) == "table", "the transition definition carries its placement")
 
-  local imagePool = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+
+  -- decoded budget for the test lifetime, released after the pool.
+
+  local imagePoolRuntime = SelectedAssetRuntimeFixture.new(cache, scope)
+
+  local imagePool =
+    ImageAssetPool.new(cache, { queue = imagePoolRuntime.preparationQueue, decoded = imagePoolRuntime.decoded })
   scope:own({
     release = function()
       imagePool:dispose()

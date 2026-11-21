@@ -3,6 +3,7 @@
 
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
@@ -25,7 +26,12 @@ function T.known_target_messages_format_with_prepared_tokens(_, version)
   -- the playback boundary that validates and prepares printer controls.
   local cache = GeneratedCacheFixture.reader(version)
   local def = assert(cache:loadLua("data/generated/field/font/font-0.lua"))
-  local provider = assert(FieldMessageProvider.new(cache))
+  -- The provider borrows each open bank through the selected runtime's
+  -- resident source branch.
+  local selectedRuntime = SelectedAssetRuntimeFixture.new(cache)
+  local provider = assert(FieldMessageProvider.new(cache, {
+    acquireSource = SelectedAssetRuntimeFixture.acquireSource(selectedRuntime),
+  }))
   provider:acquireBank(543)
   local resolvers = {
     [0x0100] = function()

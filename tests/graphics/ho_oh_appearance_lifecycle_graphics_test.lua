@@ -5,6 +5,7 @@
 
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -80,7 +81,10 @@ end
 
 local function newRenderer(scope)
   local cache = GeneratedCacheFixture.reader(VERSION)
-  local images = ImageAssetPool.new(cache)
+  -- The session image owner borrows the selected CPU pair: one worker and one
+  -- decoded budget for the test lifetime, released after the pool.
+  local runtime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local images = ImageAssetPool.new(cache, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   scope:own({
     release = function()
       images:dispose()

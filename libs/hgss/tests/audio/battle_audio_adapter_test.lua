@@ -322,7 +322,8 @@ end
 ---@return BattleAudio adapter over the real normalized engine
 ---@return table engine player behind rendering
 local function adapterOverEngine(symbols)
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache(operationBundle(symbols)))
+  local cache = AudioFixture.residentCache(operationBundle(symbols))
+  local provider = AudioAssetProvider.new(cache, { acquireSource = AudioFixture.acquireSource() })
   ---@cast provider AudioAssetProvider
   local mixer = VoiceMixer.new({ sampleRate = SAMPLE_RATE })
   local player = SequencePlayer.new({ sampleRate = SAMPLE_RATE, mixer = mixer, provider = provider })

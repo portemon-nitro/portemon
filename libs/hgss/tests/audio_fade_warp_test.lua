@@ -887,7 +887,8 @@ T["music fade task completes exactly when the real fade reaches its target"] = f
   local GameSound = require("libs.hgss.src.audio.GameSound")
   local SequencePlayer = require("libs.nds.src.nitro.sound.SequencePlayer")
   local VoiceMixer = require("libs.nds.src.nitro.sound.VoiceMixer")
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache(AudioFixture.bundle()))
+  local cache = AudioFixture.residentCache(AudioFixture.bundle())
+  local provider = AudioAssetProvider.new(cache, { acquireSource = AudioFixture.acquireSource() })
   local mixer = VoiceMixer.new({ sampleRate = 48000 })
   local player = SequencePlayer.new({
     sampleRate = 48000,

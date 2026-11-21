@@ -156,8 +156,8 @@ local function startupPairCacheFs(_, versionId)
     exists = function()
       return true
     end,
-    read = function(_, path)
-      return assert(files[path], "unexpected generated read " .. tostring(path))
+    readData = function(_, path)
+      return assert(love.data.newByteData(assert(files[path], "unexpected generated read " .. tostring(path))))
     end,
   }
 end
@@ -197,16 +197,10 @@ function T.startup_pair_paints_transparent_sprites_over_the_live_stage(scope)
   local total = WIDTH * HEIGHT * 4
   local changed = startupDiffBytes(pre:getString(), post:getString())
   Assert.isTrue(changed > 0, "the adopted pair is visible over the live stage")
-  Assert.isTrue(
-    changed < total * 0.05,
-    "transparent sprite margins leave the live stage visible around the pair"
-  )
+  Assert.isTrue(changed < total * 0.05, "transparent sprite margins leave the live stage visible around the pair")
   presentation:update(1 / 30)
   local advanced = renderStage(scope, presentation)
-  Assert.isTrue(
-    advanced:getString() ~= post:getString(),
-    "the adopted stage keeps animating through source walk ticks"
-  )
+  Assert.isTrue(advanced:getString() ~= post:getString(), "the adopted stage keeps animating through source walk ticks")
   Assert.isTrue(cornerAlpha(advanced) > 0, "the adopted stage still covers the full drawable")
 end
 
@@ -247,10 +241,7 @@ function T.startup_stage_opens_on_a_random_line_and_stays_animated(scope)
   local adopted = renderStage(scope, first)
   first:update(1 / 60)
   local moved = renderStage(scope, first)
-  Assert.isTrue(
-    moved:getString() ~= adopted:getString(),
-    "the scenery keeps moving behind the adopted pair"
-  )
+  Assert.isTrue(moved:getString() ~= adopted:getString(), "the scenery keeps moving behind the adopted pair")
 end
 
 function T.walking_pair_keeps_source_cadence_with_lift(scope)
@@ -534,8 +525,23 @@ end
 function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
   local StartupTitleState = require("app.src.launcher.StartupTitleState")
   local Movie = require("libs.hgss.src.presentation.HgssOpeningMovie")
+  local TitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
   local staged = {}
   local savedNew, savedScenes = Movie.new, Movie.loadValidatedScenes
+  -- This scenario owns the loading/movie handoff, not title asset decoding:
+  -- the title build stays staged and never becomes ready behind it.
+  local savedTitleBegin = TitleScene.begin
+  TitleScene.begin = function()
+    return {
+      isReady = function()
+        return false
+      end,
+      advance = function()
+        return 0
+      end,
+      release = function() end,
+    }
+  end
   Movie.loadValidatedScenes = function()
     local scenes = {}
     for sceneNumber = 1, 5 do
@@ -599,10 +605,27 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
       presentation:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
       "the chosen pair adopts its two transparent atlases"
     )
+    local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+    local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+    local cacheFs = GeneratedCacheFixture.reader("heartgold")
+    local decoded = ResidentAssetCache.new({
+      idleByteLimit = 64 * 1024 * 1024,
+      release = function(value)
+        value:release()
+      end,
+    })
+    local queue = AssetPreparationQueue.new(cacheFs, { decoded = decoded })
+    scope:own({
+      release = function()
+        queue:release()
+        decoded:clear()
+      end,
+    })
     local state = StartupTitleState.new({
       versionId = "heartgold",
       epoch = 7,
-      cacheFs = GeneratedCacheFixture.reader("heartgold"),
+      cacheFs = cacheFs,
+      assetRuntime = { cacheFs = cacheFs, decoded = decoded, preparationQueue = queue },
       derivedAssets = host,
       stageMenu = function()
         return menu
@@ -722,6 +745,7 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
   end, debug.traceback)
   Movie.new = savedNew
   Movie.loadValidatedScenes = savedScenes
+  TitleScene.begin = savedTitleBegin
   if not ok then
     error(err, 0)
   end
@@ -939,11 +963,11 @@ function T.failed_pair_adoption_releases_staged_art_without_half_published_sprit
   local bad = {
     loadLua = good.loadLua,
     exists = good.exists,
-    read = function(_, path)
+    readData = function(_, path)
       if path == followerPath then
         return nil
       end
-      return good.read(_, path)
+      return good.readData(_, path)
     end,
   }
   local presentation = Presentation.new({
@@ -1089,8 +1113,8 @@ local function sizedPairCacheFs(followerWidth, versionId)
     exists = function()
       return true
     end,
-    read = function(_, path)
-      return assert(files[path], "unexpected generated read " .. tostring(path))
+    readData = function(_, path)
+      return assert(love.data.newByteData(assert(files[path], "unexpected generated read " .. tostring(path))))
     end,
   }
 end

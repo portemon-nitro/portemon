@@ -10,10 +10,9 @@
 -- keep their replacement glyph advances.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
 local DialogueLayout = require("libs.hgss.src.ui.DialogueLayout")
-local FakeCache = require("tests.support.FakeCache")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+local FieldMessageFixture = require("tests.support.FieldMessageFixture")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
@@ -192,7 +191,7 @@ end
 -- multibyte É contributes 6, each ASCII letter 8 -- never a marker width.
 function T.resolved_substitutions_contribute_replacement_glyph_widths()
   local def = FieldUiFixture.cardFontDefWithMultibyte()
-  local provider = FieldMessageProvider.new(CacheFs.forVersion("heartgold", FakeCache.new()))
+  local provider = FieldMessageFixture.provider({})
   local name = "\195\137" .. "GOLD" -- ÉGOLD
   local formatted = provider:format({
     bankId = 0,

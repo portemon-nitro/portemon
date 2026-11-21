@@ -10,13 +10,10 @@
 local Assert = require("tests.support.Assert")
 local BadgeSets = require("tests.support.BadgeSets")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
-local CacheFs = require("libs.storage.src.CacheFs")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
-local FakeCache = require("tests.support.FakeCache")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
 local FieldMessageFixture = require("tests.support.FieldMessageFixture")
-local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
@@ -56,7 +53,9 @@ local function manifestWithIcons()
   return manifest
 end
 
-local function seedLabelBank(cache)
+-- The source label bank: one entry per static start-menu label, addressed by
+-- message id exactly as the compiled bank is.
+local function labelMessages()
   local messages = {}
   for messageId = 0, 14 do
     messages[messageId + 1] = {}
@@ -67,13 +66,11 @@ local function seedLabelBank(cache)
       FieldMessageFixture.eos(),
     }
   end
-  FieldMessageFixture.write(cache, SOURCE_LABEL_BANK, messages)
+  return messages
 end
 
 local function providerWithLabels()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  seedLabelBank(cache)
-  local provider = FieldMessageProvider.new(cache)
+  local provider = assert(FieldMessageFixture.provider({ [SOURCE_LABEL_BANK] = labelMessages() }))
   local bank, err = provider:acquireBank(SOURCE_LABEL_BANK)
   assert(bank ~= nil, err and err.message or "the source label bank must acquire")
   return provider

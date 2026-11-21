@@ -603,8 +603,15 @@ local function fprRuntime(versionId)
     -- staging anything behind the doubles.
     imageAssets = SharedImagePoolFake.new(),
     -- The bag hero the presented runtime constructs decodes its model bank
-    -- through the preparation worker; this suite's doubles answer ready.
+    -- through the preparation worker; this suite's doubles answer ready and
+    -- accept the returned lease.
     assetPreparation = FakePreparationQueue.new(),
+    decoded = {
+      returnLease = function()
+        return true
+      end,
+      trim = function() end,
+    },
   }
   runtime.derivedAssets = {}
   runtime.bindPartyIconPreparation = function(_, _, _)

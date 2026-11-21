@@ -127,10 +127,11 @@ local function fieldData(musicId)
 end
 
 local function newComposition()
-  local cacheFs = AudioFixture.readyCache(engineBundle())
+  local cacheFs = AudioFixture.residentCache(engineBundle())
   local runtime = AudioRuntime.compose({
     cacheFs = cacheFs,
     outputRate = SAMPLE_RATE,
+    acquireSource = AudioFixture.acquireSource(),
   })
   local sound, player = runtime.sound, runtime.renderer
   local eventState = {
@@ -140,7 +141,7 @@ local function newComposition()
   }
   local controller = FieldAudioController.new({
     sound = sound,
-    provider = AudioAssetProvider.new(cacheFs),
+    provider = AudioAssetProvider.new(cacheFs, { acquireSource = AudioFixture.acquireSource() }),
     eventState = eventState,
     fieldPosition = function()
       return 0, 0

@@ -27,6 +27,36 @@ local ValueEditor = require("app.src.saveeditor.SaveEditorValueEditor")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
+-- The borrowed selected CPU pair the editor renderer composes over. These
+-- rendering suites stub every pooled request, so one inert pair is enough.
+local function newRenderer(options)
+  options.assetPreparation = options.assetPreparation
+    or {
+      request = function()
+        return 0
+      end,
+      poll = function()
+        return "failed", "the rendering fixture carries no prepared image"
+      end,
+      take = function()
+        error("the rendering fixture carries no prepared image")
+      end,
+      cancel = function() end,
+      promote = function() end,
+      acquireSource = function()
+        error("the rendering fixture carries no resident source")
+      end,
+    }
+  options.decoded = options.decoded
+    or {
+      returnLease = function()
+        return true
+      end,
+      trim = function() end,
+    }
+  return Renderer.new(options)
+end
+
 local T = {}
 local LONG_FLAG_NAME = "FLAG_HIDE_GOLDENROD_DEPT_STORE_5F_RETURN_FRUSTRATION_LADY"
 local LONG_FLAG_DISPLAY_NAME = LONG_FLAG_NAME:gsub("^FLAG_", "")
@@ -680,7 +710,7 @@ local function draw(scope, width, height, topology, name, section, variant, vers
       graphics.print(value, x, y)
     end,
   }
-  local renderer = Renderer.new({ text = text, versionId = view.versionId })
+  local renderer = newRenderer({ text = text, versionId = view.versionId })
   local frameCache = FieldUiFixture.cacheWithFontAndFrames()
   renderer:preparePresentationAssets(frameCache, assert(frameCache:loadLua(FieldUiAssetCache.manifestPath())))
   local bagDrawn = {}
@@ -1576,7 +1606,7 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
   local drawnText = {}
   local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
   local pool = SharedImagePoolFake.new()
-  local renderer = RendererModule.new({
+  local renderer = newRenderer({
     versionId = "heartgold",
     imagePool = pool,
     text = {
@@ -2997,7 +3027,7 @@ function T.name_editor_renders_the_real_naming_snapshot_in_a_neutral_dialog(scop
       love.graphics.print(value, x, y)
     end,
   }
-  local renderer = Renderer.new({ text = text, versionId = "heartgold" })
+  local renderer = newRenderer({ text = text, versionId = "heartgold" })
   local frameCache = FieldUiFixture.cacheWithFontAndFrames()
   renderer:preparePresentationAssets(frameCache, assert(frameCache:loadLua(FieldUiAssetCache.manifestPath())))
   local canvas = scope:own(love.graphics.newCanvas(width, height))
@@ -4178,7 +4208,7 @@ function T.section_labels_reuse_party_game_font_and_palette(scope)
     local view, _, plan = fixture(scope, width, height, singleDisplay(width, height), "Party", "Stats")
     local cache = FieldUiFixture.cacheWithFontAndFrames()
     local text = scope:own(FieldTextRenderer.new({ cacheFs = cache, graphics = love.graphics }))
-    local renderer = Renderer.new({ text = text, versionId = view.versionId })
+    local renderer = newRenderer({ text = text, versionId = view.versionId })
     renderer._bagImages = {}
     for _, path in ipairs({ "bag/dec-normal", "bag/dec-pressed", "bag/inc-normal", "bag/inc-pressed" }) do
       renderer._bagImages[path] = scope:own(love.graphics.newImage(love.image.newImageData(12, 12)))
@@ -4978,7 +5008,7 @@ function T.bag_icon_preparation_needs_no_browse_or_focus_art(scope)
   local RendererModule = require("app.src.saveeditor.SaveEditorRenderer")
   local iconImage = scope:own(love.graphics.newImage(love.image.newImageData(16, 16)))
   local iconQuad = scope:own(love.graphics.newQuad(0, 0, 16, 16, 16, 16))
-  local renderer = RendererModule.new({
+  local renderer = newRenderer({
     versionId = "heartgold",
     text = {
       fontDef = { lineHeight = 14 },
@@ -5579,7 +5609,7 @@ function T.party_body_paint_failure_restores_clip_and_graphics_state(scope)
 end
 
 function T.deferred_icon_preparation_uses_the_draw_time_presentation(_)
-  local renderer = Renderer.new({ text = {}, graphics = {}, versionId = "heartgold" })
+  local renderer = newRenderer({ text = {}, graphics = {}, versionId = "heartgold" })
   local oldView, oldPlan = { section = "Party" }, { content = { layout = {} }, panes = {} }
   local currentView, currentPlan = { section = "Bag" }, { content = { layout = {} }, panes = {} }
   local cacheFs, derivedAssets = {}, {}
@@ -5598,7 +5628,7 @@ function T.deferred_icon_preparation_uses_the_draw_time_presentation(_)
   Assert.isTrue(preparedDerivedAssets == derivedAssets, "deferred preparation retains its asset provider")
   renderer:dispose()
 
-  local disposedRenderer = Renderer.new({ text = {}, graphics = {}, versionId = "heartgold" })
+  local disposedRenderer = newRenderer({ text = {}, graphics = {}, versionId = "heartgold" })
   disposedRenderer:prepareVisibleIcons(oldView, oldPlan, cacheFs, derivedAssets, true)
   disposedRenderer:dispose()
   Assert.isNil(disposedRenderer._pendingIconPreparation, "dispose releases deferred presentation references")
@@ -5668,9 +5698,20 @@ function T.editor_generated_images_use_borrowed_classified_images_and_free_on_ex
   -- This convergence probe pins the historical evict-all cadence explicitly
   -- so renderer disposal frees staged images without a pool prune; the
   -- production default is the compiled first-pass idle budget.
-  local pool = ImageAssetPool.new(cache, { graphics = graphics, idleByteLimit = 0 })
+  local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+  local decoded = ResidentAssetCache.new({ idleByteLimit = 64 * 1024 * 1024, release = function() end })
+  local queue = AssetPreparationQueue.new(cache, { decoded = decoded })
+  local pool = ImageAssetPool.new(cache, { graphics = graphics, idleByteLimit = 0, queue = queue, decoded = decoded })
   local ok, err = pcall(function()
-    local renderer = Renderer.new({ text = {}, graphics = graphics, versionId = "heartgold", imagePool = pool })
+    local renderer = newRenderer({
+      text = {},
+      graphics = graphics,
+      versionId = "heartgold",
+      imagePool = pool,
+      assetPreparation = queue,
+      decoded = decoded,
+    })
     local function numberView(set)
       return {
         section = "Progress",

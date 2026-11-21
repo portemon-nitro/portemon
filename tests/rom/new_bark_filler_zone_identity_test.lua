@@ -6,6 +6,7 @@
 local Assert = require("tests.support.Assert")
 local MapResolver = require("romdump.src.digest.map.MapResolver")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local FieldCoverage = require("libs.hgss.src.world.FieldCoverage")
@@ -35,13 +36,17 @@ function T.everywhere_filler_cells_keep_raw_header_zero_with_new_bark_as_logical
     Assert.isTrue(#cell.batches > 0, label .. " draws real terrain")
   end
 
-  -- Committed headless coverage over the same coordinates.
+  -- Committed headless coverage over the same coordinates: cell collision
+  -- borrows through the selected runtime's compact source branch.
+  local selectedRuntime = SelectedAssetRuntimeFixture.new(cache)
+  local acquireSource = SelectedAssetRuntimeFixture.acquireSource(selectedRuntime)
   local coverage = FieldCoverage.new({
     cacheFs = cache,
     index = index,
     matrixMemberId = r.matrixMemberId,
     anchorX = r.matrixX,
     anchorZ = r.matrixZ,
+    acquireSource = acquireSource,
   })
   local loader
   local ok, err = pcall(function()
@@ -58,7 +63,7 @@ function T.everywhere_filler_cells_keep_raw_header_zero_with_new_bark_as_logical
 
     -- Logical behavior owner over a north-filler coordinate.
     local world = assert(cache:loadLua(MapAssetCache.worldPath()))
-    loader = FieldMapLoader.new(cache, world)
+    loader = FieldMapLoader.new(cache, world, { acquireSource = acquireSource })
     local newBark = loader:load(NEW_BARK_MAP_ID)
     local calls = { lookups = {} }
     local zoneController = FieldZoneController.new({

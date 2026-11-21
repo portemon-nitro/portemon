@@ -95,6 +95,13 @@ local WAIT = {}
 ---@field wrapByMaterial table<number, { x: string, y: string }>
 ---@field bounds table<string, unknown>
 
+-- The per-build options one scene task passes through to its pool: the pool's
+-- own options plus the seeded time-of-day band and the selected runtime's
+-- resident source acquirer the scene's collision borrows through.
+---@class MapSceneLoader.BuildOptions: GpuAssetPoolOptions
+---@field timeBand string?
+---@field acquireSource (fun(reference: unknown): table<string, unknown>)?
+
 ---@class MapSceneLoader.BuildTask
 ---@field state "active"|"ready"|"transferred"|"released"|"failed"
 ---@field pool GpuAssetPool
@@ -103,13 +110,16 @@ local WAIT = {}
 ---@field result MapSceneLoader.Runtime?
 ---@field _queue table<string, unknown>?
 ---@field _outstanding integer?
----@field _stashed table<integer, table<string, unknown>>?
+---@field _transfer ResidentAssetCacheLease? lease taken but not yet returned after its upload
+---@field _decoded ResidentAssetCache? borrowed decoded CPU owner the taken leases return through
+---@field _stashed table<integer, ResidentAssetCacheLease>?
 ---@field _finishing boolean
 ---@field advance fun(self: MapSceneLoader.BuildTask, maxWorkUnits: integer): integer
 ---@field isReady fun(self: MapSceneLoader.BuildTask): boolean
 ---@field takeResult fun(self: MapSceneLoader.BuildTask): MapSceneLoader.Runtime
 ---@field finish fun(self: MapSceneLoader.BuildTask): MapSceneLoader.Runtime
 ---@field release fun(self: MapSceneLoader.BuildTask)
+---@field returnPreparedLeases fun(self: MapSceneLoader.BuildTask)
 
 ---@class MapSceneLoader.Runtime
 ---@field scene table<string, unknown>
@@ -193,13 +203,13 @@ local function materialsById(list, acquireImage, checkpoint)
 end
 
 -- Build the runtime scene against an already-created pool. Raises on any
--- failure; the owning build task releases the pool in that case. `opts.timeBand` seeds the time-of-day band
--- (default: the band of the default field time, noon = day); `opts.meshBuilder`
--- passes through to the pool (the GPU seam, injectable in headless tests). `opts.assetPreparation` routes mesh/image acquisition
--- through a preparation queue: CPU work runs on the worker while this build
--- blocks at the first unprepared resource, and GPU realization still happens
--- here on the main thread. `task` carries the outstanding prepared token
--- across staged resumes when a queue is present.
+-- failure; the owning build task releases the pool in that case. `opts.timeBand`
+-- seeds the time-of-day band (default: the band of the default field time, noon
+-- = day). `opts.assetPreparation` routes mesh/image acquisition through a
+-- preparation queue: CPU work runs on the worker while this build blocks at the
+-- first unprepared resource, and GPU realization still happens here on the main
+-- thread. `task` carries the outstanding prepared token across staged resumes
+-- when a queue is present.
 ---@param pool GpuAssetPool
 ---@param cacheFs CacheFs
 ---@param scene table<string, unknown>
@@ -235,26 +245,30 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
   end
   -- Block at the first unprepared resource: request it, then poll until it
   -- is ready, yielding WAIT (zero work) while pending. The task owns the
-  -- outstanding token from the request until the queue consumed it -- a take
-  -- or a wait that returned a payload -- so finish() can block-wait it and
-  -- every failure unwind can cancel it exactly once.
+  -- outstanding token from the request until the queue consumes it -- a take,
+  -- or the wait that already transferred the lease -- so finish() can
+  -- block-wait it and every failure unwind can cancel it exactly once. What a
+  -- take or wait transfers is the shared decoded lease; the task returns it as
+  -- soon as the GPU realization has consumed the payload.
   local function awaitPrepared(kind, path)
     local priority = task._finishing and "demand" or "prefetch"
     local token = queue:request(kind, path, priority)
     task._outstanding = token
     while true do
       if task._stashed ~= nil and task._stashed[token] ~= nil then
-        -- The finishing wait already consumed the ticket.
+        -- The finishing wait already transferred the lease.
         local stashed = task._stashed[token]
         task._stashed[token] = nil
         task._outstanding = nil
+        task._transfer = stashed
         return stashed
       end
       local status, failure = queue:poll(token)
       if status == "ready" then
-        local payload = queue:take(token)
+        local lease = queue:take(token)
         task._outstanding = nil
-        return payload
+        task._transfer = lease
+        return lease
       end
       if status == "failed" then
         error("prepared asset " .. tostring(path) .. " (" .. kind .. ") failed: " .. tostring(failure), 0)
@@ -270,7 +284,14 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
       -- per decode context, one terrain repair) and this staged build only
       -- realizes the resulting upload packets into LÖVE meshes.
       if queue then
-        entry = pool:preparedMesh(path, awaitPrepared)
+        -- The pool borrows the awaited lease's shared value for the upload; the
+        -- task returns that lease immediately afterwards, on success or failure.
+        local realizedOk, realized = pcall(pool.preparedMesh, pool, path, awaitPrepared)
+        task:returnPreparedLeases()
+        if not realizedOk then
+          error(realized, 0)
+        end
+        entry = realized --[[@as table]]
       else
         entry = pool:meshFor(path)
       end
@@ -705,18 +726,29 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
     end
   end
 
-  -- Collision from the G4CL asset (CollisionGridAsset bytes), around the
-  -- cell origin. Decoded through the same pure project-owned asset path the
-  -- simulation-only loaders use, so the visual scene carries the grid the
-  -- door-ownership pass resolves against.
-  local collisionBytes = assert(cacheFs:read(scene.collision.file), "missing collision asset")
-  local grid, decodeErr =
-    CollisionGridAsset.decode(collisionBytes, { mapId = scene.mapId, path = scene.collision.file })
-  assert(grid, decodeErr and decodeErr.message or "malformed collision asset")
+  -- Collision from the resident G4CL bytes, around the cell origin. The scene
+  -- borrows the compact source through the selected runtime and reads single
+  -- cells, so the visual scene carries the grid the door-ownership pass resolves
+  -- against without an expanded cell array. A failed open returns the staged
+  -- source interest before the malformed-data error propagates.
+  local collisionPath = scene.collision.file
+  local collisionReference = assert(cacheFs:resolveAsset(collisionPath), "missing collision asset")
+  local acquireSource =
+    assert(opts.acquireSource, "presented scene collision requires the selected runtime's source acquirer")
+  local collisionLease = acquireSource(collisionReference)
+  local collisionView, collisionErr = CollisionGridAsset.open(collisionLease.value, {
+    mapId = scene.mapId,
+    path = collisionPath,
+  })
+  if collisionView == nil then
+    collisionLease:release()
+    assert(nil, collisionErr and collisionErr.message or "malformed collision asset")
+  end
   checkpoint()
-  local collision = CollisionGrid.new(grid, {
+  local collision = CollisionGrid.new(collisionView --[[@as CollisionGridAsset.View]], {
     worldOriginX = scene.matrix.worldOriginX,
     worldOriginZ = scene.matrix.worldOriginZ,
+    sourceLease = collisionLease,
   })
 
   -- The door tiles of this scene: every DOOR-kind (behavior 105) tile of
@@ -843,8 +875,14 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
     runtimePropDraws = #runtime.runtimePropDraws,
   }
 
+  local released = false
   function runtime:release()
+    if released then
+      return
+    end
+    released = true
     pool:release()
+    collision:dispose()
   end
 
   for _, resolver in ipairs(liveImageResolvers) do
@@ -862,6 +900,7 @@ BuildTask.__index = BuildTask
 local function failTask(task, err)
   if task.state == "active" then
     task.state = "failed"
+    task:returnPreparedLeases()
     local token = task._outstanding
     task._outstanding = nil
     if token ~= nil and task._queue ~= nil then
@@ -924,8 +963,31 @@ function BuildTask:takeResult()
   return result
 end
 
----@return MapSceneLoader.Runtime
+-- Return every decoded lease this task transferred out of the queue but whose
+-- upload has not consumed it yet: the in-flight transfer and any lease the
+-- finishing wait stashed for a build that never resumed.
 ---@param self MapSceneLoader.BuildTask
+function BuildTask:returnPreparedLeases()
+  local transfer = self._transfer
+  self._transfer = nil
+  local decoded = self._decoded
+  if decoded == nil then
+    return
+  end
+  if transfer ~= nil then
+    decoded:returnLease(transfer)
+    decoded:trim()
+  end
+  local stashed = self._stashed
+  if stashed ~= nil then
+    self._stashed = nil
+    for _, lease in pairs(stashed) do
+      decoded:returnLease(lease)
+      decoded:trim()
+    end
+  end
+end
+
 function BuildTask:finish()
   -- Finishing is synchronous from here on: the outstanding prefetch token,
   -- if any, becomes demand before the block-wait, and every later resource
@@ -970,6 +1032,7 @@ function BuildTask:release()
   end
   self.state = "released"
   self.result = nil
+  self:returnPreparedLeases()
   local token = self._outstanding
   self._outstanding = nil
   if token ~= nil and self._queue ~= nil then
@@ -999,7 +1062,7 @@ end
 -- without it the build keeps the direct synchronous path.
 ---@param cacheFs CacheFs
 ---@param scene table<string, unknown>
----@param opts { graphics?: GpuAssetPool.Graphics, timeBand?: string, meshBuilder?: GpuAssetPool.MeshBuilder, assetPreparation?: table<string, unknown>, imageAssets?: table<string, unknown> }?
+---@param opts MapSceneLoader.BuildOptions?
 ---@return MapSceneLoader.BuildTask
 function MapSceneLoader.begin(cacheFs, scene, opts)
   opts = opts or {}
@@ -1014,7 +1077,9 @@ function MapSceneLoader.begin(cacheFs, scene, opts)
     pool = pool,
     poolReleased = false,
     _queue = opts.assetPreparation,
+    _decoded = opts.decoded,
     _outstanding = nil,
+    _transfer = nil,
     _stashed = nil,
     _finishing = false,
     advance = BuildTask.advance,
@@ -1022,6 +1087,7 @@ function MapSceneLoader.begin(cacheFs, scene, opts)
     takeResult = BuildTask.takeResult,
     finish = BuildTask.finish,
     release = BuildTask.release,
+    returnPreparedLeases = BuildTask.returnPreparedLeases,
   }
   setmetatable(task, BuildTask)
   task.thread = coroutine.create(function()
@@ -1034,7 +1100,7 @@ end
 -- background physical presentation prefetch.
 ---@param cacheFs CacheFs
 ---@param scene table<string, unknown>
----@param opts { graphics?: GpuAssetPool.Graphics, timeBand?: string, meshBuilder?: GpuAssetPool.MeshBuilder, imageAssets?: table<string, unknown> }?
+---@param opts MapSceneLoader.BuildOptions?
 ---@return table<string, unknown>
 function MapSceneLoader.load(cacheFs, scene, opts)
   return MapSceneLoader.begin(cacheFs, scene, opts):finish()
@@ -1060,6 +1126,10 @@ end
 -- Build a presentation runtime for one generated physical cell. The cell uses
 -- the same normalized scene and model descriptors as a full map scene, while
 -- the physical-world owner supplies its translated render origin.
+---@param cacheFs CacheFs
+---@param cell table<string, unknown>
+---@param opts MapSceneLoader.BuildOptions?
+---@return table<string, unknown>
 function MapSceneLoader.loadCell(cacheFs, cell, opts)
   return MapSceneLoader.beginCell(cacheFs, cell, opts):finish()
 end
@@ -1068,7 +1138,7 @@ end
 -- the same staged scene task as a full logical scene.
 ---@param cacheFs CacheFs
 ---@param cell table<string, unknown>
----@param opts table<string, unknown>?
+---@param opts MapSceneLoader.BuildOptions?
 ---@return MapSceneLoader.BuildTask
 function MapSceneLoader.beginCell(cacheFs, cell, opts)
   assert(type(cell) == "table", "field cell descriptor required")

@@ -144,6 +144,15 @@ local function compositionRuntime(versionId, helper)
     -- Summary owner working without a second worker beside the doubles.
     imageAssets = helper.imagePool,
     assetPreparation = FakePreparationQueue.new(),
+    -- The bag hero borrows the selected decoded owner for the leases it takes
+    -- back from the preparation worker; the stub pair keeps that capability
+    -- present without a second CPU owner beside the injected worker double.
+    decoded = {
+      returnLease = function()
+        return true
+      end,
+      trim = function() end,
+    },
     easyChatCatalog = {
       template = function()
         return nil

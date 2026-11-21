@@ -253,6 +253,7 @@ end
 ---@field pendingFocusReturn string?
 ---@field versionId string
 ---@field cacheFs table<string, unknown> selected epoch's installed generated view
+---@field assetRuntime { decoded: table<string, unknown>, preparationQueue: table<string, unknown> } borrowed selected CPU runtime
 ---@field saveId string
 ---@field startupPairIndex integer selected 1..32 walking pair, decorative only
 ---@field width number
@@ -543,16 +544,19 @@ function State.new(options)
   -- those paths never reach pooled draws. The renderer borrows this
   -- pool; the State disposes it after renderer teardown.
   local cacheFs = assert(options.cacheFs, "the save editor needs the selected epoch's installed generated view")
-  local sessionPool
-  do
-    local poolOk, poolOrError = pcall(ImageAssetPool.new, cacheFs, {})
-    if poolOk then
-      sessionPool = poolOrError
-    end
-  end
+  local assetRuntime = assert(options.assetRuntime, "the save editor needs the selected CPU runtime")
+  local sessionPool = ImageAssetPool.new(cacheFs, {
+    queue = assetRuntime.preparationQueue,
+    decoded = assetRuntime.decoded,
+  })
   local text = makeText(cacheFs, sessionPool)
-  local rendererOk, rendererOrError =
-    pcall(Renderer.new, { text = text, versionId = options.versionId, imagePool = sessionPool })
+  local rendererOk, rendererOrError = pcall(Renderer.new, {
+    text = text,
+    versionId = options.versionId,
+    imagePool = sessionPool,
+    assetPreparation = assetRuntime.preparationQueue,
+    decoded = assetRuntime.decoded,
+  })
   if not rendererOk then
     pcall(function()
       text:release()
@@ -586,6 +590,7 @@ function State.new(options)
     onResult = options.onResult,
     navigationDebug = options.navigationDebug == true,
     displayContext = displayContext,
+    assetRuntime = assetRuntime,
     controller = Controller.new(),
     modalStack = ModalStack.new(),
     modalLayerSequence = 0,
@@ -855,11 +860,15 @@ function State:update(dt)
     end
     self.partyView = PartyView.new(assert(graphOrError.context))
     self.session = assert(graphOrError.session)
+    local runtime = assert(self.assetRuntime, "the save editor lost its selected CPU runtime")
     self.locationService = LocationService.new({
       cacheFs = assert(graphOrError.cacheFs),
       world = assert(graphOrError.world),
       derivedAssets = assert(graphOrError.derivedAssets),
       savedObjects = assert(graphOrError.savedObjects),
+      acquireSource = function(reference)
+        return runtime.preparationQueue:acquireSource(reference)
+      end,
     })
     self._locationMapSummaryTask = self.locationService:newMapSummaryTask()
     local originalLocation = assert(self.session:snapshot().location)
@@ -3062,11 +3071,15 @@ function State:importPresetFile(file)
   end
 
   local graph = assert(self.dependencies)
+  local runtime = assert(self.assetRuntime, "the save editor lost its selected CPU runtime")
   local service = LocationService.new({
     cacheFs = assert(graph.cacheFs),
     world = world,
     derivedAssets = assert(graph.derivedAssets),
     savedObjects = assert(graph.savedObjects),
+    acquireSource = function(reference)
+      return runtime.preparationQueue:acquireSource(reference)
+    end,
   })
   local setupOk, setupError = pcall(function()
     service:openMap(assert(resolvedMapId), { purpose = "verify" })

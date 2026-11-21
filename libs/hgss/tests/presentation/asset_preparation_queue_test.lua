@@ -15,6 +15,23 @@ local function requireQueue()
   return AssetPreparationQueue --[[@as table]]
 end
 
+-- The selected decoded CPU owner every queue requires: one shared kernel with a
+-- generous idle budget, so a repeated request inside one test resolves as a
+-- resident identity. A test that asserts charges builds and inspects its own.
+local function newQueue(cacheFs, options)
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+  options = options or {}
+  options.decoded = ResidentAssetCache.new({
+    idleByteLimit = 32 * 1024 * 1024,
+    release = function(value)
+      if type(value.release) == "function" then
+        value:release()
+      end
+    end,
+  })
+  return requireQueue().new(cacheFs, options)
+end
+
 local function fakeCacheFs()
   local references = {}
   return {
@@ -30,9 +47,12 @@ local function fakeCacheFs()
           sourceId = "base:test-generation",
           contentId = "test-generation\0" .. relativePath,
           size = 0,
-          data = { path = relativePath, getString = function()
-            return "resident:" .. relativePath
-          end },
+          data = {
+            path = relativePath,
+            getString = function()
+              return "resident:" .. relativePath
+            end,
+          },
         }
         references[relativePath] = reference
       end
@@ -169,14 +189,29 @@ local function responseChannelFor(state, requestIndex)
   error("no response channel found")
 end
 
+-- Owned upload buffers in the shape a completion publishes: a measurable size
+-- and one release.
+local function ownedBuffer(bytes)
+  return {
+    released = 0,
+    attached = bytes,
+    getSize = function(self)
+      return #self.attached
+    end,
+    release = function(self)
+      self.released = self.released + 1
+    end,
+  }
+end
+
 local function meshResponse(token, path)
   return {
     token = token,
     ok = true,
     kind = "mesh",
     path = path,
-    vertexData = { fake = "vertexData" },
-    indexData = { fake = "indexData" },
+    vertexData = ownedBuffer(string.rep("\0", 120)),
+    indexData = ownedBuffer(string.rep("\0", 6)),
     vertexCount = 3,
     indexCount = 3,
     indexType = "uint16",
@@ -194,7 +229,7 @@ function T.one_time_take_and_unknown_token_fail_loudly()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local token = queue:request("mesh", "geometry/a.g4mesh", "demand")
     Assert.isTrue(requestWasPushedFor(host, token), "an idle worker dispatches the only queued request")
 
@@ -202,7 +237,7 @@ function T.one_time_take_and_unknown_token_fail_loudly()
     responseChannelFor(host, requestIndex):push(meshResponse(token, "geometry/a.g4mesh"))
 
     Assert.equal(queue:poll(token), "ready")
-    local prepared = queue:take(token)
+    local prepared = assert(queue:take(token)).value.payload
     Assert.notNil(prepared, "take transfers the prepared payload")
     Assert.throws(function()
       queue:take(token)
@@ -229,7 +264,7 @@ function T.cancelled_ready_payload_never_transfers_but_leaves_unrelated_work_alo
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local first = queue:request("mesh", "geometry/first.g4mesh", "demand")
     local requestIndex = requestChannelIndexFor(host, first)
     responseChannelFor(host, requestIndex):push(meshResponse(first, "geometry/first.g4mesh"))
@@ -256,7 +291,7 @@ function T.demand_dispatches_before_queued_prefetch_without_preempting_running_w
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
 
     local running = queue:request("mesh", "geometry/running.g4mesh", "prefetch")
     Assert.isTrue(requestWasPushedFor(host, running), "the idle worker takes the first request immediately")
@@ -284,7 +319,7 @@ function T.queued_cancellation_never_reaches_the_worker()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local running = queue:request("mesh", "geometry/running.g4mesh", "prefetch")
     local queued = queue:request("mesh", "geometry/queued.g4mesh", "prefetch")
 
@@ -308,7 +343,7 @@ function T.running_cancellation_discards_the_late_result()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local running = queue:request("mesh", "geometry/running.g4mesh", "demand")
     Assert.isTrue(requestWasPushedFor(host, running))
 
@@ -349,7 +384,7 @@ function T.worker_failure_does_not_wedge_subsequent_requests()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local failing = queue:request("mesh", "geometry/broken.g4mesh", "demand")
     local requestIndex = requestChannelIndexFor(host, failing)
     responseChannelFor(host, requestIndex):push(failureResponse(failing, "mesh", "geometry/broken.g4mesh"))
@@ -369,11 +404,31 @@ function T.worker_failure_does_not_wedge_subsequent_requests()
   end)
 end
 
+-- A queue that never dispatched owns no worker: compact source acquisition and
+-- an unused selection must not depend on a thread host at all.
+function T.release_before_first_dispatch_creates_no_worker()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(fakeCacheFs())
+    queue:release()
+    queue:release()
+    Assert.equal(#host.threads, 0, "a queue released before its first dispatch creates no worker")
+    Assert.equal(#host.channels, 0, "no channel pair exists without a worker")
+  end)
+end
+
+-- Once dispatched, one persistent worker is owned for the queue lifetime and
+-- released exactly once.
 function T.release_while_idle_joins_the_worker_and_is_idempotent()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
+    local token = queue:request("mesh", "geometry/idle.g4mesh", "demand")
+    local requestIndex = requestChannelIndexFor(host, token)
+    responseChannelFor(host, requestIndex):push(meshResponse(token, "geometry/idle.g4mesh"))
+    Assert.equal(queue:poll(token), "ready")
     queue:release()
     queue:release()
     Assert.equal(#host.threads, 1, "one persistent worker is owned for the queue lifetime")
@@ -385,7 +440,7 @@ function T.release_while_busy_drains_and_discards_outstanding_work()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local running = queue:request("mesh", "geometry/running.g4mesh", "demand")
     Assert.isTrue(requestWasPushedFor(host, running))
 
@@ -402,7 +457,11 @@ function T.default_construction_starts_the_worker_from_a_literal_require_bootstr
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs(), { thread = host.love.thread })
+    local queue = newQueue(fakeCacheFs(), { thread = host.love.thread })
+    Assert.equal(#host.threads, 0, "constructing the queue starts no worker")
+    Assert.equal(#host.channels, 0, "constructing the queue creates no channel pair")
+    local token = queue:request("mesh", "geometry/bootstrap.g4mesh", "demand")
+    Assert.isTrue(requestWasPushedFor(host, token), "the first dispatch starts the worker")
     local source = host.threadSources[1]
     Assert.equal(type(source), "string", "the worker starts from a literal bootstrap string")
     Assert.isTrue(
@@ -426,7 +485,7 @@ function T.cancelled_running_work_keeps_the_physical_slot_until_its_reply()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local runningPrefetch = queue:request("mesh", "geometry/running.g4mesh", "prefetch")
     Assert.isTrue(requestWasPushedFor(host, runningPrefetch), "the idle worker takes the first request immediately")
     local queuedPrefetch = queue:request("mesh", "geometry/queued.g4mesh", "prefetch")
@@ -467,7 +526,7 @@ function T.stopped_worker_fails_pending_and_future_requests()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local token = queue:request("mesh", "geometry/stalled.g4mesh", "demand")
     Assert.isTrue(requestWasPushedFor(host, token), "the idle worker takes the request immediately")
 
@@ -508,7 +567,7 @@ function T.ready_payload_survives_worker_death_while_pending_work_fails()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local first = queue:request("mesh", "geometry/first.g4mesh", "demand")
     local second = queue:request("mesh", "geometry/second.g4mesh", "demand")
     Assert.isTrue(requestWasPushedFor(host, first), "the idle worker takes the first request immediately")
@@ -522,7 +581,7 @@ function T.ready_payload_survives_worker_death_while_pending_work_fails()
     host.threads[1]:stop("late worker crash")
 
     Assert.equal(queue:poll(first), "ready", "a drained ready payload stays transferable after the worker dies")
-    local prepared = queue:take(first)
+    local prepared = assert(queue:wait(first)).value.payload
     Assert.notNil(prepared, "the ready payload transfers exactly once despite the later worker death")
 
     local pendingState, pendingFailure = queue:poll(second)
@@ -540,7 +599,7 @@ function T.release_after_worker_death_joins_once_without_masking_cleanup()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local token = queue:request("mesh", "geometry/stalled.g4mesh", "demand")
     Assert.isTrue(requestWasPushedFor(host, token), "the idle worker takes the request immediately")
 
@@ -566,7 +625,7 @@ function T.synchronous_wait_reobserves_worker_death_during_channel_block()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local token = queue:request("mesh", "geometry/stalled.g4mesh", "demand")
     Assert.isTrue(requestWasPushedFor(host, token), "the idle worker takes the request immediately")
 
@@ -603,7 +662,7 @@ function T.demand_admission_wins_over_queued_prefetch_when_request_discovers_a_c
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local running = queue:request("mesh", "geometry/running.g4mesh", "prefetch")
     Assert.isTrue(requestWasPushedFor(host, running), "the idle worker takes the first request immediately")
     local queuedPrefetch = queue:request("mesh", "geometry/queued.g4mesh", "prefetch")
@@ -647,7 +706,7 @@ function T.cancelled_running_prefetch_holds_the_worker_until_queued_demand_dispa
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local running = queue:request("mesh", "geometry/running.g4mesh", "prefetch")
     Assert.isTrue(requestWasPushedFor(host, running), "the idle worker takes the first request immediately")
     local queuedDemand = queue:request("mesh", "geometry/queued-demand.g4mesh", "demand")
@@ -696,7 +755,7 @@ function T.late_reply_after_mass_cancellation_dispatches_exactly_one_job()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local running = queue:request("mesh", "geometry/running.g4mesh", "demand")
     Assert.isTrue(requestWasPushedFor(host, running), "the idle worker takes the first request immediately")
     local firstQueued = queue:request("mesh", "geometry/first-queued.g4mesh", "prefetch")
@@ -733,7 +792,7 @@ function T.queued_wait_reobserves_worker_death_through_bounded_demands()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local running = queue:request("mesh", "geometry/running.g4mesh", "demand")
     Assert.isTrue(requestWasPushedFor(host, running), "the idle worker takes the first request immediately")
     local queued = queue:request("mesh", "geometry/queued.g4mesh", "demand")
@@ -782,7 +841,7 @@ function T.dispatched_requests_carry_the_resolved_resident_payload()
   local host = fakeThreadHost()
   withLove(host.love, function()
     local cacheFs = fakeCacheFs()
-    local queue = AssetPreparationQueue.new(cacheFs)
+    local queue = newQueue(cacheFs)
     local token = queue:request("mesh", "geometry/a.g4mesh", "demand")
 
     local record = nil
@@ -798,7 +857,7 @@ function T.dispatched_requests_carry_the_resolved_resident_payload()
     local reference = assert(cacheFs:resolveAsset("geometry/a.g4mesh"), "the queue resolves the resident reference")
     Assert.isTrue(record.data == reference.data, "the worker receives the resolved resident bytes themselves")
     Assert.equal(record.path, "geometry/a.g4mesh", "the logical path still names the job for diagnostics")
-    Assert.equal(record.logicalPath, "geometry/a.g4mesh", "the logical path identifies the decoded payload")
+    Assert.isNil(record.logicalPath, "the job carries one logical path, not a second bank-memo identity")
     Assert.isNil(record.versionId, "the worker builds no second versioned cache")
     Assert.equal(record.data:getString(), "resident:geometry/a.g4mesh", "the payload carries the selected bytes")
     Assert.equal(queue:poll(token), "pending", "no reply was faked, so the token stays pending")
@@ -810,7 +869,7 @@ function T.finish_promotes_the_queued_prefetch_token_to_demand()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local running = queue:request("mesh", "geometry/running.g4mesh", "prefetch")
     Assert.isTrue(requestWasPushedFor(host, running), "the idle worker takes the first request immediately")
     local queued = queue:request("mesh", "geometry/queued.g4mesh", "prefetch")
@@ -845,7 +904,7 @@ function T.identical_inflight_requests_share_one_worker_dispatch()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local first = queue:request("mesh", "geometry/shared.g4mesh", "demand")
     Assert.isTrue(requestWasPushedFor(host, first), "the idle worker takes the first request immediately")
     -- An identical in-flight request keeps its own token but never
@@ -861,8 +920,8 @@ function T.identical_inflight_requests_share_one_worker_dispatch()
     responseChannelFor(host, requestIndex):push(meshResponse(first, "geometry/shared.g4mesh"))
     Assert.equal(queue:poll(first), "ready")
     Assert.equal(queue:poll(second), "ready", "the linked token observes the shared result")
-    local firstPayload = queue:take(first)
-    local secondPayload = queue:take(second)
+    local firstPayload = assert(queue:take(first)).value.payload
+    local secondPayload = assert(queue:take(second)).value.payload
     Assert.equal(firstPayload.vertexCount, secondPayload.vertexCount, "both tokens take the shared payload")
     Assert.throws(function()
       queue:take(second)
@@ -876,7 +935,7 @@ function T.cancelled_primary_promotes_its_follower_without_redispatch()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local running = queue:request("mesh", "geometry/running.g4mesh", "prefetch")
     local primary = queue:request("mesh", "geometry/shared.g4mesh", "prefetch")
     local follower = queue:request("mesh", "geometry/shared.g4mesh", "prefetch")
@@ -903,7 +962,7 @@ function T.shared_worker_failure_fails_every_link()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local first = queue:request("mesh", "geometry/shared.g4mesh", "demand")
     local second = queue:request("mesh", "geometry/shared.g4mesh", "demand")
     local requestIndex = requestChannelIndexFor(host, first)
@@ -914,11 +973,133 @@ function T.shared_worker_failure_fails_every_link()
   end)
 end
 
+-- A decoded identity publishes one immutable value and every consumer takes
+-- its own kernel lease over it. The hand-off must be a lease rather than raw
+-- payload ownership: only then do equal requests share one charge, one
+-- consumer's return leave the others valid, and the payload free exactly once
+-- after the last return even when it exceeds the idle budget.
+local function ownedBytes(size)
+  return {
+    released = 0,
+    getSize = function(self)
+      return size
+    end,
+    release = function(self)
+      self.released = self.released + 1
+    end,
+  }
+end
+
+local function leaseableMeshResponse(token, path)
+  return {
+    token = token,
+    ok = true,
+    kind = "mesh",
+    path = path,
+    vertexData = ownedBytes(32),
+    indexData = ownedBytes(8),
+    vertexCount = 3,
+    indexCount = 3,
+    indexType = "uint16",
+    centerX = 0,
+    centerY = 0,
+    centerZ = 0,
+  }
+end
+
+local function sharedKernel()
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+  local released = {}
+  local decoded = ResidentAssetCache.new({
+    idleByteLimit = 64,
+    release = function(value)
+      released[#released + 1] = value
+      if type(value.release) == "function" then
+        value:release()
+      end
+    end,
+  })
+  return decoded, released
+end
+
+function T.coalesced_requests_transfer_independent_leases_over_one_charge()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local decoded, released = sharedKernel()
+    local cacheFs = fakeCacheFs()
+    local queue = AssetPreparationQueue.new(cacheFs, { decoded = decoded })
+
+    local primary = queue:request("mesh", "geometry/shared.g4mesh", "demand")
+    local follower = queue:request("mesh", "geometry/shared.g4mesh", "demand")
+    Assert.equal(pushCountFor(host, follower), 0, "an equal request coalesces onto the running job")
+
+    queue:cancel(primary)
+    local late = queue:request("mesh", "geometry/other.g4mesh", "demand")
+    Assert.equal(pushCountFor(host, late), 0, "cancelling the primary frees no physical worker slot")
+
+    local requestIndex = requestChannelIndexFor(host, primary)
+    responseChannelFor(host, requestIndex):push(leaseableMeshResponse(primary, "geometry/shared.g4mesh"))
+    Assert.equal(queue:poll(follower), "ready", "the cancelled primary's completion serves the surviving follower")
+    Assert.equal(pushCountFor(host, late), 1, "the late reply frees the worker for the next job")
+
+    local followerLease = queue:take(follower)
+    Assert.equal(type(followerLease), "table", "a ready token transfers a lease")
+    Assert.notNil(
+      followerLease.value,
+      "take must transfer a lease over the shared decoded value instead of raw payload ownership"
+    )
+    local value = followerLease.value
+    Assert.equal(value.kind, "mesh", "the lease exposes the requested decode kind")
+    Assert.notNil(value.payload.vertexData, "the lease exposes the immutable decoded payload")
+    Assert.equal(value.nativeBytes, 40, "native bytes count the owned output buffers, never the borrowed source")
+    Assert.equal(value.metadataChargeBytes, 128, "one decoded value carries its policy charge")
+    local charge = value.nativeBytes + value.metadataChargeBytes
+    Assert.equal(decoded:stats().pinnedBytes, charge, "the whole weight is pinned while the lease lives")
+    Assert.equal(decoded:stats().idleBytes, 0, "a live lease keeps no idle bytes")
+    local ownedVertex = value.payload.vertexData
+    local ownedIndex = value.payload.indexData
+
+    local revisit = queue:request("mesh", "geometry/shared.g4mesh", "demand")
+    Assert.equal(queue:poll(revisit), "ready", "a resident identity resolves without another worker job")
+    Assert.equal(pushCountFor(host, revisit), 0, "a resident identity never dispatches the worker again")
+    local revisitLease = queue:take(revisit)
+    Assert.isTrue(revisitLease.value == value, "independent consumers share one immutable value")
+    Assert.equal(decoded:stats().pinnedBytes, charge, "a repeated consumer charges the shared value once")
+
+    local reference = assert(cacheFs:resolveAsset("geometry/shared.g4mesh"))
+    Assert.equal(
+      reference.data:getString(),
+      "resident:geometry/shared.g4mesh",
+      "the borrowed base bytes stay untouched and out of the charge"
+    )
+
+    Assert.isTrue(decoded:returnLease(followerLease), "the owner accepts the first lease return")
+    Assert.isNil(followerLease.value, "a returned lease clears its exposed value")
+    Assert.notNil(revisitLease.value, "another consumer keeps its valid lease after the first return")
+    Assert.equal(decoded:stats().pinnedBytes, charge, "the shared value stays pinned for the surviving lease")
+    Assert.equal(#released, 0, "no shared payload is freed while a lease remains")
+    Assert.isFalse(decoded:returnLease(followerLease), "repeating a return is harmless")
+
+    Assert.isTrue(decoded:returnLease(revisitLease))
+    Assert.equal(decoded:stats().pinnedBytes, 0, "the last return unpins the shared value")
+    Assert.equal(decoded:stats().idleBytes, charge, "the shared value becomes idle at its single charge")
+    Assert.equal(decoded:trim(), 1, "a demand larger than the idle budget is evicted after its final return")
+    Assert.equal(#released, 1, "the shared payload is freed exactly once")
+    Assert.isTrue(released[1] == value, "the freed value is the one every consumer shared")
+    Assert.equal(ownedVertex.released, 1, "the owned vertex buffer is released exactly once")
+    Assert.equal(ownedIndex.released, 1, "the owned index buffer is released exactly once")
+
+    queue:cancel(late)
+    queue:release()
+  end)
+end
+
 function T.linked_demand_upgrades_a_queued_prefetch_job()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
-    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local queue = newQueue(fakeCacheFs())
     local running = queue:request("mesh", "geometry/running.g4mesh", "prefetch")
     local primary = queue:request("mesh", "geometry/shared.g4mesh", "prefetch")
     local follower = queue:request("mesh", "geometry/shared.g4mesh", "demand")

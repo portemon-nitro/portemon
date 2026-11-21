@@ -418,6 +418,8 @@ local function movieGraphics(fakeOpts)
       end
     end
     local mesh = { released = false, releaseCount = 0 }
+    mesh.setVertices = function() end
+    mesh.setVertexMap = function() end
     mesh.release = function()
       mesh.released = true
       mesh.releaseCount = mesh.releaseCount + 1
@@ -432,6 +434,31 @@ end
 ---@param cacheFs table
 ---@param graphics table
 ---@return table player
+-- The selected CPU pair an opening movie composes over: these cases drive the
+-- movie's own staging with fixture bytes, so the queue realizes the same
+-- upload shape the worker publishes and the decoded owner returns each lease.
+local function withPreparation(options)
+  local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
+  local cacheFs = options.cacheFs
+  local queue = {}
+  function queue:request(kind, path, priority)
+    return { kind = kind, path = path, priority = priority }
+  end
+  function queue:wait(request)
+    local bytes = assert(cacheFs:read(request.path), "missing fixture geometry " .. tostring(request.path))
+    local payload = request.kind == "g4gx" and SceneMesh.prepareNativeBank(bytes) or SceneMesh.prepareUpload(bytes)
+    return { value = { kind = request.kind, payload = payload } }
+  end
+  local decoded = {}
+  function decoded:returnLease()
+    return true
+  end
+  function decoded:trim() end
+  options.assetPreparation = options.assetPreparation or queue
+  options.decoded = options.decoded or decoded
+  return requireMovie().new(options)
+end
+
 local function openMovie(scenes, cacheFs, graphics)
   local context = DisplayContext.new({
     graphics = graphics,
@@ -444,7 +471,7 @@ local function openMovie(scenes, cacheFs, graphics)
     end,
   })
   local Movie = requireMovie()
-  return Movie.new({
+  return withPreparation({
     versionId = VERSION_ID,
     splRandomState = { state = 0 },
     scenes = scenes,
@@ -798,7 +825,7 @@ function T.construction_fails_cleanly_when_the_first_acquisition_fails()
     end,
   })
   Assert.throws(function()
-    Movie.new({
+    withPreparation({
       versionId = VERSION_ID,
       scenes = scenes,
       cacheFs = cacheFs,
@@ -2407,7 +2434,7 @@ local function openMovieSized(scenes, cacheFs, graphics, width, height)
       }
     end,
   })
-  return Movie.new({
+  return withPreparation({
     versionId = VERSION_ID,
     splRandomState = { state = 0 },
     scenes = scenes,
@@ -6140,11 +6167,7 @@ function T.starter_child_scale_interpolates_raw_unity_curve_and_paints_once_norm
     drawnSx[age] = assert(found, "the animated child paints at age " .. age).sx
   end
   for age = 0, 3 do
-    Assert.equal(
-      drawnSx[age],
-      expectWidths[age],
-      "the painted child width follows the raw scale at age " .. age
-    )
+    Assert.equal(drawnSx[age], expectWidths[age], "the painted child width follows the raw scale at age " .. age)
   end
   movie:dispose()
 end

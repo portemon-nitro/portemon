@@ -125,10 +125,11 @@ end
 local POOL_IMAGE_WIDTH = 128
 local POOL_IMAGE_HEIGHT = 128
 
+---@param preparation { queue: table, decoded: table }? borrowed CPU preparation the session owner reports
 ---@return table<string, unknown> pool double with stamped source geometry
 ---@return SharedImagePoolFake inner fake behind pool census assertions
-local function sizedImagePool()
-  local inner = SharedImagePoolFake.new()
+local function sizedImagePool(preparation)
+  local inner = SharedImagePoolFake.new(preparation and { preparation = preparation } or nil)
   local pool = {}
   function pool:request(path, sampler, priority)
     return inner:request(path, sampler, priority)
@@ -170,13 +171,17 @@ local function sizedImagePool()
   function pool:stats()
     return inner:stats()
   end
+  function pool:preparation()
+    return inner:preparation()
+  end
   return pool, inner
 end
 
+---@param preparation { queue: table, decoded: table }? borrowed CPU preparation the session owner reports
 ---@return table<string, unknown> pool double with stamped source geometry
 ---@return SharedImagePoolFake inner fake behind pool census assertions
-function SummaryAcceptanceFixture.sizedImagePool()
-  return sizedImagePool()
+function SummaryAcceptanceFixture.sizedImagePool(preparation)
+  return sizedImagePool(preparation)
 end
 
 ---@param failures table<string, boolean>? armed failure switches shared with the doubles

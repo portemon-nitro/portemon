@@ -64,6 +64,7 @@ local SaveEditorLocationPolicy = require("app.src.saveeditor.SaveEditorLocationP
 ---@field world SaveEditorStructuralWorld
 ---@field derivedAssets SaveEditorDerivedAssetHost
 ---@field savedObjects { actors: table<string, SaveEditorSavedActor> }
+---@field acquireSource fun(reference: ResidentCache.BlobRef): table<string, unknown> borrowed selected runtime source acquirer
 
 ---@alias SaveEditorDerivedAssetHost table<string, function>
 
@@ -313,7 +314,10 @@ function SaveEditorLocationService.new(options)
     world = options.world,
     derivedAssets = options.derivedAssets,
     actorOccupiedByMap = indexSavedActorPoints(options.savedObjects),
-    loader = FieldMapLoader.new(options.cacheFs, options.world, { derivedAssets = options.derivedAssets }),
+    loader = FieldMapLoader.new(options.cacheFs, options.world, {
+      derivedAssets = options.derivedAssets,
+      acquireSource = options.acquireSource,
+    }),
     loadTask = nil,
     loadTaskMapId = nil,
     coverageTask = nil,

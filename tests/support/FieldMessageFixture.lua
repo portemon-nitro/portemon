@@ -3,9 +3,13 @@
 -- display text); the bytes come from the production encoder, so a fixture can
 -- never invent a representation the runtime cannot read.
 
+local CacheFs = require("libs.storage.src.CacheFs")
 local FieldMessageAsset = require("libs.assets.src.field.FieldMessageAsset")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
+local ResidentCache = require("libs.storage.src.ResidentCache")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 
 local FieldMessageFixture = {}
 
@@ -44,6 +48,53 @@ function FieldMessageFixture.write(cache, bankId, messages)
   local data = FieldMessageFixture.encode(FieldMessageFixture.bank(bankId, messages))
   cache:write(FieldMessageCache.bankPath(bankId), data)
   return data
+end
+
+---@class FieldMessageFixture.ResidentBanks
+---@field versionId string
+---@field store ResidentCache fixture resident store
+---@field reader CacheFs generated reader over the fixture banks
+
+-- Encoded fixture banks committed as one resident store: a consumer resolves
+-- the immutable reference per bank path exactly as it does against an installed
+-- epoch, so no fixture copies a bank payload into its own view.
+---@param versionId string
+---@param banks table<integer, FieldMessageText.Token[][]>
+---@return FieldMessageFixture.ResidentBanks
+function FieldMessageFixture.resident(versionId, banks)
+  local sourceId = "base:" .. versionId
+  local store = ResidentCache.new(versionId, sourceId)
+  local entries = {}
+  for bankId, messages in pairs(banks) do
+    local path = FieldMessageCache.bankPath(bankId)
+    local data = FieldMessageFixture.encode(FieldMessageFixture.bank(bankId, messages))
+    entries[#entries + 1] = {
+      path = path,
+      data = data,
+      size = data:getSize(),
+      sourceId = sourceId,
+      contentId = versionId .. "\0" .. path,
+    }
+  end
+  if #entries > 0 then
+    store:commit(store:prepare(entries))
+  end
+  return { versionId = versionId, store = store, reader = CacheFs.fromStore(store) }
+end
+
+-- The compact bank consumer a selected session installs over fixture banks: one
+-- resident bank view, the selected runtime's source branch, and the provider
+-- that borrows each open bank through it. The consumer keeps the view alive
+-- while it holds a bank, and dropping it releases both owners.
+---@param banks table<integer, FieldMessageText.Token[][]>
+---@param versionId string?
+---@return FieldMessageProvider provider
+function FieldMessageFixture.provider(banks, versionId)
+  local view = FieldMessageFixture.resident(versionId or "heartgold", banks)
+  local runtime = SelectedAssetRuntimeFixture.new(view.reader)
+  return assert(FieldMessageProvider.new(view.reader, {
+    acquireSource = SelectedAssetRuntimeFixture.acquireSource(runtime),
+  }))
 end
 
 -- The token spellings the producer's tokenizer emits. Ordinary tokens leave

@@ -46,7 +46,8 @@ end
 local function loadScenes(versionId)
   local scenes = {}
   for sceneNumber = 1, 5 do
-    local loaded, err = StartupAssetCache.loadOpeningScene(GeneratedCacheFixture.reader(versionId), sceneNumber, versionId)
+    local loaded, err =
+      StartupAssetCache.loadOpeningScene(GeneratedCacheFixture.reader(versionId), sceneNumber, versionId)
     Assert.notNil(loaded, "scene " .. sceneNumber .. " reads back as a ready bundle: " .. tostring(err))
     scenes[sceneNumber] = loaded
   end
@@ -60,15 +61,33 @@ end
 ---@return table player
 local function openMovie(scope, versionId, width, height)
   local Movie = requireMovie()
+  local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
   local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology("single") })
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
+  local decoded = ResidentAssetCache.new({
+    idleByteLimit = 64 * 1024 * 1024,
+    release = function(value)
+      value:release()
+    end,
+  })
+  local queue = AssetPreparationQueue.new(cacheFs, { decoded = decoded })
+  scope:own({
+    release = function()
+      queue:release()
+      decoded:clear()
+    end,
+  })
   local movie = Movie.new({
     versionId = versionId,
     splRandomState = { state = 0 },
     scenes = loadScenes(versionId),
-    cacheFs = GeneratedCacheFixture.reader(versionId),
+    cacheFs = cacheFs,
     width = width,
     height = height,
     displayContext = context,
+    assetPreparation = queue,
+    decoded = decoded,
   })
   scope:own({
     release = function()

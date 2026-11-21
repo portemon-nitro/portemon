@@ -12,6 +12,7 @@ local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BagCache = require("libs.assets.src.BagCache")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
@@ -856,10 +857,12 @@ end
 
 local function oakCompose(versionId, width, height)
   local audio = FakeAudioOutput.new()
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   return OakIntroComposition.compose({
     candidate = oakCandidate(versionId),
     versionId = versionId,
-    cacheFs = GeneratedCacheFixture.reader(versionId),
+    cacheFs = cacheFs,
+    assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs),
     graphics = love.graphics,
     audioOutput = { audio = audio.audio, sound = audio.sound },
     clock = {

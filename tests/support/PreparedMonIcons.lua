@@ -12,6 +12,7 @@ local FakeCache = require("tests.support.FakeCache")
 local MonCache = require("libs.assets.src.MonCache")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local PngWriter = require("tests.support.PngEncoder")
+local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local PreparedMonIcons = {}
@@ -49,18 +50,13 @@ function PreparedMonIcons.iconCache()
   return cache
 end
 
----@param cache CacheFs backing cache the pool classifies from
----@return table<string, unknown> session image owner for graphics icon preparation
-function PreparedMonIcons.imagePool(cache)
-  local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
-  return ImageAssetPool.new(cache)
-end
-
----@param scope table<string, unknown> graphics ownership scope disposing the pool
+---@param scope table<string, unknown> graphics ownership scope owning the CPU pair and the pool
 ---@param cache CacheFs backing cache the pool classifies from
 ---@return table<string, unknown> session image owner disposed with the scope
 function PreparedMonIcons.scopedImagePool(scope, cache)
-  local pool = PreparedMonIcons.imagePool(cache)
+  local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
+  local runtime = SelectedAssetRuntimeFixture.new(cache, scope)
+  local pool = ImageAssetPool.new(cache, { queue = runtime.preparationQueue, decoded = runtime.decoded })
   scope:own({
     release = function()
       pool:dispose()

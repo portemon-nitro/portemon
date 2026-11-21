@@ -13,6 +13,7 @@ local function withCompositionStubs(fn)
     "libs.ui.src.DisplayContext",
     "app.src.mainmenu.MainMenuRenderer",
     "app.src.mainmenu.MainMenuState",
+    "libs.hgss.src.presentation.ImageAssetPool",
   }
   local previous = {}
   for _, name in ipairs(names) do
@@ -91,6 +92,13 @@ local function withCompositionStubs(fn)
   }
   package.loaded["app.src.mainmenu.MainMenuRenderer"] = mainMenuRenderer
   package.loaded["app.src.mainmenu.MainMenuState"] = mainMenuState
+  package.loaded["libs.hgss.src.presentation.ImageAssetPool"] = {
+    new = function()
+      return {
+        dispose = function() end,
+      }
+    end,
+  }
 
   local ok, result = xpcall(function()
     fn(observed)
@@ -112,10 +120,12 @@ function T.tests.menu_composition_preserves_resource_ownership_on_success_and_fa
     -- The selected epoch's installed generated view, supplied by the caller:
     -- the composition opens no generated root of its own.
     local generatedView = { versionId = "heartgold" }
+    local assetRuntime = { cacheFs = generatedView, decoded = {}, preparationQueue = {} }
     observed.displayContextFailure = "injected display context construction failure"
     local displayOk, displayError = pcall(Composition.new, {
       versionId = "heartgold",
       cacheFs = generatedView,
+      assetRuntime = assetRuntime,
       onResult = onResult,
     })
     Assert.isFalse(displayOk, "display context failure must propagate")
@@ -123,7 +133,12 @@ function T.tests.menu_composition_preserves_resource_ownership_on_success_and_fa
     Assert.equal(observed.textCreated, 0, "display context construction precedes resource acquisition")
     observed.displayContextFailure = nil
 
-    local state = Composition.new({ versionId = "heartgold", cacheFs = generatedView, onResult = onResult })
+    local state = Composition.new({
+      versionId = "heartgold",
+      cacheFs = generatedView,
+      assetRuntime = assetRuntime,
+      onResult = onResult,
+    })
     Assert.equal(observed.textCreated, 1)
     Assert.equal(observed.rendererCreated, 1)
     state:dispose()
@@ -134,6 +149,7 @@ function T.tests.menu_composition_preserves_resource_ownership_on_success_and_fa
     local rendererOk, rendererError = pcall(Composition.new, {
       versionId = "heartgold",
       cacheFs = generatedView,
+      assetRuntime = assetRuntime,
       onResult = onResult,
     })
     Assert.isFalse(rendererOk, "renderer failure must propagate")
@@ -146,6 +162,7 @@ function T.tests.menu_composition_preserves_resource_ownership_on_success_and_fa
     local stateOk, stateError = pcall(Composition.new, {
       versionId = "heartgold",
       cacheFs = generatedView,
+      assetRuntime = assetRuntime,
       onResult = onResult,
     })
     Assert.isFalse(stateOk, "state failure must propagate")

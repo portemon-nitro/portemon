@@ -70,26 +70,36 @@ end
 -- it after the scene.
 local function titlePreparation(scope, cacheFs)
   local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
-  local queue = AssetPreparationQueue.new(cacheFs)
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+  local decoded = ResidentAssetCache.new({
+    idleByteLimit = 64 * 1024 * 1024,
+    release = function(value)
+      value:release()
+    end,
+  })
+  local queue = AssetPreparationQueue.new(cacheFs, { decoded = decoded })
   scope:own({
     release = function()
       queue:release()
+      decoded:clear()
     end,
   })
-  return queue
+  return queue, decoded
 end
 
 local function renderEdition(scope, versionId)
   local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
   local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology("single") })
   local cacheFs = GeneratedCacheFixture.reader(versionId)
+  local queue, decoded = titlePreparation(scope, cacheFs)
   local scene = HgssTitleScene.new({
     versionId = versionId,
     cacheFs = cacheFs,
     width = 512,
     height = 384,
     displayContext = context,
-    assetPreparation = titlePreparation(scope, cacheFs),
+    assetPreparation = queue,
+    decoded = decoded,
   })
   scope:own({
     release = function()
@@ -205,13 +215,15 @@ local function openTitleScene(scope, versionId, width, height, kind)
   local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
   local context = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology(kind) })
   local cacheFs = GeneratedCacheFixture.reader(versionId)
+  local queue, decoded = titlePreparation(scope, cacheFs)
   local scene = HgssTitleScene.new({
     versionId = versionId,
     cacheFs = cacheFs,
     width = width,
     height = height,
     displayContext = context,
-    assetPreparation = titlePreparation(scope, cacheFs),
+    assetPreparation = queue,
+    decoded = decoded,
   })
   scope:own({
     release = function()
@@ -275,19 +287,15 @@ local function titleDeliversSourceCameraAndLighting(scope, context)
     local rawTarget = timeline.camera.target
     Assert.deepEqual(
       camera.view(),
-      Matrix4.lookAt(
-        {
-          rawEye[1] / SOURCE_UNITS_PER_WORLD_UNIT,
-          rawEye[2] / SOURCE_UNITS_PER_WORLD_UNIT,
-          rawEye[3] / SOURCE_UNITS_PER_WORLD_UNIT,
-        },
-        {
-          rawTarget[1] / SOURCE_UNITS_PER_WORLD_UNIT,
-          rawTarget[2] / SOURCE_UNITS_PER_WORLD_UNIT,
-          rawTarget[3] / SOURCE_UNITS_PER_WORLD_UNIT,
-        },
-        { 0, 1, 0 }
-      ),
+      Matrix4.lookAt({
+        rawEye[1] / SOURCE_UNITS_PER_WORLD_UNIT,
+        rawEye[2] / SOURCE_UNITS_PER_WORLD_UNIT,
+        rawEye[3] / SOURCE_UNITS_PER_WORLD_UNIT,
+      }, {
+        rawTarget[1] / SOURCE_UNITS_PER_WORLD_UNIT,
+        rawTarget[2] / SOURCE_UNITS_PER_WORLD_UNIT,
+        rawTarget[3] / SOURCE_UNITS_PER_WORLD_UNIT,
+      }, { 0, 1, 0 }),
       "title opens on its sourced end pose"
     )
     withRendererCapture(scene, function(seen)
@@ -552,12 +560,7 @@ local function compactAndWideFillWithTheLegend(scope, context)
       Assert.isTrue(drawOk, "the cinematic prompt frame draws: " .. tostring(drawFailure))
       local line = assert(seenLine, "prompt draws through the palette path while visible")
       local lineAt = assert(line.at, "prompt line follows a translate")
-      Assert.near(
-        lineAt.x + expectedWidth / 2,
-        prompt.x + prompt.width / 2,
-        2,
-        "ROM prompt centers in its strip"
-      )
+      Assert.near(lineAt.x + expectedWidth / 2, prompt.x + prompt.width / 2, 2, "ROM prompt centers in its strip")
       Assert.near(lineAt.y, prompt.y, 2, "ROM prompt sits at the strip top")
       local fg = assert(scene.bundle.prompt.color.foregroundRgb, "prompt carries its edition ink")
       local function byte(channel)
@@ -594,8 +597,7 @@ local function tallAndDualKeepTheirSourceRoles(scope, context)
     local draws = captureComposedDraws(scene, scope, 600, 1000)
     local surfaces = assert(scene.surfaces)
     local bounds = assert(scene.layout.composition.bounds, "tall composition has drawable bounds")
-    local upperHalf =
-      { x = bounds.x, y = bounds.y, width = bounds.width, height = bounds.height / 2 }
+    local upperHalf = { x = bounds.x, y = bounds.y, width = bounds.width, height = bounds.height / 2 }
     local lowerHalf =
       { x = bounds.x, y = bounds.y + bounds.height / 2, width = bounds.width, height = bounds.height / 2 }
     local logoDraws = drawsOf(draws, surfaces.editionLogo)
@@ -743,7 +745,7 @@ local function titleMissingSurfaceFailsCleanly(scope, context)
       end,
     }
     local before = love.graphics.getStats()
-    local queue = titlePreparation(scope, realFs)
+    local queue, decoded = titlePreparation(scope, realFs)
     local ok, failure = pcall(HgssTitleScene.new, {
       versionId = versionId,
       cacheFs = hollowFs,
@@ -751,6 +753,7 @@ local function titleMissingSurfaceFailsCleanly(scope, context)
       height = 384,
       displayContext = DisplayContext.new({ graphics = love.graphics, topologyProvider = topology("single") }),
       assetPreparation = queue,
+      decoded = decoded,
     })
     Assert.isFalse(ok, "a missing title surface stops title construction")
     Assert.isTrue(tostring(failure):find("subscreen") ~= nil, "the failure names the missing surface")
@@ -985,13 +988,7 @@ local function legendaryMatchesItsSourcedReferenceFrame(scope, context)
     scene:_drawModel()
     assertSilhouetteNearProduction(
       silhouetteFractions(scene.canvas, "the native title frame"),
-      renderWorldReferenceSilhouette(
-        scene,
-        scope,
-        scene.cameraPos,
-        rawTarget,
-        "the world-unit reference frame"
-      ),
+      renderWorldReferenceSilhouette(scene, scope, scene.cameraPos, rawTarget, "the world-unit reference frame"),
       "the " .. versionId .. " legendary"
     )
     scene:dispose()
@@ -1187,7 +1184,12 @@ local function assertCinematicWideLens(scene, view, tick, label)
   -- aspect while preserving the source vertical FOV: no stretch.
   Assert.near(lens[6] / lens[1], canvasWidth / canvasHeight, 1e-9, label .. " 3D target carries a 16:9 projection")
   Assert.near(canvasWidth / canvasHeight, 16 / 9, 0.05, label .. " 3D target is 16:9")
-  Assert.near(sourceVerticalFov(lens), sourceVerticalFov(expectedSourceProjection()), 0.02, label .. " preserves the source vertical FOV")
+  Assert.near(
+    sourceVerticalFov(lens),
+    sourceVerticalFov(expectedSourceProjection()),
+    0.02,
+    label .. " preserves the source vertical FOV"
+  )
 end
 
 local function assertCenteredLegendPlacement(scene, scope, width, height, label)

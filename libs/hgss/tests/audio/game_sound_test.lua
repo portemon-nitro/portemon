@@ -205,8 +205,18 @@ end
 -- Returns sound, player, spy.
 local function newGameSound(sequences, opts)
   opts = opts or {}
-  local provider = AudioAssetProvider.new(AudioFixture.readyCache(engineBundle(sequences or defaultSequences(), opts)))
-  --[[@as AudioAssetProvider]]
+  local cache = AudioFixture.residentCache(engineBundle(sequences or defaultSequences(), opts))
+  -- The selected runtime's base source boundary: each acquisition roots the
+  -- store's own packed bytes and hands that reference back on release.
+  local provider = AudioAssetProvider.new(cache, {
+    acquireSource = function(reference)
+      local lease = { value = reference.data }
+      function lease:release()
+        self.value = nil
+      end
+      return lease
+    end,
+  }) --[[@as AudioAssetProvider]]
   local mixer = VoiceMixer.new({ sampleRate = SAMPLE_RATE })
   local spy = { readings = {}, faderWrites = {} }
   local realUpdateVoice = mixer.updateVoice
