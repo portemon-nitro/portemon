@@ -538,10 +538,17 @@ end
 function T.gym_mechanism_nodes_dispatch_their_source_operands()
   local written = {}
   local initialized = {}
+  local called = {}
   local run = runState({
     gymMechanism = {
       initialize = function(_, kind)
         initialized[#initialized + 1] = kind
+      end,
+      bindCandle = function()
+        called[#called + 1] = "bindCandle"
+      end,
+      unbindCandle = function()
+        called[#called + 1] = "unbindCandle"
       end,
     },
   }, written)
@@ -565,6 +572,39 @@ function T.gym_mechanism_nodes_dispatch_their_source_operands()
   Assert.equal(run.blockTaskId.type, "gym_mechanism")
   Assert.equal(run.blockTaskId.spec.action, "switch")
   Assert.equal(run.blockTaskId.spec.switchNumber, 1)
+
+  Assert.equal(Runtime.executeNode({ op = "gym_init", kind = "ecruteak" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(Runtime.executeNode({ op = "gym_init", kind = "cianwood" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.deepEqual(initialized, { "violet", "azalea", "ecruteak", "cianwood" })
+
+  Assert.equal(Runtime.executeNode({ op = "gym_candle_bind" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(Runtime.executeNode({ op = "gym_candle_unbind" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.deepEqual(called, { "bindCandle", "unbindCandle" }, "the candle binding commands are same-tick calls")
+  Assert.equal(
+    Runtime.executeNode({ op = "gym_winch", result = { value = "var", id = 0x4000 } }, run),
+    Runtime.OUTCOME_BLOCK
+  )
+  Assert.equal(run.blockTaskId.spec.action, "winch")
+  Assert.equal(run.blockResultRef.id, 0x4000, "the winch writes the variable its command names")
+end
+
+-- The candle's raw selector byte chooses the source script environment
+-- attribute: nonzero names the invoked interaction's actor, zero the engaged
+-- trainer slot, which the mechanism resolves itself.
+function T.the_candle_extinguish_selector_chooses_its_source_attribute()
+  local run = runState({ gymMechanism = {} }, {})
+  run.instance.trigger = { kind = "object", selfActor = "map:80:object:5" }
+  local outcome = Runtime.executeNode({ op = "gym_candle_extinguish", useLastInteracted = 1 }, run)
+  Assert.equal(outcome, Runtime.OUTCOME_BLOCK)
+  Assert.equal(run.blockTaskId.spec.action, "candle_extinguish")
+  Assert.isTrue(run.blockTaskId.spec.useLastInteracted)
+  Assert.equal(run.blockTaskId.spec.lastInteractedActor, "map:80:object:5")
+  Assert.isNil(run.blockResultRef, "the extinguish command answers no output variable")
+
+  run.instance.trigger = nil
+  Runtime.executeNode({ op = "gym_candle_extinguish", useLastInteracted = 0 }, run)
+  Assert.isFalse(run.blockTaskId.spec.useLastInteracted, "a zero selector names the engaged trainer")
+  Assert.isNil(run.blockTaskId.spec.lastInteractedActor)
 end
 
 -- A runtime without the mechanism service faults instead of pretending the

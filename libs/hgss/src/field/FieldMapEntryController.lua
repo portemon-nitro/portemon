@@ -12,7 +12,7 @@
 ---| "resume_running"
 ---| "ready"
 
----@alias FieldMapEntryMode "full"|"connection"
+---@alias FieldMapEntryMode "full"|"load"|"connection"
 
 ---@class FieldMapEntryLifecycle
 ---@field hasLifecycle fun(self: FieldMapEntryLifecycle, lifecycle: string): boolean
@@ -77,12 +77,17 @@ end
 
 ---@param mode FieldMapEntryMode
 function FieldMapEntryController:begin(mode)
-  assert(mode == "full" or mode == "connection", "map entry mode required")
+  assert(mode == "full" or mode == "load" or mode == "connection", "map entry mode required")
   assert(type(self.enterMapActors) == "function", "map actor entry capability required")
   assert(self.initController and self.initController.startLifecycle, "map lifecycle controller required")
   self.mode = mode
   self.lastMode = mode
-  self.stageName = "transition"
+  -- A load is not a map-enter: the source runs INIT_SCRIPT_ON_LOAD and
+  -- INIT_SCRIPT_ON_RESUME while the field map opens and reaches
+  -- INIT_SCRIPT_ON_TRANSITION only through the warp task
+  -- (src/field/fieldmap.c and src/field_warp_tasks.c), so a restored game never
+  -- re-runs the entered map's transition scripts.
+  self.stageName = mode == "load" and "actors" or "transition"
   self.connectionArrivalPending = mode == "connection"
   self.prePresentationResume = false
 end

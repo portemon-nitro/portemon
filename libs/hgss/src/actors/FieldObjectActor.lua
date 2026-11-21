@@ -58,6 +58,7 @@ local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibrat
 ---@field presentationStateInto fun(self: FieldObjectActor, out: FieldObjectActor.PresentationState): FieldObjectActor.PresentationState
 ---@field setGesturePresentation fun(self: FieldObjectActor, pose: string, tick: integer)
 ---@field clearGesturePresentation fun(self: FieldObjectActor)
+---@field replaceVisual fun(self: FieldObjectActor, spriteId: integer, visual: table<string, unknown>, idlePresentation: { mode: "static"|"animated", cadence: integer, freeRunning: boolean? })
 ---@field scriptedMotionState fun(self: FieldObjectActor): table<string, unknown>?
 ---@field setFacing fun(self: FieldObjectActor, direction: FieldDirection)
 ---@field setVisible fun(self: FieldObjectActor, visible: boolean)
@@ -872,6 +873,24 @@ function FieldObjectActor:settlePresentation()
   self.activeEmoteKind = nil
   applyIdlePresentation(self, false)
   self:_numeric().scriptedPresentationAdvanced = 0
+end
+
+-- Replace the actor's own billboard, exactly what the source does when it
+-- changes a map object's sprite (MapObject_ChangeBillboardSprite): identity,
+-- position, facing, occupancy and visibility stay untouched while the new
+-- sprite's own idle presentation takes over from its first frame.
+---@param spriteId integer
+---@param visual table<string, unknown>
+---@param idlePresentation { mode: "static"|"animated", cadence: integer, freeRunning: boolean? }
+function FieldObjectActor:replaceVisual(spriteId, visual, idlePresentation)
+  requireIdlePresentation(visual, idlePresentation)
+  self.spriteId = spriteId
+  self._visual = visual
+  self._idlePresentation = idlePresentation
+  local state = self:_numeric()
+  state.poseTick = 0
+  state.scriptedPresentationAdvanced = 0
+  self.pose = "idle"
 end
 
 -- The active semantic action kind (`walk`, `walk_in_place`, `jump`, `face`,

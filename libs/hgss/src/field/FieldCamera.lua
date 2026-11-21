@@ -41,6 +41,7 @@ local FIELD_BILLBOARD_DEPTH_OFFSET_TILES = 0.5
 ---@field up { x: number, y: number, z: number }
 ---@field history table<string, unknown>
 ---@field historyEnabled boolean
+---@field translation FieldCamera.Translation? the live source camera translation path
 ---@field canonicalAspect number
 ---@field projectionAspect number
 ---@field _rawPerspective integer -- live perspective half angle in Nintendo raw units (65536 per turn)
@@ -184,6 +185,7 @@ function FieldCamera.new(profile, options)
     up = { x = 0, y = 1, z = 0 },
     history = CameraHistory.new(7, 6),
     historyEnabled = options.historyEnabled ~= false,
+    translation = nil,
     canonicalAspect = canonicalAspect,
     projectionAspect = canonicalAspect,
     zoom = 1,
@@ -317,6 +319,72 @@ function FieldCamera:updateFixed(playerTarget)
         self.shake = nil
       end
     end
+  end
+  self:_advanceTranslation()
+end
+
+---@class FieldCamera.Translation
+---@field offset { x: number, y: number, z: number } the path's whole displacement
+---@field ticks integer the source path duration in fixed ticks
+---@field step integer the steps already applied
+---@field applied { x: number, y: number, z: number } the displacement the path already moved
+
+-- The source camera translation wrapper (src/camera_translation.c): a path
+-- that displaces the camera from where it stands to `offset` away from it
+-- over `ticks` frames, applying one whole-path step per frame
+-- (calcPositionComponentStep), and reports completion once the last step
+-- landed. The look-at target and the eye move together, so the shot keeps
+-- its angle and distance for the whole path.
+---@param offset { x: number, y: number, z: number }
+---@param ticks integer
+function FieldCamera:startTranslation(offset, ticks)
+  assertVectorComponents(offset, "camera translation offset")
+  assert(
+    type(ticks) == "number" and ticks % 1 == 0 and ticks >= 1,
+    "camera translation ticks must be a positive integer"
+  )
+  assert(self.translation == nil, "a camera translation path is already running")
+  self.translation = {
+    offset = { x = offset.x, y = offset.y, z = offset.z },
+    ticks = ticks,
+    step = 0,
+    applied = { x = 0, y = 0, z = 0 },
+  }
+end
+
+---@return boolean
+function FieldCamera:isTranslationFinished()
+  return self.translation == nil
+end
+
+-- Abandon the running path where it stands: the source deletes the wrapper,
+-- which leaves the camera at the last step it applied.
+function FieldCamera:abandonTranslation()
+  self.translation = nil
+end
+
+-- One whole-path step of the running translation: the source's
+-- calcPositionComponentStep keeps the total exact, because a component moves
+-- by component*step/ticks - component*(step-1)/ticks on every frame.
+function FieldCamera:_advanceTranslation()
+  local translation = self.translation
+  if translation == nil then
+    return
+  end
+  local step = translation.step + 1
+  local ticks = translation.ticks
+  local offset, applied = translation.offset, translation.applied
+  local previous = translation.step
+  local dx = offset.x * step / ticks - offset.x * previous / ticks
+  local dy = offset.y * step / ticks - offset.y * previous / ticks
+  local dz = offset.z * step / ticks - offset.z * previous / ticks
+  translation.step = step
+  applied.x, applied.y, applied.z = applied.x + dx, applied.y + dy, applied.z + dz
+  local target, eye = self.target, self.eye
+  target.x, target.y, target.z = target.x + dx, target.y + dy, target.z + dz
+  eye.x, eye.y, eye.z = eye.x + dx, eye.y + dy, eye.z + dz
+  if step >= ticks then
+    self.translation = nil
   end
 end
 

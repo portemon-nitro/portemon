@@ -38,12 +38,15 @@ local STANDARD_INTERACTION_SCRIPTS = {
 -- owner; the source object id pins the same retail partner.
 
 -- The consume() outcome protocol shared with FieldSession: a consumed intent
--- either started a foreground script, found the field already owned, or was
--- unmapped (a composition fault the session asserts on). The session and
--- every consumer read these constants, never the literal strings.
+-- either started a foreground script, found the field already owned, was
+-- unavailable (it addresses a global standard script this composition does not
+-- carry yet, so there is nothing to run), or was unmapped (a composition fault
+-- the session asserts on). The session and every consumer read these
+-- constants, never the literal strings.
 ScriptInteractionClient.RESULTS = {
   started = "started",
   blocked = "blocked",
+  unavailable = "unavailable",
   unmapped = "unmapped",
 }
 
@@ -237,18 +240,26 @@ end
 
 -- Consume one interaction intent. Returns the RESULTS.started outcome when a
 -- script now owns the field, RESULTS.blocked when a foreground script already
--- owns it, or RESULTS.unmapped when nothing is bound (the session treats that
--- as a composition fault: the binding audit guarantees every interactable
--- event is bound). A started script may execute during this tick.
+-- owns it, RESULTS.unavailable when the intent addresses a global standard
+-- script this composition does not carry, or RESULTS.unmapped when nothing is
+-- bound (the session treats that as a composition fault: the binding audit
+-- guarantees every interactable event is bound). A started script may execute
+-- during this tick.
 ---@param intent table<string, unknown> InteractionIntent
 ---@param tick integer
----@return string started|blocked|unmapped
+---@return string started|blocked|unavailable|unmapped
 function ScriptInteractionClient:consume(intent, tick)
   if self._scheduler:foregroundEnvironmentId() ~= nil then
     return ScriptInteractionClient.RESULTS.blocked
   end
   local hit = self:resolve(intent)
   if hit == nil then
+    -- A standard-script sentinel is a global script member, never a map-bank
+    -- index: a composition that does not carry it has no script to run, and
+    -- that is not the map-bank binding fault `unmapped` reports.
+    if self._bindings:isStandardScriptIntent(intent) then
+      return ScriptInteractionClient.RESULTS.unavailable
+    end
     return ScriptInteractionClient.RESULTS.unmapped
   end
   if intent.kind == "background" and type(intent.background) == "table" and intent.background.type == 2 then

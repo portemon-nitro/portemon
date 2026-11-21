@@ -5,6 +5,14 @@
 -- unrelated to the map's own bank) arrives already canonicalized to its
 -- public id by the field-map producer, so a string intent script id is
 -- passed through rather than re-derived.
+--
+-- A raw id at or above the lowest standard-script group threshold
+-- (include/constants/std_script.h::_std_misc, 2000) is such a sentinel and is
+-- never a map-bank index: the source picks a global scr_seq bank for it by
+-- threshold (src/script_manager.c::sScriptBankMapping) and only ids below the
+-- first threshold address the current map's own bank. This module therefore
+-- never derives a map-bank identity from a sentinel; whether the composition
+-- carries the global script is the interaction client's answer.
 
 local Errors = require("libs.errors.src.Errors")
 local ScriptIdentity = require("libs.assets.src.ScriptIdentity")
@@ -14,6 +22,11 @@ local ScriptIdentity = require("libs.assets.src.ScriptIdentity")
 local Bindings = {}
 Bindings.__index = Bindings
 Bindings.CANONICAL_INERT_SCRIPT = "runtime.inert_interaction"
+
+-- The lowest standard-script group threshold. Every group in
+-- include/constants/std_script.h sits at or above it, so a raw interaction
+-- script id at or above this value addresses a global standard script.
+Bindings.STANDARD_SCRIPT_MINIMUM = 2000
 
 local INVALID_INTENT = "SCRIPT_BINDING_INVALID_INTENT"
 
@@ -47,6 +60,10 @@ local function scriptIdFor(intent)
       "interaction raw script id must be a non-negative integer",
       { mapId = intent.mapId, scriptBankId = intent.scriptBankId, rawScriptId = rawScriptId }
     )
+  end
+  if rawScriptId >= Bindings.STANDARD_SCRIPT_MINIMUM then
+    -- A standard-script sentinel has no map-bank identity.
+    return nil
   end
   local scriptBankId = intent.scriptBankId
   if type(scriptBankId) ~= "number" or math.floor(scriptBankId) ~= scriptBankId or scriptBankId < 0 then
@@ -125,6 +142,15 @@ function Bindings.coordinateTrigger(intent, scriptId, playerFacing)
     selfActor = nil,
     backgroundId = nil,
   }
+end
+
+-- Whether one intent addresses a global standard script rather than the current
+-- map's own script bank. Such an intent has no map-bank identity.
+---@param intent table<string, unknown> InteractionIntent
+---@return boolean
+function Bindings:isStandardScriptIntent(intent)
+  local rawScriptId = intent.scriptId
+  return type(rawScriptId) == "number" and rawScriptId >= Bindings.STANDARD_SCRIPT_MINIMUM
 end
 
 -- Resolve one interaction intent into a trigger descriptor plus its generated

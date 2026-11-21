@@ -73,6 +73,7 @@ local FieldGrid = require("libs.hgss.src.world.FieldGrid")
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local AnimationClip = require("libs.assets.src.model.AnimationClip")
+local AnimationPlayer = require("libs.hgss.src.presentation.AnimationPlayer")
 local DoorSound = require("libs.hgss.src.transition.DoorSound")
 
 local ANIMATION_CATEGORIES = { AnimationClip.CATEGORIES.joint, AnimationClip.CATEGORIES.material }
@@ -549,6 +550,76 @@ function SceneProp:stop(animation)
     raiseUnknown(self.instance.definition, animation)
   end
   return self.instance:stop(animation)
+end
+
+-- Stop every clip the prop's own model defines. The source removes a prop's
+-- whole registered animation set before replaying it from the first frame
+-- (src/field/gymmick/cianwood.c::CianwoodGymmick_RebindAnims).
+---@return integer removed
+function SceneProp:stopAll()
+  if not self.instance then
+    return 0
+  end
+  local removed = 0
+  for _, clip in ipairs(self.instance.definition.animations or {}) do
+    removed = removed + self.instance:stop(clip.name)
+  end
+  return removed
+end
+
+-- Start every clip the prop's model publishes under `name`. One build-model
+-- animation record carries one clip per Nitro channel kind under a shared name
+-- (the waterfall's texture SRT and pattern swap are one source animation
+-- record), and the source starts the whole record, so all of its clips begin
+-- together. Returns the live attachment handles.
+---@param name string
+---@param opts table<string, unknown>?
+---@return table<string, unknown>[] handles
+function SceneProp:playAll(name, opts)
+  if not self.instance then
+    return {}
+  end
+  local definition = self.instance.definition
+  local handles = {}
+  for _, clip in ipairs(definition.animations or {}) do
+    if clip.name == name then
+      handles[#handles + 1] = self.instance.animationState:attach(clip, opts)
+    end
+  end
+  if #handles == 0 then
+    raiseUnknown(definition, name)
+  end
+  return handles
+end
+
+-- Whether every one of these plays reached the end of its clip. A prop with no
+-- live instance presents no animation clock, so the caller waits for nothing.
+---@param handles table<string, unknown>[]
+---@return boolean
+function SceneProp:arePlaysFinished(handles)
+  for _, handle in ipairs(handles) do
+    local player = handle.player
+    if player ~= nil and not player:isComplete() then
+      return false
+    end
+  end
+  return true
+end
+
+-- Put the prop's whole animation record on its last frame, paused there: the
+-- source's MapPropAnimationData_GoToLastAnimationFrame applied to a settled map
+-- prop. The live instances' own poses stay where that frame leaves them.
+---@return table<string, unknown>[] handles
+function SceneProp:restAtEnd()
+  self:stopAll()
+  if not self.instance then
+    return {}
+  end
+  local handles = {}
+  for _, clip in ipairs(self.instance.definition.animations or {}) do
+    handles[#handles + 1] = self.instance.animationState:attach(clip, { player = AnimationPlayer.atEnd(clip) })
+  end
+  return handles
 end
 
 -- The player's single checked-advance completion for the prop's play of

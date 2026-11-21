@@ -1,16 +1,19 @@
 -- Compiles the field models a gym mechanism loads at runtime instead of the
--- map scene placing them: the Violet Gym elevator car (build model 111) and
--- the Azalea Gym Spinarak (build model 118). Both are ordinary interior build
--- models of their own map (src/field/gymmick/violet.c and azalea.c call
+-- map scene placing them: the Violet Gym elevator car (build model 111), the
+-- Azalea Gym Spinarak (build model 118) and the Ecruteak Gym candle (build
+-- model 128). All three are ordinary interior build models of their own map
+-- (src/field/gymmick/violet.c, azalea.c and ecruteak.c call
 -- MapPropManager_LoadOne with the model id, the source transform and a null
--- rotation override), and both are listed by their area's build config, which
--- is also how the source area loader registers their animations.
+-- rotation override), and all three are listed by their area's build config,
+-- which is also how the source area loader registers their animations.
+--
+-- The Cianwood Gym winch's own animated props are the map scene's placements,
+-- so only their records matter here and they already travel with the map.
 --
 -- The generated bundle therefore carries their normalized model definitions
--- and clips; the runtime mechanism owns nothing but the transform it applies
--- to them. Each model keeps exactly the one clip its source anim-list record
--- declares: the car's record is an ordinary ambient loop, the Spinarak's is
--- only ever played explicitly by its ride.
+-- and clips; the runtime mechanism owns nothing but the transform and the clip
+-- playback it applies to them. Each model keeps exactly the one clip its source
+-- anim-list record declares.
 
 local AreaData = require("romdump.src.digest.map.AreaData")
 local BuildingModelCompiler = require("romdump.src.digest.map.BuildingModelCompiler")

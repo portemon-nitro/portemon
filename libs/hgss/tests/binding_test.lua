@@ -275,6 +275,40 @@ T["unmapped intent falls through"] = function()
   Assert.isNil(p.scheduler:foregroundEnvironmentId())
 end
 
+-- 12b. A standard-script sentinel names a global script member, never a
+-- map-bank index: the bindings never derive a map-bank identity from it, and
+-- the client answers "unavailable" instead of the map-bank composition fault.
+T["a standard script sentinel is never a map-bank identity"] = function()
+  local p = platform()
+  local bindings = Bindings.new()
+  local sentinel = objectIntent(57, "obj_T27_itako", "north", 3044)
+  Assert.isTrue(bindings:isStandardScriptIntent(sentinel), "the trainer talk sentinel is a standard script")
+  Assert.isNil(
+    bindings:resolveIntent(sentinel, "north"),
+    "no map-bank script identity is derived from a standard script sentinel"
+  )
+  Assert.isFalse(
+    bindings:isStandardScriptIntent(objectIntent(57, "obj_map_bank", "north", 2)),
+    "a map-bank id is not a standard script"
+  )
+  Assert.isTrue(objectIntent(57, "obj_first_sentinel", "north", 2000).scriptId == Bindings.STANDARD_SCRIPT_MINIMUM)
+
+  local client = ScriptInteractionClient.new({
+    bindings = bindings,
+    compose = function(id)
+      return p.composition:effective(id)
+    end,
+    scheduler = p.scheduler,
+  })
+  Assert.equal(client:consume(sentinel, 100), ScriptInteractionClient.RESULTS.unavailable)
+  Assert.isNil(p.scheduler:foregroundEnvironmentId(), "an unavailable interaction starts nothing")
+  Assert.equal(
+    client:consume(objectIntent(57, "obj_unmapped", "north"), 102),
+    ScriptInteractionClient.RESULTS.unmapped,
+    "a map-bank intent with no composed script keeps the composition fault"
+  )
+end
+
 -- 13. Actor world adapter: the player is always present; snapshots are
 -- read-only records; mutation operations reach the manager.
 T["actor world adapter"] = function()

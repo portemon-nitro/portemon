@@ -1933,6 +1933,39 @@ function HANDLERS.gym_switch(node, run)
   return blockOnTask(run, "gym_mechanism", { action = "switch", switchNumber = node.switchNumber })
 end
 
+-- The Ecruteak candle commands. Binding and unbinding are same-tick calls on
+-- the mechanism, and the extinguish command blocks on the source shrink task.
+-- The source reads its trainer attribute from the script environment, so the
+-- interacted actor this frame carries the last-interacted selector through.
+function HANDLERS.gym_candle_bind(_, run)
+  requireService(run, "gymMechanism"):bindCandle()
+  return Runtime.OUTCOME_CONTINUE
+end
+
+function HANDLERS.gym_candle_unbind(_, run)
+  requireService(run, "gymMechanism"):unbindCandle()
+  return Runtime.OUTCOME_CONTINUE
+end
+
+function HANDLERS.gym_candle_extinguish(node, run)
+  requireService(run, "gymMechanism")
+  local trigger = run.instance.trigger
+  local lastInteractedActor = type(trigger) == "table" and trigger.selfActor or nil
+  return blockOnTask(run, "gym_mechanism", {
+    action = "candle_extinguish",
+    useLastInteracted = node.useLastInteracted ~= 0,
+    lastInteractedActor = lastInteractedActor,
+  })
+end
+
+-- The Cianwood winch answers its own output variable with the source boolean:
+-- the task carries the completed write, so the value lands before the next
+-- command runs.
+function HANDLERS.gym_winch(node, run)
+  requireService(run, "gymMechanism")
+  return blockOnTask(run, "gym_mechanism", { action = "winch" }, node.result)
+end
+
 function HANDLERS.elevator_anim(node, run)
   local semantics = semanticsFor(run)
   requireService(run, "propAnimations")

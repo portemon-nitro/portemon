@@ -3,9 +3,11 @@
 -- mechanism is active at a time, so the bucket is one tagged kind plus that
 -- kind's settled data:
 --
---   none   {}                                     no gym is active
---   violet { raised = boolean }                   the lift's settled floor
---   azalea { endpoints = {0,1,2,7}, switchMask }  spider nodes, switch bits
+--   none     {}                                       no gym is active
+--   violet   { raised = boolean }                     the lift's settled floor
+--   azalea   { endpoints = {0,1,2,7}, switchMask }    spider nodes, switch bits
+--   ecruteak { candles = {false x4} }                 the four candles' burnt state
+--   cianwood { winchRaised = boolean }                the one-shot winch
 --
 -- The source installs a kind through Save_Gymmick_Init (gym init) and clears
 -- the union on every non-connection map entry; here restore/initialize own the
@@ -27,6 +29,8 @@ GymMechanismState.SCHEMA = "hgss-gymmick-v1"
 GymMechanismState.NONE = "none"
 GymMechanismState.VIOLET = "violet"
 GymMechanismState.AZALEA = "azalea"
+GymMechanismState.ECRUTEAK = "ecruteak"
+GymMechanismState.CIANWOOD = "cianwood"
 
 -- The source's spider slots and switch bits (include/gymmick.h).
 GymMechanismState.SPIDER_SLOTS = 4
@@ -42,10 +46,16 @@ GymMechanismState.ENDPOINT_COUNT = 12
 GymMechanismState.FIRST_SWITCH = 0
 GymMechanismState.LAST_SWITCH = 1
 
+-- src/field/gymmick/ecruteak.c::NUM_CANDLES: one candle per source medium
+-- trainer object, in source object order (obj_T27GYM0101_itako .. itako_4).
+GymMechanismState.CANDLE_COUNT = 4
+
 local KINDS = {
   [GymMechanismState.NONE] = true,
   [GymMechanismState.VIOLET] = true,
   [GymMechanismState.AZALEA] = true,
+  [GymMechanismState.ECRUTEAK] = true,
+  [GymMechanismState.CIANWOOD] = true,
 }
 
 ---@param message string
@@ -122,6 +132,49 @@ local function checkAzaleaData(data)
   return { endpoints = checkEndpoints(data.endpoints), switchMask = switchMask }
 end
 
+---@param candles unknown
+---@return boolean[]
+local function checkCandles(candles)
+  if type(candles) ~= "table" or #candles ~= GymMechanismState.CANDLE_COUNT then
+    fail("ecruteak candles must be one state per candle", { candles = tostring(candles) })
+  end
+  assert(type(candles) == "table", "candle validation reads the quartet")
+  local copy = {}
+  for index = 1, GymMechanismState.CANDLE_COUNT do
+    local extinguished = candles[index]
+    if type(extinguished) ~= "boolean" then
+      fail("an ecruteak candle state must be a boolean", { index = index, value = tostring(extinguished) })
+    end
+    copy[index] = extinguished
+  end
+  return copy
+end
+
+---@param data unknown
+---@return table<string, unknown>
+local function checkEcruteakData(data)
+  if type(data) ~= "table" then
+    fail("ecruteak mechanism data must be a record", {})
+  end
+  assert(type(data) == "table", "ecruteak data validation reads the record")
+  checkNoUnknownFields(data, { candles = true }, "ecruteak mechanism data")
+  return { candles = checkCandles(data.candles) }
+end
+
+---@param data unknown
+---@return table<string, unknown>
+local function checkCianwoodData(data)
+  if type(data) ~= "table" then
+    fail("cianwood mechanism data must be a record", {})
+  end
+  assert(type(data) == "table", "cianwood data validation reads the record")
+  if type(data.winchRaised) ~= "boolean" then
+    fail("cianwood winch flag must be a boolean", { winchRaised = tostring(data.winchRaised) })
+  end
+  checkNoUnknownFields(data, { winchRaised = true }, "cianwood mechanism data")
+  return { winchRaised = data.winchRaised }
+end
+
 ---@param kind unknown
 ---@param data unknown
 ---@return table<string, unknown> detached record
@@ -139,6 +192,12 @@ local function checkUnion(kind, data)
   end
   if kind == GymMechanismState.VIOLET then
     return checkVioletData(data)
+  end
+  if kind == GymMechanismState.ECRUTEAK then
+    return checkEcruteakData(data)
+  end
+  if kind == GymMechanismState.CIANWOOD then
+    return checkCianwoodData(data)
   end
   return checkAzaleaData(data)
 end
@@ -166,10 +225,19 @@ end
 ---@param kind string
 function GymMechanismState:initialize(kind)
   self._kind = kind
-  self._data = checkUnion(kind, kind == GymMechanismState.AZALEA and {
-    endpoints = GymMechanismState.AZALEA_INITIAL_ENDPOINTS,
-    switchMask = 0,
-  } or (kind == GymMechanismState.VIOLET and { raised = false } or {}))
+  local defaults = {}
+  if kind == GymMechanismState.AZALEA then
+    defaults = { endpoints = GymMechanismState.AZALEA_INITIAL_ENDPOINTS, switchMask = 0 }
+  elseif kind == GymMechanismState.VIOLET then
+    defaults = { raised = false }
+  elseif kind == GymMechanismState.ECRUTEAK then
+    -- InitEcruteakGym clears the four candle states.
+    defaults = { candles = { false, false, false, false } }
+  elseif kind == GymMechanismState.CIANWOOD then
+    -- InitCianwoodGym installs the kind alone: a cleared union is a lowered winch.
+    defaults = { winchRaised = false }
+  end
+  self._data = checkUnion(kind, defaults)
 end
 
 ---@return string
@@ -264,6 +332,55 @@ function GymMechanismState:toggleSwitch(switchNumber)
   local bit = 2 ^ switchNumber
   local flipped = (math.floor(mask / bit) % 2) == 1 and mask - bit or mask + bit
   self._data.switchMask = flipped
+end
+
+---@return boolean[] the four source candle states, detached
+function GymMechanismState:ecruteakCandles()
+  requireKind(self, GymMechanismState.ECRUTEAK)
+  local candles = assert(self._data.candles, "an ecruteak union always carries its candles") --[[@as boolean[] ]]
+  return { candles[1], candles[2], candles[3], candles[4] }
+end
+
+---@private
+---@param index unknown
+---@return integer
+function GymMechanismState:_requireCandleIndex(index)
+  if not isInteger(index) or index < 1 or index > GymMechanismState.CANDLE_COUNT then
+    fail("ecruteak candle index is outside the source quartet", { index = tostring(index) })
+  end
+  assert(isInteger(index), "candle indexing requires an integer")
+  return index
+end
+
+-- The source writes the candle bit when the shrink reached its last scale, so
+-- the write happens on the candle's own source index.
+---@param index integer one-based source candle index
+---@param extinguished boolean
+function GymMechanismState:setEcruteakCandle(index, extinguished)
+  requireKind(self, GymMechanismState.ECRUTEAK)
+  if type(extinguished) ~= "boolean" then
+    fail("an ecruteak candle state must be a boolean", { value = tostring(extinguished) })
+  end
+  local slot = self:_requireCandleIndex(index)
+  local candles = assert(self._data.candles, "an ecruteak union always carries its candles") --[[@as boolean[] ]]
+  candles[slot] = extinguished
+end
+
+---@return boolean
+function GymMechanismState:cianwoodWinchRaised()
+  requireKind(self, GymMechanismState.CIANWOOD)
+  local raised = self._data.winchRaised
+  assert(type(raised) == "boolean", "a cianwood union always carries its winch flag")
+  return raised
+end
+
+---@param raised boolean
+function GymMechanismState:setCianwoodWinchRaised(raised)
+  requireKind(self, GymMechanismState.CIANWOOD)
+  if type(raised) ~= "boolean" then
+    fail("cianwood winch flag must be a boolean", { winchRaised = tostring(raised) })
+  end
+  self._data.winchRaised = raised
 end
 
 ---@return table<string, unknown> detached bucket

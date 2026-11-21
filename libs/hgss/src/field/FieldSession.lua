@@ -556,13 +556,16 @@ function FieldSession.new(options)
 end
 
 -- Source FieldSystem_ResetStateOnWarp and _OnMapConnection clear the
--- Strength enablement whenever a map is entered by warp or connection.
-function FieldSession:beginMapEntry()
+-- Strength enablement whenever a map is entered by warp or connection. A load
+-- (a restored game opening the field on its saved map) is not a map-enter: it
+-- runs the map's load and resume scripts without its transition scripts.
+---@param mode FieldMapEntryMode? defaults to a warp entry
+function FieldSession:beginMapEntry(mode)
   if self.fieldMoves ~= nil then
     self.fieldMoves:clearTransient()
   end
   self:validateSurfSpawn()
-  self.mapEntryController:begin("full")
+  self.mapEntryController:begin(mode or "full")
   self._entryTerrainPending = true
 end
 
@@ -1815,15 +1818,23 @@ function FieldSession:updateFixed(inputSnapshot)
         -- and runs it during this tick. There is no fallback client: the
         -- binding audit at load time guarantees every interactable event is
         -- bound, so an unmapped intent here is a composition fault, not a
-        -- silent absorption.
+        -- silent absorption. An intent whose raw script id addresses a global
+        -- standard script the composition does not carry has nothing to run
+        -- and claims nothing.
         local result = self.scriptClient:consume(intent, self.tick + 1)
         local results = ScriptInteractionClient.RESULTS
-        assert(
-          result == results.started or result == results.blocked,
-          "an interactable event must be bound: " .. tostring(intent.mapId)
-        )
-        self:_advanceTick()
-        return
+        if result == results.unavailable then
+          -- The intent addresses a global standard script this composition
+          -- does not carry yet: there is no runnable script to start, so the
+          -- press claims nothing and the tick runs on.
+        else
+          assert(
+            result == results.started or result == results.blocked,
+            "an interactable event must be bound: " .. tostring(intent.mapId)
+          )
+          self:_advanceTick()
+          return
+        end
       end
     end
 

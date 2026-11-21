@@ -1,6 +1,7 @@
 -- The gym mechanism owner: the closed kind dispatch, the single activation
--- lease, the source switch flip, the map-entry reset that retains a
--- connection's union, and the save stability window.
+-- lease, the source switch flip, the Ecruteak candle commands and the Cianwood
+-- winch, the map-entry reset that retains a connection's union, and the save
+-- stability window.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -12,7 +13,7 @@ local T = {}
 
 local function newHost(options)
   options = options or {}
-  local host = { effects = {}, binds = {}, foreground = options.foreground or "script-a" }
+  local host = { effects = {}, binds = {}, sprites = {}, foreground = options.foreground or "script-a" }
   host.player = {
     fieldX = 15,
     fieldZ = 20,
@@ -43,7 +44,7 @@ local function newHost(options)
     commitScriptedAction = function(self)
       self.motion = "idle"
     end,
-    currentMap = { coordinateOrigin = { x = 0, z = 0 } },
+    currentMap = { mapId = 80, coordinateOrigin = { x = 0, z = 0 } },
   }
   host.actors = {
     partnerId = function()
@@ -57,6 +58,9 @@ local function newHost(options)
     end,
     setPresentationOffset = function() end,
     clearPresentationOffset = function() end,
+    setSprite = function(_, actorId, spriteId)
+      host.sprites[#host.sprites + 1] = { actorId = actorId, spriteId = spriteId }
+    end,
   }
   host.followingMon = {
     repositionRelativeToPlayer = function() end,
@@ -114,6 +118,7 @@ local function newHost(options)
     foregroundScript = function()
       return host.foreground
     end,
+    trainerEngagement = options.trainerEngagement,
   })
   return host
 end
@@ -172,9 +177,18 @@ function T.a_mechanism_only_answers_its_own_installed_kind()
   Assert.equal(err.code, FieldErrors.FIELD_GYM_MECHANISM_INVALID)
 
   err = Assert.throws(function()
-    azalea.mechanism:begin("winch")
+    azalea.mechanism:begin("unknown_action")
   end)
   Assert.equal(err.code, FieldErrors.FIELD_GYM_MECHANISM_INVALID)
+end
+
+-- The winch answers its own refusal boolean for a wrong gym instead of
+-- faulting: ScrCmd_CianwoodGymTurnWinch writes false and yields.
+function T.the_winch_writes_its_refusal_boolean_for_a_wrong_gym()
+  local host = newHost({ union = union("azalea", { endpoints = { 0, 1, 2, 7 }, switchMask = 0 }) })
+  host.mechanism:begin("winch")
+  Assert.equal(host.mechanism:takeResult(), 0, "a wrong gym answers the source false")
+  Assert.equal(host.mechanism:step(), "complete")
 end
 
 -- The gym init command installs one kind without touching runtime geometry,
@@ -447,6 +461,167 @@ function T.map_teardown_releases_every_presented_model_once()
   for slot = 1, 4 do
     Assert.equal(host.models.spiders[slot].disposed, 1, "the factory reset releases the quartet once")
   end
+end
+
+-- The candle commands read the source script environment's trainer attributes:
+-- slot 0's engaged trainer from the injected engagement context and the last
+-- interacted actor from the invocation that carries it, and a wrong gym answers
+-- the source no-op.
+function T.the_candle_commands_follow_the_source_trainer_attributes()
+  local engaged = "map:80:object:3"
+  local withoutEngagement = newHost({ union = union("ecruteak", { candles = { false, false, false, false } }) })
+  withoutEngagement.actors.getById = function(_, actorId)
+    if actorId == engaged then
+      return { actorId = actorId, objectEventId = 3 }
+    end
+    return nil
+  end
+  withoutEngagement.mechanism:bindMap(withoutEngagement.player.currentMap)
+  local ok = pcall(function()
+    withoutEngagement.mechanism:bindCandle()
+  end)
+  Assert.isFalse(ok, "no engaged trainer is the source's own missing-actor path")
+
+  local host = newHost({
+    union = union("ecruteak", { candles = { false, false, false, false } }),
+    trainerEngagement = {
+      engagedActor = function()
+        return engaged
+      end,
+    },
+  })
+  host.actors.getById = function(_, actorId)
+    if actorId == engaged then
+      return { actorId = actorId, objectEventId = 3 }
+    end
+    return nil
+  end
+  host.mechanism:bindMap(host.player.currentMap)
+  host.mechanism:bindCandle()
+  Assert.equal(host.mechanism._ecruteak:boundActorId(), engaged, "the engaged trainer's candle follows it")
+  host.mechanism:unbindCandle()
+  Assert.isNil(host.mechanism._ecruteak:boundActorId(), "unbinding releases the follow")
+end
+
+-- A wrong gym answers the source no-op for every candle command and never
+-- builds a candle mechanism.
+function T.candle_commands_do_nothing_outside_the_ecruteak_union()
+  local host = newHost({ union = union("azalea", { endpoints = { 0, 1, 2, 7 }, switchMask = 0 }) })
+  host.mechanism:bindCandle()
+  host.mechanism:unbindCandle()
+  host.mechanism:begin("candle_extinguish", { useLastInteracted = true, lastInteractedActor = "map:80:object:2" })
+  Assert.isNil(host.mechanism._ecruteak, "a wrong gym owns no candle mechanism")
+  Assert.equal(host.mechanism:step(), "complete", "the same-tick refusal completes without a wait")
+end
+
+-- The extinguish command blocks while the source task runs and takes its
+-- result-free completion: the union's candle bit is the committed evidence.
+function T.extinguishing_a_candle_blocks_until_the_source_task_finished()
+  local host = newHost({ union = union("ecruteak", { candles = { false, false, false, false } }) })
+  host.mechanism:setModelFactory(newModelFactory(host))
+  host.mechanism:bindMap(host.player.currentMap)
+  local actorId = "map:80:object:5"
+  host.actors.getById = function(_, id)
+    if id == actorId then
+      return { actorId = id, objectEventId = 5 }
+    end
+    return nil
+  end
+  host.mechanism:setModelFactory(nil)
+
+  host.mechanism:begin("candle_extinguish", { useLastInteracted = true, lastInteractedActor = actorId })
+  Assert.isTrue(host.mechanism:isRiding(), "the running task owns the field")
+  Assert.isFalse(host.mechanism:isStableForSave(), "a running candle task is never saved mid-way")
+  local status
+  repeat
+    status = host.mechanism:step()
+  until status == "complete"
+  Assert.deepEqual(host.state:ecruteakCandles(), { false, false, false, true }, "the candle bit is committed")
+  Assert.isFalse(host.mechanism:isRiding())
+  Assert.isNil(host.mechanism:takeResult(), "the candle command answers no output variable")
+end
+
+-- The winch command answers its output variable with the source boolean and
+-- blocks until the cutscene released the camera; a repeated activation answers
+-- false without a second cutscene.
+function T.the_winch_command_answers_the_source_boolean()
+  local host = newHost({ union = union("cianwood", { winchRaised = false }) })
+  host.mechanism:bindMap(host.player.currentMap)
+  host.camera = nil
+  local camera = {
+    translations = {},
+    finished = true,
+    startTranslation = function(self, offset, ticks)
+      self.finished = false
+      self.remaining = ticks
+      self.translations[#self.translations + 1] = { x = offset.x, z = offset.z, ticks = ticks }
+    end,
+    isTranslationFinished = function(self)
+      return self.finished
+    end,
+    abandonTranslation = function(self)
+      self.finished = true
+    end,
+  }
+  host.mechanism._camera = camera
+
+  host.mechanism:begin("winch")
+  Assert.equal(host.mechanism:takeResult(), 1, "the source boolean is one for an accepted turn")
+  Assert.isTrue(host.mechanism:isRiding(), "the cutscene owns the field")
+  Assert.isTrue(host.state:cianwoodWinchRaised(), "the raised bit is committed at the activation point")
+
+  local ticks = 0
+  while host.mechanism:step() ~= "complete" do
+    if not camera.finished then
+      camera.remaining = camera.remaining - 1
+      camera.finished = camera.remaining <= 0
+    end
+    ticks = ticks + 1
+    assert(ticks < 500, "the cutscene never released the field")
+  end
+  Assert.equal(#camera.translations, 2, "the accepted turn pans out and back")
+  Assert.deepEqual(camera.translations[1], { x = 50, z = 58, ticks = 24 })
+  Assert.deepEqual(camera.translations[2], { x = -50, z = -58, ticks = 24 })
+
+  host.mechanism:begin("winch")
+  Assert.equal(host.mechanism:takeResult(), 0, "an already raised winch answers the source false")
+  Assert.equal(host.mechanism:step(), "complete", "a refused turn yields without a cutscene")
+  Assert.equal(#camera.translations, 2, "a refused turn never pans")
+end
+
+-- A raised winch union on a map load restores the gym's settled props; the
+-- Ecruteak union installs the gym's own fog on the loaded map.
+function T.a_loaded_union_restores_the_gyms_own_map_state()
+  local fog = { enabled = true }
+  local ecruteak = newHost({ union = union("ecruteak", { candles = { true, false, false, false } }) })
+  ecruteak.player.currentMap.renderEnvironment = { fog = fog }
+  ecruteak.mechanism:bindMap(ecruteak.player.currentMap)
+  Assert.equal(ecruteak.player.currentMap.renderEnvironment.fog, require("libs.hgss.src.field.gymmick.EcruteakGym").FOG)
+
+  local cianwood = newHost({ union = union("cianwood", { winchRaised = true }) })
+  local rested = {}
+  cianwood.player.currentMap.mapProps = {
+    placements = {
+      { placementIndex = 1, modelKey = "indoor:175:abfb66ef8784" },
+      { placementIndex = 2, modelKey = "indoor:173:3e8deabe626a" },
+    },
+    prop = function(_, placementIndex)
+      return {
+        instance = {},
+        restAtEnd = function()
+          rested[#rested + 1] = placementIndex
+        end,
+      }
+    end,
+  }
+  cianwood.mechanism:bindMap(cianwood.player.currentMap)
+  table.sort(rested)
+  Assert.deepEqual(rested, { 1, 2 }, "a raised winch restores both settled records")
+
+  local lowered = newHost({ union = union("cianwood", { winchRaised = false }) })
+  lowered.player.currentMap.mapProps = cianwood.player.currentMap.mapProps
+  lowered.mechanism:bindMap(lowered.player.currentMap)
+  Assert.deepEqual(rested, { 1, 2 }, "a lowered winch restores nothing")
 end
 
 return { tests = T }

@@ -28,6 +28,15 @@
 
 local AnimationClip = require("libs.assets.src.model.AnimationClip")
 
+-- One live player: the clip's frame count, its bounded pass count and the
+-- checked-advance position the owner draws from.
+---@class AnimationPlayer
+---@field frameCount integer
+---@field loopCount integer? nil plays unbounded
+---@field loopsDone integer
+---@field frameFx integer the checked-advance position, frame * FRAME_UNIT
+---@field loopMode string "loop" or "once"
+---@field completed boolean
 local AnimationPlayer = {}
 AnimationPlayer.__index = AnimationPlayer
 
@@ -96,6 +105,19 @@ end
 
 function AnimationPlayer:isComplete()
   return self.completed
+end
+
+-- A player that already holds the clip's last frame and reports completion:
+-- the source's MapPropAnimationData_GoToLastAnimationFrame applied to a paused
+-- record (a reloaded prop that must stand where its one-shot ended).
+---@param clip { frameCount: integer }
+---@return AnimationPlayer
+function AnimationPlayer.atEnd(clip)
+  local player = AnimationPlayer.new(clip)
+  player.loopMode = "once"
+  player.frameFx = clip.frameCount * AnimationPlayer.FRAME_UNIT
+  player.completed = true
+  return player
 end
 
 return AnimationPlayer

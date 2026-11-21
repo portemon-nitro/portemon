@@ -2605,4 +2605,50 @@ T["violet and azalea gym mechanism commands lower to their closed source nodes"]
   validateSteps("test.source_326", azaleaSteps)
 end
 
+-- The Ecruteak candle and Cianwood winch family: the two init commands and the
+-- candle binding return in their own tick, the candle's selector is a literal
+-- byte, and the winch reads the output variable its boolean lands in.
+T["ecruteak and cianwood gym commands lower to their closed source nodes"] = function()
+  Assert.equal(CommandCatalog.classification(314), CommandCatalog.CONTINUE, "the ecruteak init returns in its own tick")
+  Assert.equal(CommandCatalog.classification(315), CommandCatalog.CONTINUE, "binding the candle is same-tick")
+  Assert.equal(CommandCatalog.classification(316), CommandCatalog.CONTINUE, "unbinding the candle is same-tick")
+  Assert.equal(CommandCatalog.classification(317), CommandCatalog.NATIVE_WAIT, "extinguishing blocks on its task")
+  Assert.equal(CommandCatalog.classification(318), CommandCatalog.CONTINUE, "the cianwood init returns in its own tick")
+  Assert.equal(CommandCatalog.classification(319), CommandCatalog.NATIVE_WAIT, "the winch blocks on its cutscene")
+
+  local _, ecruteakSteps, ecruteakReport = translateOnly({
+    { op = 314, args = {} },
+    { op = 315, args = {} },
+    { op = 316, args = {} },
+    { op = 317, args = { { value = 1, width = 1 } } },
+    { op = 2, args = {} },
+  })
+  Assert.equal(ecruteakSteps[1].op, "gym_init")
+  Assert.equal(ecruteakSteps[1].kind, "ecruteak")
+  Assert.deepEqual(ecruteakSteps[1].provenance, { offsets = { 0x20 }, opcodes = { 314 } })
+  Assert.equal(ecruteakSteps[2].op, "gym_candle_bind")
+  Assert.equal(ecruteakSteps[3].op, "gym_candle_unbind")
+  Assert.equal(ecruteakSteps[4].op, "gym_candle_extinguish")
+  Assert.equal(ecruteakSteps[4].useLastInteracted, 1, "the source selector is a literal byte")
+  Assert.equal(countVariableReferences(ecruteakSteps[4]), 0, "the selector dereferences no variable")
+  Assert.isTrue(ecruteakReport.complete, "the ecruteak mechanism script completes")
+  validateSteps("test.source_314", ecruteakSteps)
+
+  local _, cianwoodSteps, cianwoodReport = translateOnly({
+    { op = 318, args = {} },
+    { op = 319, args = { { value = 0x4000, width = 2 } } },
+    { op = 2, args = {} },
+  })
+  Assert.equal(cianwoodSteps[1].op, "gym_init")
+  Assert.equal(cianwoodSteps[1].kind, "cianwood")
+  Assert.equal(cianwoodSteps[2].op, "gym_winch")
+  Assert.equal(cianwoodSteps[2].result.value, "var", "the winch writes a variable, not a literal")
+  Assert.isTrue(
+    type(cianwoodSteps[2].result.id) == "string",
+    "the winch writes the variable its command names: " .. tostring(cianwoodSteps[2].result.id)
+  )
+  Assert.isTrue(cianwoodReport.complete, "the cianwood mechanism script completes")
+  validateSteps("test.source_318", cianwoodSteps)
+end
+
 return { tests = T }

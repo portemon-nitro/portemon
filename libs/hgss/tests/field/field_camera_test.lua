@@ -679,4 +679,57 @@ function T.collapse_leaves_history_and_view_untouched()
   Assert.deepEqual(snapshot(camera:view(0.75)), settled, "every alpha keeps the settled view")
 end
 
+-- The source camera translation wrapper (src/camera_translation.c) moves the
+-- look-at target and the eye together along a whole-path displacement and
+-- reports completion only after the last frame landed.
+function T.a_translation_path_moves_the_whole_camera_and_lands_exactly()
+  local camera = FieldCamera.new(profile({ targetOffsetTiles = { x = 0, y = 0, z = 0 } }), {
+    initialTarget = { x = 0, y = 0, z = 0 },
+  })
+  camera:updateFixed({ x = 0, y = 0, z = 10 })
+  local startTargetX, startEyeX = camera.target.x, camera.eye.x
+  local startDistance = {
+    x = camera.eye.x - camera.target.x,
+    y = camera.eye.y - camera.target.y,
+    z = camera.eye.z - camera.target.z,
+  }
+  camera:startTranslation({ x = 50, y = 0, z = 58 }, 24)
+  Assert.isFalse(camera:isTranslationFinished(), "the path owns the camera until it lands")
+  local steps = 0
+  while not camera:isTranslationFinished() do
+    camera:updateFixed({ x = 0, y = 0, z = 10 })
+    steps = steps + 1
+    assert(steps < 100, "the translation path never finished")
+  end
+  Assert.equal(steps, 24, "the path takes its own source frame count")
+  Assert.near(camera.target.x - startTargetX, 50, 1e-9, "the look-at target lands on the whole displacement")
+  Assert.near(camera.target.z, 68, 1e-9)
+  Assert.near(camera.eye.x - startEyeX, 50, 1e-9, "the eye travels with the target")
+  Assert.near(camera.eye.x - camera.target.x, startDistance.x, 1e-9, "the shot keeps its angle")
+  Assert.near(camera.eye.y - camera.target.y, startDistance.y, 1e-9)
+  Assert.near(camera.eye.z - camera.target.z, startDistance.z, 1e-9)
+  camera:updateFixed({ x = 0, y = 0, z = 10 })
+  Assert.near(camera.target.x - startTargetX, 50, 1e-9, "a finished path leaves the camera where it landed")
+end
+
+-- A second path is refused while one runs, and the source's own abandon leaves
+-- the camera at the step it reached.
+function T.a_translation_path_is_abandoned_where_it_stands()
+  local camera = FieldCamera.new(profile({ targetOffsetTiles = { x = 0, y = 0, z = 0 } }), {
+    initialTarget = { x = 0, y = 0, z = 0 },
+  })
+  camera:updateFixed({ x = 0, y = 0, z = 10 })
+  camera:startTranslation({ x = 4, y = 0, z = 0 }, 4)
+  camera:updateFixed({ x = 0, y = 0, z = 10 })
+  Assert.throws(function()
+    camera:startTranslation({ x = 1, y = 0, z = 0 }, 4)
+  end, "one camera translation path at a time")
+  local reached = camera.target.x
+  camera:abandonTranslation()
+  Assert.isTrue(camera:isTranslationFinished(), "an abandoned path owns nothing")
+  camera:updateFixed({ x = 0, y = 0, z = 10 })
+  Assert.near(camera.target.x, reached, 1e-9, "the abandoned path moved nothing further")
+  Assert.isTrue(reached > 0, "the abandoned path kept the step it applied")
+end
+
 return { tests = T }

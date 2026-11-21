@@ -2269,6 +2269,21 @@ function T.unmapped_interaction_is_a_composition_fault()
   Assert.equal(steps(), 0, "a faulting interaction must not start movement")
 end
 
+-- An intent whose raw script id addresses a global standard script this
+-- composition does not carry has nothing to run: the press claims nothing and
+-- the tick runs on instead of faulting.
+function T.unavailable_interaction_leaves_the_tick_unclaimed()
+  local session, player, interactions, steps = interactionSession({
+    intent = { kind = "object", object = { actorId = "map:61:object:0" } },
+    result = ScriptInteractionClient.RESULTS.unavailable,
+  })
+  session:updateFixed({ actionPressed = true, heldDirection = "north" })
+  assert(interactions.consumedIntent, "the resolved intent is still dispatched")
+  Assert.equal(steps(), 1, "an unavailable interaction leaves the tick to movement")
+  Assert.equal(player.facing, "north")
+  Assert.equal(session.tick, 1, "the ordinary tick still advanced once")
+end
+
 -- A foreground script already owning the field blocks the new interaction;
 -- the tick is still consumed.
 function T.blocked_interaction_still_consumes_the_tick()

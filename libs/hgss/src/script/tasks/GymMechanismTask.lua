@@ -1,8 +1,14 @@
 -- The blocking gym mechanism task: one script-frame owner for the source's
--- native gym actions. ScrCmd_VioletGymElevator, ScrCmd_AzaleaGymSpinarak and
--- ScrCmd_AzaleaGymSwitch all return TRUE in the source, so the task holds the
--- script until the transport or the switch sound finished and only then lets
--- it resume; ScrCmd_*GymInit returns FALSE and never reaches this task.
+-- native gym actions. ScrCmd_VioletGymElevator, ScrCmd_AzaleaGymSpinarak,
+-- ScrCmd_AzaleaGymSwitch, ScrCmd_EcruteakGymExtinguishCandle and
+-- ScrCmd_CianwoodGymTurnWinch all return TRUE in the source, so the task holds
+-- the script until the transport, the switch sound, the candle task or the
+-- winch cutscene finished and only then lets it resume; the init commands and
+-- the candle binding commands return FALSE and never reach this task.
+--
+-- The winch answers its own output variable, so a completed mechanism hands the
+-- source boolean back with its completion and the scheduler writes it before
+-- the next command runs.
 --
 -- The task is serializable only once COMPLETE. An active ride owns a player
 -- transport lease, the follower's carried presentation and a source sound
@@ -25,12 +31,17 @@ local function requireMechanism(ctx)
   return assert(ctx.services.gymMechanism, "gymMechanism service is unavailable")
 end
 
----@param spec { action: string, selector: integer?, switchNumber: integer? }
+---@param spec { action: string, selector: integer?, switchNumber: integer?, useLastInteracted: boolean?, lastInteractedActor: string? }
 ---@param ctx table<string, unknown>
 ---@return table<string, unknown> state
 function GymMechanismTask.create(spec, ctx)
   assert(type(spec) == "table" and type(spec.action) == "string", "a gym mechanism task needs its source action")
-  requireMechanism(ctx):begin(spec.action, { selector = spec.selector, switchNumber = spec.switchNumber })
+  requireMechanism(ctx):begin(spec.action, {
+    selector = spec.selector,
+    switchNumber = spec.switchNumber,
+    useLastInteracted = spec.useLastInteracted,
+    lastInteractedActor = spec.lastInteractedActor,
+  })
   return { phase = "wait", action = spec.action, selector = spec.selector, switchNumber = spec.switchNumber }
 end
 
@@ -41,12 +52,13 @@ function GymMechanismTask.poll(state, ctx)
   if state.phase == "complete" then
     return { complete = true, state = state, result = nil }
   end
-  local status = requireMechanism(ctx):step()
+  local mechanism = requireMechanism(ctx)
+  local status = mechanism:step()
   if status ~= "complete" then
     return { complete = false, state = state }
   end
   state.phase = "complete"
-  return { complete = true, state = state, result = nil }
+  return { complete = true, state = state, result = mechanism:takeResult() }
 end
 
 -- Cancel the owned activation. The mechanism restores its own settled state,

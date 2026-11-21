@@ -1,8 +1,9 @@
--- ROM conformance for the two source map props the gym mechanisms load at
--- runtime: the Violet Gym elevator car (build model 111) and the Azalea Gym
--- Spinarak (build model 118). Both are interior build models listed by their
--- area's build config, so the area loader also registers their anim-list
--- records; neither has a generated map placement.
+-- ROM conformance for the three source map props the gym mechanisms load at
+-- runtime: the Violet Gym elevator car (build model 111), the Azalea Gym
+-- Spinarak (build model 118) and the Ecruteak Gym candle (build model 128).
+-- All three are interior build models listed by their area's build config, so
+-- the area loader also registers their anim-list records; none has a generated
+-- map placement.
 
 local AreaData = require("romdump.src.digest.map.AreaData")
 local Assert = require("tests.support.Assert")
@@ -30,6 +31,15 @@ local SOURCES = {
     animationResourceId = 43,
     frameCount = 30,
     ambientLoop = false,
+  },
+  {
+    key = "ecruteak_gym_candle",
+    mapSymbol = "MAP_ECRUTEAK_GYM",
+    modelMemberId = 128,
+    clipName = "g04_light",
+    animationResourceId = 44,
+    frameCount = 8,
+    ambientLoop = true,
   },
 }
 
@@ -99,11 +109,20 @@ local function assertCompiledSource(compiled, definition, source, meshes, textur
     hashed[entry.memberId or entry.resourceId] = true
   end
   Assert.isTrue(hashed[source.modelMemberId] == true, source.key .. " model member is part of the provenance")
-  Assert.isTrue(hashed[source.modelMemberId] == true and hashed[source.animationResourceId] == true)
+  local listed = {}
+  for _, entry in ipairs(compiled.memberHashes) do
+    listed[#listed + 1] = tostring(entry.memberId or entry.resourceId)
+      .. ":"
+      .. tostring(entry.kind or entry.alias or "")
+  end
+  Assert.isTrue(
+    hashed[source.modelMemberId] == true and hashed[source.animationResourceId] == true,
+    source.key .. " animation resource is part of the provenance (" .. table.concat(listed, ",") .. ")"
+  )
 end
 
 local suite = RomSuite.fromFacts({
-  ["compiles both mechanism prop models from their own map archives"] = function(romFs)
+  ["compiles every mechanism prop model from its own map archives"] = function(romFs)
     local meshes, textures = {}, {}
     local compiled = assert(StoryEffectAssetCompiler.compile(romFs, meshes, textures))
     for _, source in ipairs(SOURCES) do

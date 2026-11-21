@@ -160,4 +160,41 @@ function T.tests.running_load_requires_a_lifecycle_settlement_query()
   end, "missing lifecycle settlement must fail instead of publishing readiness")
 end
 
+-- A load (a restored game opening the field on its saved map) is not a
+-- map-enter: the source runs INIT_SCRIPT_ON_LOAD and INIT_SCRIPT_ON_RESUME for
+-- it and reaches INIT_SCRIPT_ON_TRANSITION only through the warp task, so a
+-- Continue never re-runs the entered map's transition scripts.
+function T.tests.a_load_entry_skips_the_transition_lifecycle()
+  local order = {}
+  local controller = controllerFixture({
+    initController = {
+      hasLifecycle = function(_, lifecycle)
+        return lifecycle == "on_transition" or lifecycle == "on_load" or lifecycle == "on_resume"
+      end,
+      startLifecycle = function(_, lifecycle, tick)
+        order[#order + 1] = lifecycle .. ":" .. tick
+        return true
+      end,
+      isLifecycleSettled = function()
+        return true
+      end,
+    },
+    enterMapActors = function()
+      order[#order + 1] = "actors"
+    end,
+  })
+
+  controller:begin("load")
+  Assert.equal(controller:currentStage(), "actors", "a load starts at the map actors")
+  Assert.isTrue(controller:advance(1))
+  Assert.equal(controller:currentStage(), "load")
+  Assert.isTrue(controller:advance(2))
+  Assert.equal(controller:currentStage(), "load_running")
+  Assert.isTrue(controller:advance(3))
+  Assert.equal(controller:currentStage(), "await_presentation")
+  Assert.isTrue(controller:destinationWorldPresentable(), "a load publishes its map before presentation")
+  Assert.deepEqual(order, { "actors", "on_load:2" }, "no transition lifecycle runs for a load")
+  Assert.equal(controller:lastEntryMode(), "load")
+end
+
 return T

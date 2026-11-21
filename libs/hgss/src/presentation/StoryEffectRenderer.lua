@@ -1,8 +1,11 @@
 -- Presents the source models a gym mechanism loads at runtime: the Violet Gym
--- elevator car and the Azalea Gym Spinarak. Both are normalized build models of
--- their own map that travel with the field-effect bundle because the map scene
--- has no placement for them (MapPropManager_LoadOne in
--- src/field/gymmick/violet.c and azalea.c).
+-- elevator car, the Azalea Gym Spinarak and the Ecruteak Gym candle. All three
+-- are normalized build models of their own map that travel with the
+-- field-effect bundle because the map scene has no placement for them
+-- (MapPropManager_LoadOne in src/field/gymmick/violet.c, azalea.c and
+-- ecruteak.c). The Cianwood winch's animated props are the map scene's own
+-- placements, so they draw through the scene; only their donor clip travels
+-- with this bundle.
 --
 -- The renderer owns the immutable model definitions, their pooled meshes and
 -- material wraps, and one model instance per source prop. The mechanism owns
@@ -40,6 +43,8 @@ local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 ---@class StoryEffectSpiderRecord
 ---@field instance ModelInstance
 ---@field clip table<string, unknown>?
+---@class StoryEffectCandleRecord
+---@field instance ModelInstance
 
 ---@class StoryEffectRenderer
 ---@field private definitions table<string, StoryEffectDefinition>
@@ -47,15 +52,18 @@ local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 ---@field pool table<string, unknown>
 ---@field car StoryEffectCarRecord?
 ---@field spiders table<integer, StoryEffectSpiderRecord>
+---@field candles table<integer, StoryEffectCandleRecord>
 local StoryEffectRenderer = {}
 StoryEffectRenderer.__index = StoryEffectRenderer
 
 StoryEffectRenderer.SPIDER_SLOTS = 4
+StoryEffectRenderer.CANDLE_SLOTS = 4
 
--- The two source props in their fixed construction order.
-local ROLES = { "car", "spider" }
+-- The source props in their fixed construction order. The candle model only
+-- joins a composition that publishes it.
+local ROLES = { "car", "spider", "candle" }
 
----@param definitions { car: StoryEffectDefinition, spider: StoryEffectDefinition } generated effect definitions
+---@param definitions { car: StoryEffectDefinition, spider: StoryEffectDefinition, candle: StoryEffectDefinition? } generated effect definitions
 ---@param pool table<string, unknown> GpuAssetPool-shaped mesh/image owner
 ---@return StoryEffectRenderer
 function StoryEffectRenderer.new(definitions, pool)
@@ -67,21 +75,27 @@ function StoryEffectRenderer.new(definitions, pool)
   local resources = {}
   pool:build(function()
     for _, role in ipairs(ROLES) do
-      local definition = assert(definitions[role], "story effect definition is missing: " .. role)
-      local descriptor = assert(definition.model, "story effect model is missing: " .. role)
-      local model = ModelDefinition.fromNitroDescriptor(descriptor)
-      local renderMeshesById = {}
-      for _, mesh in ipairs(model.meshes) do
-        local resource = pool:meshFor(mesh.geometry)
-        mesh.center = resource.center
-        renderMeshesById[mesh.id] = resource.mesh
+      -- The candle model joins only a composition that publishes it.
+      local definition = definitions[role]
+      if definition == nil and role ~= "candle" then
+        error("story effect definition is missing: " .. role, 0)
       end
-      resources[role] = {
-        model = model,
-        clip = assert(model.animations[1], "story effect model carries no clip: " .. role),
-        renderMeshesById = renderMeshesById,
-        wraps = SceneDescriptor.wrapByMaterial(descriptor.materials),
-      }
+      if definition ~= nil then
+        local descriptor = assert(definition.model, "story effect model is missing: " .. role)
+        local model = ModelDefinition.fromNitroDescriptor(descriptor)
+        local renderMeshesById = {}
+        for _, mesh in ipairs(model.meshes) do
+          local resource = pool:meshFor(mesh.geometry)
+          mesh.center = resource.center
+          renderMeshesById[mesh.id] = resource.mesh
+        end
+        resources[role] = {
+          model = model,
+          clip = assert(model.animations[1], "story effect model carries no clip: " .. role),
+          renderMeshesById = renderMeshesById,
+          wraps = SceneDescriptor.wrapByMaterial(descriptor.materials),
+        }
+      end
     end
     return resources
   end)
@@ -91,6 +105,7 @@ function StoryEffectRenderer.new(definitions, pool)
     pool = pool,
     car = nil,
     spiders = {},
+    candles = {},
   }, StoryEffectRenderer)
 end
 
@@ -174,15 +189,18 @@ end
 ---@param self StoryEffectRenderer
 ---@param items table[]
 ---@param record table<string, unknown>
----@param placement { x: number, y: number, z: number, rotationDegrees: number }
----@param role string "car" or "spider"
+---@param placement { x: number, y: number, z: number, rotationDegrees: number, scale: number? }
+---@param role string "car", "spider" or "candle"
 local function appendInstance(self, items, record, placement, role)
   local resource = assert(self.resources[role])
   local instance = assert(record.instance, "story effect instance is missing")
-  instance.transform = Matrix4.multiply(
+  local transform = Matrix4.multiply(
     Matrix4.translate(placement.x, placement.y, placement.z),
     Matrix4.rotateY(math.rad(placement.rotationDegrees))
   )
+  local scale = placement.scale
+  instance.transform = scale ~= nil and scale ~= 1 and Matrix4.multiply(transform, Matrix4.scale(scale, scale, scale))
+    or transform
   instance:evaluatePose()
   for _, item in ipairs(instance:drawItems(resource.renderMeshesById)) do
     -- A source prop is solid world geometry: it draws through the world
@@ -210,12 +228,44 @@ function StoryEffectRenderer:drawItems(status)
       appendInstance(self, items, record, placement, "spider")
     end
   end
+  -- A culled candle is the source's own hidden prop: its model stays owned but
+  -- nothing of it draws.
+  for _, placement in ipairs(status.candles or {}) do
+    local record = self.candles[assert(placement.index, "a candle placement carries its index")]
+    if record ~= nil and placement.culled ~= true then
+      appendInstance(self, items, record, placement, "candle")
+    end
+  end
   return items
+end
+
+-- Claim one candle prop. It stands on its trainer object with no clip of its
+-- own: the source loads the candle's model without starting an animation.
+---@param index integer one-based source candle index
+---@return table<string, unknown> handle
+function StoryEffectRenderer:newCandle(index)
+  assert(type(index) == "number" and index % 1 == 0, "a candle index is required")
+  assert(index >= 1 and index <= StoryEffectRenderer.CANDLE_SLOTS, "a candle index is outside the source quartet")
+  assert(self.candles[index] == nil, "candle " .. index .. " already owns a model")
+  assert(self.resources.candle ~= nil, "story effect renderer has no candle model")
+  local instance = newInstance(self, "candle")
+  self.candles[index] = { instance = instance }
+  local renderer = self
+  local handle = {}
+  function handle:updateFixed()
+    local live = assert(renderer.candles[index], "the candle model was released")
+    live.instance:updateFixed()
+  end
+  function handle:dispose()
+    renderer.candles[index] = nil
+  end
+  return handle
 end
 
 function StoryEffectRenderer:dispose()
   self.car = nil
   self.spiders = {}
+  self.candles = {}
   self.resources = nil
   self.definitions = nil
   self.pool = nil

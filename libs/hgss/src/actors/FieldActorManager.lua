@@ -227,6 +227,7 @@ end
 ---@field hide fun(self: FieldActorManager, actorId: string)
 ---@field setMovementType fun(self: FieldActorManager, actorId: string, movementType: string)
 ---@field setAnimationPaused fun(self: FieldActorManager, actorId: string, paused: boolean)
+---@field setSprite fun(self: FieldActorManager, actorId: string, spriteId: integer)
 ---@field setPresentationOffset fun(self: FieldActorManager, actorId: string, offset: { x: number, y: number, z: number })
 ---@field setPresentationTickAllowedWhileLocked fun(self: FieldActorManager, actorId: string, allowed: boolean)
 ---@field clearPresentationOffset fun(self: FieldActorManager, actorId: string)
@@ -2863,6 +2864,33 @@ end
 
 -- Scripted pause_animation/resume_animation: the actor's pose clock stops
 -- advancing while paused (the manager's fixed-tick step honors the flag).
+-- MapObject_ChangeBillboardSprite: swap one live actor's own billboard for
+-- another compiled sprite. Identity, position, facing, occupancy and save
+-- eligibility are untouched; the replacement visual is acquired from the
+-- resident actor set before the swap, so an unknown sprite faults with the
+-- actor unchanged. A save record never carries the sprite, which is why the
+-- source restores the event's own sprite on re-entry.
+---@param actorId string
+---@param spriteId integer
+---@param self FieldActorManager
+function FieldActorManager:setSprite(actorId, spriteId)
+  local actor = requireActor(self, actorId)
+  assert(type(spriteId) == "number" and spriteId % 1 == 0, "an actor sprite id must be an integer")
+  local previousSpriteId = actor.spriteId
+  if previousSpriteId == spriteId then
+    return
+  end
+  local asset = self:_acquireVisual(spriteId, actorId)
+  local visual = assert(asset.visual, "field actor visual is required")
+  local idlePresentation = assert(visual.idlePresentation, "field actor idle presentation is required")
+  actor:replaceVisual(spriteId, visual, idlePresentation)
+  self.assets:release(previousSpriteId)
+  local entry = self.maps[actor.mapId]
+  if entry ~= nil and self.maps[entry.runtimeMap.mapId] == entry then
+    self._visualRevision = self._visualRevision + 1
+  end
+end
+
 ---@param actorId string
 ---@param paused boolean
 ---@param self FieldActorManager

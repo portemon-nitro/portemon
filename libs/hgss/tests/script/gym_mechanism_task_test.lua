@@ -8,14 +8,19 @@ local GymMechanismTask = require("libs.hgss.src.script.tasks.GymMechanismTask")
 
 local T = {}
 
-local function newContext(statuses)
-  local mechanism = { begins = {}, steps = 0, cancellations = {} }
+local function newContext(statuses, result)
+  local mechanism = { begins = {}, steps = 0, cancellations = {}, result = result }
   function mechanism:begin(action, operands)
     self.begins[#self.begins + 1] = { action = action, operands = operands }
   end
   function mechanism:step()
     self.steps = self.steps + 1
     return statuses[self.steps] or "complete"
+  end
+  function mechanism:takeResult()
+    local taken = self.result
+    self.result = nil
+    return taken
   end
   function mechanism:cancelRide(reason)
     self.cancellations[#self.cancellations + 1] = reason
@@ -35,6 +40,33 @@ function T.the_task_blocks_until_the_mechanism_reports_its_settlement()
   Assert.equal(state.phase, "complete")
   Assert.isTrue(GymMechanismTask.poll(state, ctx).complete, "a completed task never replays its ride")
   Assert.equal(mechanism.steps, 3, "a completed task stops polling the mechanism")
+end
+
+-- The candle extinguish command carries the source selector and the actor the
+-- invoked interaction names, so the mechanism never invents either.
+function T.the_candle_command_carries_its_source_selector_and_actor()
+  local ctx, mechanism = newContext({ "complete" })
+  GymMechanismTask.create({
+    action = "candle_extinguish",
+    useLastInteracted = true,
+    lastInteractedActor = "map:80:object:5",
+  }, ctx)
+  Assert.deepEqual(mechanism.begins[1], {
+    action = "candle_extinguish",
+    operands = { useLastInteracted = true, lastInteractedActor = "map:80:object:5" },
+  })
+end
+
+-- The winch command answers its output variable: the completed task carries the
+-- mechanism's source boolean exactly once.
+function T.the_winch_answers_its_source_boolean_once()
+  local ctx, mechanism = newContext({ "riding", "complete" }, 1)
+  local state = GymMechanismTask.create({ action = "winch" }, ctx)
+  Assert.isFalse(GymMechanismTask.poll(state, ctx).complete, "the cutscene still owns the field")
+  local done = GymMechanismTask.poll(state, ctx)
+  Assert.isTrue(done.complete)
+  Assert.equal(done.result, 1, "the completed task carries the source boolean")
+  Assert.isNil(mechanism:takeResult(), "the result is taken exactly once")
 end
 
 function T.the_switch_flip_carries_its_source_operand()

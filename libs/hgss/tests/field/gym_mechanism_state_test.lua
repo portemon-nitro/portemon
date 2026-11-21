@@ -26,7 +26,8 @@ function T.the_union_starts_inactive_and_round_trips_each_closed_kind()
   Assert.equal(empty:kind(), "none", "a save without the bucket carries no active mechanism")
   Assert.deepEqual(empty:capture(), { schema = GymMechanismState.SCHEMA, kind = "none", data = {} })
 
-  local violet = GymMechanismState.restore({ schema = GymMechanismState.SCHEMA, kind = "violet", data = { raised = true } })
+  local violet =
+    GymMechanismState.restore({ schema = GymMechanismState.SCHEMA, kind = "violet", data = { raised = true } })
   Assert.equal(violet:kind(), "violet")
   Assert.isTrue(violet:violetRaised(), "the settled lift height survives the round trip")
   Assert.deepEqual(violet:capture(), {
@@ -112,6 +113,23 @@ function T.malformed_buckets_are_rejected_without_repair()
     { bucket = { kind = "violet", data = {} } },
     { bucket = { schema = "hgss-gymmick-v2", kind = "violet", data = { raised = false } } },
     { bucket = { schema = GymMechanismState.SCHEMA, kind = "ecruteak", data = {} } },
+    { bucket = { schema = GymMechanismState.SCHEMA, kind = "ecruteak", data = { candles = { false, false, false } } } },
+    {
+      bucket = {
+        schema = GymMechanismState.SCHEMA,
+        kind = "ecruteak",
+        data = { candles = { false, false, false, 1 } },
+      },
+    },
+    {
+      bucket = {
+        schema = GymMechanismState.SCHEMA,
+        kind = "ecruteak",
+        data = { candles = { false, false, false, false }, winchRaised = true },
+      },
+    },
+    { bucket = { schema = GymMechanismState.SCHEMA, kind = "cianwood", data = {} } },
+    { bucket = { schema = GymMechanismState.SCHEMA, kind = "cianwood", data = { winchRaised = "yes" } } },
     { bucket = { schema = GymMechanismState.SCHEMA, kind = "none", data = { raised = false } } },
     { bucket = { schema = GymMechanismState.SCHEMA, kind = "violet", data = { raised = "yes" } } },
     { bucket = { schema = GymMechanismState.SCHEMA, kind = "violet", data = { raised = false, extra = 1 } } },
@@ -128,6 +146,63 @@ function T.malformed_buckets_are_rejected_without_repair()
     Assert.isTrue(Errors.is(err), "case " .. index .. " raises a structured error")
     Assert.equal(err.code, FieldErrors.FIELD_GYM_MECHANISM_INVALID, "case " .. index .. " keeps the bucket invalid")
   end
+end
+
+-- The Ecruteak union is four candle bits; the source init clears them and only
+-- the candle's own index may change.
+function T.the_ecruteak_union_carries_four_candle_states()
+  local state = GymMechanismState.restore(nil)
+  state:initialize("ecruteak")
+  Assert.equal(state:kind(), "ecruteak")
+  Assert.deepEqual(state:ecruteakCandles(), { false, false, false, false }, "InitEcruteakGym clears every candle")
+  state:setEcruteakCandle(3, true)
+  Assert.deepEqual(state:ecruteakCandles(), { false, false, true, false })
+  Assert.deepEqual(state:capture().data, { candles = { false, false, true, false } }, "the settled bit is saved")
+  local captured = state:capture()
+  state:setEcruteakCandle(1, true)
+  Assert.deepEqual(captured.data.candles, { false, false, true, false }, "a capture stays detached")
+
+  for _, index in ipairs({ 0, 5, 1.5 }) do
+    local err = Assert.throws(function()
+      state:setEcruteakCandle(index, true)
+    end)
+    Assert.equal(err.code, FieldErrors.FIELD_GYM_MECHANISM_INVALID, "candle index " .. tostring(index) .. " is refused")
+  end
+  Assert.throws(function()
+    state:cianwoodWinchRaised()
+  end, "the winch accessor is unavailable outside its kind")
+end
+
+-- The Cianwood union is the one-shot winch bit, lowered by its own init.
+function T.the_cianwood_union_carries_the_winch_bit()
+  local state = GymMechanismState.restore({
+    schema = GymMechanismState.SCHEMA,
+    kind = "cianwood",
+    data = { winchRaised = true },
+  })
+  Assert.isTrue(state:cianwoodWinchRaised(), "the raised winch survives the round trip")
+  Assert.deepEqual(state:capture().data, { winchRaised = true })
+  state:setCianwoodWinchRaised(false)
+  Assert.isFalse(state:cianwoodWinchRaised())
+  state:initialize("cianwood")
+  Assert.isFalse(state:cianwoodWinchRaised(), "InitCianwoodGym installs a lowered winch")
+  Assert.throws(function()
+    state:ecruteakCandles()
+  end, "the candle accessor is unavailable outside its kind")
+end
+
+-- The previous kinds still round-trip unchanged beside the new ones.
+function T.the_new_kinds_do_not_disturb_the_previous_union()
+  local state = GymMechanismState.restore(azaleaBucket())
+  state:initialize("ecruteak")
+  state:initialize("azalea")
+  Assert.deepEqual(state:spiderEndpoints(), { 0, 1, 2, 7 }, "the azalea init still installs its source defaults")
+  local violet = GymMechanismState.restore({
+    schema = GymMechanismState.SCHEMA,
+    kind = "violet",
+    data = { raised = true },
+  })
+  Assert.isTrue(violet:violetRaised())
 end
 
 return { tests = T }

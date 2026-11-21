@@ -1,7 +1,7 @@
 -- The gym mechanism owner for one live field: the closed dispatcher over the
 -- port's implemented native mechanisms (the Violet lift and the Azalea
--- Spinarak transports), the persisted union they settle, and the runtime
--- geometry that union implies.
+-- Spinarak transports, the Ecruteak candles and the Cianwood winch), the
+-- persisted union they settle, and the runtime geometry that union implies.
 --
 -- The source keeps exactly one active mechanism in the saved union
 -- (include/gymmick.h), places its props and plates when the map loads
@@ -23,6 +23,15 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local GymMechanismState = require("libs.hgss.src.field.GymMechanismState")
 local VioletGym = require("libs.hgss.src.field.gymmick.VioletGym")
 local AzaleaGym = require("libs.hgss.src.field.gymmick.AzaleaGym")
+local CianwoodGym = require("libs.hgss.src.field.gymmick.CianwoodGym")
+local EcruteakGym = require("libs.hgss.src.field.gymmick.EcruteakGym")
+
+-- The source script environment's trainer attributes the candle commands read
+-- (SCRIPTENV_ENGAGED_TRAINER_0_EVENT): the live trainer engagement owner
+-- answers which actor occupies engagement slot 0. Without one no candle can be
+-- bound or extinguished, which is the source's own assertion path.
+---@class GymMechanismTrainerEngagement
+---@field engagedActor fun(): string|nil
 
 -- The collaborators a live field supplies once: the saved union, the runtime
 -- plateau it projects, and the live services the rides read.
@@ -35,12 +44,14 @@ local AzaleaGym = require("libs.hgss.src.field.gymmick.AzaleaGym")
 ---@field audio table<string, unknown>? the source audio host the rides play through
 ---@field camera table<string, unknown>?
 ---@field foregroundScript (fun(): string|nil)? reads the script frame that owns the field
+---@field trainerEngagement GymMechanismTrainerEngagement? the live engaged-trainer identity owner
 
 -- The presented source-prop factory the rendering composition installs once:
 -- every call claims one live prop instance the mechanism animates and releases.
 ---@class GymMechanismModelFactory
 ---@field car fun(): table<string, unknown>
 ---@field spider fun(slot: integer): table<string, unknown>
+---@field candle (fun(index: integer): table<string, unknown>)? nil when the composition publishes no candle prop
 
 -- The immutable presentation snapshot the field draws: where the owned source
 -- props stand this tick. The mechanism owns every transform, so a renderer
@@ -52,9 +63,15 @@ local AzaleaGym = require("libs.hgss.src.field.gymmick.AzaleaGym")
 ---@field rotationDegrees number
 ---@class GymMechanism.SpiderPlacement: GymMechanism.PropPlacement
 ---@field slot integer
+---@class GymMechanism.CandlePlacement: GymMechanism.PropPlacement
+---@field index integer
+---@field scale number
+---@field culled boolean
 ---@class GymMechanism.Presentation
 ---@field car GymMechanism.PropPlacement?
 ---@field spiders GymMechanism.SpiderPlacement[]?
+---@field candles GymMechanism.CandlePlacement[]?
+---@field fog table<string, unknown>? the gym's own map fog the field applies
 
 ---@class GymMechanism
 ---@field private _state GymMechanismState
@@ -72,6 +89,11 @@ local AzaleaGym = require("libs.hgss.src.field.gymmick.AzaleaGym")
 ---@field private _modelFactory GymMechanismModelFactory|nil
 ---@field private _carModel table<string, unknown>|nil
 ---@field private _spiderModels table<integer, table<string, unknown>>
+---@field private _candleModels table<integer, table<string, unknown>>
+---@field private _ecruteak EcruteakGym|nil the live candle mechanism of this map
+---@field private _winch CianwoodGym|nil the live winch cutscene
+---@field private _result integer|nil the source boolean the blocking command answers
+---@field private _trainerEngagement GymMechanismTrainerEngagement|nil
 local GymMechanism = {}
 GymMechanism.__index = GymMechanism
 
@@ -98,6 +120,12 @@ function GymMechanism.new(options)
       "the gym mechanism foreground-script lookup must be a function"
     )
   end
+  if options.trainerEngagement ~= nil then
+    assert(
+      type(options.trainerEngagement.engagedActor) == "function",
+      "the trainer engagement context answers the engaged trainer actor"
+    )
+  end
   return setmetatable({
     _foregroundScript = options.foregroundScript,
     _state = options.state,
@@ -113,11 +141,17 @@ function GymMechanism.new(options)
     _modelFactory = nil,
     _carModel = nil,
     _spiderModels = {},
+    _candleModels = {},
+    _ecruteak = nil,
+    _winch = nil,
+    _result = nil,
+    _trainerEngagement = options.trainerEngagement,
   }, GymMechanism)
 end
 
 -- Map load: publish the settled runtime geometry the saved union describes,
--- then project it over the loaded map's generated terrain.
+-- project it over the loaded map's generated terrain, and restore what the
+-- settled kind owns on this map - the source Gymmick_Init call site.
 ---@param runtimeMap table<string, unknown>
 function GymMechanism:bindMap(runtimeMap)
   assert(type(runtimeMap) == "table", "the gym mechanism binds to one runtime map")
@@ -125,6 +159,30 @@ function GymMechanism:bindMap(runtimeMap)
   self._geometry:bindMap(runtimeMap)
   self._runtimeMap = runtimeMap
   self:_syncModels()
+  self:_restoreMapState()
+end
+
+-- GymmickInit_*: the settled union decides what the loaded map starts with.
+-- Ecruteak installs the gym's own fog; Cianwood puts the winch records on
+-- their last frame. Violet and Azalea own only their runtime geometry and
+-- their props, which bindMap already published.
+---@private
+function GymMechanism:_restoreMapState()
+  local runtimeMap = self._runtimeMap
+  if runtimeMap == nil then
+    return
+  end
+  local kind = self._state:kind()
+  if kind == GymMechanismState.ECRUTEAK then
+    local environment = runtimeMap.renderEnvironment
+    if environment ~= nil then
+      environment.fog = EcruteakGym.FOG
+    end
+    return
+  end
+  if kind == GymMechanismState.CIANWOOD and self._state:cianwoodWinchRaised() then
+    CianwoodGym.restoreSettled(runtimeMap)
+  end
 end
 
 -- The source gym init command: install one closed kind and its source
@@ -136,6 +194,7 @@ function GymMechanism:initialize(kind)
       kind = kind,
     })
   end
+  self:_releaseLeaves()
   self._state:initialize(kind)
   self:_syncModels()
 end
@@ -147,6 +206,7 @@ end
 function GymMechanism:enterMap(runtimeMap)
   self._ownerScript = nil
   self:cancelRide("the field left the map")
+  self:_releaseLeaves()
   self._state:initialize(GymMechanismState.NONE)
   self:bindMap(runtimeMap)
 end
@@ -154,6 +214,7 @@ end
 function GymMechanism:unbind()
   self._ownerScript = nil
   self:cancelRide("the field retired")
+  self:_releaseLeaves()
   self:_releaseModels()
   self._runtimeMap = nil
   self._geometry:unbind()
@@ -161,7 +222,11 @@ end
 
 ---@return boolean
 function GymMechanism:isRiding()
-  return self._active ~= nil or self._switch ~= nil
+  if self._active ~= nil or self._switch ~= nil or self._winch ~= nil then
+    return true
+  end
+  local ecruteak = self._ecruteak
+  return ecruteak ~= nil and not ecruteak:isExtinguishComplete()
 end
 
 -- The presented composition installs the source-model bridge once. A headless
@@ -173,6 +238,10 @@ function GymMechanism:setModelFactory(factory)
     assert(
       type(factory.car) == "function" and type(factory.spider) == "function",
       "the gym mechanism model factory creates both source props"
+    )
+    assert(
+      factory.candle == nil or type(factory.candle) == "function",
+      "a gym mechanism candle factory creates the source candle prop"
     )
   end
   self:_releaseModels()
@@ -203,12 +272,39 @@ end
 function GymMechanism:_releaseModels()
   self:_releaseCarModel()
   self:_releaseSpiderModels()
+  self:_releaseCandleModels()
+end
+
+---@private
+function GymMechanism:_releaseCandleModels()
+  for index, model in pairs(self._candleModels) do
+    model:dispose()
+    self._candleModels[index] = nil
+  end
+end
+
+-- Release the live mechanism leaves of this map exactly once. A gym init, a map
+-- swap and a field teardown all land here, so no candle tracker or winch
+-- cutscene outlives the map whose union installed it.
+---@private
+function GymMechanism:_releaseLeaves()
+  local ecruteak = self._ecruteak
+  self._ecruteak = nil
+  if ecruteak ~= nil then
+    ecruteak:dispose()
+  end
+  local winch = self._winch
+  self._winch = nil
+  if winch ~= nil then
+    winch:dispose()
+  end
 end
 
 -- Keep the presented props matched to the settled union the map loaded with.
 -- The source map init loads exactly the active mechanism's models
--- (GymmickInit_Violet loads the car, GymmickInit_Azalea the four Spinarak) and
--- loads nothing for a cleared union.
+-- (GymmickInit_Violet loads the car, GymmickInit_Azalea the four Spinarak,
+-- GymmickInit_Ecruteak the four candle props) and loads nothing for a cleared
+-- union or for the winch, whose props the map scene places itself.
 ---@private
 function GymMechanism:_syncModels()
   local factory = self._modelFactory
@@ -219,18 +315,40 @@ function GymMechanism:_syncModels()
   end
   if kind == GymMechanismState.VIOLET then
     self:_releaseSpiderModels()
+    self:_releaseCandleModels()
     if self._carModel == nil then
       self._carModel = factory.car()
     end
     return
   end
-  assert(kind == GymMechanismState.AZALEA, "the gym mechanism union is closed")
-  self:_releaseCarModel()
-  for slot = 1, GymMechanismState.SPIDER_SLOTS do
-    if self._spiderModels[slot] == nil then
-      self._spiderModels[slot] = factory.spider(slot)
+  if kind == GymMechanismState.AZALEA then
+    self:_releaseCarModel()
+    self:_releaseCandleModels()
+    for slot = 1, GymMechanismState.SPIDER_SLOTS do
+      if self._spiderModels[slot] == nil then
+        self._spiderModels[slot] = factory.spider(slot)
+      end
     end
+    return
   end
+  if kind == GymMechanismState.ECRUTEAK then
+    self:_releaseCarModel()
+    self:_releaseSpiderModels()
+    -- The gym's live candle mechanism exists for the whole Ecruteak visit: the
+    -- source allocates its local data at map load, not at the first command.
+    self:_ecruteakGym()
+    local newCandle = factory.candle
+    if newCandle ~= nil then
+      for index = 1, GymMechanismState.CANDLE_COUNT do
+        if self._candleModels[index] == nil then
+          self._candleModels[index] = newCandle(index)
+        end
+      end
+    end
+    return
+  end
+  assert(kind == GymMechanismState.CIANWOOD, "the gym mechanism union is closed")
+  self:_releaseModels()
 end
 
 -- Advance the presented source models one fixed tick of the field. Only the
@@ -241,6 +359,9 @@ function GymMechanism:updatePresentation()
     self._carModel:updateFixed()
   end
   for _, model in pairs(self._spiderModels) do
+    model:updateFixed()
+  end
+  for _, model in pairs(self._candleModels) do
     model:updateFixed()
   end
 end
@@ -291,22 +412,51 @@ local function spiderPlacements(self)
   return placements
 end
 
+-- The four candle placements: each candle stands on its own medium trainer's
+-- current world point, which is how the source's follow task tracks a bound
+-- trainer. A composition with no candle props loaded presents none.
+---@return GymMechanism.CandlePlacement[]
+local function candlePlacements(self)
+  local ecruteak = self._ecruteak
+  if ecruteak == nil then
+    return {}
+  end
+  local placements = {}
+  for _, candle in ipairs(ecruteak:candlePlacements()) do
+    if self._candleModels[candle.index] ~= nil then
+      placements[#placements + 1] = {
+        index = candle.index,
+        x = candle.x,
+        y = candle.y,
+        z = candle.z,
+        scale = candle.scale,
+        culled = candle.culled,
+        rotationDegrees = 0,
+      }
+    end
+  end
+  return placements
+end
+
 -- The immutable presentation snapshot the field draws: where the owned source
 -- props stand this tick. The mechanism owns every transform, so a renderer
 -- only applies them.
 ---@return GymMechanism.Presentation
 function GymMechanism:presentation()
   if self._runtimeMap == nil then
-    return { car = nil, spiders = nil }
+    return { car = nil, spiders = nil, candles = nil }
   end
   local kind = self._state:kind()
   if kind == GymMechanismState.VIOLET then
-    return { car = carPlacement(self), spiders = nil }
+    return { car = carPlacement(self), spiders = nil, candles = nil }
   end
   if kind == GymMechanismState.AZALEA then
-    return { car = nil, spiders = spiderPlacements(self) }
+    return { car = nil, spiders = spiderPlacements(self), candles = nil }
   end
-  return { car = nil, spiders = nil }
+  if kind == GymMechanismState.ECRUTEAK then
+    return { car = nil, spiders = nil, candles = candlePlacements(self), fog = EcruteakGym.FOG }
+  end
+  return { car = nil, spiders = nil, candles = nil }
 end
 
 -- A gym mechanism activation belongs to the script frame that started it: a
@@ -344,10 +494,73 @@ local function requireKind(self, kind)
   end
 end
 
+-- The live candle mechanism of this map. The source allocates the gym's local
+-- data at map load (GymmickInit_Ecruteak) and every candle command reads it; a
+-- command reaching a map with no Ecruteak mechanism has already failed its kind
+-- test, so this leaf is only created for the map whose union is Ecruteak.
+---@private
+---@return EcruteakGym
+function GymMechanism:_ecruteakGym()
+  local ecruteak = self._ecruteak
+  if ecruteak == nil then
+    local runtimeMap = assert(self._runtimeMap, "the candle mechanism needs the live map")
+    ecruteak = EcruteakGym.new({
+      state = self._state,
+      actors = self._actors,
+      audio = self._audio,
+      mapId = assert(runtimeMap.mapId, "the candle mechanism binds the live map's medium objects"),
+    })
+    self._ecruteak = ecruteak
+  end
+  return ecruteak
+end
+
+-- SCRIPTENV_ENGAGED_TRAINER_0_EVENT: the actor of engagement slot 0. A
+-- command that needs it without one is the source's own assertion failure.
+---@private
+---@return string actorId
+function GymMechanism:_engagedActorId()
+  local engagement = self._trainerEngagement
+  local actorId = engagement ~= nil and engagement.engagedActor() or nil
+  if type(actorId) ~= "string" or actorId == "" then
+    Errors.raise(
+      FieldErrors.FIELD_GYM_MECHANISM_INVALID,
+      "the source candle command needs an engaged trainer",
+      { slot = 0 }
+    )
+  end
+  -- Errors.raise carries no noreturn annotation, so the guard above leaves the
+  -- value unnarrowed; reaching here proves the source slot holds an actor.
+  return assert(actorId, "engagement slot 0 holds the actor the candle command reads")
+end
+
+-- ScrCmd_EcruteakGymBindCandleToTrainer: a wrong gym answers the source FALSE
+-- and does nothing; otherwise the engaged trainer's candle follows it.
+function GymMechanism:bindCandle()
+  if self._state:kind() ~= GymMechanismState.ECRUTEAK then
+    return
+  end
+  self:_ecruteakGym():bindCandle(self:_engagedActorId())
+end
+
+-- ScrCmd_EcruteakGymUnbindCandleFromTrainer: a wrong gym does nothing, and so
+-- does an unbind with no live candle mechanism.
+function GymMechanism:unbindCandle()
+  if self._state:kind() ~= GymMechanismState.ECRUTEAK then
+    return
+  end
+  local ecruteak = self._ecruteak
+  if ecruteak ~= nil then
+    ecruteak:unbindCandle()
+  end
+end
+
 -- Start the one ride this task will drive. The switch flip is not a ride: it
 -- commits its bit in the same tick and only waits for its own source sound.
 ---@param action string
----@param operands { selector: integer?, switchNumber: integer? }|nil
+---@param operands
+---| { selector: integer?, switchNumber: integer? }
+---| { useLastInteracted: boolean?, lastInteractedActor: string? }|nil
 function GymMechanism:begin(action, operands)
   if self:isRiding() then
     Errors.raise(FieldErrors.FIELD_GYM_MECHANISM_BUSY, "another gym transport owns the field", { action = action })
@@ -401,7 +614,58 @@ function GymMechanism:begin(action, operands)
     self._switch = { sound = GymMechanism.SWITCH_SEQUENCE }
     return
   end
+  if action == "candle_extinguish" then
+    -- ScrCmd_EcruteakGymExtinguishCandle returns TRUE for every mechanism kind,
+    -- so a wrong gym yields once without touching a candle; the byte selector
+    -- names the source script environment attribute the candle is read from.
+    if self._state:kind() ~= GymMechanismState.ECRUTEAK then
+      return
+    end
+    local actorId
+    if operands.useLastInteracted == true then
+      actorId = operands.lastInteractedActor
+      if type(actorId) ~= "string" or actorId == "" then
+        Errors.raise(
+          FieldErrors.FIELD_GYM_MECHANISM_INVALID,
+          "the source candle command needs the last interacted actor",
+          { actor = tostring(actorId) }
+        )
+      end
+    else
+      actorId = self:_engagedActorId()
+    end
+    -- Errors.raise carries no noreturn annotation, so the branch's guard leaves
+    -- the value unnarrowed; reaching here proves the command read an actor.
+    self:_ecruteakGym():beginExtinguish(assert(actorId, "the candle command resolves the actor it extinguishes"))
+    return
+  end
+  if action == "winch" then
+    -- ScrCmd_CianwoodGymTurnWinch answers OpenTrainer/refusal through its own
+    -- output variable: the mechanism writes the source boolean either way.
+    local winch = CianwoodGym.new({
+      state = self._state,
+      camera = self._camera,
+      runtimeMap = self._runtimeMap,
+    })
+    local accepted = winch:activate()
+    self._result = accepted and 1 or 0
+    if accepted then
+      self._winch = winch
+    else
+      winch:dispose()
+    end
+    return
+  end
   Errors.raise(FieldErrors.FIELD_GYM_MECHANISM_INVALID, "unknown gym mechanism action", { action = tostring(action) })
+end
+
+-- The source boolean a blocking gym command answers, taken exactly once by the
+-- task that completed it.
+---@return integer|nil
+function GymMechanism:takeResult()
+  local result = self._result
+  self._result = nil
+  return result
 end
 
 -- One fixed tick of the owned activation. Answers "complete" when nothing is
@@ -420,6 +684,24 @@ function GymMechanism:step()
     end
     return "riding"
   end
+  local winch = self._winch
+  if winch ~= nil then
+    winch:updateFixed()
+    if not winch:isComplete() then
+      return "riding"
+    end
+    winch:dispose()
+    self._winch = nil
+    return "complete"
+  end
+  local ecruteak = self._ecruteak
+  if ecruteak ~= nil and not ecruteak:isExtinguishComplete() then
+    ecruteak:updateFixed()
+    if not ecruteak:isExtinguishComplete() then
+      return "riding"
+    end
+    return "complete"
+  end
   local ride = self._active
   if ride == nil then
     return "complete"
@@ -437,6 +719,16 @@ end
 -- floor, and the switch keeps the bit it already committed.
 ---@param reason string?
 function GymMechanism:cancelRide(reason)
+  local winch = self._winch
+  if winch ~= nil then
+    self._winch = nil
+    winch:cancel(reason)
+    winch:dispose()
+  end
+  local ecruteak = self._ecruteak
+  if ecruteak ~= nil then
+    ecruteak:cancelExtinguish()
+  end
   local ride = self._active
   if ride == nil then
     return

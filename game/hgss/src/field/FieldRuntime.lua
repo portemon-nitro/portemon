@@ -1676,6 +1676,11 @@ function FieldRuntime:_composeFieldServices(boot)
     audio = self.audio or (self.scriptHosts and self.scriptHosts.audio),
     camera = self.camera,
     foregroundScript = currentForegroundScriptId,
+    -- The candle commands read the source script environment's
+    -- engaged-trainer attribute. No live owner publishes one yet, so the
+    -- mechanism has no engaged actor and reports the source's own
+    -- missing-trainer path instead of inventing one; the engagement owner
+    -- supplies `trainerEngagement` here.
   })
   -- The initial map's own union decides which runtime-loaded source props the
   -- mechanism presents, exactly like the source map init loading them.
@@ -2086,7 +2091,11 @@ function FieldRuntime:_startFieldSession(boot)
   else
     self:_applyEffectiveWeather(self.runtimeMap)
   end
-  self.session:beginMapEntry()
+  -- A restored game opens the field on its saved map: the source loads that map
+  -- with INIT_SCRIPT_ON_LOAD and INIT_SCRIPT_ON_RESUME and reaches
+  -- INIT_SCRIPT_ON_TRANSITION only through a warp, so a Continue never re-runs
+  -- the map's transition scripts.
+  self.session:beginMapEntry(boot.loadedGame ~= nil and "load" or "full")
   self.playTime = boot.loadedGame and PlayTime.new(boot.loadedGame.playTimeSeconds) or self.game.playTime
   assert(self.playTime and self.playTime.start and self.playTime.advance, "game play time is required")
   self.playTime:start()

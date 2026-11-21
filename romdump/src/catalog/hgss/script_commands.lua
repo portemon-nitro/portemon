@@ -2293,28 +2293,34 @@ return {
       },
     },
     [314] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_EcruteakGymInit",
       widths = {},
     },
     [315] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_EcruteakGymBindCandleToTrainer",
       widths = {},
     },
     [316] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_EcruteakGymUnbindCandleFromTrainer",
       widths = {},
     },
     [317] = {
+      classification = "native_wait",
       name = "ScrCmd_EcruteakGymExtinguishCandle",
       widths = {
         [1] = 1,
       },
     },
     [318] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_CianwoodGymInit",
       widths = {},
     },
     [319] = {
+      classification = "native_wait",
       name = "ScrCmd_CianwoodGymTurnWinch",
       widths = {
         [1] = 2,

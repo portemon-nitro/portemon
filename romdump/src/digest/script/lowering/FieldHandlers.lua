@@ -2032,15 +2032,21 @@ FieldHandlers[342] = FieldServiceHandlers.moveWarp
 FieldHandlers[242] = FieldServiceHandlers.elevatorCurFloorBox
 FieldHandlers[488] = FieldServiceHandlers.elevatorAnim
 FieldHandlers[522] = FieldServiceHandlers.getCurrentHour
--- The Violet and Azalea gym mechanism family rides the cohesive StoryHandlers
--- leaf for the same local-budget reason: the two gym init commands install
--- their own closed kind, the lift carries no operands, and the spider ride and
--- switch selector are literal source bytes.
+-- The gym mechanism family rides the cohesive StoryHandlers leaf for the same
+-- local-budget reason: the init commands install their own closed kind, the
+-- lift and candle binding carry no operands, the selector-driven commands read
+-- literal source bytes, and the winch writes the output variable it names.
 FieldHandlers[324] = require("romdump.src.digest.script.lowering.StoryHandlers").violetGymInit
 FieldHandlers[325] = require("romdump.src.digest.script.lowering.StoryHandlers").violetGymElevator
 FieldHandlers[326] = require("romdump.src.digest.script.lowering.StoryHandlers").azaleaGymInit
 FieldHandlers[327] = require("romdump.src.digest.script.lowering.StoryHandlers").azaleaGymSpinarak
 FieldHandlers[328] = require("romdump.src.digest.script.lowering.StoryHandlers").azaleaGymSwitch
+FieldHandlers[314] = require("romdump.src.digest.script.lowering.StoryHandlers").ecruteakGymInit
+FieldHandlers[315] = require("romdump.src.digest.script.lowering.StoryHandlers").ecruteakGymBindCandle
+FieldHandlers[316] = require("romdump.src.digest.script.lowering.StoryHandlers").ecruteakGymUnbindCandle
+FieldHandlers[317] = require("romdump.src.digest.script.lowering.StoryHandlers").ecruteakGymExtinguishCandle
+FieldHandlers[318] = require("romdump.src.digest.script.lowering.StoryHandlers").cianwoodGymInit
+FieldHandlers[319] = require("romdump.src.digest.script.lowering.StoryHandlers").cianwoodGymTurnWinch
 FieldHandlers[784] = FieldServiceHandlers.scriptOverlayCmd
 
 -- The seventeen dex entries ride the cohesive PokedexHandlers leaf. This

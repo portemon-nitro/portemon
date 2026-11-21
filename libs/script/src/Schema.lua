@@ -57,9 +57,9 @@ Schema.ENUMS = {
   mart_query = { "athlete_available", "card_prefix" },
   -- The source money family's two mutations and three box commands.
   money_action = { "add", "subtract" },
-  -- The two closed native gym mechanisms this port implements; the source
-  -- union's other kinds stay unimplemented rather than named here.
-  gym_mechanism = { "violet", "azalea" },
+  -- The closed native gym mechanisms this port implements; the source union's
+  -- other kinds stay unimplemented rather than named here.
+  gym_mechanism = { "violet", "azalea", "ecruteak", "cianwood" },
   money_box_action = { "show", "update", "hide" },
   pc_application = { "storage", "mailbox", "photoAlbum" },
   -- The foreground phone call direction across the shared menu/script
@@ -1133,6 +1133,17 @@ Schema.OPERATIONS = {
   gym_elevator = { fields = {} },
   gym_spinarak = { fields = { selector = { type = "integer", required = true } } },
   gym_switch = { fields = { switchNumber = { type = "integer", required = true } } },
+  -- The Ecruteak candle commands: binding and unbinding read the engaged
+  -- trainer from the mechanism's own script environment and return in their
+  -- tick, while extinguishing blocks until the source shrink task finished.
+  -- `useLastInteracted` is the source's raw selector byte: nonzero names the
+  -- last interacted actor, zero the engaged trainer of slot 0.
+  gym_candle_bind = { fields = {} },
+  gym_candle_unbind = { fields = {} },
+  gym_candle_extinguish = { fields = { useLastInteracted = { type = "integer", required = true } } },
+  -- The Cianwood winch: one blocking command that writes its source boolean
+  -- into the caller's output variable.
+  gym_winch = { fields = { result = { type = "value", required = true } } },
   field_clock_hour = { fields = { result = { type = "value", required = true } } },
   shake_camera = {
     fields = {

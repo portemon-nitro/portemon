@@ -847,10 +847,12 @@ function FieldPresentationResources.new(runtime)
     -- composition keeps the renderer nil and the mechanism presents nothing.
     local carDefinition = fieldEffectAssets.effects.violet_gym_car
     local spiderDefinition = fieldEffectAssets.effects.azalea_gym_spinarak
+    local candleDefinition = fieldEffectAssets.effects.ecruteak_gym_candle
     if carDefinition ~= nil and spiderDefinition ~= nil and runtime.gymMechanism ~= nil then
       local mechanismRenderer = StoryEffectRenderer.new({
         car = carDefinition,
         spider = spiderDefinition,
+        candle = candleDefinition,
       }, entrancePool)
       self.gymMechanismRenderer = mechanismRenderer
       local function newMechanismCar()
@@ -859,7 +861,16 @@ function FieldPresentationResources.new(runtime)
       local function newMechanismSpider(slot)
         return mechanismRenderer:newSpider(slot)
       end
-      runtime.gymMechanism:setModelFactory({ car = newMechanismCar, spider = newMechanismSpider })
+      local newMechanismCandle = candleDefinition ~= nil
+          and function(index)
+            return mechanismRenderer:newCandle(index)
+          end
+        or nil
+      runtime.gymMechanism:setModelFactory({
+        car = newMechanismCar,
+        spider = newMechanismSpider,
+        candle = newMechanismCandle,
+      })
     end
     self.presenters = buildPresenters(self)
   end)

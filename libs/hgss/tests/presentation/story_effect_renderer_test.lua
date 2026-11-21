@@ -1,6 +1,6 @@
 -- The story-effect adapter presents the gym mechanisms' runtime-loaded source
--- props: the Violet car's ambient loop and the four Azalea Spinarak, each drawn
--- only at the transform the mechanism publishes.
+-- props: the Violet car's ambient loop, the four Azalea Spinarak and the four
+-- Ecruteak candles, each drawn only at the transform the mechanism publishes.
 
 local Assert = require("tests.support.Assert")
 
@@ -79,11 +79,20 @@ local function withRendererMocks(overrides, fn)
     }
     local definitions = {
       car = overrides.car or {
-        model = { key = "field-effect:violet_gym_car", geometry = "car-mesh", animations = { { name = "gym01_lift" } } },
+        model = {
+          key = "field-effect:violet_gym_car",
+          geometry = "car-mesh",
+          animations = { { name = "gym01_lift" } },
+        },
       },
       spider = overrides.spider or {
-        model = { key = "field-effect:azalea_gym_spinarak", geometry = "spider-mesh", animations = { { name = "gym02lift" } } },
+        model = {
+          key = "field-effect:azalea_gym_spinarak",
+          geometry = "spider-mesh",
+          animations = { { name = "gym02lift" } },
+        },
       },
+      candle = overrides.candle,
     }
     fn({
       Renderer = Renderer,
@@ -153,7 +162,8 @@ T.tests["draws the car and every placed spider at the published transform"] = fu
     Assert.equal(harness.updates(), 2, "each live model advances its own clip clock")
 
     spiders[2]:stopRideAnimation()
-    local afterStop = renderer:drawItems({ car = nil, spiders = { { slot = 2, x = 0, y = 0, z = 0, rotationDegrees = 0 } } })
+    local afterStop =
+      renderer:drawItems({ car = nil, spiders = { { slot = 2, x = 0, y = 0, z = 0, rotationDegrees = 0 } } })
     Assert.equal(#afterStop, 1)
     Assert.isNil(afterStop[1].clip, "arrival unloads the one-shot like the source animation manager")
   end)
@@ -166,14 +176,10 @@ T.tests["a released model drops out of the draw and its handle stays closed"] = 
     local spider = renderer:newSpider(1)
     car:dispose()
     spider:dispose()
-    Assert.equal(
-      #renderer:drawItems({
-        car = { x = 0, y = 0, z = 0, rotationDegrees = 0 },
-        spiders = { { slot = 1, x = 0, y = 0, z = 0, rotationDegrees = 0 } },
-      }),
-      0,
-      "a released prop draws nothing"
-    )
+    Assert.equal(#renderer:drawItems({
+      car = { x = 0, y = 0, z = 0, rotationDegrees = 0 },
+      spiders = { { slot = 1, x = 0, y = 0, z = 0, rotationDegrees = 0 } },
+    }), 0, "a released prop draws nothing")
     renderer:dispose()
   end)
 end
@@ -195,6 +201,70 @@ T.tests["one source prop owns one live model and four spiders fill the quartet"]
       renderer:newSpider(1)
     end, "a spider slot keeps one model")
     renderer:dispose()
+  end)
+end
+
+-- The candle props stand at their trainer's own point, take the source shrink
+-- scale, and a culled candle keeps its model while drawing nothing.
+T.tests["the candle props follow the source scale and cull state"] = function()
+  local candle = {
+    model = {
+      key = "field-effect:ecruteak_gym_candle",
+      geometry = "candle-mesh",
+      animations = { { name = "g04_light", frameCount = 8 } },
+    },
+  }
+  withRendererMocks({ candle = candle }, function(harness)
+    local renderer = harness.renderer
+    local handles = {}
+    for index = 1, 4 do
+      handles[index] = renderer:newCandle(index)
+    end
+    Assert.equal(#harness.plays, 0, "a candle never starts an animation the source does not start")
+    Assert.throws(function()
+      renderer:newCandle(5)
+    end, "the source loads exactly four candles")
+    Assert.throws(function()
+      renderer:newCandle(1)
+    end, "a candle slot keeps one model")
+
+    local items = renderer:drawItems({
+      candles = {
+        { index = 1, x = 4.5, y = 0, z = 6.5, scale = 1, culled = false, rotationDegrees = 0 },
+        { index = 2, x = 10.5, y = 0, z = 6.5, scale = 0.5, culled = false, rotationDegrees = 0 },
+        { index = 3, x = 4.5, y = 0, z = 12.5, scale = 1, culled = true, rotationDegrees = 0 },
+        { index = 4, x = 11.5, y = 0, z = 19.5, scale = 0.25, culled = false, rotationDegrees = 0 },
+      },
+    })
+    Assert.equal(#items, 3, "an extinguished candle draws nothing")
+    Assert.equal(items[1].transform[13], 4.5, "the first candle stands on its trainer")
+    Assert.near(items[1].transform[1], 1, 1e-9, "a full-scale candle draws its own size")
+    Assert.near(items[2].transform[1], 0.5, 1e-9, "the source shrink scale reaches the model transform")
+    Assert.near(items[3].transform[1], 0.25, 1e-9)
+    Assert.near(items[3].transform[13], 11.5, 1e-9, "the fourth candle draws at its own trainer")
+
+    handles[1]:updateFixed()
+    Assert.equal(harness.updates(), 1, "a presented candle advances its own clip clock")
+    handles[1]:dispose()
+    local afterRelease = renderer:drawItems({
+      candles = { { index = 1, x = 0, y = 0, z = 0, scale = 1, culled = false, rotationDegrees = 0 } },
+    })
+    Assert.equal(#afterRelease, 0, "a released candle draws nothing")
+    renderer:dispose()
+  end)
+end
+
+-- A composition that publishes no candle model still presents the car and the
+-- spiders: the candle role only joins the props the bundle carries.
+T.tests["a bundle without the candle model still presents the other props"] = function()
+  withRendererMocks(nil, function(harness)
+    Assert.isNil(harness.renderer.resources.candle, "no candle resource is built without its model")
+    harness.renderer:newCar()
+    Assert.equal(#harness.plays, 1)
+    Assert.throws(function()
+      harness.renderer:newCandle(1)
+    end, "a candle claim without its model fails loudly")
+    harness.renderer:dispose()
   end)
 end
 

@@ -1,9 +1,12 @@
--- Gym mechanism lowerings. The Violet and Azalea gyms drive the port's closed
--- native mechanism union through one family of semantic nodes: the two init
--- commands install their own kind with no operands, the lift has no operands,
--- and the spider ride and switch read their source operands as literal bytes
--- (ScriptReadByte), never as script variables. They live here so their names
--- never become more file-scoped locals in the main field-handler chunk.
+-- Gym mechanism lowerings. The five gyms drive the port's closed native
+-- mechanism union through one family of semantic nodes: the init commands
+-- install their own kind with no operands, the lift and the candle binding
+-- commands carry none either, and the spider ride, the switch flip and the
+-- candle's own selector read their operands as literal bytes (ScriptReadByte),
+-- never as script variables. The winch's single operand is the output variable
+-- the source boolean lands in (ScriptGetVarPointer), so it lowers as a value
+-- reference. They live here so their names never become more file-scoped
+-- locals in the main field-handler chunk.
 
 local Operands = require("romdump.src.digest.script.lowering.Operands")
 
@@ -49,6 +52,47 @@ function StoryHandlers.azaleaGymSwitch(ins)
   local switchNumber = Operands.operandValue(ins.operands[1])
   assert(isByte(switchNumber), "azalea switch selector must be a source byte")
   return { op = "gym_switch", switchNumber = switchNumber }
+end
+
+-- ScrCmd_EcruteakGymInit: InitEcruteakGym installs GYMMICK_ECRUTEAK with four
+-- unburnt candles and returns FALSE.
+function StoryHandlers.ecruteakGymInit(_)
+  return { op = "gym_init", kind = "ecruteak" }
+end
+
+-- ScrCmd_EcruteakGymBindCandleToTrainer reads the engaged trainer of slot 0
+-- from the script environment and starts the source follow task; it returns
+-- FALSE, so the following command runs in the same tick.
+function StoryHandlers.ecruteakGymBindCandle(_)
+  return { op = "gym_candle_bind" }
+end
+
+-- ScrCmd_EcruteakGymUnbindCandleFromTrainer ends that follow task and returns
+-- FALSE.
+function StoryHandlers.ecruteakGymUnbindCandle(_)
+  return { op = "gym_candle_unbind" }
+end
+
+-- ScrCmd_EcruteakGymExtinguishCandle reads one literal selector byte: nonzero
+-- names the last interacted actor, zero the engaged trainer of slot 0. It
+-- starts the blocking shrink task and returns TRUE.
+function StoryHandlers.ecruteakGymExtinguishCandle(ins)
+  local useLastInteracted = Operands.operandValue(ins.operands[1])
+  assert(isByte(useLastInteracted), "ecruteak candle selector must be a source byte")
+  return { op = "gym_candle_extinguish", useLastInteracted = useLastInteracted }
+end
+
+-- ScrCmd_CianwoodGymInit: InitCianwoodGym installs GYMMICK_CIANWOOD and returns
+-- FALSE.
+function StoryHandlers.cianwoodGymInit(_)
+  return { op = "gym_init", kind = "cianwood" }
+end
+
+-- ScrCmd_CianwoodGymTurnWinch reads the output variable a halfword names, writes
+-- the source boolean there and returns TRUE: the cutscene it may start runs as
+-- the blocking mechanism task.
+function StoryHandlers.cianwoodGymTurnWinch(ins)
+  return { op = "gym_winch", result = Operands.varRef(ins.operands[1]) }
 end
 
 return StoryHandlers

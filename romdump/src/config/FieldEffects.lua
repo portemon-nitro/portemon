@@ -117,9 +117,14 @@ return {
   -- and azalea.c). Both are interior build models of their own map and both
   -- are listed by that area's build config, so the area loader also registers
   -- their anim-list records.
+  -- The Ecruteak Gym candle (build model 128, MapPropManager_LoadOne in
+  -- src/field/gymmick/ecruteak.c) stands on each medium trainer object. The
+  -- Cianwood winch's props are the map scene's own placements, so they need no
+  -- role here.
   mechanismPropModels = {
     { key = "violet_gym_car", mapSymbol = "MAP_VIOLET_GYM", modelMemberId = 111 },
     { key = "azalea_gym_spinarak", mapSymbol = "MAP_AZALEA_GYM", modelMemberId = 118 },
+    { key = "ecruteak_gym_candle", mapSymbol = "MAP_ECRUTEAK_GYM", modelMemberId = 128 },
   },
   -- The retail ROM's follower reaction callback table
   -- pairs each reaction's BTX0 texture member with a companion four-frame
