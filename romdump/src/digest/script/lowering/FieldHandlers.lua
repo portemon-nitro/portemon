@@ -2047,6 +2047,7 @@ FieldHandlers[316] = require("romdump.src.digest.script.lowering.StoryHandlers")
 FieldHandlers[317] = require("romdump.src.digest.script.lowering.StoryHandlers").ecruteakGymExtinguishCandle
 FieldHandlers[318] = require("romdump.src.digest.script.lowering.StoryHandlers").cianwoodGymInit
 FieldHandlers[319] = require("romdump.src.digest.script.lowering.StoryHandlers").cianwoodGymTurnWinch
+FieldHandlers[329] = require("romdump.src.digest.script.lowering.StoryHandlers").blackthornGymInit
 FieldHandlers[784] = FieldServiceHandlers.scriptOverlayCmd
 
 -- The seventeen dex entries ride the cohesive PokedexHandlers leaf. This

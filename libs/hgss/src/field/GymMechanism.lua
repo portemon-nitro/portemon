@@ -1,7 +1,8 @@
 -- The gym mechanism owner for one live field: the closed dispatcher over the
 -- port's implemented native mechanisms (the Violet lift and the Azalea
--- Spinarak transports, the Ecruteak candles and the Cianwood winch), the
--- persisted union they settle, and the runtime geometry that union implies.
+-- Spinarak transports, the Ecruteak candles, the Cianwood winch and the
+-- Blackthorn platforms), the persisted union they settle, and the runtime
+-- geometry that union implies.
 --
 -- The source keeps exactly one active mechanism in the saved union
 -- (include/gymmick.h), places its props and plates when the map loads
@@ -25,6 +26,7 @@ local VioletGym = require("libs.hgss.src.field.gymmick.VioletGym")
 local AzaleaGym = require("libs.hgss.src.field.gymmick.AzaleaGym")
 local CianwoodGym = require("libs.hgss.src.field.gymmick.CianwoodGym")
 local EcruteakGym = require("libs.hgss.src.field.gymmick.EcruteakGym")
+local BlackthornGym = require("libs.hgss.src.field.gymmick.BlackthornGym")
 
 -- The source script environment's trainer attributes the candle commands read
 -- (SCRIPTENV_ENGAGED_TRAINER_0_EVENT): the live trainer engagement owner
@@ -52,6 +54,7 @@ local EcruteakGym = require("libs.hgss.src.field.gymmick.EcruteakGym")
 ---@field car fun(): table<string, unknown>
 ---@field spider fun(slot: integer): table<string, unknown>
 ---@field candle (fun(index: integer): table<string, unknown>)? nil when the composition publishes no candle prop
+---@field platform (fun(slot: integer, kind: string): table<string, unknown>)? nil when the composition publishes no platform prop
 
 -- The immutable presentation snapshot the field draws: where the owned source
 -- props stand this tick. The mechanism owns every transform, so a renderer
@@ -67,10 +70,13 @@ local EcruteakGym = require("libs.hgss.src.field.gymmick.EcruteakGym")
 ---@field index integer
 ---@field scale number
 ---@field culled boolean
+---@class GymMechanism.PlatformPlacement: GymMechanism.PropPlacement
+---@field slot integer one-based source platform index
 ---@class GymMechanism.Presentation
 ---@field car GymMechanism.PropPlacement?
 ---@field spiders GymMechanism.SpiderPlacement[]?
 ---@field candles GymMechanism.CandlePlacement[]?
+---@field platforms GymMechanism.PlatformPlacement[]?
 ---@field fog table<string, unknown>? the gym's own map fog the field applies
 
 ---@class GymMechanism
@@ -90,8 +96,10 @@ local EcruteakGym = require("libs.hgss.src.field.gymmick.EcruteakGym")
 ---@field private _carModel table<string, unknown>|nil
 ---@field private _spiderModels table<integer, table<string, unknown>>
 ---@field private _candleModels table<integer, table<string, unknown>>
+---@field private _platformModels table<integer, table<string, unknown>>
 ---@field private _ecruteak EcruteakGym|nil the live candle mechanism of this map
 ---@field private _winch CianwoodGym|nil the live winch cutscene
+---@field private _blackthorn BlackthornGym|nil the live platform mechanism of this map
 ---@field private _result integer|nil the source boolean the blocking command answers
 ---@field private _trainerEngagement GymMechanismTrainerEngagement|nil
 local GymMechanism = {}
@@ -142,20 +150,27 @@ function GymMechanism.new(options)
     _carModel = nil,
     _spiderModels = {},
     _candleModels = {},
+    _platformModels = {},
     _ecruteak = nil,
     _winch = nil,
+    _blackthorn = nil,
     _result = nil,
     _trainerEngagement = options.trainerEngagement,
   }, GymMechanism)
 end
 
 -- Map load: publish the settled runtime geometry the saved union describes,
--- project it over the loaded map's generated terrain, and restore what the
--- settled kind owns on this map - the source Gymmick_Init call site.
+-- project it over the loaded map's generated terrain and permission grid, and
+-- restore what the settled kind owns on this map - the source Gymmick_Init call
+-- site.
 ---@param runtimeMap table<string, unknown>
 function GymMechanism:bindMap(runtimeMap)
   assert(type(runtimeMap) == "table", "the gym mechanism binds to one runtime map")
-  self._geometry:restoreViolet(self._state:kind() == GymMechanismState.VIOLET and self._state:violetRaised() or false)
+  local kind = self._state:kind()
+  self._geometry:restoreViolet(kind == GymMechanismState.VIOLET and self._state:violetRaised() or false)
+  self._geometry:setBlackthornPlatforms(
+    kind == GymMechanismState.BLACKTHORN and self._state:blackthornPlatforms() or nil
+  )
   self._geometry:bindMap(runtimeMap)
   self._runtimeMap = runtimeMap
   self:_syncModels()
@@ -186,7 +201,11 @@ function GymMechanism:_restoreMapState()
 end
 
 -- The source gym init command: install one closed kind and its source
--- defaults. Runtime geometry is untouched, exactly like Save_Gymmick_Init.
+-- defaults. Runtime geometry is untouched, exactly like Save_Gymmick_Init: a
+-- mechanism whose own tables were loaded at map load (the Blackthorn platforms)
+-- keeps running for the rest of the visit, so the gym's own on-load init command
+-- never drops a platform the player is standing on. A different kind replaces
+-- the previous mechanism outright.
 ---@param kind string
 function GymMechanism:initialize(kind)
   if self._active ~= nil or self._switch ~= nil then
@@ -194,7 +213,12 @@ function GymMechanism:initialize(kind)
       kind = kind,
     })
   end
-  self:_releaseLeaves()
+  -- A mechanism whose own tables were loaded at map load keeps them for the
+  -- rest of the visit; every other kind is rebuilt from the installed union.
+  local keepsMapTables = kind == GymMechanismState.BLACKTHORN and self._state:kind() == kind
+  if not keepsMapTables then
+    self:_releaseLeaves()
+  end
   self._state:initialize(kind)
   self:_syncModels()
 end
@@ -222,7 +246,11 @@ end
 
 ---@return boolean
 function GymMechanism:isRiding()
+  local blackthorn = self._blackthorn
   if self._active ~= nil or self._switch ~= nil or self._winch ~= nil then
+    return true
+  end
+  if blackthorn ~= nil and blackthorn:isRunning() then
     return true
   end
   local ecruteak = self._ecruteak
@@ -242,6 +270,10 @@ function GymMechanism:setModelFactory(factory)
     assert(
       factory.candle == nil or type(factory.candle) == "function",
       "a gym mechanism candle factory creates the source candle prop"
+    )
+    assert(
+      factory.platform == nil or type(factory.platform) == "function",
+      "a gym mechanism platform factory creates the source platform props"
     )
   end
   self:_releaseModels()
@@ -273,6 +305,15 @@ function GymMechanism:_releaseModels()
   self:_releaseCarModel()
   self:_releaseSpiderModels()
   self:_releaseCandleModels()
+  self:_releasePlatformModels()
+end
+
+---@private
+function GymMechanism:_releasePlatformModels()
+  for slot, model in pairs(self._platformModels) do
+    model:dispose()
+    self._platformModels[slot] = nil
+  end
 end
 
 ---@private
@@ -284,8 +325,8 @@ function GymMechanism:_releaseCandleModels()
 end
 
 -- Release the live mechanism leaves of this map exactly once. A gym init, a map
--- swap and a field teardown all land here, so no candle tracker or winch
--- cutscene outlives the map whose union installed it.
+-- swap and a field teardown all land here, so no candle tracker, winch cutscene
+-- or platform action outlives the map whose union installed it.
 ---@private
 function GymMechanism:_releaseLeaves()
   local ecruteak = self._ecruteak
@@ -298,17 +339,28 @@ function GymMechanism:_releaseLeaves()
   if winch ~= nil then
     winch:dispose()
   end
+  local blackthorn = self._blackthorn
+  self._blackthorn = nil
+  if blackthorn ~= nil then
+    blackthorn:dispose()
+  end
 end
 
 -- Keep the presented props matched to the settled union the map loaded with.
 -- The source map init loads exactly the active mechanism's models
 -- (GymmickInit_Violet loads the car, GymmickInit_Azalea the four Spinarak,
--- GymmickInit_Ecruteak the four candle props) and loads nothing for a cleared
--- union or for the winch, whose props the map scene places itself.
+-- GymmickInit_Ecruteak the four candle props, GymmickInit_Blackthorn the three
+-- platforms) and loads nothing for a cleared union or for the winch, whose props
+-- the map scene places itself. The platform mechanism itself is not only its
+-- props: it owns the runtime platform floors and the step-triggered action, so
+-- it exists for the whole map visit even when no composition presents a model.
 ---@private
 function GymMechanism:_syncModels()
   local factory = self._modelFactory
   local kind = self._state:kind()
+  if kind == GymMechanismState.BLACKTHORN and self._runtimeMap ~= nil and self._blackthorn == nil then
+    self:_blackthornGym()
+  end
   if factory == nil or self._runtimeMap == nil or kind == GymMechanismState.NONE then
     self:_releaseModels()
     return
@@ -316,6 +368,7 @@ function GymMechanism:_syncModels()
   if kind == GymMechanismState.VIOLET then
     self:_releaseSpiderModels()
     self:_releaseCandleModels()
+    self:_releasePlatformModels()
     if self._carModel == nil then
       self._carModel = factory.car()
     end
@@ -324,6 +377,7 @@ function GymMechanism:_syncModels()
   if kind == GymMechanismState.AZALEA then
     self:_releaseCarModel()
     self:_releaseCandleModels()
+    self:_releasePlatformModels()
     for slot = 1, GymMechanismState.SPIDER_SLOTS do
       if self._spiderModels[slot] == nil then
         self._spiderModels[slot] = factory.spider(slot)
@@ -334,6 +388,7 @@ function GymMechanism:_syncModels()
   if kind == GymMechanismState.ECRUTEAK then
     self:_releaseCarModel()
     self:_releaseSpiderModels()
+    self:_releasePlatformModels()
     -- The gym's live candle mechanism exists for the whole Ecruteak visit: the
     -- source allocates its local data at map load, not at the first command.
     self:_ecruteakGym()
@@ -342,6 +397,23 @@ function GymMechanism:_syncModels()
       for index = 1, GymMechanismState.CANDLE_COUNT do
         if self._candleModels[index] == nil then
           self._candleModels[index] = newCandle(index)
+        end
+      end
+    end
+    return
+  end
+  if kind == GymMechanismState.BLACKTHORN then
+    self:_releaseCarModel()
+    self:_releaseSpiderModels()
+    self:_releaseCandleModels()
+    -- The platform mechanism exists for the whole Blackthorn visit and owns the
+    -- three platform tables the source allocates at map load.
+    self:_blackthornGym()
+    local newPlatform = factory.platform
+    if newPlatform ~= nil then
+      for slot = 1, GymMechanismState.BLACKTHORN_PLATFORMS do
+        if self._platformModels[slot] == nil then
+          self._platformModels[slot] = newPlatform(slot, assert(BlackthornGym.PLATFORM_MODELS[slot]))
         end
       end
     end
@@ -364,6 +436,20 @@ function GymMechanism:updatePresentation()
   for _, model in pairs(self._candleModels) do
     model:updateFixed()
   end
+  for _, model in pairs(self._platformModels) do
+    model:updateFixed()
+  end
+end
+
+-- Advance the one gameplay mechanism this field drives without a script: the
+-- Blackthorn platform action a completed step started. Every other mechanism is
+-- driven by its blocking script task.
+function GymMechanism:updateFixed()
+  local blackthorn = self._blackthorn
+  if blackthorn == nil then
+    return
+  end
+  blackthorn:updateFixed()
 end
 
 -- The car's own world placement: the source prop stands on the pad centre
@@ -456,6 +542,10 @@ function GymMechanism:presentation()
   if kind == GymMechanismState.ECRUTEAK then
     return { car = nil, spiders = nil, candles = candlePlacements(self), fog = EcruteakGym.FOG }
   end
+  if kind == GymMechanismState.BLACKTHORN then
+    local blackthorn = self:_blackthornGym()
+    return { car = nil, spiders = nil, candles = nil, platforms = blackthorn:presentation() }
+  end
   return { car = nil, spiders = nil, candles = nil }
 end
 
@@ -513,6 +603,29 @@ function GymMechanism:_ecruteakGym()
     self._ecruteak = ecruteak
   end
   return ecruteak
+end
+
+-- The live platform mechanism of this map. The source allocates the gym's
+-- local platform data at map load (GymmickInit_Blackthorn) and every platform
+-- action reads it; the platform tables follow the union the map loaded with, so
+-- a later gym init command settles only the saved union, exactly like
+-- Save_Gymmick_Init.
+---@private
+---@return BlackthornGym
+function GymMechanism:_blackthornGym()
+  local blackthorn = self._blackthorn
+  if blackthorn == nil then
+    local player = self._playerOf()
+    assert(player ~= nil, "the blackthorn mechanism needs the live field player")
+    blackthorn = BlackthornGym.new({
+      state = self._state,
+      geometry = self._geometry,
+      player = player,
+      audio = self._audio,
+    })
+    self._blackthorn = blackthorn
+  end
+  return blackthorn
 end
 
 -- SCRIPTENV_ENGAGED_TRAINER_0_EVENT: the actor of engagement slot 0. A
@@ -729,6 +842,10 @@ function GymMechanism:cancelRide(reason)
   if ecruteak ~= nil then
     ecruteak:cancelExtinguish()
   end
+  local blackthorn = self._blackthorn
+  if blackthorn ~= nil then
+    blackthorn:cancel()
+  end
   local ride = self._active
   if ride == nil then
     return
@@ -739,13 +856,24 @@ function GymMechanism:cancelRide(reason)
 end
 
 -- The completed-step seam the field asks before publishing an ordinary step
--- or warp. The Violet and Azalea mechanisms own no committed-step claim, so
--- this slice claims nothing; the seam exists so the field has exactly one
--- place to ask the active mechanism before those owners run.
----@param _ table<string, unknown> the committed step facts
+-- or warp. Only the source's platform buttons claim a completed step: the
+-- mechanism is asked exactly once per committed step, a real button starts the
+-- platform action, and the claimed tick publishes no ordinary step, no warp and
+-- no encounter.
+---@param step { mapId: integer, fieldX: integer, fieldZ: integer, facing: string }
 ---@return boolean claimed
-function GymMechanism:tryClaimCompletedStep(_)
-  return false
+function GymMechanism:tryClaimCompletedStep(step)
+  if self._state:kind() ~= GymMechanismState.BLACKTHORN then
+    return false
+  end
+  local blackthorn = self:_blackthornGym()
+  if blackthorn:isRunning() then
+    return false
+  end
+  if not blackthorn:startAction(step.fieldX, step.fieldZ) then
+    return false
+  end
+  return true
 end
 
 return GymMechanism

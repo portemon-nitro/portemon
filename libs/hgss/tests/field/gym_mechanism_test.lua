@@ -25,6 +25,13 @@ local function newHost(options)
     _lease = false,
     beginTransport = function(self)
       self._lease = true
+      return {
+        fieldX = self.fieldX,
+        fieldZ = self.fieldZ,
+        worldX = self.worldX,
+        worldY = self.worldY,
+        worldZ = self.worldZ,
+      }
     end,
     applyTransportPose = function(self, x, y, z)
       self.worldX, self.worldY, self.worldZ = x, y, z
@@ -93,6 +100,19 @@ local function newHost(options)
     floorWorldY = function()
       return 0
     end,
+    setBlackthornPlatforms = function(self, anchors)
+      self._blackthorn = anchors
+    end,
+    mapTile = function(_, fieldX, fieldZ)
+      local blocked = host.blocked ~= nil and host.blocked[fieldX .. ":" .. fieldZ] == true
+      return blocked, not blocked
+    end,
+    tileCentre = function(_, fieldX, fieldZ)
+      return { x = fieldX + 0.5, z = fieldZ + 0.5 }
+    end,
+    reproject = function(self)
+      host.reprojections = (host.reprojections or 0) + 1
+    end,
   }
   host.audio = {
     play = function(_, sound)
@@ -125,6 +145,10 @@ end
 
 local function union(kind, data)
   return { schema = GymMechanismState.SCHEMA, kind = kind, data = data or {} }
+end
+
+local function blackthornUnion()
+  return union("blackthorn", { platforms = GymMechanismState.BLACKTHORN_INITIAL_PLATFORMS })
 end
 
 -- The presented source props: one renderer-owned model per prop, created by
@@ -313,8 +337,9 @@ function T.cancel_restores_the_ride_and_capture_stays_detached()
   Assert.deepEqual(host.mechanism:capture(), captured, "the cancelled ride committed nothing")
 end
 
--- The completed-step seam: this slice's mechanisms own no committed-step
--- claim, so the field's own owners keep running after the question.
+-- The completed-step seam: the transport and winch mechanisms own no
+-- committed-step claim, so the field's own owners keep running after the
+-- question.
 function T.the_completed_step_seam_claims_nothing()
   local host = newHost({ union = union("violet", { raised = false }) })
   Assert.isFalse(host.mechanism:tryClaimCompletedStep({
@@ -325,6 +350,107 @@ function T.the_completed_step_seam_claims_nothing()
     worldY = 0,
     facing = "north",
   }))
+end
+
+-- The Blackthorn seam: only a completed step onto a platform button claims the
+-- tick, and the claimed action then holds the field until it settles.
+function T.a_blackthorn_button_step_claims_the_tick_and_holds_it()
+  local host = newHost({ union = blackthornUnion() })
+  host.mechanism:bindMap(host.player.currentMap)
+  host.player.fieldX, host.player.fieldZ = 14, 75
+  host.player.worldX, host.player.worldZ = 14.5, 75.5
+  Assert.isFalse(
+    host.mechanism:tryClaimCompletedStep({
+      mapId = 141,
+      fieldX = 13,
+      fieldZ = 76,
+      facing = "north",
+    }),
+    "an ordinary platform tile claims nothing"
+  )
+  Assert.isFalse(host.mechanism:isRiding(), "an unclaimed step leaves the field free")
+  Assert.isTrue(
+    host.mechanism:tryClaimCompletedStep({
+      mapId = 141,
+      fieldX = 14,
+      fieldZ = 75,
+      facing = "west",
+    }),
+    "the completed step onto the +x button claims the tick"
+  )
+  Assert.isTrue(host.mechanism:isRiding(), "the claimed move holds the field")
+  Assert.isFalse(host.mechanism:isStableForSave(), "a live platform action is never saved")
+  Assert.equal(host.effects[#host.effects], "play:SEQ_SE_GS_GONDORA_IDOU", "the claimed action starts the source loop")
+  Assert.isFalse(
+    host.mechanism:tryClaimCompletedStep({
+      mapId = 141,
+      fieldX = 12,
+      fieldZ = 75,
+      facing = "west",
+    }),
+    "a second completed step cannot claim beside the live action"
+  )
+
+  for _ = 1, 200 do
+    host.mechanism:updateFixed()
+    if not host.mechanism:isRiding() then
+      break
+    end
+  end
+  Assert.isFalse(host.mechanism:isRiding(), "the settled move releases the field")
+  Assert.equal(host.effects[#host.effects], "stop:SEQ_SE_GS_GONDORA_IDOU", "the settled move releases its loop")
+  Assert.deepEqual(host.mechanism:capture().data.platforms[1], { x = 18, z = 75, rotation = 0 })
+end
+
+-- A blackthorn union presents its three platform props at the source transform,
+-- and it exists even when no composition publishes a model.
+function T.the_blackthorn_union_presents_its_three_platforms()
+  local host = newHost({ union = blackthornUnion() })
+  host.mechanism:bindMap(host.player.currentMap)
+  Assert.notNil(host.mechanism._blackthorn, "the platform mechanism exists without a presented model")
+  local placements = assert(host.mechanism:presentation().platforms)
+  Assert.equal(#placements, 3, "the union presents all three platforms")
+  Assert.deepEqual({ placements[1].slot, placements[2].slot, placements[3].slot }, { 1, 2, 3 })
+  Assert.equal(placements[1].rotationDegrees, 0, "the first platform stands unrotated")
+  Assert.equal(placements[2].rotationDegrees, -4, "the second platform stands one source quarter turned")
+  Assert.equal(placements[1].y, 0, "a platform stands on the settled gym floor")
+  Assert.notNil(host.geometry._blackthorn, "the union projects its floors onto the map")
+
+  host.mechanism:initialize(GymMechanismState.NONE)
+  Assert.isNil(host.mechanism:presentation().platforms, "a cleared union presents no platform")
+  Assert.isNil(host.mechanism._blackthorn, "a cleared union releases the platform mechanism")
+  Assert.isNil(host.geometry._blackthorn, "a cleared union removes the platform floors")
+end
+
+-- The three source platform props are claimed once each with the model role its
+-- footprint names, and a teardown releases them exactly once.
+function T.a_presented_platform_follows_the_union_and_releases_once()
+  local host = newHost({ union = blackthornUnion() })
+  host.mechanism:bindMap(host.player.currentMap)
+  local factory = newModelFactory(host)
+  factory.platform = function(slot, kind)
+    host.models.platforms = host.models.platforms or {}
+    host.models.platforms[slot] = { kind = kind, disposed = 0, updates = 0 }
+    local record = host.models.platforms[slot]
+    return {
+      updateFixed = function()
+        record.updates = record.updates + 1
+      end,
+      dispose = function()
+        record.disposed = record.disposed + 1
+      end,
+    }
+  end
+  host.mechanism:setModelFactory(factory)
+  Assert.equal(host.models.platforms[1].kind, "wide", "the 5x7 platforms load the wide source model")
+  Assert.equal(host.models.platforms[2].kind, "narrow", "the 4x8 platform loads the narrow source model")
+  Assert.equal(host.models.platforms[3].kind, "wide")
+  host.mechanism:updatePresentation()
+  Assert.equal(host.models.platforms[1].updates, 1, "a presented platform advances its own clip clock")
+  host.mechanism:unbind()
+  for slot = 1, 3 do
+    Assert.equal(host.models.platforms[slot].disposed, 1, "a teardown releases platform " .. slot .. " once")
+  end
 end
 
 -- The settled union decides which runtime-loaded source props are presented:

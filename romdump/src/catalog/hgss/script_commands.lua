@@ -2378,6 +2378,7 @@ return {
       },
     },
     [329] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_BlackthornGymInit",
       widths = {},
     },

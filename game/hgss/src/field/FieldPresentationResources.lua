@@ -848,11 +848,18 @@ function FieldPresentationResources.new(runtime)
     local carDefinition = fieldEffectAssets.effects.violet_gym_car
     local spiderDefinition = fieldEffectAssets.effects.azalea_gym_spinarak
     local candleDefinition = fieldEffectAssets.effects.ecruteak_gym_candle
+    local widePlatformDefinition = fieldEffectAssets.effects.blackthorn_gym_platform_wide
+    local narrowPlatformDefinition = fieldEffectAssets.effects.blackthorn_gym_platform_narrow
+    local platformDefinitions
+    if widePlatformDefinition ~= nil and narrowPlatformDefinition ~= nil then
+      platformDefinitions = { wide = widePlatformDefinition, narrow = narrowPlatformDefinition }
+    end
     if carDefinition ~= nil and spiderDefinition ~= nil and runtime.gymMechanism ~= nil then
       local mechanismRenderer = StoryEffectRenderer.new({
         car = carDefinition,
         spider = spiderDefinition,
         candle = candleDefinition,
+        platform = platformDefinitions,
       }, entrancePool)
       self.gymMechanismRenderer = mechanismRenderer
       local function newMechanismCar()
@@ -861,15 +868,19 @@ function FieldPresentationResources.new(runtime)
       local function newMechanismSpider(slot)
         return mechanismRenderer:newSpider(slot)
       end
-      local newMechanismCandle = candleDefinition ~= nil
-          and function(index)
-            return mechanismRenderer:newCandle(index)
-          end
-        or nil
+      local function newMechanismCandle(index)
+        return mechanismRenderer:newCandle(index)
+      end
+      local function newMechanismPlatform(slot, kind)
+        return mechanismRenderer:newPlatform(slot, kind)
+      end
+      -- The candle and the platforms load only where their generated
+      -- definitions exist; an absent factory is an absent source prop.
       runtime.gymMechanism:setModelFactory({
         car = newMechanismCar,
         spider = newMechanismSpider,
-        candle = newMechanismCandle,
+        candle = candleDefinition ~= nil and newMechanismCandle or nil,
+        platform = platformDefinitions ~= nil and newMechanismPlatform or nil,
       })
     end
     self.presenters = buildPresenters(self)

@@ -849,6 +849,11 @@ local function composePhysicalMap(logicalMap, coverage)
     runtimeMap.terrainDependencyHash = coverage.terrainDependencyHash
     runtimeMap.coordinateOrigin = { x = coverage.origin.x, z = coverage.origin.z }
     runtimeMap.physicalOrigin = coverage.origin
+    -- The composed terrain and permission owners were just replaced: a runtime
+    -- projection the field installed over them re-installs over these.
+    if runtimeMap.reprojectFieldGeometry ~= nil then
+      runtimeMap.reprojectFieldGeometry()
+    end
   end
   runtimeMap:syncPhysicalFields()
   return runtimeMap
@@ -1241,8 +1246,12 @@ function FieldRuntime:_loadInitialWorld(boot)
   local composeInitialMap = boot.composeInitialMap
   local function composeAndDecorateInitialMap(logicalMap, position)
     local runtimeMap = composeInitialMap(logicalMap, position)
+    local mechanismState = self.gymMechanismState
     self.gymMechanismGeometry:restoreViolet(
-      self.gymMechanismState:kind() == GymMechanismState.VIOLET and self.gymMechanismState:violetRaised() or false
+      mechanismState:kind() == GymMechanismState.VIOLET and mechanismState:violetRaised() or false
+    )
+    self.gymMechanismGeometry:setBlackthornPlatforms(
+      mechanismState:kind() == GymMechanismState.BLACKTHORN and mechanismState:blackthornPlatforms() or nil
     )
     self.gymMechanismGeometry:bindMap(runtimeMap)
     return runtimeMap
@@ -2274,9 +2283,12 @@ function FieldRuntime:update(dt)
       self.pokemonCenterHeal:updateFixed()
     end
     -- The mechanism's presented source props advance their own clip clocks on
-    -- the same fixed tick; gameplay state is untouched here.
+    -- the same fixed tick, and the one gameplay mechanism the field drives
+    -- without a script - the Blackthorn platform action - advances here too;
+    -- gameplay state is untouched by the presentation half.
     if self.gymMechanism then
       self.gymMechanism:updatePresentation()
+      self.gymMechanism:updateFixed()
     end
     self:_processApricornDate()
     -- The transient banner advances one fixed tick before the session so a

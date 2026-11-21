@@ -1,11 +1,12 @@
 -- Compiles the field models a gym mechanism loads at runtime instead of the
 -- map scene placing them: the Violet Gym elevator car (build model 111), the
--- Azalea Gym Spinarak (build model 118) and the Ecruteak Gym candle (build
--- model 128). All three are ordinary interior build models of their own map
--- (src/field/gymmick/violet.c, azalea.c and ecruteak.c call
--- MapPropManager_LoadOne with the model id, the source transform and a null
--- rotation override), and all three are listed by their area's build config,
--- which is also how the source area loader registers their animations.
+-- Azalea Gym Spinarak (build model 118), the Ecruteak Gym candle (build model
+-- 128) and the Blackthorn Gym platforms (build models 120 and 121). All of them
+-- are ordinary interior build models of their own map (src/field/gymmick/
+-- violet.c, azalea.c, ecruteak.c and blackthorn.c call MapPropManager_LoadOne
+-- with the model id, the source transform and a null rotation override), and all
+-- of them are listed by their area's build config, which is also how the source
+-- area loader registers their animations.
 --
 -- The Cianwood Gym winch's own animated props are the map scene's placements,
 -- so only their records matter here and they already travel with the map.
@@ -13,7 +14,9 @@
 -- The generated bundle therefore carries their normalized model definitions
 -- and clips; the runtime mechanism owns nothing but the transform and the clip
 -- playback it applies to them. Each model keeps exactly the one clip its source
--- anim-list record declares.
+-- anim-list record declares, and none at all when its area registers no record
+-- for it: the Blackthorn platforms are plain static build models the mechanism
+-- only ever translates and rotates.
 
 local AreaData = require("romdump.src.digest.map.AreaData")
 local BuildingModelCompiler = require("romdump.src.digest.map.BuildingModelCompiler")
@@ -75,13 +78,22 @@ local function compileProp(romFs, source, meshes, textures)
     assert(compiled.modelKeyOf[source.modelMemberId], "mechanism prop model did not compile: " .. source.key)
   local descriptor = assert(compiled.models[modelKey], "mechanism prop descriptor is missing: " .. source.key)
   local animations = descriptor.animations
-  if descriptor.kind ~= "nitro-dynamic" or type(animations) ~= "table" or #animations ~= 1 then
-    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "mechanism prop model must carry its one source clip", {
+  if descriptor.kind == "nitro-dynamic" then
+    if type(animations) ~= "table" or #animations ~= 1 then
+      Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "mechanism prop model must carry its one source clip", {
+        key = source.key,
+        mapSymbol = source.mapSymbol,
+        modelMemberId = source.modelMemberId,
+        kind = descriptor.kind,
+        animationCount = type(animations) == "table" and #animations or 0,
+      })
+    end
+  elseif descriptor.kind ~= "static" then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "mechanism prop model must be a normalized model", {
       key = source.key,
       mapSymbol = source.mapSymbol,
       modelMemberId = source.modelMemberId,
       kind = descriptor.kind,
-      animationCount = type(animations) == "table" and #animations or 0,
     })
   end
   -- The generated definition travels with the field-effect family, so its

@@ -67,7 +67,7 @@ local function withRendererMocks(overrides, fn)
     local meshPaths = {}
     local pool = {
       build = function(_, build)
-        build()
+        return build()
       end,
       meshFor = function(_, path)
         meshPaths[#meshPaths + 1] = path
@@ -78,6 +78,7 @@ local function withRendererMocks(overrides, fn)
       end,
     }
     local definitions = {
+      platform = overrides.platform,
       car = overrides.car or {
         model = {
           key = "field-effect:violet_gym_car",
@@ -264,6 +265,85 @@ T.tests["a bundle without the candle model still presents the other props"] = fu
     Assert.throws(function()
       harness.renderer:newCandle(1)
     end, "a candle claim without its model fails loudly")
+    harness.renderer:dispose()
+  end)
+end
+
+-- The Blackthorn platforms are static build models of their own area: no clip
+-- is ever registered for them, so each claim draws its own batch list through
+-- the world projection at the transform the mechanism publishes.
+T.tests["the platform props draw their static batches at the published transform"] = function()
+  local platform = {
+    wide = {
+      model = {
+        kind = "static",
+        batches = {
+          {
+            geometry = "platform-mesh",
+            material = 0,
+            alphaClass = "opaque",
+            cullMode = "back",
+            polygonAlpha = 31,
+            polygonMode = "modulation",
+            polygonId = 0,
+            translucentDepthWrite = false,
+            depthEqual = false,
+            lightMask = 5,
+            fogEnabled = false,
+          },
+        },
+        materials = {
+          { id = 0, name = "platform", texture = "platform-texture", wrap = { x = "clamp", y = "clamp" } },
+        },
+      },
+    },
+    narrow = { model = { kind = "static", batches = {}, materials = {} } },
+  }
+  withRendererMocks({ platform = platform }, function(harness)
+    local handles = {}
+    handles[1] = harness.renderer:newPlatform(1, "wide")
+    handles[2] = harness.renderer:newPlatform(2, "narrow")
+    handles[3] = harness.renderer:newPlatform(3, "wide")
+    Assert.throws(function()
+      harness.renderer:newPlatform(4, "wide")
+    end, "the source loads exactly three platforms")
+    Assert.throws(function()
+      harness.renderer:newPlatform(1, "wide")
+    end, "a platform slot keeps one model")
+
+    local items = harness.renderer:drawItems({
+      platforms = {
+        { slot = 1, x = 13.5, y = 3, z = 75.5, rotationDegrees = -4 },
+        { slot = 2, x = 9.5, y = 3, z = 58.5, rotationDegrees = 0 },
+        { slot = 3, x = 14.5, y = 3, z = 32.5, rotationDegrees = 0 },
+      },
+    })
+    Assert.equal(#items, 2, "both wide platforms draw their own batch and the narrow one draws none")
+    Assert.equal(items[1].transform[13], 13.5, "the prop stands on its anchor column")
+    Assert.equal(items[1].transform[14], 3, "the prop stands at the source native height")
+    Assert.equal(items[1].transform[15], 75.5, "the prop stands on its anchor row")
+    Assert.equal(items[2].transform[13], 14.5, "the second wide platform draws at its own anchor")
+    Assert.isTrue(items[1].worldSpace == true, "a platform draws as world geometry")
+    Assert.isNil(items[1].fieldEffect, "a solid prop never takes the flat-billboard projection")
+    Assert.near(items[1].transform[1], math.cos(math.rad(-4)), 1e-9, "the settled source angle reaches the model")
+
+    handles[1]:updateFixed()
+    handles[1]:dispose()
+    Assert.equal(#harness.renderer:drawItems({
+      platforms = { { slot = 1, x = 0, y = 0, z = 0, rotationDegrees = 0 } },
+    }), 0, "a released platform draws nothing")
+    harness.renderer:dispose()
+  end)
+end
+
+-- A composition that publishes no platform models still presents the other
+-- props; a platform claim without its model fails loudly.
+T.tests["a bundle without the platform models still presents the other props"] = function()
+  withRendererMocks(nil, function(harness)
+    Assert.isNil(harness.renderer.resources.platform, "no platform resource is built without its model")
+    Assert.throws(function()
+      harness.renderer:newPlatform(1, "wide")
+    end, "a platform claim without its model fails loudly")
     harness.renderer:dispose()
   end)
 end

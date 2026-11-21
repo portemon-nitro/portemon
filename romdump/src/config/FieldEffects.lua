@@ -121,10 +121,14 @@ return {
   -- src/field/gymmick/ecruteak.c) stands on each medium trainer object. The
   -- Cianwood winch's props are the map scene's own placements, so they need no
   -- role here.
+  -- The Blackthorn Gym loads build model 120 on its two 5x7 platforms and 121 on
+  -- its 4x8 one (GymmickInit_Blackthorn's modelIDs).
   mechanismPropModels = {
     { key = "violet_gym_car", mapSymbol = "MAP_VIOLET_GYM", modelMemberId = 111 },
     { key = "azalea_gym_spinarak", mapSymbol = "MAP_AZALEA_GYM", modelMemberId = 118 },
     { key = "ecruteak_gym_candle", mapSymbol = "MAP_ECRUTEAK_GYM", modelMemberId = 128 },
+    { key = "blackthorn_gym_platform_wide", mapSymbol = "MAP_BLACKTHORN_GYM", modelMemberId = 120 },
+    { key = "blackthorn_gym_platform_narrow", mapSymbol = "MAP_BLACKTHORN_GYM", modelMemberId = 121 },
   },
   -- The retail ROM's follower reaction callback table
   -- pairs each reaction's BTX0 texture member with a companion four-frame

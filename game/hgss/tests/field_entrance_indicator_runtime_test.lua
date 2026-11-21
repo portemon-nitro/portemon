@@ -19,6 +19,8 @@ local KINDS = {
   "pokemon_center_heal",
   "violet_gym_car",
   "azalea_gym_spinarak",
+  "blackthorn_gym_platform_wide",
+  "blackthorn_gym_platform_narrow",
 }
 for selector = 1, 14 do
   KINDS[#KINDS + 1] = "follower_reaction_" .. selector

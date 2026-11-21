@@ -1,5 +1,6 @@
--- The gym mechanisms' runtime geometry: one source dynamic height plate
--- projected over the active runtime map's immutable terrain.
+-- The gym mechanisms' runtime geometry: the source plates one settled union
+-- projects over the active runtime map's immutable terrain and permission
+-- grid.
 --
 -- The source keeps a DynamicTerrainHeightManager plate separate from the BDHC
 -- terrain (src/field/dynamic_terrain_height.c): the Violet Gym installs one
@@ -16,16 +17,28 @@
 -- publishes nothing while the car stands down: the generated floor plate
 -- answers those samples, and two coincident surfaces never make one point
 -- ambiguous.
+--
+-- The Blackthorn Gym keeps no height plate: its three platforms own the only
+-- walkable ground over the gym's lava, and its collision rule
+-- (GymmickCheckCollision_Blackthorn) answers before the map's own permission.
+-- This owner projects those floors the same way: it wraps the map's composed
+-- collision for the lifetime of the union that installed them and delegates
+-- every other tile to the generated grid, so the decoded cells are never
+-- rewritten.
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
 local FieldGrid = require("libs.hgss.src.world.FieldGrid")
+local BlackthornGym = require("libs.hgss.src.field.gymmick.BlackthornGym")
 
 ---@class GymMechanismGeometry
 ---@field _runtimeMap table<string, unknown>|nil
 ---@field _base table<string, unknown>|nil
+---@field _collisionBase table<string, unknown>|nil
+---@field _collisionProjection table<string, unknown>|nil
 ---@field private _raised boolean
+---@field _blackthornFloors table<integer, table<integer, true>>|nil
 local GymMechanismGeometry = {}
 GymMechanismGeometry.__index = GymMechanismGeometry
 
@@ -52,7 +65,13 @@ GymMechanismGeometry.PLATE_SURFACE_ID = 0x7F000001
 
 ---@return GymMechanismGeometry
 function GymMechanismGeometry.new()
-  return setmetatable({ _runtimeMap = nil, _base = nil, _raised = false }, GymMechanismGeometry)
+  return setmetatable({
+    _runtimeMap = nil,
+    _base = nil,
+    _collisionBase = nil,
+    _collisionProjection = nil,
+    _raised = false,
+  }, GymMechanismGeometry)
 end
 
 -- The wrapper terrain: every query delegates to the generated surfaces except
@@ -151,16 +170,50 @@ end
 -- The car's own horizontal world placement: the centre of its source tile.
 ---@return { x: number, z: number }|nil
 function GymMechanismGeometry:violetCarWorldPoint()
+  return self:tileCentre(GymMechanismGeometry.ELEVATOR_CAR_FIELD_X, GymMechanismGeometry.ELEVATOR_CAR_FIELD_Z)
+end
+
+-- One field tile's centre in world space: the placement origin of every source
+-- prop a mechanism loads over its own transform.
+---@param fieldX integer
+---@param fieldZ integer
+---@return { x: number, z: number }|nil
+function GymMechanismGeometry:tileCentre(fieldX, fieldZ)
   local runtimeMap = self._runtimeMap
   if runtimeMap == nil then
     return nil
   end
   local origin = assert(runtimeMap.coordinateOrigin, "active runtime map has no coordinate origin")
-  local worldX, worldZ = FieldGrid.tileCenterToWorld(
-    GymMechanismGeometry.ELEVATOR_CAR_FIELD_X - origin.x,
-    GymMechanismGeometry.ELEVATOR_CAR_FIELD_Z - origin.z
-  )
+  local worldX, worldZ = FieldGrid.tileCenterToWorld(fieldX - origin.x, fieldZ - origin.z)
   return { x = worldX, z = worldZ }
+end
+
+-- The generated map's own facts for one field tile: its permission blocking and
+-- whether its metatile behavior is TILE_BEHAVIOR_MAGMA. This reads the decoded
+-- coverage, never this owner's own collision projection, because the source
+-- gymmick algorithms test the map first and apply their rule second. A tile
+-- outside the map answers the source's 0xFF attribute: unblocked, never magma.
+---@param fieldX integer
+---@param fieldZ integer
+---@return boolean blocked
+---@return boolean magma
+function GymMechanismGeometry:mapTile(fieldX, fieldZ)
+  local runtimeMap, base = self._runtimeMap, self._collisionBase
+  if runtimeMap == nil or base == nil then
+    Errors.raise(FieldErrors.FIELD_GYM_MECHANISM_INVALID, "the gym mechanism has no bound map collision", {
+      fieldX = fieldX,
+      fieldZ = fieldZ,
+    })
+  end
+  ---@cast runtimeMap -nil
+  ---@cast base -nil
+  local origin = assert(runtimeMap.coordinateOrigin, "active runtime map has no coordinate origin")
+  local localX, localZ = fieldX - origin.x, fieldZ - origin.z
+  if base.containsLocal == nil or not base:containsLocal(localX, localZ) then
+    return false, false
+  end
+  local cell = base:getLocal(localX, localZ)
+  return cell.blocked == true, cell.behavior == BlackthornGym.MAGMA_BEHAVIOR
 end
 
 local function plateContains(plate, localX, localZ)
@@ -260,9 +313,84 @@ local function removeWrapper(self)
   end
 end
 
--- Bind to the map whose floor the plate is projected over. Rebinding detaches
--- the previous map (its terrain is the generated surface again) but keeps the
--- runtime plate: the map load, not the rebind, owns the settled floor.
+-- The verdict for one local tile of the bound map: a real boolean when the
+-- source rule answers, nil when the map's own permission stands.
+---@param localX number
+---@param localZ number
+---@return boolean?
+function GymMechanismGeometry:blackthornBlockedLocal(localX, localZ)
+  local floors, base, runtimeMap = self._blackthornFloors, self._collisionBase, self._runtimeMap
+  if floors == nil or base == nil or runtimeMap == nil then
+    return nil
+  end
+  local origin = assert(runtimeMap.coordinateOrigin, "active runtime map has no coordinate origin")
+  local cell = base:getLocal(localX, localZ)
+  return BlackthornGym.collisionVerdict(floors, localX + origin.x, localZ + origin.z, cell.behavior)
+end
+
+-- The map's composed permission grid answered through the Blackthorn floors: a
+-- platform floor is walkable whatever the map says, magma is blocked outside
+-- one, and every other tile keeps the generated permission
+-- (GymmickCheckCollision_Blackthorn). The decoded grid is only read; data fields
+-- of the generated owner read through unchanged.
+---@param self GymMechanismGeometry
+---@param base table<string, unknown>
+---@return table<string, unknown>
+local function projectCollision(self, base)
+  local function containsLocal(_, localX, localZ)
+    return base:containsLocal(localX, localZ)
+  end
+  local function isBlockedLocal(_, localX, localZ)
+    local verdict = self:blackthornBlockedLocal(localX, localZ)
+    if verdict ~= nil then
+      return verdict
+    end
+    return base:isBlockedLocal(localX, localZ)
+  end
+  local function getLocal(_, localX, localZ)
+    local cell = base:getLocal(localX, localZ)
+    local verdict = self:blackthornBlockedLocal(localX, localZ)
+    if verdict ~= nil then
+      cell.blocked = verdict
+    end
+    return cell
+  end
+  return setmetatable({ containsLocal = containsLocal, isBlockedLocal = isBlockedLocal, getLocal = getLocal }, {
+    __index = base,
+  })
+end
+
+-- Install the Blackthorn floors over the generated permission of the bound
+-- map. Only a settled union with platforms needs it.
+---@param self GymMechanismGeometry
+local function installCollisionWrapper(self)
+  local runtimeMap, base = self._runtimeMap, self._collisionBase
+  if runtimeMap == nil or base == nil or self._blackthornFloors == nil then
+    return
+  end
+  if runtimeMap.collision ~= base then
+    return
+  end
+  self._collisionProjection = projectCollision(self, base)
+  runtimeMap.collision = self._collisionProjection
+end
+
+---@param self GymMechanismGeometry
+local function removeCollisionWrapper(self)
+  local runtimeMap = self._runtimeMap
+  if runtimeMap == nil then
+    return
+  end
+  if self._collisionProjection ~= nil and runtimeMap.collision == self._collisionProjection then
+    runtimeMap.collision = self._collisionBase
+  end
+  self._collisionProjection = nil
+end
+
+-- Bind to the map whose terrain and permission grid the settled union projects
+-- over. Rebinding detaches the previous map (its terrain and generated
+-- permission answer again) but keeps the runtime projection: the map load, not
+-- the rebind, owns the settled floors.
 ---@param runtimeMap table<string, unknown>
 function GymMechanismGeometry:bindMap(runtimeMap)
   assert(type(runtimeMap) == "table" and runtimeMap.terrain ~= nil, "gym mechanism geometry requires a runtime map")
@@ -277,14 +405,61 @@ function GymMechanismGeometry:bindMap(runtimeMap)
     return
   end
   self._runtimeMap, self._base = runtimeMap, base
+  self._collisionBase = runtimeMap.collision
+  -- The map re-publishes its composed terrain and permission objects through
+  -- this hook after a frame shift; the settled plates install over those.
+  local function reprojectBoundMap()
+    self:reproject()
+  end
+  runtimeMap.reprojectFieldGeometry = reprojectBoundMap
   if self._raised then
     installWrapper(self)
   end
+  installCollisionWrapper(self)
+end
+
+-- The physical coverage window re-centers after some committed steps and the
+-- map re-publishes composed terrain and permission objects built in the new
+-- frame. Re-projecting re-installs the settled plates over whatever the map
+-- answers now, so a shifted window never leaves the previous frame in place.
+function GymMechanismGeometry:reproject()
+  local runtimeMap = self._runtimeMap
+  if runtimeMap == nil then
+    return
+  end
+  removeWrapper(self)
+  removeCollisionWrapper(self)
+  local terrain = runtimeMap.terrain
+  if terrain ~= nil then
+    self._base = terrain.base ~= nil and terrain.base or terrain
+  end
+  local collision = runtimeMap.collision
+  if collision ~= nil then
+    self._collisionBase = collision
+  end
+  if self._raised then
+    installWrapper(self)
+  end
+  installCollisionWrapper(self)
 end
 
 function GymMechanismGeometry:unbind()
   removeWrapper(self)
-  self._runtimeMap, self._base = nil, nil
+  removeCollisionWrapper(self)
+  if self._runtimeMap ~= nil and self._runtimeMap.reprojectFieldGeometry ~= nil then
+    self._runtimeMap.reprojectFieldGeometry = nil
+  end
+  self._runtimeMap, self._base, self._collisionBase = nil, nil, nil
+  self._collisionProjection = nil
+end
+
+-- Map load: GymmickInit_Blackthorn reads the settled union and places the
+-- platforms, so their floors answer before any loaded position is sampled.
+-- `nil` means the active union owns no platform floor.
+---@param anchors BlackthornGym.PlatformAnchor[]?
+function GymMechanismGeometry:setBlackthornPlatforms(anchors)
+  self._blackthornFloors = anchors ~= nil and BlackthornGym.floorCells(anchors) or nil
+  self:reproject()
 end
 
 -- Map load: the source GymmickInit_Violet reads the settled union and places

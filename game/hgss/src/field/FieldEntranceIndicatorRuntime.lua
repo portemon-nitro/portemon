@@ -28,6 +28,8 @@ function M.load(cacheFs)
     "surf_attachment",
     "violet_gym_car",
     "azalea_gym_spinarak",
+    "blackthorn_gym_platform_wide",
+    "blackthorn_gym_platform_narrow",
   }) do
     local entry = assert(index.effects[kind], "field-effect index is missing " .. kind)
     local definition = assert(cacheFs:loadLua(entry.path), "field-effect definition is missing: " .. kind)

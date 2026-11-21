@@ -144,16 +144,17 @@ local function installStoryEffectCompilerMock()
       animations = { { id = key, name = key, category = "joint", kind = "trs", frameCount = 8 } },
     }
   end
+  -- The mock answers every mechanism prop the source selection declares, so the
+  -- compiler's own coverage of that list never has to be restated here.
   package.loaded["romdump.src.digest.field.StoryEffectAssetCompiler"] = {
     compile = function(_, meshes, textures)
       assert(type(meshes) == "table" and type(textures) == "table", "mechanism props share the asset accumulators")
-      return {
-        definitions = {
-          violet_gym_car = { model = descriptor("violet_gym_car") },
-          azalea_gym_spinarak = { model = descriptor("azalea_gym_spinarak") },
-        },
-        memberHashes = { { memberId = 111, sha1 = "car-model" }, { memberId = 118, sha1 = "spinarak-model" } },
-      }
+      local definitions, memberHashes = {}, {}
+      for _, source in ipairs(SourceFieldEffects.mechanismPropModels) do
+        definitions[source.key] = { model = descriptor(source.key) }
+        memberHashes[#memberHashes + 1] = { memberId = source.modelMemberId, sha1 = source.key .. "-model" }
+      end
+      return { definitions = definitions, memberHashes = memberHashes }
     end,
   }
 end

@@ -1043,6 +1043,16 @@ function Compiler.compile(romFs, hashLua)
         definition = "azalea_gym_spinarak",
         path = FieldEffectAssetCache.definitionPath("azalea_gym_spinarak"),
       },
+      blackthorn_gym_platform_wide = {
+        kind = "model",
+        definition = "blackthorn_gym_platform_wide",
+        path = FieldEffectAssetCache.definitionPath("blackthorn_gym_platform_wide"),
+      },
+      blackthorn_gym_platform_narrow = {
+        kind = "model",
+        definition = "blackthorn_gym_platform_narrow",
+        path = FieldEffectAssetCache.definitionPath("blackthorn_gym_platform_narrow"),
+      },
       celebi_time_travel = {
         kind = "cinematic",
         definition = "celebi_time_travel",

@@ -1,5 +1,5 @@
 -- Gym mechanism lowerings. The five gyms drive the port's closed native
--- mechanism union through one family of semantic nodes: the init commands
+-- mechanism union through one family of semantic nodes: the six init commands
 -- install their own kind with no operands, the lift and the candle binding
 -- commands carry none either, and the spider ride, the switch flip and the
 -- candle's own selector read their operands as literal bytes (ScriptReadByte),
@@ -86,6 +86,13 @@ end
 -- FALSE.
 function StoryHandlers.cianwoodGymInit(_)
   return { op = "gym_init", kind = "cianwood" }
+end
+
+-- ScrCmd_BlackthornGymInit: InitBlackthornGym installs GYMMICK_BLACKTHORN with
+-- its three source platforms and returns FALSE. The platforms act on completed
+-- player steps, so the command installs state and nothing else.
+function StoryHandlers.blackthornGymInit(_)
+  return { op = "gym_init", kind = "blackthorn" }
 end
 
 -- ScrCmd_CianwoodGymTurnWinch reads the output variable a halfword names, writes

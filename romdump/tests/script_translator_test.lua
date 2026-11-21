@@ -2639,6 +2639,23 @@ T["ecruteak and cianwood gym commands lower to their closed source nodes"] = fun
     { op = 319, args = { { value = 0x4000, width = 2 } } },
     { op = 2, args = {} },
   })
+  -- The Blackthorn gym's own init installs its kind with no operands and returns
+  -- in the same tick: its platforms act on completed player steps, not on this
+  -- command.
+  Assert.equal(
+    CommandCatalog.classification(329),
+    CommandCatalog.CONTINUE,
+    "the blackthorn init returns in its own tick"
+  )
+  local _, blackthornSteps, blackthornReport = translateOnly({
+    { op = 329, args = {} },
+    { op = 2, args = {} },
+  })
+  Assert.equal(blackthornSteps[1].op, "gym_init")
+  Assert.equal(blackthornSteps[1].kind, "blackthorn")
+  Assert.deepEqual(blackthornSteps[1].provenance, { offsets = { 0x20 }, opcodes = { 329 } })
+  Assert.isTrue(blackthornReport.complete, "the blackthorn mechanism script completes")
+  validateSteps("test.source_329", blackthornSteps)
   Assert.equal(cianwoodSteps[1].op, "gym_init")
   Assert.equal(cianwoodSteps[1].kind, "cianwood")
   Assert.equal(cianwoodSteps[2].op, "gym_winch")

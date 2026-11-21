@@ -191,6 +191,119 @@ function T.the_cianwood_union_carries_the_winch_bit()
   end, "the candle accessor is unavailable outside its kind")
 end
 
+-- The Blackthorn union is the three source platform anchors; its own init
+-- places them, a move writes one anchor and a turn advances one rotation.
+function T.the_blackthorn_union_carries_the_three_platform_anchors()
+  local state = GymMechanismState.restore(nil)
+  state:initialize("blackthorn")
+  Assert.equal(state:kind(), "blackthorn")
+  Assert.deepEqual(state:blackthornPlatforms(), {
+    { x = 13, z = 75, rotation = 0 },
+    { x = 9, z = 58, rotation = 1 },
+    { x = 14, z = 32, rotation = 0 },
+  }, "InitBlackthornGym places the three source platforms")
+  Assert.deepEqual(state:capture(), {
+    schema = GymMechanismState.SCHEMA,
+    kind = "blackthorn",
+    data = {
+      platforms = {
+        { x = 13, z = 75, rotation = 0 },
+        { x = 9, z = 58, rotation = 1 },
+        { x = 14, z = 32, rotation = 0 },
+      },
+    },
+  }, "the settled anchors are saved as three platform tuples")
+
+  state:setBlackthornPlatformPosition(1, 18, 75)
+  Assert.deepEqual(state:blackthornPlatforms()[1], { x = 18, z = 75, rotation = 0 }, "a move writes its anchor")
+  state:advanceBlackthornRotation(2)
+  Assert.deepEqual(state:blackthornPlatforms()[2], { x = 9, z = 58, rotation = 2 }, "a turn advances one quarter")
+  state:advanceBlackthornRotation(2)
+  state:advanceBlackthornRotation(2)
+  state:advanceBlackthornRotation(2)
+  state:advanceBlackthornRotation(2)
+  Assert.equal(state:blackthornPlatforms()[2].rotation, 2, "four quarter turns wrap back to the same quarter")
+
+  -- A captured record never aliases the live anchors.
+  local captured = state:capture()
+  state:setBlackthornPlatformPosition(1, 1, 2)
+  Assert.deepEqual(captured.data.platforms[1], { x = 18, z = 75, rotation = 0 }, "a capture stays detached")
+
+  for _, index in ipairs({ 0, 4, 1.5 }) do
+    local err = Assert.throws(function()
+      state:setBlackthornPlatformPosition(index, 1, 1)
+    end)
+    Assert.equal(
+      err.code,
+      FieldErrors.FIELD_GYM_MECHANISM_INVALID,
+      "platform index " .. tostring(index) .. " is refused"
+    )
+  end
+  Assert.throws(function()
+    state:setBlackthornPlatformPosition(1, -1, 1)
+  end, "an anchor outside the source tile range is refused")
+  Assert.throws(function()
+    state:violetRaised()
+  end, "the lift accessor is unavailable outside its kind")
+end
+
+-- A saved blackthorn bucket round-trips, and a malformed one is rejected rather
+-- than repaired.
+function T.the_blackthorn_union_is_strict_about_its_three_anchors()
+  local bucket = {
+    schema = GymMechanismState.SCHEMA,
+    kind = "blackthorn",
+    data = {
+      platforms = {
+        { x = 18, z = 75, rotation = 3 },
+        { x = 9, z = 54, rotation = 2 },
+        { x = 14, z = 32, rotation = 0 },
+      },
+    },
+  }
+  local restored = GymMechanismState.restore(bucket)
+  Assert.deepEqual(restored:blackthornPlatforms(), bucket.data.platforms, "the settled anchors survive a reload")
+
+  local cases = {
+    { data = {} },
+    { data = { platforms = {} } },
+    { data = { platforms = { { x = 1, z = 1, rotation = 0 } } } },
+    { data = { platforms = { { x = 1, z = 1, rotation = 0 }, { x = 2, z = 2, rotation = 0 } } } },
+    {
+      data = {
+        platforms = { { x = 1, z = 1, rotation = 0 }, { x = 2, z = 2, rotation = 0 }, { x = 3, z = 3, rotation = 4 } },
+      },
+    },
+    { data = { platforms = { { x = 1, z = 1, rotation = 0 }, { x = 2, z = 2, rotation = 0 }, { x = 3, z = 3 } } } },
+    {
+      data = {
+        platforms = {
+          { x = 1, z = 1, rotation = 0 },
+          { x = 2, z = 2, rotation = 0 },
+          { x = 3, z = 3, rotation = 0, extra = true },
+        },
+      },
+    },
+    {
+      data = {
+        platforms = { { x = 1.5, z = 1, rotation = 0 }, { x = 2, z = 2, rotation = 0 }, { x = 3, z = 3, rotation = 0 } },
+      },
+    },
+    {
+      data = {
+        platforms = { { x = 1, z = 1, rotation = 0 }, { x = 2, z = 2, rotation = 0 }, { x = 3, z = 3, rotation = 0 } },
+        extra = 1,
+      },
+    },
+  }
+  for index, case in ipairs(cases) do
+    local err = Assert.throws(function()
+      GymMechanismState.restore({ schema = GymMechanismState.SCHEMA, kind = "blackthorn", data = case.data })
+    end)
+    Assert.equal(err.code, FieldErrors.FIELD_GYM_MECHANISM_INVALID, "case " .. index .. " keeps the bucket invalid")
+  end
+end
+
 -- The previous kinds still round-trip unchanged beside the new ones.
 function T.the_new_kinds_do_not_disturb_the_previous_union()
   local state = GymMechanismState.restore(azaleaBucket())
@@ -203,6 +316,10 @@ function T.the_new_kinds_do_not_disturb_the_previous_union()
     data = { raised = true },
   })
   Assert.isTrue(violet:violetRaised())
+  state:initialize("blackthorn")
+  state:setBlackthornPlatformPosition(3, 20, 32)
+  state:initialize("azalea")
+  Assert.deepEqual(state:spiderEndpoints(), { 0, 1, 2, 7 }, "a blackthorn union never leaks into the next kind")
 end
 
 return { tests = T }

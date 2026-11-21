@@ -1,8 +1,8 @@
 -- Graphics regression for the gym mechanisms' runtime-loaded source props. The
--- test loads the canonical generated car and Spinarak definitions through the
--- production GPU pool and story-effect adapter, then draws them over a bright
--- target: the models render, and their published world transform decides where
--- on screen they land.
+-- test loads the canonical generated car, Spinarak and platform definitions
+-- through the production GPU pool and story-effect adapter, then draws them over
+-- a bright target: the models render, and their published world transform
+-- decides where on screen they land.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -89,10 +89,18 @@ local function canonicalAssets(context)
   local index = assert(cache:loadLua(FieldEffectAssetCache.indexPath()))
   local car = assert(index.effects.violet_gym_car, "field-effect index is missing the car")
   local spider = assert(index.effects.azalea_gym_spinarak, "field-effect index is missing the Spinarak")
-  return cache, {
-    car = assert(cache:loadLua(car.path)),
-    spider = assert(cache:loadLua(spider.path)),
-  }
+  local wide = assert(index.effects.blackthorn_gym_platform_wide, "field-effect index is missing the wide platform")
+  local narrow =
+    assert(index.effects.blackthorn_gym_platform_narrow, "field-effect index is missing the narrow platform")
+  return cache,
+    {
+      car = assert(cache:loadLua(car.path)),
+      spider = assert(cache:loadLua(spider.path)),
+      platform = {
+        wide = assert(cache:loadLua(wide.path)),
+        narrow = assert(cache:loadLua(narrow.path)),
+      },
+    }
 end
 
 function T.the_car_and_spider_models_render_at_their_published_transform(scope, context)
@@ -129,7 +137,8 @@ function T.the_car_and_spider_models_render_at_their_published_transform(scope, 
   end
   local cameraProfiles = assert(cache:loadLua("data/generated/field/camera/profiles.lua"))
   local camera = FieldCamera.new(cameraProfiles.profiles[0], { canonicalAspect = 4 / 3 })
-  local fieldRenderer = scope:own(FieldRenderer.new({ clearColor = { BACKGROUND[1], BACKGROUND[2], BACKGROUND[3], 1 } }))
+  local fieldRenderer =
+    scope:own(FieldRenderer.new({ clearColor = { BACKGROUND[1], BACKGROUND[2], BACKGROUND[3], 1 } }))
   local canvas = scope:own(love.graphics.newCanvas(256, 192))
 
   local base = drawSnapshot(
@@ -156,6 +165,34 @@ function T.the_car_and_spider_models_render_at_their_published_transform(scope, 
     canvas
   )
   Assert.isTrue(moved.centroidX > base.centroidX, "a car placed two tiles east draws further right")
+
+  local platform = renderer:newPlatform(1, "wide")
+  scope:own({
+    release = function()
+      platform:dispose()
+    end,
+  })
+  local platformItems = renderer:drawItems({
+    platforms = { { slot = 1, x = 0, y = 0, z = 0, rotationDegrees = 0 } },
+  })
+  local platformDrawn = drawSnapshot(fieldRenderer, camera, platformItems, canvas)
+  Assert.isTrue(platformDrawn.changed > 0, "the canonical Blackthorn platform must render visible pixels")
+  local turnedItems = renderer:drawItems({
+    platforms = { { slot = 1, x = 0, y = 0, z = 0, rotationDegrees = -4 } },
+  })
+  Assert.isTrue(#turnedItems == #platformItems, "a turned platform draws the same batches")
+  Assert.isTrue(
+    turnedItems[1].transform[1] ~= platformItems[1].transform[1],
+    "the source quarter turn reaches the drawn transform"
+  )
+  local movedPlatform = renderer:drawItems({
+    platforms = { { slot = 1, x = 3, y = 0, z = 0, rotationDegrees = 0 } },
+  })
+  local movedDrawn = drawSnapshot(fieldRenderer, camera, movedPlatform, canvas)
+  Assert.isTrue(
+    movedDrawn.centroidX > platformDrawn.centroidX,
+    "a platform placed three tiles east draws further right"
+  )
 
   local spiderItems = renderer:drawItems({
     spiders = {

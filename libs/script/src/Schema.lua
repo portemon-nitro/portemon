@@ -59,7 +59,7 @@ Schema.ENUMS = {
   money_action = { "add", "subtract" },
   -- The closed native gym mechanisms this port implements; the source union's
   -- other kinds stay unimplemented rather than named here.
-  gym_mechanism = { "violet", "azalea", "ecruteak", "cianwood" },
+  gym_mechanism = { "violet", "azalea", "ecruteak", "cianwood", "blackthorn" },
   money_box_action = { "show", "update", "hide" },
   pc_application = { "storage", "mailbox", "photoAlbum" },
   -- The foreground phone call direction across the shared menu/script

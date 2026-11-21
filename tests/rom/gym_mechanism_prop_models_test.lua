@@ -1,9 +1,10 @@
--- ROM conformance for the three source map props the gym mechanisms load at
--- runtime: the Violet Gym elevator car (build model 111), the Azalea Gym
--- Spinarak (build model 118) and the Ecruteak Gym candle (build model 128).
--- All three are interior build models listed by their area's build config, so
--- the area loader also registers their anim-list records; none has a generated
--- map placement.
+-- ROM conformance for the source map props the gym mechanisms load at runtime:
+-- the Violet Gym elevator car (build model 111), the Azalea Gym Spinarak (build
+-- model 118), the Ecruteak Gym candle (build model 128) and the Blackthorn Gym
+-- platforms (build models 120 and 121). All of them are interior build models
+-- listed by their area's build config; none has a generated map placement. The
+-- first three also have an anim-list record, while the platform props are plain
+-- static models: the source only ever translates and rotates them.
 
 local AreaData = require("romdump.src.digest.map.AreaData")
 local Assert = require("tests.support.Assert")
@@ -40,6 +41,18 @@ local SOURCES = {
     animationResourceId = 44,
     frameCount = 8,
     ambientLoop = true,
+  },
+  {
+    key = "blackthorn_gym_platform_wide",
+    mapSymbol = "MAP_BLACKTHORN_GYM",
+    modelMemberId = 120,
+    static = true,
+  },
+  {
+    key = "blackthorn_gym_platform_narrow",
+    mapSymbol = "MAP_BLACKTHORN_GYM",
+    modelMemberId = 121,
+    static = true,
   },
 }
 
@@ -80,13 +93,19 @@ local function assertCompiledSource(compiled, definition, source, meshes, textur
   Assert.notNil(definition, source.key .. " is published in the bundle")
   local model = assert(definition.model)
   Assert.equal(model.key, "field-effect:" .. source.key)
-  Assert.equal(model.kind, "nitro-dynamic")
-  Assert.equal(#model.animations, 1, source.key .. " carries exactly its one source clip")
-  local clip = model.animations[1]
-  Assert.equal(clip.name, source.clipName)
-  Assert.equal(clip.frameCount, source.frameCount)
-  Assert.equal(clip.ambientLoop or false, source.ambientLoop)
-  for _, batch in ipairs(model.dynamic.batches) do
+  if source.static then
+    -- A prop whose area registers no anim-list record is a plain static model.
+    Assert.equal(model.kind, "static", source.key .. " is a static build model")
+    Assert.isNil(model.animations, source.key .. " carries no clip at all")
+  else
+    Assert.equal(model.kind, "nitro-dynamic")
+    Assert.equal(#model.animations, 1, source.key .. " carries exactly its one source clip")
+    local clip = model.animations[1]
+    Assert.equal(clip.name, source.clipName)
+    Assert.equal(clip.frameCount, source.frameCount)
+    Assert.equal(clip.ambientLoop or false, source.ambientLoop)
+  end
+  for _, batch in ipairs(model.kind == "static" and model.batches or model.dynamic.batches) do
     local sha1 = assert(
       batch.geometry:match("^assets/generated/field/effects/geometry/([0-9a-f]+)%.g4mesh$"),
       source.key .. " geometry publishes under the effect root"
@@ -109,6 +128,9 @@ local function assertCompiledSource(compiled, definition, source, meshes, textur
     hashed[entry.memberId or entry.resourceId] = true
   end
   Assert.isTrue(hashed[source.modelMemberId] == true, source.key .. " model member is part of the provenance")
+  if source.static then
+    return
+  end
   local listed = {}
   for _, entry in ipairs(compiled.memberHashes) do
     listed[#listed + 1] = tostring(entry.memberId or entry.resourceId)

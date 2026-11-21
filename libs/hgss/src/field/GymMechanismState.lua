@@ -3,11 +3,12 @@
 -- mechanism is active at a time, so the bucket is one tagged kind plus that
 -- kind's settled data:
 --
---   none     {}                                       no gym is active
---   violet   { raised = boolean }                     the lift's settled floor
---   azalea   { endpoints = {0,1,2,7}, switchMask }    spider nodes, switch bits
---   ecruteak { candles = {false x4} }                 the four candles' burnt state
---   cianwood { winchRaised = boolean }                the one-shot winch
+--   none       {}                                       no gym is active
+--   violet     { raised = boolean }                       the lift's settled floor
+--   azalea     { endpoints = {0,1,2,7}, switchMask }      spider nodes, switch bits
+--   ecruteak   { candles = {false x4} }                   the four candles' burnt state
+--   cianwood   { winchRaised = boolean }                  the one-shot winch
+--   blackthorn { platforms = {{x,z,rotation} x3} }        the three platforms
 --
 -- The source installs a kind through Save_Gymmick_Init (gym init) and clears
 -- the union on every non-connection map entry; here restore/initialize own the
@@ -31,6 +32,7 @@ GymMechanismState.VIOLET = "violet"
 GymMechanismState.AZALEA = "azalea"
 GymMechanismState.ECRUTEAK = "ecruteak"
 GymMechanismState.CIANWOOD = "cianwood"
+GymMechanismState.BLACKTHORN = "blackthorn"
 
 -- The source's spider slots and switch bits (include/gymmick.h).
 GymMechanismState.SPIDER_SLOTS = 4
@@ -50,12 +52,28 @@ GymMechanismState.LAST_SWITCH = 1
 -- trainer object, in source object order (obj_T27GYM0101_itako .. itako_4).
 GymMechanismState.CANDLE_COUNT = 4
 
+-- src/field/gymmick/blackthorn.c::BLACKTHORN_NUM_PLATFORMS and the anchor
+-- rotations BlackthornPlatform_ApplyRotation accepts (a quarter turn each).
+GymMechanismState.BLACKTHORN_PLATFORMS = 3
+GymMechanismState.BLACKTHORN_ROTATIONS = 4
+-- The source union stores each anchor as a u16 tile pair
+-- (include/gymmick.h::GymmickUnion.blackthorn).
+GymMechanismState.BLACKTHORN_COORDINATE_MAX = 0xFFFF
+
+-- src/gymmick_init.c::InitBlackthornGym places the three platforms.
+GymMechanismState.BLACKTHORN_INITIAL_PLATFORMS = {
+  { x = 13, z = 75, rotation = 0 },
+  { x = 9, z = 58, rotation = 1 },
+  { x = 14, z = 32, rotation = 0 },
+}
+
 local KINDS = {
   [GymMechanismState.NONE] = true,
   [GymMechanismState.VIOLET] = true,
   [GymMechanismState.AZALEA] = true,
   [GymMechanismState.ECRUTEAK] = true,
   [GymMechanismState.CIANWOOD] = true,
+  [GymMechanismState.BLACKTHORN] = true,
 }
 
 ---@param message string
@@ -161,6 +179,56 @@ local function checkEcruteakData(data)
   return { candles = checkCandles(data.candles) }
 end
 
+-- One source platform anchor: the union's x/z pair and its quarter-turn
+-- rotation, with no other field.
+---@param platform unknown
+---@param slot integer
+---@return { x: integer, z: integer, rotation: integer }
+local function checkBlackthornPlatform(platform, slot)
+  if type(platform) ~= "table" then
+    fail("a blackthorn platform must be a record", { slot = slot })
+  end
+  assert(type(platform) == "table", "platform validation reads the record")
+  checkNoUnknownFields(platform, { x = true, z = true, rotation = true }, "blackthorn platform data")
+  local x, z, rotation = platform.x, platform.z, platform.rotation
+  for _, coordinate in ipairs({ x, z }) do
+    if not isInteger(coordinate) or coordinate < 0 or coordinate > GymMechanismState.BLACKTHORN_COORDINATE_MAX then
+      fail("a blackthorn platform anchor is outside the source tile range", {
+        slot = slot,
+        coordinate = tostring(coordinate),
+      })
+    end
+  end
+  if not isInteger(rotation) or rotation < 0 or rotation >= GymMechanismState.BLACKTHORN_ROTATIONS then
+    fail("a blackthorn platform rotation is outside the source quarters", {
+      slot = slot,
+      rotation = tostring(rotation),
+    })
+  end
+  assert(isInteger(x) and isInteger(z) and isInteger(rotation), "platform validation requires integers")
+  return { x = x, z = z, rotation = rotation }
+end
+
+---@param data unknown
+---@return table<string, unknown>
+local function checkBlackthornData(data)
+  if type(data) ~= "table" then
+    fail("blackthorn mechanism data must be a record", {})
+  end
+  assert(type(data) == "table", "blackthorn data validation reads the record")
+  checkNoUnknownFields(data, { platforms = true }, "blackthorn mechanism data")
+  local platforms = data.platforms
+  if type(platforms) ~= "table" or #platforms ~= GymMechanismState.BLACKTHORN_PLATFORMS then
+    fail("blackthorn platforms must be one record per source platform", { platforms = tostring(platforms) })
+  end
+  assert(type(platforms) == "table", "platform validation reads the triple")
+  local copy = {}
+  for slot = 1, GymMechanismState.BLACKTHORN_PLATFORMS do
+    copy[slot] = checkBlackthornPlatform(platforms[slot], slot)
+  end
+  return { platforms = copy }
+end
+
 ---@param data unknown
 ---@return table<string, unknown>
 local function checkCianwoodData(data)
@@ -199,6 +267,9 @@ local function checkUnion(kind, data)
   if kind == GymMechanismState.CIANWOOD then
     return checkCianwoodData(data)
   end
+  if kind == GymMechanismState.BLACKTHORN then
+    return checkBlackthornData(data)
+  end
   return checkAzaleaData(data)
 end
 
@@ -236,6 +307,9 @@ function GymMechanismState:initialize(kind)
   elseif kind == GymMechanismState.CIANWOOD then
     -- InitCianwoodGym installs the kind alone: a cleared union is a lowered winch.
     defaults = { winchRaised = false }
+  elseif kind == GymMechanismState.BLACKTHORN then
+    -- InitBlackthornGym places the three source platforms.
+    defaults = { platforms = GymMechanismState.BLACKTHORN_INITIAL_PLATFORMS }
   end
   self._data = checkUnion(kind, defaults)
 end
@@ -381,6 +455,51 @@ function GymMechanismState:setCianwoodWinchRaised(raised)
     fail("cianwood winch flag must be a boolean", { winchRaised = tostring(raised) })
   end
   self._data.winchRaised = raised
+end
+
+---@private
+---@param index unknown
+---@return integer
+function GymMechanismState:_requireBlackthornPlatform(index)
+  if not isInteger(index) or index < 1 or index > GymMechanismState.BLACKTHORN_PLATFORMS then
+    fail("blackthorn platform index is outside the source triple", { index = tostring(index) })
+  end
+  assert(isInteger(index), "platform indexing requires an integer")
+  return index
+end
+
+---@return { x: integer, z: integer, rotation: integer }[] the three source anchors, detached
+function GymMechanismState:blackthornPlatforms()
+  requireKind(self, GymMechanismState.BLACKTHORN)
+  local platforms = assert(self._data.platforms, "a blackthorn union always carries its platforms") --[[@as table[] ]]
+  local copy = {}
+  for slot = 1, GymMechanismState.BLACKTHORN_PLATFORMS do
+    local platform = platforms[slot]
+    copy[slot] = { x = platform.x, z = platform.z, rotation = platform.rotation }
+  end
+  return copy
+end
+
+-- STATE_MOVE_APPLY writes the anchor the platform prop reached, in tiles.
+---@param index integer one-based source platform index
+---@param x integer
+---@param z integer
+function GymMechanismState:setBlackthornPlatformPosition(index, x, z)
+  requireKind(self, GymMechanismState.BLACKTHORN)
+  local slot = self:_requireBlackthornPlatform(index)
+  local platform = assert(self._data.platforms, "a blackthorn union always carries its platforms") --[[@as table[] ]]
+  local checked = checkBlackthornPlatform({ x = x, z = z, rotation = platform[slot].rotation }, slot)
+  platform[slot].x, platform[slot].z = checked.x, checked.z
+end
+
+-- STATE_ROTATE_RUN commits one more quarter turn at the platform's own index.
+---@param index integer one-based source platform index
+function GymMechanismState:advanceBlackthornRotation(index)
+  requireKind(self, GymMechanismState.BLACKTHORN)
+  local slot = self:_requireBlackthornPlatform(index)
+  local platforms = assert(self._data.platforms, "a blackthorn union always carries its platforms") --[[@as table[] ]]
+  local platform = platforms[slot]
+  platform.rotation = (platform.rotation + 1) % GymMechanismState.BLACKTHORN_ROTATIONS
 end
 
 ---@return table<string, unknown> detached bucket

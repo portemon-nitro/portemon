@@ -575,7 +575,8 @@ function T.gym_mechanism_nodes_dispatch_their_source_operands()
 
   Assert.equal(Runtime.executeNode({ op = "gym_init", kind = "ecruteak" }, run), Runtime.OUTCOME_CONTINUE)
   Assert.equal(Runtime.executeNode({ op = "gym_init", kind = "cianwood" }, run), Runtime.OUTCOME_CONTINUE)
-  Assert.deepEqual(initialized, { "violet", "azalea", "ecruteak", "cianwood" })
+  Assert.equal(Runtime.executeNode({ op = "gym_init", kind = "blackthorn" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.deepEqual(initialized, { "violet", "azalea", "ecruteak", "cianwood", "blackthorn" })
 
   Assert.equal(Runtime.executeNode({ op = "gym_candle_bind" }, run), Runtime.OUTCOME_CONTINUE)
   Assert.equal(Runtime.executeNode({ op = "gym_candle_unbind" }, run), Runtime.OUTCOME_CONTINUE)
