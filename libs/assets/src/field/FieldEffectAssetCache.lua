@@ -646,6 +646,31 @@ local function validHoOhOverlayPart(shot, variant)
   return validate
 end
 
+-- A prepared screen overlay: one rasterized source tilemap the field paints
+-- itself. It carries no model, so the publisher validates it through this
+-- record instead of the model descriptor path.
+local function validOverlayDefinition(definition, _)
+  if not hasExactKeys(definition, { "overlay" }) or type(definition.overlay) ~= "table" then
+    return false
+  end
+  local overlay = definition.overlay
+  if not hasExactKeys(overlay, { "texture", "width", "height" }) then
+    return false
+  end
+  if
+    type(overlay.texture) ~= "string"
+    or overlay.texture:match("^assets/generated/field/effects/textures/([0-9a-f]+)%.png$") == nil
+  then
+    return false
+  end
+  return finiteNumber(overlay.width)
+    and finiteNumber(overlay.height)
+    and overlay.width > 0
+    and overlay.height > 0
+    and overlay.width % 8 == 0
+    and overlay.height % 8 == 0
+end
+
 local function validWarpDefinition(definition, _)
   return type(definition.lifetime) == "number" and definition.lifetime > 0
 end
@@ -671,6 +696,10 @@ local FIELD_EFFECT_INVENTORY = {
   { key = "trainer_reveal", entryKind = "animated_model", validator = validTrainerRevealDefinition },
   { key = "violet_gym_car", entryKind = "animated_model", validator = validMechanismPropDefinition },
   { key = "azalea_gym_spinarak", entryKind = "animated_model", validator = validMechanismPropDefinition },
+  { key = "rocket_trap_electric", entryKind = "animated_model", validator = validMechanismPropDefinition },
+  { key = "rocket_trap_poison", entryKind = "animated_model", validator = validMechanismPropDefinition },
+  { key = "rocket_trap_rock", entryKind = "animated_model", validator = validMechanismPropDefinition },
+  { key = "rocket_alarm_overlay", entryKind = "overlay", validator = validOverlayDefinition },
   { key = "surf_attachment", entryKind = "model", validator = validSurfDefinition },
   { key = "follower_transition", entryKind = "transition", validator = validTransitionDefinition },
   { key = "pokemon_center_heal", entryKind = "healing", validator = validPokemonCenterHealDefinition },
@@ -709,6 +738,20 @@ end
 ---@return boolean
 function FieldEffectAssetCache.isPartKind(kind)
   return PART_SPECS[kind] ~= nil
+end
+
+-- True for a published effect that carries no model descriptor of its own (a
+-- prepared screen overlay the field paints directly). The publisher validates
+-- those through their inventory record instead of the model path.
+---@param kind string
+---@return boolean
+function FieldEffectAssetCache.isModellessKind(kind)
+  for _, spec in ipairs(FIELD_EFFECT_INVENTORY) do
+    if spec.key == kind then
+      return spec.entryKind == "overlay"
+    end
+  end
+  return false
 end
 
 function FieldEffectAssetCache.indexPath()
@@ -852,7 +895,14 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
       return false
     end
     local descriptors
-    if spec.part then
+    if spec.entryKind == "overlay" then
+      -- A prepared overlay carries no model: its inventory record is its whole
+      -- contract, and its texture already travels in the effect bundle.
+      if not spec.validator(definition) then
+        return false
+      end
+      descriptors = {}
+    elseif spec.part then
       -- Shared parts precede their overlays in the inventory, so they are loaded already.
       local assembled, result = pcall(FieldEffectAssetCache.modelDescriptors, kind, definition, function(partKind)
         return sharedParts[PART_SPECS[partKind].shot]

@@ -13,7 +13,7 @@
 --     keeps the caller-supplied launch identity)
 --   host:battleStatus(launchId)
 --     -> { phase: string, committed: boolean, result: string?,
---          sourceResult: integer? } | nil
+--          sourceResult: integer?, nativeOutcome: integer? } | nil
 -- Without a host, start records the pending launch and poll reports the
 -- precise missing-service fault instead of succeeding.
 
@@ -30,6 +30,12 @@ BattleTask.version = 1
 -- mistake a draw, loss, or flight for a victory.
 BattleTask.SOURCE_WON = 1
 BattleTask.SOURCE_NOT_WON = 0
+
+-- The source's own numeric battle outcome words (BATTLE_OUTCOME_*): none, win,
+-- loss, draw, caught, player fled, foe fled. The task records the committed
+-- code unchanged beside its boolean script result; only the host projects it.
+BattleTask.NATIVE_OUTCOME_MIN = 0
+BattleTask.NATIVE_OUTCOME_MAX = 6
 
 BattleTask.KINDS = { wild = true, trainer = true, scripted = true, scenario = true, tutorial = true }
 
@@ -99,6 +105,28 @@ local function battleHost(ctx)
     return nil
   end
   return host --[[@as table<string, unknown>]]
+end
+
+-- Validate one committed native outcome code: a whole number in the source's
+-- own 0..6 range. A malformed terminal fact fails the task instead of being
+-- coerced.
+---@param nativeOutcome unknown
+---@return integer?
+local function checkNativeOutcome(nativeOutcome)
+  if nativeOutcome == nil then
+    return nil
+  end
+  if
+    type(nativeOutcome) ~= "number"
+    or nativeOutcome % 1 ~= 0
+    or nativeOutcome < BattleTask.NATIVE_OUTCOME_MIN
+    or nativeOutcome > BattleTask.NATIVE_OUTCOME_MAX
+  then
+    Errors.raise(ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE, "committed battles report a source native outcome code", {
+      nativeOutcome = tostring(nativeOutcome),
+    })
+  end
+  return nativeOutcome --[[@as integer]]
 end
 
 ---@param result unknown
@@ -199,6 +227,7 @@ function BattleTask.poll(state, ctx)
   state.completed = true
   state.result = status.result
   state.sourceResult = code
+  state.nativeOutcome = checkNativeOutcome(status.nativeOutcome)
   return { complete = true, state = state, result = code }
 end
 
@@ -237,13 +266,28 @@ function BattleTask.validate(state)
       sourceResult = state.sourceResult,
     })
   end
+  if state.nativeOutcome ~= nil then
+    local native = state.nativeOutcome
+    if
+      type(native) ~= "number"
+      or native % 1 ~= 0
+      or native < BattleTask.NATIVE_OUTCOME_MIN
+      or native > BattleTask.NATIVE_OUTCOME_MAX
+    then
+      return Errors.new(
+        ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE,
+        "battle task native outcome must be a source outcome code",
+        { nativeOutcome = tostring(native) }
+      )
+    end
+  end
   return nil
 end
 
 -- Reads a task's recorded outcome or an explicitly supplied host without
 -- starting or polling a battle. A bare launch identity with no host remains
 -- pending because it carries no owned completion record.
----@param ref { launchId: string, completed: boolean?, result: string?, sourceResult: integer? }
+---@param ref { launchId: string, completed: boolean?, result: string?, sourceResult: integer?, nativeOutcome: integer? }
 ---@param ctx table<string, unknown>?
 ---@return { launchId: string, result: string, sourceResult: integer?, committed: boolean }
 function BattleTask.result(ref, ctx)
@@ -271,6 +315,7 @@ function BattleTask.result(ref, ctx)
       launchId = ref.launchId,
       result = ref.result,
       sourceResult = code,
+      nativeOutcome = checkNativeOutcome(ref.nativeOutcome),
       committed = true,
     }
   end
@@ -302,6 +347,7 @@ function BattleTask.result(ref, ctx)
           launchId = ref.launchId,
           result = status.result,
           sourceResult = sourceCode(status.result),
+          nativeOutcome = checkNativeOutcome(status.nativeOutcome),
           committed = true,
         }
       end

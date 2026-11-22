@@ -462,6 +462,80 @@ function T.source_region_restore_uses_the_captured_surface()
   restoredMgr:dispose()
 end
 
+-- A hideout-shaped composite floor: the central cell's flat floor and a
+-- neighbor cell one map-matrix cell east whose BDHC declares its floor twice
+-- (a wide strip and a one-tile split of the same plane). The object event
+-- stands in the neighbor cell on that duplicated tile.
+function T.composite_floor_actor_resolves_a_duplicated_neighbor_plate()
+  local central = TerrainSurface.new({
+    plates = {
+      {
+        id = 0,
+        minX = 0,
+        minZ = 0,
+        maxX = 32,
+        maxZ = 32,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 1,
+        slopeClass = "flat",
+        walkable = true,
+      },
+    },
+  })
+  local neighbor = TerrainSurface.new({
+    plates = {
+      {
+        id = 0,
+        minX = 0,
+        minZ = 0,
+        maxX = 20,
+        maxZ = 32,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 1,
+        slopeClass = "flat",
+        walkable = true,
+      },
+      {
+        id = 1,
+        minX = 12,
+        minZ = 3,
+        maxX = 13,
+        maxZ = 4,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 1,
+        slopeClass = "flat",
+        walkable = true,
+      },
+    },
+  })
+  local collisionGrid = {
+    containsLocal = function(_, x, z)
+      return x >= 0 and x < 32 and z >= 0 and z < 32
+    end,
+  }
+  local events = { object({ x = 44, z = 3, y = 131072 }) }
+  local map = runtimeMap(events)
+  local region = FieldRegion.new(collisionGrid, central, {
+    {
+      key = "1:0",
+      offsetTilesX = 32,
+      offsetTilesY = 0,
+      offsetTilesZ = 0,
+      collision = collisionGrid,
+      terrain = neighbor,
+    },
+  }, "0:0", 0)
+  map.collision = region.collision
+  map.terrain = region.terrain
+  map.fieldRegion = region
+  local mgr = enter(events, { map = map })
+  local actor = assert(mgr:getById("map:61:object:0"))
+  local surface = FieldActorPlacement.resolveSurfaceAt(map, 44, 3, 131072, actor.actorId)
+  Assert.equal(surface.worldY, 1, "the object stands on the neighbor cell's floor")
+  Assert.equal(actor:getFieldPosition().fieldX, 44)
+  mgr:dispose()
+end
+
 function T.placement_module_works_from_plain_facts()
   for key, value in pairs(FieldActorPlacement) do
     Assert.isTrue(type(value) == "function", "placement export " .. key .. " must be a pure operation")

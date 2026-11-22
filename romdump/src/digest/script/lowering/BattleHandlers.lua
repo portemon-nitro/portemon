@@ -44,7 +44,28 @@ end
 ---@param ins table<string, unknown> decoded instruction record
 ---@return table<string, unknown>
 function BattleHandlers.checkBattleWon(ins)
-  return { op = "battle_result", result = Operands.varRef(ins.operands[1]) }
+  -- ScrCmd_CheckBattleWon reads the source's native outcome query into its
+  -- result variable and returns TRUE, so the script yields one tick after the
+  -- write. The query reports not-won only for a native loss or draw; a win, a
+  -- capture and either fleeing side read as won.
+  return { op = "battle_result", context = "native_won", result = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_RocketTrapBattle reads its authored species and level through
+-- ScriptGetVar and starts the ordinary wild battle application: the trap hazard
+-- never selects a species of its own, and the trap's own sixteen variables stay
+-- script-owned.
+---@param ins table<string, unknown> decoded instruction record
+---@return table<string, unknown>
+function BattleHandlers.rocketTrapBattle(ins)
+  return {
+    op = "battle_launch",
+    kind = "wild",
+    details = {
+      species = Operands.varRef(ins.operands[1]),
+      level = Operands.varRef(ins.operands[2]),
+    },
+  }
 end
 
 -- Retail catching-tutorial (scrcmd_c.c ScrCmd_CatchingTutorial opcode 251,

@@ -1654,10 +1654,10 @@ return {
       widths = {},
     },
     [220] = {
+      classification = "yield_next_tick",
       name = "ScrCmd_CheckBattleWon",
       feature = "battle",
       disposition = "supported",
-      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -1875,11 +1875,10 @@ return {
       },
     },
     [249] = {
+      classification = "native_wait",
       name = "ScrCmd_RocketTrapBattle",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trap battles need the special battle application",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4049,6 +4048,7 @@ return {
       },
     },
     [530] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_MapEventKeyAction",
       widths = {
         [1] = 2,
@@ -4689,12 +4689,14 @@ return {
       },
     },
     [619] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_RocketCostumeFlagCheck",
       widths = {
         [1] = 2,
       },
     },
     [620] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_RocketCostumeFlagAction",
       widths = {
         [1] = 1,
@@ -5408,16 +5410,19 @@ return {
       },
     },
     [708] = {
+      classification = "native_wait",
       name = "ScrCmd_PlayTrapEffect",
       widths = {
         [1] = 2,
       },
     },
     [709] = {
+      classification = "native_wait",
       name = "ScrCmd_PlayHideoutAlarm",
       widths = {},
     },
     [710] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_UpdateMapPropAnimsFromFlag96B",
       widths = {},
     },
@@ -5917,11 +5922,10 @@ return {
       widths = {},
     },
     [783] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_SetFollowMonInhibitState",
       feature = "following_mon",
-      disposition = "deferred",
-      deferredReason = "special_follower_event",
-      deferredNote = "follower inhibit state needs the following-mon controller",
+      disposition = "supported",
       widths = {
         [1] = 1,
       },

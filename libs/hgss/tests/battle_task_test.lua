@@ -109,6 +109,33 @@ function T.poll_rejects_unknown_outcome_words()
   end)))
 end
 
+-- The committed host fact's native outcome code rides the completed task
+-- unchanged beside its boolean script result, and a malformed code fails the
+-- task instead of being coerced.
+function T.poll_retains_the_committed_native_outcome()
+  for nativeOutcome = 0, 6 do
+    local host = hostWith({
+      ["wild#1"] = { phase = "complete", committed = true, result = "win", sourceResult = 1, nativeOutcome = nativeOutcome },
+    })
+    local state = BattleTask.start({ launchId = "wild", kind = "wild", details = {} }, ctxWith(host))
+    local polled = BattleTask.poll(state, ctxWith(host))
+    Assert.isTrue(polled.complete == true, "the committed battle completes its task")
+    Assert.equal(polled.result, 1, "the script-visible won code is unchanged")
+    Assert.equal(state.nativeOutcome, nativeOutcome, "the native outcome code is retained unchanged")
+    Assert.isNil(BattleTask.validate(state), "a retained native outcome code serializes")
+  end
+
+  local host = hostWith({
+    ["wild#1"] = { phase = "complete", committed = true, result = "win", sourceResult = 1, nativeOutcome = 7 },
+  })
+  local state = BattleTask.start({ launchId = "wild", kind = "wild", details = {} }, ctxWith(host))
+  local err = Assert.throws(function()
+    BattleTask.poll(state, ctxWith(host))
+  end)
+  Assert.isTrue(Errors.is(err), "a malformed native outcome fails the task")
+  Assert.equal(err.code, ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE)
+end
+
 function T.validate_pins_the_persisted_shape()
   Assert.isNil(BattleTask.validate({ launchId = "launch-6", kind = "trainer", completed = false }))
   Assert.isNil(BattleTask.validate({ launchId = "launch-6", completed = true, result = "draw", sourceResult = 0 }))

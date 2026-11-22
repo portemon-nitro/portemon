@@ -1,15 +1,93 @@
 -- Runtime index over normalized BDHC plates. It answers horizontal containment
 -- and evaluates the authoritative gameplay plane; permission/collision policy
 -- deliberately remains outside this pure domain module.
+--
+-- A composite region (FieldRegion) joins several cells' plate sets, translating
+-- every neighbor plate into the central frame and tagging it with its cell
+-- offset. Retail resolves one BDHC's plates in source record order, and a BDHC
+-- may legitimately declare the same floor twice (the Rocket Hideout's own
+-- neighbor chunk carries a wide strip plus one-tile splits of it, and its second
+-- floor's central chunk declares its whole partition twice). A coordinate in a
+-- composite region therefore resolves against the first containing cell's plates
+-- (the central cell first, then neighbors in load order) and, inside that cell,
+-- against one record per plane: a later record covering the same point on the
+-- same plane is the same physical surface, not a second candidate. Distinct
+-- planes that merely share a height still tie, so resolution keeps refusing to
+-- choose between them. A single plate set (one cell, no offsets) keeps the
+-- strict single-surface policy: every covering record is a candidate.
 
 ---@class TerrainSurface
 ---@field artifact table<string, unknown>
 ---@field plates table[]
 ---@field plateById table<integer, table<string, unknown>>
+---@field cells { plates: table[] }[]? ordered cell plate groups; nil for a single plate set
 local TerrainSurface = {}
 TerrainSurface.__index = TerrainSurface
 
 local CONTAINMENT_EPSILON = 1e-9
+local PLANE_EPSILON = 1e-9
+
+-- The cell offset triple a composite region's plates carry; nil for a plain
+-- single-cell artifact.
+---@param plate table<string, unknown>
+---@return string?
+local function cellOf(plate)
+  if plate.cellOffsetX == nil then
+    return nil
+  end
+  return plate.cellOffsetX .. ":" .. plate.cellOffsetY .. ":" .. plate.cellOffsetZ
+end
+
+---@param plates table[]
+---@param localX number
+---@param localZ number
+---@param terrain TerrainSurface
+---@return table[]
+local function platesAt(terrain, plates, localX, localZ)
+  local candidates = {}
+  -- Full scans are intentional until strip boundary semantics are verified.
+  for _, plate in ipairs(plates) do
+    if plate.walkable ~= false and terrain:contains(plate.id, localX, localZ) then
+      candidates[#candidates + 1] = plate
+    end
+  end
+  return candidates
+end
+
+---@param left table<string, unknown>
+---@param right table<string, unknown>
+---@return boolean
+local function samePlane(left, right)
+  local leftNormal, rightNormal = left.normal, right.normal
+  return math.abs(leftNormal.x - rightNormal.x) <= PLANE_EPSILON
+    and math.abs(leftNormal.y - rightNormal.y) <= PLANE_EPSILON
+    and math.abs(leftNormal.z - rightNormal.z) <= PLANE_EPSILON
+    and math.abs(left.distance - right.distance) <= PLANE_EPSILON
+end
+
+-- One cell's covering records in source order, with duplicate records of an
+-- already covered plane dropped.
+---@param terrain TerrainSurface
+---@param plates table[]
+---@param localX number
+---@param localZ number
+---@return table[]
+local function distinctPlatesAt(terrain, plates, localX, localZ)
+  local candidates = {}
+  for _, plate in ipairs(platesAt(terrain, plates, localX, localZ)) do
+    local duplicate = false
+    for _, accepted in ipairs(candidates) do
+      if samePlane(accepted, plate) then
+        duplicate = true
+        break
+      end
+    end
+    if not duplicate then
+      candidates[#candidates + 1] = plate
+    end
+  end
+  return candidates
+end
 
 function TerrainSurface.new(artifact)
   assert(
@@ -17,11 +95,33 @@ function TerrainSurface.new(artifact)
     "TerrainSurface.new requires a terrain artifact"
   )
   local plateById = {}
+  local cells, cellByKey = {}, {}
   for _, plate in ipairs(artifact.plates) do
     assert(plateById[plate.id] == nil, "duplicate terrain surface id")
     plateById[plate.id] = plate
+    local key = cellOf(plate)
+    if key == nil then
+      cells = nil
+      cellByKey = nil
+    elseif cells ~= nil then
+      local cell = cellByKey[key]
+      if cell == nil then
+        cell = { plates = {} }
+        cellByKey[key] = cell
+        cells[#cells + 1] = cell
+      end
+      cell.plates[#cell.plates + 1] = plate
+    end
   end
-  return setmetatable({ artifact = artifact, plates = artifact.plates, plateById = plateById }, TerrainSurface)
+  -- A lone cell group has no cross-cell composition to resolve: it keeps the
+  -- plain single plate set behavior.
+  if cells ~= nil and #cells < 2 then
+    cells = nil
+  end
+  return setmetatable(
+    { artifact = artifact, plates = artifact.plates, plateById = plateById, cells = cells },
+    TerrainSurface
+  )
 end
 
 function TerrainSurface:plate(surfaceId)
@@ -41,14 +141,16 @@ end
 
 function TerrainSurface:candidatesAt(localX, localZ)
   assert(type(localX) == "number" and type(localZ) == "number", "candidate coordinates must be numbers")
-  local candidates = {}
-  -- Full scans are intentional until strip boundary semantics are verified.
-  for _, plate in ipairs(self.plates) do
-    if plate.walkable ~= false and self:contains(plate.id, localX, localZ) then
-      candidates[#candidates + 1] = plate
+  local cells = self.cells
+  if cells == nil then
+    return platesAt(self, self.plates, localX, localZ)
+  end
+  for _, cell in ipairs(cells) do
+    if #platesAt(self, cell.plates, localX, localZ) > 0 then
+      return distinctPlatesAt(self, cell.plates, localX, localZ)
     end
   end
-  return candidates
+  return {}
 end
 
 function TerrainSurface:sampleHeight(surfaceId, localX, localZ)

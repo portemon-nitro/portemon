@@ -130,6 +130,47 @@ return {
     { key = "blackthorn_gym_platform_wide", mapSymbol = "MAP_BLACKTHORN_GYM", modelMemberId = 120 },
     { key = "blackthorn_gym_platform_narrow", mapSymbol = "MAP_BLACKTHORN_GYM", modelMemberId = 121 },
   },
+  -- The Rocket hideout's own script-driven field effects
+  -- (src/field/script_field_effects.c sTrapEffects and
+  -- Task_ShowHideoutAlarm): the three trap models travel with their own clips
+  -- out of the demo/legend archive, and the alarm's red overlay is that same
+  -- archive's palette, character data and tilemap.
+  hideoutEffectArchive = "NARC_demo_legend",
+  hideoutTrapModels = {
+    {
+      key = "rocket_trap_electric",
+      id = "electric",
+      memberId = 10,
+      animations = {
+        { memberId = 11, format = "NSBCA", id = "rocket.trap.electric.joint", category = "joint", kind = "trs" },
+      },
+    },
+    {
+      key = "rocket_trap_poison",
+      id = "poison",
+      memberId = 3,
+      animations = {
+        { memberId = 4, format = "NSBCA", id = "rocket.trap.poison.joint", category = "joint", kind = "trs" },
+        { memberId = 5, format = "NSBMA", id = "rocket.trap.poison.color", category = "material", kind = "color" },
+      },
+    },
+    {
+      key = "rocket_trap_rock",
+      id = "rock",
+      memberId = 6,
+      animations = {
+        { memberId = 7, format = "NSBCA", id = "rocket.trap.rock.joint", category = "joint", kind = "trs" },
+        { memberId = 8, format = "NSBMA", id = "rocket.trap.rock.color", category = "material", kind = "color" },
+        { memberId = 9, format = "NSBTA", id = "rocket.trap.rock.srt", category = "material", kind = "texsrt" },
+      },
+    },
+  },
+  hideoutAlarmOverlay = {
+    key = "rocket_alarm_overlay",
+    paletteMemberId = 12,
+    charMemberId = 13,
+    screenMemberId = 14,
+  },
   -- The retail ROM's follower reaction callback table
   -- pairs each reaction's BTX0 texture member with a companion four-frame
   -- selector table. Both source identities stay here; generated keys stay semantic.

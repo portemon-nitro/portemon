@@ -93,6 +93,142 @@ function T.leaves_central_surfaces_local_without_a_physical_cell_key()
   Assert.isNil(plate.sourceSurfaceId)
 end
 
+-- One plate list with its own source record order: the composite region keeps
+-- every cell's records in the order that cell's BDHC declared them.
+---@param plates { minX: number, maxX: number, minZ: number, maxZ: number, distance: number }[]
+---@return TerrainSurface
+local function flatCells(plates)
+  local records = {}
+  for index, plate in ipairs(plates) do
+    records[index] = {
+      id = index - 1,
+      minX = plate.minX,
+      minZ = plate.minZ,
+      maxX = plate.maxX,
+      maxZ = plate.maxZ,
+      normal = { x = 0, y = 1, z = 0 },
+      distance = plate.distance,
+      slopeClass = "flat",
+      walkable = true,
+    }
+  end
+  return TerrainSurface.new({ schema = "g4-terrain-surfaces-v1", plates = records })
+end
+
+-- A neighbor cell whose BDHC declares the same floor twice: retail resolves a
+-- BDHC's records in source order, and the Rocket Hideout's own neighbor chunk
+-- carries exactly this overlap (a wide strip plus a one-tile split of it at the
+-- same height). The composite region joins the two cells, so the duplicated
+-- record must not become an equal candidate of its own cell.
+function T.duplicate_neighbor_plates_resolve_to_the_first_source_record()
+  local region = FieldRegion.new(collision(), flatCells({ { minX = 0, maxX = 32, minZ = 0, maxZ = 32, distance = 1 } }), {
+    {
+      offsetTilesX = 32,
+      offsetTilesY = 0,
+      offsetTilesZ = 0,
+      collision = collision(),
+      terrain = flatCells({
+        { minX = 12, maxX = 20, minZ = 0, maxZ = 32, distance = 1 },
+        { minX = 12, maxX = 20, minZ = 3, maxZ = 4, distance = 1 },
+        { minX = 12, maxX = 13, minZ = 3, maxZ = 4, distance = 1 },
+      }),
+    },
+  })
+  local candidates = region.terrain:candidatesAt(44.5, 3.5)
+  Assert.equal(#candidates, 1, "the neighbor's duplicated floor record is one surface")
+  Assert.equal(candidates[1].minX, 44, "the first source record carries the surface identity")
+  Assert.equal(region.terrain:sampleHeight(candidates[1].id, 44.5, 3.5), 1)
+end
+
+-- A coordinate the central cell covers resolves against the central cell's own
+-- plates, even when a translated neighbor plate reaches over the seam: the
+-- central cell is the first containing cell, never a tie between two cells.
+function T.central_cell_plates_win_a_coordinate_both_cells_cover()
+  local region = FieldRegion.new(
+    collision(),
+    flatCells({ { minX = 0, maxX = 33, minZ = 0, maxZ = 32, distance = 2 } }),
+    {
+      {
+        offsetTilesX = 32,
+        offsetTilesY = 0,
+        offsetTilesZ = 0,
+        collision = collision(),
+        terrain = flatCells({ { minX = -1, maxX = 20, minZ = 0, maxZ = 32, distance = 3 } }),
+      },
+    }
+  )
+  local candidates = region.terrain:candidatesAt(32.5, 4.5)
+  Assert.equal(#candidates, 1, "both cells cover the coordinate through one resolved cell")
+  Assert.equal(candidates[1].cellOffsetX, 0, "the central cell is the first containing cell")
+  Assert.equal(region.terrain:sampleHeight(candidates[1].id, 32.5, 4.5), 2)
+end
+
+-- Coverage outside the central cell still resolves through the neighbor: the
+-- cell preference never drops a coordinate the central cell does not reach.
+function T.neighbor_coverage_outside_the_central_cell_is_preserved()
+  local region = FieldRegion.new(collision(), flatCells({ { minX = 0, maxX = 32, minZ = 0, maxZ = 32, distance = 1 } }), {
+    {
+      offsetTilesX = 32,
+      offsetTilesY = 0,
+      offsetTilesZ = 0,
+      collision = collision(),
+      terrain = flatCells({ { minX = 0, maxX = 32, minZ = 0, maxZ = 32, distance = 5 } }),
+    },
+  })
+  local candidates = region.terrain:candidatesAt(40.5, 8.5)
+  Assert.equal(#candidates, 1)
+  Assert.equal(candidates[1].cellOffsetX, 32, "the neighbor covers the coordinate on its own")
+  Assert.equal(region.terrain:sampleHeight(candidates[1].id, 40.5, 8.5), 5)
+  Assert.equal(#region.terrain:candidatesAt(70.5, 8.5), 0, "a coordinate no cell covers has no surface")
+end
+
+-- Genuinely distinct plates that share a height still raise: a flat floor and a
+-- ramp crossing it at the sampled point are two different surfaces, and picking
+-- one silently would change the slope a walker stands on.
+function T.distinct_plates_at_one_height_still_report_ambiguity()
+  local normal = { x = -0.70710678118654757, y = 0.70710678118654757, z = 0 }
+  local function rampDistanceAt(localY)
+    return localY * normal.y + normal.x * 12.5
+  end
+  local opposing = TerrainSurface.new({
+    plates = {
+      {
+        id = 0,
+        minX = 12,
+        minZ = 0,
+        maxX = 20,
+        maxZ = 32,
+        normal = { x = normal.x, y = normal.y, z = normal.z },
+        distance = rampDistanceAt(1),
+        slopeClass = "ramp_x",
+        walkable = true,
+      },
+      {
+        id = 1,
+        minX = 12,
+        maxX = 20,
+        minZ = 0,
+        maxZ = 32,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 1,
+        slopeClass = "flat",
+        walkable = true,
+      },
+    },
+  })
+  Assert.isTrue(
+    math.abs(opposing:sampleHeight(0, 12.5, 3.5) - 1) < 1e-9,
+    "the two distinct planes share the sampled height"
+  )
+  local region = FieldRegion.new(collision(), flatCells({ { minX = 0, maxX = 32, minZ = 0, maxZ = 32, distance = 1 } }), {
+    { offsetTilesX = 32, offsetTilesY = 0, offsetTilesZ = 0, collision = collision(), terrain = opposing },
+  })
+  local err = Assert.throws(function()
+    SurfaceResolver.new(region.terrain):resolve({ localX = 44.5, localZ = 3.5, currentY = 1 })
+  end)
+  Assert.equal(err.code, "TERRAIN_SURFACE_AMBIGUOUS")
+end
+
 function T.translates_sloped_plane_distance_with_vertical_offset()
   local slope = TerrainSurface.new({
     plates = {

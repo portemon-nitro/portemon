@@ -154,6 +154,19 @@ local function installStoryEffectCompilerMock()
         definitions[source.key] = { model = descriptor(source.key) }
         memberHashes[#memberHashes + 1] = { memberId = source.modelMemberId, sha1 = source.key .. "-model" }
       end
+      for _, source in ipairs(SourceFieldEffects.hideoutTrapModels) do
+        definitions[source.key] = { model = descriptor(source.key) }
+        memberHashes[#memberHashes + 1] = { memberId = source.memberId, sha1 = source.key .. "-model" }
+      end
+      local overlay = SourceFieldEffects.hideoutAlarmOverlay
+      definitions[overlay.key] = {
+        overlay = {
+          texture = "assets/generated/maps/textures/overlay.png",
+          width = 256,
+          height = 256,
+        },
+      }
+      memberHashes[#memberHashes + 1] = { memberId = overlay.screenMemberId, sha1 = "alarm-overlay" }
       return { definitions = definitions, memberHashes = memberHashes }
     end,
   }
@@ -267,6 +280,18 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
       { key = "violet_gym_car", mapSymbol = "MAP_VIOLET_GYM", modelMemberId = 111 },
       { key = "azalea_gym_spinarak", mapSymbol = "MAP_AZALEA_GYM", modelMemberId = 118 },
     },
+    hideoutEffectArchive = SourceFieldEffects.hideoutEffectArchive,
+    hideoutTrapModels = {
+      {
+        key = "rocket_trap_electric",
+        id = "electric",
+        memberId = 10,
+        animations = {
+          { memberId = 11, format = "NSBCA", id = "rocket.trap.electric.joint", category = "joint", kind = "trs" },
+        },
+      },
+    },
+    hideoutAlarmOverlay = SourceFieldEffects.hideoutAlarmOverlay,
     followerReactions = SourceFieldEffects.followerReactions,
     followerReactionBase = SourceFieldEffects.followerReactionBase,
   }

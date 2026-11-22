@@ -1393,6 +1393,10 @@ do
   -- zero-initialized result), never a guessed victory.
   local battleWonWords = { win = true }
   local battleWonOrCaughtWords = { win = true, capture = true }
+  -- The source's own native outcome query (battle_setup.c::IsBattleResultWin)
+  -- reports not-won only for a loss and a draw: a win, a capture and either
+  -- fleeing side all read as won.
+  local nativeLossWords = { [2] = true, [3] = true }
 
   local function handleBattleResult(node, run)
     local host = battleHostFor(run)
@@ -1401,19 +1405,37 @@ do
     local code = 0
     if latest ~= nil then
       assert(type(latest) == "table", "battle results stay records")
-      local words = node.context == "static_wild_won_or_caught" and battleWonOrCaughtWords or battleWonWords
-      if type(latest.result) ~= "string" then
-        Errors.raise(
-          ScriptErrors.SCRIPT_INVALID_REFERENCE,
-          "battle results report an outcome word",
-          { scriptId = run.instance.scriptId }
-        )
-      end
-      if words[latest.result] == true then
-        code = 1
+      if node.context == "native_won" then
+        if latest.nativeOutcome ~= nil and type(latest.nativeOutcome) ~= "number" then
+          Errors.raise(
+            ScriptErrors.SCRIPT_INVALID_REFERENCE,
+            "battle results report a native outcome code",
+            { scriptId = run.instance.scriptId }
+          )
+        end
+        -- No recorded battle reads the zero-initialized native outcome, which
+        -- the source query reports as won; every settled battle reads its own
+        -- committed code.
+        code = nativeLossWords[latest.nativeOutcome or 0] == true and 0 or 1
+      else
+        local words = node.context == "static_wild_won_or_caught" and battleWonOrCaughtWords or battleWonWords
+        if type(latest.result) ~= "string" then
+          Errors.raise(
+            ScriptErrors.SCRIPT_INVALID_REFERENCE,
+            "battle results report an outcome word",
+            { scriptId = run.instance.scriptId }
+          )
+        end
+        if words[latest.result] == true then
+          code = 1
+        end
       end
     end
     semanticsFor(run).writeRef(node.result, code, run)
+    -- The source query returns TRUE, so the script resumes one tick later.
+    if node.context == "native_won" then
+      return Runtime.OUTCOME_YIELD_TICK
+    end
     return Runtime.OUTCOME_CONTINUE
   end
 
@@ -1964,6 +1986,65 @@ end
 function HANDLERS.gym_winch(node, run)
   requireService(run, "gymMechanism")
   return blockOnTask(run, "gym_mechanism", { action = "winch" }, node.result)
+end
+
+-- The Rocket hideout's own source commands. The trap effect and the alarm are
+-- blocking native animations: they hand their evaluated source kind to the one
+-- registered effect owner through the shared native-action task and block until
+-- the trap clips and sound or the two alarm pulses and siren finished. The
+-- powered prop projection, the map event key write and the costume commands
+-- settle in their own tick. None of them touches the avatar: the source changes
+-- the costume flag only, and the authored avatar commands stay the sole
+-- appearance authority.
+function HANDLERS.rocket_trap_effect(node, run)
+  local kind = semanticsFor(run).evaluateValue(node.kind, run)
+  requireService(run, "rocketHideout")
+  return blockOnTask(run, "gym_mechanism", { action = "rocket_trap", kind = kind })
+end
+
+function HANDLERS.rocket_alarm(_, run)
+  requireService(run, "rocketHideout")
+  return blockOnTask(run, "gym_mechanism", { action = "rocket_alarm" })
+end
+
+function HANDLERS.rocket_power_props(_, run)
+  requireService(run, "rocketHideout"):syncPowerProps()
+  return Runtime.OUTCOME_CONTINUE
+end
+
+function HANDLERS.map_event_key(node, run)
+  local slot = semanticsFor(run).evaluateValue(node.slot, run)
+  requireService(run, "rocketHideout"):writeMapEventKey(slot, node.action)
+  return Runtime.OUTCOME_CONTINUE
+end
+
+function HANDLERS.rocket_costume_check(node, run)
+  local flag = semanticsFor(run).resolveIdOperand(node.flag, run)
+  semanticsFor(run).writeRef(node.result, requireService(run, "world"):isFlagSet(flag) and 1 or 0, run)
+  return Runtime.OUTCOME_CONTINUE
+end
+
+function HANDLERS.rocket_costume_action(node, run)
+  local flag = semanticsFor(run).resolveIdOperand(node.flag, run)
+  -- A missing world service is the requireService fault, never a nil dereference
+  -- here.
+  local world = assert(requireService(run, "world"))
+  if node.mode ~= 0 then
+    world:setFlag(flag)
+  else
+    world:clearFlag(flag)
+  end
+  if run.services.actors ~= nil and run.services.actors.syncPresence ~= nil then
+    run.services.actors:syncPresence()
+  end
+  return Runtime.OUTCOME_CONTINUE
+end
+
+-- ScrCmd_SetFollowMonInhibitState reads one raw byte and writes the durable
+-- follower inhibit bit in the same tick it is asked for.
+function HANDLERS.follower_set_inhibited(node, run)
+  requireService(run, "followingMon"):setInhibited(node.inhibited ~= 0)
+  return Runtime.OUTCOME_CONTINUE
 end
 
 function HANDLERS.elevator_anim(node, run)

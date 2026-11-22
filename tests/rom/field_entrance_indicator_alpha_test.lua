@@ -78,9 +78,10 @@ local function testMember85Alpha(romFs)
   -- Every textured material the bundle publishes names one texel/palette
   -- pairing inside the bank it selects; the bank records must decode to the
   -- same alpha classification the material carries, and a pair classified with
-  -- zero-alpha coverage must have alpha-zero pixels. The Ho-Oh leaf overlay
-  -- frames are screen-space images no model material samples, so they stay
-  -- outside this material-driven proof.
+  -- zero-alpha coverage must have alpha-zero pixels. Screen-space overlays the
+  -- field paints itself (the Ho-Oh leaf appearance frames and the Rocket
+  -- hideout alarm) are no model material's category and stay outside this
+  -- material-driven proof.
   local descriptors = { bundle.model }
   local function addDescriptor(candidate)
     if type(candidate) == "table" and type(candidate.materials) == "table" then

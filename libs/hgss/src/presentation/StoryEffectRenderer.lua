@@ -7,6 +7,14 @@
 -- are the map scene's own placements, so they draw through the scene; only their
 -- donor clip travels with this bundle.
 --
+-- The same bundle carries the Rocket hideout's own script-driven effects: the
+-- three trap models the trap command anchors to the player
+-- (src/field/script_field_effects.c sTrapEffects) and the alarm's red overlay
+-- tilemap (Task_ShowHideoutAlarm loads its palette, character data and tilemap
+-- into the main BG1). Trap models draw through the world queue like the gym
+-- props; the alarm overlay is a prepared screen image the field paints under
+-- the alarm's own alpha pulse.
+--
 -- The renderer owns the immutable model definitions, their pooled meshes and
 -- material wraps, and one model instance per source prop. The mechanism owns
 -- each instance's lifetime through the returned handle and publishes every
@@ -38,6 +46,13 @@ local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 ---@field wide StoryEffectDefinition?
 ---@field narrow StoryEffectDefinition?
 
+-- One prepared alarm overlay: the rasterized source tilemap the field paints
+-- under the alarm's own alpha pulse.
+---@class StoryEffectOverlay
+---@field image table<string, unknown>
+---@field width number
+---@field height number
+
 -- One prepared source prop: the runtime model, the single clip its source
 -- anim-list record declares, and the pooled draws its instances share.
 ---@class StoryEffectResource
@@ -66,6 +81,9 @@ local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 ---@field spiders table<integer, StoryEffectSpiderRecord>
 ---@field candles table<integer, StoryEffectCandleRecord>
 ---@field platforms table<integer, StoryEffectPlatformRecord>
+---@field traps table<string, table<string, unknown>>
+---@field overlay StoryEffectOverlay?
+---@field _trap table<string, unknown>?
 local StoryEffectRenderer = {}
 StoryEffectRenderer.__index = StoryEffectRenderer
 
@@ -103,27 +121,31 @@ local function buildResource(pool, definition, label)
   }
 end
 
----@param definitions { car: StoryEffectDefinition, spider: StoryEffectDefinition, candle: StoryEffectDefinition?, platform: StoryEffectPlatforms? } generated effect definitions
+---@param definitions { car: StoryEffectDefinition?, spider: StoryEffectDefinition?, candle: StoryEffectDefinition?, platform: StoryEffectPlatforms?, trap: table<string, StoryEffectDefinition>?, overlay: table<string, unknown>? } generated effect definitions
 ---@param pool table<string, unknown> GpuAssetPool-shaped mesh/image owner
 ---@return StoryEffectRenderer
 function StoryEffectRenderer.new(definitions, pool)
   assert(
-    type(definitions) == "table" and definitions.car ~= nil and definitions.spider ~= nil,
-    "story effect definitions are required for both source props"
+    type(definitions) == "table" and (definitions.car ~= nil or definitions.trap ~= nil),
+    "story effect definitions are required for at least one source prop"
   )
   assert(pool and pool.meshFor and pool.sharedImage and pool.build, "field effect asset pool is required")
   local resources ---@type table<string, unknown>
+  local traps = {}
   pool:build(function()
     resources = {}
     for _, role in ipairs(ROLES) do
-      -- The candle model joins only a composition that publishes it.
+      -- The candle model joins only a composition that publishes it; the car
+      -- and the Spinarak join only a composition that presents their mechanism.
       local definition = definitions[role]
-      if definition == nil and role ~= "candle" then
-        error("story effect definition is missing: " .. role, 0)
-      end
       if definition ~= nil then
         resources[role] = buildResource(pool, definition, role)
       end
+    end
+    -- The hideout trap models carry every clip their source anim-list record
+    -- declares; the trap itself starts them all at once.
+    for kind, definition in pairs(definitions.trap or {}) do
+      traps[kind] = buildResource(pool, definition, "trap:" .. kind)
     end
     -- The platform models join only a composition that publishes them. A
     -- platform is a plain placed prop of its area's build config with no
@@ -145,6 +167,16 @@ function StoryEffectRenderer.new(definitions, pool)
     end
     return resources
   end)
+  local overlay = nil
+  if definitions.overlay ~= nil then
+    local overlayDefinition = definitions.overlay --[[@as table<string, unknown>]]
+    local texture = assert(overlayDefinition.texture, "the alarm overlay carries its prepared texture")
+    overlay = {
+      image = pool:sharedImage(texture, "clamp", "clamp"),
+      width = assert(overlayDefinition.width, "the alarm overlay carries its width"),
+      height = assert(overlayDefinition.height, "the alarm overlay carries its height"),
+    }
+  end
   return setmetatable({
     definitions = definitions,
     resources = resources,
@@ -153,6 +185,8 @@ function StoryEffectRenderer.new(definitions, pool)
     spiders = {},
     candles = {},
     platforms = {},
+    traps = traps,
+    overlay = overlay,
   }, StoryEffectRenderer)
 end
 
@@ -262,10 +296,74 @@ local function appendInstance(items, record, placement)
   end
 end
 
+-- Claim one hideout trap model. The source starts every clip of its own
+-- anim-list record together (FieldAnimModel_Animate advances all of them and
+-- the effect ends when all finished), so the claim plays them all once and
+-- reports completion only when the last of them reached its end.
+---@param kind string "electric", "poison" or "rock"
+---@return table<string, unknown> handle
+function StoryEffectRenderer:newTrap(kind)
+  assert(type(kind) == "string" and kind ~= "", "a trap kind is required")
+  local resource = assert(self.traps[kind], "the story effect renderer has no " .. kind .. " trap model")
+  assert(self._trap == nil, "the hideout trap model is already active")
+  local instance = newInstanceFor(self, resource)
+  local record = { instance = instance, resource = resource, plays = {}, kind = kind }
+  self._trap = record
+  local renderer = self
+  local handle = {}
+  function handle:start()
+    local live = assert(renderer._trap, "the hideout trap model was released")
+    for _, clip in ipairs(live.resource.model.animations) do
+      live.plays[#live.plays + 1] = live.instance:play(clip.name, { loopMode = "once" })
+    end
+  end
+  function handle:isComplete()
+    local live = renderer._trap
+    if live == nil then
+      return true
+    end
+    for _, play in ipairs(live.plays) do
+      if play.player ~= nil and play.player:isComplete() ~= true then
+        return false
+      end
+    end
+    return true
+  end
+  function handle:updateFixed()
+    local live = assert(renderer._trap, "the hideout trap model was released")
+    live.instance:updateFixed()
+  end
+  function handle:dispose()
+    renderer._trap = nil
+  end
+  return handle
+end
+
+-- Paint the alarm's prepared source overlay under its own alpha pulse. The
+-- snapshot carries the source blend level (0..12 of 31); nothing here reads a
+-- cache or advances a clock.
+---@param status RocketHideoutEffects.Presentation
+---@return boolean drawn
+function StoryEffectRenderer:drawAlarmOverlay(status)
+  local overlay = self.overlay
+  if overlay == nil or status == nil or status.alarm == nil then
+    return false
+  end
+  local graphics = assert(love and love.graphics, "the alarm overlay requires the graphics boundary")
+  local image = overlay.image and overlay.image.image or nil
+  assert(image ~= nil, "the alarm overlay image is unavailable")
+  local width, height = graphics.getDimensions()
+  graphics.setColor(1, 1, 1, status.alarm.blend / 31)
+  graphics.draw(image, 0, 0, 0, width / overlay.width, height / overlay.height)
+  graphics.setColor(1, 1, 1, 1)
+  return true
+end
+
 -- Draw the props one borrowed presentation snapshot places. The snapshot is
--- the mechanism's own per-tick record of where each source prop stands; an
--- absent prop draws nothing.
----@param status GymMechanism.Presentation
+-- an owner's own per-tick record of where each source prop stands: the gym
+-- mechanism's placements and the hideout's trap travel through this one draw,
+-- and an absent prop draws nothing.
+---@param status GymMechanism.Presentation|RocketHideoutEffects.Presentation
 ---@return table[]
 function StoryEffectRenderer:drawItems(status)
   assert(type(status) == "table", "story effect status is required")
@@ -286,6 +384,10 @@ function StoryEffectRenderer:drawItems(status)
     if record ~= nil and placement.culled ~= true then
       appendInstance(items, record, placement)
     end
+  end
+  local trap = status.trap
+  if trap ~= nil and self._trap ~= nil then
+    appendInstance(items, self._trap, trap)
   end
   for _, placement in ipairs(status.platforms or {}) do
     local record = self.platforms[assert(placement.slot, "a platform placement carries its slot")]
@@ -364,6 +466,9 @@ function StoryEffectRenderer:dispose()
   self.spiders = {}
   self.candles = {}
   self.platforms = {}
+  self.traps = {}
+  self._trap = nil
+  self.overlay = nil
   self.resources = nil
   self.definitions = nil
   self.pool = nil

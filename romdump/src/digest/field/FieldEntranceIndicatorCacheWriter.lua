@@ -25,7 +25,10 @@ local function persist(stage, bundle)
     local descriptors = FieldEffectAssetCache.modelDescriptors(kind, definition, function(partKind)
       return assert(bundle.effects[partKind], "field-effect part is missing from the bundle: " .. partKind)
     end)
-    assert(#descriptors >= 1 or FieldEffectAssetCache.isPartKind(kind), "field-effect definition carries no model")
+    assert(
+      #descriptors >= 1 or FieldEffectAssetCache.isPartKind(kind) or FieldEffectAssetCache.isModellessKind(kind),
+      "field-effect definition carries no model"
+    )
     for _, descriptor in ipairs(descriptors) do
       ModelAsset.validate(descriptor)
       for _, path in ipairs(ModelAsset.referencedPaths(descriptor)) do

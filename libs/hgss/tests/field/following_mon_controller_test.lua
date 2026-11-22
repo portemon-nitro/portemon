@@ -884,6 +884,37 @@ function T.map_change_clears_the_queue_and_reinstalls()
   w.mgr:dispose()
 end
 
+-- The durable inhibit bit suppresses the follower on every reveal path and is
+-- released at the source map-entry boundary, including a seamless connection:
+-- the authored event's own hide never outlives the map it belongs to.
+function T.the_source_map_entry_releases_the_durable_inhibit_bit()
+  local FollowingMonState = require("libs.hgss.src.save.FollowingMonState")
+  local inhibitState = FollowingMonState.new()
+  local w = world({ inhibitState = inhibitState })
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  Assert.equal(w.mgr:partnerId(), "field:partner", "the permitted map installs the follower")
+
+  w.controller:setInhibited(true)
+  tick(w, 2)
+  Assert.isNil(w.mgr:partnerId(), "the inhibited follower never appears")
+  Assert.isTrue(inhibitState:isInhibited(), "the durable bit keeps its written state")
+
+  -- A party change on the same map still honors the bit.
+  w.svc:setLead(0, mon("TOTODILE"))
+  tick(w, 2)
+  Assert.isNil(w.mgr:partnerId(), "a party change never reveals an inhibited follower")
+
+  -- The next map entry releases the bit and republishes the follower.
+  local nextMap = runtimeMap(62)
+  w.mgr:enterMap(nextMap, FieldEventState.new())
+  w.player.currentMap = nextMap
+  tick(w, 3)
+  Assert.isFalse(inhibitState:isInhibited(), "the source map entry clears the inhibit bit")
+  Assert.equal(w.mgr:partnerId(), "field:partner", "the new map installs the follower again")
+  w.mgr:dispose()
+end
+
 function T.party_swap_replaces_atomically_and_keeps_pause()
   local w = world()
   w.svc:setLead(0, mon("CHIKORITA"))

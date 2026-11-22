@@ -196,6 +196,31 @@ function T.resolver_rejects_a_step_at_the_height_limit()
   Assert.equal(err.context.kind, "step-beyond")
 end
 
+function T.single_cell_duplicate_plates_at_one_height_stay_ambiguous()
+  -- A single BDHC's own plate list keeps the strict single-surface policy: two
+  -- records covering the same point at the same height are unexpected in one
+  -- source plate set, so resolution refuses to guess. Composite regions (the
+  -- Rocket Hideout floors among them) resolve by cell and source record order.
+  local t = terrain({
+    heights = { TerrainFixture.heightRaw(0) },
+    points = {
+      { x = -16, z = -16 },
+      { x = 16, z = 16 },
+      { x = -16, z = -16 },
+      { x = 16, z = 16 },
+    },
+    plates = {
+      { minPointIndex = 0, maxPointIndex = 1, slopeIndex = 0, heightIndex = 0 },
+      { minPointIndex = 2, maxPointIndex = 3, slopeIndex = 0, heightIndex = 0 },
+    },
+  })
+  Assert.equal(#t:candidatesAt(20, 20), 2, "a single plate set keeps every covering record")
+  local err = Assert.throws(function()
+    SurfaceResolver.new(t):resolve({ localX = 20, localZ = 20, currentY = 0 })
+  end)
+  Assert.equal(err.code, "TERRAIN_SURFACE_AMBIGUOUS")
+end
+
 function T.current_surface_disconnected_from_the_crossing_is_a_distinct_kind()
   -- The player's own surface does not cover the crossing source: an
   -- inconsistent current terrain state, discriminated from an ordinary

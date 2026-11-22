@@ -1912,6 +1912,7 @@ local FieldHandlers = {
   [293] = awardRunningShoes,
   [213] = BattleHandlers.trainerBattle,
   [220] = BattleHandlers.checkBattleWon,
+  [249] = BattleHandlers.rocketTrapBattle,
   [589] = BattleHandlers.wildBattle,
   [251] = BattleHandlers.catchingTutorial,
   [219] = FieldServiceHandlers.whiteout,
@@ -2048,6 +2049,17 @@ FieldHandlers[317] = require("romdump.src.digest.script.lowering.StoryHandlers")
 FieldHandlers[318] = require("romdump.src.digest.script.lowering.StoryHandlers").cianwoodGymInit
 FieldHandlers[319] = require("romdump.src.digest.script.lowering.StoryHandlers").cianwoodGymTurnWinch
 FieldHandlers[329] = require("romdump.src.digest.script.lowering.StoryHandlers").blackthornGymInit
+-- The Rocket hideout's own commands ride the same cohesive leaf: the trap
+-- selector and the map event key are ScriptGetVar operands, the alarm and the
+-- powered-prop projection carry none, and the costume and inhibit selectors are
+-- raw source bytes.
+FieldHandlers[708] = require("romdump.src.digest.script.lowering.StoryHandlers").playTrapEffect
+FieldHandlers[709] = require("romdump.src.digest.script.lowering.StoryHandlers").playHideoutAlarm
+FieldHandlers[710] = require("romdump.src.digest.script.lowering.StoryHandlers").updateMapPropAnimsFromFlag96B
+FieldHandlers[530] = require("romdump.src.digest.script.lowering.StoryHandlers").mapEventKeyAction
+FieldHandlers[619] = require("romdump.src.digest.script.lowering.StoryHandlers").rocketCostumeFlagCheck
+FieldHandlers[620] = require("romdump.src.digest.script.lowering.StoryHandlers").rocketCostumeFlagAction
+FieldHandlers[783] = require("romdump.src.digest.script.lowering.StoryHandlers").setFollowMonInhibitState
 FieldHandlers[784] = FieldServiceHandlers.scriptOverlayCmd
 
 -- The seventeen dex entries ride the cohesive PokedexHandlers leaf. This

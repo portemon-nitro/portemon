@@ -394,7 +394,11 @@ function FieldBattleCoordinator:updateBattle()
     end
     launch.phase = "complete"
     launch.committed = true
-    self._lastBattleResult = { result = launch.result, sourceResult = launch.sourceResult }
+    self._lastBattleResult = {
+      result = launch.result,
+      sourceResult = launch.sourceResult,
+      nativeOutcome = launch.nativeOutcome,
+    }
     self._battleReceipt = launch
     self._battleLaunch = nil
     self:reconcileBattleGate()
@@ -432,17 +436,22 @@ function FieldBattleCoordinator:updateBattle()
     error(failure, 0)
   end
   if decision ~= nil then
+    local published = {
+      result = decision.result,
+      sourceResult = decision.sourceResult,
+      nativeOutcome = decision.nativeOutcome,
+    }
     if launch == nil then
-      self._lastBattleResult = { result = decision.result, sourceResult = decision.sourceResult }
+      self._lastBattleResult = published
     elseif not decision.successful then
       launch.phase = "complete"
       launch.committed = true
-      self._lastBattleResult = { result = decision.result, sourceResult = decision.sourceResult }
+      self._lastBattleResult = published
       self._battleReceipt = launch
       self._battleLaunch = nil
     else
       launch.phase = "restoring"
-      self._lastBattleResult = { result = decision.result, sourceResult = decision.sourceResult }
+      self._lastBattleResult = published
       fieldRuntime(self).overworld:requestRestore()
     end
   end
@@ -520,14 +529,22 @@ function FieldBattleCoordinator:_updatePresentedBattle(launch)
         -- save gate closed through the transfer.
         launch.phase = "transfer"
         launch.committed = true
-        self._lastBattleResult = { result = result, sourceResult = launch.sourceResult }
+        self._lastBattleResult = {
+          result = result,
+          sourceResult = launch.sourceResult,
+          nativeOutcome = launch.nativeOutcome,
+        }
         self._battleReceipt = launch
         self.battleRuntime = nil
       else
         self:_beginAutomaticRecovery(launch)
       end
     else
-      self._lastBattleResult = { result = result, sourceResult = launch.sourceResult }
+      self._lastBattleResult = {
+        result = result,
+        sourceResult = launch.sourceResult,
+        nativeOutcome = launch.nativeOutcome,
+      }
       fieldRuntime(self).overworld:requestRestore()
       launch.phase = "restoring"
     end
@@ -704,6 +721,7 @@ function FieldBattleCoordinator:battleStatus(launchId)
       committed = receipt.committed == true,
       result = receipt.result,
       sourceResult = receipt.sourceResult,
+      nativeOutcome = receipt.nativeOutcome,
       error = receipt.error,
     }
   end
@@ -714,6 +732,7 @@ function FieldBattleCoordinator:battleStatus(launchId)
       committed = launch.committed == true,
       result = launch.result,
       sourceResult = launch.sourceResult,
+      nativeOutcome = launch.nativeOutcome,
       error = launch.error,
     }
   end
@@ -810,6 +829,7 @@ function FieldBattleCoordinator:launchPresentedBattle(launchId, request, method)
     revealed = false,
     result = nil,
     sourceResult = nil,
+    nativeOutcome = nil,
     committed = false,
     error = nil,
     recovery = nil,
@@ -1531,7 +1551,11 @@ end
 -- through this boundary.
 ---@param launch table<string, unknown> presented launch record
 function FieldBattleCoordinator:_publishPresentedReceipt(launch)
-  self._lastBattleResult = { result = launch.result, sourceResult = launch.sourceResult }
+  self._lastBattleResult = {
+    result = launch.result,
+    sourceResult = launch.sourceResult,
+    nativeOutcome = launch.nativeOutcome,
+  }
   self._battleReceipt = launch
   launch.phase = "complete"
   launch.committed = true

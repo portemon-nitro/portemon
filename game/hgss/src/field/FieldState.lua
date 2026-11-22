@@ -1005,6 +1005,12 @@ function FieldState:_worldParts(alpha)
   local mechanism = self.runtime.gymMechanism
   worldParts[16] = (mechanismRenderer and mechanism) and mechanismRenderer:drawItems(mechanism:presentation())
     or NO_DRAWS
+  -- The Rocket hideout's trap model draws from the effect owner's own snapshot
+  -- the same way: the effect owns the anchor and the clip clock, the renderer
+  -- only applies the transform and the source clips.
+  local rocketEffects = self.runtime.rocketHideoutEffects
+  worldParts[17] = (mechanismRenderer and rocketEffects) and mechanismRenderer:drawItems(rocketEffects:presentation())
+    or NO_DRAWS
   return worldParts
 end
 
@@ -1821,6 +1827,10 @@ function FieldState:draw()
     resources:drawEasyChat(assert(easyChatHost:status(), "active word editor host publishes its status"))
   end
   self:_drawEntryCoverIfNeeded(width, height)
+  -- The hideout alarm's own red overlay paints over the world under every
+  -- modal surface and under the script's own screen covers, exactly where the
+  -- source loads it into the main background layer.
+  self:_drawRocketAlarmOverlay(resources)
   if not legendCinematic then
     self:_drawScriptScreenFadeIfNeeded()
   end
@@ -1927,6 +1937,21 @@ end
 
 -- The Honey/Sweet Scent tint over the world, then the script screen fade
 -- over everything.
+-- Paint the hideout alarm's prepared source overlay when the effect owner
+-- reports one; the renderer owns the image and the pulse alpha.
+---@param resources FieldPresentationResources
+function FieldState:_drawRocketAlarmOverlay(resources)
+  local effects = self.runtime.rocketHideoutEffects
+  if effects == nil then
+    return
+  end
+  local renderer = resources.gymMechanismRenderer
+  if renderer == nil then
+    return
+  end
+  renderer:drawAlarmOverlay(effects:presentation())
+end
+
 function FieldState:_drawScriptScreenFadeIfNeeded()
   local scentTint = self.runtime.scentTint
   if scentTint ~= nil then

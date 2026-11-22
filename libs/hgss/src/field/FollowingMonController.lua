@@ -757,6 +757,14 @@ function FollowingMonController:_handleMapChange(mapId, coveredRebuild)
   self:_clearHopIntoBall()
   self._hopReleasePending = false
   self._paused = false
+  -- The source inhibit bit is an event-scoped suppression: the map entry
+  -- releases it, so the authored event's own hide never outlives the map it
+  -- belongs to, including a seamless connection that swaps cells without a
+  -- transition. A later set by the executing script still applies to the map
+  -- it runs on.
+  if self._inhibitState ~= nil then
+    self._inhibitState:setInhibited(false)
+  end
 end
 
 -- Observe one movement-start transaction: an ordinary adjacent walk starts

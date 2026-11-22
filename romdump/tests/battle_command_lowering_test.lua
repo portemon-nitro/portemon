@@ -54,12 +54,26 @@ function T.wild_battle_lowers_to_a_blocking_launch()
   Assert.equal(CommandCatalog.classification(589), "native_wait", "launches block like the source")
 end
 
-function T.battle_won_check_lowers_to_a_result_read()
+function T.battle_won_check_lowers_to_a_native_result_read()
   local read = lowerSingle(220, { 0x800D })
   Assert.equal(read.op, "battle_result")
+  Assert.equal(read.context, "native_won", "the read answers the source's own native outcome query")
   Assert.equal(read.result.value, "var", "the result variable rides the read")
   Assert.equal(CommandCatalog.disposition(220), "supported")
-  Assert.equal(CommandCatalog.classification(220), "continue_same_tick", "result reads answer in the same tick")
+  Assert.equal(CommandCatalog.classification(220), "yield_next_tick", "the source query returns TRUE")
+end
+
+-- ScrCmd_RocketTrapBattle carries the authored species and level as
+-- ScriptGetVar operands and starts the ordinary wild battle application.
+function T.rocket_trap_battle_lowers_to_a_wild_launch()
+  local launch = lowerSingle(249, { 100, 23 })
+  Assert.equal(launch.op, "battle_launch")
+  Assert.equal(launch.kind, "wild")
+  Assert.equal(launch.details.species, 100, "the trap launches the species its script authored")
+  Assert.equal(launch.details.level, 23)
+  Assert.equal(launch.details.args, nil, "the trap battle carries no trailing operands")
+  Assert.equal(CommandCatalog.disposition(249), "supported")
+  Assert.equal(CommandCatalog.classification(249), "native_wait", "the trap battle blocks the script")
 end
 
 -- The catalog decides which battle commands are still deferred, so a command

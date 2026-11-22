@@ -122,6 +122,53 @@ function T.result_maps_contexts_and_unrecorded_battles_conservatively()
   Assert.equal(world.vars[6], 0, "an unrecorded battle reads back not-won")
 end
 
+-- The source's own native outcome query (ScrCmd_CheckBattleWon →
+-- battle_setup.c::IsBattleResultWin): loss and draw read not-won, every other
+-- native outcome - win, capture and either fleeing side - reads won, and the
+-- command yields one tick after the write (the source returns TRUE).
+function T.native_won_query_reads_the_source_polarity()
+  local cases = {
+    { nativeOutcome = 0, expected = 1, label = "an unrecorded native outcome" },
+    { nativeOutcome = 1, expected = 1, label = "a win" },
+    { nativeOutcome = 2, expected = 0, label = "a loss" },
+    { nativeOutcome = 3, expected = 0, label = "a draw" },
+    { nativeOutcome = 4, expected = 1, label = "a capture" },
+    { nativeOutcome = 5, expected = 1, label = "the player's flight" },
+    { nativeOutcome = 6, expected = 1, label = "the foe's flight" },
+  }
+  for index, case in ipairs(cases) do
+    local world = worldWith({})
+    local host = {
+      lastBattleResult = function()
+        return { result = "flee", sourceResult = 0, nativeOutcome = case.nativeOutcome }
+      end,
+    }
+    local fixture = runWith({ world = world, battle = host })
+    local outcome = Runtime.executeNode({
+      op = "battle_result",
+      context = "native_won",
+      result = var(index),
+    }, fixture.run)
+    Assert.equal(outcome, Runtime.OUTCOME_YIELD_TICK, case.label .. " yields the source tick")
+    Assert.equal(world.vars[index], case.expected, case.label .. " reads the source polarity")
+  end
+end
+
+-- The generic read keeps its own contract: a flight is not a generic win even
+-- though the native query reports it as a source success.
+function T.the_generic_read_keeps_its_generic_contract()
+  local world = worldWith({})
+  local host = {
+    lastBattleResult = function()
+      return { result = "flee", sourceResult = 0, nativeOutcome = 5 }
+    end,
+  }
+  local fixture = runWith({ world = world, battle = host })
+  local outcome = Runtime.executeNode({ op = "battle_result", result = var(3) }, fixture.run)
+  Assert.equal(outcome, Runtime.OUTCOME_CONTINUE, "the generic read stays in its own tick")
+  Assert.equal(world.vars[3], 0, "the generic read never counts a flight as a win")
+end
+
 function T.result_without_a_host_is_an_attributed_fault()
   local fixture = runWith({ world = worldWith({}) })
   local err = Assert.throws(function()

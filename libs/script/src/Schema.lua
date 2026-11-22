@@ -105,9 +105,10 @@ Schema.ENUMS = {
   -- fights, and fully explicit scenarios. Numeric source codes never
   -- appear at runtime (lowering converts them).
   battle_kind = { "wild", "trainer", "scripted", "scenario", "tutorial" },
-  -- Battle result read contexts: the ordinary won check and the static
-  -- wild won-or-caught check.
-  battle_result_context = { "battle_won", "static_wild_won_or_caught" },
+  -- Battle result read contexts: the ordinary won check, the static wild
+  -- won-or-caught check, and the source's native outcome query that reports a
+  -- loss or a draw as not-won and every other native outcome as won.
+  battle_result_context = { "battle_won", "static_wild_won_or_caught", "native_won" },
   -- Dex display modes: the explicit generated johto and national orders.
   pokedex_mode = { "johto", "national" },
   -- Dex count kinds: historical sightings or captures.
@@ -1144,6 +1145,42 @@ Schema.OPERATIONS = {
   -- The Cianwood winch: one blocking command that writes its source boolean
   -- into the caller's output variable.
   gym_winch = { fields = { result = { type = "value", required = true } } },
+  -- The Rocket hideout's own source commands. The trap effect and the alarm are
+  -- blocking native animations, so they ride the one registered effect owner and
+  -- complete only after their source clips and sound finished. The trap kind is
+  -- read through ScriptGetVar (a variable or a literal); the power-prop
+  -- projection resolves its three source flags in the same tick.
+  rocket_trap_effect = { fields = { kind = { type = "scalar_or_value", required = true } } },
+  rocket_alarm = { fields = {} },
+  rocket_power_props = { fields = {} },
+  -- ScrCmd_MapEventKeyAction reads its key through ScriptGetVar and its action
+  -- as a raw byte: a nonzero action writes that key slot's source magic value
+  -- into its own world variable, zero writes zero.
+  map_event_key = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      action = { type = "integer", required = true },
+    },
+  },
+  -- ScrCmd_RocketCostumeFlagCheck writes the source costume flag into an output
+  -- variable; the flag action reads one raw selector byte where nonzero sets and
+  -- zero clears it. The flag is the source's own symbolic identity, supplied by
+  -- the lowering; neither command touches the avatar.
+  rocket_costume_check = {
+    fields = {
+      flag = { type = "string", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  rocket_costume_action = {
+    fields = {
+      flag = { type = "string", required = true },
+      mode = { type = "integer", required = true },
+    },
+  },
+  -- ScrCmd_SetFollowMonInhibitState reads one raw byte and writes the durable
+  -- follower inhibit bit in the same tick.
+  follower_set_inhibited = { fields = { inhibited = { type = "integer", required = true } } },
   field_clock_hour = { fields = { result = { type = "value", required = true } } },
   shake_camera = {
     fields = {

@@ -971,6 +971,13 @@ function Compiler.compile(romFs, hashLua)
   for _, source in ipairs(FieldEffects.mechanismPropModels) do
     effects[source.key] = assert(storyEffects.definitions[source.key], "mechanism prop definition is missing")
   end
+  -- The Rocket hideout's own script-driven effects: the three trap models and
+  -- the alarm overlay.
+  for _, source in ipairs(FieldEffects.hideoutTrapModels) do
+    effects[source.key] = assert(storyEffects.definitions[source.key], "hideout trap definition is missing")
+  end
+  effects[FieldEffects.hideoutAlarmOverlay.key] =
+    assert(storyEffects.definitions[FieldEffects.hideoutAlarmOverlay.key], "hideout alarm overlay is missing")
   -- The Ho-Oh appearance record is published in parts (core, and per
   -- cinematic shot a shared part plus per-variant overlays).
   for kind, definition in pairs(hoOhAppearance.definitions) do
@@ -1064,6 +1071,18 @@ function Compiler.compile(romFs, hashLua)
         path = FieldEffectAssetCache.definitionPath("lugia_appearance"),
       },
     },
+  }
+  for _, source in ipairs(FieldEffects.hideoutTrapModels) do
+    index.effects[source.key] = {
+      kind = "animated_model",
+      definition = source.key,
+      path = FieldEffectAssetCache.definitionPath(source.key),
+    }
+  end
+  index.effects[FieldEffects.hideoutAlarmOverlay.key] = {
+    kind = "overlay",
+    definition = FieldEffects.hideoutAlarmOverlay.key,
+    path = FieldEffectAssetCache.definitionPath(FieldEffects.hideoutAlarmOverlay.key),
   }
   for kind in pairs(hoOhAppearance.definitions) do
     index.effects[kind] = {

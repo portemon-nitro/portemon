@@ -123,6 +123,7 @@ local PlayerData = require("libs.hgss.src.save.PlayerData")
 ---@field _result string?
 ---@field _terminalRewards table<string, unknown>? reward plan shared by terminal narration facts and commit
 ---@field _sourceResult integer
+---@field _nativeOutcome integer? the source's own 0..6 battle outcome code
 ---@field _postTicks integer
 ---@field _runTicks integer
 ---@field _stagedCaptures table<integer, table<string, unknown>>? committer-shaped captures behind the completion queue
@@ -258,7 +259,14 @@ local function checkRequest(request)
   assert(type(launch.payload) == "table", "battle launches carry their payload record")
   local payload = launch.payload --[[@as table<string, unknown>]]
   if launch.kind == "wild" then
-    assert(type(payload.species) == "string" and payload.species ~= "", "wild launches name their species")
+    -- A wild launch names its species either as the mon catalog key or as the
+    -- source's own native species number, which is what a script's literal
+    -- ScriptGetVar operand reads.
+    local species = payload.species
+    assert(
+      (type(species) == "string" and species ~= "") or (type(species) == "number" and species % 1 == 0 and species >= 0),
+      "wild launches name their species"
+    )
     assert(
       type(payload.level) == "number" and payload.level % 1 == 0 and payload.level >= 1 and payload.level <= 100,
       "wild launches carry their level in 1..100"
@@ -503,6 +511,7 @@ function BattleRuntime.new(args)
     _result = nil,
     _terminalRewards = nil,
     _sourceResult = BattleTask.SOURCE_NOT_WON,
+    _nativeOutcome = nil,
     _postTicks = 0,
     _runTicks = 0,
     _stagedCaptures = nil,
@@ -1410,6 +1419,20 @@ local function survivorSides(snapshot)
   return playerAlive, enemyAlive
 end
 
+-- The source's own numeric outcome words: 0 none, 1 win, 2 loss, 3 draw,
+-- 4 caught, 5 player fled, 6 foe fled (BATTLE_OUTCOME_* in the pinned native
+-- battle headers). The generic word stays the scripts' own vocabulary; this code
+-- exists only beside it.
+BattleRuntime.NATIVE_OUTCOME = {
+  none = 0,
+  win = 1,
+  loss = 2,
+  draw = 3,
+  capture = 4,
+  playerFled = 5,
+  foeFled = 6,
+}
+
 ---@return string outcome word for the committer
 function BattleRuntime:_mapOutcome()
   local outcome = self._outcome or {}
@@ -2171,6 +2194,40 @@ function BattleRuntime:_rewardMultiplier()
   return multiplier --[[@as integer]]
 end
 
+-- Derive the source's native outcome from the settled generic word and the
+-- terminal flight side. A flight without its escaping side is a battle that
+-- cannot state who left, so it refuses to project one instead of defaulting to
+-- the player.
+---@param result string settled generic outcome word
+---@return integer native outcome code
+function BattleRuntime:_mapNativeOutcome(result)
+  local words = BattleRuntime.NATIVE_OUTCOME
+  if result == "win" then
+    return words.win
+  end
+  if result == "loss" then
+    return words.loss
+  end
+  if result == "draw" then
+    return words.draw
+  end
+  if result == "capture" then
+    return words.capture
+  end
+  if result == "flee" then
+    local outcome = self._outcome or {}
+    local fledSide = outcome.fledSide
+    if fledSide == "player" then
+      return words.playerFled
+    end
+    if fledSide == "foe" then
+      return words.foeFled
+    end
+    error("a fleeing battle outcome must name the side that left", 0)
+  end
+  error("unknown battle outcome word " .. tostring(result), 0)
+end
+
 ---@param result string outcome word the commit carries
 ---@return table<string, unknown> reward plan, or an empty record when nothing is owed
 function BattleRuntime:_commitRewards(result)
@@ -2372,6 +2429,10 @@ function BattleRuntime:_prepareCommit()
   -- Capture and victory both report the script-visible won code; every
   -- other settled word reports not-won.
   self._sourceResult = (result == "win" or result == "capture") and BattleTask.SOURCE_WON or BattleTask.SOURCE_NOT_WON
+  -- The source's own numeric outcome is prepared beside the generic words and
+  -- only ever observed through a committed receipt: a failed commit leaves no
+  -- settled native result behind.
+  self._nativeOutcome = self:_mapNativeOutcome(result)
   -- Source Task_TutorialBattle discards its own setup: the catching
   -- lesson publishes its outcome alone, never a party, capture, Pokedex,
   -- stats, bag, or money consequence.
@@ -3282,6 +3343,7 @@ function BattleRuntime:status()
     evolutionReceipts = copyValue(self._evolutionReceipts),
     result = self._result,
     sourceResult = self._sourceResult,
+    nativeOutcome = self._nativeOutcome,
     error = self._error,
     completionPending = #self._completions,
     completionError = self._completionError,
@@ -3335,7 +3397,7 @@ end
 -- BattleTask host observation: the committed outcome for one launch, or nil
 -- when the identity names no owned launch.
 ---@param launchId string
----@return table<string, unknown>? { phase, committed, result, sourceResult }
+---@return table<string, unknown>? { phase, committed, result, sourceResult, nativeOutcome }
 function BattleRuntime:battleStatus(launchId)
   if launchId ~= self._request.id then
     return nil
@@ -3345,6 +3407,7 @@ function BattleRuntime:battleStatus(launchId)
     committed = self._receipt ~= nil and self._receipt.committed == true,
     result = self._result,
     sourceResult = self._sourceResult,
+    nativeOutcome = self._nativeOutcome,
   }
 end
 

@@ -82,6 +82,8 @@ local BLOCKING_OPS = {
   gym_switch = true,
   gym_candle_extinguish = true,
   gym_winch = true,
+  rocket_trap_effect = true,
+  rocket_alarm = true,
   follower_appearance = true,
   follower_recall = true,
   easy_chat_edit = true,
@@ -102,6 +104,9 @@ local YIELD_OPS = {
   signpost_direction = true,
   signpost_set = true,
   signpost_command = true,
+  -- The source battle result query returns TRUE, and its lowered node writes the
+  -- code and yields the one tick the source spends before the next command.
+  battle_result = true,
   stop = true,
   fashion_title_word = true,
 }

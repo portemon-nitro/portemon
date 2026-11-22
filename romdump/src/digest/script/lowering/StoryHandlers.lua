@@ -1,4 +1,4 @@
--- Gym mechanism lowerings. The five gyms drive the port's closed native
+-- Gym and Rocket story lowerings. The five gyms drive the port's closed native
 -- mechanism union through one family of semantic nodes: the six init commands
 -- install their own kind with no operands, the lift and the candle binding
 -- commands carry none either, and the spider ride, the switch flip and the
@@ -7,11 +7,24 @@
 -- the source boolean lands in (ScriptGetVarPointer), so it lowers as a value
 -- reference. They live here so their names never become more file-scoped
 -- locals in the main field-handler chunk.
+--
+-- The Rocket hideout's own commands join the same leaf: the trap selector is
+-- read through ScriptGetVar, the alarm and the powered-prop projection carry no
+-- operands, the map event key is a ScriptGetVar key with a raw action byte, the
+-- costume check writes the costume flag into an output variable while the
+-- costume action reads a raw mode byte, and the follower inhibit reads a raw
+-- byte too.
 
 local Operands = require("romdump.src.digest.script.lowering.Operands")
 
 ---@class StoryHandlers
 local StoryHandlers = {}
+
+-- The Rocket costume's own source flag identity (Save_VarsFlags_Check/Set/
+-- ClearRocketCostumeFlag read FLAG_SYS_ROCKET_COSTUME). The flag travels as the
+-- symbol the world store resolves, never as a raw number.
+StoryHandlers.ROCKET_COSTUME_FLAG = "FLAG_SYS_ROCKET_COSTUME"
+local ROCKET_COSTUME_FLAG = StoryHandlers.ROCKET_COSTUME_FLAG
 
 ---@param value unknown
 ---@return boolean
@@ -100,6 +113,59 @@ end
 -- the blocking mechanism task.
 function StoryHandlers.cianwoodGymTurnWinch(ins)
   return { op = "gym_winch", result = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_PlayTrapEffect reads its kind through ScriptGetVar, loads that kind's
+-- archive model, anchors it to the player and blocks until every clip and the
+-- trap sound finished. The hazard itself only presents the effect: the authored
+-- script owns the sound, the trap battle and the spent variable.
+function StoryHandlers.playTrapEffect(ins)
+  return { op = "rocket_trap_effect", kind = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_PlayHideoutAlarm takes no operands: it loads the source red overlay,
+-- runs two alpha pulses and blocks until the siren stopped.
+function StoryHandlers.playHideoutAlarm(_)
+  return { op = "rocket_alarm" }
+end
+
+-- ScrCmd_UpdateMapPropAnimsFromFlag96B takes no operands and returns FALSE: the
+-- three powered props replay the record their own flags select in that tick.
+function StoryHandlers.updateMapPropAnimsFromFlag96B(_)
+  return { op = "rocket_power_props" }
+end
+
+-- ScrCmd_MapEventKeyAction reads its key slot through ScriptGetVar and its
+-- action as a raw byte; a nonzero action writes that slot's source magic value
+-- into its own world variable, zero clears it. The node keeps the slot under its
+-- own name: `key` is the compiler's node identity, never an operand.
+function StoryHandlers.mapEventKeyAction(ins)
+  local action = Operands.operandValue(ins.operands[2])
+  assert(isByte(action), "map event key action must be a source byte")
+  return { op = "map_event_key", slot = Operands.varRef(ins.operands[1]), action = action }
+end
+
+-- ScrCmd_RocketCostumeFlagCheck writes the Rocket costume flag into its output
+-- variable and returns FALSE.
+function StoryHandlers.rocketCostumeFlagCheck(ins)
+  return { op = "rocket_costume_check", flag = ROCKET_COSTUME_FLAG, result = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_RocketCostumeFlagAction reads one raw byte where nonzero sets the
+-- Rocket costume flag and zero clears it, and returns FALSE. The avatar stays
+-- untouched: the authored avatar commands own the outfit.
+function StoryHandlers.rocketCostumeFlagAction(ins)
+  local mode = Operands.operandValue(ins.operands[1])
+  assert(isByte(mode), "rocket costume selector must be a source byte")
+  return { op = "rocket_costume_action", flag = ROCKET_COSTUME_FLAG, mode = mode }
+end
+
+-- ScrCmd_SetFollowMonInhibitState reads one raw byte and writes the durable
+-- follower inhibit bit in the same tick.
+function StoryHandlers.setFollowMonInhibitState(ins)
+  local inhibited = Operands.operandValue(ins.operands[1])
+  assert(isByte(inhibited), "follow-mon inhibit selector must be a source byte")
+  return { op = "follower_set_inhibited", inhibited = inhibited }
 end
 
 return StoryHandlers

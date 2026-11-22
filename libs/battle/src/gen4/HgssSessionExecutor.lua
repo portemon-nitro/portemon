@@ -3644,10 +3644,26 @@ end
 -- can resurrect the decided result. Earned evolution eligibility rides
 -- along exactly as it does on faint-decided terminals, since earlier
 -- knockouts keep their rewards when the battle ends by flight or throw.
+-- The terminal record names the combatant that left, and the record
+-- carries its side semantically: the player side is the battle's own first side
+-- (every production scenario seats the player participant there), so the host
+-- learns which side left without a numeric HGSS outcome code. A broken roster
+-- link leaves the side unnamed rather than guessing one, and the host then
+-- refuses to project a native flight outcome.
 ---@param state table<string, unknown> live battle state under early terminal settlement
 ---@param outcome table<string, unknown> terminal marker for the early result
 local function endBattleEarly(state, outcome)
   state.status = "ended"
+  local fleeing = outcome.fleeCombatant
+  if fleeing ~= nil then
+    outcome.fleeCombatant = nil
+    local side = actorSide(state, fleeing --[[@as integer]])
+    if side == 1 then
+      outcome.fledSide = "player"
+    elseif side == 2 then
+      outcome.fledSide = "foe"
+    end
+  end
   state.outcome = outcome
   state.outcome.evolutionEligible = copyValue(state.evolutionEligible)
 end
@@ -5950,7 +5966,11 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         escapeSource = { kind = "item", key = payload.item },
       })
       fled.actionId = ordinal
-      endBattleEarly(state, { kind = "escaped", rounds = state.round })
+      endBattleEarly(state, {
+        kind = "escaped",
+        rounds = state.round,
+        fleeCombatant = actor.combatant,
+      })
       return
     end
     local holderState = (state.combatants --[[@as table<integer, table<string, unknown>>]])[
@@ -6050,7 +6070,11 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       payload.escapeSource = itemSource or runAwaySource
       local fled = context:emit("flee", cause, payload)
       fled.actionId = ordinal
-      endBattleEarly(state, { kind = "escaped", rounds = state.round })
+      endBattleEarly(state, {
+        kind = "escaped",
+        rounds = state.round,
+        fleeCombatant = actor.combatant,
+      })
       return
     end
     state.escapeAttempts = result.attempts
@@ -6243,7 +6267,11 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
           battleKind = battleKind,
         }, speciesFacts)
         if type(plan) == "table" and plan.kind == "flee" then
-          endBattleEarly(state, { kind = "escaped", rounds = state.round })
+          endBattleEarly(state, {
+            kind = "escaped",
+            rounds = state.round,
+            fleeCombatant = payload.target,
+          })
           return
         elseif type(plan) == "table" and plan.kind == "replace" then
           local outgoing = plan.target --[[@as integer]]
@@ -8223,7 +8251,11 @@ function HgssSessionExecutor:_commitReplacementEscape(state, obligations, runner
     frames[#frames] = nil
     state.pending = nil
     state.queue = {}
-    endBattleEarly(state, { kind = "escaped", rounds = state.round })
+    endBattleEarly(state, {
+      kind = "escaped",
+      rounds = state.round,
+      fleeCombatant = runnerId,
+    })
     return
   end
   state.escapeAttempts = result.attempts

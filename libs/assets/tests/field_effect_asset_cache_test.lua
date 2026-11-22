@@ -302,6 +302,10 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
     "pokemon_center_heal",
     "violet_gym_car",
     "azalea_gym_spinarak",
+    "rocket_trap_electric",
+    "rocket_trap_poison",
+    "rocket_trap_rock",
+    "rocket_alarm_overlay",
     "celebi_time_travel",
     "ho_oh_appearance",
     "lugia_appearance",
@@ -310,6 +314,7 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
       kind = (kind == "warp_entrance" or kind == "surf_attachment") and "model"
         or kind == "follower_transition" and "transition"
         or kind == "pokemon_center_heal" and "healing"
+        or kind == "rocket_alarm_overlay" and "overlay"
         or (kind == "celebi_time_travel" or kind == "ho_oh_appearance" or kind == "lugia_appearance") and "cinematic"
         or "animated_model",
       definition = kind,
@@ -442,8 +447,17 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
       if kind == "lugia_appearance" then
         return extra.lugiaDefinition or validLugiaDefinition()
       end
-      if kind == "violet_gym_car" or kind == "azalea_gym_spinarak" then
+      if kind == "violet_gym_car" or kind == "azalea_gym_spinarak" or kind:match("^rocket_trap_") then
         return validMechanismPropDefinition(kind)
+      end
+      if kind == "rocket_alarm_overlay" then
+        return {
+          overlay = {
+            texture = "assets/generated/field/effects/textures/0123456789abcdef.png",
+            width = 256,
+            height = 256,
+          },
+        }
       end
       if kind == "trainer_reveal" then
         if extra.unknownLifecycleMode then
@@ -853,6 +867,26 @@ local function surfCache(surfDefinition, mutateIndex)
         definition = "azalea_gym_spinarak",
         path = FieldEffectAssetCache.definitionPath("azalea_gym_spinarak"),
       },
+      rocket_trap_electric = {
+        kind = "animated_model",
+        definition = "rocket_trap_electric",
+        path = FieldEffectAssetCache.definitionPath("rocket_trap_electric"),
+      },
+      rocket_trap_poison = {
+        kind = "animated_model",
+        definition = "rocket_trap_poison",
+        path = FieldEffectAssetCache.definitionPath("rocket_trap_poison"),
+      },
+      rocket_trap_rock = {
+        kind = "animated_model",
+        definition = "rocket_trap_rock",
+        path = FieldEffectAssetCache.definitionPath("rocket_trap_rock"),
+      },
+      rocket_alarm_overlay = {
+        kind = "overlay",
+        definition = "rocket_alarm_overlay",
+        path = FieldEffectAssetCache.definitionPath("rocket_alarm_overlay"),
+      },
       celebi_time_travel = {
         kind = "cinematic",
         definition = "celebi_time_travel",
@@ -950,8 +984,17 @@ local function surfCache(surfDefinition, mutateIndex)
           fanfare = "SEQ_ME_ASA",
         }
       end
-      if kind == "violet_gym_car" or kind == "azalea_gym_spinarak" then
+      if kind == "violet_gym_car" or kind == "azalea_gym_spinarak" or kind:match("^rocket_trap_") then
         return validMechanismPropDefinition(kind)
+      end
+      if kind == "rocket_alarm_overlay" then
+        return {
+          overlay = {
+            texture = "assets/generated/field/effects/textures/0123456789abcdef.png",
+            width = 256,
+            height = 256,
+          },
+        }
       end
       if kind == "trainer_reveal" then
         return {

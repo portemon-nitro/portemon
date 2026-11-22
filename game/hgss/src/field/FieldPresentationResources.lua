@@ -31,6 +31,9 @@ local FieldStaticEffectRenderer = require("libs.hgss.src.presentation.FieldStati
 local FieldActorEmoteRenderer = require("libs.hgss.src.presentation.FieldActorEmoteRenderer")
 local FieldTerrainEffectRenderer = require("libs.hgss.src.presentation.FieldTerrainEffectRenderer")
 local StoryEffectRenderer = require("libs.hgss.src.presentation.StoryEffectRenderer")
+
+-- The hideout's three source trap kinds, in their own selector order.
+local ROCKET_TRAP_KINDS = { "rocket_trap_electric", "rocket_trap_poison", "rocket_trap_rock" }
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
@@ -97,6 +100,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field pokemonCenterHeal PokemonCenterHealFlow? active healing choreography
 ---@field pokemonCenterHealDefinition table<string, unknown>? generated healing-ball asset definition
 ---@field gymMechanism GymMechanism? the runtime mechanism whose presented source props this composition owns
+---@field rocketHideoutEffects RocketHideoutEffects? the runtime hideout effects whose presented trap this composition owns
 
 ---@class FieldPresentationResources
 ---@field cacheFs CacheFs generated asset filesystem
@@ -854,13 +858,31 @@ function FieldPresentationResources.new(runtime)
     if widePlatformDefinition ~= nil and narrowPlatformDefinition ~= nil then
       platformDefinitions = { wide = widePlatformDefinition, narrow = narrowPlatformDefinition }
     end
-    if carDefinition ~= nil and spiderDefinition ~= nil and runtime.gymMechanism ~= nil then
-      local mechanismRenderer = StoryEffectRenderer.new({
+    -- The Rocket hideout's own script-driven effects travel with the same
+    -- generated bundle: its three trap models and the alarm's prepared overlay.
+    local trapDefinitions = {}
+    for _, kind in ipairs(ROCKET_TRAP_KINDS) do
+      if fieldEffectAssets.effects[kind] ~= nil then
+        trapDefinitions[kind] = fieldEffectAssets.effects[kind]
+      end
+    end
+    local alarmOverlayDefinition = fieldEffectAssets.effects.rocket_alarm_overlay
+    local mechanismRenderer = nil
+    if
+      (carDefinition ~= nil and spiderDefinition ~= nil)
+      or next(trapDefinitions) ~= nil
+      or alarmOverlayDefinition ~= nil
+    then
+      mechanismRenderer = StoryEffectRenderer.new({
         car = carDefinition,
         spider = spiderDefinition,
         candle = candleDefinition,
         platform = platformDefinitions,
+        trap = next(trapDefinitions) ~= nil and trapDefinitions or nil,
+        overlay = alarmOverlayDefinition ~= nil and alarmOverlayDefinition.overlay or nil,
       }, entrancePool)
+    end
+    if mechanismRenderer ~= nil and runtime.gymMechanism ~= nil then
       self.gymMechanismRenderer = mechanismRenderer
       local function newMechanismCar()
         return mechanismRenderer:newCar()
@@ -882,6 +904,21 @@ function FieldPresentationResources.new(runtime)
         candle = candleDefinition ~= nil and newMechanismCandle or nil,
         platform = platformDefinitions ~= nil and newMechanismPlatform or nil,
       })
+    end
+    if mechanismRenderer ~= nil and runtime.rocketHideoutEffects ~= nil then
+      self.gymMechanismRenderer = self.gymMechanismRenderer or mechanismRenderer
+      local rocketRenderer = mechanismRenderer
+      local function newTrapModel(kind)
+        return rocketRenderer:newTrap(kind)
+      end
+      runtime.rocketHideoutEffects:setModelFactory(next(trapDefinitions) ~= nil and { trap = newTrapModel } or nil)
+      if alarmOverlayDefinition ~= nil then
+        -- The alarm's overlay is an already-prepared screen image: claiming it
+        -- only marks the pulse as presented.
+        runtime.rocketHideoutEffects:setOverlayFactory(function()
+          return rocketRenderer.overlay
+        end)
+      end
     end
     self.presenters = buildPresenters(self)
   end)

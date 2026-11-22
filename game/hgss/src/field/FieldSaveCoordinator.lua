@@ -130,6 +130,12 @@ function FieldSaveCoordinator:capture(allowMenu)
   if gymMechanism ~= nil and not gymMechanism:isStableForSave() then
     return nil, "Save deferred: a gym transport is active"
   end
+  -- A live Rocket hideout effect owns a presented model, the alarm overlay and
+  -- a source sound: it publishes no record until its own script released it.
+  local rocket = runtime.rocketHideoutEffects
+  if rocket ~= nil and not rocket:isStableForSave() then
+    return nil, "Save deferred: a Rocket hideout effect is active"
+  end
   if not canCapture(runtime.session, allowMenu == true) then
     return nil, "Save deferred: movement, transition, map entry, or modal state is active"
   end

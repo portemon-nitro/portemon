@@ -33,6 +33,7 @@ local FollowingMonState = require("libs.hgss.src.save.FollowingMonState")
 local GymMechanism = require("libs.hgss.src.field.GymMechanism")
 local GymMechanismGeometry = require("libs.hgss.src.field.GymMechanismGeometry")
 local GymMechanismState = require("libs.hgss.src.field.GymMechanismState")
+local RocketHideoutEffects = require("libs.hgss.src.field.RocketHideoutEffects")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local FieldPoison = require("libs.hgss.src.field.FieldPoison")
 local FieldPoisonEffect = require("libs.hgss.src.field.FieldPoisonEffect")
@@ -1694,6 +1695,52 @@ function FieldRuntime:_composeFieldServices(boot)
   -- The initial map's own union decides which runtime-loaded source props the
   -- mechanism presents, exactly like the source map init loading them.
   self.gymMechanism:bindMap(self.runtimeMap)
+  -- The Rocket hideout's own effects: the trap and alarm animations those
+  -- scripts block on, and the powered-prop projection its map init asks for.
+  -- The owner reads the live map, player and world store, so a warp never leaves
+  -- it with a stale anchor and its map event key writes land in the executing
+  -- script's own variable store. The script platform is composed after this
+  -- owner, so the world facade resolves it on each call instead of capturing it.
+  local function scriptsWorldState()
+    assert(self.scripts ~= nil, "the Rocket hideout effects need the script platform")
+    return assert(self.scripts.worldState, "the Rocket hideout effects need the world store")
+  end
+  -- The hideout owner calls its world facade with method syntax, so these
+  -- take the facade as their own discarded receiver.
+  local function isWorldFlagSet(_, id)
+    return scriptsWorldState():isFlagSet(id)
+  end
+  local function setWorldVariable(_, id, value)
+    return scriptsWorldState():setVar(id, value)
+  end
+  local rocketWorld = {
+    isFlagSet = isWorldFlagSet,
+    setVar = setWorldVariable,
+  }
+  local function currentRuntimeMap()
+    return self.session ~= nil and self.session.currentMap or self.runtimeMap
+  end
+  self.rocketHideoutEffects = RocketHideoutEffects.new({
+    playerOf = currentMechanismPlayer,
+    runtimeMapOf = currentRuntimeMap,
+    -- The effect owner plays every trap and alarm sound itself, so it needs the
+    -- source audio host the field composes or its recording script adapter.
+    audio = assert(
+      self.audio or (self.scriptHosts and self.scriptHosts.audio),
+      "the Rocket hideout effects need the source audio host"
+    ),
+    world = rocketWorld,
+    mapEventKeyVariableBase = assert(
+      FieldScriptSymbols.variablesByName.VAR_UNK_4036,
+      "the map event key variable identity is required"
+    ),
+    electrodeFlagBase = assert(
+      FieldScriptSymbols.flagsByName.FLAG_UNK_96B,
+      "the powered prop flag identity is required"
+    ),
+    foregroundScript = currentForegroundScriptId,
+  })
+  self.rocketHideoutEffects:bindMap()
   self.starterBalls = composeStarterBalls(self)
   self.partySelection = buildPartySelectionHost(self, boot.cacheFs)
   self:_composePartyMenu(boot.cacheFs)
@@ -2289,6 +2336,9 @@ function FieldRuntime:update(dt)
     if self.gymMechanism then
       self.gymMechanism:updatePresentation()
       self.gymMechanism:updateFixed()
+    end
+    if self.rocketHideoutEffects then
+      self.rocketHideoutEffects:updatePresentation()
     end
     self:_processApricornDate()
     -- The transient banner advances one fixed tick before the session so a
@@ -3851,7 +3901,7 @@ function FieldRuntime:_buildBattleScenarioFragment(request)
     -- encounter. Prepared encounters already carry full records and skip
     -- this; without the composed catalogs the descriptor rides through
     -- untouched and fails loudly only if it ever settles, as before.
-    if type(payload.species) == "string" then
+    if type(payload.species) == "string" or type(payload.species) == "number" then
       local grown = self:_materializeDescriptorFoe(payload --[[@as table<string, unknown>]])
       if grown ~= nil then
         local staged = {}
@@ -3940,8 +3990,11 @@ end
 
 -- Materializes one bare species/level foe into a full mon record through
 -- the existing wild factory, drawing identity on the world stream exactly
--- like a scripted static encounter. Nil unless every composed catalog and
--- the world generator are present; production always carries them.
+-- like a scripted static encounter. The authored species rides either as its
+-- catalog key or as the source's own native species number (ScriptGetVar reads
+-- a literal species id), which the mon catalog maps to that key. Nil unless
+-- every composed catalog and the world generator are present; production always
+-- carries them.
 ---@param payload table<string, unknown> wild launch payload naming its species and level
 ---@return table<string, unknown>? full foe record, nil when uncomposable
 function FieldRuntime:_materializeDescriptorFoe(payload)
@@ -3952,6 +4005,16 @@ function FieldRuntime:_materializeDescriptorFoe(payload)
     return nil
   end
   if type(payload.level) ~= "number" then
+    return nil
+  end
+  local species = payload.species
+  if type(species) == "number" then
+    species = catalog:speciesKeyByNativeId(species)
+    if type(species) ~= "string" then
+      return nil
+    end
+  end
+  if type(species) ~= "string" then
     return nil
   end
   local scripts = self.scripts
@@ -3983,7 +4046,7 @@ function FieldRuntime:_materializeDescriptorFoe(payload)
     return nil
   end
   local met = self:_wildMetContext()
-  return factory:createStatic(payload.species --[[@as string]], payload.level --[[@as integer]], stream, {
+  return factory:createStatic(species, payload.level --[[@as integer]], stream, {
     profile = profile,
     ball = "POKE_BALL",
     location = met.location,
@@ -4109,7 +4172,7 @@ end
 ---@param launch table<string, unknown>? the active field launch, when present
 ---@param battle table<string, unknown> the matching live battle
 ---@param status table<string, unknown> terminal battle status
----@return { result: string, sourceResult: integer, receipt: table<string, unknown>, successful: boolean }
+---@return { result: string, sourceResult: integer, nativeOutcome: integer, receipt: table<string, unknown>, successful: boolean }
 function FieldRuntime:acceptCommittedBattleStatus(launch, battle, status)
   assert(self.battleCoordinator:activeBattle() == battle, "only the owned battle can settle its field launch")
   assert(status.phase == "complete", "only a complete battle can be accepted")
@@ -4117,14 +4180,17 @@ function FieldRuntime:acceptCommittedBattleStatus(launch, battle, status)
   assert(type(receipt) == "table" and receipt.committed == true, "battle completed without a committed outcome receipt")
   local result = assert(status.result, "committed battle status requires its result")
   local sourceResult = assert(status.sourceResult, "committed battle status requires its source result")
+  local nativeOutcome = assert(status.nativeOutcome, "committed battle status requires its native outcome code")
   if launch ~= nil then
     launch.result = result
     launch.sourceResult = sourceResult
+    launch.nativeOutcome = nativeOutcome
     self.battleCoordinator:adoptCommittedPlayerMoney(launch, receipt)
   end
   return {
     result = result,
     sourceResult = sourceResult,
+    nativeOutcome = nativeOutcome,
     receipt = receipt,
     successful = result ~= "loss" and result ~= "draw",
   }
@@ -5697,6 +5763,10 @@ function FieldRuntime:_releaseAll()
     self.residency:dispose()
   end
   self.residency = nil
+  if self.rocketHideoutEffects then
+    self.rocketHideoutEffects:unbind()
+  end
+  self.rocketHideoutEffects = nil
   if self.gymMechanism then
     self.gymMechanism:unbind()
   end

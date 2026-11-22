@@ -384,6 +384,9 @@ function T.host_status_waits_for_the_native_lifecycle_boundary_by_outcome()
   local successful = { "win", "capture", "flee" }
   local absentOutcomes = { "loss", "draw" }
 
+  -- The source's own numeric outcome word the settled generic word projects to.
+  local nativeOutcomes = { win = 1, loss = 2, draw = 3, capture = 4, flee = 5 }
+
   local function runtimeFor(result)
     local phase = "absent"
     local overworld = {
@@ -409,6 +412,7 @@ function T.host_status_waits_for_the_native_lifecycle_boundary_by_outcome()
           phase = "complete",
           result = result,
           sourceResult = 1,
+          nativeOutcome = nativeOutcomes[result],
           outcomeReceipt = { committed = true },
         }
       end,
