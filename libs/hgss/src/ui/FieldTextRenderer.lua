@@ -569,6 +569,41 @@ function FieldTextRenderer:drawText(text, x, y)
   end
 end
 
+-- Draws one plain text string through a baked colour band of the atlas: the
+-- same glyph fallback and advances as drawText, but glyphs sample the band
+-- the source colour pair names (band n is foreground slot 2n+1 and shadow
+-- slot 2n+2 of the font palette).
+
+---@param text string
+---@param x number
+---@param y number
+---@param colorIndex integer
+function FieldTextRenderer:drawTextWithColorVariant(text, x, y, colorIndex)
+  assert(
+    type(colorIndex) == "number" and colorIndex % 1 == 0 and colorIndex >= 0,
+    "color variants are non-negative integer bands"
+  )
+  local lg = assert(self._graphics)
+  local atlas = assert(self._atlas)
+  local def = self.fontDef
+  local lease = self._atlasLease
+  lg.setColor(1, 1, 1, 1)
+  for char in Utf8Glyphs.iter(text) do
+    local code = def.charmap[char]
+    if not code then
+      code = 0
+    end
+    local glyph = def.glyphs[code] or def.glyphs[0]
+    local quad = self:_quad(colorIndex, code)
+    if lease ~= nil then
+      ImageSampling.draw(lg, lease, quad, x, y)
+    else
+      lg.draw(atlas, quad, x, y)
+    end
+    x = x + glyph.advance + (def.letterSpacing or 0)
+  end
+end
+
 -- Draws a plain UTF-8 string through the semantic mask atlas and caller
 -- palette, using the same glyph fallback and advances as drawText.
 ---@param text string

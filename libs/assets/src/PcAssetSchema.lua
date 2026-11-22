@@ -111,6 +111,53 @@ local function checkColor(color, label)
   end
 end
 
+local function checkWallpaperSwatchArt(art)
+  exactKeys(art, { variants = true, locked = true }, "storage.wallpaperSwatchArt")
+  for logicalId = 0, 23 do
+    checkVisual(art.variants[logicalId], "storage.wallpaperSwatchArt.variants[" .. logicalId .. "]")
+    if art.variants[logicalId].width ~= 24 or art.variants[logicalId].height ~= 24 then
+      fail("storage.wallpaperSwatchArt.variants[" .. logicalId .. "] must be 24x24")
+    end
+  end
+  checkVisual(art.locked, "storage.wallpaperSwatchArt.locked")
+  if art.locked.width ~= 24 or art.locked.height ~= 24 then
+    fail("storage.wallpaperSwatchArt.locked must be 24x24")
+  end
+end
+
+local function checkBoxThumbnail(thumbnail)
+  exactKeys(
+    thumbnail,
+    { variants = true, locked = true, dots = true, dotOrigin = true, dotStep = true },
+    "storage.boxThumbnail"
+  )
+  for logicalId = 0, 23 do
+    checkVisual(thumbnail.variants[logicalId], "storage.boxThumbnail.variants[" .. logicalId .. "]")
+    if thumbnail.variants[logicalId].width ~= 32 or thumbnail.variants[logicalId].height ~= 32 then
+      fail("storage.boxThumbnail.variants[" .. logicalId .. "] must be 32x32")
+    end
+  end
+  checkVisual(thumbnail.locked, "storage.boxThumbnail.locked")
+  if thumbnail.locked.width ~= 32 or thumbnail.locked.height ~= 32 then
+    fail("storage.boxThumbnail.locked must be 32x32")
+  end
+  for color = 0, 9 do
+    checkColor(thumbnail.dots[color], "storage.boxThumbnail.dots[" .. color .. "]")
+  end
+  exactKeys(thumbnail.dotOrigin, { x = true, y = true }, "storage.boxThumbnail.dotOrigin")
+  if
+    type(thumbnail.dotOrigin.x) ~= "number"
+    or thumbnail.dotOrigin.x % 1 ~= 0
+    or type(thumbnail.dotOrigin.y) ~= "number"
+    or thumbnail.dotOrigin.y % 1 ~= 0
+  then
+    fail("storage.boxThumbnail.dotOrigin must carry integer coordinates")
+  end
+  if type(thumbnail.dotStep) ~= "number" or thumbnail.dotStep % 1 ~= 0 or thumbnail.dotStep <= 0 then
+    fail("storage.boxThumbnail.dotStep must be a positive integer")
+  end
+end
+
 local function checkWallpaperSwatches(swatches)
   exactKeys(swatches, { colors = true, locked = true }, "storage.wallpaperSwatches")
   for logicalId = 0, 23 do
@@ -362,6 +409,8 @@ function PcAssetSchema.assertManifest(manifest)
     backgrounds = true,
     wallpapers = true,
     wallpaperSwatches = true,
+    wallpaperSwatchArt = true,
+    boxThumbnail = true,
     ui = true,
     boxNames = true,
     expansionNameFormat = true,
@@ -373,27 +422,103 @@ function PcAssetSchema.assertManifest(manifest)
     boxPane = true,
     infoPane = true,
     partyTray = true,
+    partyTrayMove = true,
     markingPanel = true,
+    plates = true,
+    panelMarkings = true,
     wallpaperBar = true,
+    movesPanel = true,
+    itemPanel = true,
+    boxTray = true,
+    depositBoxTray = true,
+    itemPanelFill = true,
     arrows = true,
     cursors = true,
+    tray = true,
+    infoGlyphs = true,
+    yesNo = true,
     windowFrames = true,
     markings = true,
   }, "storage.ui")
   checkWallpaperSwatches(storage.wallpaperSwatches)
+  checkWallpaperSwatchArt(storage.wallpaperSwatchArt)
+  checkBoxThumbnail(storage.boxThumbnail)
   exactKeys(storage.ui.arrows, { left = true, right = true }, "storage.ui.arrows")
   checkVisual(storage.ui.arrows.left, "storage.ui.arrows.left")
   checkVisual(storage.ui.arrows.right, "storage.ui.arrows.right")
   exactKeys(storage.ui.cursors, { browse = true, menu = true, carry = true }, "storage.ui.cursors")
   for _, pose in ipairs({ "browse", "menu", "carry" }) do
-    checkVisual(storage.ui.cursors[pose], "storage.ui.cursors." .. pose)
+    local label = "storage.ui.cursors." .. pose
+    local sequence = storage.ui.cursors[pose]
+    exactKeys(sequence, { frames = true, loop = true }, label)
+    if type(sequence.frames) ~= "table" or #sequence.frames == 0 then
+      fail(label .. ".frames must contain rendered frames")
+    end
+    if type(sequence.loop) ~= "boolean" then
+      fail(label .. ".loop must be a boolean")
+    end
+    for index, frame in ipairs(sequence.frames) do
+      checkRenderedFrame(frame, label .. ".frames[" .. index .. "]", true)
+    end
+  end
+  exactKeys(
+    storage.ui.tray,
+    { prev = true, next = true, marker = true, cursor = true, wallpaperCursor = true, label = true },
+    "storage.ui.tray"
+  )
+  for _, role in ipairs({ "prev", "next", "marker", "cursor", "wallpaperCursor", "label" }) do
+    checkVisual(storage.ui.tray[role], "storage.ui.tray." .. role)
+  end
+  exactKeys(storage.ui.infoGlyphs, { lv = true, no = true }, "storage.ui.infoGlyphs")
+  for _, role in ipairs({ "lv", "no" }) do
+    local label = "storage.ui.infoGlyphs." .. role
+    checkVisual(storage.ui.infoGlyphs[role], label)
+    if storage.ui.infoGlyphs[role].width ~= 16 or storage.ui.infoGlyphs[role].height ~= 8 then
+      fail(label .. " must be the 16x8 source bitmap")
+    end
+  end
+  exactKeys(
+    storage.ui.yesNo,
+    { yesNormal = true, yesSelected = true, noNormal = true, noSelected = true },
+    "storage.ui.yesNo"
+  )
+  for _, key in ipairs({ "yesNormal", "yesSelected", "noNormal", "noSelected" }) do
+    local label = "storage.ui.yesNo." .. key
+    checkVisual(storage.ui.yesNo[key], label)
+    if storage.ui.yesNo[key].width ~= 48 or storage.ui.yesNo[key].height ~= 32 then
+      fail(label .. " must be the compact 48x32 button surface")
+    end
   end
   checkVisual(storage.ui.wallpaperBar, "storage.ui.wallpaperBar")
   checkVisual(storage.ui.boxPane, "storage.ui.boxPane")
   checkVisual(storage.ui.infoPane, "storage.ui.infoPane")
   checkVisual(storage.ui.partyTray, "storage.ui.partyTray")
+  checkVisual(storage.ui.partyTrayMove, "storage.ui.partyTrayMove")
   checkVisual(storage.ui.markingPanel, "storage.ui.markingPanel")
-  exactKeys(storage.ui.windowFrames, { standard = true, accent = true }, "storage.ui.windowFrames")
+  checkVisual(storage.ui.movesPanel, "storage.ui.movesPanel")
+  checkVisual(storage.ui.itemPanel, "storage.ui.itemPanel")
+  checkVisual(storage.ui.boxTray, "storage.ui.boxTray")
+  checkVisual(storage.ui.depositBoxTray, "storage.ui.depositBoxTray")
+  checkColor(storage.ui.itemPanelFill, "storage.ui.itemPanelFill")
+  if storage.ui.movesPanel.width ~= 96 or storage.ui.movesPanel.height ~= 80 then
+    fail("storage.ui.movesPanel must be the 96x80 Move info panel")
+  end
+  if storage.ui.itemPanel.width ~= 256 or storage.ui.itemPanel.height ~= 72 then
+    fail("storage.ui.itemPanel must be the 256x72 Item info panel")
+  end
+  if storage.ui.boxTray.width ~= 256 or storage.ui.boxTray.height ~= 48 then
+    fail("storage.ui.boxTray must be the 256x48 box tray strip")
+  end
+  if storage.ui.depositBoxTray.width ~= 256 or storage.ui.depositBoxTray.height ~= 56 then
+    fail("storage.ui.depositBoxTray must be the 256x56 Depot selector strip")
+  end
+  exactKeys(
+    storage.ui.windowFrames,
+    { standard = true, accent = true, fill = true, accentFill = true },
+    "storage.ui.windowFrames"
+  )
+  checkColor(storage.ui.windowFrames.fill, "storage.ui.windowFrames.fill")
+  checkColor(storage.ui.windowFrames.accentFill, "storage.ui.windowFrames.accentFill")
   for _, style in ipairs({ "standard", "accent" }) do
     local banks = storage.ui.windowFrames[style]
     exactKeys(banks, { paletteBank0 = true, paletteBank1 = true }, "storage.ui.windowFrames." .. style)
@@ -405,11 +530,34 @@ function PcAssetSchema.assertManifest(manifest)
       end
     end
   end
+  exactKeys(storage.ui.plates, { tab = true, summary = true }, "storage.ui.plates")
+  for _, role in ipairs({ "tab", "summary" }) do
+    exactKeys(storage.ui.plates[role], { left = true, middle = true, right = true }, "storage.ui.plates." .. role)
+    for _, part in ipairs({ "left", "middle", "right" }) do
+      local visual = storage.ui.plates[role][part]
+      checkVisual(visual, "storage.ui.plates." .. role .. "." .. part)
+      if visual.width ~= 8 or visual.height ~= 24 then
+        fail("storage.ui.plates." .. role .. "." .. part .. " must preserve one 8x24 plate column")
+      end
+    end
+  end
   local markingBits = {}
   for bit = 0, 5 do
     markingBits[bit] = true
   end
   exactKeys(storage.ui.markings, markingBits, "storage.ui.markings")
+  exactKeys(storage.ui.panelMarkings, markingBits, "storage.ui.panelMarkings")
+  for bit = 0, 5 do
+    local pair = storage.ui.panelMarkings[bit]
+    exactKeys(pair, { clear = true, set = true }, "storage.ui.panelMarkings." .. bit)
+    for _, state in ipairs({ "clear", "set" }) do
+      local visual = pair[state]
+      checkVisual(visual, "storage.ui.panelMarkings." .. bit .. "." .. state)
+      if visual.width ~= 8 or visual.height ~= 8 then
+        fail("storage.ui.panelMarkings." .. bit .. "." .. state .. " must preserve one source tile")
+      end
+    end
+  end
   for bit = 0, 5 do
     local pair = storage.ui.markings[bit]
     exactKeys(pair, { clear = true, set = true }, "storage.ui.markings." .. bit)

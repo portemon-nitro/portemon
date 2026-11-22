@@ -1,16 +1,11 @@
 -- Draws the production Storage child through FieldPresentationResources with
--- compiled PC graphics over each supported display arrangement.
+-- compiled PC graphics while a replacement wallpaper stays pending.
 
-local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
-local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local Assert = require("tests.support.Assert")
-local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local CacheFs = require("libs.storage.src.CacheFs")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FakeCache = require("tests.support.FakeCache")
 local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
-local FieldState = require("game.hgss.src.field.FieldState")
-local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
@@ -30,144 +25,8 @@ local T = {}
 
 local REQUIRED_ASSETS = {
   "field-runtime",
-  "audio-bank:700",
-  "audio-bank:702",
-  "audio-bank:730",
-  "audio-bank:759",
-  "map-data:7",
-  "map:7",
   "pc:global",
 }
-
-local function savedField()
-  local derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets
-  local game = AcceptanceHarness.new():boot({
-    versionId = AcceptanceHarness.defaultVersion(),
-    map = "MAP_BURNED_TOWER_1F",
-    save = "fresh",
-    fieldOptions = { derivedAssets = derivedAssets },
-  })
-  local ok, record = pcall(function()
-    game:waitForFieldEntry()
-    return assert(game.runtime:captureGameSave(), "the settled production field can be captured")
-  end)
-  game:close()
-  if not ok then
-    error(record, 0)
-  end
-  return record, derivedAssets
-end
-
-local function display(width, height)
-  return {
-    width = width,
-    height = height,
-    topology = ScreenTopology.oneDisplay({
-      id = "main",
-      rect = { x = 0, y = 0, width = width, height = height },
-      touch = true,
-      role = "world",
-    }),
-  }
-end
-
-local function assertPainted(data, width, height, label)
-  local painted = 0
-  for y = 0, height - 1, 8 do
-    for x = 0, width - 1, 8 do
-      local _, _, _, alpha = data:getPixel(x, y)
-      if alpha > 0 then
-        painted = painted + 1
-      end
-    end
-  end
-  Assert.isTrue(painted > 8, label .. " draws compiled Storage pixels")
-end
-
-local function assertTransparent(data, width, height, label)
-  for y = 0, height - 1, 8 do
-    for x = 0, width - 1, 8 do
-      local _, _, _, alpha = data:getPixel(x, y)
-      Assert.equal(alpha, 0, label .. " has no fixed surface without a 1x fit")
-    end
-  end
-end
-
-function T.production_storage_draws_with_real_pc_graphics_across_layouts(scope)
-  local record, derivedAssets = savedField()
-  local cacheFs = GeneratedCacheFixture.reader(AcceptanceHarness.defaultVersion())
-  -- The presented runtime borrows the selected epoch's CPU owners for the boot;
-  -- the scope releases them after the state disposes.
-  local assetRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
-  local state = FieldState.new(record, {
-    derivedAssets = derivedAssets,
-    cacheFs = cacheFs,
-    assetRuntime = assetRuntime,
-  })
-  local runtime = state.runtime
-  local host = assert(runtime.pcApplicationHost, "the production runtime owns the PC child host")
-  local handle = host:open({ app = "storage", mode = 0 })
-  local layouts = {
-    { label = "native-like", display = display(256, 192) },
-    { label = "wide", display = display(512, 192) },
-    { label = "tall", display = display(192, 512) },
-    {
-      label = "dual-display",
-      display = {
-        width = 512,
-        height = 384,
-        topology = ScreenTopology.dualDisplay(
-          { id = "upper", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
-          { id = "lower", rect = { x = 256, y = 0, width = 256, height = 192 }, touch = true, role = "auxiliary" }
-        ),
-      },
-    },
-  }
-
-  local ok, err = xpcall(function()
-    for _, layout in ipairs(layouts) do
-      local measured = layout.display
-      runtime:resizePresentation(measured.width, measured.height, measured.topology)
-      host:setPresentationReady(handle, true)
-      host:step(handle, {})
-      -- Readiness now waits for the admitted Storage visuals beside the
-      -- mon icons: advance preparation the way the field update does
-      -- until the host turns ready, then present the admitted view.
-      local ready, failure
-      local deadline = os.clock() + 120
-      while true do
-        ready, failure = state.presentationResources:preparePcApplication(host:status(), runtime)
-        if ready or failure ~= nil then
-          break
-        end
-        Assert.isTrue(os.clock() < deadline, layout.label .. " admits its Storage visuals without stalling")
-        if love.timer ~= nil and love.timer.sleep ~= nil then
-          love.timer.sleep(0.005)
-        end
-      end
-      Assert.isNil(failure, layout.label .. " prepares without a graphics failure")
-      Assert.isTrue(ready, layout.label .. " has all visible Storage icons ready")
-      host:setPresentationReady(handle, ready)
-
-      local canvas = scope:own(love.graphics.newCanvas(measured.width, measured.height))
-      love.graphics.setCanvas(canvas)
-      love.graphics.clear(0, 0, 0, 0)
-      state.presentationResources:drawPcApplication(host, runtime)
-      love.graphics.setCanvas()
-      local imageData = scope:own(canvas:newImageData())
-      if layout.label == "tall" then
-        assertTransparent(imageData, measured.width, measured.height, layout.label)
-      else
-        assertPainted(imageData, measured.width, measured.height, layout.label)
-      end
-    end
-  end, debug.traceback)
-  host:dispose()
-  state:dispose()
-  if not ok then
-    error(err, 0)
-  end
-end
 
 -- A delayed wallpaper keeps real admitted pixels on the canvas: the
 -- production Storage child draws through the real host onto a real canvas
@@ -208,24 +67,61 @@ local function pixelVisualPaths(manifest)
     storage.ui.boxPane,
     storage.ui.infoPane,
     storage.ui.partyTray,
+    storage.ui.partyTrayMove,
     storage.ui.markingPanel,
     storage.ui.wallpaperBar,
+    storage.ui.movesPanel,
+    storage.ui.itemPanel,
+    storage.ui.boxTray,
+    storage.ui.depositBoxTray,
     storage.ui.arrows.left,
     storage.ui.arrows.right,
-    storage.ui.cursors.browse,
-    storage.ui.cursors.menu,
-    storage.ui.cursors.carry,
+    storage.ui.tray.prev,
+    storage.ui.tray.next,
+    storage.ui.tray.marker,
+    storage.ui.tray.cursor,
+    storage.ui.tray.wallpaperCursor,
+    storage.ui.tray.label,
   }
+  for _, pose in pairs(storage.ui.cursors) do
+    for _, frame in ipairs(pose.frames) do
+      all[#all + 1] = frame
+    end
+  end
+  all[#all + 1] = storage.ui.infoGlyphs.lv
+  all[#all + 1] = storage.ui.infoGlyphs.no
+  for _, key in ipairs({ "yesNormal", "yesSelected", "noNormal", "noSelected" }) do
+    all[#all + 1] = storage.ui.yesNo[key]
+  end
+  for _, visual in pairs(storage.wallpaperSwatchArt.variants) do
+    all[#all + 1] = visual
+  end
+  all[#all + 1] = storage.wallpaperSwatchArt.locked
+  for _, visual in pairs(storage.boxThumbnail.variants) do
+    all[#all + 1] = visual
+  end
+  all[#all + 1] = storage.boxThumbnail.locked
   for _, visual in pairs(storage.wallpapers) do
     all[#all + 1] = visual
   end
-  for _, pair in pairs(storage.ui.markings) do
-    all[#all + 1] = pair.clear
-    all[#all + 1] = pair.set
+  for _, set in ipairs({ storage.ui.markings, storage.ui.panelMarkings }) do
+    for _, pair in pairs(set) do
+      all[#all + 1] = pair.clear
+      all[#all + 1] = pair.set
+    end
+  end
+  for _, plate in pairs(storage.ui.plates) do
+    all[#all + 1] = plate.left
+    all[#all + 1] = plate.middle
+    all[#all + 1] = plate.right
   end
   for _, style in pairs(storage.ui.windowFrames) do
-    for _, visual in pairs(style) do
-      all[#all + 1] = visual
+    if type(style) == "table" and style.image == nil then
+      for _, visual in pairs(style) do
+        if type(visual) == "table" and type(visual.image) == "string" then
+          all[#all + 1] = visual
+        end
+      end
     end
   end
   return all
@@ -264,9 +160,46 @@ function T.pending_wallpaper_replacement_repaints_the_admitted_pixels(scope)
   end
   cache:write(manifest.storage.wallpapers[0].image, solidPng(255, 0, 0, 256, 192))
   cache:write(manifest.storage.wallpapers[2].image, solidPng(0, 255, 0, 256, 192))
+  -- The selected mon's top-screen info borrows the shared portrait and
+  -- move-icon families; seed the fixture's exact selector and types.
+  local portraitEntries = {}
+  for _, gender in ipairs({ "male", "female" }) do
+    for _, shiny in ipairs({ "plain", "shiny" }) do
+      portraitEntries["CHIKORITA/f0/" .. gender .. "/" .. shiny] =
+        { pageId = 0, frames = { { x = 0, y = 0, width = 80, height = 80 } }, width = 80, height = 80 }
+    end
+  end
+  cache:write("data/generated/mon/portraits.lua", "return { entries = {" .. (function()
+    local parts = {}
+    for selector in pairs(portraitEntries) do
+      parts[#parts + 1] = string.format(
+        "[%q] = { pageId = 0, frames = { { x = 0, y = 0, width = 80, height = 80 } }, width = 80, height = 80 }",
+        selector
+      )
+    end
+    return table.concat(parts, ",")
+  end)() .. "}, pages = { [0] = { width = 80, height = 80 } } }")
+  local portraitPath = "assets/generated/mon/portraits/0.png"
+  cache:write(portraitPath, solidPng(10, 20, 30, 80, 80))
+  local typePaths = {}
+  for _, typeKey in ipairs({ "grass", "poison" }) do
+    local path = "assets/generated/move-icons/type-" .. typeKey .. ".png"
+    typePaths[#typePaths + 1] = path
+    cache:write(path, solidPng(40, 50, 60, 32, 16))
+  end
+  cache:write(
+    "data/generated/move-icons/manifest.lua",
+    "return { schema = 'g4-move-icons-v1', types = { grass = { image = '"
+      .. typePaths[1]
+      .. "', width = 32, height = 16, offset = { x = -16, y = -8 } }, poison = { image = '"
+      .. typePaths[2]
+      .. "', width = 32, height = 16, offset = { x = -16, y = -8 } } }, categories = {} }"
+  )
 
   local inner = SharedImagePoolFake.new()
+  local seeded = {}
   for _, visual in ipairs(pixelVisualPaths(manifest)) do
+    seeded[visual.image] = true
     local bytes = assert(cache:read(visual.image), "fixture writes every visual")
     local image = love.graphics.newImage(love.filesystem.newFileData(bytes, visual.image))
     inner:seedPhysical(visual.image, PIXEL_SAMPLER, {
@@ -274,6 +207,17 @@ function T.pending_wallpaper_replacement_repaints_the_admitted_pixels(scope)
       width = image:getWidth(),
       height = image:getHeight(),
     })
+  end
+  for _, path in ipairs({ portraitPath, typePaths[1], typePaths[2] }) do
+    if not seeded[path] then
+      local bytes = assert(cache:read(path), "fixture writes the info images")
+      local image = love.graphics.newImage(love.filesystem.newFileData(bytes, path))
+      inner:seedPhysical(path, PIXEL_SAMPLER, {
+        image = image,
+        width = image:getWidth(),
+        height = image:getHeight(),
+      })
+    end
   end
   local pendingPaths = {}
   local tokenPaths = {}

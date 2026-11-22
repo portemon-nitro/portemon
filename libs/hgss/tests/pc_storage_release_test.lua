@@ -1,5 +1,6 @@
--- Release eligibility follows the first protected move in stored move
--- order, scans expanded box addresses, and revalidates before publication.
+-- Release eligibility requires every release-check move the mon knows to be
+-- known by another mon, scans expanded box addresses, and revalidates before
+-- publication.
 
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -66,19 +67,24 @@ local function release(actions, slot)
   return actions:preview({ kind = "release", source = { kind = "party", slot = slot } })
 end
 
-function T.first_protected_move_selects_the_release_return_guard()
+function T.every_release_check_move_needs_another_user()
   local mons, bag = services()
   mons:setMove(0, 0, "SURF")
   mons:setMove(0, 1, "FLY")
   mons:setMove(1, 0, "SURF")
   local actions = PcStorageActions.new({ mons = mons, bag = bag })
-  Assert.equal(release(actions, 0).kind, "confirm", "another Surf user clears the first matching move")
+  -- Surf is duplicated but Fly is not: one flag bit remains, so the mon comes back.
+  Assert.equal(release(actions, 0).kind, "refused", "an uncovered Fly still brings the mon back")
+
+  mons:setMove(1, 1, "FLY")
+  Assert.equal(release(actions, 0).kind, "confirm", "another Fly user clears the last flag bit")
 
   mons:setMove(0, 1, "TACKLE")
   mons:setMove(0, 0, "FLY")
   mons:setMove(0, 1, "SURF")
-  local reversed = release(actions, 0)
-  Assert.equal(reversed.kind, "refused", "move order makes Fly the sole first-match return guard")
+  mons:setMove(1, 0, "SURF")
+  mons:setMove(1, 1, "TACKLE")
+  Assert.equal(release(actions, 0).kind, "refused", "stored move order never changes the guard")
 
   mons:setMove(0, 0, "CUT")
   mons:deleteMove(0, 1)

@@ -20,6 +20,7 @@ local Party = require("libs.mons.src.Party")
 local PcStorageState = require("game.hgss.src.pc.StorageScreenState")
 local PcPresentationFixture = require("tests.support.PcPresentationFixture")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+local PcStorageGeometry = require("libs.hgss.src.ui.PcStorageGeometry")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
@@ -83,7 +84,10 @@ local function setActiveBox(mons, box)
   change.publish()
 end
 
-local function releaseService()
+-- `coverage` picks the alternative holder's release-check set: "both" covers
+-- Surf and Fly (so the selected mon may leave), "surf" leaves Fly uncovered
+-- (so the mon comes back).
+local function releaseService(coverage)
   local root = CatalogFixture.buildAssetRoot()
   for _, entry in ipairs({ { "SURF", 57 }, { "FLY", 19 } }) do
     local move = {}
@@ -116,6 +120,9 @@ local function releaseService()
   mons:setMove(0, 1, "FLY")
   local alternative = mons:partyMon(1)
   alternative.moves[1] = { move = "SURF", pp = catalog:move("SURF").basePp, ppUps = 0 }
+  if coverage ~= "surf" then
+    alternative.moves[2] = { move = "FLY", pp = catalog:move("FLY").basePp, ppUps = 0 }
+  end
   local boxed = assert(mons:preparePcChanges({
     partyRevision = mons:partyRevision(),
     boxRevision = mons:boxRevision(),
@@ -153,22 +160,56 @@ local function heldItemPicker(item)
   end
 end
 
-local function finishReleaseScan(state)
-  state:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
-  Assert.equal(state:status().releaseCheck.outcome, "confirm")
+-- The source release prompt opens on NO; the player moves the highlight to
+-- YES and confirms it to start the release scan.
+local function confirmReleaseYes(state)
+  state:updateFixed({ { type = "navigate", direction = "up" } })
   state:updateFixed({ { type = "confirm" } })
+end
+
+-- Acknowledges the release's two message lines (released/bye-bye, or
+-- came-back/worried) with the input the source waits for. The first input
+-- only advances the pair; the second (for a removal) finally deletes the mon.
+local function acknowledgeReleaseMessages(state)
+  local check = state:status().releaseCheck
+  while
+    check ~= nil
+    and (check.outcome == "released" or (check.outcome == "returned" and not check.acknowledged))
+  do
+    state:updateFixed({ { type = "navigate", direction = "up" } })
+    check = state:status().releaseCheck
+  end
+  return check
+end
+
+-- Confirms the armed release and ticks the concurrent shrink/scan to its
+-- terminal phase, without acknowledging the messages that follow.
+local function settleReleaseScan(state)
+  confirmReleaseYes(state)
   local check = state:status().releaseCheck
   local ticks = 1
-  local maximumTicks = math.ceil(check.total / 15)
+  local scanTicks = math.ceil(check.total / 15)
+  local limit = scanTicks + PcStorageGeometry.RELEASE_GROW_TICKS
   while check.outcome == "pending" do
-    Assert.isTrue(ticks < maximumTicks, "scan completes within the source candidate count")
+    Assert.isTrue(ticks <= limit, "the concurrent shrink/scan finishes within its budget")
     state:updateFixed({})
     ticks = ticks + 1
     check = state:status().releaseCheck
   end
-  Assert.equal(ticks, maximumTicks, "the source scan visits fifteen addresses on each fixed tick")
   Assert.equal(check.scanned, check.total, "the fixed-tick scan covers every candidate address")
-  return check
+  if check.outcome == "returned" then
+    Assert.equal(ticks, scanTicks + PcStorageGeometry.RELEASE_GROW_TICKS, "a came-back mon grows back after the scan")
+  else
+    Assert.equal(ticks, scanTicks, "the source scan visits fifteen addresses on each fixed tick")
+  end
+  return check, ticks, scanTicks
+end
+
+local function finishReleaseScan(state)
+  state:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
+  Assert.equal(state:status().releaseCheck.outcome, "confirm")
+  local check = settleReleaseScan(state)
+  return acknowledgeReleaseMessages(state) or check
 end
 
 local function measurement(configuration)
@@ -270,7 +311,9 @@ function T.deposit_and_withdraw_run_through_the_mode_menus()
   Assert.equal(withdraw:status().menu.actions[1], "withdraw")
   withdraw:updateFixed({ { type = "confirm" } })
   Assert.notNil(withdraw:status().carry)
+  Assert.equal(withdraw:_view().tray, "right", "Withdraw slides the party panel in on the right")
   withdraw:updateFixed({ { type = "confirm" } })
+  Assert.equal(withdraw:_view().tray, "closed", "the party panel closes once the mon lands")
   Assert.isNil(mons:boxMon(0, 0))
   Assert.equal(mons:partyCount(), 2)
   withdraw:dispose()
@@ -298,7 +341,8 @@ function T.retail_lists_follow_each_mode_and_context()
   deposit:updateFixed({ { type = "confirm" } })
   Assert.deepEqual(deposit:status().menu.actions, { "deposit", "summary", "markings", "release" })
   deposit:updateFixed({ { type = "confirm" } })
-  Assert.equal(#deposit._session:plan().content.hitRegions.boxSlots, 30, "a deposit asks where, so box slots answer")
+  Assert.equal(#deposit._session:plan().content.hitRegions.boxSlots, 0, "the deposit selector replaces the box grid")
+  Assert.equal(assert(deposit:_view().boxTray).mode, "deposit", "a deposit opens the source box selector")
   deposit:dispose()
 
   -- Withdraw mode lists a box mon, and leaves empty slots without a list.
@@ -309,37 +353,64 @@ function T.retail_lists_follow_each_mode_and_context()
   Assert.equal(withdraw:status().phase, "browse", "an empty box slot opens no list")
   withdraw:dispose()
 
-  -- Move mode picks the mon up at once with its list showing.
+  -- Move mode selects the mon and lists its actions; the MOVE row is what puts
+  -- it on the hand and slides the box tray open (PCBox_SelectMoveModeBoxMon
+  -- only selects).
   local move = PcStorageState.new(openOptions(mons, 2, "wide"))
   move:updateFixed({ boxTap(4), { type = "confirm" } })
-  Assert.equal(move:status().phase, "carry", "tapping a mon picks it up immediately")
+  Assert.equal(move:status().phase, "menu", "selecting a mon opens its list without picking it up")
   Assert.deepEqual(move:status().menu.actions, { "move", "summary", "heldItems", "markings", "release" })
   Assert.equal(move:status().menu.selected, 1, "MOVE is the highlighted entry")
   move:updateFixed({ { type = "action", action = "markings" } })
-  Assert.equal(move:status().phase, "editor", "another entry puts the mon back and runs")
+  Assert.equal(move:status().phase, "editor", "another entry runs from the list")
   Assert.isNil(move:status().carry)
   move:dispose()
 
-  -- Item mode has no list: a tap picks up the held item directly.
+  -- The MOVE row picks the mon up and opens the box tray with it on the hand.
+  local holdMove = PcStorageState.new(openOptions(mons, 2, "wide"))
+  holdMove:updateFixed({ boxTap(4), { type = "confirm" }, { type = "confirm" } })
+  Assert.equal(holdMove:status().phase, "carry", "the MOVE row puts the mon on the hand")
+  Assert.equal(assert(holdMove:_view().boxTray).mode, "box", "the MOVE row slides the box tray open")
+  Assert.equal(holdMove._grid:layoutName(), "tray", "the held mon moves through the tray layout")
+  holdMove:dispose()
+
+  -- Item mode lists one BAG/GIVE row and lifts a held item for a pointer swap.
   local held = mons:partyMon(0)
   held.heldItem = "POTION"
   assert(mons:preparePartyChanges(mons:partyRevision(), { { slot = 0, mon = held } })).publish()
   local items = PcStorageState.new(openOptions(mons, 3, "wide"))
+  items:updateFixed({ { type = "party" } })
+  items:updateFixed({ { type = "storage_target", target = { kind = "party", slot = 0 } } })
   items:updateFixed({ { type = "confirm" } })
-  Assert.equal(items:status().phase, "carry", "a tap on a held item picks it up")
-  Assert.isNil(items:status().menu, "the item mode has no action list")
+  Assert.equal(items:status().phase, "carry", "a tapped held item rides the hand")
+  Assert.deepEqual(items:status().menu.actions, { "bagItem" }, "the item list carries the BAG row")
   items:dispose()
+
+  -- An item-less mon offers GIVE instead.
+  local give = PcStorageState.new(openOptions(mons, 3, "wide"))
+  give:updateFixed({ { type = "party" } })
+  give:updateFixed({ { type = "storage_target", target = { kind = "party", slot = 1 } } })
+  give:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(give:status().menu.actions, { "giveItem" }, "an empty hand offers GIVE")
+  Assert.isNil(give:status().carry, "GIVE does not lift an item")
+  give:dispose()
 
   -- HELD ITEMS is one entry that branches on the held item: take it back here,
   -- or open the Bag to give one when the mon holds nothing.
   local holdOptions = openOptions(mons, 2, "wide")
   local pickerOpened = 0
+  local pickPending = true
   holdOptions.childFactories = {
     heldItemPicker = function()
       pickerOpened = pickerOpened + 1
       return {
         updateFixed = function() end,
-        takeIntent = function() end,
+        takeIntent = function()
+          if pickPending then
+            pickPending = false
+            return { kind = "pick", item = "POTION" }
+          end
+        end,
         status = function()
           return {}
         end,
@@ -348,12 +419,21 @@ function T.retail_lists_follow_each_mode_and_context()
     end,
   }
   local hold = PcStorageState.new(holdOptions)
+  hold:updateFixed({ { type = "party" } })
   hold:updateFixed({ { type = "action", action = "heldItems" } })
+  Assert.equal(hold:_view().message.id, 23, "taking asks the source confirmation")
+  hold:updateFixed({ { type = "confirm" } })
   Assert.equal(mons:partyMon(0).heldItem, "NONE", "a held item is taken back to the Bag")
   Assert.equal(holdOptions.bag:quantity("POTION"), 1)
   hold:updateFixed({ { type = "action", action = "heldItems" } })
   Assert.equal(pickerOpened, 1, "an empty hand opens the Bag picker to give an item")
   Assert.equal(hold:status().childKind, "heldItemPicker")
+  hold:updateFixed({})
+  Assert.equal(mons:partyMon(0).heldItem, "POTION", "the picker's item lands on the mon")
+  local given = hold:_view().message
+  Assert.notNil(given, "giving an item prints its result line")
+  Assert.equal(given.id, 16, "giving prints ... is now being held.")
+  Assert.equal(given.subject, "Potion", "the line names the given item")
   hold:dispose()
 
   -- The title plate opens the Wallpaper / Name pair.
@@ -418,7 +498,7 @@ function T.party_tray_follows_each_mode()
   local plan = move._session:plan()
   Assert.equal(#plan.content.hitRegions.partySlots, 0, "a closed tray has no party touch targets")
   move:updateFixed({ { type = "storage_target", target = { kind = "party", slot = 0 } } })
-  Assert.equal(move:status().focus.domain, "party", "the default focus is untouched by an ignored tap")
+  Assert.equal(move:status().focus.domain, "box", "the default box focus is untouched by an ignored tap")
   move:updateFixed({ { type = "party" } })
   Assert.equal(move:_view().tray, "left", "the PARTY button opens the tray at the left")
   Assert.equal(#move._session:plan().content.hitRegions.partySlots, 6)
@@ -526,6 +606,7 @@ function T.move_swap_cancel_and_held_item_routes_keep_domain_owners_authoritativ
     }
   end
   local items = PcStorageState.new(options)
+  items:updateFixed({ { type = "party" } })
   items:updateFixed({ { type = "action", action = "giveItem" } })
   Assert.equal(items:status().childKind, "heldItemPicker", "Give Item opens a child picker")
   Assert.equal(mons:partyMon(0).heldItem, "NONE", "opening the picker leaves the Pokemon unchanged")
@@ -563,6 +644,7 @@ function T.give_item_existing_item_confirmation_can_cancel_or_commit_through_sto
 
   options.childFactories.heldItemPicker = heldItemPicker("SITRUS_BERRY")
   local cancelled = PcStorageState.new(options)
+  cancelled:updateFixed({ { type = "party" } })
   cancelled:updateFixed({ { type = "action", action = "giveItem" } })
   cancelled:updateFixed({})
   Assert.equal(cancelled:status().lastAction.kind, "confirm", "replacing a held item requests confirmation")
@@ -577,6 +659,7 @@ function T.give_item_existing_item_confirmation_can_cancel_or_commit_through_sto
 
   options.childFactories.heldItemPicker = heldItemPicker("SITRUS_BERRY")
   local confirmed = PcStorageState.new(options)
+  confirmed:updateFixed({ { type = "party" } })
   confirmed:updateFixed({ { type = "action", action = "giveItem" } })
   confirmed:updateFixed({})
   local beforeConfirmRevision = bag:revision()
@@ -596,6 +679,7 @@ function T.give_item_refusal_from_picker_preserves_mon_and_bag()
   options.childFactories.heldItemPicker = heldItemPicker("ITEM_112")
   local state = PcStorageState.new(options)
   local beforeMon, beforeBagRevision = mons:partyMon(0), bag:revision()
+  state:updateFixed({ { type = "party" } })
   state:updateFixed({ { type = "action", action = "giveItem" } })
   state:updateFixed({})
   Assert.equal(state:status().lastAction.reason, "griseous_orb", "the domain owner refuses an ineligible mon/item pair")
@@ -650,13 +734,13 @@ function T.deposit_tracks_controller_navigation_after_box_focus_changes()
   local state = PcStorageState.new(openOptions(mons, 0, "wide"))
   local deposited = mons:partyMon(0)
   state:updateFixed({ { type = "action", action = "deposit" } })
-  state:updateFixed({ { type = "storage_target", target = { kind = "box", slot = 0 } } })
+  Assert.equal(state:status().visualView.cursor.node, 0, "the selector starts on the active box thumbnail")
   state:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.deepEqual(state:status().focus, { domain = "box", slot = 1 }, "controller input advances the Box focus")
+  Assert.equal(state:status().visualView.cursor.node, 8, "down reaches the selector's OK plate")
   local confirmed, failure = pcall(function()
     state:updateFixed({ { type = "confirm" } })
   end)
-  Assert.isTrue(confirmed, "Deposit confirmation follows controller focus to the empty Box slot: " .. tostring(failure))
+  Assert.isTrue(confirmed, "Deposit confirmation commits the chosen box: " .. tostring(failure))
   Assert.equal(mons:boxMon(0, 1).personality, deposited.personality)
   Assert.equal(mons:boxMon(0, 0).personality, occupied.personality)
   state:dispose()
@@ -722,7 +806,7 @@ function T.child_cancel_returns_to_the_same_mode_box_and_focus()
   local disposed = 0
   local childFactories = {
     summary = function(request)
-      Assert.deepEqual(request.source, { kind = "party", slot = 0 })
+      Assert.deepEqual(request.source, { kind = "box", box = 0, slot = 0 })
       local result
       return {
         updateFixed = function(_, events)
@@ -751,7 +835,7 @@ function T.child_cancel_returns_to_the_same_mode_box_and_focus()
   state:updateFixed({ { type = "cancel" } })
   Assert.equal(state:status().phase, "browse")
   Assert.equal(state:status().mode, 2)
-  Assert.deepEqual(state:status().focus, { domain = "party", slot = 0 })
+  Assert.deepEqual(state:status().focus, { domain = "box", slot = 0 })
   Assert.equal(disposed, 1, "returned child is disposed exactly once")
   state:dispose()
 end
@@ -780,7 +864,7 @@ function T.nested_child_receives_the_original_raw_pointer_batch()
   Assert.deepEqual(received, { raw }, "the child owns the raw host event and its coordinates")
   Assert.deepEqual(
     state:status().focus,
-    { domain = "party", slot = 0 },
+    { domain = "box", slot = 0 },
     "parent focus is untouched while the child owns input"
   )
   state:dispose()
@@ -867,6 +951,7 @@ function T.refused_carry_keeps_storage_live_and_preserves_domain_custody()
   local beforePartyRevision = mons:partyRevision()
   local beforeBoxRevision = mons:boxRevision()
   local beforeBagRevision = bag:revision()
+  state:updateFixed({ { type = "party" } })
   state:updateFixed({ { type = "action", action = "move" } })
   Assert.notNil(state:status().carry)
   local ok, failure = pcall(function()
@@ -909,7 +994,9 @@ function T.take_held_item_and_edit_box_records_return_through_child_results()
     portraits = {},
     childFactories = {},
   })
+  items:updateFixed({ { type = "party" } })
   items:updateFixed({ { type = "action", action = "takeItem" } })
+  items:updateFixed({ { type = "confirm" } })
   Assert.equal(mons:partyMon(0).heldItem, "NONE")
   Assert.equal(bag:quantity("POTION"), 1)
   items:dispose()
@@ -1247,7 +1334,7 @@ function T.release_scan_processes_fifteen_addresses_per_tick_and_detects_stale_c
     Assert.equal(confirmation.total, 37 * 30 + 6)
     Assert.deepEqual(confirmation.address, { kind = "party", slot = 0 })
 
-    state:updateFixed({ { type = "confirm" } })
+    confirmReleaseYes(state)
     local pending = state:status().releaseCheck
     Assert.equal(pending.outcome, "pending")
     Assert.equal(pending.scanned, 15, "each fixed tick advances fifteen candidate addresses")
@@ -1265,25 +1352,43 @@ function T.release_scan_processes_fifteen_addresses_per_tick_and_detects_stale_c
   end
 end
 
-function T.completed_release_scan_includes_the_last_box_and_respects_first_move_order()
+function T.completed_release_scan_includes_the_last_box_and_clears_every_check_move()
+  -- The last box (36) holds an alternative that knows the released mon's whole
+  -- release-check set (Surf and Fly), so every flag bit clears and the mon may
+  -- leave the save.
   local mons = releaseService()
+  local alternative = mons:partyMon(1)
+  alternative.moves[2] = { move = "FLY", pp = mons:catalog():move("FLY").basePp, ppUps = 0 }
+  assert(mons:preparePartyChanges(mons:partyRevision(), { { slot = 1, mon = alternative } })).publish()
   local state = PcStorageState.new(openOptions(mons, 2, "wide"))
   local released = finishReleaseScan(state)
   Assert.equal(released.total, 37 * 30 + 6)
-  Assert.equal(released.outcome, "removed", "the duplicate Surf in box 36 permits removal")
+  Assert.equal(released.outcome, "removed", "a fully covered check-move set permits removal")
   Assert.equal(mons:partyCount(), 1)
   Assert.notNil(mons:boxMon(36, 29), "release never moves the alternative holder")
   state:dispose()
 
-  local reversed = releaseService()
+  local reversed = releaseService("surf")
   reversed:setMove(0, 1, "TACKLE")
   reversed:setMove(0, 0, "FLY")
   reversed:setMove(0, 1, "SURF")
   local reverseState = PcStorageState.new(openOptions(reversed, 2, "wide"))
   local returned = finishReleaseScan(reverseState)
-  Assert.equal(returned.outcome, "returned", "first matching Fly controls the source guard")
+  Assert.equal(returned.outcome, "returned", "an uncovered release-check move brings the mon back")
   Assert.equal(reversed:partyCount(), 2, "returned Pokemon retains party custody")
   reverseState:dispose()
+
+  -- Every release-check move must stay known: Surf is duplicated but Fly is
+  -- not, so the mon returns even though the first matching move is covered
+  -- (PCBox_RunReleaseMoveCheck keeps one flag bit per uncovered move).
+  local mixed = releaseService("surf")
+  mixed:setMove(0, 0, "SURF")
+  mixed:setMove(0, 1, "FLY")
+  local mixedState = PcStorageState.new(openOptions(mixed, 2, "wide"))
+  local mixedResult = finishReleaseScan(mixedState)
+  Assert.equal(mixedResult.outcome, "returned", "a partially covered move set still returns the mon")
+  Assert.equal(mixed:partyCount(), 2, "the mon stays in the party")
+  mixedState:dispose()
 end
 
 function T.populated_boxes_keep_idle_projection_off_full_capture()
@@ -1457,29 +1562,19 @@ end
 
 function T.menu_and_mapped_release_share_protected_move_return()
   local function protectedService()
-    local mons = releaseService()
+    local mons = releaseService("surf")
     mons:setMove(0, 1, "TACKLE")
     mons:setMove(0, 0, "FLY")
     mons:setMove(0, 1, "SURF")
     return mons
   end
   local function settle(state)
-    state:updateFixed({ { type = "confirm" } })
-    local check = state:status().releaseCheck
-    local ticks = 1
-    local maximumTicks = math.ceil(check.total / 15)
-    while check.outcome == "pending" do
-      Assert.isTrue(ticks < maximumTicks, "protected scan completes within the candidate count")
-      state:updateFixed({})
-      ticks = ticks + 1
-      check = state:status().releaseCheck
-    end
-    return check, ticks, maximumTicks
+    return settleReleaseScan(state)
   end
 
   local menuMons = protectedService()
   local menuState = PcStorageState.new(openOptions(menuMons, 2, "wide"))
-  menuState:updateFixed({ { type = "action", action = "release" } })
+  menuState:updateFixed({ { type = "party" }, { type = "action", action = "release" } })
   local menuArmed = menuState:status().releaseCheck
   Assert.notNil(menuArmed, "menu protected-move request opens confirmation")
   Assert.equal(menuArmed.outcome, "confirm")
@@ -1508,7 +1603,7 @@ end
 
 function T.menu_and_mapped_release_agree_on_removal_cancel_and_stale()
   local function settle(state)
-    state:updateFixed({ { type = "confirm" } })
+    confirmReleaseYes(state)
     local check = state:status().releaseCheck
     local maximumTicks = math.ceil(check.total / 15)
     local ticks = 1
@@ -1518,12 +1613,12 @@ function T.menu_and_mapped_release_agree_on_removal_cancel_and_stale()
       ticks = ticks + 1
       check = state:status().releaseCheck
     end
-    return check
+    return acknowledgeReleaseMessages(state) or check
   end
 
   local menuMons = releaseService()
   local menuState = PcStorageState.new(openOptions(menuMons, 2, "wide"))
-  menuState:updateFixed({ { type = "action", action = "release" } })
+  menuState:updateFixed({ { type = "party" }, { type = "action", action = "release" } })
   Assert.equal(menuState:status().releaseCheck.outcome, "confirm")
   local menuRemoved = settle(menuState)
   Assert.equal(menuRemoved.outcome, "removed")
@@ -1549,8 +1644,8 @@ function T.menu_and_mapped_release_agree_on_removal_cancel_and_stale()
 
   local menuCancelMons = releaseService()
   local menuCancel = PcStorageState.new(openOptions(menuCancelMons, 2, "wide"))
-  menuCancel:updateFixed({ { type = "action", action = "release" } })
-  menuCancel:updateFixed({ { type = "confirm" } })
+  menuCancel:updateFixed({ { type = "party" }, { type = "action", action = "release" } })
+  confirmReleaseYes(menuCancel)
   Assert.equal(menuCancel:status().releaseCheck.outcome, "pending")
   menuCancel:updateFixed({ { type = "cancel" } })
   Assert.equal(menuCancel:status().releaseCheck.outcome, "cancelled", "menu cancel stops the scan")
@@ -1560,7 +1655,7 @@ function T.menu_and_mapped_release_agree_on_removal_cancel_and_stale()
   local eventCancelMons = releaseService()
   local eventCancel = PcStorageState.new(openOptions(eventCancelMons, 2, "wide"))
   eventCancel:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
-  eventCancel:updateFixed({ { type = "confirm" } })
+  confirmReleaseYes(eventCancel)
   eventCancel:updateFixed({ { type = "cancel" } })
   Assert.equal(eventCancel:status().releaseCheck.outcome, "cancelled")
   Assert.equal(eventCancelMons:partyCount(), 2, "mapped cancel never removes")
@@ -1568,8 +1663,8 @@ function T.menu_and_mapped_release_agree_on_removal_cancel_and_stale()
 
   local menuStaleMons = releaseService()
   local menuStale = PcStorageState.new(openOptions(menuStaleMons, 2, "wide"))
-  menuStale:updateFixed({ { type = "action", action = "release" } })
-  menuStale:updateFixed({ { type = "confirm" } })
+  menuStale:updateFixed({ { type = "party" }, { type = "action", action = "release" } })
+  confirmReleaseYes(menuStale)
   local drifting = menuStaleMons:partyMon(1)
   drifting.heldItem = "SITRUS_BERRY"
   local preparation =
@@ -1581,10 +1676,10 @@ function T.menu_and_mapped_release_agree_on_removal_cancel_and_stale()
   menuStale:dispose()
 
   local armed = PcStorageState.new(openOptions(releaseService(), 2, "wide"))
-  armed:updateFixed({ { type = "action", action = "release" } })
+  armed:updateFixed({ { type = "party" }, { type = "action", action = "release" } })
   Assert.equal(armed:status().releaseCheck.outcome, "confirm")
   local secondMenu = pcall(function()
-    armed:updateFixed({ { type = "action", action = "release" } })
+    armed:updateFixed({ { type = "party" }, { type = "action", action = "release" } })
   end)
   Assert.isFalse(secondMenu, "a second menu request never overwrites the armed decision")
   local secondEvent = pcall(function()
@@ -1598,18 +1693,8 @@ end
 -- Settles an armed confirmation through the bounded fixed-tick scan and
 -- returns the terminal check with its tick count and tick budget.
 local function settleArmedRelease(state)
-  state:updateFixed({ { type = "confirm" } })
-  local check = state:status().releaseCheck
-  local maximumTicks = math.ceil(check.total / 15)
-  local ticks = 1
-  while check.outcome == "pending" do
-    Assert.isTrue(ticks < maximumTicks, "release scan completes within the candidate count")
-    state:updateFixed({})
-    ticks = ticks + 1
-    check = state:status().releaseCheck
-  end
-  Assert.equal(ticks, maximumTicks, "the scan visits fifteen addresses on each fixed tick")
-  return check, ticks, maximumTicks
+  local check, ticks, maximumTicks = settleReleaseScan(state)
+  return acknowledgeReleaseMessages(state) or check, ticks, maximumTicks
 end
 
 function T.sequential_confirmed_removals_share_one_storage_lifetime()
@@ -1673,7 +1758,7 @@ function T.sequential_confirmed_removals_share_one_storage_lifetime()
 end
 
 function T.protected_return_leaves_later_releases_independent()
-  local mons = releaseService()
+  local mons = releaseService("surf")
   mons:setMove(0, 1, "TACKLE")
   mons:setMove(0, 0, "FLY")
   mons:setMove(0, 1, "SURF")
@@ -1683,7 +1768,7 @@ function T.protected_return_leaves_later_releases_independent()
   local protectedBefore = mons:partyMon(0)
   local state = PcStorageState.new(openOptions(mons, 2, "wide"))
 
-  state:updateFixed({ { type = "action", action = "release" } })
+  state:updateFixed({ { type = "party" }, { type = "action", action = "release" } })
   Assert.equal(state:status().releaseCheck.outcome, "confirm")
   local returned = settleArmedRelease(state)
   Assert.equal(returned.outcome, "returned", "the protected first move returns instead of removing")
@@ -1725,7 +1810,7 @@ function T.concurrent_release_requests_stay_rejected_while_armed_or_scanning()
   local armedBoxRevision = mons:boxRevision()
 
   local secondMenu, secondMenuError = pcall(function()
-    state:updateFixed({ { type = "action", action = "release" } })
+    state:updateFixed({ { type = "party" }, { type = "action", action = "release" } })
   end)
   Assert.isFalse(secondMenu, "a second menu request never overwrites the armed decision")
   Assert.notNil(
@@ -1747,14 +1832,14 @@ function T.concurrent_release_requests_stay_rejected_while_armed_or_scanning()
   Assert.equal(mons:partyRevision(), armedPartyRevision)
   Assert.equal(mons:boxRevision(), armedBoxRevision)
 
-  state:updateFixed({ { type = "confirm" } })
+  confirmReleaseYes(state)
   local pending = state:status().releaseCheck
   Assert.equal(pending.outcome, "pending")
   Assert.equal(pending.scanned, 15, "confirmation starts the scan before the overlap retry")
   local scanningPartyRevision = mons:partyRevision()
   local scanningBoxRevision = mons:boxRevision()
   local scanningMenu, scanningMenuError = pcall(function()
-    state:updateFixed({ { type = "action", action = "release" } })
+    state:updateFixed({ { type = "party" }, { type = "action", action = "release" } })
   end)
   Assert.isFalse(scanningMenu, "a menu request never interrupts the scanning decision")
   Assert.notNil(
@@ -1785,7 +1870,8 @@ function T.concurrent_release_requests_stay_rejected_while_armed_or_scanning()
     ticks = ticks + 1
     check = state:status().releaseCheck
   end
-  Assert.equal(check.outcome, "removed", "the first scan completes normally after rejection")
+  acknowledgeReleaseMessages(state)
+  Assert.equal(state:status().releaseCheck.outcome, "removed", "the first scan completes normally after rejection")
   Assert.equal(mons:partyCount(), 1)
   state:dispose()
 end
@@ -1797,7 +1883,7 @@ function T.cancelled_and_stale_scans_admit_fresh_releases_without_replay()
     state:updateFixed({ { type = "party" } })
     state:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
     Assert.equal(state:status().releaseCheck.outcome, "confirm")
-    state:updateFixed({ { type = "confirm" } })
+    confirmReleaseYes(state)
     Assert.equal(state:status().releaseCheck.outcome, "pending")
     state:updateFixed({ { type = "cancel" } })
     Assert.equal(state:status().releaseCheck.outcome, "cancelled", "cancel stops the scan")
@@ -1831,7 +1917,7 @@ function T.cancelled_and_stale_scans_admit_fresh_releases_without_replay()
     state:updateFixed({ { type = "party" } })
     state:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
     Assert.equal(state:status().releaseCheck.outcome, "confirm")
-    state:updateFixed({ { type = "confirm" } })
+    confirmReleaseYes(state)
     Assert.equal(state:status().releaseCheck.outcome, "pending")
     local drifting = mons:partyMon(1)
     drifting.heldItem = "SITRUS_BERRY"
@@ -1963,9 +2049,10 @@ function T.state_changes_publish_once_while_idle_ticks_reuse_the_layout()
     )
     Assert.deepEqual(state:status().focus, { domain = "box", slot = 3 }, "content refresh leaves focus alone")
     local switchedBuilds, switchedResolves = builds, resolves
+    state:updateFixed({ { type = "navigate", direction = "up" } })
     state:updateFixed({ { type = "navigate", direction = "right" } })
-    Assert.equal(builds, switchedBuilds + 1, configuration .. ": a box switch publishes once")
-    Assert.equal(resolves, switchedResolves + 1, configuration .. ": a box switch resolves once")
+    Assert.equal(builds, switchedBuilds + 2, configuration .. ": reaching the title and switching publishes each step")
+    Assert.equal(resolves, switchedResolves + 2, configuration .. ": the title step and switch each resolve once")
     Assert.equal(state:status().activeBox, 1)
     Assert.equal(state:status().boxSlots[7], false, "the new box shows its own empty slot, not stale contents")
     Assert.deepEqual(state:status().focus, { domain = "box", slot = 0 })
@@ -2034,7 +2121,7 @@ function T.mixed_batch_opening_a_child_defers_trailing_input_to_the_child()
   state:updateFixed({ { type = "action", action = "summary" }, { type = "cancel" } })
   Assert.equal(state:status().phase, "child")
   Assert.equal(state:status().childKind, "summary")
-  Assert.deepEqual(state:status().focus, { domain = "party", slot = 0 })
+  Assert.deepEqual(state:status().focus, { domain = "box", slot = 0 })
   Assert.equal(#batches, 0, "the newly opened child sees nothing from the opening batch")
   Assert.isNil(state:_view().message, "the trailing cancel never becomes a parent exit prompt")
   -- The next tick belongs to the child alone: it observes the deferred
@@ -2045,7 +2132,7 @@ function T.mixed_batch_opening_a_child_defers_trailing_input_to_the_child()
   Assert.equal(state:status().phase, "browse", "the child's cancel returns to browsing")
   Assert.equal(state:status().mode, 2)
   Assert.equal(state:status().activeBox, 0)
-  Assert.deepEqual(state:status().focus, { domain = "party", slot = 0 })
+  Assert.deepEqual(state:status().focus, { domain = "box", slot = 0 })
   Assert.equal(disposed, 1, "the returned child is disposed exactly once")
   state:dispose()
 end
@@ -2058,6 +2145,7 @@ function T.confirmed_release_advances_fifteen_addresses_once_per_tick_and_holds_
   Assert.equal(armed.outcome, "confirm")
   Assert.equal(armed.scanned, 0)
   Assert.equal(armed.total, 37 * 30 + 6)
+  state:updateFixed({ { type = "navigate", direction = "up" } })
   local armedTick = state:status().transitionTick
   state:updateFixed({ { type = "confirm" } })
   local pending = state:status().releaseCheck
@@ -2082,8 +2170,11 @@ function T.confirmed_release_advances_fifteen_addresses_once_per_tick_and_holds_
     ticks = ticks + 1
     check = state:status().releaseCheck
   end
-  Assert.equal(check.outcome, "removed")
+  Assert.equal(check.outcome, "released", "the shrink and scan end before the mon is removed")
   Assert.equal(check.scanned, check.total, "the scan covers every candidate address")
+  Assert.equal(mons:partyCount(), 2, "the mon waits in custody behind the release messages")
+  acknowledgeReleaseMessages(state)
+  Assert.equal(state:status().releaseCheck.outcome, "removed")
   Assert.equal(mons:partyCount(), 1, "the confirmed release commits exactly once")
   local afterRevision = mons:partyRevision()
   state:updateFixed({})
@@ -2160,7 +2251,9 @@ function T.held_item_picker_status_rides_alongside_for_bag_preparation()
     end,
   }
   local state = PcStorageState.new(options)
+  state:updateFixed({ { type = "party" } })
   state:updateFixed({ { type = "action", action = "heldItems" } })
+  state:updateFixed({ { type = "confirm" } })
   Assert.equal(mons:partyMon(0).heldItem, "NONE", "a held item is taken back to the Bag")
   state:updateFixed({ { type = "action", action = "heldItems" } })
   Assert.equal(state:status().childKind, "heldItemPicker", "an empty hand opens the Bag picker")
@@ -2217,24 +2310,43 @@ local function stateVisualPaths(manifest)
     storage.ui.boxPane,
     storage.ui.infoPane,
     storage.ui.partyTray,
+    storage.ui.partyTrayMove,
     storage.ui.markingPanel,
     storage.ui.wallpaperBar,
     storage.ui.arrows.left,
     storage.ui.arrows.right,
-    storage.ui.cursors.browse,
-    storage.ui.cursors.menu,
-    storage.ui.cursors.carry,
   }
+  for _, pose in pairs(storage.ui.cursors) do
+    for _, frame in ipairs(pose.frames) do
+      all[#all + 1] = frame
+    end
+  end
+  all[#all + 1] = storage.ui.infoGlyphs.lv
+  all[#all + 1] = storage.ui.infoGlyphs.no
+  for _, key in ipairs({ "yesNormal", "yesSelected", "noNormal", "noSelected" }) do
+    all[#all + 1] = storage.ui.yesNo[key]
+  end
   for _, visual in pairs(storage.wallpapers) do
     all[#all + 1] = visual
   end
-  for _, pair in pairs(storage.ui.markings) do
-    all[#all + 1] = pair.clear
-    all[#all + 1] = pair.set
+  for _, set in ipairs({ storage.ui.markings, storage.ui.panelMarkings }) do
+    for _, pair in pairs(set) do
+      all[#all + 1] = pair.clear
+      all[#all + 1] = pair.set
+    end
+  end
+  for _, plate in pairs(storage.ui.plates) do
+    all[#all + 1] = plate.left
+    all[#all + 1] = plate.middle
+    all[#all + 1] = plate.right
   end
   for _, style in pairs(storage.ui.windowFrames) do
-    for _, visual in pairs(style) do
-      all[#all + 1] = visual
+    if type(style) == "table" and style.image == nil then
+      for _, visual in pairs(style) do
+        if type(visual) == "table" and type(visual.image) == "string" then
+          all[#all + 1] = visual
+        end
+      end
     end
   end
   return all
@@ -2256,6 +2368,7 @@ local function stateRenderer(pool)
   local graphics = FakeGraphics.new({})
   local text = {
     drawText = function() end,
+    drawTextWithColorVariant = function() end,
     textWidth = function()
       return 0
     end,
@@ -2653,7 +2766,7 @@ function T.retained_parent_plan_reflows_to_the_current_display_without_moving_in
   -- Desired state advances while the parent lags: the live snapshot moves
   -- on, the admitted pair stays behind.
   state:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.deepEqual(state:status().focus, { domain = "box", slot = 1 })
+  Assert.deepEqual(state:status().focus, { domain = "box", slot = 6 }, "down moves one grid row")
   Assert.isTrue(state:status().admittedParentView == admittedView, "desired advances keep the admitted view")
 
   -- A tall display reflows the retained parent geometry without touching
@@ -2661,7 +2774,7 @@ function T.retained_parent_plan_reflows_to_the_current_display_without_moving_in
   current = measurement("tall")
   local advanced = state:status()
   Assert.isTrue(advanced.admittedParentView == admittedView, "the resize keeps the admitted semantic view by identity")
-  Assert.deepEqual(advanced.focus, { domain = "box", slot = 1 }, "the resize keeps live focus")
+  Assert.deepEqual(advanced.focus, { domain = "box", slot = 6 }, "the resize keeps live focus")
   local tallPlan = assert(state:presentationPlan(false), "the resize keeps a parent plan")
   Assert.isTrue(tallPlan ~= widePlan, "the resize replaces the stale parent plan")
   assertFollowsCurrentTopology(tallPlan, admittedView, current, "the reflowed parent")
@@ -2897,7 +3010,8 @@ function T.full_deposit_target_reports_full_and_keeps_the_selector_open()
   Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))))
   local updates = {}
   for slot = 0, 29 do
-    updates[#updates + 1] = { box = 0, slot = slot, mon = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" })) }
+    updates[#updates + 1] =
+      { box = 0, slot = slot, mon = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" })) }
   end
   assert(mons:preparePcChanges({
     partyRevision = mons:partyRevision(),
@@ -2914,6 +3028,7 @@ function T.full_deposit_target_reports_full_and_keeps_the_selector_open()
   Assert.equal(full.id, 13, "confirming a full box reports that the box is full")
   Assert.notNil(state:status().carry, "a full box keeps the selector open")
   Assert.equal(mons:partyCount(), 2, "a full box never takes party custody")
+  state:updateFixed({ { type = "navigate", direction = "up" } })
   state:updateFixed({ { type = "navigate", direction = "right" } })
   Assert.equal(state:_view().message.id, 19, "leaving the full box returns to the deposit prompt")
   state:updateFixed({ { type = "confirm" } })
@@ -2927,33 +3042,39 @@ function T.release_followups_show_bye_bye_and_worried_once_each()
   local mons = releaseService()
   local state = PcStorageState.new(openOptions(mons, 2, "wide"))
   local nickname = Mon.displayName(mons:partyMon(0), mons:catalog())
-  finishReleaseScan(state)
-  Assert.equal(state:status().releaseCheck.outcome, "removed")
+  state:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
+  settleReleaseScan(state)
+  local released = state:_view().message
+  Assert.equal(released.id, 3, "the shrink ends with the released line while the mon is still held")
+  Assert.equal(mons:partyCount(), 2, "the released line precedes removal")
   state:updateFixed({ { type = "navigate", direction = "up" } })
   local bye = state:_view().message
-  Assert.equal(bye.id, 4, "acknowledging a removal shows the bye-bye line once")
+  Assert.equal(bye.id, 4, "acknowledging the released line shows the bye-bye line once")
   Assert.equal(bye.subject, nickname, "the bye-bye line retains the released nickname")
   Assert.equal(bye.window, "W37")
+  Assert.equal(mons:partyCount(), 2, "the mon leaves only after the bye-bye acknowledgement")
   state:updateFixed({ { type = "navigate", direction = "up" } })
-  local dismissed = state:_view().message
-  Assert.isTrue(dismissed == nil or dismissed.id ~= 4, "a second input dismisses the bye-bye line")
   Assert.equal(state:status().releaseCheck.outcome, "removed")
+  Assert.equal(mons:partyCount(), 1, "the bye-bye acknowledgement removes the mon")
+  Assert.isNil(state:_view().message, "the removal closes the message line")
   state:dispose()
 
-  local protected = releaseService()
+  local protected = releaseService("surf")
   protected:setMove(0, 1, "TACKLE")
   protected:setMove(0, 0, "FLY")
   protected:setMove(0, 1, "SURF")
   local returned = PcStorageState.new(openOptions(protected, 2, "wide"))
-  finishReleaseScan(returned)
-  Assert.equal(returned:status().releaseCheck.outcome, "returned")
+  returned:updateFixed({ { type = "release", address = { kind = "party", slot = 0 } } })
+  settleReleaseScan(returned)
+  local cameBack = returned:_view().message
+  Assert.equal(cameBack.id, 32, "a protected move grows the mon back before the came-back line")
   returned:updateFixed({ { type = "navigate", direction = "up" } })
   local worried = returned:_view().message
   Assert.equal(worried.id, 33, "acknowledging a return shows the worried line once")
   Assert.equal(worried.window, "W37")
+  Assert.equal(protected:partyCount(), 2, "a return never removes the mon")
   returned:updateFixed({ { type = "navigate", direction = "up" } })
-  local settled = returned:_view().message
-  Assert.isTrue(settled == nil or settled.id ~= 33, "a second input dismisses the worried line")
+  Assert.isNil(returned:_view().message, "a second input dismisses the worried line")
   Assert.equal(returned:status().releaseCheck.outcome, "returned")
   returned:dispose()
 end
@@ -2967,6 +3088,7 @@ function T.give_item_replacement_confirms_with_the_incoming_item()
   setPartyHeldItem(mons, "POTION")
   options.childFactories.heldItemPicker = heldItemPicker("SITRUS_BERRY")
   local state = PcStorageState.new(options)
+  state:updateFixed({ { type = "party" } })
   state:updateFixed({ { type = "action", action = "giveItem" } })
   state:updateFixed({})
   local pending = state:_view().message
@@ -3068,6 +3190,588 @@ function T.storage_cues_follow_the_retail_situations()
     Assert.isNil(state:status().carry)
     state:dispose()
   end
+end
+
+function T.controller_focus_follows_the_source_grid_through_title_and_bottom_controls()
+  local mons = monService()
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  local function node()
+    return state:status().visualView.cursor.node
+  end
+  Assert.equal(node(), 0, "Move starts on the first box slot")
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(node(), 30, "the first box row rises to the box title")
+  state:updateFixed({ { type = "confirm" } })
+  Assert.isNil(state:status().menu.address, "the title plate opens the Wallpaper / Name pair")
+  Assert.equal(node(), 0, "the title menu starts on the active box thumbnail")
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(node(), 8, "the thumbnail drops to the Change Box plate")
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(node(), 9, "the plate drops to Wallpaper")
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(node(), 8, "Wallpaper rises to the Change Box plate")
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(node(), 0, "the plate rises to the thumbnail row")
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(node(), 10, "the list walks to Name")
+  state:updateFixed({ { type = "cancel" } })
+  Assert.equal(node(), 30, "closing the title menu returns to the title plate")
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(node(), 0, "the title drops back to the column the player left")
+  for _ = 1, 3 do
+    state:updateFixed({ { type = "navigate", direction = "right" } })
+  end
+  for _ = 1, 4 do
+    state:updateFixed({ { type = "navigate", direction = "down" } })
+  end
+  Assert.equal(node(), 27, "the grid walks to the last row's fourth column")
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(node(), 33, "the last box row drops to PARTY")
+  Assert.equal(state:status().visualView.cursor.pose, "browse", "bottom buttons use the open hand")
+  state:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(node(), 34, "PARTY steps to the Move tab")
+  state:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(node(), 35, "the tab steps to RETURN")
+  state:updateFixed({ { type = "confirm" } })
+  Assert.notNil(state:status().visualView.message, "RETURN asks to leave")
+  state:updateFixed({ { type = "cancel" } })
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(node(), 24, "up from RETURN uses the source link to the last box row")
+  state:dispose()
+end
+
+function T.box_tray_pages_selects_and_switches_the_active_box()
+  local mons = monService()
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  state:updateFixed({ { type = "box_tab" } })
+  local tray = assert(state:_view().boxTray, "the MOVE tab opens the box tray")
+  Assert.equal(tray.mode, "box", "the tray runs in its Move/Item mode")
+  Assert.equal(tray.trayBox, 0, "the tray starts on the active box")
+  state:updateFixed({ { type = "box_tray_select", column = 3 } })
+  tray = assert(state:_view().boxTray)
+  Assert.equal(tray.trayBox, 3, "a thumbnail selects its box")
+  Assert.isTrue(tray.changeBox, "a different box offers the Change Box plate")
+  state:updateFixed({ { type = "box_tray_change" } })
+  Assert.equal(state:status().activeBox, 3, "the Change Box plate switches the active box")
+  tray = assert(state:_view().boxTray)
+  Assert.isFalse(tray.changeBox, "the plate retires once the box matches")
+  state:updateFixed({ { type = "box_tray_page", delta = 1 } })
+  tray = assert(state:_view().boxTray)
+  Assert.equal(tray.page, 6, "the next arrow pages by six boxes")
+  Assert.equal(tray.trayBox, 9, "paging keeps the selected column")
+  state:updateFixed({ { type = "box_tray_cancel" } })
+  Assert.isNil(state:_view().boxTray, "EXIT closes the tray")
+  state:dispose()
+end
+
+function T.deposit_selector_switches_to_the_chosen_box_before_the_drop()
+  local mons = monService()
+  local factory = CatalogFixture.makeFactory(0x0fedcba9, mons:catalog())
+  Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))))
+  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  state:updateFixed({ { type = "action", action = "deposit" } })
+  local tray = assert(state:_view().boxTray, "Deposit opens the box selector")
+  Assert.equal(tray.mode, "deposit", "the selector runs in its Deposit mode")
+  Assert.equal(state:status().visualView.cursor.node, 0, "the selector starts on the active box")
+  state:updateFixed({ { type = "box_tray_select", column = 2 } })
+  Assert.equal(assert(state:_view().boxTray).trayBox, 2, "a selector thumbnail stages its box")
+  Assert.equal(state:status().visualView.cursor.node, 8, "touch selection moves to the OK plate")
+  state:updateFixed({ { type = "confirm" } })
+  Assert.isNil(state:_view().boxTray, "OK closes the selector")
+  Assert.equal(state:status().activeBox, 2, "the chosen box becomes active")
+  Assert.notNil(mons:boxMon(2, 0), "the deposit lands in the chosen box")
+  Assert.equal(mons:partyCount(), 1, "the deposited mon leaves the party")
+  state:dispose()
+end
+
+-- PCBox_State_ChooseMoveFromBox slides the tray open with the mon on the hand;
+-- a drop on another box's thumbnail lands in that box's first empty slot, and a
+-- summary opened from the mode list returns to the same row without custody.
+function T.move_hold_drops_into_another_box_and_list_summary_restores_the_row()
+  local mons = monService()
+  local factory = CatalogFixture.makeFactory(0x99887766, mons:catalog())
+  Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))))
+  local boxed = mons:partyMon(1)
+  local stored = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 4, mon = boxed } } }))
+  stored.publish()
+
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  state:updateFixed({
+    { type = "storage_target", target = { kind = "box", box = 0, slot = 4 } },
+    { type = "confirm" },
+    { type = "confirm" },
+  })
+  Assert.equal(state:status().phase, "carry", "the MOVE row holds the mon")
+  Assert.isTrue(state:status().carry.holding, "the held mon is in the tray holding state")
+  state:updateFixed({ { type = "box_tray_select", column = 1 }, { type = "confirm" } })
+  Assert.isNil(state:status().carry, "a thumbnail drop releases the hand")
+  Assert.equal(state:status().activeBox, 0, "a cross-box drop does not change the active box")
+  Assert.isNil(mons:boxMon(0, 4), "the dropped box slot empties")
+  Assert.equal(mons:boxMon(1, 0).personality, boxed.personality, "the mon lands in the target box's first empty slot")
+  state:dispose()
+
+  -- Cancelling the hold puts the mon back and closes the tray.
+  local cancelled = PcStorageState.new(openOptions(mons, 2, "wide"))
+  local before = mons:boxMon(0, 4)
+  cancelled:updateFixed({
+    { type = "storage_target", target = { kind = "box", box = 0, slot = 4 } },
+    { type = "confirm" },
+    { type = "confirm" },
+  })
+  cancelled:updateFixed({ { type = "cancel" } })
+  Assert.isNil(cancelled:status().carry, "cancel releases the hand")
+  Assert.isNil(cancelled:_view().boxTray, "cancel closes the tray the MOVE row opened")
+  Assert.deepEqual(mons:boxMon(0, 4), before, "cancel keeps the mon in its slot")
+  cancelled:dispose()
+
+  -- SUMMARY from the open list runs the action; returning restores the row.
+  local summaryOptions = openOptions(mons, 1, "wide")
+  local disposed = 0
+  summaryOptions.childFactories = {
+    summary = function()
+      return {
+        updateFixed = function() end,
+        result = function()
+          return { kind = "closed" }
+        end,
+        status = function()
+          return {}
+        end,
+        dispose = function()
+          disposed = disposed + 1
+        end,
+      }
+    end,
+  }
+  local summary = PcStorageState.new(summaryOptions)
+  summary:updateFixed({
+    { type = "storage_target", target = { kind = "box", box = 1, slot = 0 } },
+    { type = "confirm" },
+  })
+  summary:updateFixed({ { type = "navigate", direction = "down" }, { type = "action", action = "summary" } })
+  Assert.equal(summary:status().phase, "child", "SUMMARY from the list opens the summary")
+  Assert.equal(summary:status().childKind, "summary")
+  summary:updateFixed({})
+  Assert.equal(disposed, 1, "the summary child is disposed exactly once")
+  Assert.equal(summary:status().phase, "menu", "returning from the summary restores the mode list")
+  Assert.deepEqual(summary:status().menu.actions, { "withdraw", "summary", "markings", "release" })
+  Assert.equal(summary:status().menu.selected, 2, "the cursor returns to the SUMMARY row")
+  Assert.equal(summary._grid:index(), 35, "the returned cursor sits on the source SUMMARY row node")
+  summary:dispose()
+end
+
+-- PCBox_TryWithdraw refuses a full party before the panel slides in or the mon
+-- leaves its slot.
+function T.withdraw_refuses_a_full_party_before_arming_the_hand()
+  local mons = monService()
+  local factory = CatalogFixture.makeFactory(0x11223344, mons:catalog())
+  for _ = 1, 5 do
+    Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))))
+  end
+  local boxed = mons:partyMon(0)
+  local stored = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 0, mon = boxed } } }))
+  stored.publish()
+  local state = PcStorageState.new(openOptions(mons, 1, "wide"))
+  state:updateFixed({
+    { type = "storage_target", target = { kind = "box", box = 0, slot = 0 } },
+    { type = "confirm" },
+    { type = "confirm" },
+  })
+  Assert.isNil(state:status().carry, "a full party refuses the withdrawal without arming the hand")
+  Assert.equal(state:status().phase, "menu", "the refusal returns to the action list")
+  Assert.notNil(mons:boxMon(0, 0), "the refused mon stays in its slot")
+  Assert.notNil(state:_view().message, "the refusal prints its message")
+  state:dispose()
+end
+
+-- The box tray's SUMMARY plate opens the held mon's summary and returns to the
+-- holding state with the mon still on the hand (summaryFromHolding).
+function T.box_tray_summary_keeps_the_held_mon_on_return()
+  local mons = monService()
+  local factory = CatalogFixture.makeFactory(0x13572468, mons:catalog())
+  Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))))
+  local boxed = mons:partyMon(1)
+  assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 3, mon = boxed } } })).publish()
+  local options = openOptions(mons, 2, "wide")
+  options.childFactories = {
+    summary = function()
+      return {
+        updateFixed = function() end,
+        result = function()
+          return { kind = "closed" }
+        end,
+        status = function()
+          return {}
+        end,
+        dispose = function() end,
+      }
+    end,
+  }
+  local state = PcStorageState.new(options)
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 3 } } })
+  state:updateFixed({ { type = "confirm" }, { type = "confirm" } })
+  Assert.isTrue(state:status().carry.holding, "the MOVE row holds the mon")
+  Assert.equal(assert(state:_view().boxTray).mode, "box", "the tray is open while holding")
+  state:updateFixed({ { type = "action", action = "summary" } })
+  Assert.equal(state:status().phase, "child", "the tray plate opens the held mon's summary")
+  state:updateFixed({})
+  Assert.equal(state:status().phase, "carry", "returning restores the holding state")
+  Assert.isTrue(state:status().carry.holding, "the mon is still on the hand")
+  Assert.equal(assert(state:_view().boxTray).mode, "box", "the tray is still open after the summary")
+  state:dispose()
+end
+
+-- One custody cell's logical centre, and the party drop-rect centre a stylus
+-- drag resolves against.
+local function boxCenter(slot)
+  local rect = PcStorageGeometry.boxSlotRect(slot)
+  return rect.x + rect.width / 2, rect.y + rect.height / 2
+end
+
+local function partyDropCenter(slot, side)
+  local rect = PcStorageGeometry.partyDropRect(slot, side)
+  return rect.x + rect.width / 2, rect.y + rect.height / 2
+end
+
+local function addPartyMon(mons, seed)
+  local factory = CatalogFixture.makeFactory(seed, mons:catalog())
+  Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))))
+end
+
+local function storePartyMon(mons, partySlot, box, slot, heldItem)
+  local mon = mons:partyMon(partySlot)
+  if heldItem ~= nil then
+    mon.heldItem = heldItem
+  end
+  local change = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = box, slot = slot, mon = mon } } }))
+  change.publish()
+end
+
+local function dragFrom(slot, pointerId)
+  local x, y = boxCenter(slot)
+  return { type = "storage_touch", target = { kind = "box", box = 0, slot = slot }, x = x, y = y, pointerId = pointerId }
+end
+
+function T.stylus_drag_moves_a_box_mon_and_releasing_on_its_cell_opens_the_list()
+  local mons = monService()
+  storePartyMon(mons, 0, 0, 4)
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  state:updateFixed({ dragFrom(4, "pen") })
+  Assert.equal(state:status().phase, "carry", "touching an occupied box cell picks the mon up immediately")
+  Assert.notNil(state:status().visualView.drag, "the drag publishes its stylus position")
+  Assert.equal(state:status().visualView.drag.kind, "mon")
+
+  local toX, toY = boxCenter(7)
+  state:updateFixed({ { type = "storage_drag_move", x = toX, y = toY, pointerId = "pen" } })
+  Assert.deepEqual(
+    { state:status().visualView.drag.x, state:status().visualView.drag.y },
+    { toX, toY },
+    "the drag follows the stylus"
+  )
+  state:updateFixed({ { type = "storage_drag_release", x = toX, y = toY, pointerId = "pen" } })
+  Assert.isNil(mons:boxMon(0, 4), "the source cell empties")
+  Assert.notNil(mons:boxMon(0, 7), "the drop cell holds the mon")
+  Assert.isNil(state:status().carry, "the drop ends the carry")
+
+  state:updateFixed({ dragFrom(7, "pen-2") })
+  local x, y = boxCenter(7)
+  state:updateFixed({ { type = "storage_drag_release", x = x, y = y, pointerId = "pen-2" } })
+  Assert.equal(state:status().phase, "menu", "releasing on the source cell opens the action list")
+  Assert.deepEqual(state:status().menu.actions, { "move", "summary", "heldItems", "markings", "release" })
+  Assert.deepEqual(state:status().focus, { domain = "box", slot = 7 })
+  state:dispose()
+end
+
+function T.stylus_touch_on_an_empty_cell_never_picks_anything_up()
+  local mons = monService()
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  state:updateFixed({ dragFrom(9, "pen") })
+  Assert.isNil(state:status().carry)
+  Assert.deepEqual(state:status().focus, { domain = "box", slot = 9 })
+  state:dispose()
+end
+
+function T.stylus_deposit_drag_lowers_the_party_panel_and_drops_into_the_box()
+  local mons = monService()
+  addPartyMon(mons, 0x1234)
+  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  local rect = PcStorageGeometry.partySlotRect(0, "left")
+  local x, y = rect.x + rect.width / 2, rect.y + rect.height / 2
+  state:updateFixed({ { type = "storage_touch", target = { kind = "party", slot = 0 }, x = x, y = y, pointerId = "pen" } })
+  Assert.equal(state:_view().tray, "left", "the deposit drag keeps the party panel up on its cell")
+  Assert.equal(state:_view().message.window, "W40", "a party drag prints the source hint strip")
+  Assert.equal(state:_view().message.id, 36, "a deposit with room in the box prints Place it in the Box!")
+
+  local toX, toY = boxCenter(5)
+  state:updateFixed({ { type = "storage_drag_move", x = toX, y = toY, pointerId = "pen" } })
+  Assert.equal(state:_view().tray, "closed", "leaving the party panel lowers it")
+  state:updateFixed({ { type = "storage_drag_release", x = toX, y = toY, pointerId = "pen" } })
+  Assert.notNil(mons:boxMon(0, 5), "the party mon lands in the dropped-on box cell")
+  Assert.equal(mons:partyCount(), 1, "the deposit removes one party member")
+  Assert.isTrue(
+    state:_view().message == nil or state:_view().message.window ~= "W40",
+    "the drag hint clears when the drag ends"
+  )
+  state:dispose()
+end
+
+function T.stylus_withdraw_drag_raises_the_right_panel_and_withdraws()
+  local mons = monService()
+  storePartyMon(mons, 0, 0, 6)
+  local state = PcStorageState.new(openOptions(mons, 1, "wide"))
+  state:updateFixed({ dragFrom(6, "pen") })
+  Assert.equal(state:_view().message.id, 37, "a withdraw with room in the party prints its hint")
+  local x, y = partyDropCenter(2, "right")
+  state:updateFixed({ { type = "storage_drag_move", x = x, y = y, pointerId = "pen" } })
+  Assert.equal(state:_view().tray, "right", "leaving the cell raises the right party panel")
+  state:updateFixed({ { type = "storage_drag_release", x = x, y = y, pointerId = "pen" } })
+  Assert.isNil(mons:boxMon(0, 6), "the withdrawn mon leaves the box")
+  Assert.equal(mons:partyCount(), 2, "the withdrawn mon joins the party")
+  state:dispose()
+end
+
+function T.stylus_item_drag_swaps_held_items_and_releases_back_on_the_source()
+  local mons = monService()
+  storePartyMon(mons, 0, 0, 4, "POTION")
+  local other = mons:partyMon(0)
+  other.heldItem = "NONE"
+  local change = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 7, mon = other } } }))
+  change.publish()
+  local state = PcStorageState.new(openOptions(mons, 3, "wide"))
+  state:updateFixed({ dragFrom(4, "pen") })
+  Assert.equal(state:status().phase, "carry")
+  Assert.equal(state:status().visualView.drag.kind, "items", "item mode lifts the held item")
+  Assert.equal(state:_view().message.id, 60, "a non-Mail item prints the give hint")
+  local toX, toY = boxCenter(7)
+  state:updateFixed({ { type = "storage_drag_move", x = toX, y = toY, pointerId = "pen" } })
+  state:updateFixed({ { type = "storage_drag_release", x = toX, y = toY, pointerId = "pen" } })
+  Assert.equal(mons:boxMon(0, 4).heldItem, "NONE", "the source mon gives its item up")
+  Assert.equal(mons:boxMon(0, 7).heldItem, "POTION", "the destination mon takes the item")
+  Assert.isNil(state:status().menu, "an item drop never opens the action list")
+
+  -- Releasing a lifted item back on its own mon returns it without a message.
+  local back = PcStorageState.new(openOptions(mons, 3, "wide"))
+  back:updateFixed({ dragFrom(7, "pen-2") })
+  Assert.equal(back:status().phase, "carry", "the mon now holding the item lifts it")
+  local x, y = boxCenter(7)
+  back:updateFixed({ { type = "storage_drag_release", x = x, y = y, pointerId = "pen-2" } })
+  Assert.isNil(back:status().carry)
+  Assert.isNil(back:status().menu)
+  Assert.equal(mons:boxMon(0, 7).heldItem, "POTION", "dropping the item back changes nothing")
+  back:dispose()
+  state:dispose()
+end
+
+function T.stylus_drag_cancel_restores_the_source_without_committing()
+  local mons = monService()
+  storePartyMon(mons, 0, 0, 4)
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  state:updateFixed({ dragFrom(4, "pen") })
+  local toX, toY = boxCenter(9)
+  state:updateFixed({ { type = "storage_drag_move", x = toX, y = toY, pointerId = "pen" } })
+  state:updateFixed({ { type = "pointer_cancel", pointerId = "pen" } })
+  Assert.isNil(state:status().carry)
+  Assert.isNil(state:status().visualView.drag)
+  Assert.notNil(mons:boxMon(0, 4), "a cancelled drag leaves the mon in its cell")
+  Assert.isNil(mons:boxMon(0, 9))
+  state:dispose()
+end
+
+function T.stylus_tap_on_a_mon_without_an_item_opens_the_give_list()
+  local mons = monService()
+  storePartyMon(mons, 0, 0, 4)
+  local state = PcStorageState.new(openOptions(mons, 3, "wide"))
+  state:updateFixed({ dragFrom(4, "pen") })
+  Assert.equal(state:status().phase, "menu", "an item-less mon opens the GIVE/BAG list on touch")
+  Assert.deepEqual(state:status().menu.actions, { "giveItem" })
+  Assert.isNil(state:status().carry)
+  state:dispose()
+end
+
+function T.real_stylus_drag_moves_a_box_mon_through_the_session_pointer_capture()
+  local mons = monService()
+  storePartyMon(mons, 0, 0, 4)
+  local state = PcStorageState.new(openOptions(mons, 2, "nativeLike"))
+  local source = assert(state._session:plan().content.hitRegions.boxSlots[5])
+  local fromX, fromY = hostPointForRect(state, source.rect)
+  state:updateFixed({ { type = "pointer_down", pointerId = "stylus", x = fromX, y = fromY } })
+  Assert.equal(state:status().phase, "carry", "the captured pointer press starts the drag")
+  local destination = assert(state._session:plan().content.hitRegions.boxSlots[8])
+  local toX, toY = hostPointForRect(state, destination.rect)
+  state:updateFixed({ { type = "pointer_move", pointerId = "stylus", x = toX, y = toY } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "stylus", x = toX, y = toY } })
+  Assert.isNil(mons:boxMon(0, 4), "the pointer release commits the drop")
+  Assert.notNil(mons:boxMon(0, 7), "the stylus carried the mon to the released cell")
+  Assert.isNil(state:status().carry)
+  state:dispose()
+end
+
+function T.deposit_selector_remembers_the_touched_column_and_cycles_boxes()
+  local mons = monService()
+  addPartyMon(mons, 0x77AA)
+  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  -- Open the deposit list and stage the selector on the active box.
+  state:updateFixed({ { type = "confirm" } })
+  state:updateFixed({ { type = "confirm" } })
+  Assert.equal(assert(state:_view().boxTray).mode, "deposit", "the deposit selector is open")
+  Assert.equal(state._grid:index(), 0, "the selector opens on the active box's column")
+
+  -- Touch the fourth thumbnail: the source records that column before moving
+  -- to the OK plate.
+  state:updateFixed({ { type = "box_tray_select", column = 3 } })
+  Assert.equal(state._grid:index(), 8, "a touched thumbnail moves the cursor to the OK plate")
+  state:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(state._grid:index(), 3, "returning from OK restores the touched column")
+  state:updateFixed({ { type = "confirm" } })
+  Assert.notNil(mons:boxMon(3, 0), "the deposit lands in the remembered box")
+  Assert.equal(state._activeBox, 3, "a committed deposit switches the active box")
+  state:dispose()
+
+  -- Crossing the row edge steps one box across the whole set, so a held
+  -- selector pages without returning to the page arrows first.
+  local cyclingMons = monService()
+  addPartyMon(cyclingMons, 0x66CC)
+  local cycling = PcStorageState.new(openOptions(cyclingMons, 0, "wide"))
+  cycling:updateFixed({ { type = "confirm" } })
+  cycling:updateFixed({ { type = "confirm" } })
+  cycling:updateFixed({ { type = "box_tray_select", column = 5 } })
+  cycling:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(cycling._grid:index(), 5, "the last column is remembered")
+  cycling:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(assert(cycling:_view().boxTray).trayBox, 6, "leaving the last column steps to the next box")
+  Assert.equal(cycling._grid:index(), 0, "the cursor lands on the first column of the next box")
+  cycling:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.equal(assert(cycling:_view().boxTray).trayBox, 5, "leaving the first column steps back a box")
+  Assert.equal(cycling._grid:index(), 5, "the cursor lands on the last column of the previous box")
+  cycling:dispose()
+end
+
+function T.item_results_print_the_source_took_and_held_lines()
+  local mons = monService()
+  local factory = CatalogFixture.makeFactory(0x99BB, mons:catalog())
+  local boxed = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))
+  boxed.heldItem = "POTION"
+  local stored = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 0, mon = boxed } } }))
+  stored.publish()
+
+  -- Item mode BAG: "Put away Potion?" then "Placed Potion in the Bag.".
+  local take = PcStorageState.new(openOptions(mons, 3, "wide"))
+  take:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 0 } } })
+  take:updateFixed({ { type = "confirm" } })
+  Assert.equal(take:status().menu.actions[1], "bagItem", "a mon holding an item offers BAG")
+  take:updateFixed({ { type = "confirm" } })
+  local message = take:_view().message
+  Assert.notNil(message, "putting an item away asks first")
+  Assert.equal(message.id, 26, "the BAG half asks Put away ...?")
+  Assert.equal(message.subject, "Potion")
+  take:updateFixed({ { type = "confirm" } })
+  message = take:_view().message
+  Assert.notNil(message, "a successful put-away prints a result line")
+  Assert.equal(message.id, 27, "putting away prints Placed ... in the Bag.")
+  Assert.equal(message.subject, "Potion", "the line names the placed item")
+  take:dispose()
+
+  -- HELD ITEMS: "Take this Potion?" then "Took the Potion.".
+  local held = monService()
+  local heldMon = held:partyMon(0)
+  heldMon.heldItem = "POTION"
+  local prepared = assert(held:preparePartyChanges(held:partyRevision(), { { slot = 0, mon = heldMon } }))
+  prepared.publish()
+  local taking = PcStorageState.new(openOptions(held, 2, "wide"))
+  taking:updateFixed({ { type = "party" } })
+  taking:updateFixed({ { type = "action", action = "heldItems" } })
+  message = taking:_view().message
+  Assert.equal(message.id, 23, "taking asks Take this ...?")
+  taking:updateFixed({ { type = "confirm" } })
+  message = taking:_view().message
+  Assert.equal(message.id, 15, "taking prints Took the ...")
+  taking:dispose()
+end
+
+function T.drag_hints_follow_the_source_guards()
+  local mons = monService()
+  -- Every other party member is unusable, so a deposit drag warns instead.
+  local rect = PcStorageGeometry.partySlotRect(0, "left")
+  local x, y = rect.x + rect.width / 2, rect.y + rect.height / 2
+  local guarded = PcStorageState.new(openOptions(mons, 0, "wide"))
+  guarded:updateFixed({ { type = "storage_touch", target = { kind = "party", slot = 0 }, x = x, y = y, pointerId = "p" } })
+  Assert.equal(guarded:_view().message.id, 58, "a last usable party mon prints its warning hint")
+  guarded:dispose()
+
+  local full = monService()
+  for index = 2, 6 do
+    addPartyMon(full, 0xA0 + index)
+  end
+  local withdraw = PcStorageState.new(openOptions(full, 1, "wide"))
+  storePartyMon(full, 0, 0, 4)
+  withdraw:updateFixed({ { type = "storage_touch", target = { kind = "box", box = 0, slot = 4 }, x = 0, y = 0, pointerId = "p" } })
+  Assert.equal(withdraw:_view().message.id, 39, "a full party prints the party-full hint")
+  withdraw:dispose()
+end
+
+function T.stylus_tray_drag_drops_a_box_mon_onto_a_thumbnail_and_returns_to_the_tray()
+  local mons = monService()
+  storePartyMon(mons, 0, 0, 4)
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  state:updateFixed({ { type = "box_tab" } })
+  Assert.equal(assert(state:_view().boxTray).mode, "box", "the Move tray opens")
+  local fromX, fromY = boxCenter(4)
+  state:updateFixed({ {
+    type = "storage_touch",
+    target = { kind = "box", box = 0, slot = 4 },
+    x = fromX,
+    y = fromY,
+    pointerId = "pen",
+  } })
+  Assert.equal(state:status().phase, "carry", "the tray keeps the box grid draggable")
+  local rect = PcStorageGeometry.trayDropRect(2, false)
+  local toX, toY = rect.x + rect.width / 2, rect.y + rect.height / 2
+  state:updateFixed({ { type = "storage_drag_move", x = toX, y = toY, pointerId = "pen" } })
+  state:updateFixed({ { type = "storage_drag_release", x = toX, y = toY, pointerId = "pen" } })
+  Assert.notNil(mons:boxMon(2, 0), "the drop lands in the thumbnail's box")
+  Assert.isNil(mons:boxMon(0, 4), "the source cell empties")
+  Assert.isNil(state:_view().boxTray, "a committed tray drop closes the tray")
+
+  state:dispose()
+
+  -- Dropping back on the source resumes the tray instead of closing it.
+  local held = monService()
+  storePartyMon(held, 0, 0, 4)
+  local back = PcStorageState.new(openOptions(held, 2, "wide"))
+  back:updateFixed({ { type = "box_tab" } })
+  local bx, by = boxCenter(4)
+  back:updateFixed({ {
+    type = "storage_touch",
+    target = { kind = "box", box = 0, slot = 4 },
+    x = bx,
+    y = by,
+    pointerId = "pen",
+  } })
+  back:updateFixed({ { type = "storage_drag_release", x = bx, y = by, pointerId = "pen" } })
+  Assert.equal(assert(back:_view().boxTray).mode, "box", "a drop-back keeps the tray open")
+  Assert.notNil(held:boxMon(0, 4), "the mon stays in its cell")
+  Assert.isNil(back:status().carry)
+  back:dispose()
 end
 
 return { tests = T }

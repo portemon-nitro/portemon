@@ -197,6 +197,41 @@ function G2dRasterizer.renderScreen(charData, paletteData, screenData, source, o
   return { width = width, height = height, pixels = ffi.string(rgba, bytes) }
 end
 
+-- Render a rectangular grid of contiguous NCGR tiles through the shared
+-- pixel/palette path. Used by generated thumbnails whose source is a plain
+-- tile grid rather than a screen map.
+---@param charData G2dRasterizer.CharData
+---@param paletteData G2dRasterizer.PaletteData
+---@param firstTile integer zero-based first source tile
+---@param columns integer tiles per row
+---@param rows integer tile rows
+---@param paletteBank integer zero-based palette bank
+---@param source G2dRasterizer.SourceContext|nil
+---@return { width: integer, height: integer, pixels: string }
+function G2dRasterizer.renderTileGrid(charData, paletteData, firstTile, columns, rows, paletteBank, source)
+  assert(
+    type(columns) == "number" and columns > 0 and columns % 1 == 0,
+    "tile grid needs a positive integer column count"
+  )
+  assert(type(rows) == "number" and rows > 0 and rows % 1 == 0, "tile grid needs a positive integer row count")
+  local entries = {}
+  for row = 0, rows - 1 do
+    for column = 0, columns - 1 do
+      entries[#entries + 1] = {
+        tile = firstTile + row * columns + column,
+        palette = paletteBank,
+        flipH = false,
+        flipV = false,
+      }
+    end
+  end
+  return G2dRasterizer.renderScreen(charData, paletteData, {
+    width = columns * 8,
+    height = rows * 8,
+    entries = entries,
+  }, source)
+end
+
 -- Render selected background tiles in their source order. The HGSS shared
 -- touchscreen list menu selects these standalone border tiles by character
 -- offset instead of storing a screen map for the control.

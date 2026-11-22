@@ -68,7 +68,7 @@ local function compileStorageWindowFrames(archive, fileId, assets, dependencies,
   local character = decode("decodeChar", characterBytes, "storage.windowFrames.character")
   local palette = decode("decodePalette", paletteBytes, "storage.windowFrames.palette")
   local tileBytes = character.depth == 3 and 32 or 64
-  local frames = {}
+  local frames = {} ---@type table<string, table>
   for styleName, style in pairs(source.styles) do
     assert(
       style.characterByteOffset % tileBytes == 0,
@@ -105,7 +105,183 @@ local function compileStorageWindowFrames(archive, fileId, assets, dependencies,
     end
     frames[styleName] = styleFrames
   end
+  local function entry(role, index)
+    local color = assert(palette.colors[index + 1], "Storage window-frame palette covers " .. role)
+    return { r = color.r, g = color.g, b = color.b }
+  end
+  frames.fill = entry("fill", source.fillEntry)
+  frames.accentFill = entry("accentFill", source.accentFillEntry)
   return frames
+end
+
+-- Composes the member-14 plate roles (the tray MOVE/SORT ITEMS tab and the box
+-- tray SUMMARY plate) as three 8x24 strips the renderer tiles across a rect:
+-- an 8px left cap, a repeatable 8px middle and an 8px right cap, each with one
+-- source tile per 8px row.
+local function compileStoragePlates(archive, fileId, assets, dependencies, selections)
+  local palettes = {}
+  local character
+  local plates = {}
+  for roleName, role in pairs(PcSources.storagePlateRoles) do
+    local paletteKey = "storage.plates." .. roleName .. ".palette"
+    local characterKey = "storage.plates." .. roleName .. ".character"
+    if palettes[role.palette] == nil then
+      local paletteBytes, paletteHash = unpackMember(archive, role.palette)
+      dependencies[#dependencies + 1] = { role = paletteKey, sha1 = paletteHash }
+      palettes[role.palette] = decode("decodePalette", paletteBytes, paletteKey)
+    end
+    local characterBytes, characterHash = unpackMember(archive, role.character or 14)
+    dependencies[#dependencies + 1] = { role = characterKey, sha1 = characterHash }
+    if character == nil then
+      character = decode("decodeChar", characterBytes, characterKey)
+    end
+    local plate = {}
+    for _, part in ipairs({ "left", "middle", "right" }) do
+      local image = G2dRasterizer.renderScreen(character, palettes[role.palette], {
+        width = 8,
+        height = 24,
+        entries = {
+          { tile = role[part][1], palette = role.paletteBank, flipH = false, flipV = false },
+          { tile = role[part][2], palette = role.paletteBank, flipH = false, flipV = false },
+          { tile = role[part][3], palette = role.paletteBank, flipH = false, flipV = false },
+        },
+      }, { role = "storage.plates." .. roleName .. "." .. part })
+      local path = PcCache.assetDir() .. "/storage-plate-" .. roleName .. "-" .. part .. ".png"
+      assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
+      plate[part] = { image = path, width = image.width, height = image.height, anchorX = 0, anchorY = 0 }
+      selections["storage.plates." .. roleName .. "." .. part] = {
+        path = PcSources.archives.storage.path,
+        fileId = fileId,
+        members = { character = role.character or 14, palette = role.palette },
+        tiles = { role[part][1], role[part][2], role[part][3] },
+        paletteBank = role.paletteBank,
+      }
+    end
+    plates[roleName] = plate
+  end
+  return plates
+end
+
+-- The marking editor's own mark set: member 14 mark tiles through member 4 bank
+-- 1, drawn one 8x8 tile per well inside the member-10 panel.
+local function compileStoragePanelMarkings(archive, fileId, assets, dependencies, selections)
+  local source = PcSources.storagePanelMarkings
+  local characterBytes, characterHash = unpackMember(archive, source.character)
+  local paletteBytes, paletteHash = unpackMember(archive, source.palette)
+  dependencies[#dependencies + 1] = { role = "storage.panelMarkings.character", sha1 = characterHash }
+  dependencies[#dependencies + 1] = { role = "storage.panelMarkings.palette", sha1 = paletteHash }
+  local character = decode("decodeChar", characterBytes, "storage.panelMarkings.character")
+  local palette = decode("decodePalette", paletteBytes, "storage.panelMarkings.palette")
+  local markings = {}
+  for bit = 0, source.count - 1 do
+    local pair = {}
+    for _, state in ipairs({ "clear", "set" }) do
+      local tileId = (state == "clear" and source.clearTileBase or source.setTileBase) + bit
+      local image = G2dRasterizer.renderTileStrip(
+        character,
+        palette,
+        tileId,
+        1,
+        source.paletteBank,
+        { role = "storage.panelMarkings." .. bit .. "." .. state }
+      )
+      local path = PcCache.assetDir() .. "/storage-panel-marking-" .. bit .. "-" .. state .. ".png"
+      assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
+      pair[state] = { image = path, width = image.width, height = image.height, anchorX = 0, anchorY = 0 }
+      selections["storage.panelMarkings." .. bit .. "." .. state] = {
+        path = PcSources.archives.storage.path,
+        fileId = fileId,
+        members = { character = source.character, palette = source.palette },
+        tileId = tileId,
+        paletteBank = source.paletteBank,
+      }
+    end
+    markings[bit] = pair
+  end
+  return markings
+end
+
+-- The info panel's raw 16x8 "Lv."/"No." bitmaps: the message-printer glyph
+-- bank stores them as 4bpp tiles whose pixel values are palette indices
+-- (1 ink, 2 shadow, 0 clear) into the font palette the info windows use.
+local function compileStorageInfoGlyphs(fontArchive, fileId, assets, dependencies, selections)
+  local source = PcSources.storageInfoGlyphs
+  local characterBytes, characterHash = unpackMember(fontArchive, source.character)
+  local paletteBytes, paletteHash = unpackMember(fontArchive, source.palette)
+  dependencies[#dependencies + 1] = { role = "storage.infoGlyphs.character", sha1 = characterHash }
+  dependencies[#dependencies + 1] = { role = "storage.infoGlyphs.palette", sha1 = paletteHash }
+  local character = decode("decodeChar", characterBytes, "storage.infoGlyphs.character")
+  local palette = decode("decodePalette", paletteBytes, "storage.infoGlyphs.palette")
+  local glyphs = {}
+  for role, entry in pairs(source.tiles) do
+    local image = G2dRasterizer.renderTileStrip(
+      character,
+      palette,
+      entry[1],
+      entry[2],
+      source.paletteBank,
+      { role = "storage.infoGlyphs." .. role }
+    )
+    local path = PcCache.assetDir() .. "/storage-info-" .. role .. ".png"
+    assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
+    glyphs[role] = { image = path, width = image.width, height = image.height, anchorX = 0, anchorY = 0 }
+    selections["storage.infoGlyphs." .. role] = {
+      path = PcSources.archives.font.path,
+      fileId = fileId,
+      members = { character = source.character, palette = source.palette },
+      tileId = entry[1],
+      tileCount = entry[2],
+      paletteBank = source.paletteBank,
+    }
+  end
+  return glyphs
+end
+
+-- The shared two-row confirmation prompt (PCBox_ShowYesNoPrompt): four 48x32
+-- baked button tilemaps. YES reads the first palette bank and NO the second;
+-- the selected variant replaces the idle art while that row is highlighted.
+local function compileStorageYesNo(promptArchive, fileId, assets, dependencies, selections)
+  local source = PcSources.storageYesNo
+  local paletteBytes, paletteHash = unpackMember(promptArchive, source.paletteMember)
+  local characterBytes, characterHash = unpackMember(promptArchive, source.charMember)
+  dependencies[#dependencies + 1] = { role = "storage.yesNo.palette", sha1 = paletteHash }
+  dependencies[#dependencies + 1] = { role = "storage.yesNo.character", sha1 = characterHash }
+  local palette = decode("decodePalette", paletteBytes, "storage.yesNo.palette")
+  local character = decode("decodeChar", characterBytes, "storage.yesNo.character")
+  local buttons = {}
+  for _, button in ipairs({
+    { key = "yesNormal", member = source.yesNormalScreen, bank = source.paletteBanks[1] },
+    { key = "yesSelected", member = source.yesSelectedScreen, bank = source.paletteBanks[1] },
+    { key = "noNormal", member = source.noNormalScreen, bank = source.paletteBanks[2] },
+    { key = "noSelected", member = source.noSelectedScreen, bank = source.paletteBanks[2] },
+  }) do
+    local screenBytes, screenHash = unpackMember(promptArchive, button.member)
+    dependencies[#dependencies + 1] = { role = "storage.yesNo." .. button.key, sha1 = screenHash }
+    local screen = decode("decodeScreen", screenBytes, "storage.yesNo." .. button.key)
+    local entries = {}
+    for index, entry in ipairs(screen.entries) do
+      entries[index] = { tile = entry.tile, palette = button.bank, flipH = entry.flipH, flipV = entry.flipV }
+    end
+    local image = G2dRasterizer.renderScreen(character, palette, {
+      width = screen.width,
+      height = screen.height,
+      entries = entries,
+    }, { role = "storage.yesNo." .. button.key })
+    assert(
+      image.width == 48 and image.height == 32,
+      "the Storage confirmation button is the compact 48x32 surface: " .. button.key
+    )
+    local path = PcCache.assetDir() .. "/storage-yesno-" .. button.key .. ".png"
+    assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
+    buttons[button.key] = { image = path, width = image.width, height = image.height, anchorX = 0, anchorY = 0 }
+    selections["storage.yesNo." .. button.key] = {
+      path = PcSources.archives.touch_subwindow.path,
+      fileId = fileId,
+      members = { character = source.charMember, palette = source.paletteMember, screen = button.member },
+      paletteBank = button.bank,
+    }
+  end
+  return buttons
 end
 
 local function compileStorageMarkings(archive, fileId, assets, dependencies, selections)
@@ -146,6 +322,138 @@ local function compileStorageMarkings(archive, fileId, assets, dependencies, sel
   return markings
 end
 
+-- Copies a decoded palette with one entry replaced by a concrete color. The
+-- thumbnail and swatch sources encode the wallpaper fill as a palette index;
+-- the retail code rewrites that index to a wallpaper color slot before upload.
+---@param palette table<string, unknown>
+---@param index integer zero-based color index
+---@param color { r: integer, g: integer, b: integer }
+---@return table<string, unknown>
+local function paletteWithColor(palette, index, color)
+  local colors = {}
+  for position, entry in ipairs(palette.colors) do
+    colors[position] = { r = entry.r, g = entry.g, b = entry.b }
+  end
+  assert(colors[index + 1] ~= nil, "PC source palette covers the recolored entry " .. index)
+  colors[index + 1] = { r = color.r, g = color.g, b = color.b }
+  return { colors = colors }
+end
+
+-- Box tray thumbnails: a 32x32 character tile grid whose fill index is the
+-- box wallpaper color, plus the ten BASE_COLOR dot colors used for each mon.
+---@param archive Narc
+---@param swatchColors { colors: table<integer, { r: integer, g: integer, b: integer }>, locked: { r: integer, g: integer, b: integer } }
+---@param assets table<string, string>
+---@param dependencies table<integer, table<string, unknown>>
+---@return table<string, unknown>
+local function compileStorageBoxThumbnails(archive, swatchColors, assets, dependencies)
+  local source = PcSources.storageBoxThumbnail
+  local characterBytes, characterHash = unpackMember(archive, source.character)
+  local paletteBytes, paletteHash = unpackMember(archive, source.palette)
+  dependencies[#dependencies + 1] = { role = "storage.boxThumbnail.character", sha1 = characterHash }
+  dependencies[#dependencies + 1] = { role = "storage.boxThumbnail.palette", sha1 = paletteHash }
+  local character = decode("decodeChar", characterBytes, "storage.boxThumbnail.character")
+  local palette = decode("decodePalette", paletteBytes, "storage.boxThumbnail.palette")
+  local variants = {}
+  for logicalId = 0, 23 do
+    local color = assert(swatchColors.colors[logicalId], "wallpaper color covers logical " .. logicalId)
+    local image = G2dRasterizer.renderTileGrid(
+      character,
+      paletteWithColor(palette, source.fillIndex, color),
+      0,
+      source.columns,
+      source.rows,
+      0,
+      { role = "storage.boxThumbnail." .. logicalId }
+    )
+    local path = PcCache.assetDir() .. "/storage-box-thumbnail-" .. logicalId .. ".png"
+    assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
+    variants[logicalId] = { image = path, width = image.width, height = image.height, anchorX = 0, anchorY = 0 }
+  end
+  local lockedImage = G2dRasterizer.renderTileGrid(
+    character,
+    paletteWithColor(palette, source.fillIndex, swatchColors.locked),
+    0,
+    source.columns,
+    source.rows,
+    0,
+    { role = "storage.boxThumbnail.locked" }
+  )
+  local lockedPath = PcCache.assetDir() .. "/storage-box-thumbnail-locked.png"
+  assets[lockedPath] = PngWriter.encode(lockedImage.width, lockedImage.height, lockedImage.pixels)
+  local dots = {}
+  local function isZero(entry)
+    return entry == nil or (entry.r == 0 and entry.g == 0 and entry.b == 0)
+  end
+  for color = 0, #source.dotColors - 1 do
+    -- The source indexes the dot colours through the second OBJ palette slot
+    -- (0x20). This member is one 16-colour bank, so the dot entries live at
+    -- their own indexes; read the slot-offset entry when that VRAM half is
+    -- present and fall back to the member's own bank otherwise.
+    local base = source.dotColors[color + 1] + 1
+    local entry = palette.colors[base + source.dotPaletteBase]
+    if isZero(entry) then
+      entry = palette.colors[base]
+    end
+    dots[color] = { r = assert(entry).r, g = entry.g, b = entry.b }
+  end
+  return {
+    variants = variants,
+    locked = { image = lockedPath, width = lockedImage.width, height = lockedImage.height, anchorX = 0, anchorY = 0 },
+    dots = dots,
+    dotOrigin = { x = source.dotOrigin.x, y = source.dotOrigin.y },
+    dotStep = source.dotStep,
+  }
+end
+
+-- Wallpaper list swatches: the 24x24 character shape with its fill index
+-- replaced by the same canonical wallpaper colors, rasterized through the
+-- source cell's four objects.
+---@param archive Narc
+---@param swatchColors { colors: table<integer, { r: integer, g: integer, b: integer }>, locked: { r: integer, g: integer, b: integer } }
+---@param assets table<string, string>
+---@param dependencies table<integer, table<string, unknown>>
+---@return table<string, unknown>
+local function compileStorageWallpaperSwatchSprites(archive, swatchColors, assets, dependencies)
+  local source = PcSources.storageWallpaperSwatch
+  local characterBytes, characterHash = unpackMember(archive, source.character)
+  local paletteBytes, paletteHash = unpackMember(archive, source.palette)
+  dependencies[#dependencies + 1] = { role = "storage.wallpaperSwatch.character", sha1 = characterHash }
+  dependencies[#dependencies + 1] = { role = "storage.wallpaperSwatch.palette", sha1 = paletteHash }
+  local character = decode("decodeChar", characterBytes, "storage.wallpaperSwatch.character")
+  local palette = decode("decodePalette", paletteBytes, "storage.wallpaperSwatch.palette")
+  local cellBytes, cellHash = unpackMember(archive, source.cell)
+  dependencies[#dependencies + 1] = { role = "storage.wallpaperSwatch.cell", sha1 = cellHash }
+  local cell = decode("decodeCell", cellBytes, "storage.wallpaperSwatch.cell")
+  local variants = {}
+  -- The swatch is one four-object NCER cell, so the art comes from the cell
+  -- layout rather than from a row-major tile grid.
+  local function render(color, role)
+    local image = G2dRasterizer.renderCell(
+      character,
+      paletteWithColor(palette, source.fillIndex, color),
+      assert(cell.cells[1], "wallpaper swatch cell carries its object list"),
+      { role = "storage.wallpaperSwatch." .. role }
+    )
+    local path = PcCache.assetDir() .. "/storage-wallpaper-swatch-" .. role .. ".png"
+    assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
+    return {
+      image = path,
+      width = image.width,
+      height = image.height,
+      anchorX = image.origin.x,
+      anchorY = image.origin.y,
+    }
+  end
+  for logicalId = 0, 23 do
+    variants[logicalId] = render(swatchColors.colors[logicalId], tostring(logicalId))
+  end
+  return {
+    variants = variants,
+    locked = render(swatchColors.locked, "locked"),
+  }
+end
+
 local function compileStorageSprites(archive, assets, dependencies)
   local members = PcSources.storageArrows
   local decoded = {}
@@ -160,14 +468,19 @@ local function compileStorageSprites(archive, assets, dependencies)
   end
   local cellBytes = unpackMember(archive, members.cell)
   local mapping = assert(G2dDecoder.decodeCellMapping(cellBytes, { label = "storage.sprites.cell" }))
-  local function frameOf(animationIndex, role, fileStem)
+  -- One rendered frame of an NCER/NANR animation, anchored at its cell
+  -- origin. Static roles keep their first frame; the hand poses carry every
+  -- frame with its source tick duration so a two-frame pulse animates.
+  local function frameOf(animationIndex, role, fileStem, frameIndex)
+    local animation = assert(decoded.animation.anims[animationIndex + 1], "Storage sprite animation exists: " .. role)
+    local sourceFrame = assert(animation.frames[frameIndex], "Storage sprite animation frame exists: " .. role)
     local rendered = G2dRasterizer.renderAnimationFrame(
       decoded.character,
       decoded.palette,
       decoded.cell,
-      decoded.animation.anims[animationIndex + 1],
-      1,
-      { role = role, frame = 0 },
+      animation,
+      frameIndex,
+      { role = role, frame = frameIndex - 1 },
       nil,
       mapping
     )
@@ -179,16 +492,32 @@ local function compileStorageSprites(archive, assets, dependencies)
       height = rendered.height,
       anchorX = rendered.offset.x,
       anchorY = rendered.offset.y,
+      duration = assert(sourceFrame.duration, "Storage sprite frames carry their source tick duration"),
     }
   end
-  local arrows, cursors = {}, {}
+  local function sequenceOf(animationIndex, role, fileStem)
+    local animation = assert(decoded.animation.anims[animationIndex + 1], "Storage sprite animation exists: " .. role)
+    local frames = {}
+    for frameIndex = 1, #animation.frames do
+      frames[#frames + 1] = frameOf(animationIndex, role, fileStem .. "-" .. (frameIndex - 1), frameIndex)
+    end
+    return { frames = frames, loop = animation.playMode == "forward_loop" }
+  end
+  local arrows, cursors, tray = {}, {}, {}
   for side, animationIndex in pairs(members.animations) do
-    arrows[side] = frameOf(animationIndex, "storage.arrows." .. side, "storage-arrow-" .. side)
+    local visual = frameOf(animationIndex, "storage.arrows." .. side, "storage-arrow-" .. side, 1)
+    visual.duration = nil
+    arrows[side] = visual
   end
   for pose, animationIndex in pairs(PcSources.storageCursorAnimations) do
-    cursors[pose] = frameOf(animationIndex, "storage.cursors." .. pose, "storage-cursor-" .. pose)
+    cursors[pose] = sequenceOf(animationIndex, "storage.cursors." .. pose, "storage-cursor-" .. pose)
   end
-  return arrows, cursors
+  for role, animationIndex in pairs(PcSources.storageTrayAnimations) do
+    local visual = frameOf(animationIndex, "storage.tray." .. role, "storage-tray-" .. role, 1)
+    visual.duration = nil
+    tray[role] = visual
+  end
+  return arrows, cursors, tray
 end
 
 local function compileWallpaperSwatches(archive, dependencies)
@@ -200,11 +529,30 @@ local function compileWallpaperSwatches(archive, dependencies)
     local entry = assert(palette.colors[index + 1], "wallpaper swatch palette covers entry " .. index)
     return { r = entry.r, g = entry.g, b = entry.b }
   end
+  -- PCBox_ColorWallpaperThumbnail maps logical wallpaper n to palette entry
+  -- n + 16, i.e. the palette's second bank holds the sixteen regular wallpaper
+  -- colours. The bonus entries (n >= 16) and the locked marker (0x28) resolve
+  -- past this member through VRAM the loader never installs, so they fall back
+  -- to the member's own band instead of inventing a colour.
+  local count = #palette.colors
+  local available = count - source.colorBase
+  assert(available > 0, "wallpaper colour palette carries its wallpaper band")
+  local function entryFor(logicalId)
+    local index = source.colorBase + logicalId
+    if index >= count then
+      index = source.colorBase + (logicalId % available)
+    end
+    return index
+  end
   local colors = {}
   for logicalId = 0, source.count - 1 do
-    colors[logicalId] = color(logicalId)
+    colors[logicalId] = color(assert(entryFor(logicalId)))
   end
-  return { colors = colors, locked = color(source.lockedIndex) }
+  local lockedIndex = source.lockedColorIndex
+  if lockedIndex >= count then
+    lockedIndex = count - 1
+  end
+  return { colors = colors, locked = color(lockedIndex) }
 end
 
 local function compileAlbumAnimations(archive, assets, dependencies)
@@ -794,7 +1142,7 @@ local function _compile(romFs)
   assert(romFs and romFs.metadata and romFs.openNarc and romFs.fileIdForPath, "compile requires a RomFs")
   local metadata = assert(romFs:metadata())
   assert(type(metadata.sha1) == "string", "ROM metadata carries its SHA-1")
-  local dependencies = { PcCache.FORMAT .. ":" .. PcCache.SCHEMA }
+  local dependencies = { PcCache.FORMAT .. ":" .. PcCache.SCHEMA } ---@type (string|table)[]
   local assets, archives, selections = {}, {}, {}
   local storageArchive
   storageArchive, archives.storage = openSource(romFs, "storage", dependencies)
@@ -804,9 +1152,24 @@ local function _compile(romFs)
   stationeryArchive, archives.stationery = openSource(romFs, "stationery", dependencies)
   local photoArchive
   photoArchive, archives.photoAlbum = openSource(romFs, "photoAlbum", dependencies)
+  local fontArchive
+  fontArchive, archives.font = openSource(romFs, "font", dependencies)
+  local promptArchive
+  promptArchive, archives.touch_subwindow = openSource(romFs, "touch_subwindow", dependencies)
 
-  local storageUi = {}
-  for _, role in ipairs({ "boxPane", "infoPane", "partyTray", "markingPanel", "wallpaperBar" }) do
+  local storageUi = {} ---@type table<string, unknown>
+  for _, role in ipairs({
+    "boxPane",
+    "infoPane",
+    "partyTray",
+    "partyTrayMove",
+    "markingPanel",
+    "wallpaperBar",
+    "movesPanel",
+    "itemPanel",
+    "boxTray",
+    "depositBoxTray",
+  }) do
     local members = assert(PcSources.storageUiMembers[role], "Storage UI role has source members")
     selections["storage.ui." .. role] = {
       path = PcSources.archives.storage.path,
@@ -815,10 +1178,30 @@ local function _compile(romFs)
     }
     storageUi[role] = renderBackground(storageArchive, members, "storage-" .. role, assets, dependencies)
   end
-  storageUi.arrows, storageUi.cursors = compileStorageSprites(storageArchive, assets, dependencies)
+  storageUi.arrows, storageUi.cursors, storageUi.tray = compileStorageSprites(storageArchive, assets, dependencies)
+  storageUi.infoGlyphs = compileStorageInfoGlyphs(fontArchive, archives.font.fileId, assets, dependencies, selections)
+  storageUi.yesNo =
+    compileStorageYesNo(promptArchive, archives.touch_subwindow.fileId, assets, dependencies, selections)
   storageUi.windowFrames =
     compileStorageWindowFrames(storageArchive, archives.storage.fileId, assets, dependencies, selections)
+  storageUi.plates = compileStoragePlates(storageArchive, archives.storage.fileId, assets, dependencies, selections)
+  storageUi.panelMarkings =
+    compileStoragePanelMarkings(storageArchive, archives.storage.fileId, assets, dependencies, selections)
   storageUi.markings = compileStorageMarkings(storageArchive, archives.storage.fileId, assets, dependencies, selections)
+  do
+    local fillSource = PcSources.storageItemPanelFill
+    local fillBytes, fillHash = unpackMember(storageArchive, fillSource.palette)
+    dependencies[#dependencies + 1] = { role = "storage.itemPanelFill.palette", sha1 = fillHash }
+    local fillPalette = decode("decodePalette", fillBytes, "storage.itemPanelFill.palette")
+    local index = fillSource.paletteBank * 16 + fillSource.entry
+    local color = assert(fillPalette.colors[index + 1], "the item panel fill palette covers its entry")
+    storageUi.itemPanelFill = { r = color.r, g = color.g, b = color.b }
+  end
+
+  local wallpaperSwatches = compileWallpaperSwatches(storageArchive, dependencies)
+  local boxThumbnail = compileStorageBoxThumbnails(storageArchive, wallpaperSwatches, assets, dependencies)
+  local wallpaperSwatchArt =
+    compileStorageWallpaperSwatchSprites(storageArchive, wallpaperSwatches, assets, dependencies)
 
   local wallpapers = {}
   for _, wallpaperId in ipairs(PcSources.wallpaperIds) do
@@ -938,7 +1321,9 @@ local function _compile(romFs)
     storage = {
       backgrounds = { default = storageBase },
       wallpapers = wallpapers,
-      wallpaperSwatches = compileWallpaperSwatches(storageArchive, dependencies),
+      wallpaperSwatches = wallpaperSwatches,
+      wallpaperSwatchArt = wallpaperSwatchArt,
+      boxThumbnail = boxThumbnail,
       ui = storageUi,
       boxNames = boxNames,
       expansionNameFormat = expansionNameFormat,

@@ -94,7 +94,7 @@ local function manifest()
     }
   end
   return {
-    schema = "g4-pc-v4",
+    schema = "g4-pc-v5",
     mailbox = { background = {}, geometry = { visibleLetters = 10 }, pageSize = 10 },
     mail = { stationery = stationery, geometry = { iconSlots = 3 } },
     text = { banks = { [233] = { [0] = {}, [1] = {}, [2] = {}, [3] = {} } } },

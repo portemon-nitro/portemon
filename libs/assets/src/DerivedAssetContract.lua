@@ -702,7 +702,7 @@ DerivedAssetContract.party = {
 -- producer is retired with it.
 DerivedAssetContract.pc = {
   cacheFormat = "pc-cache-v1",
-  schema = "g4-pc-v4",
+  schema = "g4-pc-v5",
 }
 
 -- The Pokegear family carries the source-independent shell, Configure,

@@ -124,14 +124,14 @@ function T.stale_joint_item_preview_does_not_change_bag_or_mon()
     source = { kind = "party", slot = 0 },
     item = "POTION",
   })
-  Assert.equal(preview.kind, "allowed")
+  Assert.equal(preview.kind, "confirm", "taking an item always asks first")
   local beforeMon, beforeBag = mons:partyMon(0), bag:quantity("POTION")
   local external = mons:partyMon(0)
   external.heldItem = "SITRUS_BERRY"
   local changed = assert(mons:preparePartyChanges(mons:partyRevision(), { { slot = 0, mon = external } }))
   changed.publish()
 
-  local result = actions:commit(preview)
+  local result = actions:commit(preview, true)
   Assert.equal(result.kind, "stale")
   Assert.equal(bag:quantity("POTION"), beforeBag, "stale item transfer retains bag quantity")
   Assert.equal(mons:partyMon(0).heldItem, "SITRUS_BERRY", "stale item transfer keeps external mon change")

@@ -1487,7 +1487,7 @@ function T.action_snapshot_carries_the_surfing_state_and_surf_permission()
         end,
       },
       partyKnowsMove = function(move)
-        Assert.equal(move, "surf")
+        Assert.equal(move, "SURF", "party move knowledge uses the mon catalog's move key")
         return knowsSurf
       end,
     })

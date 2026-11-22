@@ -18,6 +18,7 @@ local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonCache = require("libs.assets.src.MonCache")
+local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
@@ -1586,12 +1587,12 @@ function T.dispose_releases_owned_resources_exactly_once()
       Assert.equal(calls.hero, 1, "repeat disposal never releases the hero model renderer twice")
       Assert.equal(calls.dialogue, 1, "repeat disposal never releases the dialogue renderer twice")
       Assert.equal(calls.signpost, 1, "repeat disposal never releases the signpost renderer twice")
-      -- The field owns four text renderers sharing one constructor seam:
-      -- the field text renderer and the battle narration, menu, and
-      -- health-box renderers. The phone list borrows the battle menu
-      -- renderer for its font-4 names instead of owning a second one.
-      -- Repeat disposal releases each exactly once.
-      Assert.equal(calls.text, 4, "repeat disposal releases each owned text renderer exactly once")
+      -- The field owns five text renderers sharing one constructor seam:
+      -- the field text renderer, the battle narration, menu, and health-box
+      -- renderers, and the PC button-label renderer. The phone list borrows
+      -- the battle menu renderer for its font-4 names. Repeat disposal
+      -- releases each exactly once.
+      Assert.equal(calls.text, 5, "repeat disposal releases each owned text renderer exactly once")
       Assert.equal(calls.renderer, 1, "repeat disposal never releases the field renderer twice")
       Assert.equal(calls.staticEffect, 2, "repeat disposal releases each static effect renderer once")
       Assert.equal(calls.terrain, 1, "repeat disposal never releases the terrain effect renderer twice")
@@ -1609,10 +1610,10 @@ function T.dispose_releases_owned_resources_exactly_once()
   end
 end
 
--- The phone contact names borrow the battle menu renderer (the single
--- font-4 owner) instead of constructing a second font-4 renderer: one
--- font-4 construction, the borrowed key pointing at the battle menu
--- instance, and no extra release beside the battle roles.
+-- The phone contact names borrow the battle menu renderer instead of
+-- constructing their own: the borrowed key points at the battle menu instance
+-- and adds no release beside the owned roles. Field construction owns two
+-- font-4 renderers (the battle menu and the PC button labels).
 function T.phone_names_borrow_the_battle_menu_renderer()
   local sink, calls = {}, {}
   withProductionComposition(sink, calls, compositionRuntime(), function(resources)
@@ -1622,7 +1623,7 @@ function T.phone_names_borrow_the_battle_menu_renderer()
         font4 = font4 + 1
       end
     end
-    Assert.equal(font4, 1, "field construction owns exactly one font-4 renderer")
+    Assert.equal(font4, 2, "field construction owns the battle-menu and PC-label font-4 renderers")
     local menu = assert(resources.battleTextRenderers, "field resources own the battle text roles").menu
     Assert.notNil(menu, "the battle menu renderer exists to lend")
     Assert.isTrue(
@@ -1630,7 +1631,7 @@ function T.phone_names_borrow_the_battle_menu_renderer()
       "the phone name renderer borrows the battle menu instance by reference"
     )
     resources:dispose()
-    Assert.equal(calls.text, 4, "disposal releases the four owned text renderers exactly once")
+    Assert.equal(calls.text, 5, "disposal releases the five owned text renderers exactly once")
   end)
 end
 
@@ -2306,24 +2307,61 @@ local function transitionVisualPaths(manifest)
     storage.ui.boxPane,
     storage.ui.infoPane,
     storage.ui.partyTray,
+    storage.ui.partyTrayMove,
     storage.ui.markingPanel,
     storage.ui.wallpaperBar,
     storage.ui.arrows.left,
     storage.ui.arrows.right,
-    storage.ui.cursors.browse,
-    storage.ui.cursors.menu,
-    storage.ui.cursors.carry,
+    storage.ui.movesPanel,
+    storage.ui.itemPanel,
+    storage.ui.boxTray,
+    storage.ui.depositBoxTray,
+    storage.ui.tray.prev,
+    storage.ui.tray.next,
+    storage.ui.tray.marker,
+    storage.ui.tray.cursor,
+    storage.ui.tray.wallpaperCursor,
+    storage.ui.tray.label,
   }
+  for _, pose in pairs(storage.ui.cursors) do
+    for _, frame in ipairs(pose.frames) do
+      all[#all + 1] = frame
+    end
+  end
+  all[#all + 1] = storage.ui.infoGlyphs.lv
+  all[#all + 1] = storage.ui.infoGlyphs.no
+  for _, key in ipairs({ "yesNormal", "yesSelected", "noNormal", "noSelected" }) do
+    all[#all + 1] = storage.ui.yesNo[key]
+  end
+  for _, visual in pairs(storage.wallpaperSwatchArt.variants) do
+    all[#all + 1] = visual
+  end
+  all[#all + 1] = storage.wallpaperSwatchArt.locked
+  for _, visual in pairs(storage.boxThumbnail.variants) do
+    all[#all + 1] = visual
+  end
+  all[#all + 1] = storage.boxThumbnail.locked
   for _, visual in pairs(storage.wallpapers) do
     all[#all + 1] = visual
   end
-  for _, pair in pairs(storage.ui.markings) do
-    all[#all + 1] = pair.clear
-    all[#all + 1] = pair.set
+  for _, set in ipairs({ storage.ui.markings, storage.ui.panelMarkings }) do
+    for _, pair in pairs(set) do
+      all[#all + 1] = pair.clear
+      all[#all + 1] = pair.set
+    end
+  end
+  for _, plate in pairs(storage.ui.plates) do
+    all[#all + 1] = plate.left
+    all[#all + 1] = plate.middle
+    all[#all + 1] = plate.right
   end
   for _, style in pairs(storage.ui.windowFrames) do
-    for _, visual in pairs(style) do
-      all[#all + 1] = visual
+    if type(style) == "table" and style.image == nil then
+      for _, visual in pairs(style) do
+        if type(visual) == "table" and type(visual.image) == "string" then
+          all[#all + 1] = visual
+        end
+      end
     end
   end
   return all
@@ -2342,9 +2380,29 @@ local function transitionRenderer(pool)
   for _, visual in ipairs(transitionVisualPaths(manifest)) do
     cache:write(visual.image, image)
   end
+  local portraitParts = {}
+  for _, species in ipairs({ "CHIKORITA", "TOTODILE" }) do
+    for _, gender in ipairs({ "male", "female" }) do
+      for _, shiny in ipairs({ "plain", "shiny" }) do
+        portraitParts[#portraitParts + 1] = string.format(
+          "[%q] = { pageId = 0, frames = { { x = 0, y = 0, width = 80, height = 80 } }, width = 80, height = 80 }",
+          species .. "/f0/" .. gender .. "/" .. shiny
+        )
+      end
+    end
+  end
+  cache:write(
+    MonCache.portraitManifestPath(),
+    "return { entries = { " .. table.concat(portraitParts, ",") .. " }, pages = { [0] = { width = 80, height = 80 } } }"
+  )
+  cache:write(
+    MoveIconCache.manifestPath(),
+    "return { schema = 'g4-move-icons-v1', types = { grass = { image = 'assets/generated/move-icons/type-grass.png', width = 32, height = 16, offset = { x = -16, y = -8 } }, poison = { image = 'assets/generated/move-icons/type-poison.png', width = 32, height = 16, offset = { x = -16, y = -8 } }, water = { image = 'assets/generated/move-icons/type-water.png', width = 32, height = 16, offset = { x = -16, y = -8 } } }, categories = {} }"
+  )
   local graphics = FakeGraphics.new({})
   local text = {
     drawText = function() end,
+    drawTextWithColorVariant = function() end,
     textWidth = function()
       return 0
     end,

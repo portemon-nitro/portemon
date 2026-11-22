@@ -25,7 +25,8 @@ function T.source_projection_keeps_pc_geometry_and_animation_ticks(romFs, _)
   Assert.isTrue(next(storage.backgrounds) ~= nil, "Storage backgrounds have required semantic records")
   Assert.isTrue(next(storage.ui) ~= nil, "Storage UI roles have required semantic records")
   local windowFrames = assert(storage.ui.windowFrames)
-  Assert.equal(countKeys(windowFrames), 2, "Storage retains standard and accent frame strips")
+  Assert.equal(countKeys(windowFrames), 4, "Storage retains both frame strips and their fill colors")
+  Assert.isTrue(windowFrames.fill ~= nil and windowFrames.accentFill ~= nil, "frame plates carry their interior fills")
   local framePixels = {}
   for _, style in ipairs({ "standard", "accent" }) do
     local banks = assert(windowFrames[style], "Storage text-window frame style resolves: " .. style)

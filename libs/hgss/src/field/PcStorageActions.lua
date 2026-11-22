@@ -87,15 +87,37 @@ local function hasCapsule(mon)
   return type(capsule) == "table" and (capsule.id ~= 0 or #capsule.seals > 0)
 end
 
-function PcStorageActions:_firstProtectedMove(mon)
+-- The custody guards the source checks before a party mon may leave: Mail
+-- and Ball Capsule attachment. The drag hints ask the same questions, so the
+-- rule stays here with the previews that enforce it.
+function PcStorageActions.hasMail(mon)
+  return type(mon) == "table" and hasMail(mon)
+end
+
+function PcStorageActions.hasCapsule(mon)
+  return type(mon) == "table" and hasCapsule(mon)
+end
+
+-- The four moves PCBox_RunReleaseMoveCheck refuses to let leave the save:
+-- Surf, Defog, Waterfall and Fly (gPCBoxReleaseCheckMoves).
+local RELEASE_CHECK_MOVES = { [57] = true, [431] = true, [127] = true, [19] = true }
+
+---@param mon table<string, unknown>
+---@return string[] every release-check move the mon knows
+function PcStorageActions:_protectedMoves(mon)
+  local moves = {}
   for _, entry in ipairs(mon.moves) do
     local definition = self._mons:catalog():move(entry.move)
-    local id = definition.nativeId
-    if id == 57 or id == 431 or id == 127 or id == 19 then
-      return entry.move
+    if RELEASE_CHECK_MOVES[definition.nativeId] and not moves[entry.move] then
+      moves[entry.move] = true
     end
   end
-  return nil
+  local list = {}
+  for move in pairs(moves) do
+    list[#list + 1] = move
+  end
+  table.sort(list)
+  return list
 end
 
 function PcStorageActions:_hasOtherMove(target, moveKey)
@@ -155,7 +177,7 @@ function PcStorageActions:_normalizeParty(mon)
   return normalized
 end
 
-function PcStorageActions:_lastUsableAfterRemoving(address)
+function PcStorageActions:lastUsableAfterRemoving(address)
   local usable = false
   for slot = 0, self._mons:partyCount() - 1 do
     if not (address.kind == "party" and address.slot == slot) then
@@ -230,7 +252,7 @@ function PcStorageActions:_previewCustodyMove(request, normalized, decision)
     if hasCapsule(partyExitMon) then
       return refusal("capsule_attached")
     end
-    local partyRemainsUsable = self:_lastUsableAfterRemoving(partyExitAddress)
+    local partyRemainsUsable = self:lastUsableAfterRemoving(partyExitAddress)
     if incomingPartyMon ~= nil and not incomingPartyMon.isEgg and incomingPartyMon.condition.currentHp > 0 then
       partyRemainsUsable = true
     end
@@ -256,20 +278,24 @@ function PcStorageActions:_previewRelease(request, decision)
   if hasCapsule(mon) then
     return refusal("capsule_attached")
   end
-  if request.source.kind == "party" and not self:_lastUsableAfterRemoving(request.source) then
+  if request.source.kind == "party" and not self:lastUsableAfterRemoving(request.source) then
     return refusal("last_usable")
   end
-  local protected = self:_firstProtectedMove(mon)
-  if protected ~= nil and not self:_hasOtherMove(request.source, protected) then
-    decision.kind = "refused"
-    decision.reason = "hm_return"
-    decision.message = "hm_return"
-    decision.returnMove = protected
-    decision.outcome = "returned"
-    return decision
+  -- Every release-check move on the mon must be known by another mon; one
+  -- uncovered move brings the mon back (PCBox_RunReleaseMoveCheck).
+  local protected = self:_protectedMoves(mon)
+  for _, move in ipairs(protected) do
+    if not self:_hasOtherMove(request.source, move) then
+      decision.kind = "refused"
+      decision.reason = "hm_return"
+      decision.message = "hm_return"
+      decision.returnMove = move
+      decision.outcome = "returned"
+      return decision
+    end
   end
   decision.kind = "confirm"
-  decision.returnMove = protected
+  decision.returnMove = protected[1]
   decision.outcome = "removed"
   return decision
 end
@@ -292,6 +318,8 @@ function PcStorageActions:_previewItemTransfer(request, normalized, decision)
       return refusal("bag_full")
     end
     normalized.item = mon.heldItem
+    -- PCBox_PrintTakeItemPrompt: taking always asks before the transfer.
+    decision.kind = "confirm"
   else
     assert(type(request.item) == "string", "giving names a semantic item")
     local item = self._bag:catalog():item(request.item)
