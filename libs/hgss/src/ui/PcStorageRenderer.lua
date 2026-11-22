@@ -374,7 +374,7 @@ local function requiredPaths(self, view)
   add(assert(storage.wallpapers[wallpaperId], "selected wallpaper is compiled"))
   add(ui.boxPane)
   local editor = view.editor
-  local trayOpen = view.tray ~= "closed"
+  local trayOpen = view.tray ~= "closed" or view.transferSide ~= nil
   if editor == nil and not trayOpen and view.message == nil and view.boxTray == nil then
     add(ui.arrows.left)
     add(ui.arrows.right)
@@ -1324,7 +1324,8 @@ function PcStorageRenderer:drawPane(view, resources, paneId, placement, animated
     -- The box arrows are hidden while the party panel, a menu, a prompt or an
     -- editor occupies the screen (PCBox_SetBoxArrowsVisible call sites).
     local editing = view.editor ~= nil
-    local trayOpen = view.tray ~= "closed"
+    local traySide = view.tray ~= "closed" and view.tray or view.transferSide
+    local trayOpen = traySide ~= nil
     local boxArrows = not editing and not trayOpen and view.message == nil and view.boxTray == nil
     if boxArrows then
       for side, center in pairs(PcStorageGeometry.BOX_ARROW_CENTERS) do
@@ -1333,7 +1334,7 @@ function PcStorageRenderer:drawPane(view, resources, paneId, placement, animated
       end
     end
     if trayOpen then
-      local origin = PcStorageGeometry.PARTY_TRAY_ORIGINS[view.tray]
+      local origin = PcStorageGeometry.PARTY_TRAY_ORIGINS[traySide]
       -- Move/Item modes load the panel art that carries the SWITCH/EXIT plate.
       local partyTray = view.mode >= 2 and assert(storage.ui.partyTrayMove, "Storage compiles the Move party panel")
         or storage.ui.partyTray
@@ -1353,7 +1354,7 @@ function PcStorageRenderer:drawPane(view, resources, paneId, placement, animated
         and PcStorageAnimation.iconAt(frame, "party", slot - 1) == nil
         and not releasedSlot(view, "party", slot - 1)
       then
-        drawPartyMon(self, resources, mon, slot - 1, view.tray, false, view)
+        drawPartyMon(self, resources, mon, slot - 1, traySide, false, view)
       end
     end
     drawEditor(self, view)

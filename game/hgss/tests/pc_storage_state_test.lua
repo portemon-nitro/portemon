@@ -24,6 +24,7 @@ local PcStorageGeometry = require("libs.hgss.src.ui.PcStorageGeometry")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
+local stateImageOwner, stateRenderer, admitStateView
 
 local function monService(configuredCount)
   local catalog = CatalogFixture.makeCatalog()
@@ -73,6 +74,16 @@ local function rawPointerAt(state, rect, pointerId)
   state:updateFixed({
     { type = "pointer_down", pointerId = pointerId, x = x, y = y },
     { type = "pointer_up", pointerId = pointerId, x = x, y = y },
+  })
+end
+
+local function rawPointerDrag(state, fromRect, toRect, pointerId)
+  local fromX, fromY = hostPointForRect(state, fromRect)
+  local toX, toY = hostPointForRect(state, toRect)
+  state:updateFixed({
+    { type = "pointer_down", pointerId = pointerId, x = fromX, y = fromY },
+    { type = "pointer_move", pointerId = pointerId, x = toX, y = toY },
+    { type = "pointer_up", pointerId = pointerId, x = toX, y = toY },
   })
 end
 
@@ -572,6 +583,10 @@ function T.move_swap_cancel_and_held_item_routes_keep_domain_owners_authoritativ
   move:updateFixed({ { type = "storage_target", target = { kind = "party", slot = 1 } }, { type = "confirm" } })
   Assert.equal(mons:partyMon(1).personality, selected.personality, "box to Party swap replaces the exact Party address")
   Assert.equal(mons:boxMon(0, 4).personality, secondParty.personality, "box to Party swap returns the displaced mon")
+  local swapTransfer = move:_view().transfer
+  Assert.equal(#swapTransfer.moves, 2, "the published swap contains both mon flights")
+  Assert.equal(swapTransfer.moves[1].mon.personality, selected.personality, "the box mon flies into the party")
+  Assert.equal(swapTransfer.moves[2].mon.personality, secondParty.personality, "the displaced party mon flies back to the box")
   local beforeParty, beforeBox = mons:partyMon(1), mons:boxMon(0, 4)
   move:updateFixed({
     { type = "storage_target", target = { kind = "party", slot = 1 } },
@@ -614,6 +629,111 @@ function T.move_swap_cancel_and_held_item_routes_keep_domain_owners_authoritativ
   Assert.equal(mons:partyMon(0).heldItem, "POTION")
   Assert.equal(bag:quantity("POTION"), 0)
   items:dispose()
+end
+
+function T.occupied_box_to_party_swap_renders_both_real_mon_visuals_during_flight()
+  local mons = monService()
+  local factory = CatalogFixture.makeFactory(0x22334455, mons:catalog())
+  Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))))
+  local displaced = mons:partyMon(1)
+  local boxed = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))
+  local stored = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 4, mon = boxed } } }))
+  stored.publish()
+
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  local pool = stateImageOwner()
+  local renderer, graphics = stateRenderer(pool)
+  local initialView = state:status().visualView
+  admitStateView(renderer, initialView)
+  renderer:beginSession()
+  renderer:stepAnimation(initialView)
+
+  state:updateFixed({
+    { type = "storage_target", target = { kind = "box", box = 0, slot = 4 } },
+    { type = "action", action = "move" },
+  })
+  state:updateFixed({ { type = "storage_target", target = { kind = "party", slot = 1 } }, { type = "confirm" } })
+  local view = state:status().visualView
+  Assert.equal(#view.transfer.moves, 2, "an occupied swap publishes both mon flights")
+  admitStateView(renderer, view)
+  local boxedIcon = mons:catalog():iconSelection(boxed)
+  local displacedIcon = mons:catalog():iconSelection(displaced)
+  local icons = {}
+  local iconProvider = {
+    dimensions = function()
+      return { width = 32, height = 32 }
+    end,
+    handleFor = function(_, iconKey)
+      icons[iconKey] = icons[iconKey] or {
+        key = iconKey,
+        setFilter = function() end,
+      }
+      return { image = icons[iconKey], kind = "rgba8", width = 32, height = 32 }
+    end,
+    quadFor = function()
+      return nil
+    end,
+  }
+  local placement = {
+    frame = { x = 0, y = 0, width = 256, height = 192 },
+    origin = { x = 0, y = 0 },
+    clipRect = { x = 0, y = 0, width = 256, height = 192 },
+    scale = 1,
+  }
+  local function drawFrame()
+    local frame = renderer:stepAnimation(view)
+    renderer:drawPane(view, { icons = iconProvider }, "touch", placement, frame)
+    return frame
+  end
+  local function drewIcon(iconKey, firstDraw)
+    for index = firstDraw + 1, #graphics.draws do
+      if graphics.draws[index].image == icons[iconKey] then
+        return true
+      end
+    end
+    return false
+  end
+  local function drewIconAt(iconKey, x, y, firstDraw)
+    for index = firstDraw + 1, #graphics.draws do
+      local draw = graphics.draws[index]
+      if draw.image == icons[iconKey] and draw.x == x - 16 and draw.y == y - 16 then
+        return true
+      end
+    end
+    return false
+  end
+
+  local firstDraw = #graphics.draws
+  drawFrame()
+  Assert.isTrue(drewIcon(boxedIcon, firstDraw), "the boxed mon icon is drawn on the first flight frame")
+  Assert.isTrue(drewIcon(displacedIcon, firstDraw), "the displaced party icon is drawn on the first flight frame")
+  local intermediateDraw = #graphics.draws
+  drawFrame()
+  drawFrame()
+  Assert.isTrue(drewIcon(boxedIcon, intermediateDraw), "the boxed mon icon remains drawn mid-flight")
+  Assert.isTrue(drewIcon(displacedIcon, intermediateDraw), "the displaced party icon remains drawn mid-flight")
+  for _ = 1, 4 do
+    drawFrame()
+  end
+  local finalDraw = #graphics.draws
+  local finalFrame = drawFrame()
+  Assert.isTrue(finalFrame.transferComplete, "the eighth flight frame reaches both destinations")
+  Assert.equal(finalFrame.icons.party[1].mon.personality, boxed.personality)
+  Assert.equal(finalFrame.icons.box[4].mon.personality, displaced.personality)
+  Assert.isTrue(
+    drewIconAt(boxedIcon, finalFrame.icons.party[1].x, finalFrame.icons.party[1].y, finalDraw),
+    "the boxed mon icon is drawn at its final party location"
+  )
+  Assert.isTrue(
+    drewIconAt(displacedIcon, finalFrame.icons.box[4].x, finalFrame.icons.box[4].y, finalDraw),
+    "the displaced party icon is drawn at its final box location"
+  )
+
+  state:dispose()
+  renderer:dispose()
 end
 
 function T.active_box_projection_keeps_all_thirty_slots_after_holes()
@@ -2268,7 +2388,7 @@ end
 -- parent may draw while the host readiness stays false. The helpers stage
 -- visuals through the real renderer behind a delayable image owner; the
 -- readiness flag travels the way the host passes it to child draw/plan.
-local function stateImageOwner()
+stateImageOwner = function()
   local inner = require("tests.support.SharedImagePoolFake").new()
   local pendingPaths = {}
   local tokenPaths = {}
@@ -2352,7 +2472,7 @@ local function stateVisualPaths(manifest)
   return all
 end
 
-local function stateRenderer(pool)
+stateRenderer = function(pool)
   local manifest = PcPresentationFixture.manifest()
   manifest.text = { banks = { [24] = {}, [25] = {} } }
   for bankId, bank in pairs(manifest.text.banks) do
@@ -2412,7 +2532,7 @@ local function settleStateView(renderer, view)
   end
 end
 
-local function admitStateView(renderer, view)
+admitStateView = function(renderer, view)
   local ready, failure = false, nil
   for _ = 1, 200 do
     ready, failure = renderer:prepare(view)
@@ -3266,6 +3386,222 @@ function T.box_tray_pages_selects_and_switches_the_active_box()
   state:dispose()
 end
 
+function T.box_tray_closure_restores_box_input_and_modal_owns_deposit_input()
+  local mons = monService()
+  Assert.isTrue(mons:addMon(CatalogFixture.makeFactory(0x99887766, mons:catalog()):createNormal(
+    CatalogFixture.normalRequest({ species = "CHIKORITA" })
+  )))
+  local party = { mons:partyMon(0), mons:partyMon(1) }
+  assert(mons:preparePcChanges({ partyRevision = mons:partyRevision(), boxRevision = mons:boxRevision() }, {
+    boxUpdates = { { box = 0, slot = 0, mon = party[1] }, { box = 0, slot = 1, mon = party[2] } },
+  })).publish()
+  local move = PcStorageState.new(openOptions(mons, 2, "wide"))
+  move:updateFixed({ { type = "box_tab" } })
+  move:updateFixed({ { type = "box_tray_cancel" } })
+  local plan = move._session:plan()
+  Assert.equal(move:_view().tray, "closed")
+  Assert.equal(move:_view().cursor.layout, "move")
+  Assert.equal(#plan.content.hitRegions.boxSlots, 30)
+  move:dispose()
+
+  local depositMons = monService()
+  Assert.isTrue(depositMons:addMon(CatalogFixture.makeFactory(0x88776655, depositMons:catalog()):createNormal(
+    CatalogFixture.normalRequest({ species = "CHIKORITA" })
+  )))
+  local deposit = PcStorageState.new(openOptions(depositMons, 0, "wide"))
+  deposit:updateFixed({ { type = "confirm" } })
+  deposit:updateFixed({ { type = "confirm" } })
+  plan = deposit._session:plan()
+  Assert.equal(#plan.content.hitRegions.partySlots, 0, "the deposit selector exclusively owns pointer input")
+  Assert.isNil(plan.mapInput({ type = "pointer_down", pointerId = "underlay", x = 32, y = 106 }, deposit:_view(), plan))
+  deposit:dispose()
+end
+
+function T.held_move_touch_on_occupied_destination_drops_the_held_source()
+  local mons = monService()
+  Assert.isTrue(mons:addMon(CatalogFixture.makeFactory(0x99887766, mons:catalog()):createNormal(
+    CatalogFixture.normalRequest({ species = "CHIKORITA" })
+  )))
+  local first, second = mons:partyMon(0), mons:partyMon(1)
+  local initial = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(), boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 0, mon = first }, { box = 0, slot = 1, mon = second } } }))
+  initial.publish()
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 0 } } })
+  state:updateFixed({ { type = "confirm" } })
+  state:updateFixed({ { type = "confirm" } })
+  Assert.isTrue(state:status().carry.holding, "MOVE holds the selected source before pointer input")
+  local plan = state._session:plan()
+  local hit = assert(plan.content.hitRegions.boxSlots[2])
+  local touch = plan.mapInput({ type = "pointer_down", pointerId = "destination", x = hit.rect.x + 1, y = hit.rect.y + 1 }, state:_view(), plan)
+  state:updateFixed({ touch, { type = "pointer_up", pointerId = "destination", x = hit.rect.x + 1, y = hit.rect.y + 1 } })
+  Assert.equal(mons:boxMon(0, 1).personality, first.personality, "the held source is dropped onto the occupied target")
+  Assert.equal(mons:boxMon(0, 0).personality, second.personality, "the occupied target swaps into the source")
+  Assert.equal(state:status().phase, "browse", "the held move resolves instead of starting another drag")
+  state:dispose()
+end
+
+function T.held_move_pointer_drops_on_empty_slots_and_box_thumbnails()
+  local mons = monService()
+  local source = CatalogFixture.makeFactory(0x44556677, mons:catalog()):createNormal(
+    CatalogFixture.normalRequest({ species = "CHIKORITA" })
+  )
+  assert(mons:preparePcChanges({ partyRevision = mons:partyRevision(), boxRevision = mons:boxRevision() }, {
+    boxUpdates = { { box = 0, slot = 0, mon = source } },
+  })).publish()
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 0 } }, { type = "confirm" }, { type = "confirm" } })
+  local plan = state._session:plan()
+  local empty = assert(plan.content.hitRegions.boxSlots[3]).rect
+  local mapped = assert(plan.mapInput({ type = "pointer_down", pointerId = "empty", x = empty.x + 1, y = empty.y + 1 }, state:_view(), plan))
+  state:updateFixed({ mapped, { type = "pointer_up", pointerId = "empty", x = empty.x + 1, y = empty.y + 1 } })
+  Assert.equal(mons:boxMon(0, 2).personality, source.personality, "touching an empty slot commits the held mon")
+  Assert.isNil(mons:boxMon(0, 0), "the source cell empties after the drop")
+
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 2 } }, { type = "confirm" }, { type = "confirm" } })
+  plan = state._session:plan()
+  local thumbnail = assert(plan.content.hitRegions.controls[1]).rect
+  for _, control in ipairs(plan.content.hitRegions.controls) do
+    if control.target.type == "box_tray_select" and control.target.column == 1 then thumbnail = control.rect end
+  end
+  mapped = assert(plan.mapInput({ type = "pointer_down", pointerId = "thumbnail", x = thumbnail.x + 1, y = thumbnail.y + 1 }, state:_view(), plan))
+  state:updateFixed({ mapped, { type = "pointer_up", pointerId = "thumbnail", x = thumbnail.x + 1, y = thumbnail.y + 1 } })
+  Assert.equal(mons:boxMon(1, 0).personality, source.personality, "touching another box thumbnail drops into its first empty slot")
+  Assert.isNil(mons:boxMon(0, 2), "the thumbnail drop empties the original slot")
+  state:dispose()
+end
+
+function T.item_menu_pointer_touch_starts_a_drag_from_the_touched_mon()
+  local mons = monService()
+  local item = CatalogFixture.makeFactory(0x66554433, mons:catalog()):createNormal(
+    CatalogFixture.normalRequest({ species = "CHIKORITA" })
+  )
+  item.heldItem = "POTION"
+  local other = CatalogFixture.makeFactory(0x77665544, mons:catalog()):createNormal(
+    CatalogFixture.normalRequest({ species = "CHIKORITA" })
+  )
+  other.heldItem = "SITRUS_BERRY"
+  assert(mons:preparePcChanges({ partyRevision = mons:partyRevision(), boxRevision = mons:boxRevision() }, {
+    boxUpdates = { { box = 0, slot = 0, mon = item }, { box = 0, slot = 1, mon = other } },
+  })).publish()
+  local state = PcStorageState.new(openOptions(mons, 3, "wide"))
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 0 } }, { type = "confirm" } })
+  local plan = state._session:plan()
+  local hit = assert(plan.content.hitRegions.boxSlots[2]).rect
+  rawPointerAt(state, hit, "item-target")
+  Assert.equal(mons:boxMon(0, 0).heldItem, "POTION", "tapping another mon does not swap its item")
+  Assert.equal(mons:boxMon(0, 1).heldItem, "SITRUS_BERRY", "the touched mon retains its item")
+  Assert.isNil(state._carry, "releasing on the same mon returns its item")
+  plan = state._session:plan()
+  rawPointerDrag(
+    state,
+    assert(plan.content.hitRegions.boxSlots[2]).rect,
+    assert(plan.content.hitRegions.boxSlots[1]).rect,
+    "item-drag"
+  )
+  Assert.equal(mons:boxMon(0, 0).heldItem, "SITRUS_BERRY", "a later drag starts from touched mon B")
+  Assert.equal(mons:boxMon(0, 1).heldItem, "POTION", "the later drag moves B's item onto A")
+  Assert.isNil(state._carry, "releasing the completed drag clears carry")
+  state:dispose()
+end
+
+function T.hidden_box_controls_and_held_summary_match_visible_controls()
+  local mons = monService()
+  local boxed = mons:partyMon(0)
+  assert(mons:preparePcChanges({ partyRevision = mons:partyRevision(), boxRevision = mons:boxRevision() }, {
+    boxUpdates = { { box = 0, slot = 0, mon = boxed } },
+  })).publish()
+  local options = openOptions(mons, 2, "wide")
+  options.childFactories.summary = function()
+    return {
+      updateFixed = function() end,
+      result = function() return { kind = "closed" } end,
+      status = function() return {} end,
+      dispose = function() end,
+    }
+  end
+  local state = PcStorageState.new(options)
+  state:updateFixed({ { type = "box_tab" } })
+  local plan = state._session:plan()
+  local hiddenArrow = plan.mapInput({ type = "pointer_down", x = 163, y = 27 }, state:_view(), plan)
+  Assert.isNil(hiddenArrow, "hidden title and arrow gaps do not accept input")
+  state:updateFixed({ { type = "box_tray_cancel" } })
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 0 } } })
+  state:updateFixed({ { type = "confirm" } })
+  state:updateFixed({ { type = "confirm" } })
+  plan = state._session:plan()
+  local summary
+  for _, control in ipairs(plan.content.hitRegions.controls) do
+    if control.target.type == "action" and control.target.action == "summary" then summary = control end
+  end
+  Assert.notNil(summary, "the held mon has a visible Summary shortcut")
+  local mapped = assert(plan.mapInput({ type = "pointer_down", x = summary.rect.x + 1, y = summary.rect.y + 1 }, state:_view(), plan))
+  Assert.equal(mapped.action, "summary")
+  state:updateFixed({ mapped })
+  Assert.equal(state:status().childKind, "summary", "the visible plate opens Summary while holding")
+  state:updateFixed({})
+  Assert.isTrue(state:status().carry.holding, "returning from Summary preserves the held mon")
+  state:dispose()
+end
+
+function T.held_move_summary_stays_bound_to_the_carried_mon_after_hovering()
+  local mons = monService()
+  local held = CatalogFixture.makeFactory(0x12344321, mons:catalog()):createNormal(
+    CatalogFixture.normalRequest({ species = "CHIKORITA" })
+  )
+  local hovered = CatalogFixture.makeFactory(0x22334411, mons:catalog()):createNormal(
+    CatalogFixture.normalRequest({ species = "TOTODILE" })
+  )
+  assert(mons:preparePcChanges({ partyRevision = mons:partyRevision(), boxRevision = mons:boxRevision() }, {
+    boxUpdates = { { box = 0, slot = 3, mon = held }, { box = 0, slot = 4, mon = hovered } },
+  })).publish()
+  local requested
+  local options = openOptions(mons, 2, "wide")
+  options.childFactories.summary = function(request)
+    requested = request
+    return { updateFixed = function() end, result = function() return nil end, status = function() return {} end, dispose = function() end }
+  end
+  local state = PcStorageState.new(options)
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 3 } }, { type = "confirm" }, { type = "confirm" } })
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 4 } } })
+  local plan = state._session:plan()
+  local button
+  for _, control in ipairs(plan.content.hitRegions.controls) do
+    if control.target.type == "action" and control.target.action == "summary" then button = control end
+  end
+  local rect = assert(button).rect
+  local mapped = assert(plan.mapInput({ type = "pointer_down", pointerId = "summary-held", x = rect.x + 1, y = rect.y + 1 }, state:_view(), plan))
+  state:updateFixed({ mapped })
+  Assert.equal(requested.source.slot, 3, "Summary opens the held source, not the hovered mon")
+  state:updateFixed({})
+  Assert.isTrue(state:status().carry.holding, "returning from Summary preserves the held mon")
+  state:dispose()
+end
+
+function T.held_move_disables_box_tray_paging_by_pointer_and_navigation()
+  local mons = monService()
+  local boxed = mons:partyMon(0)
+  assert(mons:preparePcChanges({ partyRevision = mons:partyRevision(), boxRevision = mons:boxRevision() }, {
+    boxUpdates = { { box = 0, slot = 0, mon = boxed } },
+  })).publish()
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  state:updateFixed({ { type = "storage_target", target = { kind = "box", box = 0, slot = 0 } }, { type = "confirm" }, { type = "confirm" } })
+  local plan = state._session:plan()
+  local mapped
+  for _, control in ipairs(plan.content.hitRegions.controls) do
+    if control.target.type == "box_tray_page" then mapped = control end
+  end
+  Assert.isNil(mapped, "held Move omits tray page arrow hit regions")
+  Assert.isFalse(state._grid:_isEnabled(43), "held Move disables the previous-page navigation node")
+  Assert.isFalse(state._grid:_isEnabled(44), "held Move disables the next-page navigation node")
+  local before = state:_view().boxTray.trayBox
+  state._grid:setNode(43)
+  state:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(state:_view().boxTray.trayBox, before, "controller navigation cannot page while holding")
+  state:dispose()
+end
+
 function T.deposit_selector_switches_to_the_chosen_box_before_the_drop()
   local mons = monService()
   local factory = CatalogFixture.makeFactory(0x0fedcba9, mons:catalog())
@@ -3541,6 +3877,21 @@ function T.stylus_withdraw_drag_raises_the_right_panel_and_withdraws()
   state:updateFixed({ { type = "storage_drag_release", x = x, y = y, pointerId = "pen" } })
   Assert.isNil(mons:boxMon(0, 6), "the withdrawn mon leaves the box")
   Assert.equal(mons:partyCount(), 2, "the withdrawn mon joins the party")
+  for _ = 1, 9 do
+    state:updateFixed({})
+  end
+  Assert.equal(state:_view().transferSide, "right", "fixed updates without a draw do not retire the transfer panel")
+  local transferView = state:_view()
+  local function hasBoxTitle()
+    for _, control in ipairs(state._session:plan().content.hitRegions.controls) do
+      if control.target.type == "box_title" then return true end
+    end
+    return false
+  end
+  Assert.isFalse(hasBoxTitle(), "the transfer layout suppresses box-title input")
+  transferView.onTransferComplete()
+  Assert.isNil(state:status().visualView.transferSide, "the presented completion retires its matching transfer")
+  Assert.isTrue(hasBoxTitle(), "the normal box-title hit target returns")
   state:dispose()
 end
 
@@ -3750,7 +4101,12 @@ function T.stylus_tray_drag_drops_a_box_mon_onto_a_thumbnail_and_returns_to_the_
   state:updateFixed({ { type = "storage_drag_release", x = toX, y = toY, pointerId = "pen" } })
   Assert.notNil(mons:boxMon(2, 0), "the drop lands in the thumbnail's box")
   Assert.isNil(mons:boxMon(0, 4), "the source cell empties")
-  Assert.isNil(state:_view().boxTray, "a committed tray drop closes the tray")
+  local returnedView, returnedPlan = state:_view(), state._session:plan()
+  Assert.isNil(returnedView.boxTray, "a committed tray drop closes the tray")
+  Assert.equal(returnedView.tray, "closed", "box-originated Move lowers the right party panel")
+  Assert.equal(returnedView.cursor.layout, "move", "box-originated Move restores the box browse layout")
+  Assert.equal(#returnedPlan.content.hitRegions.boxSlots, 30, "the box grid owns input again after Move")
+  Assert.equal(#returnedPlan.content.hitRegions.partySlots, 0, "the hidden party panel has no touch targets")
 
   state:dispose()
 

@@ -31,6 +31,9 @@ local Personality = require("libs.mons.src.gen4.Personality")
 ---@field _admittedParentPlan table<string, unknown>?
 ---@field _dexNumber fun(speciesKey: string): integer?
 ---@field _tray "left"|"right"|"closed"
+---@field _transferSide "right"?
+---@field _transferGeneration integer
+---@field _transfer { moves: { fromDomain: "box"|"party", from: integer, toDomain: "box"|"party", to: integer, mon: table<string, unknown>? }[] }?
 ---@field _boxTray "closed"|"box"|"deposit"
 ---@field _trayBox integer
 ---@field _boxTrayChangeBox boolean
@@ -146,6 +149,9 @@ function StorageScreenState.new(options)
     -- The party tray starts open at the left only in Deposit mode; the other
     -- modes open it from the PARTY button (EB2EC, EC354).
     _tray = options.mode == 0 and "left" or "closed",
+    _transferSide = nil,
+    _transferGeneration = 0,
+    _transfer = nil,
     _boxTray = "closed",
     _trayBox = options.mons:activeBox(),
     _boxTrayChangeBox = false,
@@ -572,6 +578,7 @@ function StorageScreenState:_buildView()
     party[index] = shown
   end
   local metadata = contents.metadata
+  local transferGeneration = self._transferGeneration
   return {
     mode = self._mode,
     state = self._state,
@@ -582,6 +589,15 @@ function StorageScreenState:_buildView()
     party = party,
     info = self._infoVisible and self:_selectedInfo() or nil,
     tray = self._tray,
+    transferSide = self._transferSide,
+    transferGeneration = transferGeneration,
+    transfer = copy(self._transfer),
+    onTransferComplete = self._transferSide ~= nil and function()
+      if self._transferGeneration == transferGeneration then
+        self._transferSide = nil
+        self._transfer = nil
+      end
+    end or nil,
     message = self:_message(),
     focus = copy(self._focus),
     cursor = self:_cursorView(),
@@ -907,7 +923,8 @@ function StorageScreenState:_openMenu()
     local holding = mon.heldItem ~= "NONE"
     self._menu = { actions = { holding and "bagItem" or "giveItem" }, selected = 1, address = address }
     if holding then
-      -- Pointers lift the item so tapping another mon swaps without a drag.
+      -- The item remains selected for the BAG action until a new touch starts
+      -- a stylus drag from its own source mon.
       self._carry = { kind = "items", action = "swapItems", source = address, mon = self:_monVisual(address) }
     end
     self:_syncGridAvailability()
@@ -1380,15 +1397,7 @@ function StorageScreenState:_confirmCarry()
   if carry.holding == true then
     local destination = self:_heldDestination()
     if destination == false then
-      local node = self._grid:current()
-      local page = math.floor(self._trayBox / PcStorageGeometry.TRAY_PAGE_SIZE) * PcStorageGeometry.TRAY_PAGE_SIZE
-      local activeThumbnail = node.kind == "box_tray" and page + node.index == self._activeBox
-      self._lastAction = {
-        kind = "refused",
-        reason = activeThumbnail and "active_box" or "box_full",
-        action = "move",
-      }
-      self:_cue("SEQ_SE_DP_BOX03")
+      self:_refuseHeldDestination()
       return
     end
     if destination == nil then
@@ -1452,6 +1461,19 @@ function StorageScreenState:_heldDestination()
   return nil
 end
 
+function StorageScreenState:_refuseHeldDestination()
+  local carry = assert(self._carry)
+  local node = self._grid:current()
+  local page = math.floor(self._trayBox / PcStorageGeometry.TRAY_PAGE_SIZE) * PcStorageGeometry.TRAY_PAGE_SIZE
+  local activeThumbnail = node.kind == "box_tray" and page + node.index == self._activeBox
+  self._lastAction = {
+    kind = "refused",
+    reason = activeThumbnail and "active_box" or "box_full",
+    action = carry.action,
+  }
+  self:_cue("SEQ_SE_DP_BOX03")
+end
+
 -- Commits one carry onto its destination and closes the hand/tray on success.
 ---@param destination table<string, unknown>
 function StorageScreenState:_finishCarry(destination)
@@ -1465,6 +1487,7 @@ function StorageScreenState:_finishCarry(destination)
   then
     self._carry, self._menu = nil, nil
     self._boxTray, self._boxTrayChangeBox = "closed", false
+    self._tray = carry.source.kind == "party" and "left" or "closed"
     self:_restoreBrowseGrid()
     return
   end
@@ -1487,12 +1510,35 @@ function StorageScreenState:_finishCarry(destination)
     or carry.action == "withdraw" and "withdraw"
     or occupied and "swap"
     or "move"
+  local displaced = destination.kind == "party" and occupied and self:_monVisual(destination) or nil
   local intent = self:_preview({ kind = kind, source = carry.source, destination = destination })
   self._lastAction = self._actions:commit(intent)
   if self._lastAction.kind == "changed" or self._lastAction.kind == "unchanged" then
-    if carry.action == "withdraw" then
-      self._tray = "closed"
+    if destination.kind == "party" and carry.source.kind == "box" then
+      self._transferGeneration = self._transferGeneration + 1
+      self._transferSide = "right"
+      self._transfer = {
+        moves = {
+          {
+            fromDomain = "box",
+            from = carry.source.slot,
+            toDomain = "party",
+            to = destination.slot,
+            mon = copy(carry.mon),
+          },
+        },
+      }
+      if displaced ~= nil then
+        self._transfer.moves[#self._transfer.moves + 1] = {
+          fromDomain = "party",
+          from = destination.slot,
+          toDomain = "box",
+          to = carry.source.slot,
+          mon = copy(displaced),
+        }
+      end
     end
+    self._tray = carry.source.kind == "party" and "left" or "closed"
     self._boxTray, self._boxTrayChangeBox = "closed", false
     self._focus, self._carry, self._menu = { domain = destination.kind, slot = destination.slot }, nil, nil
     self:_cue("SEQ_SE_DP_BOX01")
@@ -1547,6 +1593,8 @@ function StorageScreenState:_publishKey(measurement)
     encodeFact(self._prompt),
     encodeFact(self._notice),
     tostring(self._tray),
+    tostring(self._transferSide),
+    tostring(self._transferGeneration),
     tostring(self._childKind),
   }, "\0")
 end
@@ -1648,9 +1696,7 @@ function StorageScreenState:_closeBoxTray()
   self._boxTray = "closed"
   self._boxTrayChangeBox = false
   self._carry = nil
-  if carry ~= nil then
-    self._tray = carry.source.kind == "party" and "left" or "closed"
-  end
+  self._tray = carry ~= nil and carry.source.kind == "party" and "left" or "closed"
   self:_restoreBrowseGrid()
 end
 
@@ -1775,6 +1821,9 @@ function StorageScreenState:_syncGridAvailability()
     return
   elseif layout == "tray" then
     self._grid:setEnabled(45, self._boxTrayChangeBox)
+    local holding = self._carry ~= nil and self._carry.holding == true and self._boxTray == "box"
+    self._grid:setEnabled(43, not holding)
+    self._grid:setEnabled(44, not holding)
   elseif layout == "deposit" then
     setRange(7, 11, menuOpen)
   elseif layout == "withdraw" then
@@ -2059,6 +2108,34 @@ function StorageScreenState:_handleStorageTouch(event)
     return
   end
   local target = copy(assert(event.target, "mapped Storage touch identifies a target"))
+  local carry = self._carry
+  if carry ~= nil and carry.holding == true then
+    local address = self:_address(target)
+    if address.kind == "box" then
+      self._activeBox = address.box or self._activeBox
+    end
+    local node = self:_nodeForSlot(address.kind, address.slot)
+    if node ~= nil then
+      self._grid:setNode(node)
+      self:_applyCursorFocus()
+      local destination = self:_heldDestination()
+      if destination ~= nil and destination ~= false then
+        self:_finishCarry(destination)
+      elseif destination == false then
+        self:_refuseHeldDestination()
+      end
+    end
+    return
+  end
+  if carry ~= nil and carry.kind == "items" and carry.holding ~= true and self._drag == nil then
+    -- The BAG row is a selection, not a hand-held drop. A touch on another
+    -- mon starts a fresh item-mode drag from that mon.
+    self._carry, self._menu = nil, nil
+    carry = nil
+  end
+  if self._boxTray == "deposit" or carry ~= nil then
+    return
+  end
   if self:_startDrag(target, event.pointerId, event.x, event.y) then
     self:_syncCarryGrid()
     return
@@ -2192,7 +2269,7 @@ function StorageScreenState:_handleCancelInput()
     self._pendingIntent = nil
     self:_cue("SEQ_SE_DP_SELECT")
   elseif self._carry ~= nil then
-    local carry = self._carry
+    local carry = assert(self._carry)
     local drag = self._drag
     local boxTrayWasOpen = self._boxTray ~= "closed"
     if drag ~= nil then
@@ -2292,6 +2369,14 @@ function StorageScreenState:_handleFocusInput(event)
         self._grid:setNode(37 + column)
       end
       self:_applyCursorFocus()
+      if self._carry ~= nil and self._carry.holding == true then
+        local destination = self:_heldDestination()
+        if destination ~= nil and destination ~= false then
+          self:_finishCarry(destination)
+        elseif destination == false then
+          self:_refuseHeldDestination()
+        end
+      end
     end
   elseif event.type == "box_tray_cancel" then
     if self._boxTray == "deposit" then
@@ -2346,7 +2431,13 @@ function StorageScreenState:_handleConfirmInput(event)
     end
   elseif event.type == "action" then
     self:_cue("SEQ_SE_DP_DECIDE")
-    self:_beginAction(assert(event.action), event, self._menu == nil and self:_address(self._focus) or nil)
+    local action = assert(event.action)
+    local carry = self._carry
+    local address = self._menu == nil and self:_address(self._focus) or nil
+    if action == "summary" and carry ~= nil and carry.holding == true then
+      address = carry.source
+    end
+    self:_beginAction(action, event, address)
   else
     assert(false, "unknown Storage input event " .. tostring(event.type))
   end

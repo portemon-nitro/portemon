@@ -45,10 +45,14 @@ local function geometry(view)
       }
     end
   end
-  local partyLayout = view.tray == "left"
-      and (view.mode == 0 and "deposit" or view.mode == 3 and "itemParty" or "moveParty")
-    or view.tray == "right" and "tray"
-    or nil
+  local partyLayout
+  if view.boxTray == nil or view.boxTray.mode ~= "deposit" then
+    if view.tray == "left" then
+      partyLayout = view.mode == 0 and "deposit" or view.mode == 3 and "itemParty" or "moveParty"
+    elseif view.tray == "right" then
+      partyLayout = "tray"
+    end
+  end
   if partyLayout ~= nil then
     for _, node in ipairs(PcStorageGrid.layout(partyLayout)) do
       if node.kind == "party" then
@@ -118,21 +122,24 @@ local function geometry(view)
     local deposit = view.boxTray.mode == "deposit"
     for column = 0, PcStorageGeometry.TRAY_PAGE_SIZE - 1 do
       controls[#controls + 1] = {
-        rect = PcStorageGeometry.traySlotRect(column, deposit),
+        rect = PcStorageGeometry.trayDropRect(column, deposit),
         target = { type = "box_tray_select", column = column },
       }
     end
-    local layout = deposit and "depositBox" or "tray"
+    local trayLayout = deposit and "depositBox" or "tray"
     local prevNode = deposit and 6 or 43
     local nextNode = deposit and 7 or 44
-    controls[#controls + 1] = {
-      rect = assert(PcStorageGrid.node(layout, prevNode).hit),
-      target = { type = "box_tray_page", delta = -1 },
-    }
-    controls[#controls + 1] = {
-      rect = assert(PcStorageGrid.node(layout, nextNode).hit),
-      target = { type = "box_tray_page", delta = 1 },
-    }
+    local holding = view.carry ~= nil and view.carry.holding == true
+    if not holding or deposit then
+      controls[#controls + 1] = {
+        rect = assert(PcStorageGrid.node(trayLayout, prevNode).hit),
+        target = { type = "box_tray_page", delta = -1 },
+      }
+      controls[#controls + 1] = {
+        rect = assert(PcStorageGrid.node(trayLayout, nextNode).hit),
+        target = { type = "box_tray_page", delta = 1 },
+      }
+    end
     if deposit then
       controls[#controls + 1] = {
         rect = PcStorageGeometry.DEPOSIT_CONFIRM_RECT,
@@ -150,11 +157,18 @@ local function geometry(view)
     }
   end
   if editor == nil then
-    if view.carry == nil and view.menu == nil then
+    local browseControlsVisible = view.carry == nil
+      and view.menu == nil
+      and view.boxTray == nil
+      and view.tray == "closed"
+      and view.transferSide == nil
+    if browseControlsVisible then
       controls[#controls + 1] = { rect = PcStorageGeometry.BOX_TITLE_RECT, target = { type = "box_title" } }
     end
-    controls[#controls + 1] = { rect = PcStorageGeometry.BOX_ARROW_RECTS.left, target = { type = "box_prev" } }
-    controls[#controls + 1] = { rect = PcStorageGeometry.BOX_ARROW_RECTS.right, target = { type = "box_next" } }
+    if browseControlsVisible and view.message == nil then
+      controls[#controls + 1] = { rect = PcStorageGeometry.BOX_ARROW_RECTS.left, target = { type = "box_prev" } }
+      controls[#controls + 1] = { rect = PcStorageGeometry.BOX_ARROW_RECTS.right, target = { type = "box_next" } }
+    end
   end
   return modeGeometry,
     {
@@ -218,7 +232,7 @@ local function mapInput(event, _, plan)
   -- The visible party panel owns overlapping hit space above the box grid.
   for _, hit in ipairs(plan.content.hitRegions.partySlots) do
     if within(hit.rect, event.x, event.y) then
-      if hit.occupied then
+      if hit.occupied or plan.content.modeGeometry.carry then
         return {
           type = "storage_touch",
           target = hit.target,
@@ -232,6 +246,15 @@ local function mapInput(event, _, plan)
   end
   for _, hit in ipairs(plan.content.hitRegions.boxSlots) do
     if within(hit.rect, event.x, event.y) then
+      if plan.content.modeGeometry.carry then
+        return {
+          type = "storage_touch",
+          target = hit.target,
+          pointerId = event.pointerId,
+          x = event.x,
+          y = event.y,
+        }
+      end
       -- An occupied custody cell starts the source drag on touch-down; an
       -- empty cell only places the cursor.
       if hit.occupied then
@@ -255,6 +278,9 @@ end
 local function renderPlan(resources, snapshot, resolved)
   local renderer = assert(resources.storageRenderer, "Storage rendering borrows its renderer")
   local animated = renderer:stepAnimation(snapshot)
+  if animated.transferComplete and type(snapshot.onTransferComplete) == "function" then
+    snapshot.onTransferComplete()
+  end
   for _, pane in ipairs(resolved.panes) do
     renderer:drawPane(snapshot, resources, pane.id, pane.placement, animated)
   end

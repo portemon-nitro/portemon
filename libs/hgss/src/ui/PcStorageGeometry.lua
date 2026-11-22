@@ -268,7 +268,10 @@ PcStorageGeometry.NO_RECT = { x = 200, y = 128, width = 48, height = 32 }
 ---@param view table<string, unknown>
 ---@return PcStorageButton[]
 function PcStorageGeometry.bottomButtons(view)
-  if view.editor ~= nil or view.carry ~= nil then
+  if view.editor ~= nil then
+    return {}
+  end
+  if view.carry ~= nil and not (view.carry.holding == true and view.boxTray ~= nil and view.boxTray.mode == "box") then
     return {}
   end
   local right = { x = 192, y = 168, width = 64, height = 24 }

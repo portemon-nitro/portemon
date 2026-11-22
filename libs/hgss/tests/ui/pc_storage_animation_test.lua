@@ -21,6 +21,9 @@ local function view(options)
     activeBox = options.activeBox or 0,
     boxCount = 18,
     tray = options.tray or "closed",
+    transferSide = options.transferSide,
+    transferGeneration = options.transferGeneration,
+    transfer = options.transfer,
     wallpaperId = options.wallpaperId or 0,
     boxSlots = options.boxSlots or {},
     party = options.party or {},
@@ -73,6 +76,183 @@ function T.tests.cross_domain_swap_animates_the_same_identity_between_domains()
   local frame = animator:step(view({ boxSlots = { party }, party = { boxed } }))
   Assert.equal(frame.icons.party[0].mon, boxed)
   Assert.equal(frame.icons.box[0].mon, party)
+end
+
+function T.tests.withdraw_uses_the_right_party_panel_during_the_transfer()
+  local animator = PcStorageAnimation.new()
+  local boxed = mon(7)
+  animator:step(view({ boxSlots = { boxed } }))
+  local moved = view({ boxSlots = { false }, party = { boxed }, transferSide = "right" })
+  local frame = animator:step(moved)
+  Assert.equal(frame.icons.party[0].x, 45, "the first flight step targets the right party slot")
+  Assert.equal(frame.icons.party[0].y, 50)
+end
+
+function T.tests.transfer_panel_retires_only_after_the_presented_flight_finishes()
+  local animator = PcStorageAnimation.new()
+  local boxed = mon(8)
+  animator:step(view({ boxSlots = { boxed } }))
+  local moved = view({ boxSlots = { false }, party = { boxed }, transferSide = "right" })
+  local first = animator:step(moved)
+  Assert.isNil(first.transferComplete, "the right panel remains through the first presented frame")
+  local last
+  for _ = 2, 7 do
+    last = animator:step(moved)
+  end
+  Assert.isNil(last.transferComplete, "fixed updates without draws cannot retire the panel")
+  last = animator:step(moved)
+  Assert.isTrue(last.transferComplete, "the eighth rendered flight frame retires the panel")
+  Assert.isNil(animator:step(moved).transferComplete, "completion is reported exactly once")
+end
+
+function T.tests.transfer_published_before_the_first_frame_still_flights_and_completes()
+  local animator = PcStorageAnimation.new()
+  animator:beginSession()
+  local boxed = mon(23)
+  local transfer = view({
+    boxSlots = { false },
+    party = { boxed },
+    transferSide = "right",
+    transferGeneration = 1,
+    transfer = { moves = { { fromDomain = "box", from = 0, toDomain = "party", to = 0, mon = boxed } } },
+  })
+
+  local first = animator:step(transfer)
+  Assert.equal(first.icons.party[0].mon, boxed, "the first rendered frame starts the published flight")
+  Assert.equal(first.icons.party[0].x, 45, "the first step heads toward the raised party panel")
+  for _ = 2, 7 do
+    Assert.isNil(animator:step(transfer).transferComplete, "completion waits for all flight frames")
+  end
+  Assert.isTrue(animator:step(transfer).transferComplete, "the eighth presented frame retires the panel")
+end
+
+function T.tests.published_occupied_party_swap_animates_both_transaction_entries()
+  local animator = PcStorageAnimation.new()
+  local boxed, party = mon(24), mon(25)
+  local swapped = view({
+    boxSlots = { party },
+    party = { false, boxed },
+    transferSide = "right",
+    transferGeneration = 1,
+    transfer = {
+      moves = {
+        { fromDomain = "box", from = 0, toDomain = "party", to = 1, mon = boxed },
+        { fromDomain = "party", from = 1, toDomain = "box", to = 0, mon = party },
+      },
+    },
+  })
+  animator:step(view({ tray = "right", boxSlots = { boxed }, party = { false, party } }))
+
+  local frame = animator:step(swapped)
+  Assert.equal(frame.icons.party[1].mon, boxed, "the boxed mon flies into the party")
+  Assert.equal(frame.icons.box[0].mon, party, "the displaced party mon flies back to the box")
+  Assert.equal(frame.icons.party[1].x, 50)
+  Assert.equal(frame.icons.box[0].x, 206, "the outgoing mon starts from the visible right panel")
+end
+
+function T.tests.coalesced_published_party_swap_starts_from_the_visible_right_panel()
+  local animator = PcStorageAnimation.new()
+  animator:beginSession()
+  local boxed, party = mon(26), mon(27)
+  local swapped = view({
+    boxSlots = { false, false, false, false, party },
+    party = { false, boxed },
+    transferSide = "right",
+    transferGeneration = 1,
+    transfer = {
+      moves = {
+        { fromDomain = "box", from = 0, toDomain = "party", to = 1, mon = boxed },
+        { fromDomain = "party", from = 1, toDomain = "box", to = 4, mon = party },
+      },
+    },
+  })
+
+  local frame = animator:step(swapped)
+  Assert.equal(frame.icons.party[1].mon, boxed, "the boxed mon flies into the party")
+  Assert.equal(frame.icons.box[4].mon, party, "the displaced party mon flies back to the box")
+  Assert.equal(frame.icons.box[4].x, 218, "the outgoing mon starts from the visible right slot")
+end
+
+function T.tests.box_switch_and_withdraw_published_together_still_complete_the_transfer()
+  local animator = PcStorageAnimation.new()
+  local boxed = mon(18)
+  local displaced = mon(19)
+  animator:step(view({ activeBox = 0, boxSlots = { mon(17) } }))
+  local changed = view({
+    activeBox = 1,
+    boxSlots = { displaced },
+    party = { boxed },
+    transferSide = "right",
+    transferGeneration = 1,
+    transfer = {
+      moves = {
+        { fromDomain = "box", from = 0, toDomain = "party", to = 0, mon = boxed },
+        { fromDomain = "party", from = 0, toDomain = "box", to = 0, mon = displaced },
+      },
+    },
+  })
+  animator:step(changed)
+  local completion
+  local sawSwap = false
+  for _ = 1, 31 do
+    local frame = animator:step(changed)
+    if frame.icons and frame.icons.party[0] and frame.icons.box[0] then
+      sawSwap = frame.icons.party[0].mon == boxed and frame.icons.box[0].mon == displaced
+    end
+    if frame.transferComplete then
+      completion = frame
+    end
+  end
+  Assert.isTrue(sawSwap, "the complete swap group starts after the box scroll")
+  Assert.notNil(completion, "the transfer completes after the box scroll and mon flight are presented")
+  Assert.isNil(animator:step(changed).transferComplete, "completion is reported once")
+end
+
+function T.tests.transfer_started_during_a_scroll_completes_after_the_scroll()
+  local animator = PcStorageAnimation.new()
+  local boxed = mon(19)
+  animator:step(view({ activeBox = 0, boxSlots = { mon(20) } }))
+  local nextBox = view({ activeBox = 1, boxSlots = { boxed } })
+  animator:step(nextBox)
+  for _ = 2, 4 do animator:step(nextBox) end
+  local transferred = view({
+    activeBox = 1,
+    boxSlots = { false },
+    party = { boxed },
+    transferSide = "right",
+    transferGeneration = 1,
+    transfer = { moves = { { fromDomain = "box", from = 0, toDomain = "party", to = 0, mon = boxed } } },
+  })
+  for _ = 1, 19 do animator:step(transferred) end
+  local completion
+  for _ = 1, 8 do completion = animator:step(transferred) end
+  Assert.isTrue(completion.transferComplete == true, "the mid-scroll transfer completes after its flight")
+end
+
+function T.tests.newer_transfer_generation_owns_the_completion_notification()
+  local animator = PcStorageAnimation.new()
+  local first, second = mon(21), mon(22)
+  animator:step(view({ boxSlots = { first, second } }))
+  local firstTransfer = view({
+    boxSlots = { false, second },
+    party = { first },
+    transferSide = "right",
+    transferGeneration = 1,
+    transfer = { moves = { { fromDomain = "box", from = 0, toDomain = "party", to = 0, mon = first } } },
+  })
+  animator:step(firstTransfer)
+  local secondTransfer = view({
+    boxSlots = { false, false },
+    party = { first, second },
+    transferSide = "right",
+    transferGeneration = 2,
+    transfer = { moves = { { fromDomain = "box", from = 1, toDomain = "party", to = 1, mon = second } } },
+  })
+  animator:step(secondTransfer)
+  for _ = 1, 6 do
+    Assert.isNil(animator:step(secondTransfer).transferComplete, "the newer flight remains presented")
+  end
+  Assert.isTrue(animator:step(secondTransfer).transferComplete, "the newest generation owns completion")
 end
 
 function T.tests.personality_collision_does_not_merge_different_species()

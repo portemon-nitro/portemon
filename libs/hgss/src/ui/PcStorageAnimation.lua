@@ -21,6 +21,7 @@
 ---@field otId unknown?
 ---@field nickname unknown?
 ---@field heldItem unknown?
+---@field iconKey string?
 ---@field itemIconKey string?
 
 ---@class PcStorageAnimation.Move
@@ -28,6 +29,7 @@
 ---@field toDomain string
 ---@field from integer
 ---@field to integer
+---@field sourceSide "left"|"right"|"closed"?
 ---@field mon PcStorageAnimation.Mon?
 ---@field timer integer
 
@@ -53,6 +55,8 @@
 ---@field private _lastCursor { x: number, y: number }?
 ---@field private _cursorSlide PcStorageAnimation.Slide?
 ---@field private _moves PcStorageAnimation.Move[]?
+---@field private _movesTransferGeneration integer?
+---@field private _seenTransferGeneration integer?
 ---@field private _scroll PcStorageAnimation.Scroll?
 ---@field private _item PcStorageAnimation.ItemFlight?
 ---@field private _dip integer?
@@ -89,6 +93,7 @@ local RELEASE_GROW_STEP = 0.05
 ---@field cursorDip integer
 ---@field itemFrom { domain: string, slot: integer }?
 ---@field itemTo { domain: string, slot: integer }?
+---@field transferComplete boolean?
 
 ---@return PcStorageAnimation
 function PcStorageAnimation.new()
@@ -97,6 +102,8 @@ function PcStorageAnimation.new()
     _lastCursor = nil,
     _cursorSlide = nil,
     _moves = nil,
+    _movesTransferGeneration = nil,
+    _seenTransferGeneration = nil,
     _scroll = nil,
     _item = nil,
     _dip = nil,
@@ -109,6 +116,8 @@ function PcStorageAnimation:beginSession()
   self._lastCursor = nil
   self._cursorSlide = nil
   self._moves = nil
+  self._movesTransferGeneration = nil
+  self._seenTransferGeneration = nil
   self._scroll = nil
   self._item = nil
   self._dip = nil
@@ -178,7 +187,9 @@ end
 -- Starts one linear mon move (eight equal source steps, then the snap).
 ---@param self PcStorageAnimation
 ---@param entries { fromDomain: string, toDomain: string, from: integer, to: integer, mon: PcStorageAnimation.Mon? }[]
-function PcStorageAnimation:_startMoves(entries)
+---@param transferGeneration integer?
+---@param sourceSide "left"|"right"|"closed"?
+function PcStorageAnimation:_startMoves(entries, transferGeneration, sourceSide)
   local moves = {}
   for _, entry in ipairs(entries) do
     moves[#moves + 1] = {
@@ -186,11 +197,26 @@ function PcStorageAnimation:_startMoves(entries)
       toDomain = entry.toDomain,
       from = entry.from,
       to = entry.to,
+      sourceSide = entry.fromDomain == "party" and sourceSide or nil,
       mon = entry.mon,
       timer = 0,
     }
   end
   self._moves = moves
+  self._movesTransferGeneration = transferGeneration
+end
+
+---@param view table<string, unknown>
+---@return boolean started
+function PcStorageAnimation:_startPublishedTransfer(view)
+  local transfer = view.transfer
+  if type(transfer) ~= "table" or view.transferGeneration == self._seenTransferGeneration then
+    return false
+  end
+  local entries = assert(transfer.moves, "published transfer has a move group")
+  self:_startMoves(entries, view.transferGeneration, view.transferSide)
+  self._seenTransferGeneration = view.transferGeneration
+  return true
 end
 
 -- Builds ordered identity occurrences across both custody domains. Including
@@ -372,15 +398,22 @@ function PcStorageAnimation:step(view)
   local previous = self._prev
   if previous == nil then
     self._prev = view
-    local frame = restedFrame(view)
-    self._lastCursor = { x = frame.cursor.x, y = frame.cursor.y }
-    self._frame = frame
-    return frame
+    previous = view
+    local cursor = view.cursor or { x = 0, y = 0 }
+    self._lastCursor = { x = cursor.x, y = cursor.y }
   end
   if self._scroll ~= nil then
+    local scrollView = self._scroll.view
     local frame = self:_stepScroll()
     if self._scroll == nil then
-      self._prev = view
+      -- A published transfer carries its source identity across a coalesced
+      -- box switch, where the scroll target may already contain final custody.
+      -- Otherwise retain the scroll-start baseline for changes during scroll.
+      if self:_startPublishedTransfer(view) then
+        self._prev = view
+      else
+        self._prev = scrollView
+      end
       self._lastCursor = { x = view.cursor and view.cursor.x or 0, y = view.cursor and view.cursor.y or 0 }
     end
     self._frame = frame
@@ -394,6 +427,7 @@ function PcStorageAnimation:step(view)
       return frame
     end
   end
+  self:_startPublishedTransfer(view)
   local frame = restedFrame(view)
   -- Cursor slide.
   local cursor = view.cursor
@@ -421,7 +455,7 @@ function PcStorageAnimation:step(view)
   if self._moves == nil then
     local entries = self:_diffMons(previous, view)
     if #entries > 0 then
-      self:_startMoves(entries)
+      self:_startMoves(entries, view.transferGeneration)
       self._prev = view
     end
     self:_startItemFlight(previous, view)
@@ -429,14 +463,18 @@ function PcStorageAnimation:step(view)
   if self._moves ~= nil then
     local icons = { box = {}, party = {} }
     local settled = true
+    local transferGeneration = view.transferGeneration
+    local movesTransferGeneration = self._movesTransferGeneration
     for _, move in ipairs(self._moves) do
       move.timer = move.timer + 1
       local t = math.min(move.timer, MOVE_TICKS)
       if move.timer < MOVE_TICKS then
         settled = false
       end
-      local fromX, fromY = slotCenter(move.fromDomain, move.from, view.tray)
-      local toX, toY = slotCenter(move.toDomain, move.to, view.tray)
+      local sourceSide = move.sourceSide or previous.tray
+      local fromX, fromY = slotCenter(move.fromDomain, move.from, sourceSide)
+      local destinationSide = view.transferSide or view.tray
+      local toX, toY = slotCenter(move.toDomain, move.to, destinationSide)
       icons[move.toDomain][move.to] = {
         x = fromX + (toX - fromX) * t / MOVE_TICKS,
         y = fromY + (toY - fromY) * t / MOVE_TICKS,
@@ -446,8 +484,18 @@ function PcStorageAnimation:step(view)
     frame.icons = icons
     if settled then
       self._moves = nil
+      if view.transferSide ~= nil and movesTransferGeneration == transferGeneration then
+        frame.transferComplete = true
+      end
+      self._movesTransferGeneration = nil
     end
-    self._prev = view
+    -- A newer transfer arrived while this move group was in flight. Retain
+    -- the old baseline so the next frame can diff and animate that transfer.
+    if movesTransferGeneration ~= transferGeneration then
+      self._prev = previous
+    else
+      self._prev = view
+    end
   end
   -- The screen state owns the release timeline; this projector renders the
   -- phase and tick it publishes. The shrink's affine anchor sits 8 px below
