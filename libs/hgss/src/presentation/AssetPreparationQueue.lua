@@ -11,6 +11,13 @@
 -- Data/ImageData, and no native pointer is ever serialized. The worker is
 -- created on the first actual asynchronous dispatch, so compact base
 -- acquisition (messages, collision, PCM) needs no thread host at all.
+--
+-- A disk-backed selected reference (one package member) adds the private
+-- `source` prerequisite: its bytes are read exactly once on the same physical
+-- worker, published into that same kernel, and only then may its graphical
+-- decode dispatch with the borrowed Data. The source task and every compact
+-- synchronous acquisition share one interest per source/content identity, so
+-- cancellation of a dependent never duplicates or frees the physical read.
 
 ---@class AssetPreparationQueueOptions
 ---@field decoded ResidentAssetCache the selected epoch's decoded CPU owner
@@ -23,18 +30,32 @@
 ---@field kind string
 ---@field path string generated file path
 ---@field selector ModelAsset.TextureReference? native bank texture/palette selector for g4tx
----@field data love.Data immutable resident payload handed to the worker
+---@field data love.Data? generated payload handed to the worker, absent for a selected source read
 ---@field key string decoded-value identity in the shared CPU owner
 ---@field priority "demand"|"prefetch"
----@field state "queued"|"running"|"linked"|"ready"|"failed"
+---@field state "queued"|"running"|"awaiting-source"|"linked"|"ready"|"failed"
 ---@field link integer? primary token this follower observes
 ---@field failure string?
 ---@field lease ResidentAssetCacheLease? this token's own borrow, until take/wait/cancel
 ---@field readyReserved boolean? true while its key holds one scheduling reservation
+---@field stage ("source"|"decode")? whether this token still owes the source read or is the decode itself
+---@field sourceKey string? selected source/content identity of a disk-backed request
+---@field reference CacheFs.PackageRef? immutable selected member descriptor captured at request time
+---@field inputLease ResidentAssetCacheLease? source bytes a queued decode continuation owns until dispatch
+---@field physicalToken integer? the dispatched request that will carry this logical record's reply
 
 ---@class AssetPreparationQueueSourceLease
 ---@field value love.Data borrowed resident bytes
 ---@field release fun(self: AssetPreparationQueueSourceLease)
+
+-- One selected source's pending physical read and the logical tokens waiting on
+-- it. The owner token performed (or will perform) the read; every member needs
+-- the one retained allocation but nothing else about the others.
+---@class AssetPreparationQueueSourceInterest
+---@field key string selected source/content identity
+---@field reference CacheFs.PackageRef immutable selected member descriptor
+---@field owner integer? token whose physical dispatch performs the read
+---@field members table<integer, boolean> every logical token needing these bytes
 
 ---@class AssetPreparationQueue
 ---@field private _cacheFs table<string, unknown>
@@ -51,6 +72,8 @@
 ---@field private _forwarded table<integer, integer> dispatched token to promoted owner after a running primary is cancelled
 ---@field private _workerBusyToken integer?
 ---@field private _workerFailure string?
+---@field private _sourceInterests table<string, AssetPreparationQueueSourceInterest>
+---@field private _decodeLeases table<integer, ResidentAssetCacheLease> source lease owned by one dispatched decode
 ---@field private _nextToken integer
 ---@field private _released boolean
 ---@field private _joined boolean
@@ -80,7 +103,7 @@ Worker.run(requestChannel, replyChannel)
   WORKER_MODULE
 )
 
-local VALID_KINDS = { mesh = true, image = true, ["image-derivative"] = true, g4gx = true, g4tx = true }
+local VALID_KINDS = { mesh = true, image = true, ["image-derivative"] = true, g4gx = true, g4tx = true, source = true }
 local VALID_PRIORITIES = { demand = true, prefetch = true }
 
 -- Estimated per-value metadata charge: small immutable Lua descriptors, not
@@ -111,6 +134,28 @@ local function lengthPrefixedKey(parts)
     encoded[index] = #part .. ":" .. part
   end
   return table.concat(encoded, "|")
+end
+
+-- One selected source is identified by its package source identity and the
+-- resolved member identity, never by logical path alone: two packages (or two
+-- epochs) may serve different bytes at the same path.
+---@param reference CacheFs.PackageRef
+---@return string
+local function sourceIdentity(reference)
+  return lengthPrefixedKey({ reference.sourceId, reference.contentId })
+end
+
+-- Every state in which a token still owes work: a queued decode waiting for the
+-- worker, a dispatched job, or a source member that waits for another token's
+-- read.
+---@param record AssetPreparationQueueRecord?
+---@return boolean
+local function isUnsettled(record)
+  if record == nil then
+    return false
+  end
+  local state = record.state
+  return state == "queued" or state == "running" or state == "awaiting-source"
 end
 
 -- A selector component is a logical path or a selected texture/palette pair and
@@ -268,6 +313,36 @@ local function typedValue(kind, response)
   return value
 end
 
+-- Build the typed immutable value one selected-source completion publishes:
+-- exactly the bytes the worker read, their real size, the same fixed metadata
+-- charge as any other value, and one repeat-safe release. The shared kernel
+-- therefore charges a package source once, however many consumers borrow it.
+---@param data love.Data
+---@param nativeBytes integer
+---@return table<string, unknown>
+local function typedSourceValue(data, nativeBytes)
+  local released = false
+  local value ---@type table<string, unknown>
+  value = {
+    kind = "source",
+    payload = data,
+    nativeBytes = nativeBytes,
+    metadataChargeBytes = METADATA_VALUE_BYTES,
+  }
+  function value:release()
+    if released then
+      return
+    end
+    released = true
+    local payload = self.payload --[[@as love.Data?]]
+    self.payload = nil
+    if payload ~= nil then
+      payload:release()
+    end
+  end
+  return value
+end
+
 -- cacheFs is the selected epoch's resident reader: each request resolves its
 -- immutable payload reference on the main thread, and only that reference
 -- crosses to the worker. Construction starts no worker.
@@ -309,6 +384,8 @@ function AssetPreparationQueue.new(cacheFs, options)
     _forwarded = {},
     _workerBusyToken = nil,
     _workerFailure = nil,
+    _sourceInterests = {},
+    _decodeLeases = {},
     _nextToken = 0,
     _released = false,
     _joined = false,
@@ -379,15 +456,28 @@ function AssetPreparationQueue:_dispatch()
   end
   local record = assert(self._tokens[token], "dispatched an unknown preparation token")
   record.state = "running"
+  record.physicalToken = token
   self._workerBusyToken = token
-  self:_ensureWorker():push({
-    op = "prepare",
-    token = token,
-    kind = record.kind,
-    path = record.path,
-    data = record.data,
-    selector = record.selector,
-  })
+  local job = { op = "prepare", token = token, path = record.path }
+  if record.stage == "source" then
+    local reference = assert(record.reference, "a source preparation job needs its selected reference")
+    job.kind = "source"
+    job.physicalPath = reference.physicalPath
+    job.size = reference.size
+    job.sourceId = reference.sourceId
+    job.contentId = reference.contentId
+  else
+    job.kind = record.kind
+    job.data = record.data
+    job.selector = record.selector
+    -- The dispatched decode owns its input source lease until its reply (or
+    -- terminal worker failure): logical cancellation cannot return it early.
+    if record.inputLease ~= nil then
+      self._decodeLeases[token] = record.inputLease
+      record.inputLease = nil
+    end
+  end
+  self:_ensureWorker():push(job)
 end
 
 -- Retunes the transient ready-payload ceiling. Already-held payloads stay
@@ -456,7 +546,9 @@ end
 
 -- Record an unexpected worker exit exactly once: every still-live queued or
 -- running token fails with the terminal cause while already-ready payloads
--- stay transferable. The queue never restarts the worker.
+-- stay transferable. Queued decode continuations and dispatched decodes give
+-- their input source leases back; the worker's own reply, if any, can never
+-- arrive now. The queue never restarts the worker.
 ---@param cause string?
 function AssetPreparationQueue:_enterTerminalFailure(cause)
   if self._workerFailure ~= nil then
@@ -466,17 +558,33 @@ function AssetPreparationQueue:_enterTerminalFailure(cause)
     cause = "worker exited without an error"
   end
   self._workerFailure = "asset preparation worker stopped: " .. tostring(cause)
+  local returnedLease = false
   for _, record in pairs(self._tokens) do
-    if record.state == "queued" or record.state == "running" or record.state == "linked" then
+    if isUnsettled(record) or record.state == "linked" then
       record.state = "failed"
       record.failure = self._workerFailure
       record.link = nil
     end
+    local lease = record.inputLease
+    if lease ~= nil then
+      record.inputLease = nil
+      self._decoded:returnLease(lease)
+      returnedLease = true
+    end
+  end
+  for token, lease in pairs(self._decodeLeases) do
+    self._decodeLeases[token] = nil
+    self._decoded:returnLease(lease)
+    returnedLease = true
+  end
+  if returnedLease then
+    self._decoded:trim()
   end
   self._demand = {}
   self._prefetch = {}
   self._inflight = {}
   self._forwarded = {}
+  self._sourceInterests = {}
   self._workerBusyToken = nil
 end
 
@@ -511,12 +619,203 @@ function AssetPreparationQueue:_checkWorkerHealth()
   self:_enterTerminalFailure(cause)
 end
 
--- Absorb one worker reply: free the matching physical slot first (even when
--- the logical token was cancelled and no longer exists), then publish or
--- discard the logical result. Replacement dispatch is left to the public
--- operation that observes the freed slot. Already resolved tokens are never
--- overwritten by late replies. A reply for a cancelled primary fans out to
--- the promoted follower through the forwarding table instead.
+-- Insert a record into the pending list its priority names.
+---@param record AssetPreparationQueueRecord
+function AssetPreparationQueue:_enqueue(record)
+  if record.priority == "demand" then
+    self._demand[#self._demand + 1] = record.token
+  else
+    self._prefetch[#self._prefetch + 1] = record.token
+  end
+end
+
+-- Remove one token from both pending lists; a stale reference can remain after
+-- an earlier promotion, so both lists are swept.
+---@param token integer
+function AssetPreparationQueue:_removeQueued(token)
+  for _, pending in ipairs({ self._demand, self._prefetch }) do
+    for index, queued in ipairs(pending) do
+      if queued == token then
+        table.remove(pending, index)
+        break
+      end
+    end
+  end
+end
+
+-- Promote a graphical primary or a direct source token to demand work: a
+-- source-stage request dispatches no job of its own, so the interest's owner
+-- carries the priority.
+---@param record AssetPreparationQueueRecord?
+function AssetPreparationQueue:_promotePrimary(record)
+  if record == nil then
+    return
+  end
+  if record.stage == "source" and record.sourceKey ~= nil then
+    local interest = self._sourceInterests[record.sourceKey]
+    if interest ~= nil and interest.owner ~= nil then
+      self:_ensureDemand(interest.owner)
+    end
+    return
+  end
+  self:_ensureDemand(record.token)
+end
+
+-- Drop one token's interest in a selected source. The physical read is never
+-- preempted: a running read keeps its slot and reports to the successor, while
+-- an undispatched read moves to the oldest remaining member. Returns the member
+-- that inherited the physical reply, if any.
+---@param record AssetPreparationQueueRecord
+---@param preferredHeir integer? the cancelled primary's own decode successor, when it is a member
+---@return integer?
+function AssetPreparationQueue:_releaseSourceInterest(record, preferredHeir)
+  local key = record.sourceKey
+  if key == nil then
+    return nil
+  end
+  local interest = self._sourceInterests[key]
+  if interest == nil then
+    return nil
+  end
+  interest.members[record.token] = nil
+  if interest.owner ~= record.token then
+    if next(interest.members) == nil then
+      self._sourceInterests[key] = nil
+    end
+    return nil
+  end
+  local heir = nil
+  if preferredHeir ~= nil and interest.members[preferredHeir] then
+    heir = preferredHeir
+  end
+  if heir == nil then
+    for memberToken in pairs(interest.members) do
+      if heir == nil or memberToken < heir then
+        heir = memberToken
+      end
+    end
+  end
+  if heir == nil then
+    self._sourceInterests[key] = nil
+    local physical = record.physicalToken
+    if record.state == "running" and physical ~= nil and self._forwarded[physical] == record.token then
+      self._forwarded[physical] = nil
+    end
+    return nil
+  end
+  interest.owner = heir
+  local heirRecord = assert(self._tokens[heir], "promoted source member is missing")
+  heirRecord.stage = "source"
+  if record.state == "running" then
+    local physical = record.physicalToken or record.token
+    heirRecord.state = "running"
+    heirRecord.physicalToken = physical
+    self._forwarded[physical] = heir
+  else
+    heirRecord.state = "queued"
+    self:_enqueue(heirRecord)
+  end
+  return heir
+end
+
+-- Publish one selected-source completion into the shared kernel and let every
+-- surviving member continue: a direct source token becomes ready with its own
+-- lease, and a graphical member becomes the decode primary (or links to the one
+-- that is). Exactly one Data allocation is retained, and every decode member
+-- borrows an input lease from it before its decode dispatches.
+---@param record AssetPreparationQueueRecord
+---@param response table<string, unknown>
+function AssetPreparationQueue:_absorbSource(record, response)
+  local sourceKey = assert(record.sourceKey, "a source preparation job is missing its identity")
+  local interest = self._sourceInterests[sourceKey]
+  if interest == nil then
+    if response.ok and response.payload ~= nil then
+      pcall(function()
+        response.payload:release()
+      end)
+    end
+    return
+  end
+  self._sourceInterests[sourceKey] = nil
+  local members = {}
+  for memberToken in pairs(interest.members) do
+    members[#members + 1] = memberToken
+  end
+  table.sort(members)
+  interest.members = {}
+  if not response.ok then
+    local failure = response.error
+    for _, memberToken in ipairs(members) do
+      local member = self._tokens[memberToken]
+      if member ~= nil then
+        member.state = "failed"
+        member.failure = failure
+        self:_forgetReadyPayload(member)
+        if member.kind ~= "source" and self._inflight[member.key] == memberToken then
+          self._inflight[member.key] = nil
+        end
+        for _, otherRecord in pairs(self._tokens) do
+          if otherRecord.link == memberToken then
+            otherRecord.link = nil
+            otherRecord.state = "failed"
+            otherRecord.failure = failure
+          end
+        end
+      end
+    end
+    return
+  end
+  local data = assert(response.payload, "a prepared source reply carries its bytes") --[[@as love.Data]]
+  local nativeBytes = data:getSize()
+  assert(type(nativeBytes) == "number" and nativeBytes >= 0, "prepared source bytes must report their size")
+  ---@cast nativeBytes integer
+  local resident = self._decoded:find(sourceKey)
+  local weight ---@type integer
+  if resident ~= nil then
+    weight = resident.nativeBytes + resident.metadataChargeBytes --[[@as integer]]
+    pcall(function()
+      data:release()
+    end)
+  else
+    local value = typedSourceValue(data, nativeBytes)
+    weight = value.nativeBytes + value.metadataChargeBytes --[[@as integer]]
+    self._decoded:publish(sourceKey, value, weight)
+  end
+  for _, memberToken in ipairs(members) do
+    local member = self._tokens[memberToken]
+    if member ~= nil then
+      member.stage = "decode"
+      if member.kind == "source" then
+        member.lease = self._decoded:borrow(sourceKey)
+        member.state = "ready"
+        self:_reserveReady(member, weight)
+      else
+        local primary = self._inflight[member.key]
+        local primaryRecord = primary ~= nil and self._tokens[primary] or nil
+        if primary ~= nil and primary ~= memberToken and isUnsettled(primaryRecord) then
+          member.state = "linked"
+          member.link = primary
+        else
+          self._inflight[member.key] = memberToken
+          member.state = "queued"
+          local lease = self._decoded:borrow(sourceKey)
+          member.inputLease = lease
+          member.data = lease.value.payload --[[@as love.Data]]
+          self:_enqueue(member)
+        end
+      end
+    end
+  end
+end
+
+-- Absorb one worker reply: free the matching physical slot first (even when the
+-- logical token was cancelled and no longer exists), return the physical
+-- decode's input source lease, then publish or discard the logical result.
+-- Replacement dispatch is left to the public operation that observes the freed
+-- slot. Already resolved tokens are never overwritten by late replies. A reply
+-- for a cancelled primary fans out to the promoted follower through the
+-- forwarding table instead, and a source reply feeds every surviving member of
+-- its interest.
 ---@param response unknown
 function AssetPreparationQueue:_absorb(response)
   if type(response) ~= "table" then
@@ -528,14 +827,27 @@ function AssetPreparationQueue:_absorb(response)
   local token = self._forwarded[response.token]
   if token ~= nil then
     self._forwarded[response.token] = nil
-    if self._workerBusyToken == token then
-      self._workerBusyToken = nil
-    end
   else
     token = response.token
   end
+  local physicalLease = self._decodeLeases[response.token]
+  if physicalLease ~= nil then
+    self._decodeLeases[response.token] = nil
+    self._decoded:returnLease(physicalLease)
+    self._decoded:trim()
+  end
   local record = self._tokens[token]
   if record == nil then
+    if response.kind == "source" and response.ok and response.payload ~= nil then
+      local payload = response.payload --[[@as love.Data]]
+      pcall(function()
+        payload:release()
+      end)
+    end
+    return
+  end
+  if record.stage == "source" then
+    self:_absorbSource(record, response)
     return
   end
   if record.state ~= "queued" and record.state ~= "running" then
@@ -633,7 +945,7 @@ function AssetPreparationQueue:_drain()
   end
 end
 
----@param kind "mesh"|"image"|"image-derivative"|"g4gx"|"g4tx"
+---@param kind "mesh"|"image"|"image-derivative"|"g4gx"|"g4tx"|"source"
 ---@param logicalPath string|ModelAsset.TextureReference generated file path, or a native texture bank selector for g4tx
 ---@param priority "demand"|"prefetch"
 ---@return integer
@@ -651,13 +963,30 @@ function AssetPreparationQueue:request(kind, logicalPath, priority)
     error(self._workerFailure, 0)
   end
   local file, selector = canonicalRequest(kind, logicalPath)
-  -- The immutable resident reference is resolved before keying: identity is
+  -- The immutable selected reference is resolved before keying: identity is
   -- the selected source's content identity, so a different epoch or a
   -- replaced payload can never be served from an older decode.
   local reference = assert(
     self._cacheFs:resolveAsset(file),
     "the generated artifact is absent from the installed view: " .. tostring(file)
   )
+  if kind == "source" then
+    assert(
+      reference.data == nil and type(reference.physicalPath) == "string",
+      "the source request kind reads a disk-backed selected member: " .. tostring(file)
+    )
+    return self:_requestSource(reference --[[@as CacheFs.PackageRef]], file, priority)
+  end
+  if reference.data == nil then
+    return self:_requestSelectedDecode(
+      kind --[[@as "mesh"|"image"|"image-derivative"|"g4gx"|"g4tx"]],
+      file,
+      selector,
+      logicalPath,
+      reference --[[@as CacheFs.PackageRef]],
+      priority
+    )
+  end
   local key = lengthPrefixedKey({ reference.sourceId, reference.contentId, kind, selector })
   self._nextToken = self._nextToken + 1
   local token = self._nextToken
@@ -675,6 +1004,7 @@ function AssetPreparationQueue:request(kind, logicalPath, priority)
       key = key,
       priority = priority,
       state = "ready",
+      stage = "decode",
       lease = lease,
     }
     self:_reserveReady(self._tokens[token], resident.nativeBytes + resident.metadataChargeBytes --[[@as integer]])
@@ -689,28 +1019,188 @@ function AssetPreparationQueue:request(kind, logicalPath, priority)
     key = key,
     priority = priority,
     state = "queued",
+    stage = "decode",
   }
   -- An identical queued-or-running job runs once: the duplicate links to
   -- it and observes the shared outcome through its own token, so
   -- per-frame re-requests never stack duplicate worker decodes.
   local primary = self._inflight[key]
   local primaryRecord = primary ~= nil and self._tokens[primary] or nil
-  if primaryRecord ~= nil and (primaryRecord.state == "queued" or primaryRecord.state == "running") then
+  if isUnsettled(primaryRecord) then
     record.state = "linked"
     record.link = primary
     self._tokens[token] = record
     if priority == "demand" then
-      self:_ensureDemand(primary)
+      self:_promotePrimary(primaryRecord)
     end
     self:_dispatch()
     return token
   end
   self._tokens[token] = record
   self._inflight[key] = token
-  if priority == "demand" then
-    self._demand[#self._demand + 1] = token
+  self:_enqueue(record)
+  self:_dispatch()
+  return token
+end
+
+-- One direct selected-source request: an already retained allocation answers
+-- with its own lease, and otherwise the token joins the one interest for that
+-- source and reads it through the shared physical worker.
+---@param reference CacheFs.PackageRef
+---@param path string logical selected path
+---@param priority "demand"|"prefetch"
+---@return integer
+function AssetPreparationQueue:_requestSource(reference, path, priority)
+  local key = sourceIdentity(reference)
+  self._nextToken = self._nextToken + 1
+  local token = self._nextToken
+  local resident = self._decoded:find(key)
+  if resident ~= nil then
+    local record = {
+      token = token,
+      kind = "source",
+      path = path,
+      key = key,
+      priority = priority,
+      state = "ready",
+      stage = "decode",
+      lease = self._decoded:borrow(key),
+    }
+    self._tokens[token] = record
+    self:_reserveReady(record, resident.nativeBytes + resident.metadataChargeBytes --[[@as integer]])
+    return token
+  end
+  local interest = self._sourceInterests[key]
+  if interest == nil then
+    interest = { key = key, reference = reference, owner = token, members = { [token] = true } }
+    self._sourceInterests[key] = interest
+    local record = {
+      token = token,
+      kind = "source",
+      path = path,
+      key = key,
+      sourceKey = key,
+      reference = reference,
+      priority = priority,
+      state = "queued",
+      stage = "source",
+    }
+    self._tokens[token] = record
+    self:_enqueue(record)
   else
-    self._prefetch[#self._prefetch + 1] = token
+    interest.members[token] = true
+    self._tokens[token] = {
+      token = token,
+      kind = "source",
+      path = path,
+      key = key,
+      sourceKey = key,
+      reference = reference,
+      priority = priority,
+      state = "awaiting-source",
+      stage = "source",
+    }
+    if priority == "demand" then
+      self:_promotePrimary(self._tokens[token])
+    end
+  end
+  self:_dispatch()
+  return token
+end
+
+-- One graphical request over a disk-backed selected member. The source read is
+-- a prerequisite of the decode: this token either owns it, joins its interest
+-- as the decode primary or as a follower of a pending primary, or decodes
+-- immediately from an allocation the shared owner already retains.
+---@param kind "mesh"|"image"|"image-derivative"|"g4gx"|"g4tx"
+---@param file string logical selected path
+---@param selector string canonical decode selector
+---@param logicalPath string|ModelAsset.TextureReference original request selector
+---@param reference CacheFs.PackageRef
+---@param priority "demand"|"prefetch"
+---@return integer
+function AssetPreparationQueue:_requestSelectedDecode(kind, file, selector, logicalPath, reference, priority)
+  local key = lengthPrefixedKey({ reference.sourceId, reference.contentId, kind, selector })
+  self._nextToken = self._nextToken + 1
+  local token = self._nextToken
+  local resident = self._decoded:find(key)
+  if resident ~= nil then
+    local record = {
+      token = token,
+      kind = kind,
+      path = file,
+      selector = type(logicalPath) == "table" and logicalPath or nil,
+      key = key,
+      priority = priority,
+      state = "ready",
+      stage = "decode",
+      lease = self._decoded:borrow(key),
+    }
+    self._tokens[token] = record
+    self:_reserveReady(record, resident.nativeBytes + resident.metadataChargeBytes --[[@as integer]])
+    return token
+  end
+  local sourceKey = sourceIdentity(reference)
+  local record = {
+    token = token,
+    kind = kind,
+    path = file,
+    selector = type(logicalPath) == "table" and logicalPath or nil,
+    key = key,
+    sourceKey = sourceKey,
+    reference = reference,
+    priority = priority,
+    stage = "source",
+  }
+  local primary = self._inflight[key]
+  local primaryRecord = primary ~= nil and self._tokens[primary] or nil
+  if primaryRecord ~= nil and isUnsettled(primaryRecord) then
+    record.state = "linked"
+    record.link = primary
+    if primaryRecord.stage == "source" then
+      local interest = self._sourceInterests[primaryRecord.sourceKey]
+      if interest ~= nil and interest.members[primary] then
+        interest.members[token] = true
+      else
+        record.stage = "decode"
+      end
+    else
+      record.stage = "decode"
+    end
+    self._tokens[token] = record
+    if priority == "demand" then
+      self:_promotePrimary(primaryRecord)
+    end
+    self:_dispatch()
+    return token
+  end
+  self._inflight[key] = token
+  local residentSource = self._decoded:find(sourceKey)
+  if residentSource ~= nil then
+    local lease = self._decoded:borrow(sourceKey)
+    record.stage = "decode"
+    record.state = "queued"
+    record.inputLease = lease
+    record.data = lease.value.payload --[[@as love.Data]]
+    self._tokens[token] = record
+    self:_enqueue(record)
+    self:_dispatch()
+    return token
+  end
+  local interest = self._sourceInterests[sourceKey]
+  if interest == nil then
+    interest = { key = sourceKey, reference = reference, owner = token, members = { [token] = true } }
+    self._sourceInterests[sourceKey] = interest
+    record.state = "queued"
+    self._tokens[token] = record
+    self:_enqueue(record)
+  else
+    interest.members[token] = true
+    record.state = "awaiting-source"
+    self._tokens[token] = record
+    if priority == "demand" then
+      self:_promotePrimary(record)
+    end
   end
   self:_dispatch()
   return token
@@ -760,7 +1250,10 @@ end
 -- is discarded when it returns. The physical slot stays occupied until that
 -- reply (or the worker's death) frees it, so cancellation never fabricates
 -- worker idleness and priority is decided at the next physical dispatch. A
--- ready token returns its own lease first.
+-- ready token returns its own lease first; a still-queued decode continuation
+-- gives its source lease back immediately unless a follower inherits it. Once a
+-- decode has dispatched, its input source lease belongs to the physical task
+-- and is returned only when that task settles.
 ---@param token integer
 function AssetPreparationQueue:cancel(token)
   local record = assert(self._tokens[token], "unknown preparation token")
@@ -768,53 +1261,65 @@ function AssetPreparationQueue:cancel(token)
   if self:_returnLease(record) then
     self._decoded:trim()
   end
+  self:_removeQueued(token)
   self._tokens[token] = nil
-  for _, pending in ipairs({ self._demand, self._prefetch }) do
-    for index, queued in ipairs(pending) do
-      if queued == token then
-        table.remove(pending, index)
-        break
+
+  local decodePrimary = record.kind ~= "source" and record.key ~= nil and self._inflight[record.key] == token
+  local heir = nil
+  if decodePrimary then
+    -- A cancelled primary hands its decode to its oldest follower instead of
+    -- abandoning the shared work: the worker runs once either way.
+    for other, otherRecord in pairs(self._tokens) do
+      if otherRecord.link == token and (heir == nil or other < heir) then
+        heir = other
+      end
+    end
+    self._inflight[record.key] = heir
+    if heir ~= nil then
+      local heirRecord = assert(self._tokens[heir], "promoted follower is missing")
+      heirRecord.link = nil
+      for _, otherRecord in pairs(self._tokens) do
+        if otherRecord.link == token then
+          otherRecord.link = heir
+        end
       end
     end
   end
-  if record.link ~= nil then
+
+  if record.stage == "source" then
+    -- The source read is still pending: its interest succession decides which
+    -- member accepts the reply, independently of the decode promotion above.
+    self:_releaseSourceInterest(record, heir)
     return
   end
-  -- A cancelled primary hands its job to its oldest follower instead of
-  -- abandoning the shared work: the worker runs once either way.
-  local key = assert(record.key, "preparation record is missing its identity")
-  if self._inflight[key] ~= token then
-    return
-  end
-  self._inflight[key] = nil
-  local heir = nil
-  for other, otherRecord in pairs(self._tokens) do
-    if otherRecord.link == token and (heir == nil or other < heir) then
-      heir = other
+
+  local lease = record.inputLease
+  if lease ~= nil then
+    record.inputLease = nil
+    if heir ~= nil and self._tokens[heir] ~= nil then
+      self._tokens[heir].inputLease = lease
+    else
+      self._decoded:returnLease(lease)
+      self._decoded:trim()
     end
   end
+
   if heir == nil then
+    local physical = record.physicalToken
+    if record.state == "running" and physical ~= nil and self._forwarded[physical] == token then
+      self._forwarded[physical] = nil
+    end
     return
   end
   local heirRecord = assert(self._tokens[heir], "promoted follower is missing")
-  heirRecord.link = nil
-  self._inflight[key] = heir
-  for _, otherRecord in pairs(self._tokens) do
-    if otherRecord.link == token then
-      otherRecord.link = heir
-    end
-  end
   if record.state == "running" then
+    local physical = record.physicalToken or token
     heirRecord.state = "running"
-    self._forwarded[token] = heir
-    self._workerBusyToken = heir
+    heirRecord.physicalToken = physical
+    self._forwarded[physical] = heir
   else
     heirRecord.state = "queued"
-    if heirRecord.priority == "demand" then
-      self._demand[#self._demand + 1] = heir
-    else
-      self._prefetch[#self._prefetch + 1] = heir
-    end
+    self:_enqueue(heirRecord)
   end
 end
 
@@ -830,9 +1335,21 @@ function AssetPreparationQueue:promote(token, priority)
   assert(priority == "demand", "unknown preparation priority " .. tostring(priority))
   local record = self._tokens[token]
   assert(record, "unknown preparation token")
-  if record.link ~= nil then
-    self:_ensureDemand(record.link)
+  local linked = record.link
+  if linked ~= nil then
+    self:_promotePrimary(self._tokens[linked])
     return
+  end
+  if record.stage == "source" then
+    -- The source read dispatches no job of its own: its interest's owner
+    -- carries the priority for every member.
+    local interest = record.sourceKey ~= nil and self._sourceInterests[record.sourceKey] or nil
+    if interest ~= nil then
+      if interest.owner ~= nil then
+        self:_ensureDemand(interest.owner)
+      end
+      return
+    end
   end
   if record.state ~= "queued" or record.priority == "demand" then
     return
@@ -878,29 +1395,78 @@ function AssetPreparationQueue:wait(token)
   end
 end
 
--- Borrow one resident base source for a compact runtime reader: the returned
--- lease roots exactly the bytes the store owns and creates no kernel entry, so a
--- map, message bank or PCM sample costs no second native buffer and no charge
--- against the decoded CPU owner. Release is idempotent and never touches the
--- store's backing. Disk-backed sources extend this same boundary in the mod
--- source form.
----@param reference ResidentCache.BlobRef
+-- Borrow one selected source for a compact runtime reader. Base resident
+-- bytes are returned as the direct, thread-free lease the store already owns:
+-- no kernel entry, no second native buffer and no charge. A disk-backed
+-- selected member instead joins (or promotes) the one source interest for that
+-- source/content identity, waits through the queue's bounded health-probe loop,
+-- and wraps the transferred kernel lease: the shared owner charges the
+-- allocation once and trims it exactly once on the final release. The caller's
+-- public value is Data, never the decoded wrapper.
+---@param reference ResidentCache.BlobRef|CacheFs.PackageRef
 ---@return AssetPreparationQueueSourceLease
 function AssetPreparationQueue:acquireSource(reference)
   assert(not self._released, "asset preparation queue is released")
   assert(
-    type(reference) == "table" and reference.data ~= nil and type(reference.sourceId) == "string",
-    "base source acquisition requires a resolved resident reference"
+    type(reference) == "table" and type(reference.sourceId) == "string",
+    "source acquisition requires a resolved reference"
   )
-  local lease = { value = reference.data }
-  ---@cast lease AssetPreparationQueueSourceLease
-  function lease:release()
+  if reference.data ~= nil then
+    local baseLease = { value = reference.data }
+    ---@cast baseLease AssetPreparationQueueSourceLease
+    function baseLease:release()
+      if self.value == nil then
+        return
+      end
+      self.value = nil
+    end
+    return baseLease
+  end
+  assert(
+    type(reference.contentId) == "string"
+      and type(reference.physicalPath) == "string"
+      and type(reference.path) == "string"
+      and type(reference.size) == "number",
+    "disk source acquisition requires a resolved selected reference: " .. tostring(reference.path)
+  )
+  self:_drain()
+  self:_checkWorkerHealth()
+  if self._workerFailure ~= nil then
+    error(self._workerFailure, 0)
+  end
+  local selected = reference --[[@as CacheFs.PackageRef]]
+  local key = sourceIdentity(selected)
+  local kernelLease ---@type ResidentAssetCacheLease?
+  local resident = self._decoded:find(key)
+  if resident ~= nil then
+    kernelLease = self._decoded:borrow(key)
+  else
+    local token = self:_requestSource(selected, selected.path, "demand")
+    self:promote(token, "demand")
+    local ok, transferred = pcall(self.wait, self, token)
+    if not ok then
+      if self._tokens[token] ~= nil then
+        self:cancel(token)
+      end
+      error(transferred, 0)
+    end
+    kernelLease = transferred
+  end
+  local decoded = self._decoded
+  local transferredLease = assert(kernelLease, "source acquisition transfers its lease")
+  local sourceLease = {
+    value = assert(transferredLease.value).payload --[[@as love.Data]],
+  }
+  ---@cast sourceLease AssetPreparationQueueSourceLease
+  function sourceLease:release()
     if self.value == nil then
       return
     end
     self.value = nil
+    decoded:returnLease(kernelLease)
+    decoded:trim()
   end
-  return lease
+  return sourceLease
 end
 
 -- Stop accepting work, return every still-held decoded lease, ask the worker to
@@ -919,12 +1485,24 @@ function AssetPreparationQueue:release()
     if self:_returnLease(record) then
       returnedLease = true
     end
+    local lease = record.inputLease
+    if lease ~= nil then
+      record.inputLease = nil
+      self._decoded:returnLease(lease)
+      returnedLease = true
+    end
+  end
+  for token, lease in pairs(self._decodeLeases) do
+    self._decodeLeases[token] = nil
+    self._decoded:returnLease(lease)
+    returnedLease = true
   end
   self._tokens = {}
   self._demand = {}
   self._prefetch = {}
   self._inflight = {}
   self._forwarded = {}
+  self._sourceInterests = {}
   self._workerBusyToken = nil
   self._readyPayloadBytes = 0
   self._readyWeights = {}
@@ -947,7 +1525,17 @@ function AssetPreparationQueue:release()
   end
   local replyChannel = self._reply
   if replyChannel ~= nil then
-    while replyChannel:pop() ~= nil do
+    while true do
+      local response = replyChannel:pop()
+      if response == nil then
+        break
+      end
+      if type(response) == "table" and response.kind == "source" and response.ok and response.payload ~= nil then
+        local payload = response.payload --[[@as love.Data]]
+        pcall(function()
+          payload:release()
+        end)
+      end
     end
   end
 end

@@ -25,7 +25,7 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field index table<string, unknown>
 ---@field matrixMemberId integer
 ---@field loadCell fun(descriptor: table<string, unknown>): table<string, unknown>
----@field acquireSource fun(reference: ResidentCache.BlobRef): AssetPreparationQueueSourceLease selected runtime's compact source acquirer
+---@field acquireSource fun(reference: ResidentCache.BlobRef|CacheFs.PackageRef): AssetPreparationQueueSourceLease selected runtime's compact source acquirer
 ---@field mapPropsFactory (fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?)?
 ---@field presentationLoader fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?
 ---@field presentationTaskFactory fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?

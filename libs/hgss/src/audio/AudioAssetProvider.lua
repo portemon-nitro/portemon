@@ -41,7 +41,7 @@ local Pcm16 = require("libs.nds.src.nitro.sound.Pcm16")
 ---@field release fun(self: AudioAssetProviderSourceLease)
 
 ---@class AudioAssetProviderOptions
----@field acquireSource fun(reference: ResidentCache.BlobRef): AudioAssetProviderSourceLease resident source acquirer of the selected epoch
+---@field acquireSource fun(reference: ResidentCache.BlobRef|CacheFs.PackageRef): AudioAssetProviderSourceLease resident source acquirer of the selected epoch
 ---@field assetPreparation table<string, unknown>? shared preparation queue this provider's payload interest routes through
 
 ---@class AudioAssetProvider.SampleRecord
@@ -62,11 +62,12 @@ local Pcm16 = require("libs.nds.src.nitro.sound.Pcm16")
 ---@class AudioAssetProvider
 ---@field private _cacheFs CacheFs
 ---@field private _index table<string, unknown>
----@field private _acquireSource fun(reference: ResidentCache.BlobRef): AudioAssetProviderSourceLease
+---@field private _acquireSource fun(reference: ResidentCache.BlobRef|CacheFs.PackageRef): AudioAssetProviderSourceLease
 ---@field private _queue table<string, unknown>?
 ---@field private _sequences table<integer, table<string, unknown>>
 ---@field private _banks table<integer, table<string, unknown>>
 ---@field private _activeSamples table<string, AudioAssetProvider.SampleRecord>
+---@field private _sampleSources table<string, integer> predicted sample key to its pending selected-source token
 ---@field private _bankKeysMemo table<string, string[]>
 ---@field private _bankKeysOrder string[]
 ---@field private _acquisitions integer
@@ -114,6 +115,7 @@ function AudioAssetProvider.new(cacheFs, opts)
     _sequences = {},
     _banks = {},
     _activeSamples = {},
+    _sampleSources = {},
     _bankKeysMemo = {},
     _bankKeysOrder = {},
     _acquisitions = 0,
@@ -287,13 +289,14 @@ function AudioAssetProvider:_openSample(key)
       { key = key }
     )
   end
+  ---@cast source -nil
   return {
     sourceLease = sourceLease,
     sourceId = reference.sourceId,
     contentId = reference.contentId,
     metadata = metadata,
     pcm = pcm,
-    byteSize = reference.data:getSize(),
+    byteSize = source:getSize(),
     references = 0,
   }
 end
@@ -361,24 +364,78 @@ function AudioAssetProvider:acquireSample(key)
   return self:_leaseSample(key, record)
 end
 
+-- The selected source of one sample's compact bytes, or nil when the key
+-- names no generated payload (acquisition raises its own structured failure)
+-- or the epoch's resident base store already owns those bytes, for which
+-- prediction needs no read, lease, or preparation.
+---@param key string
+---@return CacheFs.PackageRef?
+function AudioAssetProvider:_sampleSource(key)
+  local reference = self._cacheFs:resolveAsset(AudioCache.samplePath(key))
+  if reference == nil or reference.data ~= nil then
+    return nil
+  end
+  return reference --[[@as CacheFs.PackageRef]]
+end
+
 -- Resolves every sample a bank's instrument closure references, in closure
 -- order, reusing the shared bank reference walk instead of a second
--- instrument grammar. The base resident store already holds the compact PCM,
--- so prediction creates no PCM buffer, holds no lease, and schedules no
--- payload work of its own; the disk source form extends this same entry.
+-- instrument grammar. Base resident samples need no work; a selected package
+-- sample joins the same source interest actual acquisition uses and is released
+-- again as soon as it is retained, so prediction adds no private PCM backing.
 ---@param idOrSymbol integer|string
 ---@return AudioAssetSample[]
 function AudioAssetProvider:prewarmBank(idOrSymbol)
-  self:_closureKeys(idOrSymbol)
+  for _, key in ipairs(self:_closureKeys(idOrSymbol)) do
+    local reference = self:_sampleSource(key)
+    if reference ~= nil then
+      local lease = self._acquireSource(reference)
+      lease:release()
+    end
+  end
   return {}
 end
 
--- Resolves one bank's closure for prediction without decoding anything: the
--- reported count is the predicted key count, never a scheduled payload job.
+-- Resolves one bank's closure for prediction without blocking: a selected
+-- sample's source read is requested at prefetch priority and its token stays
+-- pending for drain/cancel. The reported count is still the predicted key
+-- count, never the number of scheduled jobs.
 ---@param idOrSymbol integer|string
 ---@return integer predicted key count
 function AudioAssetProvider:prewarmBankBackground(idOrSymbol)
-  return #self:_closureKeys(idOrSymbol)
+  local keys = self:_closureKeys(idOrSymbol)
+  local queue = self._queue
+  for _, key in ipairs(keys) do
+    self:_scheduleBackgroundSource(key, queue)
+  end
+  return #keys
+end
+
+-- Forecast one sample's selected source without decoding it. The queue
+-- coalesces the request with any pending read or actual acquisition of the same
+-- content key; only this provider's own token is remembered, so cancel and
+-- disposal never drop another consumer's interest.
+---@param key string
+---@param queue table<string, unknown>?
+function AudioAssetProvider:_scheduleBackgroundSource(key, queue)
+  if queue == nil then
+    return
+  end
+  local reference = self:_sampleSource(key)
+  if reference == nil then
+    return
+  end
+  local pending = self._sampleSources[key]
+  if pending ~= nil then
+    local state = queue:poll(pending)
+    if state == "pending" or state == "ready" then
+      return
+    end
+    queue:cancel(pending)
+    self._sampleSources[key] = nil
+  end
+  local token = queue:request("source", AudioCache.samplePath(key), "prefetch")
+  self._sampleSources[key] = token --[[@as integer]]
 end
 
 -- Binds (or unbinds) the shared preparation queue this provider's payload
@@ -390,18 +447,52 @@ function AudioAssetProvider:bindQueue(queue)
   self._queue = queue
 end
 
--- Base prewarm copies nothing and schedules no source job, so nothing is in
--- flight to adopt; prepared package source work arrives with selected sources.
+-- Adopt whatever predicted sample source work has completed. A ready token is
+-- dropped through cancel, which returns its kernel lease to the shared owner
+-- and trims it exactly once; the retained allocation stays available to the
+-- next acquisition. The provider holds no decoded-owner handle, so it never
+-- takes a lease it could not return. A failed prediction is dropped the same
+-- way; real playback acquisition raises the selected source's failure.
 ---@return integer adopted count
 function AudioAssetProvider:drainReadySamples()
-  return 0
+  local queue = self._queue
+  if queue == nil then
+    return 0
+  end
+  local adopted = 0
+  for key, token in pairs(self._sampleSources) do
+    local state = queue:poll(token)
+    if state == "ready" then
+      queue:cancel(token)
+      self._sampleSources[key] = nil
+      adopted = adopted + 1
+    elseif state == "failed" then
+      queue:cancel(token)
+      self._sampleSources[key] = nil
+    end
+  end
+  return adopted
 end
 
--- Base prewarm holds no predicted source interest to drop: the caller's key
--- set stays its own; prepared package source work arrives with selected sources.
+-- Drops this provider's predicted source interests outside the caller's key
+-- set. Voices and other consumers keep their own interests, and a physically
+-- running read still settles before its bytes are released.
+---@param predictedSet table<string, boolean>
 ---@return integer cancelled count
-function AudioAssetProvider:cancelUnpredicted(_)
-  return 0
+function AudioAssetProvider:cancelUnpredicted(predictedSet)
+  local queue = self._queue
+  if queue == nil then
+    return 0
+  end
+  local cancelled = 0
+  for key, token in pairs(self._sampleSources) do
+    if not predictedSet[key] then
+      queue:cancel(token)
+      self._sampleSources[key] = nil
+      cancelled = cancelled + 1
+    end
+  end
+  return cancelled
 end
 
 -- Active sample interests only: how many records are backed by outstanding
@@ -428,14 +519,23 @@ function AudioAssetProvider:status()
   }
 end
 
--- Releases the provider's metadata memos. Disposal requires every sounder
--- stopped: the composition disposes its mixer first, which returns each
--- physical voice's acquisition, so no active sample record may remain here.
+-- Releases the provider's metadata memos and any prediction token of its own.
+-- Disposal requires every sounder stopped: the composition disposes its mixer
+-- first, which returns each physical voice's acquisition, so no active sample
+-- record may remain here. A queue already released by its owner discards its
+-- own tokens, so a stale prediction token cannot block teardown.
 function AudioAssetProvider:dispose()
   assert(
     next(self._activeSamples) == nil,
     "audio sample provider disposal requires every sample voice stopped and returned"
   )
+  local queue = self._queue
+  for key, token in pairs(self._sampleSources) do
+    self._sampleSources[key] = nil
+    if queue ~= nil then
+      pcall(queue.cancel, queue, token)
+    end
+  end
   self._sequences = {}
   self._banks = {}
   self._bankKeysMemo = {}

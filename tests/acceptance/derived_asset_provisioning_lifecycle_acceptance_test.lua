@@ -155,6 +155,20 @@ T.tests["the selected game receives only the semantic provisioning host"] = func
       local store = ResidentCache.new("heartgold", "base:derived-provisioning-fixture")
       return CacheFs.fromStore(store)
     end
+    function service:cacheIdentity(_)
+      -- The identity those bytes were produced under: App validates the
+      -- ordered package selection against it before any consumer exists.
+      return {
+        schema = "derived-cache",
+        versionId = "heartgold",
+        romSha1 = string.rep("0", 40),
+        mode = "release",
+        producerId = "derived-provisioning-fixture",
+        assetRevision = 19,
+        scriptApi = 1,
+        generationId = "derived-provisioning-fixture",
+      }
+    end
     function service:firstPlayReady(_)
       return result.firstPlayReady == true
     end

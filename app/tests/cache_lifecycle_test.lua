@@ -236,6 +236,23 @@ local function newMenuService(events)
   function service:getCacheFs(_)
     return generatedView
   end
+  function generatedView:withPackages(packageSet)
+    return setmetatable({ versionId = generatedView.versionId, base = generatedView, packages = packageSet }, {
+      __index = generatedView,
+    })
+  end
+  function service:cacheIdentity(_)
+    return {
+      schema = "derived-cache",
+      versionId = "heartgold",
+      romSha1 = string.rep("0", 40),
+      mode = "release",
+      producerId = "menu-harness",
+      assetRevision = 19,
+      scriptApi = 1,
+      generationId = "test-generation",
+    }
+  end
   function service:firstPlayReady(_)
     return true
   end
@@ -355,7 +372,8 @@ local function withAppStubs(fn)
   end
   -- One installed generated reader per live epoch: these cases stub every
   -- generated consumer, so a shared empty view stands in for the epoch's
-  -- resident bytes.
+  -- resident bytes. The selection's overlay is a second reader over it, as the
+  -- App composes one per selected epoch.
   context.generatedView = { versionId = "heartgold" }
   function context.generatedView:resolveAsset(_)
     return nil
@@ -363,11 +381,36 @@ local function withAppStubs(fn)
   function context.generatedView:loadLua(_)
     return nil, "the lifecycle harness carries no generated payloads"
   end
+  function context.generatedView:withPackages(packageSet)
+    context.packageSets = context.packageSets or {}
+    context.packageSets[#context.packageSets + 1] = packageSet
+    return setmetatable({ versionId = context.generatedView.versionId, base = context.generatedView }, {
+      __index = context.generatedView,
+    })
+  end
   function service:getCacheFs(epochArg)
     if context.retiredEpochs[epochArg] == true then
       return nil
     end
     return context.generatedView
+  end
+  -- The identity the installed bytes were produced under, which every selected
+  -- package manifest must match.
+  context.cacheIdentity = {
+    schema = "derived-cache",
+    versionId = "heartgold",
+    romSha1 = string.rep("0", 40),
+    mode = "release",
+    producerId = "lifecycle-harness",
+    assetRevision = 19,
+    scriptApi = 1,
+    generationId = context.cannedGeneration,
+  }
+  function service:cacheIdentity(epochArg)
+    if context.retiredEpochs[epochArg] == true then
+      return nil
+    end
+    return context.cacheIdentity
   end
   function service:firstPlayReady(epochArg)
     return scriptedFirstPlayReady(context, epochArg)
@@ -758,9 +801,12 @@ function T.menu_installation_starts_no_prefetch_or_warmup()
   local originalProvisioner = App.provisioner
   local originalOpts = App.opts
   local originalEpoch = App.epoch
+  local originalService = App.service
   App.epoch = 1
   App.opts = { dev = false }
   local events = {}
+  local service = newMenuService(events)
+  App.service = service
   local menu = { dispose = function() end }
   MainMenuComposition.new = function(_)
     events[#events + 1] = "menu:new"
@@ -771,7 +817,7 @@ function T.menu_installation_starts_no_prefetch_or_warmup()
     originalSetState(next)
   end
   local ok, err = pcall(function()
-    local provisioner = Provisioner.new({ versionId = "heartgold", service = newMenuService(events) })
+    local provisioner = Provisioner.new({ versionId = "heartgold", service = service })
     local host = provisioner:gameHost()
     Assert.isNil(host.startBackgroundWarmup, "warmup lifecycle stays off the semantic game host")
     Assert.isNil(host.enableSweep, "corpus authorization stays off the semantic game host")
@@ -804,6 +850,7 @@ function T.menu_installation_starts_no_prefetch_or_warmup()
   App.provisioner = originalProvisioner
   App.opts = originalOpts
   App.epoch = originalEpoch
+  App.service = originalService
   if not ok then
     error(err, 0)
   end
@@ -836,11 +883,13 @@ function T.menu_installation_starts_no_background_warmup()
   local originalProvisioner = App.provisioner
   local originalOpts = App.opts
   local originalEpoch = App.epoch
+  local originalService = App.service
   App.epoch = 1
   App.opts = { dev = false }
   local events = {}
   local enabled = 0
   local service = newMenuService(events)
+  App.service = service
   local realEnable = service.enableSweep
   function service:enableSweep(epoch)
     enabled = enabled + 1
@@ -873,6 +922,7 @@ function T.menu_installation_starts_no_background_warmup()
   App.provisioner = originalProvisioner
   App.opts = originalOpts
   App.epoch = originalEpoch
+  App.service = originalService
   if not ok then
     error(err, 0)
   end
@@ -2126,9 +2176,39 @@ local function withBootGateApp(options, fn)
       function view:loadLua(_)
         return nil, "the lifecycle harness carries no generated payloads"
       end
+      -- The selection's overlay over this stand-in view: the App composes one
+      -- reader per selected epoch, so the stand-in must offer that composition.
+      function view:withPackages(packageSet)
+        context.packageSets = context.packageSets or {}
+        context.packageSets[#context.packageSets + 1] = packageSet
+        return setmetatable({ versionId = view.versionId, base = view }, { __index = view })
+      end
       installedViews[epoch] = view
     end
     return view
+  end
+  -- The identity the installed bytes were produced under, for the package
+  -- manifests a selection validates. A real installation always wins.
+  local baseCacheIdentity = service.cacheIdentity
+  local harnessIdentity = {
+    schema = "derived-cache",
+    versionId = "heartgold",
+    romSha1 = string.rep("0", 40),
+    mode = "release",
+    producerId = "lifecycle-harness",
+    assetRevision = 19,
+    scriptApi = 1,
+    generationId = "test-generation",
+  }
+  service.cacheIdentity = function(self, epoch)
+    local identity = baseCacheIdentity(self, epoch)
+    if identity ~= nil then
+      return identity
+    end
+    if context.retiredEpochs[epoch] == true or context.generatedViewInstalled ~= true then
+      return nil
+    end
+    return harnessIdentity
   end
   graphics.getDimensions = function()
     return 640, 480
@@ -2788,9 +2868,18 @@ function T.selected_consumers_share_the_installed_view_and_first_play_is_an_inst
       )
       Assert.isTrue(provisioner:getCacheFs() == installed, "the provisioner serves the installed view itself")
       Assert.isTrue(provisioner:gameHost().getCacheFs() == installed, "the game-facing host serves the same view")
+      -- The selection's reader is one overlay over that installed view: every
+      -- generated consumer shares it, and it still lends the installed bytes
+      -- themselves instead of re-reading a physical generated root.
+      local selected = assert(App._ensureAssetRuntime(epoch), "the selected epoch owns its CPU runtime").cacheFs
       Assert.isTrue(
-        context.menus[1].options.cacheFs == installed,
-        "the menu composition receives the installed view instead of a physical generated root"
+        context.menus[1].options.cacheFs == selected,
+        "the menu composition receives the selection's reader over the installed view"
+      )
+      Assert.isTrue(selected ~= installed, "the selection's reader is its own overlay, never the base view itself")
+      Assert.isTrue(
+        selected:resolveAsset(scenePath) == installed:resolveAsset(scenePath),
+        "the overlay lends the installed entry itself"
       )
       Assert.isFalse(rewritesPhysical(installed), "the installed view is not a physical generated root")
       local asset = assert(installed:resolveAsset(scenePath), "the installed bytes are readable at once")
@@ -2799,8 +2888,8 @@ function T.selected_consumers_share_the_installed_view_and_first_play_is_an_inst
       App._launchGameWithProvisioner(VERSION, { kind = "continue", saveId = "fixture" })
       Assert.equal(#context.games, 1, "the menu route launches one retail entry")
       Assert.isTrue(
-        context.games[1].launchOptions.cacheFs == installed,
-        "the retail entry receives the same installed view"
+        context.games[1].launchOptions.cacheFs == selected,
+        "the retail entry receives the same selected reader the menu used"
       )
       Assert.equal(context.service:firstPlayReady(epoch), true, "first play is a cached fact of the installed epoch")
       App._publishFirstPlay(VERSION)

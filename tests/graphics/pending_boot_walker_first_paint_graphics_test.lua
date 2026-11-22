@@ -29,8 +29,9 @@ end
 
 ---@param pairIndex integer
 ---@param script table
+---@param cacheFs table the installed generated reader supplying the pair's art
 ---@return CachePreparationState
-local function pendingBootWaitWithReadyWalker(pairIndex, script)
+local function pendingBootWaitWithReadyWalker(pairIndex, script, cacheFs)
   local service = {}
   function service:bootSourceStatus(_)
     script.bootPolls = script.bootPolls + 1
@@ -54,6 +55,11 @@ local function pendingBootWaitWithReadyWalker(pairIndex, script)
     service = service,
     versionId = "soulsilver",
     pairIndex = pairIndex,
+    -- The selected epoch's reader: the wait adopts the pair's art from the same
+    -- view every other generated consumer reads.
+    getAssetReader = function()
+      return cacheFs
+    end,
     isCurrent = function()
       return true
     end,
@@ -78,7 +84,7 @@ local function pending_gate_paints_adopted_walker_pixels_without_transfer(scope,
   Assert.notNil(choice.heroId, "the fixed pair maps to a catalog hero")
   Assert.notNil(choice.followerSpeciesId, "the fixed pair maps to a catalog follower")
   local script = { bootPolls = 0, walkerDemands = 0, fired = 0 }
-  local state = pendingBootWaitWithReadyWalker(pairIndex, script)
+  local state = pendingBootWaitWithReadyWalker(pairIndex, script, cacheFs)
   local ok, err = xpcall(function()
     local preSprites = 0
     local originalPreDraw = love.graphics.draw

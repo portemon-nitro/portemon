@@ -23,11 +23,11 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field sourceLease FieldMessageProvider.SourceLease
 
 ---@class FieldMessageProviderOptions
----@field acquireSource fun(reference: ResidentCache.BlobRef): FieldMessageProvider.SourceLease
+---@field acquireSource fun(reference: ResidentCache.BlobRef|CacheFs.PackageRef): FieldMessageProvider.SourceLease
 
 ---@class FieldMessageProvider
 ---@field private _cacheFs CacheFs
----@field private _acquireSource fun(reference: ResidentCache.BlobRef): FieldMessageProvider.SourceLease
+---@field private _acquireSource fun(reference: ResidentCache.BlobRef|CacheFs.PackageRef): FieldMessageProvider.SourceLease
 ---@field private _banks table<integer, FieldMessageProvider.BankRecord>
 ---@field private _stats table<string, unknown>
 local FieldMessageProvider = {}

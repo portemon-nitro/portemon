@@ -26,6 +26,7 @@ function Worker.run(requestChannel, replyChannel)
   local ImageDerivative = require("libs.hgss.src.presentation.ImageDerivative")
   local NativeTextureBank = require("libs.assets.src.model.NativeTextureBank")
   local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
+  local StorageErrors = require("libs.storage.src.errors")
   local TextureDecoder = require("libs.nds.src.gx.TextureDecoder")
 
   ---@param payload unknown
@@ -218,12 +219,90 @@ function Worker.run(requestChannel, replyChannel)
     replyChannel:push({ token = token, ok = true, kind = "image", path = path, imageData = imageData })
   end
 
+  -- One selected package member: read exactly the confined mounted path the
+  -- main thread resolved, verify the actual byte count against the manifest, and
+  -- return the Data once with its source identity. A known read failure keeps
+  -- the selected source's identity and logical path in the typed category; a
+  -- malformed dispatch record is a programming error that stops the worker, not
+  -- a plausible read failure. Nothing retains the bytes after the reply.
+  local function prepareSource(token, job)
+    assert(type(job.path) == "string" and job.path ~= "", "source preparation requires its logical path")
+    assert(type(job.physicalPath) == "string" and job.physicalPath ~= "", "source preparation requires a confined path")
+    assert(type(job.size) == "number" and job.size >= 0, "source preparation requires a declared size")
+    assert(
+      type(job.sourceId) == "string" and type(job.contentId) == "string",
+      "source preparation requires its source identity"
+    )
+    ---@type boolean, string|love.FileData|nil, unknown
+    local callOk, data, readError = pcall(love.filesystem.read, "data", job.physicalPath)
+    if not callOk then
+      readError = data
+      data = nil
+    end
+    if data == nil then
+      local text = string.format(
+        "%s: selected source %s at %s could not be read: %s",
+        StorageErrors.MOD_ASSET_READ_FAILED,
+        job.sourceId,
+        job.path,
+        tostring(readError)
+      )
+      replyChannel:push({
+        token = token,
+        ok = false,
+        kind = "source",
+        path = job.path,
+        sourceId = job.sourceId,
+        contentId = job.contentId,
+        code = StorageErrors.MOD_ASSET_READ_FAILED,
+        error = text,
+      })
+      return
+    end
+    local fileData = data --[[@as love.Data]]
+    local actual = fileData:getSize()
+    if actual ~= job.size then
+      fileData:release()
+      local text = string.format(
+        "%s: selected source %s at %s carries %d bytes but the manifest declares %d",
+        StorageErrors.MOD_ASSET_READ_FAILED,
+        job.sourceId,
+        job.path,
+        actual,
+        job.size
+      )
+      replyChannel:push({
+        token = token,
+        ok = false,
+        kind = "source",
+        path = job.path,
+        sourceId = job.sourceId,
+        contentId = job.contentId,
+        code = StorageErrors.MOD_ASSET_READ_FAILED,
+        error = text,
+      })
+      return
+    end
+    replyChannel:push({
+      token = token,
+      ok = true,
+      kind = "source",
+      path = job.path,
+      sourceId = job.sourceId,
+      contentId = job.contentId,
+      size = actual,
+      payload = fileData,
+    })
+  end
+
   while true do
     local job = requestChannel:demand()
     if type(job) ~= "table" or job.op == "shutdown" then
       break
     end
-    if job.op == "prepare" and job.kind == "mesh" then
+    if job.op == "prepare" and job.kind == "source" then
+      prepareSource(job.token, job)
+    elseif job.op == "prepare" and job.kind == "mesh" then
       local ok, err = pcall(prepareMesh, job.token, job.data, job.path)
       if not ok then
         fail(job.token, job.kind, job.path, err)

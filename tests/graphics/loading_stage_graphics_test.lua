@@ -782,6 +782,11 @@ function T.boot_wait_paints_the_animated_stage_before_the_gate_answers(scope)
     service = service,
     versionId = "soulsilver",
     pairIndex = 5,
+    -- The themed stage paints before any generated art exists: this epoch's
+    -- base installation is still pending, so the wait keeps its built-in art.
+    getAssetReader = function()
+      return nil
+    end,
     isCurrent = function()
       return true
     end,
@@ -851,6 +856,10 @@ function T.warm_admitted_wait_draws_no_remedy_copy_while_the_pair_is_pending(sco
     service = service,
     versionId = "heartgold",
     pairIndex = 5,
+    -- The pair is still pending, so no generated reader is needed yet.
+    getAssetReader = function()
+      return nil
+    end,
     isCurrent = function()
       return true
     end,
@@ -911,6 +920,10 @@ function T.blocked_wait_keeps_the_matching_rom_remedy_visible(scope)
     service = service,
     versionId = "soulsilver",
     pairIndex = 5,
+    -- A blocked boot has no generated art to adopt yet.
+    getAssetReader = function()
+      return nil
+    end,
     isCurrent = function()
       return true
     end,

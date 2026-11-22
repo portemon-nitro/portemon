@@ -175,15 +175,14 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
     end
     return nil, nil
   end
-  function service:requestBootSource(_)
-  end
+  function service:requestBootSource(_) end
   function service:bootSourceStatus(_)
     return "ready", nil
   end
-  function service:update()
-  end
-  function service:retire(_)
-  end
+  function service:update() end
+  function service:retire(_) end
+  -- The selected epoch's installed generated view plus the selection's overlay
+  -- over it, exactly as the App composes one reader per selected epoch.
   local generatedView = { versionId = "heartgold" }
   function generatedView:resolveAsset(_)
     return nil
@@ -191,8 +190,33 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
   function generatedView:loadLua(_)
     return nil, "the startup harness carries no generated payloads"
   end
+  local selectedView = { versionId = "heartgold", base = generatedView }
+  function selectedView:resolveAsset(path)
+    return generatedView:resolveAsset(path)
+  end
+  function selectedView:loadLua(path)
+    return generatedView:loadLua(path)
+  end
+  function generatedView:withPackages(packageSet)
+    return setmetatable(
+      { versionId = "heartgold", base = selectedView, packages = packageSet },
+      { __index = selectedView }
+    )
+  end
   function service:getCacheFs(_)
     return generatedView
+  end
+  function service:cacheIdentity(_)
+    return {
+      schema = "derived-cache",
+      versionId = "heartgold",
+      romSha1 = string.rep("0", 40),
+      mode = "release",
+      producerId = "startup-harness",
+      assetRevision = 19,
+      scriptApi = 1,
+      generationId = "synthetic-test-generation",
+    }
   end
   function service:firstPlayReady(_)
     return false
@@ -206,12 +230,9 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
     adoptions = 0,
     disposals = 0,
   }
-  function loading:update()
-  end
-  function loading:resize()
-  end
-  function loading:draw()
-  end
+  function loading:update() end
+  function loading:resize() end
+  function loading:draw() end
   function loading:dispose()
     self.disposals = self.disposals + 1
   end
@@ -260,8 +281,7 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
       function preparation:poll()
         return nil, nil
       end
-      function preparation:dispose()
-      end
+      function preparation:dispose() end
       return preparation
     end
     love.math.random = function()
@@ -289,11 +309,7 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
       Assert.isNil(demand.pairIndex, "the shared demand carries no pair identity")
       Assert.equal(demand.urgency, "required", "the shared demand stays required")
     end
-    Assert.equal(
-      getmetatable(App.state).__index,
-      StartupTitleState,
-      "the prepared fallback pair completes the handoff"
-    )
+    Assert.equal(getmetatable(App.state).__index, StartupTitleState, "the prepared fallback pair completes the handoff")
   end, debug.traceback)
   restore()
   if not ok then
@@ -351,15 +367,14 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
     end
     return nil, nil
   end
-  function service:requestBootSource(_)
-  end
+  function service:requestBootSource(_) end
   function service:bootSourceStatus(_)
     return "ready", nil
   end
-  function service:update()
-  end
-  function service:retire(_)
-  end
+  function service:update() end
+  function service:retire(_) end
+  -- The selected epoch's installed generated view plus the selection's overlay
+  -- over it, exactly as the App composes one reader per selected epoch.
   local generatedView = { versionId = "heartgold" }
   function generatedView:resolveAsset(_)
     return nil
@@ -367,8 +382,33 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
   function generatedView:loadLua(_)
     return nil, "the startup harness carries no generated payloads"
   end
+  local selectedView = { versionId = "heartgold", base = generatedView }
+  function selectedView:resolveAsset(path)
+    return generatedView:resolveAsset(path)
+  end
+  function selectedView:loadLua(path)
+    return generatedView:loadLua(path)
+  end
+  function generatedView:withPackages(packageSet)
+    return setmetatable(
+      { versionId = "heartgold", base = selectedView, packages = packageSet },
+      { __index = selectedView }
+    )
+  end
   function service:getCacheFs(_)
     return generatedView
+  end
+  function service:cacheIdentity(_)
+    return {
+      schema = "derived-cache",
+      versionId = "heartgold",
+      romSha1 = string.rep("0", 40),
+      mode = "release",
+      producerId = "startup-harness",
+      assetRevision = 19,
+      scriptApi = 1,
+      generationId = "synthetic-test-generation",
+    }
   end
   function service:firstPlayReady(_)
     return false
@@ -378,14 +418,10 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
     return "synthetic-test-generation"
   end
   local loading = {}
-  function loading:update()
-  end
-  function loading:resize()
-  end
-  function loading:draw()
-  end
-  function loading:dispose()
-  end
+  function loading:update() end
+  function loading:resize() end
+  function loading:draw() end
+  function loading:dispose() end
   function loading:adoptGeneratedAssets()
     return true
   end
@@ -430,8 +466,7 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
       function preparation:poll()
         return nil, nil
       end
-      function preparation:dispose()
-      end
+      function preparation:dispose() end
       return preparation
     end
     love.math.random = function(_, _)

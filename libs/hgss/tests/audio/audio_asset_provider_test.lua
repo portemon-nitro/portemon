@@ -381,4 +381,168 @@ function T.two_mixers_share_one_sample_and_return_their_acquisitions_once()
   runtime.queue:release()
 end
 
+-- The selected overlay's answer for a package-supplied audio family: index,
+-- banks, sequences and metadata stay resident metadata reads, while every
+-- compact PCM payload is a disk-backed selected source with no resident bytes.
+---@param bundle AudioFixture.Bundle
+---@return CacheFs cache
+---@return table<string, table> references by logical sample path
+local function selectedSampleCache(bundle)
+  local cache = AudioFixture.residentCache(bundle)
+  local references = {}
+  local samplePaths = {}
+  for key in pairs(bundle.samples) do
+    samplePaths[AudioCache.samplePath(key)] = true
+  end
+  local resolveAsset = cache.resolveAsset
+  function cache:resolveAsset(path)
+    local reference = resolveAsset(self, path)
+    if reference == nil or not samplePaths[path] then
+      return reference
+    end
+    local selected = references[path]
+    if selected == nil then
+      selected = {
+        path = path,
+        size = reference.size,
+        sourceId = "mod:selected-audio\0package",
+        contentId = "mod:selected-audio\0package\0" .. path,
+        physicalPath = "__mod/selected-audio/" .. path,
+      }
+      references[path] = selected
+    end
+    return selected
+  end
+  return cache, references
+end
+
+-- A stand-in for the shared preparation queue's source interface: requests are
+-- recorded, tokens complete only when the test says so, and cancellation is
+-- observable. Source reads themselves belong to the queue suite.
+local function recordingQueue()
+  local queue = { requests = {}, states = {}, cancelled = {}, nextToken = 0 }
+  function queue:request(kind, path, priority)
+    assert(kind == "source", "prediction must request the selected source kind")
+    self.nextToken = self.nextToken + 1
+    self.requests[#self.requests + 1] = { token = self.nextToken, path = path, priority = priority }
+    return self.nextToken
+  end
+  function queue:poll(token)
+    return self.states[token] or "pending"
+  end
+  function queue:cancel(token)
+    self.cancelled[#self.cancelled + 1] = token
+    self.states[token] = nil
+  end
+  return queue
+end
+
+-- The selected runtime's source acquisition as the provider sees it: one lease
+-- over the exact reference the caller asked for, released by its consumer.
+---@param cache CacheFs
+---@return { acquireSource: fun(reference: table): table }, table[]
+local function recordingAcquirer(cache)
+  local acquired = {}
+  local api = {
+    acquireSource = function(reference)
+      local lease = { value = assert(cache:readData(reference.path)) }
+      acquired[#acquired + 1] = { reference = reference, lease = lease }
+      function lease:release()
+        self.value = nil
+      end
+      return lease
+    end,
+  }
+  return api, acquired
+end
+
+-- Package prediction is source work, never a private PCM copy: each closure key
+-- requests the selected source at prefetch priority, actual acquisition joins
+-- the same reference, ready/failed predictions are adopted by returning their
+-- kernel lease, and only this provider's own interests are cancelled.
+function T.package_prediction_schedules_sources_and_adopts_them_without_a_pcm_copy()
+  local bundle = AudioFixture.bundle()
+  local cache, references = selectedSampleCache(bundle)
+  local queue = recordingQueue()
+  local api, acquired = recordingAcquirer(cache)
+  local p = AudioAssetProvider.new(cache, { acquireSource = api.acquireSource, assetPreparation = queue })
+  local firstKey = AudioFixture.key(1)
+  local secondKey = AudioFixture.key(2)
+  local firstPath = AudioCache.samplePath(firstKey)
+  local secondPath = AudioCache.samplePath(secondKey)
+
+  local predicted = p:prewarmBankBackground(12)
+  Assert.equal(predicted, 2, "the bank closure predicts both fixture samples")
+  Assert.equal(#queue.requests, 2, "each predicted sample requests its selected source once")
+  Assert.equal(queue.requests[1].priority, "prefetch", "background prediction stays prefetch work")
+  Assert.isTrue(
+    references[queue.requests[1].path] == references[firstPath]
+      or references[queue.requests[1].path] == references[secondPath],
+    "the request names a selected sample payload"
+  )
+  Assert.equal(#acquired, 0, "background prediction creates no PCM backing")
+
+  -- A repeated prediction round joins the same pending tokens.
+  p:prewarmBankBackground(12)
+  Assert.equal(#queue.requests, 2, "repeated prediction joins the pending source interest")
+
+  -- A ready prediction is adopted by returning its kernel lease; a failed one
+  -- is dropped the same way.
+  queue.states[queue.requests[1].token] = "ready"
+  queue.states[queue.requests[2].token] = "failed"
+  Assert.equal(p:drainReadySamples(), 1, "one ready prediction is adopted")
+  Assert.equal(#queue.cancelled, 2, "both settled prediction tokens are returned")
+
+  -- Acquisition of the same content key joins the reference the prediction
+  -- named and keeps no wrapper over the shared bytes.
+  local lease = p:acquireSample(firstKey)
+  Assert.isTrue(
+    acquired[#acquired].reference == references[firstPath],
+    "actual acquisition uses the selected source reference prediction named"
+  )
+  Assert.equal(assert(lease.value).pcm.frames, 4, "the selected source decodes in place")
+  Assert.equal(p:status().activeSamples, 1, "the acquisition holds one active record")
+  lease:release()
+  Assert.equal(p:status().activeSamples, 0, "returning the acquisition drops the record")
+
+  -- Synchronous prediction retains the selected source only long enough to
+  -- schedule it, then returns the lease immediately.
+  local acquiredBefore = #acquired
+  Assert.deepEqual(p:prewarmBank(12), {}, "synchronous prediction returns no PCM wrapper")
+  Assert.equal(#acquired, acquiredBefore + 2, "synchronous prediction reads each selected sample once")
+  for index = acquiredBefore + 1, #acquired do
+    Assert.isNil(acquired[index].lease.value, "the synchronous prediction lease is returned")
+  end
+
+  -- Only this provider's own interests are cancelled.
+  p:prewarmBankBackground(12)
+  local firstPending, secondPending = queue.requests[#queue.requests - 1], queue.requests[#queue.requests]
+  Assert.equal(p:cancelUnpredicted({ [firstKey] = true, [secondKey] = true }), 0, "predicted keys stay pending")
+  Assert.equal(p:cancelUnpredicted({ [firstKey] = true }), 1, "the unpredicted key's own interest is dropped")
+  local cancelledBeforeDispose = #queue.cancelled
+  p:dispose()
+  Assert.equal(#queue.cancelled, cancelledBeforeDispose + 1, "disposal drops its remaining prediction token")
+  Assert.isTrue(
+    queue.cancelled[#queue.cancelled] == firstPending.token or queue.cancelled[#queue.cancelled] == secondPending.token,
+    "the disposed token is this provider's own request"
+  )
+end
+
+-- Base resident samples need no read, lease, or preparation: prediction stays
+-- the metadata-only no-op it was before selected sources existed.
+function T.base_resident_prediction_stays_a_no_op()
+  local bundle = AudioFixture.bundle()
+  local cache = AudioFixture.residentCache(bundle)
+  local queue = recordingQueue()
+  local api, acquired = recordingAcquirer(cache)
+  local p = AudioAssetProvider.new(cache, { acquireSource = api.acquireSource, assetPreparation = queue })
+
+  Assert.deepEqual(p:prewarmBank(12), {}, "base prediction returns no sample wrapper")
+  Assert.equal(p:prewarmBankBackground(12), 2, "the predicted key count is unchanged")
+  Assert.equal(#acquired, 0, "base resident samples schedule no source lease")
+  Assert.equal(#queue.requests, 0, "base resident samples schedule no source read")
+  Assert.equal(p:drainReadySamples(), 0, "nothing is in flight to adopt")
+  Assert.equal(p:cancelUnpredicted({}), 0, "nothing is in flight to cancel")
+end
+
 return { tests = T }

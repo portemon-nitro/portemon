@@ -674,4 +674,87 @@ T["override-driven typed task survives snapshot restore while closures stay unsa
   end
 end
 
+-- A selected view overlays an ordered package set on the generated reader. The
+-- loader needs no package-specific hook: passing that one reader as its existing
+-- generated input keeps built-in installation, the generated layer, and the
+-- curated repository overrides in their declared order.
+---@param members table<string, string> package payloads by logical path
+---@return table
+local function selectedOverlay(cache, members)
+  local reads = 0
+  local packages = {
+    resolveAsset = function(_, path)
+      local bytes = members[path]
+      if bytes == nil then
+        return nil
+      end
+      return {
+        path = path,
+        size = #bytes,
+        sourceId = "mod:script-selection",
+        contentId = "mod:script-selection\0" .. path,
+        physicalPath = "__package/" .. path,
+      }
+    end,
+    paths = function(_, prefix)
+      local listed = {}
+      for path in pairs(members) do
+        if path:sub(1, #prefix) == prefix then
+          listed[#listed + 1] = path
+        end
+      end
+      table.sort(listed)
+      return listed
+    end,
+    readData = function(_, reference)
+      reads = reads + 1
+      return assert(love.data.newByteData(assert(members[reference.path])))
+    end,
+    reads = function()
+      return reads
+    end,
+  }
+  return cache:withPackages(packages)
+end
+
+T["a selected package replaces the generated script layer only"] = function()
+  local ScriptCache = require("libs.assets.src.ScriptCache")
+  local override =
+    'local S = require("gen4.script")\nreturn S.script { api = 1, id = "new_bark.lab_sign", metadata = { override = true }, steps = { S.waitTicks { ticks = 1 }, S.stop() } }\n'
+  local baseCache = scriptCache()
+  local replacement = ScriptCacheFixture.memberSource({
+    { id = "new_bark.lab_sign", steps = "S.waitTicks { ticks = 2 }, S.stop()" },
+    { id = "vanilla.hgss.scr_seq.0842.script_001", steps = "S.noop(), S.stop()" },
+  })
+  local selected = selectedOverlay(baseCache, {
+    [ScriptCache.memberPath(GENERATION, 0)] = replacement,
+  })
+  local registry = ScriptLoader.buildRegistry(selected, overrideFs({}), requireShim, { lazy = true })
+  local packageScript = assert(registry:base("vanilla.hgss.scr_seq.0842.script_001"))
+  Assert.equal(packageScript.steps[1].op, "noop", "the selected package supplies the generated script")
+  local replaced = assert(registry:base("new_bark.lab_sign"))
+  Assert.equal(replaced.steps[1].op, "wait_ticks", "both ids of the replaced member come from the package")
+  Assert.equal(replaced.steps[1].ticks, 2, "the package member's own source is what loads")
+
+  local withOverride = selectedOverlay(baseCache, {
+    [ScriptCache.memberPath(GENERATION, 0)] = replacement,
+  })
+  local curated = ScriptLoader.buildRegistry(
+    withOverride,
+    overrideFs({
+      ["new_bark.lab_sign.lua"] = override,
+    }),
+    requireShim,
+    { lazy = true }
+  )
+  local curatedScript = assert(curated:base("new_bark.lab_sign"))
+  Assert.isTrue(curatedScript.metadata and curatedScript.metadata.override == true, "a curated override still wins")
+  local untouched = assert(curated:base("vanilla.hgss.scr_seq.0842.script_001"))
+  Assert.equal(untouched.steps[1].op, "noop", "the curated layer leaves the package's other ids alone")
+
+  local outside, outsideErr = selected:loadModule("data/generated/scripts/9999/generations/unlisted.lua")
+  Assert.isNil(outside, "the selected view loads nothing its indexed members do not supply")
+  Assert.isTrue(Errors.is(outsideErr), "an unlisted module is a typed missing-file failure: " .. tostring(outsideErr))
+end
+
 return { tests = T }

@@ -158,12 +158,18 @@ end
 ---@param overrides table?
 ---@return CachePreparationState
 local function bootWait(script, overrides)
+  local service = bootService(script)
   local options = {
     kind = "boot-source",
     epoch = 7,
-    service = bootService(script),
+    service = service,
     versionId = "heartgold",
     pairIndex = 5,
+    -- The composition owner answers the selected epoch's reader: this harness
+    -- answers the installed view, which is what the production closure returns.
+    getAssetReader = function()
+      return service:getCacheFs(7)
+    end,
     isCurrent = function()
       return true
     end,
@@ -749,11 +755,7 @@ function T.warm_construction_shows_cached_art_before_any_worker_reply()
   withPatchedLoading(loading, record, function()
     local script = {}
     local state = bootWait(script)
-    Assert.equal(
-      loading.adoptions,
-      1,
-      "construction tries cached art once before the first paint"
-    )
+    Assert.equal(loading.adoptions, 1, "construction tries cached art once before the first paint")
     Assert.isTrue(loading.adopted, "cached art is visible on the first frame")
     Assert.isFalse(state.walkerReady, "cached art never marks the pair job ready")
     Assert.isFalse(state.bootAdmitted, "cached art never admits the source gate")

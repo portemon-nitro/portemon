@@ -29,6 +29,7 @@ local ImportState = require("app.src.launcher.ImportState")
 ---@field freshImport boolean? boot-source only: cold first import holds its card until the pair is drawable
 ---@field importStatus { state: string?, progress: number?, versionId: string?, displayName: string?, sourceName: string? }? cold only: frozen verified importer snapshot behind the card
 ---@field importReceipt string? cold only: received filename shown on the retained card
+---@field getAssetReader (fun(): table<string, unknown>?)? boot-source only: the selected epoch's generated reader, nil while the base installation is pending
 ---@field isCurrent fun(epoch: integer): boolean owner liveness: the epoch is still selected
 ---@field onReady fun() exactly-once transfer on readiness
 ---@field onCancel fun() return to the owning selection
@@ -45,6 +46,7 @@ local ImportState = require("app.src.launcher.ImportState")
 ---@field freshImport boolean
 ---@field importStatus { state: string?, progress: number?, versionId: string?, displayName: string?, sourceName: string? }?
 ---@field importReceipt string?
+---@field getAssetReader (fun(): table<string, unknown>?)? boot-source only: the selected reader every generated art adoption uses
 ---@field sourceStatus string? boot-source only: last observed gate status pending|ready|source-required|failed
 ---@field sourceDetail unknown? boot-source only: last typed source-required detail
 ---@field isCurrent fun(epoch: integer): boolean
@@ -102,6 +104,25 @@ local function bootReasonText(detail)
   return nil
 end
 
+---@param detail unknown
+---@param fallback string
+---@return string boot failure text held on the wait
+local function failureText(detail, fallback)
+  if type(detail) == "table" then
+    if type(detail.message) == "string" and detail.message ~= "" then
+      return detail.message
+    end
+    if type(detail.code) == "string" and detail.code ~= "" then
+      return detail.code
+    end
+    return fallback
+  end
+  if detail ~= nil then
+    return tostring(detail)
+  end
+  return fallback
+end
+
 ---@return number width
 ---@return number height current drawable size, safe before the first love frame
 local function drawableSize()
@@ -152,6 +173,10 @@ function CachePreparationState.new(options)
   end
   if options.kind == "boot-source" then
     assert(
+      type(options.getAssetReader) == "function",
+      "boot-source preparation requires the selected epoch's reader callback"
+    )
+    assert(
       options.versionId == nil or type(options.versionId) == "string",
       "boot-source preparation version must be a string"
     )
@@ -196,6 +221,7 @@ function CachePreparationState.new(options)
     freshImport = options.freshImport == true,
     importStatus = options.importStatus,
     importReceipt = options.importReceipt,
+    getAssetReader = options.getAssetReader,
     sourceStatus = nil,
     sourceDetail = nil,
     isCurrent = options.isCurrent,
@@ -292,6 +318,23 @@ function CachePreparationState:_releaseLoading()
   end
 end
 
+-- The selected epoch's generated reader for art adoption. The composition
+-- owner answers nil while the base installation is pending, which keeps the
+-- built-in art; a raised typed failure is the ordered package selection failing
+-- to compose, so it latches through the same boot error path as a failed gate
+-- instead of being swallowed as "no art yet".
+---@return table<string, unknown>?
+function CachePreparationState:_selectedReader()
+  local getAssetReader = self.getAssetReader
+  assert(type(getAssetReader) == "function", "boot-source preparation requires its reader callback")
+  local ok, cacheFs = pcall(getAssetReader)
+  if not ok then
+    self.error = failureText(cacheFs, "cache preparation failed")
+    return nil
+  end
+  return cacheFs
+end
+
 -- Adoption of the selected pair once its keyed worker job is ready. Both
 -- warm and cold boots treat the adopted pair as a handoff precondition:
 -- a pending job holds the transfer, and a failure latches visibly with a
@@ -300,18 +343,19 @@ end
 ---@return unknown? failure
 function CachePreparationState:_adoptSelectedPair()
   local loading = assert(self.loading, "boot-source preparation owns its presentation")
-  local cacheFs = self.service:getCacheFs(self.epoch)
+  local cacheFs = self:_selectedReader()
   if cacheFs == nil then
     return nil
   end
   return loading:adoptGeneratedAssets(cacheFs)
 end
 
--- Adopts the installed generated art as soon as this epoch has it: the
--- themed stage is decorative, so an epoch that installed nothing keeps its
--- built-in art instead of opening a physical generated root. This preview
--- never latches: the first ready pair answer owns the visible adoption
--- failure and its retry.
+-- Adopts the selected generated art as soon as this epoch has it: the
+-- themed stage is decorative, so an epoch whose base installation is still
+-- pending keeps its built-in art. This preview never latches an adoption
+-- failure: the first ready pair answer owns the visible adoption failure and
+-- its retry. A selection that cannot compose its reader latches through
+-- `_selectedReader` instead, which is a boot failure rather than pending art.
 function CachePreparationState:_adoptInstalledArt()
   pcall(self._adoptSelectedPair, self)
 end
@@ -410,13 +454,7 @@ function CachePreparationState:_pollBootSource()
   elseif status == "failed" then
     self.sourceStatus = "failed"
     self.sourceDetail = nil
-    if type(detail) == "table" then
-      self.error = detail.message or detail.code or "cache boot failed"
-    elseif detail ~= nil then
-      self.error = detail
-    else
-      self.error = "cache boot failed"
-    end
+    self.error = failureText(detail, "cache boot failed")
   elseif status == nil then
     self.sourceStatus = nil
   end

@@ -113,15 +113,29 @@ local function fakeAdopter()
   return presentation
 end
 
+-- The production composition supplies the selected epoch's generated reader
+-- through this callback; the fixture asks the installed view the same way, so an
+-- epoch that installed nothing keeps its built-in art.
+---@param service table
+---@param epoch integer
+---@return fun(): table<string, unknown>?
+local function installedReader(service, epoch)
+  return function()
+    return service:getCacheFs(epoch)
+  end
+end
+
 ---@param script table
 ---@param overrides table?
 ---@return CachePreparationState
 local function bootWait(script, overrides)
+  local service = bootService(script)
   local options = onTransfer(script, {
     kind = "boot-source",
     epoch = 7,
-    service = bootService(script),
+    service = service,
     versionId = "heartgold",
+    getAssetReader = installedReader(service, 7),
   })
   for key, value in pairs(overrides or {}) do
     options[key] = value
@@ -165,8 +179,10 @@ function T.boot_source_wait_stays_blocked_while_the_source_is_required()
   end
   local ok, err = xpcall(function()
     local script = { detail = { code = "ROM_SOURCE_REQUIRED", message = "the original file is missing" } }
-    local state =
-      bootWait(script, { mismatch = "Dropped SoulSilver does not match the expected HeartGold version.", pairIndex = 5 })
+    local state = bootWait(
+      script,
+      { mismatch = "Dropped SoulSilver does not match the expected HeartGold version.", pairIndex = 5 }
+    )
     state:update(0.016)
     state:update(0.016)
     Assert.equal(script.fired or 0, 0, "a missing source never transfers")
@@ -460,6 +476,7 @@ function T.terminal_worker_failure_is_escape_only_until_a_fresh_selection()
       kind = "boot-source",
       epoch = epoch,
       service = service,
+      getAssetReader = installedReader(service, epoch),
       versionId = "heartgold",
       pairIndex = 5,
       isCurrent = function()
@@ -527,6 +544,7 @@ function T.terminal_worker_failure_is_escape_only_until_a_fresh_selection()
       kind = "boot-source",
       epoch = second,
       service = service,
+      getAssetReader = installedReader(service, second),
       versionId = "heartgold",
       pairIndex = 5,
       isCurrent = function()
@@ -595,6 +613,7 @@ function T.local_adoption_failure_needs_one_explicit_key_per_attempt()
       kind = "boot-source",
       epoch = epoch,
       service = service,
+      getAssetReader = installedReader(service, epoch),
       versionId = "heartgold",
       pairIndex = 5,
       isCurrent = function()
@@ -658,6 +677,7 @@ function T.cold_terminal_worker_failure_forwards_escape_only_to_the_card()
       kind = "boot-source",
       epoch = epoch,
       service = service,
+      getAssetReader = installedReader(service, epoch),
       versionId = "heartgold",
       pairIndex = 5,
       freshImport = true,
@@ -995,11 +1015,7 @@ function T.quiescence_card_names_the_pending_file_before_the_barrier_admits()
       App.pairIndex = nil
       calls = {}
       App.filedropped(dropStub())
-      Assert.equal(
-        getmetatable(App.state),
-        CachePreparationState,
-        "the cancelled attempt starts behind its barrier"
-      )
+      Assert.equal(getmetatable(App.state), CachePreparationState, "the cancelled attempt starts behind its barrier")
       App.state:keypressed("escape")
       App.update(0.016)
       Assert.isNil(App.pendingQuiesce, "escape releases the pending barrier")
@@ -1063,6 +1079,7 @@ function T.loading_art_comes_from_the_installed_generated_view()
       kind = "boot-source",
       epoch = epoch,
       service = service,
+      getAssetReader = installedReader(service, epoch),
       versionId = "heartgold",
       pairIndex = 5,
       isCurrent = function()
@@ -1104,6 +1121,110 @@ function T.loading_art_comes_from_the_installed_generated_view()
   end, debug.traceback)
   Loading.new = savedNew
   rawset(CacheFs, "forVersion", originalForVersion)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A loading presentation that records which reader adopted the generated art.
+local function adoptedReaderPresentation()
+  local presentation = { adoptions = 0, adoptedFs = nil, disposals = 0 }
+  function presentation:update() end
+  function presentation:resize() end
+  function presentation:draw() end
+  function presentation:dispose()
+    self.disposals = self.disposals + 1
+  end
+  function presentation:adoptGeneratedAssets(cacheFs)
+    self.adoptions = self.adoptions + 1
+    self.adoptedFs = cacheFs
+    return true
+  end
+  return presentation
+end
+
+-- The boot wait adopts the selected epoch's overlay reader through its own
+-- selected-reader callback, so the first generated art frame already reflects an
+-- ordered package selection. The installed base view is not consulted directly:
+-- a boot that read it would silently drop the selection's overrides.
+function T.boot_artifact_reads_the_selected_overlay_through_its_reader_callback()
+  local Loading = require(LOADING_MODULE)
+  local savedNew = Loading.new
+  local loading = adoptedReaderPresentation()
+  Loading.new = function()
+    return loading
+  end
+  local ok, err = xpcall(function()
+    local script = { ready = true, walkerReady = true }
+    local service = bootService(script)
+    service.getCacheFs = function()
+      error("the boot wait must read the selected epoch's overlay, not the installed base view", 0)
+    end
+    local selected = { versionId = "heartgold", overlay = true }
+    local asks = 0
+    local installed = false
+    local state = bootWait(script, {
+      pairIndex = 5,
+      getAssetReader = function()
+        asks = asks + 1
+        if not installed then
+          return nil
+        end
+        return selected
+      end,
+    })
+    Assert.equal(loading.adoptions, 0, "an epoch whose base installation is pending keeps its built-in art")
+    installed = true
+    state:update(0.016)
+    state:update(0.016)
+    Assert.isTrue(asks >= 1, "the boot wait asks its selected-reader callback for the overlay")
+    Assert.equal(loading.adoptions, 1, "the ready pair is adopted once")
+    Assert.isTrue(loading.adoptedFs == selected, "the adopted art reads the selected overlay reader")
+    Assert.equal(script.fired, 1, "the boot gate still transfers on readiness")
+    state:dispose()
+  end, debug.traceback)
+  Loading.new = savedNew
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A selection that cannot compose its reader is not "no art yet": the failure
+-- stays visible through the wait's boot error path, the built-in art never
+-- replaces the selected content, and the admitted gate never transfers a boot
+-- that would silently ignore the user's packages.
+function T.selected_reader_failure_latches_instead_of_builtin_art()
+  local Errors = require("libs.errors.src.Errors")
+  local Loading = require(LOADING_MODULE)
+  local savedNew = Loading.new
+  local loading = adoptedReaderPresentation()
+  Loading.new = function()
+    return loading
+  end
+  local ok, err = xpcall(function()
+    local script = { ready = true, walkerReady = true }
+    local raised, failure = pcall(Errors.raise, "MOD_PACKAGE_INCOMPATIBLE", "one.zip was built for another game", {
+      package = "one.zip",
+    })
+    Assert.isFalse(raised, "the fixture raises one typed selection failure")
+    local state = bootWait(script, {
+      pairIndex = 5,
+      getAssetReader = function()
+        error(failure, 0)
+      end,
+    })
+    state:update(0.016)
+    state:update(0.016)
+    Assert.notNil(state.error, "the selection failure surfaces on the wait")
+    Assert.isTrue(
+      tostring(state.error):find("another game", 1, true) ~= nil,
+      "the boot failure names the rejected package: " .. tostring(state.error)
+    )
+    Assert.equal(loading.adoptions, 0, "built-in art never stands in for a failed selection")
+    Assert.equal(script.fired, 0, "a failed selection never transfers a boot")
+    state:dispose()
+  end, debug.traceback)
+  Loading.new = savedNew
   if not ok then
     error(err, 0)
   end

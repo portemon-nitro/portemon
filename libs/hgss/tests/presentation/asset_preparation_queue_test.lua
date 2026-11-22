@@ -1121,4 +1121,200 @@ function T.linked_demand_upgrades_a_queued_prefetch_job()
   end)
 end
 
+-- A selected reader whose entries are disk-backed package sources: a reference
+-- names its confined mounted path and carries no resident bytes. The ordered
+-- selection itself is proven by its own suites; this only supplies the read
+-- shape the queue's source work is defined over.
+local function diskCacheFs()
+  local references = {}
+  return {
+    versionId = "heartgold",
+    resolveAsset = function(_, relativePath)
+      local reference = references[relativePath]
+      if reference == nil then
+        reference = {
+          path = relativePath,
+          size = 24,
+          sourceId = "mod:selected-epoch\0package",
+          contentId = "mod:selected-epoch\0package\0" .. relativePath,
+          physicalPath = "__package/" .. relativePath,
+        }
+        references[relativePath] = reference
+      end
+      return reference
+    end,
+  }
+end
+
+-- Every physical dispatch the fake worker received for one token.
+---@param state table
+---@param token integer
+---@return table[]
+local function pushesFor(state, token)
+  local pushed = {}
+  for _, entry in ipairs(state.allPushes) do
+    local value = entry.value
+    if type(value) == "table" and value.token == token and value.path ~= nil and value.kind ~= nil then
+      pushed[#pushed + 1] = value
+    end
+  end
+  return pushed
+end
+
+-- A disk-backed selected asset is read first: the physical dispatch for a
+-- graphical request is the source read of that confined member, and the decode
+-- itself never reaches the worker with an absent payload.
+function T.a_disk_backed_request_dispatches_its_source_read_before_any_decode()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(diskCacheFs())
+    local path = "assets/generated/field/30/package.png"
+    local token = queue:request("image-derivative", path, "demand")
+    local dispatched = pushesFor(host, token)
+    Assert.equal(#dispatched, 1, "one physical dispatch happens for the pending selected source")
+    Assert.equal(dispatched[1].kind, "source", "the worker first reads the selected member, not a decode")
+    Assert.equal(dispatched[1].path, path, "the source read names the logical selected path")
+    Assert.equal(queue:poll(token), "pending", "the graphical request waits for its source rather than failing")
+    queue:cancel(token)
+    queue:release()
+  end)
+end
+
+-- The same selected source is physically read once however many consumers ask
+-- for it, and a cancelled consumer returns only its own interest.
+function T.consumers_of_one_disk_source_share_a_single_physical_read()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(diskCacheFs())
+    local path = "assets/generated/field/30/shared-package.png"
+    local primary = queue:request("image-derivative", path, "demand")
+    local follower = queue:request("image-derivative", path, "demand")
+    local sourcePushes = 0
+    for _, entry in ipairs(host.allPushes) do
+      if type(entry.value) == "table" and entry.value.kind == "source" then
+        sourcePushes = sourcePushes + 1
+      end
+    end
+    Assert.equal(sourcePushes, 1, "both consumers wait on one physical source read")
+    Assert.equal(#pushesFor(host, follower), 0, "the follower owns no physical dispatch")
+    queue:cancel(follower)
+    Assert.equal(queue:poll(primary), "pending", "cancelling one consumer keeps the other's interest alive")
+    queue:cancel(primary)
+    queue:release()
+  end)
+end
+
+-- The source request kind belongs to disk-backed references: asking for base
+-- resident bytes through it is programming misuse, because base bytes are
+-- borrowed directly and never charged to the decoded owner.
+function T.the_source_request_kind_refuses_a_resident_base_reference()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(fakeCacheFs())
+    local failure = Assert.throws(function()
+      queue:request("source", "geometry/resident.g4mesh", "demand")
+    end, "a resident base reference is not a source read")
+    Assert.isTrue(
+      tostring(failure):find("unknown preparation kind", 1, true) == nil,
+      "the source kind is a known preparation kind, so the refusal is the base-reference misuse: " .. tostring(failure)
+    )
+    queue:release()
+  end)
+end
+
+-- One worker reply for a selected source read, in the flat shape the worker
+-- pushes: identity, logical path, and exactly the bytes it read.
+local function sourceResponse(token, path, bytes)
+  local payload = ownedBuffer(bytes)
+  return {
+    token = token,
+    ok = true,
+    kind = "source",
+    path = path,
+    sourceId = "mod:selected-epoch\0package",
+    contentId = "mod:selected-epoch\0package\0" .. path,
+    size = payload:getSize(),
+    payload = payload,
+  }
+end
+
+-- Physical source requests only: test-pushed replies also carry kind "source"
+-- and an ok flag, so they are not dispatches.
+local function sourcePushCount(state)
+  local count = 0
+  for _, entry in ipairs(state.allPushes) do
+    local value = entry.value
+    if type(value) == "table" and value.kind == "source" and value.ok == nil then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+-- A compact synchronous acquisition joins the one source read already pending
+-- for its content key: it neither starts a second read nor duplicates the
+-- retained allocation, and the lease it returns is the shared owner's.
+function T.a_compact_acquisition_joins_the_pending_selected_source()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local cacheFs = diskCacheFs()
+    local queue = newQueue(cacheFs)
+    local path = "assets/generated/field/30/pending-compact.png"
+    local decode = queue:request("image-derivative", path, "demand")
+    local requestIndex = requestChannelIndexFor(host, decode)
+    local response = sourceResponse(decode, path, string.rep("s", 24))
+    responseChannelFor(host, requestIndex):push(response)
+
+    local reference = assert(cacheFs:resolveAsset(path), "the selected member resolves")
+    local lease = queue:acquireSource(reference)
+    Assert.isTrue(lease.value == response.payload, "the compact lease borrows the read selected bytes")
+    Assert.equal(sourcePushCount(host), 1, "compact acquisition joins the one pending source read")
+    local decoded = queue:poll(decode)
+    Assert.isTrue(decoded == "pending" or decoded == "ready", "the graphical request continues after the same read")
+    lease:release()
+    Assert.isNil(lease.value, "a returned compact lease clears its reference")
+    queue:release()
+  end)
+end
+
+-- A dispatched source read keeps its physical slot and still feeds the
+-- surviving consumer after its logical owner is cancelled; the read is never
+-- duplicated and the replacement dispatch waits for the physical reply.
+function T.cancelling_a_dispatched_source_owner_keeps_the_read_for_its_successor()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local cacheFs = diskCacheFs()
+    local queue = newQueue(cacheFs)
+    local path = "assets/generated/field/30/forwarded-source.png"
+    local owner = queue:request("image-derivative", path, "demand")
+    local requestIndex = requestChannelIndexFor(host, owner)
+    local waiter = queue:request("source", path, "demand")
+    Assert.equal(#pushesFor(host, waiter), 0, "the compact waiter dispatches no job of its own")
+    Assert.equal(sourcePushCount(host), 1, "both consumers share the one physical read")
+
+    queue:cancel(owner)
+    local later = queue:request("mesh", "geometry/later.g4mesh", "demand")
+    Assert.isFalse(
+      requestWasPushedFor(host, later),
+      "a fresh request waits while the cancelled source read still occupies the worker"
+    )
+
+    responseChannelFor(host, requestIndex):push(sourceResponse(owner, path, string.rep("f", 24)))
+    Assert.equal(queue:poll(waiter), "ready", "the surviving consumer receives the forwarded read")
+    local lease = queue:wait(waiter)
+    Assert.notNil(assert(lease.value).payload, "the forwarded read hands over its retained bytes")
+    Assert.isTrue(
+      requestWasPushedFor(host, later),
+      "the queued request dispatches only after the physical reply frees the worker"
+    )
+    queue:cancel(later)
+    queue:release()
+  end)
+end
+
 return { tests = T }

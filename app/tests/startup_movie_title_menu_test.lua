@@ -221,7 +221,9 @@ local function withStartup(fn)
     return "startup-test-generation"
   end
   -- The selected epoch's installed generated view: these suites stub every
-  -- generated consumer, so one shared reader object stands in for it.
+  -- generated consumer, so one shared reader object stands in for it. The
+  -- selection's overlay is a second reader over that same view, as the App
+  -- composes one per selected epoch.
   local generatedView = { versionId = "heartgold" }
   function generatedView:resolveAsset(_)
     return nil
@@ -229,8 +231,34 @@ local function withStartup(fn)
   function generatedView:loadLua(_)
     return nil, "the startup harness carries no generated payloads"
   end
+  local selectedView = { versionId = "heartgold", base = generatedView }
+  function selectedView:resolveAsset(path)
+    return generatedView:resolveAsset(path)
+  end
+  function selectedView:loadLua(path)
+    return generatedView:loadLua(path)
+  end
+  function generatedView:withPackages(packageSet)
+    active.packageSets = active.packageSets or {}
+    active.packageSets[#active.packageSets + 1] = packageSet
+    return selectedView
+  end
   function service:getCacheFs(_)
     return generatedView
+  end
+  -- The identity the installed bytes were produced under, which a selected
+  -- package manifest must match.
+  function service:cacheIdentity(_)
+    return {
+      schema = "derived-cache",
+      versionId = "heartgold",
+      romSha1 = string.rep("0", 40),
+      mode = "release",
+      producerId = "startup-harness",
+      assetRevision = 19,
+      scriptApi = 1,
+      generationId = "startup-test-generation",
+    }
   end
   function service:firstPlayReady(_)
     return active.firstPlayReady == true

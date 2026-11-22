@@ -374,7 +374,11 @@ function T.resident_reader_serves_committed_bytes_and_refuses_mutation()
   Assert.equal(reader:resolveAsset(text).contentId, "probe\0" .. text, "the reference keeps its content identity")
   Assert.isTrue(reader:exists(text, "file"), "a committed entry exists")
   Assert.isNil(reader:read("assets/generated/field/30/missing.png"), "an absent entry reads as nil")
-  Assert.deepEqual(reader:getDirectoryItems("assets/generated/field/30"), { "atlas.png" }, "the directory lists its children")
+  Assert.deepEqual(
+    reader:getDirectoryItems("assets/generated/field/30"),
+    { "atlas.png" },
+    "the directory lists its children"
+  )
   local scene = assert(reader:loadLua(lua), "generated metadata still loads as Lua")
   Assert.equal(scene.mapId, 30)
 
@@ -403,6 +407,129 @@ function T.physical_root_stores_logical_bytes_unchanged()
   c:write("data/generated/tagged.lua", tagged)
   Assert.equal(backend.files["heartgold/data/generated/tagged.lua"], tagged, "the retired tag is ordinary payload")
   Assert.equal(c:read("data/generated/tagged.lua"), tagged, "a tagged payload is never decoded")
+end
+
+-- The read shape a selected session's package set exposes to the overlay: a
+-- winner resolves to a disk source reference with no resident bytes, and one
+-- immediate read serves transient callers. The ordered selection itself belongs
+-- to its own owner and the acceptance scenario; this fake supplies only the
+-- three read operations the overlay is allowed to use, and counts payload reads
+-- so a test can prove base bytes are never copied.
+---@param members table<string, string> package payloads by logical path
+---@param sourceId string
+---@return table
+local function packageSet(members, sourceId)
+  local reads = { payload = 0 }
+  local set = { reads = reads }
+  function set:resolveAsset(path)
+    local bytes = members[path]
+    if bytes == nil then
+      return nil
+    end
+    return {
+      path = path,
+      size = #bytes,
+      sourceId = sourceId,
+      contentId = sourceId .. "\0" .. path,
+      physicalPath = "__package/" .. path,
+    }
+  end
+  function set:paths(prefix)
+    local listed = {}
+    for path in pairs(members) do
+      if path:sub(1, #prefix) == prefix then
+        listed[#listed + 1] = path
+      end
+    end
+    table.sort(listed)
+    return listed
+  end
+  function set:readData(reference)
+    reads.payload = reads.payload + 1
+    local bytes = assert(members[reference.path], "a selected read must name an indexed member")
+    return assert(love.data.newByteData(bytes))
+  end
+  function set:close()
+    set.closed = true
+  end
+  return set
+end
+
+-- A selected view overlays one ordered package set on the resident base reader:
+-- every read method observes the same winner, an unselected path borrows the
+-- base entry unchanged, directory enumeration unions the two layers, and
+-- mutations stay forbidden.
+function T.selected_overlay_serves_one_winner_and_borrows_base_bytes()
+  local store = ResidentCache.new("heartgold", "base:overlay")
+  local baseOnly = "data/generated/field/30/scene.lua"
+  local replacedLua = "data/generated/field/30/collision.lua"
+  local replacedAsset = "assets/generated/field/30/atlas.png"
+  local function baseEntry(path, text)
+    return {
+      path = path,
+      data = assert(love.data.newByteData(text)),
+      size = #text,
+      sourceId = "base:overlay",
+      contentId = "overlay\0" .. path,
+    }
+  end
+  store:commit(store:prepare({
+    baseEntry(baseOnly, "return { mapId = 30 }"),
+    baseEntry(replacedLua, "return { baseCollision = true }"),
+    baseEntry(replacedAsset, "BASE-PNG"),
+  }))
+  local base = CacheFs.fromStore(store)
+  local packages = packageSet({
+    [replacedLua] = "return { packageCollision = true }",
+    [replacedAsset] = "PACKAGE-PNG",
+  }, "package:overlay")
+  local selected = base:withPackages(packages)
+  Assert.isTrue(selected.versionId == base.versionId, "the overlay keeps the selected version")
+  Assert.isTrue(selected ~= base, "the overlay is its own read view")
+  Assert.isTrue(
+    selected:resolveAsset(baseOnly) == base:resolveAsset(baseOnly),
+    "an unselected path borrows the base entry itself, never a copy"
+  )
+  local winner = assert(selected:resolveAsset(replacedAsset), "a selected path resolves to its winner")
+  Assert.isNil(winner.data, "the winner is a disk source, not resident bytes")
+  Assert.equal(winner.contentId, "package:overlay\0" .. replacedAsset, "the winner keeps its source identity")
+  Assert.equal(selected:read(replacedAsset), "PACKAGE-PNG", "a convenience read selects the winner")
+  Assert.equal(packages.reads.payload, 1, "selecting the winner reads exactly one package payload")
+  Assert.equal(selected:read(baseOnly), "return { mapId = 30 }", "an unselected read stays on the base bytes")
+  Assert.equal(packages.reads.payload, 1, "an unselected read never touches the package set")
+  Assert.equal(selected:readData(baseOnly):getString(), "return { mapId = 30 }", "borrowed base bytes stay readable")
+  Assert.isTrue(selected:exists(replacedAsset, "file"), "a selected entry exists")
+  Assert.isTrue(selected:exists(baseOnly, "file"), "a base entry still exists")
+  Assert.deepEqual(
+    selected:getDirectoryItems("assets/generated/field/30"),
+    { "atlas.png" },
+    "directory enumeration returns unique direct children across both layers"
+  )
+  Assert.deepEqual(
+    selected:getDirectoryItems("data/generated/field/30"),
+    { "collision.lua", "scene.lua" },
+    "the union lists both a package winner and a base-only child once"
+  )
+  Assert.equal(packages.reads.payload, 1, "enumeration reads no payload")
+  local collision = assert(selected:loadLua(replacedLua), "a generated Lua member loads through the overlay")
+  Assert.isTrue(collision.packageCollision == true, "the loaded member is the package's, not the base's")
+  Assert.equal(packages.reads.payload, 2, "loading one selected member reads it once")
+  local moduleOk = pcall(function()
+    return selected:loadModule(replacedLua)
+  end)
+  Assert.isTrue(moduleOk or packages.reads.payload == 3, "module loading selects the same winner")
+
+  local mutationOk, mutationError = pcall(function()
+    selected:write(replacedLua, "return {}")
+  end)
+  Assert.isFalse(mutationOk, "a selected view is read-only")
+  Assert.isTrue(tostring(mutationError):find("immutable", 1, true) ~= nil, "the refusal names residency")
+  packages.closed = true
+  packages.resolveAsset = function()
+    error("a closed selected view must not consult its package set", 0)
+  end
+  store:close()
+  Assert.isNil(selected:resolveAsset(baseOnly), "a retired base entry is no longer served")
 end
 
 return { tests = T }
