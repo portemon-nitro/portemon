@@ -455,7 +455,7 @@ function PcStorageActions:_commitCustodyMove(request, boxUpdates)
     if request.destination.kind == "party" then
       party = party or self:_partyRoster()
       local slot = request.destination.slot or #party
-      if slot == #party then
+      if slot >= #party then
         party[#party + 1] = mon
       else
         setParty(party, slot, mon)
@@ -472,7 +472,11 @@ function PcStorageActions:_commitCustodyMove(request, boxUpdates)
       sourceMon = self:_normalizeParty(sourceMon)
       destinationMon = self:_normalizeBox(destinationMon)
     end
-    if request.source.kind == "party" or request.destination.kind == "party" then
+    if request.source.kind == "party" and request.destination.kind == "party" then
+      party = self:_partyRoster()
+      setParty(party, request.source.slot, destinationMon)
+      setParty(party, request.destination.slot, sourceMon)
+    elseif request.source.kind == "party" or request.destination.kind == "party" then
       party = self:_partyRoster()
       if request.source.kind == "party" then
         setParty(party, request.source.slot, destinationMon)

@@ -25,7 +25,7 @@ function T.party_drop_rects_match_the_source_columns_and_rows()
   Assert.equal(PcStorageGeometry.partyDropSlot(57, 80, "left"), 0, "the rect covers its last row and column")
   Assert.isNil(PcStorageGeometry.partyDropSlot(58, 80, "left"), "the next column starts a new cell")
   local right = PcStorageGeometry.partyDropRect(5, "right")
-  Assert.deepEqual(right, { x = 214, y = 122, width = 32, height = 23 }, "the right panel offsets by its source band")
+  Assert.deepEqual(right, { x = 214, y = 130, width = 32, height = 23 }, "the second column keeps its source stagger")
   Assert.equal(PcStorageGeometry.partyDropSlot(230, 130, "right"), 5, "the last right cell resolves")
 end
 

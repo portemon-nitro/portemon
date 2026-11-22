@@ -313,6 +313,7 @@ function T.source_modes_keep_distinct_storage_geometry_and_live_hit_regions(scop
           "deposit mode hit-tests only the party tray until it asks where"
         )
         view.carry = { kind = "mon", action = "deposit" }
+        view.boxTray = { mode = "deposit", trayBox = 0, boxes = {} }
       end
       local plan = session:resolve(measurement("nativeLike"), view)
       Assert.equal(plan.content.mode, mode, "the published plan retains the source mode")
@@ -321,16 +322,20 @@ function T.source_modes_keep_distinct_storage_geometry_and_live_hit_regions(scop
         wallpaperMap,
         "the source wallpaper tile map reaches the paired plan unchanged"
       )
-      local hit = assert(plan.content.hitRegions.boxSlots[1], "the visible box slot has a paired hit region")
-      local rect = hit.rect
-      Assert.isTrue(rect.width > 0 and rect.height > 0, "drawn box slots have positive hit geometry")
-      local mapped = plan.mapInput({
-        type = "pointer_down",
-        pointerId = "touch:0",
-        x = rect.x + rect.width / 2,
-        y = rect.y + rect.height / 2,
-      }, view, plan)
-      Assert.equal(mapped.target, hit.target, "the box slot hit maps through the same resolved plan")
+      if mode == 0 then
+        Assert.equal(#plan.content.hitRegions.boxSlots, 0, "the deposit selector replaces the box grid")
+      else
+        local hit = assert(plan.content.hitRegions.boxSlots[1], "the visible box slot has a paired hit region")
+        local rect = hit.rect
+        Assert.isTrue(rect.width > 0 and rect.height > 0, "drawn box slots have positive hit geometry")
+        local mapped = plan.mapInput({
+          type = "pointer_down",
+          pointerId = "touch:0",
+          x = rect.x + rect.width / 2,
+          y = rect.y + rect.height / 2,
+        }, view, plan)
+        Assert.equal(mapped.target, hit.target, "the box slot hit maps through the same resolved plan")
+      end
       modeGeometry[mode] = plan.content.modeGeometry
     end
     for mode = 1, 3 do

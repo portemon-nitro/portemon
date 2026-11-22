@@ -171,7 +171,8 @@ end
 function PcStorageGeometry.partyDropRect(slot, side)
   local columns = assert(PARTY_DROP_COLUMNS[side], "party drop side is left or right")
   local x = columns[slot % 2 + 1]
-  local y = PARTY_DROP_ROWS[math.floor(slot / 2) + 1]
+  local row = math.floor(slot / 2)
+  local y = PARTY_DROP_ROWS[row + 1] + slot % 2 * 8
   return {
     x = x,
     y = y,

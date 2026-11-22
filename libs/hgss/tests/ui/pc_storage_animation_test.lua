@@ -7,7 +7,11 @@ local PcStorageAnimation = require("libs.hgss.src.ui.PcStorageAnimation")
 local T = { tests = {} }
 
 local function mon(personality)
-  return { personality = personality, iconKey = "icon-" .. tostring(personality) }
+  return {
+    personality = personality,
+    species = "SPECIES_" .. tostring(personality),
+    iconKey = "icon-" .. tostring(personality),
+  }
 end
 
 local function view(options)
@@ -59,6 +63,26 @@ function T.tests.party_shift_moves_every_later_slot()
   local frame = animator:step(view({ party = { b } }))
   Assert.notNil(frame.icons.party[0], "the surviving mon flies to the vacated slot")
   Assert.equal(frame.icons.party[0].mon, b, "the moving icon carries the surviving mon")
+end
+
+function T.tests.cross_domain_swap_animates_the_same_identity_between_domains()
+  local animator = PcStorageAnimation.new()
+  local boxed = mon(1)
+  local party = mon(2)
+  animator:step(view({ boxSlots = { boxed }, party = { party } }))
+  local frame = animator:step(view({ boxSlots = { party }, party = { boxed } }))
+  Assert.equal(frame.icons.party[0].mon, boxed)
+  Assert.equal(frame.icons.box[0].mon, party)
+end
+
+function T.tests.personality_collision_does_not_merge_different_species()
+  local animator = PcStorageAnimation.new()
+  local boxed = { personality = 1, species = "CHIKORITA", iconKey = "chiko" }
+  local party = { personality = 1, species = "TOTODILE", iconKey = "toto" }
+  animator:step(view({ boxSlots = { boxed }, party = { party } }))
+  local frame = animator:step(view({ boxSlots = { party }, party = { boxed } }))
+  Assert.equal(frame.icons.party[0].mon, boxed)
+  Assert.equal(frame.icons.box[0].mon, party)
 end
 
 function T.tests.release_projects_the_screen_state_shrink_and_grow()

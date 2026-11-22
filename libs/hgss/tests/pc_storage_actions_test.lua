@@ -159,6 +159,48 @@ function T.party_move_cannot_remove_the_last_usable_mon()
   Assert.isNil(mons:boxMon(0, 0), "refused move leaves destination empty")
 end
 
+function T.party_to_party_swap_preserves_both_records()
+  local mons, bag = services()
+  local factory = CatalogFixture.makeFactory(0x66778899, mons:catalog())
+  Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))))
+  partyUpdate(mons, 0, function(mon)
+    mon.nickname = "FIRST"
+    mon.heldItem = "POTION"
+  end)
+  partyUpdate(mons, 1, function(mon)
+    mon.nickname = "SECOND"
+    mon.moves[1].pp = 2
+  end)
+  local first, second = mons:partyMon(0), mons:partyMon(1)
+  local actions = PcStorageActions.new({ mons = mons, bag = bag })
+  local result = actions:commit(actions:preview({
+    kind = "swap",
+    source = { kind = "party", slot = 0 },
+    destination = { kind = "party", slot = 1 },
+  }))
+  Assert.equal(result.kind, "changed")
+  Assert.deepEqual(mons:partyMon(0), second)
+  Assert.deepEqual(mons:partyMon(1), first)
+  Assert.equal(mons:partyCount(), 2)
+end
+
+function T.party_move_to_trailing_slot_appends_after_removal()
+  local mons, bag = services()
+  local factory = CatalogFixture.makeFactory(0x66778899, mons:catalog())
+  Assert.isTrue(mons:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))))
+  local first, second = mons:partyMon(0), mons:partyMon(1)
+  local actions = PcStorageActions.new({ mons = mons, bag = bag })
+  local result = actions:commit(actions:preview({
+    kind = "move",
+    source = { kind = "party", slot = 0 },
+    destination = { kind = "party", slot = 2 },
+  }))
+  Assert.equal(result.kind, "changed")
+  Assert.equal(mons:partyCount(), 2)
+  Assert.deepEqual(mons:partyMon(0), second)
+  Assert.deepEqual(mons:partyMon(1), first)
+end
+
 local function assertPartyMoveAttachmentRefused(attachment, expectedReason)
   local mons, bag = services()
   local factory = CatalogFixture.makeFactory(0x66778899, mons:catalog())

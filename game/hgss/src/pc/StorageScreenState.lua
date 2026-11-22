@@ -1084,6 +1084,7 @@ function StorageScreenState:_beginAction(action, data, address)
       holding = true,
     }
     self._boxTray = "box"
+    self._tray = "right"
     self._trayBox = self._activeBox
     self._boxTrayChangeBox = false
     self._grid:setLayout("tray", 0)
@@ -1379,8 +1380,14 @@ function StorageScreenState:_confirmCarry()
   if carry.holding == true then
     local destination = self:_heldDestination()
     if destination == false then
-      -- A full destination box reports bank-25 msg 13 and keeps the mon held.
-      self._lastAction = { kind = "refused", reason = "box_full", action = "move" }
+      local node = self._grid:current()
+      local page = math.floor(self._trayBox / PcStorageGeometry.TRAY_PAGE_SIZE) * PcStorageGeometry.TRAY_PAGE_SIZE
+      local activeThumbnail = node.kind == "box_tray" and page + node.index == self._activeBox
+      self._lastAction = {
+        kind = "refused",
+        reason = activeThumbnail and "active_box" or "box_full",
+        action = "move",
+      }
       self:_cue("SEQ_SE_DP_BOX03")
       return
     end
@@ -1433,6 +1440,9 @@ function StorageScreenState:_heldDestination()
   elseif node.kind == "box_tray" then
     local page = math.floor(self._trayBox / PcStorageGeometry.TRAY_PAGE_SIZE) * PcStorageGeometry.TRAY_PAGE_SIZE
     local box = page + node.index
+    if box == self._activeBox then
+      return false
+    end
     local slot = self:_firstEmptySlot(box)
     if slot == nil then
       return false
@@ -1614,6 +1624,7 @@ function StorageScreenState:_openBoxTray()
     return
   end
   self._boxTray = "box"
+  self._tray = "right"
   self._trayBox = self._activeBox
   self._boxTrayChangeBox = false
   local carry = self._carry
@@ -1633,9 +1644,13 @@ function StorageScreenState:_closeBoxTray()
   if self._boxTray == "closed" then
     return
   end
+  local carry = self._carry
   self._boxTray = "closed"
   self._boxTrayChangeBox = false
   self._carry = nil
+  if carry ~= nil then
+    self._tray = carry.source.kind == "party" and "left" or "closed"
+  end
   self:_restoreBrowseGrid()
 end
 
@@ -1653,13 +1668,18 @@ end
 -- Cancelling the deposit selector returns to the deposit list on the same
 -- party mon (PCBox_State_DepositBoxSelectClosed -> RETURN_TO_ACTION_MENU).
 function StorageScreenState:_closeDepositSelector()
+  local source = assert(self._carry, "deposit selector retains its source").source
   self._boxTray = "closed"
   self._boxTrayChangeBox = false
   self._carry = nil
-  local address = self._focus
-  self._menu = { actions = { "deposit", "summary", "markings", "release" }, selected = 1, address = copy(address) }
+  self._focus = { domain = "party", slot = source.slot }
+  self._menu = {
+    actions = { "deposit", "summary", "markings", "release" },
+    selected = 1,
+    address = copy(source),
+  }
   local layout = self:_browseLayout()
-  local node = self:_nodeForSlot(address.domain, address.slot) or 0
+  local node = self:_nodeForSlot("party", source.slot) or 0
   self._grid:setLayout(layout, node)
   self:_syncGridAvailability()
   self:_placeCursor(assert(self:_firstMenuNode(), "the deposit list carries source row nodes"))
@@ -2006,6 +2026,9 @@ function StorageScreenState:_dragDestination()
     if column ~= nil then
       local page = math.floor(self._trayBox / PcStorageGeometry.TRAY_PAGE_SIZE) * PcStorageGeometry.TRAY_PAGE_SIZE
       local box = page + column
+      if box == self._activeBox then
+        return nil
+      end
       if drag.kind == "items" then
         return nil
       end
@@ -2085,8 +2108,9 @@ function StorageScreenState:_handleDragRelease(event)
   self._boxTray = drag.boxTrayBefore
   self:_finishCarry(destination)
   if self._carry ~= nil then
-    -- A refused drop keeps the mon on the stylus, matching the source.
-    drag.x, drag.y = event.x, event.y
+    -- Pointer capture ended; a refused drop returns custody and presentation
+    -- to the source rather than leaving a ghost attached to a released pen.
+    self:_returnDragToSource()
     return
   end
   self._drag = nil
@@ -2168,14 +2192,23 @@ function StorageScreenState:_handleCancelInput()
     self._pendingIntent = nil
     self:_cue("SEQ_SE_DP_SELECT")
   elseif self._carry ~= nil then
-    if self._carry.action == "withdraw" then
+    local carry = self._carry
+    local drag = self._drag
+    local boxTrayWasOpen = self._boxTray ~= "closed"
+    if drag ~= nil then
+      self._tray = drag.trayBefore
+      self._boxTray = drag.boxTrayBefore
+    end
+    if carry.action == "withdraw" then
       self._tray = "closed"
     end
     -- A cancelled hold puts the mon back and closes the tray it opened from.
     self._carry, self._menu = nil, nil
-    if self._boxTray ~= "closed" then
+    if boxTrayWasOpen then
       self._boxTray, self._boxTrayChangeBox = "closed", false
+      self._tray = carry.source.kind == "party" and "left" or "closed"
     end
+    self._drag, self._hint = nil, nil
     self:_cue("SEQ_SE_DP_SELECT")
     self:_restoreBrowseGrid()
   elseif self._menu ~= nil then

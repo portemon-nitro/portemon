@@ -31,23 +31,34 @@ local function geometry(view)
     item = mode == 3,
   }
   local slots = {}
-  for slot = 0, 29 do
-    local mon = view.boxSlots and view.boxSlots[slot + 1]
-    slots[#slots + 1] = {
-      rect = PcStorageGeometry.boxSlotRect(slot),
-      target = { kind = "box", slot = slot },
-      occupied = type(mon) == "table",
-    }
-  end
   local visibleParty = {}
-  if view.tray ~= "closed" then
-    for slot = 0, 5 do
-      local mon = view.party and view.party[slot + 1]
-      visibleParty[#visibleParty + 1] = {
-        rect = PcStorageGeometry.partySlotRect(slot, view.tray),
-        target = { kind = "party", slot = slot },
+  local layout = view.boxTray ~= nil and view.boxTray.mode == "box" and "tray"
+    or view.boxTray ~= nil and view.boxTray.mode == "deposit" and "depositBox"
+    or PcStorageGrid.browseLayout(view.mode, view.tray ~= "closed")
+  for _, node in ipairs(PcStorageGrid.layout(layout)) do
+    if node.kind == "box" then
+      local mon = view.boxSlots and view.boxSlots[node.index + 1]
+      slots[#slots + 1] = {
+        rect = assert(node.hit),
+        target = { kind = "box", slot = node.index },
         occupied = type(mon) == "table",
       }
+    end
+  end
+  local partyLayout = view.tray == "left"
+      and (view.mode == 0 and "deposit" or view.mode == 3 and "itemParty" or "moveParty")
+    or view.tray == "right" and "tray"
+    or nil
+  if partyLayout ~= nil then
+    for _, node in ipairs(PcStorageGrid.layout(partyLayout)) do
+      if node.kind == "party" then
+        local mon = view.party and view.party[node.index + 1]
+        visibleParty[#visibleParty + 1] = {
+          rect = assert(node.hit),
+          target = { kind = "party", slot = node.index },
+          occupied = type(mon) == "table",
+        }
+      end
     end
   end
   local editorChoices = {}
@@ -80,7 +91,7 @@ local function geometry(view)
   -- The Move/Item box tray keeps the grid live behind its strip so a stylus
   -- can drag a mon out of a box and onto a thumbnail.
   local boxTouchable = editor == nil
-    and (view.boxTray == nil or view.boxTray == "box")
+    and (view.boxTray == nil or view.boxTray.mode == "box")
     and (view.mode ~= 0 or view.carry ~= nil)
   local menuButtons, controls = {}, {}
   if editor == nil and view.menu ~= nil then
@@ -204,10 +215,9 @@ local function mapInput(event, _, plan)
       return hit.target
     end
   end
-  for _, hit in ipairs(plan.content.hitRegions.boxSlots) do
+  -- The visible party panel owns overlapping hit space above the box grid.
+  for _, hit in ipairs(plan.content.hitRegions.partySlots) do
     if within(hit.rect, event.x, event.y) then
-      -- An occupied custody cell starts the source drag on touch-down; an
-      -- empty cell only places the cursor.
       if hit.occupied then
         return {
           type = "storage_touch",
@@ -220,8 +230,10 @@ local function mapInput(event, _, plan)
       return { type = "storage_target", target = hit.target }
     end
   end
-  for _, hit in ipairs(plan.content.hitRegions.partySlots) do
+  for _, hit in ipairs(plan.content.hitRegions.boxSlots) do
     if within(hit.rect, event.x, event.y) then
+      -- An occupied custody cell starts the source drag on touch-down; an
+      -- empty cell only places the cursor.
       if hit.occupied then
         return {
           type = "storage_touch",

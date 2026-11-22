@@ -3774,4 +3774,166 @@ function T.stylus_tray_drag_drops_a_box_mon_onto_a_thumbnail_and_returns_to_the_
   back:dispose()
 end
 
+function T.mapped_party_touch_owns_the_hit_area_over_the_box_grid()
+  local mons = monService()
+  storePartyMon(mons, 0, 0, 7)
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  state:updateFixed({ { type = "party" } })
+  local plan = state._session:plan()
+  local mapped = plan.mapInput({ type = "pointer_down", pointerId = "touch", x = 32, y = 58 }, state:_view(), plan)
+  Assert.equal(mapped.type, "storage_touch")
+  Assert.deepEqual(mapped.target, { kind = "party", slot = 0 })
+  state:updateFixed({ mapped })
+  Assert.deepEqual(state:status().carry.source, { kind = "party", slot = 0 })
+  state:dispose()
+end
+
+function T.move_box_tray_keeps_box_and_right_party_targets_mapped()
+  local mons = monService()
+  storePartyMon(mons, 0, 0, 4)
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  state:updateFixed({
+    { type = "storage_target", target = { kind = "box", slot = 4 } },
+    { type = "confirm" },
+    { type = "confirm" },
+  })
+  local view, plan = state:_view(), state._session:plan()
+  Assert.equal(view.tray, "right", "the box-side tray raises the right party panel")
+  Assert.equal(#plan.content.hitRegions.boxSlots, 30)
+  Assert.equal(#plan.content.hitRegions.partySlots, 6)
+  local hit = assert(plan.content.hitRegions.boxSlots[5])
+  local mapped = plan.mapInput({
+    type = "pointer_down",
+    pointerId = "touch",
+    x = hit.rect.x + hit.rect.width / 2,
+    y = hit.rect.y + hit.rect.height / 2,
+  }, view, plan)
+  Assert.equal(mapped.type, "storage_touch")
+  Assert.deepEqual(mapped.target, { kind = "box", slot = 4 })
+  local partyHit = assert(plan.content.hitRegions.partySlots[1])
+  local mappedParty = plan.mapInput({
+    type = "pointer_down",
+    pointerId = "touch-party",
+    x = partyHit.rect.x + partyHit.rect.width / 2,
+    y = partyHit.rect.y + partyHit.rect.height / 2,
+  }, view, plan)
+  Assert.equal(mappedParty.type, "storage_touch")
+  Assert.deepEqual(mappedParty.target, { kind = "party", slot = 0 })
+  state:updateFixed({ { type = "cancel" } })
+  Assert.isNil(state:status().carry)
+  Assert.equal(state:_view().tray, "closed", "cancel lowers the box-side party panel")
+  state:updateFixed({
+    { type = "storage_target", target = { kind = "box", slot = 4 } },
+    { type = "confirm" },
+    { type = "confirm" },
+  })
+  Assert.equal(state:_view().tray, "right", "reopening restores its visible party destination")
+  state:dispose()
+end
+
+function T.party_drop_rects_follow_the_staggered_source_columns()
+  for _, side in ipairs({ "left", "right" }) do
+    for slot = 0, 5 do
+      local rect = PcStorageGeometry.partyDropRect(slot, side)
+      local row = math.floor(slot / 2)
+      local x = side == "left" and (slot % 2 == 0 and 26 or 62) or (slot % 2 == 0 and 178 or 214)
+      local y = 58 + row * 32 + (slot % 2) * 8
+      Assert.deepEqual(rect, { x = x, y = y, width = 32, height = 23 })
+    end
+  end
+end
+
+function T.deposit_selector_cancel_restores_the_party_action_address()
+  local mons = monService()
+  addPartyMon(mons, 0x66778899)
+  local state = PcStorageState.new(openOptions(mons, 0, "wide"))
+  state:updateFixed({ { type = "confirm" }, { type = "confirm" } })
+  Assert.equal(assert(state:_view().boxTray).mode, "deposit")
+  state:updateFixed({ { type = "cancel" } })
+  Assert.deepEqual(state:status().focus, { domain = "party", slot = 0 })
+  Assert.deepEqual(state:status().menu.address, { kind = "party", slot = 0 })
+  state:updateFixed({ { type = "action", action = "deposit" } })
+  Assert.equal(assert(state:_view().boxTray).mode, "deposit", "the restored party action can reopen its selector")
+  state:dispose()
+end
+
+function T.refused_pointer_drop_clears_drag_and_returns_the_source()
+  local mons = monService()
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  state:updateFixed({ { type = "party" } })
+  local rect = PcStorageGeometry.partySlotRect(0, "left")
+  state:updateFixed({
+    {
+      type = "storage_touch",
+      target = { kind = "party", slot = 0 },
+      pointerId = "pen",
+      x = rect.x + 1,
+      y = rect.y + 1,
+    },
+  })
+  Assert.notNil(state:status().visualView.drag)
+  local x, y = boxCenter(0)
+  state:updateFixed({ { type = "storage_drag_release", pointerId = "pen", x = x, y = y } })
+  Assert.isNil(state:status().carry)
+  Assert.isNil(state:status().visualView.drag)
+  Assert.isNil(state._hint)
+  Assert.equal(mons:partyCount(), 1)
+  Assert.isNil(mons:boxMon(0, 0))
+  state:dispose()
+
+  local cancelled = PcStorageState.new(openOptions(mons, 2, "wide"))
+  cancelled:updateFixed({ { type = "party" } })
+  local partyRect = PcStorageGeometry.partySlotRect(0, "left")
+  cancelled:updateFixed({
+    {
+      type = "storage_touch",
+      target = { kind = "party", slot = 0 },
+      pointerId = "pen-cancel",
+      x = partyRect.x + 1,
+      y = partyRect.y + 1,
+    },
+  })
+  cancelled:updateFixed({ { type = "cancel" } })
+  Assert.isNil(cancelled:status().carry)
+  Assert.isNil(cancelled:status().visualView.drag)
+  Assert.isNil(cancelled._hint)
+  Assert.equal(cancelled:_view().tray, "left", "cancel restores the panel that held the source")
+  cancelled:dispose()
+end
+
+function T.pc_party_preparation_rejects_sparse_replacement_before_copying()
+  local mons = monService()
+  local first, second = mons:partyMon(0), mons:partyMon(0)
+  second.personality = second.personality + 1
+  local ok = pcall(function()
+    mons:preparePcChanges({
+      partyRevision = mons:partyRevision(),
+      boxRevision = mons:boxRevision(),
+    }, { party = { [1] = first, [2] = second, [4] = first } })
+  end)
+  Assert.isFalse(ok, "sparse roster replacement is rejected before ipairs can truncate it")
+  Assert.equal(mons:partyCount(), 1)
+  Assert.deepEqual(mons:partyMon(0), first)
+end
+
+function T.move_tray_rejects_its_own_active_box_without_releasing_the_mon()
+  local mons = monService()
+  storePartyMon(mons, 0, 0, 4)
+  local original = mons:boxMon(0, 4)
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  state:updateFixed({
+    { type = "storage_target", target = { kind = "box", slot = 4 } },
+    { type = "confirm" },
+    { type = "confirm" },
+    { type = "box_tray_select", column = 0 },
+    { type = "confirm" },
+  })
+  Assert.equal(state:status().lastAction.reason, "active_box")
+  Assert.notNil(state:status().carry, "the refused thumbnail leaves the mon held")
+  Assert.equal(assert(state:_view().boxTray).mode, "box", "the tray remains open for another destination")
+  Assert.deepEqual(mons:boxMon(0, 4), original)
+  Assert.equal(mons:partyCount(), 1)
+  state:dispose()
+end
+
 return { tests = T }

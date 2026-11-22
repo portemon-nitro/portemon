@@ -14,11 +14,21 @@
 ---@field yNegative boolean
 ---@field frames integer
 
+---@class PcStorageAnimation.Mon
+---@field personality unknown?
+---@field species unknown?
+---@field trainerId unknown?
+---@field otId unknown?
+---@field nickname unknown?
+---@field heldItem unknown?
+---@field itemIconKey string?
+
 ---@class PcStorageAnimation.Move
----@field domain string
+---@field fromDomain string
+---@field toDomain string
 ---@field from integer
 ---@field to integer
----@field mon table?
+---@field mon PcStorageAnimation.Mon?
 ---@field timer integer
 
 ---@class PcStorageAnimation.ItemFlight
@@ -73,8 +83,8 @@ local RELEASE_GROW_STEP = 0.05
 ---@class PcStorageAnimation.Frame
 ---@field cursor { x: number, y: number }
 ---@field wallpaper { id: integer, x: integer }[]
----@field icons table<string, table<integer, { x: number, y: number, mon: table?, scale: number? }>>?
----@field release table<integer, { x: number, y: number, mon: table?, scale: number }>?
+---@field icons table<string, table<integer, { x: number, y: number, mon: PcStorageAnimation.Mon?, scale: number? }>>?
+---@field release table<integer, { x: number, y: number, mon: PcStorageAnimation.Mon?, scale: number }>?
 ---@field item { iconKey: string, x: number, y: number }?
 ---@field cursorDip integer
 ---@field itemFrom { domain: string, slot: integer }?
@@ -136,7 +146,7 @@ end
 ---@param frame PcStorageAnimation.Frame
 ---@param domain "box"|"party"
 ---@param slot integer
----@return { x: number, y: number, mon: table?, scale: number? }?
+---@return { x: number, y: number, mon: PcStorageAnimation.Mon?, scale: number? }?
 local function iconAt(frame, domain, slot)
   local icons = frame.icons
   return icons and icons[domain] and icons[domain][slot] or nil
@@ -167,12 +177,13 @@ end
 
 -- Starts one linear mon move (eight equal source steps, then the snap).
 ---@param self PcStorageAnimation
----@param entries { domain: string, from: integer, to: integer, mon: table? }[]
+---@param entries { fromDomain: string, toDomain: string, from: integer, to: integer, mon: PcStorageAnimation.Mon? }[]
 function PcStorageAnimation:_startMoves(entries)
   local moves = {}
   for _, entry in ipairs(entries) do
     moves[#moves + 1] = {
-      domain = entry.domain,
+      fromDomain = entry.fromDomain,
+      toDomain = entry.toDomain,
       from = entry.from,
       to = entry.to,
       mon = entry.mon,
@@ -182,18 +193,25 @@ function PcStorageAnimation:_startMoves(entries)
   self._moves = moves
 end
 
--- Builds the per-domain personality -> slot map used to diff two views.
+-- Builds ordered identity occurrences across both custody domains. Including
+-- species and trainer identity avoids treating personality collisions as the
+-- same visual record.
 ---@param view table<string, unknown>
----@param domain "box"|"party"
----@return table<string, integer>
-local function slotByPersonality(view, domain)
+---@return table<string, { domain: string, slot: integer }[]>
+local function slotsByIdentity(view)
   local map = {}
-  local slots = domain == "box" and view.boxSlots or view.party
-  for index, mon in ipairs(slots or {}) do
-    if mon ~= false and type(mon) == "table" then
-      local personality = mon.personality
-      if personality ~= nil then
-        map[tostring(personality)] = index - 1
+  for _, domain in ipairs({ "box", "party" }) do
+    local slots = domain == "box" and view.boxSlots or view.party
+    for index, mon in ipairs(slots or {}) do
+      if mon ~= false and type(mon) == "table" and mon.personality ~= nil then
+        local key = table.concat({
+          tostring(mon.personality),
+          tostring(mon.species),
+          tostring(mon.trainerId or mon.otId),
+          tostring(mon.nickname),
+        }, "\31")
+        map[key] = map[key] or {}
+        map[key][#map[key] + 1] = { domain = domain, slot = index - 1 }
       end
     end
   end
@@ -221,22 +239,28 @@ end
 ---@param self PcStorageAnimation
 ---@param previous table<string, unknown>
 ---@param view table<string, unknown>
----@return { domain: string, from: integer, to: integer, mon: table? }[]
+---@return { fromDomain: string, toDomain: string, from: integer, to: integer, mon: PcStorageAnimation.Mon? }[]
 function PcStorageAnimation:_diffMons(previous, view)
   local entries = {}
-  for _, domain in ipairs({ "box", "party" }) do
-    local before = slotByPersonality(previous, domain)
-    local after = slotByPersonality(view, domain)
-    for personality, from in pairs(before) do
-      local to = after[personality]
-      if to ~= nil and to ~= from then
-        local slots = domain == "box" and view.boxSlots or view.party
-        entries[#entries + 1] = { domain = domain, from = from, to = to, mon = slots and slots[to + 1] or nil }
+  local before, after = slotsByIdentity(previous), slotsByIdentity(view)
+  for identity, sources in pairs(before) do
+    local destinations = after[identity] or {}
+    for index, source in ipairs(sources) do
+      local destination = destinations[index]
+      if destination ~= nil and (source.domain ~= destination.domain or source.slot ~= destination.slot) then
+        local slots = destination.domain == "box" and view.boxSlots or view.party
+        entries[#entries + 1] = {
+          fromDomain = source.domain,
+          toDomain = destination.domain,
+          from = source.slot,
+          to = destination.slot,
+          mon = slots and slots[destination.slot + 1] or nil,
+        }
       end
     end
   end
   table.sort(entries, function(a, b)
-    return a.domain == b.domain and a.from < b.from or a.domain < b.domain
+    return a.fromDomain == b.fromDomain and a.from < b.from or a.fromDomain < b.fromDomain
   end)
   return entries
 end
@@ -411,9 +435,9 @@ function PcStorageAnimation:step(view)
       if move.timer < MOVE_TICKS then
         settled = false
       end
-      local fromX, fromY = slotCenter(move.domain, move.from, view.tray)
-      local toX, toY = slotCenter(move.domain, move.to, view.tray)
-      icons[move.domain][move.to] = {
+      local fromX, fromY = slotCenter(move.fromDomain, move.from, view.tray)
+      local toX, toY = slotCenter(move.toDomain, move.to, view.tray)
+      icons[move.toDomain][move.to] = {
         x = fromX + (toX - fromX) * t / MOVE_TICKS,
         y = fromY + (toY - fromY) * t / MOVE_TICKS,
         mon = move.mon,

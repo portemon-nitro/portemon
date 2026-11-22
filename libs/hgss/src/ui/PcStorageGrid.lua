@@ -5,6 +5,23 @@
 
 local Layouts = require("libs.hgss.src.ui.PcStorageGridData")
 
+---@class PcStorageGrid.HitBox
+---@field x number
+---@field y number
+---@field width number
+---@field height number
+
+---@class PcStorageGrid.Node
+---@field kind string
+---@field index integer?
+---@field x number
+---@field y number
+---@field up integer
+---@field down integer
+---@field left integer
+---@field right integer
+---@field hit PcStorageGrid.HitBox
+
 ---@class PcStorageGrid
 ---@field _name string
 ---@field _node integer
@@ -40,7 +57,7 @@ local BROWSE_LAYOUTS = {
 }
 
 ---@param name string
----@return table[]
+---@return PcStorageGrid.Node[]
 function PcStorageGrid.layout(name)
   return assert(Layouts[name], "Storage grid layout is known: " .. tostring(name))
 end
@@ -57,7 +74,7 @@ end
 -- one-based Lua sequences.
 ---@param name string
 ---@param index integer
----@return table
+---@return PcStorageGrid.Node
 function PcStorageGrid.node(name, index)
   assert(type(index) == "number" and index >= 0 and index % 1 == 0, "Storage grid node id is a source index")
   return assert(PcStorageGrid.layout(name)[index + 1], "Storage grid node exists: " .. name .. ":" .. index)
@@ -94,7 +111,7 @@ function PcStorageGrid:index()
   return self._node
 end
 
----@return table
+---@return PcStorageGrid.Node
 function PcStorageGrid:current()
   return PcStorageGrid.node(self._name, self._node)
 end
