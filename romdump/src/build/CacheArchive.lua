@@ -244,6 +244,43 @@ local function sortedStringList(value, label)
   return copy
 end
 
+-- Cross-artifact closure rules shared by the writer's cut and the boot
+-- manifest: a published fact may only depend on an artifact captured in the
+-- same cut, a declared shared path must be one of those captured payloads,
+-- and one cut never captures the same artifact twice. Two artifacts that name
+-- one output path are one payload: the cut carries a single entry for it and
+-- both artifacts keep their own owned-root and file references. Contradictory
+-- bytes for one path are a typed commit failure, so no cut ever carries two
+-- versions of it. `fail` decides whether a violation is a producer assert or a
+-- typed input rejection.
+---@param artifacts { kind: string, key: string, dependencies: string[], ownedRoots: string[], sharedPaths: string[] }[]
+---@param coverage table<string, boolean>
+---@param fail fun(ok: boolean, message: string)
+local function checkArtifactClosure(artifacts, coverage, fail)
+  local captured = {}
+  for _, artifact in ipairs(artifacts) do
+    local identity = artifact.kind .. ":" .. artifact.key
+    fail(captured[identity] == nil, "the snapshot captures the same artifact twice: " .. identity)
+    captured[identity] = true
+  end
+  for _, artifact in ipairs(artifacts) do
+    for _, dependency in ipairs(artifact.dependencies) do
+      fail(type(dependency) == "string", "a captured artifact dependency is not a string")
+      fail(
+        captured[dependency] == true,
+        "a captured artifact dependency is missing from the cut: " .. tostring(dependency)
+      )
+    end
+    for _, shared in ipairs(artifact.sharedPaths) do
+      fail(type(shared) == "string", "a captured shared path is not a string")
+      fail(coverage[shared] == true, "a captured shared path is not a listed payload: " .. tostring(shared))
+    end
+    for _, root in ipairs(artifact.ownedRoots) do
+      fail(type(root) == "string" and root ~= "", "a captured owned root is not a string")
+    end
+  end
+end
+
 ---@class CacheArchive.Row
 ---@field path string
 ---@field uncompressedSize integer
@@ -337,6 +374,7 @@ local function normalizeCut(cut)
   for _, entry in ipairs(ordered) do
     assert(coverage[entry.path] == true, "snapshot cut payload belongs to no artifact: " .. entry.path)
   end
+  checkArtifactClosure(records, coverage, assert)
   table.sort(records, function(first, second)
     return first.kind .. ":" .. first.key < second.kind .. ":" .. second.key
   end)
@@ -1043,6 +1081,11 @@ local function validateIndex(index)
       })
     end
   end
+  checkArtifactClosure(index.artifacts, covered, function(ok, message)
+    if not ok then
+      Errors.raise(ARCHIVE_CODES.SCHEMA_INVALID, message, {})
+    end
+  end)
   if type(index.milestones) ~= "table" then
     Errors.raise(ARCHIVE_CODES.SCHEMA_INVALID, "the snapshot manifest carries no milestone list")
   end
@@ -1344,21 +1387,6 @@ function CacheArchive.restoreBackup(versionId)
   end
   local restored, _ = renamePath(paths.backup, paths.canonical)
   return restored == true
-end
-
--- An explicit cache clear removes exactly the snapshot's own known siblings:
--- the canonical archive, its temporary, and its backup.
----@param versionId string
----@return boolean
-function CacheArchive.clear(versionId)
-  local paths = CacheArchive.paths(versionId)
-  local removed = true
-  for _, path in ipairs({ paths.temporary, paths.backup, paths.canonical }) do
-    if not removeQuietly(path) then
-      removed = false
-    end
-  end
-  return removed
 end
 
 return CacheArchive

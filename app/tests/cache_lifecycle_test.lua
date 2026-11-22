@@ -1997,7 +1997,7 @@ local function newBootGateChannelHost()
   return { newChannel = newChannel, newThread = newThread, channels = channels, threads = threads }
 end
 
----@param options table|nil { firstPlayCurrent: boolean?, readyVersions: string[]?, generatedViewInstalled: boolean? }
+---@param options table|nil { firstPlayCurrent: boolean?, readyVersions: string[]?, harnessInstallsCache: boolean? }
 ---@param fn fun(App: table, context: table)
 local function withBootGateApp(options, fn)
   options = options or {}
@@ -2134,62 +2134,11 @@ local function withBootGateApp(options, fn)
     context.retiredEpochs[epoch] = true
     return baseRetire(self, epoch)
   end
-  local baseFirstPlayReady = service.firstPlayReady
-  service.firstPlayReady = function(self, epoch)
-    local installed = baseFirstPlayReady(self, epoch)
-    if installed ~= nil then
-      return installed
-    end
-    return scriptedFirstPlayReady(context, epoch)
-  end
   service.recordFirstPlay = function(_, epoch)
     context.firstPlayPublished[#context.firstPlayPublished + 1] = { epoch = epoch }
   end
-  -- The epoch's installed generated view. A real installation always wins.
-  -- Cases that do not install one themselves (every generated consumer is
-  -- stubbed) get the same stable empty reader per live epoch, because the boot
-  -- wait and the menu handoff both require the reader to exist; the authored
-  -- installation case opts out so it can observe the pre-install answer.
-  context.generatedViewInstalled = options.generatedViewInstalled
-  if context.generatedViewInstalled == nil then
-    context.generatedViewInstalled = true
-  end
-  local installedViews = {}
-  local baseGetCacheFs = service.getCacheFs
-  service.getCacheFs = function(self, epoch)
-    local installed = baseGetCacheFs(self, epoch)
-    if installed ~= nil then
-      return installed
-    end
-    if context.retiredEpochs[epoch] == true or context.generatedViewInstalled ~= true then
-      return nil
-    end
-    local view = installedViews[epoch]
-    if view == nil then
-      view = { versionId = "heartgold" }
-      function view:resolveAsset(_)
-        return nil
-      end
-      function view:readData(_)
-        return nil
-      end
-      function view:loadLua(_)
-        return nil, "the lifecycle harness carries no generated payloads"
-      end
-      -- The selection's overlay over this stand-in view: the App composes one
-      -- reader per selected epoch, so the stand-in must offer that composition.
-      function view:withPackages(packageSet)
-        context.packageSets = context.packageSets or {}
-        context.packageSets[#context.packageSets + 1] = packageSet
-        return setmetatable({ versionId = view.versionId, base = view }, { __index = view })
-      end
-      installedViews[epoch] = view
-    end
-    return view
-  end
   -- The identity the installed bytes were produced under, for the package
-  -- manifests a selection validates. A real installation always wins.
-  local baseCacheIdentity = service.cacheIdentity
+  -- manifests a selection validates.
   local harnessIdentity = {
     schema = "derived-cache",
     versionId = "heartgold",
@@ -2200,15 +2149,25 @@ local function withBootGateApp(options, fn)
     scriptApi = 1,
     generationId = "test-generation",
   }
-  service.cacheIdentity = function(self, epoch)
-    local identity = baseCacheIdentity(self, epoch)
-    if identity ~= nil then
-      return identity
+  -- Every selection streams its initial installation before any terminal
+  -- observation, so the harness installs one empty sequence per epoch with the
+  -- scripted first-play fact. The authored installation case opts out and
+  -- installs its own cut.
+  local harnessInstallsCache = options.harnessInstallsCache
+  if harnessInstallsCache == nil then
+    harnessInstallsCache = true
+  end
+  local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
+  local baseSelect = service.select
+  service.select = function(self, selectors)
+    local epoch = baseSelect(self, selectors)
+    if epoch ~= nil and harnessInstallsCache then
+      SnapshotBootFixture.installBoot(self, epoch, {
+        identity = harnessIdentity,
+        firstPlay = scriptedFirstPlayReady(context, epoch),
+      })
     end
-    if context.retiredEpochs[epoch] == true or context.generatedViewInstalled ~= true then
-      return nil
-    end
-    return harnessIdentity
+    return epoch
   end
   graphics.getDimensions = function()
     return 640, 480
@@ -2456,11 +2415,23 @@ function T.incomplete_cache_with_a_ready_first_play_closure_stays_in_the_boot_wa
       pumpBootGate(App, 2)
       local walkerId =
         assert(walkerRequestId(context, second), "the admitted wait requests exactly the selected walking pair")
-      context.service:injectReply({ op = "request-result", epoch = second, requestId = walkerId, state = "ready" })
+      context.service:injectReply({
+        op = "request-result",
+        epoch = second,
+        requestId = walkerId,
+        state = "ready",
+        requiredSequence = 1,
+      })
       pumpBootGate(App, 3)
       local bootstrapId =
         assert(milestoneRequestId(context, second, "bootstrap"), "the title requests ordinary bootstrap readiness")
-      context.service:injectReply({ op = "request-result", epoch = second, requestId = bootstrapId, state = "ready" })
+      context.service:injectReply({
+        op = "request-result",
+        epoch = second,
+        requestId = bootstrapId,
+        state = "ready",
+        requiredSequence = 1,
+      })
       pumpBootGate(App, 2)
       Assert.equal(#context.menus, 1, "a complete cache reaches its menu without its original file")
       Assert.equal(romOpens, 0, "the offline boot opens no ROM source")
@@ -2548,7 +2519,13 @@ function T.fresh_import_offer_reaches_the_controller_before_the_boot_check_on_on
       Assert.equal(held.kind, "boot-source", "the pair demand alone never completes the handoff")
       local walkerId =
         assert(walkerRequestId(context, epoch), "the cold wait requests exactly the selected walking pair")
-      context.service:injectReply({ op = "request-result", epoch = epoch, requestId = walkerId, state = "ready" })
+      context.service:injectReply({
+        op = "request-result",
+        epoch = epoch,
+        requestId = walkerId,
+        state = "ready",
+        requiredSequence = 1,
+      })
       -- One pump absorbs the pair answer and transfers to the title, one
       -- queues its bootstrap demand, and one flushes that demand on stream.
       pumpBootGate(App, 3)
@@ -2561,7 +2538,13 @@ function T.fresh_import_offer_reaches_the_controller_before_the_boot_check_on_on
         milestoneRequestId(context, epoch, "bootstrap"),
         "the title requests bootstrap while first-play warmup remains optional"
       )
-      context.service:injectReply({ op = "request-result", epoch = epoch, requestId = bootstrapId, state = "ready" })
+      context.service:injectReply({
+        op = "request-result",
+        epoch = epoch,
+        requestId = bootstrapId,
+        state = "ready",
+        requiredSequence = 1,
+      })
       pumpBootGate(App, 2)
       Assert.equal(#context.menus, 1, "bootstrap installs the menu while first-play remains pending")
       Assert.equal(#context.firstPlayPublished, 0, "pending background work publishes no completion")
@@ -2604,13 +2587,25 @@ function T.fresh_import_offer_reaches_the_controller_before_the_boot_check_on_on
       pumpBootGate(App, 2)
       local thirdWalkerId =
         assert(walkerRequestId(context, third), "the attested wait requests exactly the selected walking pair")
-      context.service:injectReply({ op = "request-result", epoch = third, requestId = thirdWalkerId, state = "ready" })
+      context.service:injectReply({
+        op = "request-result",
+        epoch = third,
+        requestId = thirdWalkerId,
+        state = "ready",
+        requiredSequence = 1,
+      })
       pumpBootGate(App, 3)
       local bootstrapId = assert(
         milestoneRequestId(context, third, "bootstrap"),
         "attested readiness continues into the ordinary bootstrap check"
       )
-      context.service:injectReply({ op = "request-result", epoch = third, requestId = bootstrapId, state = "ready" })
+      context.service:injectReply({
+        op = "request-result",
+        epoch = third,
+        requestId = bootstrapId,
+        state = "ready",
+        requiredSequence = 1,
+      })
       pumpBootGate(App, 2)
       Assert.equal(#context.menus, 2, "a current attestation reaches its menu without the ROM")
       Assert.equal(romOpens, 0, "the attested boot opens no ROM source")
@@ -2748,11 +2743,23 @@ function T.blocked_boot_refuses_a_wrong_version_and_ignores_stale_replies()
     -- the keyed walker demand before expecting the title bootstrap.
     local walkerId =
       assert(walkerRequestId(context, third), "the matching source requests exactly the selected walking pair")
-    context.service:injectReply({ op = "request-result", epoch = third, requestId = walkerId, state = "ready" })
+    context.service:injectReply({
+      op = "request-result",
+      epoch = third,
+      requestId = walkerId,
+      state = "ready",
+      requiredSequence = 1,
+    })
     pumpBootGate(App, 3)
     local bootstrapId =
       assert(milestoneRequestId(context, third, "bootstrap"), "the matching source reaches the title bootstrap request")
-    context.service:injectReply({ op = "request-result", epoch = third, requestId = bootstrapId, state = "ready" })
+    context.service:injectReply({
+      op = "request-result",
+      epoch = third,
+      requestId = bootstrapId,
+      state = "ready",
+      requiredSequence = 1,
+    })
     pumpBootGate(App, 2)
     Assert.equal(#context.menus, 1, "the matching source resumes preparation into the menu")
     Assert.equal(#context.games, 0, "recovery installs the menu without launching retail by itself")
@@ -2762,8 +2769,10 @@ end
 function T.terminal_walker_record_keeps_its_identity_across_epochs()
   local CacheService = require("app.src.CacheService")
   local host = newBootGateChannelHost()
+  local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
   local service = CacheService.new({ thread = host })
   local first = assert(service:select({ versionId = VERSION }), "selection mints an epoch")
+  SnapshotBootFixture.installBoot(service, first)
   local firstId = assert(
     service:request(first, { requestKind = "startup-walker", urgency = "required" }),
     "the first epoch registers its walker demand"
@@ -2774,6 +2783,7 @@ function T.terminal_walker_record_keeps_its_identity_across_epochs()
     epoch = first,
     requestId = firstId,
     state = "failed",
+    requiredSequence = 1,
     errorMessage = "synthetic walker failure",
   })
   service:update()
@@ -2782,19 +2792,32 @@ function T.terminal_walker_record_keeps_its_identity_across_epochs()
   Assert.notNil(failure, "the terminal record keeps its failure")
   local sameId = service:request(first, { requestKind = "startup-walker", urgency = "required" })
   Assert.equal(sameId, firstId, "the same epoch reuses the terminal request identity")
-  service:injectReply({ op = "request-result", epoch = first, requestId = firstId, state = "ready" })
+  service:injectReply({
+    op = "request-result",
+    epoch = first,
+    requestId = firstId,
+    state = "ready",
+    requiredSequence = 1,
+  })
   service:update()
   local healed, healedFailure = service:observe(first, { requestKind = "startup-walker" })
   Assert.equal(healed, false, "a late ready packet never heals the terminal record")
   Assert.notNil(healedFailure, "the terminal failure survives the ignored packet")
   local second = assert(service:select({ versionId = VERSION }), "reselection mints a fresh epoch")
   Assert.isTrue(second ~= first, "the fresh epoch differs from the failed one")
+  SnapshotBootFixture.installBoot(service, second)
   local secondId = assert(
     service:request(second, { requestKind = "startup-walker", urgency = "required" }),
     "the fresh epoch registers its own walker demand"
   )
   Assert.isTrue(secondId ~= firstId, "the fresh epoch owns a distinct request identity")
-  service:injectReply({ op = "request-result", epoch = second, requestId = secondId, state = "ready" })
+  service:injectReply({
+    op = "request-result",
+    epoch = second,
+    requestId = secondId,
+    state = "ready",
+    requiredSequence = 1,
+  })
   service:update()
   local freshReady, freshFailure = service:observe(second, { requestKind = "startup-walker" })
   Assert.equal(freshReady, true, "the fresh epoch answers ready on its independent record")
@@ -2808,7 +2831,7 @@ end
 -- instead of a marker the main thread writes. Retirement revokes the view and
 -- reselection never sees the previous epoch's bytes or facts as current.
 function T.selected_consumers_share_the_installed_view_and_first_play_is_an_installed_fact()
-  withBootGateApp({ firstPlayCurrent = false, generatedViewInstalled = false }, function(App, context)
+  withBootGateApp({ firstPlayCurrent = false, harnessInstallsCache = false }, function(App, context)
     local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
     local CacheFs = require("libs.storage.src.CacheFs")
     local realForVersion = CacheFs.forVersion
@@ -2847,11 +2870,23 @@ function T.selected_consumers_share_the_installed_view_and_first_play_is_an_inst
       context.service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
       pumpBootGate(App, 2)
       local walkerId = assert(walkerRequestId(context, epoch), "the admitted wait requests the selected pair")
-      context.service:injectReply({ op = "request-result", epoch = epoch, requestId = walkerId, state = "ready" })
+      context.service:injectReply({
+        op = "request-result",
+        epoch = epoch,
+        requestId = walkerId,
+        state = "ready",
+        requiredSequence = 1,
+      })
       pumpBootGate(App, 3)
       local bootstrapId =
         assert(milestoneRequestId(context, epoch, "bootstrap"), "the title requests ordinary bootstrap readiness")
-      context.service:injectReply({ op = "request-result", epoch = epoch, requestId = bootstrapId, state = "ready" })
+      context.service:injectReply({
+        op = "request-result",
+        epoch = epoch,
+        requestId = bootstrapId,
+        state = "ready",
+        requiredSequence = 1,
+      })
       pumpBootGate(App, 2)
       Assert.equal(#context.menus, 1, "the admitted boot installs its menu")
       Assert.equal(

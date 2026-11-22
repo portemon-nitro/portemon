@@ -1,23 +1,14 @@
--- Per-version attestation of the last strictly successful derived-cache
--- build: the strict generation identity
+-- Pure generation identity of one derived-cache build: the strict record
 -- { schema, versionId, romSha1, mode, producerId, assetRevision, scriptApi,
--- generationId } persisted at data/generated/build.lua under the version
--- root. Development producer identity is `d` plus the SHA-256 digest of the
--- actual producer working-tree bytes; release producer identity is `r` plus
--- the explicit per-game release counter and never enumerates sources. The
+-- generationId }. Development producer identity is `d` plus the SHA-256 digest
+-- of the actual producer working-tree bytes; release producer identity is `r`
+-- plus the explicit per-game release counter and never enumerates sources. The
 -- generation token `g4:<version>:<romSha1>:<producerId>:a<revision>:s<api>`
--- is a comparison token, not a save fingerprint and not a path. It is an
--- attestation, not a runtime asset; no runtime loader ever reads it. It
--- exists so a build can answer "was the published cache produced by this
--- producer + contract for this dump?" without opening the ROM. publish
--- writes a temporary sibling and atomically replaces the live state, and the
--- state is only ever written after a fully strict build (no compile
--- exclusions) whose whole batch succeeded: CacheBuilder defers both the world
--- index and this attestation to the batch outcome, so the attestation never
--- vouches for a world index the batch left stale. invalidate removes the
--- attestation without touching the artifacts themselves. A stored record from
--- a previous schema never matches the current identity; it is cold, not a
--- migration error.
+-- is a comparison token, not a save fingerprint and not a path. The committed
+-- snapshot's manifest carries the same identity fields, so this module derives
+-- and compares the identity only; it never persists or reads a separate
+-- attestation file. A stored record from a previous schema never matches the
+-- current identity; it is cold, not a migration error.
 
 local Errors = require("libs.errors.src.Errors")
 local GameVersion = require("romdump.src.source.GameVersion")
@@ -28,12 +19,8 @@ local Schema = require("libs.script.src.Schema")
 
 local DerivedCacheState = {}
 
--- Schema of the persisted state file itself; bump when its shape changes.
+-- Schema of the identity record itself; bump when its shape changes.
 DerivedCacheState.schema = 2
-
--- Attestation path below the version root, kept out of every runtime asset
--- load.
-DerivedCacheState.path = "data/generated/build.lua"
 
 local GENERATION_KEYS = {
   schema = true,
@@ -268,25 +255,6 @@ function DerivedCacheState.matches(stored, identity)
     return fieldsMatch(stored, identity, LEGACY_KEYS)
   end
   return false
-end
-
--- Remove the successful-build attestation: stops the fast path from trusting
--- a state that no longer holds (identity mismatch or damaged artifacts).
--- Never touches the artifacts themselves.
----@param cacheFs table<string, unknown>
-function DerivedCacheState.invalidate(cacheFs)
-  cacheFs:remove(DerivedCacheState.path)
-end
-
--- Atomically persist the identity: write a temporary sibling, then replace
--- the live state. A failed write or failed replace raises and leaves the
--- previous state (or its absence) in place.
----@param cacheFs table<string, unknown>
----@param identity table<string, unknown>
-function DerivedCacheState.publish(cacheFs, identity)
-  local staged = DerivedCacheState.path .. ".new"
-  cacheFs:writeLua(staged, identity)
-  cacheFs:replace(staged, DerivedCacheState.path)
 end
 
 return DerivedCacheState

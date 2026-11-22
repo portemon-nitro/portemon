@@ -1,11 +1,12 @@
 -- CacheBuilder contract: buildVersions prepares every listed version with
 -- the complete scope through one common generation session per version. A
--- matching attestation with a valid audit is a fast path that compiles
--- nothing; a strict success defers its new attestation until every requested
--- version satisfies the completion policy; accepted map exclusions and any
--- version failure publish no new attestation. The session, pool, cache, and
--- state modules are faked through package.loaded before CacheBuilder is
--- required, so delegation is exercised without a ROM or filesystem.
+-- matching complete snapshot is a fast path that compiles nothing and
+-- repersists nothing; every version that reaches a successful closure
+-- persists its own cut, while a failed version fails the batch without
+-- rewriting another version's snapshot. Accepted map exclusions persist an
+-- honest partial cut. The session, pool, archive, and state modules are faked
+-- through package.loaded before CacheBuilder is required, so delegation is
+-- exercised without a ROM or filesystem.
 
 local Assert = require("tests.support.Assert")
 
@@ -13,7 +14,6 @@ local Assert = require("tests.support.Assert")
 -- replaced with a fake. Pure vocabulary modules (ArtifactState, GameVersion,
 -- contracts) stay real so requirement parsing and identity shape are proved.
 local FAKE_PATHS = {
-  "libs.storage.src.CacheFs",
   "romdump.src.DerivedCacheState",
   "romdump.src.ProducerFingerprint",
   "romdump.src.DerivedCacheAudit",
@@ -54,16 +54,10 @@ local function newEnv()
     shutdowns = 0,
     shutdownError = nil,
     retires = 0,
-    stateStored = nil,
-    stateMatches = false,
     auditAvailable = false,
     auditCalls = {},
     plansAvailable = true,
     planCalls = {},
-    invalidatedVersions = {},
-    publishes = {},
-    publishAttempts = 0,
-    publishFailCalls = {},
     updateRaise = nil,
     logLines = {},
   }
@@ -402,38 +396,7 @@ end
 
 local function makeFakes()
   local fakes = {}
-  fakes.CacheFs = {
-    forVersion = function(versionId)
-      return {
-        versionId = versionId,
-        read = function(_, _)
-          return nil
-        end,
-        loadLua = function()
-          return env.stateStored
-        end,
-        remove = function()
-          return true
-        end,
-      }
-    end,
-  }
-  fakes.DerivedCacheState = {
-    path = "data/generated/build.lua",
-    matches = function(stored)
-      return env.stateMatches and stored == env.stateStored
-    end,
-    invalidate = function(cacheFs)
-      env.invalidatedVersions[#env.invalidatedVersions + 1] = cacheFs.versionId
-    end,
-    publish = function(_, identity)
-      env.publishAttempts = env.publishAttempts + 1
-      if env.publishFailCalls[env.publishAttempts] then
-        error("injected attestation publication failure", 0)
-      end
-      env.publishes[#env.publishes + 1] = identity
-    end,
-  }
+  fakes.DerivedCacheState = {}
   fakes.ProducerFingerprint = {
     checkoutBackend = function()
       return {}
@@ -584,8 +547,8 @@ end
 
 local module = {
   beforeAll = function()
-    -- Pure identity computation stays real; only the stateful attestation
-    -- behavior (match/invalidate/publish) is faked.
+    -- Pure identity computation stays real; the fake supplies the module the
+    -- pipeline requires at load.
     local realCurrent = require("romdump.src.DerivedCacheState").current
     for _, path in ipairs(FAKE_PATHS) do
       saved[path] = package.loaded[path]
@@ -621,8 +584,8 @@ function T.empty_version_list_returns_no_ready_version_to_compile()
 end
 
 -- The complete scope drives one common session per version with the sweep
--- enabled, requests field core plus the mon summary, and publishes the
--- schema-2 attestation only after every version succeeds.
+-- enabled, requests field core plus the mon summary, and persists a complete
+-- cut only after the closure succeeds.
 function T.batch_reports_success_and_preserves_partial_publication_failure()
   env = newEnv()
   env.auditAvailable = true
@@ -722,7 +685,7 @@ function T.a_complete_snapshot_is_trusted_without_audit_or_inventory()
 end
 
 -- Map compile failures fail the batch by default; with explicitly accepted
--- exclusions the batch succeeds partially but publishes no attestation.
+-- exclusions the batch succeeds with an honest partial cut.
 function T.compile_exclusions_fail_the_batch_unless_allowed()
   env = newEnv()
   env.failKeys["map:7"] = "MAP_SCHEMA_INVALID: injected compile rejection"
@@ -732,7 +695,7 @@ function T.compile_exclusions_fail_the_batch_unless_allowed()
   )
   Assert.isNil(report)
   Assert.equal(err, "cache preparation failed")
-  Assert.equal(#env.publishes, 0, "a failed batch publishes no attestation")
+  Assert.equal(#persistedSnapshots(), 0, "a failed batch persists no snapshot")
 
   env = newEnv()
   env.failKeys["map:7"] = "MAP_SCHEMA_INVALID: injected compile rejection"
@@ -743,7 +706,8 @@ function T.compile_exclusions_fail_the_batch_unless_allowed()
   )
   Assert.isNil(acceptedErr)
   Assert.deepEqual(accepted, { published = true, complete = false, exclusionCount = 1 })
-  Assert.equal(#env.publishes, 0, "an exclusion-accepting batch never attests completeness")
+  Assert.equal(#persistedSnapshots(), 1, "an exclusion-accepting batch persists its partial cut")
+  Assert.equal(persistedSnapshots()[1].complete, false, "the accepted partial cut never claims completeness")
 end
 
 -- A non-map failure is never hidden by the map-exclusion option.
@@ -757,13 +721,13 @@ function T.non_map_family_failure_is_never_hidden_by_map_exclusions()
   )
   Assert.isNil(report)
   Assert.equal(err, "cache preparation failed")
-  Assert.equal(#env.publishes, 0, "a hidden family failure must never pass as partial success")
+  Assert.equal(#persistedSnapshots(), 0, "a hidden family failure must never pass as partial success")
 end
 
 -- One version whose identity cannot resolve is reported while the remaining
--- versions still run; the batch fails and no new attestation is published
--- for any version, while previously valid attestations are untouched.
-function T.a_failed_version_continues_without_publishing_new_attestations()
+-- versions still run; the batch fails, the healthy version keeps its own
+-- persisted cut, and nothing is rewritten for the failed version.
+function T.a_failed_version_continues_while_the_healthy_cut_persists()
   env = newEnv()
   env.auditAvailable = true
   local report, err = CacheBuilder.buildVersions(
@@ -773,7 +737,7 @@ function T.a_failed_version_continues_without_publishing_new_attestations()
   Assert.isNil(report)
   Assert.equal(err, "cache preparation failed")
   Assert.equal(#env.sessions, 1, "the remaining version still prepares through its session")
-  Assert.equal(#env.publishes, 0, "a failed batch defers every new attestation")
+  Assert.equal(#persistedSnapshots(), 1, "the healthy version still persists its own cut")
 end
 
 -- A complete snapshot of an unaffected version survives another version's
@@ -806,7 +770,7 @@ function T.a_programming_fault_rethrows_after_cleanup()
   Assert.equal(raised, "boom", "the original fault must propagate unchanged")
   Assert.equal(env.retires, 1, "the faulting session is retired")
   Assert.equal(env.shutdowns, 1, "the owned pool is shut down")
-  Assert.equal(#env.publishes, 0, "a faulting batch publishes no attestation")
+  Assert.equal(#persistedSnapshots(), 0, "a faulting batch persists no snapshot")
 end
 
 -- Progress stays quiet per job: one dot per ten ready jobs, never a
@@ -828,7 +792,7 @@ function T.progress_reports_one_dot_per_ten_ready_jobs()
     log = testLog(),
   })
   Assert.isNil(err)
-  Assert.isFalse(report.complete, "a targeted scope never attests completeness")
+  Assert.isFalse(report.complete, "a targeted scope never claims completeness")
   local dots = 0
   local dotLines = 0
   for _, line in ipairs(env.logLines) do
@@ -866,9 +830,9 @@ function T.log_defaults_to_print()
   Assert.deepEqual(lines, { "." }, "one dot per ten ready jobs through the default log")
 end
 
--- A targeted scope never attests completeness, while a strict complete
--- preparation publishes exactly one attestation and deletes nothing.
-function T.targeted_prepare_never_attests_while_complete_prepare_does()
+-- A targeted scope never claims completeness, while a strict complete
+-- preparation persists exactly one complete cut and deletes nothing.
+function T.targeted_prepare_never_claims_completeness()
   env = newEnv()
   local identity = {
     versionId = "heartgold",
@@ -881,7 +845,7 @@ function T.targeted_prepare_never_attests_while_complete_prepare_does()
     log = testLog(),
   })
   Assert.isNil(targetedErr)
-  Assert.isFalse(targeted.complete, "a targeted scope never attests completeness")
+  Assert.isFalse(targeted.complete, "a targeted scope never claims completeness")
   Assert.equal(#snapshots(), 1, "a targeted scope persists its own partial cut")
   Assert.equal(snapshots()[1].complete, false, "a targeted scope never persists a complete cut")
 
@@ -891,14 +855,14 @@ function T.targeted_prepare_never_attests_while_complete_prepare_does()
     log = testLog(),
   })
   Assert.isNil(completeErr)
-  Assert.isTrue(complete.complete, "a strict complete build attests completeness")
+  Assert.isTrue(complete.complete, "a strict complete build persists a complete cut")
   Assert.equal(#snapshots(), 2, "a strict complete build persists its complete cut")
   Assert.equal(snapshots()[2].complete, true, "the complete cut carries its completeness fact")
 end
 
--- An unproved pool closure fails the build before attestation: no new
--- full marker is published.
-function T.unproved_pool_closure_blocks_attestation()
+-- An unproved pool closure fails the build before persistence: no cut is
+-- written.
+function T.unproved_pool_closure_blocks_persistence()
   env = newEnv()
   env.shutdownError = "injected worker join failure"
   local identity = {
@@ -913,11 +877,11 @@ function T.unproved_pool_closure_blocks_attestation()
   })
   Assert.isNil(complete, "an unproved join never reports a successful build")
   Assert.notNil(completeErr, "an unproved join carries its failure")
-  Assert.equal(#env.publishes, 0, "an unproved join publishes no attestation")
+  Assert.equal(#persistedSnapshots(), 0, "an unproved join persists no cut")
 end
 
--- An exclusion-accepting partial batch publishes no completeness attestation.
-function T.accepted_partial_batch_publishes_no_attestation()
+-- An exclusion-accepting partial batch persists only a partial cut.
+function T.accepted_partial_batch_persists_a_partial_cut()
   env = newEnv()
   env.failKeys["map:7"] = "MAP_SCHEMA_INVALID: injected compile rejection"
   env.auditAvailable = true
@@ -927,7 +891,8 @@ function T.accepted_partial_batch_publishes_no_attestation()
   )
   Assert.isNil(acceptedErr)
   Assert.deepEqual(accepted, { published = true, complete = false, exclusionCount = 1 })
-  Assert.equal(#env.publishes, 0, "an exclusion-accepting partial batch attests nothing")
+  Assert.equal(#persistedSnapshots(), 1, "an exclusion-accepting partial batch persists one cut")
+  Assert.equal(persistedSnapshots()[1].complete, false, "the partial cut never claims completeness")
 end
 
 return module

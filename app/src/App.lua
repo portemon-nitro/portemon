@@ -153,28 +153,16 @@ end
 -- none owns or releases it.
 function App._releaseAssetRuntime()
   local record = App._assetRuntime
-  App._assetRuntime = nil
   if record == nil then
     return
   end
-  local failure
-  local ok, err = pcall(record.preparationQueue.release, record.preparationQueue)
-  if not ok then
-    failure = err
-  end
-  local cleared, clearErr = pcall(record.decoded.clear, record.decoded)
-  if not cleared and failure == nil then
-    failure = clearErr
-  end
-  -- Closing a selection whose packages cannot unmount is a teardown failure:
-  -- reporting success would let the next selection mount over a live namespace.
-  local closed, closeErr = pcall(record.packages.close, record.packages)
-  if not closed and failure == nil then
-    failure = closeErr
-  end
-  if failure ~= nil then
-    error(failure, 0)
-  end
+  -- Later owners borrow resources released by earlier owners, so do not
+  -- advance teardown when one owner fails. Keep the record available for the
+  -- next close attempt and prohibit a replacement selection from orphaning it.
+  record.preparationQueue:release()
+  record.decoded:clear()
+  record.packages:close()
+  App._assetRuntime = nil
 end
 
 -- One tenancy per live selected epoch: the same record answers every
@@ -193,6 +181,7 @@ function App._ensureAssetRuntime(epoch)
   if existing ~= nil and existing.epoch == epoch then
     return existing
   end
+  assert(existing == nil, "the previous asset runtime must close before a replacement selection")
   local service = App.service
   if service == nil then
     return nil

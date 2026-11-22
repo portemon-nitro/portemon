@@ -7,6 +7,7 @@
 -- computes digests inline; those are the intended reds.
 
 local Assert = require("tests.support.Assert")
+local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
 
 local T = {}
 
@@ -492,13 +493,20 @@ function T.pushed_request_completion_lands_in_the_matching_cached_observation()
   local host = newChannelHost()
   local service = assert(Service.new({ thread = host }))
   local epoch = assert(service:select({ versionId = "heartgold", development = true }))
+  SnapshotBootFixture.installBoot(service, epoch)
   local first = assert(service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" }))
   local second =
     assert(service:request(epoch, { requestKind = "milestone", name = "field-planning", urgency = "required" }))
   service:update()
   local pending, _ = service:observe(epoch, { requestKind = "milestone", name = "bootstrap" })
   Assert.isNil(pending, "an unanswered request observes no readiness")
-  service:injectReply({ op = "request-result", epoch = epoch, requestId = first, state = "ready" })
+  service:injectReply({
+    op = "request-result",
+    epoch = epoch,
+    requestId = first,
+    state = "ready",
+    requiredSequence = 1,
+  })
   service:update()
   local ready, failure = service:observe(epoch, { requestKind = "milestone", name = "bootstrap" })
   Assert.isTrue(ready, "the pushed ready event lands in the matching cached observation")
@@ -510,6 +518,7 @@ function T.pushed_request_completion_lands_in_the_matching_cached_observation()
     epoch = epoch,
     requestId = second,
     state = "failed",
+    requiredSequence = 1,
     errorMessage = "background production failed",
   })
   service:update()
@@ -586,6 +595,7 @@ function T.selection_generation_comes_only_from_the_selection_answer()
   local host = newChannelHost()
   local service = assert(Service.new({ thread = host }))
   local epoch = assert(service:select({ versionId = "heartgold", development = true }))
+  SnapshotBootFixture.installBoot(service, epoch)
   service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" })
   service:update()
   service:injectReply({ op = "select-result", epoch = epoch, ok = true, generationId = "g4:test:token" })
@@ -596,6 +606,7 @@ function T.selection_generation_comes_only_from_the_selection_answer()
     epoch = epoch,
     requestId = 1,
     state = "ready",
+    requiredSequence = 1,
     generationId = "g4:test:rotated",
   })
   service:update()
@@ -615,7 +626,13 @@ function T.stale_pushed_results_never_enter_a_new_selection()
   local second = assert(service:select({ versionId = "heartgold", development = true }))
   service:injectReply({ op = "select-result", epoch = second, ok = true, generationId = "g4:test:second" })
   service:update()
-  service:injectReply({ op = "request-result", epoch = first, requestId = firstRequest, state = "ready" })
+  service:injectReply({
+    op = "request-result",
+    epoch = first,
+    requestId = firstRequest,
+    state = "ready",
+    requiredSequence = 1,
+  })
   service:injectReply({ op = "barrier-result", epoch = first, barrierId = firstBarrier, kind = "retire" })
   service:injectReply({ op = "select-result", epoch = first, ok = true, generationId = "g4:test:late" })
   service:update()
@@ -743,6 +760,7 @@ function T.scene_demands_dedupe_by_key_and_epoch_with_urgency_promotion()
   local service = assert(Service.new({ thread = host }))
   local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
   local epoch = assert(provisioner.epoch, "selection borrows an epoch")
+  SnapshotBootFixture.installBoot(service, epoch)
   local gameHost = provisioner:gameHost()
   Assert.isTrue(type(gameHost.requestBattleScene) == "function", "the selected-game host demands its battle scene")
   local day = "general/grass/day"
@@ -785,7 +803,13 @@ function T.scene_demands_dedupe_by_key_and_epoch_with_urgency_promotion()
     "the night demand registers its selector identity"
   )
   Assert.isTrue(dayId ~= nightId, "different scene keys never share a request identity")
-  service:injectReply({ op = "request-result", epoch = epoch, requestId = dayId, state = "ready" })
+  service:injectReply({
+    op = "request-result",
+    epoch = epoch,
+    requestId = dayId,
+    state = "ready",
+    requiredSequence = 1,
+  })
   service:update()
   local ready, failure = gameHost.requestBattleScene(day, "required")
   Assert.isTrue(ready, "the pushed ready event lands in the matching scene observation")
@@ -813,6 +837,7 @@ function T.scene_failure_and_stale_epoch_never_read_ready()
   local service = assert(Service.new({ thread = host }))
   local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
   local firstEpoch = assert(provisioner.epoch, "selection borrows an epoch")
+  SnapshotBootFixture.installBoot(service, firstEpoch)
   local gameHost = provisioner:gameHost()
   Assert.isTrue(type(gameHost.requestBattleScene) == "function", "the selected-game host demands its battle scene")
   local key = "city/sand/night"
@@ -826,6 +851,7 @@ function T.scene_failure_and_stale_epoch_never_read_ready()
     epoch = firstEpoch,
     requestId = id,
     state = "failed",
+    requiredSequence = 1,
     errorMessage = "probe source read failed",
   })
   service:update()
@@ -843,7 +869,13 @@ function T.scene_failure_and_stale_epoch_never_read_ready()
   local freshPending, freshErr = freshHost.requestBattleScene(key, "required")
   Assert.isNil(freshPending, "the reselected scene starts pending")
   Assert.isNil(freshErr, "the reselected scene starts without failure")
-  service:injectReply({ op = "request-result", epoch = firstEpoch, requestId = id, state = "ready" })
+  service:injectReply({
+    op = "request-result",
+    epoch = firstEpoch,
+    requestId = id,
+    state = "ready",
+    requiredSequence = 1,
+  })
   service:update()
   local staleReady, staleErr = freshHost.requestBattleScene(key, "required")
   Assert.isNil(staleReady, "a retired-epoch ready never satisfies the new selection")
@@ -865,6 +897,7 @@ function T.selective_battle_leaf_demands_route_by_exact_selector()
   local service = assert(Service.new({ thread = host }))
   local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
   local epoch = assert(provisioner.epoch, "the selection borrows an epoch")
+  SnapshotBootFixture.installBoot(service, epoch)
   local gameHost = provisioner:gameHost()
   Assert.isTrue(
     type(gameHost.requestBattleTrainerPicture) == "function",
@@ -981,7 +1014,13 @@ function T.selective_battle_leaf_demands_route_by_exact_selector()
   )
   Assert.equal(ballCommands, 1, "one ball selector leaves exactly one worker request")
   Assert.equal(evolutionCommands, 1, "evolution leaves exactly one worker request")
-  service:injectReply({ op = "request-result", epoch = epoch, requestId = firstId, state = "ready" })
+  service:injectReply({
+    op = "request-result",
+    epoch = epoch,
+    requestId = firstId,
+    state = "ready",
+    requiredSequence = 1,
+  })
   service:update()
   local ready, failure = gameHost.requestBattleTrainerPicture("front:YOUNGSTER", "required")
   Assert.isTrue(ready, "the pushed ready event lands in the matching trainer observation")
@@ -1001,6 +1040,7 @@ function T.missing_selected_audio_bank_fails_instead_of_staying_silent()
   local service = assert(Service.new({ thread = host }))
   local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
   local epoch = assert(provisioner.epoch, "the selection borrows an epoch")
+  SnapshotBootFixture.installBoot(service, epoch)
   local gameHost = provisioner:gameHost()
   local pending, pendingErr = gameHost.requestAudioBank(999, "required")
   Assert.isNil(pending, "an unbuilt bank observes no readiness")
@@ -1017,6 +1057,7 @@ function T.missing_selected_audio_bank_fails_instead_of_staying_silent()
     epoch = epoch,
     requestId = id,
     state = "failed",
+    requiredSequence = 1,
     errorMessage = "probe bank read failed",
   })
   service:update()
@@ -1485,6 +1526,28 @@ function T.an_observation_waits_for_installed_bytes_and_the_reader_shares_them()
   service:shutdown()
 end
 
+-- A terminal observation is a protocol fact: it names the installation
+-- sequence whose bytes and facts it attests. One that omits the sequence can
+-- never stand in for an installed stream, so it is a protocol violation
+-- instead of an instantly exposed readiness.
+function T.a_terminal_observation_without_its_sequence_is_a_protocol_violation()
+  local Service = requireService()
+  local service = assert(Service.new({ thread = newChannelHost() }))
+  local epoch = assert(service:select({ versionId = "heartgold", development = true }))
+  SnapshotBootFixture.installBoot(service, epoch)
+  local requestId = assert(service:request(epoch, {
+    requestKind = "milestone",
+    name = "bootstrap",
+    urgency = "required",
+  }))
+  service:update()
+  service:injectReply({ op = "request-result", epoch = epoch, requestId = requestId, state = "ready" })
+  Assert.throws(function()
+    service:update()
+  end, "a terminal observation without its installation sequence is a protocol violation")
+  service:shutdown()
+end
+
 -- A sequence is a stream position, not a count of entries: a fresh empty
 -- installation establishes sequence 1 with no payload at all, and a hydrated
 -- snapshot may open the stream at any later sequence and continue from there.
@@ -1630,6 +1693,56 @@ function T.a_duplicate_part_must_match_the_installed_bytes()
   Assert.throws(function()
     service:update()
   end, "a duplicate part with different bytes under one content identity is a protocol violation")
+  service:shutdown()
+end
+
+-- A whole installation stream replayed for a sequence that is already
+-- committed is a no-op when it names the same identity, and a protocol error
+-- when it tries to name another one under that sequence.
+function T.a_replayed_committed_installation_is_a_no_op()
+  local Service = requireService()
+  local identity = probeIdentity()
+  local service = assert(Service.new({ thread = newChannelHost() }))
+  local epoch = assert(service:select({ versionId = "heartgold", development = true }))
+  local scene = residentEntry(identity, "data/generated/field/30/scene.lua", "stable")
+  pushInstallation(service, {
+    epoch = epoch,
+    identity = identity,
+    sequence = 1,
+    initial = true,
+    entries = { scene },
+    milestones = { "bootstrap" },
+  })
+  service:update()
+  local reader = requireInstalledReader(service, epoch)
+  local committed = assert(reader:resolveAsset(scene.path), "the installed entry resolves")
+
+  pushInstallation(service, {
+    epoch = epoch,
+    identity = identity,
+    sequence = 1,
+    initial = true,
+    entries = { scene },
+    milestones = { "bootstrap" },
+  })
+  service:update()
+  Assert.isTrue(reader:resolveAsset(scene.path) == committed, "a replayed committed stream changes nothing")
+
+  local other = {}
+  for field, value in pairs(identity) do
+    other[field] = value
+  end
+  other.generationId = identity.generationId .. "-other"
+  pushInstallation(service, {
+    epoch = epoch,
+    identity = other,
+    sequence = 1,
+    initial = true,
+    entries = {},
+  })
+  Assert.throws(function()
+    service:update()
+  end, "a duplicate committed sequence with another identity is a protocol violation")
   service:shutdown()
 end
 
@@ -1837,6 +1950,75 @@ function T.a_real_thread_installs_every_part_before_readiness_is_observed()
   if not ok then
     error(err, 0)
   end
+end
+
+function T.persistence_observations_are_live_epoch_scoped_and_do_not_fail_play()
+  local service = requireService().new({ thread = newChannelHost() })
+  local first = assert(service:select({ versionId = "heartgold" }))
+  service:update()
+  local identity = probeIdentity()
+  pushInstallation(service, {
+    epoch = first,
+    identity = identity,
+    sequence = 1,
+    initial = true,
+    entries = {},
+    milestones = { "bootstrap" },
+  })
+  service:update()
+  local reader = assert(service:getCacheFs(first), "the installed reader is available before any archive error")
+  service:request(first, { requestKind = "milestone", name = "bootstrap", urgency = "required" })
+  Assert.isTrue(
+    service:observe(first, { requestKind = "milestone", name = "bootstrap" }),
+    "the installed request is ready"
+  )
+  Assert.deepEqual(
+    service:persistenceStatus(first),
+    { sequence = 0, observedSequence = 0 },
+    "a selected epoch starts with no persisted snapshot"
+  )
+
+  service:injectReply({
+    op = "cache-persistence-failed",
+    epoch = first,
+    sequence = 4,
+    error = { code = "CACHE_ARCHIVE_WRITE_FAILED", message = "disk full" },
+  })
+  service:update()
+  local failed = assert(service:persistenceStatus(first))
+  Assert.equal(failed.sequence, 0, "a failed snapshot advances no durable sequence")
+  Assert.equal(failed.error.code, "CACHE_ARCHIVE_WRITE_FAILED", "the writer failure stays observable")
+  Assert.isNil(service._failure, "an archive failure never becomes a controller failure")
+  Assert.notNil(service:getCacheFs(first), "the failed persistence report leaves the installed reader available")
+  Assert.isTrue(service:getCacheFs(first) == reader, "the persistence report preserves the reader identity")
+  Assert.isTrue(
+    service:observe(first, { requestKind = "milestone", name = "bootstrap" }),
+    "the persistence report leaves request readiness intact"
+  )
+
+  service:injectReply({ op = "cache-persistence-succeeded", epoch = first - 1, sequence = 5 })
+  service:injectReply({ op = "cache-persistence-succeeded", epoch = first, sequence = 3 })
+  service:update()
+  Assert.notNil(service:persistenceStatus(first).error, "an older success cannot clear a newer failure")
+
+  service:injectReply({ op = "cache-persistence-succeeded", epoch = first, sequence = 4 })
+  service:update()
+  local recovered = assert(service:persistenceStatus(first))
+  Assert.equal(recovered.sequence, 4, "a successful acknowledgement advances durability")
+  Assert.isNil(recovered.error, "a later successful write clears the failure")
+
+  local second = assert(service:select({ versionId = "soulsilver" }))
+  service:update()
+  service:injectReply({
+    op = "cache-persistence-failed",
+    epoch = first,
+    sequence = 6,
+    error = { message = "stale" },
+  })
+  service:update()
+  Assert.isNil(service:persistenceStatus(first), "a retired selection exposes no status")
+  Assert.equal(assert(service:persistenceStatus(second)).sequence, 0, "old reports cannot alter the new selection")
+  service:shutdown()
 end
 
 return { tests = T }

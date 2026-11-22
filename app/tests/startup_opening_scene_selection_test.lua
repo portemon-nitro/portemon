@@ -4,6 +4,7 @@
 -- thread.
 
 local Assert = require("tests.support.Assert")
+local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
 
 local T = {}
 
@@ -57,6 +58,7 @@ local function selectGame()
   local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
   local service = assert(CacheService.new({ thread = newChannelHost() }))
   local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
+  SnapshotBootFixture.installBoot(service, assert(provisioner.epoch, "selection must yield an epoch"))
   return service, provisioner
 end
 
@@ -102,7 +104,13 @@ function T.opening_scene_requests_dedupe_by_scene_and_leave_other_scenes_pending
   Assert.isTrue(seen[4] == true and seen[2] == true, "the worker sees exactly the demanded scenes")
   local stillPending, _ = service:observe(epoch, { requestKind = "opening-scene", sceneNumber = 2 })
   Assert.isNil(stillPending, "the second scene stays pending before its answer lands")
-  service:injectReply({ op = "request-result", epoch = epoch, requestId = first, state = "ready" })
+  service:injectReply({
+    op = "request-result",
+    epoch = epoch,
+    requestId = first,
+    state = "ready",
+    requiredSequence = 1,
+  })
   service:update()
   local ready, failure = gameHost.requestOpeningScene(4, "required")
   Assert.isTrue(ready, "the pushed ready event lands in the matching scene observation")

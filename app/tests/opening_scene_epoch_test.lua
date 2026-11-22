@@ -3,6 +3,7 @@
 -- strengthens to required through one promote.
 
 local Assert = require("tests.support.Assert")
+local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
 
 local T = {}
 
@@ -53,6 +54,11 @@ local function selectGame()
   local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
   local service = assert(CacheService.new({ thread = newChannelHost() }))
   local provisioner = DerivedAssetProvisioner.new({ versionId = "soulsilver", service = service })
+  SnapshotBootFixture.installBoot(
+    service,
+    assert(provisioner.epoch, "selection must yield an epoch"),
+    { versionId = "soulsilver" }
+  )
   return service, provisioner
 end
 
@@ -131,6 +137,7 @@ function T.opening_scene_failures_land_in_the_matching_scene_only()
     epoch = epoch,
     requestId = ids[1],
     state = "failed",
+    requiredSequence = 1,
     errorMessage = "boom",
   })
   service:update()

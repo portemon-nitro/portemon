@@ -1317,4 +1317,42 @@ function T.cancelling_a_dispatched_source_owner_keeps_the_read_for_its_successor
   end)
 end
 
+function T.release_keeps_dispatched_source_lease_until_worker_join()
+  local AssetPreparationQueue = requireQueue()
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+  local host = fakeThreadHost()
+  local released = 0
+  local decoded = ResidentAssetCache.new({
+    idleByteLimit = 0,
+    release = function(value)
+      released = released + 1
+      value:release()
+    end,
+  })
+  withLove(host.love, function()
+    local queue = AssetPreparationQueue.new(diskCacheFs(), { decoded = decoded, thread = host.love.thread })
+    local path = "assets/generated/field/30/leased-package.png"
+    local token = queue:request("image-derivative", path, "demand")
+    local sourceRequest = requestChannelIndexFor(host, token)
+    responseChannelFor(host, sourceRequest):push(sourceResponse(token, path, string.rep("p", 24)))
+    Assert.equal(queue:poll(token), "pending", "the source reply dispatches a decode with its input pinned")
+    Assert.isTrue(decoded:stats().pinnedBytes > 0, "the physical decode owns the source lease")
+
+    local thread = assert(host.threads[1], "the worker was started for the source read")
+    local wait = thread.wait
+    local pinnedDuringWait = 0
+    function thread:wait()
+      pinnedDuringWait = decoded:stats().pinnedBytes
+      return wait(self)
+    end
+    queue:release()
+
+    Assert.isTrue(pinnedDuringWait > 0, "the dispatched decode stays pinned throughout worker join")
+    Assert.equal(decoded:stats().pinnedBytes, 0, "the physical lease returns after join")
+    Assert.equal(decoded:stats().idleBytes, 0, "over-budget source bytes trim only after join")
+    Assert.equal(released, 1, "the source backing releases once after its final lease returns")
+    Assert.equal(next(queue._decodeLeases), nil, "no borrowed decode lease survives disposal")
+  end)
+end
+
 return { tests = T }

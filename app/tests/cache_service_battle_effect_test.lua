@@ -131,7 +131,13 @@ function T.cancelled_generations_never_publish_into_later_ones()
     urgency = "required",
   })
   Assert.isTrue(freshOk, "the new generation may restage the same effect")
-  service:injectReply({ op = "request-result", epoch = first, requestId = firstId, state = "ready" })
+  service:injectReply({
+    op = "request-result",
+    epoch = first,
+    requestId = firstId,
+    state = "ready",
+    requiredSequence = 1,
+  })
   service:update()
   local ready, failure = service:observe(second, { requestKind = "battle-effect", effectKey = "synthetic-probe" })
   Assert.isNil(ready, "a late publication from the cancelled generation never lands in the new one")

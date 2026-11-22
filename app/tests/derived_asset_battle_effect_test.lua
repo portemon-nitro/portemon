@@ -5,6 +5,7 @@
 -- reporting ready while unrelated effects stay lazy.
 
 local Assert = require("tests.support.Assert")
+local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
 
 local T = {}
 
@@ -57,6 +58,7 @@ local function selectGame()
   local Provisioner = require("app.src.DerivedAssetProvisioner")
   local service = assert(Service.new({ thread = newChannelHost() }))
   local provisioner = Provisioner.new({ versionId = "heartgold", service = service })
+  SnapshotBootFixture.installBoot(service, assert(provisioner.epoch, "selection must yield an epoch"))
   return service, provisioner
 end
 
@@ -73,7 +75,13 @@ function T.effect_requests_follow_the_scene_closure_convention()
     "the effect demand registers its selector identity"
   )
   service:update()
-  service:injectReply({ op = "request-result", epoch = epoch, requestId = id, state = "ready" })
+  service:injectReply({
+    op = "request-result",
+    epoch = epoch,
+    requestId = id,
+    state = "ready",
+    requiredSequence = 1,
+  })
   service:update()
   local ready, failure = gameHost.requestBattleEffect("synthetic-probe", "required")
   Assert.isTrue(ready, "the pushed ready event lands in the matching effect observation")
@@ -109,6 +117,7 @@ function T.effect_failures_carry_their_cause_and_keep_good_scenes_usable()
     epoch = epoch,
     requestId = id,
     state = "failed",
+    requiredSequence = 1,
     errorMessage = "synthetic missing companion texture",
   })
   service:update()

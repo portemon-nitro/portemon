@@ -24,6 +24,7 @@ local MAX_BASENAME_BYTES = 128
 local BASENAME_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._-]*%.zip$"
 local MODS_ROOT = "mods"
 local MOUNT_PREFIX = "__portemon_mods"
+local pendingRollback = {}
 
 -- The shared confined loader reports its own categories; every unreadable or
 -- malformed selection config is one config failure regardless of the stage.
@@ -45,6 +46,7 @@ local CONFIG_CODES = {
 ---@field versionId string
 ---@field epoch integer selected runtime epoch these packages belong to
 ---@field closed boolean
+---@field closing boolean
 ---@field private _winners table<string, ModPackages.SourceRef>
 ---@field private _owners table<string, ModArchive>
 ---@field private _archives ModArchive[]
@@ -81,6 +83,8 @@ local function isPackageBasename(basename)
   if basename:find("[/\\]", 1) ~= nil or basename:find("\0", 1, true) ~= nil then
     return false
   end
+  -- The native mount refuses an archive name carrying `..`, so the selection
+  -- rejects it as a config failure instead of a later mount failure.
   if basename:find("%.%.") ~= nil then
     return false
   end
@@ -229,20 +233,58 @@ end
 -- selection leaves no package namespace behind. A cleanup failure is attached
 -- to the original cause instead of replacing it.
 ---@param archives ModArchive[]
----@param cause unknown
+---@param cause unknown?
+---@return ModArchive[] failed archives, kept dense in selection order
 local function rollback(archives, cause)
   local cleanup = nil
+  local failed = {}
   for index = #archives, 1, -1 do
     local archive = archives[index]
-    archives[index] = nil
     local closed, failure = pcall(archive.close, archive)
-    if not closed and cleanup == nil then
-      cleanup = failure
+    if not closed then
+      failed[#failed + 1] = archive
+      if cleanup == nil then
+        cleanup = failure
+      end
     end
+  end
+  local remaining = {}
+  for index = #failed, 1, -1 do
+    remaining[#remaining + 1] = failed[index]
   end
   if cleanup ~= nil and Errors.is(cause) then
     local errorObject = cause --[[@as Errors.Error]]
     errorObject.context.rollback = tostring(cleanup)
+  end
+  return remaining
+end
+
+---@param archives ModArchive[]
+local function retainPending(archives)
+  for _, archive in ipairs(archives) do
+    local found = false
+    for _, pending in ipairs(pendingRollback) do
+      if pending == archive then
+        found = true
+        break
+      end
+    end
+    if not found then
+      pendingRollback[#pendingRollback + 1] = archive
+    end
+  end
+end
+
+---@param archives ModArchive[]
+local function forgetPending(archives)
+  local forgotten = {}
+  for _, archive in ipairs(archives) do
+    forgotten[archive] = true
+  end
+  for index = #pendingRollback, 1, -1 do
+    if forgotten[pendingRollback[index]] then
+      table.remove(pendingRollback, index)
+    end
   end
 end
 
@@ -293,8 +335,13 @@ end
 ---@param epoch integer
 ---@return ModPackages
 function ModPackages.open(versionId, identity, epoch)
+  if #pendingRollback > 0 then
+    pendingRollback = rollback(pendingRollback, nil)
+    assert(#pendingRollback == 0, "a previous mod package mount is still closing")
+  end
   ScopedFs.validateVersionId(versionId)
   assert(type(identity) == "table", "a selected package set needs the installed cache identity")
+  assert(identity.versionId == versionId, "a selected package set validates the version it selects")
   assert(isInteger(epoch), "a selected package set needs its runtime epoch")
   local basenames = readConfig(versionId)
   local archives = {}
@@ -302,13 +349,14 @@ function ModPackages.open(versionId, identity, epoch)
   local owners = {}
   local opened, failure = pcall(selectPackages, versionId, identity, epoch, basenames, archives, winners, owners)
   if not opened then
-    rollback(archives, failure)
+    pendingRollback = rollback(archives, failure)
     error(failure, 0)
   end
   return setmetatable({
     versionId = versionId,
     epoch = epoch,
     closed = false,
+    closing = false,
     _winners = winners,
     _owners = owners,
     _archives = archives,
@@ -321,7 +369,7 @@ end
 ---@return ModPackages.SourceRef?
 function ModPackages:resolveAsset(path)
   assert(type(path) == "string", "a selected package path must be a string")
-  if self.closed then
+  if self.closed or self.closing then
     return nil
   end
   return self._winners[path]
@@ -332,7 +380,7 @@ end
 ---@return string[]
 function ModPackages:paths(prefix)
   assert(type(prefix) == "string", "a selected package path prefix must be a string")
-  if self.closed then
+  if self.closed or self.closing then
     return {}
   end
   local matched = {}
@@ -353,7 +401,7 @@ end
 function ModPackages:readData(reference)
   assert(type(reference) == "table", "a selected package read requires its source reference")
   local path = tostring(reference.path)
-  if self.closed then
+  if self.closed or self.closing then
     fault(StorageErrors.MOD_ASSET_READ_FAILED, "the selected package set is closed", { path = path })
   end
   local expected = self._winners[reference.path]
@@ -377,18 +425,29 @@ function ModPackages:close()
     return nil
   end
   local failure = nil
+  local remaining = {}
+  local attempted = self._archives
+  self.closing = true
   for index = #self._archives, 1, -1 do
     local archive = self._archives[index]
     local closed, closeFailure = pcall(archive.close, archive)
-    if closed then
-      self._archives[index] = nil
-    elseif failure == nil then
-      failure = closeFailure
+    if not closed then
+      remaining[#remaining + 1] = archive
+      if failure == nil then
+        failure = closeFailure
+      end
     end
   end
+  self._archives = {}
+  for index = #remaining, 1, -1 do
+    self._archives[#self._archives + 1] = remaining[index]
+  end
   if failure ~= nil then
+    retainPending(self._archives)
     error(failure, 0)
   end
+  forgetPending(attempted)
+  self.closing = false
   self.closed = true
   self._winners = {}
   self._owners = {}

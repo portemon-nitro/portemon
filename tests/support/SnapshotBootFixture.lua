@@ -61,15 +61,17 @@ end
 -- The identity a snapshot of the selected generation carries: the controller
 -- derives it from the selected version, so a scenario that installs a
 -- snapshot into a live selection has to carry that same identity.
+---@param versionId string? selected version id, heartgold by default
 ---@return table<string, unknown> the identity a snapshot of this generation carries
-function SnapshotBootFixture.identity()
+function SnapshotBootFixture.identity(versionId)
+  local selected = versionId or "heartgold"
   local DerivedCacheState = require("romdump.src.DerivedCacheState")
   local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
   local GameVersion = require("romdump.src.source.GameVersion")
   return assert(DerivedCacheState.currentForSelection({
-    versionId = "heartgold",
-    romSha1 = GameVersion.info("heartgold").sha1,
-    producerId = "r" .. tostring(DerivedCacheVersions.heartgold),
+    versionId = selected,
+    romSha1 = GameVersion.info(selected).sha1,
+    producerId = "r" .. tostring(DerivedCacheVersions[selected]),
   }))
 end
 
@@ -319,6 +321,26 @@ function SnapshotBootFixture.install(service, installation)
     milestones = installation.milestones or {},
     firstPlay = installation.firstPlay == true,
     complete = installation.complete == true,
+  })
+end
+
+-- The initial installation a real selection streams before it emits any
+-- terminal observation: one empty sequence for the epoch, carrying whatever
+-- completion facts a scenario scripts.
+---@param service table<string, unknown> cache service under test
+---@param epoch integer selected epoch
+---@param facts { versionId: string?, identity: table<string, unknown>?, milestones: table[]?, firstPlay: boolean?, complete: boolean? }?
+function SnapshotBootFixture.installBoot(service, epoch, facts)
+  facts = facts or {}
+  SnapshotBootFixture.install(service, {
+    epoch = epoch,
+    identity = facts.identity or SnapshotBootFixture.identity(facts.versionId),
+    sequence = 1,
+    initial = true,
+    entries = {},
+    milestones = facts.milestones,
+    firstPlay = facts.firstPlay,
+    complete = facts.complete,
   })
 end
 

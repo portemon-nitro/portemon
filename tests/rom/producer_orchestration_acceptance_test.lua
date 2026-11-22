@@ -4,7 +4,6 @@
 
 local Assert = require("tests.support.Assert")
 local CacheBuilder = require("romdump.src.CacheBuilder")
-local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local Errors = require("libs.errors.src.Errors")
 local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
 local IntroAssetCompiler = require("romdump.src.digest.newgame.IntroAssetCompiler")
@@ -29,10 +28,7 @@ end
 function T.cache_builder_failure_preserves_publication_state(romFs, versionId)
   local log = function() end
   local mainStateOpens = 0
-  local statePublished = false
   local originalOpen = RomFs.open
-  local originalMatches = DerivedCacheState.matches
-  local originalPublish = DerivedCacheState.publish
   local originalSessionNew = InteractiveCacheBuild.new
   -- The generation identity resolves without source bytes, so a
   -- main-state borrow must never exist on this path: the injected failure
@@ -43,15 +39,6 @@ function T.cache_builder_failure_preserves_publication_state(romFs, versionId)
     mainStateOpens = mainStateOpens + 1
     return originalOpen(...)
   end
-  local function forceMismatch()
-    return false
-  end
-  local function recordPublish(...)
-    statePublished = true
-    return originalPublish(...)
-  end
-  rawset(DerivedCacheState, "matches", forceMismatch)
-  rawset(DerivedCacheState, "publish", recordPublish)
   -- Compiler work runs in worker threads that never observe main-state
   -- module patching, and the session constructor performs no ROM work, so
   -- the failure is injected where the main-state pipeline actually pumps
@@ -70,14 +57,11 @@ function T.cache_builder_failure_preserves_publication_state(romFs, versionId)
   end)
   RomFs.open = originalOpen
   rawset(InteractiveCacheBuild, "new", originalSessionNew)
-  rawset(DerivedCacheState, "matches", originalMatches)
-  rawset(DerivedCacheState, "publish", originalPublish)
 
   Assert.isTrue(ok, tostring(report))
   Assert.isNil(report)
   Assert.equal(err, "cache preparation failed")
   Assert.equal(mainStateOpens, 0, "an expected source failure must borrow no main-state RomFs")
-  Assert.isFalse(statePublished, "a failed version must not publish its attestation")
   Assert.isTrue(romFs ~= nil, "RomSuite must keep the source handle available for later scenarios")
 end
 

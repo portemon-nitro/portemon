@@ -1,19 +1,14 @@
 -- Coarse derived-cache generation identity: development identity follows the
 -- actual producer working-tree bytes (one SHA-256 manifest over a fixed broad
 -- source-root set), release identity uses an explicit per-game counter and
--- performs no producer I/O. Old attestations go
--- cold without touching raw dumps, saves, or artifact roots, and any
--- enumeration/read/validation fault aborts selection instead of falling back
--- to another key. A job receipt is bound to the generation that wrote it, so a
--- replacement publish either becomes current with its complete payload or
--- leaves the previous complete publish selected.
+-- performs no producer I/O. Old identities go cold without touching raw dumps,
+-- saves, or artifact roots, and any enumeration/read/validation fault aborts
+-- selection instead of falling back to another key.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
-local FakeCache = require("tests.support.FakeCache")
 local GameVersion = require("romdump.src.source.GameVersion")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local Schema = require("libs.script.src.Schema")
@@ -241,39 +236,6 @@ function T.generation_differs_across_producer_bytes()
     first.generationId ~= second.generationId,
     "different producer bytes must yield different generation tokens"
   )
-end
-
-function T.previous_attestation_is_cold_and_leaves_raw_and_saves_alone()
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
-  cache:write("data/raw/heartgold.nds", "raw dump bytes")
-  cache:write("saves/heartgold/save1.lua", "save payload bytes")
-
-  local oldIdentity = DerivedCacheState.current({
-    dump = "g4-rom-dump-v1:heartgold:" .. HEARTGOLD_SHA1,
-    producer = "old-producer-fingerprint",
-    assetContract = { revision = DerivedAssetContract.revision },
-    scriptApi = Schema.API_VERSION,
-  })
-  DerivedCacheState.publish(cache, oldIdentity)
-
-  local rotated = DerivedCacheState.current({
-    versionId = "heartgold",
-    romSha1 = HEARTGOLD_SHA1,
-    mode = "development",
-    producerId = "d" .. Sha256.hex("new producer tree"),
-    assetRevision = DerivedAssetContract.revision,
-    scriptApi = Schema.API_VERSION,
-  })
-  local stored = cache:loadLua(DerivedCacheState.path)
-  Assert.isFalse(DerivedCacheState.matches(stored, rotated), "an attestation from another generation must read as cold")
-  Assert.equal(cache:read("data/raw/heartgold.nds"), "raw dump bytes", "invalidation must preserve the raw dump")
-  Assert.equal(cache:read("saves/heartgold/save1.lua"), "save payload bytes", "invalidation must preserve saves")
-
-  DerivedCacheState.invalidate(cache)
-  Assert.isNil(cache:read(DerivedCacheState.path), "invalidate must remove the completion attestation")
-  Assert.equal(cache:read("data/raw/heartgold.nds"), "raw dump bytes", "invalidate must not delete the raw dump")
-  Assert.equal(cache:read("saves/heartgold/save1.lua"), "save payload bytes", "invalidate must not delete saves")
 end
 
 function T.faults_abort_selection_without_a_fallback_key()

@@ -115,28 +115,6 @@ function T.markers_alone_never_prove_usability()
   Assert.isTrue(reason ~= nil and reason ~= "", "a refused proof names its cause")
 end
 
--- The audit never consults the attestation file itself: with a mismatching
--- attestation on disk, the failure names the missing fact instead.
-function T.a_stale_attestation_is_never_consulted()
-  local DerivedCacheState = require("romdump.src.DerivedCacheState")
-  local cache = publishedMarkers()
-  cache:writeLua(DerivedCacheState.path, {
-    schema = DerivedCacheState.schema,
-    versionId = "heartgold",
-    romSha1 = string.rep("a", 40),
-    mode = "development",
-    producerId = "d" .. string.rep("1", 64),
-    assetRevision = 11,
-    scriptApi = 1,
-    generationId = "stale-generation",
-  })
-  local available, reason = DerivedCacheAudit.isAvailable(cache, newFacts(), IDENTITY, minimalPlans())
-  Assert.isFalse(available)
-  assert(reason, "a refused proof names its cause")
-  Assert.isTrue(reason:find("has no committed artifact fact", 1, true) ~= nil, tostring(reason))
-  Assert.isNil(reason:find("build.lua", 1, true), "the attestation is never evidence: " .. tostring(reason))
-end
-
 -- A malformed inventory is unavailable data, not a programming fault that
 -- escapes the read-only boundary.
 function T.a_malformed_inventory_is_unavailable()

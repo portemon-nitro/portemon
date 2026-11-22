@@ -3,6 +3,7 @@
 -- own pending request, and only demanded pairs ever leave the game thread.
 
 local Assert = require("tests.support.Assert")
+local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
 
 local T = {}
 
@@ -56,6 +57,7 @@ local function selectGame()
   local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
   local service = assert(CacheService.new({ thread = newChannelHost() }))
   local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
+  SnapshotBootFixture.installBoot(service, assert(provisioner.epoch, "selection must yield an epoch"))
   return service, provisioner
 end
 
@@ -93,7 +95,13 @@ function T.startup_walker_global_demand_dedupes_to_one_worker_request()
     end
   end
   Assert.equal(sharedDemands, 1, "only the one shared demand leaves the game thread")
-  service:injectReply({ op = "request-result", epoch = epoch, requestId = first, state = "ready" })
+  service:injectReply({
+    op = "request-result",
+    epoch = epoch,
+    requestId = first,
+    state = "ready",
+    requiredSequence = 1,
+  })
   service:update()
   local ready, failure = gameHost.requestStartupWalker("required")
   Assert.isTrue(ready, "the pushed ready event lands in the shared observation")

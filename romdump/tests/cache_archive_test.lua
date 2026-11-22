@@ -535,6 +535,45 @@ function T.one_snapshot_carries_exactly_the_cut_it_was_given()
   end)
 end
 
+-- A captured fact may only depend on another artifact captured by the same
+-- cut, and a declared shared path must resolve to one of the cut's payloads.
+-- A cut that breaks either rule is refused as a persistence failure and leaves
+-- no archive behind.
+function T.a_cut_with_a_dangling_artifact_reference_is_refused()
+  requireArchive()
+  local generationId = generation()
+  local path = "data/generated/field/30/scene.lua"
+  for _, case in ipairs({
+    { name = "dependency", dependencies = { "script:missing" }, sharedPaths = {} },
+    { name = "shared", dependencies = {}, sharedPaths = { "assets/generated/field/30/missing.png" } },
+  }) do
+    local versionId = versionFor("dangling-" .. case.name)
+    local cut = cutFor({
+      versionId = versionId,
+      identity = generationId,
+      sequence = 2,
+      entries = { blob(path, "return { mapId = 30 }\n") },
+      artifacts = {
+        {
+          kind = "map",
+          key = "30",
+          marker = "map-ready",
+          dependencies = case.dependencies,
+          ownedRoots = { "data/generated/field/30" },
+          sharedPaths = case.sharedPaths,
+          files = { path },
+        },
+      },
+    })
+    withWriter({ versionId = versionId }, function(probe)
+      probe.control:push(cut)
+      local ack = assert(awaitAck(probe, 2), "the writer answers a refused cut")
+      Assert.equal(ack.op, "snapshot-failed", "a dangling reference is a persistence failure: " .. case.name)
+      Assert.isNil(SnapshotArchive.read(versionId), "a refused cut writes no archive: " .. case.name)
+    end)
+  end
+end
+
 -- A payload two artifacts publish as their own output rather than as a
 -- declared shared file is still one logical path: the manifest keeps one entry
 -- for it, both artifacts keep their own file references, and the payload

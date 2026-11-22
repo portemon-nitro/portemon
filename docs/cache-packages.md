@@ -101,6 +101,12 @@ Every listed member must exist in the ZIP as an ordinary file whose uncompressed
 size equals the declared `size`. Opening a package checks this from directory
 metadata only, so a listing mismatch fails before anything reaches the game.
 
+The package is read through LÖVE's ZIP mount, which does not expose two entries
+with the same name inside one archive. Duplicate member names therefore cannot
+be detected at selection: build packages with unique member names. A listed
+member is still checked against its declared size and decoded by its stated
+format when it is used.
+
 ## Laziness
 
 Selecting a package reads only its `mod.lua` and directory metadata. No payload

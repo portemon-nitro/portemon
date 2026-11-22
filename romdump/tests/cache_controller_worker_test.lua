@@ -303,6 +303,26 @@ function T.request_outcome_is_pushed_without_a_status_probe()
   Assert.equal(results[1].requestId, 11, "the terminal event carries the request identity")
   Assert.equal(results[1].state, "ready", "the terminal event carries the ready state")
   Assert.equal(results[1].epoch, 7, "the terminal event carries the epoch identity")
+  Assert.equal(
+    results[1].requiredSequence,
+    1,
+    "a terminal event for an epoch that has not streamed names its first installation sequence"
+  )
+end
+
+-- A terminal event names the sequence whose bytes and facts it attests: once
+-- the epoch installed a sequence, its readiness carries that installed
+-- sequence, so main never exposes the fact before the install lands.
+function T.terminal_events_name_the_installed_sequence_of_their_epoch()
+  local worker, replies, queued = pushWorker(terminalSession(), 7)
+  worker.installedEpoch = 7
+  worker.sequence = 4
+  queued[#queued + 1] =
+    { op = "request", epoch = 7, requestId = 12, requestKind = "milestone", name = "bootstrap", urgency = "required" }
+  worker:step()
+  local results = packetsOf(replies, "request-result")
+  Assert.equal(#results, 1, "the installed epoch emits its terminal event")
+  Assert.equal(results[1].requiredSequence, 4, "the terminal event names the installed sequence it attests")
 end
 
 -- A request that settles after session progress emits exactly one terminal
@@ -2585,6 +2605,58 @@ function T.one_captured_snapshot_and_one_pending_indication_keep_persistence_hon
   if not ok then
     error(err, 0)
   end
+end
+
+function T.stopped_snapshot_writer_is_replaced_after_its_retry_deadline()
+  local rig = snapshotRig(nil)
+  local worker = rig.worker
+  local generationId = assert(worker.selectedIdentity, "the selection owns its identity").generationId
+  completedSession(worker, generationId)
+  worker:step()
+  rig.clock.now = rig.clock.now + 6
+  worker:step()
+  local oldThread = assert(worker.snapshot.thread, "the first capture starts one writer")
+  local oldControl = assert(worker.snapshot.control)
+  local first = assert(oldControl:pop(), "the writer receives the initial capture")
+  local alive = true
+  function oldThread:isRunning()
+    return alive
+  end
+  local waits = 0
+  function oldThread:wait()
+    waits = waits + 1
+  end
+
+  alive = false
+  worker:step()
+  Assert.isNil(worker.snapshot.active, "a stopped writer's capture settles as a failure")
+  Assert.equal(worker.snapshot.persistedSequence, 0, "a stopped writer persists no sequence")
+  Assert.isNil(worker.snapshot.thread, "the dead writer and its channels are detached")
+  local retryAt = assert(worker.snapshot.retryAt)
+  rig.clock.now = retryAt
+  worker:step()
+
+  Assert.notNil(worker.snapshot.active, "the retry reaches a live replacement writer")
+  Assert.isTrue(worker.snapshot.thread ~= oldThread, "the retry does not reuse the stopped writer")
+  Assert.isTrue(worker.snapshot.control ~= oldControl, "the retry uses a fresh command channel")
+  Assert.equal(waits, 1, "the stopped writer is joined once")
+  local retry = assert(worker.snapshot.control):pop()
+  Assert.equal(retry.op, "snapshot", "one replacement writer receives the retry")
+  Assert.equal(retry.sequence, first.sequence, "the retry captures the still-unpersisted sequence")
+  worker.snapshot.reply:push({
+    op = "snapshot-persisted",
+    versionId = retry.versionId,
+    generationId = retry.generationId,
+    epoch = retry.epoch,
+    sequence = retry.sequence,
+  })
+  worker:step()
+  Assert.equal(
+    worker.snapshot.persistedSequence,
+    first.sequence,
+    "the replacement writer advances the durable sequence"
+  )
+  closeSnapshotRig(rig)
 end
 
 return { metadata = { capabilities = {} }, tests = T }

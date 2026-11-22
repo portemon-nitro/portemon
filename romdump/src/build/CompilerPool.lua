@@ -2093,9 +2093,10 @@ function CompilerPool:_commitArtifact(record, result)
   local files = {}
   for _, entry in ipairs(assert(result.entries, "artifact commit carries no output entries")) do
     -- A path two artifacts publish is one payload whether each artifact owns
-    -- it or declares it shared: equal bytes reuse the committed Data, a
-    -- contradiction refuses this artifact, and only a pixel-identical PNG
-    -- reinstalls its staged bytes.
+    -- it as an owned root or declares it shared: equal bytes reuse the
+    -- committed Data and both facts keep the path, a contradiction refuses
+    -- this artifact, and only a pixel-identical PNG reinstalls its staged
+    -- bytes.
     local committed = store:resolveAsset(entry.path)
     if committed == nil then
       batch[#batch + 1] = entry

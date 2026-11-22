@@ -6,9 +6,7 @@
 -- disturbing the previous state.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
-local FakeCache = require("tests.support.FakeCache")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local GameVersion = require("romdump.src.source.GameVersion")
 local Schema = require("libs.script.src.Schema")
@@ -69,38 +67,6 @@ end
 function T.script_api_change_invalidates()
   local stored = identity({ scriptApi = 2 })
   Assert.isFalse(DerivedCacheState.matches(stored, identity()))
-end
-
-function T.publish_round_trips_and_invalidate_removes_it()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  DerivedCacheState.publish(cache, identity())
-
-  local stored = cache:loadLua(DerivedCacheState.path)
-  Assert.isTrue(DerivedCacheState.matches(stored, identity()), "published state must load and match")
-  Assert.isNil(cache:read(DerivedCacheState.path .. ".new"), "the staging sibling must not survive")
-
-  DerivedCacheState.invalidate(cache)
-  Assert.isNil(cache:read(DerivedCacheState.path), "invalidate must remove the attestation")
-end
-
--- A backend-reported replace failure propagates as CACHE_REPLACE_FAILED and
--- leaves the previous live state in place: publication must never report
--- success when the atomic rename failed.
-function T.failed_atomic_publication_propagates_and_preserves_previous_state()
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
-  DerivedCacheState.publish(cache, identity())
-
-  backend.replace = function()
-    return false, "injected replace failure"
-  end
-
-  local err = Assert.throws(function()
-    DerivedCacheState.publish(cache, identity({ producer = "new-producer-fingerprint" }))
-  end)
-  Assert.equal(err.code, "CACHE_REPLACE_FAILED")
-  local stored = cache:loadLua(DerivedCacheState.path)
-  Assert.isTrue(DerivedCacheState.matches(stored, identity()), "the previous attestation must survive")
 end
 
 -- The shared asset revision is part of the release identity, so a complete fact

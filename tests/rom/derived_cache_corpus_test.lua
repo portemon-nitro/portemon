@@ -1,8 +1,8 @@
 -- Read-only conformance over the prepared complete corpus: the current
 -- development preparation proves the whole inventory through the
--- generation-aware audit, every expected receipt validates, and the
--- published attestation matches the prepared generation. Nothing is compiled
--- or published here; the command tests own publication and failure evidence.
+-- generation-aware audit and every expected artifact fact is committed for the
+-- prepared generation. Nothing is compiled or published here; the command
+-- tests own publication and failure evidence.
 
 local Assert = require("tests.support.Assert")
 local ArtifactState = require("romdump.src.build.ArtifactState")
@@ -13,7 +13,7 @@ local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 
 local T = {}
 
-function T.prepared_complete_corpus_passes_audit_with_matching_attestation(romFs, versionId)
+function T.prepared_complete_corpus_passes_audit_with_committed_facts(romFs, versionId)
   local sha1 = assert(romFs:metadata().sha1, "the published dump carries the validated ROM hash")
   local sourceBase = love.filesystem.getSourceBaseDirectory()
   local identity = DerivedCacheState.currentForSelection({
@@ -23,7 +23,12 @@ function T.prepared_complete_corpus_passes_audit_with_matching_attestation(romFs
     developmentRepositoryRoot = sourceBase,
   })
   local generationId = assert(identity.generationId, "the selection identity carries its generation")
-  local cacheFs = GeneratedCacheFixture.reader(versionId)
+  local view = GeneratedCacheFixture.view(versionId)
+  local cacheFs = view.reader
+  local facts = ArtifactState.new(generationId)
+  for _, artifact in ipairs(view.candidate.artifacts) do
+    ArtifactState.commitFact(facts, artifact)
+  end
   local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
   local plans, plansReason = ArtifactJobs.publishedPlans(cacheFs, identity)
   assert(plans ~= nil, "the prepared corpus publishes its inventory: " .. tostring(plansReason))
@@ -31,18 +36,13 @@ function T.prepared_complete_corpus_passes_audit_with_matching_attestation(romFs
   Assert.isTrue(#completeJobs > 0, "the exhaustive inventory covers the real corpus")
   local missing = {}
   for _, job in ipairs(completeJobs) do
-    if ArtifactState.read(cacheFs, generationId, job.kind, job.key) == nil then
+    if ArtifactState.read(facts, job.kind, job.key) == nil then
       missing[#missing + 1] = job.jobKey
     end
   end
-  Assert.equal(#missing, 0, "every expected receipt validates: missing " .. table.concat(missing, ", "))
-  local ok, reason = DerivedCacheAudit.isAvailable(cacheFs, identity, plans)
+  Assert.equal(#missing, 0, "every expected artifact fact is committed: missing " .. table.concat(missing, ", "))
+  local ok, reason = DerivedCacheAudit.isAvailable(cacheFs, facts, identity, plans)
   Assert.isTrue(ok, "the prepared corpus passes the generation-aware audit: " .. tostring(reason))
-  local stored = cacheFs:loadLua(DerivedCacheState.path)
-  Assert.isTrue(
-    DerivedCacheState.matches(stored, identity),
-    "the published attestation matches the prepared generation"
-  )
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)

@@ -497,6 +497,7 @@ function T.terminal_worker_failure_is_escape_only_until_a_fresh_selection()
       epoch = epoch,
       requestId = walkerId,
       state = "failed",
+      requiredSequence = 1,
       errorMessage = "synthetic walker failure",
     })
     service:update()
@@ -517,7 +518,13 @@ function T.terminal_worker_failure_is_escape_only_until_a_fresh_selection()
     Assert.notNil(state.artFailure, "R leaves the terminal failure latched")
     Assert.equal(#host.channels[1].log, commandsBefore, "R issues no identical selector again")
     Assert.equal(loading.adoptions, 1, "only the construction preview runs before the worker failure")
-    service:injectReply({ op = "request-result", epoch = epoch, requestId = walkerId, state = "ready" })
+    service:injectReply({
+      op = "request-result",
+      epoch = epoch,
+      requestId = walkerId,
+      state = "ready",
+      requiredSequence = 1,
+    })
     service:update()
     state:update(0.016)
     Assert.equal(script.fired, 0, "a late ready packet never heals the terminal record")
@@ -559,12 +566,24 @@ function T.terminal_worker_failure_is_escape_only_until_a_fresh_selection()
     service:update()
     local freshWalkerId = assert(walkerCommandId(host, second), "the fresh wait demands the pair anew")
     Assert.isTrue(freshWalkerId ~= walkerId, "the fresh epoch owns a distinct request identity")
-    service:injectReply({ op = "request-result", epoch = second, requestId = freshWalkerId, state = "ready" })
+    service:injectReply({
+      op = "request-result",
+      epoch = second,
+      requestId = freshWalkerId,
+      state = "ready",
+      requiredSequence = 1,
+    })
     service:update()
     fresh:update(0.016)
     Assert.equal(freshScript.fired, 1, "the fresh epoch transfers on its independent answer")
     Assert.isTrue(fresh:takeLoading() == freshLoading, "the fresh wait transfers its own presentation")
-    service:injectReply({ op = "request-result", epoch = epoch, requestId = walkerId, state = "ready" })
+    service:injectReply({
+      op = "request-result",
+      epoch = epoch,
+      requestId = walkerId,
+      state = "ready",
+      requiredSequence = 1,
+    })
     service:update()
     fresh:update(0.016)
     Assert.equal(freshScript.fired, 1, "a stale packet never publishes a second transfer")
@@ -627,7 +646,13 @@ function T.local_adoption_failure_needs_one_explicit_key_per_attempt()
     state:update(0.016)
     service:update()
     local walkerId = assert(walkerCommandId(host, epoch), "the wait demands the selected pair")
-    service:injectReply({ op = "request-result", epoch = epoch, requestId = walkerId, state = "ready" })
+    service:injectReply({
+      op = "request-result",
+      epoch = epoch,
+      requestId = walkerId,
+      state = "ready",
+      requiredSequence = 1,
+    })
     service:update()
     state:update(0.016)
     Assert.equal(script.fired, 0, "a failed adoption never transfers")
@@ -672,6 +697,9 @@ function T.cold_terminal_worker_failure_forwards_escape_only_to_the_card()
     assert(service:requestBootSource(epoch))
     service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
     service:update()
+    local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
+    SnapshotBootFixture.installBoot(service, epoch)
+    service:update()
     local script = { fired = 0 }
     local state = CachePreparationState.new({
       kind = "boot-source",
@@ -698,6 +726,7 @@ function T.cold_terminal_worker_failure_forwards_escape_only_to_the_card()
       epoch = epoch,
       requestId = walkerId,
       state = "failed",
+      requiredSequence = 1,
       errorMessage = "synthetic walker failure",
     })
     service:update()
@@ -1109,7 +1138,13 @@ function T.loading_art_comes_from_the_installed_generated_view()
     state:update(0.016)
     service:update()
     local walkerId = assert(walkerCommandId(host, epoch), "the wait demands the selected pair")
-    service:injectReply({ op = "request-result", epoch = epoch, requestId = walkerId, state = "ready" })
+    service:injectReply({
+      op = "request-result",
+      epoch = epoch,
+      requestId = walkerId,
+      state = "ready",
+      requiredSequence = 1,
+    })
     service:update()
     state:update(0.016)
     Assert.equal(loading.adoptions, 1, "the ready pair is adopted once")

@@ -6,6 +6,7 @@
 -- statically known dependencies behind the field-runtime prerequisite.
 
 local Assert = require("tests.support.Assert")
+local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
 
 local T = {}
 
@@ -76,6 +77,7 @@ local function selectedHarness()
   -- travels through that selection.
   local provisioner = DerivedAssetProvisioner.new({ service = service, versionId = "heartgold" })
   local epoch = assert(provisioner.epoch, "selection must yield an epoch")
+  SnapshotBootFixture.installBoot(service, epoch)
   return {
     service = service,
     epoch = epoch,
@@ -127,7 +129,13 @@ function T.semantic_pokedex_request_coalesces_to_one_global_job()
   harness.service:update()
   Assert.equal(#emittedRequests(harness.thread), 1, "a settled demand emits no duplicate request")
 
-  pushReply(harness, { op = "request-result", epoch = harness.epoch, requestId = command.requestId, state = "ready" })
+  pushReply(harness, {
+    op = "request-result",
+    epoch = harness.epoch,
+    requestId = command.requestId,
+    state = "ready",
+    requiredSequence = 1,
+  })
   harness.service:update()
   Assert.isTrue(harness.host.requestPokedex("required"), "a ready worker result satisfies the semantic request")
   harness.provisioner:dispose()
@@ -149,11 +157,18 @@ function T.stale_completion_is_ignored_and_failure_is_retained()
   })
   local nextEpoch = assert(provisioner.epoch, "reselection must yield a fresh epoch")
   Assert.isTrue(nextEpoch ~= harness.epoch, "reselection retires the previous generation")
+  SnapshotBootFixture.installBoot(harness.service, nextEpoch)
   local freshHost = provisioner:gameHost()
   Assert.isNil(freshHost.requestPokedex("required"), "the fresh generation starts pending")
   -- A completion for the retired generation must not satisfy the fresh
   -- live epoch even though both describe the same selector.
-  pushReply(harness, { op = "request-result", epoch = harness.epoch, requestId = staleId, state = "ready" })
+  pushReply(harness, {
+    op = "request-result",
+    epoch = harness.epoch,
+    requestId = staleId,
+    state = "ready",
+    requiredSequence = 1,
+  })
   harness.service:update()
   local freshReady, freshFailure = harness.service:observe(nextEpoch, { requestKind = "pokedex", urgency = "required" })
   Assert.isNil(freshReady, "a stale completion must not satisfy the new generation")
@@ -168,6 +183,7 @@ function T.stale_completion_is_ignored_and_failure_is_retained()
     epoch = nextEpoch,
     requestId = current.requestId,
     state = "failed",
+    requiredSequence = 1,
     errorMessage = "fixture pokedex job failure",
   })
   harness.service:update()

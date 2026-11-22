@@ -244,4 +244,61 @@ function T.a_previous_selections_source_never_enters_a_new_epoch()
   end
 end
 
+function T.close_retains_dense_failed_mounts_and_retries_constructor_rollback()
+  reset()
+  local originalUnmount = love.filesystem.unmount
+  local failedPath = nil
+  love.filesystem.unmount = function(path)
+    if path == failedPath then
+      failedPath = nil
+      return false, "injected unmount failure"
+    end
+    return originalUnmount(path)
+  end
+  local ok, err = xpcall(function()
+    writePackage("one.zip", "one", { [REPLACED] = "return { owner = 'one' }\n" })
+    writePackage("two.zip", "two", { [BASE_ONLY] = "return { owner = 'two' }\n" })
+    ModPackageFixture.writeConfig(VERSION, { "one.zip", "two.zip" })
+    local set = openSelection(31)
+    failedPath = ModPackageFixture.archivePath(VERSION, "one.zip")
+    local closed = pcall(set.close, set)
+    Assert.isFalse(closed, "one failed unmount keeps teardown incomplete")
+    Assert.isTrue(set.closing, "a partially unmounted set stops serving new reads")
+    Assert.isNil(set:resolveAsset(REPLACED), "a closing package set exposes no mounted sources")
+    Assert.equal(#set._archives, 1, "only the failed mount remains in a dense retry list")
+    set:close()
+    Assert.isTrue(set.closed, "a retry closes the retained mount")
+
+    ModPackageFixture.writeArchive(VERSION, "bad.zip", {
+      versionId = VERSION,
+      assetRevision = IDENTITY.assetRevision + 1,
+      scriptApi = IDENTITY.scriptApi,
+    }, {
+      id = "bad",
+      files = { [REPLACED] = "return {}\n" },
+    })
+    ModPackageFixture.writeConfig(VERSION, { "one.zip", "bad.zip" })
+    failedPath = ModPackageFixture.archivePath(VERSION, "one.zip")
+    local opened = pcall(openSelection, 32, IDENTITY)
+    Assert.isFalse(opened, "an incompatible package fails after the earlier package mounted")
+    Assert.notNil(
+      love.filesystem.getInfo("__portemon_mods/32/1/mod.lua"),
+      "a rollback failure keeps its mounted archive reachable for retry"
+    )
+    ModPackageFixture.writeConfig(VERSION, { "one.zip" })
+    local recovered = openSelection(33)
+    Assert.notNil(recovered:resolveAsset(REPLACED), "a later open retries rollback before mounting")
+    Assert.isNil(
+      love.filesystem.getInfo("__portemon_mods/32/1/mod.lua"),
+      "the failed constructor mount is gone before the replacement opens"
+    )
+    recovered:close()
+  end, debug.traceback)
+  love.filesystem.unmount = originalUnmount
+  reset()
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return { tests = T }

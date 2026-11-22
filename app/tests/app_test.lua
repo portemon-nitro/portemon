@@ -2772,4 +2772,58 @@ function T.selected_pair_survives_title_menu_game_editor_and_rerolls_on_reselect
   end
 end
 
+function T.failed_asset_runtime_teardown_keeps_the_owner_for_retry()
+  loadShellModules()
+  local previous = App._assetRuntime
+  local queueAttempts = 0
+  local clearAttempts = 0
+  local closeAttempts = 0
+  local record = {
+    preparationQueue = {
+      release = function()
+        queueAttempts = queueAttempts + 1
+        if queueAttempts == 1 then
+          error("injected worker join failure")
+        end
+      end,
+    },
+    decoded = {
+      clear = function()
+        clearAttempts = clearAttempts + 1
+      end,
+    },
+    packages = {
+      close = function()
+        closeAttempts = closeAttempts + 1
+        if closeAttempts == 1 then
+          error("injected unmount failure")
+        end
+      end,
+    },
+  }
+  App._assetRuntime = record
+  local ok, err = xpcall(function()
+    local firstClosed = pcall(App._releaseAssetRuntime)
+    Assert.isFalse(firstClosed, "a worker join failure aborts dependent teardown")
+    Assert.isTrue(App._assetRuntime == record, "the App retains its runtime owner after the join failure")
+    Assert.equal(clearAttempts, 0, "decoded backing stays live while worker shutdown failed")
+    Assert.equal(closeAttempts, 0, "mounted packages stay live while the queue still owns readers")
+
+    local secondClosed = pcall(App._releaseAssetRuntime)
+    Assert.isFalse(secondClosed, "an unmount failure keeps teardown incomplete")
+    Assert.isTrue(App._assetRuntime == record, "the App retains its runtime owner after the unmount failure")
+    Assert.equal(clearAttempts, 1, "decoded state clears after the worker has joined")
+
+    App._releaseAssetRuntime()
+    Assert.isNil(App._assetRuntime, "the App drops the owner after all cleanup succeeds")
+    Assert.equal(queueAttempts, 3, "queue release remains safely retryable")
+    Assert.equal(clearAttempts, 2, "decoded clear may be retried idempotently")
+    Assert.equal(closeAttempts, 2, "the package owner receives its cleanup retry")
+  end, debug.traceback)
+  App._assetRuntime = previous
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return { tests = T }

@@ -1469,8 +1469,9 @@ function AssetPreparationQueue:acquireSource(reference)
   return sourceLease
 end
 
--- Stop accepting work, return every still-held decoded lease, ask the worker to
--- stop after its current job, join it, and discard unclaimed replies.
+-- Stop accepting work, return leases for jobs the worker never received, ask
+-- it to stop and join it, then return leases pinned by physical jobs and
+-- discard unclaimed replies.
 -- Idempotent: the worker is created and joined at most once, and a queue that
 -- never dispatched never creates one. The borrowed decoded owner is never
 -- cleared here; its lifetime belongs to the selected runtime.
@@ -1492,11 +1493,6 @@ function AssetPreparationQueue:release()
       returnedLease = true
     end
   end
-  for token, lease in pairs(self._decodeLeases) do
-    self._decodeLeases[token] = nil
-    self._decoded:returnLease(lease)
-    returnedLease = true
-  end
   self._tokens = {}
   self._demand = {}
   self._prefetch = {}
@@ -1507,9 +1503,6 @@ function AssetPreparationQueue:release()
   self._readyPayloadBytes = 0
   self._readyWeights = {}
   self._readyTokens = {}
-  if returnedLease then
-    self._decoded:trim()
-  end
   local requestChannel = self._request
   if requestChannel ~= nil then
     pcall(function()
@@ -1537,6 +1530,14 @@ function AssetPreparationQueue:release()
         end)
       end
     end
+  end
+  for token, lease in pairs(self._decodeLeases) do
+    self._decodeLeases[token] = nil
+    self._decoded:returnLease(lease)
+    returnedLease = true
+  end
+  if returnedLease then
+    self._decoded:trim()
   end
 end
 

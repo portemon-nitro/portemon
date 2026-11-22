@@ -220,11 +220,21 @@ end
 ---@param requestId integer
 ---@param observation table<string, unknown> terminal ready/failed observation
 function Worker:_emitRequestResult(epoch, requestId, observation)
-  local packet = { op = "request-result", epoch = epoch, requestId = requestId, state = observation.state }
-  if self.installedEpoch == epoch then
-    -- Main may not expose this fact before the bytes it vouches for install.
-    packet.requiredSequence = self.sequence
+  -- Main may not expose this fact before the bytes and facts it vouches for
+  -- install, so every terminal fact names the sequence that carries them.
+  local requiredSequence = self.sequence
+  if self.installedEpoch ~= epoch then
+    -- Nothing of this epoch has streamed yet: its bytes and facts install
+    -- with the next sequence.
+    requiredSequence = self.sequence + 1
   end
+  local packet = {
+    op = "request-result",
+    epoch = epoch,
+    requestId = requestId,
+    state = observation.state,
+    requiredSequence = requiredSequence,
+  }
   if observation.state == "failed" then
     packet.errorMessage = observation.errorMessage or ""
     packet.errorCode = observation.errorCode or ""
@@ -1043,7 +1053,15 @@ end
 function Worker:_ensureArchiveWriter()
   local snapshot = self.snapshot
   if snapshot.thread ~= nil then
-    return true
+    local thread = snapshot.thread
+    if type(thread.isRunning) ~= "function" then
+      return true
+    end
+    local ok, running = pcall(thread.isRunning, thread)
+    if not ok or running then
+      return true
+    end
+    self:_discardArchiveWriter()
   end
   if snapshot.unavailable ~= nil then
     return false
@@ -1073,6 +1091,19 @@ function Worker:_ensureArchiveWriter()
   snapshot.reply = reply
   snapshot.thread = thread
   return true
+end
+
+-- A stopped writer cannot consume another command. Join it and detach both
+-- channels so no late packet can settle a capture owned by its replacement.
+function Worker:_discardArchiveWriter()
+  local snapshot = self.snapshot
+  local thread = snapshot.thread
+  if thread ~= nil and type(thread.wait) == "function" then
+    pcall(thread.wait, thread)
+  end
+  snapshot.thread = nil
+  snapshot.control = nil
+  snapshot.reply = nil
 end
 
 -- Capture the latest consistent cut for the writer: the committed bytes and
@@ -1158,6 +1189,15 @@ function Worker:_settleSnapshotReply(packet)
     if active.sequence > snapshot.persistedSequence then
       snapshot.persistedSequence = active.sequence
     end
+    if self.liveEpoch == active.epoch then
+      self.reply:push({
+        op = "cache-persistence-succeeded",
+        versionId = active.versionId,
+        generationId = active.generationId,
+        epoch = active.epoch,
+        sequence = active.sequence,
+      })
+    end
     return
   end
   local now = self.clock()
@@ -1201,20 +1241,21 @@ function Worker:_pumpSnapshot()
   end
   -- A writer that stopped without answering settles its capture as a failure:
   -- the controller never waits on a channel nobody will push to.
-  if snapshot.active ~= nil and snapshot.thread ~= nil and type(snapshot.thread.isRunning) == "function" then
-    local alive = true
-    local probeOk = pcall(function()
-      alive = snapshot.thread:isRunning() == true
-    end)
-    if probeOk and not alive then
-      self:_settleSnapshotReply({
-        op = "snapshot-failed",
-        versionId = snapshot.active.versionId,
-        generationId = snapshot.active.generationId,
-        epoch = snapshot.active.epoch,
-        sequence = snapshot.active.sequence,
-        error = { code = "CACHE_ARCHIVE_WRITE_FAILED", message = "the snapshot writer stopped unexpectedly" },
-      })
+  local thread = snapshot.thread
+  if thread ~= nil and type(thread.isRunning) == "function" then
+    local probeOk, running = pcall(thread.isRunning, thread)
+    if probeOk and not running then
+      if snapshot.active ~= nil then
+        self:_settleSnapshotReply({
+          op = "snapshot-failed",
+          versionId = snapshot.active.versionId,
+          generationId = snapshot.active.generationId,
+          epoch = snapshot.active.epoch,
+          sequence = snapshot.active.sequence,
+          error = { code = "CACHE_ARCHIVE_WRITE_FAILED", message = "the snapshot writer stopped unexpectedly" },
+        })
+      end
+      self:_discardArchiveWriter()
     end
   end
   if snapshot.active ~= nil or not snapshot.dirty then
@@ -1380,6 +1421,14 @@ function Worker:_applySelect(command)
   end)
   if not installOk then
     self:_fail("controller generation installation failed: " .. formatError(installError))
+  elseif hydration ~= nil then
+    self.reply:push({
+      op = "cache-persistence-succeeded",
+      versionId = identity.versionId,
+      generationId = identity.generationId,
+      epoch = epoch,
+      sequence = hydration.sequence,
+    })
   end
 end
 
@@ -1452,10 +1501,7 @@ function Worker:_applyRequest(command)
   }
   local selectorError = validateSelectors(params)
   if selectorError ~= nil then
-    self.reply:push({
-      op = "request-result",
-      epoch = command.epoch,
-      requestId = command.requestId,
+    self:_emitRequestResult(command.epoch, command.requestId, {
       state = "failed",
       errorMessage = selectorError,
       errorCode = "protocol",

@@ -302,7 +302,6 @@ function MenuLayout.resolve(spec)
     return resolveMultichoice(spec, surface, selectedIndex, items, itemTexts)
   end
   local resolvedPlacement = placement(surface, spec.bounds, spec.preferredScale)
-  local scale = resolvedPlacement.scale
 
   local cancellable = spec.menu.cancellable == true and surface.touch == true
   local insets = ApplicationLayout.applicationFrameInsets()

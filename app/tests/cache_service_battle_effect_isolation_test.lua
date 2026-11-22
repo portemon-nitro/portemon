@@ -4,6 +4,7 @@
 -- No dump is needed; the controller is a deterministic in-memory host.
 
 local Assert = require("tests.support.Assert")
+local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
 
 local T = {}
 
@@ -104,6 +105,7 @@ function T.terminal_effect_observations_keep_their_shape()
   local service = assert(Service.new({ thread = newChannelHost() }))
   local provisioner = Provisioner.new({ versionId = "heartgold", service = service })
   local epoch = assert(provisioner.epoch, "selection borrows an epoch")
+  SnapshotBootFixture.installBoot(service, epoch)
   local gameHost = provisioner:gameHost()
   local pending, pendingErr = gameHost.requestBattleEffect("synthetic-shape", "required")
   Assert.isNil(pending, "an unstaged effect starts pending")
@@ -123,7 +125,13 @@ function T.terminal_effect_observations_keep_their_shape()
     command = service._command:pop()
   end
   Assert.equal(coldRequests, 1, "the cold demand dispatches one worker request")
-  service:injectReply({ op = "request-result", epoch = epoch, requestId = id, state = "ready" })
+  service:injectReply({
+    op = "request-result",
+    epoch = epoch,
+    requestId = id,
+    state = "ready",
+    requiredSequence = 1,
+  })
   service:update()
   local ready, failure = gameHost.requestBattleEffect("synthetic-shape", "required")
   Assert.isTrue(ready, "the ready observation reports readiness")

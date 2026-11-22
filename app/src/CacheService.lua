@@ -72,8 +72,14 @@ local URGENCY_ORDER = { required = 0, near = 10, sweep = 100 }
 ---@field _pendingObservations table<integer, table<integer, table<string, unknown>>> terminal facts awaiting their sequence
 ---@field _firstPlayRequested table<integer, boolean> epochs whose first-play recording is already queued
 ---@field _versions table<integer, string> selected version id by epoch
+---@field _persistence table<integer, CacheService.Persistence> last archive observation by epoch
 local CacheService = {}
 CacheService.__index = CacheService
+
+---@class CacheService.Persistence
+---@field sequence integer latest successfully persisted sequence
+---@field error table<string, unknown>? latest write failure, cleared by success
+---@field observedSequence integer newest attempt reported by the controller
 
 ---@class CacheService.Installed
 ---@field generationId string
@@ -109,6 +115,29 @@ local function sameEntry(first, second)
     and first.contentId == second.contentId
     and first.size == second.size
     and first.data == second.data
+end
+
+-- Full installed identity equality: every declared field must match exactly in
+-- both directions, so a replayed installation cannot smuggle another
+-- generation in under an already committed sequence.
+---@param first unknown
+---@param second unknown
+---@return boolean
+local function sameIdentity(first, second)
+  if type(first) ~= "table" or type(second) ~= "table" then
+    return false
+  end
+  for field, value in pairs(first) do
+    if second[field] ~= value then
+      return false
+    end
+  end
+  for field in pairs(second) do
+    if first[field] == nil then
+      return false
+    end
+  end
+  return true
 end
 
 ---@param options table<string, unknown>? { thread = love.thread-shaped host }
@@ -153,6 +182,7 @@ function CacheService.new(options)
     _pendingObservations = {},
     _firstPlayRequested = {},
     _versions = {},
+    _persistence = {},
   }, CacheService)
 end
 
@@ -390,6 +420,7 @@ function CacheService:select(options)
   self._boot[epoch] = { state = "pending" }
   self._bootRequested[epoch] = nil
   self._versions[epoch] = options.versionId
+  self._persistence[epoch] = { sequence = 0, observedSequence = 0 }
   return epoch
 end
 
@@ -713,6 +744,7 @@ function CacheService:_revokeEpoch(epoch)
   self._pendingObservations[epoch] = nil
   self._firstPlayRequested[epoch] = nil
   self._versions[epoch] = nil
+  self._persistence[epoch] = nil
 end
 
 -- The epoch's one stable generated reader, available only after an
@@ -768,6 +800,29 @@ function CacheService:firstPlayReady(epoch)
     return nil
   end
   return installed.firstPlay == true
+end
+
+-- Persistence is independent of play readiness. Reports belong only to the
+-- currently selected epoch, so callers cannot mistake an old archive result
+-- for the durability of a replacement selection.
+---@param epoch integer
+---@return CacheService.Persistence?
+function CacheService:persistenceStatus(epoch)
+  if epoch ~= self._liveEpoch or self._retiring then
+    return nil
+  end
+  local status = self._persistence[epoch]
+  if status == nil then
+    return nil
+  end
+  local errorCopy = nil
+  if status.error ~= nil then
+    errorCopy = {}
+    for field, value in pairs(status.error) do
+      errorCopy[field] = value
+    end
+  end
+  return { sequence = status.sequence, error = errorCopy, observedSequence = status.observedSequence }
 end
 
 -- Ask the controller to record first play for the epoch. The request is
@@ -884,6 +939,37 @@ function CacheService:_absorb(packet)
     self:_absorbInstallCommit(packet)
   elseif op == "controller-failure" then
     self:_enterTerminalFailure(packet.errorMessage)
+  elseif op == "cache-persistence-failed" or op == "cache-persistence-succeeded" then
+    self:_absorbPersistence(packet)
+  end
+end
+
+---@param packet table<string, unknown>
+function CacheService:_absorbPersistence(packet)
+  local epoch = packet.epoch
+  if epoch ~= self._liveEpoch or self._retiring then
+    return
+  end
+  assert(isPositiveInteger(packet.sequence), "a persistence observation names a positive sequence")
+  local status = assert(self._persistence[epoch], "a live selection owns persistence status")
+  if packet.sequence < status.observedSequence then
+    return
+  end
+  status.observedSequence = packet.sequence
+  if packet.op == "cache-persistence-succeeded" then
+    status.sequence = math.max(status.sequence, packet.sequence)
+    status.error = nil
+  else
+    assert(type(packet.error) == "table", "a persistence failure carries its structured error")
+    status.error = packet.error
+    print(
+      "Cache snapshot persistence failed for "
+        .. tostring(packet.versionId or "selected cache")
+        .. " at sequence "
+        .. tostring(packet.sequence)
+        .. ": "
+        .. tostring(packet.error.message or packet.error.code or "unknown archive error")
+    )
   end
 end
 
@@ -909,6 +995,25 @@ function CacheService:_absorbInstallBegin(packet)
   assert(type(packet.identity) == "table", "an installation names the derived-cache identity")
   assert(type(packet.entryCount) == "number" and packet.entryCount >= 0, "an installation names its entry count")
   local installed = self._cache[epoch]
+  local pending = self._install[epoch]
+  if pending ~= nil then
+    assert(
+      pending.sequence == packet.sequence
+        and pending.generationId == packet.generationId
+        and sameIdentity(pending.identity, packet.identity),
+      "a duplicate installation begin contradicts its pending stream"
+    )
+    return
+  end
+  if installed ~= nil and packet.sequence == installed.sequence then
+    -- A replayed stream for a sequence already committed changes nothing: its
+    -- parts and commit must match the installed bytes exactly.
+    assert(
+      packet.generationId == installed.generationId and sameIdentity(packet.identity, installed.identity),
+      "a duplicate installation sequence names another identity"
+    )
+    return
+  end
   if packet.initial ~= true then
     local expected = installed ~= nil and installed.sequence + 1 or 1
     assert(
@@ -1000,7 +1105,16 @@ function CacheService:_absorbInstallCommit(packet)
   end
   local epoch = packet.epoch
   local pending = self:_installForPacket(packet)
-  assert(pending ~= nil, "an installation commit addresses no pending sequence: " .. tostring(packet.sequence))
+  if pending == nil then
+    local installed = self._cache[epoch]
+    assert(
+      installed ~= nil and installed.sequence == packet.sequence and installed.generationId == packet.generationId,
+      "an installation commit addresses no pending sequence: " .. tostring(packet.sequence)
+    )
+    -- A replayed commit for an already committed stream changes no bytes and
+    -- no facts: the sequence is a no-op once its identity matches.
+    return
+  end
   local entries = {}
   for part = 1, #pending.parts do
     for _, entry in ipairs(pending.parts[part]) do
@@ -1092,7 +1206,7 @@ function CacheService:_settleObservations(epoch)
   local installed = assert(self._cache[epoch], "a settled observation needs its installed sequence")
   for requestId, packet in pairs(buffered) do
     local required = packet.requiredSequence
-    if required == nil or required <= installed.sequence then
+    if required <= installed.sequence then
       buffered[requestId] = nil
       self:_applyRequestResult(packet)
     end
@@ -1160,8 +1274,9 @@ function CacheService:_absorbRequestResult(packet)
     return
   end
   local required = packet.requiredSequence
+  assert(isPositiveInteger(required), "a terminal observation must name the installation sequence it attests")
   local installed = self._cache[packet.epoch]
-  if required ~= nil and (installed == nil or installed.sequence < required) then
+  if installed == nil or installed.sequence < required then
     -- The fact may not overtake the bytes it vouches for.
     local epoch = packet.epoch
     local buffered = self._pendingObservations[epoch]
