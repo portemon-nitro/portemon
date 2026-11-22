@@ -2359,6 +2359,12 @@ BattlePresentationSources.MESSAGE_RECORDS = {
   -- attempting escape before any reserve enters. Runtime reaches it only
   -- through the semantic useNextPrompt route on wild replacements.
   ["battle/prompt/use-next"] = { bank = "scriptController", messageId = 11 },
+  -- Source catching-tutorial select prompt on the throwing turn
+  -- (battle_controller_opponent.c PRINT_PROMPT: msg_0197_01226 plus the
+  -- lesson author's trainer gender), printed at text speed before the
+  -- command menu opens.
+  ["battle/prompt/tutorial-throw/male-author"] = { bank = "scriptController", messageId = 1226 },
+  ["battle/prompt/tutorial-throw/female-author"] = { bank = "scriptController", messageId = 1227 },
   ["battle/narration/trainer-victory"] = { bank = "scriptController", messageId = 839 },
   ["battle/narration/won-money"] = { bank = "scriptController", messageId = 33 },
   ["battle/narration/defeated-last-mon"] = { bank = "scriptController", messageId = 36 },

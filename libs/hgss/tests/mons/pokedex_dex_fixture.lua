@@ -450,6 +450,7 @@ function PokedexDexFixture.buildPokedexCatalog()
         giratina_origin = { heightBankId = 814, weightBankId = 812 },
       },
       registrationAnnouncement = { bankId = 197, messageId = 871 },
+      registrationHeader = { bankId = 802, messageId = 144 },
       landmarks = { bankId = 279, fallbackBankId = 280, fallbackMessageId = 2 },
     },
     searchText = PokedexSources.searchText(),

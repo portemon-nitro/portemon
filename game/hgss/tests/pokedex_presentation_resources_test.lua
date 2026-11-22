@@ -61,6 +61,7 @@ local function ownerArgs(pool)
             },
             measureByProfile = { base = { heightBankId = 815, weightBankId = 813 } },
             registrationAnnouncement = { bankId = 197, messageId = 871 },
+            registrationHeader = { bankId = 802, messageId = 144 },
           },
         }
       end,
@@ -303,23 +304,30 @@ local function closureManifest()
         controls = { r = 0, g = 0, b = 0, a = 255 },
       },
       backgrounds = { information = { background(bgRole) }, controls = {} },
-      cells = { cellRole },
+      cells = { cellRole, "numbers.cell" },
       sprites = { spriteRole },
       windows = {},
     }
   end
+  local digits = {}
+  for index = 1, 10 do
+    digits[index] = "numbers.art"
+  end
   return {
     schema = PokedexCache.SCHEMA,
     fonts = { body = 0, header = 4 },
+    numberAtlas = { marker = "numbers.art", caught = digits, seen = digits, digits = 10 },
     chrome = {
       ["grid.bg"] = { path = "pokedex/chrome/grid-bg", width = 256, height = 192 },
       ["grid.cell.art"] = { path = "pokedex/chrome/grid-cell", width = 8, height = 8 },
       ["results.bg"] = { path = "pokedex/chrome/results-bg", width = 256, height = 192 },
       ["results.cell.art"] = { path = "pokedex/chrome/results-cell", width = 8, height = 8 },
+      ["numbers.art"] = { path = "pokedex/chrome/numbers", width = 8, height = 8 },
     },
     cells = {
       ["grid.cursor"] = cell("grid.cell.art"),
       ["results.cursor"] = cell("results.cell.art"),
+      ["numbers.cell"] = cell("numbers.art"),
     },
     animations = {
       ["grid.cursor.anim"] = { frames = { { cell = "grid.cursor", duration = 1 } } },
@@ -335,6 +343,7 @@ local function closureManifest()
       entryByLanguage = { native = { nameBankId = 237, categoryBankId = 816, flavorBankId = 803 } },
       measureByProfile = { base = { heightBankId = 815, weightBankId = 813 } },
       registrationAnnouncement = { bankId = 197, messageId = 871 },
+      registrationHeader = { bankId = 802, messageId = 144 },
     },
     pages = {
       grid = page("grid.bg", "grid.cursor", "grid.cursor.sprite"),
@@ -404,14 +413,14 @@ function T.page_change_adopts_only_the_current_source_closure()
   Assert.notNil(first, "the current page converges on a complete bundle")
   Assert.deepEqual(
     chromeRoles(first.assets.chrome),
-    { "grid.bg", "grid.cell.art" },
+    { "grid.bg", "grid.cell.art", "numbers.art" },
     "the grid bundle holds only the grid closure"
   )
   local stepped = lease:prepare(pageDemand("results", "pokedex-results"))
   Assert.equal(stepped.kind, "pending", "a fresh generation never adopts on its enrollment call")
   Assert.deepEqual(
     chromeRoles(first.assets.chrome),
-    { "grid.bg", "grid.cell.art" },
+    { "grid.bg", "grid.cell.art", "numbers.art" },
     "pending work leaves the committed bundle untouched"
   )
   local second = nil
@@ -426,7 +435,7 @@ function T.page_change_adopts_only_the_current_source_closure()
   Assert.notNil(second, "the replacement page converges on a complete bundle")
   Assert.deepEqual(
     chromeRoles(second.assets.chrome),
-    { "results.bg", "results.cell.art" },
+    { "numbers.art", "results.bg", "results.cell.art" },
     "the results bundle holds only the results closure"
   )
   Assert.isTrue(second.assets ~= first.assets, "replacement publishes a new bundle identity")
@@ -473,7 +482,7 @@ function T.failed_replacement_preserves_the_committed_bundle()
   Assert.isTrue(type(failed.error) == "string" and failed.error ~= "", "the failure carries its original cause")
   Assert.deepEqual(
     chromeRoles(first.assets.chrome),
-    { "grid.bg", "grid.cell.art" },
+    { "grid.bg", "grid.cell.art", "numbers.art" },
     "the failed generation never mutates the committed bundle"
   )
   pool:clearFailure()
@@ -734,6 +743,7 @@ function T.registration_announcement_substitutes_the_capture_name()
   local pool = SharedImagePoolFake.new()
   local provider = stubMessageProvider({
     [197] = { [871] = "{STRVAR_1 1, 0, 0}'s data was added." },
+    [802] = { [144] = "Pokédex registration completed." },
     [237] = { [158] = "Totodile" },
     [816] = { [158] = "Big Jaw" },
     [803] = { [158] = "It bites." },
@@ -776,6 +786,7 @@ function T.registration_slots_resolve_through_the_borrowed_banks()
   local pool = SharedImagePoolFake.new()
   local provider = stubMessageProvider({
     [197] = { [871] = "{STRVAR_1 1, 0, 0}'s data was added." },
+    [802] = { [144] = "Pokédex registration completed." },
     [237] = { [158] = "Totodile" },
     [816] = { [158] = "Big Jaw" },
     [803] = { [158] = "It bites." },
@@ -808,6 +819,7 @@ function T.registration_slots_resolve_through_the_borrowed_banks()
   Assert.notNil(ready, "the card slots converge on a complete bundle")
   Assert.deepEqual(ready.assets.messages, {
     registrationAnnouncement = "TOTODILE's data was added.",
+    ["registration.header"] = "Pokédex registration completed.",
     ["registration.dex-number"] = expectedNumber,
     ["registration.species-name"] = "Totodile",
     ["registration.category"] = "Big Jaw",
@@ -899,9 +911,14 @@ local function placedQuadManifest()
       windows = {},
     }
   end
+  local quadDigits = {}
+  for index = 1, 10 do
+    quadDigits[index] = "quad.a.art"
+  end
   return {
     schema = PokedexCache.SCHEMA,
     fonts = { body = 0, header = 4 },
+    numberAtlas = { marker = "quad.a.art", caught = quadDigits, seen = quadDigits, digits = 10 },
     chrome = {
       ["quad.a.bg"] = { path = "pokedex/chrome/quad-a-bg", width = 256, height = 192 },
       ["quad.a.art"] = { path = "pokedex/chrome/quad-a-art", width = 64, height = 32 },
@@ -936,6 +953,7 @@ local function placedQuadManifest()
       entryByLanguage = { native = { nameBankId = 237, categoryBankId = 816, flavorBankId = 803 } },
       measureByProfile = { base = { heightBankId = 815, weightBankId = 813 } },
       registrationAnnouncement = { bankId = 197, messageId = 871 },
+      registrationHeader = { bankId = 802, messageId = 144 },
     },
     pages = {
       grid = page("quad.a.bg", { "quad.a.arrow", "quad.a.echo" }),
@@ -1279,6 +1297,7 @@ local function sourceClosureManifest(roles, objects)
       entryByLanguage = { native = { nameBankId = 237, categoryBankId = 816, flavorBankId = 803 } },
       measureByProfile = { base = { heightBankId = 815, weightBankId = 813 } },
       registrationAnnouncement = { bankId = 197, messageId = 871 },
+      registrationHeader = { bankId = 802, messageId = 144 },
     },
     pages = pages,
     footprints = footprints,
@@ -1333,14 +1352,37 @@ local function drive(controller, events)
   Fixture.tick(controller, events)
 end
 
+-- Opens the browser through its cover drag and lands on the list page.
+---@param controller table live browser controller under test
+local function openGrid(controller)
+  drive(controller, { { type = "drag", target = "cover", phase = "begin", value = 240 } })
+  drive(controller, { { type = "drag", target = "cover", phase = "move", value = 40 } })
+  drive(controller, { { type = "drag", target = "cover", phase = "end", value = 40 } })
+  settle(controller, 40)
+  Assert.equal(controller:view().page, "grid", "the cover drag reaches the grid")
+end
+
 ---@param controller table live browser controller under test
 ---@param species string selected species key
 local function walkTo(controller, species)
   for _ = 1, 40 do
-    if controller:view().selection.species == species then
+    local view = controller:view()
+    if view.selection.species == species then
       return
     end
-    drive(controller, { { type = "navigate", direction = "right" } })
+    local entries = view.grid.buffers[1].entries
+    local cursor = view.grid.cursor
+    local target = nil
+    for index, entry in ipairs(entries) do
+      if entry.species == species then
+        target = index - 1
+      end
+    end
+    if target == nil then
+      error("the grid page never stages " .. species, 0)
+    end
+    local direction = target > cursor and "right" or "left"
+    drive(controller, { { type = "navigate", direction = direction } })
   end
   Assert.equal(controller:view().selection.species, species, "the walk reaches " .. species)
 end
@@ -1354,11 +1396,7 @@ function T.caught_search_results_prepare_their_full_page_closure()
   local pool = SharedImagePoolFake.new()
   local monCatalog, catalog = Fixture.catalogs()
   local controller = Fixture.openController(Fixture.ownerWithHistory(monCatalog, catalog), monCatalog, catalog)
-  drive(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
-  drive(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
-  drive(controller, { { type = "drag", target = "cover", phase = "end", value = 64 } })
-  settle(controller, 40)
-  Assert.equal(controller:view().page, "grid", "the cover drag reaches the grid")
+  openGrid(controller)
   drive(controller, { { type = "y" } })
   drive(controller, { { type = "start" } })
   settle(controller, 200)
@@ -1436,9 +1474,9 @@ function T.shape_pages_prepare_while_invalid_subjects_still_fail()
   local monCatalog, catalog = Fixture.catalogs()
   withPublishedOptionOrder(catalog)
   local controller = Fixture.openController(Fixture.ownerWithHistory(monCatalog, catalog), monCatalog, catalog)
-  drive(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
-  drive(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
-  drive(controller, { { type = "drag", target = "cover", phase = "end", value = 64 } })
+  drive(controller, { { type = "drag", target = "cover", phase = "begin", value = 240 } })
+  drive(controller, { { type = "drag", target = "cover", phase = "move", value = 40 } })
+  drive(controller, { { type = "drag", target = "cover", phase = "end", value = 40 } })
   settle(controller, 40)
   drive(controller, { { type = "y" } })
   Assert.equal(controller:view().page, "search", "grid Y reaches the criteria root")
@@ -1512,11 +1550,7 @@ function T.staged_slider_quantities_expand_through_their_borrowed_templates()
   local monCatalog, catalog = Fixture.catalogs()
   local dexOwner = Fixture.ownerWithHistory(monCatalog, catalog)
   local controller = Fixture.openController(dexOwner, monCatalog, catalog)
-  drive(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
-  drive(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
-  drive(controller, { { type = "drag", target = "cover", phase = "end", value = 64 } })
-  settle(controller, 40)
-  Assert.equal(controller:view().page, "grid", "the cover drag reaches the grid")
+  openGrid(controller)
   drive(controller, { { type = "y" } })
   settle(controller, 2)
   Assert.equal(controller:view().page, "search", "grid Y reaches the search criteria")
@@ -1600,27 +1634,52 @@ local function idleClosureManifest()
   local function background(chrome)
     return { chrome = chrome, layer = 0, x = 0, y = 0, priority = 0, paletteGroup = "group" }
   end
-  local function page(bgRole)
+  local function page(bgRole, cells)
     return {
       backdrop = {
         information = { r = 0, g = 0, b = 0, a = 255 },
         controls = { r = 0, g = 0, b = 0, a = 255 },
       },
       backgrounds = { information = { background(bgRole) }, controls = {} },
-      cells = {},
+      cells = cells or {},
       sprites = {},
       windows = {},
     }
   end
+  local idleDigits = {}
+  for index = 1, 10 do
+    idleDigits[index] = "numbers.art"
+  end
   return {
     schema = PokedexCache.SCHEMA,
     fonts = { body = 0, header = 4 },
+    numberAtlas = { marker = "numbers.art", caught = idleDigits, seen = idleDigits, digits = 10 },
+    dexModeLabel = {
+      johto = "numbers.art",
+      national = "numbers.art",
+      x = 40,
+      y = 24,
+      locked = { role = "numbers.art", x = 24, y = 120, width = 208, height = 16 },
+    },
     chrome = {
       ["cover.bg"] = { path = "pokedex/chrome/cover-bg", width = 256, height = 192 },
       ["grid.bg"] = { path = "pokedex/chrome/grid-bg", width = 256, height = 192 },
       ["registration.bg"] = { path = "pokedex/chrome/registration-bg", width = 256, height = 192 },
+      ["numbers.art"] = { path = "pokedex/chrome/numbers", width = 8, height = 8 },
     },
-    cells = {},
+    cells = {
+      ["numbers.cell"] = {
+        bounds = { x = 0, y = 0, width = 8, height = 8 },
+        parts = {
+          {
+            chrome = "numbers.art",
+            source = { x = 0, y = 0, width = 8, height = 8 },
+            x = 0,
+            y = 0,
+          },
+        },
+      },
+    },
     animations = {},
     sprites = {},
     windows = {},
@@ -1629,10 +1688,11 @@ local function idleClosureManifest()
       entryByLanguage = { native = { nameBankId = 237, categoryBankId = 816, flavorBankId = 803 } },
       measureByProfile = { base = { heightBankId = 815, weightBankId = 813 } },
       registrationAnnouncement = { bankId = 197, messageId = 871 },
+      registrationHeader = { bankId = 802, messageId = 144 },
     },
     pages = {
       cover = page("cover.bg"),
-      grid = page("grid.bg"),
+      grid = page("grid.bg", { "numbers.cell" }),
       registration = page("registration.bg"),
     },
   }
@@ -2134,6 +2194,65 @@ function T.settled_idle_work_rests_without_new_interest_or_reads()
   )
   owner:release()
   Assert.equal(pool:stats().outstandingLeases, 0, "close returns every adopted image interest")
+end
+
+-- A demanded portrait borrows its page only after the provisioner reports
+-- that exact page compiled: while it compiles the lease stays pending
+-- without pooled interest in the page. The portrait manifest loads once
+-- per owner lifetime, not once per preparation round.
+function T.portrait_pages_borrow_only_after_their_compilation_is_ready()
+  local Owner = requirePresent("portrait page compilation")
+  local MonCache = require("libs.assets.src.MonCache")
+  local pool = SharedImagePoolFake.new()
+  local pagePath = MonCache.portraitPagePath(7)
+  local pageRequests = 0
+  local rawRequest = pool.request
+  function pool:request(path, sampler, priority)
+    if path == pagePath then
+      pageRequests = pageRequests + 1
+    end
+    return rawRequest(self, path, sampler, priority)
+  end
+  local args = ownerArgs(pool)
+  local dexManifest = args.cacheFs.loadLua()
+  local portraitLoads = 0
+  args.cacheFs = {
+    loadLua = function(_, path)
+      if path == MonCache.portraitManifestPath() then
+        portraitLoads = portraitLoads + 1
+        return {
+          entries = setmetatable({}, {
+            __index = function()
+              return { pageId = 7 }
+            end,
+          }),
+        }
+      end
+      return dexManifest
+    end,
+  }
+  local compiled = { ready = false, asked = {} }
+  args.derivedAssets.requestMonPortraitPage = function(pageId, urgency)
+    compiled.asked[#compiled.asked + 1] = { pageId = pageId, urgency = urgency }
+    return compiled.ready
+  end
+  local owner = Owner.new(args)
+  local lease = owner:acquire({ purpose = "browser" })
+  for _ = 1, 4 do
+    Assert.equal(lease:prepare(browserDemand("browser", "page-a")).kind, "pending", "a compiling page stays pending")
+  end
+  Assert.equal(pageRequests, 0, "a compiling page enrolls no pooled interest")
+  Assert.isTrue(#compiled.asked > 0, "the picture demands its page compilation")
+  Assert.equal(compiled.asked[1].pageId, 7, "the demand names the selector's page")
+  Assert.equal(compiled.asked[1].urgency, "required", "a visible picture compiles at required urgency")
+  compiled.ready = true
+  local ready = pumpReady(lease, browserDemand("browser", "page-a"))
+  Assert.notNil(ready.assets.pictures.selected.handle, "the compiled page backs the picture")
+  Assert.equal(pageRequests, 1, "the compiled page enrolls exactly once")
+  Assert.equal(portraitLoads, 1, "the portrait manifest loads once")
+  lease:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "release returns the portrait page")
 end
 
 return { tests = T }

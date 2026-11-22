@@ -513,11 +513,15 @@ function T.tests.opening_movie_queues_only_the_shared_battle_core_once()
     local state = startTitle()
     Assert.isTrue(isStartupTitle(state), "the title journey reaches its movie while the shared core stays pending")
     local shared, sharedUrgency, leaves = 0, nil, {}
+    local dex, dexUrgency = 0, nil
     for _, request in ipairs(active.requests) do
       local selector = request.selector
       if selector.requestKind == "battle-presentation" then
         shared = shared + 1
         sharedUrgency = selector.urgency
+      elseif selector.requestKind == "pokedex" then
+        dex = dex + 1
+        dexUrgency = selector.urgency
       elseif
         selector.requestKind == "battle-trainer-picture"
         or selector.requestKind == "battle-ball"
@@ -528,6 +532,8 @@ function T.tests.opening_movie_queues_only_the_shared_battle_core_once()
     end
     Assert.equal(shared, 1, "the opening movie queues the shared battle core exactly once")
     Assert.equal(sharedUrgency, "near", "the startup core demand never outranks title work")
+    Assert.equal(dex, 1, "the opening movie enrolls the pokedex presentation scope once")
+    Assert.equal(dexUrgency, "near", "the pokedex presentation compiles behind title and field work")
     Assert.deepEqual(leaves, {}, "the opening never bulk-enqueues leaf art")
     Assert.equal(#active.menus, 0, "the core demand precedes any menu transfer")
     Assert.equal(active.sweeps or 0, 1, "the title entry authorizes background completion once")

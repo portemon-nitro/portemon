@@ -96,11 +96,12 @@ local MENU_ROW_PITCH = 24
 local MENU_TEXT_TOP = 8
 local MENU_TEXT_HEIGHT = 16
 
--- Source UI tones on the phone card: cursor motion, list decisions and
--- scrolling, and cancellation.
+-- Source UI tones on the phone card: the contact list and its manual-move
+-- mode walk with the gear cursor tone, while the action, sort, and in-call
+-- TouchscreenListMenus stay silent themselves and voice the source static
+-- tooltip callback's gear decide tone on every move, decision, and cancel.
 local CURSOR_SOUND = "SEQ_SE_GS_GEARCURSOR"
 local DECIDE_SOUND = "SEQ_SE_GS_GEARDECIDE"
-local CANCEL_SOUND = "SEQ_SE_GS_GEARCANCEL"
 
 -- In-call choice frames in tiles: one menu identity owns its frame,
 -- option count, and first display label entry together, so geometry,
@@ -842,6 +843,7 @@ function PhoneController:_chooseMain(option)
     self._mode = "list"
     self._held = nil
     self._selectedContact = nil
+    playEffect(self, DECIDE_SOUND)
   end
 end
 
@@ -922,10 +924,10 @@ function PhoneController:_handleMenu(event)
   if event.type == "navigate" and type(event.direction) == "string" then
     if event.direction == "up" then
       self._menuCursor = (self._menuCursor - 1) % MAIN_OPTION_COUNT
-      playEffect(self, CURSOR_SOUND)
+      playEffect(self, DECIDE_SOUND)
     elseif event.direction == "down" then
       self._menuCursor = (self._menuCursor + 1) % MAIN_OPTION_COUNT
-      playEffect(self, CURSOR_SOUND)
+      playEffect(self, DECIDE_SOUND)
     end
   elseif event.type == "confirm" then
     self:_chooseMain(self._menuCursor)
@@ -933,7 +935,7 @@ function PhoneController:_handleMenu(event)
     self._mode = "list"
     self._held = nil
     self._selectedContact = nil
-    playEffect(self, CANCEL_SOUND)
+    playEffect(self, DECIDE_SOUND)
   elseif event.type == "pointer_cancel" then
     self._mode = "list"
     self._held = nil
@@ -962,6 +964,7 @@ function PhoneController:_chooseSort(option)
     self._mode = "menu"
     self._menuCursor = 1
     self._held = nil
+    playEffect(self, DECIDE_SOUND)
   end
 end
 
@@ -970,10 +973,10 @@ function PhoneController:_handleSort(event)
   if event.type == "navigate" and type(event.direction) == "string" then
     if event.direction == "up" then
       self._menuCursor = (self._menuCursor - 1) % SORT_OPTION_COUNT
-      playEffect(self, CURSOR_SOUND)
+      playEffect(self, DECIDE_SOUND)
     elseif event.direction == "down" then
       self._menuCursor = (self._menuCursor + 1) % SORT_OPTION_COUNT
-      playEffect(self, CURSOR_SOUND)
+      playEffect(self, DECIDE_SOUND)
     end
   elseif event.type == "confirm" then
     self:_chooseSort(self._menuCursor)
@@ -981,7 +984,7 @@ function PhoneController:_handleSort(event)
     self._mode = "menu"
     self._menuCursor = 1
     self._held = nil
-    playEffect(self, CANCEL_SOUND)
+    playEffect(self, DECIDE_SOUND)
   elseif event.type == "pointer_cancel" then
     self._mode = "menu"
     self._menuCursor = 1
@@ -1136,6 +1139,7 @@ function PhoneController:_callEdge(event)
     if waiting then
       local choices = shown.choices --[[@as string[] ]]
       local cursor = math.min(math.max(self._choiceCursor, 0), #choices - 1)
+      playEffect(self, DECIDE_SOUND)
       return { choice = choices[cursor + 1] }
     end
     return { confirm = true }
@@ -1144,8 +1148,10 @@ function PhoneController:_callEdge(event)
     local choices = shown.choices --[[@as string[] ]]
     if event.direction == "up" then
       self._choiceCursor = (self._choiceCursor - 1) % #choices
+      playEffect(self, DECIDE_SOUND)
     elseif event.direction == "down" then
       self._choiceCursor = (self._choiceCursor + 1) % #choices
+      playEffect(self, DECIDE_SOUND)
     end
   end
   if event.type == "pointer_down" then
@@ -1191,6 +1197,7 @@ function PhoneController:_callEdge(event)
       local frame = choiceProjection(shown)
       local row = callMenuRowAt(frame, event.x, event.y)
       if row ~= nil and row >= 0 and row < #choices then
+        playEffect(self, DECIDE_SOUND)
         return { choice = choices[row + 1] }
       end
     end

@@ -607,7 +607,10 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
     )
     local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
     local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
-    local cacheFs = GeneratedCacheFixture.reader("heartgold")
+    -- The movie scenes and title build are staged above, so the handoff reads
+    -- no generated payload: an empty fixture view stands in for the epoch.
+    local view = GeneratedCacheFixture.resident("heartgold")
+    local cacheFs = view.reader
     local decoded = ResidentAssetCache.new({
       idleByteLimit = 64 * 1024 * 1024,
       release = function(value)
@@ -619,6 +622,7 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
       release = function()
         queue:release()
         decoded:clear()
+        GeneratedCacheFixture.close(view)
       end,
     })
     local state = StartupTitleState.new({

@@ -9,7 +9,6 @@ local Errors = require("libs.errors.src.Errors")
 
 ---@class PokedexForms
 ---@field _catalog table<string, unknown> borrowed generated catalog
----@field _monCatalog table<string, unknown> borrowed resolved mon catalog
 ---@field _dex table<string, unknown> borrowed authoritative knowledge owner
 ---@field _species string entry species key
 ---@field _variants table[] ordered logical picture variants
@@ -39,39 +38,7 @@ local function checkTable(value, what)
   return value
 end
 
----@param ratio integer gender ratio
----@return boolean whether the male gender is reachable
-local function maleReachable(ratio)
-  return ratio ~= 255 and ratio ~= 254
-end
-
----@param ratio integer gender ratio
----@return boolean whether the female gender is reachable
-local function femaleReachable(ratio)
-  return ratio ~= 255 and ratio ~= 0
-end
-
----@param monCatalog table<string, unknown>
----@param speciesKey string
----@return integer gender ratio
-local function genderRatioOf(monCatalog, speciesKey)
-  local speciesOf = monCatalog.species
-  if type(speciesOf) ~= "function" then
-    fail("forms needs the resolved mon catalog", { species = speciesKey })
-  end
-  local ok, definition = pcall(speciesOf, monCatalog, speciesKey)
-  if not ok or type(definition) ~= "table" then
-    fail("forms names a species outside the resolved catalog", { species = speciesKey })
-  end
-  assert(type(definition) == "table", "forms reads the resolved species")
-  local ratio = definition.genderRatio
-  if type(ratio) ~= "number" or ratio % 1 ~= 0 or ratio < 0 or ratio > 255 then
-    fail("forms names a species without a gender ratio", { species = speciesKey })
-  end
-  return ratio --[[@as integer]]
-end
-
----@param args { catalog: table<string, unknown>, monCatalog: table<string, unknown>, dex: table<string, unknown>, species: string }
+---@param args { catalog: table<string, unknown>, dex: table<string, unknown>, species: string }
 ---@return PokedexForms
 function PokedexForms.new(args)
   if type(args) ~= "table" then
@@ -79,9 +46,6 @@ function PokedexForms.new(args)
   end
   assert(type(args) == "table", "forms reads its construction record")
   local catalog = checkTable(args.catalog, "the generated catalog")
-  if type(args.monCatalog) ~= "table" then
-    fail("forms needs the resolved mon catalog", {})
-  end
   if type(args.dex) ~= "table" then
     fail("forms needs the knowledge owner", {})
   end
@@ -90,7 +54,6 @@ function PokedexForms.new(args)
   end
   local self = setmetatable({
     _catalog = catalog,
-    _monCatalog = args.monCatalog,
     _dex = args.dex,
     _species = args.species,
     _variants = {},
@@ -117,6 +80,17 @@ local function dexList(dex, key, method)
   return out
 end
 
+---@param dex table<string, unknown>
+---@param key string
+---@return string? first recorded gender behind the species
+local function firstGenderOf(dex, key)
+  local reader = dex.observedGenders
+  assert(type(reader) == "function", "forms reads knowledge through its owner")
+  local genders = reader(dex, key)
+  assert(type(genders) == "table", "forms reads the detached knowledge list")
+  return genders[1] --[[@as string?]]
+end
+
 function PokedexForms:_build()
   local catalog = self._catalog
   assert(type(catalog) == "table", "forms reads its borrowed catalog")
@@ -124,93 +98,46 @@ function PokedexForms:_build()
   local record = checkTable(speciesRecords[self._species], "the entry species record")
   local policy = checkTable(record.formPolicy, "the generated form policy")
   local dex = self._dex
-  local ratio = genderRatioOf(self._monCatalog, self._species)
   local variants = {}
+  local entries = checkTable(policy.variants, "the declared variants")
   if policy.kind == "automatic" then
-    local entries = checkTable(policy.variants, "the declared variants")
-    local seenReader = dex.isSeen
-    local caughtReader = dex.isCaught
-    assert(type(seenReader) == "function", "forms reads knowledge through its owner")
-    assert(type(caughtReader) == "function", "forms reads knowledge through its owner")
-    local known = seenReader(dex, self._species) == true or caughtReader(dex, self._species) == true
-    if known == true then
-      local genders = dexList(dex, self._species, "observedGenders")
-      local pictureGender = genders[1]
-      if pictureGender == nil then
-        if maleReachable(ratio) then
-          pictureGender = "male"
-        elseif femaleReachable(ratio) then
-          pictureGender = "female"
-        else
-          pictureGender = "genderless"
-        end
-      end
-      for _, entry in ipairs(entries) do
-        variants[#variants + 1] = { id = entry.id, form = entry.form, gender = pictureGender }
-      end
+    -- Every declared form is listed unconditionally (pokedex_screen_setup.c
+    -- hard-codes Castform = 4 and Cherrim = 2); form rows keep the first
+    -- recorded gender for their artwork.
+    local gender = firstGenderOf(dex, self._species) or "genderless"
+    for _, entry in ipairs(entries) do
+      variants[#variants + 1] = { id = entry.id, form = entry.form, gender = gender }
     end
   elseif policy.kind == "ordered" then
-    local entries = checkTable(policy.variants, "the declared variants")
     local byId = {}
     for _, entry in ipairs(entries) do
       byId[entry.id] = entry
     end
-    local genders = dexList(dex, self._species, "observedGenders")
-    local pictureGender = genders[1]
-    if pictureGender == nil then
-      if maleReachable(ratio) then
-        pictureGender = "male"
-      elseif femaleReachable(ratio) then
-        pictureGender = "female"
-      else
-        pictureGender = "genderless"
-      end
-    end
+    local gender = firstGenderOf(dex, self._species) or "genderless"
     for _, id in ipairs(dexList(dex, self._species, "observedVariants")) do
       local entry = byId[id]
       if entry ~= nil then
-        variants[#variants + 1] = { id = entry.id, form = entry.form, gender = entry.gender or pictureGender }
+        variants[#variants + 1] = { id = entry.id, form = entry.form, gender = entry.gender or gender }
       end
     end
   else
-    local entries = checkTable(policy.variants, "the declared variants")
-    local defaultForm = 0
-    if entries[1] ~= nil and type(entries[1].form) == "number" then
-      defaultForm = entries[1].form
+    -- Ordinary species show at most the first-seen and the first different
+    -- gender, never a gender-by-form cross-product. A historyless entry
+    -- falls back to one genderless row.
+    local defaultEntry = entries[1]
+    assert(type(defaultEntry) == "table", "the form policy declares its variants")
+    local defaultForm = type(defaultEntry.form) == "number" and defaultEntry.form or 0
+    local defaultId = type(defaultEntry.id) == "number" and defaultEntry.id or 0
+    local seen = 0
+    for _, gender in ipairs(dexList(dex, self._species, "observedGenders")) do
+      if seen >= 2 then
+        break
+      end
+      seen = seen + 1
+      variants[#variants + 1] = { id = defaultId, form = defaultForm, gender = gender }
     end
-    local defaultId = 0
-    if entries[1] ~= nil and type(entries[1].id) == "number" then
-      defaultId = entries[1].id
-    end
-    local genders = dexList(dex, self._species, "observedGenders")
-    if ratio == 255 then
+    if #variants == 0 then
       variants[#variants + 1] = { id = defaultId, form = defaultForm, gender = "genderless" }
-    else
-      for _, gender in ipairs(genders) do
-        variants[#variants + 1] = { id = defaultId, form = defaultForm, gender = gender }
-      end
-    end
-  end
-  if #variants == 0 then
-    local seenReader = self._dex.isSeen
-    local caughtReader = self._dex.isCaught
-    assert(type(seenReader) == "function", "forms reads knowledge through its owner")
-    assert(type(caughtReader) == "function", "forms reads knowledge through its owner")
-    if seenReader(self._dex, self._species) == true or caughtReader(self._dex, self._species) == true then
-      local entries = checkTable(policy.variants, "the declared variants")
-      local first = entries[1]
-      assert(type(first) == "table", "the form policy declares its variants")
-      local fallbackGender = first.gender
-      if fallbackGender == nil then
-        if maleReachable(ratio) then
-          fallbackGender = "male"
-        elseif femaleReachable(ratio) then
-          fallbackGender = "female"
-        else
-          fallbackGender = "genderless"
-        end
-      end
-      variants[#variants + 1] = { id = first.id or 0, form = first.form or 0, gender = fallbackGender }
     end
   end
   self._variants = variants
@@ -372,6 +299,23 @@ function PokedexForms:currentPictureFacts()
   return { form = variant.form, gender = variant.gender, frontPersonality = frontPersonality, backPersonality = 0 }
 end
 
+-- The source portrait and size pages always read seen-form index 0, not
+-- the forms-tab cursor. This returns that first row's facts.
+---@return { form: integer, gender: string, frontPersonality: integer, backPersonality: integer } first variant picture facts
+function PokedexForms:firstPictureFacts()
+  local variant = self._variants[1]
+  if variant == nil then
+    fail("forms needs its first variant before pictures", { species = self._species })
+  end
+  assert(type(variant) == "table", "forms pictures read the first variant")
+  local frontPersonality = 0
+  local reader = self._dex.firstPersonality
+  if type(reader) == "function" then
+    frontPersonality = reader(self._dex, self._species) or 0
+  end
+  return { form = variant.form, gender = variant.gender, frontPersonality = frontPersonality, backPersonality = 0 }
+end
+
 ---@return integer authored scrollbar thumb length
 function PokedexForms:scrollbarLength()
   local count = #self._variants
@@ -399,12 +343,18 @@ function PokedexForms:scrollbarPosition()
   return minY + math.floor(step * self._row / 256)
 end
 
----@return { variants: table[], row: integer, scrollbar: { length: integer, position: integer }, comparison: { indices: integer[], activeSide: integer, facing: string }? } detached forms projection
+---@return { variants: table[], row: integer, scrollbar: { length: integer, position: integer, top: integer, bottom: integer }, scroll: { offset: integer, iconOffset: integer }?, comparison: { indices: integer[], activeSide: integer, facing: string }? } detached forms projection
 function PokedexForms:view()
+  local length = self:scrollbarLength()
+  local half = math.floor(length / 2)
+  local track = PokedexForms.SCROLLBAR_TRACK
+  local center = PokedexForms.SCROLLBAR_CENTER
+  local top = center - math.floor(track / 2) + half
+  local bottom = center + math.floor(track / 2) - half
   local projection = {
     variants = self:variants(),
     row = self._row,
-    scrollbar = { length = self:scrollbarLength(), position = self:scrollbarPosition() },
+    scrollbar = { length = length, position = self:scrollbarPosition(), top = top, bottom = bottom },
   }
   local comparison = self:comparison()
   if comparison ~= nil then

@@ -28,8 +28,8 @@ local Errors = require("libs.errors.src.Errors")
 local PokedexSize = {}
 PokedexSize.__index = PokedexSize
 
-PokedexSize.SETUP_TICKS = 48
-PokedexSize.DROP_UPDATES = 30
+PokedexSize.SETUP_TICKS = 4
+PokedexSize.DROP_CONTACT_UPDATES = 14
 PokedexSize.DROP_STEP = 0x400
 PokedexSize.DROP_START_Y = -16
 PokedexSize.BEAM_Y = 88
@@ -186,18 +186,35 @@ end
 
 ---@param panAngle integer sixteen-bit pan angle
 ---@return integer pan column
-function PokedexSize:_panX(panAngle)
-  local sine = quantizedTrig(panAngle)
-  return PokedexSize.BEAM_PIVOT_X + shiftFloor(PokedexSize.PAN_RADIUS * sine)
+---@return integer pan row
+function PokedexSize:_panPoint(panAngle)
+  local sine, cosine = quantizedTrig(panAngle)
+  return PokedexSize.BEAM_PIVOT_X + shiftFloor(PokedexSize.PAN_RADIUS * sine),
+    PokedexSize.BEAM_PIVOT_Y + shiftFloor(PokedexSize.PAN_RADIUS * cosine)
 end
 
 ---@return table[] detached pan projections
 function PokedexSize:_pans()
   local out = {}
   for _, base in ipairs({ -0x4000, 0x4000 }) do
-    out[#out + 1] = { x = self:_panX(base - self._beamAngle), y = PokedexSize.BEAM_PIVOT_Y, visible = true }
+    local x, y = self:_panPoint(base - self._beamAngle)
+    out[#out + 1] = { x = x, y = y, visible = true }
   end
   return out
+end
+
+-- Keeps every standing figure on its own pan top while the beam tilts;
+-- a thrown or escaping figure keeps its independent vertical motion.
+function PokedexSize:_placeStandingFigures()
+  local pans = self:_pans()
+  for index, figure in ipairs(self._figures) do
+    if figure.visible ~= false and self._phase ~= "thrown" and self._phase ~= "escape" then
+      local pan = pans[index]
+      if pan ~= nil then
+        figure.y = pan.y - 16
+      end
+    end
+  end
 end
 
 function PokedexSize:_finishDrop()
@@ -225,7 +242,9 @@ function PokedexSize:_updateDrop()
       figure.y = PokedexSize.BEAM_Y
     end
   end
-  if self._dropTick >= PokedexSize.DROP_UPDATES then
+  -- Contact clamps the figures on the fourteenth update; the bucket
+  -- state (and its tone) starts on the following update.
+  if self._dropTick >= PokedexSize.DROP_CONTACT_UPDATES + 1 then
     self:_finishDrop()
   end
 end
@@ -275,29 +294,27 @@ end
 
 function PokedexSize:_updateThrown()
   local bucket = PokedexSize.CLASSES[self._class + 1]
-  local figure = self._figures[self._thrownIndex or self:_highSide()]
+  local index = self._thrownIndex or self:_highSide()
+  local figure = self._figures[index]
+  local pan = self:_pans()[index]
+  local target = (pan ~= nil and pan.y or PokedexSize.BEAM_PIVOT_Y) - 16
   local velocity = self._throwVelocity or 0
   figure.y = figure.y + velocity
   velocity = velocity + bucket.ay
   self._throwVelocity = velocity
-  if figure.y == PokedexSize.BEAM_PIVOT_Y - 16 and velocity >= 0 then
+  if figure.y >= target and velocity >= 0 then
+    figure.y = target
     self._phase = "landed"
   end
 end
 
 function PokedexSize:_updateEscape()
   local velocity = self._throwVelocity or 0
-  local gone = true
-  for _, figure in ipairs(self._figures) do
-    figure.y = figure.y + velocity
-    if figure.y > -256 then
-      gone = false
-    end
-  end
-  if gone == true then
-    for _, figure in ipairs(self._figures) do
-      figure.visible = false
-    end
+  local index = self._thrownIndex or self:_highSide()
+  local figure = self._figures[index]
+  figure.y = figure.y + velocity
+  if figure.y <= -256 then
+    figure.visible = false
     self._phase = "escaped"
   end
 end
@@ -322,6 +339,9 @@ function PokedexSize:_updateMotion()
     self:_updateThrown()
   elseif self._phase == "escape" then
     self:_updateEscape()
+  end
+  if self._phase ~= "setup" and self._phase ~= "drop" then
+    self:_placeStandingFigures()
   end
 end
 

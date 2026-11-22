@@ -185,13 +185,19 @@ end
 -- A deterministic audio boundary that counts its tones: every effect
 -- wait completes on the next poll, so the conversation advances through
 -- completion state rather than wall-clock waits, and every dial and
--- hangup tone is counted to prove exactly-once release.
+-- hangup tone is counted to prove exactly-once release. Named sequence
+-- plays (the menu callback tones and the pre-hangup button tone) land in
+-- `plays` in order.
 ---@return table
 local function countingAudio()
   local completed = true
   return {
     dials = 0,
     hangups = 0,
+    plays = {},
+    play = function(self, sequence)
+      self.plays[#self.plays + 1] = sequence
+    end,
     playDialing = function(self)
       self.dials = self.dials + 1
       completed = false
@@ -1591,12 +1597,101 @@ function T.tests.call_text_types_at_the_configured_text_speed()
   controller:dispose()
 end
 
--- Dynamic Mother end-to-end through the controller: outgoing, non-local,
--- rival named+introduced reaches the intro, owes the savings choice with
--- menu-2 geometry, answers via tap, writes the flag, and completes.
--- Frame, labels, and tap routing ride the shared choice projection;
--- static calls never owe a choice (pinned elsewhere).
-function T.tests.dynamic_mother_choice_answers_through_controller_taps()
+-- The phone list and its menus voice their named source tones through the
+-- shared one-shot effect boundary, and only on input that moves or decides:
+-- list steps play the cursor tone and stay silent at the ends, opening the
+-- action menu plays the decide tone, and every TouchscreenListMenu callback
+-- (motion, quit, cancel) voices the gear decide tone.
+function T.tests.phone_list_and_menu_input_voices_the_source_tones()
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 101 }, { catalog = record.catalog })
+  for _, key in ipairs({ "custom.mom", "custom.trainer-plain", "custom.leader-falkner" }) do
+    state:registerContact(key)
+  end
+  local audio = countingAudio()
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = withUiMessages({ greeting = "custom.greeting" }),
+    world = worldFixture(),
+    audio = audio,
+    random = PokegearRandom.new(101),
+    tooltips = browseTooltips(),
+    menuLabels = browseMenuLabels(),
+  })
+  local function lastPlay()
+    return audio.plays[#audio.plays]
+  end
+  local function view()
+    return assert(controller:status().view, "the phone card publishes its view")
+  end
+
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.deepEqual(audio.plays, { "SEQ_SE_GS_GEARCURSOR" }, "stepping down the list plays the cursor tone")
+  controller:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.deepEqual(
+    audio.plays,
+    { "SEQ_SE_GS_GEARCURSOR", "SEQ_SE_GS_GEARCURSOR" },
+    "stepping back up the list plays it again"
+  )
+  controller:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(#audio.plays, 2, "bumping the list end plays nothing")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.notNil(view().contextMenu, "confirming a row opens its action menu")
+  Assert.equal(lastPlay(), "SEQ_SE_GS_GEARDECIDE", "opening the action menu plays the decide tone")
+  audio.plays = {}
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(lastPlay(), "SEQ_SE_GS_GEARDECIDE", "action-menu motion plays the source callback tone")
+  audio.plays = {}
+  controller:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(lastPlay(), "SEQ_SE_GS_GEARDECIDE", "every action-menu motion plays the source callback tone")
+  audio.plays = {}
+  controller:updateFixed({ { type = "cancel" } })
+  Assert.equal(lastPlay(), "SEQ_SE_GS_GEARDECIDE", "action-menu cancellation plays the source callback tone")
+  Assert.isNil(view().contextMenu, "action-menu cancellation returns to the list")
+
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  audio.plays = {}
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(lastPlay(), "SEQ_SE_GS_GEARDECIDE", "quitting the action menu plays the source callback tone")
+  Assert.isNil(view().contextMenu, "the action-menu Quit selection returns to the list")
+
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(view().contextMenu.options, browseMenuLabelsSort(), "choosing Sort opens its submenu")
+  audio.plays = {}
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(lastPlay(), "SEQ_SE_GS_GEARDECIDE", "sort-menu motion plays the source callback tone")
+  for _ = 1, 3 do
+    controller:updateFixed({ { type = "navigate", direction = "down" } })
+  end
+  audio.plays = {}
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(lastPlay(), "SEQ_SE_GS_GEARDECIDE", "quitting the sort menu plays the source callback tone")
+
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(view().contextMenu.options, browseMenuLabelsSort(), "the sort menu reopens on demand")
+  audio.plays = {}
+  controller:updateFixed({ { type = "cancel" } })
+  Assert.equal(lastPlay(), "SEQ_SE_GS_GEARDECIDE", "sort-menu cancellation plays the source callback tone")
+  controller:dispose()
+end
+
+-- Builds the dynamic-Mother outgoing call controller over the synthetic
+-- catalog: a fresh companion state, the native selector facts that reach
+-- the savings offer, the entry resolver, and the recording audio.
+---@param seed integer deterministic companion-stream seed
+---@return table controller, table audio, table written
+local function dynamicMotherCall(seed)
   local PhoneController = require("game.hgss.src.pokegear.PhoneController")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record = PokegearAssetSchema.validate(fixtureManifest())
@@ -1604,7 +1699,7 @@ function T.tests.dynamic_mother_choice_answers_through_controller_taps()
   assert(record ~= nil, "synthetic catalog validated above")
   local PokegearState = require("libs.hgss.src.save.PokegearState")
   local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
-  local state = PokegearState.new({ seed = 11 }, { catalog = record.catalog })
+  local state = PokegearState.new({ seed = seed }, { catalog = record.catalog })
   state:registerContact("custom.mom")
   state:setMom({ balance = 800, purchases = {}, gifts = {} })
   local written = {}
@@ -1629,37 +1724,62 @@ function T.tests.dynamic_mother_choice_answers_through_controller_taps()
   messages.resolveLine = function()
     error("dynamic mother never resolves a static script", 0)
   end
+  local audio = countingAudio()
   local controller = PhoneController.new({
     state = state,
     catalog = record.catalog,
     messages = messages,
     world = world,
-    audio = countingAudio(),
-    random = PokegearRandom.new(11),
-    request = { id = "dyn-mom-1", contact = "custom.mom", direction = "outgoing", kind = "ordinary" },
+    audio = audio,
+    random = PokegearRandom.new(seed),
+    request = { id = "dyn-mom-" .. seed, contact = "custom.mom", direction = "outgoing", kind = "ordinary" },
   })
-  -- Advance to the owed choice: connecting → greeting → message pages →
-  -- program (prompt + waiting) → choice.
+  return controller, audio, written
+end
+
+-- Advances a live conversation to its owed choice menu.
+---@param controller table
+---@return table view the published view, with callMenu when the choice is owed
+local function advanceToChoice(controller)
   for _ = 1, 10 do
     controller:updateFixed({})
     local view = controller:status().view
     if view.callMenu ~= nil then
-      break
+      return view
     end
     controller:updateFixed({ { type = "advance" } })
   end
-  local owed = controller:status().view
+  return controller:status().view
+end
+
+-- Advances the dynamic Mother conversation to its owed savings choice and
+-- returns the published menu frame. The in-call menu is the source
+-- TouchscreenListMenu with the static tooltip callback, so a cursor move
+-- voices the gear decide tone.
+---@param controller table live phone controller
+---@param audio table recording audio boundary
+---@return table frame the owed choice menu frame
+local function owedChoiceFrame(controller, audio)
+  -- Advance to the owed choice: connecting → greeting → message pages →
+  -- program (prompt + waiting) → choice.
+  local owed = advanceToChoice(controller)
   Assert.notNil(owed.callMenu, "dynamic mother owes its choice menu")
   Assert.equal(owed.callMenu.frame.x, 7, "the choice frame carries menu-2 x")
   Assert.equal(owed.callMenu.frame.y, 11, "the choice frame carries menu-2 y")
   Assert.equal(#owed.callMenu.options, 2, "the choice carries two source labels")
-  -- Tap the first (save) label: compute its band center from the frame.
-  local frame = owed.callMenu.frame
-  local x = frame.x * 8 + 4
-  local y = frame.y * 8 + 8 + 8
-  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:9", x = x, y = y } })
-  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:9", x = x, y = y } })
-  Assert.isTrue(written.choice == true, "tapping save writes the native savings flag")
+  audio.plays = {}
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(
+    audio.plays[#audio.plays],
+    "SEQ_SE_GS_GEARDECIDE",
+    "moving the in-call choice cursor voices the gear decide tone"
+  )
+  return owed.callMenu.frame
+end
+
+-- Steps an answered conversation to its terminal result.
+---@param controller table live phone controller
+local function settleAnsweredChoice(controller)
   for _ = 1, 80 do
     if controller:takeResult() ~= nil then
       break
@@ -1667,7 +1787,46 @@ function T.tests.dynamic_mother_choice_answers_through_controller_taps()
     controller:updateFixed({ { type = "advance" } })
   end
   Assert.notNil(controller:takeResult(), "the dynamic choice completes")
-  controller:dispose()
+end
+
+-- Dynamic Mother end-to-end through the controller: outgoing, non-local,
+-- rival named+introduced reaches the intro, owes the savings choice with
+-- menu-2 geometry, and answers from either input path with its own decide
+-- callback tone. Frame, labels, and input routing ride the shared choice
+-- projection; static calls never owe a choice (pinned elsewhere).
+function T.tests.dynamic_mother_choice_answers_through_controller_input()
+  -- The keyboard decides through the confirm key.
+  do
+    local controller, audio, written = dynamicMotherCall(12)
+    owedChoiceFrame(controller, audio)
+    controller:updateFixed({ { type = "confirm" } })
+    Assert.equal(
+      audio.plays[#audio.plays],
+      "SEQ_SE_GS_GEARDECIDE",
+      "confirming an in-call choice voices the gear decide tone"
+    )
+    Assert.isTrue(written.choice == false, "confirming keep writes the native savings flag")
+    settleAnsweredChoice(controller)
+    controller:dispose()
+  end
+  -- A touch answers the pressed label band, computed from the frame.
+  do
+    local controller, audio, written = dynamicMotherCall(11)
+    local frame = owedChoiceFrame(controller, audio)
+    local x = frame.x * 8 + 4
+    local y = frame.y * 8 + 8 + 8
+    audio.plays = {}
+    controller:updateFixed({ { type = "pointer_down", pointerId = "touch:9", x = x, y = y } })
+    controller:updateFixed({ { type = "pointer_up", pointerId = "touch:9", x = x, y = y } })
+    Assert.equal(
+      audio.plays[#audio.plays],
+      "SEQ_SE_GS_GEARDECIDE",
+      "tapping an in-call choice voices the gear decide tone"
+    )
+    Assert.isTrue(written.choice == true, "tapping save writes the native savings flag")
+    settleAnsweredChoice(controller)
+    controller:dispose()
+  end
 end
 
 -- The remaining source menu identities keep their own geometry without

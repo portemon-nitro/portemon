@@ -110,12 +110,22 @@ local function idle(controller, count)
   end
 end
 
+-- Marker sprite choices carry the silhouette plus the row's source palette
+-- index; area assertions name only the silhouette.
+---@param intent table projected marker sprite intent
+---@return string shape the silhouette choice
+local function markerShape(intent)
+  local shape = intent.choice:match("^(shape%d+)%-%d+$")
+  assert(shape ~= nil, "marker choices name a silhouette and palette: " .. tostring(intent.choice))
+  return shape
+end
+
 ---@param controller table browser under test
 ---@param species string entry to open through the grid
 local function openArea(controller, species)
-  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 64 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 240 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 40 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 40 } })
   idle(controller, 40)
   Assert.equal(controller:view().page, "grid", "the cover drag reaches the grid before the entry")
   local slots = controller:view().grid.buffers[1].entries
@@ -250,7 +260,7 @@ function T.summary_only_species_report_unknown_area()
   controller:dispose()
 end
 
-function T.refresh_hides_markers_rebuilds_and_restores_with_pulse()
+function T.refresh_rebuilds_markers_and_restores_with_pulse()
   local PokedexController = requirePresent("typed area lists and region/time travel")
   local monCatalog, catalog = catalogs()
   local owner = enabledOwner(monCatalog, catalog, true)
@@ -258,16 +268,16 @@ function T.refresh_hides_markers_rebuilds_and_restores_with_pulse()
   local controller = newBrowser(PokedexController, owner, monCatalog, catalog, { mapX = 10, mapY = 10 })
   openArea(controller, "EEVEE")
   tick(controller, { { type = "activate", action = "area-time", value = 1 } })
-  local hidden = controller:view()
+  local refreshed = controller:view()
   local anyVisible = false
-  for _, marker in ipairs(hidden.area.markers) do
+  for _, marker in ipairs(refreshed.area.markers) do
     if marker.visible then
       anyVisible = true
     end
   end
-  Assert.isFalse(anyVisible, "a region/time refresh immediately hides every habitat marker")
-  Assert.isFalse(hidden.area.player.visible, "a region/time refresh immediately hides the player marker")
-  local refresh = hidden.visual.blend.controls
+  Assert.isTrue(anyVisible, "the current-time marker set stays drawn through the refresh")
+  Assert.isTrue(refreshed.area.player.visible, "the region-matching player marker stays drawn through the refresh")
+  local refresh = refreshed.visual.blend.controls
   Assert.equal(refresh.eva + refresh.evb, 31, "the refresh blend preserves the hardware complement")
   Assert.isTrue(refresh.eva ~= 6 or refresh.evb ~= 10, "the refresh blend leaves the normal controls coefficients")
   idle(controller, 60)
@@ -276,16 +286,23 @@ function T.refresh_hides_markers_rebuilds_and_restores_with_pulse()
   Assert.equal(restored.visual.blend.controls.evb, 10, "the rebuild restores the normal controls blend")
   Assert.equal(restored.area.player.x, 10, "the player marker keeps its projected global column")
   Assert.equal(restored.area.player.y, 10, "the player marker keeps its projected global row")
-  local seenOn, seenOff = false, false
+  local firstSet, alternated = nil, false
   for _ = 1, 30 do
     tick(controller)
-    if controller:view().area.player.visible then
-      seenOn = true
-    else
-      seenOff = true
+    local view = controller:view()
+    Assert.isTrue(view.area.player.visible, "the region-matching player marker never blinks")
+    local set = {}
+    for index, marker in ipairs(view.area.markers) do
+      set[index] = marker.visible and "1" or "0"
+    end
+    local signature = table.concat(set)
+    if firstSet == nil then
+      firstSet = signature
+    elseif signature ~= firstSet then
+      alternated = true
     end
   end
-  Assert.isTrue(seenOn and seenOff, "the player marker blinks on its authored cycle")
+  Assert.isTrue(alternated, "the marker set alternates between the time-source phases")
   local first = restored.area.alpha
   tick(controller)
   local second = controller:view().area.alpha
@@ -438,7 +455,7 @@ function T.dungeon_markers_apply_their_own_shape_and_pixel_shift_in_both_regions
   Assert.equal(#markers, 5, "every fixture row paints its marker")
   local choices = {}
   for _, marker in ipairs(markers) do
-    choices[#choices + 1] = marker.choice
+    choices[#choices + 1] = markerShape(marker)
     Assert.equal(marker.pane, "information", "markers paint on the upper pane")
   end
   Assert.deepEqual(
@@ -467,7 +484,7 @@ function T.dungeon_markers_apply_their_own_shape_and_pixel_shift_in_both_regions
     end
   end
   Assert.equal(#kantoMarkers, 1, "the kanto leg paints only the shaft")
-  Assert.equal(kantoMarkers[1].choice, "shape6", "the kanto shaft keeps its tall silhouette")
+  Assert.equal(markerShape(kantoMarkers[1]), "shape6", "the kanto shaft keeps its tall silhouette")
   Assert.equal(kantoMarkers[1].x, 132, "the painted kanto shaft matches its projected column")
   Assert.equal(kantoMarkers[1].y, 104, "the painted kanto shaft matches its projected row")
   controller:dispose()

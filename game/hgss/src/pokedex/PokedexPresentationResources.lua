@@ -27,6 +27,7 @@ local PokedexRenderer = require("libs.hgss.src.ui.PokedexRenderer")
 ---@field _renderer table<string, unknown> the one shared prepared rasterizer
 ---@field _manifest table<string, unknown>? loaded presentation manifest, synthetic when no cache backs the seam
 ---@field _manifestReady boolean
+---@field _portraitEntries table<string, table<string, unknown>>|false|nil generated portrait entries loaded once; false when no manifest backs the seam
 ---@field _warmChromeTokens table<string, integer> unconsumed shared-owner prefetch tokens by canonical path
 ---@field _warmChromeLeases table<string, table<string, unknown>> owner-held prefetch leases by canonical path
 ---@field _warmChromePaths string[]? deduplicated sorted staged chrome paths behind the validated manifest
@@ -107,7 +108,7 @@ function PokedexPresentationResources.new(opts)
     _warmStaticFailure = nil,
     _warmSettled = false,
     _idleSurfaces = nil,
-    _portraitManifest = nil,
+    _portraitEntries = nil,
     _leases = {},
     _released = false,
   }, PokedexPresentationResources)
@@ -275,30 +276,39 @@ local function pictureSelector(owner, specimen, facing, browser)
   return selector
 end
 
+-- The generated portrait manifest entries, loaded once per owner lifetime.
+-- Nil when no cache backs the seam or the loaded record carries no entries.
+---@param owner PokedexPresentationResources
+---@return table<string, table<string, unknown>>? entries by canonical selector
+local function portraitEntries(owner)
+  if owner._portraitEntries == nil then
+    local entries = false
+    if owner._cacheFs ~= nil then
+      local ok, manifest = pcall(owner._cacheFs.loadLua, owner._cacheFs, MonCache.portraitManifestPath())
+      if ok and type(manifest) == "table" and type(manifest.entries) == "table" then
+        entries = manifest.entries
+      end
+    end
+    owner._portraitEntries = entries
+  end
+  return owner._portraitEntries or nil
+end
+
 ---@param owner PokedexPresentationResources
 ---@param selector string canonical portrait selector
 ---@return string? pooled path behind the selector, nil when no legal page resolves
 ---@return string? absence cause when the generated manifest carries no page
+---@return integer? pageId compiled page behind the path, nil where no manifest backs the seam
 local function portraitPath(owner, selector)
-  if owner._cacheFs == nil then
-    return "pokedex/portraits/" .. selector
-  end
-  local loaded, manifest = pcall(function()
-    return owner._cacheFs:loadLua(MonCache.portraitManifestPath())
-  end)
-  if not loaded then
-    return "pokedex/portraits/" .. selector
-  end
-  assert(type(manifest) == "table", "the portrait manifest loads as a record")
-  local entries = manifest.entries
-  if type(entries) ~= "table" then
+  local entries = portraitEntries(owner)
+  if entries == nil then
     return "pokedex/portraits/" .. selector
   end
   local entry = entries[selector]
   if type(entry) ~= "table" or type(entry.pageId) ~= "number" then
     return nil, "the portrait manifest carries no page for " .. selector
   end
-  return MonCache.portraitPagePath(entry.pageId)
+  return MonCache.portraitPagePath(entry.pageId), nil, entry.pageId
 end
 
 -- One per-lease icon demand over the shared pool: the committed plus
@@ -350,9 +360,6 @@ local function newIconDemand(lease)
         ---@return boolean ready
         ---@return string? failure nonempty cause when a wanted key is unknown
         function demand:prepare(allowance)
-          -- The provider admits its own page per call; count that
-          -- allowance as consumed even when the set turns ready here.
-          allowance.remaining = 0
           local owned = assert(self._provider, "preparation leases own their icon demand")
           local okPrepare, ready, failure = pcall(owned.prepareKeys, owned, self._wanted)
           if not okPrepare then
@@ -360,6 +367,12 @@ local function newIconDemand(lease)
           end
           if failure ~= nil then
             return false, tostring(failure)
+          end
+          -- The provider admits its own pages; an unsettled set spends one
+          -- shared admission per call, while a settled set spends none so
+          -- later families such as the header font still get admitted.
+          if ready ~= true then
+            allowance.remaining = math.max(0, allowance.remaining - 1)
           end
           return ready == true
         end
@@ -526,38 +539,44 @@ end
 ---@param demand table<string, unknown> validated demand under preparation
 ---@return string[]? wanted ordered distinct pooled portrait paths, nil when no legal selector resolves
 ---@return string? failure nonempty cause when a picture has no legal selector
+---@return table<string, integer>? pages compiled page id behind each manifest-backed path
 local function wantedPortraitPaths(lease, demand)
   local owner = lease._owner
   local browser = demand.purpose == "browser"
-  local wanted, seen = {}, {}
+  local wanted, seen, pages = {}, {}, {}
   for _, picture in ipairs(demand.pictures) do
     local selector, cause = pictureSelector(owner, picture.specimen, picture.facing, browser)
     if selector == nil then
       return nil, cause
     end
-    local path, pathCause = portraitPath(owner, selector)
+    local path, pathCause, pageId = portraitPath(owner, selector)
     if path == nil then
       return nil, pathCause
     end
     assert(type(path) == "string", "portrait paths resolve as strings")
     if not seen[path] then
       seen[path] = true
+      pages[path] = pageId
       wanted[#wanted + 1] = path
     end
   end
-  return wanted
+  return wanted, nil, pages
 end
 
--- Admits at most one new portrait interest under the shared budget, polls
--- the pending set, and adopts ready leases. Stale paths the new union no
--- longer watches cancel before any new enrollment.
+-- Enrolls portrait interests under the shared budget, polls the pending
+-- set, and adopts ready leases. A manifest-backed page enrolls only once
+-- the provisioner reports it compiled, so a cold page waits instead of
+-- failing on its missing file. Stale paths the new union no longer
+-- watches cancel before any new enrollment.
 ---@param lease table<string, unknown>
 ---@param wanted string[] ordered distinct pooled portrait paths
+---@param pages table<string, integer> compiled page id behind each manifest-backed path
 ---@param allowance { remaining: integer } shared per-prepare admission budget
 ---@return boolean ready
 ---@return string? failure nonempty cause when a portrait cannot be borrowed
-local function preparePortraits(lease, wanted, allowance)
-  local pool = lease._owner._pool
+local function preparePortraits(lease, wanted, pages, allowance)
+  local owner = lease._owner
+  local pool = owner._pool
   local keep = {}
   for _, path in ipairs(wanted) do
     keep[path] = true
@@ -570,8 +589,26 @@ local function preparePortraits(lease, wanted, allowance)
   end
   for _, path in ipairs(wanted) do
     if lease._portraitLeases[path] == nil and lease._portraitTokens[path] == nil and allowance.remaining > 0 then
-      lease._portraitTokens[path] = pool:request(path, POOLED_SAMPLER, "demand")
-      allowance.remaining = allowance.remaining - 1
+      local compiled = true
+      local pageId = pages[path]
+      if pageId ~= nil then
+        local requestPage = owner._derivedAssets.requestMonPortraitPage
+        if type(requestPage) ~= "function" then
+          return false, "pokedex portrait compilation is unavailable"
+        end
+        local ok, ready, failure = pcall(requestPage, pageId, "required")
+        if not ok then
+          return false, tostring(ready)
+        end
+        if failure ~= nil then
+          return false, tostring(failure)
+        end
+        compiled = ready == true
+      end
+      if compiled then
+        lease._portraitTokens[path] = pool:request(path, POOLED_SAMPLER, "demand")
+        allowance.remaining = allowance.remaining - 1
+      end
     end
   end
   for _, path in ipairs(wanted) do
@@ -864,6 +901,60 @@ local function requiredChromeRoles(manifest, pageRole)
           if failure ~= nil then
             return nil, failure
           end
+        end
+      end
+    end
+  end
+  if pageRole == "cover" then
+    local label = manifest.dexModeLabel
+    if type(label) ~= "table" then
+      return nil, "the pokedex manifest carries no dex mode label"
+    end
+    local failure = add(label.johto)
+    if failure ~= nil then
+      return nil, failure
+    end
+    failure = add(label.national)
+    if failure ~= nil then
+      return nil, failure
+    end
+    local locked = label.locked
+    if type(locked) ~= "table" then
+      return nil, "the pokedex manifest carries no dex mode locked fill"
+    end
+    failure = add(locked.role)
+    if failure ~= nil then
+      return nil, failure
+    end
+  end
+  if type(page.bannerFlash) == "table" then
+    local failure = add(page.bannerFlash.chrome)
+    if failure ~= nil then
+      return nil, failure
+    end
+  end
+  local hasBackground = false
+  if type(page.backgrounds) == "table" then
+    for _, pane in ipairs({ "information", "controls" }) do
+      if type(page.backgrounds[pane]) == "table" and #page.backgrounds[pane] > 0 then
+        hasBackground = true
+      end
+    end
+  end
+  if (pageRole == "grid" or pageRole == "results") and hasBackground then
+    local atlas = manifest.numberAtlas
+    if type(atlas) ~= "table" then
+      return nil, "the pokedex manifest carries no number atlas"
+    end
+    local failure = add(atlas.marker)
+    if failure ~= nil then
+      return nil, failure
+    end
+    for _, row in ipairs({ atlas.caught, atlas.seen }) do
+      for _, role in ipairs(row) do
+        failure = add(role)
+        if failure ~= nil then
+          return nil, failure
         end
       end
     end
@@ -1469,6 +1560,28 @@ local function messageBankEntry(manifest, owner, slot, profile)
     end
     return slot.bankId, slot.messageId
   end
+  if kind == "category_placeholder" then
+    local language = type(slot.language) == "string" and slot.language or "native"
+    local bindings = manifest.text
+    local entries = type(bindings) == "table" and bindings.entryByLanguage or nil
+    local entry = type(entries) == "table" and entries[language] or nil
+    if type(entry) ~= "table" or type(entry.categoryBankId) ~= "number" then
+      return nil, nil, "the pokedex manifest binds no " .. language .. " category placeholder"
+    end
+    return entry.categoryBankId, 0
+  end
+  if kind == "height_placeholder" or kind == "weight_placeholder" then
+    local bindings = manifest.text
+    local measures = type(bindings) == "table"
+        and type(bindings.measureByProfile) == "table"
+        and bindings.measureByProfile[profile]
+      or nil
+    local bankKey = kind == "height_placeholder" and "heightBankId" or "weightBankId"
+    if type(measures) ~= "table" or type(measures[bankKey]) ~= "number" then
+      return nil, nil, "the pokedex manifest binds no " .. kind
+    end
+    return measures[bankKey], 0
+  end
   if kind == "height" or kind == "weight" then
     local bindings = manifest.text
     if type(bindings) ~= "table" or type(bindings.measureByProfile) ~= "table" then
@@ -1778,13 +1891,26 @@ local function prepareMessages(lease, demand)
       return nil, nil, "registration demands carry their card text slots"
     end
     local bankId, messageId = 197, 871
+    local headerBankId, headerMessageId = 802, 144
     local bindings = manifest.text
     if type(bindings) == "table" and type(bindings.registrationAnnouncement) == "table" then
       bankId = bindings.registrationAnnouncement.bankId
       messageId = bindings.registrationAnnouncement.messageId
     end
+    if type(bindings) == "table" and type(bindings.registrationHeader) == "table" then
+      headerBankId = bindings.registrationHeader.bankId
+      headerMessageId = bindings.registrationHeader.messageId
+    end
     if type(bankId) ~= "number" or bankId % 1 ~= 0 or type(messageId) ~= "number" or messageId % 1 ~= 0 then
       return nil, nil, "the pokedex manifest carries no registration announcement binding"
+    end
+    if
+      type(headerBankId) ~= "number"
+      or headerBankId % 1 ~= 0
+      or type(headerMessageId) ~= "number"
+      or headerMessageId % 1 ~= 0
+    then
+      return nil, nil, "the pokedex manifest carries no registration header binding"
     end
     local provider = lease._owner._messages
     if provider == nil or type(provider.acquireBank) ~= "function" then
@@ -1817,8 +1943,22 @@ local function prepareMessages(lease, demand)
     if formatted == "" then
       return nil, nil, "the registration announcement formats to an empty string"
     end
+    local headerFailure = acquireMessageBank(lease, headerBankId --[[@as integer]])
+    if headerFailure ~= nil then
+      return nil, nil, headerFailure
+    end
+    local header, headerReadFailure =
+      readMessageEntry(lease, headerBankId --[[@as integer]], headerMessageId --[[@as integer]])
+    if header == nil then
+      return nil, nil, headerReadFailure
+    end
+    if header == "" then
+      return nil, nil, "the registration header reads an empty string"
+    end
     slotMessages.registrationAnnouncement = formatted
+    slotMessages["registration.header"] = header
     slotBanks[bankId] = true
+    slotBanks[headerBankId] = true
     return slotMessages, slotBanks
   end
   local text = demand.text
@@ -1832,24 +1972,8 @@ end
 ---@param selector string canonical portrait selector
 ---@return table<string, unknown>? portrait manifest entry with its source viewport
 local function portraitEntry(owner, selector)
-  if owner._cacheFs == nil then
-    return nil
-  end
-  if owner._portraitManifest == nil then
-    local ok, manifest = pcall(function()
-      return owner._cacheFs:loadLua(MonCache.portraitManifestPath())
-    end)
-    if not ok or type(manifest) ~= "table" then
-      owner._portraitManifest = false
-    else
-      owner._portraitManifest = manifest
-    end
-  end
-  if owner._portraitManifest == false then
-    return nil
-  end
-  local entries = owner._portraitManifest.entries
-  if type(entries) ~= "table" then
+  local entries = portraitEntries(owner)
+  if entries == nil then
     return nil
   end
   local entry = entries[selector]
@@ -2241,11 +2365,12 @@ local function prepareBundle(owner, lease, demand)
   -- one unready family never serializes the other.
   -- A picture with no legal selector fails the whole demand; an empty
   -- picture list prepares nothing.
-  local wantedPortraits, portraitCause = wantedPortraitPaths(lease, demand)
+  local wantedPortraits, portraitCause, portraitPages = wantedPortraitPaths(lease, demand)
   if wantedPortraits == nil then
     return nil, portraitCause
   end
-  local portraitsReady, portraitsFailure = preparePortraits(lease, wantedPortraits, allowance)
+  assert(portraitPages ~= nil, "resolved portrait paths carry their pages")
+  local portraitsReady, portraitsFailure = preparePortraits(lease, wantedPortraits, portraitPages, allowance)
   if portraitsFailure ~= nil then
     return nil, portraitsFailure
   end
@@ -2918,7 +3043,7 @@ function PokedexPresentationResources:release()
   self._warmChromePaths = nil
   self._warmStaticFailure = nil
   self._warmSettled = false
-  self._portraitManifest = nil
+  self._portraitEntries = nil
 end
 
 return PokedexPresentationResources

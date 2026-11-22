@@ -295,7 +295,10 @@ end
 local function encounterPaletteRestoreType(request, scenario)
   local kind = request.kind
   local format = scenario.format
-  if kind == "wild" and (format == "wild-single" or format == "single") then
+  -- The catching tutorial's battle type carries neither the trainer nor
+  -- the doubles flag, so its scripted lesson restores through the wild
+  -- singles branch.
+  if (kind == "wild" or scenario.tutorial == true) and (format == "wild-single" or format == "single") then
     return "wild"
   end
   if kind == "trainer" and format == "single" then
@@ -2369,6 +2372,13 @@ function BattleRuntime:_prepareCommit()
   -- Capture and victory both report the script-visible won code; every
   -- other settled word reports not-won.
   self._sourceResult = (result == "win" or result == "capture") and BattleTask.SOURCE_WON or BattleTask.SOURCE_NOT_WON
+  -- Source Task_TutorialBattle discards its own setup: the catching
+  -- lesson publishes its outcome alone, never a party, capture, Pokedex,
+  -- stats, bag, or money consequence.
+  if self._scenario.tutorial == true then
+    self._stagedCaptures = {}
+    return HgssBattleCommitter.prepare({ outcome = { id = self._request.id, result = result }, rewards = {} })
+  end
   local updates = self:_partyUpdates()
   local captures = self:_commitCaptures()
   self._stagedCaptures = captures

@@ -103,18 +103,25 @@ local function idle(controller, count)
 end
 
 ---@param controller table browser under test
-local function openSize(controller)
-  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 64 } })
+---@return table controller opened on the size page before its motion starts
+local function reachSize(controller)
+  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 240 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 40 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 40 } })
   idle(controller, 40)
   Assert.equal(controller:view().page, "grid", "the cover drag reaches the grid before the entry")
   tick(controller, { { type = "confirm" } })
   idle(controller, 40)
   Assert.equal(controller:view().page, "area", "the entry opens on its area page")
   tick(controller, { { type = "activate", action = "entry-tab", value = "size" } })
-  idle(controller, 40)
   Assert.equal(controller:view().page, "size", "the entry tab reaches the size page")
+  return controller
+end
+
+---@param controller table browser under test
+local function openSize(controller)
+  reachSize(controller)
+  idle(controller, 40)
 end
 
 ---@param controller table browser under test
@@ -181,7 +188,7 @@ function T.quantized_trigonometry_matches_every_pinned_anchor()
   Assert.equal(negSin, -995, "negative products floor away from zero, never truncate")
 end
 
-function T.every_class_runs_thirty_drops_then_its_sound()
+function T.every_class_runs_the_contact_drop_then_its_sound()
   local PokedexController = requirePresent("numeric size traces and authored height presentation")
   for class = 0, 16 do
     local monCatalog, catalog = catalogs()
@@ -189,7 +196,7 @@ function T.every_class_runs_thirty_drops_then_its_sound()
     local owner = enabledOwner(monCatalog, catalog)
     catch(owner, monCatalog, "EEVEE", 31)
     local controller = newBrowser(PokedexController, owner, monCatalog, catalog, "male")
-    openSize(controller)
+    reachSize(controller)
     Assert.equal(#controller:view().size.figures, 2, "the weight motion runs exactly two figures")
     local dropMoves = 0
     local previousFx = 0
@@ -205,10 +212,11 @@ function T.every_class_runs_thirty_drops_then_its_sound()
         break
       end
     end
-    Assert.equal(dropMoves, 30, "class " .. class .. " runs exactly thirty drop movement updates")
-    Assert.equal(previousFx, 30 * 0x400, "class " .. class .. " rests at the full drop velocity")
-    for _, figure in ipairs(controller:view().size.figures) do
-      Assert.equal(figure.y, 88, "class " .. class .. " clamps every figure at the beam")
+    Assert.equal(dropMoves, 15, "class " .. class .. " runs the contact drop movement updates")
+    Assert.equal(previousFx, 15 * 0x400, "class " .. class .. " rests at the full drop velocity")
+    local pans = controller:view().size.pans
+    for index, figure in ipairs(controller:view().size.figures) do
+      Assert.equal(figure.y, pans[index].y - 16, "class " .. class .. " places each figure on its pan")
     end
     Assert.equal(weightOf(controller).class, class, "class " .. class .. " resolves from its difference bucket")
     local sounded = false
@@ -328,18 +336,20 @@ function T.thrown_figures_start_on_the_limit_update_and_land_or_escape()
   for _ = 1, 200 do
     tick(escape)
     local figures = escape:view().size.figures
-    local gone = true
+    local gone, standing = 0, 0
     for _, figure in ipairs(figures) do
-      if figure.visible ~= false and figure.y > -256 then
-        gone = false
+      if figure.visible == false or figure.y <= -256 then
+        gone = gone + 1
+      else
+        standing = standing + 1
       end
     end
-    if gone then
+    if gone == 1 and standing == 1 then
       escaped = true
       break
     end
   end
-  Assert.isTrue(escaped, "the lightest class escapes upward without a return")
+  Assert.isTrue(escaped, "the lighter thrown figure escapes upward while its partner stays")
   Assert.equal(escape:view().page, "size", "the escape never leaves the size page")
   escape:dispose()
 end

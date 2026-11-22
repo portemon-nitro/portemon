@@ -86,6 +86,8 @@ local function fixtureMonCatalog()
   for id = 280, 333 do
     species[MonSources.speciesKeys[id]].genderRatio = 255
   end
+  species.CASTFORM.forms = { [0] = {}, [1] = {}, [2] = {}, [3] = {} }
+  species.CHERRIM.forms = { [0] = {}, [1] = {} }
   return { species = species, version = { id = "heartgold", language = "english" } }
 end
 
@@ -223,7 +225,7 @@ local function sliderArchive(maskOverrides)
   end
   -- The mask member is entry-indexed: byte 1 is the padding slot and
   -- species s carries byte s + 1.
-  for id, bits in pairs(maskOverrides or { [1] = 0x02, [25] = 0x04, [151] = 0x10, [2] = 0x80 }) do
+  for id, bits in pairs(maskOverrides or { [1] = 0x02, [25] = 0x04, [151] = 0x01, [2] = 0x08 }) do
     masks[id + 1] = string.char(bits)
   end
   return NarcBuilder.build({ table.concat(rows), table.concat(masks) })

@@ -7,8 +7,7 @@
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
-local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
-local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
+local FieldMessageFixture = require("tests.support.FieldMessageFixture")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local FieldScripts = require("game.hgss.src.field.FieldScripts")
 local ScriptCache = require("libs.assets.src.ScriptCache")
@@ -265,42 +264,16 @@ end
 ---@return FieldMessageProvider
 function FieldScriptSliceFixture.moneyMessageProvider(label)
   local messages = {}
-  for messageId = 0, 31 do
-    messages[messageId] = {
-      id = messageId,
-      raw = { 0xFFFF },
-      text = "",
-      tokens = { { kind = "eos", raw = { 0xFFFF } } },
-    }
+  for index = 1, 32 do
+    messages[index] = { FieldMessageFixture.eos() }
   end
-  messages[30] = {
-    id = 30,
-    raw = { 0x0121, 0xFFFF },
-    text = label or "MONEY",
-    tokens = {
-      { kind = "glyph", code = 0x0121, text = label or "MONEY", raw = { 0x0121 } },
-      { kind = "eos", raw = { 0xFFFF } },
-    },
+  messages[31] = { FieldMessageFixture.glyph(0x0121, label or "MONEY"), FieldMessageFixture.eos() }
+  messages[32] = {
+    FieldMessageFixture.glyph(0x01A8, "$"),
+    FieldMessageFixture.control(FieldMessageText.STRVAR_1 + 55, { 0, 0 }),
+    FieldMessageFixture.eos(),
   }
-  messages[31] = {
-    id = 31,
-    raw = { 0x01A8, 0x0137, 0x0000, 0x0000, 0xFFFF },
-    text = "${STRVAR_1 55, 0, 0}",
-    tokens = {
-      { kind = "glyph", code = 0x01A8, text = "$", raw = { 0x01A8 } },
-      { kind = "substitution", control = FieldMessageText.STRVAR_1 + 55, args = { 0, 0 } },
-      { kind = "eos", raw = { 0xFFFF } },
-    },
-  }
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:writeLua(FieldMessageCache.bankPath(435), {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = 435,
-    messageCount = 32,
-    source = { narc = "NARC_msgdata_msg", memberId = 435, memberSha1 = "synthetic" },
-    messages = messages,
-  })
-  return FieldMessageProvider.new(cache)
+  return FieldMessageFixture.provider({ [435] = messages })
 end
 
 return FieldScriptSliceFixture

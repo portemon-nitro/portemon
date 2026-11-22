@@ -87,6 +87,7 @@ local function textBindings()
       giratina_origin = { heightBankId = 814, weightBankId = 812 },
     },
     registrationAnnouncement = { bankId = 197, messageId = 871 },
+    registrationHeader = { bankId = 802, messageId = 144 },
     landmarks = { bankId = 279, fallbackBankId = 280, fallbackMessageId = 2 },
   }
 end
@@ -230,7 +231,7 @@ local function fixtureManifest(catalog)
   local pictures = { backYOffset = {} }
   pictures.backYOffset[MonCache.portraitSelector("custom.alpha", 0, "male", false, "back")] = 4
   return {
-    schema = "g4-pokedex-assets-v2",
+    schema = "g4-pokedex-assets-v3",
     versionId = "heartgold",
     fonts = { body = 0, header = 4 },
     pages = pages,
@@ -314,6 +315,20 @@ local function fixtureManifest(catalog)
       spots = { { x = 1, y = 2 }, { x = 3, y = 4 }, { x = 5, y = 6 }, { x = 7, y = 8 } },
       secondFrameXOffset = -14,
     },
+    dexModeLabel = {
+      johto = "panel",
+      national = "panel",
+      x = 40,
+      y = 24,
+      locked = { role = "panel", x = 24, y = 120, width = 208, height = 16 },
+    },
+    numberAtlas = (function()
+      local row = {}
+      for index = 1, 10 do
+        row[index] = "panel"
+      end
+      return { marker = "panel", caught = row, seen = row, digits = 10 }
+    end)(),
     text = catalog.textBindings,
   }
 end
@@ -354,7 +369,7 @@ function T.separate_data_and_presentation_scopes_publish_and_read_independently(
   local PokedexCacheWriter, PokedexCache, DerivedAssetContract = requireProduction()
   Assert.deepEqual(
     DerivedAssetContract.pokedex,
-    { cacheFormat = "pokedex-cache-v1", catalogSchema = "g4-pokedex-catalog-v2", schema = "g4-pokedex-assets-v2" },
+    { cacheFormat = "pokedex-cache-v1", catalogSchema = "g4-pokedex-catalog-v2", schema = "g4-pokedex-assets-v3" },
     "the contract names the exact pokedex family identities"
   )
   Assert.equal(PokedexCache.dir(), "data/generated/pokedex", "the pokedex data directory is stable")
@@ -409,7 +424,7 @@ function T.separate_data_and_presentation_scopes_publish_and_read_independently(
   )
   Assert.equal(
     PokedexCache.loadManifest(cacheFs).schema,
-    "g4-pokedex-assets-v2",
+    "g4-pokedex-assets-v3",
     "the loaded manifest keeps its schema identity"
   )
 end
@@ -591,30 +606,6 @@ local function secondRevisionCatalog()
   dungeon.markerShape = 0
   dungeon.markerOffsetPx = { x = 0, y = 0 }
   return catalog
-end
-
-function T.versioned_catalog_identity_names_the_second_revision()
-  local _, PokedexCache, DerivedAssetContract = requireProduction()
-  Assert.deepEqual(
-    DerivedAssetContract.pokedex,
-    { cacheFormat = "pokedex-cache-v1", catalogSchema = "g4-pokedex-catalog-v2", schema = "g4-pokedex-assets-v2" },
-    "only the catalog schema advances to the second revision"
-  )
-  Assert.equal(
-    PokedexCache.CATALOG_SCHEMA,
-    "g4-pokedex-catalog-v2",
-    "the cache owner publishes under the second revision"
-  )
-  Assert.equal(
-    DerivedAssetContract.pokedex.cacheFormat,
-    "pokedex-cache-v1",
-    "the cache format stays on its existing identity"
-  )
-  Assert.equal(
-    DerivedAssetContract.pokedex.schema,
-    "g4-pokedex-assets-v2",
-    "the presentation schema stays on its existing identity"
-  )
 end
 
 function T.strict_catalog_accepts_only_complete_second_revision_payloads()

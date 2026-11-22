@@ -14,6 +14,8 @@ local Errors = require("libs.errors.src.Errors")
 ---@field _playerY integer captured global block row
 ---@field _time integer 0 morning, 1 day, 2 night
 ---@field _region string viewed map region
+---@field _pendingTime integer? time applied at the refresh midpoint
+---@field _pendingRegion string? region applied at the refresh midpoint
 ---@field _row integer zero-based list cursor
 ---@field _rows table[] merged typed rows
 ---@field _phase string rest or refresh
@@ -21,7 +23,7 @@ local Errors = require("libs.errors.src.Errors")
 ---@field _refreshUp boolean whether the background refresh is still climbing
 ---@field _travelTicks integer remaining region movement updates
 ---@field _pulseTick integer marker pulse clock
----@field _blinkTick integer player blink clock
+---@field _blinkPhase integer 0 current-time markers, 1 other-time markers
 local PokedexArea = {}
 PokedexArea.__index = PokedexArea
 
@@ -31,9 +33,7 @@ PokedexArea.TIME_COUNT = 3
 PokedexArea.REFRESH_STEP = 2
 PokedexArea.REFRESH_TOP = 16
 PokedexArea.REGION_TRAVEL_TICKS = 22
-PokedexArea.BLINK_ON_TICKS = 16
-PokedexArea.BLINK_PERIOD = 24
-PokedexArea.PULSE_PERIOD = 32
+PokedexArea.PULSE_PERIOD = 30
 PokedexArea.PULSE_TOP = 15
 -- Only these authored pairs coalesce; no other neighboring areas merge.
 PokedexArea.COALESCED_PAIRS = {
@@ -103,6 +103,8 @@ function PokedexArea.new(args)
     _playerY = position.mapY,
     _time = 0,
     _region = "johto",
+    _pendingTime = nil,
+    _pendingRegion = nil,
     _row = 0,
     _rows = {},
     _phase = "rest",
@@ -110,7 +112,7 @@ function PokedexArea.new(args)
     _refreshUp = true,
     _travelTicks = 0,
     _pulseTick = 0,
-    _blinkTick = 0,
+    _blinkPhase = 0,
   }, PokedexArea)
   self:_rebuild()
   return self
@@ -229,17 +231,25 @@ function PokedexArea:_beginRefresh()
   self._travelTicks = PokedexArea.REGION_TRAVEL_TICKS
 end
 
+---@return string region the pan travels toward during a pending refresh
+function PokedexArea:targetRegion()
+  return self._pendingRegion or self._region
+end
+
+---@return integer daypart applied at or after the refresh midpoint
+function PokedexArea:targetTime()
+  return self._pendingTime or self._time
+end
+
 ---@param time integer 0 morning, 1 day, 2 night
 function PokedexArea:setTime(time)
   if time ~= 0 and time ~= 1 and time ~= 2 then
     fail("area times are morning, day, or night", { time = time })
   end
-  if time == self._time then
+  if time == (self._pendingTime or self._time) then
     return
   end
-  self._time = time
-  self._row = 0
-  self:_rebuild()
+  self._pendingTime = time
   self:_beginRefresh()
 end
 
@@ -255,12 +265,10 @@ function PokedexArea:setRegion(region)
   if region == "kanto" and self._nationalUnlocked ~= true then
     return
   end
-  if region == self._region then
+  if region == (self._pendingRegion or self._region) then
     return
   end
-  self._region = region
-  self._row = 0
-  self:_rebuild()
+  self._pendingRegion = region
   self:_beginRefresh()
 end
 
@@ -291,27 +299,42 @@ end
 
 function PokedexArea:update()
   if self._phase == "refresh" then
+    if self._travelTicks > 0 then
+      self._travelTicks = self._travelTicks - 1
+    end
     if self._refreshUp == true then
       self._refreshQ = self._refreshQ + PokedexArea.REFRESH_STEP
       if self._refreshQ >= PokedexArea.REFRESH_TOP then
         self._refreshQ = PokedexArea.REFRESH_TOP
         self._refreshUp = false
+        -- Rebuild the rows at the blend midpoint while the map pan keeps
+        -- travelling: the source swaps content behind the darkest frame.
+        if self._pendingTime ~= nil then
+          self._time = self._pendingTime
+          self._pendingTime = nil
+        end
+        if self._pendingRegion ~= nil then
+          self._region = self._pendingRegion
+          self._pendingRegion = nil
+        end
+        self._row = 0
+        self:_rebuild()
       end
     elseif self._refreshQ > 0 then
       self._refreshQ = self._refreshQ - PokedexArea.REFRESH_STEP
       if self._refreshQ < 0 then
         self._refreshQ = 0
       end
-    elseif self._travelTicks > 0 then
-      self._travelTicks = self._travelTicks - 1
-    else
+    elseif self._travelTicks == 0 then
       self._phase = "rest"
       self._refreshQ = 0
       self._pulseTick = 0
     end
   end
   self._pulseTick = self._pulseTick + 1
-  self._blinkTick = self._blinkTick + 1
+  if self._pulseTick % PokedexArea.PULSE_PERIOD == 0 then
+    self._blinkPhase = self._blinkPhase == 0 and 1 or 0
+  end
 end
 
 ---@return integer current pulse coefficient 0 through 15
@@ -324,8 +347,9 @@ function PokedexArea:alpha()
 end
 
 ---@param mapKey string
+---@param row { timed: boolean?, other: boolean? } habitat row behind the marker
 ---@return { shape: string, palette: integer, position: { x: number, y: number }, visible: boolean } marker projection for one habitat row
-function PokedexArea:_markerFor(mapKey)
+function PokedexArea:_markerFor(mapKey, row)
   local catalog = self._catalog
   assert(type(catalog) == "table", "area reads its borrowed catalog")
   local geometry = checkTable(catalog.areaGeometry, "area geometry")
@@ -352,7 +376,8 @@ function PokedexArea:_markerFor(mapKey)
       y = 8 * rect.y + 4 * rect.height + 40,
     }
   end
-  return { shape = "area", palette = 0, position = position, visible = self._phase == "rest" }
+  local visible = (self._blinkPhase == 0 and row.timed == true) or (self._blinkPhase == 1 and row.other == true)
+  return { shape = "area", palette = self._blinkPhase, position = position, visible = visible }
 end
 
 ---@return { x: integer, y: integer, visible: boolean } detached player marker projection
@@ -361,14 +386,20 @@ function PokedexArea:playerView()
   if self._region == "kanto" then
     x = x - 22
   end
-  return {
-    x = x,
-    y = self._playerY,
-    visible = self._phase == "rest" and (self._blinkTick % PokedexArea.BLINK_PERIOD) < PokedexArea.BLINK_ON_TICKS,
-  }
+  -- The source keeps the player marker visible only when the viewed
+  -- region matches the player's block column: Johto hides it from block
+  -- 23 onward, Kanto shows it only from block 23 onward.
+  local blockColumn = math.floor(self._playerX / 32)
+  local visible
+  if self._region == "kanto" then
+    visible = blockColumn >= 23
+  else
+    visible = blockColumn < 23
+  end
+  return { x = x, y = self._playerY, visible = visible }
 end
 
----@return { time: integer, region: string, row: integer, rows: { kind: string, mapKey: string?, timed: boolean?, other: boolean? }[], mapOffset: integer, markers: { shape: string, palette: integer, position: { x: number, y: number }, visible: boolean }[], specialMarkers: { shape: string, palette: integer, position: { x: number, y: number }, visible: boolean, mapKey: string }[], player: { x: integer, y: integer, visible: boolean }, alpha: integer, phase: string, refresh: integer } detached area projection
+---@return { time: integer, region: string, row: integer, scrollbar: { length: integer, position: integer, top: integer, bottom: integer }?, scroll: { offset: integer }?, rows: { kind: string, mapKey: string?, timed: boolean?, other: boolean? }[], mapOffset: integer, markers: { shape: string, palette: integer, position: { x: number, y: number }, visible: boolean }[], specialMarkers: { shape: string, palette: integer, position: { x: number, y: number }, visible: boolean, mapKey: string }[], player: { x: integer, y: integer, visible: boolean }, alpha: integer, phase: string, refresh: integer } detached area projection
 function PokedexArea:view()
   local rows = {}
   for _, row in ipairs(self._rows) do
@@ -382,7 +413,7 @@ function PokedexArea:view()
   for position = 2, #self._rows do
     local row = self._rows[position]
     assert(type(row.mapKey) == "string", "habitat rows carry their map key")
-    local marker = self:_markerFor(row.mapKey)
+    local marker = self:_markerFor(row.mapKey, row)
     markers[#markers + 1] = marker
   end
   local specialMarkers = {}
@@ -394,9 +425,9 @@ function PokedexArea:view()
         for _, spot in ipairs(extras) do
           specialMarkers[#specialMarkers + 1] = {
             shape = "area",
-            palette = 0,
+            palette = self._blinkPhase,
             position = { x = spot.x, y = spot.y },
-            visible = self._phase == "rest",
+            visible = (self._blinkPhase == 0 and row.timed == true) or (self._blinkPhase == 1 and row.other == true),
             mapKey = row.mapKey,
           }
         end

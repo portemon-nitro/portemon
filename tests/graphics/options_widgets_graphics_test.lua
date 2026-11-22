@@ -64,15 +64,15 @@ local function preparedQuadFor(manifest, chrome)
   end
 end
 
--- The widget fixture's own manifest, chrome and slider thumb layered over the
--- prepared snapshot: one resident reader serves the renderer's manifest and the
--- pool worker's payload, and no shared prepared path is written.
+-- The widget fixture's own manifest, chrome and slider thumb as a fixture-only
+-- resident view: one resident reader serves the renderer's manifest and the
+-- pool worker's payload, and no shared prepared path is read or written.
 ---@return GeneratedCacheFixture.ResidentView view
 ---@return table<string, unknown> manifest
 local function optionsCache()
   local manifest = FieldUiFixture.manifest()
   FieldUiFixture.addOptionsContract(manifest)
-  local view = GeneratedCacheFixture.overlay("heartgold", {
+  local view = GeneratedCacheFixture.resident("heartgold", {
     [FieldUiAssetCache.manifestPath()] = assert(LuaWriter.encode(manifest)),
     [FieldUiFixture.OPTIONS_CHROME_PATH] = FieldUiFixture.optionsChromeBytes(),
     [FieldUiFixture.OPTIONS_SLIDER_THUMB_PATH] = FieldUiFixture.optionsSliderThumbBytes(),

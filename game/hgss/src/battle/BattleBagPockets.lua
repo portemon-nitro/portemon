@@ -7,6 +7,8 @@
 -- order; the detached inventory map has no slot order yet). Pure data
 -- projection: no love, no I/O.
 
+local BattleFinger = require("game.hgss.src.battle.BattleFinger")
+
 local BattleBagPockets = {}
 
 -- Zero-based bit index to zero-based battle pocket index, transcribed
@@ -559,18 +561,23 @@ function BattleBagPockets.group(inventory, catalog, slotOrder)
 end
 
 -- Tutorial finger draw for the visible browser page (battle_bag_menu.c
--- UpdateTutorialFinger): the finger centers on its per-page spot while
--- the tutorial auto-plays, and draws nothing outside tutorial mode.
+-- UpdateTutorialFinger): the finger centers on its per-page spot, offset
+-- by its bob and press pose, while the tutorial auto-plays, and draws
+-- nothing outside tutorial mode or once its release hides it.
 -- Pure data projection: callers resolve drawables.
 ---@param native table<string, unknown>? detached bag browser status under reading
----@return { key: string, x: integer, y: integer }? centered finger draw, nil outside tutorial mode
+---@return { key: string, x: integer, y: integer }? centered finger draw, nil when no finger shows
 function BattleBagPockets.fingerDraw(native)
   if type(native) ~= "table" or native.open == false or native.tutorial ~= true then
     return nil
   end
   local bagPage = type(native.bagPage) == "string" and native.bagPage or "item_list"
   local spot = BattleBagPockets.TUTORIAL_FINGER_SPOTS[bagPage] or BattleBagPockets.TUTORIAL_FINGER_SPOTS.item_list
-  return { key = "battle:finger", x = spot.x, y = spot.y }
+  local dy = BattleFinger.offset(native.fingerTicks --[[@as integer]])
+  if dy == nil then
+    return nil
+  end
+  return { key = "battle:finger", x = spot.x, y = spot.y + dy }
 end
 
 return BattleBagPockets

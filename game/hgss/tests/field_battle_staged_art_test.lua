@@ -702,7 +702,7 @@ function T.tutorial_finger_resolves_its_staged_image()
   -- consumes: the browser projects the key and the envelope resolves
   -- it instead of nil-matching.
   local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
-  local native = { open = true, tutorial = true, bagPage = "pocket_menu" }
+  local native = { open = true, tutorial = true, bagPage = "pocket_menu", fingerTicks = 0 }
   local finger = assert(
     BattleBagPockets.fingerDraw(native),
     "the lesson auto-play projects its finger"

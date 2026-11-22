@@ -68,6 +68,7 @@ local function stubView()
   return {
     key = "view-generation",
     mode = "johto",
+    nationalUnlocked = true,
     page = "grid",
     selection = { species = "CHIKORITA" },
     counts = { seen = 2, caught = 2 },
@@ -148,6 +149,100 @@ function T.browser_resolves_both_native_panes_in_every_paired_layout()
     end
     Assert.isTrue(#names >= 2, class .. " places both the information and controls panes")
   end
+end
+
+-- Underfilled single-display paired layouts publish the static outer frame
+-- geometry every other field application draws; the physical dual pair and
+-- a pair that exactly fills its display are exact fits and stay unframed.
+function T.paired_layouts_publish_their_decoration_frames()
+  local Interface = requirePresent("application frame geometry")
+  local function measured(width, height, signature)
+    return {
+      width = width,
+      height = height,
+      topology = ScreenTopology.oneDisplay({
+        id = "main",
+        rect = { x = 0, y = 0, width = width, height = height },
+        touch = true,
+        role = "world",
+      }),
+      pixelRatio = 1,
+      signature = signature,
+    }
+  end
+  local underfilled = {
+    { class = "wide", facts = measured(1000, 600, "pokedex-interface-test:underfilled-wide") },
+    { class = "tall", facts = measured(400, 700, "pokedex-interface-test:underfilled-tall") },
+  }
+  for _, entry in ipairs(underfilled) do
+    local session = ApplicationPresentation.new(Interface.browser())
+    local plan = session:resolve(entry.facts, sessionView(stubView()))
+    Assert.isTrue(#(plan.frames or {}) >= 1, entry.class .. " publishes its decoration frames")
+    for _, frame in ipairs(plan.frames) do
+      Assert.notNil(frame.placement, entry.class .. " frames carry their placement")
+      Assert.notNil(frame.contentBox, entry.class .. " frames carry their content box")
+    end
+  end
+  for _, class in ipairs({ "dual", "compact" }) do
+    local session = ApplicationPresentation.new(Interface.browser())
+    local plan = session:resolve(measurementFor(class), sessionView(stubView()))
+    Assert.equal(#(plan.frames or {}), 0, class .. " fits its display exactly and stays unframed")
+  end
+end
+
+-- The native cover carries the three source footer cells and the mode
+-- switch above them; every other press keeps the source swipe.
+function T.native_cover_footer_and_switch_map_their_own_commands()
+  local Interface = requirePresent("native cover buttons")
+  local view = stubView()
+  local function planOn(page, mode)
+    local session = ApplicationPresentation.new(Interface.browser())
+    local projected = viewOn(view, page)
+    projected.mode = mode or projected.mode
+    local plan = session:resolve(measurementFor("wide"), sessionView(projected))
+    return session, plan, projected
+  end
+  local session, plan, projected = planOn("cover")
+  local pointer = 200
+  local function tap(lx, ly)
+    pointer = pointer + 1
+    local mapped = session:mapInput({ hostTap(plan, "controls", "pointer_down", lx, ly, pointer) }, projected)
+    session:mapInput({ hostTap(plan, "controls", "pointer_up", lx, ly, pointer) }, projected)
+    return mapped
+  end
+  local search = tap(31, 169)
+  Assert.equal(#search, 1, "the cover search cell maps to exactly one command")
+  Assert.equal(search[1].action, "search", "the cover search cell opens the search")
+  local open = tap(127, 169)
+  Assert.equal(#open, 1, "the cover open cell maps to exactly one command")
+  Assert.equal(open[1].type, "confirm", "the cover open cell opens the highlighted entry")
+  local quit = tap(223, 169)
+  Assert.equal(#quit, 1, "the cover quit cell maps to exactly one command")
+  Assert.equal(quit[1].type, "cancel", "the cover quit cell leaves the browser")
+  local lockedView = viewOn(view, "cover")
+  lockedView.nationalUnlocked = false
+  local lockedSession = ApplicationPresentation.new(Interface.browser())
+  local lockedPlan = lockedSession:resolve(measurementFor("wide"), sessionView(lockedView))
+  local lockedPress = lockedSession:mapInput(
+    { hostTap(lockedPlan, "controls", "pointer_down", 127, 128, 199) },
+    lockedView
+  )
+  Assert.equal(#lockedPress, 1, "the locked switch region maps to exactly one command")
+  Assert.equal(lockedPress[1].type, "drag", "a locked dex treats the switch press as a cover swipe")
+  local switch = tap(127, 128)
+  Assert.equal(#switch, 1, "the mode switch maps to exactly one command")
+  Assert.equal(switch[1].action, "mode", "the mode switch toggles the dex mode")
+  Assert.equal(switch[1].value, "national", "a johto cover switches toward national mode")
+  local nationalSession, nationalPlan, nationalView = planOn("cover", "national")
+  local back = nationalSession:mapInput(
+    { hostTap(nationalPlan, "controls", "pointer_down", 127, 128, 201) },
+    nationalView
+  )
+  Assert.equal(back[1].value, "johto", "a national cover switches back toward johto")
+  local swipe = tap(20, 40)
+  Assert.equal(#swipe, 1, "the cover body press starts the source swipe")
+  Assert.equal(swipe[1].type, "drag", "the cover body press stays a drag")
+  Assert.equal(swipe[1].phase, "begin", "the cover body press begins the drag")
 end
 
 function T.compact_layout_keeps_every_grid_cell_and_selection_reachable()
@@ -374,14 +469,16 @@ function T.native_search_menu_hitboxes_follow_source_order_and_edges()
     Assert.equal(mapped[1].value, box.value, "the " .. box.value .. " box opens its own criterion")
     for _, corner in ipairs({
       { box.left, box.top },
-      { box.right, box.top },
-      { box.left, box.bottom },
-      { box.right, box.bottom },
+      { box.right - 1, box.top },
+      { box.left, box.bottom - 1 },
+      { box.right - 1, box.bottom - 1 },
     }) do
       local edge = tapDown(corner[1], corner[2])
-      Assert.equal(#edge, 1, "the inclusive " .. box.value .. " corner still opens its criterion")
-      Assert.equal(edge[1].value, box.value, "the inclusive corner keeps the " .. box.value .. " criterion")
+      Assert.equal(#edge, 1, "the open " .. box.value .. " corner still opens its criterion")
+      Assert.equal(edge[1].value, box.value, "the open corner keeps the " .. box.value .. " criterion")
     end
+    Assert.equal(#tapDown(box.right, box.top), 0, "the exclusive " .. box.value .. " right edge opens no criterion")
+    Assert.equal(#tapDown(box.left, box.bottom), 0, "the exclusive " .. box.value .. " bottom edge opens no criterion")
     Assert.equal(#tapDown(box.left - 1, centerY), 0, "the pixel left of " .. box.value .. " opens no criterion")
     Assert.equal(#tapDown(centerX, box.bottom + 1), 0, "the pixel below " .. box.value .. " opens no criterion")
   end
@@ -391,7 +488,7 @@ function T.native_search_menu_hitboxes_follow_source_order_and_edges()
   local reset = tapDown(40, 175)
   Assert.equal(#reset, 1, "the left bottom control maps to exactly one command")
   Assert.equal(reset[1].action, "search-reset", "the left bottom control resets the criteria")
-  for _, corner in ipairs({ { 4, 164 }, { 75, 164 }, { 4, 187 }, { 75, 187 } }) do
+  for _, corner in ipairs({ { 4, 164 }, { 74, 164 }, { 4, 186 }, { 74, 186 } }) do
     local edge = tapDown(corner[1], corner[2])
     Assert.equal(#edge, 1, "the inclusive reset corner still resets")
     Assert.equal(edge[1].action, "search-reset", "the inclusive corner keeps the reset action")
@@ -402,7 +499,7 @@ function T.native_search_menu_hitboxes_follow_source_order_and_edges()
   local run = tapDown(127, 175)
   Assert.equal(#run, 1, "the center bottom control maps to exactly one command")
   Assert.equal(run[1].action, "search-run", "the center bottom control starts the search")
-  for _, corner in ipairs({ { 92, 164 }, { 163, 164 }, { 92, 187 }, { 163, 187 } }) do
+  for _, corner in ipairs({ { 92, 164 }, { 162, 164 }, { 92, 186 }, { 162, 186 } }) do
     local edge = tapDown(corner[1], corner[2])
     Assert.equal(#edge, 1, "the inclusive run corner still runs")
     Assert.equal(edge[1].action, "search-run", "the inclusive corner keeps the run action")
@@ -412,7 +509,7 @@ function T.native_search_menu_hitboxes_follow_source_order_and_edges()
   local back = tapDown(215, 175)
   Assert.equal(#back, 1, "the right bottom control maps to exactly one command")
   Assert.equal(back[1].type, "cancel", "the right bottom control leaves the search")
-  for _, corner in ipairs({ { 180, 164 }, { 251, 164 }, { 180, 187 }, { 251, 187 } }) do
+  for _, corner in ipairs({ { 180, 164 }, { 250, 164 }, { 180, 186 }, { 250, 186 } }) do
     Assert.equal(#tapDown(corner[1], corner[2]), 1, "the inclusive back corner still leaves")
   end
   Assert.equal(#tapDown(179, 175), 0, "the pixel left of back stays inert")
@@ -440,8 +537,11 @@ function T.native_grid_arrows_and_footer_follow_their_source_bands()
   local next = gridTap(241, 138)
   Assert.equal(#next, 1, "the lower arrow maps to exactly one command")
   Assert.equal(next[1].action, "page-next", "the lower arrow pages forward")
-  for _, corner in ipairs({ { 231, 5 }, { 252, 20 }, { 231, 131 }, { 252, 146 } }) do
-    Assert.equal(#gridTap(corner[1], corner[2]), 1, "the inclusive arrow corner still pages")
+  for _, corner in ipairs({ { 231, 5 }, { 251, 19 }, { 231, 131 }, { 251, 145 } }) do
+    Assert.equal(#gridTap(corner[1], corner[2]), 1, "the open arrow corner still pages")
+  end
+  for _, corner in ipairs({ { 252, 20 }, { 252, 146 } }) do
+    Assert.equal(#gridTap(corner[1], corner[2]), 0, "the exclusive arrow edge pages nothing")
   end
   Assert.equal(#gridTap(241, 75), 0, "the scrollbar strip between the arrows pages nothing")
   Assert.equal(#gridTap(241, 21), 0, "the strip just below the upper arrow pages nothing")
@@ -462,12 +562,13 @@ function T.native_grid_arrows_and_footer_follow_their_source_bands()
   Assert.equal(#exit, 1, "the footer exit cell maps to exactly one command")
   Assert.equal(exit[1].type, "cancel", "the footer exit cell leaves the browser")
   local boundaries = {
-    { lx = 63, action = "search" },
+    { lx = 62, action = "search" },
     { lx = 64, action = "cry" },
-    { lx = 127, action = "cry" },
+    { lx = 126, action = "cry" },
     { lx = 128, action = "entry-tab" },
-    { lx = 191, action = "entry-tab" },
+    { lx = 190, action = "entry-tab" },
     { lx = 192, type = "cancel" },
+    { lx = 254, type = "cancel" },
   }
   for _, edge in ipairs(boundaries) do
     local mapped = gridTap(edge.lx, 169)
@@ -477,6 +578,9 @@ function T.native_grid_arrows_and_footer_follow_their_source_bands()
     else
       Assert.equal(mapped[1].type, edge.type, "the footer boundary at " .. edge.lx .. " keeps its exit")
     end
+  end
+  for _, lx in ipairs({ 63, 127, 191, 255 }) do
+    Assert.equal(#gridTap(lx, 169), 0, "the exclusive footer boundary at " .. lx .. " maps to nothing")
   end
   Assert.equal(#gridTap(31, 151), 0, "the row above the footer stays inert")
   Assert.equal(#gridTap(31, 188), 0, "the row below the footer stays inert")
@@ -505,12 +609,13 @@ function T.native_entry_tabs_use_narrow_source_bands()
     Assert.equal(mapped[1].action, "entry-tab", "the tab strip switches tabs")
     Assert.equal(mapped[1].value, case.value, "the tab at " .. case.lx .. " selects its own page")
   end
-  Assert.equal(#tapDown(7, 168, 51), 1, "the inclusive tab corner still switches")
-  Assert.equal(#tapDown(57, 183, 52), 1, "the inclusive tab edge still switches")
+  Assert.equal(#tapDown(7, 168, 51), 1, "the open tab corner still switches")
+  Assert.equal(#tapDown(56, 182, 52), 1, "the last open tab row still switches")
+  Assert.equal(#tapDown(57, 183, 52), 0, "the exclusive tab bottom switches nothing")
   for _, lx in ipairs({ 60, 130, 190, 252 }) do
     Assert.equal(#tapDown(lx, 180, 53), 0, "the gap at " .. lx .. " switches no tab")
   end
-  Assert.equal(#tapDown(100, 183, 54), 1, "the inclusive tab bottom still switches")
+  Assert.equal(#tapDown(100, 182, 54), 1, "the last open tab row still switches")
   for _, point in ipairs({ { 30, 184 }, { 100, 187 }, { 160, 190 }, { 220, 191 } }) do
     Assert.equal(
       #tapDown(point[1], point[2], 55),
@@ -533,19 +638,17 @@ function T.native_area_circles_and_letter_cells_match_source_selection()
     session:mapInput({ hostTap(areaPlan, "controls", "pointer_up", lx, ly, pointerId) }, sessionView(area))
     return mapped
   end
-  local circles = { { cx = 77, value = 0 }, { cx = 109, value = 1 }, { cx = 141, value = 2 } }
+  local circles = { { cy = 77, value = 0 }, { cy = 109, value = 1 }, { cy = 141, value = 2 } }
   for _, circle in ipairs(circles) do
-    local mapped = areaTap(circle.cx, 33, 60)
-    Assert.equal(#mapped, 1, "the daypart at " .. circle.cx .. " maps to exactly one command")
+    local mapped = areaTap(33, circle.cy, 60)
+    Assert.equal(#mapped, 1, "the daypart at " .. circle.cy .. " maps to exactly one command")
     Assert.equal(mapped[1].action, "area-time", "the daypart selects its time")
-    Assert.equal(mapped[1].value, circle.value, "the daypart at " .. circle.cx .. " selects its own time")
-    local edge = areaTap(circle.cx + 13, 33, 61)
-    Assert.equal(#edge, 1, "the inclusive circle edge still selects its time")
-    Assert.equal(edge[1].value, circle.value, "the circle edge keeps its own time")
-    Assert.equal(#areaTap(circle.cx, 33 + 13, 62), 1, "the inclusive circle bottom still selects its own time")
+    Assert.equal(mapped[1].value, circle.value, "the daypart at " .. circle.cy .. " selects its own time")
+    Assert.equal(#areaTap(33 + 13, circle.cy, 61), 0, "the exclusive circle edge selects no time")
+    Assert.equal(#areaTap(33, circle.cy + 13, 62), 0, "the exclusive circle bottom selects no time")
   end
-  Assert.equal(#areaTap(77 + 14, 33, 63), 0, "the pixel past the circle radius selects no time")
-  Assert.equal(#areaTap(77, 33 + 14, 64), 0, "the pixel below the circle radius selects no time")
+  Assert.equal(#areaTap(33, 77 - 14, 63), 0, "the pixel above the first circle selects no time")
+  Assert.equal(#areaTap(33, 141 + 14, 64), 0, "the pixel below the last circle selects no time")
   local editor = viewOn(stubView(), "search")
   editor.search = {
     criteria = {},
@@ -581,8 +684,8 @@ function T.native_area_circles_and_letter_cells_match_source_selection()
   Assert.equal(#lastCell, 1, "the last letter cell maps to exactly one command")
   Assert.equal(lastCell[1].value, "unrestricted", "the last letter cell clears the filter")
   Assert.equal(#editorTap(184 + 7, 136 + 7, 68), 0, "the missing last-row slot chooses nothing")
-  Assert.equal(#editorTap(24, 40, 69), 1, "the inclusive first cell corner still holds A")
-  Assert.equal(#editorTap(231, 55, 70), 1, "the inclusive seventh column corner still holds G")
+  Assert.equal(#editorTap(24, 40, 69), 1, "the open first cell corner still holds A")
+  Assert.equal(#editorTap(230, 54, 70), 1, "the open seventh column corner still holds G")
   Assert.equal(#editorTap(23, 47, 71), 0, "the pixel left of the first row chooses nothing")
   Assert.equal(#editorTap(232, 47, 72), 0, "the pixel right of the first row chooses nothing")
   Assert.equal(#editorTap(31, 135, 73), 0, "the row between the third and last rows chooses nothing")
@@ -638,8 +741,8 @@ function T.native_option_editors_map_their_own_source_boxes()
     Assert.equal(mapped[1].action, "editor-choice", "the order editor chooses")
     Assert.equal(mapped[1].value, cell.value, "the order cell holds " .. cell.value)
   end
-  Assert.equal(#editorTap("order", orders, 24, 48), 1, "the inclusive order corner still chooses")
-  Assert.equal(#editorTap("order", orders, 111, 63), 1, "the inclusive order edge still chooses")
+  Assert.equal(#editorTap("order", orders, 24, 48), 1, "the open order corner still chooses")
+  Assert.equal(#editorTap("order", orders, 110, 62), 1, "the open order edge still chooses")
   Assert.equal(#editorTap("order", orders, 23, 55), 0, "the pixel left of the order grid stays inert")
   Assert.equal(#editorTap("order", orders, 128, 55), 0, "the gap between the order columns stays inert")
   Assert.equal(#editorTap("order", orders, 67, 64), 0, "the row between order rows stays inert")
@@ -663,7 +766,7 @@ function T.native_option_editors_map_their_own_source_boxes()
   local typeLast = editorTap("type", types, 95, 143)
   Assert.equal(#typeLast, 1, "the final type cell maps to exactly one command")
   Assert.equal(typeLast[1].value, "unrestricted", "the final type cell clears the filter")
-  Assert.equal(#editorTap("type", types, 3, 40), 1, "the inclusive type corner still chooses")
+  Assert.equal(#editorTap("type", types, 3, 40), 1, "the open type corner still chooses")
   Assert.equal(#editorTap("type", types, 2, 47), 0, "the pixel left of the type grid stays inert")
   Assert.equal(#editorTap("type", types, 61, 47), 0, "the gap after the first type column stays inert")
   Assert.equal(#editorTap("type", types, 159, 143), 0, "the missing final-row type slot stays inert")
@@ -683,7 +786,7 @@ function T.native_option_editors_map_their_own_source_boxes()
   local shapeLast = editorTap("shape", shapes, 223, 135)
   Assert.equal(#shapeLast, 1, "the final shape cell maps to exactly one command")
   Assert.equal(shapeLast[1].value, "unrestricted", "the final shape cell clears the filter")
-  Assert.equal(#editorTap("shape", shapes, 16, 40), 1, "the inclusive shape corner still chooses")
+  Assert.equal(#editorTap("shape", shapes, 16, 40), 1, "the open shape corner still chooses")
   Assert.equal(#editorTap("shape", shapes, 60, 55), 0, "the gap after the first shape column stays inert")
   -- Original area editor: johto, kanto, unknown, then unrestricted.
   local areas = { "johto", "kanto", "unknown", "unrestricted" }
@@ -699,7 +802,7 @@ function T.native_option_editors_map_their_own_source_boxes()
     Assert.equal(mapped[1].action, "editor-choice", "the area editor chooses")
     Assert.equal(mapped[1].value, cell.value, "the area cell holds " .. cell.value)
   end
-  Assert.equal(#editorTap("area", areas, 48, 64), 1, "the inclusive area corner still chooses")
+  Assert.equal(#editorTap("area", areas, 48, 64), 1, "the open area corner still chooses")
   Assert.equal(#editorTap("area", areas, 47, 71), 0, "the pixel left of the area grid stays inert")
   Assert.equal(#editorTap("area", areas, 128, 71), 0, "the gap between the area columns stays inert")
   Assert.equal(#editorTap("area", areas, 75, 80), 0, "the row between area rows stays inert")
@@ -795,7 +898,7 @@ function T.native_slider_tracks_convert_from_the_handle_origin_and_keep_their_en
   Assert.equal(#minFull, 1, "the far end of the lower track begins exactly one gesture")
   Assert.equal(minFull[1].value, 152, "the lower far handle pixel converts to the final step")
   Assert.equal(#send("pointer_down", 26, 46), 1, "the inclusive upper track corner still begins")
-  Assert.equal(#send("pointer_down", 229, 145), 1, "the inclusive lower track corner still begins")
+  Assert.equal(#send("pointer_down", 228, 144), 1, "the open lower track corner still begins")
   Assert.equal(#send("pointer_down", 26, 45), 0, "the row above the upper track begins nothing")
   Assert.equal(#send("pointer_down", 100, 100), 0, "the row between the tracks begins nothing")
   -- Original step arrows beside each track move only their endpoint.

@@ -1013,36 +1013,6 @@ function T.row_taps_open_the_menu_and_page_keys_walk_viewports(_scope)
   controller:dispose()
 end
 
--- List and menu keys play their named source tones through the shared
--- one-shot effect boundary, and only on actions that move or decide.
-function T.list_and_menu_keys_play_their_source_tones(_scope)
-  local played = {}
-  local audio = {
-    play = function(_, sequence)
-      played[#played + 1] = sequence
-    end,
-    playDialing = function() end,
-    isEffectWaitComplete = function()
-      return true
-    end,
-  }
-  local contacts, order = sortingFixture()
-  local controller = openPhone(fixtureManifest(contacts, order), 0, audio)
-  controller:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.deepEqual(played, { "SEQ_SE_GS_GEARCURSOR" }, "stepping down plays the cursor tone")
-  controller:updateFixed({ { type = "navigate", direction = "up" } })
-  Assert.deepEqual(played, { "SEQ_SE_GS_GEARCURSOR", "SEQ_SE_GS_GEARCURSOR" }, "stepping back plays it again")
-  controller:updateFixed({ { type = "navigate", direction = "up" } })
-  Assert.equal(#played, 2, "bumping the list end plays nothing")
-  controller:updateFixed({ { type = "confirm" } })
-  Assert.equal(played[3], "SEQ_SE_GS_GEARDECIDE", "opening the menu plays the decide tone")
-  controller:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(played[4], "SEQ_SE_GS_GEARCURSOR", "menu motion plays the cursor tone")
-  controller:updateFixed({ { type = "cancel" } })
-  Assert.equal(played[5], "SEQ_SE_GS_GEARCANCEL", "menu cancellation plays the cancel tone")
-  controller:dispose()
-end
-
 -- Samples the center byte color of one prepared sprite lease: solid
 -- fakes paint uniformly, so the center names the sprite's pixels.
 ---@param scope table

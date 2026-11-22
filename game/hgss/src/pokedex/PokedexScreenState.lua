@@ -125,7 +125,8 @@ local function buildDemand(view)
   -- even when the selection stages off the visible buffer or the page
   -- stages no grid at all.
   if type(view.selection) == "table" and type(view.selection.species) == "string" then
-    local key = view.selection.species .. "/f0"
+    local form = type(view.selection.form) == "number" and math.floor(view.selection.form) or 0
+    local key = view.selection.species .. "/f" .. form
     if not seenIcons[key] and #iconKeys < 30 then
       seenIcons[key] = true
       iconKeys[#iconKeys + 1] = key

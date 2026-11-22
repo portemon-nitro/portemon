@@ -47,9 +47,10 @@ local PokedexSize = require("game.hgss.src.pokedex.PokedexSize")
 ---@field _areaPanOffset integer current SUB BG0 X scroll in native pixels
 ---@field _disposed boolean teardown flag
 ---@field _coverOffset integer cover slide position
----@field _coverDrag { from: number, preOffset: integer }? in-progress cover drag
+---@field _coverDrag { originX: number, preOffset: integer, fromPage: string }? in-progress cover drag
+---@field _coverSlide { target: integer }? snapping cover/list offset
 ---@field _held { left: boolean, right: boolean, touch: boolean } last held snapshot
----@field _transition { phase: string, tick: integer } named visual phase and tick
+---@field _transition { phase: string, tick: integer, ticks?: integer, inTicks?: integer, kind?: string, targetPage?: integer, targetCursor?: integer, direction?: integer, step?: integer, apply?: fun() } named visual phase and tick
 ---@field _flash { id: string, tick: integer }? pressed-control flash and tick
 local PokedexController = {}
 PokedexController.__index = PokedexController
@@ -72,11 +73,12 @@ PokedexController.FEED_TIMEOUT_TICKS = 60
 -- button palettes swap normal->flash->normal over 4 ticks, and entry
 -- tab switches fade out/in instead of swapping instantly.
 PokedexController.FLASH_TICKS = 4
-PokedexController.FADE_TICKS = 8
+PokedexController.FADE_TICKS = 4
 
--- Ordered keyboard/gamepad focus graph across the search root: the
--- seven source criteria followed by the run and reset actions.
-local SEARCH_FOCUSABLES = { "order", "letter", "type", "height", "weight", "area", "shape", "run", "reset" }
+-- The search root uses its source 2D DpadMenuBox graph; names index the
+-- published nodes for the compact rows and the criterion shortcut.
+local SEARCH_MENU_GRAPH = PokedexSearch.FOCUS.menu
+local SEARCH_MENU_NAMES = SEARCH_MENU_GRAPH.names
 
 -- Scrollbar families: source thresholds map to authored thumb lengths.
 PokedexController.SCROLL_THRESHOLDS = { 15, 45, 90, 135, 180, 225, 270, 315, 360, 405, 450, 495 }
@@ -283,6 +285,7 @@ function PokedexController.new(args)
     _feedback = nil,
     _results = {},
     _searchFocus = "order",
+    _searchMenu = { node = 0, returnInput = nil, column = 0 },
     _area = nil,
     _size = nil,
     _forms = nil,
@@ -302,6 +305,7 @@ function PokedexController.new(args)
     _disposed = false,
     _coverOffset = 0,
     _coverDrag = nil,
+    _coverSlide = nil,
     _held = { left = false, right = false, touch = false },
     _transition = { phase = "rest", tick = 0 },
     _flash = nil,
@@ -455,6 +459,22 @@ function PokedexController:_startEntryFade()
   self._transition = { phase = "fade", tick = 0 }
 end
 
+-- Runs an out/in envelope around a page swap: the old page fades to
+-- black over outTicks, the apply closure swaps content, then the new
+-- page fades back in over inTicks.
+---@param outTicks integer fade-out duration
+---@param inTicks integer fade-in duration
+---@param apply fun() content swap at the midpoint
+function PokedexController:_beginFade(outTicks, inTicks, apply)
+  self._transition = {
+    phase = "out",
+    tick = 0,
+    ticks = outTicks,
+    inTicks = inTicks,
+    apply = apply,
+  }
+end
+
 ---@param role string
 function PokedexController:_emitSound(role)
   self._effects[#self._effects + 1] = { kind = "sound", role = role }
@@ -535,44 +555,57 @@ function PokedexController:_scrollbar(length, lastPage, page)
       position = minY + math.floor(step * page / 256)
     end
   end
-  return { length = thumb, position = position }
+  return { length = thumb, position = position, top = minY, bottom = maxY }
+end
+
+---@param speciesKey string
+---@return { id: integer, form: integer, gender: string } first seen form facts for portraits and size
+function PokedexController:_firstSeenVariant(speciesKey)
+  local speciesRecords = self._catalog.species
+  assert(type(speciesRecords) == "table", "the browser reads species records")
+  local record = speciesRecords[speciesKey]
+  local entries = nil
+  if type(record) == "table" and type(record.formPolicy) == "table" then
+    entries = record.formPolicy.variants
+  end
+  assert(type(entries) == "table" and type(entries[1]) == "table", "the species declares its form policy")
+  local variants = tryDex(self._dex, "observedVariants", speciesKey)
+  if type(variants) == "table" and type(variants[1]) == "number" then
+    for _, entry in ipairs(entries) do
+      if entry.id == variants[1] and type(entry.form) == "number" then
+        local genders = tryDex(self._dex, "observedGenders", speciesKey)
+        local gender = entry.gender
+        if type(gender) ~= "string" then
+          gender = type(genders) == "table" and genders[1] or "genderless"
+        end
+        return { id = entry.id, form = entry.form, gender = gender }
+      end
+    end
+  end
+  local first = entries[1]
+  local genders = tryDex(self._dex, "observedGenders", speciesKey)
+  local gender = first.gender
+  if type(gender) ~= "string" then
+    gender = type(genders) == "table" and genders[1] or "genderless"
+  end
+  return {
+    id = type(first.id) == "number" and first.id or 0,
+    form = type(first.form) == "number" and first.form or 0,
+    gender = gender,
+  }
 end
 
 ---@param speciesKey string
 ---@return integer first observed physical form for cries
 function PokedexController:_cryForm(speciesKey)
-  local variants = tryDex(self._dex, "observedVariants", speciesKey)
-  if type(variants) == "table" and type(variants[1]) == "number" then
-    local speciesRecords = self._catalog.species
-    assert(type(speciesRecords) == "table", "the browser reads species records")
-    local record = speciesRecords[speciesKey]
-    if type(record) == "table" and type(record.formPolicy) == "table" then
-      local entries = record.formPolicy.variants
-      if type(entries) == "table" then
-        for _, entry in ipairs(entries) do
-          if entry.id == variants[1] and type(entry.form) == "number" then
-            return entry.form
-          end
-        end
-      end
-    end
-  end
-  local speciesRecords = self._catalog.species
-  assert(type(speciesRecords) == "table", "the browser reads species records")
-  local record = speciesRecords[speciesKey]
-  if type(record) == "table" and type(record.formPolicy) == "table" then
-    local entries = record.formPolicy.variants
-    if type(entries) == "table" and type(entries[1]) == "table" and type(entries[1].form) == "number" then
-      return entries[1].form
-    end
-  end
-  return 0
+  return self:_firstSeenVariant(speciesKey).form
 end
 
+---@param pageIndex integer zero-based grid page behind the buffer
 ---@return { firstIndex: integer, yOffset: integer, entries: { index: integer, dexNumber: integer?, species: string?, seen: boolean, caught: boolean, returnToSearch: boolean }[] } detached grid buffer of thirty semantic entries
-function PokedexController:_gridBuffer()
+function PokedexController:_gridBufferAt(pageIndex)
   local order = self:_activeOrder()
-  local firstIndex = self._pageIndex * PokedexController.RESULT_SLOTS
+  local firstIndex = pageIndex * PokedexController.RESULT_SLOTS
   local entries = {}
   for position = 1, 30 do
     local global = firstIndex + position - 1
@@ -596,9 +629,15 @@ function PokedexController:_gridBuffer()
   return { firstIndex = firstIndex, yOffset = 0, entries = entries }
 end
 
+---@return { firstIndex: integer, yOffset: integer, entries: { index: integer, dexNumber: integer?, species: string?, seen: boolean, caught: boolean, returnToSearch: boolean }[] } detached grid buffer of thirty semantic entries
+function PokedexController:_gridBuffer()
+  return self:_gridBufferAt(self._pageIndex)
+end
+
+---@param pageIndex integer zero-based results page behind the buffer
 ---@return { firstIndex: integer, yOffset: integer, entries: { index: integer, dexNumber: integer?, species: string?, seen: boolean, caught: boolean, returnToSearch: boolean }[] } detached result buffer with the leading return slot
-function PokedexController:_resultsBuffer()
-  local firstIndex = self._pageIndex * PokedexController.RESULT_SLOTS
+function PokedexController:_resultsBufferAt(pageIndex)
+  local firstIndex = pageIndex * PokedexController.RESULT_SLOTS
   local entries = {}
   for position = 1, 30 do
     local global = firstIndex + position - 1
@@ -623,6 +662,11 @@ function PokedexController:_resultsBuffer()
   return { firstIndex = firstIndex, yOffset = 0, entries = entries }
 end
 
+---@return { firstIndex: integer, yOffset: integer, entries: { index: integer, dexNumber: integer?, species: string?, seen: boolean, caught: boolean, returnToSearch: boolean }[] } detached result buffer with the leading return slot
+function PokedexController:_resultsBuffer()
+  return self:_resultsBufferAt(self._pageIndex)
+end
+
 ---@param speciesKey string
 ---@return integer? active-mode number
 function PokedexController:_activeNumber(speciesKey)
@@ -640,34 +684,41 @@ function PokedexController:_resultsLastPage()
   return math.floor(#self._results / PokedexController.RESULT_SLOTS)
 end
 
-function PokedexController:_openEntry(speciesKey, origin)
-  self._entrySpecies = speciesKey
-  self._origin = origin
-  local nationalUnlocked = self._nationalUnlocked
-  self._area = PokedexArea.new({
-    catalog = self._catalog,
-    dex = self._dex,
-    species = speciesKey,
-    nationalUnlocked = nationalUnlocked,
-    playerPosition = self._playerPosition,
-  })
-  self._forms = PokedexForms.new({
-    catalog = self._catalog,
-    monCatalog = self._monCatalog,
-    dex = self._dex,
-    species = speciesKey,
-  })
-  self._size = nil
-  if tryDex(self._dex, "isCaught", speciesKey) == true then
-    self._size = PokedexSize.new({
+---@param speciesKey string entry species
+---@param origin string grid or results
+---@param tab string? entry tab to open after the fade midpoint
+function PokedexController:_openEntry(speciesKey, origin, tab)
+  self:_beginFade(8, 4, function()
+    self._entrySpecies = speciesKey
+    self._origin = origin
+    local nationalUnlocked = self._nationalUnlocked
+    self._area = PokedexArea.new({
       catalog = self._catalog,
+      dex = self._dex,
       species = speciesKey,
-      profileName = self._profileName,
-      playerGender = self._playerGender,
+      nationalUnlocked = nationalUnlocked,
+      playerPosition = self._playerPosition,
     })
-  end
-  self._page = "area"
-  self:_bumpKey()
+    self._forms = PokedexForms.new({
+      catalog = self._catalog,
+      dex = self._dex,
+      species = speciesKey,
+    })
+    self._size = nil
+    if tryDex(self._dex, "isCaught", speciesKey) == true then
+      self._size = PokedexSize.new({
+        catalog = self._catalog,
+        species = speciesKey,
+        profileName = self._profileName,
+        playerGender = self._playerGender,
+      })
+    end
+    self._page = "area"
+    self:_startEntryFade()
+    if type(tab) == "string" then
+      self:_switchEntryTab(tab)
+    end
+  end)
 end
 
 function PokedexController:_closeEntry()
@@ -688,9 +739,13 @@ function PokedexController:_returnToOrigin()
     self._cursor = saved.cursor
     self._pageIndex = saved.page
     self._page = "results"
+    self._coverOffset = 256
+    self:_startEntryFade()
     self:_refreshResultsSelection()
   else
     self._page = "grid"
+    self._coverOffset = 256
+    self:_startEntryFade()
     self._cursor = self._originGrid.cursor
     self._pageIndex = self._originGrid.page
     local species = self:_gridSlotSpecies(self._pageIndex * PokedexController.RESULT_SLOTS + self._cursor)
@@ -773,7 +828,7 @@ function PokedexController:_rebuildFromKnowledge()
     if type(self._entrySpecies) == "string" and tryDex(dex, "isSeen", self._entrySpecies) == true then
       local species = self._entrySpecies
       local page = self._page
-      self:_openEntry(species, self._origin)
+      self:_openEntry(assert(species), assert(self._origin))
       if page == "size" and self._size == nil then
         self._page = "area"
       elseif page ~= "area" and page ~= "return" then
@@ -903,9 +958,6 @@ function PokedexController:updateFixed(events, preparation)
     self:_handleCancel()
     return
   end
-  if self._closing == true then
-    return
-  end
   if self:_isReady(preparation) ~= true then
     -- A captured slider gesture is a lifetime event, not newly admitted
     -- navigation: its move/end/cancel settles the owned search
@@ -927,6 +979,15 @@ function PokedexController:updateFixed(events, preparation)
     return
   end
   self:_advancePhases()
+  if
+    self._closing == true
+    or self._coverSlide ~= nil
+    or self._transition.phase == "turn"
+    or self._transition.phase == "rows"
+    or self._transition.phase == "out"
+  then
+    return
+  end
   if self._feedback ~= nil then
     return
   end
@@ -983,13 +1044,17 @@ function PokedexController:_handleCancel()
       self:_bumpKey()
     else
       self._page = "grid"
+      self._coverOffset = 256
+      self:_startEntryFade()
       self:_bumpKey()
     end
     return
   end
   if self._page == "results" then
     self._page = "grid"
+    self._coverOffset = 256
     self:_restoreSelection(self._resumeSelection)
+    self:_startEntryFade()
     self:_bumpKey()
     return
   end
@@ -1019,9 +1084,8 @@ function PokedexController:_handleStart()
     return
   end
   if self._page == "grid" then
-    -- The grid return is silent like the source list START key.
-    self._page = "cover"
-    self._coverOffset = 0
+    self:_emitSound("SEQ_SE_GS_BUTTON01")
+    self:_beginCoverSlide(0)
     self:_bumpKey()
     return
   end
@@ -1031,17 +1095,20 @@ function PokedexController:_handleStart()
   if self._search:isEditorOpen() then
     -- START in an editor commits it like its OK button, without
     -- running the search.
-    self:_emitSound("SEQ_SE_GS_ZKN04")
-    self._search:closeEditor(true)
-    self:_bumpKey()
+    self:_commitEditor()
     return
   end
+  -- START on the search root runs the search through the source run
+  -- button feedback.
+  self:_emitSound("SEQ_SE_GS_ZKN04")
+  self:_startFlash("search-run")
   self:_runSearch()
 end
 
 function PokedexController:_openSearch()
   self._search:reset()
   self._searchFocus = "order"
+  self._searchMenu = { node = 0, returnInput = nil, column = 0 }
   self._search:setContext({
     mode = self._mode,
     profileName = self._profileName,
@@ -1049,6 +1116,7 @@ function PokedexController:_openSearch()
   })
   self._feedback = nil
   self._page = "search"
+  self:_startEntryFade()
   self:_bumpKey()
 end
 
@@ -1098,6 +1166,7 @@ function PokedexController:_advanceFeedback()
       self._pageIndex = 0
       self._origin = "search"
       self._page = "results"
+      self._coverOffset = 256
       self._feedback = nil
       self:_refreshResultsSelection()
       self:_bumpKey()
@@ -1127,8 +1196,7 @@ end
 function PokedexController:_syncAreaPanRegion()
   local region = 0
   if self._area ~= nil then
-    local area = self._area:view()
-    if area.region == "kanto" and self._nationalUnlocked == true then
+    if self._area:targetRegion() == "kanto" and self._nationalUnlocked == true then
       region = 1
     end
   end
@@ -1168,6 +1236,28 @@ end
 -- pure animation ticks keep the key quiet.
 function PokedexController:_advancePhases()
   self._spriteTick = self._spriteTick + 1
+  if self._coverSlide ~= nil then
+    local target = self._coverSlide.target
+    local offset = self._coverOffset
+    if offset < target then
+      offset = math.min(offset + 16, target)
+    elseif offset > target then
+      offset = math.max(offset - 16, target)
+    end
+    self._coverOffset = offset
+    if target == 256 then
+      if offset >= 192 and self._page ~= "grid" then
+        self._page = "grid"
+        self:_bumpKey()
+      end
+    elseif offset < 64 and self._page ~= "cover" then
+      self._page = "cover"
+      self:_bumpKey()
+    end
+    if offset == target then
+      self._coverSlide = nil
+    end
+  end
   -- Pressed-control flashes and entry fades are pure visual ticks:
   -- they never advance the demand key, only the published fields.
   if self._flash ~= nil then
@@ -1177,10 +1267,43 @@ function PokedexController:_advancePhases()
     end
   end
   local visual = self._transition
-  if type(visual) == "table" and visual.phase == "fade" then
+  if type(visual) == "table" and visual.phase == "out" then
+    visual.tick = visual.tick + 1
+    if visual.tick >= visual.ticks then
+      local apply = visual.apply
+      if type(apply) == "function" then
+        apply()
+      end
+      self._transition = { phase = "in", tick = 0, ticks = visual.inTicks }
+      self:_bumpKey()
+    end
+  elseif type(visual) == "table" and visual.phase == "in" then
+    visual.tick = visual.tick + 1
+    if visual.tick >= visual.ticks then
+      self._transition = { phase = "rest", tick = 0 }
+    end
+  elseif type(visual) == "table" and visual.phase == "fade" then
     visual.tick = visual.tick + 1
     if visual.tick >= PokedexController.FADE_TICKS then
       self._transition = { phase = "rest", tick = 0 }
+    end
+  elseif type(visual) == "table" and visual.phase == "rows" then
+    visual.tick = visual.tick + 1
+    if visual.tick >= visual.ticks then
+      self._transition = { phase = "rest", tick = 0 }
+    end
+  elseif type(visual) == "table" and visual.phase == "turn" then
+    visual.tick = visual.tick + 1
+    if visual.tick >= visual.ticks then
+      self._pageIndex = visual.targetPage
+      self._cursor = visual.targetCursor
+      if visual.kind == "results" then
+        self:_refreshResultsSelection()
+      else
+        self:_refreshGridSelection()
+      end
+      self._transition = { phase = "rest", tick = 0 }
+      self:_bumpKey()
     end
   end
   if self._feedback ~= nil then
@@ -1205,6 +1328,12 @@ function PokedexController:_advancePhases()
   self._search:tick()
 end
 
+---@param destination integer 0 for the cover, 256 for the list
+function PokedexController:_beginCoverSlide(destination)
+  assert(destination == 0 or destination == 256, "cover slides rest on the cover or list")
+  self._coverSlide = { target = destination }
+end
+
 ---@param event table<string, unknown>
 function PokedexController:_handleDrag(event)
   local target = event.target
@@ -1212,47 +1341,35 @@ function PokedexController:_handleDrag(event)
   local value = event.value
   if target == "cover" then
     if phase == "begin" then
-      -- Beginning the dex-mode switch drag plays the decide tone;
-      -- the rest of the cover gesture stays silent.
-      self:_emitSound("SEQ_SE_GS_BUTTON01")
-      self._coverDrag = { from = type(value) == "number" and value or 0, preOffset = self._coverOffset }
-    elseif phase == "move" and self._coverDrag ~= nil then
-      if type(value) == "number" then
-        if value < 0 then
-          value = 0
-        end
-        if value > 256 then
-          value = 256
-        end
-        self._coverOffset = math.floor(value) --[[@as integer]]
-      end
-    elseif phase == "end" and self._coverDrag ~= nil then
-      local from = self._coverDrag.from
-      self._coverDrag = nil
-      if type(value) ~= "number" then
+      if self._coverSlide ~= nil then
         return
       end
-      if from <= 128 then
-        if value >= 64 then
-          self._page = "grid"
-          self._coverOffset = 256
-        else
-          self._page = "cover"
-          self._coverOffset = 0
+      -- Beginning the cover/list drag plays the decide tone; the rest of
+      -- the gesture stays silent until a page actually changes.
+      self:_emitSound("SEQ_SE_GS_BUTTON01")
+      local originX = type(value) == "number" and value or 0
+      self._coverDrag = { originX = originX, preOffset = self._coverOffset, fromPage = self._page }
+    elseif phase == "move" and self._coverDrag ~= nil then
+      if type(value) == "number" then
+        local drag = assert(self._coverDrag)
+        local base = drag.fromPage == "cover" and drag.preOffset or 256
+        local offset = base + (drag.originX - value)
+        if offset < 0 then
+          offset = 0
+        elseif offset > 256 then
+          offset = 256
         end
-      else
-        if value >= 192 then
-          self._page = "grid"
-          self._coverOffset = 256
-        else
-          self._page = "cover"
-          self._coverOffset = 0
-        end
+        self._coverOffset = math.floor(offset) --[[@as integer]]
       end
-      self:_bumpKey()
-    elseif (phase == "cancel" or phase == "end") and self._coverDrag ~= nil then
+    elseif phase == "cancel" and self._coverDrag ~= nil then
       self._coverOffset = self._coverDrag.preOffset
       self._coverDrag = nil
+    elseif phase == "end" and self._coverDrag ~= nil then
+      local drag = assert(self._coverDrag)
+      self._coverDrag = nil
+      local threshold = drag.fromPage == "cover" and 64 or 192
+      local destination = self._coverOffset >= threshold and 256 or 0
+      self:_beginCoverSlide(destination)
     end
     return
   end
@@ -1300,7 +1417,10 @@ function PokedexController:_handleDrag(event)
     return
   end
   if target == "grid-scroll" or target == "area-scroll" or target == "forms-scroll" then
-    if phase ~= "end" or type(value) ~= "number" then
+    if phase ~= "begin" and phase ~= "move" and phase ~= "end" then
+      return
+    end
+    if type(value) ~= "number" then
       return
     end
     local fraction = value
@@ -1445,25 +1565,92 @@ function PokedexController:_handleCover(event)
       self:_reconcileModeSelection()
       self:_bumpKey()
     end
+  elseif event.type == "activate" and event.action == "search" then
+    self:_emitSound("SEQ_SE_GS_ZKN04")
+    self:_openSearch()
   end
 end
 
----@param delta integer
+-- Starts the three-tick row nudge behind an accepted area/forms row move.
+---@param kind string area or forms family
+---@param step integer +1 down, -1 up
+function PokedexController:_beginRowScroll(kind, step)
+  self._transition = { phase = "rows", tick = 0, ticks = 3, kind = kind, step = step }
+end
+
+-- Starts the source fifteen-tick icon/page scroll toward another page.
+-- The committed page and cursor change only at the end of the turn.
+---@param kind string grid or results family
+---@param targetPage integer zero-based destination page
+---@param targetCursor integer zero-based destination cursor
+function PokedexController:_beginPageTurn(kind, targetPage, targetCursor)
+  local direction = targetPage > self._pageIndex and 1 or -1
+  self._transition = {
+    phase = "turn",
+    tick = 1,
+    ticks = 16,
+    kind = kind,
+    direction = direction,
+    targetPage = targetPage,
+    targetCursor = targetCursor,
+  }
+  self:_emitSound("SEQ_SE_GS_ZKN04")
+  self:_bumpKey()
+end
+
+-- Source list grid movement: row/column steps that cross a page edge
+-- turn the page and wrap to the matching row, while an edge with no
+-- neighbouring page refuses the move and stays silent.
+---@param delta integer -5, -1, 1, or 5
 function PokedexController:_moveGridCursor(delta)
-  local total = (self:_gridLastPage() + 1) * PokedexController.RESULT_SLOTS
-  local absolute = self._pageIndex * PokedexController.RESULT_SLOTS + self._cursor
-  absolute = (absolute + delta) % total
-  local before = self._pageIndex
-  self._pageIndex = math.floor(absolute / PokedexController.RESULT_SLOTS)
-  self._cursor = absolute % PokedexController.RESULT_SLOTS
-  self:_refreshGridSelection()
-  -- Moves within the page play the cursor tone; edge page turns play
-  -- the touch tone like the source list page sequences.
-  if self._pageIndex ~= before then
-    self:_emitSound("SEQ_SE_GS_ZKN04")
+  local lastPage = self:_gridLastPage()
+  local page, cursor = self._pageIndex, self._cursor
+  if delta == -1 then
+    if cursor > 0 then
+      cursor = cursor - 1
+    elseif page > 0 then
+      page = page - 1
+      cursor = 14
+    else
+      return
+    end
+  elseif delta == 1 then
+    if cursor < 14 then
+      cursor = cursor + 1
+    elseif page < lastPage then
+      page = page + 1
+      cursor = 0
+    else
+      return
+    end
+  elseif delta == -5 then
+    if cursor >= 5 then
+      cursor = cursor - 5
+    elseif page > 0 then
+      page = page - 1
+      cursor = cursor + 10
+    else
+      return
+    end
+  elseif delta == 5 then
+    if cursor < 10 then
+      cursor = cursor + 5
+    elseif page < lastPage then
+      page = page + 1
+      cursor = cursor - 10
+    else
+      return
+    end
   else
-    self:_emitSound("SEQ_SE_GS_ZKN03")
+    return
   end
+  if page ~= self._pageIndex then
+    self:_beginPageTurn("grid", page, cursor)
+    return
+  end
+  self._cursor = cursor
+  self:_refreshGridSelection()
+  self:_emitSound("SEQ_SE_GS_ZKN03")
   self:_bumpKey()
 end
 
@@ -1493,23 +1680,17 @@ function PokedexController:_handleGrid(event)
       self:_emitCry(species, self:_cryForm(species))
     end
   elseif event.type == "y" then
+    self:_emitSound("SEQ_SE_GS_ZKN04")
     self:_openSearch()
   elseif event.type == "select" then
     self:_cycleLanguage()
   elseif event.type == "l" then
     if self._pageIndex > 0 then
-      self._pageIndex = self._pageIndex - 1
-      self:_refreshGridSelection()
-      self:_emitSound("SEQ_SE_GS_ZKN04")
-      self:_bumpKey()
+      self:_beginPageTurn("grid", self._pageIndex - 1, self._cursor)
     end
   elseif event.type == "r" then
-    local lastPage = self:_gridLastPage()
-    if self._pageIndex < lastPage then
-      self._pageIndex = self._pageIndex + 1
-      self:_refreshGridSelection()
-      self:_emitSound("SEQ_SE_GS_ZKN04")
-      self:_bumpKey()
+    if self._pageIndex < self:_gridLastPage() then
+      self:_beginPageTurn("grid", self._pageIndex + 1, self._cursor)
     end
   elseif event.type == "activate" then
     self:_handleGridActivate(event)
@@ -1545,8 +1726,7 @@ function PokedexController:_handleGridActivate(event)
     self:_emitSound("SEQ_SE_GS_ZKN04")
     self:_select(species)
     self._originGrid = { page = self._pageIndex, cursor = self._cursor }
-    self:_openEntry(species, "grid")
-    self:_switchEntryTab(event.value)
+    self:_openEntry(species, "grid", event.value)
   elseif event.action == "cry" then
     local species = self:_gridSlotSpecies(self._pageIndex * PokedexController.RESULT_SLOTS + self._cursor)
     if species ~= nil then
@@ -1559,23 +1739,16 @@ function PokedexController:_handleGridActivate(event)
     self:_openSearch()
   elseif event.action == "cover" then
     self:_emitSound("SEQ_SE_GS_ZKN04")
-    self._page = "cover"
-    self._coverOffset = 0
+    self:_beginCoverSlide(0)
     self:_bumpKey()
   elseif event.action == "page-next" then
     local lastPage = self:_gridLastPage()
     if self._pageIndex < lastPage then
-      self._pageIndex = self._pageIndex + 1
-      self:_refreshGridSelection()
-      self:_emitSound("SEQ_SE_GS_ZKN04")
-      self:_bumpKey()
+      self:_beginPageTurn("grid", self._pageIndex + 1, self._cursor)
     end
   elseif event.action == "page-prev" then
     if self._pageIndex > 0 then
-      self._pageIndex = self._pageIndex - 1
-      self:_refreshGridSelection()
-      self:_emitSound("SEQ_SE_GS_ZKN04")
-      self:_bumpKey()
+      self:_beginPageTurn("grid", self._pageIndex - 1, self._cursor)
     end
   end
 end
@@ -1609,114 +1782,133 @@ function PokedexController:_cycleLanguage()
 end
 
 ---@param direction string navigate direction
----@return integer focus step across the search graph
-local function searchFocusStep(direction)
-  if direction == "up" or direction == "left" then
-    return -1
+function PokedexController:_moveSearchFocus(direction)
+  if PokedexSearch.moveFocus(SEARCH_MENU_GRAPH, self._searchMenu, direction) ~= true then
+    return
   end
-  return 1
-end
-
----@param delta integer signed focus step
-function PokedexController:_moveSearchFocus(delta)
-  local index = 1
-  for position, name in ipairs(SEARCH_FOCUSABLES) do
-    if name == self._searchFocus then
-      index = position
-    end
-  end
-  index = (index + delta - 1) % #SEARCH_FOCUSABLES + 1
-  self._searchFocus = SEARCH_FOCUSABLES[index]
-  -- Focus always steps to another criterion, so the focus move tone
-  -- always plays.
+  self._searchFocus = SEARCH_MENU_NAMES[self._searchMenu.node + 1]
   self:_emitSound("SEQ_SE_GS_ZKN03")
   self:_bumpKey()
 end
 
--- Moves the open editor focus one step without staging anything: option
--- editors walk their projected option list, skipping the locked Kanto
--- scope, while slider editors switch endpoint on up/down.
----@param delta integer signed focus step
+-- Moves the open editor focus through the source 2D graph. Slider
+-- left/right steps stay intercepted by the slider owner, exactly like
+-- the native handlers that read the arrows before the grid.
 ---@param direction string navigate direction
-function PokedexController:_moveEditorFocus(delta, direction)
+function PokedexController:_moveEditorFocus(direction)
   local editor = self._search:editorView()
   if editor == nil then
     return
   end
   local kind = editor.criterion
-  if kind == "height" or kind == "weight" then
-    if direction == "up" then
-      self._search:setSliderEndpoint("min")
-      if self._search:editorView().endpoint == "min" and editor.endpoint ~= "min" then
+  if (kind == "height" or kind == "weight") and (direction == "left" or direction == "right") then
+    if editor.node ~= 0 and editor.node ~= 1 then
+      if self._search:moveEditorFocus(direction) then
         self:_emitSound("SEQ_SE_GS_ZKN03")
+        self:_bumpKey()
       end
-      self:_bumpKey()
-    elseif direction == "down" then
-      self._search:setSliderEndpoint("max")
-      if self._search:editorView().endpoint == "max" and editor.endpoint ~= "max" then
-        self:_emitSound("SEQ_SE_GS_ZKN03")
-      end
-      self:_bumpKey()
-    elseif direction == "left" or direction == "right" then
-      local endpoint = editor.endpoint
-      if endpoint ~= "min" and endpoint ~= "max" then
-        endpoint = "min"
-      end
-      local bounds = self._search:criteria()[kind]
-      assert(type(bounds) == "table", "search reads its slider bounds")
-      local before = bounds[endpoint]
-      self._search:stepSlider(kind, endpoint, searchFocusStep(direction))
-      local moved = self._search:criteria()[kind]
-      assert(type(moved) == "table", "search reads its stepped slider bounds")
-      -- Arrow steps play the touch tone, but a clamped step at the
-      -- bound stays silent.
-      if moved[endpoint] ~= before then
-        self:_emitSound("SEQ_SE_GS_ZKN04")
-      end
-      self:_bumpKey()
-    end
-    return
-  end
-  local options = self._search:editorOptions(kind)
-  if #options == 0 then
-    return
-  end
-  local index = 1
-  for position, option in ipairs(options) do
-    if option == editor.focus then
-      index = position
-    end
-  end
-  local before = editor.focus
-  for _ = 1, #options do
-    index = (index + delta - 1) % #options + 1
-    local choice = options[index]
-    if choice ~= "kanto" or kind ~= "area" or self._nationalUnlocked == true then
-      self._search:focusOption(choice)
-      if self._search:editorView().focus ~= before then
-        self:_emitSound("SEQ_SE_GS_ZKN03")
-      end
-      self:_bumpKey()
       return
     end
+    local endpoint = editor.node == 1 and "min" or "max"
+    local bounds = self._search:criteria()[kind]
+    assert(type(bounds) == "table", "search reads its slider bounds")
+    local before = bounds[endpoint]
+    self._search:stepSlider(kind, endpoint, direction == "left" and -1 or 1)
+    local moved = self._search:criteria()[kind]
+    assert(type(moved) == "table", "search reads its stepped slider bounds")
+    -- Arrow steps play the touch tone, but a clamped step at the bound
+    -- stays silent.
+    if moved[endpoint] ~= before then
+      self:_emitSound("SEQ_SE_GS_ZKN04")
+    end
+    self:_bumpKey()
+    return
   end
+  if self._search:moveEditorFocus(direction) ~= true then
+    return
+  end
+  self:_emitSound("SEQ_SE_GS_ZKN03")
+  self:_bumpKey()
+end
+
+---@param name string search criterion node name
+---@return integer zero-based source focus node
+local function searchCriterionNode(name)
+  for index, candidate in ipairs(SEARCH_MENU_NAMES) do
+    if candidate == name then
+      return index - 1
+    end
+  end
+  return 0
+end
+
+-- Commits the open editor through its OK node: the source plays the
+-- decide tone and flashes the OK control before the page returns.
+function PokedexController:_commitEditor()
+  local editor = self._search:editorView()
+  if editor == nil then
+    return
+  end
+  local kind = editor.criterion
+  self:_emitSound("SEQ_SE_GS_ZKN04")
+  self:_startFlash("editor-ok")
+  self._search:closeEditor(true)
+  self:_startEntryFade()
+  self._searchFocus = kind
+  self._searchMenu.node = searchCriterionNode(kind)
+  self._searchMenu.column = self._searchMenu.node
+  self._searchMenu.returnInput = nil
+  self:_bumpKey()
+end
+
+-- Cancels the open editor through its cancel node: the source restores
+-- the criterion backup, plays the cancel tone, and flashes cancel.
+function PokedexController:_cancelEditor()
+  local editor = self._search:editorView()
+  if editor == nil then
+    return
+  end
+  local kind = editor.criterion
+  self:_emitSound("SEQ_SE_GS_GEARCANCEL")
+  self:_startFlash("editor-cancel")
+  self._search:closeEditor(false)
+  self:_startEntryFade()
+  self._searchFocus = kind
+  self._searchMenu.node = searchCriterionNode(kind)
+  self._searchMenu.column = self._searchMenu.node
+  self._searchMenu.returnInput = nil
+  self:_bumpKey()
 end
 
 function PokedexController:_confirmSearchFocus()
-  local focus = self._searchFocus
-  if focus == "run" then
+  local node = self._searchMenu.node
+  if node == 8 then
     self:_emitSound("SEQ_SE_GS_ZKN04")
+    self:_startFlash("search-run")
     self:_runSearch()
     return
   end
-  if focus == "reset" then
+  if node == 9 then
+    self:_emitSound("SEQ_SE_GS_GEARCANCEL")
+    self._page = "grid"
+    self:_bumpKey()
+    return
+  end
+  if node == 7 then
     self:_emitSound("SEQ_SE_GS_ZKN04")
+    self:_startFlash("search-reset")
     self._search:reset()
     self:_bumpKey()
     return
   end
+  local name = SEARCH_MENU_NAMES[node + 1]
+  if type(name) ~= "string" then
+    return
+  end
   self:_emitSound("SEQ_SE_GS_ZKN04")
-  self._search:openEditor(focus)
+  self:_startFlash("search-option:" .. name)
+  self._search:openEditor(name)
+  self:_startEntryFade()
   self:_bumpKey()
 end
 
@@ -1727,30 +1919,41 @@ function PokedexController:_handleSearch(event)
     return
   end
   if event.type == "navigate" then
-    self:_moveSearchFocus(searchFocusStep(event.direction))
+    self:_moveSearchFocus(event.direction)
   elseif event.type == "confirm" then
     self:_confirmSearchFocus()
   elseif event.type == "activate" and event.action == "criterion" then
     if type(event.value) == "string" then
-      local known = false
-      for _, name in ipairs(SEARCH_FOCUSABLES) do
+      local node = nil
+      for index, name in ipairs(SEARCH_MENU_NAMES) do
         if name == event.value then
-          known = true
+          node = index - 1
         end
       end
-      if known then
+      if node ~= nil then
         self:_emitSound("SEQ_SE_GS_ZKN04")
+        self:_startFlash("search-option:" .. event.value)
         self._searchFocus = event.value
+        self._searchMenu.node = node
+        self._searchMenu.column = node
+        self._searchMenu.returnInput = nil
         self._search:openEditor(event.value)
         self:_bumpKey()
       end
     end
-  elseif event.type == "activate" and (event.action == "search-run" or event.action == "editor-ok") then
+  elseif event.type == "activate" and event.action == "search-run" then
     self:_emitSound("SEQ_SE_GS_ZKN04")
+    self:_startFlash("search-run")
     self:_runSearch()
   elseif event.type == "activate" and event.action == "search-reset" then
     self:_emitSound("SEQ_SE_GS_ZKN04")
+    self:_startFlash("search-reset")
     self._search:reset()
+    self:_bumpKey()
+  elseif event.type == "activate" and event.action == "cancel" then
+    self:_emitSound("SEQ_SE_GS_GEARCANCEL")
+    self:_startFlash("search-back")
+    self._page = "grid"
     self:_bumpKey()
   end
 end
@@ -1763,14 +1966,18 @@ function PokedexController:_handleEditor(event)
   end
   local kind = editor.criterion
   if event.type == "navigate" then
-    self:_moveEditorFocus(searchFocusStep(event.direction), event.direction)
+    self:_moveEditorFocus(event.direction)
     return
   end
   if event.type == "confirm" then
-    if kind == "height" or kind == "weight" then
-      self:_emitSound("SEQ_SE_GS_ZKN04")
-      self._search:closeEditor(true)
-      self:_bumpKey()
+    if editor.node == editor.ok then
+      self:_commitEditor()
+    elseif editor.node == editor.cancel then
+      self:_cancelEditor()
+    elseif kind == "height" or kind == "weight" then
+      -- The native A on a slider handle starts a handle drag rather than
+      -- committing the editor; START or the OK node commits.
+      return
     else
       local focus = editor.focus
       if type(focus) == "string" then
@@ -1783,6 +1990,11 @@ function PokedexController:_handleEditor(event)
   end
   if event.type == "activate" and event.action == "editor-choice" then
     if type(event.value) == "string" then
+      for index, option in ipairs(self._search:editorOptions(kind)) do
+        if option == event.value then
+          self._search:focusNode(index - 1)
+        end
+      end
       self:_emitSound("SEQ_SE_GS_ZKN04")
       self._search:choose(event.value)
       self:_bumpKey()
@@ -1798,32 +2010,62 @@ function PokedexController:_handleEditor(event)
     end
     self:_bumpKey()
   elseif event.type == "activate" and event.action == "editor-ok" then
-    self:_emitSound("SEQ_SE_GS_ZKN04")
-    self._search:closeEditor(true)
-    self:_bumpKey()
+    self:_commitEditor()
   elseif event.type == "activate" and event.action == "editor-cancel" then
-    self:_emitSound("SEQ_SE_GS_GEARCANCEL")
-    self._search:closeEditor(false)
-    self:_bumpKey()
+    self:_cancelEditor()
   end
 end
 
 ---@param delta integer
 function PokedexController:_moveResultsCursor(delta)
-  local total = (self:_resultsLastPage() + 1) * PokedexController.RESULT_SLOTS
-  local absolute = self._pageIndex * PokedexController.RESULT_SLOTS + self._cursor
-  absolute = (absolute + delta) % total
-  local before = self._pageIndex
-  self._pageIndex = math.floor(absolute / PokedexController.RESULT_SLOTS)
-  self._cursor = absolute % PokedexController.RESULT_SLOTS
-  self:_refreshResultsSelection()
-  -- Moves within the page play the cursor tone; edge page turns play
-  -- the touch tone like the source result page sequences.
-  if self._pageIndex ~= before then
-    self:_emitSound("SEQ_SE_GS_ZKN04")
+  local lastPage = self:_resultsLastPage()
+  local page, cursor = self._pageIndex, self._cursor
+  if delta == -1 then
+    if cursor > 0 then
+      cursor = cursor - 1
+    elseif page > 0 then
+      page = page - 1
+      cursor = 14
+    else
+      return
+    end
+  elseif delta == 1 then
+    if cursor < 14 then
+      cursor = cursor + 1
+    elseif page < lastPage then
+      page = page + 1
+      cursor = 0
+    else
+      return
+    end
+  elseif delta == -5 then
+    if cursor >= 5 then
+      cursor = cursor - 5
+    elseif page > 0 then
+      page = page - 1
+      cursor = cursor + 10
+    else
+      return
+    end
+  elseif delta == 5 then
+    if cursor < 10 then
+      cursor = cursor + 5
+    elseif page < lastPage then
+      page = page + 1
+      cursor = cursor - 10
+    else
+      return
+    end
   else
-    self:_emitSound("SEQ_SE_GS_ZKN03")
+    return
   end
+  if page ~= self._pageIndex then
+    self:_beginPageTurn("results", page, cursor)
+    return
+  end
+  self._cursor = cursor
+  self:_refreshResultsSelection()
+  self:_emitSound("SEQ_SE_GS_ZKN03")
   self:_bumpKey()
 end
 
@@ -1858,8 +2100,12 @@ function PokedexController:_handleResults(event)
       end
     end
   elseif event.type == "y" then
+    self:_emitSound("SEQ_SE_GS_ZKN04")
     self._page = "search"
+    self:_startEntryFade()
     self:_bumpKey()
+  elseif event.type == "select" then
+    self:_cycleLanguage()
   elseif event.type == "l" then
     if self._pageIndex > 0 then
       self._pageIndex = self._pageIndex - 1
@@ -1879,15 +2125,73 @@ function PokedexController:_handleResults(event)
     if event.action == "grid-slot" and type(event.value) == "number" then
       local slot = event.value
       if slot >= 0 and slot < PokedexController.RESULT_SLOTS and slot % 1 == 0 then
-        -- Touching the already-active return slot is the silent
-        -- criteria recap; every other touch plays the touch tone.
-        if slot ~= self._cursor or not self:_isSearchReturnSlot() then
+        if slot ~= self._cursor then
+          -- A fresh slot only moves the cursor; it never opens on the
+          -- first tap.
           self:_emitSound("SEQ_SE_GS_ZKN04")
+          self._cursor = slot
+          self:_refreshResultsSelection()
+          self:_bumpKey()
+          return
         end
-        self._cursor = slot
-        self:_refreshResultsSelection()
+        -- The active return slot is the audible criteria recap.
+        self:_emitSound("SEQ_SE_GS_ZKN04")
         self:_activateResultsSlot()
         self:_bumpKey()
+      end
+      return
+    end
+    -- The results footer carries the same commands as the grid list: the
+    -- search word reopens the criteria, the cover word returns to the
+    -- list, the cry reads the highlighted species, and the language and
+    -- page arrows act on the current result page.
+    if event.action == "search" then
+      self:_emitSound("SEQ_SE_GS_ZKN04")
+      self._page = "search"
+      self:_bumpKey()
+    elseif event.action == "cover" then
+      self:_emitSound("SEQ_SE_GS_ZKN04")
+      self:_beginCoverSlide(0)
+      self:_bumpKey()
+    elseif event.action == "cry" then
+      if self:_isSearchReturnSlot() ~= true then
+        local key = self._results[self._pageIndex * PokedexController.RESULT_SLOTS + self._cursor]
+        if type(key) == "string" then
+          self:_emitCry(key, self:_cryForm(key))
+        end
+      end
+    elseif event.action == "language" then
+      self:_cycleLanguage()
+    elseif event.action == "page-next" then
+      if self._pageIndex < self:_resultsLastPage() then
+        self._pageIndex = self._pageIndex + 1
+        self:_refreshResultsSelection()
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+        self:_bumpKey()
+      end
+    elseif event.action == "page-prev" then
+      if self._pageIndex > 0 then
+        self._pageIndex = self._pageIndex - 1
+        self:_refreshResultsSelection()
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+        self:_bumpKey()
+      end
+    elseif event.action == "entry-tab" then
+      -- The result footer opens the highlighted result on its own entry
+      -- tab, exactly like the list footer; the leading return slot names
+      -- no species, so it stays inert.
+      if self:_isSearchReturnSlot() ~= true then
+        local key = self._results[self._pageIndex * PokedexController.RESULT_SLOTS + self._cursor]
+        if type(key) == "string" then
+          self:_emitSound("SEQ_SE_GS_ZKN04")
+          self._originResults = {
+            list = self._results,
+            cursor = self._cursor,
+            page = self._pageIndex,
+          }
+          self:_select(key)
+          self:_openEntry(key, "results", event.value)
+        end
       end
     end
   end
@@ -1923,38 +2227,40 @@ function PokedexController:_handleArea(event)
     self:_emitSound("SEQ_SE_GS_ZKN03")
     self:_bumpKey()
   elseif event.type == "select" then
-    local before = self._area:view().region
-    if self._area:view().region == "johto" then
+    local before = self._area:targetRegion()
+    if before == "johto" then
       self:_setAreaRegion("kanto")
     else
       self:_setAreaRegion("johto")
     end
-    if self._area:view().region ~= before then
+    if self._area:targetRegion() ~= before then
       self:_emitSound("SEQ_SE_GS_ZKN03")
     end
     self:_bumpKey()
   elseif event.type == "l" then
-    local before = self._area:view().region
+    local before = self._area:targetRegion()
     self:_setAreaRegion("johto")
-    if self._area:view().region ~= before then
+    if self._area:targetRegion() ~= before then
       self:_emitSound("SEQ_SE_GS_ZKN03")
     end
     self:_bumpKey()
   elseif event.type == "r" then
-    local before = self._area:view().region
+    local before = self._area:targetRegion()
     self:_setAreaRegion("kanto")
-    if self._area:view().region ~= before then
+    if self._area:targetRegion() ~= before then
       self:_emitSound("SEQ_SE_GS_ZKN03")
     end
     self:_bumpKey()
   elseif event.type == "navigate" then
     if event.direction == "up" then
       if self._area:moveRow(-1) then
+        self:_beginRowScroll("area", -1)
         self:_emitSound("SEQ_SE_GS_ZKN03")
         self:_bumpKey()
       end
     elseif event.direction == "down" then
       if self._area:moveRow(1) then
+        self:_beginRowScroll("area", 1)
         self:_emitSound("SEQ_SE_GS_ZKN03")
         self:_bumpKey()
       end
@@ -1976,19 +2282,32 @@ function PokedexController:_handleArea(event)
     end
   elseif event.type == "activate" then
     if event.action == "area-time" then
-      local before = self._area:view().time
+      local before = self._area:targetTime()
       self._area:setTime(event.value)
-      if self._area:view().time ~= before then
+      if self._area:targetTime() ~= before then
         self:_emitSound("SEQ_SE_GS_ZKN04")
       end
       self:_bumpKey()
     elseif event.action == "area-region" then
-      local before = self._area:view().region
+      local before = self._area:targetRegion()
       self:_setAreaRegion(event.value)
-      if self._area:view().region ~= before then
+      if self._area:targetRegion() ~= before then
         self:_emitSound("SEQ_SE_GS_ZKN04")
       end
       self:_bumpKey()
+    elseif event.action == "area-scroll" then
+      local step = event.value > 0 and 1 or -1
+      local moved = false
+      for _ = 1, math.abs(event.value) do
+        if self._area:moveRow(step) then
+          moved = true
+        end
+      end
+      if moved then
+        self:_beginRowScroll("area", step)
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+        self:_bumpKey()
+      end
     elseif event.action == "area-row" then
       if self._area:goRow(event.value) then
         self:_emitSound("SEQ_SE_GS_ZKN04")
@@ -2115,6 +2434,19 @@ function PokedexController:_handleForms(event)
   elseif event.type == "activate" then
     if event.action == "forms-row" then
       if self._forms:goRow(event.value) then
+        self:_emitSound("SEQ_SE_GS_ZKN04")
+      end
+      self:_bumpKey()
+    elseif event.action == "forms-scroll" and type(event.value) == "number" and event.value ~= 0 then
+      local step = event.value > 0 and 1 or -1
+      local moved = false
+      for _ = 1, math.abs(event.value) do
+        if self._forms:moveRow(step) then
+          moved = true
+        end
+      end
+      if moved then
+        self:_beginRowScroll("forms", step)
         self:_emitSound("SEQ_SE_GS_ZKN04")
       end
       self:_bumpKey()
@@ -2263,6 +2595,9 @@ function PokedexController:_switchEntryTab(tab)
   -- fade out/in through the shared visual envelope like the retail
   -- palette fades between entry screens.
   if self._page ~= before then
+    if type(tab) == "string" and (tab == "area" or tab == "size" or tab == "forms") then
+      self:_startFlash("entry-tab:" .. tab)
+    end
     self:_startEntryFade()
   end
   self:_bumpKey()
@@ -2322,10 +2657,7 @@ function PokedexController:_entryPictures()
   if type(self._entrySpecies) ~= "string" or self._forms == nil then
     return pictures
   end
-  local mode = "silhouette"
-  if self._selection.caught == true then
-    mode = "portrait"
-  end
+  local mode = "portrait"
   if self._forms:comparison() ~= nil then
     local comparison = self._forms:comparison()
     if comparison ~= nil then
@@ -2352,7 +2684,10 @@ function PokedexController:_entryPictures()
       return pictures
     end
   end
-  local facts = self._forms:currentPictureFacts()
+  local facts = self._forms:firstPictureFacts()
+  if self._page == "forms" then
+    facts = self._forms:currentPictureFacts()
+  end
   pictures[#pictures + 1] = {
     slot = 0,
     specimen = self:_specimen(facts.form, facts.gender, facts.frontPersonality),
@@ -2432,20 +2767,6 @@ local function appendUiSlot(slots, role, messageId, language)
   slots[#slots + 1] = { role = role, kind = "ui", messageId = messageId, language = language }
 end
 
----@param slots table[] detached semantic text slot requests under construction
----@param selection { species: string?, dexNumber: integer?, seen: boolean, caught: boolean, language: string } live browser selection record
-local function appendHighlightedIdentity(slots, selection)
-  if selection.seen == true and type(selection.species) == "string" and type(selection.dexNumber) == "number" then
-    slots[#slots + 1] = { role = "grid.selected-number", kind = "numeric", value = padNumber(selection.dexNumber) }
-    slots[#slots + 1] = {
-      role = "grid.selected-name",
-      kind = "species_name",
-      species = selection.species,
-      language = selection.language,
-    }
-  end
-end
-
 -- Bounded selected-detail family for the adapted inspector: number and
 -- name for seen-only highlights, plus the caught-protected category,
 -- flavor, height, and weight once caught. Unseen slots publish nothing.
@@ -2504,6 +2825,29 @@ local function appendCompactListActions(controller, slots)
   appendUiSlot(slots, "compact.action-cover", searchText.returnCancel, language)
 end
 
+-- The two count captions and their zero-padded quantities: the cover and
+-- the grid/results pages share the native list-family windows, so every
+-- page that paints them publishes the same four slots.
+---@param controller PokedexController browser controller under construction of its text slots
+---@param slots table[] detached semantic text slot requests under construction
+local function appendCountSlots(controller, slots)
+  local listText = checkTable(searchTextBindings(controller).list, "list text bindings")
+  appendUiSlot(slots, "grid.seen-caption", listText.seen, controller._nativeLanguage)
+  appendUiSlot(slots, "grid.caught-caption", listText.caught, controller._nativeLanguage)
+  local seen = tryDex(controller._dex, "countSeen", controller._mode)
+  local caught = tryDex(controller._dex, "countCaught", controller._mode)
+  slots[#slots + 1] = {
+    role = "grid.seen-count",
+    kind = "numeric",
+    value = padNumber(type(seen) == "number" and seen or 0),
+  }
+  slots[#slots + 1] = {
+    role = "grid.caught-count",
+    kind = "numeric",
+    value = padNumber(type(caught) == "number" and caught or 0),
+  }
+end
+
 ---@param controller PokedexController browser controller under construction of its text slots
 ---@return table<string, unknown> bound entry-page text bindings
 local function entryTextBindings(controller)
@@ -2535,7 +2879,7 @@ end
 -- and a raw numeric index is never shown.
 ---@param formNames table<string, unknown> bound form-name policy bindings
 ---@param species string entry species key
----@param variant { form: integer, gender: string } visible list variant
+---@param variant { id: integer, form: integer, gender: string } visible list variant
 ---@return integer bound source UI message identity
 ---@return boolean whether the message names the species through the native field
 local function formNameMessageId(formNames, species, variant)
@@ -2546,7 +2890,7 @@ local function formNameMessageId(formNames, species, variant)
   end
   if species == "PICHU" then
     local pichu = checkTable(formNames.pichu, "pichu form names")
-    local entry = pichu[variant.form]
+    local entry = pichu[variant.id]
     if type(entry) == "number" then
       ---@cast entry integer
       return entry, false
@@ -2578,7 +2922,7 @@ end
 ---@param slots table[] detached semantic text slot requests under construction
 ---@param role string contracted window role
 ---@param species string entry species key
----@param variant { form: integer, gender: string } visible list variant
+---@param variant { id: integer, form: integer, gender: string } visible list variant
 ---@param language string selected game language key
 ---@param formNames table<string, unknown> bound form-name policy bindings
 local function appendFormNameSlot(slots, role, species, variant, language, formNames)
@@ -3018,6 +3362,81 @@ local function appendFormsSlots(controller, slots, entryText, formNames, species
   end
 end
 
+-- The native list/results information header: INFO label, English dex
+-- number and species name (windows 8/9 always pass LANGUAGE_ENGLISH in
+-- the source), the cycled-language name bar (window 6), and the caught
+-- block's category, flavor, HT/WT marks and values. Seen-only rows keep
+-- only the identity fields their source windows can fill today.
+---@param controller PokedexController browser controller under construction of its text slots
+---@param slots table[] detached semantic text slot requests under construction
+---@param listText table<string, unknown> bound list caption ids
+---@param language string cycled entry language key
+local function appendListInfo(controller, slots, listText, language)
+  local selection = controller._selection
+  if type(selection.species) ~= "string" then
+    return
+  end
+  appendUiSlot(slots, "grid.info-label", listText.info, controller._nativeLanguage)
+  if type(selection.dexNumber) == "number" then
+    slots[#slots + 1] = { role = "grid.selected-number", kind = "numeric", value = padNumber(selection.dexNumber) }
+  end
+  slots[#slots + 1] =
+    { role = "grid.selected-name", kind = "species_name", species = selection.species, language = "english" }
+  slots[#slots + 1] =
+    { role = "grid.name-bar", kind = "species_name", species = selection.species, language = language }
+  if selection.caught == true then
+    slots[#slots + 1] = { role = "grid.category", kind = "category", species = selection.species, language = "english" }
+    slots[#slots + 1] = { role = "grid.flavor", kind = "flavor", species = selection.species, language = language }
+  else
+    slots[#slots + 1] = { role = "grid.category", kind = "category_placeholder", language = "english" }
+  end
+  if language == "english" then
+    appendUiSlot(slots, "grid.height-mark", listText.heightMark, controller._nativeLanguage)
+    appendUiSlot(slots, "grid.weight-mark", listText.weightMark, controller._nativeLanguage)
+    if selection.caught == true then
+      slots[#slots + 1] = { role = "grid.height", kind = "height", species = selection.species }
+      slots[#slots + 1] = { role = "grid.weight", kind = "weight", species = selection.species }
+    else
+      slots[#slots + 1] = { role = "grid.height", kind = "height_placeholder" }
+      slots[#slots + 1] = { role = "grid.weight", kind = "weight_placeholder" }
+    end
+  end
+end
+
+-- The two-line native search help window: the mode/result title on line
+-- one and the active page's instruction on line two. The searching label
+-- holds through the animation gates; the results count replaces it when
+-- the move starts; the empty-result pair replaces both after the
+-- retract. Editor pages name their criterion's help entry.
+---@param controller PokedexController browser controller under construction of its text slots
+---@param searchText table<string, unknown> bound search text
+---@return integer titleId
+---@return integer? detailId
+---@return string? detailCount
+local function searchHelpEntry(controller, searchText)
+  local help = checkTable(searchText.help, "search help bindings")
+  local feedback = controller._feedback
+  if feedback ~= nil then
+    if feedback.phase == "retract" or feedback.phase == "wait" then
+      return help.noResultsTitle, help.noResultsDetail, nil
+    end
+    if feedback.phase == "move" and type(feedback.list) == "table" then
+      return help.resultsTitle, help.resultsCount, padNumber(#feedback.list)
+    end
+    return help.title, help.searching, nil
+  end
+  local editor = controller._search:editorView()
+  if editor ~= nil then
+    local kind = editor.criterion
+    if type(kind) ~= "string" then
+      kind = editor.kind
+    end
+    local detail = type(kind) == "string" and help[kind] or nil
+    return help.title, type(detail) == "number" and detail or help.criteria, nil
+  end
+  return help.title, help.criteria, nil
+end
+
 -- Detached semantic text requests for the visible page: counts, the
 -- regional selection identity, source-backed search captions/values and
 -- per-editor options, area daypart/region, return actions, the selected
@@ -3033,40 +3452,46 @@ function PokedexController:_textSlots()
     local coverLanguage = self._nativeLanguage
     appendUiSlot(slots, "compact.action-search", coverText.buttons.run, coverLanguage)
     appendUiSlot(slots, "compact.action-open", coverText.returnAction, coverLanguage)
+    appendCountSlots(self, slots)
     appendCompactClose(self, slots)
   elseif self._page == "grid" then
-    local seen = tryDex(self._dex, "countSeen", self._mode)
-    local caught = tryDex(self._dex, "countCaught", self._mode)
-    slots[#slots + 1] =
-      { role = "grid.seen-count", kind = "numeric", value = tostring(type(seen) == "number" and seen or 0) }
-    slots[#slots + 1] = {
-      role = "grid.caught-count",
-      kind = "numeric",
-      value = tostring(type(caught) == "number" and caught or 0),
-    }
-    appendHighlightedIdentity(slots, self._selection)
+    local text = searchTextBindings(self)
+    local listText = checkTable(text.list, "list text bindings")
+    appendCountSlots(self, slots)
+    local language = self._selection.language
+    if type(language) ~= "string" then
+      language = self._nativeLanguage
+    end
+    appendListInfo(self, slots, listText, language)
     appendCompactDetails(self, slots)
     appendCompactListActions(self, slots)
     appendCompactClose(self, slots)
   elseif self._page == "search" then
-    -- The feedback count follows the native result-count template (bank
-    -- 802 entry 15, field 0 bound to the completed count, shown while
-    -- the results rise). While the count is unknown the slot stays
-    -- unpublished and its window stays absent, never a raw marker.
-    if self._feedback ~= nil and self._feedback.list ~= nil then
+    local text = searchTextBindings(self)
+    local titleId, detailId, detailCount = searchHelpEntry(self, text)
+    slots[#slots + 1] = { role = "search.feedback", kind = "ui", messageId = titleId, language = self._nativeLanguage }
+    if detailId ~= nil then
       slots[#slots + 1] = {
-        role = "search.feedback",
+        role = "search.feedback-detail",
         kind = "ui",
-        messageId = 15,
-        fields = { [0] = padNumber(#self._feedback.list) },
+        messageId = detailId,
+        fields = detailCount ~= nil and { [0] = detailCount } or nil,
         language = self._nativeLanguage,
       }
     end
     appendSearchSlots(self, slots)
     appendCompactClose(self, slots)
   elseif self._page == "results" then
-    slots[#slots + 1] = { role = "search.results", kind = "numeric", value = tostring(#self._results) }
-    appendHighlightedIdentity(slots, self._selection)
+    local text = searchTextBindings(self)
+    local listText = checkTable(text.list, "list text bindings")
+    slots[#slots + 1] =
+      { role = "search.results", kind = "ui", messageId = listText.info, language = self._nativeLanguage }
+    appendCountSlots(self, slots)
+    local language = self._selection.language
+    if type(language) ~= "string" then
+      language = self._nativeLanguage
+    end
+    appendListInfo(self, slots, listText, language)
     appendCompactDetails(self, slots)
     appendCompactListActions(self, slots)
     appendCompactClose(self, slots)
@@ -3101,11 +3526,6 @@ function PokedexController:_textSlots()
         slots[#slots + 1] = { role = "entry.category", kind = "category", species = species, language = language }
         slots[#slots + 1] = { role = "entry.flavor", kind = "flavor", species = species, language = language }
         slots[#slots + 1] = { role = "entry.height", kind = "height", species = species }
-        -- The size page paints weight through its own lower-pane window;
-        -- the entry-page rect would overflow that screen.
-        if self._page ~= "size" then
-          slots[#slots + 1] = { role = "entry.weight", kind = "weight", species = species }
-        end
       end
     end
     if self._page == "area" and self._area ~= nil then
@@ -3145,15 +3565,18 @@ function PokedexController:_textSlots()
   return slots
 end
 
----@return { species: string?, dexNumber: integer?, seen: boolean, caught: boolean, language: string } detached selection snapshot
+---@return { species: string?, dexNumber: integer?, form: integer?, gender: string?, seen: boolean, caught: boolean, language: string } detached selection snapshot
 function PokedexController:_selectionView()
   local selection = self._selection
   if selection.species == nil then
     return { seen = false, caught = false, language = self._nativeLanguage }
   end
+  local first = self:_firstSeenVariant(selection.species)
   return {
     species = selection.species,
     dexNumber = selection.dexNumber,
+    form = first.form,
+    gender = first.gender,
     seen = selection.seen == true,
     caught = selection.caught == true,
     language = selection.language,
@@ -3190,20 +3613,36 @@ end
 ---@return table[] per-pane fade entries with their black coefficient
 function PokedexController:_paletteFades()
   local visual = self._transition
-  if type(visual) ~= "table" or visual.phase ~= "fade" then
+  if type(visual) ~= "table" then
+    return {}
+  end
+  if visual.phase == "out" then
+    local total = visual.ticks
+    local coefficient = total > 0 and math.floor(16 * visual.tick / total + 0.5) or 0
+    local target = { r = 0, g = 0, b = 0 }
+    return {
+      { pane = "information", target = target, coeff = math.min(16, coefficient) },
+      { pane = "controls", target = target, coeff = math.min(16, coefficient) },
+    }
+  end
+  if visual.phase == "in" then
+    local total = visual.ticks
+    local coefficient = total > 0 and math.floor(16 * (total - visual.tick) / total + 0.5) or 0
+    local target = { r = 0, g = 0, b = 0 }
+    return {
+      { pane = "information", target = target, coeff = math.min(16, coefficient) },
+      { pane = "controls", target = target, coeff = math.min(16, coefficient) },
+    }
+  end
+  if visual.phase ~= "fade" then
     return {}
   end
   local tick = visual.tick
   if type(tick) ~= "number" then
     return {}
   end
-  local half = math.floor(PokedexController.FADE_TICKS / 2)
-  local coefficient = 0
-  if tick < half then
-    coefficient = math.floor(16 * (tick + 1) / half + 0.5)
-  else
-    coefficient = math.floor(16 * (PokedexController.FADE_TICKS - tick) / half + 0.5)
-  end
+  local total = PokedexController.FADE_TICKS
+  local coefficient = math.floor(16 * (total - tick) / total + 0.5)
   if coefficient < 0 then
     coefficient = 0
   end
@@ -3462,6 +3901,28 @@ local function projectGridObjects(self, objects, pageKey)
     ageOf("scrollbar", "size" .. (bucket - 1))
   )
   local selection = self:_selectionView()
+  if self._nationalUnlocked == true then
+    local x = self._mode == "johto" and 144 or 112
+    emitIntent(objects, "dex-mode", "shown", "controls", x, 128, ageOf("dex-mode", "shown"))
+  end
+  if selection.species == nil and self:_isSearchReturnSlot() ~= true then
+    emitIntent(objects, "placeholder", "shown", "information", 48, 72, ageOf("placeholder", "shown"))
+  end
+  if type(selection.species) == "string" and tryDex(self._dex, "hasInternationalDex") == true then
+    local languages = tryDex(self._dex, "caughtLanguages", selection.species)
+    local foreign = false
+    if type(languages) == "table" then
+      for _, language in ipairs(languages) do
+        if language ~= self._nativeLanguage then
+          foreign = true
+        end
+      end
+    end
+    if foreign then
+      emitIntent(objects, "intl-pair", "left", "controls", 64, 136, ageOf("intl-pair-left", "left"))
+      emitIntent(objects, "intl-pair", "right", "controls", 184, 136, ageOf("intl-pair-right", "right"))
+    end
+  end
   if selection.caught == true and type(selection.species) == "string" then
     local species = selection.species
     local types = self:_selectionTypes(species)
@@ -3535,7 +3996,6 @@ local function projectSliderObjects(self, objects, pageKey, kind, bounds)
   end
   local maxX = 52 + bounds.max
   local minX = 52 + bounds.min
-  emitIntent(objects, "slider-cursor", "active", "controls", maxX, 16, ageOf("slider-cursor", "active"))
   emitIntent(objects, "slider-max", kind, "controls", maxX, 68, ageOf("slider-max", kind))
   emitIntent(objects, "slider-min", kind, "controls", minX, 132, ageOf("slider-min", kind))
   local maxPhysical = sliderPhysical(self, kind, bounds.max)
@@ -3565,9 +4025,45 @@ local function projectSliderObjects(self, objects, pageKey, kind, bounds)
   emitIntent(objects, "limit-min-right", minChoice, "controls", 238, 132, ageOf("limit-min-right", minChoice))
 end
 
+-- Emits the source search cursor at its current dpad node: the graph
+-- position for both the root menu and every editor, with the slider
+-- handle nodes sitting on their live bounds.
+---@param objects table[] intent list under projection
+---@param pageKey integer demand generation behind the projection
+local function projectSearchCursor(self, objects, pageKey)
+  local editor = self._search:editorView()
+  local kind, node, x, y
+  if editor ~= nil then
+    kind = editor.criterion
+    node = editor.node or 0
+    local graph = PokedexSearch.FOCUS[kind]
+    assert(type(graph) == "table", "search editors carry their focus graph")
+    local spec = graph.nodes[node + 1]
+    assert(type(spec) == "table", "search focus nodes address the graph")
+    x, y = spec.x, spec.y
+    if (kind == "height" or kind == "weight") and (node == 0 or node == 1) then
+      local bounds = self._search:criteria()[kind]
+      assert(type(bounds) == "table", "search sliders carry their bounds")
+      x = 52 + (node == 0 and bounds.max or bounds.min)
+    end
+  else
+    node = self._searchMenu.node
+    local spec = SEARCH_MENU_GRAPH.nodes[node + 1]
+    assert(type(spec) == "table", "the search menu focus node addresses its graph")
+    x, y = spec.x, spec.y
+  end
+  local choice = "n" .. node
+  emitIntent(objects, "cursor", choice, "controls", x, y, self:_trackObjectAge(pageKey, "cursor", choice))
+end
+
 ---@param objects table[] intent list under projection
 ---@param pageKey integer demand generation behind the projection
 local function projectSearchObjects(self, objects, pageKey)
+  projectSearchCursor(self, objects, pageKey)
+  if self._nationalUnlocked == true then
+    local x = self._mode == "johto" and 144 or 112
+    emitIntent(objects, "dex-mode", "shown", "controls", x, 128, self:_trackObjectAge(pageKey, "dex-mode", "shown"))
+  end
   if self._feedback ~= nil and self._feedback.phase ~= "wait" then
     local phase = self._feedback.phase
     local choice = phase == "label" and "label" or (phase == "retract" and "retract" or "rise")
@@ -3599,12 +4095,7 @@ local function areaPlayerHit(self, area)
   for position = 2, #rows do
     local marker = markers[position - 1]
     local row = rows[position]
-    if
-      type(marker) == "table"
-      and marker.visible == true
-      and (area.row == 0 or area.row == position - 1)
-      and type(row) == "table"
-    then
+    if type(marker) == "table" and (area.row == 0 or area.row == position - 1) and type(row) == "table" then
       local shape = self:_areaMarkerShape(row.mapKey, row.kind)
       local size = AREA_MARKER_SIZES[shape + 1]
       if size ~= nil and type(marker.position) == "table" then
@@ -3623,7 +4114,6 @@ local function areaPlayerHit(self, area)
     for _, extra in ipairs(area.specialMarkers) do
       if
         type(extra) == "table"
-        and extra.visible == true
         and type(extra.position) == "table"
         and (area.row == 0 or (type(selectedRow) == "table" and selectedRow.mapKey == extra.mapKey))
       then
@@ -3636,6 +4126,24 @@ local function areaPlayerHit(self, area)
     end
   end
   return false
+end
+
+---@param area table<string, unknown> detached area projection behind the intents
+---@return { length: integer, position: integer, top: integer, bottom: integer } area scrollbar geometry
+local function areaScrollbarOf(area)
+  local count = #area.rows
+  local bucket = bucketIndex(AREA_SCROLL_THRESHOLDS, count)
+  local length = AREA_SCROLL_LENGTHS[bucket]
+  local half = math.floor(length / 2)
+  local minY = AREA_SCROLL_CENTER - math.floor(AREA_SCROLL_TRACK / 2) + half
+  local maxY = AREA_SCROLL_CENTER + math.floor(AREA_SCROLL_TRACK / 2) - half
+  local y = maxY
+  local last = count - 1
+  if last > 0 and area.row ~= last then
+    local step = math.floor((maxY - minY) * 256 / last)
+    y = minY + math.floor(step * area.row / 256)
+  end
+  return { length = length, position = y, top = minY, bottom = maxY }
 end
 
 ---@param objects table[] intent list under projection
@@ -3668,7 +4176,7 @@ local function projectAreaObjects(self, objects, pageKey, area)
     if type(marker) == "table" and type(row) == "table" and (area.row == 0 or area.row == position - 1) then
       instance = instance + 1
       local shape = self:_areaMarkerShape(row.mapKey, row.kind)
-      local shapeChoice = "shape" .. shape
+      local shapeChoice = "shape" .. shape .. "-" .. tostring(marker.palette or 0)
       local markerRecord = {
         subject = "marker",
         choice = shapeChoice,
@@ -3693,13 +4201,14 @@ local function projectAreaObjects(self, objects, pageKey, area)
         and (area.row == 0 or (type(selectedRow) == "table" and selectedRow.mapKey == extra.mapKey))
       then
         instance = instance + 1
+        local extraChoice = "shape0-" .. tostring(extra.palette or 0)
         local extraRecord = {
           subject = "marker",
-          choice = "shape0",
+          choice = extraChoice,
           pane = "information",
           x = extra.position.x,
           y = extra.position.y,
-          age = self:_trackObjectAge(pageKey, "marker-" .. instance, "shape0"),
+          age = self:_trackObjectAge(pageKey, "marker-" .. instance, extraChoice),
           visible = extra.visible == true,
           instance = instance,
         }
@@ -3709,18 +4218,10 @@ local function projectAreaObjects(self, objects, pageKey, area)
   end
   local count = #area.rows
   local bucket = bucketIndex(AREA_SCROLL_THRESHOLDS, count)
-  local length = AREA_SCROLL_LENGTHS[bucket]
-  local half = math.floor(length / 2)
-  local minY = AREA_SCROLL_CENTER - math.floor(AREA_SCROLL_TRACK / 2) + half
-  local maxY = AREA_SCROLL_CENTER + math.floor(AREA_SCROLL_TRACK / 2) - half
-  local y = maxY
+  local scrollbar = areaScrollbarOf(area)
   local last = count - 1
-  if last > 0 and area.row ~= last then
-    local step = math.floor((maxY - minY) * 256 / last)
-    y = minY + math.floor(step * area.row / 256)
-  end
   local scrollChoice = "size" .. (bucket - 1)
-  emitIntent(objects, "scrollbar", scrollChoice, "controls", 242, y, ageOf("scrollbar", scrollChoice))
+  emitIntent(objects, "scrollbar", scrollChoice, "controls", 242, scrollbar.position, ageOf("scrollbar", scrollChoice))
   local upChoice = area.row > 0 and "enabled" or "disabled"
   local downChoice = area.row < last and "enabled" or "disabled"
   emitIntent(objects, "arrow-up", upChoice, "controls", 242, 44, ageOf("arrow-up", upChoice))
@@ -3760,24 +4261,39 @@ local function projectEntryObjects(self, objects, pageKey)
     end
     emitIntent(objects, "beam-top", "active", "controls", 128, 104, ageOf("beam-top", "active"))
     emitIntent(objects, "beam-bottom", "active", "controls", 128, 104, ageOf("beam-bottom", "active"))
+    local beamAngle = 0
+    if type(size.weight) == "table" and type(size.weight.beamAngle) == "number" then
+      beamAngle = size.weight.beamAngle
+    end
+    local beamBottom = objects[#objects]
+    -- The source rotates the pivot art about (0, -4) with the beam angle.
+    beamBottom.rotation = -2 * math.pi * beamAngle / 65536
+    beamBottom.pivotY = -4
     local gender = self._playerGender == "female" and "female" or "male"
     local yOffset = 0
-    if type(size.height) == "table" and type(size.height.trainer) == "table" then
-      yOffset = size.height.trainer.yOffset or 0
+    local trainerScale = 1
+    if type(size.height) == "table" then
+      if type(size.height.trainer) == "table" then
+        yOffset = size.height.trainer.yOffset or 0
+      end
+      if type(size.height.scale) == "table" and type(size.height.scale.trainer) == "number" then
+        trainerScale = size.height.scale.trainer
+      end
     end
     emitIntent(objects, "trainer", gender, "information", 184, 112 + yOffset, ageOf("trainer", gender))
+    objects[#objects].scale = trainerScale
     -- The weight figure rides its pan: sprite 2 over pan 8 while the
     -- height portrait above stays fixed. The mon figure beside it is
     -- icon art the renderer draws from the selected icon bundle.
-    if type(size.figures) == "table" and type(size.pans) == "table" and size.pans[1] ~= nil then
+    if type(size.figures) == "table" and type(size.pans) == "table" and size.pans[2] ~= nil then
       for _, figure in ipairs(size.figures) do
         if figure.side == "trainer" and figure.visible ~= false then
           emitIntent(
             objects,
-            "trainer",
+            "trainer-figure",
             gender,
             "information",
-            size.pans[1].x,
+            size.pans[2].x,
             figure.y,
             ageOf("trainer-figure", gender)
           )
@@ -3846,6 +4362,7 @@ function PokedexController:view()
   local snapshot = {
     key = self._key,
     mode = self._mode,
+    nationalUnlocked = self._nationalUnlocked == true,
     page = self._page,
     origin = self._origin,
     selection = self:_selectionView(),
@@ -3866,19 +4383,31 @@ function PokedexController:view()
     pictures = {},
     controls = {},
   }
+  local turn = nil
+  if self._transition.phase == "turn" then
+    turn = {
+      offset = 8 * self._transition.tick,
+      direction = self._transition.direction,
+    }
+  end
   if self._page == "grid" then
+    local buffers = { self:_gridBuffer() }
+    if turn ~= nil then
+      buffers[2] = self:_gridBufferAt(self._transition.targetPage)
+    end
     snapshot.grid = {
       page = self._pageIndex,
       lastPage = self:_gridLastPage(),
       cursor = self._cursor,
-      buffers = { self:_gridBuffer() },
+      buffers = buffers,
       scrollbar = self:_scrollbar(self:_sparseLength(), self:_gridLastPage(), self._pageIndex),
+      turn = turn,
     }
   elseif self._page == "search" then
     snapshot.search = {
       criteria = self._search:criteria(),
       focus = self._searchFocus,
-      previousColumn = "criteria",
+      node = self._searchMenu.node,
     }
     local editor = self._search:editorView()
     if editor ~= nil then
@@ -3888,7 +4417,7 @@ function PokedexController:view()
       end
       snapshot.search.editor = editor
       snapshot.search.focus = editor.focus
-      snapshot.search.previousColumn = editor.previousColumn
+      snapshot.search.node = editor.node
     end
     local slider = self._search:sliderView()
     if slider ~= nil then
@@ -3904,15 +4433,24 @@ function PokedexController:view()
       }
     end
   elseif self._page == "results" then
+    local buffers = { self:_resultsBuffer() }
+    if turn ~= nil then
+      buffers[2] = self:_resultsBufferAt(self._transition.targetPage)
+    end
     snapshot.grid = {
       page = self._pageIndex,
       lastPage = self:_resultsLastPage(),
       cursor = self._cursor,
-      buffers = { self:_resultsBuffer() },
+      buffers = buffers,
       scrollbar = self:_scrollbar(#self._results + 1, self:_resultsLastPage(), self._pageIndex),
+      turn = turn,
     }
   elseif self._page == "area" and self._area ~= nil then
     snapshot.area = self._area:view()
+    snapshot.area.scrollbar = areaScrollbarOf(snapshot.area)
+    if self._transition.phase == "rows" and self._transition.kind == "area" then
+      snapshot.area.scroll = { offset = -self._transition.step * self._transition.tick }
+    end
     snapshot.pictures = self:_entryPictures()
   elseif self._page == "size" and self._size ~= nil then
     snapshot.size = self._size:view()
@@ -3923,6 +4461,12 @@ function PokedexController:view()
     snapshot.pictures = self:_entryPictures()
   elseif self._page == "forms" and self._forms ~= nil then
     snapshot.forms = self._forms:view()
+    if self._transition.phase == "rows" and self._transition.kind == "forms" then
+      snapshot.forms.scroll = {
+        offset = -self._transition.step * self._transition.tick,
+        iconOffset = -self._transition.step * 8 * self._transition.tick,
+      }
+    end
     snapshot.pictures = self:_entryPictures()
   elseif self._page == "return" then
     snapshot.returnPanel = { focused = true }

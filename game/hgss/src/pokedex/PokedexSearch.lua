@@ -30,6 +30,355 @@ PokedexSearch.SLIDER_OP_CAP = 24
 PokedexSearch.SLIDER_ANIM_TICKS = 10
 PokedexSearch.CRITERIA = { "order", "letter", "type", "height", "weight", "area", "shape" }
 
+-- Source DpadMenuBox graphs (pokedex_input.c). Each node names its native
+-- center, its four directional links, and the directions whose link carries
+-- the 0x80 return flag. Node indices are the native dpad indices.
+local function node(x, y, up, down, left, right, ret)
+  return { x = x, y = y, up = up, down = down, left = left, right = right, ret = ret }
+end
+
+PokedexSearch.DIRECTION_KEYS = { up = "up", down = "down", left = "left", right = "right" }
+local OPPOSITE = { up = "down", down = "up", left = "right", right = "left" }
+
+PokedexSearch.FOCUS = {
+  menu = {
+    names = { "order", "letter", "type", "height", "weight", "area", "shape", "reset", "run", "back" },
+    nodes = {
+      node(172, 16, 0, 1, 0, 0),
+      node(92, 40, 0, 2, 1, 6),
+      node(116, 64, 1, 3, 2, 6),
+      node(112, 88, 2, 4, 3, 6),
+      node(136, 112, 3, 5, 4, 4),
+      node(84, 136, 4, 8, 5, 5, { down = true }),
+      node(224, 72, 0, 4, 1, 6, { left = true }),
+      node(40, 176, 5, 7, 7, 8),
+      node(128, 176, 5, 8, 7, 9),
+      node(216, 176, 5, 9, 8, 9),
+    },
+  },
+  order = {
+    cells = 6,
+    ok = 6,
+    cancel = 7,
+    nodes = {
+      node(68, 56, 6, 2, 1, 1),
+      node(188, 56, 7, 3, 0, 0),
+      node(68, 88, 0, 4, 3, 3),
+      node(188, 88, 1, 5, 2, 2),
+      node(68, 120, 2, 6, 5, 5),
+      node(188, 120, 3, 7, 4, 4),
+      node(40, 176, 4, 0, 7, 7),
+      node(216, 176, 5, 1, 6, 6),
+    },
+  },
+  area = {
+    cells = 4,
+    ok = 4,
+    cancel = 5,
+    nodes = {
+      node(76, 72, 4, 2, 1, 1),
+      node(180, 72, 5, 3, 0, 0),
+      node(76, 128, 0, 4, 3, 3),
+      node(180, 128, 1, 5, 2, 2),
+      node(40, 176, 2, 0, 5, 5),
+      node(216, 176, 3, 1, 4, 4),
+    },
+  },
+  height = {
+    cells = 2,
+    ok = 2,
+    cancel = 3,
+    nodes = {
+      node(52, 60, 2, 1, 0, 0),
+      node(204, 132, 0, 2, 1, 1, { down = true }),
+      node(40, 176, 1, 0, 3, 3),
+      node(216, 176, 1, 0, 2, 2),
+    },
+  },
+  weight = {
+    cells = 2,
+    ok = 2,
+    cancel = 3,
+    nodes = {
+      node(52, 60, 2, 1, 0, 0),
+      node(204, 132, 0, 2, 1, 1, { down = true }),
+      node(40, 176, 1, 0, 3, 3),
+      node(216, 176, 1, 0, 2, 2),
+    },
+  },
+  shape = {
+    cells = 15,
+    ok = 15,
+    cancel = 16,
+    nodes = {
+      node(32, 56, 15, 5, 4, 1),
+      node(80, 56, 15, 6, 0, 2),
+      node(128, 56, 15, 7, 1, 3),
+      node(176, 56, 16, 8, 2, 4),
+      node(224, 56, 16, 9, 3, 0),
+      node(32, 96, 0, 10, 9, 6),
+      node(80, 96, 1, 11, 5, 7),
+      node(128, 96, 2, 12, 6, 8),
+      node(176, 96, 3, 13, 7, 9),
+      node(224, 96, 4, 14, 8, 5),
+      node(32, 136, 5, 15, 14, 11),
+      node(80, 136, 6, 15, 10, 12),
+      node(128, 136, 7, 15, 11, 13),
+      node(176, 136, 8, 16, 12, 14),
+      node(224, 136, 9, 16, 13, 10),
+      node(40, 176, 10, 0, 16, 16),
+      node(216, 176, 14, 4, 15, 15),
+    },
+  },
+  type = {
+    cells = 18,
+    ok = 18,
+    cancel = 19,
+    nodes = {
+      node(32, 48, 18, 4, 3, 1),
+      node(96, 48, 18, 5, 0, 2),
+      node(160, 48, 19, 6, 1, 3),
+      node(224, 48, 19, 7, 2, 0),
+      node(32, 72, 0, 8, 7, 5),
+      node(96, 72, 1, 9, 4, 6),
+      node(160, 72, 2, 10, 5, 7),
+      node(224, 72, 3, 11, 6, 4),
+      node(32, 96, 4, 12, 11, 9),
+      node(96, 96, 5, 13, 8, 10),
+      node(160, 96, 6, 14, 9, 11),
+      node(224, 96, 7, 15, 10, 8),
+      node(32, 120, 8, 16, 15, 13),
+      node(96, 120, 9, 17, 12, 14),
+      node(160, 120, 10, 19, 13, 15),
+      node(224, 120, 11, 19, 14, 12),
+      node(32, 144, 12, 18, 17, 17),
+      node(96, 144, 13, 18, 16, 16),
+      node(40, 176, 16, 0, 19, 19),
+      node(216, 176, 15, 3, 18, 18),
+    },
+  },
+  letter = {
+    cells = 27,
+    ok = 27,
+    cancel = 28,
+    nodes = {
+      node(32, 48, 27, 7, 6, 1),
+      node(64, 48, 27, 8, 0, 2),
+      node(96, 48, 27, 9, 1, 3),
+      node(128, 48, 27, 10, 2, 4),
+      node(160, 48, 28, 11, 3, 5),
+      node(192, 48, 28, 12, 4, 6),
+      node(224, 48, 28, 13, 5, 0),
+      node(32, 80, 0, 14, 13, 8),
+      node(64, 80, 1, 15, 7, 9),
+      node(96, 80, 2, 16, 8, 10),
+      node(128, 80, 3, 17, 9, 11),
+      node(160, 80, 4, 18, 10, 12),
+      node(192, 80, 5, 19, 11, 13),
+      node(224, 80, 6, 20, 12, 7),
+      node(32, 112, 7, 21, 20, 15),
+      node(64, 112, 8, 22, 14, 16),
+      node(96, 112, 9, 23, 15, 17),
+      node(128, 112, 10, 24, 16, 18),
+      node(160, 112, 11, 25, 17, 19),
+      node(192, 112, 12, 28, 18, 20),
+      node(224, 112, 13, 26, 19, 14),
+      node(32, 144, 14, 27, 26, 22),
+      node(64, 144, 15, 27, 21, 23),
+      node(96, 144, 16, 27, 22, 24),
+      node(128, 144, 17, 27, 23, 25),
+      node(160, 144, 18, 28, 24, 26),
+      node(224, 144, 20, 28, 25, 21),
+      node(40, 176, 21, 0, 28, 28),
+      node(216, 176, 26, 6, 27, 27),
+    },
+  },
+}
+
+-- Returning from OK/cancel lands in the letter column the cursor left
+-- (OnSearchNameGridMove).
+local function letterHooks(state, source, target)
+  if source ~= 27 and source ~= 28 then
+    return
+  end
+  local column = state.column
+  if type(column) ~= "number" then
+    return
+  end
+  local nodes = PokedexSearch.FOCUS.letter.nodes
+  local columnX = nodes[column + 1].x
+  local first, last, step = 0, 26, 1
+  if target == 21 or target == 26 then
+    first, last, step = 26, 0, -1
+  elseif target ~= 0 and target ~= 6 then
+    return
+  end
+  for index = first, last, step do
+    if nodes[index + 1].x == columnX then
+      state.node = index
+      state.returnInput = source
+      return
+    end
+  end
+end
+
+-- Type rows remember which half-row the cursor came from
+-- (OnSearchTypeGridMove).
+local function typeHooks(state, source, target)
+  local column = state.column
+  if type(column) ~= "number" then
+    column = 0
+  end
+  if source == 18 then
+    if target == 0 then
+      if column >= 16 and column <= 17 then
+        column = column % 4
+      elseif column < 0 or column > 1 then
+        column = 0
+      end
+      state.node = column
+      state.returnInput = 18
+    elseif target == 16 then
+      if column >= 0 and column <= 1 then
+        column = column + 16
+      elseif column < 16 or column > 17 then
+        column = 16
+      end
+      state.node = column
+      state.returnInput = 18
+    end
+  elseif source == 19 then
+    if target == 3 then
+      if column >= 14 and column <= 15 then
+        column = column % 4
+      elseif column < 2 or column > 3 then
+        column = 3
+      end
+      state.node = column
+      state.returnInput = 19
+    elseif target == 15 then
+      if column >= 2 and column <= 3 then
+        column = column + 12
+      elseif column < 14 or column > 15 then
+        column = 15
+      end
+      state.node = column
+      state.returnInput = 19
+    end
+  end
+end
+
+-- Shape rows remember which five-column block the cursor came from
+-- (OnSearchFormGridMove).
+local function shapeHooks(state, source, target)
+  local column = state.column
+  if type(column) ~= "number" then
+    column = 0
+  end
+  if source == 15 then
+    if target == 0 then
+      if column >= 0 and column <= 2 then
+        column = column
+      elseif column >= 10 and column <= 12 then
+        column = column % 5
+      else
+        column = 0
+      end
+      state.node = column
+      state.returnInput = 15
+    elseif target == 10 then
+      if column >= 0 and column <= 2 then
+        column = column + 10
+      elseif column < 10 or column > 12 then
+        column = 10
+      end
+      state.node = column
+      state.returnInput = 15
+    end
+  elseif source == 16 then
+    if target == 4 then
+      if column >= 3 and column <= 4 then
+        column = column
+      elseif column >= 13 and column <= 14 then
+        column = column % 5
+      else
+        column = 4
+      end
+      state.node = column
+      state.returnInput = 16
+    elseif target == 14 then
+      if column >= 3 and column <= 4 then
+        column = column + 10
+      elseif column < 13 or column > 14 then
+        column = 14
+      end
+      state.node = column
+      state.returnInput = 16
+    end
+  end
+end
+
+PokedexSearch.FOCUS.letter.hooks = letterHooks
+PokedexSearch.FOCUS.type.hooks = typeHooks
+PokedexSearch.FOCUS.shape.hooks = shapeHooks
+
+-- Source dpad graphs read the cell the cursor stood on before it entered
+-- OK or cancel (the native prevGridInput), so `state.column` names the last
+-- focus cell and survives the move out of it.
+---@param state table<string, unknown> focus state under traversal
+---@param graph table<string, unknown> focus graph under traversal
+---@param direction string up/down/left/right
+---@param enabled (fun(nodeIndex: integer): boolean)|nil node enable predicate
+---@return boolean moved whether the focus changed
+function PokedexSearch.moveFocus(graph, state, direction, enabled)
+  local nodes = assert(graph.nodes, "focus graphs carry their nodes")
+  local key = assert(PokedexSearch.DIRECTION_KEYS[direction], "focus directions name a dpad direction")
+  local current = assert(state.node, "focus state carries its node")
+  local row = assert(nodes[current + 1], "focus state addresses its node")
+  local link = assert(row[key], "focus nodes carry their directional links")
+  local target = link
+  local ret = row.ret
+  if type(ret) == "table" and ret[key] == true then
+    target = state.returnInput or link
+  end
+  local landed = true
+  local function isEnabled(index)
+    if type(enabled) == "function" then
+      return enabled(index) == true
+    end
+    return true
+  end
+  while isEnabled(target) ~= true do
+    landed = false
+    local walk = assert(nodes[target + 1], "focus links address their node")
+    local nextIndex = assert(walk[key], "disabled focus nodes carry their links")
+    if nextIndex == target or nextIndex == current then
+      target = current
+      break
+    end
+    target = nextIndex
+  end
+  if target == current then
+    return false
+  end
+  local back = nodes[target + 1].ret
+  if landed and type(back) == "table" and back[OPPOSITE[key]] == true then
+    state.returnInput = current
+  else
+    state.returnInput = nil
+  end
+  local source = current
+  state.node = target
+  if type(graph.cells) == "number" and source < graph.cells then
+    state.column = source
+  end
+  local hooks = graph.hooks
+  if type(hooks) == "function" then
+    hooks(state, source, target)
+  end
+  return true
+end
+
 local function fail(message, context)
   Errors.raise("POKEDEX_INVALID", message, context)
 end
@@ -172,7 +521,7 @@ function PokedexSearch:openEditor(kind)
     fail("search names an unknown editor", { editor = kind })
   end
   local backup = copyCriteria(self._criteria)
-  local editor = { kind = kind, backup = backup, focus = nil, previousColumn = "criteria" }
+  local editor = { kind = kind, backup = backup, focus = nil, node = 0, returnInput = nil, column = nil }
   if kind == "type" then
     local pending = {}
     if self._criteria.type1 ~= nil then
@@ -182,19 +531,94 @@ function PokedexSearch:openEditor(kind)
       pending[#pending + 1] = self._criteria.type2
     end
     editor.types = pending
-    editor.focus = pending[1]
   elseif kind == "area" then
     editor.areaChoice = self._criteria.area
-    editor.focus = self._criteria.area or "unrestricted"
   elseif kind == "height" or kind == "weight" then
-    editor.endpoint = "min"
+    -- The native slider grids start on the upper (maximum) handle.
+    editor.endpoint = "max"
     self._sliderOpCount = 0
     self._sliderAnim = 0
     self._drag = nil
-  else
-    editor.focus = self._criteria[kind]
   end
   self._editor = editor
+  if kind ~= "height" and kind ~= "weight" then
+    -- Every native option grid is created at initial position 0: the
+    -- first projected cell, never the currently stored criterion.
+    local options = self:editorOptions(kind)
+    assert(type(options) == "table" and #options > 0, "search editors publish at least one option")
+    editor.focus = options[1]
+  end
+  editor.column = 0
+end
+
+---@param editor table<string, unknown> open editor under sync
+---@param options string[]? option keys behind an option editor
+local function syncEditorFocus(editor, options)
+  local graph = assert(PokedexSearch.FOCUS[editor.kind], "search editors carry a source focus graph")
+  local nodeIndex = assert(editor.node, "search editors carry their focus node")
+  if editor.kind == "height" or editor.kind == "weight" then
+    if nodeIndex == 0 then
+      editor.endpoint = "max"
+    elseif nodeIndex == 1 then
+      editor.endpoint = "min"
+    end
+    return
+  end
+  if nodeIndex < graph.cells then
+    assert(type(options) == "table", "option editors carry their option keys")
+    local option = options[nodeIndex + 1]
+    assert(type(option) == "string", "search focus cells resolve their option")
+    editor.focus = option
+  end
+end
+
+-- Moves the open editor focus through the source 2D dpad graph. A self
+-- neighbour stays silent and leaves the cursor in place.
+---@param direction string up/down/left/right
+---@return boolean moved whether the focus changed
+function PokedexSearch:moveEditorFocus(direction)
+  if self._editor == nil then
+    fail("search moves focus inside an open editor", {})
+  end
+  assert(type(self._editor) == "table", "search reads its open editor")
+  local kind = self._editor.kind
+  local graph = assert(PokedexSearch.FOCUS[kind], "search editors carry a source focus graph")
+  local moved = PokedexSearch.moveFocus(graph, self._editor, direction, function(nodeIndex)
+    return kind ~= "area" or nodeIndex ~= 1 or self._nationalUnlocked == true
+  end)
+  if moved ~= true then
+    return false
+  end
+  if kind ~= "height" and kind ~= "weight" then
+    syncEditorFocus(self._editor, self:editorOptions(kind))
+  else
+    syncEditorFocus(self._editor, nil)
+  end
+  return true
+end
+
+-- Sets the open editor focus directly from a touch hitbox index.
+---@param nodeIndex integer zero-based source dpad node
+function PokedexSearch:focusNode(nodeIndex)
+  if self._editor == nil then
+    fail("search focuses a node inside an open editor", {})
+  end
+  assert(type(self._editor) == "table", "search reads its open editor")
+  local kind = self._editor.kind
+  local graph = assert(PokedexSearch.FOCUS[kind], "search editors carry a source focus graph")
+  if type(nodeIndex) ~= "number" or nodeIndex % 1 ~= 0 or graph.nodes[nodeIndex + 1] == nil then
+    fail("search focus nodes address the source graph", { editor = kind, node = nodeIndex })
+  end
+  self._editor.node = nodeIndex
+  self._editor.returnInput = nil
+  if nodeIndex < graph.cells then
+    self._editor.column = nodeIndex
+  end
+  if kind ~= "height" and kind ~= "weight" then
+    syncEditorFocus(self._editor, self:editorOptions(kind))
+  else
+    syncEditorFocus(self._editor, nil)
+  end
 end
 
 ---@param commit boolean true retains, false restores the backup
@@ -741,10 +1165,7 @@ function PokedexSearch:run()
             eligible = false
           end
         elseif scope == "unknown" then
-          local inKanto = listHas(areas.kanto, key)
-          local inUnknown = listHas(areas.unknown, key)
-          local inJohto = listHas(areas.johto, key)
-          if not ((inKanto or inUnknown) and not inJohto) then
+          if not listHas(areas.unknown, key) then
             eligible = false
           end
         else
@@ -787,8 +1208,17 @@ function PokedexSearch:editorView()
   -- The projection carries both spellings: criteria transactions read
   -- `criterion` while the touch interface, compact rows, and role
   -- projections read `kind`.
-  local view =
-    { kind = kind, criterion = kind, focus = self._editor.focus, previousColumn = self._editor.previousColumn }
+  local graph = assert(PokedexSearch.FOCUS[kind], "search editors carry a source focus graph")
+  local view = {
+    kind = kind,
+    criterion = kind,
+    focus = self._editor.focus,
+    node = self._editor.node or 0,
+    cells = graph.cells,
+    ok = graph.ok,
+    cancel = graph.cancel,
+    column = self._editor.column,
+  }
   if kind == "type" then
     local pending = self._editor.types
     assert(type(pending) == "table", "the type editor keeps its pending slots")

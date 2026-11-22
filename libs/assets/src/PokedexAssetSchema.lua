@@ -57,6 +57,8 @@ local MANIFEST_FIELDS = {
   footprints = true,
   areaMaps = true,
   spinda = true,
+  numberAtlas = true,
+  dexModeLabel = true,
   text = true,
 }
 
@@ -1108,6 +1110,8 @@ local function checkSearchText(search)
     { name = "areas", expected = 4 },
     { name = "buttons", expected = 3 },
     { name = "editorButtons", expected = 2 },
+    { name = "list", expected = 5 },
+    { name = "help", expected = 14 },
   }
   for _, group in ipairs(groups) do
     local records = search[group.name]
@@ -1159,6 +1163,8 @@ local function checkSearchText(search)
       and field ~= "timeBase"
       and field ~= "returnCancel"
       and field ~= "returnAction"
+      and field ~= "list"
+      and field ~= "help"
     then
       return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "search text carries an unexpected field", {})
     end
@@ -1326,6 +1332,14 @@ local function checkTextBindings(bindings)
   then
     return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "text bindings carry no registration announcement", {})
   end
+  local header = bindings.registrationHeader
+  if
+    type(header) ~= "table"
+    or not isNonNegativeInteger(header.bankId)
+    or not isNonNegativeInteger(header.messageId)
+  then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "text bindings carry no registration header", {})
+  end
   local landmarks = bindings.landmarks
   if
     type(landmarks) ~= "table"
@@ -1342,6 +1356,7 @@ local function checkTextBindings(bindings)
       and field ~= "measureByProfile"
       and field ~= "landmarks"
       and field ~= "registrationAnnouncement"
+      and field ~= "registrationHeader"
     then
       return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "text bindings carry an unexpected field", {})
     end
@@ -1735,6 +1750,38 @@ local function checkPages(manifest)
         then
           return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page background carries invalid blend", { role = role })
         end
+        if background.scroll ~= nil and background.scroll ~= "cover" and background.scroll ~= "areaPan" then
+          return fail(
+            PokedexAssetSchema.ERROR.SHAPE_INVALID,
+            "page background names an unknown scroll",
+            { role = role }
+          )
+        end
+      end
+    end
+    local bannerFlash = page.bannerFlash
+    if bannerFlash ~= nil then
+      if type(bannerFlash) ~= "table" or bannerFlash.chrome == nil or manifest.chrome[bannerFlash.chrome] == nil then
+        return fail(
+          PokedexAssetSchema.ERROR.DANGLING_REFERENCE,
+          "page banner flash references unknown chrome",
+          { role = role }
+        )
+      end
+      if not isInteger(bannerFlash.layer) or bannerFlash.layer < 0 or bannerFlash.layer > 3 then
+        return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page banner flash names an invalid layer", { role = role })
+      end
+      for _, field in ipairs({ "x", "y", "width", "height" }) do
+        if not isInteger(bannerFlash[field]) then
+          return fail(
+            PokedexAssetSchema.ERROR.SHAPE_INVALID,
+            "page banner flash carries invalid geometry",
+            { role = role }
+          )
+        end
+      end
+      if bannerFlash.width <= 0 or bannerFlash.height <= 0 then
+        return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page banner flash carries an empty rect", { role = role })
       end
     end
     for _, field in ipairs({ "cells", "sprites", "windows" }) do
@@ -1808,12 +1855,96 @@ local function checkPages(manifest)
               { role = role, subject = subject, choice = choice }
             )
           end
+          if
+            binding.priority ~= nil
+            and (not isInteger(binding.priority) or binding.priority < 0 or binding.priority > 3)
+          then
+            return fail(
+              PokedexAssetSchema.ERROR.SHAPE_INVALID,
+              "live subject choice carries an invalid OBJ priority",
+              { role = role, subject = subject, choice = choice }
+            )
+          end
           bound = true
         end
       end
       if not bound then
         return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page binds no live sprite subject", { role = role })
       end
+    end
+  end
+  return nil
+end
+
+---@param manifest unknown
+---@return Errors.Error?
+local function checkNumberAtlas(manifest)
+  local atlas = manifest.numberAtlas
+  if type(atlas) ~= "table" then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "manifest carries no number atlas", {})
+  end
+  local chrome = manifest.chrome
+  if type(chrome) ~= "table" or chrome[atlas.marker] == nil then
+    return fail(PokedexAssetSchema.ERROR.DANGLING_REFERENCE, "number atlas misses its marker chrome", {})
+  end
+  if type(atlas.caught) ~= "table" or type(atlas.seen) ~= "table" then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "number atlas misses its digit rows", {})
+  end
+  if not isInteger(atlas.digits) or atlas.digits < 10 then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "number atlas carries no digit run", {})
+  end
+  for _, row in ipairs({ atlas.caught, atlas.seen }) do
+    if #row ~= atlas.digits then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "number atlas digit run is short", {})
+    end
+    for _, role in ipairs(row) do
+      if type(role) ~= "string" or chrome[role] == nil then
+        return fail(PokedexAssetSchema.ERROR.DANGLING_REFERENCE, "number atlas references unknown chrome", {})
+      end
+    end
+  end
+  for field in pairs(atlas) do
+    if field ~= "marker" and field ~= "caught" and field ~= "seen" and field ~= "digits" then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "number atlas carries an unexpected field", {})
+    end
+  end
+  return nil
+end
+
+---@param manifest unknown
+---@return Errors.Error?
+local function checkDexModeLabel(manifest)
+  local label = manifest.dexModeLabel
+  if type(label) ~= "table" then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "manifest carries no dex mode label", {})
+  end
+  local chrome = manifest.chrome
+  for _, mode in ipairs({ "johto", "national" }) do
+    if type(label[mode]) ~= "string" or type(chrome) ~= "table" or chrome[label[mode]] == nil then
+      return fail(PokedexAssetSchema.ERROR.DANGLING_REFERENCE, "dex mode label misses its " .. mode .. " chrome", {})
+    end
+  end
+  if not isInteger(label.x) or not isInteger(label.y) then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "dex mode label carries invalid geometry", {})
+  end
+  local locked = label.locked
+  if type(locked) ~= "table" then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "dex mode label carries no locked fill", {})
+  end
+  if type(locked.role) ~= "string" or type(chrome) ~= "table" or chrome[locked.role] == nil then
+    return fail(PokedexAssetSchema.ERROR.DANGLING_REFERENCE, "dex mode locked fill misses its chrome", {})
+  end
+  if not isInteger(locked.x) or not isInteger(locked.y) then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "dex mode locked fill carries invalid geometry", {})
+  end
+  for field in pairs(locked) do
+    if field ~= "role" and field ~= "x" and field ~= "y" and field ~= "width" and field ~= "height" then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "dex mode locked fill carries an unexpected field", {})
+    end
+  end
+  for field in pairs(label) do
+    if field ~= "johto" and field ~= "national" and field ~= "x" and field ~= "y" and field ~= "locked" then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "dex mode label carries an unexpected field", {})
     end
   end
   return nil
@@ -2105,6 +2236,8 @@ function PokedexAssetSchema.validateManifest(manifest, catalog)
       or checkPages(manifest)
       or checkPictures(manifest)
       or checkFootprints(manifest)
+      or checkNumberAtlas(manifest)
+      or checkDexModeLabel(manifest)
       or checkAreaMaps(manifest)
       or checkSpinda(manifest)
     if err then

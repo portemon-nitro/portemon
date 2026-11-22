@@ -493,7 +493,8 @@ end
 
 local function formPolicyFor(key, monCatalog)
   local ordered = PokedexSources.orderedPolicies[key]
-  local automatic = PokedexSources.automaticFamilies[key] == true
+  local automaticCount = PokedexSources.automaticFamilies[key]
+  local rememberFirstPersonality = PokedexSources.personalityFamilies[key] == true
   local catalogRecord = monCatalog.species[key]
   local resolved = {}
   if type(catalogRecord) == "table" and type(catalogRecord.forms) == "table" then
@@ -541,23 +542,23 @@ local function formPolicyFor(key, monCatalog)
       variants = variants,
       defaultVariant = variants[1].id,
       rememberCaughtVariants = ordered.rememberCaughtVariants == true,
-      rememberFirstPersonality = ordered.rememberFirstPersonality == true,
+      rememberFirstPersonality = rememberFirstPersonality,
     }
   end
-  if automatic then
+  if automaticCount ~= nil then
     local variants = {}
-    for _, form in ipairs(resolved) do
+    for form = 0, automaticCount - 1 do
+      if not resolvedSet[form] then
+        error("pokedex automatic form family is missing a native form: " .. key .. " form " .. form, 0)
+      end
       variants[#variants + 1] = { id = form, form = form }
-    end
-    if #variants == 0 then
-      variants[#variants + 1] = { id = 0, form = 0 }
     end
     return {
       kind = "automatic",
       variants = variants,
       defaultVariant = variants[1].id,
       rememberCaughtVariants = false,
-      rememberFirstPersonality = false,
+      rememberFirstPersonality = rememberFirstPersonality,
     }
   end
   return {
@@ -565,7 +566,7 @@ local function formPolicyFor(key, monCatalog)
     variants = { { id = 0, form = resolved[1] or 0 } },
     defaultVariant = 0,
     rememberCaughtVariants = false,
-    rememberFirstPersonality = false,
+    rememberFirstPersonality = rememberFirstPersonality,
   }
 end
 
@@ -678,14 +679,16 @@ local function _compile(romFs, versionId, monCatalog, sink)
     local key = MonSources.speciesKeys[id]
     if key ~= nil and monCatalog.species[key] ~= nil then
       local mask = maskFor(id, maskBytes)
-      local unrestricted = (math.floor(mask / 128) % 2) == 1
-      if unrestricted or (mask % 4) >= 2 then
+      -- One bit per search scope in the source's criteria order:
+      -- bit0 unknown, bit1 Johto, bit2 Kanto. Bit3 is always set in the
+      -- shipped table and carries no scope meaning.
+      if math.floor(mask / 2) % 2 == 1 then
         areas.johto[#areas.johto + 1] = key
       end
-      if unrestricted or (math.floor(mask / 4) % 2) == 1 then
+      if math.floor(mask / 4) % 2 == 1 then
         areas.kanto[#areas.kanto + 1] = key
       end
-      if unrestricted or (math.floor(mask / 16) % 2) == 1 then
+      if mask % 2 == 1 then
         areas.unknown[#areas.unknown + 1] = key
       end
     end

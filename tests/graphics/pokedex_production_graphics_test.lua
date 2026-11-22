@@ -446,9 +446,9 @@ end
 -- Drives the real controller to the grid page through its cover drag.
 ---@param controller table live browser controller under test
 local function openGrid(controller)
-  press(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
-  press(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
-  press(controller, { { type = "drag", target = "cover", phase = "end", value = 64 } })
+  press(controller, { { type = "drag", target = "cover", phase = "begin", value = 240 } })
+  press(controller, { { type = "drag", target = "cover", phase = "move", value = 40 } })
+  press(controller, { { type = "drag", target = "cover", phase = "end", value = 40 } })
   idle(controller, 10)
   Assert.equal(controller:view().page, "grid", "the cover drag reaches the grid")
 end
@@ -697,10 +697,11 @@ end
 ---@param message string failure diagnostic
 local function assertPixel(data, x, y, r, g, b, message)
   local ar, ag, ab, aa = pixel(data, x, y)
-  Assert.equal(aa, 255, message .. " stays opaque")
-  Assert.equal(ar, r, message .. " red channel")
-  Assert.equal(ag, g, message .. " green channel")
-  Assert.equal(ab, b, message .. " blue channel")
+  local detail = string.format(" (got %d,%d,%d,%d want %d,%d,%d at %d,%d)", ar, ag, ab, aa, r, g, b, x, y)
+  Assert.equal(aa, 255, message .. " stays opaque" .. detail)
+  Assert.equal(ar, r, message .. " red channel" .. detail)
+  Assert.equal(ag, g, message .. " green channel" .. detail)
+  Assert.equal(ab, b, message .. " blue channel" .. detail)
 end
 
 ---@param plan table resolved application plan
@@ -719,7 +720,7 @@ end
 -- Forward pixel-evidence references shared with the rasterization
 -- scenarios below: legacy composition legs reuse the same authored
 -- background expectations.
-local bgLayersFor, expectedBackground, seedChromeFor
+local bgLayersFor, expectedBackground, seedChromeFor, backgroundShift
 
 -- Finds the visible slot behind one species in the staged grid buffer.
 ---@param view table detached browser projection with its grid buffer
@@ -790,11 +791,13 @@ function T.native_panes_draw_both_information_and_controls_at_source_size(scope)
     local infoPri = Renderer.layerPrioritiesOf(rig.manifest, "grid", "information")
     local ctrlLayers = bgLayersFor(rig.cacheFs, rig.manifest, "grid", "controls")
     local ctrlPri = Renderer.layerPrioritiesOf(rig.manifest, "grid", "controls")
+    local infoPan = backgroundShift("grid", "information", view, rig.manifest)
+    local ctrlPan = backgroundShift("grid", "controls", view, rig.manifest)
     Assert.equal(info.scale, 1, "the native pair draws at integral source scale")
     -- Corners carry authored background bytes, falling back to the
     -- compiled backdrop only where every layer stays clear.
     do
-      local er, eg, eb = expectedBackground(infoLayers, infoPri, infoBd, 2, 2)
+      local er, eg, eb = expectedBackground(infoLayers, infoPri, infoBd, 2, 2, infoPan)
       assertPixel(
         data,
         info.origin.x + 2,
@@ -806,7 +809,7 @@ function T.native_panes_draw_both_information_and_controls_at_source_size(scope)
       )
     end
     do
-      local er, eg, eb = expectedBackground(ctrlLayers, ctrlPri, ctrlBd, 2, 2)
+      local er, eg, eb = expectedBackground(ctrlLayers, ctrlPri, ctrlBd, 2, 2, ctrlPan)
       assertPixel(
         data,
         controls.origin.x + 2,
@@ -834,7 +837,7 @@ function T.native_panes_draw_both_information_and_controls_at_source_size(scope)
     local seenSlot = gridSlotOf(view, "CHIKORITA")
     local seenRect = Renderer.iconSlotRect(seenSlot)
     local sx, sy = controls.origin.x + seenRect.x + 16, controls.origin.y + seenRect.y + 16
-    local br, bg, bb = expectedBackground(ctrlLayers, ctrlPri, ctrlBd, seenRect.x + 16, seenRect.y + 16)
+    local br, bg, bb = expectedBackground(ctrlLayers, ctrlPri, ctrlBd, seenRect.x + 16, seenRect.y + 16, ctrlPan)
     local er = blendByteOracle(255, br, 6, 10)
     local eg = blendByteOracle(255, bg, 6, 10)
     local eb = blendByteOracle(255, bb, 6, 10)
@@ -842,7 +845,7 @@ function T.native_panes_draw_both_information_and_controls_at_source_size(scope)
     -- A blank slot past every staged entry keeps the authored background.
     local blankRect = Renderer.iconSlotRect(14)
     do
-      local er, eg, eb = expectedBackground(ctrlLayers, ctrlPri, ctrlBd, blankRect.x + 16, blankRect.y + 16)
+      local er, eg, eb = expectedBackground(ctrlLayers, ctrlPri, ctrlBd, blankRect.x + 16, blankRect.y + 16, ctrlPan)
       assertPixel(
         data,
         controls.origin.x + blankRect.x + 16,
@@ -1066,6 +1069,7 @@ function T.size_pans_track_the_published_beam(scope)
       lease:release()
       return data, assets
     end
+    press(controller, { { type = "confirm" } })
     local first, firstAssets = drawSize(controller:view())
     Assert.notNil(firstAssets.spriteParts["sprite-entry-size-trainer-male"], "the size bundle stages its trainer")
     for _ = 1, 150 do
@@ -1262,6 +1266,7 @@ function T.compact_single_display_paints_fifteen_icons_portrait_and_footer(scope
     local info = placementOf(plan, "information")
     local controls = placementOf(plan, "controls")
     local grid = assert(compact.grid, "the compact record carries its grid")
+    local infoPan = backgroundShift("grid", "information", view, rig.manifest)
     for slot = 0, 14 do
       local rect = assert(grid.iconRects[slot + 1], "the compact grid stages slot " .. slot)
       local entry = view.grid.buffers[1].entries[slot + 1]
@@ -1291,7 +1296,8 @@ function T.compact_single_display_paints_fifteen_icons_portrait_and_footer(scope
             infoPri,
             Renderer.backdropOf(rig.manifest, "grid", "information"),
             rect.x + 16,
-            rect.y + 16
+            rect.y + 16,
+            infoPan
           )
           assertPixel(
             data,
@@ -1311,7 +1317,8 @@ function T.compact_single_display_paints_fifteen_icons_portrait_and_footer(scope
           infoPri,
           Renderer.backdropOf(rig.manifest, "grid", "information"),
           rect.x + 16,
-          rect.y + 16
+          rect.y + 16,
+          infoPan
         )
         assertPixel(
           data,
@@ -1419,7 +1426,8 @@ function T.all_layouts_resolve_prepared_browser_pixels(scope)
           Renderer.layerPrioritiesOf(rig.manifest, "grid", "information"),
           infoBd,
           2,
-          2
+          2,
+          backgroundShift("grid", "information", view, rig.manifest)
         )
         assertPixel(
           data,
@@ -2500,7 +2508,7 @@ expectedBackground = function(layers, priorities, backdrop, x, y, pan)
       local data = item.data
       local sx = x
       if pan ~= nil and layer == pan.layer then
-        sx = x - pan.dx
+        sx = x + pan.dx
       end
       if sx >= 0 and y >= 0 and sx < data:getWidth() and y < data:getHeight() then
         local pr, pg, pb, pa = pixel(data, sx, y)
@@ -2593,18 +2601,13 @@ local function contentCount(data, origin, backdrop)
   return content
 end
 
--- Maps prepared messages onto their authored window keys; the
--- registration announcement rides its header window, whose key differs
--- from the prepared message role.
+-- Detaches prepared messages for lookup by their authored window keys.
 ---@param messages table<string, string> prepared message record
 ---@return table<string, string> message by authored window key
 local function textByWindow(messages)
   local mapped = {}
   for key, value in pairs(messages) do
     mapped[key] = value
-  end
-  if mapped["registration.header"] == nil and type(messages.registrationAnnouncement) == "string" then
-    mapped["registration.header"] = messages.registrationAnnouncement
   end
   return mapped
 end
@@ -2693,6 +2696,24 @@ seedChromeFor = function(pool, cacheFs, manifest, role)
       seedRole(part.chrome)
     end
   end
+  if role == "cover" then
+    local label = assert(manifest.dexModeLabel, "the manifest carries its dex mode label")
+    seedRole(label.johto)
+    seedRole(label.national)
+    seedRole(assert(label.locked, "the manifest carries its locked fill").role)
+  end
+  if type(page.bannerFlash) == "table" then
+    seedRole(page.bannerFlash.chrome)
+  end
+  if role == "grid" or role == "results" then
+    local atlas = assert(manifest.numberAtlas, "the manifest carries its number atlas")
+    seedRole(atlas.marker)
+    for _, row in ipairs({ atlas.caught, atlas.seen }) do
+      for _, chromeRole in ipairs(row) do
+        seedRole(chromeRole)
+      end
+    end
+  end
   if type(page.cells) == "table" then
     for _, cellRole in ipairs(page.cells) do
       seedCell(cellRole)
@@ -2768,18 +2789,28 @@ end
 ---@param paneId string browser pane identity
 ---@param view table detached browser projection
 ---@return { layer: integer, dx: integer }? scrolled layer behind the pane
-local function areaPanShift(role, paneId, view)
-  if role ~= "entry.area" or paneId ~= "information" then
+backgroundShift = function(role, paneId, view, manifest)
+  if type(view) ~= "table" or type(manifest) ~= "table" then
     return nil
   end
-  if type(view) ~= "table" then
+  local page = manifest.pages[role]
+  if type(page) ~= "table" then
     return nil
   end
-  local pan = view.areaPan
-  if type(pan) ~= "table" or type(pan.offset) ~= "number" then
-    return nil
+  for _, entry in ipairs(page.backgrounds[paneId] or {}) do
+    if entry.scroll == "cover" then
+      local visual = view.visual
+      if type(visual) == "table" and type(visual.coverOffset) == "number" then
+        return { layer = entry.layer, dx = visual.coverOffset }
+      end
+    elseif entry.scroll == "areaPan" then
+      local pan = view.areaPan
+      if type(pan) == "table" and type(pan.offset) == "number" then
+        return { layer = entry.layer, dx = pan.offset }
+      end
+    end
   end
-  return { layer = 0, dx = pan.offset }
+  return nil
 end
 
 -- Asserts the pannable entry-area map paints shifted by exactly the
@@ -2954,7 +2985,7 @@ local function assertNativeBackgrounds(Renderer, scope, rig, view, assets, role,
     local layers = bgLayersFor(rig.cacheFs, rig.manifest, role, paneId)
     local priorities = Renderer.layerPrioritiesOf(rig.manifest, role, paneId)
     local backdrop = Renderer.backdropOf(rig.manifest, role, paneId)
-    local pan = areaPanShift(role, paneId, view)
+    local pan = backgroundShift(role, paneId, view, rig.manifest)
     local exclusions = {}
     for _, item in ipairs(messaged) do
       local win = assert(rig.manifest.windows[item.key], "messaged windows stay authored")
@@ -2964,7 +2995,9 @@ local function assertNativeBackgrounds(Renderer, scope, rig, view, assets, role,
     end
     if paneId == "controls" and (role == "grid" or role == "results") then
       for slot = 0, Renderer.ICON_SLOTS - 1 do
-        exclusions[#exclusions + 1] = Renderer.iconSlotRect(slot)
+        local rect = Renderer.iconSlotRect(slot)
+        exclusions[#exclusions + 1] = rect
+        exclusions[#exclusions + 1] = { x = rect.x, y = rect.y, width = rect.width, height = 8 }
       end
     end
     for _, rect in ipairs(dynamicExclusions(view, assets, role, paneId)) do
@@ -3070,7 +3103,7 @@ function T.native_pages_paint_authored_backgrounds_and_window_glyphs(scope)
     -- Search editors reuse no list background: their composed screens
     -- differ from the grid bytes they replace.
     press(controller, { { type = "y" } })
-    idle(controller, 2)
+    idle(controller, 6)
     Assert.equal(controller:view().page, "search", "the grid opens its search criteria")
     do
       local view = controller:view()
@@ -3154,6 +3187,156 @@ function T.native_pages_paint_authored_backgrounds_and_window_glyphs(scope)
     controller:dispose()
     rig.owner:release()
     Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
+  end)
+end
+
+-- The cover paints the two count captions and their quantities from the
+-- published semantic slots, and a locked national mode replaces the
+-- baked switch row with the source fill patch instead of showing it.
+function T.cover_paints_counts_and_hides_the_locked_mode_switch(scope)
+  local Renderer = requireRenderer("cover count windows and the locked mode switch")
+  local Interface = requireInterface("cover plan geometry")
+  requireOwner("prepared bundles behind the cover panes")
+  local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    seedIcon(pool, "CHIKORITA/f0", 1, 1, 1)
+    seedIcon(pool, "EEVEE/f0", 0, 0, 0)
+    seedIcon(pool, "TOTODILE/f0", 1, 0, 0)
+    seedIcon(pool, "SPINDA/f0", 0, 1, 0)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "cover")
+    local measurement = measurementFor("dualDisplay")
+    local function drawCover(view)
+      local demand = browserDemandFor(Renderer, view)
+      local lease = rig.owner:acquire({ purpose = "browser" })
+      local assets = prepareReady(rig, lease, demand)
+      local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
+      local controls = placementOf(plan, "controls")
+      local data = drawPlan(
+        scope,
+        plan,
+        { graphics = love.graphics, renderer = assets.renderer },
+        preparedBrowserView(view, assets),
+        measurement.width,
+        measurement.height
+      )
+      lease:release()
+      return data, controls, assets
+    end
+    -- The cover carries both captions and both quantities in its bundle.
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    local view = controller:view()
+    Assert.equal(view.page, "cover", "the browser opens on its cover")
+    local painted, controls = drawCover(view)
+    local labelWindow = assert(rig.manifest.windows["grid.seen-caption"], "the cover inventory carries its label")
+    local obtainedWindow = assert(rig.manifest.windows["grid.caught-caption"], "the cover inventory carries its label")
+    local countWindow = assert(rig.manifest.windows["grid.seen-count"], "the cover inventory carries its count")
+    local obtainedCountWindow = assert(rig.manifest.windows["grid.caught-count"], "the cover carries its count")
+    -- The same cover without any published text paints no glyphs: the
+    -- labels and quantities are the published slots, not baked art.
+    local stripped = {}
+    for key, value in pairs(view) do
+      stripped[key] = value
+    end
+    stripped.text = {}
+    stripped.key = view.key + 1000
+    local blank, blankControls = drawCover(stripped)
+    local function differing(x0, y0, width, height)
+      for y = y0, y0 + height - 1 do
+        for x = x0, x0 + width - 1 do
+          local r1, g1, b1 = pixel(painted, x, y)
+          local r2, g2, b2 = pixel(blank, x, y)
+          if r1 ~= r2 or g1 ~= g2 or b1 ~= b2 then
+            return true
+          end
+        end
+      end
+      return false
+    end
+    for _, window in ipairs({ labelWindow, obtainedWindow, countWindow, obtainedCountWindow }) do
+      Assert.isTrue(
+        differing(controls.origin.x + window.x, controls.origin.y + window.y, window.width, window.height),
+        "the cover paints its " .. tostring(window.pane) .. " count window from the published slots"
+      )
+    end
+    Assert.equal(blankControls.origin.x, controls.origin.x, "both draws place the controls pane identically")
+    -- The count windows ride the cover/list scroll plane: a published
+    -- cover offset slides them left with the plane, exactly like the
+    -- authored background.
+    local slid = {}
+    for key, value in pairs(view) do
+      slid[key] = value
+    end
+    slid.visual = {}
+    for key, value in pairs(view.visual) do
+      slid.visual[key] = value
+    end
+    slid.visual.coverOffset = 8
+    slid.key = view.key + 2000
+    local slidPixels = drawCover(slid)
+    for _, window in ipairs({ labelWindow, countWindow }) do
+      local shifted = 0
+      for y = window.y, window.y + window.height - 1 do
+        for x = window.x, window.x + window.width - 1 do
+          local r1, g1, b1 = pixel(painted, controls.origin.x + x, controls.origin.y + y)
+          local r2, g2, b2 = pixel(slidPixels, controls.origin.x + x - 8, controls.origin.y + y)
+          if r1 == r2 and g1 == g2 and b1 == b2 then
+            shifted = shifted + 1
+          end
+        end
+      end
+      Assert.equal(
+        shifted,
+        window.width * window.height,
+        "the cover count window slides left with its published plane offset"
+      )
+    end
+    -- The unlocked cover shows the switch art; the locked cover replaces
+    -- the whole source fill rect with the compiled patch bytes.
+    local label = assert(rig.manifest.dexModeLabel, "the manifest carries its dex mode label")
+    local locked = assert(label.locked, "the manifest carries its locked fill")
+    local patch = decodePage(rig.cacheFs, assert(rig.manifest.chrome[locked.role]).path)
+    local lockedOwner = PokedexKnowledge.new(PokedexDexFixture.refs(rig.monCatalog, rig.catalog))
+    lockedOwner:prepareChanges({ flags = { dexEnabled = true } }):publish()
+    local function observe(species)
+      local specimen = lockedOwner:describe(PokedexDexFixture.makeMon(rig.monCatalog, {
+        species = species,
+        personality = 0,
+      }))
+      lockedOwner:prepareChanges({ observations = { { kind = "seen", specimen = specimen } } }):publish()
+    end
+    observe("CHIKORITA")
+    local lockedController = Fixture.openController(lockedOwner, rig.monCatalog, rig.catalog)
+    local lockedView = lockedController:view()
+    Assert.isFalse(lockedView.nationalUnlocked, "a saved dex without national ownership stays locked")
+    local lockedPixels, lockedControls = drawCover(lockedView)
+    local differences = 0
+    for row = 0, locked.height - 1 do
+      for column = 0, locked.width - 1 do
+        local x = lockedControls.origin.x + locked.x + column
+        local y = lockedControls.origin.y + locked.y + row
+        local r, g, b = pixel(lockedPixels, x, y)
+        local er, eg, eb = pixel(patch, column, row)
+        Assert.equal(
+          string.format("%d,%d,%d", r, g, b),
+          string.format("%d,%d,%d", er, eg, eb),
+          "the locked switch row carries the compiled fill at " .. column .. "," .. row
+        )
+        local ur, ug, ub = pixel(painted, x, y)
+        if ur ~= r or ug ~= g or ub ~= b then
+          differences = differences + 1
+        end
+      end
+    end
+    Assert.isTrue(differences > 0, "the unlocked cover paints its switch art where the locked cover fills it")
+    for _, leftover in ipairs({ controller, lockedController }) do
+      leftover:dispose()
+    end
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the cover journey returns every borrowed interest")
   end)
 end
 
@@ -3269,14 +3452,16 @@ function T.transparent_sprite_corners_reveal_their_background(scope)
     local layers = bgLayersFor(rig.cacheFs, rig.manifest, "grid", "controls")
     local priorities = Renderer.layerPrioritiesOf(rig.manifest, "grid", "controls")
     local backdrop = Renderer.backdropOf(rig.manifest, "grid", "controls")
+    local pan = backgroundShift("grid", "controls", view, rig.manifest)
     -- The caught corner reveals the authored background exactly.
     local caughtRect = Renderer.iconSlotRect(gridSlotOf(view, "TOTODILE"))
     do
-      local er, eg, eb = expectedBackground(layers, priorities, backdrop, caughtRect.x + 2, caughtRect.y + 2)
+      local cornerY = caughtRect.y + 30
+      local er, eg, eb = expectedBackground(layers, priorities, backdrop, caughtRect.x + 31, cornerY, pan)
       assertPixel(
         data,
-        controls.origin.x + caughtRect.x + 2,
-        controls.origin.y + caughtRect.y + 2,
+        controls.origin.x + caughtRect.x + 31,
+        controls.origin.y + cornerY,
         er,
         eg,
         eb,
@@ -3296,18 +3481,19 @@ function T.transparent_sprite_corners_reveal_their_background(scope)
     -- blends 6/10 against the eligible layer.
     local seenRect = Renderer.iconSlotRect(gridSlotOf(view, "CHIKORITA"))
     do
-      local er, eg, eb = expectedBackground(layers, priorities, backdrop, seenRect.x + 2, seenRect.y + 2)
+      local seenCornerY = seenRect.y + 30
+      local er, eg, eb = expectedBackground(layers, priorities, backdrop, seenRect.x + 31, seenCornerY, pan)
       assertPixel(
         data,
-        controls.origin.x + seenRect.x + 2,
-        controls.origin.y + seenRect.y + 2,
+        controls.origin.x + seenRect.x + 31,
+        controls.origin.y + seenCornerY,
         er,
         eg,
         eb,
         "the seen-only icon corner reveals its authored background"
       )
       local cx, cy = seenRect.x + 16, seenRect.y + 16
-      local br, bg, bb = expectedBackground(layers, priorities, backdrop, cx, cy)
+      local br, bg, bb = expectedBackground(layers, priorities, backdrop, cx, cy, pan)
       assertPixel(
         data,
         controls.origin.x + cx,
@@ -3595,7 +3781,7 @@ function T.search_shape_grid_paints_placed_choice_art(scope)
     local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
     openGrid(controller)
     press(controller, { { type = "y" } })
-    idle(controller, 2)
+    idle(controller, 6)
     Assert.equal(controller:view().page, "search", "the grid opens its search criteria")
     press(controller, { { type = "activate", action = "criterion", value = "shape" } })
     idle(controller, 2)
@@ -3618,7 +3804,7 @@ function T.search_shape_grid_paints_placed_choice_art(scope)
         placed[#placed + 1] = { role = spriteRole, record = record }
       end
     end
-    Assert.equal(#placed, 14, "the shape page places its fourteen choice sprites")
+    Assert.equal(#placed, 15, "the shape page places its fourteen choice sprites and scrollbar track")
     local decoded = {}
     local function chromeData(role)
       if decoded[role] == nil then
@@ -3753,7 +3939,7 @@ function T.prepared_page_sprites_draw_without_realizing_new_objects(scope)
     local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
     openGrid(controller)
     press(controller, { { type = "y" } })
-    idle(controller, 2)
+    idle(controller, 6)
     Assert.equal(controller:view().page, "search", "the grid opens its search criteria")
     press(controller, { { type = "activate", action = "criterion", value = "shape" } })
     idle(controller, 2)
@@ -3824,7 +4010,7 @@ function T.prepared_page_sprites_draw_without_realizing_new_objects(scope)
           placed[#placed + 1] = { role = spriteRole, record = record }
         end
       end
-      Assert.equal(#placed, 14, "the shape page places its fourteen choice sprites")
+      Assert.equal(#placed, 15, "the shape page places its fourteen choice sprites and scrollbar track")
       local shapeParts = assert(shapeAssets.spriteParts, "the shape bundle publishes its prepared sprite parts")
       for _, entry in ipairs(placed) do
         local frames = assert(shapeParts[entry.role], entry.role .. " publishes its prepared frame")
@@ -3993,7 +4179,7 @@ function T.native_search_and_entry_text_paints_source_glyphs(scope)
     local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
     openGrid(controller)
     press(controller, { { type = "y" } })
-    idle(controller, 2)
+    idle(controller, 6)
     local seeded = {}
     local function drawCurrent(role)
       local view = controller:view()
@@ -4207,7 +4393,7 @@ function T.compact_footer_and_rows_show_distinct_marks_without_new_realizations(
     Assert.isTrue(marked >= 1, "the grid footer marks its enabled actions")
     Assert.isTrue(dimmed >= 1, "the first grid page visibly disables its previous-page action")
     press(controller, { { type = "y" } })
-    idle(controller, 2)
+    idle(controller, 6)
     local searchView = controller:view()
     Assert.equal(searchView.page, "search", "the grid opens its search criteria")
     local searchDemand = browserDemandFor(Renderer, searchView)
@@ -4266,7 +4452,7 @@ function T.caught_results_paint_their_prepared_mark(scope)
     local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
     openGrid(controller)
     press(controller, { { type = "y" } })
-    idle(controller, 2)
+    idle(controller, 6)
     press(controller, { { type = "start" } })
     idle(controller, 200)
     Assert.equal(controller:view().page, "results", "the completed search lands on the result grid")
@@ -4353,7 +4539,7 @@ function T.entry_rows_and_slider_values_paint_their_prepared_source_content(scop
     local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
     openGrid(controller)
     press(controller, { { type = "y" } })
-    idle(controller, 2)
+    idle(controller, 6)
     Assert.equal(controller:view().page, "search", "the grid opens its search criteria")
     local seeded = {}
     local function drawCurrent(role)
@@ -4460,6 +4646,66 @@ function T.entry_rows_and_slider_values_paint_their_prepared_source_content(scop
     controller:dispose()
     rig.owner:release()
     Assert.equal(pool:stats().outstandingLeases, 0, "the row and slider journey returns every interest")
+  end)
+end
+
+-- The production icon path (the compiled icon provider over the real
+-- shared image owner) shares one admission budget with the owned font4
+-- header renderer: the list and search pages, whose windows draw font4,
+-- must converge instead of starving their header font behind settled
+-- icons.
+function T.header_font_pages_converge_behind_the_icon_provider(scope)
+  local Renderer = requireRenderer("header font pages behind the icon provider")
+  local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
+  local versionId = readyVersion()
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
+  local imagesRuntime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
+  local pool = ImageAssetPool.new(cacheFs, { queue = imagesRuntime.preparationQueue, decoded = imagesRuntime.decoded })
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    rig.owner:release()
+    local owner = requireOwner("header font pages behind the icon provider").new({
+      imagePool = pool,
+      monCatalog = rig.monCatalog,
+      catalog = rig.catalog,
+      cacheFs = rig.cacheFs,
+      graphics = love.graphics,
+      text = scope:own(FieldTextRenderer.new({ cacheFs = rig.cacheFs })),
+      messages = messageProvider(rig.cacheFs, scope),
+      derivedAssets = {
+        requestPokedex = function(_)
+          return true
+        end,
+        requestIconPage = function(_, _)
+          return true
+        end,
+      },
+    })
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    local lease = owner:acquire({ purpose = "browser" })
+    ---@param label string page under preparation
+    local function converge(label)
+      local demand = browserDemandFor(Renderer, controller:view())
+      Assert.isTrue(#demand.iconKeys > 0, label .. " demands provider icons")
+      for _ = 1, 2000 do
+        local outcome = lease:prepare(demand)
+        if outcome.kind == "ready" then
+          return
+        end
+        Assert.equal(outcome.kind, "pending", label .. " never fails: " .. tostring(outcome.error))
+        love.timer.sleep(0.001)
+      end
+      error(label .. " never converges behind the icon provider", 0)
+    end
+    openGrid(controller)
+    converge("the list page")
+    press(controller, { { type = "y" } })
+    idle(controller, 6)
+    Assert.equal(controller:view().page, "search", "the grid opens its search criteria")
+    converge("the search page")
+    lease:release()
+    owner:release()
   end)
 end
 

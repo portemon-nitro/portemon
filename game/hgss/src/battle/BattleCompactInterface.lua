@@ -1127,6 +1127,37 @@ local function fillBox(graphics, background, box)
   graphics.rectangle("fill", box.x, box.y, box.width, box.height)
 end
 
+-- Draws the lesson finger over a compact control label: the adapted docks
+-- keep the retail bob and press pose around the label instead of the
+-- native sprite spot (battle_input.c BattleInput_CatchingTutorialCB_*).
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param id string control identity whose label is drawn
+---@param x number label origin
+---@param y number label origin
+local function drawLabelFinger(resources, view, id, x, y)
+  local finger = view.tutorialFinger
+  if type(finger) ~= "table" or finger.id ~= id then
+    return
+  end
+  local assets = assert(resources.assets, "the compact render borrows its finger art")
+  local fingerArt = assets:drawable("battle:finger")
+  if fingerArt == nil then
+    return
+  end
+  local width, height = 32, 32
+  if type(fingerArt.getDimensions) == "function" then
+    width, height = fingerArt:getDimensions()
+  end
+  local fingerX = x + 8 - math.floor(width / 2)
+  local fingerY = y + 8 + finger.dy - math.floor(height / 2)
+  if type(fingerArt.draw) == "function" then
+    fingerArt:draw(resources.graphics, fingerX, fingerY)
+  else
+    resources.graphics.draw(fingerArt, fingerX, fingerY)
+  end
+end
+
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot under drawing
 ---@param content table<string, unknown> canonical compact plan content under drawing
@@ -1176,6 +1207,7 @@ local function drawCommandDock(resources, view, content)
       end
     end
     drawLabel(text, label, x, y)
+    drawLabelFinger(resources, view, id, x, y)
   end
   windows.drawApplicationFrame(content.prompt.content, frame)
   windows.drawApplicationFrame(content.commands.content, frame)
@@ -1275,12 +1307,10 @@ local function drawMoveDock(resources, view, content)
       if view.selection == "move:" .. tostring(slot) then
         label = fitText(text, CURSOR .. " " .. entry.name, MOVE_LABEL_WIDTH)
       end
-      drawLabel(
-        text,
-        label,
-        MOVE_GRID_X + 8 + column * MOVE_COLUMN_WIDTH,
-        MOVE_GRID_TOP + MOVE_NAME_DY + row * MOVE_ROW_HEIGHT
-      )
+      local labelX = MOVE_GRID_X + 8 + column * MOVE_COLUMN_WIDTH
+      local labelY = MOVE_GRID_TOP + MOVE_NAME_DY + row * MOVE_ROW_HEIGHT
+      drawLabel(text, label, labelX, labelY)
+      drawLabelFinger(resources, view, "move:" .. tostring(slot), labelX, labelY)
       local geometry = content.moveSlots[slot + 1]
       drawMoveTypeIcon(resources, entry, geometry.icon)
       drawLabel(

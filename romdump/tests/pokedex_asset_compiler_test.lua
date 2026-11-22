@@ -71,6 +71,7 @@ local function textBindings()
       giratina_origin = { heightBankId = 814, weightBankId = 812 },
     },
     registrationAnnouncement = { bankId = 197, messageId = 871 },
+    registrationHeader = { bankId = 802, messageId = 144 },
   }
 end
 
@@ -114,7 +115,7 @@ local function fixtureManifest(catalog)
   local pictures = { backYOffset = {} }
   pictures.backYOffset[MonCache.portraitSelector("custom.alpha", 0, "male", false, "back")] = 4
   return {
-    schema = "g4-pokedex-assets-v2",
+    schema = "g4-pokedex-assets-v3",
     versionId = "heartgold",
     fonts = { body = 0, header = 4 },
     pages = pages,
@@ -230,6 +231,20 @@ local function fixtureManifest(catalog)
       spots = { { x = 1, y = 2 }, { x = 3, y = 4 }, { x = 5, y = 6 }, { x = 7, y = 8 } },
       secondFrameXOffset = -14,
     },
+    dexModeLabel = {
+      johto = "panel",
+      national = "panel",
+      x = 40,
+      y = 24,
+      locked = { role = "panel", x = 24, y = 120, width = 208, height = 16 },
+    },
+    numberAtlas = (function()
+      local row = {}
+      for index = 1, 10 do
+        row[index] = "panel"
+      end
+      return { marker = "panel", caught = row, seen = row, digits = 10 }
+    end)(),
     text = catalog.textBindings,
   }
 end
@@ -588,10 +603,20 @@ end
 -- tables are the sole native-identity owners; the manifest carries only
 -- generated roles.
 local CONTRACTED_WINDOWS = {
+  "grid.seen-caption",
+  "grid.caught-caption",
   "grid.seen-count",
   "grid.caught-count",
+  "grid.info-label",
   "grid.selected-number",
   "grid.selected-name",
+  "grid.category",
+  "grid.flavor",
+  "grid.height-mark",
+  "grid.height",
+  "grid.weight-mark",
+  "grid.weight",
+  "grid.name-bar",
   "entry.species-name",
   "entry.dex-number",
   "entry.category",
@@ -600,6 +625,7 @@ local CONTRACTED_WINDOWS = {
   "entry.weight",
   "search.criteria",
   "search.feedback",
+  "search.feedback-detail",
   "search.results",
   "area.time",
   "area.location",
@@ -614,7 +640,9 @@ local CONTRACTED_WINDOWS = {
   "registration.species-name",
   "registration.category",
   "registration.flavor",
+  "registration.mark-height",
   "registration.height",
+  "registration.mark-weight",
   "registration.weight",
 }
 
@@ -642,25 +670,25 @@ function T.producer_page_layers_cover_every_required_role()
   end
 end
 
--- Native scroll state: the grid page depicts the scrolled entry view, where
--- SUB BG0 sits on its cleared half, so the grid information pane carries no
--- opaque layer-0 composition over the layer-1 text windows. The windowless
--- cover keeps the loaded dial art.
+-- Native scroll state: cover, grid and results bind the same MAIN0/SUB0
+-- scroll plane. The runtime X offset selects the cover or list half; the
+-- list half leaves the layer-1 text windows visible.
 function T.producer_grid_information_layer_matches_scrolled_native_state()
   local PokedexSources = assert(require("romdump.src.config.PokedexSources"))
-  local function bindsInformationLayer0(role)
+  local function scrollPlane(role)
     for _, entry in ipairs(assert(PokedexSources.pageLayers[role], "the source map must bind " .. role)) do
       if entry.pane == "information" and entry.layer == 0 then
-        return true
+        return entry
       end
     end
-    return false
+    return nil
   end
-  Assert.isFalse(
-    bindsInformationLayer0("grid"),
-    "the grid information pane carries no foreground composition over its layer-1 text windows"
-  )
-  Assert.isTrue(bindsInformationLayer0("cover"), "the windowless cover keeps its native foreground art")
+  local cover = assert(scrollPlane("cover"), "the cover binds its native foreground art")
+  local grid = assert(scrollPlane("grid"), "the grid binds the same scroll plane")
+  Assert.equal(grid.char, cover.char, "cover and grid share the scroll-plane character")
+  Assert.equal(grid.screen, cover.screen, "cover and grid share the scroll-plane tilemap")
+  Assert.equal(grid.scroll, "cover", "the scroll plane follows the published cover offset")
+  Assert.equal(scrollPlane("results").scroll, "cover", "results reuse the same scroll plane")
 end
 
 -- Native area view: SetupScreen case 1 loads the area graphics and
@@ -720,7 +748,7 @@ local NATIVE_WINDOWS = {
     pane = "controls",
     layer = 0,
     x = 88,
-    y = 88,
+    y = 92,
     width = 24,
     height = 16,
     font = 0,
@@ -731,7 +759,7 @@ local NATIVE_WINDOWS = {
     pane = "controls",
     layer = 0,
     x = 216,
-    y = 88,
+    y = 92,
     width = 24,
     height = 16,
     font = 0,
@@ -741,9 +769,9 @@ local NATIVE_WINDOWS = {
   ["grid.selected-number"] = {
     pane = "information",
     layer = 1,
-    x = 120,
+    x = 121,
     y = 24,
-    width = 32,
+    width = 31,
     height = 16,
     font = 4,
     align = "left",
@@ -760,6 +788,116 @@ local NATIVE_WINDOWS = {
     align = "left",
     paletteGroup = "window-0",
   },
+  ["grid.seen-caption"] = {
+    pane = "controls",
+    layer = 0,
+    x = 16,
+    y = 72,
+    width = 96,
+    height = 16,
+    font = 0,
+    align = "right",
+    paletteGroup = "window-0",
+  },
+  ["grid.caught-caption"] = {
+    pane = "controls",
+    layer = 0,
+    x = 144,
+    y = 72,
+    width = 96,
+    height = 16,
+    font = 0,
+    align = "right",
+    paletteGroup = "window-0",
+  },
+  ["grid.info-label"] = {
+    pane = "information",
+    layer = 1,
+    x = 16,
+    y = 0,
+    width = 64,
+    height = 16,
+    font = 4,
+    align = "left",
+    paletteGroup = "window-2",
+  },
+  ["grid.category"] = {
+    pane = "information",
+    layer = 1,
+    x = 104,
+    y = 40,
+    width = 140,
+    height = 16,
+    font = 4,
+    align = "right",
+    paletteGroup = "window-0",
+  },
+  ["grid.flavor"] = {
+    pane = "information",
+    layer = 1,
+    x = 16,
+    y = 136,
+    width = 224,
+    height = 48,
+    font = 0,
+    align = "center",
+    paletteGroup = "window-1",
+  },
+  ["grid.height-mark"] = {
+    pane = "information",
+    layer = 1,
+    x = 144,
+    y = 88,
+    width = 40,
+    height = 16,
+    font = 0,
+    align = "center",
+    paletteGroup = "window-2",
+  },
+  ["grid.height"] = {
+    pane = "information",
+    layer = 1,
+    x = 188,
+    y = 88,
+    width = 64,
+    height = 16,
+    font = 0,
+    align = "left",
+    paletteGroup = "window-2",
+  },
+  ["grid.weight-mark"] = {
+    pane = "information",
+    layer = 1,
+    x = 144,
+    y = 104,
+    width = 40,
+    height = 16,
+    font = 0,
+    align = "center",
+    paletteGroup = "window-2",
+  },
+  ["grid.weight"] = {
+    pane = "information",
+    layer = 1,
+    x = 188,
+    y = 104,
+    width = 64,
+    height = 16,
+    font = 0,
+    align = "left",
+    paletteGroup = "window-2",
+  },
+  ["grid.name-bar"] = {
+    pane = "controls",
+    layer = 1,
+    x = 80,
+    y = 128,
+    width = 88,
+    height = 16,
+    font = 0,
+    align = "center",
+    paletteGroup = "window-0",
+  },
   ["entry.species-name"] = {
     pane = "information",
     layer = 1,
@@ -774,9 +912,9 @@ local NATIVE_WINDOWS = {
   ["entry.dex-number"] = {
     pane = "information",
     layer = 1,
-    x = 120,
+    x = 121,
     y = 24,
-    width = 32,
+    width = 31,
     height = 16,
     font = 4,
     align = "left",
@@ -787,7 +925,7 @@ local NATIVE_WINDOWS = {
     layer = 1,
     x = 104,
     y = 40,
-    width = 144,
+    width = 140,
     height = 16,
     font = 4,
     align = "right",
@@ -801,7 +939,7 @@ local NATIVE_WINDOWS = {
     width = 224,
     height = 48,
     font = 0,
-    align = "left",
+    align = "center",
     paletteGroup = "window-1",
   },
   ["entry.height"] = {
@@ -841,9 +979,20 @@ local NATIVE_WINDOWS = {
     pane = "information",
     layer = 1,
     x = 16,
-    y = 152,
+    y = 158,
     width = 224,
-    height = 40,
+    height = 16,
+    font = 0,
+    align = "center",
+    paletteGroup = "window-2",
+  },
+  ["search.feedback-detail"] = {
+    pane = "information",
+    layer = 1,
+    x = 16,
+    y = 174,
+    width = 224,
+    height = 16,
     font = 0,
     align = "center",
     paletteGroup = "window-2",
@@ -961,9 +1110,9 @@ local NATIVE_WINDOWS = {
   ["registration.dex-number"] = {
     pane = "information",
     layer = 1,
-    x = 120,
+    x = 121,
     y = 24,
-    width = 32,
+    width = 31,
     height = 16,
     font = 4,
     align = "left",
@@ -985,7 +1134,7 @@ local NATIVE_WINDOWS = {
     layer = 1,
     x = 104,
     y = 40,
-    width = 144,
+    width = 140,
     height = 16,
     font = 4,
     align = "right",
@@ -999,13 +1148,24 @@ local NATIVE_WINDOWS = {
     width = 224,
     height = 48,
     font = 0,
-    align = "left",
+    align = "center",
+    paletteGroup = "window-1",
+  },
+  ["registration.mark-height"] = {
+    pane = "information",
+    layer = 1,
+    x = 144,
+    y = 88,
+    width = 40,
+    height = 16,
+    font = 0,
+    align = "center",
     paletteGroup = "window-1",
   },
   ["registration.height"] = {
     pane = "information",
     layer = 1,
-    x = 184,
+    x = 188,
     y = 88,
     width = 64,
     height = 16,
@@ -1013,10 +1173,21 @@ local NATIVE_WINDOWS = {
     align = "left",
     paletteGroup = "window-1",
   },
+  ["registration.mark-weight"] = {
+    pane = "information",
+    layer = 1,
+    x = 144,
+    y = 104,
+    width = 40,
+    height = 16,
+    font = 0,
+    align = "center",
+    paletteGroup = "window-1",
+  },
   ["registration.weight"] = {
     pane = "information",
     layer = 1,
-    x = 184,
+    x = 188,
     y = 104,
     width = 64,
     height = 16,
@@ -1086,8 +1257,37 @@ end
 -- arrows, scrollbars, tab cursors, digits, type/footprint/mon-picture art
 -- and language icons all vary art, position, or visibility by live
 -- state, so no static anchor can place them.
+local LIST_TRACK = {
+  [14] = {
+    [5] = { x = 242, y = 76, pane = "controls" },
+  },
+}
+
 local NATIVE_SPRITE_ANCHORS = {
+  grid = LIST_TRACK,
+  results = LIST_TRACK,
+  ["search.criteria"] = LIST_TRACK,
+  ["search.order"] = LIST_TRACK,
+  ["search.name"] = LIST_TRACK,
+  ["search.type"] = LIST_TRACK,
+  ["search.height"] = LIST_TRACK,
+  ["search.weight"] = LIST_TRACK,
+  ["search.area"] = LIST_TRACK,
+  ["entry.area"] = {
+    [14] = {
+      [27] = { x = 32, y = 108, pane = "controls" },
+      [64] = { x = 242, y = 96, pane = "controls" },
+    },
+  },
+  ["entry.forms"] = {
+    [14] = {
+      [64] = { x = 242, y = 64, pane = "controls" },
+    },
+  },
   ["search.shape"] = {
+    [14] = {
+      [5] = { x = 242, y = 76, pane = "controls" },
+    },
     [74] = {
       [1] = { x = 32, y = 56, pane = "controls" },
       [2] = { x = 80, y = 56, pane = "controls" },

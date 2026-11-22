@@ -765,22 +765,45 @@ function T.scenarios_carry_pc_box_room_for_the_throw_gate()
   Assert.isTrue(live.boxHasSpace == true, "live boxes with empty slots read as room")
 end
 
+-- Fixture-catalog record relabeled as one lesson mon: the shaper reads the
+-- record's species and met level, never the catalog.
+---@param species string lesson species under shaping
+---@param level integer lesson level under shaping
+---@return table<string, unknown> full mon record
+local function lessonRecord(species, level)
+  local factory = CatalogFixture.makeFactory(0x44444444, CatalogFixture.makeCatalog())
+  local record = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", level = level }))
+  record.species = species
+  return record
+end
+
 -- Retail catching-tutorial content (battle_setup.c BattleSetup_New_Tutorial):
 -- player Marill L5, enemy Rattata L2, 20× POKE_BALL granted, scripted
 -- kind with the tutorial marker and box room for the throw gate.
 function T.tutorial_lessons_carry_their_fixed_content()
-  local scenario = ScenarioFactory.fromTutorial({}, {})
+  local mons = { player = lessonRecord("MARILL", 5), foe = lessonRecord("RATTATA", 2) }
+  local scenario = ScenarioFactory.fromTutorial({ mons = mons }, {})
   Assert.equal(scenario.kind, "scripted", "the lesson keeps its scripted kind")
   Assert.isTrue(scenario.tutorial == true, "the lesson marks its tutorial")
   Assert.isTrue(scenario.boxHasSpace == true, "the lesson keeps room for its throw")
   Assert.equal(#scenario.participants, 2, "the lesson fields both sides")
   local player = scenario.participants[1]
-  Assert.equal(player.roster[1].mon.species, "MARILL", "the lesson fields Marill")
-  Assert.equal(player.roster[1].mon.level, 5, "Marill fields at level 5")
+  Assert.deepEqual(player.roster[1].mon, mons.player, "the lesson fields its materialized Marill")
+  Assert.isTrue(player.roster[1].mon ~= mons.player, "the lesson detaches its Marill")
   local foe = scenario.participants[2]
-  Assert.equal(foe.roster[1].mon.species, "RATTATA", "the lesson fields Rattata")
-  Assert.equal(foe.roster[1].mon.level, 2, "Rattata fields at level 2")
+  Assert.deepEqual(foe.roster[1].mon, mons.foe, "the lesson fields its materialized Rattata")
   Assert.equal(scenario.inventories[1].quantities.POKE_BALL, 20, "the lesson grants 20 balls")
+end
+
+function T.tutorial_lessons_refuse_content_outside_the_lesson()
+  local ok = pcall(ScenarioFactory.fromTutorial, {
+    mons = { player = { species = "MARILL", level = 5 }, foe = lessonRecord("RATTATA", 2) },
+  }, {})
+  Assert.isFalse(ok, "a bare descriptor never fields the lesson")
+  ok = pcall(ScenarioFactory.fromTutorial, {
+    mons = { player = lessonRecord("MARILL", 5), foe = lessonRecord("RATTATA", 3) },
+  }, {})
+  Assert.isFalse(ok, "a record off the lesson level never fields the lesson")
 end
 
 return { tests = T }

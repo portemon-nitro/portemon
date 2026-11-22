@@ -33,6 +33,13 @@ HgssBattleScenarioFactory.DESCRIPTOR_LEVEL = 5
 HgssBattleScenarioFactory.PLAYER_CONTROLLER = "player"
 HgssBattleScenarioFactory.WILD_CONTROLLER = "wild"
 
+-- The catching tutorial's fixed lesson (battle_setup.c
+-- BattleSetup_New_Tutorial): the rival's Marill against a wild Rattata.
+HgssBattleScenarioFactory.TUTORIAL_LESSON = {
+  player = { species = "MARILL", level = 5 },
+  foe = { species = "RATTATA", level = 2 },
+}
+
 ---@param value unknown
 ---@return unknown detached copy without shared mutable state
 local function copyValue(value)
@@ -848,28 +855,43 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
   })
 end
 
+---@param mons table<string, unknown> materialized lesson records by side
+---@param side "player"|"foe"
+---@return table<string, unknown> detached lesson record
+local function lessonMon(mons, side)
+  local lesson = HgssBattleScenarioFactory.TUTORIAL_LESSON[side]
+  local mon = mons[side]
+  assert(
+    isFullRecord(mon) and mon.species == lesson.species and mon.met.level == lesson.level,
+    "tutorial lessons field their materialized " .. side .. " " .. lesson.species
+  )
+  return copyValue(mon)
+end
+
 -- Builds the scripted catching-tutorial fragment (battle_setup.c
 -- BattleSetup_New_Tutorial, scrcmd_c.c ScrCmd_CatchingTutorial opcode 251):
--- the lesson runs its fixed content regardless of live party or bag —
--- player Marill L5, enemy Rattata L2, 20× POKE_BALL granted — with the
--- scripted kind and the tutorial marker so the lesson command surface
--- auto-plays its bag behind the finger. The rival-gendered author name
--- resolves through the staged tutorial/author bank via the
--- battle/tutorial-author route (playerGender xor one), so the scenario
--- keeps the player context for that input instead of inventing a name.
----@param payload table<string, unknown>? opcode-251 payload carrying no operands
+-- the lesson runs its fixed TUTORIAL_LESSON content regardless of live
+-- party or bag, with 20× POKE_BALL granted, the scripted kind, and the
+-- tutorial marker so the lesson command surface auto-plays its bag behind
+-- the finger. The caller materializes the lesson records. The
+-- rival-gendered author name resolves through the staged tutorial/author
+-- bank via the battle/tutorial-author route (playerGender xor one), so the
+-- scenario keeps the player context for that input instead of inventing a
+-- name.
+---@param payload { attemptId: string?, id: string?, mons: { player: table<string, unknown>, foe: table<string, unknown> } }
 ---@param ctx table<string, unknown>? scenario context carrying live field sources
 ---@return table<string, unknown> detached tutorial scenario fragment
 function HgssBattleScenarioFactory.fromTutorial(payload, ctx)
+  assert(type(payload) == "table" and type(payload.mons) == "table", "tutorial lessons carry their records")
   local context = ctx or {}
   assert(type(context) == "table", "scenario context stays a record")
-  local playerMon = descriptorMon({ species = "MARILL", level = 5 })
-  local enemyMon = descriptorMon({ species = "RATTATA", level = 2 })
+  local playerMon = lessonMon(payload.mons, "player")
+  local enemyMon = lessonMon(payload.mons, "foe")
   local playerSeed = { id = 1, mon = playerMon, source = { kind = "tutorial", owner = "player", key = "lesson" } }
   local foeSeed = { id = 2, mon = enemyMon, source = { kind = "tutorial", owner = "enemy", key = "lesson" } }
   local playerInventoryId = HgssBattleScenarioFactory.PLAYER_INVENTORY_ID
   return kernelShape({
-    attemptId = type(payload) == "table" and (payload.attemptId or payload.id) or nil,
+    attemptId = payload.attemptId or payload.id,
     kind = "scripted",
     format = "single",
     sides = { { id = 1, participants = { 1 } }, { id = 2, participants = { 2 } } },
@@ -896,7 +918,7 @@ function HgssBattleScenarioFactory.fromTutorial(payload, ctx)
     },
     inventories = { { id = playerInventoryId, owners = { 1 }, quantities = { POKE_BALL = 20 } } },
     environment = { weather = "none" },
-    random = { seed = scenarioSeed(type(payload) == "table" and payload or { id = "tutorial" }) },
+    random = { seed = scenarioSeed(payload) },
     formatState = {},
     mon = copyValue(enemyMon),
     trainer = nil,

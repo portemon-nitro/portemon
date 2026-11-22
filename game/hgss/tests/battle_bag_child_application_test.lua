@@ -246,6 +246,7 @@ end
 -- input (covered above).
 function T.tutorial_bag_auto_plays_behind_the_finger()
   local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
+  local BattleFinger = require("game.hgss.src.battle.BattleFinger")
   local catalog = ItemFixture.makeCatalog()
   local flows = coordinator(catalog)
   local ballChoice = itemChoice("POKE_BALL", 3)
@@ -264,7 +265,8 @@ function T.tutorial_bag_auto_plays_behind_the_finger()
     Assert.isTrue(native.tutorial == true, "the lesson browser marks its tutorial")
     local finger = BattleBagPockets.fingerDraw(native)
     Assert.notNil(finger, "the lesson finger draws")
-    return finger
+    -- The spot under the bob: the finger rises and presses around it.
+    return { x = finger.x, y = finger.y - BattleFinger.offset(native.fingerTicks) }
   end
   Assert.equal(flows:status().childView.bagPage, "pocket_menu", "the lesson opens on the pocket menu")
   Assert.deepEqual(

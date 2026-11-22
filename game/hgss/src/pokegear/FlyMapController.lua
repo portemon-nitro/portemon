@@ -101,15 +101,7 @@ function FlyMapController.new(opts)
   local locations = MapLocations.new({ regionMap = catalog.regionMap, unlock = unlock, fieldMap = "" })
   local matrix = { x = 0, y = 0 }
   if context ~= nil then
-    matrix = MapProjection.contextCell({
-      matrixX = context.matrixX,
-      matrixY = context.matrixY,
-      explicitX = context.explicitX,
-      explicitY = context.explicitY,
-      lastExterior = context.lastExterior,
-      specialSpawn = context.specialSpawn,
-      special = context.specialMode,
-    })
+    matrix = MapProjection.openCell(context)
   end
   local self = setmetatable({
     _mode = opts.mode,

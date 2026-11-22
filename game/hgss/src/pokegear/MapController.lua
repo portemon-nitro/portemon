@@ -180,32 +180,34 @@ function MapController:_playerCell()
   if explicitX == nil and explicitY == nil and record ~= nil then
     explicitX, explicitY = record.explicitX, record.explicitY
   end
-  local special = context.specialMode
-  if special == nil and record ~= nil and type(record.special) == "string" then
-    special = record.special
+  local specialMode = context.specialMode
+  if specialMode == nil and record ~= nil and type(record.special) == "string" then
+    specialMode = record.special
   end
-  if explicitX == 0 and explicitY == 0 and context.lastExterior == nil and context.specialSpawn == nil then
-    if record ~= nil then
-      -- A source-known zero-coordinate header with no exterior evidence
-      -- refuses its unprovable cell instead of guessing one.
-      Errors.raise(
-        ScriptErrors.FEATURE_UNAVAILABLE,
-        "the region map has no proven exterior position for " .. context.fieldMap,
-        { map = context.fieldMap }
-      )
-    end
-    -- Maps without compiled coverage carry no such promise: the card
-    -- opens on the context anchor cell instead of refusing the map.
-    explicitX, explicitY = nil, nil
+  if
+    record ~= nil
+    and explicitX == 0
+    and explicitY == 0
+    and context.lastExterior == nil
+    and context.specialSpawn == nil
+  then
+    -- A source-known zero-coordinate header with no exterior evidence
+    -- refuses its unprovable cell instead of guessing one. Maps without
+    -- compiled coverage carry no such promise and open on their anchor.
+    Errors.raise(
+      ScriptErrors.FEATURE_UNAVAILABLE,
+      "the region map has no proven exterior position for " .. context.fieldMap,
+      { map = context.fieldMap }
+    )
   end
-  return MapProjection.contextCell({
+  return MapProjection.openCell({
     matrixX = context.matrixX,
     matrixY = context.matrixY,
     explicitX = explicitX,
     explicitY = explicitY,
     lastExterior = context.lastExterior,
     specialSpawn = context.specialSpawn,
-    special = special,
+    specialMode = specialMode,
   })
 end
 

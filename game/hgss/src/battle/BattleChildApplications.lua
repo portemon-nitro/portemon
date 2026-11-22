@@ -21,6 +21,7 @@
 -- drained as evidence, never as acceptance.
 
 local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
+local BattleFinger = require("game.hgss.src.battle.BattleFinger")
 local BattlePartyPages = require("game.hgss.src.battle.BattlePartyPages")
 local MonCache = require("libs.assets.src.MonCache")
 local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController")
@@ -30,6 +31,11 @@ local SummaryController = require("libs.hgss.src.ui.SummaryController")
 local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
 
 local BattleChildApplications = {}
+
+-- Every tutorial page re-arms the lesson finger
+-- (battle_bag_menu.c BattleBagMenu_UpdateTutorialFinger). The control each tutorial page's finger touches (RunTutorial): the
+-- balls pocket, its first cell, then USE.
+local TUTORIAL_FINGER_TARGETS = { pocket_menu = "bagpocket:2", item_list = "bag:0", use_item = "use" }
 
 -- Canonical battle child hit geometry: the six list rows and the footer
 -- Back share one coordinate space with the rows the battle renderer
@@ -825,6 +831,10 @@ local function newBattleBagBrowser(inventory, catalog, intent)
     -- lesson finger instead of taking input (battle_bag_menu.c
     -- RunTutorial via BattleBagContext.isTutorial).
     _tutorial = intent.isTutorial == true,
+    -- Lesson finger clock: the page the finger was last armed on and the
+    -- ticks it has run there.
+    _fingerPage = nil,
+    _fingerTicks = 0,
     -- D-pad cursor visibility (BattleDpadCursor active flag): set by
     -- the first key press (TryActivate), cleared by touch
     -- (DeactivateCursor), and kept between openings
@@ -1231,6 +1241,23 @@ local function newBattleBagBrowser(inventory, catalog, intent)
     -- Navigate, cancel, and pointer topology stay with the barrier:
     -- the lesson finger alone advances the auto-play.
   end
+  -- Runs the lesson finger one tick: each shown page re-arms it, and it
+  -- touches that page's control once its retail timing elapses.
+  ---@return nil
+  local function stepTutorialFinger()
+    if browser._fingerPage ~= browser._page then
+      browser._fingerPage = browser._page
+      browser._fingerTicks = 0
+    end
+    local target = TUTORIAL_FINGER_TARGETS[browser._page]
+    if target == nil or browser._pending ~= nil then
+      return
+    end
+    browser._fingerTicks = browser._fingerTicks + 1
+    if browser._fingerTicks == BattleFinger.TOUCH_TICKS then
+      tutorialEvent({ type = "tap", id = target })
+    end
+  end
   ---@param events table<integer, table<string, unknown>> semantic input batch under stepping
   function browser:updateFixed(events)
     if browser._disposed then
@@ -1454,6 +1481,9 @@ local function newBattleBagBrowser(inventory, catalog, intent)
         end
       end
     end
+    if browser._tutorial == true then
+      stepTutorialFinger()
+    end
     if animAtStart then
       advanceAnim()
     end
@@ -1613,6 +1643,7 @@ local function newBattleBagBrowser(inventory, catalog, intent)
       -- The tutorial marker rides the status so the finger projection
       -- and the message-page producer read the same auto-play source.
       tutorial = browser._tutorial == true,
+      fingerTicks = browser._fingerTicks,
       -- D-pad cursor visibility (BattleDpadCursor active flag) and the
       -- staged press dip (button + frame) ride the status so paint and
       -- taps resolve through the same focus the browser owns.

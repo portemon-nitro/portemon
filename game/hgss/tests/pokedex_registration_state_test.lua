@@ -298,7 +298,9 @@ local function checkLockedDemand(demands, registration)
         species = registration.specimen.species,
         language = "native",
       },
+      { role = "registration.mark-height", kind = "ui", messageId = 10, language = "native" },
       { role = "registration.height", kind = "height", species = registration.specimen.species },
+      { role = "registration.mark-weight", kind = "ui", messageId = 11, language = "native" },
       { role = "registration.weight", kind = "weight", species = registration.specimen.species },
     }, "the demand publishes the caught specimen's card text slots")
     Assert.equal(demand.cry.species, registration.specimen.species, "the cry names the captured species")
@@ -652,6 +654,31 @@ function T.ready_card_projects_type_and_footprint_intents()
   child:updateFixed(1 / 30)
   local later = assert(findCardObject(child:view().objects, "type-1"), "the card keeps its types across ticks")
   Assert.isTrue(later.age >= first.age, "accepted ticks never rewind card ages")
+  child:dispose()
+end
+
+-- The banner strip free-runs from card creation: palette 7 on the 16th
+-- source update, back to palette 0 on the 32nd, independent of the cry
+-- and of dismissal. The first update only resolves preparation, so the
+-- source timer starts with the second accepted update.
+function T.banner_flashes_from_creation_and_loops_independently_of_the_cry()
+  local Child = requirePresent("banner strip free-run")
+  local child = newChild(Child, frozenRegistration(), newPokedexFake({ "ready" }), newAudioFake())
+  local function advance(count)
+    for _ = 1, count do
+      child:updateFixed(1 / 30)
+    end
+  end
+  advance(16)
+  Assert.equal(child:view().banner, 0, "the first fifteen source updates keep palette 0")
+  advance(1)
+  Assert.equal(child:view().banner, 7, "the sixteenth source update lights the banner")
+  advance(15)
+  Assert.equal(child:view().banner, 7, "the banner holds palette 7 through the thirty-first source update")
+  advance(1)
+  Assert.equal(child:view().banner, 0, "the thirty-second source update returns to palette 0")
+  advance(16)
+  Assert.equal(child:view().banner, 7, "the banner keeps looping after its reset")
   child:dispose()
 end
 

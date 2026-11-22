@@ -16,6 +16,7 @@ local BattleEffectTasks = require("libs.hgss.src.presentation.BattleEffectTasks"
 local BattleBallParticles = require("game.hgss.src.battle.BattleBallParticles")
 local BattleEncounterParticles = require("game.hgss.src.battle.BattleEncounterParticles")
 local BattleEncounterIndexedRaster = require("game.hgss.src.battle.BattleEncounterIndexedRaster")
+local BattleFinger = require("game.hgss.src.battle.BattleFinger")
 local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local MonCache = require("libs.assets.src.MonCache")
@@ -114,6 +115,10 @@ local Rgb555 = require("libs.codec.src.Rgb555")
 ---@field _introBuilt boolean opening cues queued
 ---@field _kind string battle kind wording for the opening narration
 ---@field _tutorial boolean true while the scripted lesson auto-plays its bag behind the tutorial finger
+---@field _tutorialStep integer current lesson finger step in TUTORIAL_STEPS
+---@field _tutorialTicks integer source ticks the current lesson menu has accepted input
+---@field _tutorialPrompted integer? request identity whose lesson throw prompt already printed
+---@field _tutorialAuthor { classKey: string, name: string, prompt: string }? lesson author resolved from the first delivered view
 ---@field _sceneKey string staged battle scene identity behind the launch
 ---@field _encounterSourceKey string? staged scene identity behind the installed encounter source, nil while unstaged
 ---@field _encounterPaletteRestoreType string? accepted native palette restore class for this launch
@@ -255,6 +260,26 @@ local KIND_COMMANDS = {
 }
 
 local ORDINARY_COMMANDS = { "fight", "bag", "pokemon", "run" }
+
+-- Lesson finger steps (battle_input.c BattleInput_CatchingTutorialMain):
+-- FIGHT, then the first move, then BAG on every later command menu. Each
+-- spot is the finger's sub-screen sprite center, and `lead` counts the
+-- menu ticks before the finger arms (CB_Bag waits 61 ticks first).
+local TUTORIAL_STEPS = {
+  { mode = "command", id = "fight", x = 128, y = 59, lead = 0 },
+  { mode = "moves", id = "move:0", x = 64, y = 21, lead = 0 },
+  { mode = "command", id = "bag", x = 40, y = 145, lead = 61 },
+}
+local TUTORIAL_THROW_STEP = 3
+
+-- The player's friend fights the lesson (BattleSetup_New_Tutorial): the
+-- player-side profile takes the player's opposite trainer gender and the
+-- name the tutorial-author route selects by the player's gender. The
+-- throw prompt follows the author's gender.
+local TUTORIAL_AUTHORS = {
+  PKMN_TRAINER_ETHAN = { classKey = "PKMN_TRAINER_LYRA", variant = "malePlayer", prompt = "female-author" },
+  PKMN_TRAINER_LYRA = { classKey = "PKMN_TRAINER_ETHAN", variant = "femalePlayer", prompt = "male-author" },
+}
 
 -- Surface slot behind the staged label key: the label family is keyed
 -- by ordinary slot even when the command identity is specialized.
@@ -1359,6 +1384,10 @@ function BattleScreenState.new(opts)
     _introBuilt = false,
     _kind = "wild",
     _tutorial = false,
+    _tutorialStep = 1,
+    _tutorialTicks = 0,
+    _tutorialPrompted = nil,
+    _tutorialAuthor = nil,
     _queue = {},
     _notice = nil,
     _showTimelineMessage = false,
@@ -2246,6 +2275,9 @@ function BattleScreenState:_commandPrompt(names)
   if self._mode ~= "command" then
     return nil
   end
+  if self._tutorial and self._tutorialStep == TUTORIAL_THROW_STEP then
+    return self:_tutorialThrowPrompt()
+  end
   if self._request == nil or type(self._request.actors) ~= "table" then
     return nil
   end
@@ -2263,6 +2295,87 @@ function BattleScreenState:_commandPrompt(names)
   return stagedBattleText(self._manifest, "battle/child/command-prompt", {
     battler.name --[[@as string]],
   })
+end
+
+---@return string lesson throw prompt in the author's gendered wording
+function BattleScreenState:_tutorialThrowPrompt()
+  local author = assert(self._tutorialAuthor, "the lesson prompt follows its delivered author")
+  return stagedBattleText(self._manifest, "battle/prompt/tutorial-throw/" .. author.prompt, {})
+end
+
+-- Places the lesson author on the player side of one delivered view. The
+-- author resolves once from the player's own trainer on the first view,
+-- so replayed or already rewritten views keep the same author.
+---@param view table<string, unknown>? delivered view under rewriting
+---@return table<string, unknown>? detached view naming the lesson author, nil without a view
+function BattleScreenState:_lessonAuthorView(view)
+  if type(view) ~= "table" then
+    return nil
+  end
+  if self._tutorialAuthor == nil then
+    local playerTrainer = view.playerTrainer
+    local classKey = type(playerTrainer) == "table" and playerTrainer.classKey or nil
+    local author = type(classKey) == "string" and TUTORIAL_AUTHORS[classKey] or nil
+    assert(author ~= nil, "the lesson author follows the player's own trainer")
+    local routes = assert(self._manifest.messages.dynamicRoutes, "lesson authors require staged message routes")
+    local route = assert(routes.tutorialAuthor, "lesson authors require the staged tutorial-author route")
+    local key = assert(route.variants[author.variant], "the tutorial-author route stages both player genders")
+    self._tutorialAuthor = {
+      classKey = author.classKey,
+      name = stagedBattleText(self._manifest, key, {}),
+      prompt = author.prompt,
+    }
+  end
+  local author = self._tutorialAuthor --[[@as table<string, string>]]
+  local rewritten = copyValue(view) --[[@as table<string, unknown>]]
+  rewritten.playerName = author.name
+  rewritten.playerTrainer = { classKey = author.classKey, name = author.name }
+  return rewritten
+end
+
+---@return table<string, unknown>? lesson finger step driving the open menu, nil when no finger drives it
+function BattleScreenState:_tutorialMenuStep()
+  local step = self._tutorial and TUTORIAL_STEPS[self._tutorialStep] or nil
+  if step == nil or self._mode ~= step.mode or self._menuGateTicks > 0 or self._buttonFeedback ~= nil then
+    return nil
+  end
+  return step
+end
+
+-- Advances the lesson finger one source tick and touches its control once
+-- the retail timing elapses; the touch presses the control like a tap.
+function BattleScreenState:_stepTutorialFinger()
+  local step = self:_tutorialMenuStep()
+  if step == nil then
+    return
+  end
+  self._tutorialTicks = self._tutorialTicks + 1
+  if self._tutorialTicks < step.lead + BattleFinger.TOUCH_TICKS then
+    return
+  end
+  self._tutorialTicks = 0
+  self._tutorialStep = math.min(self._tutorialStep + 1, TUTORIAL_THROW_STEP)
+  self._selection = step.id
+  local armed = nil
+  if step.mode == "command" then
+    self:_syncCommandCursor(step.id)
+  else
+    armed = { focused = true }
+  end
+  self:_startButtonFeedback(step.mode, step.id, armed)
+end
+
+---@return { id: string, x: integer, y: integer, dy: integer }? touched control, armed sprite center, and pose offset; nil while no finger shows
+function BattleScreenState:_tutorialFinger()
+  local step = self:_tutorialMenuStep()
+  if step == nil or self._tutorialTicks < step.lead then
+    return nil
+  end
+  local dy = BattleFinger.offset(self._tutorialTicks - step.lead)
+  if dy == nil then
+    return nil
+  end
+  return { id = step.id, x = step.x, y = step.y, dy = dy }
 end
 
 ---@param entry table<string, unknown> staged battle ball or trainer source record
@@ -2805,6 +2918,7 @@ function BattleScreenState:_snapshot(borrowStatic)
     menuRevealEdge = type(menuWindows) == "table" and menuWindows.edge or nil,
     menuWindows = menuWindows,
     menuInputEnabled = self._menuGateTicks == 0,
+    tutorialFinger = self:_tutorialFinger(),
     selection = self._selection,
     cursorVisible = self._keyboardFocus and self._mode ~= "child",
     cursorTick = self._cursorTick,
@@ -3208,6 +3322,7 @@ function BattleScreenState:view()
     menuRevealEdge = snapshot.menuRevealEdge,
     menuWindows = copyValue(snapshot.menuWindows),
     menuInputEnabled = snapshot.menuInputEnabled,
+    tutorialFinger = copyValue(snapshot.tutorialFinger),
     effectInstances = copyValue(snapshot.effectInstances),
     messageId = self._timeline:messageId(),
     selection = self._selection,
@@ -4599,6 +4714,15 @@ function BattleScreenState:_portPresent(packet)
     self._mode = "failed"
     self._error = "malformed battle packet for launch " .. self._launchId
     return
+  end
+  if self._tutorial then
+    local authored = {}
+    for field, value in pairs(packet) do
+      authored[field] = value
+    end
+    authored.before = self:_lessonAuthorView(packet.before)
+    authored.after = self:_lessonAuthorView(packet.after)
+    packet = authored
   end
   -- Leaf demand before cue construction: every trainer and ball selector
   -- behind the delivered views reaches the asset holder first. While any
@@ -6588,6 +6712,15 @@ end
 ---@param event table<string, unknown> mapped semantic input under consumption
 function BattleScreenState:_consume(event)
   local eventType = event.type
+  -- The lesson menus read only the finger: BattleInput_CheckTouch takes
+  -- the tutorial branch instead of touch or keypad input.
+  if
+    self._tutorial
+    and eventType ~= "pointer_cancel"
+    and (self._mode == "command" or self._mode == "moves" or self._mode == "target")
+  then
+    return
+  end
   local menuKeyboardEdge = (self._mode == "command" or self._mode == "moves" or self._mode == "target")
     and (eventType == "navigate" or eventType == "confirm" or eventType == "cancel")
   local revealCursor = eventType == "navigate" and menuKeyboardEdge and not self._keyboardFocus
@@ -7527,6 +7660,19 @@ function BattleScreenState:_drain(settledTick)
   end
   if self._pendingRequest ~= nil then
     local request = self._pendingRequest --[[@as table<string, unknown>]]
+    -- The lesson's throwing turn prints its prompt at text speed and opens
+    -- the command menu once the printer finishes
+    -- (battle_controller_opponent.c PRINT_PROMPT then WAIT_PROMPT).
+    if
+      self._tutorial
+      and self._tutorialStep == TUTORIAL_THROW_STEP
+      and self._tutorialPrompted ~= request.requestId
+      and self:_modeForOptions(request.options --[[@as table<string, unknown>?]]) == "command"
+    then
+      self._tutorialPrompted = request.requestId --[[@as integer]]
+      self._timeline:announce(self:_tutorialThrowPrompt(), false, 0)
+      return
+    end
     self._pendingRequest = nil
     self._request = request
     self._options = request.options --[[@as table<string, unknown>?]]
@@ -8629,6 +8775,7 @@ function BattleScreenState:updateFixed(dt)
       -- first frame already carries its staged plane snapshot.
       self:_stageEncounterSource()
       self:_advanceButtonFeedback()
+      self:_stepTutorialFinger()
       self._timeline:update(BattleScreenState.SOURCE_FRAME, isAvailable, function(cue)
         return self:_soundCueComplete(cue)
       end, function(messageId, callback, controlIndex)

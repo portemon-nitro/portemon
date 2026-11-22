@@ -97,6 +97,9 @@ local T = {
       -- backpic and the lead ball behind every leg. Foe fronts and the
       -- evolution bundle extend this list exactly as journeys name them.
       "battle-trainer-picture:back-PKMN_TRAINER_ETHAN",
+      -- The catching lesson's friend fights with the player's opposite
+      -- backpic.
+      "battle-trainer-picture:back-PKMN_TRAINER_LYRA",
       "battle-trainer-picture:front-RIVAL",
       "battle-ball:POKE_BALL",
       "battle-evolution:global",
@@ -919,6 +922,100 @@ function T.tests.scripted_launches_keep_their_result_ownership()
     Assert.isTrue(unbound, "each version releases its factory binding")
   end)
   harness = nil
+end
+
+-- The catching tutorial (ScrCmd_CatchingTutorial) launches through the
+-- script battle host onto the covered presented route and completes its
+-- lesson through the real screen: the lesson finger fights on the first
+-- command and opens the bag on the next, where the browser auto-plays
+-- the throw (battle_input.c BattleInput_CatchingTutorialMain). The player
+-- only acknowledges narration; menu input never reaches the lesson, and
+-- the driver never submits a decision behind the screen.
+function T.tests.catching_tutorial_completes_its_presented_lesson()
+  local harness = AcceptanceHarness.new({ versions = { AcceptanceHarness.defaultVersion() } })
+  harness:forEachVersion(function(versionId)
+    local _, game = bootFieldGame(versionId, "MAP_NEW_BARK_ELMS_LAB_1F")
+    local runtime = game.runtime
+    local envelope, binding = bindEnvelope(game, versionId, dualMeasurement("presented-tutorial:dual"))
+    local ok, failure = xpcall(function()
+      local partyCount = runtime.monService:partyCount()
+      local boxCount = runtime.monService:boxCount()
+      local balls = runtime.bagService:quantity("POKE_BALL")
+      local foeSeen = runtime.dexKnowledge:isSeen("RATTATA")
+      local money = runtime.playerData.profile.money
+      local context = { services = { battle = assert(runtime._battleHost, "the runtime composes its battle host") } }
+      local task = BattleTask.start({ kind = "tutorial", details = {} }, context)
+      local coordinator = runtime.battleCoordinator
+      local menus = {}
+      local author = nil
+      local ticks = 0
+      while coordinator._battleLaunch ~= nil and ticks < SETTLE_BUDGET do
+        local battle = coordinator:activeBattle()
+        if battle ~= nil and battle:status().phase == "failed" then
+          error("the tutorial battle failed: " .. tostring(battle:status().error), 0)
+        end
+        local screen = envelope:liveScreen()
+        if screen ~= nil then
+          local shown = screen:status()
+          Assert.isFalse(shown.mode == "failed", "the tutorial screen stays live: " .. tostring(shown.error))
+          if
+            shown.mode == "intro"
+            or shown.mode == "narration"
+            or shown.mode == "outcome"
+            or hasAwaitingNarration(screen)
+          then
+            envelope:input({ { type = "confirm" } })
+          elseif shown.mode == "command" or shown.mode == "moves" then
+            menus[shown.mode] = true
+            author = screen:view().playerTrainer
+            envelope:input({ { type = "navigate", direction = "down" }, { type = "cancel" } })
+          end
+        end
+        game:step()
+        envelope:updateFixed(TICK)
+        ticks = ticks + 1
+      end
+      Assert.isTrue(menus.command == true and menus.moves == true, "the lesson shows its command and move menus")
+      -- The player's friend fights the lesson (BattleSetup_New_Tutorial):
+      -- the opposite trainer under the staged author name.
+      local ownClass = ({ [0] = "PKMN_TRAINER_ETHAN", [1] = "PKMN_TRAINER_LYRA" })[runtime.playerData.profile.gender]
+      Assert.isTrue(type(author) == "table", "the lesson names its player-side trainer")
+      Assert.isFalse(author.classKey == ownClass, "the lesson author is the player's opposite trainer")
+      Assert.isTrue(
+        type(author.name) == "string" and author.name ~= "" and author.name ~= runtime.playerData.profile.name,
+        "the lesson author carries the staged friend name"
+      )
+      local screen = envelope:liveScreen()
+      local battle = coordinator:activeBattle()
+      local status = battle ~= nil and battle:status() or nil
+      Assert.isNil(
+        coordinator._battleLaunch,
+        "the tutorial lesson settles its presented launch; launch="
+          .. tostring(coordinator._battleLaunch and coordinator._battleLaunch.phase)
+          .. " screen="
+          .. tostring(screen and screen:status().mode)
+          .. " battle="
+          .. tostring(status and status.phase)
+          .. " request="
+          .. tostring(status and status.request and table.concat(status.request.legalChoices.kinds, ","))
+      )
+      Assert.isNil(runtime.errorText, "the tutorial returns to the field without a fault")
+      Assert.isTrue(BattleTask.poll(task, context).complete, "the tutorial completes its script task")
+      -- Source Task_TutorialBattle discards its own setup: the lesson's
+      -- party, balls, capture, and sightings never reach the player.
+      Assert.equal(runtime.monService:partyCount(), partyCount, "the lesson capture never joins the party")
+      Assert.equal(runtime.monService:boxCount(), boxCount, "the lesson capture never reaches the boxes")
+      Assert.equal(runtime.bagService:quantity("POKE_BALL"), balls, "the lesson balls never touch the bag")
+      Assert.equal(runtime.dexKnowledge:isSeen("RATTATA"), foeSeen, "the lesson foe never registers in the Pokedex")
+      Assert.equal(runtime.playerData.profile.money, money, "the lesson pays no money")
+      Assert.equal(game:renderAttempts(), 0, "the tutorial route stops before GPU rendering")
+    end, debug.traceback)
+    runtime:unbindBattlePresentation(binding)
+    game:close()
+    if not ok then
+      error(failure, 0)
+    end
+  end)
 end
 
 -- Covered entry and return wait for real readiness while music stays with

@@ -37,6 +37,7 @@ local SysInfoState = require("libs.hgss.src.save.SysInfoState")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local FieldScriptScreenFade = require("libs.hgss.src.transition.FieldScriptScreenFade")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+local Personality = require("libs.mons.src.gen4.Personality")
 local MonCache = require("libs.assets.src.MonCache")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local ItemCache = require("libs.assets.src.ItemCache")
@@ -3693,7 +3694,13 @@ function FieldRuntime:_buildBattleScenarioFragment(request)
   -- a test-only launch without the script still builds the same lesson
   -- through this seam.
   if request.kind == "tutorial" then
-    return HgssBattleScenarioFactory.fromTutorial(request.payload --[[@as table<string, unknown>]] or {}, live)
+    local payload = request.payload
+    assert(type(payload) == "table", "tutorial launches carry their payload")
+    local lesson = HgssBattleScenarioFactory.TUTORIAL_LESSON
+    return HgssBattleScenarioFactory.fromTutorial({
+      attemptId = payload.attemptId,
+      mons = { player = self:_materializeLessonMon(lesson.player), foe = self:_materializeLessonMon(lesson.foe) },
+    }, live)
   end
   return HgssBattleScenarioFactory.fromScript(request.payload --[[@as table<string, unknown>]], live)
 end
@@ -3800,6 +3807,22 @@ function FieldRuntime:_materializeDescriptorFoe(payload)
     terrain = met.terrain,
     date = met.date,
   })
+end
+
+-- Materializes one catching-tutorial lesson mon like a scripted static
+-- foe, then gives it the source OT_ID_RANDOM_NO_SHINY original trainer: a
+-- random identity drawn on the world stream that never makes it shiny.
+---@param descriptor { species: string, level: integer } fixed lesson content
+---@return table<string, unknown> full lesson record
+function FieldRuntime:_materializeLessonMon(descriptor)
+  local mon =
+    assert(self:_materializeDescriptorFoe(descriptor), "tutorial lessons materialize through the composed wild factory")
+  local worldRng = self.scripts.worldState.rng
+  local origin = mon.origin --[[@as table<string, unknown>]]
+  repeat
+    origin.trainerId = worldRng:nextRaw() % 65536 + (worldRng:nextRaw() % 65536) * 65536
+  until not Personality.shiny(origin.trainerId --[[@as integer]], mon.personality --[[@as integer]])
+  return mon
 end
 
 -- Resolves one trainer launch payload into the detached trainer entries the
@@ -4676,7 +4699,6 @@ function FieldRuntime:_encounterLeadFacts()
       end
     end
     if type(lead.personality) == "number" then
-      local Personality = require("libs.mons.src.gen4.Personality")
       facts.leadNature = Personality.nature(lead.personality)
       local catalog = self.monCatalog
       if type(catalog) == "table" and type(catalog.species) == "function" then

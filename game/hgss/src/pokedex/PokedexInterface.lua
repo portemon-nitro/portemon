@@ -122,6 +122,16 @@ local NATIVE_LIST_FOOTER = {
   { box = { top = 152, bottom = 187, left = 192, right = 255 }, action = "cancel" },
 }
 
+-- Native cover footer: the three source buttons over the y152..187
+-- band (search, open, quit) plus the dex-mode switch target above them.
+-- The switch is checked first, like the source hitbox order.
+local NATIVE_COVER_FOOTER = {
+  { box = { top = 152, bottom = 187, left = 0, right = 63 }, action = "search" },
+  { box = { top = 152, bottom = 187, left = 64, right = 191 }, action = "open" },
+  { box = { top = 152, bottom = 187, left = 192, right = 255 }, action = "cancel" },
+}
+local NATIVE_COVER_SWITCH = { box = { top = 96, bottom = 160, left = 112, right = 143 } }
+
 -- Native entry tabs: four source bands over the y168..183 strip. Gaps
 -- between the bands and the rows above and below switch nothing.
 local NATIVE_ENTRY_TABS = {
@@ -131,12 +141,51 @@ local NATIVE_ENTRY_TABS = {
   { box = { top = 168, bottom = 183, left = 199, right = 249 }, value = "return" },
 }
 
--- Native area daypart selectors: three circle targets carrying the
--- original centers and radius on the controls pane.
+-- Native area daypart selectors: three circle targets in a vertical
+-- column at x=33, matching the drawn sun/day/moon icons.
 local NATIVE_AREA_CIRCLES = {
-  { cx = 77, cy = 33, radius = 13, value = 0 },
-  { cx = 109, cy = 33, radius = 13, value = 1 },
-  { cx = 141, cy = 33, radius = 13, value = 2 },
+  { cx = 33, cy = 77, radius = 13, value = 0 },
+  { cx = 33, cy = 109, radius = 13, value = 1 },
+  { cx = 33, cy = 141, radius = 13, value = 2 },
+}
+
+-- Native area region tabs: the two source bands over the map header.
+local NATIVE_AREA_REGIONS = {
+  { box = { top = 6, bottom = 24, left = 70, right = 128 }, value = "johto" },
+  { box = { top = 6, bottom = 24, left = 190, right = 246 }, value = "kanto" },
+}
+
+-- Native area/form list scroll bands: the two rows above and the two
+-- rows below the six visible rows, plus the arrow buttons at the track
+-- ends. Each command scrolls the source number of rows.
+local NATIVE_AREA_ROWS = {
+  { box = { top = 40, bottom = 55, left = 82, right = 221 }, delta = -2 },
+  { box = { top = 64, bottom = 79, left = 82, right = 221 }, delta = -1 },
+  { box = { top = 136, bottom = 151, left = 82, right = 221 }, delta = 2 },
+  { box = { top = 112, bottom = 127, left = 82, right = 221 }, delta = 1 },
+  { box = { top = 37, bottom = 52, left = 231, right = 252 }, delta = -1 },
+  { box = { top = 139, bottom = 154, left = 231, right = 252 }, delta = 1 },
+}
+local NATIVE_FORMS_ROWS = {
+  { box = { top = 8, bottom = 23, left = 34, right = 213 }, delta = -2 },
+  { box = { top = 32, bottom = 47, left = 34, right = 213 }, delta = -1 },
+  { box = { top = 104, bottom = 119, left = 34, right = 213 }, delta = 2 },
+  { box = { top = 80, bottom = 95, left = 34, right = 213 }, delta = 1 },
+  { box = { top = 5, bottom = 20, left = 231, right = 252 }, delta = -1 },
+  { box = { top = 107, bottom = 122, left = 231, right = 252 }, delta = 1 },
+}
+
+-- Native comparison targets: four cycle labels, the right-side flip and
+-- close buttons, and the two picture zones that select their side.
+local NATIVE_COMPARE = {
+  { box = { top = 56, bottom = 71, left = 48, right = 63 }, action = "compare-cycle", side = 0, delta = -1 },
+  { box = { top = 56, bottom = 71, left = 120, right = 136 }, action = "compare-cycle", side = 0, delta = 1 },
+  { box = { top = 184, bottom = 199, left = 48, right = 63 }, action = "compare-cycle", side = 1, delta = -1 },
+  { box = { top = 184, bottom = 199, left = 120, right = 136 }, action = "compare-cycle", side = 1, delta = 1 },
+  { box = { top = 8, bottom = 118, left = 160, right = 183 }, action = "compare-flip" },
+  { box = { top = 128, bottom = 254, left = 160, right = 183 }, action = "compare-back" },
+  { box = { top = 2, bottom = 114, left = 67, right = 116 }, action = "compare-side", value = 0 },
+  { box = { top = 130, bottom = 253, left = 67, right = 116 }, action = "compare-side", value = 1 },
 }
 
 -- Native height/weight slider geometry on the controls pane: the upper
@@ -156,22 +205,6 @@ local NATIVE_SLIDER_ARROWS = {
   { box = { top = 49, bottom = 70, left = 230, right = 245 }, endpoint = "max", direction = 1 },
   { box = { top = 121, bottom = 142, left = 10, right = 25 }, endpoint = "min", direction = -1 },
   { box = { top = 121, bottom = 142, left = 230, right = 245 }, endpoint = "min", direction = 1 },
-}
-
--- Native entry-page controls on the controls pane: the tab strip plus
--- one action group per page, transcribed from the source action groups.
-local NATIVE_ENTRY = {
-  timeButton = { x = 200, y = 8, width = 48, height = 24 },
-  regionButton = { x = 200, y = 40, width = 48, height = 24 },
-  rowFirstY = 72,
-  rowHeight = 16,
-  rowWidth = 184,
-  restartButton = { x = 8, y = 8, width = 96, height = 24 },
-  compareButton = { x = 200, y = 8, width = 48, height = 24 },
-  sideLButton = { x = 8, y = 140, width = 48, height = 24 },
-  sideRButton = { x = 64, y = 140, width = 48, height = 24 },
-  flipButton = { x = 120, y = 140, width = 48, height = 24 },
-  backButton = { x = 176, y = 140, width = 48, height = 24 },
 }
 
 -- Compact single-display reflow (host adaptation, non-retail
@@ -263,15 +296,15 @@ local function nativeSliderStep(x)
   return step
 end
 
--- Tests one pane-local point against one inclusive source rectangle.
--- Source hitboxes include both ends, so the right and bottom edges
--- belong to the box.
+-- Tests one pane-local point against one half-open source rectangle.
+-- The native hitbox test is x-left < right-left and y-top < bottom-top,
+-- so the right and bottom edges belong to the next band.
 ---@param x number pane-local x
 ---@param y number pane-local y
 ---@param box { top: integer, bottom: integer, left: integer, right: integer } source hitbox
 ---@return boolean true inside the source rectangle
 local function insideSourceRect(x, y, box)
-  return x >= box.left and x <= box.right and y >= box.top and y <= box.bottom
+  return x >= box.left and x < box.right and y >= box.top and y < box.bottom
 end
 
 -- Tests one pane-local point against one source circle target.
@@ -281,7 +314,7 @@ end
 ---@return boolean true inside the circle
 local function insideCircle(x, y, circle)
   local dx, dy = x - circle.cx, y - circle.cy
-  return dx * dx + dy * dy <= circle.radius * circle.radius
+  return dx * dx + dy * dy < circle.radius * circle.radius
 end
 
 -- Maps one pane-local tap to the native entry tabs: four 51px source
@@ -312,6 +345,35 @@ local function coverDrag(event)
     return { type = "drag", target = "cover", phase = "end", value = event.x }
   end
   return nil
+end
+
+-- Maps one pane-local tap on the native cover: the dex-mode switch and
+-- the three footer buttons take their own commands, and every other
+-- press keeps the source cover/list swipe.
+---@param event table<string, unknown> pane-local pointer event
+---@param view table<string, unknown>? detached browser projection
+---@return table<string, unknown>? finite model command
+local function coverInput(event, view)
+  if event.type == "pointer_down" then
+    local x, y = event.x, event.y
+    -- The switch target only exists while national mode is unlocked; a
+    -- locked dex treats the same press as a cover swipe like the source.
+    if type(view) == "table" and view.nationalUnlocked == true and insideSourceRect(x, y, NATIVE_COVER_SWITCH.box) then
+      local mode = view.mode == "national" and "johto" or "national"
+      return { type = "activate", action = "mode", value = mode }
+    end
+    for _, button in ipairs(NATIVE_COVER_FOOTER) do
+      if insideSourceRect(x, y, button.box) then
+        if button.action == "open" then
+          return { type = "confirm" }
+        elseif button.action == "cancel" then
+          return { type = "cancel" }
+        end
+        return { type = "activate", action = button.action }
+      end
+    end
+  end
+  return coverDrag(event)
 end
 
 -- Maps one native grid/results tap to its slot selection. All fifteen
@@ -347,6 +409,60 @@ local function gridTap(event)
     end
   end
   return nil
+end
+
+-- Maps the vertical scrollbar band to its live drag phase. The published
+-- thumb top/bottom bound the native drag range; the controller applies
+-- the fraction on every accepted move.
+---@param event table<string, unknown> pane-local pointer event
+---@param view table<string, unknown>? detached browser projection
+---@param page string? top-level page behind the drag
+---@return table<string, unknown>? finite model command
+local function scrollDrag(event, view, page)
+  local _ = page
+  if event.type ~= "pointer_down" and event.type ~= "pointer_move" and event.type ~= "pointer_up" then
+    return nil
+  end
+  if event.paneId ~= "controls" then
+    return nil
+  end
+  local x, y = event.x, event.y
+  if x < 231 or x > 252 then
+    return nil
+  end
+  local scrollbar = nil
+  local family = nil
+  if page == "grid" or page == "results" then
+    if type(view) == "table" and type(view.grid) == "table" then
+      scrollbar = view.grid.scrollbar
+    end
+    family = "grid-scroll"
+  elseif page == "area" then
+    if type(view) == "table" and type(view.area) == "table" then
+      scrollbar = view.area.scrollbar
+    end
+    family = "area-scroll"
+  elseif page == "forms" then
+    if type(view) == "table" and type(view.forms) == "table" then
+      scrollbar = view.forms.scrollbar
+    end
+    family = "forms-scroll"
+  end
+  if type(scrollbar) ~= "table" or type(scrollbar.top) ~= "number" or type(scrollbar.bottom) ~= "number" then
+    return nil
+  end
+  local span = scrollbar.bottom - scrollbar.top
+  if span <= 0 then
+    return nil
+  end
+  local fraction = (y - scrollbar.top) / span
+  if fraction < 0 then
+    fraction = 0
+  elseif fraction > 1 then
+    fraction = 1
+  end
+  local phase = event.type == "pointer_down" and "begin" or (event.type == "pointer_move" and "move" or "end")
+  return { type = "drag", target = family, phase = phase, value = fraction }
 end
 
 -- Reads the open search editor behind the projection, if any.
@@ -801,30 +917,22 @@ local function entryInput(event, view, page)
         return { type = "activate", action = "area-time", value = circle.value }
       end
     end
-    if inside(x, y, NATIVE_ENTRY.timeButton) then
-      return { type = "confirm" }
+    for _, region in ipairs(NATIVE_AREA_REGIONS) do
+      if insideSourceRect(x, y, region.box) then
+        return { type = "activate", action = "area-region", value = region.value }
+      end
     end
-    if inside(x, y, NATIVE_ENTRY.regionButton) then
-      return { type = "select" }
-    end
-    for row = 0, entryRowCount(view, page) - 1 do
-      local rect = {
-        x = 8,
-        y = NATIVE_ENTRY.rowFirstY + row * NATIVE_ENTRY.rowHeight,
-        width = NATIVE_ENTRY.rowWidth,
-        height = NATIVE_ENTRY.rowHeight,
-      }
-      if inside(x, y, rect) then
-        return { type = "activate", action = "area-row", value = row }
+    for _, band in ipairs(NATIVE_AREA_ROWS) do
+      if insideSourceRect(x, y, band.box) then
+        return { type = "activate", action = "area-scroll", value = band.delta }
       end
     end
     return nil
   end
   if page == "size" then
-    if inside(x, y, NATIVE_ENTRY.restartButton) then
-      return { type = "activate", action = "size-restart" }
-    end
-    return nil
+    -- Every non-tab touch on the size page restarts the check; the tab
+    -- strip was already consumed above.
+    return { type = "activate", action = "size-restart" }
   end
   if page == "forms" then
     local forms = nil
@@ -832,32 +940,26 @@ local function entryInput(event, view, page)
       forms = view.forms
     end
     if type(forms) == "table" and forms.comparison ~= nil then
-      if inside(x, y, NATIVE_ENTRY.sideLButton) then
-        return { type = "activate", action = "compare-side", value = 0 }
-      end
-      if inside(x, y, NATIVE_ENTRY.sideRButton) then
-        return { type = "activate", action = "compare-side", value = 1 }
-      end
-      if inside(x, y, NATIVE_ENTRY.flipButton) then
-        return { type = "activate", action = "compare-flip" }
-      end
-      if inside(x, y, NATIVE_ENTRY.backButton) then
-        return { type = "activate", action = "compare-back" }
+      for _, target in ipairs(NATIVE_COMPARE) do
+        if insideSourceRect(x, y, target.box) then
+          local command = { type = "activate", action = target.action }
+          if target.side ~= nil then
+            command.side = target.side
+          end
+          if target.delta ~= nil then
+            command.delta = target.delta
+          end
+          if target.value ~= nil then
+            command.value = target.value
+          end
+          return command
+        end
       end
       return nil
     end
-    if inside(x, y, NATIVE_ENTRY.compareButton) then
-      return { type = "activate", action = "compare" }
-    end
-    for row = 0, entryRowCount(view, page) - 1 do
-      local rect = {
-        x = 8,
-        y = NATIVE_ENTRY.rowFirstY + row * NATIVE_ENTRY.rowHeight,
-        width = NATIVE_ENTRY.rowWidth,
-        height = NATIVE_ENTRY.rowHeight,
-      }
-      if inside(x, y, rect) then
-        return { type = "activate", action = "forms-row", value = row }
+    for _, band in ipairs(NATIVE_FORMS_ROWS) do
+      if insideSourceRect(x, y, band.box) then
+        return { type = "activate", action = "forms-scroll", value = band.delta }
       end
     end
     return nil
@@ -884,16 +986,34 @@ local function mapNativeInput(event, view, page)
     return nil
   end
   if page == "cover" then
-    return coverDrag(event)
+    return coverInput(event, view)
   end
   if page == "grid" or page == "results" then
-    return gridTap(event)
+    local tap = gridTap(event)
+    if tap ~= nil then
+      return tap
+    end
+    local drag = scrollDrag(event, view, page)
+    if drag ~= nil then
+      return drag
+    end
+    if event.type == "pointer_down" then
+      if event.x >= 0 and event.x < 23 and event.y >= 0 and event.y < 124 then
+        return coverDrag(event)
+      end
+      return nil
+    end
+    return coverDrag(event)
   end
   if page == "search" then
     return searchInput(event, view)
   end
   if page == "area" or page == "size" or page == "forms" or page == "return" then
-    return entryInput(event, view, page)
+    local command = entryInput(event, view, page)
+    if command ~= nil then
+      return command
+    end
+    return scrollDrag(event, view, page)
   end
   return nil
 end
@@ -1638,15 +1758,16 @@ end
 ---@param panes table<string, unknown>[] resolved plan panes
 ---@param inputKey string stable input-geometry identity
 ---@param compact table<string, unknown>? shared compact geometry record, nil on native plans
+---@param frames table<integer, table<string, unknown>>? static outer-frame geometry from the layout
 ---@return table<string, unknown> complete application plan
-local function browserPlan(panes, inputKey, compact)
+local function browserPlan(panes, inputKey, compact, frames)
   local content = {}
   if compact ~= nil then
     content.pokedexCompact = compact
   end
   return {
     panes = panes,
-    frames = {},
+    frames = frames or {},
     content = content,
     inputKey = inputKey,
     render = renderBrowser,
@@ -1763,7 +1884,12 @@ local function pairedBrowserPlan(context, measurement, upper, lower, pair, view)
   if geometry == nil then
     return fitCompactPlan(context, browserInputKey(view), view, ":compact-fallback")
   end
-  return browserPlan(panesFrom(geometry, { "information", "controls" }, true), browserInputKey(view) .. ":paired")
+  return browserPlan(
+    panesFrom(geometry, { "information", "controls" }, true),
+    browserInputKey(view) .. ":paired",
+    nil,
+    geometry.frames
+  )
 end
 
 -- Renders the prepared registration bundle through the one shared
@@ -1795,11 +1921,12 @@ end
 
 ---@param panes table<string, unknown>[] resolved plan panes
 ---@param inputKey string stable input-geometry identity
+---@param frames table<integer, table<string, unknown>>? static outer-frame geometry from the layout
 ---@return table<string, unknown> complete application plan
-local function registrationPlan(panes, inputKey)
+local function registrationPlan(panes, inputKey, frames)
   return {
     panes = panes,
-    frames = {},
+    frames = frames or {},
     content = {},
     inputKey = inputKey,
     render = renderRegistration,
@@ -1877,7 +2004,8 @@ function PokedexInterface.registration(overrides)
     end
     return registrationPlan(
       panesFrom(geometry, { "registration", "registrationTouch" }, true),
-      "pokedex-registration:paired"
+      "pokedex-registration:paired",
+      geometry.frames
     )
   end
   ---@param context table<string, unknown>
@@ -1895,7 +2023,8 @@ function PokedexInterface.registration(overrides)
     end
     return registrationPlan(
       panesFrom(geometry, { "registration", "registrationTouch" }, true),
-      "pokedex-registration:paired"
+      "pokedex-registration:paired",
+      geometry.frames
     )
   end
   ---@param context table<string, unknown>
@@ -1913,7 +2042,8 @@ function PokedexInterface.registration(overrides)
     end
     return registrationPlan(
       panesFrom(geometry, { "registration", "registrationTouch" }, true),
-      "pokedex-registration:paired"
+      "pokedex-registration:paired",
+      geometry.frames
     )
   end
   ---@param context table<string, unknown>

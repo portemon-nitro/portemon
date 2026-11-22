@@ -112,6 +112,19 @@ function T.tests.the_card_opens_on_unmapped_headers_without_an_exterior()
   Assert.equal(v.panel.landmark, "Landmark 41", "the selection falls back to the anchor cell")
 end
 
+-- A compiled location whose own source header declares both coordinates zero
+-- promises a proven cell it cannot deliver without exterior or special
+-- evidence: the card refuses that unprovable position instead of guessing one.
+function T.tests.the_card_refuses_source_zero_headers_without_an_exterior()
+  local context = Fixture.context()
+  context.explicitX, context.explicitY = 0, 0
+  local ok, err = pcall(Fixture.openMap, { mapContext = context })
+  Assert.isFalse(ok, "a compiled zero-coordinate header never guesses its cell")
+  Assert.equal(type(err), "table", "the refusal carries its structured attribution")
+  Assert.equal(err.code, "FEATURE_UNAVAILABLE", "the refusal names its recoverable cause")
+  Assert.notNil(tostring(err.message):find(context.fieldMap, 1, true), "the refusal names its map")
+end
+
 function T.tests.a_keyboard_move_selects_the_next_location_after_two_ticks()
   local box = Fixture.openMap()
   local before = view(box.controller).sprites.cursor.x

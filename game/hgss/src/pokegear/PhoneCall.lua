@@ -51,8 +51,8 @@ PhoneCall.HANGUP_SEQUENCE = "SEQ_SE_GS_PHONE_OFF"
 -- reader: the first prints on hangup entry, the other two each follow
 -- an eleven-tick post-increment wait, and a third wait ends the call.
 PhoneCall.HANGUP_MESSAGE_ENTRIES = { 33, 34, 35 }
--- The button-press tone behind the pre-hangup wait, played once when
--- the player confirms the finished conversation.
+-- The button-press tone behind the pre-hangup wait, played once for
+-- either source confirmation: Action/tap or the cancel press.
 PhoneCall.SELECT_SEQUENCE = "SEQ_SE_DP_SELECT"
 
 -- World facts frozen at the call boundary for program dispatch. Only
@@ -2126,6 +2126,11 @@ function PhoneCall:step(handle, input)
     return
   end
   if edges.cancel == true then
+    -- The finished conversation's button wait answers B like A: one
+    -- source SELECT tone, then the staged hangup.
+    if session.stage == "waitPress" then
+      self:_playSequence(PhoneCall.SELECT_SEQUENCE)
+    end
     self:_beginHangup(session)
     return
   end
@@ -2723,8 +2728,11 @@ end
 -- Hangs the call up at once behind the single source hangup tone.
 -- Forced teardown never replays the tone: a call already hanging up
 -- finishes silently, any other live call plays it once here, and a
--- terminal call stays untouched. Committed effects are always kept;
--- the staged timer path belongs to stepped player hangups.
+-- terminal call stays untouched. A call waiting on the finished
+-- conversation's button still voices the source SELECT tone first, so
+-- cancelling that wait sounds like the source A/B confirmation. Committed
+-- effects are always kept; the staged timer path belongs to stepped
+-- player hangups.
 ---@param handle { id: string }
 ---@param reason string hangup reason
 function PhoneCall:cancel(handle, reason)
@@ -2734,6 +2742,9 @@ function PhoneCall:cancel(handle, reason)
     return
   end
   if session.stage ~= "hangingUp" then
+    if session.stage == "waitPress" then
+      self:_playSequence(PhoneCall.SELECT_SEQUENCE)
+    end
     self:_playSequence(PhoneCall.HANGUP_SEQUENCE)
   end
   self:_finishHangup(session)

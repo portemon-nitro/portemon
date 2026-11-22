@@ -240,6 +240,33 @@ function T.tests.cancelled_and_stale_fly_selections_never_warp()
   Assert.deepEqual(world.calls, {}, "cancel, repeat, invalid, and stale inputs warped nothing")
 end
 
+-- The Fly card opens wherever the gear opens, including an indoor map whose
+-- context proves no cell: the selector anchors on the context's own
+-- normalized cell instead of refusing the card.
+function T.tests.selector_opens_on_an_indoor_context_without_exterior_evidence()
+  local FlyMapController = requireFeature(
+    "game.hgss.src.pokegear.FlyMapController",
+    "the fly destination selector refuses indoor contexts it cannot prove"
+  )
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local context = Fixture.context()
+  context.fieldMap = "MAP_UNCOMPILED_INTERIOR"
+  context.matrixX, context.matrixY = 0, 0
+  context.explicitX, context.explicitY = 0, 0
+  local selector = openSelector(FlyMapController, record, "fly-op-indoor", context)
+  local status = selector:status()
+  local view = assert(status.view, "the unprovable indoor selector still publishes its world")
+  Assert.isTrue(
+    type(view.cursor.x) == "number" and type(view.cursor.y) == "number",
+    "the indoor selector projects its cursor from the anchored cell"
+  )
+  selector:updateFixed({ { type = "cancel" } })
+  Assert.notNil(selector:takeResult(), "the unprovable indoor selector still closes through its terminal")
+  selector:dispose()
+end
+
 -- Malformed selector options fail before any effect: an unknown mode, a
 -- missing operation identity, and a non-key destination each raise
 -- without publishing anything.

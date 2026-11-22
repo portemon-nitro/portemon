@@ -497,6 +497,14 @@ function App._beginSaveAgnosticWarmup(versionId, epoch)
         App.startupWarmupError = tostring(failure)
       end
     end
+    -- The Pokedex presentation scope compiles every browser page's chrome
+    -- and its manifest, so a first open must never be the request that
+    -- starts that work: enroll it beside the field milestones while the
+    -- cinematic still plays.
+    local dexOk, dexFailure = pcall(host.requestPokedex, "near")
+    if not dexOk then
+      App.startupWarmupError = tostring(dexFailure)
+    end
     local battleOk, battleFailure = pcall(host.requestBattlePresentation, "near")
     if not battleOk then
       App.startupWarmupError = tostring(battleFailure)

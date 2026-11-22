@@ -12,12 +12,9 @@ local ScriptSave = require("libs.script.src.ScriptSave")
 local MenuTask = require("libs.hgss.src.script.tasks.MenuTask")
 ---@cast MenuTask TaskImplementation
 local ScriptMenuHost = require("libs.hgss.src.script.ScriptMenuHost")
-local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
-local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
+local FieldMessageFixture = require("tests.support.FieldMessageFixture")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
-local CacheFs = require("libs.storage.src.CacheFs")
 local FakeServices = require("tests.support.script.FakeServices")
-local FakeCache = require("tests.support.FakeCache")
 
 local T = {}
 
@@ -196,24 +193,12 @@ local STANDARD_BANK_ITEMS = { 0, 1, 2 }
 local function standardMenuBank(messageIds)
   local messages = {}
   for _, messageId in ipairs(messageIds) do
-    messages[messageId] = {
-      id = messageId,
-      raw = { 0xFFFF },
-      text = "Choice " .. messageId,
-      tokens = { { kind = "glyph", text = "Choice " .. messageId }, { kind = "eos", raw = { 0xFFFF } } },
+    messages[messageId + 1] = {
+      FieldMessageFixture.glyph(0x0100 + messageId, "Choice " .. messageId),
+      FieldMessageFixture.eos(),
     }
   end
-  return {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = MenuProtocol.STANDARD_MESSAGE_BANK,
-    messageCount = #messageIds,
-    source = {
-      narc = "NARC_msgdata_msg",
-      memberId = MenuProtocol.STANDARD_MESSAGE_BANK,
-      memberSha1 = "synthetic",
-    },
-    messages = messages,
-  }
+  return messages
 end
 
 -- Source foreground multichoice resolves its labels through the production
@@ -221,9 +206,8 @@ end
 -- because this layer owns menu interaction rather than drawing.
 local function sourceMenuHarness()
   local h = harness()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:writeLua(FieldMessageCache.bankPath(MenuProtocol.STANDARD_MESSAGE_BANK), standardMenuBank(STANDARD_BANK_ITEMS))
-  local provider = assert(FieldMessageProvider.new(cache))
+  local provider =
+    FieldMessageFixture.provider({ [MenuProtocol.STANDARD_MESSAGE_BANK] = standardMenuBank(STANDARD_BANK_ITEMS) })
   h.services.scriptMenu = ScriptMenuHost.new({
     provider = provider,
     substitutionResolvers = function()
@@ -604,17 +588,9 @@ function T.menu_task_plays_the_source_select_cue_on_move_decision_and_cancel()
   poll({ { type = "focus", itemIndex = 1 } }, 100)
   Assert.deepEqual(played, { "SEQ_SE_DP_SELECT" }, "moving to a new row sounds once")
   poll({ { type = "focus", itemIndex = 1 } }, 101)
-  Assert.deepEqual(
-    played,
-    { "SEQ_SE_DP_SELECT" },
-    "repeating the focused row stays silent"
-  )
+  Assert.deepEqual(played, { "SEQ_SE_DP_SELECT" }, "repeating the focused row stays silent")
   local outcome = poll({ { type = "confirm" } }, 102)
-  Assert.deepEqual(
-    played,
-    { "SEQ_SE_DP_SELECT", "SEQ_SE_DP_SELECT" },
-    "confirming the choice sounds once more"
-  )
+  Assert.deepEqual(played, { "SEQ_SE_DP_SELECT", "SEQ_SE_DP_SELECT" }, "confirming the choice sounds once more")
   Assert.isTrue(outcome.complete, "confirmation completes the menu task")
   Assert.equal(outcome.result, 99, "confirmation resolves the focused value")
 

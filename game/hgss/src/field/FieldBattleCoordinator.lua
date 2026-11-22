@@ -301,8 +301,14 @@ function FieldBattleCoordinator:startBattle(args)
       presentation = self.battlePresentation
     end
   end
+  -- The catching tutorial runs as a scripted lifetime: its scenario's
+  -- tutorial marker, never a runtime launch kind, selects the lesson.
+  local battleRequest = request
+  if request.kind == "tutorial" then
+    battleRequest = { id = request.id, kind = "scripted", payload = request.payload }
+  end
   local battleArgs = {
-    request = request,
+    request = battleRequest,
     scenario = scenario,
     presentation = presentation,
     party = fieldRuntime(self).monService,
@@ -995,8 +1001,14 @@ function FieldBattleCoordinator:_captureTransitionContext(request, environment)
     end
     assert(type(fallback) == "boolean", "wild transition setup fallback is an explicit source fact")
     context.wildSetupFallback = fallback
+  elseif request.kind == "tutorial" then
+    -- Source SetupAndStartTutorialBattle selects its effect and music
+    -- through the wild rules over the lesson's fixed enemy party.
+    context.kind = "wild"
+    context.wildSpecies = require("libs.hgss.src.battle.HgssBattleScenarioFactory").TUTORIAL_LESSON.foe.species
+    context.wildSetupFallback = false
   else
-    error("presented transition context requires a trainer or wild launch", 0)
+    error("presented transition context requires a trainer, wild, or tutorial launch", 0)
   end
 
   return context
@@ -1312,11 +1324,18 @@ function FieldBattleCoordinator:_battleMusicRole(request)
   if type(payload) ~= "table" then
     payload = {}
   end
+  local kind = request.kind
   local species = type(payload.species) == "string" and payload.species or nil
+  -- Source SetupAndStartTutorialBattle plays the wild track for the
+  -- lesson's fixed enemy party.
+  if kind == "tutorial" then
+    kind = "wild"
+    species = require("libs.hgss.src.battle.HgssBattleScenarioFactory").TUTORIAL_LESSON.foe.species
+  end
   local rivalName = type(payload.rivalName) == "string" and payload.rivalName or nil
   local trainerClass = self:_battleTrainerClass(request)
   local okSelect, selected = pcall(BattleMusicSelection.select, {
-    kind = request.kind,
+    kind = kind,
     species = species,
     trainerClass = trainerClass,
     rivalName = rivalName,

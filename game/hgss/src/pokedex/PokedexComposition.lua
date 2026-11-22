@@ -15,8 +15,8 @@ local PokedexScreenState = require("game.hgss.src.pokedex.PokedexScreenState")
 local PokedexComposition = {}
 
 -- Resolves the player position once per open through the existing
--- authority: the read-only Pokégear context closure over the live map,
--- converted through the existing projection. Never derives the marker
+-- authority: the read-only Pokégear map context closure over the live map,
+-- projected through the shared page projection. Never derives the marker
 -- from local player coordinates and never caches exterior state here.
 ---@param runtime table<string, unknown> the owning field runtime
 ---@return { mapX: integer, mapY: integer } captured global block cell
@@ -25,14 +25,7 @@ local function resolvePlayerCell(runtime)
   assert(type(pokegear.mapContext) == "function", "the pokedex factory reads the shared player-location authority")
   local facts = pokegear.mapContext()
   assert(type(facts) == "table", "the shared map context resolves its location facts afresh")
-  local cellInput = {}
-  for key, value in pairs(facts) do
-    cellInput[key] = value
-  end
-  if cellInput.special == nil and cellInput.specialMode ~= nil then
-    cellInput.special = cellInput.specialMode
-  end
-  local cell = MapProjection.contextCell(cellInput)
+  local cell = MapProjection.openCell(facts)
   assert(
     type(cell.x) == "number" and type(cell.y) == "number",
     "the existing projection resolves numeric block coordinates"

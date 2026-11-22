@@ -1906,6 +1906,25 @@ local function drawSpriteObject(graphics, image, stripWidth, baseX, baseY, obj)
   end
 end
 
+-- Draws the staged lesson finger centered on its sprite position. A
+-- missing staged finger draws nothing under the existing pending path,
+-- never a substitute.
+---@param graphics table<string, unknown> injected host graphics
+---@param assets table<string, unknown> injected asset holder
+---@param x integer finger sprite center
+---@param y integer finger sprite center
+local function drawTutorialFinger(graphics, assets, x, y)
+  local fingerArt = assets:drawable("battle:finger")
+  if fingerArt == nil then
+    return
+  end
+  local width, height = drawableDims(fingerArt)
+  if type(width) ~= "number" or type(height) ~= "number" then
+    width, height = 32, 32
+  end
+  drawArtwork(graphics, fingerArt, nil, x - math.floor(width / 2), y - math.floor(height / 2))
+end
+
 ---@param graphics table<string, unknown> injected host graphics
 ---@param assets table<string, unknown> generated battle assets
 ---@param view table<string, unknown> battle snapshot under drawing
@@ -3531,18 +3550,10 @@ local function drawBagChild(resources, view, child)
   end
   -- The lesson finger centers on its per-page spot while the tutorial
   -- auto-plays (battle_bag_menu.c UpdateTutorialFinger, staged like the
-  -- item spots). A missing staged finger draws nothing under the
-  -- existing pending path, never a substitute.
+  -- item spots).
   local finger = BattleBagPockets.fingerDraw(native)
   if finger ~= nil then
-    local fingerArt = assets:drawable(finger.key)
-    if fingerArt ~= nil then
-      local width, height = drawableDims(fingerArt)
-      if type(width) ~= "number" or type(height) ~= "number" then
-        width, height = 32, 32
-      end
-      drawArtwork(graphics, fingerArt, nil, finger.x - math.floor(width / 2), finger.y - math.floor(height / 2))
-    end
+    drawTutorialFinger(graphics, assets, finger.x, finger.y)
   end
   -- D-pad cursor corners frame the focused box while the cursor is
   -- active (BattleDpadCursor_SetRect over the page cursor boxes; set by
@@ -4665,6 +4676,12 @@ local function drawInteraction(resources, view, content, placement)
       end
       drawControls(resources, menuView, layout, regions)
       drawKeypadCursor(graphics, assets, menuView, layout, regions)
+      -- The lesson finger bobs over the control it will touch
+      -- (battle_input.c BattleInput_CatchingTutorialCB_*).
+      local finger = view.tutorialFinger
+      if type(finger) == "table" then
+        drawTutorialFinger(graphics, assets, finger.x, finger.y + finger.dy)
+      end
     end
     local top = type(menuWindows) == "table" and menuWindows.outsideTop or nil
     local bottom = type(menuWindows) == "table" and menuWindows.outsideBottom or nil

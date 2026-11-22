@@ -161,6 +161,7 @@ function T.numeric_giratina_slider_and_text_bindings_conform(romFs, versionId)
       giratina_origin = { heightBankId = 814, weightBankId = 812 },
     },
     landmarks = { bankId = 279, fallbackBankId = 280, fallbackMessageId = 2 },
+    registrationHeader = { bankId = 802, messageId = 144 },
     registrationAnnouncement = { bankId = 197, messageId = 871 },
   }, versionId .. " binds the exact message roles")
 end
@@ -524,20 +525,22 @@ function T.presentation_backgrounds_reproduce_source_screen_maps(romFs, versionI
   Assert.isTrue(searchBytes ~= areaBytes, "two source-distinct screens produce distinct images")
 end
 
--- Compositing leg: the grid information pane binds no layer-0 composition,
--- so faithful priority compositing (lower number in front) leaves the native
--- layer-1 number/name windows visible. The windowless cover keeps the loaded
--- dial art, proving the correction is page-local rather than wholesale art
--- deletion.
-function T.presentation_grid_windows_clear_their_foreground_layer(romFs, versionId)
+-- Compositing leg: the grid information pane binds the same layer-0 scroll
+-- plane as the cover, and the runtime X offset selects the cover or list
+-- half, so the native layer-1 number/name windows stay visible over the list
+-- half. The windowless cover keeps the loaded dial art, proving the shared
+-- plane is not a wholesale art substitution.
+function T.presentation_grid_binds_the_cover_scroll_plane_under_its_windows(romFs, versionId)
   local manifest, sink = compiledChrome(romFs, versionId)
   local grid = assert(manifest.pages.grid, versionId .. " closes the grid page")
+  local scrollPlane = nil
   for _, background in ipairs(assert(grid.backgrounds.information, versionId .. " binds the grid information pane")) do
-    Assert.isTrue(
-      background.layer ~= 0,
-      versionId .. " binds no grid information foreground over the layer-1 text windows"
-    )
+    if background.layer == 0 then
+      scrollPlane = background
+    end
   end
+  Assert.notNil(scrollPlane, versionId .. " binds the grid scroll plane on information layer 0")
+  Assert.equal(scrollPlane.scroll, "cover", versionId .. " grid foreground follows the cover/list scroll")
   local bytes, record = backgroundPng(manifest, sink, "cover", "information", 0, versionId)
   local archive = openGraphicsArchive(romFs, versionId)
   local char, screen, palette = decodedTriple(archive, 17, 16, 18, versionId)
@@ -628,18 +631,36 @@ function T.presentation_pages_bind_distinct_source_families(romFs, versionId)
     table.sort(roles)
     return roles
   end
-  -- The list loader family serves cover and results identically; grid
-  -- depicts the scrolled entry-view state, so its information pane carries
-  -- no foreground composition over the layer-1 text windows.
+  -- The list loader family serves cover, grid and results identically on
+  -- the scroll plane; the MAIN2 bottom-strip cells differ per page.
   Assert.deepEqual(
     chromeRoles("results", "information"),
     chromeRoles("cover", "information"),
     "results and cover share their native loader family"
   )
   Assert.deepEqual(
-    chromeRoles("results", "controls"),
-    chromeRoles("grid", "controls"),
-    "results and grid share their native loader family"
+    chromeRoles("grid", "information"),
+    chromeRoles("cover", "information"),
+    "grid and cover share their native scroll plane"
+  )
+  local function roleAt(role, pane, layer)
+    local page = assert(manifest.pages[role], versionId .. " closes the " .. role .. " page")
+    for _, background in ipairs(assert(page.backgrounds[pane])) do
+      if background.layer == layer then
+        return background.chrome
+      end
+    end
+    return nil
+  end
+  Assert.equal(
+    roleAt("results", "controls", 0),
+    roleAt("grid", "controls", 0),
+    "results and grid share the MAIN0 scroll plane"
+  )
+  Assert.equal(
+    roleAt("results", "controls", 3),
+    roleAt("grid", "controls", 3),
+    "results and grid share the number strip"
   )
   -- Search, area, size, forms, compare and back each resolve their own
   -- loader family: no search *composed* chrome role appears on the area
@@ -830,6 +851,15 @@ function T.presentation_sprites_bind_only_the_authored_static_anchors(romFs, ver
     expected["sprite-search-shape-" .. (87 + slot)] =
       { x = 32 + 48 * (slot % 5), y = 56 + 40 * math.floor(slot / 5), pane = "controls" }
   end
+  expected["sprite-grid-5"] = { x = 242, y = 76, pane = "controls" }
+  expected["sprite-results-5"] = { x = 242, y = 76, pane = "controls" }
+  for _, slug in ipairs({ "criteria", "order", "name", "type", "height", "weight", "area" }) do
+    expected["sprite-search-" .. slug .. "-5"] = { x = 242, y = 76, pane = "controls" }
+  end
+  expected["sprite-search-shape-5"] = { x = 242, y = 76, pane = "controls" }
+  expected["sprite-entry-area-27"] = { x = 32, y = 108, pane = "controls" }
+  expected["sprite-entry-area-64"] = { x = 242, y = 96, pane = "controls" }
+  expected["sprite-entry-forms-64"] = { x = 242, y = 64, pane = "controls" }
   expected["sprite-registration-1"] = { x = 112, y = 32, pane = "information" }
   local placed = 0
   for role, record in pairs(manifest.sprites) do
@@ -891,8 +921,11 @@ function T.presentation_subject_bindings_resolve_to_page_local_sprite_roles(romF
   resolve("entry.area", "tab-cursor", "active")
   resolve("entry.area", "player", "male")
   resolve("entry.area", "player", "female-here")
-  resolve("entry.area", "marker", "shape0")
-  resolve("entry.area", "marker", "shape11")
+  resolve("entry.area", "marker", "shape0-0")
+  resolve("entry.area", "marker", "shape11-1")
+  resolve("search.criteria", "cursor", "n0")
+  resolve("search.criteria", "cursor", "n9")
+  resolve("search.height", "cursor", "n0")
   resolve("entry.area", "time-cursor", "active")
   resolve("entry.size", "pan-left", "active")
   resolve("entry.size", "trainer", "male")

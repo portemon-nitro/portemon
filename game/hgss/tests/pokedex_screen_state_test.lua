@@ -205,6 +205,18 @@ local function screenArgs(overrides)
   return args
 end
 
+-- Opens the cursor entry through its fade and cancels back to the grid: the
+-- list keeps drawing until the entry fade completes, so the cancel only
+-- lands once the fade has settled.
+---@param screen table<string, unknown> live presented screen under test
+local function openAndCancelEntry(screen)
+  screen:updateFixed({ { type = "confirm" } })
+  for _ = 1, 12 do
+    screen:updateFixed({})
+  end
+  screen:updateFixed({ { type = "cancel" } })
+end
+
 function T.first_demand_needs_no_prepared_animation_metadata()
   local ScreenState = requirePresent("initial demand without readiness")
   local args = screenArgs()
@@ -239,8 +251,7 @@ function T.matching_readiness_admits_motion_while_stale_keys_retain_the_view()
       return true
     end,
   })
-  screen:updateFixed({ { type = "confirm" } })
-  screen:updateFixed({ { type = "cancel" } })
+  openAndCancelEntry(screen)
   local committed = screen:status()
   Assert.equal(committed.view.page, "grid", "cover confirm opens the entry and cancel returns to the grid")
   Assert.notNil(committed.assets, "the grid demand commits its whole bundle")
@@ -590,8 +601,7 @@ function T.captured_slider_release_outside_bands_settles_under_pending_assets()
       return true
     end,
   })
-  screen:updateFixed({ { type = "confirm" } })
-  screen:updateFixed({ { type = "cancel" } })
+  openAndCancelEntry(screen)
   Assert.equal(screen:status().view.page, "grid", "cover confirm opens the entry and cancel returns to the grid")
   screen:updateFixed({ { type = "y" } })
   Assert.equal(live:view().page, "search", "grid Y reaches the search root")
@@ -671,8 +681,7 @@ function T.display_reflow_cancels_the_active_drag_exactly_once()
       return true
     end,
   })
-  screen:updateFixed({ { type = "confirm" } })
-  screen:updateFixed({ { type = "cancel" } })
+  openAndCancelEntry(screen)
   screen:updateFixed({ { type = "y" } })
   screen:updateFixed({ { type = "activate", action = "criterion", value = "height" } })
   Assert.notNil(live:view().search.editor, "the height editor opens")
@@ -794,8 +803,7 @@ function T.compact_inspector_shields_every_background_input()
   local screen = ScreenState.new(args)
   gate.open = true
   screen:updateFixed({})
-  screen:updateFixed({ { type = "confirm" } })
-  screen:updateFixed({ { type = "cancel" } })
+  openAndCancelEntry(screen)
   Assert.equal(screen:status().view.page, "grid", "cover confirm opens the entry and cancel returns to the committed grid")
   screen:updateFixed({ { type = "inspect" } })
   Assert.isTrue(screen:status().compact.inspect, "the inspect action opens the panel")
@@ -854,8 +862,7 @@ function T.held_input_cancels_once_across_a_display_reflow()
       return true
     end,
   })
-  screen:updateFixed({ { type = "confirm" } })
-  screen:updateFixed({ { type = "cancel" } })
+  openAndCancelEntry(screen)
   Assert.equal(screen:status().view.page, "grid", "cover confirm opens the entry and cancel returns to the grid")
   local gridBundle = assert(screen:status().assets, "the grid demand commits its whole bundle")
   -- Hold the search candidate pending, then capture a press on the
@@ -913,8 +920,7 @@ function T.failed_candidate_plans_keep_the_last_ready_triplet()
     },
   })
   local screen = ScreenState.new(args)
-  screen:updateFixed({ { type = "confirm" } })
-  screen:updateFixed({ { type = "cancel" } })
+  openAndCancelEntry(screen)
   Assert.equal(screen:status().view.page, "grid", "cover confirm opens the entry and cancel returns to the grid")
   local gridBundle = assert(screen:status().assets, "the grid demand commits its whole bundle")
   local gridKey = screen:status().view.key
@@ -934,10 +940,23 @@ end
 ---@param species string expected selected species key
 local function driveSelectionTo(screen, species)
   for _ = 1, 40 do
-    if screen:status().view.selection.species == species then
+    local view = screen:status().view
+    if view.selection.species == species then
       return
     end
-    screen:updateFixed({ { type = "navigate", direction = "right" } })
+    local entries = view.grid.buffers[1].entries
+    local cursor = view.grid.cursor
+    local target = nil
+    for index, entry in ipairs(entries) do
+      if entry.species == species then
+        target = index - 1
+      end
+    end
+    if target == nil then
+      error("the grid page never stages " .. species, 0)
+    end
+    local direction = target > cursor and "right" or "left"
+    screen:updateFixed({ { type = "navigate", direction = direction } })
   end
   error("the grid never selects " .. species, 0)
 end
@@ -989,8 +1008,7 @@ function T.inspector_binds_only_eligible_details_and_closes_without_side_effects
       return true
     end,
   })
-  screen:updateFixed({ { type = "confirm" } })
-  screen:updateFixed({ { type = "cancel" } })
+  openAndCancelEntry(screen)
   Assert.equal(screen:status().view.page, "grid", "cover confirm opens the entry and cancel returns to the grid")
   driveSelectionTo(screen, "TOTODILE")
   screen:updateFixed({ { type = "inspect" } })
@@ -1044,8 +1062,7 @@ function T.inspector_close_maps_at_its_drawn_rectangle_without_click_through()
       return true
     end,
   })
-  screen:updateFixed({ { type = "confirm" } })
-  screen:updateFixed({ { type = "cancel" } })
+  openAndCancelEntry(screen)
   driveSelectionTo(screen, "TOTODILE")
   screen:updateFixed({ { type = "inspect" } })
   Assert.isTrue(screen:status().compact.inspect, "the inspect action opens the panel")

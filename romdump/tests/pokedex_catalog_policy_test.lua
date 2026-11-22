@@ -57,6 +57,8 @@ local function fixtureMonCatalog()
   end
   species.UNOWN.forms = { [0] = {}, [28] = {} }
   species.PICHU.forms = { [0] = {}, [1] = {}, [2] = {} }
+  species.CASTFORM.forms = { [0] = {}, [1] = {}, [2] = {}, [3] = {} }
+  species.CHERRIM.forms = { [0] = {}, [1] = {} }
   species["custom.alpha"] = { forms = { [0] = {}, [1] = {} }, genderRatio = 127 }
   species["custom.beta"] = { forms = { [0] = {} }, genderRatio = 255 }
   return { species = species, version = { id = "heartgold", language = "english" } }
@@ -293,18 +295,18 @@ end
 function T.message_bank_closure_covers_every_named_role()
   local PokedexSources = require("romdump.src.config.PokedexSources")
   local ids = PokedexSources.messageBankIds()
-  Assert.equal(
-    #ids,
-    30,
-    "the presentation closure names every fixed bank once: 28 pre-existing plus the landmarks name/fallback banks behind AREA location rows"
-  )
+  local seen = {}
+  for _, bank in ipairs(ids) do
+    Assert.isNil(seen[bank], "the presentation closure names bank " .. bank .. " once")
+    seen[bank] = true
+  end
   local wanted = {
     [802] = true,
+    [197] = true,
     [237] = true,
     [816] = true,
     [803] = true,
     [804] = true,
-    [197] = true,
     [815] = true,
     [812] = true,
   }

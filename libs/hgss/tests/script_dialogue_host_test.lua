@@ -354,32 +354,29 @@ end
 -- The generated floor-label bank the department store floor text reads
 -- (src/message_format.c::BufferDeptStoreFloorNo): msg_0191_00116..00121 are
 -- 1F..6F, 00122 is the basement label, and 00125 the roof label.
-local function floorLabelBankArtifact()
+local function floorLabelBankMessages()
   local labels = { [122] = "B1F", [125] = "ROOF" }
   for floor = 1, 6 do
     labels[115 + floor] = floor .. "F"
   end
   local messages = {}
-  for messageId, text in pairs(labels) do
-    messages[messageId] = { id = messageId, raw = {}, text = text, tokens = glyphTokensFor(text) }
+  for index = 1, 126 do
+    messages[index] = { FIELD.eos() }
   end
-  return {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = 191,
-    messageCount = 126,
-    source = { narc = "NARC_msgdata_msg", memberId = 191, memberSha1 = "synthetic" },
-    messages = messages,
-  }
+  for messageId, text in pairs(labels) do
+    messages[messageId + 1] = glyphTokensFor(text)
+  end
+  return messages
 end
 
 -- A department store floor buffer reads the storey's own label: floor 0 is the
 -- basement message, floors 1..6 are the 1F..6F messages, and a floor outside
 -- that source table is an attributed fault instead of an unrelated read.
 function T.department_store_floor_label_resolves_the_source_storey_messages()
-  local provider = assert(FieldMessageProvider.new(cacheWith({
-    [542] = bankArtifact(542),
-    [191] = floorLabelBankArtifact(),
-  })))
+  local provider = assert(FieldMessageFixture.provider({
+    [542] = substitutionBankMessages(),
+    [191] = floorLabelBankMessages(),
+  }))
   local h = host({ provider = provider })
   local function floorText(floor)
     h:openMessage({})

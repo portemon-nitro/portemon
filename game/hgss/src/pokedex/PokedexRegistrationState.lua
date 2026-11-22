@@ -40,7 +40,7 @@ PokedexRegistrationState.__index = PokedexRegistrationState
 -- The source post-text wait is thirty main-task updates at thirty hertz;
 -- the borrowed battle timeline counts sixty internal ticks per second.
 local SOURCE_STEP = 1 / 30
-local ANNOUNCE_HOLD_TICKS = 60
+local ANNOUNCE_HOLD_TICKS = 30
 local FADE_MAX = 16
 local FADE_STEP = 2
 local BANNER_HOLD = 7
@@ -117,6 +117,7 @@ local function cardObjects(self, shown)
       subject = "type-1",
       choice = types[1],
       pane = "information",
+      priority = 0,
       x = 168,
       y = 72,
       age = self._spriteTick,
@@ -127,6 +128,7 @@ local function cardObjects(self, shown)
         subject = "type-2",
         choice = types[2],
         pane = "information",
+        priority = 0,
         x = 217,
         y = 72,
         age = self._spriteTick,
@@ -141,6 +143,7 @@ local function cardObjects(self, shown)
         subject = "footprint",
         choice = specimen.species,
         pane = "information",
+        priority = 0,
         x = 120,
         y = 80,
         age = self._spriteTick,
@@ -189,7 +192,9 @@ local function buildDemand(self)
         { role = "registration.species-name", kind = "species_name", species = species, language = "native" },
         { role = "registration.category", kind = "category", species = species, language = "native" },
         { role = "registration.flavor", kind = "flavor", species = species, language = "native" },
+        { role = "registration.mark-height", kind = "ui", messageId = 10, language = "native" },
         { role = "registration.height", kind = "height", species = species },
+        { role = "registration.mark-weight", kind = "ui", messageId = 11, language = "native" },
         { role = "registration.weight", kind = "weight", species = species },
       },
     },
@@ -397,7 +402,6 @@ local function completeCard(self)
     self._picture = fadeInit(0, 0, false)
     self._pictureX = CARD_PICTURE_X
     self._spritesHidden = false
-    self._banner = 0
   end
   self._dismissible = false
   self._dismissRequested = false
@@ -405,8 +409,22 @@ local function completeCard(self)
   self._phase = "complete"
 end
 
+-- The banner strip free-runs for the whole popup lifetime: palette 7 from
+-- the 16th source update and back to palette 0 on the 32nd, looping.
+---@param self PokedexRegistrationState
+local function stepBanner(self)
+  self._bannerTimer = self._bannerTimer + 1
+  if self._bannerTimer == BANNER_TIMER_FIRST then
+    self._banner = BANNER_HOLD
+  elseif self._bannerTimer == BANNER_TIMER_DEPART then
+    self._banner = 0
+    self._bannerTimer = 0
+  end
+end
+
 ---@param self PokedexRegistrationState
 local function stepSource(self)
+  stepBanner(self)
   if self._phase == "announcement" then
     local okSettled, settled = pcall(self._timeline.settled, self._timeline)
     if okSettled and settled == true then
@@ -449,14 +467,10 @@ local function stepSource(self)
       self._error = "the registration cry failed: " .. tostring(playErr)
       return
     end
-    self._bannerTimer = 0
-    self._banner = 0
     self._phase = "readyCard"
     return
   end
   if self._phase == "readyCard" then
-    -- The banner belongs to the ready card after the cry releases it:
-    -- no palette animation advances while the cry is unfinished.
     local audio = self._audio --[[@as table<string, unknown>]]
     local finished = audio.isCryFinished --[[@as fun(): boolean]]
     local okCry, cryDone = pcall(finished)
@@ -466,18 +480,6 @@ local function stepSource(self)
     end
     if cryDone == true then
       self._dismissible = true
-    end
-    if self._dismissible then
-      self._bannerTimer = self._bannerTimer + 1
-      if self._bannerTimer == BANNER_TIMER_FIRST then
-        self._banner = BANNER_HOLD
-      end
-      -- The banner timer is purely palette animation: palette7 from
-      -- timer16 resets to palette0 at timer32 while the card still waits
-      -- for a latched fresh dismissal.
-      if self._bannerTimer == BANNER_TIMER_DEPART then
-        self._banner = 0
-      end
     end
     if self._dismissRequested and self._dismissible then
       startDeparture(self)
@@ -519,7 +521,7 @@ function PokedexRegistrationState:updateFixed(dt)
     return
   end
   assert(type(dt) == "number" and dt == dt and dt >= 0, "registration updates take accepted seconds")
-  if self._complete or self._error ~= nil then
+  if self._error ~= nil then
     return
   end
   if self._phase == "preparing" then
@@ -565,8 +567,12 @@ function PokedexRegistrationState:updateFixed(dt)
       self._accumulator = 0
     end
     self._spriteTick = self._spriteTick + 1
-    stepSource(self)
-    if self._complete or self._error ~= nil then
+    if self._complete then
+      stepBanner(self)
+    else
+      stepSource(self)
+    end
+    if self._error ~= nil then
       self._accumulator = 0
       break
     end
@@ -576,9 +582,8 @@ end
 
 -- Maps one raw batch through the current plan, then consumes card edges:
 -- fresh confirmation or touch dismisses the ready card, cancellation never
--- does, and every other edge falls away. During the announcement,
--- confirmation accelerates the borrowed reveal without skipping its timed
--- hold; an early edge never crosses into dismissal.
+-- does, and every other edge falls away. An early edge never crosses into
+-- dismissal.
 ---@param events table<integer, table<string, unknown>> raw fixed-tick batch
 function PokedexRegistrationState:input(events)
   if self._disposed or self._complete or self._error ~= nil then
@@ -599,8 +604,6 @@ function PokedexRegistrationState:input(events)
       if kind == "confirm" or kind == "touch_new" then
         if self._phase == "readyCard" and self._dismissible then
           self._dismissRequested = true
-        elseif self._phase == "announcement" and self._announced then
-          pcall(self._timeline.ack, self._timeline)
         end
       end
     end

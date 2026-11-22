@@ -4,6 +4,7 @@
 -- second coverage copy.
 
 local Assert = require("tests.support.Assert")
+local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
 local Coverage = require("romdump.src.digest.script.Coverage")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCacheBuildFixture = require("tests.support.ScriptCacheBuildFixture")
@@ -26,19 +27,37 @@ local function supportedMemberBytes()
   })
 end
 
--- SetTrainerFlag stays an explicit unsupported node, so the aggregate report
--- has one unsupported instruction to account for.
-local function partiallySupportedMemberBytes()
+-- The catalog decides which commands are still unsupported, so a command that
+-- gains real lowering leaves this fixture instead of invalidating a frozen
+-- opcode: the lowest fixed-width unsupported command is the one unsupported
+-- instruction the aggregate report must account for.
+local function unsupportedOpcode()
+  local chosen = nil
+  for opcode in pairs(CommandCatalog.NAMES) do
+    if
+      not CommandCatalog.SUPPORTED[opcode]
+      and CommandCatalog.widths(opcode) ~= nil
+      and CommandCatalog.variants(opcode) == nil
+      and (chosen == nil or opcode < chosen)
+    then
+      chosen = opcode
+    end
+  end
+  return assert(chosen, "the catalog still leaves a fixed-width command unsupported")
+end
+
+local function partiallySupportedMemberBytes(opcode)
+  local args = {}
+  for _, width in ipairs(assert(CommandCatalog.widths(opcode))) do
+    args[#args + 1] = { value = 0, width = width }
+  end
   return ScriptFixture.member({
     scripts = {
       {
         offset = 0x20,
-        instructions = {
-          { op = 36, args = { { value = 1, width = 2 }, { value = 2, width = 2 } } },
-          { op = 2, args = {} },
-        },
+        instructions = { { op = opcode, args = args }, { op = 2, args = {} } },
       },
-      { offset = 0x2C, instructions = { { op = 2, args = {} } } },
+      { offset = 0x60, instructions = { { op = 2, args = {} } } },
     },
   })
 end
@@ -93,7 +112,8 @@ local function publishedScripts(cache)
 end
 
 function T.one_aggregate_report_matches_the_verifier_totals()
-  local romFs = ScriptCacheBuildFixture.romFs({ supportedMemberBytes(), partiallySupportedMemberBytes() })
+  local opcode = unsupportedOpcode()
+  local romFs = ScriptCacheBuildFixture.romFs({ supportedMemberBytes(), partiallySupportedMemberBytes(opcode) })
   local plan, cache, compiled =
     ScriptCacheBuildFixture.publishGeneration(romFs, GENERATION, OUTER_GENERATION, "coverage-report")
   Assert.equal(#plan.members, 2, "both members compile as independent jobs")
@@ -120,7 +140,8 @@ function T.one_aggregate_report_matches_the_verifier_totals()
   Assert.equal(metrics["Unsupported instructions"], expected.totals.unsupportedInstructions)
   Assert.equal(metrics["Malformed instructions"], expected.totals.malformedInstructions)
   Assert.equal(metrics["Unsupported instructions"], 1, "the unsupported fixture instruction is reported once")
-  Assert.isTrue(markdown:find("SetTrainerFlag", 1, true) ~= nil, "the report keeps unsupported opcode detail")
+  local opcodeName = CommandCatalog.name(opcode):gsub("^ScrCmd_", "")
+  Assert.isTrue(markdown:find(opcodeName, 1, true) ~= nil, "the report keeps unsupported opcode detail")
 
   local scripts = publishedScripts(cache)
   Assert.equal(#scripts, 4, "the generation publishes every source script body")

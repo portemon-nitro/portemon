@@ -8,12 +8,9 @@
 
 local Assert = require("tests.support.Assert")
 local BagSave = require("libs.hgss.src.save.BagSave")
-local CacheFs = require("libs.storage.src.CacheFs")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
-local FakeCache = require("tests.support.FakeCache")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
-local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
-local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
+local FieldMessageFixture = require("tests.support.FieldMessageFixture")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local FieldScriptSliceFixture = require("tests.support.FieldScriptSliceFixture")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
@@ -66,26 +63,23 @@ end
 -- The naming screen's own generated message bank: the source reads the
 -- selected edition's FIRST_DEFAULT_NAME_RIVAL row from bank 254 when the
 -- player commits an empty name (msg_0254_00084 under HeartGold). The provider
--- is the real one over a fake cache, so the task's default travels the same
+-- is the real one over a compact fixture bank, so the task's default travels the same
 -- generated-text path dialogue does.
 ---@param rivalDefaultText string the bank's rival default-name row
 ---@return FieldMessageProvider
 local function namingMessageProvider(rivalDefaultText)
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:writeLua(FieldMessageCache.bankPath(254), {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = 254,
-    messageCount = 91,
-    messages = {
-      [84] = {
-        id = 84,
-        raw = { 0xFFFF },
-        text = rivalDefaultText,
-        tokens = { { kind = "eos", raw = { 0xFFFF } } },
-      },
-    },
-  })
-  return FieldMessageProvider.new(cache)
+  local messages = {}
+  for index = 1, 91 do
+    messages[index] = { FieldMessageFixture.eos() }
+  end
+  local name = {}
+  for index = 1, #rivalDefaultText do
+    local char = rivalDefaultText:sub(index, index)
+    name[index] = FieldMessageFixture.glyph(0x0100 + char:byte(), char)
+  end
+  name[#name + 1] = FieldMessageFixture.eos()
+  messages[85] = name
+  return FieldMessageFixture.provider({ [254] = messages })
 end
 
 local SAVE_CONTEXT = { charmap = CatalogFixture.CHARMAP, frameIndexes = { [0] = true } }
@@ -1022,23 +1016,13 @@ local function floorWindowMessageSource()
   end
   local fontDef = { charmap = charmap }
   local messages = {}
-  for messageId, text in pairs(FLOOR_WINDOW_MESSAGES) do
-    messages[messageId] = {
-      id = messageId,
-      raw = {},
-      text = text,
-      tokens = FieldMessageText.parse(text, fontDef, { eos = true }),
-    }
+  for index = 1, 126 do
+    messages[index] = { FieldMessageFixture.eos() }
   end
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:writeLua(FieldMessageCache.bankPath(191), {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = 191,
-    messageCount = 126,
-    source = { narc = "NARC_msgdata_msg", memberId = 191, memberSha1 = "synthetic" },
-    messages = messages,
-  })
-  return FieldMessageProvider.new(cache), fontDef
+  for messageId, text in pairs(FLOOR_WINDOW_MESSAGES) do
+    messages[messageId + 1] = FieldMessageText.parse(text, fontDef, { eos = true })
+  end
+  return FieldMessageFixture.provider({ [191] = messages }), fontDef
 end
 
 -- A composed floor-window slice shows the source window through the composed

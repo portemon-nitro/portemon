@@ -85,9 +85,9 @@ end
 ---@param controller table browser under test
 ---@param species string entry to open through the grid
 local function openForms(controller, species)
-  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 64 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 240 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 40 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 40 } })
   idle(controller, 40)
   Assert.equal(controller:view().page, "grid", "the cover drag reaches the grid before the entry")
   local entries = controller:view().grid.buffers[1].entries
@@ -453,6 +453,56 @@ function T.wide_comparison_reports_each_real_change()
   Assert.equal(forms:comparison().activeSide, 1, "the switch moves the active side")
   Assert.isTrue(forms:cycle(1, -1), "stepping the other side reports its change")
   Assert.deepEqual(forms:comparison().indices, { 2, 0 }, "the other step advances past the first index")
+end
+
+-- A species with no dex history still lists what the source declares: an
+-- automatic family lists every declared form, and an ordinary species lists
+-- one genderless row instead of inventing a ratio gender.
+function T.historyless_species_list_their_declared_forms()
+  local monCatalog, catalog = catalogs()
+  local owner = enabledOwner(monCatalog, catalog)
+  local castform = PokedexForms.new({ catalog = catalog, dex = owner, species = "CASTFORM" })
+  Assert.deepEqual(variantForms(castform:variants()), { 0, 1, 2, 3 }, "castform lists four rows before any sighting")
+  local cherrim = PokedexForms.new({ catalog = catalog, dex = owner, species = "CHERRIM" })
+  Assert.deepEqual(variantForms(cherrim:variants()), { 0, 1 }, "cherrim lists two rows before any sighting")
+  local chikorita = PokedexForms.new({ catalog = catalog, dex = owner, species = "CHIKORITA" })
+  Assert.equal(chikorita:count(), 1, "an unobserved ordinary species lists one row")
+  Assert.equal(chikorita:variants()[1].gender, "genderless", "the historyless row is genderless")
+end
+
+-- Seen history drives the rows without reinterpreting the ratio: an ordinary
+-- species caps at its two seen genders, a genderless-ratio species never
+-- invents one, and an automatic family carries the first seen gender.
+function T.seen_history_caps_rows_and_keeps_the_first_seen_gender()
+  local monCatalog, catalog = catalogs()
+  local owner = enabledOwner(monCatalog, catalog)
+  record(owner, monCatalog, "CHIKORITA", 0, 0, "seen")
+  record(owner, monCatalog, "CHIKORITA", 31, 0, "seen")
+  record(owner, monCatalog, "SHEDINJA", 4294967295, 0)
+  record(owner, monCatalog, "CASTFORM", 0, 2, "seen")
+  record(owner, monCatalog, "CASTFORM", 31, 1, "seen")
+  local dimorphic = PokedexForms.new({ catalog = catalog, dex = owner, species = "CHIKORITA" })
+  Assert.equal(dimorphic:count(), 2, "an ordinary species caps at its two seen genders")
+  local genderless = PokedexForms.new({ catalog = catalog, dex = owner, species = "SHEDINJA" })
+  Assert.equal(genderless:count(), 1, "a genderless-ratio species lists one row")
+  Assert.equal(genderless:variants()[1].gender, "genderless", "the genderless row never invents a ratio gender")
+  local automatic = PokedexForms.new({ catalog = catalog, dex = owner, species = "CASTFORM" })
+  for _, variant in ipairs(automatic:variants()) do
+    Assert.equal(variant.gender, "female", "every automatic row keeps the first seen gender")
+  end
+end
+
+function T.first_picture_facts_keep_the_first_seen_variant()
+  local monCatalog, catalog = catalogs()
+  local owner = enabledOwner(monCatalog, catalog)
+  record(owner, monCatalog, "UNOWN", 0, 5, "seen")
+  record(owner, monCatalog, "UNOWN", 0, 0, "seen")
+  record(owner, monCatalog, "UNOWN", 0, 13, "seen")
+  local forms = PokedexForms.new({ catalog = catalog, dex = owner, species = "UNOWN" })
+  Assert.equal(forms:firstPictureFacts().form, 5, "the first picture uses seen-form index 0")
+  Assert.isTrue(forms:goRow(2), "the cursor moves through the rows")
+  Assert.equal(forms:currentPictureFacts().form, 13, "the current picture follows the cursor")
+  Assert.equal(forms:firstPictureFacts().form, 5, "the first picture stays on index 0")
 end
 
 return { tests = T }

@@ -51,6 +51,30 @@ function T.wild_context_folds_battle_terrain_and_clock_into_fallback_axes()
   Assert.equal(cave.timeOfDay, "late", "night reads late")
 end
 
+-- Source SetupAndStartTutorialBattle selects its effect and music through
+-- the wild rules over the lesson's fixed enemy party.
+function T.tutorial_context_selects_through_the_wild_rules_for_its_lesson_foe()
+  local coordinator = setmetatable({
+    runtime = { playerData = { profile = { gender = 1 } } },
+  }, FieldBattleCoordinator)
+  local context = coordinator:_captureTransitionContext({
+    kind = "tutorial",
+    payload = {},
+  }, { terrain = "grass", time = "day", hour = 12 })
+
+  Assert.deepEqual(context, {
+    kind = "wild",
+    wildSpecies = "RATTATA",
+    doubleBattle = false,
+    specialBattle = false,
+    alternateTransition = false,
+    wildSetupFallback = false,
+    terrain = "plain",
+    timeOfDay = "day",
+    playerGender = "female",
+  })
+end
+
 function T.trainer_context_reads_class_without_materializing_party()
   local catalog = HgssTrainerCatalog.new({
     trainers = {

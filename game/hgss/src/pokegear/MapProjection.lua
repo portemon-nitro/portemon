@@ -2,7 +2,8 @@
 -- source coordinate roles of the current field map (outdoor world position
 -- divided by thirty-two, explicit header coordinates, the tabled special
 -- locations, or the last exterior fallback). The cell carries no row
--- offset; the map world view adds the source's two rows. Pure domain
+-- offset; the map world view adds the source's two rows. Map pages that must
+-- open use the anchored projection over the same roles. Pure domain
 -- module: no love dependency.
 
 ---@class MapProjection
@@ -54,6 +55,31 @@ function MapProjection.contextCell(input)
     x = math.floor(input.matrixX / MATRIX_DIVISOR),
     y = math.floor(input.matrixY / MATRIX_DIVISOR),
   }
+end
+
+-- Resolves the cell a player-facing map page opens on from the normalized
+-- map context: the same projection as contextCell, except that a
+-- zero-coordinate context without exterior or special evidence anchors on
+-- its own normalized cell. Such a map proves no cell, so a page that must
+-- still open shows its anchor instead of refusing the page; callers that
+-- must refuse the unprovable position decide that before projecting.
+---@param context { matrixX: number, matrixY: number, explicitX: integer?, explicitY: integer?, lastExterior: { x: number, y: number }?, specialSpawn: { x: number, y: number }?, specialMode: string? }
+---@return { x: integer, y: integer }
+function MapProjection.openCell(context)
+  assert(type(context) == "table", "map pages project their normalized context")
+  local explicitX, explicitY = context.explicitX, context.explicitY
+  if explicitX == 0 and explicitY == 0 and context.lastExterior == nil and context.specialSpawn == nil then
+    explicitX, explicitY = nil, nil
+  end
+  return MapProjection.contextCell({
+    matrixX = context.matrixX,
+    matrixY = context.matrixY,
+    explicitX = explicitX,
+    explicitY = explicitY,
+    lastExterior = context.lastExterior,
+    specialSpawn = context.specialSpawn,
+    special = context.specialMode,
+  })
 end
 
 return MapProjection

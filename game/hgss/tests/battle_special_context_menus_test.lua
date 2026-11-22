@@ -12,8 +12,12 @@
 
 local Assert = require("tests.support.Assert")
 local BattleScreenState = require("game.hgss.tests.support.BattleScreenFixture")
+local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
+local FakeGraphics = require("tests.support.FakeGraphics")
+local ItemFixture = require("libs.items.tests.item_fixture")
 local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 local T = {}
 local TICK = 1 / 60
@@ -34,6 +38,12 @@ local function stubAssets()
     return assets.images[key]
   end
   function assets.release(_) end
+  -- Composition frames drain through the recording boundary so drawn
+  -- content stays observable without a GPU.
+  function assets.renderPictures(_, drawGraphics, frame)
+    CompositionFrameDrain.drain(drawGraphics, frame)
+    return { handle = "picture-composite" }
+  end
   return assets
 end
 
@@ -51,7 +61,7 @@ end
 
 ---@return table recording window boundary
 local function recordingWindows()
-  local windows = { calls = {} }
+  local windows = { calls = {}, background = { 0, 0, 0, 1 } }
   function windows.drawWindow(box, frameKey, background)
     windows.calls[#windows.calls + 1] = { box = box, frame = frameKey, background = background }
   end
@@ -85,15 +95,21 @@ local function openScreen(launchId)
     audio.plays[#audio.plays + 1] = name
     return true
   end
+  local submitted = {}
   local screen = BattleScreenState.new({
     splRandomState = { state = 0 },
     launchId = launchId,
-    manifest = ManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" }, { "ball:POKE_BALL" }),
+    manifest = ManifestFixture.launchView(
+      { "back:PKMN_TRAINER_ETHAN", "back:PKMN_TRAINER_LYRA", "front:YOUNGSTER" },
+      { "ball:POKE_BALL" }
+    ),
     model = {},
-    submit = function(_)
+    submit = function(reply)
+      submitted[#submitted + 1] = reply
       return true
     end,
     measureDisplay = compactMeasurement,
+    itemCatalog = ItemFixture.makeCatalog(),
     assets = stubAssets(),
     text = recordingText(),
     windows = recordingWindows(),
@@ -104,7 +120,7 @@ local function openScreen(launchId)
   for _ = 1, 10 do
     screen:updateFixed(TICK)
   end
-  return { screen = screen, port = screen:presentationPort(), launchId = launchId }
+  return { screen = screen, port = screen:presentationPort(), launchId = launchId, submitted = submitted }
 end
 
 ---@param combatant integer stable battler identity
@@ -137,19 +153,23 @@ end
 
 ---@param fixture table open screen fixture
 ---@param choices table[] detached command choices for the acting lead
-local function presentCommandPacket(fixture, choices)
+---@param packetId integer? packet and request sequence, defaulting to the first
+local function presentCommandPacket(fixture, choices, packetId)
+  local sequence = packetId or 1
   local view = {
     own = { battlerRecord(1, 1, "EEVEE", "LEADA", "EEVEE/0/male/plain/back") },
     foes = { battlerRecord(3, 2, "RATTATA", "FOEX", "RATTATA/0/male/plain/front") },
+    playerName = "ETHAN",
+    playerTrainer = { classKey = "PKMN_TRAINER_ETHAN", name = "ETHAN" },
   }
   fixture.port.present({
     launchId = fixture.launchId,
-    packetId = 1,
+    packetId = sequence,
     events = {},
     before = view,
     after = view,
     request = {
-      requestId = 7,
+      requestId = 6 + sequence,
       epoch = 1,
       controller = "player",
       actors = { { combatant = 1, activation = 1, kind = "command" } },
@@ -214,9 +234,13 @@ local function ordinaryChoices()
       id = "move:0",
       enabled = true,
       display = { name = "TACKLE", pp = 35, maxPp = 35, type = "NORMAL" },
-      choice = { kind = "attack", payload = {} },
+      choice = { kind = "attack", actor = { combatant = 1, activation = 1 }, payload = {} },
     },
-    { role = "run", enabled = true, choice = { kind = "run", payload = {} } },
+    {
+      role = "run",
+      enabled = true,
+      choice = { kind = "run", actor = { combatant = 1, activation = 1 }, payload = {} },
+    },
   }
 end
 
@@ -319,6 +343,109 @@ function T.scripted_tutorial_marker_reaches_the_lesson_surface()
   Assert.isTrue(ids.pokemon == nil, "the lesson never offers party selection")
   Assert.isTrue(ids.run == nil, "the lesson never offers flight")
   fixture.screen:dispose()
+end
+
+-- The lesson finger plays the scripted commands for the player's friend
+-- (battle_input.c BattleInput_CatchingTutorialMain): it touches FIGHT and
+-- then the first move on the first turn, and BAG on the next after the
+-- lesson prompt (battle_controller_opponent.c msg_0197_01226 plus the
+-- author's gender, the player's opposite). Each touch lands 76 ticks after
+-- the finger arms, and the BAG finger arms 61 ticks after the menu opens.
+-- The lesson never reads the player's menu input.
+function T.scripted_tutorial_finger_plays_the_lesson_commands()
+  local fixture = openScreen("special-context-tutorial-finger")
+  Assert.isTrue(
+    fixture.port.enter({ launchId = fixture.launchId, kind = "scripted", tutorial = true }),
+    "setup: the marked scripted launch enters"
+  )
+  presentCommandPacket(fixture, ordinaryChoices())
+  driveToCommand(fixture, "tutorial-finger")
+  local screen = fixture.screen
+  -- The friend fights the lesson (BattleSetup_New_Tutorial): the player
+  -- side takes the opposite trainer and the gender-selected author name.
+  Assert.deepEqual(
+    screen:view().playerTrainer,
+    { classKey = "PKMN_TRAINER_LYRA", name = "LYRA" },
+    "the lesson author stands on the player side"
+  )
+  local opened = 0
+  while not screen:view().menuInputEnabled do
+    screen:updateFixed(SourceTick.DT)
+    opened = opened + 1
+    Assert.isTrue(opened < 30, "setup: the command menu opens")
+  end
+  Assert.deepEqual(
+    screen:view().tutorialFinger,
+    { id = "fight", x = 128, y = 59, dy = 0 },
+    "the finger arms over FIGHT"
+  )
+  local graphics = FakeGraphics.new({})
+  screen:draw({ graphics = graphics })
+  local drawnFinger = false
+  for _, drawn in ipairs(graphics.draws) do
+    if type(drawn.image) == "table" and drawn.image.handle == "battle:finger" then
+      drawnFinger = true
+    end
+  end
+  Assert.isTrue(drawnFinger, "the compact command dock draws the lesson finger")
+  local function holdFor(ticks, mode, what)
+    for _ = 1, ticks do
+      screen:input({ { type = "navigate", direction = "down" }, { type = "cancel" }, { type = "confirm" } })
+      Assert.equal(screen:status().mode, mode, what)
+      screen:updateFixed(SourceTick.DT)
+    end
+  end
+  holdFor(75, "command", "the finger owns FIGHT until its touch")
+  local pressed = 0
+  while screen:status().mode == "command" do
+    screen:updateFixed(SourceTick.DT)
+    pressed = pressed + 1
+    Assert.isTrue(pressed < 10, "the finger touches FIGHT")
+  end
+  Assert.equal(screen:status().mode, "moves", "the touch opens the move menu")
+  while not screen:view().menuInputEnabled do
+    screen:updateFixed(SourceTick.DT)
+  end
+  Assert.deepEqual(
+    screen:view().tutorialFinger,
+    { id = "move:0", x = 64, y = 21, dy = 0 },
+    "the finger arms over the first move"
+  )
+  holdFor(75, "moves", "the finger owns the move menu until its touch")
+  pressed = 0
+  while #fixture.submitted == 0 do
+    screen:updateFixed(SourceTick.DT)
+    pressed = pressed + 1
+    Assert.isTrue(pressed < 10, "the finger touches the first move")
+  end
+  Assert.equal(fixture.submitted[1].choices[1].kind, "attack", "the first turn seals the lesson attack")
+
+  presentCommandPacket(fixture, ordinaryChoices(), 2)
+  local prompted = nil
+  for _ = 1, DRIVE_BUDGET do
+    screen:updateFixed(SourceTick.DT)
+    if screen:status().mode == "command" and screen:view().menuInputEnabled then
+      break
+    end
+    local message = screen:view().message
+    if type(message) == "string" and message:find("Poké Ball", 1, true) then
+      prompted = message
+    end
+  end
+  Assert.equal(prompted, "OK! Its HP is down!\nIt’s ready for a Poké Ball!", "the lesson prompt names its author")
+  Assert.isNil(screen:view().tutorialFinger, "the BAG finger waits before arming")
+  holdFor(61, "command", "the BAG finger waits out its lead")
+  Assert.deepEqual(screen:view().tutorialFinger, { id = "bag", x = 40, y = 145, dy = 0 }, "the finger arms over BAG")
+  holdFor(75, "command", "the finger owns BAG until its touch")
+  pressed = 0
+  while screen:status().mode == "command" do
+    screen:updateFixed(SourceTick.DT)
+    pressed = pressed + 1
+    Assert.isTrue(pressed < 10, "the finger touches BAG")
+  end
+  Assert.equal(screen:status().mode, "child", "the touch opens the lesson bag")
+  Assert.equal(screen:view().childView.kind, "bag", "the lesson bag opens")
+  screen:dispose()
 end
 
 -- A frontier-facility presentation keeps its facility restrictions on

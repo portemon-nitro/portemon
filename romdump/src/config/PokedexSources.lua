@@ -85,29 +85,25 @@ PokedexSources.pagePriorities = {
 -- when the dump is not English; `screenNational` stages the
 -- national-mode area variant (NSCR 81) as a separately selectable image
 -- while the default johto variant (NSCR 80) stays referenced.
-local listLayers = {
-  { pane = "controls", layer = 0, char = 1, screen = 0, palette = 2 },
-  { pane = "controls", layer = 2, char = 4, palette = 2 },
-  { pane = "controls", layer = 3, char = 3, palette = 2 },
-  { pane = "information", layer = 0, char = 17, screen = 16, palette = 18 },
-  { pane = "information", layer = 3, char = 19, screen = 20, screenJapanese = 21, palette = 18 },
+local numberStripCells = {
+  { screen = 10, x = 0, y = 0 },
+  { screen = 10, x = 0, y = 5 },
+  { screen = 10, x = 0, y = 10 },
+  { screen = 10, x = 0, y = 15 },
+  { screen = 10, x = 0, y = 20 },
 }
 
--- Grid depicts the scrolled entry-view state, not the list-browse state the
--- loader leaves behind. SUB BG0 is a 512-wide map carrying art on its left
--- half only; the list/entry sequences scroll MAIN BG0 and SUB BG0 together
--- to X=256 on entry (open/resume and list-to-entry slides) and back to X=0
--- on return to the list. At X=256 SUB BG0 shows its cleared half (clear
--- fill tile 0 of the loaded character data is fully blank), so the SUB BG1
--- header windows stay visible; at X=0 the dial art covers them at priority
--- 0. The grid information pane therefore binds no layer-0 composition while
--- the windowless cover keeps the loaded art.
-local gridLayers = {
-  { pane = "controls", layer = 0, char = 1, screen = 0, palette = 2 },
-  { pane = "controls", layer = 2, char = 4, palette = 2 },
-  { pane = "controls", layer = 3, char = 3, palette = 2 },
-  { pane = "information", layer = 3, char = 19, screen = 20, screenJapanese = 21, palette = 18 },
-}
+---@param buttonCells table[] MAIN2 bottom-strip cells behind one list page
+---@return table[] page layers binding the shared 512-wide scroll plane
+local function listLayers(buttonCells)
+  return {
+    { pane = "controls", layer = 0, char = 1, screen = 0, palette = 2, scroll = "cover" },
+    { pane = "controls", layer = 2, char = 4, palette = 2, cells = buttonCells },
+    { pane = "controls", layer = 3, char = 3, palette = 2, cells = numberStripCells },
+    { pane = "information", layer = 0, char = 17, screen = 16, palette = 18, scroll = "cover" },
+    { pane = "information", layer = 3, char = 19, screen = 20, screenJapanese = 21, palette = 18 },
+  }
+end
 
 local searchBaseLayers = {
   { pane = "controls", layer = 1, char = 4, palette = 2 },
@@ -129,9 +125,9 @@ local function searchLayers(screenMember)
 end
 
 PokedexSources.pageLayers = {
-  cover = listLayers,
-  grid = gridLayers,
-  results = listLayers,
+  cover = listLayers({ { screen = 5, x = 0, y = 19 } }),
+  grid = listLayers({ { screen = 9, x = 0, y = 15 }, { screen = 6, x = 0, y = 19 } }),
+  results = listLayers({ { screen = 9, x = 0, y = 15 }, { screen = 71, x = 0, y = 19 } }),
   ["search.criteria"] = searchLayers(57),
   ["search.order"] = searchLayers(62),
   ["search.name"] = searchLayers(63),
@@ -144,7 +140,7 @@ PokedexSources.pageLayers = {
     { pane = "controls", layer = 0, char = 83, screen = 80, screenNational = 81, palette = 2 },
     { pane = "controls", layer = 1, char = 4, palette = 2 },
     { pane = "controls", layer = 3, char = 83, screen = 82, palette = 2 },
-    { pane = "information", layer = 0, char = 87, screen = 86, palette = 18 },
+    { pane = "information", layer = 0, char = 87, screen = 86, palette = 18, scroll = "areaPan" },
     { pane = "information", layer = 3, char = 85, screen = 84, palette = 18 },
   },
   ["entry.size"] = {
@@ -283,9 +279,35 @@ for slot = 0, 13 do
   }
 end
 
+local listTrack = {
+  [5] = { x = 242, y = 76, pane = "controls" },
+}
+local searchTrack = { [14] = listTrack }
+
 PokedexSources.spriteAnchors = {
+  grid = searchTrack,
+  results = searchTrack,
+  ["search.criteria"] = searchTrack,
+  ["search.order"] = searchTrack,
+  ["search.name"] = searchTrack,
+  ["search.type"] = searchTrack,
+  ["search.height"] = searchTrack,
+  ["search.weight"] = searchTrack,
+  ["search.area"] = searchTrack,
+  ["entry.area"] = {
+    [14] = {
+      [27] = { x = 32, y = 108, pane = "controls" },
+      [64] = { x = 242, y = 96, pane = "controls" },
+    },
+  },
+  ["entry.forms"] = {
+    [14] = {
+      [64] = { x = 242, y = 64, pane = "controls" },
+    },
+  },
   ["search.shape"] = {
     [74] = shapeAnchors,
+    [14] = listTrack,
   },
   registration = {
     [31] = {
@@ -328,8 +350,8 @@ PokedexSources.typeIconArt = {
 -- with animations 107 for both). Member ids stop here and never reach
 -- the runtime.
 PokedexSources.trainerArt = {
-  male = { char = 105, palette = 108 },
-  female = { char = 109, palette = 110 },
+  male = { char = 105, palette = 108, standingChar = 111, standingCells = 112, standingAnims = 113 },
+  female = { char = 109, palette = 110, standingChar = 114, standingCells = 112, standingAnims = 113 },
 }
 
 -- Producer-only OBJ character palettes: the tile grids backing cell art
@@ -346,11 +368,109 @@ PokedexSources.objPalettes = {
   [76] = 75,
   [77] = 75,
   [105] = 108,
-  [109] = 108,
-  [111] = 110,
+  [109] = 110,
+  [111] = 108,
   [114] = 110,
   [115] = 118,
-  [119] = 118,
+  [119] = 122,
+}
+
+-- Source sprite palette banks per page animation member. `default` is the
+-- sequence bank, and numeric keys override individual sequences (the exact
+-- `template->pal` / explicit `SetPaletteOverride` slot for that family).
+PokedexSources.spriteBanks = {
+  cover = {},
+  grid = { [14] = { default = 1, [2] = 0, [4] = 4 } },
+  results = { [14] = { default = 1, [2] = 0, [4] = 4 } },
+  ["search.criteria"] = { [14] = { default = 0 } },
+  ["search.order"] = { [14] = { default = 0 } },
+  ["search.name"] = { [14] = { default = 0 } },
+  ["search.type"] = { [14] = { default = 0 } },
+  ["search.height"] = { [14] = { default = 0, [42] = 1, [43] = 1, [54] = 1, [56] = 1, [57] = 1, [59] = 1, [68] = 1, [69] = 1 } },
+  ["search.weight"] = { [14] = { default = 0, [42] = 1, [43] = 1, [54] = 1, [56] = 1, [57] = 1, [59] = 1, [68] = 1, [69] = 1 } },
+  ["search.area"] = { [14] = { default = 0 } },
+  ["search.shape"] = { [14] = { default = 0 }, [74] = { default = 0 } },
+  ["entry.area"] = { [14] = { default = 1, [4] = 4, [27] = 3, [28] = 0 }, [117] = { default = 0 }, [121] = { default = 0 } },
+  ["entry.size"] = { [14] = { default = 1, [4] = 4 }, [113] = { default = 0 } },
+  ["entry.forms"] = { [14] = { default = 1, [4] = 4, [67] = 0 } },
+  ["entry.compare"] = { [14] = { default = 1, [4] = 4, [67] = 0 } },
+  ["entry.return"] = { [14] = { default = 1, [4] = 4 } },
+  registration = { [31] = { default = 0 }, [34] = { default = 0 }, [79] = { default = 0 } },
+}
+
+-- Source OBJ priority (the template's bgPriority) per page animation
+-- member. Origin-anchored and live subjects use their own choice priority.
+PokedexSources.spritePriorities = {
+  cover = {},
+  grid = { [14] = { default = 3, [24] = 0, [25] = 0, [26] = 0 } },
+  results = { [14] = { default = 3, [24] = 0, [25] = 0, [26] = 0 } },
+  ["search.criteria"] = { [14] = { default = 0 }, [25] = { default = 3 }, [74] = { default = 0 } },
+  ["search.order"] = { [14] = { default = 0 }, [25] = { default = 3 } },
+  ["search.name"] = { [14] = { default = 0 }, [25] = { default = 3 } },
+  ["search.type"] = { [14] = { default = 0 }, [25] = { default = 3 } },
+  ["search.height"] = { [14] = { default = 0 }, [25] = { default = 3 } },
+  ["search.weight"] = { [14] = { default = 0 }, [25] = { default = 3 } },
+  ["search.area"] = { [14] = { default = 0 }, [25] = { default = 3 } },
+  ["search.shape"] = { [14] = { default = 0 }, [25] = { default = 3 }, [74] = { default = 0 } },
+  ["entry.area"] = { [14] = { default = 0 }, [117] = { default = 3 }, [121] = { default = 3 } },
+  ["entry.size"] = { [14] = { default = 1, [4] = 0 }, [113] = { default = 1 } },
+  ["entry.forms"] = { [14] = { default = 0 } },
+  ["entry.compare"] = { [14] = { default = 0 } },
+  ["entry.return"] = { [14] = { default = 0 } },
+  registration = { [31] = { default = 0 }, [34] = { default = 0 }, [79] = { default = 0 } },
+}
+
+---@param spec table<integer|string, integer>? bank or priority specification
+---@param sequence integer one-based sequence
+---@return integer bank or priority
+function PokedexSources.spriteSpecValue(spec, sequence)
+  if type(spec) ~= "table" then
+    return 0
+  end
+  local value = spec[sequence]
+  if type(value) == "number" then
+    return value
+  end
+  return type(spec.default) == "number" and spec.default or 0
+end
+
+-- Runtime dex-mode label cells: MAIN0 char member 1 with NSCR 7 (JOHTO)
+-- or NSCR 8 (NATIONAL), a 22x4 cell block drawn at tile (5,3) = (40,24).
+PokedexSources.dexModeLabel = {
+  johto = { char = 1, screen = 7, palette = 2 },
+  national = { char = 1, screen = 8, palette = 2 },
+  x = 40,
+  y = 24,
+  -- Locked national mode erases the switch row of the scroll plane before
+  -- the label cell is drawn: `PokedexApp_LoadListGraphics` fills the
+  -- MAIN0 tilemap rect at tile (3,15) size 26x2 with tile 0x16 keeping
+  -- each cell's palette bits, and `SetupListSprites` hides the switch
+  -- sprite. The compiled patch reproduces that fill from the same char
+  -- member and scroll map.
+  locked = {
+    char = 1,
+    screen = 0,
+    palette = 2,
+    tile = 0x16,
+    tileX = 3,
+    tileY = 15,
+    tilesWide = 26,
+    tilesHigh = 2,
+  },
+}
+
+-- Runtime dex-number glyphs from MAIN3 char member 3 with palette member 2,
+-- palette bank 1: caught digits start at tile 3, seen digits at tile 14,
+-- and the caught marker is tile 2 (PokedexApp_3DigitNumToTiles ORs the
+-- 0x1000 palette bit).
+PokedexSources.numberAtlas = {
+  char = 3,
+  palette = 2,
+  bank = 1,
+  caughtBase = 3,
+  seenBase = 14,
+  marker = 2,
+  digits = 10,
 }
 
 -- Native application/data source archives with their verified HG member
@@ -385,10 +505,9 @@ PokedexSources.habitatBases = { 2, 497, 992, 1487, 1982, 2477, 2972, 3467 }
 
 -- Search mask bits of file 204 member 1 (one byte per species slot).
 PokedexSources.maskBits = {
+  unknown = 0x01,
   johto = 0x02,
   kanto = 0x04,
-  unknown = 0x10,
-  unrestricted = 0x80,
 }
 
 -- Type lists of file 203/343 members 62..78 in source order (mystery has
@@ -470,12 +589,13 @@ PokedexSources.completionExclusions = {
 }
 
 -- Native ordered form families (fixed logical variant IDs). Unown alone
--- persists caught variants; Spinda alone persists its first personality.
+-- persists caught variants. Spinda is an ordinary gender-row species in
+-- the forms screen (pokedex_screen_setup.c has no Spinda form case) but
+-- still persists its first personality for its generated spot picture.
 -- Pichu carries three fixed gender/form variants; additional forms use
 -- ID = form + 1 so unrelated additions never renumber saved variants.
 PokedexSources.orderedPolicies = {
   UNOWN = { capacity = 28, rememberCaughtVariants = true },
-  SPINDA = { capacity = 1, rememberFirstPersonality = true },
   DEOXYS = { capacity = 4 },
   BURMY = { capacity = 3 },
   WORMADAM = { capacity = 3 },
@@ -487,16 +607,22 @@ PokedexSources.orderedPolicies = {
   PICHU = { capacity = 2, gendered = true },
 }
 
--- Native automatic families expose every declared variant once seen and
+-- Native automatic families expose every declared variant unconditionally
+-- (pokedex_screen_setup.c hard-codes Castform = 4 rows, Cherrim = 2) and
 -- persist no automatic form history.
-PokedexSources.automaticFamilies = { CASTFORM = true, CHERRIM = true }
+PokedexSources.automaticFamilies = { CASTFORM = 4, CHERRIM = 2 }
+
+-- Spinda has no form list in the source forms screen but persists the first
+-- personality behind its generated spot picture.
+PokedexSources.personalityFamilies = { SPINDA = true }
 
 -- Fixed Pichu gender/form variants: normal male, normal female, then the
--- spiky form. Additional forms use ID = form + 1.
+-- spiky-eared form, which is always female. Additional forms use
+-- ID = form + 1.
 PokedexSources.pichuVariants = {
   { id = 0, form = 0, gender = "male" },
   { id = 1, form = 0, gender = "female" },
-  { id = 2, form = 1 },
+  { id = 2, form = 1, gender = "female" },
 }
 
 -- Ordinary portrait Y member in a/0/0/5 for a species, facing (0 back,
@@ -578,6 +704,12 @@ function PokedexSources.textBindings(versionId)
     -- (`BufferLandmarkName`): bank 279 by map-section id, falling back
     -- to bank 280 entry 2 when the section id is zero or past the bank.
     landmarks = { bankId = 279, fallbackBankId = 280, fallbackMessageId = 2 },
+    -- The registration card's own banner text (bank 802 entry 144,
+    -- "Pokédex registration completed."); the entry popup prints it
+    -- verbatim and no battle/trainer message supplies it.
+    registrationHeader = { bankId = 802, messageId = 144 },
+    -- The battle line printed before the card (bank 197 entry 871,
+    -- "{name}'s data was added to the Pokédex.").
     registrationAnnouncement = { bankId = 197, messageId = 871 },
   }
 end
@@ -629,6 +761,27 @@ function PokedexSources.searchText()
     timeBase = 129,
     returnCancel = 173,
     returnAction = 174,
+    -- List/result captions and count marks (bank 802 entries 0/1/8/10/11)
+    -- and the two-line search help window (`PokedexApp_DrawSearchMessage`):
+    -- line 1 names the mode or the result page, line 2 the active page's
+    -- instruction, the searching label, or the empty-result notice.
+    list = { seen = 0, caught = 1, info = 8, heightMark = 10, weightMark = 11 },
+    help = {
+      title = 12,
+      criteria = 13,
+      resultsTitle = 14,
+      resultsCount = 15,
+      order = 16,
+      name = 17,
+      type = 18,
+      height = 20,
+      weight = 19,
+      area = 22,
+      shape = 21,
+      searching = 25,
+      noResultsTitle = 23,
+      noResultsDetail = 24,
+    },
   }
 end
 
@@ -839,6 +992,7 @@ function PokedexSources.messageBankIds()
       banks[#banks + 1] = bindings.landmarks.bankId
       banks[#banks + 1] = bindings.landmarks.fallbackBankId
     end
+    banks[#banks + 1] = bindings.registrationHeader.bankId
     banks[#banks + 1] = bindings.registrationAnnouncement.bankId
     for _, bankId in ipairs(banks) do
       if not seen[bankId] then
@@ -893,18 +1047,31 @@ local function dexWindow(pane, layer, x, y, width, height, font, align, paletteS
 end
 
 PokedexSources.windows = {
-  ["grid.seen-count"] = dexWindow("controls", 0, 88, 88, 24, 16, 0, "left", 9),
-  ["grid.caught-count"] = dexWindow("controls", 0, 216, 88, 24, 16, 0, "left", 9),
-  ["grid.selected-number"] = dexWindow("information", 1, 120, 24, 32, 16, 4, "left", 0),
+  ["grid.seen-caption"] = dexWindow("controls", 0, 16, 72, 96, 16, 0, "right", 0),
+  ["grid.caught-caption"] = dexWindow("controls", 0, 144, 72, 96, 16, 0, "right", 0),
+  ["grid.seen-count"] = dexWindow("controls", 0, 88, 92, 24, 16, 0, "left", 9),
+  ["grid.caught-count"] = dexWindow("controls", 0, 216, 92, 24, 16, 0, "left", 9),
+  ["grid.selected-number"] = dexWindow("information", 1, 121, 24, 31, 16, 4, "left", 0),
   ["grid.selected-name"] = dexWindow("information", 1, 152, 24, 72, 16, 4, "left", 0),
+  ["grid.info-label"] = dexWindow("information", 1, 16, 0, 64, 16, 4, "left", 2),
+  ["grid.category"] = dexWindow("information", 1, 104, 40, 140, 16, 4, "right", 0),
+  ["grid.flavor"] = dexWindow("information", 1, 16, 136, 224, 48, 0, "center", 1),
+  ["grid.height-mark"] = dexWindow("information", 1, 144, 88, 40, 16, 0, "center", 2),
+  ["grid.height"] = dexWindow("information", 1, 188, 88, 64, 16, 0, "left", 2),
+  ["grid.weight-mark"] = dexWindow("information", 1, 144, 104, 40, 16, 0, "center", 2),
+  ["grid.weight"] = dexWindow("information", 1, 188, 104, 64, 16, 0, "left", 2),
+  ["grid.name-bar"] = dexWindow("controls", 1, 80, 128, 88, 16, 0, "center", 0),
   ["entry.species-name"] = dexWindow("information", 1, 0, 128, 72, 16, 0, "center", 1),
-  ["entry.dex-number"] = dexWindow("information", 1, 120, 24, 32, 16, 4, "left", 0),
-  ["entry.category"] = dexWindow("information", 1, 104, 40, 144, 16, 4, "right", 0),
-  ["entry.flavor"] = dexWindow("information", 1, 16, 136, 224, 48, 0, "left", 1),
+  ["entry.dex-number"] = dexWindow("information", 1, 121, 24, 31, 16, 4, "left", 0),
+  ["entry.category"] = dexWindow("information", 1, 104, 40, 140, 16, 4, "right", 0),
+  ["entry.flavor"] = dexWindow("information", 1, 16, 136, 224, 48, 0, "center", 1),
   ["entry.height"] = dexWindow("information", 1, 56, 168, 64, 16, 0, "center", 2),
+  -- Compact-inspector-only weight slot (host-adapted; no native list
+  -- window uses this rect, and no native page list paints it).
   ["entry.weight"] = dexWindow("controls", 1, 56, 184, 64, 16, 0, "center", 1),
   ["search.criteria"] = dexWindow("controls", 0, 128, 8, 88, 16, 4, "center", 2),
-  ["search.feedback"] = dexWindow("information", 1, 16, 152, 224, 40, 0, "center", 2),
+  ["search.feedback"] = dexWindow("information", 1, 16, 158, 224, 16, 0, "center", 2),
+  ["search.feedback-detail"] = dexWindow("information", 1, 16, 174, 224, 16, 0, "center", 2),
   ["search.results"] = dexWindow("information", 1, 16, 0, 64, 16, 4, "left", 2),
   ["area.time"] = dexWindow("information", 1, 8, 24, 56, 16, 0, "center", 1),
   ["area.location"] = dexWindow("controls", 2, 80, 40, 144, 16, 4, "center", 1),
@@ -913,14 +1080,15 @@ PokedexSources.windows = {
   ["forms.compare-left"] = dexWindow("controls", 1, 0, 96, 128, 16, 0, "center", 1),
   ["forms.compare-right"] = dexWindow("controls", 1, 128, 96, 128, 16, 0, "center", 1),
   ["return.title"] = dexWindow("information", 1, 16, 0, 72, 16, 4, "left", 2),
-  ["return.action"] = dexWindow("information", 1, 128, 150, 120, 14, 4, "center", 2),
   ["registration.header"] = dexWindow("information", 1, 16, 0, 224, 16, 4, "center", 2),
-  ["registration.dex-number"] = dexWindow("information", 1, 120, 24, 32, 16, 4, "left", 0),
+  ["registration.dex-number"] = dexWindow("information", 1, 121, 24, 31, 16, 4, "left", 0),
   ["registration.species-name"] = dexWindow("information", 1, 152, 24, 72, 16, 4, "left", 0),
-  ["registration.category"] = dexWindow("information", 1, 104, 40, 144, 16, 4, "right", 0),
-  ["registration.flavor"] = dexWindow("information", 1, 16, 136, 224, 48, 0, "left", 1),
-  ["registration.height"] = dexWindow("information", 1, 184, 88, 64, 16, 0, "left", 1),
-  ["registration.weight"] = dexWindow("information", 1, 184, 104, 64, 16, 0, "left", 1),
+  ["registration.category"] = dexWindow("information", 1, 104, 40, 140, 16, 4, "right", 0),
+  ["registration.flavor"] = dexWindow("information", 1, 16, 136, 224, 48, 0, "center", 1),
+  ["registration.mark-height"] = dexWindow("information", 1, 144, 88, 40, 16, 0, "center", 1),
+  ["registration.height"] = dexWindow("information", 1, 188, 88, 64, 16, 0, "left", 1),
+  ["registration.mark-weight"] = dexWindow("information", 1, 144, 104, 40, 16, 0, "center", 1),
+  ["registration.weight"] = dexWindow("information", 1, 188, 104, 64, 16, 0, "left", 1),
 }
 
 -- Source-transcribed text-run windows for the search/entry bindings above.
@@ -958,8 +1126,8 @@ do
   PokedexSources.windows["search.value-type-2"] = dexWindow("controls", 0, 120, 56, 58, 16, 4, "center", 2)
   PokedexSources.windows["search.value-height-min"] = dexWindow("controls", 0, 56, 80, 48, 16, 4, "center", 2)
   PokedexSources.windows["search.value-height-max"] = dexWindow("controls", 0, 120, 80, 48, 16, 4, "center", 2)
-  PokedexSources.windows["search.value-weight-min"] = dexWindow("controls", 0, 56, 104, 48, 16, 4, "center", 2)
-  PokedexSources.windows["search.value-weight-max"] = dexWindow("controls", 0, 120, 104, 48, 16, 4, "center", 2)
+  PokedexSources.windows["search.value-weight-min"] = dexWindow("controls", 0, 56, 104, 72, 16, 4, "center", 2)
+  PokedexSources.windows["search.value-weight-max"] = dexWindow("controls", 0, 144, 104, 72, 16, 4, "center", 2)
   PokedexSources.windows["search.value-area"] = dexWindow("controls", 0, 56, 128, 56, 16, 4, "center", 2)
   -- Menu and editor commit buttons (templates 17-19, MAIN BG1, palette
   -- slot 4; labels centered in font 4 over the 8-tile button frame).
@@ -988,9 +1156,9 @@ do
   PokedexSources.windows["search.summary-value-height-max"] =
     dexWindow("information", 1, 120, 80, 48, 16, 4, "center", 2)
   PokedexSources.windows["search.summary-value-weight-min"] =
-    dexWindow("information", 1, 56, 104, 48, 16, 4, "center", 2)
+    dexWindow("information", 1, 56, 104, 72, 16, 4, "center", 2)
   PokedexSources.windows["search.summary-value-weight-max"] =
-    dexWindow("information", 1, 120, 104, 48, 16, 4, "center", 2)
+    dexWindow("information", 1, 144, 104, 72, 16, 4, "center", 2)
   PokedexSources.windows["search.summary-value-area"] = dexWindow("information", 1, 56, 128, 56, 16, 4, "center", 2)
   -- Order editor: title 36, current value 37, six options 38-43.
   PokedexSources.windows["search.title-order"] = dexWindow("controls", 0, 24, 8, 88, 16, 0, "center", 2)
@@ -1064,10 +1232,10 @@ do
   -- `area.location` is the first visible row window.
   PokedexSources.windows["area.title"] = dexWindow("information", 1, 16, 0, 72, 16, 4, "left", 2)
   PokedexSources.windows["area.unknown"] = dexWindow("information", 1, 104, 96, 112, 16, 0, "center", 2)
-  PokedexSources.windows["area.caption"] = dexWindow("information", 1, 8, 40, 48, 16, 0, "center", 1)
-  PokedexSources.windows["area.tab-johto"] = dexWindow("information", 1, 72, 8, 56, 16, 4, "center", 1)
-  PokedexSources.windows["area.tab-kanto"] = dexWindow("information", 1, 192, 8, 56, 16, 4, "center", 1)
-  PokedexSources.windows["area.tab-johto-solo"] = dexWindow("information", 1, 144, 8, 56, 16, 0, "center", 1)
+  PokedexSources.windows["area.caption"] = dexWindow("controls", 1, 8, 40, 48, 16, 0, "center", 1)
+  PokedexSources.windows["area.tab-johto"] = dexWindow("controls", 1, 72, 8, 56, 16, 4, "center", 1)
+  PokedexSources.windows["area.tab-kanto"] = dexWindow("controls", 1, 192, 8, 56, 16, 4, "center", 1)
+  PokedexSources.windows["area.tab-johto-solo"] = dexWindow("controls", 1, 144, 8, 56, 16, 0, "center", 1)
   for row = 2, 6 do
     PokedexSources.windows["area.row-" .. row] =
       dexWindow("controls", 2, 80, 40 + (row - 1) * 24, 144, 16, 4, "center", 1)
@@ -1095,7 +1263,7 @@ do
   -- rows 10-15. `forms.selected` keeps its oracle record above.
   PokedexSources.windows["forms.title"] = dexWindow("information", 1, 16, 0, 72, 16, 4, "left", 2)
   PokedexSources.windows["forms.header"] = dexWindow("information", 1, 32, 40, 72, 16, 0, "right", 1)
-  PokedexSources.windows["forms.caption"] = dexWindow("information", 1, 168, 136, 80, 16, 4, "left", 1)
+  PokedexSources.windows["forms.caption"] = dexWindow("controls", 1, 168, 136, 80, 16, 4, "left", 1)
   for row = 1, 6 do
     PokedexSources.windows["forms.row-" .. row] =
       dexWindow("controls", 2, 64, 8 + (row - 1) * 24, 144, 16, 4, "left", 1)
@@ -1104,12 +1272,12 @@ do
   -- header 3 (169 + species name), caption 5 (170), side labels 8-9
   -- (171/172). `forms.compare-left/right` keep their oracle records.
   PokedexSources.windows["forms.compare-header"] = dexWindow("information", 1, 56, 40, 144, 16, 0, "center", 1)
-  PokedexSources.windows["forms.compare-caption"] = dexWindow("information", 1, 104, 16, 48, 16, 0, "center", 1)
+  PokedexSources.windows["forms.compare-caption"] = dexWindow("controls", 1, 104, 16, 48, 16, 0, "center", 1)
   PokedexSources.windows["forms.compare-label-left"] = dexWindow("controls", 1, 24, 164, 96, 16, 4, "center", 1)
   PokedexSources.windows["forms.compare-label-right"] = dexWindow("controls", 1, 144, 164, 96, 16, 4, "center", 1)
   -- Back tab: title 0 (173); the message 1 (174) replaces the invented
   -- cancel/action split with the single authored return-to-list line.
-  PokedexSources.windows["return.action"] = dexWindow("information", 1, 80, 80, 120, 16, 4, "center", 1)
+  PokedexSources.windows["return.action"] = dexWindow("controls", 1, 80, 80, 120, 16, 4, "center", 1)
   local detailWindows = {
     ["compact.detail-number"] = dexWindow("information", 1, 120, 80, 32, 14, 4, "left", 0),
     ["compact.detail-name"] = dexWindow("information", 1, 152, 80, 72, 14, 4, "left", 0),
@@ -1131,8 +1299,19 @@ end
 -- grid/results paint: its prepared strings are data for the adapted
 -- inspector surface, and the native list pages never paint entry details.
 -- The inventory records above remain their generated backing.
-local gridWindows = { "grid.seen-count", "grid.caught-count", "grid.selected-number", "grid.selected-name" }
-local searchCriteriaWindows = { "search.criteria", "search.feedback" }
+local gridWindows = {
+  "grid.info-label",
+  "grid.selected-number",
+  "grid.selected-name",
+  "grid.category",
+  "grid.flavor",
+  "grid.height-mark",
+  "grid.height",
+  "grid.weight-mark",
+  "grid.weight",
+  "grid.name-bar",
+}
+local searchCriteriaWindows = { "search.criteria", "search.feedback", "search.feedback-detail" }
 for _, name in ipairs({ "order", "letter", "type", "height", "weight", "area", "shape" }) do
   searchCriteriaWindows[#searchCriteriaWindows + 1] = "search.caption-" .. name
 end
@@ -1172,6 +1351,7 @@ end
 local searchOrderWindows = {
   "search.criteria",
   "search.feedback",
+  "search.feedback-detail",
   "search.title-order",
   "search.current-order",
   "search.button-ok",
@@ -1180,7 +1360,8 @@ local searchOrderWindows = {
 for _, name in ipairs({ "numerical", "alphabetical", "heaviest", "lightest", "tallest", "shortest" }) do
   searchOrderWindows[#searchOrderWindows + 1] = "search.option-order-" .. name
 end
-local searchLetterWindows = { "search.criteria", "search.feedback", "search.title-letter", "search.current-letter" }
+local searchLetterWindows = { "search.criteria", "search.feedback",
+  "search.feedback-detail", "search.title-letter", "search.current-letter" }
 for position = 0, 26 do
   local label = position < 26 and string.char(string.byte("A") + position) or "unrestricted"
   searchLetterWindows[#searchLetterWindows + 1] = "search.option-letter-" .. label
@@ -1188,7 +1369,8 @@ end
 searchLetterWindows[#searchLetterWindows + 1] = "search.button-ok"
 searchLetterWindows[#searchLetterWindows + 1] = "search.button-cancel"
 local searchTypeWindows =
-  { "search.criteria", "search.feedback", "search.title-type", "search.current-type-1", "search.current-type-2" }
+  { "search.criteria", "search.feedback",
+  "search.feedback-detail", "search.title-type", "search.current-type-1", "search.current-type-2" }
 for _, name in ipairs(PokedexSources.typeOrder) do
   searchTypeWindows[#searchTypeWindows + 1] = "search.option-type-" .. name
 end
@@ -1199,6 +1381,7 @@ local function searchSliderWindows(criterion)
   return {
     "search.criteria",
     "search.feedback",
+  "search.feedback-detail",
     "search.title-" .. criterion,
     "search.current-" .. criterion .. "-min",
     "search.current-" .. criterion .. "-max",
@@ -1209,6 +1392,7 @@ end
 local searchAreaWindows = {
   "search.criteria",
   "search.feedback",
+  "search.feedback-detail",
   "search.title-area",
   "search.current-area",
   "search.button-ok",
@@ -1218,13 +1402,40 @@ for _, name in ipairs({ "johto", "kanto", "unknown", "unrestricted" }) do
   searchAreaWindows[#searchAreaWindows + 1] = "search.option-area-" .. name
 end
 local searchShapeWindows =
-  { "search.criteria", "search.feedback", "search.title-shape", "search.button-ok", "search.button-cancel" }
-local resultsWindows = { "search.results", "grid.selected-number", "grid.selected-name" }
+  { "search.criteria", "search.feedback",
+  "search.feedback-detail", "search.title-shape", "search.button-ok", "search.button-cancel" }
+local resultsWindows = {
+  "search.results",
+  "grid.selected-number",
+  "grid.selected-name",
+  "grid.category",
+  "grid.flavor",
+  "grid.height-mark",
+  "grid.height",
+  "grid.weight-mark",
+  "grid.weight",
+  "grid.name-bar",
+  "grid.seen-caption",
+  "grid.caught-caption",
+  "grid.seen-count",
+  "grid.caught-count",
+}
 for _, role in ipairs(searchSummaryWindows) do
   resultsWindows[#resultsWindows + 1] = role
 end
+-- The cover page carries the two count labels and their quantities: the
+-- native list-family windows sit on MAIN0 (the 512-wide cover/list scroll
+-- plane) at plane x16/144, so they ride the cover half and slide out with
+-- it. The list view itself keeps its counts on the fixed-address MAIN3
+-- number strip instead.
+local coverWindows = {
+  "grid.seen-caption",
+  "grid.caught-caption",
+  "grid.seen-count",
+  "grid.caught-count",
+}
 PokedexSources.pageWindows = {
-  cover = {},
+  cover = coverWindows,
   grid = gridWindows,
   results = resultsWindows,
   ["search.criteria"] = searchCriteriaWindows,
@@ -1238,7 +1449,6 @@ PokedexSources.pageWindows = {
   ["entry.area"] = {
     "area.title",
     "entry.species-name",
-    "entry.dex-number",
     "area.time",
     "area.caption",
     "area.tab-johto",
@@ -1272,8 +1482,6 @@ PokedexSources.pageWindows = {
     "forms.header",
     "forms.selected",
     "forms.caption",
-    "entry.species-name",
-    "entry.dex-number",
     "forms.row-1",
     "forms.row-2",
     "forms.row-3",
@@ -1297,7 +1505,9 @@ PokedexSources.pageWindows = {
     "registration.species-name",
     "registration.category",
     "registration.flavor",
+    "registration.mark-height",
     "registration.height",
+    "registration.mark-weight",
     "registration.weight",
   },
 }
@@ -1390,6 +1600,16 @@ local gridSubjects = {
   ["caught-mark"] = {
     shown = { cells = 30, anims = 31, seq = 1, pane = "information" },
   },
+  ["dex-mode"] = {
+    shown = { cells = 13, anims = 14, seq = 24, pane = "controls" },
+  },
+  placeholder = {
+    shown = { cells = 27, anims = 28, seq = 1, pane = "information" },
+  },
+  ["intl-pair"] = {
+    left = { cells = 13, anims = 14, seq = 25, pane = "controls" },
+    right = { cells = 13, anims = 14, seq = 26, pane = "controls" },
+  },
 }
 
 -- Shared digit choices: height and weight editors spell their handle
@@ -1423,9 +1643,6 @@ local farLimitChoices = {
 -- handle columns and limits reflect the slider ends.
 local function sliderSubjects(digitCount)
   local subjects = {
-    ["slider-cursor"] = {
-      active = { cells = 13, anims = 14, seq = 40, pane = "controls" },
-    },
     ["slider-max"] = {
       height = { cells = 13, anims = 14, seq = 68, pane = "controls" },
       weight = { cells = 13, anims = 14, seq = 42, pane = "controls" },
@@ -1495,7 +1712,10 @@ end
 local function areaMarkerSubjects()
   local choices = {}
   for shape = 0, 11 do
-    choices["shape" .. shape] = { cells = 120, anims = 121, seq = shape + 1, pane = "information" }
+    for bank = 0, 1 do
+      choices["shape" .. shape .. "-" .. bank] =
+        { cells = 120, anims = 121, seq = shape + 1, pane = "information", bank = bank }
+    end
   end
   return { marker = choices }
 end
@@ -1539,6 +1759,12 @@ local sizeSubjects = {
     male = { trainer = "male", pane = "information" },
     female = { trainer = "female", pane = "information" },
   },
+  -- The weight-check trainer figure uses the same character/cell family
+  -- as the standing height portrait but rides its own weight pan.
+  ["trainer-figure"] = {
+    male = { trainer = "male", pane = "information" },
+    female = { trainer = "female", pane = "information" },
+  },
 }
 
 local formsSubjects = {
@@ -1574,6 +1800,29 @@ local feedbackSubjects = {
   },
 }
 
+-- Source search cursor sequences (sSearch*CursorAnims, one-based). The
+-- cursor family is the page's main OBJ pair (cells 13 / anims 14); each
+-- focus node selects its authored highlight animation.
+local function cursorChoices(sequences)
+  local choices = {}
+  for index, sequence in ipairs(sequences) do
+    choices["n" .. (index - 1)] = { cells = 13, anims = 14, seq = sequence, pane = "controls" }
+  end
+  return choices
+end
+
+local menuCursor = cursorChoices({ 40, 36, 37, 60, 61, 39, 35, 36, 36, 36 })
+local orderCursor = cursorChoices({ 40, 40, 40, 40, 40, 40, 36, 36 })
+local areaCursor = cursorChoices({ 39, 39, 39, 39, 36, 36 })
+local sliderCursor = cursorChoices({ 63, 63, 36, 36 })
+local shapeCursor = cursorChoices({ 35, 35, 35, 35, 35, 35, 35, 35, 35, 35, 35, 35, 35, 35, 35, 36, 36 })
+local typeCursor = cursorChoices({
+  39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 36, 36,
+})
+local letterCursor = cursorChoices({
+  41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 36, 36,
+})
+
 local function searchSubjects(extra)
   local subjects = {
     feedback = feedbackSubjects.feedback,
@@ -1584,10 +1833,18 @@ local function searchSubjects(extra)
   return subjects
 end
 
-local heightSubjects = searchSubjects(sliderSubjects(4))
-local weightSubjects = searchSubjects(sliderSubjects(5))
-local shapeSubjects = searchSubjects(bodyIconSubjects())
-local criteriaSubjects = searchSubjects(bodyIconSubjects())
+local function withCursor(subjects, cursor)
+  subjects.cursor = cursor
+  subjects["dex-mode"] = {
+    shown = { cells = 13, anims = 14, seq = 24, pane = "controls" },
+  }
+  return subjects
+end
+
+local heightSubjects = withCursor(searchSubjects(sliderSubjects(4)), sliderCursor)
+local weightSubjects = withCursor(searchSubjects(sliderSubjects(5)), sliderCursor)
+local shapeSubjects = withCursor(searchSubjects(bodyIconSubjects()), shapeCursor)
+local criteriaSubjects = withCursor(searchSubjects(bodyIconSubjects()), menuCursor)
 
 local gridTypes = typeIconSubjects()
 gridSubjects["type-1"] = gridTypes["type-1"]
@@ -1609,14 +1866,17 @@ PokedexSources.nativeSpriteSubjects = {
     ["type-2"] = resultTypes["type-2"],
     ["lang-flag"] = gridSubjects["lang-flag"],
     ["lang-current"] = gridSubjects["lang-current"],
+    ["dex-mode"] = gridSubjects["dex-mode"],
+    placeholder = gridSubjects.placeholder,
+    ["intl-pair"] = gridSubjects["intl-pair"],
   },
   ["search.criteria"] = criteriaSubjects,
-  ["search.order"] = searchSubjects({}),
-  ["search.name"] = searchSubjects({}),
-  ["search.type"] = searchSubjects({}),
+  ["search.order"] = withCursor(searchSubjects({}), orderCursor),
+  ["search.name"] = withCursor(searchSubjects({}), letterCursor),
+  ["search.type"] = withCursor(searchSubjects({}), typeCursor),
   ["search.height"] = heightSubjects,
   ["search.weight"] = weightSubjects,
-  ["search.area"] = searchSubjects({}),
+  ["search.area"] = withCursor(searchSubjects({}), areaCursor),
   ["search.shape"] = shapeSubjects,
   ["entry.area"] = areaSubjects,
   ["entry.size"] = sizeSubjects,
@@ -1625,5 +1885,93 @@ PokedexSources.nativeSpriteSubjects = {
   ["entry.return"] = tabCursorSubjects(),
   registration = registrationTypes,
 }
+
+-- Source OBJ priorities (template bgPriority) per page subject. A
+-- subject family that shares an animation member with another priority
+-- family carries it explicitly here (language flags vs the current
+-- language icon, search feedback vs the search cursor).
+local SUBJECT_PRIORITY = {
+  grid = {
+    cursor = 3,
+    ["arrow-up"] = 3,
+    ["arrow-down"] = 3,
+    scrollbar = 3,
+    ["caught-mark"] = 3,
+    ["type-1"] = 3,
+    ["type-2"] = 3,
+    ["lang-flag"] = 3,
+    ["lang-current"] = 0,
+    ["dex-mode"] = 0,
+    placeholder = 3,
+    ["intl-pair"] = 0,
+  },
+  results = {
+    cursor = 3,
+    ["arrow-up"] = 3,
+    ["arrow-down"] = 3,
+    scrollbar = 3,
+    ["caught-mark"] = 3,
+    ["type-1"] = 3,
+    ["type-2"] = 3,
+    ["lang-flag"] = 3,
+    ["lang-current"] = 0,
+    ["dex-mode"] = 0,
+    placeholder = 3,
+    ["intl-pair"] = 0,
+  },
+  ["search.criteria"] = { cursor = 0, feedback = 3, ["body-icon"] = 0 },
+  ["search.order"] = { cursor = 0, feedback = 3 },
+  ["search.name"] = { cursor = 0, feedback = 3 },
+  ["search.type"] = { cursor = 0, feedback = 3 },
+  ["search.height"] = { cursor = 0, feedback = 3 },
+  ["search.weight"] = { cursor = 0, feedback = 3 },
+  ["search.area"] = { cursor = 0, feedback = 3 },
+  ["search.shape"] = { cursor = 0, feedback = 3, ["body-icon"] = 0 },
+  ["entry.area"] = {
+    ["tab-cursor"] = 0,
+    player = 3,
+    ["time-cursor"] = 0,
+    ["arrow-up"] = 0,
+    ["arrow-down"] = 0,
+    scrollbar = 0,
+    marker = 3,
+  },
+  ["entry.size"] = {
+    ["tab-cursor"] = 0,
+    ["pan-left"] = 1,
+    ["pan-right"] = 1,
+    ["beam-top"] = 1,
+    ["beam-bottom"] = 1,
+    trainer = 0,
+    ["trainer-figure"] = 0,
+    ["trainer-height"] = 1,
+  },
+  ["entry.forms"] = {
+    ["tab-cursor"] = 0,
+    ["arrow-up"] = 0,
+    ["arrow-down"] = 0,
+    scrollbar = 0,
+    ["compare-frame"] = 0,
+    ["compare-side"] = 0,
+  },
+  ["entry.compare"] = { ["tab-cursor"] = 0, ["compare-frame"] = 0, ["compare-side"] = 0 },
+  ["entry.return"] = { ["tab-cursor"] = 0 },
+  registration = { ["type-1"] = 0, ["type-2"] = 0 },
+}
+
+for page, subjects in pairs(PokedexSources.nativeSpriteSubjects) do
+  local overrides = SUBJECT_PRIORITY[page] or {}
+  for subject, choices in pairs(subjects) do
+    local priority = overrides[subject]
+    if type(priority) ~= "number" then
+      priority = 0
+    end
+    for _, entry in pairs(choices) do
+      if entry.priority == nil then
+        entry.priority = priority
+      end
+    end
+  end
+end
 
 return PokedexSources

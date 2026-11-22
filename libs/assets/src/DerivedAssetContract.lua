@@ -731,7 +731,7 @@ DerivedAssetContract.pokegear = {
 DerivedAssetContract.pokedex = {
   cacheFormat = "pokedex-cache-v1",
   catalogSchema = "g4-pokedex-catalog-v2",
-  schema = "g4-pokedex-assets-v2",
+  schema = "g4-pokedex-assets-v3",
 }
 
 -- The Easy Chat family carries the semantic word data catalog (dictionary

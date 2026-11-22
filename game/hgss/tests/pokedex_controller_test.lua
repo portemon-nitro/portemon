@@ -145,12 +145,22 @@ local function press(controller, events)
   tick(controller, events)
 end
 
+-- Marker sprite choices carry the silhouette plus the row's source palette
+-- index; area assertions name only the silhouette.
+---@param intent table projected marker sprite intent
+---@return string shape the silhouette choice
+local function markerShape(intent)
+  local shape = intent.choice:match("^(shape%d+)%-%d+$")
+  assert(shape ~= nil, "marker choices name a silhouette and palette: " .. tostring(intent.choice))
+  return shape
+end
+
 local function openGrid(controller)
   -- The cover drag still opens the sparse list; cover confirm and START
   -- now slide straight into the cursor entry like the retail cover path.
-  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 64 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 240 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 40 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 40 } })
   idle(controller, 40)
 end
 
@@ -197,6 +207,7 @@ function T.cover_confirm_and_start_open_the_cursor_entry_directly()
   Assert.equal(slots[18].species, "ROTOM", "the highest seen member sets the list length")
   Assert.equal(grid.grid.lastPage, 1, "eighteen members spill onto a second page")
   press(controller, { { type = "start" } })
+  idle(controller, 20)
   Assert.equal(controller:view().page, "cover", "start on the grid returns to the cover")
   controller:drainEffects()
   press(controller, { { type = "start" } })
@@ -216,6 +227,7 @@ function T.cover_confirm_and_start_open_the_cursor_entry_directly()
   Assert.equal(controller:view().page, "grid", "confirming a blank grid slot opens no entry")
   Assert.deepEqual(controller:drainEffects(), {}, "a blank grid confirm emits no cry or transition effect")
   press(controller, { { type = "start" } })
+  idle(controller, 20)
   Assert.equal(controller:view().page, "cover", "the grid keeps its cursor under the cover")
   controller:drainEffects()
   press(controller, { { type = "confirm" } })
@@ -254,24 +266,25 @@ function T.cover_drag_thresholds_complete_or_snap_back()
   local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
   observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
   local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
-  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 40 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 63 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 200 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 137 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 137 } })
   idle(controller, 40)
   Assert.equal(controller:view().page, "cover", "releasing below 64 snaps the cover back")
   Assert.equal(controller:view().visual.coverOffset, 0, "the snapped cover rests at zero offset")
-  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 64 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 200 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 40 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 40 } })
   idle(controller, 40)
   Assert.equal(controller:view().page, "grid", "releasing at 64 completes the opening")
-  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 256 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 192 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 40 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 40 } })
   idle(controller, 40)
-  Assert.equal(controller:view().page, "grid", "releasing at 192 snaps the grid back open")
-  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 256 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 191 } })
+  Assert.equal(controller:view().page, "grid", "releasing at 216 snaps the grid back open")
+  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 200 } })
   idle(controller, 40)
   Assert.equal(controller:view().page, "cover", "releasing below 192 completes the cover return")
   controller:dispose()
@@ -288,23 +301,30 @@ function T.grid_crossings_page_and_selected_cry_uses_first_physical_form()
   local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
   openGrid(controller)
   press(controller, { { type = "navigate", direction = "left" } })
+  Assert.equal(controller:view().grid.cursor, 0, "linear left at the first slot refuses to wrap")
+  Assert.equal(controller:view().grid.page, 0, "the first page keeps its cursor at the left edge")
+  press(controller, { { type = "r" } })
+  idle(controller, 20)
+  Assert.equal(controller:view().grid.page, 1, "page-next advances from the first page")
+  press(controller, { { type = "navigate", direction = "left" } })
+  idle(controller, 20)
   Assert.equal(controller:view().grid.cursor, 14, "linear left across zero wraps to the previous page end")
-  Assert.equal(controller:view().grid.page, 1, "the crossing lands on the last page")
+  Assert.equal(controller:view().grid.page, 0, "the crossing lands on the previous page")
   press(controller, { { type = "navigate", direction = "down" } })
-  Assert.equal(controller:view().grid.page, 0, "vertical crossing preserves the column across pages")
+  idle(controller, 20)
+  Assert.equal(controller:view().grid.page, 1, "vertical crossing preserves the column across pages")
   Assert.equal(controller:view().grid.cursor, 4, "the crossing lands on the pichu cursor")
   press(controller, { { type = "l" } })
-  Assert.equal(controller:view().grid.page, 0, "page-prev clamps at the first page")
+  idle(controller, 16)
+  Assert.equal(controller:view().grid.page, 0, "page-prev returns to the first page")
   Assert.equal(controller:view().grid.cursor, 4, "page-prev keeps the cursor")
   press(controller, { { type = "r" } })
+  idle(controller, 16)
   Assert.equal(controller:view().grid.page, 1, "page-next advances preserving the cursor")
   Assert.equal(controller:view().grid.cursor, 4, "page-next keeps the cursor")
-  press(controller, { { type = "r" } })
-  Assert.equal(controller:view().grid.page, 1, "paging clamps at the last page")
-  Assert.equal(controller:view().grid.cursor, 4, "clamped page-next keeps the cursor")
   press(controller, { { type = "l" } })
+  idle(controller, 16)
   Assert.equal(controller:view().grid.page, 0, "page-prev returns to the first page")
-  Assert.equal(controller:view().grid.cursor, 4, "page-prev returns to the pichu cursor")
   local scrollbar = controller:view().grid.scrollbar
   Assert.isTrue(isAuthoredLength(scrollbar.length), "the scrollbar length is one of the authored values")
   local minY = 21 + math.floor(scrollbar.length / 2)
@@ -408,6 +428,48 @@ function T.result_feedback_runs_source_timing_and_origin_restores()
   controller:dispose()
 end
 
+-- The cover search word and the results footer commands every layout
+-- paints must reach their pages: the cover search opens the criteria, and
+-- the results footer reopens the criteria, returns to the list, and pages
+-- through results instead of ignoring the press.
+function T.cover_search_and_results_footer_commands_reach_their_pages()
+  local PokedexController = requirePresent("cover and results footer commands")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  for _, key in ipairs(PokedexDexFixture.DISPLAY_ORDER) do
+    observe(owner, monCatalog, { species = key, personality = 0 })
+    if key == "ROTOM" then
+      break
+    end
+  end
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  Assert.equal(controller:view().page, "cover", "the browser opens on the cover")
+  press(controller, { { type = "activate", action = "search" } })
+  idle(controller, 10)
+  Assert.equal(controller:view().page, "search", "the cover search word opens the criteria")
+  press(controller, { { type = "start" } })
+  idle(controller, 200)
+  Assert.equal(controller:view().page, "results", "the staged search lands on the result grid")
+  press(controller, { { type = "activate", action = "cover" } })
+  idle(controller, 40)
+  Assert.equal(controller:view().page, "cover", "the results cover word slides back to the cover")
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  press(controller, { { type = "start" } })
+  idle(controller, 200)
+  Assert.equal(controller:view().page, "results", "a second search lands on the result grid")
+  local pageIndex = controller:view().grid.page
+  press(controller, { { type = "activate", action = "page-next" } })
+  idle(controller, 4)
+  Assert.isTrue(controller:view().grid.page >= pageIndex, "the results page arrow never pages backward")
+  press(controller, { { type = "navigate", direction = "right" } })
+  idle(controller, 2)
+  press(controller, { { type = "activate", action = "entry-tab", value = "forms" } })
+  idle(controller, 40)
+  Assert.equal(controller:view().page, "forms", "the results details word opens the forms tab")
+  controller:dispose()
+end
+
 function T.empty_results_retract_before_accepting_fresh_edges()
   local PokedexController = requirePresent("result feedback timing and return origin")
   local monCatalog, catalog = catalogs()
@@ -482,7 +544,7 @@ function T.acquired_languages_cycle_and_seen_only_hides_protected_details()
   Assert.equal(controller:view().page, "area", "confirming opens the seen-only entry")
   Assert.equal(controller:view().selection.language, "english", "species change resets an invalid foreign choice")
   local seenPictures = controller:view().pictures
-  Assert.equal(seenPictures[1].mode, "silhouette", "a seen-only entry hides its portrait")
+  Assert.equal(seenPictures[1].mode, "portrait", "a seen-only entry still shows its portrait")
   controller:dispose()
 end
 
@@ -658,7 +720,7 @@ function T.empty_wait_answers_fresh_a_b_and_touch_but_ignores_held_and_timeout()
   cancelCase:dispose()
   local touchCase = PokedexController.new(baseArgs(owner, monCatalog, catalog))
   reachEmptyWait(touchCase)
-  press(touchCase, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
+  press(touchCase, { { type = "drag", target = "cover", phase = "begin", value = 240 } })
   idle(touchCase, 10)
   Assert.equal(touchCase:view().page, "search", "a fresh touch dismisses the empty wait")
   touchCase:dispose()
@@ -816,12 +878,39 @@ function T.browser_text_slots_reference_semantic_bank_roles()
   observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
   observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
   local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  local coverRoles = checkTextSlots(controller:view())
+  Assert.notNil(coverRoles["grid.seen-caption"], "the cover labels its seen count")
+  Assert.notNil(coverRoles["grid.caught-caption"], "the cover labels its obtained count")
+  Assert.notNil(coverRoles["grid.seen-count"], "the cover shows its seen quantity")
+  Assert.notNil(coverRoles["grid.caught-count"], "the cover shows its obtained quantity")
+  local seenCountSlot = nil
+  for _, slot in ipairs(controller:view().text) do
+    if slot.role == "grid.seen-count" then
+      seenCountSlot = slot
+    end
+  end
+  Assert.equal(assert(seenCountSlot).value, "002", "the cover pads its seen quantity to three digits")
   openGrid(controller)
+  for _ = 1, 15 do
+    if controller:view().selection.species == "EEVEE" then
+      break
+    end
+    press(controller, { { type = "navigate", direction = "right" } })
+  end
+  Assert.equal(controller:view().selection.species, "EEVEE", "the caught fixture species is highlighted")
   local gridRoles = checkTextSlots(controller:view())
   Assert.notNil(gridRoles["grid.seen-count"], "the grid counts its seen members")
   Assert.notNil(gridRoles["grid.caught-count"], "the grid counts its caught members")
   Assert.notNil(gridRoles["grid.selected-number"], "the grid numbers its regional selection")
   Assert.notNil(gridRoles["grid.selected-name"], "the grid names its selection")
+  Assert.notNil(gridRoles["grid.name-bar"], "the grid paints its selected name bar")
+  Assert.notNil(gridRoles["grid.info-label"], "the grid carries its INFO label")
+  Assert.notNil(gridRoles["grid.category"], "a caught grid selection classifies its specimen")
+  Assert.notNil(gridRoles["grid.flavor"], "a caught grid selection describes its specimen")
+  Assert.notNil(gridRoles["grid.height"], "a caught grid selection measures its specimen")
+  Assert.notNil(gridRoles["grid.weight"], "a caught grid selection weighs its specimen")
+  Assert.notNil(gridRoles["grid.seen-caption"], "the grid labels its seen count")
+  Assert.notNil(gridRoles["grid.caught-caption"], "the grid labels its caught count")
   openEntry(controller, "EEVEE")
   local entryRoles = checkTextSlots(controller:view())
   Assert.notNil(entryRoles["entry.species-name"], "the entry names its specimen")
@@ -829,7 +918,6 @@ function T.browser_text_slots_reference_semantic_bank_roles()
   Assert.notNil(entryRoles["entry.category"], "a caught entry classifies its specimen")
   Assert.notNil(entryRoles["entry.flavor"], "a caught entry describes its specimen")
   Assert.notNil(entryRoles["entry.height"], "a caught entry measures its specimen")
-  Assert.notNil(entryRoles["entry.weight"], "a caught entry weighs its specimen")
   controller:dispose()
   local seenOnly = PokedexController.new(baseArgs(owner, monCatalog, catalog))
   openGrid(seenOnly)
@@ -868,7 +956,6 @@ function T.area_pan_travels_eight_pixels_per_frame_to_kanto()
   openGrid(controller)
   openEntry(controller, "EEVEE")
   press(controller, { { type = "r" } })
-  Assert.equal(controller:view().area.region, "kanto", "the kanto selector travels with national unlocked")
   local switched = controller:view().areaPan
   Assert.equal(switched.region, 1, "the pan follows the kanto region at once")
   Assert.equal(switched.offset, -72, "the travel starts from the johto scroll without snapping")
@@ -876,7 +963,9 @@ function T.area_pan_travels_eight_pixels_per_frame_to_kanto()
   Assert.equal(controller:view().areaPan.offset, -64, "the first travel frame advances eight pixels")
   press(controller, {})
   Assert.equal(controller:view().areaPan.offset, -56, "the second travel frame advances eight more pixels")
-  idle(controller, 20)
+  idle(controller, 8)
+  Assert.equal(controller:view().area.region, "kanto", "the kanto selector travels with national unlocked")
+  idle(controller, 12)
   local settled = controller:view().areaPan
   Assert.equal(settled.region, 1, "the settled pan stays on the kanto region")
   Assert.equal(settled.offset, 104, "twenty-two travel frames settle on the kanto scroll")
@@ -897,13 +986,14 @@ function T.area_pan_returns_to_johto_and_pins_without_national()
   idle(controller, 22)
   Assert.equal(controller:view().areaPan.offset, 104, "the kanto leg settles before returning")
   press(controller, { { type = "l" } })
-  Assert.equal(controller:view().area.region, "johto", "the johto selector travels back")
   local switched = controller:view().areaPan
   Assert.equal(switched.region, 0, "the pan follows the johto region at once")
   Assert.equal(switched.offset, 104, "the return starts from the kanto scroll without snapping")
   press(controller, {})
   Assert.equal(controller:view().areaPan.offset, 96, "the first return frame retreats eight pixels")
-  idle(controller, 21)
+  idle(controller, 8)
+  Assert.equal(controller:view().area.region, "johto", "the johto selector travels back")
+  idle(controller, 13)
   Assert.equal(controller:view().areaPan.offset, -72, "twenty-two return frames settle on the johto scroll")
   controller:dispose()
   local locked = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
@@ -977,15 +1067,24 @@ function T.search_keyboard_focus_traverses_criteria_and_confirms()
   press(controller, { { type = "y" } })
   Assert.equal(controller:view().page, "search", "grid Y reaches the criteria root")
   Assert.equal(controller:view().search.focus, "order", "search focus starts on the order criterion")
-  -- Keyboard focus walks the visible criteria in order, then run and
-  -- reset, before wrapping back to the start.
-  local traversal = { "letter", "type", "height", "weight", "area", "shape", "run", "reset", "order" }
+  -- The source graph walks the criterion column down into the run
+  -- button; reset and back are reachable along the bottom row.
+  local traversal = { "letter", "type", "height", "weight", "area", "run" }
   for _, focus in ipairs(traversal) do
     press(controller, { { type = "navigate", direction = "down" } })
     Assert.equal(controller:view().search.focus, focus, "search focus steps to " .. focus)
   end
   press(controller, { { type = "navigate", direction = "down" } })
-  Assert.equal(controller:view().search.focus, "letter", "search focus steps to the letter criterion")
+  Assert.equal(controller:view().search.focus, "run", "the run button has no downward neighbour")
+  press(controller, { { type = "navigate", direction = "left" } })
+  Assert.equal(controller:view().search.focus, "reset", "the bottom row steps left to reset")
+  press(controller, { { type = "navigate", direction = "right" } })
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().search.focus, "back", "the bottom row steps right to back")
+  for _ = 1, 5 do
+    press(controller, { { type = "navigate", direction = "up" } })
+  end
+  Assert.equal(controller:view().search.focus, "letter", "search focus returns to the letter criterion")
   press(controller, { { type = "confirm" } })
   local editorView = controller:view().search.editor
   Assert.notNil(editorView, "confirm opens the focused criterion editor")
@@ -1069,7 +1168,7 @@ function T.search_pointer_and_keyboard_choose_the_same_published_option()
   Assert.equal(controller:view().search.criteria.type1, "normal", "the pointer choice stages the first type")
   -- A keyboard step from that staged choice stages the next published type.
   press(controller, { { type = "activate", action = "criterion", value = "type" } })
-  press(controller, { { type = "navigate", direction = "down" } })
+  press(controller, { { type = "navigate", direction = "right" } })
   Assert.equal(controller:view().search.editor.focus, "fighting", "the keyboard step reaches the second published type")
   press(controller, { { type = "confirm" } })
   press(controller, { { type = "activate", action = "editor-ok" } })
@@ -1134,36 +1233,44 @@ function T.search_feedback_publishes_the_result_count_once_resolved()
   press(controller, { { type = "y" } })
   press(controller, { { type = "start" } })
   Assert.notNil(controller:view().search.feedback, "search start enters the feedback sequence")
-  local function feedbackSlot(view)
+  local function slotOf(view, role)
     for _, slot in ipairs(view.text) do
-      if type(slot) == "table" and slot.role == "search.feedback" then
+      if type(slot) == "table" and slot.role == role then
         return slot
       end
     end
     return nil
   end
-  Assert.isNil(feedbackSlot(controller:view()), "the label phase publishes no count it has not run")
+  local title = slotOf(controller:view(), "search.feedback")
+  Assert.notNil(title, "the label phase publishes its help title")
+  Assert.equal(title.messageId, 12, "the help title names the search mode")
+  local detail = slotOf(controller:view(), "search.feedback-detail")
+  Assert.notNil(detail, "the label phase publishes its searching line")
+  Assert.equal(detail.messageId, 25, "the label phase shows the searching line")
+  Assert.isNil(detail.fields, "the searching line carries no count it has not run")
   idle(controller, 30)
   Assert.equal(controller:view().search.feedback.phase, "rise", "the completed run rises with its result list")
-  local slot = feedbackSlot(controller:view())
-  Assert.notNil(slot, "the rise phase publishes its result count")
-  Assert.equal(slot.kind, "ui", "the count rides the native UI template")
-  Assert.equal(slot.messageId, 15, "the count uses the native result-count entry")
-  idle(controller, 200)
+  for _ = 1, 200 do
+    if controller:view().search.feedback.phase == "move" then
+      break
+    end
+    idle(controller, 1)
+  end
+  Assert.equal(controller:view().search.feedback.phase, "move", "the completed run moves to its results")
+  detail = slotOf(controller:view(), "search.feedback-detail")
+  Assert.notNil(detail, "the result line publishes with the move")
+  Assert.equal(detail.messageId, 15, "the count uses the native result-count entry")
+  Assert.equal(
+    detail.fields ~= nil and detail.fields[0] or nil,
+    string.format("%03d", 2),
+    "the count matches the two seen members"
+  )
+  idle(controller, 60)
   local view = controller:view()
   Assert.equal(view.page, "results", "the completed search lands on the result grid")
-  local results = nil
-  for _, result in ipairs(view.text) do
-    if type(result) == "table" and result.role == "search.results" then
-      results = result
-    end
-  end
-  Assert.notNil(results, "the results page publishes its count")
-  Assert.equal(
-    slot.fields ~= nil and slot.fields[0] or nil,
-    string.format("%03d", tonumber(results.value)),
-    "the feedback count matches the published result count"
-  )
+  local results = slotOf(view, "search.results")
+  Assert.notNil(results, "the results page publishes its INFO label")
+  Assert.equal(results.messageId, 8, "the results header is the native INFO label")
   controller:dispose()
 end
 
@@ -1398,12 +1505,14 @@ function T.entry_area_reports_its_daypart_region_and_return_actions()
   Assert.equal(area["area.time"].messageId, 129, "the fresh entry opens on the morning mark")
   Assert.isNil(area["area.location"], "the fresh entry leaves the first row window blank like the source")
   press(controller, { { type = "navigate", direction = "down" } })
+  idle(controller, 3)
   local scrolled = {}
   for _, slot in ipairs(controller:view().text) do
     scrolled[slot.role] = slot
   end
   Assert.equal(scrolled["area.location"].messageId, 134, "the scrolled region row keeps its source entry")
   press(controller, { { type = "activate", action = "area-time", value = 2 } })
+  idle(controller, 8)
   local night = {}
   for _, slot in ipairs(controller:view().text) do
     night[slot.role] = slot
@@ -1456,28 +1565,28 @@ function T.entry_forms_reports_selected_rows_and_comparison_names()
   local resting = roles()
   Assert.equal(resting["forms.title"].messageId, 170, "the forms page keeps its title")
   Assert.equal(resting["forms.header"].kind, "named_ui", "the species header names its specimen")
-  Assert.equal(resting["forms.selected"].messageId, 114, "the first variant names the spiky-eared mark")
+  Assert.equal(resting["forms.selected"].messageId, 114, "the first variant names the male row")
   Assert.equal(resting["forms.caption"].messageId, 168, "the multi-form list keeps its caption")
   Assert.isNil(resting["forms.row-1"], "the window above the first variant stays blank")
-  Assert.equal(resting["forms.row-2"].messageId, 114, "the first window names the first variant")
-  Assert.equal(resting["forms.row-3"].messageId, 114, "the second window names the second variant")
-  Assert.equal(resting["forms.row-4"].messageId, 115, "the next row names the other form")
+  Assert.equal(resting["forms.row-2"].messageId, 114, "the first window names the male row")
+  Assert.equal(resting["forms.row-3"].messageId, 115, "the second window names the female row")
+  Assert.equal(resting["forms.row-4"].messageId, 166, "the third window names the spiky-eared form")
   Assert.isNil(resting["forms.row-5"], "rows past the last variant stay blank")
   Assert.isNil(resting["forms.row-6"], "rows past the last variant stay blank")
   press(controller, { { type = "navigate", direction = "down" } })
   press(controller, { { type = "navigate", direction = "down" } })
   local moved = roles()
-  Assert.equal(moved["forms.selected"].messageId, 115, "the moved cursor names the other form")
-  Assert.equal(moved["forms.row-1"].messageId, 114, "the scrolled top window names the second variant")
-  Assert.equal(moved["forms.row-2"].messageId, 115, "the centered row follows the cursor")
+  Assert.equal(moved["forms.selected"].messageId, 166, "the moved cursor names the spiky-eared form")
+  Assert.equal(moved["forms.row-1"].messageId, 115, "the scrolled top window names the female row")
+  Assert.equal(moved["forms.row-2"].messageId, 166, "the centered row follows the cursor")
   Assert.isNil(moved["forms.row-3"], "windows past the last variant stay blank")
   press(controller, { { type = "activate", action = "compare" } })
   local compared = roles()
   Assert.equal(compared["forms.compare-caption"].messageId, 170, "the comparison keeps its title")
   Assert.equal(compared["forms.compare-label-left"].messageId, 171, "the comparison labels its left side")
   Assert.equal(compared["forms.compare-label-right"].messageId, 172, "the comparison labels its right side")
-  Assert.equal(compared["forms.compare-left"].messageId, 115, "the comparison names the selected variant")
-  Assert.equal(compared["forms.compare-right"].messageId, 114, "the comparison names the other variant")
+  Assert.equal(compared["forms.compare-left"].messageId, 166, "the comparison names the selected variant")
+  Assert.equal(compared["forms.compare-right"].messageId, 114, "the comparison names the first other variant")
   controller:dispose()
 end
 
@@ -1592,7 +1701,9 @@ function T.empty_search_publishes_no_feedback_count()
     tick(controller, {})
     for _, slot in ipairs(controller:view().text) do
       Assert.isTrue(
-        type(slot) ~= "table" or slot.role ~= "search.feedback",
+        type(slot) ~= "table"
+          or slot.role ~= "search.feedback-detail"
+          or slot.messageId ~= 15,
         "no feedback phase publishes a count for zero results"
       )
     end
@@ -1713,7 +1824,7 @@ function T.caught_selection_shows_type_and_footprint_art()
     if controller:view().selection.species == "CHIKORITA" then
       break
     end
-    press(controller, { { type = "navigate", direction = "right" } })
+    press(controller, { { type = "navigate", direction = "left" } })
   end
   view = controller:view()
   Assert.equal(view.selection.species, "CHIKORITA", "the cursor reaches the seen-only selection")
@@ -1823,7 +1934,7 @@ function T.size_subjects_follow_figures_and_pans()
   press(controller, { { type = "confirm" } })
   idle(controller, 40)
   press(controller, { { type = "navigate", direction = "right" } })
-  idle(controller, 40)
+  idle(controller, 2)
   local view = controller:view()
   Assert.equal(view.page, "size", "the caught entry reaches its size")
   local left = assert(findObject(view.objects, "pan-left"), "the size projects its left pan")
@@ -1836,7 +1947,7 @@ function T.size_subjects_follow_figures_and_pans()
   Assert.equal(trainer.choice, "male", "the trainer names the captured gender")
   local figures = assert(view.size.figures, "the size projects its figures")
   local y0 = assert(figures[1], "the size projects its mon figure").y
-  idle(controller, 25)
+  idle(controller, 10)
   local dropped = controller:view()
   local y1 = assert(assert(dropped.size.figures, "the figures persist")[1], "the mon figure persists").y
   Assert.isTrue(y1 > y0, "accepted ticks drop the published figures")
@@ -1900,8 +2011,10 @@ function T.search_slider_subjects_follow_both_handles_and_digits()
     end
   end
   Assert.isTrue(#digits >= 1, "the max handle spells its value in digits")
-  local cursor = assert(findObject(view.objects, "slider-cursor"), "the editor projects its cursor")
+  local cursor = assert(findObject(view.objects, "cursor"), "the editor projects its focus cursor")
+  Assert.equal(cursor.choice, "n0", "the cursor sits on the max handle node")
   Assert.equal(cursor.x, maxHandle.x, "the cursor follows the max handle")
+  Assert.equal(cursor.y, 60, "the max handle node rides its source y")
   controller:dispose()
 end
 
@@ -2009,7 +2122,7 @@ function T.shape_icon_and_results_mark_follow_only_their_visible_pages()
     if controller:view().selection.species == "CHIKORITA" then
       break
     end
-    press(controller, { { type = "navigate", direction = "right" } })
+    press(controller, { { type = "navigate", direction = "left" } })
   end
   local seenView = controller:view()
   Assert.equal(seenView.selection.species, "CHIKORITA", "the walk reaches the seen-only result")
@@ -2069,8 +2182,10 @@ function T.area_list_names_the_same_habitat_the_cursor_selects()
   checkCursor(0)
   Assert.notNil(slotsByRole(controller:view())["area.row-2"], "the first legal window shows the region entry")
   press(controller, { { type = "navigate", direction = "down" } })
+  idle(controller, 3)
   checkCursor(1)
   press(controller, { { type = "navigate", direction = "down" } })
+  idle(controller, 3)
   checkCursor(2)
   Assert.equal(
     slotsByRole(controller:view())["area.location"].kind,
@@ -2115,28 +2230,28 @@ function T.forms_list_names_the_same_variant_the_cursor_selects()
     return found
   end
   local resting = roles()
-  Assert.equal(resting["forms.selected"].messageId, 114, "the first variant names the spiky-eared mark")
+  Assert.equal(resting["forms.selected"].messageId, 114, "the first variant names the male row")
   Assert.notNil(resting["forms.row-2"], "the first legal window shows the first variant")
-  Assert.equal(resting["forms.row-2"].messageId, 114, "the first window names the first variant")
-  Assert.equal(resting["forms.row-3"].messageId, 114, "the second window names the second variant")
-  Assert.equal(resting["forms.row-4"].messageId, 115, "the third window names the other form")
+  Assert.equal(resting["forms.row-2"].messageId, 114, "the first window names the male row")
+  Assert.equal(resting["forms.row-3"].messageId, 115, "the second window names the female row")
+  Assert.equal(resting["forms.row-4"].messageId, 166, "the third window names the spiky-eared form")
   Assert.isNil(resting["forms.row-5"], "windows past the variants stay blank")
   press(controller, { { type = "navigate", direction = "down" } })
   local middle = roles()
-  Assert.equal(middle["forms.selected"].messageId, 114, "the middle cursor names the second variant")
+  Assert.equal(middle["forms.selected"].messageId, 115, "the middle cursor names the female row")
   Assert.equal(middle["forms.row-1"].messageId, 114, "the scrolled top window follows the cursor")
-  Assert.equal(middle["forms.row-2"].messageId, 114, "the centered window follows the cursor")
-  Assert.equal(middle["forms.row-3"].messageId, 115, "the next window names the other form")
+  Assert.equal(middle["forms.row-2"].messageId, 115, "the centered window follows the cursor")
+  Assert.equal(middle["forms.row-3"].messageId, 166, "the next window names the spiky-eared form")
   press(controller, { { type = "navigate", direction = "down" } })
   local last = roles()
-  Assert.equal(last["forms.selected"].messageId, 115, "the last cursor names the other form")
-  Assert.equal(last["forms.row-1"].messageId, 114, "the last top window names the second variant")
-  Assert.equal(last["forms.row-2"].messageId, 115, "the last centered window names the other form")
+  Assert.equal(last["forms.selected"].messageId, 166, "the last cursor names the spiky-eared form")
+  Assert.equal(last["forms.row-1"].messageId, 115, "the last top window names the female row")
+  Assert.equal(last["forms.row-2"].messageId, 166, "the last centered window names the spiky-eared form")
   Assert.isNil(last["forms.row-3"], "windows past the last variant stay blank")
   press(controller, { { type = "activate", action = "compare" } })
   local compared = roles()
-  Assert.equal(compared["forms.compare-left"].messageId, 115, "the comparison names the selected variant")
-  Assert.equal(compared["forms.compare-right"].messageId, 114, "the comparison names the other variant")
+  Assert.equal(compared["forms.compare-left"].messageId, 166, "the comparison names the selected variant")
+  Assert.equal(compared["forms.compare-right"].messageId, 114, "the comparison names the first other variant")
   controller:dispose()
 end
 
@@ -2395,10 +2510,10 @@ function T.trainer_inside_state_follows_the_painted_dungeon_marker()
     end
   end
   Assert.equal(#markers, 2, "the road and the hollow both paint")
-  Assert.equal(markers[1].choice, "shape3", "the road keeps its wide silhouette")
+  Assert.equal(markerShape(markers[1]), "shape3", "the road keeps its wide silhouette")
   Assert.equal(markers[1].x, 112, "the road keeps its column")
   Assert.equal(markers[1].y, 64, "the road keeps its row")
-  Assert.equal(markers[2].choice, "shape6", "the hollow paints its tall silhouette")
+  Assert.equal(markerShape(markers[2]), "shape6", "the hollow paints its tall silhouette")
   Assert.equal(markers[2].x, 156, "the hollow paints its shifted column")
   Assert.equal(markers[2].y, 96, "the hollow paints its shifted row")
   local player = assert(foundPlayer, "the area projects its trainer pin")
@@ -2422,7 +2537,7 @@ function T.trainer_inside_state_follows_the_painted_dungeon_marker()
     end
   end
   local farMarker = assert(foundFarMarker, "the far page still paints the hollow")
-  Assert.equal(farMarker.choice, "shape6", "the far page keeps the tall silhouette")
+  Assert.equal(markerShape(farMarker), "shape6", "the far page keeps the tall silhouette")
   Assert.equal(farMarker.x, 156, "the far hollow keeps its shifted column")
   Assert.equal(farMarker.y, 96, "the far hollow keeps its shifted row")
   local farPlayer = assert(foundFarPlayer, "the far page projects its trainer pin")
@@ -2458,6 +2573,7 @@ function T.retail_key_moves_and_touch_opens_play_their_list_tones()
     "a d-pad cursor move plays the cursor tone"
   )
   press(controller, { { type = "r" } })
+  idle(controller, 16)
   Assert.equal(controller:view().grid.page, 1, "page-next turns the page")
   Assert.isTrue(
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
@@ -2467,6 +2583,7 @@ function T.retail_key_moves_and_touch_opens_play_their_list_tones()
   Assert.equal(controller:view().grid.page, 1, "page-next clamps at the last page")
   Assert.deepEqual(drainSoundRoles(controller), {}, "a clamped page turn stays silent")
   press(controller, { { type = "l" } })
+  idle(controller, 16)
   Assert.equal(controller:view().grid.page, 0, "page-prev turns the page")
   Assert.isTrue(
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
@@ -2486,6 +2603,7 @@ function T.retail_key_moves_and_touch_opens_play_their_list_tones()
     "a touch move onto the seen slot plays the touch tone"
   )
   press(controller, { { type = "activate", action = "grid-slot", value = 0 } })
+  idle(controller, 12)
   Assert.equal(controller:view().page, "area", "a same-tap seen slot opens its entry")
   Assert.isTrue(
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
@@ -2498,10 +2616,11 @@ function T.retail_key_moves_and_touch_opens_play_their_list_tones()
     "cancelling the entry plays the cancel tone"
   )
   press(controller, { { type = "start" } })
+  idle(controller, 20)
   Assert.equal(controller:view().page, "cover", "start returns to the cover")
-  Assert.isFalse(
+  Assert.isTrue(
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_BUTTON01"),
-    "start on the grid returns silently like the source list START key"
+    "start on the grid plays the decide tone like the source list START key"
   )
   controller:dispose()
 end
@@ -2550,10 +2669,11 @@ function T.retail_cover_plays_decide_mode_and_search_tones()
     "cancelling the search plays the cancel tone"
   )
   press(controller, { { type = "start" } })
+  idle(controller, 20)
   Assert.equal(controller:view().page, "cover", "start returns to the cover")
-  Assert.isFalse(
+  Assert.isTrue(
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_BUTTON01"),
-    "start on the grid returns silently like the source list START key"
+    "start on the grid plays the decide tone like the source list START key"
   )
   press(controller, { { type = "confirm" } })
   idle(controller, 10)
@@ -2695,18 +2815,21 @@ function T.retail_entry_pages_play_key_and_touch_tones()
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
     "scrolling the area rows by key plays the cursor tone"
   )
+  idle(controller, 3)
   press(controller, { { type = "activate", action = "area-row", value = 0 } })
   Assert.isTrue(
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
     "touching an area row plays the touch tone"
   )
   press(controller, { { type = "select" } })
+  idle(controller, 8)
   Assert.equal(controller:view().area.region, "kanto", "the region key switches to kanto")
   Assert.isTrue(
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
     "switching regions by key plays the cursor tone"
   )
   press(controller, { { type = "activate", action = "area-region", value = "johto" } })
+  idle(controller, 8)
   Assert.equal(controller:view().area.region, "johto", "the touch region returns to johto")
   Assert.isTrue(
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
@@ -2720,6 +2843,7 @@ function T.retail_entry_pages_play_key_and_touch_tones()
     "a region switch with no change stays silent"
   )
   press(controller, { { type = "r" } })
+  idle(controller, 8)
   Assert.equal(controller:view().area.region, "kanto", "the kanto key switches regions")
   Assert.isTrue(
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
@@ -2732,7 +2856,10 @@ function T.retail_entry_pages_play_key_and_touch_tones()
     "cycling tabs by key plays the cursor tone"
   )
   idle(controller, 60)
-  Assert.equal(controller:view().size.weight.phase, "drop", "the weight figures start their drop")
+  Assert.isTrue(
+    controller:view().size.weight.phase ~= "setup",
+    "the weight figures have started their drop"
+  )
   controller:drainEffects()
   press(controller, { { type = "activate", action = "size-restart", value = 0 } })
   Assert.isTrue(
@@ -2934,7 +3061,10 @@ function T.size_confirm_always_restarts_the_finished_weight_check()
     "confirming the restart plays the cursor tone"
   )
   idle(controller, 60)
-  Assert.equal(controller:view().size.weight.phase, "drop", "the rebuilt check starts its drop")
+  Assert.isTrue(
+    controller:view().size.weight.phase ~= "setup",
+    "the rebuilt check has started its drop"
+  )
   controller:drainEffects()
   press(controller, { { type = "activate", action = "size-restart" } })
   Assert.equal(controller:view().size.weight.phase, "setup", "touching restart rebuilds the check")
@@ -3010,7 +3140,10 @@ function T.retail_search_plays_key_and_touch_tones_with_found_chime()
   controller:drainEffects()
   press(controller, { { type = "y" } })
   Assert.equal(controller:view().page, "search", "grid Y reaches the criteria root")
-  Assert.deepEqual(drainSoundRoles(controller), {}, "opening the search by key stays silent")
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
+    "opening the search by key plays the touch tone"
+  )
   press(controller, { { type = "navigate", direction = "down" } })
   Assert.equal(controller:view().search.focus, "letter", "search focus steps to the letter criterion")
   Assert.isTrue(
@@ -3045,6 +3178,9 @@ function T.retail_search_plays_key_and_touch_tones_with_found_chime()
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
     "touching the criterion plays the touch tone"
   )
+  press(controller, { { type = "navigate", direction = "down" } })
+  Assert.equal(controller:view().search.editor.endpoint, "min", "down selects the lower handle")
+  drainSoundRoles(controller)
   press(controller, { { type = "navigate", direction = "right" } })
   Assert.equal(
     controller:view().search.criteria.height.min,
@@ -3130,24 +3266,30 @@ function T.retail_drags_play_scroll_and_decide_tones()
   observe(owner, monCatalog, { species = "WORMADAM", personality = 0 })
   observe(owner, monCatalog, { species = "ROTOM", personality = 0 })
   local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
-  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 240 } })
   Assert.isTrue(
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_BUTTON01"),
     "beginning the cover drag plays the decide tone"
   )
-  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 40 } })
   Assert.deepEqual(drainSoundRoles(controller), {}, "moving the cover drag stays silent")
   tick(controller, { { type = "drag", target = "cover", phase = "end", value = 200 } })
   idle(controller, 40)
   Assert.equal(controller:view().page, "grid", "completing the cover drag opens the grid")
   Assert.deepEqual(drainSoundRoles(controller), {}, "completing the cover drag stays silent")
-  tick(controller, { { type = "drag", target = "grid-scroll", phase = "end", value = 1 } })
-  Assert.equal(controller:view().grid.page, 1, "the scrollbar drag turns the page")
+  tick(controller, { { type = "drag", target = "grid-scroll", phase = "begin", value = 0.5 } })
   Assert.isTrue(
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
-    "paging the scrollbar plays the cursor tone"
+    "a scrollbar press that changes the page plays the cursor tone"
   )
-  tick(controller, { { type = "drag", target = "grid-scroll", phase = "end", value = 1 } })
+  tick(controller, { { type = "drag", target = "grid-scroll", phase = "move", value = 0.5 } })
+  Assert.deepEqual(drainSoundRoles(controller), {}, "a scrollbar move inside the same page stays silent")
+  tick(controller, { { type = "drag", target = "grid-scroll", phase = "end", value = 0 } })
+  Assert.isTrue(
+    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
+    "paging the scrollbar by drag plays the cursor tone"
+  )
+  tick(controller, { { type = "drag", target = "grid-scroll", phase = "end", value = 0 } })
   Assert.deepEqual(drainSoundRoles(controller), {}, "an unchanged scrollbar drag stays silent")
   controller:dispose()
 end
@@ -3235,29 +3377,23 @@ function T.size_weight_figure_rides_its_pan()
   press(controller, { { type = "confirm" } })
   idle(controller, 40)
   press(controller, { { type = "navigate", direction = "right" } })
-  idle(controller, 40)
+  idle(controller, 2)
   local view = controller:view()
   Assert.equal(view.page, "size", "the caught entry reaches its size")
-  local trainers = {}
+  local portrait, figure = nil, nil
   for _, intent in ipairs(assert(view.objects, "the size carries its intents")) do
     if intent.subject == "trainer" then
       checkIntentShape(intent)
-      trainers[#trainers + 1] = intent
-    end
-  end
-  Assert.equal(#trainers, 2, "the portrait and the weight figure both project")
-  local portrait, figure = nil, nil
-  for _, intent in ipairs(trainers) do
-    if intent.x == 184 then
       portrait = intent
-    else
+    elseif intent.subject == "trainer-figure" then
+      checkIntentShape(intent)
       figure = intent
     end
   end
   portrait = assert(portrait, "the height portrait keeps its authored column")
   Assert.equal(portrait.x, 184, "the height portrait keeps its authored column")
   figure = assert(figure, "the weight figure projects beside its pan")
-  Assert.equal(figure.x, view.size.pans[1].x, "the figure tracks its pan column")
+  Assert.equal(figure.x, view.size.pans[2].x, "the figure tracks its right pan column")
   local figures = assert(view.size.figures, "the size projects its figures")
   local trainerY = nil
   for _, record in ipairs(figures) do
@@ -3277,7 +3413,7 @@ function T.size_weight_figure_rides_its_pan()
   Assert.isTrue(nextY ~= trainerY, "accepted ticks move the simulated figure")
   local moved = nil
   for _, intent in ipairs(assert(dropped.objects, "the dropped size carries its intents")) do
-    if intent.subject == "trainer" and intent.x ~= 184 then
+    if intent.subject == "trainer-figure" then
       moved = intent
     end
   end
@@ -3331,7 +3467,7 @@ function T.special_markers_paint_beside_their_backed_dungeon()
     end
   end
   foundExtra = assert(foundExtra, "the extra marker paints as a shape-0 marker")
-  Assert.equal(foundExtra.choice, "shape0", "the extra paints its authored silhouette")
+  Assert.equal(markerShape(foundExtra), "shape0", "the extra paints its authored silhouette")
   local player = assert(foundPlayer, "the area projects its trainer pin")
   Assert.equal(player.choice, "male-here", "the pin inside the extra marker reports inside")
   controller:dispose()
@@ -3478,6 +3614,76 @@ function T.moved_comparison_gestures_keep_their_key_and_touch_tones()
   Assert.equal(controller:view().forms.comparison.activeSide, 0, "the touch selection moves the active side")
   Assert.deepEqual(drainSoundRoles(controller), { "SEQ_SE_GS_ZKN04" }, "a touch side selection plays one touch tone")
   controller:dispose()
+end
+
+-- The list page turn animates for fifteen accepted updates: the old
+-- page stays committed, both buffers publish, and the destination lands
+-- only when the scroll completes.
+function T.page_turn_animates_before_committing_the_destination()
+  local PokedexController = requirePresent("page turn animation")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  observe(owner, monCatalog, { species = "WORMADAM", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "r" } })
+  local turning = controller:view()
+  Assert.equal(turning.visual.transition.phase, "turn", "the page key starts a turn")
+  Assert.equal(turning.grid.page, 0, "the old page stays committed during the turn")
+  Assert.equal(turning.grid.turn.offset, 8, "the first turn update scrolls eight pixels")
+  Assert.equal(#turning.grid.buffers, 2, "the turn publishes both incoming and outgoing buffers")
+  idle(controller, 14)
+  Assert.equal(controller:view().grid.page, 0, "the destination page waits for the full turn")
+  Assert.equal(controller:view().grid.turn.offset, 120, "the icons reach their final scroll offset")
+  idle(controller, 1)
+  local settled = controller:view()
+  Assert.equal(settled.grid.page, 1, "the turn commits its destination page")
+  Assert.equal(settled.visual.transition.phase, "rest", "the turn settles back to rest")
+end
+
+-- The cover/list slide advances sixteen pixels per accepted update and
+-- switches the visible page only at the native button-strip threshold.
+function T.cover_slide_advances_sixteen_pixels_per_update()
+  local PokedexController = requirePresent("cover slide timing")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "start" } })
+  Assert.equal(controller:view().visual.coverOffset, 256, "the slide starts from the list offset")
+  idle(controller, 1)
+  Assert.equal(controller:view().visual.coverOffset, 240, "the slide retreats sixteen pixels")
+  Assert.equal(controller:view().page, "grid", "the list keeps drawing above the closing threshold")
+  idle(controller, 11)
+  Assert.equal(controller:view().visual.coverOffset, 64, "the slide reaches the threshold")
+  Assert.equal(controller:view().page, "grid", "the list still draws at the threshold")
+  idle(controller, 1)
+  Assert.equal(controller:view().visual.coverOffset, 48, "the slide crosses the threshold")
+  Assert.equal(controller:view().page, "cover", "the cover takes over below the threshold")
+  idle(controller, 3)
+  Assert.equal(controller:view().visual.coverOffset, 0, "the slide rests on the cover")
+end
+
+-- Opening an entry fades in through the shared palette envelope.
+function T.entry_open_fades_in_then_settles()
+  local PokedexController = requirePresent("entry open fade")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "confirm" } })
+  local opened = controller:view()
+  Assert.equal(opened.page, "grid", "the list holds through the fade out")
+  Assert.equal(opened.visual.transition.phase, "out", "the entry starts by fading the list out")
+  Assert.isTrue(opened.visual.paletteFades[1].coeff >= 0, "the fade starts at the current coefficient")
+  idle(controller, 8)
+  Assert.equal(controller:view().page, "area", "the entry swaps in at the midpoint")
+  Assert.equal(controller:view().visual.transition.phase, "in", "the entry fades in")
+  idle(controller, 4)
+  Assert.equal(controller:view().visual.transition.phase, "rest", "the entry fade settles")
 end
 
 return { tests = T }

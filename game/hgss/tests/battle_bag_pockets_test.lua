@@ -140,15 +140,15 @@ end
 
 function T.finger_draws_follow_the_tutorial_browser_page()
   Assert.deepEqual(
-    BattleBagPockets.fingerDraw({ open = true, tutorial = true, bagPage = "pocket_menu" }),
+    BattleBagPockets.fingerDraw({ open = true, tutorial = true, bagPage = "pocket_menu", fingerTicks = 0 }),
     { key = "battle:finger", x = 192, y = 24 }
   )
   Assert.deepEqual(
-    BattleBagPockets.fingerDraw({ open = true, tutorial = true, bagPage = "item_list" }),
+    BattleBagPockets.fingerDraw({ open = true, tutorial = true, bagPage = "item_list", fingerTicks = 0 }),
     { key = "battle:finger", x = 64, y = 16 }
   )
   Assert.deepEqual(
-    BattleBagPockets.fingerDraw({ open = true, tutorial = true, bagPage = "use_item" }),
+    BattleBagPockets.fingerDraw({ open = true, tutorial = true, bagPage = "use_item", fingerTicks = 0 }),
     { key = "battle:finger", x = 104, y = 152 }
   )
   Assert.isNil(
@@ -159,6 +159,24 @@ function T.finger_draws_follow_the_tutorial_browser_page()
     BattleBagPockets.fingerDraw({ open = false, tutorial = true, bagPage = "item_list" }),
     "closed browsers draw no finger"
   )
+end
+
+-- The finger bobs on its 18-update sine wave, presses 8 pixels down on
+-- the touch, rests 2 pixels down, then hides (battle_finger.c
+-- BattleFinger_Update).
+function T.finger_draws_bob_press_and_release()
+  local function y(ticks)
+    local draw =
+      BattleBagPockets.fingerDraw({ open = true, tutorial = true, bagPage = "item_list", fingerTicks = ticks })
+    return draw and draw.y or nil
+  end
+  Assert.equal(y(3), 16 - 7, "the finger rises with the wave")
+  Assert.equal(y(9), 16 - 14, "the wave peaks at fourteen pixels")
+  Assert.equal(y(18), 16, "the wave wraps every eighteen updates")
+  Assert.equal(y(73), 16 - 2, "the press waits on the last wave pose")
+  Assert.equal(y(76), 16 + 8, "the touch presses down")
+  Assert.equal(y(79), 16 + 2, "the release rests above the press")
+  Assert.isNil(y(82), "the finger hides after its release")
 end
 
 return { tests = T }

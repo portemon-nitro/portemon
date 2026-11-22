@@ -4,6 +4,8 @@
 -- an owned data home, so no user cache, save root, or ROM is involved.
 
 local Assert = require("tests.support.Assert")
+local GameVersion = require("romdump.src.source.GameVersion")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local LuaWriter = require("libs.codec.src.LuaWriter")
 
@@ -233,7 +235,7 @@ end
 
 -- The real reader, launched the way the helper launches it: a windowless LÖVE
 -- process reading the private data home.
-local function readerCommand(dataHome, modeArgs)
+local function readerCommand(dataHome, versionId, modeArgs)
   local parts = {
     "env",
     "XDG_DATA_HOME=" .. shellQuote(dataHome),
@@ -242,7 +244,7 @@ local function readerCommand(dataHome, modeArgs)
     "--repo-root",
     shellQuote(projectRoot()),
     "--version",
-    "heartgold",
+    versionId,
   }
   for _, arg in ipairs(modeArgs) do
     parts[#parts + 1] = arg
@@ -274,8 +276,9 @@ function T.raw_extraction_returns_the_exact_compact_bytes()
   local dataHome = ensureSeeded()
   local expected = assert(readFile(root .. "/expected-bank.g4msg"), "the seed bytes are available")
   local outputPath = root .. "/raw-bank.g4msg"
-  local output, exit =
-    run(readerCommand(dataHome, { "--path", bankPath(EXPORTED_BANK_ID), "--output", shellQuote(outputPath) }))
+  local output, exit = run(
+    readerCommand(dataHome, "heartgold", { "--path", bankPath(EXPORTED_BANK_ID), "--output", shellQuote(outputPath) })
+  )
 
   Assert.equal(exit, 0, "raw extraction must succeed: " .. output)
   Assert.equal(readFile(outputPath), expected, "raw extraction returns the stored compact bytes")
@@ -290,8 +293,13 @@ function T.message_text_export_carries_normalized_messages_and_rejects_truncated
   local dataHome = ensureSeeded()
   local messages = seedMessages()
   local outputPath = root .. "/bank.messages.lua"
-  local output, exit =
-    run(readerCommand(dataHome, { "--message-text", bankPath(EXPORTED_BANK_ID), "--output", shellQuote(outputPath) }))
+  local output, exit = run(
+    readerCommand(
+      dataHome,
+      "heartgold",
+      { "--message-text", bankPath(EXPORTED_BANK_ID), "--output", shellQuote(outputPath) }
+    )
+  )
   Assert.equal(exit, 0, "message-text export must succeed: " .. output)
   contains(output, "decoded_file=" .. outputPath, "the reader")
 
@@ -328,15 +336,24 @@ function T.message_text_export_carries_normalized_messages_and_rejects_truncated
 
   -- Repeating the export produces the same chunk: nothing depends on run order.
   local secondPath = root .. "/bank-again.messages.lua"
-  local again, againExit =
-    run(readerCommand(dataHome, { "--message-text", bankPath(EXPORTED_BANK_ID), "--output", shellQuote(secondPath) }))
+  local again, againExit = run(
+    readerCommand(
+      dataHome,
+      "heartgold",
+      { "--message-text", bankPath(EXPORTED_BANK_ID), "--output", shellQuote(secondPath) }
+    )
+  )
   Assert.equal(againExit, 0, "a repeated export must succeed: " .. again)
   Assert.equal(readFile(secondPath), readFile(outputPath), "the export is deterministic")
 
   -- A truncated compact payload is an error, never a partial export.
   local truncatedPath = root .. "/truncated.messages.lua"
   local _, truncatedExit = run(
-    readerCommand(dataHome, { "--message-text", bankPath(TRUNCATED_BANK_ID), "--output", shellQuote(truncatedPath) })
+    readerCommand(
+      dataHome,
+      "heartgold",
+      { "--message-text", bankPath(TRUNCATED_BANK_ID), "--output", shellQuote(truncatedPath) }
+    )
   )
   Assert.isTrue(truncatedExit ~= 0, "a truncated bank must fail the export")
   Assert.isNil(readFile(truncatedPath), "a failed export leaves no partial output file")
@@ -494,7 +511,14 @@ end
 function T.the_inspector_serves_members_from_the_prepared_snapshot()
   local SnapshotArchive = require("tests.support.SnapshotArchive")
   Assert.notNil(os.getenv("XDG_DATA_HOME"), "the scoped preparation runs against a private data home")
-  local index, members, archiveBytes = SnapshotArchive.read("heartgold")
+  local versionId = nil
+  for _, candidate in ipairs(GameVersion.ORDER) do
+    if versionId == nil and GeneratedCacheFixture.isPrepared(candidate) then
+      versionId = candidate
+    end
+  end
+  assert(versionId ~= nil, "the runner prepares the selected version's snapshot")
+  local index, members, archiveBytes = SnapshotArchive.read(versionId)
   Assert.notNil(index, "the scoped preparation must leave one snapshot archive the next process can read")
   Assert.notNil(archiveBytes, "the prepared snapshot is readable as archive bytes")
   local preparedBank = nil
@@ -507,13 +531,13 @@ function T.the_inspector_serves_members_from_the_prepared_snapshot()
   Assert.notNil(preparedBank, "the prepared snapshot carries the requested message bank")
   local root = ensureRoot()
   local dataHome = root .. "/snapshot-cache"
-  local saveDir = dataHome .. "/love/portemon/heartgold"
+  local saveDir = dataHome .. "/love/portemon/" .. versionId
   local loosePath = saveDir .. "/" .. preparedBank
   os.execute("mkdir -p -- " .. shellQuote(loosePath:gsub("/[^/]+$", "")))
   writeFile(saveDir .. "/cache.zip", assert(archiveBytes))
   writeFile(loosePath, "stale-loose-bank-bytes")
   local decoded = root .. "/snapshot-bank.g4msg"
-  local output, exit = run(readerCommand(dataHome, {
+  local output, exit = run(readerCommand(dataHome, versionId, {
     "--path",
     shellQuote(preparedBank),
     "--output",
@@ -530,7 +554,8 @@ function T.the_inspector_serves_members_from_the_prepared_snapshot()
     "stale-loose-bank-bytes",
     "reading a snapshot member leaves a loose generated file untouched"
   )
-  local listed, listExit = run(readerCommand(dataHome, { "--list", shellQuote("data/generated/field/messages") }))
+  local listed, listExit =
+    run(readerCommand(dataHome, versionId, { "--list", shellQuote("data/generated/field/messages") }))
   Assert.equal(listExit, 0, "the inspector lists the prepared snapshot, got:\n" .. listed)
   Assert.isTrue(
     listed:find(preparedBank, 1, true) ~= nil,
@@ -548,7 +573,7 @@ function T.the_inspector_refuses_a_loose_bank_without_a_snapshot()
   os.execute("mkdir -p -- " .. shellQuote((loosePath:gsub("/[^/]+$", ""))))
   writeFile(loosePath, "legacy-loose-bank-bytes")
   local decoded = root .. "/loose-bank.g4msg"
-  local output, exit = run(readerCommand(dataHome, {
+  local output, exit = run(readerCommand(dataHome, "heartgold", {
     "--path",
     shellQuote(bankPath(EXPORTED_BANK_ID)),
     "--output",

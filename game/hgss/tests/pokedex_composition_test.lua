@@ -393,9 +393,14 @@ end
 -- the browser cell. New Bark town keeps the same town with a location.
 local COVERED_MAP = "MAP_NEW_BARK"
 
-local function withUnlockedRuntime(versionId, fn)
+---@param versionId string
+---@param mapSymbol string? field map to boot on; nil keeps the fixture house interior
+---@param fn fun(runtime: table<string, unknown>)
+local function withUnlockedRuntimeOn(versionId, mapSymbol, fn)
   local entry = validEntry(versionId)
-  entry.location.mapSymbol = COVERED_MAP
+  if mapSymbol ~= nil then
+    entry.location.mapSymbol = mapSymbol
+  end
   local booted = FieldRuntime.new(entry, runtimeOptions(versionId))
   local ok, err = xpcall(function()
     booted.eventState:setFlag(107)
@@ -411,6 +416,10 @@ local function withUnlockedRuntime(versionId, fn)
   if not ok then
     error(err, 0)
   end
+end
+
+local function withUnlockedRuntime(versionId, fn)
+  withUnlockedRuntimeOn(versionId, COVERED_MAP, fn)
 end
 
 function T.factory_routes_through_the_existing_destination_descriptor(context)
@@ -458,11 +467,51 @@ function T.map_context_reaches_the_browser_from_the_existing_authority(context)
       )
       local facts = pokegear.mapContext()
       Assert.equal(type(facts), "table", versionId .. " the context resolves its location facts afresh")
-      local cell = MapProjection.contextCell(facts)
+      local cell = MapProjection.openCell(facts)
       Assert.isTrue(
         type(cell.x) == "number" and type(cell.y) == "number",
         versionId .. " the existing projection resolves numeric block coordinates"
       )
+    end)
+  end
+end
+
+-- The reported field flow: the browser opens from an indoor map that has no
+-- compiled phone location, no committed exterior, and no scripted special
+-- spawn. Such a context proves no cell, so the capture anchors on the
+-- context's own normalized cell instead of refusing the browser.
+function T.indoor_open_without_exterior_or_special_evidence_anchors_its_cell(context)
+  requireComposition("indoor capture without exterior evidence")
+  local MapProjection = require("game.hgss.src.pokegear.MapProjection")
+  for _, versionId in ipairs(requireVersions(context)) do
+    withUnlockedRuntimeOn(versionId, nil, function(runtime)
+      local pokegear = assert(runtime.pokegear, versionId .. " the runtime composes its gear feature")
+      local facts = pokegear.mapContext()
+      Assert.equal(facts.fieldMap, MAP, versionId .. " the context names the indoor field map")
+      Assert.isNil(facts.lastExterior, versionId .. " a fresh boot committed no exterior")
+      Assert.isNil(facts.specialSpawn, versionId .. " the save recorded no special spawn")
+      Assert.equal(facts.explicitX, 0, versionId .. " the uncompiled indoor map declares zero headers")
+      Assert.equal(facts.explicitY, 0, versionId .. " the uncompiled indoor map declares zero headers")
+      local cell = MapProjection.openCell(facts)
+      Assert.deepEqual(
+        cell,
+        { x = 0, y = 0 },
+        versionId .. " the unprovable indoor capture anchors on the origin cell its context declares"
+      )
+      local descriptor = findPokedexDescriptor(runtime)
+      Assert.notNil(descriptor, versionId .. " the existing catalogue routes the pokedex destination")
+      local binding = runtime:bindPokedexPreparation(function(_)
+        return stubLease()
+      end)
+      local child = nil
+      local ok, err = xpcall(function()
+        child = descriptor.factory()
+      end, debug.traceback)
+      runtime:unbindPokedexPreparation(binding)
+      if ok then
+        child:dispose()
+      end
+      Assert.isTrue(ok, versionId .. " the browser opens indoors without exterior evidence: " .. tostring(err))
     end)
   end
 end
@@ -589,9 +638,16 @@ return {
       "field-runtime",
       "map:64",
       "map-data:64",
+      "map:60",
+      "map-data:31",
+      "map-data:33",
+      "map-data:47",
+      "map-data:48",
+      "map-data:60",
       "trainers:global",
       "encounters:global",
       "audio-bank:702",
+      "audio-bank:709",
       "pokedex-data:global",
     },
     tags = { "pokedex" },

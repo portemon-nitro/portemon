@@ -610,6 +610,7 @@ local function fullManifest()
   old.images["assets/generated/battle/trainer-front-YOUNGSTER.png"] = { width = 80, height = 80 }
   old.images["assets/generated/battle/trainer-front-LEADER_FALKNER.png"] = { width = 80, height = 80 }
   old.images["assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN.png"] = { width = 80, height = 80 }
+  old.images["assets/generated/battle/trainer-back-PKMN_TRAINER_LYRA.png"] = { width = 80, height = 80 }
   old.images["assets/generated/battle/bag-page-1.png"] = { width = 256, height = 192 }
   old.images["assets/generated/battle/bag-page-2.png"] = { width = 256, height = 192 }
   old.images["assets/generated/battle/bag-page-3.png"] = { width = 256, height = 192 }
@@ -920,6 +921,26 @@ local function fullManifest()
           animation = trainerAnimation(
             "back:PKMN_TRAINER_ETHAN",
             "assets/generated/battle/trainer-back-PKMN_TRAINER_ETHAN.png",
+            { x = -40, y = -40 }
+          ),
+          throwOffsets = {
+            { x = 0, y = 128 },
+            { x = -34, y = 4 },
+            { x = -28, y = -11 },
+            { x = 50, y = -12 },
+            { x = 32767, y = 32767 },
+            { x = 32767, y = 32767 },
+          },
+        },
+        ["back:PKMN_TRAINER_LYRA"] = {
+          drawableKey = "trainer:back:PKMN_TRAINER_LYRA",
+          image = "assets/generated/battle/trainer-back-PKMN_TRAINER_LYRA.png",
+          width = 80,
+          height = 80,
+          rasterOffset = { x = -40, y = -40 },
+          animation = trainerAnimation(
+            "back:PKMN_TRAINER_LYRA",
+            "assets/generated/battle/trainer-back-PKMN_TRAINER_LYRA.png",
             { x = -40, y = -40 }
           ),
           throwOffsets = {
@@ -1709,6 +1730,12 @@ local function fullManifest()
           ". Will you switch your Pokémon?",
         }),
         ["battle/prompt/use-next"] = messageRecord({ "Use next Pokémon?" }),
+        ["battle/prompt/tutorial-throw/male-author"] = messageRecord({
+          "All right! I got its HP down!\nTime to throw a Poké Ball!",
+        }),
+        ["battle/prompt/tutorial-throw/female-author"] = messageRecord({
+          "OK! Its HP is down!\nIt’s ready for a Poké Ball!",
+        }),
         ["battle/narration/experience"] = messageRecord({ false, " gained ", false, " Exp. Points!" }),
         ["battle/narration/experience/boosted"] = messageRecord({ false, " gained a boosted ", false, " Exp. Points!" }),
         ["battle/narration/level-up"] = messageRecord({ false, " grew to Lv. ", false, "!" }),
@@ -1999,8 +2026,8 @@ local function fullManifest()
         ["status/recorder-5"] = { tokens = {} },
         ["label/bug-contest-gender-male"] = { tokens = {} },
         ["label/bug-contest-gender-female"] = { tokens = {} },
-        ["tutorial/author/male-player"] = { tokens = {} },
-        ["tutorial/author/female-player"] = { tokens = {} },
+        ["tutorial/author/male-player"] = messageRecord({ "LYRA" }),
+        ["tutorial/author/female-player"] = messageRecord({ "ETHAN" }),
         ["transition/trainer-name"] = { tokens = {} },
       },
       routes = {

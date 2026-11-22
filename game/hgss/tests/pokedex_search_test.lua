@@ -108,9 +108,9 @@ local function idle(controller, count)
 end
 
 local function openSearch(controller)
-  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 200 } })
-  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 64 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "begin", value = 240 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "move", value = 40 } })
+  tick(controller, { { type = "drag", target = "cover", phase = "end", value = 40 } })
   idle(controller, 40)
   Assert.equal(controller:view().page, "grid", "the cover drag reaches the grid before searching")
   tick(controller, { { type = "y" } })
@@ -283,7 +283,7 @@ function T.editor_ok_retains_and_cancel_restores_the_backup()
   controller:dispose()
 end
 
-function T.unknown_area_matches_kanto_or_unknown_without_johto_before_national()
+function T.unknown_area_matches_only_the_unknown_mask_before_national()
   local PokedexController = requirePresent("complete search and editor behavior")
   local monCatalog, catalog = catalogs()
   catalog.criteria.areas = { johto = { "CHIKORITA" }, kanto = { "TOTODILE" }, unknown = { "CUSTOM_IN" } }
@@ -305,8 +305,8 @@ function T.unknown_area_matches_kanto_or_unknown_without_johto_before_national()
   runSearch(controller)
   Assert.deepEqual(
     resultSpecies(resultEntries(controller)),
-    { "TOTODILE", "CUSTOM_IN" },
-    "unknown matches kanto or unknown members without johto ones"
+    { "CUSTOM_IN" },
+    "unknown matches only the unknown mask members"
   )
   controller:dispose()
 end
@@ -382,7 +382,7 @@ function T.simultaneous_start_wins_over_touch_and_grid_edges()
   openSearch(controller)
   tick(controller, {
     { type = "start" },
-    { type = "drag", target = "cover", phase = "begin", value = 0 },
+    { type = "drag", target = "cover", phase = "begin", value = 240 },
   })
   idle(controller, 250)
   Assert.equal(controller:view().page, "results", "the fresh-start shortcut runs the search ahead of touch handling")
@@ -576,6 +576,91 @@ function T.editor_option_lists_follow_the_published_option_order()
   search:choose("unrestricted")
   search:closeEditor(true)
   Assert.isNil(search:criteria().type1, "choosing the final type choice clears the filter")
+end
+
+-- Focus states carry the node index plus the last cell the cursor stood on;
+-- the source graphs read that memory when the cursor leaves OK or cancel.
+---@param PokedexSearch table search module under test
+---@param kind string focus graph identity
+---@param node integer zero-based native focus node
+---@param column integer? last focused cell, defaulting to the node itself
+---@return table focus state
+local function graphState(PokedexSearch, kind, node, column)
+  local graph = assert(PokedexSearch.FOCUS[kind], "the focus graph exists")
+  return { node = node, returnInput = nil, column = column or (node < (graph.cells or 0) and node or nil) }
+end
+
+---@param PokedexSearch table search module under test
+---@param kind string focus graph identity
+---@param state table focus state under traversal
+---@param direction string dpad direction
+---@param enabled (fun(nodeIndex: integer): boolean)|nil node enable predicate
+---@return boolean moved whether the focus changed
+local function move(PokedexSearch, kind, state, direction, enabled)
+  local graph = assert(PokedexSearch.FOCUS[kind], "the focus graph exists")
+  return PokedexSearch.moveFocus(graph, state, direction, enabled)
+end
+
+-- The editor focus graphs are the source DpadMenuBox tables: rows and
+-- columns step on their native links, a locked scope never takes focus, OK
+-- and cancel stay reachable, and leaving OK re-enters the column the cursor
+-- came from.
+function T.search_editor_graphs_follow_the_source_links()
+  local PokedexSearch = require(SEARCH_MODULE)
+
+  local letter = graphState(PokedexSearch, "letter", 0)
+  Assert.isTrue(move(PokedexSearch, "letter", letter, "down"), "the letter grid steps down")
+  Assert.equal(letter.node, 7, "the letter grid lands on the next row's first letter")
+  Assert.isTrue(move(PokedexSearch, "letter", letter, "up"), "the letter grid steps up")
+  Assert.equal(letter.node, 0, "the letter grid returns to the first letter")
+  local typeState = graphState(PokedexSearch, "type", 0)
+  move(PokedexSearch, "type", typeState, "down")
+  Assert.equal(typeState.node, 4, "the type grid lands on the second row")
+  local shape = graphState(PokedexSearch, "shape", 0)
+  move(PokedexSearch, "shape", shape, "down")
+  Assert.equal(shape.node, 5, "the shape grid lands on the second row")
+  local area = graphState(PokedexSearch, "area", 0)
+  move(PokedexSearch, "area", area, "down")
+  Assert.equal(area.node, 2, "the area grid lands on the unknown scope")
+  local blocked = graphState(PokedexSearch, "area", 0)
+  Assert.isFalse(
+    move(PokedexSearch, "area", blocked, "left", function(nodeIndex)
+      return nodeIndex ~= 1
+    end),
+    "the locked kanto neighbour is a silent no-op"
+  )
+  Assert.equal(blocked.node, 0, "the locked kanto scope never takes focus")
+
+  local height = graphState(PokedexSearch, "height", 0)
+  Assert.isTrue(move(PokedexSearch, "height", height, "down"), "the max handle steps down")
+  Assert.equal(height.node, 1, "the max handle steps to the min handle")
+  Assert.isTrue(move(PokedexSearch, "height", height, "down"), "the min handle steps down")
+  Assert.equal(height.node, 2, "the min handle steps to OK")
+  Assert.isTrue(move(PokedexSearch, "height", height, "down"), "OK steps down to the max handle")
+  Assert.equal(height.node, 0, "OK returns to the max handle")
+  Assert.isTrue(move(PokedexSearch, "height", height, "up"), "the max handle steps up")
+  Assert.equal(height.node, 2, "the max handle steps to OK")
+  Assert.isTrue(move(PokedexSearch, "height", height, "right"), "OK steps right to cancel")
+  Assert.equal(height.node, 3, "OK steps to cancel")
+
+  -- Leaving OK downward re-enters the column the cursor came from; a cursor
+  -- that stood on a later cell must not collapse onto the first column.
+  local downward = graphState(PokedexSearch, "letter", 24)
+  Assert.isTrue(move(PokedexSearch, "letter", downward, "down"), "the letter column steps into OK")
+  Assert.equal(downward.node, 27, "the bottom-row letter lands on OK")
+  Assert.isTrue(move(PokedexSearch, "letter", downward, "down"), "OK steps down")
+  Assert.equal(downward.node, 3, "OK returns to the top of the column the cursor left")
+  -- The upward departure enters the same column's bottom row.
+  local upward = graphState(PokedexSearch, "letter", 27, 24)
+  Assert.isTrue(move(PokedexSearch, "letter", upward, "up"), "OK steps up")
+  Assert.equal(upward.node, 24, "OK returns to the bottom of the column the cursor left")
+  -- The shape grid keeps its five-column block across the same departure.
+  local shapeBlock = graphState(PokedexSearch, "shape", 15, 12)
+  Assert.isTrue(move(PokedexSearch, "shape", shapeBlock, "down"), "the shape OK steps down")
+  Assert.equal(shapeBlock.node, 2, "shape OK returns into the block the cursor left")
+  local typeBlock = graphState(PokedexSearch, "type", 18, 17)
+  Assert.isTrue(move(PokedexSearch, "type", typeBlock, "down"), "the type OK steps down")
+  Assert.equal(typeBlock.node, 1, "type OK returns into the half-row the cursor left")
 end
 
 return { tests = T }

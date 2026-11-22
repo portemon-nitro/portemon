@@ -802,7 +802,9 @@ function T.menu_installation_starts_no_prefetch_or_warmup()
   local originalOpts = App.opts
   local originalEpoch = App.epoch
   local originalService = App.service
+  local originalAssetRuntime = App._assetRuntime
   App.epoch = 1
+  App._assetRuntime = nil
   App.opts = { dev = false }
   local events = {}
   local service = newMenuService(events)
@@ -849,6 +851,8 @@ function T.menu_installation_starts_no_prefetch_or_warmup()
   App.state = originalState
   App.provisioner = originalProvisioner
   App.opts = originalOpts
+  App._releaseAssetRuntime()
+  App._assetRuntime = originalAssetRuntime
   App.epoch = originalEpoch
   App.service = originalService
   if not ok then
@@ -884,7 +888,9 @@ function T.menu_installation_starts_no_background_warmup()
   local originalOpts = App.opts
   local originalEpoch = App.epoch
   local originalService = App.service
+  local originalAssetRuntime = App._assetRuntime
   App.epoch = 1
+  App._assetRuntime = nil
   App.opts = { dev = false }
   local events = {}
   local enabled = 0
@@ -921,6 +927,8 @@ function T.menu_installation_starts_no_background_warmup()
   App.state = originalState
   App.provisioner = originalProvisioner
   App.opts = originalOpts
+  App._releaseAssetRuntime()
+  App._assetRuntime = originalAssetRuntime
   App.epoch = originalEpoch
   App.service = originalService
   if not ok then

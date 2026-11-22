@@ -252,6 +252,19 @@ local function recordingInstantAudio(log)
   return audio
 end
 
+---@param played string[] recorded sequence plays
+---@param sequence string sequence identity under test
+---@return integer count plays of the named sequence
+local function countPlayed(played, sequence)
+  local count = 0
+  for _, playedSequence in ipairs(played) do
+    if playedSequence == sequence then
+      count = count + 1
+    end
+  end
+  return count
+end
+
 local function phoneMessages()
   return {
     greeting = "custom.greeting",
@@ -465,21 +478,17 @@ function T.tests.normal_hangup_runs_the_source_three_message_timer()
       "every staged line is one of the three source messages"
     )
   end
-  local off, debug, selects = 0, 0, 0
-  for _, sequence in ipairs(played) do
-    if sequence == "SEQ_SE_GS_PHONE_OFF" then
-      off = off + 1
-    end
-    if sequence == "SEQ_SE_DP_BOX03" then
-      debug = debug + 1
-    end
-    if sequence == "SEQ_SE_DP_SELECT" then
-      selects = selects + 1
-    end
-  end
-  Assert.equal(off, 1, "the normal hangup plays the source PHONE_OFF tone exactly once")
-  Assert.equal(debug, 0, "the normal hangup plays no debug click tone behind its staged lines")
-  Assert.equal(selects, 0, "a cancelled call skips the pre-hangup wait tone")
+  Assert.equal(
+    countPlayed(played, "SEQ_SE_GS_PHONE_OFF"),
+    1,
+    "the normal hangup plays the source PHONE_OFF tone exactly once"
+  )
+  Assert.equal(
+    countPlayed(played, "SEQ_SE_DP_BOX03"),
+    0,
+    "the normal hangup plays no debug click tone behind its staged lines"
+  )
+  Assert.equal(countPlayed(played, "SEQ_SE_DP_SELECT"), 0, "a cancelled call skips the pre-hangup wait tone")
   -- Forced release of a live call settles immediately without
   -- replaying the tone.
   local secondHandle = call:begin({
@@ -506,27 +515,85 @@ function T.tests.normal_hangup_runs_the_source_three_message_timer()
     "hangingUp",
     "the second call reaches its staged hangup"
   )
-  local selectsAfter = 0
-  for _, sequence in ipairs(played) do
-    if sequence == "SEQ_SE_DP_SELECT" then
-      selectsAfter = selectsAfter + 1
-    end
-  end
-  Assert.equal(selectsAfter, 1, "the completed script plays the pre-hangup button tone once")
-  local releasedBefore = 0
-  for _, sequence in ipairs(played) do
-    if sequence == "SEQ_SE_GS_PHONE_OFF" then
-      releasedBefore = releasedBefore + 1
-    end
-  end
+  Assert.equal(countPlayed(played, "SEQ_SE_DP_SELECT"), 1, "the completed script plays the pre-hangup button tone once")
+  local releasedBefore = countPlayed(played, "SEQ_SE_GS_PHONE_OFF")
   call:release(secondHandle)
-  local released = 0
-  for _, sequence in ipairs(played) do
-    if sequence == "SEQ_SE_GS_PHONE_OFF" then
-      released = released + 1
+  Assert.equal(
+    countPlayed(played, "SEQ_SE_GS_PHONE_OFF"),
+    releasedBefore,
+    "forced release settles without replaying the tone"
+  )
+end
+
+-- A player who confirms the finished conversation with B hears the same
+-- source wait-button tone as A: PhoneCall_WaitButtonBeforeHangup plays
+-- SEQ_SE_DP_SELECT before the staged hangup runs.
+function T.tests.button_wait_cancelled_with_b_plays_the_source_select_tone()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 4243 }, catalogRefs(record))
+  state:registerContact("custom.kurt")
+  local world = { flags = {}, rematchReady = {}, nativeSelectorFacts = localPhoneSelectorFacts() }
+  local played = {}
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = phoneMessages(),
+    world = world,
+    audio = recordingInstantAudio(played),
+    random = PokegearRandom.new(4243),
+  })
+  local handle = call:begin({
+    id = "button-wait-b",
+    contact = "custom.kurt",
+    direction = "outgoing",
+    kind = "ordinary",
+  })
+  settleDial(call, handle)
+  call:step(handle, { advance = true })
+  call:step(handle, { advance = true })
+  Assert.equal(countPlayed(played, "SEQ_SE_DP_SELECT"), 0, "the conversation itself plays no button tone")
+  call:step(handle, { cancel = true })
+  Assert.equal(
+    (call:view(handle) --[[@as table<string, unknown>]]).stage,
+    "hangingUp",
+    "cancelling the finished conversation enters the staged hangup"
+  )
+  Assert.equal(
+    countPlayed(played, "SEQ_SE_DP_SELECT"),
+    1,
+    "cancelling the button wait plays the source button tone once"
+  )
+  for _ = 1, 40 do
+    if call:result(handle) ~= nil then
+      break
     end
+    call:step(handle, {})
   end
-  Assert.equal(released, releasedBefore, "forced release settles without replaying the tone")
+  Assert.notNil(call:result(handle), "the B hangup settles on its staged timer")
+
+  -- The forced cancel boundary (a host-owned call cancelled at the same
+  -- wait) voices the tone too before settling at once.
+  local second = call:begin({
+    id = "button-wait-forced",
+    contact = "custom.kurt",
+    direction = "outgoing",
+    kind = "ordinary",
+  })
+  settleDial(call, second)
+  call:step(second, { advance = true })
+  call:step(second, { advance = true })
+  call:cancel(second, "hangup")
+  Assert.equal(
+    countPlayed(played, "SEQ_SE_DP_SELECT"),
+    2,
+    "forced cancellation at the button wait plays the source tone once"
+  )
 end
 
 -- A missing world owner is an attributed dependency failure, never an

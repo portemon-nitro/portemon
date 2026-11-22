@@ -10,6 +10,15 @@ local T = {
   tests = {},
 }
 
+-- Stub runtimes own no generated consumer, so the harness answers them no
+-- installed view instead of hydrating a runner-prepared snapshot.
+local function syntheticHarness(options)
+  options.generatedView = function()
+    return nil
+  end
+  return AcceptanceHarness.new(options)
+end
+
 local function fakeRuntime(game)
   local runtime = {
     versionId = game.versionId,
@@ -41,7 +50,7 @@ function T.tests.synthetic_boot_is_closed_once_and_uses_a_unique_save_namespace(
   local runtimes = {}
   local graphics = love.graphics
   local originalShader = graphics.newShader
-  local harness = AcceptanceHarness.new({
+  local harness = syntheticHarness({
     versions = { "heartgold" },
     runtimeFactory = function(game)
       local runtime = fakeRuntime(game)
@@ -74,7 +83,7 @@ function T.tests.synthetic_boot_is_closed_once_and_uses_a_unique_save_namespace(
 end
 
 function T.tests.synthetic_boot_keeps_the_global_save_catalog_inside_its_namespace()
-  local harness = AcceptanceHarness.new({ versions = { "heartgold" }, runtimeFactory = fakeRuntime })
+  local harness = syntheticHarness({ versions = { "heartgold" }, runtimeFactory = fakeRuntime })
   local priorCatalog = love.filesystem.getInfo("saves/catalog.lua")
   local game = harness:boot({ versionId = "heartgold", save = "fresh" })
   Assert.notNil(love.filesystem.getInfo(game.saveNamespace .. "/global/catalog.lua"))
@@ -99,7 +108,7 @@ function T.tests.synthetic_boot_keeps_the_global_save_catalog_inside_its_namespa
 end
 
 function T.tests.advance_until_timeout_contains_a_bounded_semantic_trace()
-  local harness = AcceptanceHarness.new({ versions = { "heartgold" }, runtimeFactory = fakeRuntime })
+  local harness = syntheticHarness({ versions = { "heartgold" }, runtimeFactory = fakeRuntime })
   local game = harness:boot({ versionId = "heartgold", save = "fresh" })
   local err = Assert.throws(function()
     game:advanceUntil("impossible state", function()
@@ -115,7 +124,7 @@ end
 
 function T.tests.wait_for_transition_returns_the_observed_destination_before_follow_up_scripts()
   local lockTicks = 0
-  local harness = AcceptanceHarness.new({
+  local harness = syntheticHarness({
     versions = { "heartgold" },
     runtimeFactory = function(game)
       local runtime = fakeRuntime(game)
@@ -164,7 +173,7 @@ function T.tests.failed_boot_disposes_the_partial_runtime_and_removes_its_namesp
   local deleted = {}
   local runtime = fakeRuntime({ versionId = "heartgold" })
   runtime.captureGameSave = nil
-  local harness = AcceptanceHarness.new({
+  local harness = syntheticHarness({
     versions = { "heartgold" },
     runtimeFactory = function()
       return runtime
@@ -187,7 +196,7 @@ end
 function T.tests.failed_namespace_cleanup_can_be_retried_without_disposing_twice()
   local runtime = fakeRuntime("heartgold")
   local removals = 0
-  local harness = AcceptanceHarness.new({
+  local harness = syntheticHarness({
     versions = { "heartgold" },
     runtimeFactory = function()
       return runtime
@@ -210,7 +219,7 @@ function T.tests.failed_namespace_cleanup_can_be_retried_without_disposing_twice
 end
 
 function T.tests.selected_versions_are_iterated_in_declared_order()
-  local harness = AcceptanceHarness.new({
+  local harness = syntheticHarness({
     versions = { "heartgold", "soulsilver" },
     runtimeFactory = fakeRuntime,
   })
@@ -222,14 +231,14 @@ function T.tests.selected_versions_are_iterated_in_declared_order()
 end
 
 function T.tests.primary_version_uses_the_first_selected_version()
-  local harness = AcceptanceHarness.new({ versions = { "soulsilver" } })
+  local harness = syntheticHarness({ versions = { "soulsilver" } })
   Assert.equal(harness:primaryVersion(), "soulsilver")
 end
 
 function T.tests.restart_reuses_the_save_namespace_and_disposes_the_replaced_runtime_once()
   local runtimes = {}
   local optionsSeen = {}
-  local harness = AcceptanceHarness.new({
+  local harness = syntheticHarness({
     versions = { "heartgold" },
     runtimeFactory = function(game, options)
       optionsSeen[#optionsSeen + 1] = options
@@ -259,7 +268,7 @@ function T.tests.restart_reuses_the_original_field_options()
     viewportHeight = 720,
     screenTopology = { id = "dual-display" },
   }
-  local harness = AcceptanceHarness.new({
+  local harness = syntheticHarness({
     versions = { "heartgold" },
     runtimeFactory = function(game, options)
       optionsSeen[#optionsSeen + 1] = options
@@ -282,7 +291,7 @@ end
 
 function T.tests.recording_script_hosts_are_an_explicit_composition_choice()
   local optionsSeen = {}
-  local harness = AcceptanceHarness.new({
+  local harness = syntheticHarness({
     versions = { "heartgold" },
     runtimeFactory = function(game, options)
       optionsSeen[#optionsSeen + 1] = options
@@ -362,7 +371,7 @@ local function readinessRuntime(game)
 end
 
 function T.tests.map_swap_transition_completion_and_field_readiness_clear_at_distinct_ticks()
-  local harness = AcceptanceHarness.new({ versions = { "heartgold" }, runtimeFactory = readinessRuntime })
+  local harness = syntheticHarness({ versions = { "heartgold" }, runtimeFactory = readinessRuntime })
   local game = harness:boot({ versionId = "heartgold", save = "fresh" })
 
   local swapped = game:waitForMapSwap()
@@ -384,7 +393,7 @@ function T.tests.map_swap_transition_completion_and_field_readiness_clear_at_dis
 end
 
 function T.tests.field_readiness_reports_the_blocking_state_when_it_never_clears()
-  local harness = AcceptanceHarness.new({
+  local harness = syntheticHarness({
     versions = { "heartgold" },
     runtimeFactory = function(game)
       local runtime = fakeRuntime(game)
@@ -434,7 +443,7 @@ end
 -- instead of treating it as fatal -- even though facing already matches the
 -- requested direction.
 function T.tests.moveOne_reports_a_blocked_step_even_when_facing_already_matches()
-  local harness = AcceptanceHarness.new({
+  local harness = syntheticHarness({
     versions = { "heartgold" },
     runtimeFactory = function(game)
       local runtime = fakeRuntime(game)
