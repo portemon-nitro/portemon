@@ -35,13 +35,18 @@ local T = {
       "move-icons:global",
       "battle-presentation:global",
       "battle-evolution:global",
-      -- Evolution cries: the standard cry sequence plus the Charmander,
-      -- Charmeleon, Eevee, and Flareon species banks.
+      -- Evolution cries: the standard sequence and each species used by
+      -- the field evolution journeys below.
       "audio-bank:1",
       "audio-bank:4",
       "audio-bank:5",
       "audio-bank:133",
       "audio-bank:136",
+      "audio-bank:190",
+      "audio-bank:290",
+      "audio-bank:291",
+      "audio-bank:292",
+      "audio-bank:424",
     },
     tags = { "party", "bag", "journey" },
   },
@@ -840,6 +845,105 @@ function T.tests.production_rare_candy_level_evolution_is_cancelable_after_the_l
     Assert.equal(audio:currentMusic(), fieldMusic, "the map music returns after the scene")
     flow:dispose()
     envelope:dispose()
+  end, evolutionAudio())
+end
+
+function T.tests.production_rare_candy_replacement_unlocks_the_move_gated_evolution(context)
+  requireVersions(context)
+  withGame(function(game)
+    local envelope = bindEvolutionPresentation(game)
+    local mons = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+    Assert.isTrue(mons:giveMon({ species = "AIPOM", level = 31 }), "the evolving fixture joins the party")
+    Assert.isTrue(bag:add("RARE_CANDY", 1), "the fixture must stock a rare candy")
+    local fieldMusic = assert(game.runtime.audio:currentMusic(), "the field plays music before the scene")
+    local flow = composition(game).makeBagFlow()
+    useOnLead(game, flow, "RARE_CANDY")
+    local sawScene = false
+    local learnedMove = false
+    local selectedLearn = false
+    for _ = 1, 7000 do
+      local status = flowStatus(flow)
+      local events = {}
+      if status.page == "evolution" then
+        sawScene = true
+      elseif status.page == "party_item_target" and status.child ~= nil then
+        if status.child.state == "message" or status.child.state == "level_up_stats" then
+          if status.child.message ~= nil and status.child.message.templateKey == "learned" then
+            learnedMove = true
+            local knowsDoubleHit = false
+            for _, entry in ipairs(mons:partyMon(0).moves) do
+              knowsDoubleHit = knowsDoubleHit or entry.move == "DOUBLE_HIT"
+            end
+            Assert.isTrue(knowsDoubleHit, "the replacement has published before its learned message")
+          end
+          events = { { type = "confirm" } }
+        elseif status.child.state == "confirm" and status.child.message.templateKey == "learnMove" then
+          if selectedLearn then
+            events = { { type = "confirm" } }
+          else
+            selectedLearn = true
+            events = { { type = "navigate", direction = "up" } }
+          end
+        elseif status.child.state == "confirm" then
+          events = { { type = "confirm" } }
+        end
+      elseif status.page == "move_pick" and status.transition == nil then
+        events = { { type = "confirm" } }
+      elseif status.page == "bag_browse" and sawScene then
+        break
+      end
+      flow:updateFixed(events)
+      game:step()
+    end
+    Assert.isTrue(sawScene, "the post-learning level check opens the evolution scene")
+    Assert.isTrue(learnedMove, "the move replacement reaches its learned message")
+    Assert.equal(mons:partyMon(0).species, "AMBIPOM", "the newly learned move unlocks Aipom's evolution")
+    Assert.equal(bag:quantity("RARE_CANDY"), 0, "the candy is spent exactly once")
+    Assert.equal(flowStatus(flow).page, "bag_browse", "the Bag reopens after evolution")
+    Assert.equal(game.runtime.audio:currentMusic(), fieldMusic, "the map music returns after evolution")
+    flow:dispose()
+    envelope:dispose()
+  end, evolutionAudio())
+end
+
+function T.tests.production_rare_candy_creates_shedinja_and_spends_one_ball(context)
+  requireVersions(context)
+  withGame(function(game)
+    local envelope = bindEvolutionPresentation(game)
+    local mons = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+    Assert.isTrue(mons:giveMon({ species = "NINCADA", level = 19 }), "the evolving fixture joins the party")
+    Assert.isTrue(bag:add("RARE_CANDY", 1), "the fixture must stock a rare candy")
+    Assert.isTrue(bag:add("POKE_BALL", 2), "the side product needs a spare Poké Ball")
+    local fieldMusic = assert(game.runtime.audio:currentMusic(), "the field plays music before the scene")
+    local flow = composition(game).makeBagFlow()
+    useOnLead(game, flow, "RARE_CANDY")
+    driveThroughEvolution(game, flow, false)
+    Assert.equal(mons:partyCount(), 2, "the side product joins the free party slot")
+    Assert.equal(mons:partyMon(0).species, "NINJASK", "Nincada evolves into Ninjask")
+    Assert.equal(mons:partyMon(1).species, "SHEDINJA", "the source creates Shedinja as a side product")
+    Assert.equal(mons:derive(mons:partyMon(0)).level, 20, "the primary keeps the Rare Candy level")
+    Assert.equal(mons:derive(mons:partyMon(1)).maxHp, 1, "the side product keeps Shedinja's one-point HP")
+    Assert.equal(mons:partyMon(1).condition.currentHp, 1, "the side product arrives at one HP")
+    Assert.isTrue(mons:hasSeenSpecies("NINJASK"), "the primary evolution registers in the Pokédex")
+    Assert.isTrue(mons:hasSeenSpecies("SHEDINJA"), "the side product registers in the Pokédex")
+    Assert.equal(bag:quantity("RARE_CANDY"), 0, "the candy is spent exactly once")
+    Assert.equal(bag:quantity("POKE_BALL"), 1, "exactly one Poké Ball is spent")
+    Assert.equal(flowStatus(flow).page, "bag_browse", "the Bag reopens after both products publish")
+    Assert.equal(game.runtime.audio:currentMusic(), fieldMusic, "the map music returns after evolution")
+    flow:dispose()
+    envelope:dispose()
+    Assert.notNil(game.runtime:captureGameSave(), "the published side product settles into a capturable save")
+    game:restart()
+    game:waitForFieldEntry()
+    local restoredMons = assert(game.runtime.monService, "the restarted runtime restores the live party")
+    local restoredBag = assert(game.runtime.bagService, "the restarted runtime restores the live bag")
+    Assert.equal(restoredMons:partyCount(), 2, "both evolution products survive save reload")
+    Assert.equal(restoredMons:partyMon(0).species, "NINJASK", "the primary evolution survives save reload")
+    Assert.equal(restoredMons:partyMon(1).species, "SHEDINJA", "the side product survives save reload")
+    Assert.equal(restoredBag:quantity("POKE_BALL"), 1, "the Poké Ball spend survives save reload")
+    Assert.equal(restoredBag:quantity("RARE_CANDY"), 0, "the Rare Candy spend survives save reload")
   end, evolutionAudio())
 end
 

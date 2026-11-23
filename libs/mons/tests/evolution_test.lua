@@ -48,6 +48,8 @@ local function testItemCatalog()
   local root = ItemFixture.buildAssetRoot()
   local swaps = {
     { from = "ITEM_43", to = "RARE_CANDY" },
+    { from = "ITEM_80", to = "SUN_STONE" },
+    { from = "ITEM_81", to = "MOON_STONE" },
     { from = "ITEM_204", to = "EVERSTONE" },
     { from = "ITEM_210", to = "FIRE_STONE" },
   }
@@ -57,6 +59,11 @@ local function testItemCatalog()
     root.items[swap.from] = nil
     root.items[swap.to] = record
   end
+  root.items.EVERSTONE.heldBehavior = { key = "prevents_evolution", params = { nativeId = 204, holdEffect = 64 } }
+  local alternate = assert(root.items.ITEM_205, "the fixture carries a distinct item identity")
+  root.items.ITEM_205 = nil
+  alternate.heldBehavior = { key = "prevents_evolution", params = { nativeId = 205, holdEffect = 64 } }
+  root.items.ALT_EVERSTONE = alternate
   return ItemCatalog.new(root)
 end
 
@@ -571,7 +578,7 @@ function T.held_blockers_stop_level_triggers()
   local bare = pinLevel(makeMon(catalog, 211, {}), catalog, 16)
   Assert.notNil(Evolution.check(bare, vectorContext(), catalog), "the bare mon matches its level slot")
   local held = pinLevel(makeMon(catalog, 223, {}), catalog, 16)
-  held.heldItem = "EVERSTONE"
+  held.heldItem = "ALT_EVERSTONE"
   Assert.isTrue(Evolution.check(held, vectorContext(), catalog) == nil, "the held blocker stops the same level trigger")
 end
 
@@ -868,7 +875,7 @@ function T.held_blockers_stop_trade_but_not_bag_use()
     }
   end)
   local held = pinLevel(makeMon(catalog, 521, {}), catalog, 12)
-  held.heldItem = "EVERSTONE"
+  held.heldItem = "ALT_EVERSTONE"
   Assert.isTrue(
     Evolution.check(held, vectorContext({ trigger = { kind = "trade" } }), catalog) == nil,
     "the held blocker stops trade checks"
@@ -926,8 +933,7 @@ function T.held_day_night_items_are_consumed_by_the_plan()
   Assert.equal(night.monAfter.species, "EEVEE", "the night slot stages its own target")
   Assert.equal(night.monAfter.heldItem, "NONE", "the held night item is consumed")
   Assert.equal(holder.heldItem, "MOON_STONE", "planning keeps the input held item")
-  local stoned =
-    Evolution.plan(holder, vectorContext({ trigger = { kind = "item", item = "FIRE_STONE" } }), catalog)
+  local stoned = Evolution.plan(holder, vectorContext({ trigger = { kind = "item", item = "FIRE_STONE" } }), catalog)
   Assert.notNil(stoned, "a bag stone stages a plan")
   Assert.equal(stoned.monAfter.species, "SHEDINJA", "the stone slot stages its own target")
   Assert.equal(stoned.monAfter.heldItem, "MOON_STONE", "a bag stone leaves the held item untouched")

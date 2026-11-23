@@ -159,38 +159,44 @@ end
 ---@param uiInput table[] ordered semantic events
 function FieldEvolutionScene:updateFixed(uiInput)
   assert(not self._disposed, "a disposed evolution scene cannot update")
-  local mapped = self._session:mapInput(uiInput, self._view)
-  if self._finished or not self:_compose() then
-    return
-  end
-  local presenter = self._presenter --[[@as EvolutionScenePresenter]]
-  for _, event in ipairs(mapped) do
-    presenter:input(event)
-  end
-  local assets = self._opts.assets
-  assets:update()
-  local printer = self._printer --[[@as BattleTimeline]]
-  printer:update(
-    SourceTick.DT,
-    function(key)
-      return assets:drawable(key) ~= nil
-    end,
-    nil,
-    function(messageId, callback, controlIndex)
-      return presenter:printerCallback(messageId, callback, controlIndex)
+  local ok, failure = pcall(function()
+    local mapped = self._session:mapInput(uiInput, self._view)
+    if self._finished or not self:_compose() then
+      return
     end
-  )
-  local poses = self._poses --[[@as BattleScene]]
-  poses:stepAnimationPictures(nil)
-  presenter:stepTick()
-  local result = presenter:advance()
-  self._view = presenter:view()
-  if result ~= nil then
-    self._result = result
-    self._finished = true
-    self:_releaseMusic()
+    local presenter = self._presenter --[[@as EvolutionScenePresenter]]
+    for _, event in ipairs(mapped) do
+      presenter:input(event)
+    end
+    local assets = self._opts.assets
+    assets:update()
+    local printer = self._printer --[[@as BattleTimeline]]
+    printer:update(
+      SourceTick.DT,
+      function(key)
+        return assets:drawable(key) ~= nil
+      end,
+      nil,
+      function(messageId, callback, controlIndex)
+        return presenter:printerCallback(messageId, callback, controlIndex)
+      end
+    )
+    local poses = self._poses --[[@as BattleScene]]
+    poses:stepAnimationPictures(nil)
+    presenter:stepTick()
+    local result = presenter:advance()
+    self._view = presenter:view()
+    if result ~= nil then
+      self._result = result
+      self._finished = true
+      self:_releaseMusic()
+    end
+    self._session:resolve(self._opts.measureDisplay(), self._view)
+  end)
+  if not ok then
+    self:dispose()
+    error(failure, 0)
   end
-  self._session:resolve(self._opts.measureDisplay(), self._view)
 end
 
 -- Cancels a held press so a stale release never reaches a successor.

@@ -12,11 +12,18 @@ local T = {}
 ---@return FieldEvolutionAssets assets
 ---@return table rig recorded demands, releases, and the answer slots
 local function newAssets()
-  local rig = { demands = {}, released = {}, core = nil, prepareAnswer = false, drawableFailure = nil }
+  local rig = {
+    demands = {},
+    released = {},
+    core = nil,
+    prepareAnswer = false,
+    prepareFailure = nil,
+    drawableFailure = nil,
+  }
   local services = {
     prepare = function(demand)
       rig.demands[#rig.demands + 1] = demand
-      return rig.prepareAnswer
+      return rig.prepareAnswer, rig.prepareFailure
     end,
     drawable = function(key)
       if rig.drawableFailure == key then
@@ -107,6 +114,16 @@ function T.assets_prepare_pages_and_banks_and_reopen_on_new_selectors()
   Assert.equal(#rig.demands, 4, "a known selector adds no demand")
 end
 
+function T.assets_latch_terminal_preparation_failure_without_retrying()
+  local assets, rig = newAssets()
+  rig.prepareFailure = "audio-bank failed"
+  assets:update()
+  Assert.equal(assets:state(), "failed", "a terminal preparation answer remains failed")
+  Assert.isTrue(assets:error():find("audio-bank failed", 1, true) ~= nil, "the holder retains the reason")
+  assets:update()
+  Assert.equal(#rig.demands, 1, "terminal failures never retry preparation")
+end
+
 function T.assets_latch_a_failed_image_and_release_each_drawable_once()
   local assets, rig = newAssets()
   Assert.equal(assets:drawable("battle:evolution:main").key, "battle:evolution:main")
@@ -139,7 +156,7 @@ end
 ---@return FieldEvolutionScene scene still waiting on its presentation core
 ---@return table audio recorded policy calls
 ---@return table assets recorded disposal
-local function pendingScene()
+local function pendingScene(manifestFailure)
   local audio = { calls = {} }
   function audio:suspendFieldPolicy(token)
     self.calls[#self.calls + 1] = "suspend:" .. token
@@ -148,7 +165,9 @@ local function pendingScene()
     self.calls[#self.calls + 1] = "resume:" .. token .. ":" .. tostring(restore)
   end
   local assets = { disposed = 0 }
-  function assets:manifest() end
+  function assets:manifest()
+    return nil, manifestFailure
+  end
   function assets:dispose()
     self.disposed = self.disposed + 1
   end
@@ -164,6 +183,18 @@ local function pendingScene()
     textSpeed = "mid",
   })
   return scene, audio, assets
+end
+
+function T.terminal_composition_failure_disposes_scene_and_releases_field_music()
+  local scene, audio, assets = pendingScene("audio-bank failed")
+  local ok, failure = pcall(scene.updateFixed, scene, {})
+  Assert.isFalse(ok, "a terminal scene preparation error is surfaced")
+  Assert.isTrue(tostring(failure):find("audio-bank failed", 1, true) ~= nil, "the source failure is preserved")
+  Assert.equal(audio.calls[2], "resume:menu-evolution:1:true", "failure restores the field music")
+  Assert.equal(assets.disposed, 1, "failure disposes the owned asset lease once")
+  scene:dispose()
+  Assert.equal(#audio.calls, 2, "repeated disposal never releases field music twice")
+  Assert.equal(assets.disposed, 1, "repeated disposal never releases the asset lease twice")
 end
 
 function T.scene_holds_the_field_music_from_construction_and_restores_it_once_on_dispose()

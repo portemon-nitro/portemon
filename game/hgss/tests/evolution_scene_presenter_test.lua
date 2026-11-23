@@ -104,7 +104,7 @@ end
 -- only once the leaf record was handed out. Portrait images additionally
 -- miss `portraitMisses` lookups, like a page whose upload is in flight.
 local function newAssets()
-  local assets = { polls = 0, record = nil, selectors = {}, portraitMisses = 0 }
+  local assets = { polls = 0, record = nil, selectors = {}, portraitMisses = 0, failure = nil }
   function assets:ensureEvolution()
     self.polls = self.polls + 1
     if self.polls > 1 and self.record == nil then
@@ -128,7 +128,13 @@ local function newAssets()
     end
   end
   function assets:state()
+    if self.failure ~= nil then
+      return "failed"
+    end
     return self.record ~= nil and "ready" or "pending"
+  end
+  function assets:error()
+    return self.failure
   end
   return assets
 end
@@ -178,6 +184,19 @@ local function compose(opts)
     assets = rig.assets,
   })
   return rig
+end
+
+function T.terminal_asset_preparation_failure_is_not_reported_as_pending()
+  local rig = compose({ speed = 1, stuckVoices = false })
+  Assert.isNil(rig.presenter:advance(), "the evolution leaf starts pending")
+  Assert.isNil(rig.presenter:advance(), "a successful asset stage opens the child")
+  rig.assets.failure = "audio-bank failed for evolution scene field-scene-1"
+  local ok, failure = pcall(rig.presenter.advance, rig.presenter)
+  Assert.isFalse(ok, "a terminal asset failure stops presenter advancement")
+  Assert.isTrue(
+    tostring(failure):find(rig.assets.failure, 1, true) ~= nil,
+    "the presenter reports the holder's detailed failure"
+  )
 end
 
 -- Steps one source tick the way a host does: printer, poses, fades, then

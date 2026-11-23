@@ -556,6 +556,8 @@ local function resolveHeldBehavior(nativeId, key, pocketKey, isHm, decoded)
     return { key = "friendship_up", params = { nativeId = nativeId, holdEffect = holdEffect } }
   elseif holdEffect == ItemSources.HOLD_EFFECT_MONEY_UP then
     return { key = "money_up", params = { nativeId = nativeId, holdEffect = holdEffect } }
+  elseif holdEffect == ItemSources.HOLD_EFFECT_NO_EVOLVE then
+    return { key = "prevents_evolution", params = { nativeId = nativeId, holdEffect = holdEffect } }
   end
   return { key = "unmapped_hold_effect", params = { nativeId = nativeId, holdEffect = holdEffect } }
 end

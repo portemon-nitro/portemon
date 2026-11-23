@@ -265,6 +265,9 @@ function PartyActions:_resolveLearn(request, mon)
     local moves = mon.moves --[[@as table<integer, table<string, unknown>>]]
     local replaced = moves[request.moveSlot + 1]
     assert(type(replaced) == "table", "a replacement names an occupied move slot")
+    if request.expectedOldMove ~= nil and replaced.move ~= request.expectedOldMove then
+      return { kind = "stale" }
+    end
     forgotten = replaced.move
     staged = LevelProgression.replace(mon, request.moveSlot, move, catalog)
   end

@@ -8,6 +8,7 @@ local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Experience = require("libs.mons.src.gen4.Experience")
 local ItemFixture = require("libs.items.tests.item_fixture")
+local ItemCatalog = require("libs.items.src.ItemCatalog")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local MonStats = require("libs.mons.src.gen4.MonStats")
 
@@ -38,8 +39,24 @@ end
 
 ---@return table shared item catalog for the vector roster
 local function testItemCatalog()
-  local ItemFixture = require("libs.items.tests.item_fixture")
-  return ItemFixture.makeCatalog()
+  local root = ItemFixture.buildAssetRoot()
+  local function renamePlaceholder(nativeId, key, heldBehavior)
+    local placeholderKey = "ITEM_" .. nativeId
+    local record = assert(root.items[placeholderKey])
+    root.items[placeholderKey] = nil
+    record.name = key
+    record.nameIndefinite = "a " .. key
+    record.namePlural = key .. "s"
+    record.description = key .. " description"
+    record.heldBehavior = heldBehavior
+    root.items[key] = record
+  end
+  renamePlaceholder(500, "EVERSTONE", {
+    key = "prevents_evolution",
+    params = { nativeId = 500, holdEffect = 64 },
+  })
+  renamePlaceholder(501, "KINGS_ROCK")
+  return ItemCatalog.new(root)
 end
 
 ---@param root table<string, unknown> mutable synthetic mon asset root

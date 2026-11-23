@@ -16,7 +16,6 @@ local Evolution = {}
 
 local FRIENDSHIP_THRESHOLD = 220
 local PARTY_MAX = 6
-local EVERSTONE_KEY = "EVERSTONE"
 local SPARE_BALL_KEY = "POKE_BALL"
 local NINJASK_METHOD = "level_ninjask"
 local SHEDINJA_METHOD = "level_shedinja"
@@ -297,8 +296,14 @@ local function triggerSlots(mon, context, catalog)
   if mon.species == "PICHU" and mon.form == 1 then
     return nil
   end
-  if mon.heldItem == EVERSTONE_KEY and kind ~= "item" and mon.species ~= "KADABRA" then
-    return nil
+  if kind ~= "item" and mon.species ~= "KADABRA" then
+    local heldItem = assert(mon.heldItem, "evolution checks read the held-item key")
+    if heldItem ~= "NONE" then
+      local behavior = catalog:item(heldItem).heldBehavior
+      if type(behavior) == "table" and behavior.key == "prevents_evolution" then
+        return nil
+      end
+    end
   end
   local form = catalog:form(mon.species, mon.form)
   local slots = assert(form.evolutions, "evolution checks read the ordered form slots")

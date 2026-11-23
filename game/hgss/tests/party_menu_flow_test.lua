@@ -1959,7 +1959,6 @@ function T.tests.rare_candy_full_move_set_decline_keeps_the_moves_and_still_evol
   rig.flow:dispose()
 end
 
-
 -- Accepting the delete-a-move question hands off to the move picker; the
 -- picked row is replaced, the Party child resumes over the same mon with
 -- the paged forgot message and then the learned one, and only then does
@@ -2008,7 +2007,13 @@ function T.tests.rare_candy_picked_move_is_forgotten_then_learned_before_evolvin
   end)
   local forgotten = assert(rig.catalog:move(movesBefore[1]).name, "the fixture names its moves")
   Assert.deepEqual(partyChild(status).message.moveNames, { forgotten }, "the forgot message names the picked move")
-  Assert.equal(rig.catalog:move(rig.mons:partyMon(0).moves[1].move).name, learning, "the picked row learns the move")
+  for index, move in ipairs(movesBefore) do
+    Assert.equal(
+      rig.mons:partyMon(0).moves[index].move,
+      move,
+      "the source moveset remains live while the forgetting message displays"
+    )
+  end
   for index = 2, 4 do
     Assert.equal(rig.mons:partyMon(0).moves[index].move, movesBefore[index], "other rows keep their moves")
   end
@@ -2022,6 +2027,11 @@ function T.tests.rare_candy_picked_move_is_forgotten_then_learned_before_evolvin
   Assert.isTrue(pages > 1, "the forgot message spans several printer pages")
   status = untilChildState(rig, "message")
   Assert.equal(partyChild(status).message.templateKey, "learned", "the learned message follows the forgot pages")
+  Assert.equal(
+    rig.catalog:move(rig.mons:partyMon(0).moves[1].move).name,
+    learning,
+    "the picked row learns before the learned message"
+  )
   Assert.equal(#opened, 0, "evolution waits for the learning messages")
   drive(rig, { { type = "confirm" } })
   driveUntil(rig, "the reopened Bag", 60, function(current)
@@ -2029,7 +2039,86 @@ function T.tests.rare_candy_picked_move_is_forgotten_then_learned_before_evolvin
   end)
   Assert.equal(#opened, 1, "the final mon opens one level evolution scene")
   Assert.equal(rig.mons:partyMon(0).species, "TOTODILE")
-  Assert.equal(rig.catalog:move(rig.mons:partyMon(0).moves[1].move).name, learning, "the learned move survives evolution")
+  Assert.equal(
+    rig.catalog:move(rig.mons:partyMon(0).moves[1].move).name,
+    learning,
+    "the learned move survives evolution"
+  )
+  rig.flow:dispose()
+end
+
+function T.tests.rare_candy_aborts_a_stale_replacement_after_the_forgot_message(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and prepared assets")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  local opened = {}
+  local rig
+  rig = progressionRig(versions[1], function(request)
+    return completingScene(rig.catalog, opened)(request)
+  end, 11)
+  Assert.isTrue(rig.bag:add("RARE_CANDY", 1))
+  useFromBag(rig, "RARE_CANDY")
+  untilChildState(rig, "message")
+  drive(rig, { { type = "confirm" } })
+  untilChildState(rig, "level_up_stats")
+  drive(rig, { { type = "confirm" } })
+  drive(rig, { { type = "confirm" } })
+  askToDeleteAMove(rig)
+  drive(rig, { { type = "navigate", direction = "up" } })
+  drive(rig, { { type = "confirm" } })
+  driveUntil(rig, "the move picker", 60, function(current)
+    return current.page == "move_pick" and current.transition == nil
+  end)
+  for _ = 1, 12 do
+    rig.flow:updateFixed({})
+  end
+  drive(rig, { { type = "confirm" } })
+  local status = driveUntil(rig, "the resumed forgot message", 60, function(current)
+    return current.page == "party_browse"
+      and current.child ~= nil
+      and current.child.state == "message"
+      and current.child.message.templateKey == "forgotMove"
+  end)
+  local currentMon = rig.mons:partyMon(0)
+  local previousMove = currentMon.moves[1].move
+  local replacementMove = previousMove == "CUT" and "TACKLE" or "CUT"
+  currentMon.moves[1].move = replacementMove
+  local preparation, _ = rig.mons:preparePartyChanges(rig.mons:partyRevision(), {
+    { slot = 0, mon = currentMon },
+  })
+  Assert.notNil(preparation, "the external move change stages")
+  assert(preparation ~= nil, "the external move change is staged")
+  Assert.isTrue(preparation.isCurrent(), "the staged external change remains current")
+  preparation.publish()
+
+  while partyChild(status).message ~= nil and partyChild(status).message.templateKey == "forgotMove" do
+    drive(rig, { { type = "confirm" } })
+    status = liveStatus(rig)
+  end
+  for _ = 1, 100 do
+    status = liveStatus(rig)
+    if status.page == "bag_browse" then
+      break
+    end
+    if status.child ~= nil and status.child.state == "message" then
+      drive(rig, { { type = "confirm" } })
+    else
+      rig.flow:updateFixed({})
+    end
+  end
+  status = liveStatus(rig)
+  Assert.equal(status.page, "bag_browse", "the stale loop returns to a valid Bag page")
+  Assert.equal(
+    rig.mons:partyMon(0).moves[1].move,
+    replacementMove,
+    "the stale pick leaves the changed move untouched"
+  )
+  Assert.equal(#opened, 0, "a stale learning loop does not evolve the changed mon")
+  Assert.equal(rig.bag:quantity("RARE_CANDY"), 0, "the already used candy stays spent")
   rig.flow:dispose()
 end
 

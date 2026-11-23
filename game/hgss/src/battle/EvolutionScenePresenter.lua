@@ -553,7 +553,11 @@ end
 ---@return boolean
 local function assetsReady(self)
   local assets = self._opts.assets
-  if assets:state() ~= "ready" then
+  local state = assets:state()
+  if state == "failed" then
+    error(assert(assets:error(), "failed evolution assets carry a diagnostic"), 0)
+  end
+  if state ~= "ready" then
     return false
   end
   local selectors = self._selectors

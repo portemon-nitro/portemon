@@ -317,6 +317,7 @@ function T.evolution_child_wraps_the_native_presentation_state()
     form = 0,
     personality = 0,
     experience = 1000,
+    heldItem = "NONE",
     moves = {},
   }
   local intent = {
