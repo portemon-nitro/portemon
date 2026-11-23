@@ -3070,6 +3070,31 @@ function FieldActorManager:_resolveTrajectoryDestination(actor, deltaX, deltaZ, 
   local destFieldX = startFieldX + deltaX
   local destFieldZ = startFieldZ + deltaZ
   local destResident = isResident(entry.runtimeMap, destFieldX, destFieldZ)
+  -- The source trajectory is a cinematic flight: its segment height comes from
+  -- the source's own band delta, and a tile with no walkable plate under it
+  -- (open air the actor flies over before the scene hides it) is flown rather
+  -- than stepped onto. Only a destination that does carry a plate re-anchors
+  -- the actor onto that surface.
+  if FieldActorPlacement.isUncovered(entry.runtimeMap, destFieldX, destFieldZ) then
+    local world = FieldCoordinates.fieldToWorld(
+      entry.runtimeMap,
+      destFieldX,
+      destFieldZ,
+      (startWorldY or 0) + surfaceBandDelta * 0.5
+    )
+    return {
+      start = start,
+      dest = {
+        fieldX = destFieldX,
+        fieldZ = destFieldZ,
+        worldX = world.x,
+        worldY = world.y,
+        worldZ = world.z,
+        cellKey = start.cellKey or cellKeyFor(destFieldX, destFieldZ),
+        resident = destResident,
+      },
+    }
+  end
   local hintWorldY = (startWorldY or 0) + surfaceBandDelta * 0.5
   local sample, world, plate, plateCellKey, plateSourceSurfaceId = destinationSample(
     entry,

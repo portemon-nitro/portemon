@@ -108,7 +108,13 @@ Schema.ENUMS = {
   -- Battle result read contexts: the ordinary won check, the static wild
   -- won-or-caught check, and the source's native outcome query that reports a
   -- loss or a draw as not-won and every other native outcome as won.
-  battle_result_context = { "battle_won", "static_wild_won_or_caught", "native_won" },
+  battle_result_context = {
+    "battle_won",
+    "static_wild_won_or_caught",
+    "native_won",
+    "latis_caught",
+    "static_encounter_outcome",
+  },
   -- Dex display modes: the explicit generated johto and national orders.
   pokedex_mode = { "johto", "national" },
   -- Dex count kinds: historical sightings or captures.
@@ -1867,8 +1873,22 @@ Schema.OPERATIONS = {
     fields = {
       result = { type = "value", required = true },
       context = { type = "enum:battle_result_context", default = "battle_won" },
+      useResultVariable = { type = "boolean" },
     },
   },
+  -- The source field Pokémon picture window (opcodes 452/453): show reads its
+  -- species and gender as values through the field's own presentation owner,
+  -- and close releases the open window with no operands.
+  mon_picture_show = {
+    fields = {
+      species = { type = "scalar_or_value", required = true },
+      gender = { type = "scalar_or_value", required = true },
+    },
+  },
+  mon_picture_close = { fields = {} },
+  -- The source native-roamer creation (opcode 464): one raw source slot index
+  -- the field roamer owner materializes and activates.
+  create_roamer = { fields = { slot = { type = "integer", required = true } } },
   -- Follower operations. Every node routes to the one field following
   -- controller through the injected collaborator; boolean results write 1
   -- or 0, and the movement mode carries one semantic mode string.

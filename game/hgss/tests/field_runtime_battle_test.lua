@@ -1265,6 +1265,21 @@ local function leadStepRuntime(overrides)
   end
 end
 
+---@param values integer[] raw draws to answer in order
+---@return { nextRaw: fun(): integer, calls: integer } world stream stand-in with its live draw count
+local function rawTokens(values)
+  local stream = { calls = 0 }
+  function stream.nextRaw()
+    stream.calls = stream.calls + 1
+    local value = values[stream.calls]
+    if value == nil then
+      error("the step drew beyond its supplied raw values", 0)
+    end
+    return value
+  end
+  return stream
+end
+
 function T.scenarios_carry_the_follower_slot_for_send_outs()
   local party = newPartyOwner()
   local request = { id = "launch-follow", kind = "wild", payload = { species = "TOTODILE", level = 4 } }
@@ -1273,7 +1288,11 @@ function T.scenarios_carry_the_follower_slot_for_send_outs()
       return true
     end,
   }
-  local runtime = fakeRuntime({ monService = party, followingMon = followingMon })
+  -- Production boot always composes the mon catalog, and the wild factory
+  -- resolves a bare species descriptor through it, so the composition fake
+  -- carries it too.
+  local monCatalog = CatalogFixture.makeCatalog()
+  local runtime = fakeRuntime({ monService = party, followingMon = followingMon, monCatalog = monCatalog })
   local scenario = runtime:buildBattleScenario(request)
   Assert.equal(scenario.followMonSlot, 0, "the live follower slot rides the scenario so send-outs skip its ball")
   runtime.followingMon = {
@@ -1283,11 +1302,14 @@ function T.scenarios_carry_the_follower_slot_for_send_outs()
   }
   local absent = runtime:buildBattleScenario(request)
   Assert.isNil(absent.followMonSlot, "no follower out means send-outs keep their ball")
-  local slotless = fakeRuntime({ monService = {
-    partyCount = function()
-      return 1
-    end,
-  } })
+  local slotless = fakeRuntime({
+    monService = {
+      partyCount = function()
+        return 1
+      end,
+    },
+    monCatalog = monCatalog,
+  })
   Assert.isNil(
     slotless:buildBattleScenario(request).followMonSlot,
     "a party without a lead slot never lends a follower slot"
@@ -2702,9 +2724,287 @@ function T.field_tick_keeps_battle_gate_positions()
   Assert.equal(events[#events], "gate-true", "the leaving launch suppresses before the battle exists")
 end
 
+-- A committed step that resolved an encounter tile consults the source roamer
+-- gate: a slot standing on the player's map replaces the ordinary table
+-- encounter with the roaming method and names its record, while a slot on
+-- another route leaves the ordinary attempt untouched and draws nothing.
+function T.committed_steps_meet_the_standing_roamer_through_the_source_gate()
+  local EncounterFixture = require("libs.hgss.tests.encounter_fixture")
+  local RoamerState = EncounterFixture.requirePresent(
+    "libs.hgss.src.encounters.HgssRoamerState",
+    "stable roaming state owns the source step gate"
+  )
+  local refs = EncounterFixture.refs()
+  local function stepRuntime(recordLocation, values)
+    local roamers = RoamerState.new({
+      records = { EncounterFixture.roamerRecord(EncounterFixture.roamerMon(), recordLocation, "roaming", 0) },
+      species = refs.species,
+      maps = refs.maps,
+    })
+    local stream = rawTokens(values)
+    local runtime, _, captured = leadStepRuntime({
+      roamerState = roamers,
+      scripts = { worldState = { rng = stream } },
+      session = {
+        tick = 41,
+        takeCommittedStep = function()
+          return { serial = 1, fieldX = 5, fieldZ = 7 }
+        end,
+        mapEntryController = {
+          isActive = function()
+            return false
+          end,
+        },
+        dialogue = {
+          isModal = function()
+            return false
+          end,
+        },
+        currentMap = { mapId = 11, fieldData = { wildEncounterMemberId = 11 }, effectiveWeatherId = 5 },
+      },
+    })
+    return runtime, captured, stream
+  end
+  local runtime, captured, stream = stepRuntime(11, { 9 })
+  runtime:_consumeCommittedStep()
+  local context = assert(captured(), "the committed step attempts with the roaming method")
+  Assert.equal(context.method, "roamer", "a standing roamer replaces the ordinary table encounter")
+  Assert.equal(context.modifiers.roamerKey, "roamer-eevee", "the attempt names the standing record")
+  Assert.equal(context.modifiers.tileMethod, "grass", "the resolved tile method still stages its rate")
+  Assert.equal(context.mapId, 11, "the attempt keeps the encounter table member identity")
+  Assert.equal(stream.calls, 1, "the meeting consumes exactly the source gate draw")
+  -- Route locality: the same walk meets nothing while no slot stands here.
+  local elsewhere, elsewhereCaptured, quiet = stepRuntime(22, {})
+  elsewhere:_consumeCommittedStep()
+  local ordinary = assert(elsewhereCaptured(), "the committed step still attempts its own table")
+  Assert.equal(ordinary.method, "grass", "a roamer on another route leaves the ordinary encounter")
+  Assert.isNil(ordinary.modifiers.roamerKey, "a roamer on another route is never met")
+  Assert.isNil(ordinary.modifiers.tileMethod, "the ordinary attempt stages no roaming tile method")
+  Assert.equal(quiet.calls, 0, "route locality draws nothing")
+end
+
+-- Admission carries the borrowed record into the staged launch: the request
+-- names the roamer owner, its record, the launch revision and the route it was
+-- met on, while the prepared encounter keeps the stored identity.
+function T.roaming_launches_stage_the_borrowed_record()
+  local EncounterFixture = require("libs.hgss.tests.encounter_fixture")
+  local RoamerState = EncounterFixture.requirePresent(
+    "libs.hgss.src.encounters.HgssRoamerState",
+    "stable roaming state borrows its stored identity"
+  )
+  local refs = EncounterFixture.refs()
+  local stored = EncounterFixture.roamerMon()
+  local roamers = RoamerState.new({
+    records = { EncounterFixture.roamerRecord(stored, 11, "roaming", 0) },
+    species = refs.species,
+    maps = refs.maps,
+  })
+  local runtime = fakeRuntime({ roamerState = roamers })
+  local launches = {}
+  runtime.battleCoordinator = {
+    nextLaunchIdentity = function()
+      return "wild#1"
+    end,
+    clearReceipt = function() end,
+    launchPresentedBattle = function(_, launchId, request, method)
+      launches[#launches + 1] = { launchId = launchId, request = request, method = method }
+    end,
+  }
+  runtime:_admitStepEncounter({
+    id = 7,
+    mons = { { mon = { species = "EEVEE", level = 20 } } },
+    environment = { weather = "none" },
+  }, "grass", "roamer-eevee")
+  local launched = assert(launches[1], "the roaming encounter reaches the presented launch")
+  Assert.equal(launched.launchId, "wild#1", "the admission keeps its issued launch identity")
+  Assert.equal(launched.method, "grass", "the launch keeps the arrival tile method")
+  Assert.equal(launched.request.payload.species, "EEVEE", "the launch names the borrowed species")
+  Assert.equal(launched.request.payload.attemptId, 7, "the launch names the prepared attempt")
+  local spec = assert(launched.request.roamer, "a roaming launch names its settlement record")
+  Assert.isTrue(spec.owner == roamers, "the settlement stages through the field roamer owner")
+  Assert.equal(spec.key, "roamer-eevee", "the settlement names the borrowed record")
+  Assert.equal(spec.expectedRevision, 0, "the settlement carries the launch revision")
+  Assert.equal(spec.details.location, 11, "the settlement keeps the route the player met it on")
+  -- An ordinary admission stages no roamer settlement at all.
+  launches = {}
+  runtime:_admitStepEncounter({
+    id = 8,
+    mons = { { mon = { species = "EEVEE", level = 20 } } },
+    environment = { weather = "none" },
+  }, "grass", nil)
+  Assert.isNil(assert(launches[1]).request.roamer, "an ordinary wild launch stages no roamer settlement")
+end
+
+-- The settled battle publishes one lifecycle word in the same publication
+-- step: 0 while roaming, 1 caught and 2 defeated. A receipt without a roamer
+-- settlement, an uncommitted receipt and a custom species without a source
+-- word all write nothing.
+function T.settled_roamer_battles_publish_one_lifecycle_word()
+  local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+  local raikou = assert(FieldScriptSymbols.variablesByName.VAR_ROAMER_RAIKOU_STATUS)
+  local writes = {}
+  local active = nil
+  local runtime = fakeRuntime({
+    scripts = {
+      worldState = {
+        rng = {
+          nextRaw = function()
+            return 0
+          end,
+        },
+        setVar = function(_, id, value)
+          writes[#writes + 1] = { id = id, value = value }
+        end,
+      },
+    },
+  })
+  runtime.battleCoordinator = {
+    activeBattle = function()
+      return active
+    end,
+  }
+  local function settle(roamer)
+    writes = {}
+    active = {}
+    return runtime:acceptCommittedBattleStatus(nil, active, {
+      phase = "complete",
+      result = "win",
+      sourceResult = 1,
+      nativeOutcome = 1,
+      outcomeReceipt = { committed = true, rewards = {}, roamer = roamer },
+    })
+  end
+  for _, case in ipairs({ { "roaming", 0 }, { "caught", 1 }, { "defeated", 2 } }) do
+    local decision = settle({
+      key = "native.raikou",
+      mon = { species = "RAIKOU" },
+      lifecycle = case[1],
+      revision = 1,
+    })
+    Assert.isTrue(decision.receipt.committed, "the settled battle reports its committed receipt")
+    Assert.equal(#writes, 1, "the settlement publishes exactly one word for " .. case[1])
+    Assert.equal(writes[1].id, raikou, "the word publishes through the source slot variable")
+    Assert.equal(writes[1].value, case[2], "a " .. case[1] .. " roamer reads " .. tostring(case[2]))
+  end
+  settle(nil)
+  Assert.equal(#writes, 0, "an ordinary battle publishes no roamer word")
+  -- A custom roamer species owns no source variable and publishes nothing.
+  settle({ key = "custom.eevee", mon = { species = "EEVEE" }, lifecycle = "caught", revision = 1 })
+  Assert.equal(#writes, 0, "a custom roamer species owns no source lifecycle word")
+  -- A rejected or stale outcome never returns a committed receipt.
+  writes = {}
+  active = {}
+  Assert.throws(function()
+    runtime:acceptCommittedBattleStatus(nil, active, {
+      phase = "complete",
+      result = "capture",
+      sourceResult = 1,
+      nativeOutcome = 4,
+      outcomeReceipt = { committed = false, rewards = {} },
+    })
+  end, "an uncommitted receipt is refused instead of publishing")
+  Assert.equal(#writes, 0, "a stale or failed commit publishes no lifecycle word")
+end
+
+-- The composed step path borrows the standing record: the gate passes the
+-- stored identity, hit points, and status into the prepared encounter with no
+-- re-selection draws beyond the source gate and the two tile rolls, and the
+-- admission names that exact record.
+function T.a_standing_roamer_launches_its_borrowed_identity()
+  local EncounterFixture = require("libs.hgss.tests.encounter_fixture")
+  local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  local RoamerState = EncounterFixture.requirePresent(
+    "libs.hgss.src.encounters.HgssRoamerState",
+    "stable roaming state borrows its stored identity"
+  )
+  local cacheFs = {
+    loadLua = function(_)
+      return { schema = FieldFontCache.SCHEMA, charmap = CatalogFixture.CHARMAP }
+    end,
+  }
+  local refs = EncounterFixture.refs()
+  local stored = EncounterFixture.roamerMon()
+  local roamers = RoamerState.new({
+    records = { EncounterFixture.roamerRecord(stored, 11, "roaming", 0) },
+    species = refs.species,
+    maps = refs.maps,
+  })
+  -- Gate 1 passes the 1-in-2 refusal; the movement and opportunity rolls
+  -- both open on zero, so nothing else is drawn before the borrow.
+  local stream = rawTokens({ 1, 0, 0 })
+  local runtime = fakeRuntime({
+    cacheFs = cacheFs,
+    monCatalog = CatalogFixture.makeCatalog(),
+    itemCatalog = ItemFixture.makeCatalog(),
+    roamerState = roamers,
+    versionId = "soulsilver",
+    monLanguage = "english",
+    player = { fieldX = 5, fieldZ = 7, facing = "south" },
+    scripts = { worldState = { rng = stream } },
+    session = {
+      tick = 12,
+      takeCommittedStep = function()
+        return { serial = 1, fieldX = 5, fieldZ = 7 }
+      end,
+      mapEntryController = {
+        isActive = function()
+          return false
+        end,
+      },
+      dialogue = {
+        isModal = function()
+          return false
+        end,
+      },
+      currentMap = {
+        mapId = 11,
+        mapSectionNativeId = 7,
+        fieldData = { wildEncounterMemberId = 11 },
+        effectiveWeatherId = 5,
+      },
+    },
+  })
+  runtime:composeEncounters(EncounterFixture.vectorCatalog())
+  local service = assert(runtime._encounters, "composition installs the encounter service")
+  service:noteStep()
+  service:noteStep()
+  service:noteStep()
+  runtime.arrivalBehavior = function()
+    return 2
+  end
+  local launches = {}
+  runtime.battleCoordinator = {
+    hasBattleWork = function()
+      return false
+    end,
+    hasPresentationFactory = function()
+      return true
+    end,
+    nextLaunchIdentity = function()
+      return "wild#roamer"
+    end,
+    clearReceipt = function() end,
+    launchPresentedBattle = function(_, launchId, request, method)
+      launches[#launches + 1] = { launchId = launchId, request = request, method = method }
+    end,
+  }
+  runtime:_consumeCommittedStep()
+  local prepared = assert(runtime.pendingEncounter, "the standing roamer prepares its encounter")
+  local mon = assert(prepared.mons[1].mon, "the prepared encounter carries its borrowed mon")
+  Assert.equal(mon.species, "EEVEE", "the prepared encounter is the standing roamer")
+  Assert.equal(mon.personality, stored.personality, "encounter construction borrows the stored identity")
+  Assert.equal(mon.condition.currentHp, 12, "encounter construction borrows the stored hit points")
+  Assert.deepEqual(mon.condition.effects, { { key = "burn" } }, "encounter construction borrows the stored status")
+  Assert.equal(stream.calls, 3, "the meeting draws only the source gate and the two tile rolls")
+  local launched = assert(launches[1], "the roaming encounter reaches the presented launch")
+  Assert.equal(launched.request.roamer.key, "roamer-eevee", "the launch names the exact standing record")
+  Assert.equal(launched.request.roamer.expectedRevision, 0, "the launch carries the record revision")
+  Assert.isTrue(launched.request.roamer.owner == roamers, "the settlement stages through the field owner")
+end
+
 return {
-  tests = T,
-  metadata = {
+  tests = T,  metadata = {
     capabilities = { "rom_dump", "derived_assets" },
     derivedAssets = {
       "field-runtime",

@@ -316,9 +316,10 @@ end
 ---@param revision integer
 ---@return table roamer record with the given lifecycle state
 function EncounterFixture.roamerRecord(mon, location, lifecycle, revision)
+  local EncounterSave = require("libs.hgss.src.save.EncounterSave")
   return {
     key = "roamer-eevee",
-    stateVersion = 1,
+    stateVersion = EncounterSave.STATE_VERSION,
     mon = mon,
     location = location,
     lifecycle = lifecycle,

@@ -18,6 +18,8 @@ local SummaryRenderer = require("libs.hgss.src.ui.SummaryRenderer")
 local EasyChatPresentationResources = require("game.hgss.src.easychat.EasyChatPresentationResources")
 local PokedexPresentationResources = require("game.hgss.src.pokedex.PokedexPresentationResources")
 local FieldPresentationConfig = require("game.hgss.src.field.FieldPresentationConfig")
+local FieldMonPictureWindow = require("game.hgss.src.field.FieldMonPictureWindow")
+local MonCache = require("libs.assets.src.MonCache")
 local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local FieldYesNoRenderer = require("libs.hgss.src.ui.FieldYesNoRenderer")
@@ -1663,6 +1665,71 @@ function FieldPresentationResources:drawAreaPreview(status, referenceFrame)
   assert(self.areaPreviewRenderer, "field presentation owns no area-preview renderer"):draw(status, referenceFrame)
 end
 
+-- The species picture of one open field picture window (opcodes 452/453): the
+-- generated portrait page the selector belongs to, realized once per page and
+-- kept while it is the live picture. A replaced page releases its image exactly
+-- once; the window only names a selector and a frame.
+---@param pageId integer generated portrait page identity
+---@return love.Image
+function FieldPresentationResources:_monPictureImageFor(pageId)
+  local cached = self._monPictureImage
+  if cached ~= nil and self._monPicturePageId == pageId then
+    return cached
+  end
+  local path = MonCache.portraitPagePath(pageId)
+  local bytes = assert(self.cacheFs:read(path), "missing generated portrait page image " .. path)
+  local graphics = assert(love and love.graphics, "the field picture window needs its graphics namespace")
+  local image = graphics.newImage(love.filesystem.newFileData(bytes, path))
+  local filterOk, filterErr = pcall(function()
+    image:setFilter("nearest", "nearest")
+  end)
+  if not filterOk then
+    image:release()
+    error(filterErr, 0)
+  end
+  if cached ~= nil then
+    cached:release()
+  end
+  self._monPictureImage = image
+  self._monPicturePageId = pageId
+  return image
+end
+
+-- Paints the open species picture window at the source's own MAIN-layer tiles:
+-- the portrait frame sits at the window's authored placement and scales with
+-- the field's resolved pixel scale, exactly like the other MAIN-display
+-- windows. A closed window paints nothing.
+---@param status table<string, unknown>? the open picture window status
+---@param referenceFrame LayoutGeometry.Rect canonical MAIN field screen
+---@param fieldScale integer the resolved field pixel scale
+function FieldPresentationResources:drawMonPicture(status, referenceFrame, fieldScale)
+  if status == nil then
+    return
+  end
+  assert(type(status) == "table", "the picture window reports a record while open")
+  local frame = assert(status.frame, "the open picture window carries its picture frame")
+  local image = self:_monPictureImageFor(assert(status.pageId, "the open picture window carries its page"))
+  local placement = self:mainDisplayPlacement(referenceFrame, fieldScale)
+  local originX = FieldMonPictureWindow.SOURCE_TILE_X * FieldMonPictureWindow.TILE_PIXELS + frame.x
+  local originY = FieldMonPictureWindow.SOURCE_TILE_Y * FieldMonPictureWindow.TILE_PIXELS + frame.y
+  local lg = love.graphics
+  local prevR, prevG, prevB, prevA = lg.getColor()
+  local prevScissorX, prevScissorY, prevScissorW, prevScissorH = lg.getScissor()
+  lg.setColor(1, 1, 1, 1)
+  local x = placement.x + originX * placement.scale
+  local y = placement.y + originY * placement.scale
+  local width = frame.width * placement.scale
+  local height = frame.height * placement.scale
+  lg.setScissor(x, y, width, height)
+  lg.draw(image, x - frame.x * placement.scale, y - frame.y * placement.scale, 0, placement.scale, placement.scale)
+  if prevScissorW ~= nil then
+    lg.setScissor(prevScissorX, prevScissorY, prevScissorW, prevScissorH)
+  else
+    lg.setScissor()
+  end
+  lg.setColor(prevR, prevG, prevB, prevA)
+end
+
 function FieldPresentationResources:dispose()
   self.presenters = nil
   if self._shortcutLayout ~= nil then
@@ -1831,6 +1898,11 @@ function FieldPresentationResources:dispose()
     self._previewImage:release()
     self._previewImage = nil
     self._previewImageKey = nil
+  end
+  if self._monPictureImage then
+    self._monPictureImage:release()
+    self._monPictureImage = nil
+    self._monPicturePageId = nil
   end
   self.fieldEntryManifest = nil
   if self.labelTextRenderer then

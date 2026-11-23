@@ -1705,6 +1705,36 @@ function GearLowering.getBuenasPassword(ins)
   }
 end
 
+-- The native roamer creation and the field Pokémon picture window lower
+-- through one helper table: this file sits near LuaJIT's local budget, so the
+-- new handlers cost a table instead of three top-level locals.
+local FieldWindowLowering = {}
+
+-- ScrCmd_CreateRoamer (src/scrcmd_encounter.c): one raw source slot index the
+-- field roamer owner materializes and activates in the same source tick.
+function FieldWindowLowering.createRoamer(ins)
+  return { op = "create_roamer", slot = Operands.operandValue(ins.operands[1]) }
+end
+
+-- ScrCmd_ShowPokemonPicWindow (src/scrcmd_c.c): both operands are source
+-- literals (species number and gender), the command draws the species picture
+-- on the field's own window layer and records the shown species as seen,
+-- returning without a wait.
+function FieldWindowLowering.showMonPicture(ins)
+  return {
+    op = "mon_picture_show",
+    species = Operands.operandValue(ins.operands[1]),
+    gender = Operands.operandValue(ins.operands[2]),
+  }
+end
+
+-- ScrCmd_ClosePokemonPicWindow (src/scrcmd_c.c): no operands; releases the
+-- open picture window and returns TRUE, so the script resumes on the next
+-- source tick.
+function FieldWindowLowering.closeMonPicture()
+  return { op = "mon_picture_close" }
+end
+
 local FieldHandlers = {
   [44] = nonNpcMessage,
   [45] = npcMessage,
@@ -1733,6 +1763,9 @@ local FieldHandlers = {
   [99] = releaseActor,
   [100] = showObject,
   [101] = hideObject,
+  [452] = FieldWindowLowering.showMonPicture,
+  [453] = FieldWindowLowering.closeMonPicture,
+  [464] = FieldWindowLowering.createRoamer,
   [104] = facePlayer,
   [105] = getPlayerCoords,
   [106] = getObjectCoords,
@@ -1926,6 +1959,10 @@ local FieldHandlers = {
   [213] = BattleHandlers.trainerBattle,
   [562] = BattleHandlers.multiBattle,
   [220] = BattleHandlers.checkBattleWon,
+  [221] = BattleHandlers.staticWildWonOrCaughtCheck,
+  [588] = BattleHandlers.latiCaughtCheck,
+  [683] = BattleHandlers.getStaticEncounterOutcome,
+  [686] = BattleHandlers.fatefulWildBattle,
   [249] = BattleHandlers.rocketTrapBattle,
   [589] = BattleHandlers.wildBattle,
   [251] = BattleHandlers.catchingTutorial,

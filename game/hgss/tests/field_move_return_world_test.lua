@@ -38,6 +38,9 @@ local function warpsDouble()
       end
       return { id = 48, originX = self.origin.x, originZ = self.origin.z }
     end,
+    beginFlyWarp = function(self)
+      calls.fly = (calls.fly or 0) + 1
+    end,
     startWarp = function(self, target)
       calls.start = calls.start + 1
       self.started = target

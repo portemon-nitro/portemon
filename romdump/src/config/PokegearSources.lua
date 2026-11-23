@@ -460,6 +460,16 @@ PokegearSources.mapLocations = {
     flypoint = "hg.flypoint.violet",
   },
   {
+    key = "hg.place.cherrygrove",
+    fieldMap = "MAP_CHERRYGROVE",
+    mapRef = 67,
+    matrix = { x = 564, y = 392 },
+    location = "hg.location.cherrygrove-city",
+    section = "hg.section.cherrygrove-city",
+    region = "johto",
+    flypoint = "hg.flypoint.cherrygrove",
+  },
+  {
     key = "hg.place.route-26",
     fieldMap = "MAP_ROUTE_26",
     mapRef = 30,
@@ -571,6 +581,7 @@ PokegearSources.mapLocations = {
 
 PokegearSources.mapFlypoints = {
   { key = "hg.flypoint.new-bark" },
+  { key = "hg.flypoint.cherrygrove" },
   { key = "hg.flypoint.violet" },
   { key = "hg.flypoint.pallet" },
   { key = "hg.flypoint.mount-silver" },

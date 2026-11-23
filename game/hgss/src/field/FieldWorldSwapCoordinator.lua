@@ -310,6 +310,11 @@ end
 function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
   local runtime = self.runtime
   local sourceMap, sourcePlayer = runtime.runtimeMap, runtime.player
+  -- The source form of this warp: a Fly warp marked its own form before
+  -- starting, every other warp is an ordinary one. The mark is consumed
+  -- here whether or not the roamer owner exists.
+  local warpForm = runtime.pendingWarpForm or "ordinary"
+  runtime.pendingWarpForm = nil
   self:publishSpecialSpawn(runtime, resolution)
   self:publishBlackoutSpawn(runtime, resolution)
   self:publishDynamicWarpEntrance(runtime, resolution)
@@ -345,6 +350,7 @@ function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
     physical.state = "committed"
   end
   runtime.fieldTerrainEffectController:clear()
+  local sourceMapId = sourceMap ~= nil and sourceMap.mapId or nil
   runtime.runtimeMap = runtimeMap
   runtime.player = prepared.player
   runtime.transition.player = prepared.player
@@ -376,6 +382,13 @@ function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
   end
   runtime.session:beginMapEntry()
   runtime:resetEncounterStepCounters()
+  -- The roamer transition publishes with the committed destination: an
+  -- ordinary warp records the route the player left and moves nothing, and
+  -- the explicit Fly warp randomizes every active roamer. A failed or
+  -- abandoned preparation never reaches this point.
+  if type(sourceMapId) == "number" then
+    runtime:publishRoamerTransition(warpForm, sourceMapId, runtimeMap.mapId)
+  end
   -- The durable destination is published: one ordinary arrival may announce
   -- the new area, regardless of the source section. Ineligible destinations
   -- are the controller's own compiled-eligibility decision.

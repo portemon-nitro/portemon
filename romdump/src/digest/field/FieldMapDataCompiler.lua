@@ -911,9 +911,28 @@ function FieldMapDataCompiler.compileSpawnDestinations(romFs, hashLua)
       deathWarpByMap[entry.map] = key
     end
   end
+  -- The fly destinations' landings: each region-map flypoint resolves to the
+  -- cited spawn record of the same place, so a confirmed flypoint lands where
+  -- the source's own Fly warp does. The entries repeat the cited destination
+  -- fields and are never a second source of coordinates.
+  local flypoints = {}
+  for flypointKey, spawnKey in pairs(FieldMoveSources.FLYPOINT_SPAWNS) do
+    assert(type(flypointKey) == "string" and flypointKey ~= "", "fly landings key on flypoint identities")
+    local destination = spawns[spawnKey]
+    assert(type(destination) == "table", "fly landing names a cited spawn destination: " .. tostring(spawnKey))
+    flypoints[flypointKey] = {
+      map = destination.map,
+      fieldX = destination.fieldX,
+      fieldZ = destination.fieldZ,
+      -- The spawn row the source also reads as the special-warp record, so a
+      -- later Dig or Teleport returns to the place the fly landed.
+      spawnKey = spawnKey,
+    }
+  end
   local index = {
     schema = FieldMapDataCache.SPAWN_INDEX_SCHEMA,
     spawns = spawns,
+    flypoints = flypoints,
     blackoutSpawns = blackoutSpawns,
     specialSpawns = specialSpawns,
     deathWarpByMap = deathWarpByMap,
@@ -937,6 +956,7 @@ function FieldMapDataCompiler.compileSpawnDestinations(romFs, hashLua)
     metadata.sha1,
     hashLua({
       spawns = spawns,
+      flypoints = flypoints,
       blackoutSpawns = blackoutSpawns,
       specialSpawns = specialSpawns,
       deathWarpByMap = deathWarpByMap,

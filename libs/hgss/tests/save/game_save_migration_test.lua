@@ -807,7 +807,7 @@ function T.v13_migration_adds_only_the_gym_union_and_follower_inhibit()
   Assert.isNil(source.gymmick, "v13 records carry no gym union")
   Assert.isNil(source.followingMon, "v13 records carry no follower inhibit bucket")
   local migrated = GameSave.migrateV13(source)
-  Assert.equal(migrated.schema, GameSave.SCHEMA, "the v13 step advances the envelope")
+  Assert.equal(migrated.schema, GameSave.LEGACY_V14_SCHEMA, "the v13 step advances the envelope to its own successor")
   Assert.equal(source.schema, GameSave.LEGACY_V13_SCHEMA, "migration leaves its input untouched")
   Assert.isNil(source.gymmick, "migration never mutates its source record")
   Assert.deepEqual(migrated.gymmick, {
@@ -827,12 +827,24 @@ function T.v13_migration_adds_only_the_gym_union_and_follower_inhibit()
   Assert.deepEqual(normalized.gymmick, migrated.gymmick, "normalization installs the gym union")
   local asNew = GameSave.migrateV13(v10record({ schema = GameSave.LEGACY_V13_SCHEMA }))
   Assert.deepEqual(asNew.gymmick, migrated.gymmick, "the step is pure and idempotent in its own defaults")
+  -- The successor step is envelope-only: the encounter bucket keeps whatever
+  -- its own owner stored, so no roamer metadata is invented here.
+  local encounters = { schema = "hgss-encounter-v2", stateVersion = 2, steps = 4, repelSteps = 1, swarm = false }
+  local successor = {}
+  for key, value in pairs(migrated) do
+    successor[key] = value
+  end
+  successor.encounters = encounters
+  local envelope = GameSave.migrateV14(successor)
+  Assert.equal(envelope.schema, GameSave.SCHEMA, "the v14 step advances the envelope to the current schema")
+  Assert.deepEqual(envelope.encounters, encounters, "the v14 step leaves the encounter bucket to its own owner")
+  Assert.deepEqual(envelope.gymmick, migrated.gymmick, "the v14 step preserves the settled gym union")
 end
 
 -- A current v14 record keeps whatever a settled ride wrote: normalization is
 -- envelope-only and never resets the union to its initial kind.
 function T.a_current_record_keeps_its_settled_gym_union()
-  local record = GameSave.migrateV13(GameSave.migrateV12(GameSave.migrateV11(GameSave.migrateV10(v10record()))))
+  local record = GameSave.migrateV14(GameSave.migrateV13(GameSave.migrateV12(GameSave.migrateV11(GameSave.migrateV10(v10record())))))
   record.gymmick = { schema = "hgss-gymmick-v1", kind = "violet", data = { raised = true } }
   record.followingMon = { schema = "hgss-following-mon-v1", inhibited = true }
   local normalized = assert(GameSave.normalize(record))

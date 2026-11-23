@@ -150,6 +150,9 @@ local function warpsDouble(rig)
     assert(ref == "MAP_ROUTE_46" or ref == "MAP_NEW_BARK", "unexpected map " .. tostring(ref))
     return { id = 48, originX = self.origin.x, originZ = self.origin.z }
   end
+  function service:beginFlyWarp()
+    self.flyWarps = (self.flyWarps or 0) + 1
+  end
   function service:startWarp(target)
     assert(rig == nil or rig.screen:isOpaque(), "the map swap waits for the move's opaque cover")
     self.starts = self.starts + 1

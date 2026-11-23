@@ -107,8 +107,16 @@ end
 -- resolve to nil so planning refuses loudly, and a missing index fails
 -- loudly instead of warping somewhere convenient.
 local function spawnResolver(cacheFs)
+  -- One landing resolver for both cited namespaces: spawn keys name the
+  -- source arrival records a return move targets, and flypoint keys name the
+  -- retail fly destinations a confirmed Fly choice targets. A key outside
+  -- both answers nil so planning refuses loudly.
   local function destinationFor(_, spawnKey)
-    return FieldMapDataCache.spawnDestination(cacheFs, spawnKey)
+    local spawn = FieldMapDataCache.spawnDestination(cacheFs, spawnKey)
+    if spawn ~= nil then
+      return spawn
+    end
+    return FieldMapDataCache.flypointDestination(cacheFs, spawnKey)
   end
   local function specialFor(_, spawnKey)
     return FieldMapDataCache.specialSpawnDestination(cacheFs, spawnKey)

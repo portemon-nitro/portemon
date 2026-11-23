@@ -98,11 +98,11 @@ function T.result_maps_contexts_and_unrecorded_battles_conservatively()
   Runtime.executeNode({ op = "battle_result", result = var(3) }, fixture.run)
   Assert.equal(world.vars[3], 0, "a drawn battle never reads back won")
   Runtime.executeNode({ op = "battle_result", result = var(4), context = "static_wild_won_or_caught" }, fixture.run)
-  Assert.equal(world.vars[4], 0)
+  Assert.equal(world.vars[4], 1, "the static won-or-caught check answers 1 for a draw")
 
   local caughtHost = {
     lastBattleResult = function()
-      return { result = "capture", sourceResult = 1 }
+      return { result = "capture", sourceResult = 1, nativeOutcome = 4 }
     end,
   }
   local caughtFixture = runWith({ world = world, battle = caughtHost })
@@ -110,7 +110,7 @@ function T.result_maps_contexts_and_unrecorded_battles_conservatively()
     { op = "battle_result", result = var(5), context = "static_wild_won_or_caught" },
     caughtFixture.run
   )
-  Assert.equal(world.vars[5], 1, "the static context counts captures")
+  Assert.equal(world.vars[5], 0, "the static won-or-caught check answers 0 for a capture")
 
   local emptyHost = {
     lastBattleResult = function()
@@ -167,6 +167,135 @@ function T.the_generic_read_keeps_its_generic_contract()
   local outcome = Runtime.executeNode({ op = "battle_result", result = var(3) }, fixture.run)
   Assert.equal(outcome, Runtime.OUTCOME_CONTINUE, "the generic read stays in its own tick")
   Assert.equal(world.vars[3], 0, "the generic read never counts a flight as a win")
+end
+
+-- ScrCmd_StaticWildWonOrCaughtCheck (221): one output variable and the raw
+-- trailing byte that selects the read. The byte selects the battle-result
+-- variable only when it is 1; otherwise the query reads the committed raw
+-- outcome word. It answers 0 for a win or a capture and 1 for every other raw
+-- word, then yields one tick.
+function T.static_won_or_caught_matrix_reads_its_own_word_and_tick()
+  local cases = {
+    { native = 0, expected = 1, label = "no outcome" },
+    { native = 1, expected = 0, label = "a win" },
+    { native = 2, expected = 1, label = "a loss" },
+    { native = 3, expected = 1, label = "a draw" },
+    { native = 4, expected = 0, label = "a capture" },
+    { native = 5, expected = 1, label = "the player's flight" },
+    { native = 6, expected = 1, label = "the foe's flight" },
+  }
+  for index, case in ipairs(cases) do
+    local world = worldWith({})
+    local host = {
+      lastBattleResult = function()
+        return { result = "flee", sourceResult = 0, nativeOutcome = case.native }
+      end,
+    }
+    local fixture = runWith({ world = world, battle = host })
+    local outcome = Runtime.executeNode({
+      op = "battle_result",
+      context = "static_wild_won_or_caught",
+      result = var(index),
+    }, fixture.run)
+    Assert.equal(outcome, Runtime.OUTCOME_YIELD_TICK, case.label .. " yields one source tick")
+    Assert.equal(world.vars[index], case.expected, case.label .. " reads its own polarity")
+  end
+end
+
+-- The raw byte selects the battle-result variable: when it is 1 the query
+-- reads VAR_BATTLE_RESULT and ignores the committed word; any other byte keeps
+-- reading the committed raw outcome. VAR_BATTLE_RESULT is the source variable
+-- the battle setup publishes (32781).
+function T.static_won_or_caught_uses_the_result_variable_only_for_its_raw_byte()
+  local BATTLE_RESULT_VAR = 32781
+  local function readWith(outcome, useResultVariable)
+    local world = worldWith({ [BATTLE_RESULT_VAR] = outcome })
+    local host = {
+      lastBattleResult = function()
+        return { result = "win", sourceResult = 1, nativeOutcome = 1 }
+      end,
+    }
+    local fixture = runWith({ world = world, battle = host })
+    local node = {
+      op = "battle_result",
+      context = "static_wild_won_or_caught",
+      result = var(1),
+      useResultVariable = useResultVariable,
+    }
+    local result = Runtime.executeNode(node, fixture.run)
+    return result, world.vars[1]
+  end
+  local tickWithVariable, withVariable = readWith(2, true)
+  Assert.equal(tickWithVariable, Runtime.OUTCOME_YIELD_TICK, "the result-variable read yields one tick")
+  Assert.equal(withVariable, 1, "a lost result variable answers 1 even when the committed word is a win")
+  local tickWithWord, withWord = readWith(4, false)
+  Assert.equal(tickWithWord, Runtime.OUTCOME_YIELD_TICK, "the committed-word read yields one tick")
+  Assert.equal(withWord, 0, "the committed capture word answers 0 when the result variable says loss")
+end
+
+-- ScrCmd_LatiCaughtCheck (588): one output; 0 only for the committed capture
+-- word, 1 for every other word, then one source tick.
+function T.lati_caught_check_answers_zero_only_for_the_capture_word()
+  for native = 0, 6 do
+    local world = worldWith({})
+    local host = {
+      lastBattleResult = function()
+        return { result = "flee", sourceResult = 0, nativeOutcome = native }
+      end,
+    }
+    local fixture = runWith({ world = world, battle = host })
+    local outcome = Runtime.executeNode({
+      op = "battle_result",
+      context = "latis_caught",
+      result = var(1),
+    }, fixture.run)
+    Assert.equal(outcome, Runtime.OUTCOME_YIELD_TICK, "the Lati caught check yields one source tick")
+    Assert.equal(world.vars[1], native == 4 and 0 or 1, "raw word " .. native .. " reads its own answer")
+  end
+end
+
+-- ScrCmd_GetStaticEncounterOutcome (683): the committed raw word itself, then
+-- one source tick. An unrecorded battle reads the zero-initialized word.
+function T.static_encounter_outcome_reads_the_committed_raw_word()
+  for native = 0, 6 do
+    local world = worldWith({})
+    local host = {
+      lastBattleResult = function()
+        return { result = "flee", sourceResult = 0, nativeOutcome = native }
+      end,
+    }
+    local fixture = runWith({ world = world, battle = host })
+    local outcome = Runtime.executeNode({
+      op = "battle_result",
+      context = "static_encounter_outcome",
+      result = var(1),
+    }, fixture.run)
+    Assert.equal(outcome, Runtime.OUTCOME_YIELD_TICK, "the raw outcome query yields one source tick")
+    Assert.equal(world.vars[1], native, "raw word " .. native .. " answers itself")
+  end
+  local world = worldWith({})
+  local unrecorded = runWith({ world = world, battle = { lastBattleResult = function() end } })
+  Runtime.executeNode({ op = "battle_result", context = "static_encounter_outcome", result = var(1) }, unrecorded.run)
+  Assert.equal(world.vars[1], 0, "an unrecorded battle reads the zero-initialized raw word")
+end
+
+-- Every query writes its output only from a committed result: a launch that
+-- has not published yet answers the zero-initialized word, and the exact query
+-- that reads it never publishes a guessed branch.
+function T.queries_stay_unpublished_until_the_battle_commits()
+  local world = worldWith({})
+  local published = nil
+  local host = {
+    lastBattleResult = function()
+      return published
+    end,
+  }
+  local fixture = runWith({ world = world, battle = host })
+  Runtime.executeNode({ op = "battle_result", context = "native_won", result = var(1) }, fixture.run)
+  Assert.equal(world.vars[1], 1, "an unrecorded battle reads the zero-initialized native word as won")
+  published = { result = "loss", sourceResult = 0, nativeOutcome = 2 }
+  Runtime.executeNode({ op = "battle_result", context = "native_won", result = var(1) }, fixture.run)
+  Assert.equal(world.vars[1], 0, "the committed loss publishes not-won on the same variable")
 end
 
 function T.result_without_a_host_is_an_attributed_fault()

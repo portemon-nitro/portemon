@@ -278,4 +278,16 @@ function HgssEncounterCatalog:specialTable(memberId, context)
   error("unreachable special lookup", 0)
 end
 
+-- The source roamer graph the compiled catalog publishes beside its member
+-- tables: the four created slots with their species, level and in-region
+-- bounds, the eligible route map symbols in source index order, and the
+-- adjacency table addressed by those indexes. Detached, so the field-owned
+-- roamer collaborator can never mutate the published catalog.
+---@return table<string, unknown>
+function HgssEncounterCatalog:nativeRoamerData()
+  local roamers = self._compiled.roamers
+  assert(type(roamers) == "table", "the compiled encounter catalog carries its roamer graph")
+  return copyValue(roamers)
+end
+
 return HgssEncounterCatalog

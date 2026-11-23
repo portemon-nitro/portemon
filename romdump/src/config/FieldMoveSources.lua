@@ -294,6 +294,36 @@ FieldMoveSources.SPECIAL_SPAWN_DESTINATIONS = {
   SPAWN_ROCK_TUNNEL = { map = "MAP_ROUTE_10", fieldX = 1426, fieldZ = 164, warpId = -1, direction = "south" },
 }
 
+-- The retail fly destinations' landing identities: each semantic flypoint the
+-- region map names resolves to the cited spawn record of the same place, so a
+-- confirmed flypoint lands where the source's own Fly warp does. The keys are
+-- the region-map flypoint identities; the values are the cited spawn keys.
+FieldMoveSources.FLYPOINT_SPAWNS = {
+  ["hg.flypoint.new-bark"] = "SPAWN_NEW_BARK",
+  ["hg.flypoint.cherrygrove"] = "SPAWN_CHERRYGROVE",
+  ["hg.flypoint.violet"] = "SPAWN_VIOLET",
+  ["hg.flypoint.azalea"] = "SPAWN_AZALEA",
+  ["hg.flypoint.goldenrod"] = "SPAWN_GOLDENROD",
+  ["hg.flypoint.ecruteak"] = "SPAWN_ECRUTEAK",
+  ["hg.flypoint.olivine"] = "SPAWN_OLIVINE",
+  ["hg.flypoint.cianwood"] = "SPAWN_CIANWOOD",
+  ["hg.flypoint.mahogany"] = "SPAWN_MAHOGANY",
+  ["hg.flypoint.lake-of-rage"] = "SPAWN_LAKE_OF_RAGE",
+  ["hg.flypoint.blackthorn"] = "SPAWN_BLACKTHORN",
+  ["hg.flypoint.mount-silver"] = "SPAWN_MT_SILVER",
+  ["hg.flypoint.pallet"] = "SPAWN_PALLET",
+  ["hg.flypoint.viridian"] = "SPAWN_VIRIDIAN",
+  ["hg.flypoint.pewter"] = "SPAWN_PEWTER",
+  ["hg.flypoint.cerulean"] = "SPAWN_CERULEAN",
+  ["hg.flypoint.lavender"] = "SPAWN_LAVENDER",
+  ["hg.flypoint.vermilion"] = "SPAWN_VERMILION",
+  ["hg.flypoint.celadon"] = "SPAWN_CELADON",
+  ["hg.flypoint.fuchsia"] = "SPAWN_FUCHSIA",
+  ["hg.flypoint.cinnabar"] = "SPAWN_CINNABAR",
+  ["hg.flypoint.indigo-plateau"] = "SPAWN_INDIGO",
+  ["hg.flypoint.saffron"] = "SPAWN_SAFFRON",
+}
+
 ---@param spawnKey string|nil
 ---@return table<string, unknown>|nil a fresh destination record, never a live table
 function FieldMoveSources.spawnDestinationForKey(spawnKey)

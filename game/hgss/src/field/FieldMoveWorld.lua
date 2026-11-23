@@ -167,6 +167,7 @@ function FieldMoveWorld.new(ports)
   assert(type(world._maps:current()) == "table", "field world maps must describe the live map")
   if world._warps ~= nil then
     assert(type(world._warps.startWarp) == "function", "warps port must start warps")
+    assert(type(world._warps.beginFlyWarp) == "function", "warps port must mark the source fly warp")
     assert(type(world._warps.warpDone) == "function", "warps port must observe warp completion")
     assert(type(world._warps.pendingError) == "function", "warps port must report warp failures")
     assert(type(world._warps.placement) == "function", "warps port must place destination maps")
@@ -691,9 +692,11 @@ end
 
 -- Resolve a semantic flypoint to the existing destination record shape:
 -- the confirmed key resolves through the cited landing destinations,
--- never through raw coordinates or the last-heal spawn. An unknown key
--- fails loudly instead of warping somewhere convenient; the caller
--- starts arrival through the existing return-warp owner.
+-- never through raw coordinates or the last-heal spawn. The landing also
+-- names the cited spawn row, which the source stamps as the special-spawn
+-- record a later Dig or Teleport returns to. An unknown key fails loudly
+-- instead of warping somewhere convenient; the caller starts arrival
+-- through the existing return-warp owner.
 ---@param flypointKey string the confirmed semantic flypoint
 ---@param context table<string, unknown> the initiating choice context
 ---@return table<string, unknown> destination record or Decision
@@ -715,13 +718,17 @@ function FieldMoveWorld:planFly(flypointKey, context)
     type(destination.fieldX) == "number" and type(destination.fieldZ) == "number",
     "landing destinations carry tiles"
   )
+  assert(
+    type(destination.specialSpawnKey) == "string" and destination.specialSpawnKey ~= "",
+    "landing destinations name the cited spawn row they also stamp as the special spawn"
+  )
   return {
     map = destination.map,
     warp = 0,
     fieldX = destination.fieldX,
     fieldZ = destination.fieldZ,
     facing = "south",
-    specialSpawnKey = flypointKey,
+    specialSpawnKey = destination.specialSpawnKey,
   }
 end
 
@@ -754,6 +761,12 @@ function FieldMoveWorld:beginReturnWarp(plan)
   -- The warp task sets the avatar to walking before the map change.
   self._player:queueAvatarTransition("walking")
   self._player:applyAvatarTransitions()
+  -- The source fly warp is its own transition form: the field records the
+  -- raw arrival and departure identities and randomizes every active roamer
+  -- once the destination is live, before the warp starts.
+  if plan.kind == "fly" then
+    warps:beginFlyWarp()
+  end
   warps:startWarp({
     map = destination.map,
     warp = destination.warp or 0,

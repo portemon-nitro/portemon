@@ -25,6 +25,7 @@ local ScriptIdentity = require("libs.assets.src.ScriptIdentity")
 ---@field incoming table<string, unknown>
 ---@field radioEffects table<string, unknown>
 ---@field mapContext fun(): table<string, unknown>
+---@field flyDestinations fun(): string[]
 ---@field dispose fun()
 local PokegearComposition = {}
 
@@ -838,12 +839,53 @@ function PokegearComposition.compose(runtime, owners)
     return liveMapContext(runtime, world, catalog)
   end
 
+  -- The player's confirmed fly destinations in source flypoint order: every
+  -- visited flypoint of the compiled region map whose warp map the compiled
+  -- location table names, reported by that location's own semantic flypoint
+  -- key. The field move hands the set to the selector, so an unvisited
+  -- flypoint is never offered and a place without a compiled identity is
+  -- never invented. Reads the live flags; owns nothing.
+  local function flyDestinations()
+    local regionMap = type(catalog) == "table" and catalog.regionMap or nil
+    if type(regionMap) ~= "table" or type(regionMap.flypoints) ~= "table" then
+      return {}
+    end
+    local flypointByMapRef = {}
+    for _, record in
+      ipairs(catalog.locations --[[@as table<integer, unknown>]])
+    do
+      local entry = record --[[@as table<string, unknown>]]
+      if type(entry.mapRef) == "number" and type(entry.flypoint) == "string" then
+        flypointByMapRef[entry.mapRef] = entry.flypoint
+      end
+    end
+    local _, facts = regionMapOwners(runtime)
+    local visited = facts.flypointVisited --[[@as fun(index: integer): boolean]]
+    local keys = {}
+    for _, flypoint in
+      ipairs(regionMap.flypoints --[[@as table<integer, table<string, unknown>>]])
+    do
+      if
+        visited(flypoint.flypoint --[[@as integer]]) == true
+      then
+        local key = flypointByMapRef[
+          flypoint.warpMapId --[[@as integer]]
+        ]
+        if type(key) == "string" then
+          keys[#keys + 1] = key
+        end
+      end
+    end
+    return keys
+  end
+
   return {
     screenFactory = screenFactory,
     scriptHost = host,
     incoming = incoming,
     radioEffects = radioEffects,
     mapContext = mapContext,
+    flyDestinations = flyDestinations,
     dispose = dispose,
   }
 end

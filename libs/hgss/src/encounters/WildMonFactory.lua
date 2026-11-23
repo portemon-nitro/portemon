@@ -40,6 +40,7 @@
 local Errors = require("libs.errors.src.Errors")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonFactory = require("libs.mons.src.gen4.MonFactory")
+local Personality = require("libs.mons.src.gen4.Personality")
 local Stats = require("libs.mons.src.gen4.Stats")
 local U32 = require("libs.codec.src.U32")
 
@@ -69,6 +70,8 @@ WildMonFactory.MALE_FORCED_LOW_BYTE = 255
 ---@field leadAbility string?
 ---@field leadNature integer?
 ---@field leadGender string?
+---@field forcedShiny boolean? scripted launch asking for the source's generated shiny identity
+---@field fateful boolean? scripted launch marking the created foe as a fateful encounter
 
 ---@class WildMonDraws
 ---@field personality integer
@@ -434,17 +437,113 @@ function WildMonFactory:create(species, level, stream, options)
   )
 end
 
--- Builds one scripted wild mon with a fixed species and level.
+-- pokemon.c::GenerateShinyPersonality: one candidate consumes two
+-- low-three-bit draws followed by thirteen single-bit draws, each of which
+-- shifts the value left two places. The candidate is accepted only when its
+-- trainer/opponent parity against the owning trainer identity is shiny, so
+-- the palette comes from the drawn identity and never from a cosmetic flag.
+-- The draws come from the one supplied stream; individual values are drawn
+-- once afterwards like every other scripted creation.
+---@param stream table<string, unknown>
+---@param trainerId integer the owning trainer identity (secret and public ids)
+---@return WildMonDraws
+local function drawShinyIdentity(stream, trainerId)
+  assert(type(stream.nextU16) == "function", "forced shiny construction consults the labeled stream")
+  local draw = stream.nextU16
+  local cause = { kind = "encounter" }
+  while true do
+    local personality = draw(stream, "shiny_personality_low", cause) % 8
+    personality = personality + (draw(stream, "shiny_personality_high", cause) % 8) * 8
+    for _ = 1, 13 do
+      personality = (personality * 4 + draw(stream, "shiny_personality_bit", cause) % 2) % U32.MOD
+    end
+    if Personality.shiny(trainerId, personality) then
+      return {
+        personality = personality,
+        ivFirst = draw(stream, "iv_first", cause),
+        ivSecond = draw(stream, "iv_second", cause),
+        held = draw(stream, "held_item", cause),
+      }
+    end
+  end
+end
+
+-- The ordinary scripted trace: the same positions the leadless wild path
+-- uses, in the same order.
+---@param stream table<string, unknown>
+---@return WildMonDraws
+local function drawStaticIdentity(stream)
+  assert(type(stream.nextU16) == "function", "scripted construction consults the labeled stream")
+  local draw = stream.nextU16
+  local cause = { kind = "encounter" }
+  local low = draw(stream, "personality_low", cause)
+  local high = draw(stream, "personality_high", cause)
+  return {
+    personality = low + high * U32.HALF_BASE,
+    ivFirst = draw(stream, "iv_first", cause),
+    ivSecond = draw(stream, "iv_second", cause),
+    held = draw(stream, "held_item", cause),
+  }
+end
+
+-- Builds one scripted wild mon with a fixed species and level. A launch that
+-- asks for the source's forced shiny identity draws it from the same stream
+-- before the individual values, and a fateful launch marks the created foe
+-- through the mon record; every other scripted launch keeps the ordinary
+-- fixed trace, which is no shiny lock: the drawn identity decides.
 ---@param species string
 ---@param level integer
 ---@param stream table<string, unknown>
 ---@param options WildMonOptions
 ---@return table<string, unknown>
 function WildMonFactory:createStatic(species, level, stream, options)
-  if type(options) == "table" and (options.leadAbility ~= nil or options.leadGender ~= nil) then
+  if type(options) ~= "table" then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "wild construction requires a capture record", { species = species })
+  end
+  assert(type(options) == "table", "scripted construction reads its capture record")
+  if options.leadAbility ~= nil or options.leadGender ~= nil then
     Errors.raise("ENCOUNTER_INVALID_INPUT", "scripted construction takes no lead ability", { species = species })
   end
-  return self:_createWithLead(species, level, stream, options, nil, nil, false)
+  local speciesDef = self:_speciesOrRaise(species)
+  checkLevel(level, species)
+  checkStream(stream)
+  local draws
+  if options.forcedShiny == true then
+    local profile = options.profile
+    local trainerId = type(profile) == "table" and profile.trainerId or nil
+    if type(trainerId) ~= "number" or trainerId % 1 ~= 0 or trainerId < 0 then
+      Errors.raise("ENCOUNTER_INVALID_INPUT", "forced shiny construction requires the owning trainer identity", {
+        species = species,
+      })
+    end
+    assert(type(trainerId) == "number", "forced shiny construction reads its trainer identity")
+    draws = drawShinyIdentity(stream, trainerId)
+  else
+    draws = drawStaticIdentity(stream)
+  end
+  local held = self:_heldItemOrRaise(speciesDef, draws.held, false)
+  local inner = MonFactory.new({
+    catalog = self._catalog,
+    rng = stagedGenerator(draws),
+    charmap = self._charmap,
+    games = self._games,
+    languages = self._languages,
+    game = self._game,
+    language = self._language,
+  })
+  local mon = inner:createNormal({
+    species = species,
+    level = level,
+    form = 0,
+    profile = options.profile,
+    ball = options.ball,
+    location = options.location,
+    terrain = options.terrain,
+    date = options.date,
+    heldItem = held,
+  })
+  mon.fatefulEncounter = options.fateful == true
+  return mon
 end
 
 return WildMonFactory

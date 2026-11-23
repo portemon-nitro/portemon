@@ -828,6 +828,19 @@ function FieldScriptComposition.compose(runtime, options)
     easyChatRandom = assert(runtime.pokegearRandom, "word scripts require the labeled random stream"),
     easyChatScriptHost = assert(runtime.easyChatScriptHost, "word scripts require the script-owned editor host"),
     battle = options.battle,
+    roamers = {
+      create = function(_, slot)
+        return runtime:createNativeRoamer(slot)
+      end,
+    },
+    monPicture = {
+      show = function(_, args)
+        return runtime.monPicture:show(args)
+      end,
+      close = function(_)
+        return runtime.monPicture:close()
+      end,
+    },
     overworld = runtime.overworld,
     propAnimations = runtime.propAnimations,
     gymMechanism = runtime.gymMechanism,

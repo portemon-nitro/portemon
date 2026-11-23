@@ -92,6 +92,64 @@ function BattleHandlers.rocketTrapBattle(ins)
   }
 end
 
+-- ScrCmd_StaticWildWonOrCaughtCheck (src/scrcmd_battle.c): the leading
+-- operand is the output variable and the trailing raw byte selects the source
+-- of the read - the battle-result variable when it is 1, the committed raw
+-- outcome word otherwise. The command reports not-won for a win or a capture.
+---@param ins table<string, unknown> decoded instruction record
+---@return table<string, unknown>
+function BattleHandlers.staticWildWonOrCaughtCheck(ins)
+  return {
+    op = "battle_result",
+    context = "static_wild_won_or_caught",
+    result = Operands.varRef(ins.operands[1]),
+    useResultVariable = Operands.operandValue(ins.operands[2]) == 1,
+  }
+end
+
+-- ScrCmd_LatiCaughtCheck (src/scrcmd_battle.c): one output variable; it
+-- reports caught only for the committed capture word.
+---@param ins table<string, unknown> decoded instruction record
+---@return table<string, unknown>
+function BattleHandlers.latiCaughtCheck(ins)
+  return {
+    op = "battle_result",
+    context = "latis_caught",
+    result = Operands.varRef(ins.operands[1]),
+  }
+end
+
+-- ScrCmd_GetStaticEncounterOutcome (src/scrcmd_battle.c): one output variable
+-- carrying the committed raw outcome word itself.
+---@param ins table<string, unknown> decoded instruction record
+---@return table<string, unknown>
+function BattleHandlers.getStaticEncounterOutcome(ins)
+  -- Whole raw-word reads never come from the battle-result variable: the
+  -- command reports the committed word.
+  return {
+    op = "battle_result",
+    context = "static_encounter_outcome",
+    result = Operands.varRef(ins.operands[1]),
+  }
+end
+
+-- ScrCmd_FatefulWildBattle (src/scrcmd_battle.c): the same authored species
+-- and level launch as ScrCmd_WildBattle, but the created foe carries the
+-- source's fateful-encounter mark. Identity stays ordinary: no forced shiny.
+---@param ins table<string, unknown> decoded instruction record
+---@return table<string, unknown>
+function BattleHandlers.fatefulWildBattle(ins)
+  return {
+    op = "battle_launch",
+    kind = "wild",
+    details = {
+      species = Operands.varRef(ins.operands[1]),
+      level = Operands.varRef(ins.operands[2]),
+      fateful = true,
+    },
+  }
+end
+
 -- Retail catching-tutorial (scrcmd_c.c ScrCmd_CatchingTutorial opcode 251,
 -- SetupAndStartTutorialBattle via BattleSetup_New_Tutorial): the lesson
 -- runs its fixed Marill/Rattata content with 20× balls behind the

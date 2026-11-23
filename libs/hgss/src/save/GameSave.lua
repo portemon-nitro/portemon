@@ -17,7 +17,8 @@ local SysInfoState = require("libs.hgss.src.save.SysInfoState")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v14"
+GameSave.SCHEMA = "g4-game-save-v15"
+GameSave.LEGACY_V14_SCHEMA = "g4-game-save-v14"
 GameSave.LEGACY_V13_SCHEMA = "g4-game-save-v13"
 GameSave.LEGACY_V12_SCHEMA = "g4-game-save-v12"
 GameSave.LEGACY_V11_SCHEMA = "g4-game-save-v11"
@@ -504,9 +505,23 @@ function GameSave.migrateV13(record)
   local GymMechanismState = require("libs.hgss.src.field.GymMechanismState")
   local FollowingMonState = require("libs.hgss.src.save.FollowingMonState")
   local migrated = deepCopy(record)
-  migrated.schema = GameSave.SCHEMA
+  migrated.schema = GameSave.LEGACY_V14_SCHEMA
   migrated.gymmick = GymMechanismState.restore(nil):capture()
   migrated.followingMon = FollowingMonState.new():capture()
+  return migrated
+end
+
+-- Pure v14 -> v15 conversion. Only the envelope moves: v14 records predate
+-- the source roamer metadata inside the encounter bucket, whose own owner
+-- migrates its stored state on restore without drawing a random value. Every
+-- field and bucket passes through copied; a predecessor that already carries
+-- a migrated encounter bucket is malformed, not silently re-migrated.
+---@param record table<string, unknown> a v14 save record
+---@return table<string, unknown> the migrated v15 record
+function GameSave.migrateV14(record)
+  assert(type(record) == "table" and record.schema == GameSave.LEGACY_V14_SCHEMA, "GameSave.migrateV14 requires v14")
+  local migrated = deepCopy(record)
+  migrated.schema = GameSave.SCHEMA
   return migrated
 end
 
@@ -540,6 +555,7 @@ function GameSave.metadata(record)
     assert(type(record) == "table")
     if
       record.schema ~= GameSave.SCHEMA
+      and record.schema ~= GameSave.LEGACY_V14_SCHEMA
       and record.schema ~= GameSave.LEGACY_V13_SCHEMA
       and record.schema ~= GameSave.LEGACY_V12_SCHEMA
       and record.schema ~= GameSave.LEGACY_V11_SCHEMA
@@ -628,6 +644,7 @@ function GameSave.normalize(record)
     local schema = record.schema
     if
       schema ~= GameSave.SCHEMA
+      and schema ~= GameSave.LEGACY_V14_SCHEMA
       and schema ~= GameSave.LEGACY_V13_SCHEMA
       and schema ~= GameSave.LEGACY_V12_SCHEMA
       and schema ~= GameSave.LEGACY_V11_SCHEMA
@@ -675,6 +692,9 @@ function GameSave.normalize(record)
     end
     if current.schema == GameSave.LEGACY_V13_SCHEMA then
       current = GameSave.migrateV13(current)
+    end
+    if current.schema == GameSave.LEGACY_V14_SCHEMA then
+      current = GameSave.migrateV14(current)
     end
     return canonicalizeCurrent(current)
   end)

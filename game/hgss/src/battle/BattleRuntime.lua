@@ -2618,15 +2618,72 @@ function BattleRuntime:_prepareCommit()
     elseif result == "win" then
       battleOutcome = "defeated"
     end
+    -- The roaming record keeps the battle of the foe it borrowed: the
+    -- executed health and canonical status ride the staged details, so the
+    -- source's own outcomes persist them instead of the stored pre-battle
+    -- facts. Without a settled foe copy the staged details stay untouched.
+    local details = copyValue(spec.details) or {}
+    assert(type(details) == "table", "the roamer settlement details stay a record")
+    local staged = details --[[@as table<string, unknown>]]
+    local condition = self:_roamerBattleCondition()
+    if condition ~= nil then
+      staged.hp = condition.hp
+      if type(condition.effects) == "table" then
+        staged.effects = condition.effects
+      end
+    end
     args.roamer = {
       owner = spec.owner,
       key = spec.key,
       outcome = battleOutcome,
       expectedRevision = spec.expectedRevision,
-      details = spec.details or {},
+      details = staged,
     }
   end
   return HgssBattleCommitter.prepare(args)
+end
+
+-- The settled battle condition of the roaming foe: the session's own combatant
+-- copy carries the executed health and the canonical status the source
+-- persists on the roaming record. A session without exactly one wild combatant
+-- answers nothing rather than inventing health.
+---@return { hp: integer, effects: table<integer, table<string, unknown>>? }?
+function BattleRuntime:_roamerBattleCondition()
+  local session = self._session
+  if session == nil or type(session.capture) ~= "function" then
+    return nil
+  end
+  local snapshot = session.capture(session) --[[@as table<string, unknown>]]
+  local combatants = snapshot.combatants
+  local participants = snapshot.participants
+  if type(combatants) ~= "table" or type(participants) ~= "table" then
+    return nil
+  end
+  local found = nil
+  for _, combatant in pairs(combatants) do
+    if type(combatant) == "table" then
+      local participantId = combatant.participant --[[@as integer]]
+      local participant = participants[participantId]
+      if type(participant) == "table" and participant.controller == BattleRuntime.WILD_CONTROLLER then
+        if found ~= nil then
+          return nil
+        end
+        local mon = combatant.mon
+        if type(mon) ~= "table" or type(combatant.hp) ~= "number" then
+          return nil
+        end
+        local monCondition = (mon --[[@as table<string, unknown>]]).condition
+        if type(monCondition) ~= "table" then
+          return nil
+        end
+        found = {
+          hp = combatant.hp,
+          effects = (monCondition --[[@as table<string, unknown>]]).effects,
+        }
+      end
+    end
+  end
+  return found
 end
 
 -- Records the derived level behind every readable source party slot at

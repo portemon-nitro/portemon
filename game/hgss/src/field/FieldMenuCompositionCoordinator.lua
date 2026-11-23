@@ -597,8 +597,15 @@ function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
   local function placeLaneWarp(_, ref)
     return lane:placement(ref)
   end
+  -- The source fly warp is marked on the runtime before the lane warp
+  -- starts, so the world-swap commit randomizes the roamers and records the
+  -- raw arrival and departure identities.
+  local function beginFlyWarp()
+    runtime:beginFlyWarp()
+  end
   local warps = {
     startWarp = startLaneWarp,
+    beginFlyWarp = beginFlyWarp,
     warpDone = laneWarpDone,
     pendingError = lanePendingError,
     placement = placeLaneWarp,

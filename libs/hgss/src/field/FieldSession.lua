@@ -75,11 +75,15 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field navigationBoundary table<string, unknown>?
 ---@field fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
 ---@field gymMechanism FieldSession.GymMechanism? completed-step claim of the active gym mechanism; absent sessions claim no mechanism step
+---@field roamerTransitions FieldSession.RoamerTransitions? connection-form roamer transition publication; absent sessions move no roamer
 ---@field overworld table<string, unknown>? lifecycle owner; absent sessions keep script scheduling but suspend ordinary field work
 ---@field initController table<string, unknown>|nil
 ---@field enterMapActors fun()?
 ---@field autoAcknowledgePresentation boolean?
 ---@field incomingCalls FieldSession.IncomingCalls? ambient incoming-call collaborator; absent sessions offer no phone opportunity
+
+---@class FieldSession.RoamerTransitions
+---@field connection fun(sourceMapId: integer, destinationMapId: integer) the source connection-entry roamer transition
 
 ---@class FieldSession.Interactions
 ---@field resolve fun(self: FieldSession.Interactions, snapshot: InteractionResolverSnapshot): InteractionIntent?
@@ -427,6 +431,12 @@ function FieldSession.new(options)
       "field session gym mechanism port requires its completed-step claim"
     )
   end
+  if options.roamerTransitions ~= nil then
+    assert(
+      type(options.roamerTransitions.connection) == "function",
+      "field session roamer transitions fault a port requires its connection publication"
+    )
+  end
   if options.fieldMoves ~= nil then
     assert(
       type(options.fieldMoves.tryStrengthPush) == "function" and type(options.fieldMoves.discardPending) == "function",
@@ -536,6 +546,7 @@ function FieldSession.new(options)
     navigationBoundary = options.navigationBoundary,
     fieldMoves = options.fieldMoves,
     gymMechanism = options.gymMechanism,
+    roamerTransitions = options.roamerTransitions,
     overworld = options.overworld,
     incomingCalls = options.incomingCalls,
     pokegearApplications = options.pokegearApplications,
@@ -1978,6 +1989,7 @@ function FieldSession:updateFixed(inputSnapshot)
       local boundaryResult = self.navigationBoundary:afterCommittedMove(self.currentMap, self.player, self.camera)
       if boundaryResult and boundaryResult.newMapId then
         zoneChanged = true
+        local sourceMapId = self.currentMap.mapId
         self.currentMap = self.navigationBoundary.zoneController.currentMap
         self.transition.suppression = {
           mapId = boundaryResult.newMapId,
@@ -1991,6 +2003,11 @@ function FieldSession:updateFixed(inputSnapshot)
         -- resolving against a map that is not live yet.
         if self.fieldMoves ~= nil then
           self.fieldMoves:clearTransient()
+        end
+        -- The source connection entry records the arrival and the map the
+        -- player left, then moves every active roamer along the route graph.
+        if self.roamerTransitions ~= nil then
+          self.roamerTransitions.connection(sourceMapId, boundaryResult.newMapId)
         end
         self.mapEntryController:begin("connection")
       end

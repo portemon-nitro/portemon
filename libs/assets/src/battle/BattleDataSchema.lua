@@ -460,6 +460,64 @@ local function assertEncounterTable(memberId, mapTable)
   end
 end
 
+-- The source roamer graph beside the member tables: the four created slots
+-- with their species/level and in-region bounds, plus the eligible route list
+-- and the adjacency table addressed by the same route indexes.
+function BattleDataSchema.assertEncounterRoamers(roamers)
+  local context = {}
+  checkRecord(
+    roamers,
+    { slots = true, routes = true, adjacency = true },
+    context,
+    "BATTLE_DATA_INVALID",
+    "encounter roamers"
+  )
+  if type(roamers.routes) ~= "table" then
+    fail("BATTLE_DATA_INVALID", "encounter roamer routes must be a list", context)
+  end
+  for index, route in ipairs(roamers.routes) do
+    checkNonEmptyString(route, context, "BATTLE_DATA_INVALID", "encounter roamer route " .. index)
+  end
+  if type(roamers.adjacency) ~= "table" or #roamers.adjacency ~= #roamers.routes then
+    fail("BATTLE_DATA_INVALID", "encounter roamer adjacency covers every route", context)
+  end
+  for index, neighbours in ipairs(roamers.adjacency) do
+    if type(neighbours) ~= "table" or #neighbours == 0 then
+      fail("BATTLE_DATA_INVALID", "encounter roamer adjacency names its neighbours", context)
+    end
+    for _, neighbour in ipairs(neighbours) do
+      checkInt(neighbour, 0, #roamers.routes - 1, context, "BATTLE_DATA_INVALID", "encounter roamer neighbour")
+      if neighbour == index - 1 then
+        fail("BATTLE_DATA_INVALID", "encounter roamer adjacency never names its own route", context)
+      end
+    end
+  end
+  if type(roamers.slots) ~= "table" or #roamers.slots == 0 then
+    fail("BATTLE_DATA_INVALID", "encounter roamer slots must be a list", context)
+  end
+  for index, slot in ipairs(roamers.slots) do
+    checkRecord(
+      slot,
+      { slot = true, key = true, species = true, level = true, regionMin = true, regionCount = true },
+      context,
+      "BATTLE_DATA_INVALID",
+      "encounter roamer slot " .. index
+    )
+    checkInt(slot.slot, 0, #roamers.slots - 1, context, "BATTLE_DATA_INVALID", "encounter roamer slot index")
+    if slot.slot ~= index - 1 then
+      fail("BATTLE_DATA_INVALID", "encounter roamer slots keep their source order", context)
+    end
+    checkNonEmptyString(slot.key, context, "BATTLE_DATA_INVALID", "encounter roamer slot key")
+    checkNonEmptyString(slot.species, context, "BATTLE_DATA_INVALID", "encounter roamer slot species")
+    checkInt(slot.level, 1, 100, context, "BATTLE_DATA_INVALID", "encounter roamer slot level")
+    checkInt(slot.regionMin, 0, #roamers.routes - 1, context, "BATTLE_DATA_INVALID", "encounter roamer region start")
+    checkInt(slot.regionCount, 1, #roamers.routes, context, "BATTLE_DATA_INVALID", "encounter roamer region size")
+    if slot.regionMin + slot.regionCount > #roamers.routes then
+      fail("BATTLE_DATA_INVALID", "encounter roamer region stays inside the route graph", context)
+    end
+  end
+end
+
 -- Projected encounter catalog: one version plus every map member table keyed
 -- by its native member identity with ordered per-method slots.
 function BattleDataSchema.assertEncounterCatalog(compiled)
@@ -468,6 +526,7 @@ function BattleDataSchema.assertEncounterCatalog(compiled)
     schema = true,
     version = true,
     tables = true,
+    roamers = true,
   }, context, "BATTLE_DATA_INVALID", "encounter catalog")
   checkNonEmptyString(compiled.schema, context, "BATTLE_DATA_INVALID", "encounter catalog schema")
   checkRecord(compiled.version, { id = true }, context, "BATTLE_DATA_INVALID", "encounter catalog version")
@@ -478,6 +537,9 @@ function BattleDataSchema.assertEncounterCatalog(compiled)
       fail("BATTLE_DATA_INVALID", "encounter table keys must be integer identities", context)
     end
     assertEncounterTable(memberId, mapTable)
+  end
+  if compiled.roamers ~= nil then
+    BattleDataSchema.assertEncounterRoamers(compiled.roamers)
   end
   return true
 end

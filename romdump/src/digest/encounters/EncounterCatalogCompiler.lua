@@ -249,6 +249,46 @@ function EncounterCatalogCompiler.decodeMember(memberId, versionId, member)
   return result
 end
 
+-- The source roamer graph beside the member tables: the pinned route list and
+-- its adjacency table, plus the four created slots with their in-region
+-- bounds. Frozen producer facts, so the only failure is malformed producer
+-- data.
+---@return table<string, unknown>
+function EncounterCatalogCompiler.compileRoamers()
+  local source = BattleSources.roamerSources
+  local routes = {}
+  for index, symbol in ipairs(source.routes) do
+    assert(type(symbol) == "string" and symbol ~= "", "roamer routes name map symbols: " .. index)
+    routes[index] = symbol
+  end
+  local adjacency = {}
+  for index, neighbours in ipairs(source.adjacency) do
+    assert(type(neighbours) == "table" and #neighbours > 0, "roamer adjacency names its neighbours")
+    local copy = {}
+    for position, neighbour in ipairs(neighbours) do
+      assert(
+        type(neighbour) == "number" and neighbour % 1 == 0 and neighbour >= 0 and neighbour < #routes,
+        "roamer adjacency names a route index"
+      )
+      copy[position] = neighbour
+    end
+    adjacency[index] = copy
+  end
+  local slots = {}
+  for index, slot in ipairs(source.slots) do
+    assert(slot.slot == index - 1, "roamer slots keep their source order")
+    slots[index] = {
+      slot = slot.slot,
+      key = slot.key,
+      species = slot.species,
+      level = slot.level,
+      regionMin = slot.regionMin,
+      regionCount = slot.regionCount,
+    }
+  end
+  return { slots = slots, routes = routes, adjacency = adjacency }
+end
+
 -- Compile synthetic native input into the encounter catalog. The input
 -- carries one raw member per map identity with its supported game; version
 -- tables keep their own replacement slots and game.
@@ -287,6 +327,7 @@ function EncounterCatalogCompiler.compile(nativeInput)
       schema = BattleDataCache.ENCOUNTER_SCHEMA,
       version = { id = versionId },
       tables = tables,
+      roamers = EncounterCatalogCompiler.compileRoamers(),
     }
     must(BattleDataSchema.assertEncounterCatalog(compiled))
     return compiled

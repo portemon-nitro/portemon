@@ -606,6 +606,7 @@ end
 ---@field _encounterCatalog table<string, unknown>? composed immutable encounter table catalog (nil before composition)
 ---@field _battleHost table<string, unknown>? narrow battle host for script battle tasks
 ---@field roamerState table<string, unknown>? the owned roamer and encounter persistence
+---@field pendingWarpForm string? the source form of the warp currently starting (nil for an ordinary warp)
 ---@field pokedexCatalog table<string, unknown>? the borrowed generated dex catalog behind knowledge (nil after teardown)
 ---@field dexKnowledge table<string, unknown>? the owned dex knowledge
 ---@field gameStats table<string, unknown>? the owned game-stats owner
@@ -615,6 +616,7 @@ end
 ---@field pokegearManifest table<string, unknown>? the compiled companion family (nil after teardown)
 ---@field pokegearCatalog table<string, unknown>? the borrowed compiled contact catalog (nil after teardown)
 ---@field pokegear table<string, unknown>? the composed companion feature bundle (nil after teardown)
+---@field pokegearApplications table<string, unknown>? the companion script host the feature composes (nil after teardown)
 ---@field incomingCalls table<string, unknown>? the owned ambient incoming-call coordinator (nil after teardown)
 ---@field playerDataContext table<string, unknown>? the generated charmap and frame-index context behind player validation
 ---@field bagCursor BagCursor the runtime-only field bag cursor
@@ -1593,6 +1595,9 @@ function FieldRuntime:_composeFieldServices(boot)
     dex = assert(self.dexKnowledge, "field runtime composes dex knowledge before the mon service"),
     stats = assert(self.gameStats, "field runtime composes game stats before the mon service"),
   })
+  -- The field Pokémon picture window (452/453) borrows the generated portrait
+  -- family and publishes its sighting through the one dex owner.
+  self:_composeMonPictureWindow(boot.cacheFs)
   self.sysInfo = SysInfoState.new(
     boot.loadedGame and boot.loadedGame.sysInfo
       or assert(boot.activeGame.sysInfo, "finalized game sysInfo bucket is required")
@@ -1618,15 +1623,18 @@ function FieldRuntime:_composeFieldServices(boot)
   self:_composePokegear(boot.loadedGame, boot.cacheFs)
   self:_composePokegearFeature(boot)
   self:_composeBag(boot.activeGame, boot.loadedGame)
+  -- Encounter and trainer data load once during boot from the same cache:
+  -- a missing or invalid payload fails the boot instead of leaving
+  -- the battle owners absent. The roamer owner reads the source roamer graph
+  -- from the same compiled catalog the encounter service consumes.
+  local compiledEncounters = BattleDataCache.loadEncounters(boot.cacheFs)
   self:_composeBattleState(
     boot.loadedGame,
     assert(boot.monRoot, "mon catalog root is required for battle state"),
-    boot.world
+    boot.world,
+    compiledEncounters
   )
-  -- Encounter and trainer data compose during boot from the same cache:
-  -- a missing or invalid payload fails the boot instead of leaving
-  -- the battle owners absent.
-  self:composeEncounters(BattleDataCache.loadEncounters(boot.cacheFs))
+  self:composeEncounters(compiledEncounters)
   self:composeTrainers(BattleDataCache.loadTrainers(boot.cacheFs))
   local martBucket = boot.loadedGame and boot.loadedGame.mart
     or assert(self.game.mart, "finalized game mart bucket is required")
@@ -2224,6 +2232,11 @@ function FieldRuntime:_startFieldSession(boot)
     progression = PlayerProgression.new(self.playerData.profile),
     partyKnowsMove = partyKnowsMove,
     gymMechanism = self.gymMechanism,
+    roamerTransitions = {
+      connection = function(sourceMapId, destinationMapId)
+        self:publishRoamerTransition("connection", sourceMapId, destinationMapId)
+      end,
+    },
   })
 
   if boot.loadedGame and boot.loadedGame.weatherId ~= nil then
@@ -3214,7 +3227,8 @@ end
 ---@param loadedGame table<string, unknown>?
 ---@param monRoot table<string, unknown>
 ---@param world table<string, unknown>
-function FieldRuntime:_composeBattleState(loadedGame, monRoot, world)
+---@param compiledEncounters table<string, unknown> the compiled encounter catalog
+function FieldRuntime:_composeBattleState(loadedGame, monRoot, world, compiledEncounters)
   local HgssRoamerState = require("libs.hgss.src.encounters.HgssRoamerState")
   local speciesRefs = {}
   for key in pairs(assert(monRoot.species, "mon catalog root carries its species")) do
@@ -3224,14 +3238,27 @@ function FieldRuntime:_composeBattleState(loadedGame, monRoot, world)
   for mapId in pairs(assert(world.byId, "world catalog carries its map index")) do
     mapRefs[mapId] = true
   end
+  local mapIdBySymbol = assert(world.bySymbol, "world catalog carries its symbol index")
+  local roamerData = assert(
+    type(compiledEncounters) == "table" and compiledEncounters.roamers,
+    "the compiled encounter catalog carries its roamer graph"
+  )
+  local refs = { species = speciesRefs, maps = mapRefs, mapIdBySymbol = mapIdBySymbol }
   if loadedGame ~= nil and loadedGame.encounters ~= nil then
-    self.roamerState = HgssRoamerState.restore(loadedGame.encounters, { species = speciesRefs, maps = mapRefs })
+    self.roamerState = HgssRoamerState.restore(loadedGame.encounters, refs, roamerData)
   else
-    self.roamerState = HgssRoamerState.new({ records = {}, species = speciesRefs, maps = mapRefs })
+    self.roamerState = HgssRoamerState.new({
+      records = {},
+      species = speciesRefs,
+      maps = mapRefs,
+      native = roamerData,
+      mapIdBySymbol = mapIdBySymbol,
+    })
   end
   self.battleCoordinator = FieldBattleCoordinator.new(self)
   self.pendingEncounterId = nil
   self.pendingEncounter = nil
+  self.pendingWarpForm = nil
   -- The narrow battle host for script battle tasks: launch, status, and
   -- result reads delegate to the runtime's battle face. The adapter (not
   -- the whole runtime) is what scheduler services carry.
@@ -3886,6 +3913,7 @@ function FieldRuntime:_composePokegearFeature(boot)
     messages = phoneGreetingRefs(catalog, self.messageProvider, self.playerData.profile, self.fontDef, self),
   })
   self.pokegear = bundle
+  self.pokegearApplications = assert(bundle.scriptHost, "companion feature carries its script host")
   self.incomingCalls = assert(bundle.incoming, "companion feature carries its incoming owner")
 end
 
@@ -4093,6 +4121,38 @@ function FieldRuntime:_wildMetContext()
   }
 end
 
+-- The field Pokémon picture window behind Screen 452/453: one borrowed
+-- generated portrait family, the mon catalog that resolves a source species
+-- number, and the one dex owner that records the shown species as seen.
+---@param cacheFs CacheFs
+function FieldRuntime:_composeMonPictureWindow(cacheFs)
+  local MonCache = require("libs.assets.src.MonCache")
+  local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
+  local FieldMonPictureWindow = require("game.hgss.src.field.FieldMonPictureWindow")
+  local portraits = assert(
+    cacheFs:loadLua(MonCache.portraitManifestPath()),
+    "the field picture window requires the generated portrait manifest"
+  )
+  assert(MonAssetSchema.isValidPortraitManifest(portraits), "the portrait manifest satisfies its current schema")
+  local catalog = assert(self.monCatalog, "the picture window resolves source species through the mon catalog")
+  local dex = assert(self.dexKnowledge, "the picture window publishes sightings through the dex owner")
+  local function markSeen(species)
+    local receipt = dex:prepareChanges({ seen = { species } })
+    if receipt.isCurrent() ~= true then
+      return false
+    end
+    receipt.publish()
+    return true
+  end
+  self.monPicture = FieldMonPictureWindow.new({
+    portraits = portraits,
+    speciesKeyByNativeId = function(nativeId)
+      return catalog:speciesKeyByNativeId(nativeId)
+    end,
+    markSeen = markSeen,
+  })
+end
+
 -- Materializes one bare species/level foe into a full mon record through
 -- the existing wild factory, drawing identity on the world stream exactly
 -- like a scripted static encounter. The authored species rides either as its
@@ -4100,30 +4160,22 @@ end
 -- a literal species id), which the mon catalog maps to that key. Nil unless
 -- every composed catalog and the world generator are present; production always
 -- carries them.
----@param payload table<string, unknown> wild launch payload naming its species and level
----@return table<string, unknown>? full foe record, nil when uncomposable
-function FieldRuntime:_materializeDescriptorFoe(payload)
+---@return table<string, unknown>? factory, table<string, unknown>? stream, table<string, unknown>? profile
+function FieldRuntime:_staticWildKit()
   local catalog = self.monCatalog
   local items = self.itemCatalog
   local cacheFs = self.cacheFs
   if catalog == nil or items == nil or cacheFs == nil or self.monLanguage == nil then
     return nil
   end
-  if type(payload.level) ~= "number" then
-    return nil
-  end
-  local species = payload.species
-  if type(species) == "number" then
-    species = catalog:speciesKeyByNativeId(species)
-    if type(species) ~= "string" then
-      return nil
-    end
-  end
-  if type(species) ~= "string" then
-    return nil
-  end
   local scripts = self.scripts
   if scripts == nil or scripts.worldState == nil or scripts.worldState.rng == nil then
+    return nil
+  end
+  local profile = self.playerData ~= nil and self.playerData.profile or nil
+  local session = self.session
+  local sessionMap = session ~= nil and session.currentMap or nil
+  if sessionMap == nil or type(profile) ~= "table" then
     return nil
   end
   local WildMonFactory = require("libs.hgss.src.encounters.WildMonFactory")
@@ -4141,22 +4193,44 @@ function FieldRuntime:_materializeDescriptorFoe(payload)
   local function drawWorldU16(_, _, _)
     return worldRng:nextRaw() % 65536
   end
-  local stream = {
-    nextU16 = drawWorldU16,
-  }
-  local session = self.session
-  local sessionMap = session ~= nil and session.currentMap or nil
-  local profile = self.playerData ~= nil and self.playerData.profile or nil
-  if sessionMap == nil or type(profile) ~= "table" then
+  return factory, { nextU16 = drawWorldU16 }, profile
+end
+
+---@param payload table<string, unknown> wild launch payload naming its species and level
+---@return table<string, unknown>? full foe record, nil when uncomposable
+function FieldRuntime:_materializeDescriptorFoe(payload)
+  if type(payload.level) ~= "number" then
+    return nil
+  end
+  local catalog = assert(self.monCatalog, "the wild factory requires the composed mon catalog")
+  local species = payload.species
+  if type(species) == "number" then
+    species = catalog:speciesKeyByNativeId(species)
+    if type(species) ~= "string" then
+      return nil
+    end
+  end
+  if type(species) ~= "string" then
+    return nil
+  end
+  local factory, stream, profile = self:_staticWildKit()
+  if factory == nil then
     return nil
   end
   local met = self:_wildMetContext()
+  -- The source wild-battle operand selects the forced shiny identity, and the
+  -- fateful launch marks the created foe. Both are authored launch facts, not
+  -- presentation choices.
+  local args = payload.args
+  local forcedShiny = type(args) == "table" and args[1] == 1
   return factory:createStatic(species, payload.level --[[@as integer]], stream, {
     profile = profile,
     ball = "POKE_BALL",
     location = met.location,
     terrain = met.terrain,
     date = met.date,
+    forcedShiny = forcedShiny,
+    fateful = payload.fateful == true,
   })
 end
 
@@ -4332,6 +4406,14 @@ function FieldRuntime:acceptCommittedBattleStatus(launch, battle, status)
     launch.rewards = receipt.rewards
     self.battleCoordinator:adoptCommittedPlayerMoney(launch, receipt)
   end
+  -- A committed roaming battle publishes its lifecycle word in this same
+  -- publication step: 0 roaming, 1 caught, 2 defeated. A rejected or stale
+  -- outcome never returns a receipt, so it reaches no variable and leaves the
+  -- stored record on its last known-good state.
+  local settledRoamer = receipt.roamer
+  if type(settledRoamer) == "table" then
+    self:_publishRoamerStatus(settledRoamer --[[@as table<string, unknown>]])
+  end
   return {
     result = result,
     sourceResult = sourceResult,
@@ -4365,6 +4447,112 @@ end
 
 function FieldRuntime:cancelPendingEncounter()
   return self.battleCoordinator:cancelPendingEncounter()
+end
+
+-- The one roamer transition publication: the source records the arrival
+-- and the map the player left, then connects a connection entry's roamer
+-- movement, randomizes every active roamer on the explicit fly warp, and
+-- moves nothing on an ordinary warp. The world random stream is the one
+-- shared generator. Called only from a committed transition, so a failed
+-- or abandoned transition mutates nothing.
+---@param form string connection, ordinary or fly
+---@param sourceMapId integer the map the player left
+---@param destinationMapId integer the map the player entered
+function FieldRuntime:publishRoamerTransition(form, sourceMapId, destinationMapId)
+  local roamers = self.roamerState
+  if type(roamers) ~= "table" then
+    return
+  end
+  local scripts = self.scripts
+  local rng = scripts ~= nil and scripts.worldState ~= nil and scripts.worldState.rng or nil
+  assert(type(rng) == "table", "roamer transitions draw from the world random stream")
+  roamers:notePlayerLocation(form, destinationMapId, sourceMapId)
+  if form == "connection" then
+    roamers:updateOnConnectionEntry(rng)
+  elseif form == "fly" then
+    roamers:randomizeLocations(rng)
+  end
+end
+
+-- The source status word per roamer lifecycle
+-- (field_roamer.c::VAR_ROAMER_*_STATUS): a roaming slot reads 0, a captured
+-- one 1 and a defeated one 2. The same publication that records the slot
+-- writes its word, so a script reading the word sees its own committed state.
+local ROAMER_STATUS_BY_LIFECYCLE = { roaming = 0, caught = 1, defeated = 2 }
+
+-- The source variable identity of one roamer lifecycle word, resolved through
+-- the compiled field symbols by the slot's own species. Only the four source
+-- slots own a word: a custom roamer species answers nil.
+---@param species string the roamer's species key
+---@return integer? the source lifecycle variable, nil without one
+local function roamerStatusVariable(species)
+  local id = FieldScriptSymbols.variablesByName["VAR_ROAMER_" .. species .. "_STATUS"]
+  if type(id) ~= "number" then
+    return nil
+  end
+  return id
+end
+
+-- Publishes one roamer's lifecycle word through the script world. Called from
+-- the same step that commits the record, so no second publication exists.
+---@param record table<string, unknown> the committed roamer record
+function FieldRuntime:_publishRoamerStatus(record)
+  local species = assert(record.mon.species, "roamer records carry their species")
+  assert(type(species) == "string", "roamer species are catalog keys")
+  local status = assert(ROAMER_STATUS_BY_LIFECYCLE[assert(record.lifecycle)], "roamer records carry a known lifecycle")
+  local variable = roamerStatusVariable(species)
+  if variable == nil then
+    return
+  end
+  local world = assert(self.scripts and self.scripts.worldState, "roamer status publishes through the script world")
+  world:setVar(variable, status)
+end
+
+-- Materializes one native roamer's identity through the ordinary static
+-- creation owner: the source generates a fresh identity, individual values and
+-- held item on the one world stream, exactly like a scripted static encounter.
+---@param fact { species: string, level: integer }
+---@return table<string, unknown>? the created mon, nil when uncomposable
+function FieldRuntime:_materializeNativeRoamer(fact)
+  local factory, stream, profile = self:_staticWildKit()
+  if factory == nil then
+    return nil
+  end
+  local met = self:_wildMetContext()
+  return factory:createStatic(fact.species, fact.level, stream, {
+    profile = profile,
+    ball = "POKE_BALL",
+    location = met.location,
+    terrain = met.terrain,
+    date = met.date,
+  })
+end
+
+-- Source ScrCmd_CreateRoamer: creates one native roamer slot from the compiled
+-- source slot facts. The roaming mon materializes once, the roamer owner
+-- records it with its route and full battle health, and the slot's status word
+-- publishes in the same step. A slot that already exists is the owner's own
+-- programming error, never a silent second creation.
+---@param slot integer source slot index
+---@return table<string, unknown> the created record
+function FieldRuntime:createNativeRoamer(slot)
+  local roamers = assert(self.roamerState, "roamer creation requires the field roamer owner")
+  local fact = roamers:nativeSlot(slot)
+  local scripts = assert(self.scripts, "roamer creation requires the field scripts")
+  local rng = assert(scripts.worldState and scripts.worldState.rng, "roamer creation draws from the world stream")
+  local mon = assert(self:_materializeNativeRoamer(fact), "roamer creation requires the composed mon catalogs")
+  local record = roamers:createNativeSlot(slot, mon, rng)
+  self:_publishRoamerStatus(record)
+  return record
+end
+
+-- Marks the warp that is about to start as the source's Fly warp. The
+-- world-swap commit consumes the mark: a Fly warp records the raw arrival
+-- and departure identities and randomizes every active roamer, while an
+-- ordinary warp only records the history.
+function FieldRuntime:beginFlyWarp()
+  assert(self.pendingWarpForm == nil, "a field warp already names its source form")
+  self.pendingWarpForm = "fly"
 end
 
 -- Composes the concrete encounter service over a compiled encounter
@@ -4787,24 +4975,39 @@ function FieldRuntime:_consumeCommittedStep()
   end
   local arrival = self:arrivalBehavior(map, self.player)
   local leadFacts = self:_encounterLeadFacts()
+  -- The source roamer gate (field_roamer.c::getRandomActiveRoamerInCurrMap)
+  -- meets the roaming slots standing on the player's map once the step
+  -- resolved an encounter tile: a met slot replaces the ordinary table
+  -- encounter with its own borrowed identity, so the attempt names the roaming
+  -- method and the record key while the resolved land or water method still
+  -- stages the tile rate. The service owns the tile rolls, so the gate's own
+  -- draws precede them here instead of following them natively.
+  local roamerKey = self:_stepRoamerKey()
+  local attemptMethod = method
+  local modifiers = {
+    radio = self:_currentRadioEffect(),
+    swarm = self:_stepSwarmActive(),
+    locomotion = self:_stepLocomotion(),
+    veryTallGrass = arrival ~= nil and MetatileBehavior.isVeryTallGrass(arrival) or false,
+    facing = self.player.facing,
+    repel = repelSteps > 0,
+    repelSteps = repelSteps,
+    leadAbility = leadFacts.leadAbility,
+    leadNature = leadFacts.leadNature,
+    leadGender = leadFacts.leadGender,
+    followActive = self:_isFollowActive(leadFacts.firstAlive ~= nil),
+  }
+  if roamerKey ~= nil then
+    attemptMethod = "roamer"
+    modifiers.roamerKey = roamerKey
+    modifiers.tileMethod = method
+  end
   local result = self:attemptEncounter({
     eventId = session.tick,
     mapId = memberId,
-    method = method,
+    method = attemptMethod,
     movement = "step",
-    modifiers = {
-      radio = self:_currentRadioEffect(),
-      swarm = self:_stepSwarmActive(),
-      locomotion = self:_stepLocomotion(),
-      veryTallGrass = arrival ~= nil and MetatileBehavior.isVeryTallGrass(arrival) or false,
-      facing = self.player.facing,
-      repel = repelSteps > 0,
-      repelSteps = repelSteps,
-      leadAbility = leadFacts.leadAbility,
-      leadNature = leadFacts.leadNature,
-      leadGender = leadFacts.leadGender,
-      followActive = self:_isFollowActive(leadFacts.firstAlive ~= nil),
-    },
+    modifiers = modifiers,
     lead = leadFacts.lead,
     firstAlive = leadFacts.firstAlive,
     environment = { weather = self:_encounterWeather(map) },
@@ -4817,7 +5020,30 @@ function FieldRuntime:_consumeCommittedStep()
   if not self.battleCoordinator:hasPresentationFactory() then
     return
   end
-  self:_admitStepEncounter(result.encounter --[[@as table<string, unknown>]], method)
+  self:_admitStepEncounter(result.encounter --[[@as table<string, unknown>]], method, roamerKey)
+end
+
+-- The source roamer step gate: a committed step that already resolved an
+-- encounter tile asks the roamer owner which roaming slot stands on the
+-- player's map. The owner consumes the source's refusal draw and, with
+-- several candidates, its uniform pick; a map without a standing roamer
+-- draws nothing. Inert without the roamer owner.
+---@return string? the roaming record key this step meets
+function FieldRuntime:_stepRoamerKey()
+  local roamers = self.roamerState
+  local session = self.session
+  if type(roamers) ~= "table" or type(roamers.stepEncounterKey) ~= "function" or session == nil then
+    return nil
+  end
+  local map = session.currentMap
+  if type(map) ~= "table" or type(map.mapId) ~= "number" then
+    return nil
+  end
+  local mapId = map.mapId --[[@as integer]]
+  local scripts = self.scripts
+  local rng = scripts ~= nil and scripts.worldState ~= nil and scripts.worldState.rng or nil
+  assert(type(rng) == "table", "roamer encounters draw from the world random stream")
+  return roamers:stepEncounterKey(mapId, rng)
 end
 
 -- The launch details that identify one prepared wild encounter to the
@@ -4976,12 +5202,36 @@ end
 -- existing policy.
 ---@param encounter table<string, unknown> prepared encounter carrying its mon
 ---@param method string encounter method for the arrival tile
-function FieldRuntime:_admitStepEncounter(encounter, method)
+---@param roamerKey string? the standing roaming record a roamer launch borrowed
+function FieldRuntime:_admitStepEncounter(encounter, method, roamerKey)
   local details = self:wildLaunchDetails(encounter)
   local launchId = self.battleCoordinator:nextLaunchIdentity("wild")
   local request = { id = launchId, kind = "wild", payload = details }
+  if roamerKey ~= nil then
+    request.roamer = self:_roamerBattleSpec(roamerKey)
+  end
   self.battleCoordinator:clearReceipt()
   self.battleCoordinator:launchPresentedBattle(launchId, request, method)
+end
+
+-- The staged roamer settlement identity behind one roaming wild launch: the
+-- record the encounter borrowed, its revision at launch, and the route the
+-- battle opens on. The battle owns the outcome and the settled battle health;
+-- the source relocates the slot in its own post-battle step, so the delta the
+-- battle stages keeps the route the player met it on.
+---@param roamerKey string the borrowed roaming record
+---@return table<string, unknown> roamer settlement spec for the battle commit
+function FieldRuntime:_roamerBattleSpec(roamerKey)
+  local roamers = assert(self.roamerState, "roaming launches name their owner")
+  local borrowed = roamers:prepareEncounter(roamerKey)
+  local revision = assert(borrowed.revision, "roamer records carry their revision")
+  assert(type(revision) == "number", "roamer revisions are numbers")
+  return {
+    owner = roamers,
+    key = roamerKey,
+    expectedRevision = revision,
+    details = { location = borrowed.location },
+  }
 end
 
 -- The encounter time of day behind step attempts and evolution gating:
@@ -5378,6 +5628,16 @@ function FieldRuntime:_admitFieldAction(actionId, request)
   if composition.fieldTravel ~= nil then
     travel = composition.fieldTravel:capture()
   end
+  -- Fly is the one field move that needs the region-map facts: the source
+  -- selector needs the live map context and the player's confirmed flypoint
+  -- set, both read from the composed companion feature. Other moves ignore
+  -- them.
+  local mapContext, destinations = nil, nil
+  if flowRequest.move == "fly" then
+    local gear = assert(self.pokegear, "fly admission requires the composed companion feature")
+    mapContext = gear.mapContext()
+    destinations = gear.flyDestinations()
+  end
   local queued = fieldMoves:queue({
     move = flowRequest.move,
     slot = flowRequest.slot,
@@ -5385,6 +5645,8 @@ function FieldRuntime:_admitFieldAction(actionId, request)
     partyRevision = flowRequest.partyRevision,
     context = context,
     travel = travel,
+    mapContext = mapContext,
+    destinations = destinations,
   })
   local session = assert(self.session, "field admission requires the field session")
   local client = assert(self.scripts and self.scripts.client, "field admission requires the script client")
@@ -5993,6 +6255,7 @@ function FieldRuntime:_releaseAll()
   self.playerAvatar = nil
   self.windowStyles, self.uiManifest, self.fontDef, self.weatherCatalog = nil, nil, nil, nil
   self.monCatalog, self.monLanguage, self.monService = nil, nil, nil
+  self.monPicture = nil
   self.easyChatCatalog, self.easyChatState = nil, nil
   self._easyChatPreparation, self._easyChatBindingId = nil, nil
   self.pokedexCatalog, self.dexKnowledge, self.gameStats = nil, nil, nil
@@ -6004,6 +6267,7 @@ function FieldRuntime:_releaseAll()
     self.pokegear:dispose()
   end
   self.pokegear = nil
+  self.pokegearApplications = nil
   self.incomingCalls = nil
   self.pokegearManifest, self.pokegearCatalog = nil, nil
   self.pokegearState, self.pokegearRandom, self.pokegearCalendar = nil, nil, nil

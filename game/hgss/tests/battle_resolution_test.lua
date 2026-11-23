@@ -529,9 +529,79 @@ function T.roamer_battle_advances_the_roamer_revision()
   Assert.isTrue(receipt.committed, "the roamer batch commits")
   Assert.equal(receipt.roamer.lifecycle, "defeated", "the receipt carries the settled roamer")
   Assert.equal(receipt.roamer.revision, 1, "the roamer revision advances exactly once")
+  Assert.equal(
+    receipt.roamer.mon.condition.currentHp,
+    0,
+    "the executed battle health of the defeated foe persists on the record"
+  )
   local ok = pcall(roamer.prepareEncounter, roamer, "roamer-eevee")
   Assert.isFalse(ok, "a defeated roamer no longer offers encounters")
   battle:dispose()
+end
+
+-- The source's other outcomes settle the same record: a capture closes the
+-- slot with the identity it was met with, while a battle the player did not
+-- win keeps it roaming with the settled battle health and the route it was met
+-- on. Capture never settles as defeat and defeat never as capture.
+function T.roamer_capture_and_loss_settle_the_source_lifecycle()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+
+  local party = newPartyOwner()
+  local roamer = newRoamerOwner()
+  local caught = foeRecord("TOTODILE", 4, 0xD0D0EE01)
+  local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xD0D0EE02))
+  local launch =
+    { id = "launch-roamer-captured", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN", metBill = false } })
+  local battle = BattleRuntime.new({
+    request = launch,
+    scenario = scenario,
+    party = party,
+    roamer = { owner = roamer, key = "roamer-eevee", expectedRevision = 0, details = { location = 11 } },
+    captures = { { captureId = 31, ball = "POKE_BALL", success = true, mon = caught } },
+  })
+  driveToSettlement(battle, scenario)
+  Assert.equal(battle:status().phase, "complete", "answered decisions finish the capture battle")
+  local receipt = assert(battle:status().outcomeReceipt, "completion carries its commit receipt")
+  Assert.equal(receipt.roamer.lifecycle, "caught", "a captured roamer closes its slot instead of defeating")
+  Assert.equal(receipt.roamer.revision, 1, "the capture advances the revision once")
+  Assert.equal(
+    receipt.roamer.mon.species,
+    "EEVEE",
+    "the caught roamer keeps the identity the encounter borrowed"
+  )
+  battle:dispose()
+
+  -- A battle the player loses keeps the slot roaming: the settled foe health
+  -- replaces the stored damage, and the met route stays until the source's own
+  -- post-battle relocation.
+  local losingParty = newPartyOwner(1)
+  local roaming = newRoamerOwner()
+  local hardFoe = tackleOnly(foeRecord("TOTODILE", 40, 0xD0D0EE03))
+  local lossLaunch =
+    { id = "launch-roamer-fled", kind = "wild", payload = { species = "TOTODILE", level = 40, mon = hardFoe } }
+  local lossScenario = ScenarioFactory.fromEncounter(lossLaunch.payload, { party = losingParty, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN", metBill = false } })
+  local lossBattle = BattleRuntime.new({
+    request = lossLaunch,
+    scenario = lossScenario,
+    party = losingParty,
+    player = playerFacts(3000),
+    roamer = { owner = roaming, key = "roamer-eevee", expectedRevision = 0, details = { location = 11 } },
+  })
+  driveToSettlement(lossBattle, lossScenario)
+  Assert.equal(lossBattle:status().result, "loss", "a fainted player side reports the loss")
+  local lossReceipt = assert(lossBattle:status().outcomeReceipt, "the lost battle commits its receipt")
+  Assert.equal(lossReceipt.roamer.lifecycle, "roaming", "a battle the player did not win keeps the roamer roaming")
+  Assert.equal(lossReceipt.roamer.revision, 1, "the fled delta advances the revision once")
+  Assert.equal(lossReceipt.roamer.location, 11, "the fled delta keeps the route the player met it on")
+  Assert.equal(
+    lossReceipt.roamer.mon.condition.currentHp,
+    hardFoe.condition.currentHp,
+    "the settled battle health persists on the roaming record"
+  )
+  Assert.equal(roaming:prepareEncounter("roamer-eevee").mon.condition.currentHp, hardFoe.condition.currentHp)
+  lossBattle:dispose()
 end
 
 function T.unknown_capture_species_fails_the_resolution()

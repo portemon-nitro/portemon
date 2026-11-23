@@ -20,6 +20,7 @@ local function roamerBucket()
     repelSteps = 0,
     swarm = false,
     radio = "none",
+    playerRoutes = { current = false, previous = false },
     roamers = {
       raikou = {
         key = "raikou",

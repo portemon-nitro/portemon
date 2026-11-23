@@ -1655,9 +1655,8 @@ return {
     [221] = {
       name = "ScrCmd_StaticWildWonOrCaughtCheck",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "static wild outcomes need the static encounter application",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
         [2] = 1,
@@ -3393,6 +3392,9 @@ return {
     },
     [452] = {
       name = "ScrCmd_ShowPokemonPicWindow",
+      feature = "field",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3400,6 +3402,9 @@ return {
     },
     [453] = {
       name = "ScrCmd_ClosePokemonPicWindow",
+      feature = "field",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {},
     },
     [454] = {
@@ -3473,6 +3478,9 @@ return {
     },
     [464] = {
       name = "ScrCmd_CreateRoamer",
+      feature = "encounter",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 1,
       },
@@ -4452,6 +4460,9 @@ return {
     },
     [588] = {
       name = "ScrCmd_LatiCaughtCheck",
+      feature = "battle",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
       },
@@ -5196,9 +5207,8 @@ return {
     [683] = {
       name = "ScrCmd_GetStaticEncounterOutcome",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "static encounter outcomes need the static encounter application",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
       },
@@ -5219,6 +5229,9 @@ return {
     },
     [686] = {
       name = "ScrCmd_FatefulWildBattle",
+      feature = "battle",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
         [2] = 2,

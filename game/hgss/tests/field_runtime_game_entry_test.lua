@@ -325,7 +325,7 @@ function T.captureGameSave_returns_an_owner_produced_snapshot_without_storage_io
   Assert.equal(valid.mons.schema, "g4-mons-save-v3", "every save captures the mons bucket")
   Assert.equal(valid.bag.schema, "hgss-bag-v1", "every save captures the bag bucket")
   Assert.equal(valid.fashionCase.counts[1], 1, "every save captures Fashion Case quantities")
-  Assert.equal(valid.encounters.schema, "hgss-encounter-v1", "every save captures the encounter bucket")
+  Assert.equal(valid.encounters.schema, "hgss-encounter-v2", "every save captures the encounter bucket")
   Assert.deepEqual(valid.fieldPoison, FieldPoisonSave.initial(), "every save captures the poison counter")
   Assert.equal(valid.pokedex.schema, "hgss-pokedex-v2", "every save captures the dex bucket")
   Assert.equal(valid.gameStats.schema, "hgss-stats-v3", "every save captures the stats bucket")

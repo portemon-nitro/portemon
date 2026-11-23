@@ -1751,6 +1751,17 @@ function FieldState:draw()
       resources:drawFieldShortcuts(shortcuts, shortcutSlide:offset(), self.runtime.viewport.worldViewport)
     end
   end
+  -- The source Pokémon picture window (opcodes 452/453) owns the species
+  -- picture at its own MAIN-layer tiles above the world and under every modal
+  -- surface until the scene closes it.
+  local monPicture = self.runtime.monPicture
+  if monPicture ~= nil then
+    resources:drawMonPicture(
+      monPicture:status(),
+      self.runtime.viewport.referenceFrame,
+      self.runtime.fieldPixelScale:resolvedScale()
+    )
+  end
   -- The source floor box is a non-modal main-display window that outlives the
   -- script that showed it: it draws at its own source tiles above the world and
   -- under every modal surface until the script writes its closing sentinel.

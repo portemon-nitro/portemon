@@ -31,6 +31,23 @@ local function rejectionCode(fn, expected)
   return assert(err)
 end
 
+---@param values integer[] raw draws to answer in order
+---@return table world stream stand-in
+---@return fun(): integer consumed draw count
+local function rawStream(values)
+  local drawn = 0
+  local stream = {}
+  function stream.nextRaw()
+    drawn = drawn + 1
+    local value = values[drawn]
+    Assert.isTrue(value ~= nil, "the roamer owner drew beyond the supplied raw values")
+    return assert(value)
+  end
+  return stream, function()
+    return drawn
+  end
+end
+
 local function roamingState()
   local refs = Fixture.refs()
   local stored = Fixture.roamerMon()
@@ -131,7 +148,7 @@ function T.save_round_trip_preserves_roamers_across_flee_and_reload()
   state:prepareResult("roamer-eevee", "fled", 0, { location = 22, hp = 7 })
   local bucket = Save.capture(state)
   local valid = assert(Save.validate(bucket, refs), "the capture validates")
-  Assert.equal(valid.schema, "hgss-encounter-v1")
+  Assert.equal(valid.schema, "hgss-encounter-v2")
   local Roamers = Fixture.requirePresent(ROAMER_MODULE, "stable roaming state and lifecycle")
   local reloaded = Roamers.restore(valid, refs)
   local found = reloaded:prepareEncounter("roamer-eevee")
@@ -164,12 +181,13 @@ function T.save_validation_names_missing_selected_references()
   local mon = Fixture.roamerMon()
   local function bucketWith(record)
     return {
-      schema = "hgss-encounter-v1",
-      stateVersion = 1,
+      schema = "hgss-encounter-v2",
+      stateVersion = 2,
       steps = 0,
       repelSteps = 0,
       swarm = false,
       radio = "none",
+      playerRoutes = { current = false, previous = false },
       roamers = { ["roamer-eevee"] = record },
     }
   end
@@ -199,7 +217,7 @@ function T.save_validation_names_missing_selected_references()
   rejectionCode(function()
     assert(Save.validate(
       invalidBucket(function(bucket)
-        bucket.stateVersion = 2
+        bucket.stateVersion = 1
       end),
       refs
     ))
@@ -237,8 +255,8 @@ function T.old_saves_without_a_bucket_start_from_the_defined_initial_state()
   local Save = saveModule()
   local refs = Fixture.refs()
   local initial = Save.initial()
-  Assert.equal(initial.schema, "hgss-encounter-v1")
-  Assert.equal(initial.stateVersion, 1)
+  Assert.equal(initial.schema, "hgss-encounter-v2")
+  Assert.equal(initial.stateVersion, 2)
   Assert.deepEqual(initial.roamers, {})
   local valid = assert(Save.validate(initial, refs), "the initial bucket validates")
   Assert.deepEqual(valid, initial, "validation preserves the initial state exactly")
@@ -258,7 +276,7 @@ function T.caught_roamers_never_reactivate_after_reload()
   local totodile = Fixture.mon("TOTODILE", 18, 43)
   local records = {
     Fixture.roamerRecord(Fixture.roamerMon(), 11, "roaming", 0),
-    { key = "roamer-totodile", stateVersion = 1, mon = totodile, location = 12, lifecycle = "roaming", revision = 0 },
+    { key = "roamer-totodile", stateVersion = 2, mon = totodile, location = 12, lifecycle = "roaming", revision = 0 },
   }
   local state = roamers(records, refs)
   state:prepareResult("roamer-eevee", "captured", 0, {})
@@ -273,6 +291,43 @@ function T.caught_roamers_never_reactivate_after_reload()
   local survivor = reloaded:prepareEncounter("roamer-totodile")
   Assert.equal(survivor.mon.personality, totodile.personality, "unrelated roamers stay encounterable")
   Assert.equal(survivor.revision, 0)
+end
+
+function T.step_encounters_meet_only_a_roaming_slot_standing_on_the_player_map()
+  local refs = Fixture.refs()
+  local totodile = Fixture.mon("TOTODILE", 18, 43)
+  -- Two active slots stand on map 11 in record order; map 12 stays empty.
+  local pair = roamers({
+    Fixture.roamerRecord(Fixture.roamerMon(), 11, "roaming", 0),
+    { key = "roamer-totodile", stateVersion = 2, mon = totodile, location = 11, lifecycle = "roaming", revision = 0 },
+  }, refs)
+  local idle, idleDraws = rawStream({})
+  Assert.isNil(pair:stepEncounterKey(12, idle), "a map without a standing roamer meets nothing")
+  Assert.equal(idleDraws(), 0, "a map without a standing roamer draws nothing")
+  -- The source's own 1-in-2 refusal draw: LCRandRange(2) refuses on zero.
+  local refused, refusedDraws = rawStream({ 8 })
+  Assert.isNil(pair:stepEncounterKey(11, refused), "an even gate draw refuses the meeting")
+  Assert.equal(refusedDraws(), 1, "the refusal consumes exactly its own draw")
+  -- One standing slot needs no pick draw; several take one uniform pick.
+  local single = roamers({ Fixture.roamerRecord(Fixture.roamerMon(), 11, "roaming", 0) }, refs)
+  local met, metDraws = rawStream({ 9 })
+  Assert.equal(single:stepEncounterKey(11, met), "roamer-eevee", "an odd gate draw meets the standing roamer")
+  Assert.equal(metDraws(), 1, "a single standing slot consumes only the gate draw")
+  local picked, pickedDraws = rawStream({ 3, 1 })
+  Assert.equal(pair:stepEncounterKey(11, picked), "roamer-totodile", "the pick draw selects its standing slot")
+  Assert.equal(pickedDraws(), 2, "several standing slots consume one uniform pick")
+  -- Only a roaming lifecycle may be met, and only on its own route.
+  local settled = roamers({ Fixture.roamerRecord(Fixture.roamerMon(), 11, "caught", 1) }, refs)
+  local quiet, quietDraws = rawStream({})
+  Assert.isNil(settled:stepEncounterKey(11, quiet), "a caught roamer never meets the player")
+  Assert.equal(quietDraws(), 0, "a settled roamer draws nothing")
+  local moved = roamers({ Fixture.roamerRecord(Fixture.roamerMon(), 22, "roaming", 0) }, refs)
+  local elsewhere, elsewhereDraws = rawStream({})
+  Assert.isNil(moved:stepEncounterKey(11, elsewhere), "a roamer on another route never meets the player")
+  Assert.equal(elsewhereDraws(), 0, "route locality draws nothing")
+  rejectionCode(function()
+    pair:stepEncounterKey("11", rawStream({ 1 }))
+  end, "ENCOUNTER_INVALID_INPUT")
 end
 
 return { tests = T }

@@ -1392,33 +1392,68 @@ do
   -- script-visible code. An unrecorded battle reads back not-won (the
   -- zero-initialized result), never a guessed victory.
   local battleWonWords = { win = true }
-  local battleWonOrCaughtWords = { win = true, capture = true }
   -- The source's own native outcome query (battle_setup.c::IsBattleResultWin)
   -- reports not-won only for a loss and a draw: a win, a capture and either
   -- fleeing side all read as won.
   local nativeLossWords = { [2] = true, [3] = true }
+  -- ScrCmd_StaticWildWonOrCaughtCheck: not-won for a win or a capture.
+  local staticWonOrCaughtWords = { [1] = true, [4] = true }
+  -- The outcome queries that return TRUE natively, so the script resumes on
+  -- the following source tick.
+  local tickContexts = {
+    native_won = true,
+    static_wild_won_or_caught = true,
+    latis_caught = true,
+    static_encounter_outcome = true,
+  }
+
+  ---@param latest table<string, unknown>? the committed battle receipt
+  ---@param run table<string, unknown>
+  ---@return integer the committed raw outcome word
+  local function committedNativeWord(latest, run)
+    if latest == nil then
+      return 0
+    end
+    assert(type(latest) == "table", "battle results stay records")
+    local native = latest.nativeOutcome
+    if native == nil then
+      return 0
+    end
+    if type(native) ~= "number" or native % 1 ~= 0 or native < 0 or native > 6 then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "battle results report a native outcome code",
+        { scriptId = run.instance.scriptId }
+      )
+    end
+    return native
+  end
 
   local function handleBattleResult(node, run)
     local host = battleHostFor(run)
     assert(host ~= nil, "the host check carries the battle host")
     local latest = host:lastBattleResult()
     local code = 0
-    if latest ~= nil then
-      assert(type(latest) == "table", "battle results stay records")
-      if node.context == "native_won" then
-        if latest.nativeOutcome ~= nil and type(latest.nativeOutcome) ~= "number" then
-          Errors.raise(
-            ScriptErrors.SCRIPT_INVALID_REFERENCE,
-            "battle results report a native outcome code",
-            { scriptId = run.instance.scriptId }
-          )
-        end
-        -- No recorded battle reads the zero-initialized native outcome, which
-        -- the source query reports as won; every settled battle reads its own
-        -- committed code.
-        code = nativeLossWords[latest.nativeOutcome or 0] == true and 0 or 1
-      else
-        local words = node.context == "static_wild_won_or_caught" and battleWonOrCaughtWords or battleWonWords
+    if node.context == "native_won" then
+      -- No recorded battle reads the zero-initialized native outcome, which
+      -- the source query reports as won; every settled battle reads its own
+      -- committed code.
+      code = nativeLossWords[committedNativeWord(latest, run)] == true and 0 or 1
+    elseif node.context == "static_wild_won_or_caught" then
+      -- The command reads the battle-result variable when its raw flag says
+      -- so, otherwise the committed raw outcome word.
+      local native = committedNativeWord(latest, run)
+      if node.useResultVariable == true then
+        native = semanticsFor(run).evaluateValue({ value = "var", id = "VAR_BATTLE_RESULT" }, run) --[[@as integer]]
+      end
+      code = staticWonOrCaughtWords[native] == true and 0 or 1
+    elseif node.context == "latis_caught" then
+      code = committedNativeWord(latest, run) == 4 and 0 or 1
+    elseif node.context == "static_encounter_outcome" then
+      code = committedNativeWord(latest, run)
+    else
+      if latest ~= nil then
+        assert(type(latest) == "table", "battle results stay records")
         if type(latest.result) ~= "string" then
           Errors.raise(
             ScriptErrors.SCRIPT_INVALID_REFERENCE,
@@ -1426,14 +1461,14 @@ do
             { scriptId = run.instance.scriptId }
           )
         end
-        if words[latest.result] == true then
+        if battleWonWords[latest.result] == true then
           code = 1
         end
       end
     end
     semanticsFor(run).writeRef(node.result, code, run)
-    -- The source query returns TRUE, so the script resumes one tick later.
-    if node.context == "native_won" then
+    -- The source queries return TRUE, so the script resumes one tick later.
+    if tickContexts[node.context] == true then
       return Runtime.OUTCOME_YIELD_TICK
     end
     return Runtime.OUTCOME_CONTINUE
@@ -1846,8 +1881,14 @@ local function handleShowObject(node, run)
 end
 
 local function handleHideObject(node, run)
-  local actorId = semanticsFor(run).requireActor(node.actor, run)
-  run.services.actors:remove(actorId)
+  -- ScrCmd_HidePerson removes the object carrying that map-local identity. The
+  -- source routinely sets the object's own hide flag first, which already
+  -- retires the live object, so an absent target is the native no-op that the
+  -- explicit remove tolerates rather than a fault.
+  local actorId = semanticsFor(run).findActor(node.actor, run)
+  if actorId ~= nil and run.services.actors:exists(actorId) then
+    run.services.actors:remove(actorId)
+  end
   return Runtime.OUTCOME_CONTINUE
 end
 
@@ -3444,6 +3485,34 @@ HANDLERS.face_player = handleFacePlayer
 HANDLERS.face = handleFace
 HANDLERS.show_object = handleShowObject
 HANDLERS.hide_object = handleHideObject
+-- ScrCmd_ShowPokemonPicWindow (452): the field's own picture-window owner
+-- draws the species picture, records the species as seen and returns without
+-- a wait, so the script continues in the same source tick. ScrCmd_
+-- ClosePokemonPicWindow (453) releases the open window and returns TRUE, so
+-- the script resumes on the next source tick. ScrCmd_CreateRoamer (464)
+-- materializes and activates the source roamer slot in the same tick. The main
+-- chunk is at LuaJIT's local budget, so these handlers live in a block.
+do
+  local function handleMonPictureShow(node, run)
+    local semantics = semanticsFor(run)
+    requireService(run, "monPicture"):show({
+      species = semantics.evaluateValue(node.species, run),
+      gender = semantics.evaluateValue(node.gender, run),
+    })
+    return Runtime.OUTCOME_CONTINUE
+  end
+  local function handleMonPictureClose(_, run)
+    requireService(run, "monPicture"):close()
+    return Runtime.OUTCOME_YIELD_TICK
+  end
+  local function handleCreateRoamer(node, run)
+    requireService(run, "roamers"):create(node.slot)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.mon_picture_show = handleMonPictureShow
+  HANDLERS.mon_picture_close = handleMonPictureClose
+  HANDLERS.create_roamer = handleCreateRoamer
+end
 HANDLERS.set_object_position = handleSetObjectPosition
 HANDLERS.set_object_facing = handleSetObjectFacing
 HANDLERS.set_object_movement_type = handleSetObjectMovementType

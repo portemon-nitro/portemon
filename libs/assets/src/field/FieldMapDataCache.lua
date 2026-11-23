@@ -530,6 +530,40 @@ function FieldMapDataCache.hasBlackoutDestinations(spawns)
   return true
 end
 
+-- The fly landings the spawn index carries beside the cited spawn records:
+-- region-map flypoint identities to the same destination shape. An absent or
+-- malformed block is corrupt generated data, never an empty feature.
+---@param flypoints unknown
+---@return boolean
+function FieldMapDataCache.hasFlypointDestinations(flypoints)
+  if type(flypoints) ~= "table" then
+    return false
+  end
+  local count = 0
+  for key, destination in pairs(flypoints) do
+    if type(key) ~= "string" or key == "" then
+      return false
+    end
+    if
+      type(destination) ~= "table"
+      or type(destination.map) ~= "string"
+      or destination.map == ""
+      or type(destination.spawnKey) ~= "string"
+      or destination.spawnKey == ""
+      or type(destination.fieldX) ~= "number"
+      or destination.fieldX % 1 ~= 0
+      or destination.fieldX < 0
+      or type(destination.fieldZ) ~= "number"
+      or destination.fieldZ % 1 ~= 0
+      or destination.fieldZ < 0
+    then
+      return false
+    end
+    count = count + 1
+  end
+  return count > 0
+end
+
 -- The setter-written special relocation records the current schema
 -- always carries: spawn keys to destination-global tiles with the unset
 -- warp id and the standard arrival facing. The namespace stays
@@ -747,6 +781,41 @@ function FieldMapDataCache.spawnDestination(cacheFs, spawnKey)
   end
   assert(type(destination) == "table", "spawn destinations are records")
   return { map = destination.map, fieldX = destination.fieldX, fieldZ = destination.fieldZ }
+end
+
+-- Resolve one confirmed flypoint to its landing destination: the retail fly
+-- destination's own cited spawn record, never a guessed tile, with the spawn
+-- identity the source also stamps as the special-spawn record a later Dig or
+-- Teleport returns to. An unknown flypoint answers nil (the caller refuses
+-- loudly); a missing or malformed index is corrupt generated data and raises.
+---@param cacheFs CacheFs
+---@param flypointKey string
+---@return table<string, unknown>? a fresh { map, fieldX, fieldZ, specialSpawnKey } record
+function FieldMapDataCache.flypointDestination(cacheFs, flypointKey)
+  assert(type(flypointKey) == "string" and flypointKey ~= "", "fly landing resolution needs a flypoint key")
+  local index = cacheFs:loadLua(FieldMapDataCache.spawnIndexPath()) ---@type table?
+  if
+    type(index) ~= "table"
+    or index.schema ~= FieldMapDataCache.SPAWN_INDEX_SCHEMA
+    or not FieldMapDataCache.hasFlypointDestinations(index.flypoints)
+  then
+    Errors.raise(SPAWN_INDEX_INVALID, "fly landing index is missing or malformed; rebuild the derived cache", {
+      flypoint = flypointKey,
+    })
+  end
+  local spawnIndex = index --[[@as table<string, unknown>]]
+  local destinations = spawnIndex.flypoints --[[@as table<string, table<string, unknown>>]]
+  local destination = destinations[flypointKey]
+  if destination == nil then
+    return nil
+  end
+  assert(type(destination) == "table", "fly landings are records")
+  return {
+    map = destination.map,
+    fieldX = destination.fieldX,
+    fieldZ = destination.fieldZ,
+    specialSpawnKey = destination.spawnKey,
+  }
 end
 
 function FieldMapDataCache.marker(romSha1, mapId, dependencyHash)

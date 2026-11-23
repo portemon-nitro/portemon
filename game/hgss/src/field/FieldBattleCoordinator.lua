@@ -351,6 +351,13 @@ function FieldBattleCoordinator:startBattle(args)
   if evolutionContext ~= nil then
     battleArgs.evolutionContext = evolutionContext
   end
+  -- A roaming wild launch settles its borrowed record through the same
+  -- staged commit: the admission names the record and its revision, and the
+  -- runtime decides the source outcome and stages the settled battle health
+  -- beside every other owner.
+  if type(request.roamer) == "table" then
+    battleArgs.roamer = request.roamer
+  end
   local battle = BattleRuntime.new(battleArgs)
   self.battleRuntime = battle
   if fieldRuntime(self).session ~= nil then
