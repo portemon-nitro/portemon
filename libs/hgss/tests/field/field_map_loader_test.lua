@@ -2639,7 +2639,7 @@ function T.logical_metadata_task_bounds_large_event_validation_across_advances()
   local cache, world, _, _, files = fixture(1)
   local field = files[FieldMapDataCache.fieldPath(0)]
   for index = 1, 128 do
-    field.events.background[index] = { hiddenItem = false }
+    field.events.background[index] = { type = 1 }
     field.events.objects[index] = {
       movementType = "stationary",
       xRange = 0,

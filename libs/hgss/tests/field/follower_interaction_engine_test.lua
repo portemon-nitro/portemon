@@ -889,18 +889,18 @@ T["time, weather, and hidden-item classifiers use live field values"] = function
 
   local subject = engine({}, nil, {
     background = {
-      { type = 2, hiddenItemFlagId = 100 },
-      { type = 2, hiddenItemFlagId = 101 },
-      { type = 1, hiddenItemFlagId = 102 },
+      { type = 2, hiddenItem = { itemId = 17, quantity = 1, flagId = 100 } },
+      { type = 2, hiddenItem = { itemId = 92, quantity = 1, flagId = 101 } },
+      { type = 1 },
     },
     flags = { [100] = true },
   })
   Assert.equal(subject:_context(0).hiddenItemCount, 1, "only uncollected hidden-item events contribute")
   local fourItems = {
-    { type = 2, hiddenItemFlagId = 200 },
-    { type = 2, hiddenItemFlagId = 201 },
-    { type = 2, hiddenItemFlagId = 202 },
-    { type = 2, hiddenItemFlagId = 203 },
+    { type = 2, hiddenItem = { itemId = 17, quantity = 1, flagId = 200 } },
+    { type = 2, hiddenItem = { itemId = 17, quantity = 1, flagId = 201 } },
+    { type = 2, hiddenItem = { itemId = 17, quantity = 1, flagId = 202 } },
+    { type = 2, hiddenItem = { itemId = 17, quantity = 1, flagId = 203 } },
   }
   Assert.deepEqual(
     selectOne({}, { hiddenItemClass = 4 }, { background = fourItems }),
@@ -1009,7 +1009,7 @@ T["successive selections reread live actor and hidden-item state"] = function()
       return { fieldX = spot.fieldX, fieldZ = spot.fieldZ }
     end,
   }
-  local background = { { type = 2, hiddenItemFlagId = 900 } }
+  local background = { { type = 2, hiddenItem = { itemId = 17, quantity = 1, flagId = 900 } } }
   local flags = {}
   local subject, rng = engine(
     { { programId = 1, percentage = 100, criteria = { nearbyObjectClass = 1, hiddenItemClass = 1 } } },

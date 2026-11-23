@@ -286,15 +286,23 @@ function FieldMapDataCache.beginRequiredEventsValidation(events)
         end
         self._count = self._count + 1
         if self._valid and collectionKey == "background" then
-          if type(value) ~= "table" or type(value.hiddenItem) ~= "boolean" then
+          if type(value) ~= "table" or value.hiddenItemFlagId ~= nil or value.hiddenItemIndex ~= nil then
             self._valid = false
+          elseif value.type == 2 then
+            local hiddenItem = value.hiddenItem
+            self._valid = type(hiddenItem) == "table"
+              and hasOnlyKeys(hiddenItem, { itemId = true, quantity = true, flagId = true })
+              and Validate.isNonNegativeInteger(hiddenItem.itemId)
+              and hiddenItem.itemId >= 1
+              and hiddenItem.itemId <= 65535
+              and Validate.isNonNegativeInteger(hiddenItem.quantity)
+              and hiddenItem.quantity >= 1
+              and hiddenItem.quantity <= 255
+              and Validate.isNonNegativeInteger(hiddenItem.flagId)
+              and hiddenItem.flagId >= 800
+              and hiddenItem.flagId <= 1030
           else
-            local flagId = value.hiddenItemFlagId
-            if value.hiddenItem then
-              self._valid = Validate.isNonNegativeInteger(flagId) and flagId >= 800 and flagId <= 1799
-            elseif flagId ~= nil then
-              self._valid = false
-            end
+            self._valid = value.hiddenItem == nil
           end
         elseif self._valid and collectionKey == "objects" then
           self._valid = type(value) == "table"

@@ -114,6 +114,7 @@ local DOMAINS = {
     "LegendAppearanceCompiler",
     "LugiaAppearanceAssetCompiler",
     "HgssSoundplate",
+    "HiddenItemParams",
   },
   ui = {
     "ApricornBoxAssetCompiler",

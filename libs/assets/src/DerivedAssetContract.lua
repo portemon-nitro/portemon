@@ -343,7 +343,9 @@ DerivedAssetContract.fieldMapData = {
   -- v14 carries semantic Apricorn tree identity and normalized ripe sprites.
   -- v15 carries the per-map Rock Smash odds with its resolved item table and
   -- the per-map Headbutt tree groups and weighted slot tables.
-  fieldSchema = "g4-field-map-v15",
+  -- v16 carries ROM-derived item, quantity, and collection flag records for
+  -- hidden background events.
+  fieldSchema = "g4-field-map-v16",
   -- The teleport landing index is a separate family-level record carrying
   -- cited spawn-keyed outdoor arrival destinations (never source numeric
   -- identities); the runtime return planner reads it, never producer data.

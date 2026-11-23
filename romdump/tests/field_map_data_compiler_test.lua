@@ -71,6 +71,22 @@ local function allMapsFixture()
   return romFs, sha1, hashLua
 end
 
+local function hiddenItemTableBytes()
+  local function u16(value)
+    return string.char(value % 256, math.floor(value / 256) % 256)
+  end
+  local function row(itemId, index)
+    return u16(itemId) .. string.char(1, 0) .. u16(0) .. u16(index)
+  end
+  local rows = { row(17, 0), row(92, 1), row(92, 225) }
+  for index = 2, 230 do
+    if index ~= 225 then
+      rows[#rows + 1] = row(index == 230 and 53 or index + 1, index)
+    end
+  end
+  return "arm9-prefix" .. table.concat(rows) .. "arm9-suffix"
+end
+
 local function playerHouseHeader()
   return string.char(
     0x01,
@@ -100,7 +116,6 @@ function T.compiles_catalog_identity_source_and_events()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
   Assert.equal(bundle.mapId, 60)
-  Assert.equal(bundle.field.schema, "g4-field-map-v15")
   Assert.equal(bundle.field.mapSymbol, "MAP_NEW_BARK")
   Assert.equal(bundle.field.cameraType, 0)
   -- Source identity lives only in the dependency record; the runtime asset
@@ -130,10 +145,59 @@ function T.compiles_catalog_identity_source_and_events()
   Assert.equal(LuaWriter.encode(bundle.field), LuaWriter.encode(again.field))
 end
 
+function T.normalizes_hidden_item_source_rows_before_script_identity()
+  local member = Builder.build({
+    backgroundEvents = {
+      { scriptId = 8000, type = 2, x = 682, z = 391, y = 0, direction = 7 },
+      { scriptId = 10, type = 11, x = 1, z = 2, y = 0, direction = 3 },
+    },
+  })
+  local romFs = FieldMapDataFixture.build({ zoneEventsMember = member })
+  local arm9Reads = 0
+  romFs.readArm9 = function()
+    arm9Reads = arm9Reads + 1
+    return hiddenItemTableBytes()
+  end
+
+  local bundle = assert(FieldMapDataCompiler.compile(romFs, 60))
+  Assert.equal(bundle.field.schema, "g4-field-map-v16")
+  Assert.equal(arm9Reads, 1)
+  Assert.deepEqual(bundle.field.events.background[1].hiddenItem, { itemId = 17, quantity = 1, flagId = 800 })
+  Assert.equal(bundle.field.events.background[1].scriptId, "common.hiddenitem_t20_potion")
+  Assert.isNil(bundle.field.events.background[1].hiddenItemIndex)
+  Assert.isNil(bundle.field.events.background[1].hiddenItemFlagId)
+  Assert.isNil(bundle.field.events.background[2].hiddenItem)
+  Assert.isTrue(FieldMapDataCache.hasRequiredEvents(bundle.field.events))
+end
+
+function T.loads_hidden_item_source_lazily_once_per_map_session()
+  local plainRomFs = FieldMapDataFixture.build()
+  plainRomFs.readArm9 = function()
+    error("a map without hidden items must not read ARM9")
+  end
+  Assert.notNil(FieldMapDataCompiler.compile(plainRomFs, 60))
+
+  local member = Builder.build({
+    backgroundEvents = {
+      { scriptId = 8000, type = 2, x = 0, z = 0, y = 0, direction = 0 },
+    },
+  })
+  local romFs = FieldMapDataFixture.build({ zoneEventsMember = member })
+  local arm9Reads = 0
+  romFs.readArm9 = function()
+    arm9Reads = arm9Reads + 1
+    return hiddenItemTableBytes()
+  end
+  local session = assert(FieldMapDataCompiler.newSession(romFs))
+  Assert.notNil(session:compile(60))
+  Assert.notNil(session:compile(61))
+  Assert.equal(arm9Reads, 1)
+  session:close()
+end
+
 function T.emits_strict_init_script_array_for_every_map()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
-  Assert.equal(bundle.field.schema, "g4-field-map-v15")
   Assert.deepEqual(bundle.field.initScripts, {})
 end
 
@@ -144,7 +208,6 @@ end
 function T.emits_normalized_render_environment_without_a_visual_scene()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
-  Assert.equal(bundle.field.schema, "g4-field-map-v15")
   local environment = bundle.field.renderEnvironment
   Assert.notNil(environment, "the field record carries its render environment")
   environment = assert(environment)
