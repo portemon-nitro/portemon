@@ -616,7 +616,8 @@ local function decodeScriptPass(state)
     local terminatedBy = nil
     while cursor + 1 < state.bytes:length() do
       local owner = state.scriptStarts[cursor]
-      if owner ~= nil and owner >= 0 and owner ~= scriptIndex - 1 then
+      -- Aliased ScrDef entries each own the body at their shared start.
+      if owner ~= nil and owner >= 0 and owner ~= scriptIndex - 1 and cursor ~= entry.label then
         break
       end
       local nextCursor, nextTerminated, nextTailRun, nextTerminatedBy =

@@ -120,4 +120,18 @@ function T.release_generation_id_uses_pure_release_constants()
   end, "an unknown version has no release generation")
 end
 
+function T.pre_hidden_item_release_generations_are_stale()
+  for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+    local current = DerivedCacheState.releaseGenerationId(versionId)
+    for _, producerId in ipairs({ "r8", "r9" }) do
+      local previous = DerivedCacheState.currentForSelection({
+        versionId = versionId,
+        romSha1 = GameVersion.VERSIONS[versionId].sha1,
+        producerId = producerId,
+      })
+      Assert.isTrue(previous.generationId ~= current, versionId .. " must not reuse its " .. producerId .. " cache")
+    end
+  end
+end
+
 return { tests = T }

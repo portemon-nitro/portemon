@@ -1484,6 +1484,7 @@ function FieldRuntime:_composeFieldUi(boot)
   self.interactionResolver = FieldInteractionResolver.new({
     actorAt = actorAt,
     targetMapAt = targetMapAt,
+    eventState = self.eventState,
   })
 
   -- The production audio composition lives in _composeAudio, keeping its

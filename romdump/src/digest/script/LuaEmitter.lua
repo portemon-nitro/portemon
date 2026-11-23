@@ -146,11 +146,38 @@ function LuaEmitter.emitMember(member)
   end
   assert(count == #resources, "a member bundle's source slots must be dense from zero")
 
+  local bodyGroups = {}
+  local groupsByIndex = {}
+  local uniqueGroups = {}
+  for scriptIndex = 0, count - 1 do
+    local resource = ordered[scriptIndex].resource
+    assert(type(resource) == "table" and type(resource.steps) == "table", "a member script requires its step graph")
+    local body = stepsLiteral(resource.steps, "")
+    local group = bodyGroups[body]
+    if group == nil then
+      group = { name = "sharedSteps_" .. tostring(scriptIndex), count = 0, body = body }
+      bodyGroups[body] = group
+      uniqueGroups[#uniqueGroups + 1] = group
+    end
+    group.count = group.count + 1
+    groupsByIndex[scriptIndex] = group
+  end
+
   local lines = {}
   lines[#lines + 1] = "-- Generated script member: every script of one source archive member in"
   lines[#lines + 1] = "-- source order. Do not edit by hand."
   lines[#lines + 1] = 'local S = require("gen4.script")'
   lines[#lines + 1] = ""
+  for _, group in ipairs(uniqueGroups) do
+    if group.count > 1 then
+      lines[#lines + 1] = "local " .. group.name .. " = {"
+      if group.body ~= "" then
+        lines[#lines + 1] = group.body
+      end
+      lines[#lines + 1] = "}"
+      lines[#lines + 1] = ""
+    end
+  end
   lines[#lines + 1] = "return {"
   lines[#lines + 1] = "  schema = " .. string.format("%q", ScriptCache.MEMBER_SCHEMA) .. ","
   lines[#lines + 1] = "  scripts = {"
@@ -163,12 +190,17 @@ function LuaEmitter.emitMember(member)
     lines[#lines + 1] = "      api = " .. tostring(resource.api) .. ","
     lines[#lines + 1] = "      id = " .. string.format("%q", resource.id) .. ","
     lines[#lines + 1] = "      metadata = { generated = true },"
-    lines[#lines + 1] = "      steps = {"
-    local body = stepsLiteral(resource.steps, "      ")
-    if body ~= "" then
-      lines[#lines + 1] = body
+    local group = groupsByIndex[scriptIndex]
+    if group.count > 1 then
+      lines[#lines + 1] = "      steps = " .. group.name .. ","
+    else
+      lines[#lines + 1] = "      steps = {"
+      local body = stepsLiteral(resource.steps, "      ")
+      if body ~= "" then
+        lines[#lines + 1] = body
+      end
+      lines[#lines + 1] = "      },"
     end
-    lines[#lines + 1] = "      },"
     lines[#lines + 1] = "    },"
   end
   lines[#lines + 1] = "  },"

@@ -59,6 +59,7 @@ local function harness()
       return composition:effective(id)
     end,
     scheduler = scheduler,
+    worldState = services.world,
     scriptBankId = 0,
   })
   return {
@@ -209,10 +210,7 @@ function T.frame_table_init_root_owns_the_field_while_it_runs()
 
   Assert.notNil(h.scheduler:foregroundEnvironmentId(), "the frame entry starts a foreground root")
   Assert.isFalse(h.scheduler:explicitPlayerLocked(), "the source frame script locks nothing explicitly")
-  Assert.isTrue(
-    h.scheduler:interactionOwnsPlayerInput(),
-    "a source map-scene frame entry owns the field while it runs"
-  )
+  Assert.isTrue(h.scheduler:interactionOwnsPlayerInput(), "a source map-scene frame entry owns the field while it runs")
   Assert.isTrue(h.scheduler:playerInputOwned(), "the frame entry owns player input")
   h.scheduler:setMaxNodes(200)
   h.scheduler:step(330, {})
@@ -462,10 +460,13 @@ end
 function T.foreground_trigger_names_the_application_launch_origin()
   local h = harness()
   Assert.isNil(h.scheduler:foregroundTrigger(), "no foreground owns the field before launch")
-  install(h, script("test.application_owned", {
-    S.waitTicks({ ticks = 5 }),
-    S.stop(),
-  }))
+  install(
+    h,
+    script("test.application_owned", {
+      S.waitTicks({ ticks = 5 }),
+      S.stop(),
+    })
+  )
   local instanceId = h.client:startApplicationScript("test.application_owned", 700)
   Assert.notNil(instanceId, "the application script must start")
   local trigger = h.scheduler:foregroundTrigger()
@@ -476,10 +477,13 @@ end
 
 function T.foreground_trigger_reports_field_interaction_roots_and_clears_on_teardown()
   local h = harness()
-  install(h, script("test.interaction_named", {
-    S.waitTicks({ ticks = 5 }),
-    S.stop(),
-  }))
+  install(
+    h,
+    script("test.interaction_named", {
+      S.waitTicks({ ticks = 5 }),
+      S.stop(),
+    })
+  )
   h.setResolvedScriptId("test.interaction_named")
   h.client:consume({ kind = "background" }, 800)
   local trigger = h.scheduler:foregroundTrigger()

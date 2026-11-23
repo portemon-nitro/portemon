@@ -56,6 +56,23 @@ T["entry table and sentinel"] = function()
   Assert.isNil(garbage)
 end
 
+-- Multiple ScrDef slots may point at one body. Each source slot must retain
+-- that body instead of treating a later alias as a boundary for earlier ones.
+T["shared script entry offsets decode the body for every alias"] = function()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      { offset = 0x20, instructions = { { op = 2, args = {} } } },
+      { offset = 0x20, instructions = { { op = 2, args = {} } } },
+      { offset = 0x20, instructions = { { op = 2, args = {} } } },
+    },
+  })
+  local member = decode(bytes, 5)
+  for index = 0, 2 do
+    Assert.equal(#member.scripts[index].instructions, 1)
+    Assert.equal(member.scripts[index].instructions[1].opcode, 2)
+  end
+end
+
 -- 2. Relative branch targets resolve to `_XXXX` labels (forward and
 -- backward, signed).
 T["relative targets resolve to labels"] = function()
