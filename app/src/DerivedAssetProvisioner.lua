@@ -163,6 +163,11 @@ function DerivedAssetProvisioner.new(options)
       assert(type(pageId) == "number" and pageId % 1 == 0 and pageId >= 0, "icon request requires its page")
       return ask("icon-page", urgency, { pageId = pageId })
     end,
+    -- The League ending's one selector-free bundle: the registration,
+    -- showcase and credit-roll sections with their source background images.
+    requestEnding = function(urgency)
+      return ask("ending", urgency)
+    end,
     requestBattleScene = function(sceneKey, urgency)
       assert(
         type(sceneKey) == "string" and sceneKey:match("^[^/]+/[^/]+/[^/]+$") ~= nil,

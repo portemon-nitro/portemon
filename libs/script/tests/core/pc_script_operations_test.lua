@@ -105,14 +105,6 @@ function T.tests.capsules_and_terminal_effects_remain_synchronous_and_typed()
   })
 end
 
-function T.tests.unsupported_hall_of_fame_open_is_not_swallowed()
-  local h = harness()
-  local ok, err = pcall(Runtime.executeNode, { op = "pc_hof_open" }, h.run)
-  Assert.isFalse(ok)
-  Assert.equal(err.code, "FEATURE_UNAVAILABLE")
-  Assert.deepEqual(h.calls, { { "openHof" } })
-end
-
 function T.tests.missing_pc_service_is_a_typed_composition_error()
   local h = harness()
   h.run.services.pcTerminal = nil

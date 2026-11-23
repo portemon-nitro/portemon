@@ -32,6 +32,14 @@ function T.tests.terminal_effects_use_manifest_roles_and_release_once()
         return 2
       end,
     },
+    hallOfFame = {
+      isAvailable = function()
+        return false
+      end,
+      total = function()
+        return 0
+      end,
+    },
     photoAlbum = {
       usedCount = function()
         return 3
@@ -63,6 +71,14 @@ function T.tests.counts_and_capsule_defer_read_canonical_owners_without_mutation
     mailbox = {
       usedCount = function()
         return 4
+      end,
+    },
+    hallOfFame = {
+      isAvailable = function()
+        return false
+      end,
+      total = function()
+        return 0
       end,
     },
     photoAlbum = {

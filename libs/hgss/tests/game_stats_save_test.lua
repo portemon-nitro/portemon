@@ -1,9 +1,9 @@
 -- Game-stats save bucket: strict persisted shape, canonical detached
 -- output, and evidence-preserving migration from a missing bucket or an
--- exact v1 or v2 bucket. v2 adds the bounded written-Mail count and v3
--- the bounded steps-biked count; migration never invents a historical
--- count. Uses literal buckets plus small
--- synthetic species sets; no ROM, GPU, or product cache is touched.
+-- exact earlier bucket. Each step adds one bounded counter (v2 the written
+-- Mail total, v3 the steps-biked total, v4 the League-win total);
+-- migration never invents a historical count. Uses literal buckets plus
+-- small synthetic species sets; no ROM, GPU, or product cache is touched.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -17,6 +17,19 @@ local function refs()
 end
 
 local function validBucket()
+  return {
+    schema = "hgss-stats-v4",
+    stateVersion = 4,
+    uniqueCaught = { "TOTODILE", "CHIKORITA" },
+    uniqueTotal = 3,
+    score = 40,
+    mailWritten = 7,
+    stepsBiked = 1500,
+    leagueWins = 2,
+  }
+end
+
+local function v3Bucket()
   return {
     schema = "hgss-stats-v3",
     stateVersion = 3,
@@ -57,13 +70,14 @@ end
 
 function T.valid_buckets_canonicalize_deterministically()
   local canonical = GameStatsSave.validate(validBucket(), refs())
-  Assert.equal(canonical.schema, "hgss-stats-v3", "validation publishes the current schema")
-  Assert.equal(canonical.stateVersion, 3, "validation publishes the current state version")
+  Assert.equal(canonical.schema, "hgss-stats-v4", "validation publishes the current schema")
+  Assert.equal(canonical.stateVersion, 4, "validation publishes the current state version")
   Assert.deepEqual(canonical.uniqueCaught, { "CHIKORITA", "TOTODILE" }, "validation sorts its registrations")
   Assert.equal(canonical.uniqueTotal, 3, "validation keeps the blind total")
   Assert.equal(canonical.score, 40, "validation keeps the saved score")
   Assert.equal(canonical.mailWritten, 7, "validation keeps the written-Mail total")
   Assert.equal(canonical.stepsBiked, 1500, "validation keeps the steps-biked total")
+  Assert.equal(canonical.leagueWins, 2, "validation keeps the League-win total")
   local again = GameStatsSave.validate(canonical, refs())
   Assert.deepEqual(again, canonical, "canonical buckets validate idempotently")
 end
@@ -76,23 +90,26 @@ function T.missing_buckets_migrate_empty_without_invention()
   Assert.equal(migrated.score, 0, "migration invents no score")
   Assert.equal(migrated.mailWritten, 0, "migration invents no written-Mail count")
   Assert.equal(migrated.stepsBiked, 0, "migration invents no steps-biked count")
+  Assert.equal(migrated.leagueWins, 0, "migration invents no League win")
   local owner = GameStats.restore(nil, refs())
   Assert.equal(owner:uniqueCount(), 0, "a missing bucket restores nothing counted")
   Assert.equal(owner:score(), 0, "a missing bucket restores a zero score")
   Assert.equal(owner:mailWrittenCount(), 0, "a missing bucket restores no written Mail")
+  Assert.equal(owner:leagueWins(), 0, "a missing bucket restores no League win")
   local roundTrip = GameStats.restore(migrated, refs())
   Assert.deepEqual(roundTrip:bucket(), migrated, "migration output restores and republishes unchanged")
 end
 
-function T.exact_v1_buckets_migrate_with_a_zero_written_count()
+function T.exact_v1_buckets_migrate_with_zero_untracked_totals()
   local migrated = GameStatsSave.migrate(legacyBucket(), refs())
-  Assert.equal(migrated.schema, "hgss-stats-v3", "migration publishes the current schema")
-  Assert.equal(migrated.stateVersion, 3, "migration publishes the current state version")
+  Assert.equal(migrated.schema, "hgss-stats-v4", "migration publishes the current schema")
+  Assert.equal(migrated.stateVersion, 4, "migration publishes the current state version")
   Assert.deepEqual(migrated.uniqueCaught, { "CHIKORITA", "TOTODILE" }, "migration preserves the species totals")
   Assert.equal(migrated.uniqueTotal, 3, "migration preserves the blind total")
   Assert.equal(migrated.score, 40, "migration never resets existing score")
   Assert.equal(migrated.mailWritten, 0, "migration sets no historical written-Mail count")
   Assert.equal(migrated.stepsBiked, 0, "migration sets no historical steps-biked count")
+  Assert.equal(migrated.leagueWins, 0, "migration sets no historical League win")
   local owner = GameStats.restore(legacyBucket(), refs())
   Assert.equal(owner:mailWrittenCount(), 0, "a v1 bucket restores no written Mail")
   Assert.equal(owner:score(), 40, "a v1 bucket restores its score")
@@ -100,16 +117,36 @@ function T.exact_v1_buckets_migrate_with_a_zero_written_count()
   Assert.deepEqual(roundTrip:bucket(), migrated, "v1 migration output restores and republishes unchanged")
 end
 
-function T.exact_v2_buckets_migrate_with_a_zero_biked_count()
+function T.exact_v2_buckets_migrate_with_zero_biked_and_win_counts()
   local migrated = GameStatsSave.migrate(v2Bucket(), refs())
-  Assert.equal(migrated.schema, "hgss-stats-v3", "migration publishes the current schema")
-  Assert.equal(migrated.stateVersion, 3, "migration publishes the current state version")
+  Assert.equal(migrated.schema, "hgss-stats-v4", "migration publishes the current schema")
+  Assert.equal(migrated.stateVersion, 4, "migration publishes the current state version")
+  Assert.deepEqual(migrated.uniqueCaught, { "CHIKORITA", "TOTODILE" }, "migration preserves the species totals")
+  Assert.equal(migrated.uniqueTotal, 3, "migration preserves the blind total")
+  Assert.equal(migrated.score, 40, "migration never resets existing score")
+  Assert.equal(migrated.mailWritten, 7, "migration preserves the written-Mail total")
+  Assert.equal(migrated.stepsBiked, 0, "migration sets no historical steps-biked count")
+  Assert.equal(migrated.leagueWins, 0, "migration sets no historical League win")
+  local owner = GameStats.restore(v2Bucket(), refs())
+  Assert.equal(owner:mailWrittenCount(), 7, "a v2 bucket restores its written Mail")
+  Assert.equal(owner:stepsBikedCount(), 0, "a v2 bucket restores no biked steps")
+  Assert.equal(owner:leagueWins(), 0, "a v2 bucket restores no League win")
+  local roundTrip = GameStats.restore(migrated, refs())
+  Assert.deepEqual(roundTrip:bucket(), migrated, "v2 migration output restores and republishes unchanged")
+end
+
+function T.exact_v3_buckets_migrate_with_a_zero_league_win_count()
+  local migrated = GameStatsSave.migrate(v3Bucket(), refs())
+  Assert.equal(migrated.schema, "hgss-stats-v4", "migration publishes the current schema")
+  Assert.equal(migrated.stateVersion, 4, "migration publishes the current state version")
   Assert.equal(migrated.score, 40, "migration keeps the score")
   Assert.equal(migrated.mailWritten, 7, "migration keeps the written-Mail total")
-  Assert.equal(migrated.stepsBiked, 0, "migration sets no historical steps-biked count")
-  local owner = GameStats.restore(v2Bucket(), refs())
-  Assert.equal(owner:stepsBikedCount(), 0, "a v2 bucket restores no biked steps")
-  Assert.deepEqual(GameStats.restore(migrated, refs()):bucket(), migrated, "v2 migration output round-trips")
+  Assert.equal(migrated.stepsBiked, 1500, "migration keeps the steps-biked total")
+  Assert.equal(migrated.leagueWins, 0, "migration sets no historical League win")
+  local owner = GameStats.restore(v3Bucket(), refs())
+  Assert.equal(owner:stepsBikedCount(), 1500, "a v3 bucket restores its biked steps")
+  Assert.equal(owner:leagueWins(), 0, "a v3 bucket restores no League win")
+  Assert.deepEqual(GameStats.restore(migrated, refs()):bucket(), migrated, "v3 migration output round-trips")
 end
 
 function T.owner_buckets_round_trip_through_validation()
@@ -125,7 +162,7 @@ end
 
 function T.malformed_buckets_fail_with_attribution()
   assertInvalid(function()
-    local bucket = { schema = "hgss-stats-v3", stateVersion = 3, uniqueCaught = {}, score = 0, extra = true }
+    local bucket = { schema = "hgss-stats-v4", stateVersion = 4, uniqueCaught = {}, score = 0, extra = true }
     GameStatsSave.validate(bucket, refs())
   end, "unknown top-level fields never validate")
   assertInvalid(function()
@@ -138,9 +175,34 @@ function T.malformed_buckets_fail_with_attribution()
   end, "foreign schemas never validate")
   assertInvalid(function()
     local bucket = validBucket()
-    bucket.stateVersion = 4
+    bucket.stateVersion = 5
     GameStatsSave.validate(bucket, refs())
   end, "incompatible state versions never validate")
+  assertInvalid(function()
+    local bucket = validBucket()
+    bucket.leagueWins = nil
+    GameStatsSave.validate(bucket, refs())
+  end, "a missing League-win total never validates")
+  assertInvalid(function()
+    local bucket = validBucket()
+    bucket.leagueWins = -1
+    GameStatsSave.validate(bucket, refs())
+  end, "negative League-win totals never validate")
+  assertInvalid(function()
+    local bucket = validBucket()
+    bucket.leagueWins = 1.5
+    GameStatsSave.validate(bucket, refs())
+  end, "fractional League-win totals never validate")
+  assertInvalid(function()
+    local bucket = validBucket()
+    bucket.leagueWins = GameStatsSave.LEAGUE_WINS_CAP + 1
+    GameStatsSave.validate(bucket, refs())
+  end, "League-win totals above the source ceiling never validate")
+  assertInvalid(function()
+    local bucket = v3Bucket()
+    bucket.leagueWins = 1
+    GameStatsSave.migrate(bucket, refs())
+  end, "a v3 bucket carrying a League-win total never migrates")
   assertInvalid(function()
     local bucket = validBucket()
     bucket.mailWritten = nil
@@ -197,6 +259,20 @@ function T.malformed_buckets_fail_with_attribution()
     bucket.stepsBiked = 3
     GameStatsSave.migrate(bucket, refs())
   end, "extended v2 buckets never migrate")
+  assertInvalid(function()
+    GameStatsSave.migrate(
+      {
+        schema = "hgss-stats-v3",
+        stateVersion = 2,
+        uniqueCaught = {},
+        uniqueTotal = 0,
+        score = 0,
+        mailWritten = 0,
+        stepsBiked = 0,
+      },
+      refs()
+    )
+  end, "shifted v3 versions never migrate")
   assertInvalid(function()
     local bucket = validBucket()
     bucket.uniqueCaught = { "MISSINGNO" }

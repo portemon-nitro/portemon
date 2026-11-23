@@ -328,7 +328,7 @@ function T.captureGameSave_returns_an_owner_produced_snapshot_without_storage_io
   Assert.equal(valid.encounters.schema, "hgss-encounter-v2", "every save captures the encounter bucket")
   Assert.deepEqual(valid.fieldPoison, FieldPoisonSave.initial(), "every save captures the poison counter")
   Assert.equal(valid.pokedex.schema, "hgss-pokedex-v2", "every save captures the dex bucket")
-  Assert.equal(valid.gameStats.schema, "hgss-stats-v3", "every save captures the stats bucket")
+  Assert.equal(valid.gameStats.schema, "hgss-stats-v4", "every save captures the stats bucket")
   Assert.equal(valid.pokegear.schema, "hgss-pokegear-v2", "every save captures the companion bucket")
   Assert.equal(valid.easyChat.schema, "hgss-easy-chat-v1", "every save captures the word bucket")
   Assert.equal(scriptCaptureCalls, 1)
@@ -847,6 +847,7 @@ local function statsBucket(uniqueCaught, uniqueTotal, score)
     score = score,
     mailWritten = 0,
     stepsBiked = 0,
+    leagueWins = 0,
   }
 end
 

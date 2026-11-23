@@ -259,7 +259,7 @@ end
 local Game = {}
 Game.__index = Game
 
-function AcceptanceHarness:_newRuntime(game, namespace, faults, lifecycle, fieldOptions, reserveSave)
+function AcceptanceHarness:_newRuntime(game, namespace, faults, lifecycle, fieldOptions, reserveSave, seedSave)
   local versionId = assert(game.versionId, "acceptance game version required")
   local runtimeOptions = {}
   for key, value in pairs(fieldOptions or {}) do
@@ -293,6 +293,14 @@ function AcceptanceHarness:_newRuntime(game, namespace, faults, lifecycle, field
     if reserveSave and game.schema == nil then
       local reservedSaveId = saveStore:reserve()
       game.saveId = reservedSaveId
+    end
+    -- A continued journey starts from a save that is already on this boot's
+    -- own disk: publish the record it continues under the identity it was
+    -- written with, so the production store can load it back.
+    if seedSave ~= nil then
+      assert(type(seedSave) == "table" and type(seedSave.saveId) == "string", "a seeded save names its identity")
+      assert(saveStore:reserve() == seedSave.saveId, "a seeded save keeps the identity it was published with")
+      assert(saveStore:publishFirst(seedSave), "the seeded save publishes through the production store")
     end
   end
   if fieldOptions and fieldOptions.recordingScriptHosts == true then
@@ -1170,6 +1178,8 @@ end
 
 ---@param options table
 ---@return AcceptanceGame
+---@param options { versionId: string, map: string|integer|nil, save: string|nil, fieldOptions: table|nil, seedSave: table|nil }
+---@return AcceptanceGame
 function AcceptanceHarness:boot(options)
   assert(options and type(options.versionId) == "string", "acceptance boot version required")
   serial = serial + 1
@@ -1178,8 +1188,17 @@ function AcceptanceHarness:boot(options)
   local faults = {}
   local lifecycle = { saveWrites = 0, saveReads = 0, runtimeDisposals = 0 }
   local game = self.gameFactory(options.versionId, options.map)
-  local ok, runtime, assetRuntime =
-    pcall(self._newRuntime, self, game, namespace, faults, lifecycle, options.fieldOptions, true)
+  local ok, runtime, assetRuntime = pcall(
+    self._newRuntime,
+    self,
+    game,
+    namespace,
+    faults,
+    lifecycle,
+    options.fieldOptions,
+    true,
+    options.seedSave
+  )
   if not ok then
     abortBoot(nil, trap, self.removeSaveNamespace, namespace)
     error("acceptance runtime boot failed: " .. tostring(runtime), 0)

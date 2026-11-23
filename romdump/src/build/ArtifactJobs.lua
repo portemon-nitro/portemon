@@ -561,6 +561,16 @@ local function executeFieldWeather(artifact, context)
   return Writer.stage(artifact, bundle)
 end
 
+local function executeEnding(artifact, context)
+  local EndingAssetCompiler = require("romdump.src.digest.ending.EndingAssetCompiler")
+  local EndingCacheWriter = require("romdump.src.digest.ending.EndingCacheWriter")
+  local romFs = assert(context.romFs, "ending jobs require a source reader")
+  local bundle = compileOrRaise(function()
+    return EndingAssetCompiler.compile(romFs)
+  end, "League ending")
+  return EndingCacheWriter.stage(artifact, bundle)
+end
+
 local function executeFieldEffects(artifact, context)
   local Compiler = require("romdump.src.digest.field.FieldEntranceIndicatorCompiler")
   local Writer = require("romdump.src.digest.field.FieldEntranceIndicatorCacheWriter")
@@ -1407,6 +1417,11 @@ end
 
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
+local function validateEnding(check)
+  local EndingAssetCache = require("libs.assets.src.ending.EndingAssetCache")
+  return EndingAssetCache.isReady(check.cacheFs, check.marker)
+end
+
 local function validateFieldEffects(check)
   local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
   return FieldEffectAssetCache.isReady(check.cacheFs, check.marker)
@@ -2142,6 +2157,18 @@ DESCRIPTORS = {
     execute = executeApricornBox,
     validate = validateApricornBox,
   },
+  -- The League ending's bundle: one selector-free artifact whose sections read
+  -- the registration, showcase and credit-roll message banks.
+  ending = {
+    size = "normal",
+    dependencies = function(key)
+      assert(key == "global", "ending family only has the global job")
+      local EndingAssetCompiler = require("romdump.src.digest.ending.EndingAssetCompiler")
+      return EndingAssetCompiler.dependencies(), true
+    end,
+    execute = executeEnding,
+    validate = validateEnding,
+  },
   mart = {
     size = "normal",
     dependencies = dependenciesMart,
@@ -2439,6 +2466,7 @@ local COMPLETE_STATIC_GLOBALS = {
   "bag",
   "move-icons",
   "apricorn-box",
+  "ending",
   "party",
   "pc",
   "pokegear",

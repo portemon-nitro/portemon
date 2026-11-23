@@ -57,6 +57,9 @@ ArtifactState.KINDS = {
   -- catalog (definitions, pockets, icon atlas with manifest) and the
   -- field-bag/party presentations each own their payload and marker.
   items = true,
+  -- The League ending's own bundle: one selector-free artifact carrying the
+  -- registration/showcase text banks and the credit roll.
+  ending = true,
   ["follower-interactions"] = true,
   mart = true,
   bag = true,
@@ -171,6 +174,10 @@ local function checkKey(kind, key)
   end
   if kind == "easy-chat-data" or kind == "easy-chat" then
     assert(key == "global", "easy chat artifacts require the global key")
+    return
+  end
+  if kind == "ending" then
+    assert(key == "global", "ending artifacts require the global key")
     return
   end
   if kind == "pokedex-data" or kind == "pokedex" then

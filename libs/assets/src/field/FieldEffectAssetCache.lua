@@ -333,6 +333,99 @@ local function validPokemonCenterHealDefinition(definition, _)
   return true
 end
 
+-- The League ending's Hall of Fame machine: the ball model with its one source
+-- one-shot clip, the machine's build model the scene anchors on, the six
+-- gHallOfFameBallOffsets placements and the source 15-frame spacing.
+---@param definition table<string, unknown>
+---@return boolean
+local function validHallOfFameDefinition(definition)
+  local allowed = {
+    machineModelMemberId = true,
+    models = true,
+    ballAnimation = true,
+    ballAnimationFrameCount = true,
+    ballPositions = true,
+    spawnIntervalSourceFrames = true,
+    placementSound = true,
+  }
+  local fieldCount = 0
+  for key in pairs(definition) do
+    fieldCount = fieldCount + 1
+    if not allowed[key] then
+      return false
+    end
+  end
+  if fieldCount ~= 7 then
+    return false
+  end
+  if not finiteNumber(definition.machineModelMemberId) or definition.machineModelMemberId < 1 then
+    return false
+  end
+  if type(definition.models) ~= "table" or #definition.models ~= 1 then
+    return false
+  end
+  local model = definition.models[1]
+  if
+    type(model) ~= "table"
+    or model.kind ~= "nitro-dynamic"
+    or type(model.animations) ~= "table"
+    or #model.animations ~= 1
+  then
+    return false
+  end
+  local clip = model.animations[1]
+  if type(definition.ballAnimation) ~= "string" or definition.ballAnimation == "" then
+    return false
+  end
+  if clip.name ~= definition.ballAnimation and clip.id ~= definition.ballAnimation then
+    return false
+  end
+  local frames = definition.ballAnimationFrameCount
+  if not finiteNumber(frames) or frames < 1 or frames ~= math.floor(frames) then
+    return false
+  end
+  if definition.spawnIntervalSourceFrames ~= 15 then
+    return false
+  end
+  if definition.placementSound ~= "SEQ_SE_DP_BOWA" then
+    return false
+  end
+  local positions = definition.ballPositions
+  if type(positions) ~= "table" or #positions ~= 6 then
+    return false
+  end
+  local expected = {
+    { x = -0.28125, y = 0.75, z = -0.28125 },
+    { x = 0.28125, y = 0.75, z = -0.28125 },
+    { x = -0.28125, y = 0.75, z = 0 },
+    { x = 0.28125, y = 0.75, z = 0 },
+    { x = -0.28125, y = 0.75, z = 0.28125 },
+    { x = 0.28125, y = 0.75, z = 0.28125 },
+  }
+  local expectedRoles = { "northwest", "northeast", "west", "east", "southwest", "southeast" }
+  for index, position in ipairs(positions) do
+    if type(position) ~= "table" or position.role ~= expectedRoles[index] then
+      return false
+    end
+    local offset = position.offset
+    local want = expected[index]
+    if not validPlacement(offset) or offset.x ~= want.x or offset.y ~= want.y or offset.z ~= want.z then
+      return false
+    end
+    local count = 0
+    for key in pairs(position) do
+      count = count + 1
+      if key ~= "role" and key ~= "offset" then
+        return false
+      end
+    end
+    if count ~= 2 then
+      return false
+    end
+  end
+  return true
+end
+
 local function validCelebiTimeTravelDefinition(definition, _)
   if type(definition) ~= "table" or type(definition.model) ~= "table" then
     return false
@@ -798,6 +891,7 @@ local FIELD_EFFECT_INVENTORY = {
   { key = "surf_attachment", entryKind = "model", validator = validSurfDefinition },
   { key = "follower_transition", entryKind = "transition", validator = validTransitionDefinition },
   { key = "pokemon_center_heal", entryKind = "healing", validator = validPokemonCenterHealDefinition },
+  { key = "hall_of_fame_machine", entryKind = "hall_of_fame", validator = validHallOfFameDefinition },
   { key = "celebi_time_travel", entryKind = "cinematic", validator = validCelebiTimeTravelDefinition },
   { key = "ho_oh_appearance", entryKind = "cinematic", validator = validHoOhAppearanceDefinition },
   { key = "lugia_appearance", entryKind = "cinematic", validator = validLugiaAppearanceDefinition },
@@ -1043,6 +1137,7 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
       if
         kind ~= "follower_transition"
         and kind ~= "pokemon_center_heal"
+        and kind ~= "hall_of_fame_machine"
         and kind ~= "ho_oh_appearance"
         and kind ~= "lugia_appearance"
         and definition.models ~= nil

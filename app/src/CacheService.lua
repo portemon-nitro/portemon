@@ -46,6 +46,8 @@ local VALID_KINDS = {
   ["battle-evolution"] = true,
   ["startup-walker"] = true,
   ["opening-scene"] = true,
+  -- The League ending's one selector-free bundle.
+  ending = true,
 }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 local URGENCY_ORDER = { required = 0, near = 10, sweep = 100 }
@@ -263,6 +265,18 @@ local function selectorKey(selector)
     assert(selector.trainerSelector == nil, "easy chat request carries no trainer selector")
     assert(selector.ballSelector == nil, "easy chat request carries no ball selector")
     return "easy-chat"
+  elseif kind == "ending" then
+    assert(selector.pageId == nil, "ending request carries no page selector")
+    assert(selector.name == nil, "ending request carries no milestone selector")
+    assert(selector.mapId == nil, "ending request carries no map selector")
+    assert(selector.matrixMemberId == nil, "ending request carries no cell selector")
+    assert(selector.index == nil, "ending request carries no cell selector")
+    assert(selector.sceneKey == nil, "ending request carries no scene selector")
+    assert(selector.bankId == nil, "ending request carries no bank selector")
+    assert(selector.trainerSelector == nil, "ending request carries no trainer selector")
+    assert(selector.ballSelector == nil, "ending request carries no ball selector")
+    assert(selector.effectKey == nil, "ending request carries no effect selector")
+    return "ending"
   elseif kind == "battle-effect" then
     assert(
       type(selector.effectKey) == "string" and selector.effectKey ~= "" and selector.effectKey:find("/", 1, true) == nil,
@@ -500,6 +514,8 @@ function CacheService:request(epoch, selector)
     command.trainerSelector = selector.trainerSelector
   elseif selector.requestKind == "battle-ball" then
     command.ballSelector = selector.ballSelector
+  elseif selector.requestKind == "ending" then
+    -- The selector-free ending demand names its kind and urgency only.
   elseif selector.requestKind == "battle-evolution" then
     -- The selector-free evolution demand names its kind and urgency only.
   elseif selector.requestKind == "startup-walker" then

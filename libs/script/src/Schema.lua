@@ -61,7 +61,9 @@ Schema.ENUMS = {
   -- other kinds stay unimplemented rather than named here.
   gym_mechanism = { "violet", "azalea", "ecruteak", "cianwood", "blackthorn", "sinjoh" },
   money_box_action = { "show", "update", "hide" },
-  pc_application = { "storage", "mailbox", "photoAlbum" },
+  pc_application = { "storage", "mailbox", "photoAlbum", "hallOfFame" },
+  -- The three boxed ribbon bit fields retail stores (GBA contest, DS1, DS2).
+  ribbon_field = { "gba", "ds1", "ds2" },
   -- The foreground phone call direction across the shared menu/script
   -- application lane; numeric source selectors never appear past the
   -- producer boundary.
@@ -402,6 +404,10 @@ Schema.OPERATIONS = {
     },
   },
   pc_hof_status = { fields = { result = { type = "writable_value", required = true } } },
+  -- ScrCmd_GetHallOfFameEntryCount writes the newest recorded number and
+  -- yields its source tick; ScrCmd_OpenHallOfFameShowcase blocks on the
+  -- shared PC application task.
+  pc_hof_count = { fields = { result = { type = "writable_value", required = true } } },
   pc_hof_open = { fields = {} },
   restore_overworld = { fields = {} },
   -- Staged foreground phone call setup: evaluates its operands and stores
@@ -1899,6 +1905,16 @@ Schema.OPERATIONS = {
   },
   -- ScrCmd_CheckGameClearFlag/ScrCmd_SetGameClearFlag read and set the save's
   -- own game-clear flag in their tick.
+  -- ScrCmd_GiveRibbon reads the party slot and the source ribbon identity
+  -- through ScriptGetVar; the producer resolves the identity to the stored
+  -- boxed ribbon bit, so the node carries only that semantic binding.
+  give_ribbon = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      ribbonField = { type = "enum:ribbon_field", required = true },
+      ribbonBit = { type = "integer", required = true },
+    },
+  },
   check_game_clear = {
     fields = {
       flag = { type = "string", required = true },
@@ -1911,6 +1927,12 @@ Schema.OPERATIONS = {
   -- way; ScrCmd_Cinematic reads one halfword scene number; the Sinjoh circle
   -- and egg cutscenes take no operand and one raw variant byte.
   legend_wing = { fields = { kind = { type = "scalar_or_value", required = true } } },
+  -- ScrCmd_HallOfFameAnim reads the non-Egg party count through ScriptGetVar and
+  -- blocks on the machine's own ball effect.
+  hall_of_fame_anim = { fields = { count = { type = "scalar_or_value", required = true } } },
+  -- ScrCmd_HOFCredits carries one raw halfword: the Red battle outcome the
+  -- shared game-clear policy branches on.
+  hof_credits = { fields = { vsRed = { type = "integer", required = true } } },
   lance_departure = {
     fields = {
       first = { type = "scalar_or_value", required = true },
@@ -2319,9 +2341,14 @@ Schema.CONSTRUCTORS = {
         notes = "spec={result}; writes the source status result.",
       },
       {
+        signature = "S.pcHallOfFameCount(spec)",
+        canonical = "op=pc_hof_count",
+        notes = "spec={result}; writes the newest recorded clear number after its source tick.",
+      },
+      {
         signature = "S.pcHallOfFameOpen()",
         canonical = "op=pc_hof_open",
-        notes = "Fails explicitly while no viewer provider exists.",
+        notes = "Blocks on the shared Hall of Fame showcase child until it closes.",
       },
       {
         signature = "S.restoreOverworld()",

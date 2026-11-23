@@ -40,6 +40,7 @@ local FieldPoisonEffect = require("libs.hgss.src.field.FieldPoisonEffect")
 local FieldPoisonSave = require("libs.hgss.src.save.FieldPoisonSave")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local SysInfoState = require("libs.hgss.src.save.SysInfoState")
+local HallOfFameState = require("libs.hgss.src.save.HallOfFameState")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local FieldScriptScreenFade = require("libs.hgss.src.transition.FieldScriptScreenFade")
 local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
@@ -572,6 +573,9 @@ end
 ---@field screenTopology ScreenTopology?
 ---@field fieldPixelScale FieldPixelScale
 ---@field saveStatus string?
+---@field returnToMainMenu (fun())? the host's own main-menu route the League ending hands back
+---@field endingPresentation table<string, unknown>? the ending's prepared presentation bundle owner
+---@field gameClear table<string, unknown>? the League ending coordinator (nil before composition / after teardown)
 ---@field saveStore FieldRuntimeSaveStore? global publication owner
 ---@field savePublished boolean whether the reserved record has been published
 ---@field saveCoordinator FieldSaveCoordinator required save capture/publication owner
@@ -587,7 +591,8 @@ end
 ---@field _partyPrefetchRevision integer? last warmed party revision, nil before the first warmup
 ---@field _partyPrefetchCooldown number? seconds until a deferred party warmup retries, failing closed at zero
 ---@field fashionCase FashionCaseState live accessory inventory restored from the save
----@field sysInfo SysInfoState live system-info state (mystery-gift flag) restored from the save
+---@field sysInfo SysInfoState live system-info state (mystery-gift flag and first clear) restored from the save
+---@field hallOfFame HallOfFameState live Hall of Fame history restored from the save
 ---@field followerInteractionCatalog table<string, unknown> generated follower interaction rules
 ---@field followerReactionTicks table<string, integer> follower reaction emote kind -> emote action duration
 ---@field bagService HgssBagService the live bag/inventory service
@@ -1558,6 +1563,29 @@ function FieldRuntime:_composeFieldUi(boot)
   -- host clock at creation time.
 end
 
+-- One mon-service construction path: the live party and the ending's detached
+-- healing copy are the same owner over different buckets and the same
+-- catalogs, policy and met context.
+---@param bucket table<string, unknown>
+---@param charmap table<string, unknown>
+---@param mapSection fun(): integer
+---@param date fun(): { year: integer, month: integer, day: integer }
+---@return table<string, unknown>
+function FieldRuntime:_newMonService(bucket, charmap, mapSection, date)
+  return HgssMonService.new({
+    catalog = self.monCatalog,
+    bucket = bucket,
+    profile = self.playerData.profile,
+    game = self.versionId,
+    language = self.monLanguage,
+    charmap = charmap,
+    mapSection = mapSection,
+    date = date,
+    dex = assert(self.dexKnowledge, "the mon service needs the composed dex knowledge"),
+    stats = assert(self.gameStats, "the mon service needs the composed statistics owner"),
+  })
+end
+
 -- Bind the live mon, Bag, follower, and script services.
 ---@param boot table<string, unknown>
 function FieldRuntime:_composeFieldServices(boot)
@@ -1583,18 +1611,7 @@ function FieldRuntime:_composeFieldServices(boot)
   )
   self:_composeGameStats(boot.loadedGame, assert(boot.monRoot, "mon catalog root is required for game stats"))
   self:_composeEasyChat(boot.loadedGame, boot.cacheFs)
-  self.monService = HgssMonService.new({
-    catalog = self.monCatalog,
-    bucket = monBucket,
-    profile = self.playerData.profile,
-    game = self.versionId,
-    language = self.monLanguage,
-    charmap = boot.fontDef.charmap,
-    mapSection = monMetMapSection,
-    date = monMetDate,
-    dex = assert(self.dexKnowledge, "field runtime composes dex knowledge before the mon service"),
-    stats = assert(self.gameStats, "field runtime composes game stats before the mon service"),
-  })
+  self.monService = self:_newMonService(monBucket, boot.fontDef.charmap, monMetMapSection, monMetDate)
   -- The field Pokémon picture window (452/453) borrows the generated portrait
   -- family and publishes its sighting through the one dex owner.
   self:_composeMonPictureWindow(boot.cacheFs)
@@ -1602,6 +1619,13 @@ function FieldRuntime:_composeFieldServices(boot)
     boot.loadedGame and boot.loadedGame.sysInfo
       or assert(boot.activeGame.sysInfo, "finalized game sysInfo bucket is required")
   )
+  -- The recorded League history: a save without the bucket is the source's
+  -- missing history chunk, which records nothing until the next clear.
+  local hallOfFameBucket = boot.loadedGame ~= nil and boot.loadedGame.hallOfFame or nil
+  if hallOfFameBucket == nil and boot.loadedGame == nil and boot.activeGame ~= nil then
+    hallOfFameBucket = boot.activeGame.hallOfFame
+  end
+  self.hallOfFame = HallOfFameState.restore(hallOfFameBucket)
   self.mailbox = Mailbox.new(
     boot.loadedGame and boot.loadedGame.mailbox
       or assert(boot.activeGame.mailbox, "finalized game mailbox bucket is required"),
@@ -1769,6 +1793,24 @@ function FieldRuntime:_composeFieldServices(boot)
     self.fieldEffectAssets and self.fieldEffectAssets.effects,
     "the legendary-story scenes require the generated field-effect bundle"
   )
+  -- The source machine effect anchors on a map prop's own translation
+  -- (FieldSystem_FindMapProp over the build model). The active map's compiled
+  -- placements carry that identity, so the scene reads the anchor from here.
+  local function propAnchor(memberId)
+    local runtimeMap = self.session ~= nil and self.session.currentMap or self.runtimeMap
+    local mapProps = runtimeMap ~= nil and runtimeMap.mapProps or nil
+    if mapProps == nil then
+      return nil
+    end
+    local FieldScriptPropAnimations = require("libs.hgss.src.field.FieldScriptPropAnimations")
+    for _, placement in ipairs(mapProps.placements) do
+      if FieldScriptPropAnimations.sourceMemberId(placement.modelKey) == memberId then
+        local transform = assert(placement.transform, "a compiled placement carries its transform")
+        return { x = transform[13], y = transform[14], z = transform[15] }
+      end
+    end
+    return nil
+  end
   self.legendEventScene = LegendEventScene.new({
     definitions = effectDefinitions,
     audio = assert(self.audio or (self.scriptHosts and self.scriptHosts.audio), "the legend scenes need the source audio host"),
@@ -1777,6 +1819,7 @@ function FieldRuntime:_composeFieldServices(boot)
     playerOf = currentMechanismPlayer,
     foregroundScript = currentForegroundScriptId,
     currentScriptBankId = currentScriptBankId,
+    anchorOf = propAnchor,
   })
   self.starterBalls = composeStarterBalls(self)
   self.partySelection = buildPartySelectionHost(self, boot.cacheFs)
@@ -1800,10 +1843,23 @@ function FieldRuntime:_composeFieldServices(boot)
   local function createPhotoAlbum()
     return self.partyMenu.makePhotoAlbumChild()
   end
+  -- The source Hall of Fame showcase child: the immutable recorded history
+  -- snapshotted at open and its own presentation owner. The generated
+  -- presentation bundle is installed by the League ending once its artifact
+  -- exists, so the child opens with an unready presentation today.
+  local function createHallOfFame()
+    local HallOfFameScreenState = require("game.hgss.src.ending.HallOfFameScreenState")
+    local HallOfFamePresentation = require("game.hgss.src.ending.HallOfFamePresentation")
+    return HallOfFameScreenState.new({ app = "hallOfFame" }, {
+      hallOfFame = assert(self.hallOfFame, "the PC showcase needs the saved Hall of Fame history"),
+      presentation = HallOfFamePresentation.new(nil),
+    })
+  end
   self.pcApplicationHost = PcApplicationHost.new({
     createStorage = createStorage,
     createMailbox = createMailbox,
     createPhotoAlbum = createPhotoAlbum,
+    createHallOfFame = createHallOfFame,
   })
   local PcTerminal = require("game.hgss.src.pc.PcTerminal")
   local function resolveTerminalProp(propRef)
@@ -1812,6 +1868,7 @@ function FieldRuntime:_composeFieldServices(boot)
   self.pcTerminal = PcTerminal.new({
     mailbox = self.mailbox,
     photoAlbum = self.photoAlbum,
+    hallOfFame = assert(self.hallOfFame, "the PC terminal needs the saved Hall of Fame history"),
     sourcePolicy = self.partyMenu.pcManifest.terminal,
     resolveTerminalProp = resolveTerminalProp,
   })
@@ -1901,6 +1958,9 @@ function FieldRuntime:_composeFieldServices(boot)
     region = currentTrainerRegion,
     effects = currentTerrainEffects,
   })
+  -- The League ending's transaction owner composes before the script platform:
+  -- the platform forwards it as the injected service behind 163.
+  self:_composeGameClear()
   local scriptComposition = require("game.hgss.src.field.FieldScriptComposition").compose(self, {
     cacheFs = boot.cacheFs,
     layoutMessage = boot.layoutMessage,
@@ -1930,6 +1990,136 @@ function FieldRuntime:_composeFieldServices(boot)
   })
   self.scripts = scriptComposition.scripts
   scriptComposition.restore()
+end
+
+-- The League ending: one transaction owner over the canonical owners it stages
+-- (the world flags, party, statistics, first-clear stamp, recorded history and
+-- travel state) and the one route the host granted the field.
+function FieldRuntime:_composeGameClear()
+  local GameClearCoordinator = require("game.hgss.src.ending.GameClearCoordinator")
+  local HallOfFamePresentation = require("game.hgss.src.ending.HallOfFamePresentation")
+  self.endingPresentation = HallOfFamePresentation.new(nil)
+  local function scriptsWorldState()
+    return assert(self.scripts ~= nil and self.scripts.worldState, "the League ending needs the world store")
+  end
+  local function locate(mapSymbol, localX, localZ, facing)
+    local runtimeMap = assert(self.mapLoader, "the League ending needs the field map loader"):load(mapSymbol)
+    local position = assert(self.mapLoader):globalPosition(mapSymbol, localX, localZ)
+    local mapX, mapZ = FieldCoordinates.fieldToLocal(runtimeMap, position.x, position.z)
+    local surface = closestSurface(runtimeMap, mapX, mapZ, 0)
+    return {
+      mapSymbol = mapSymbol,
+      mapId = runtimeMap.mapId,
+      localX = localX,
+      localZ = localZ,
+      fieldX = position.x,
+      fieldZ = position.z,
+      worldY = surface.worldY,
+      surfaceId = surface.surfaceId,
+      terrainDependencyHash = runtimeMap.terrainDependencyHash,
+      facing = facing,
+    }
+  end
+  local function nowLocal()
+    local now = assert(self.localClock, "the League ending needs the host clock"):nowLocal()
+    return { year = now.year, month = now.month, day = now.day }
+  end
+  local function detachedMonService(bucket)
+    local function metSection()
+      local currentMap = self.session and self.session.currentMap or self.runtimeMap
+      return assert(currentMap and currentMap.mapSectionNativeId, "a detached party needs the active map section")
+    end
+    return self:_newMonService(bucket, assert(self.playerDataContext, "the party needs its charmap").charmap, metSection, nowLocal)
+  end
+  self.gameClear = GameClearCoordinator.new({
+    capture = function()
+      return assert(self.saveCoordinator, "the ending needs the save coordinator"):captureEndingCandidate()
+    end,
+    publish = function(record)
+      return self:_publishEndingRecord(record)
+    end,
+    setSaveStatus = function(text)
+      self.saveStatus = text
+    end,
+    worldState = {
+      isFlagSet = function(_, id)
+        return scriptsWorldState():isFlagSet(id)
+      end,
+      setFlag = function(_, id)
+        return scriptsWorldState():setFlag(id)
+      end,
+      clearFlag = function(_, id)
+        return scriptsWorldState():clearFlag(id)
+      end,
+    },
+    monService = self.monService,
+    detachedMonService = detachedMonService,
+    gameStats = assert(self.gameStats, "the League ending needs the statistics owner"),
+    hallOfFame = assert(self.hallOfFame, "the League ending needs the recorded history"),
+    sysInfo = assert(self.sysInfo, "the League ending needs the system-info state"),
+    fieldTravel = assert(self.fieldTravel, "the League ending needs the travel state"),
+    date = nowLocal,
+    locate = locate,
+    -- The generated ending bundle is not produced yet, so the ending's own
+    -- presentation is unready: it publishes no frames and draws nothing.
+    presentation = self.endingPresentation,
+    requestAssets = function(urgency)
+      if self.derivedAssets == nil or type(self.derivedAssets.requestEnding) ~= "function" then
+        return nil
+      end
+      return self.derivedAssets.requestEnding(urgency)
+    end,
+    loadPresentation = function()
+      return self:_loadEndingPresentation()
+    end,
+    audio = self.audio or (self.scriptHosts and self.scriptHosts.audio),
+  })
+end
+
+-- Admit the generated ending bundle into the ending's own presentation owner.
+-- The bundle is one selector-free artifact the ending demands for itself; while
+-- it is absent the ending keeps its source timeline and draws nothing.
+function FieldRuntime:_loadEndingPresentation()
+  local presentation = self.endingPresentation
+  if presentation == nil or presentation:isReady() then
+    return presentation
+  end
+  local cacheFs = self.cacheFs
+  if cacheFs == nil then
+    return presentation
+  end
+  local EndingAssetCache = require("libs.assets.src.ending.EndingAssetCache")
+  local ready = EndingAssetCache.isReady(cacheFs)
+  if not ready then
+    return presentation
+  end
+  presentation:prepare(EndingAssetCache.load(cacheFs))
+  return presentation
+end
+
+-- Publish the ending's one candidate: the same record identity the ordinary
+-- save path uses, first publication when nothing is catalog-visible yet.
+---@param record table<string, unknown>
+---@return boolean
+function FieldRuntime:_publishEndingRecord(record)
+  local Errors = require("libs.errors.src.Errors")
+  local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
+  local store = assert(self.saveStore, "the League ending needs its save store")
+  if self.savePublished then
+    store:save(record)
+    return true
+  end
+  local ok, err = pcall(store.publishFirst, store, record)
+  if ok then
+    self.savePublished = true
+    return true
+  end
+  if Errors.is(err) and err.code == GameSaveErrors.GAME_SAVE_ALREADY_PUBLISHED then
+    store:save(record)
+    self.savePublished = true
+    return true
+  end
+  error(err, 0)
 end
 
 function FieldRuntime:_processApricornDate()
@@ -2307,6 +2497,8 @@ function FieldRuntime.new(game, options)
     cacheFs = options.cacheFs,
     saveStore = options.saveStore,
     savePublished = false,
+    returnToMainMenu = options.returnToMainMenu,
+    endingPresentation = nil,
     localClock = options.localClock or LocalClock.system(),
     weatherClock = options.weatherClock,
     presentationOverrides = options.presentationOverrides,
@@ -2484,8 +2676,19 @@ function FieldRuntime:update(dt)
     if self.shortcutSlide then
       self.shortcutSlide:updateFixed(self.applicationHost:isActive() or not self.session:isRoamingFree())
     end
-    self.session:updateFixed()
+    local inputSnapshot = self.input:snapshot()
+    self.session:updateFixed(inputSnapshot)
     self.fishingHost:updateFixed()
+    -- The League ending owns the field from 163 until it published and rolled
+    -- the source credits: it advances on this same fixed tick with the same
+    -- input edges, and a completed ending releases the suspended source script
+    -- before it could resume, then hands the host its main-menu route.
+    if self.gameClear ~= nil and self.gameClear:isActive() then
+      local endingStatus = self.gameClear:updateFixed(inputSnapshot)
+      if endingStatus == "complete" then
+        self:_finishLeagueEnding()
+      end
+    end
     if self.hoOhAppearanceScene then
       self.hoOhAppearanceScene:updateFixed()
     end
@@ -3163,6 +3366,32 @@ end
 
 function FieldRuntime:_captureManualSaveFromMenu()
   return assert(self.saveCoordinator, "field runtime has no save coordinator"):captureManual()
+end
+
+-- The completed League ending: the published save is durable, the suspended
+-- source script must never resume its own tail (the native path resets the
+-- system instead), so the ending releases that environment, the ending's own
+-- leases, and only then hands the host its main-menu route. The field is
+-- disposed by that route's own state transition, never here.
+function FieldRuntime:_finishLeagueEnding()
+  local coordinator = assert(self.gameClear, "a completed ending owns its coordinator")
+  local scheduler = self.session ~= nil and self.session.scriptScheduler or nil
+  if scheduler ~= nil then
+    local environmentId = scheduler:foregroundEnvironmentId()
+    if environmentId ~= nil then
+      scheduler:cancelEnvironment(environmentId, "the League ending completed")
+    end
+  end
+  coordinator:finish()
+  local presentation = self.endingPresentation
+  if presentation ~= nil then
+    presentation:dispose()
+    self.endingPresentation = nil
+  end
+  local route = self.returnToMainMenu
+  if route ~= nil then
+    route()
+  end
 end
 
 -- Composes the one authoritative dex owner before the mon service: the
@@ -6294,6 +6523,7 @@ function FieldRuntime:_releaseAll()
   self.bagService, self.bagCursor = nil, nil
   self.martService = nil
   self.mailbox, self.photoAlbum, self.sysInfo = nil, nil, nil
+  self.hallOfFame = nil
   self.fieldPoison, self.poisonEffect, self.poisonCure = nil, nil, nil
   if self.pokegear ~= nil then
     self.pokegear:dispose()

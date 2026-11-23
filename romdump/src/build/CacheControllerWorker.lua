@@ -107,6 +107,8 @@ local VALID_KINDS = {
   ["battle-evolution"] = true,
   ["startup-walker"] = true,
   ["opening-scene"] = true,
+  -- The League ending's one selector-free bundle.
+  ending = true,
 }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 
@@ -604,6 +606,13 @@ end
 
 ---@param params table<string, unknown>
 ---@return string? selector error
+local function checkEnding(params)
+  -- One global-keyed ending bundle: urgency alone rides it.
+  return rejectExtraSelectors(params, "ending", NO_SELECTORS_12)
+end
+
+---@param params table<string, unknown>
+---@return string? selector error
 local function checkStartupWalker(params)
   return rejectExtraSelectors(params, "startup-walker", NO_SELECTORS_12)
 end
@@ -650,6 +659,7 @@ local SELECTOR_CHECKS = {
   ["battle-trainer-picture"] = checkBattleTrainerPicture,
   ["battle-ball"] = checkBattleBall,
   ["battle-evolution"] = checkBattleEvolution,
+  ending = checkEnding,
   ["startup-walker"] = checkStartupWalker,
   ["opening-scene"] = checkOpeningScene,
 }
@@ -715,6 +725,8 @@ function Worker:_invoke(params)
     return session:requestJob("battle-ball", itemKey, urgency)
   elseif kind == "battle-evolution" then
     return session:requestJob("battle-evolution", "global", urgency)
+  elseif kind == "ending" then
+    return session:requestJob("ending", "global", urgency)
   elseif kind == "startup-walker" then
     return session:requestStartupWalker(urgency)
   elseif kind == "opening-scene" then

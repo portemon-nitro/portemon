@@ -30,7 +30,7 @@ local function requireScene(ctx)
   return assert(services.legendEvents, "legendEvents service is unavailable")
 end
 
----@param spec { action: string, kind: integer?, choice: integer?, first: unknown?, second: unknown? }
+---@param spec { action: string, kind: integer?, choice: integer?, count: integer?, first: unknown?, second: unknown? }
 ---@param ctx table<string, unknown>
 ---@return table<string, unknown> state
 function LegendEventTask.create(spec, ctx)
@@ -38,6 +38,7 @@ function LegendEventTask.create(spec, ctx)
   requireScene(ctx):begin(spec.action, {
     kind = spec.kind,
     choice = spec.choice,
+    count = spec.count,
     first = spec.first,
     second = spec.second,
   })
@@ -46,6 +47,7 @@ function LegendEventTask.create(spec, ctx)
     action = spec.action,
     kind = spec.kind,
     choice = spec.choice,
+    count = spec.count,
     first = spec.first,
     second = spec.second,
   }

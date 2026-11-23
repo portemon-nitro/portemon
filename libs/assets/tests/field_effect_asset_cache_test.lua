@@ -322,6 +322,32 @@ local function isHoOhKind(kind)
   return kind == "ho_oh_appearance" or kind:match("^ho_oh_cinematic_") ~= nil
 end
 
+-- The League ending's Hall of Fame machine definition: the ball model with its
+-- one source clip, the machine's build model, the six source ball placements and
+-- the source 15-frame spacing.
+local function hallOfFameDefinition()
+  local ballModel = validDynamicModel()
+  ballModel.key = "field-effect:hall-of-fame-ball"
+  ballModel.animations[1].id = "hf_mb"
+  ballModel.animations[1].name = "hf_mb"
+  return {
+    machineModelMemberId = 38,
+    models = { ballModel },
+    ballAnimation = "hf_mb",
+    ballAnimationFrameCount = 67,
+    ballPositions = {
+      { role = "northwest", offset = { x = -0.28125, y = 0.75, z = -0.28125 } },
+      { role = "northeast", offset = { x = 0.28125, y = 0.75, z = -0.28125 } },
+      { role = "west", offset = { x = -0.28125, y = 0.75, z = 0 } },
+      { role = "east", offset = { x = 0.28125, y = 0.75, z = 0 } },
+      { role = "southwest", offset = { x = -0.28125, y = 0.75, z = 0.28125 } },
+      { role = "southeast", offset = { x = 0.28125, y = 0.75, z = 0.28125 } },
+    },
+    spawnIntervalSourceFrames = 15,
+    placementSound = "SEQ_SE_DP_BOWA",
+  }
+end
+
 local function cache(model, present, marker, omitLifecycle, omitPlacement, extra)
   extra = extra or {}
   local index = {
@@ -336,6 +362,7 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
     "surf_attachment",
     "follower_transition",
     "pokemon_center_heal",
+    "hall_of_fame_machine",
     "violet_gym_car",
     "azalea_gym_spinarak",
     "rocket_trap_electric",
@@ -355,6 +382,7 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
       kind = (kind == "warp_entrance" or kind == "surf_attachment") and "model"
         or kind == "follower_transition" and "transition"
         or kind == "pokemon_center_heal" and "healing"
+        or kind == "hall_of_fame_machine" and "hall_of_fame"
         or kind == "rocket_alarm_overlay" and "overlay"
         or (kind == "celebi_time_travel" or kind == "ho_oh_appearance" or kind == "lugia_appearance") and "cinematic"
         or kind == "arceus_cinematic" and "montage"
@@ -481,6 +509,9 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
             placementSound = "SEQ_SE_DP_BOWA",
             fanfare = "SEQ_ME_ASA",
           }
+      end
+      if kind == "hall_of_fame_machine" then
+        return hallOfFameDefinition()
       end
       if kind == "celebi_time_travel" then
         return extra.celebiDefinition or validCelebiDefinition()
@@ -907,6 +938,11 @@ local function surfCache(surfDefinition, mutateIndex)
         definition = "pokemon_center_heal",
         path = FieldEffectAssetCache.definitionPath("pokemon_center_heal"),
       },
+      hall_of_fame_machine = {
+        kind = "hall_of_fame",
+        definition = "hall_of_fame_machine",
+        path = FieldEffectAssetCache.definitionPath("hall_of_fame_machine"),
+      },
       violet_gym_car = {
         kind = "animated_model",
         definition = "violet_gym_car",
@@ -1038,6 +1074,9 @@ local function surfCache(surfDefinition, mutateIndex)
           model = reaction,
           lifecycle = { mode = "once", frameCount = 4 },
         }
+      end
+      if kind == "hall_of_fame_machine" then
+        return hallOfFameDefinition()
       end
       if kind == "pokemon_center_heal" then
         local ballModel = validDynamicModel()

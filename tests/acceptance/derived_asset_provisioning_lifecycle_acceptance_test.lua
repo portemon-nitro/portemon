@@ -188,13 +188,14 @@ T.tests["the selected game receives only the semantic provisioning host"] = func
     local host = assert(launch.derivedAssets, "the running game must receive a derived-asset host")
     Assert.keySet(
       host,
-      "ensureCell,ensureField,ensureLogicalField,getCacheFs,milestoneStatus,requestAudioBank,requestBattleBall,requestBattleEffect,requestBattleEvolution,requestBattlePresentation,requestBattleScene,requestBattleTrainerPicture,requestCell,requestEasyChat,requestField,requestIconPage,requestLogicalField,requestMilestone,requestMonPortraitPage,requestOpeningScene,requestPokedex,requestStartupWalker,status"
+      "ensureCell,ensureField,ensureLogicalField,getCacheFs,milestoneStatus,requestAudioBank,requestBattleBall,requestBattleEffect,requestBattleEvolution,requestBattlePresentation,requestBattleScene,requestBattleTrainerPicture,requestCell,requestEasyChat,requestEnding,requestField,requestIconPage,requestLogicalField,requestMilestone,requestMonPortraitPage,requestOpeningScene,requestPokedex,requestStartupWalker,status"
     )
     Assert.equal(type(host.requestField), "function")
     Assert.equal(type(host.ensureField), "function")
     Assert.equal(type(host.requestLogicalField), "function")
     Assert.equal(type(host.ensureLogicalField), "function")
     Assert.equal(type(host.requestCell), "function")
+    Assert.equal(type(host.requestEnding), "function")
     Assert.equal(type(host.ensureCell), "function")
     Assert.isNil(host.update, "the game must not receive producer lifecycle control")
     Assert.isNil(host.dispose, "the game must not receive producer disposal control")

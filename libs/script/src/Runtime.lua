@@ -2846,10 +2846,24 @@ function HANDLERS.pc_hof_status(node, run)
   semanticsFor(run).writeRef(node.result, status, run)
   return Runtime.OUTCOME_CONTINUE
 end
+-- ScrCmd_GetHallOfFameEntryCount (550) reads the newest recorded number and
+-- returns TRUE in the source, so it costs its one source tick before the
+-- result lands. ScrCmd_OpenHallOfFameShowcase (164) launches the showcase and
+-- waits for it, so the operation blocks on the existing PC application task.
+function HANDLERS.give_ribbon(node, run)
+  local slot = semanticsFor(run).evaluateValue(node.slot, run)
+  requireService(run, "mons"):giveRibbon(slot, node.ribbonField, node.ribbonBit)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.pc_hof_count(node, run)
+  local count = requireService(run, "pcTerminal"):hallOfFameCount()
+  semanticsFor(run).writeRef(node.result, count, run)
+  return Runtime.OUTCOME_YIELD_TICK
+end
 function HANDLERS.pc_hof_open(_, run)
   requireForeground(run, "pc_hof_open")
-  requireService(run, "pcTerminal"):openHallOfFame()
-  return Runtime.OUTCOME_CONTINUE
+  requireService(run, "pcApplications")
+  return blockOnTask(run, "pc_application", { kind = "application", app = "hallOfFame" })
 end
 
 -- The main chunk is at LuaJIT's 200-local limit; the foreground phone
@@ -3557,6 +3571,14 @@ do
       kind = semanticsFor(run).evaluateValue(node.kind, run),
     })
   end
+  local function handleHallOfFameAnim(node, run)
+    requireForeground(run, node.op)
+    requireService(run, "legendEvents")
+    return blockOnTask(run, "legend_event", {
+      action = "hall_of_fame",
+      count = semanticsFor(run).evaluateValue(node.count, run),
+    })
+  end
   local function handleLanceDeparture(node, run)
     requireForeground(run, node.op)
     requireService(run, "legendEvents")
@@ -3585,6 +3607,13 @@ do
     return blockOnTask(run, "gym_mechanism", { action = "sinjoh_choose", choice = node.choice })
   end
   HANDLERS.legend_wing = handleLegendWing
+  local function handleHofCredits(node, run)
+    requireForeground(run, node.op)
+    requireService(run, "gameClear")
+    return blockOnTask(run, "game_clear", { vsRed = node.vsRed })
+  end
+  HANDLERS.hall_of_fame_anim = handleHallOfFameAnim
+  HANDLERS.hof_credits = handleHofCredits
   HANDLERS.lance_departure = handleLanceDeparture
   HANDLERS.sinjoh_unown_circle = handleUnownCircle
   HANDLERS.sinjoh_egg_cutscene = handleEggCutscene

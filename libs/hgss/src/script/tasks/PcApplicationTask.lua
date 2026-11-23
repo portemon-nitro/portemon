@@ -8,7 +8,7 @@ local PcApplicationTask = {}
 PcApplicationTask.type = "pc_application"
 PcApplicationTask.version = 1
 
-local APPS = { storage = true, mailbox = true, photoAlbum = true }
+local APPS = { storage = true, mailbox = true, photoAlbum = true, hallOfFame = true }
 
 local function applicationHost(ctx)
   local services = ctx.services

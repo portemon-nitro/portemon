@@ -58,6 +58,18 @@ function M.load(cacheFs)
   assert(type(healingDefinition.models) == "table" and #healingDefinition.models == 1, "healing model is missing")
   ModelAsset.validate(healingDefinition.models[1])
   effects.pokemon_center_heal = healingDefinition
+  local hallEntry = assert(index.effects.hall_of_fame_machine, "field-effect index is missing hall_of_fame_machine")
+  assert(
+    hallEntry.kind == "hall_of_fame"
+      and hallEntry.definition == "hall_of_fame_machine"
+      and hallEntry.path == FieldEffectAssetCache.definitionPath("hall_of_fame_machine"),
+    "field-effect index has an invalid hall_of_fame_machine entry"
+  )
+  local hallDefinition =
+    assert(cacheFs:loadLua(hallEntry.path), "field-effect definition is missing: hall_of_fame_machine")
+  assert(type(hallDefinition.models) == "table" and #hallDefinition.models == 1, "Hall of Fame ball model is missing")
+  ModelAsset.validate(hallDefinition.models[1])
+  effects.hall_of_fame_machine = hallDefinition
   local model = effects.warp_entrance.model
   return { model = model, schema = index.schema, index = index, effects = effects }, FieldEntranceIndicator.new()
 end

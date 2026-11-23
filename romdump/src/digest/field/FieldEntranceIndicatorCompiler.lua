@@ -729,6 +729,54 @@ local function compilePokemonCenterHeal(romFs, meshes, textures)
   }
 end
 
+-- The League ending's Hall of Fame machine (src/field/field_move_effects.c::
+-- HallOfFame_StartBallAnim): the room's own placement provides the machine's
+-- world translation, and each registered party member pops one Poké Ball prop
+-- out of that model's single source one-shot clip before the animation plays.
+-- Only the ball model travels here; the machine itself is the map placement the
+-- scene resolves by its build model.
+---@param storyEffects table<string, table<string, unknown>>
+---@return table<string, unknown> definition
+local function compileHallOfFameMachine(storyEffects)
+  local source = assert(FieldEffects.hallOfFame, "Hall of Fame source selection is required")
+  local ball = assert(storyEffects.definitions[source.ballModelKey], "Hall of Fame ball model did not compile")
+  local descriptor = assert(ball.model, "Hall of Fame ball definition carries its model")
+  local clips = descriptor.animations
+  if type(clips) ~= "table" or #clips ~= 1 then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "Hall of Fame ball model must carry its one source clip", {
+      modelKey = descriptor.key,
+      animationCount = type(clips) == "table" and #clips or 0,
+    })
+  end
+  local clip = clips[1]
+  local positions = {}
+  for index, point in ipairs(source.ballPositionsFx32) do
+    local fx32UnitsPerModelUnit = 0x1000
+    local x, y, z = MapUnits.toTiles(
+      point.x / fx32UnitsPerModelUnit,
+      point.y / fx32UnitsPerModelUnit,
+      point.z / fx32UnitsPerModelUnit
+    )
+    positions[index] = { role = point.role, offset = { x = x, y = y, z = z } }
+  end
+  if #positions ~= 6 then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "Hall of Fame source must define six ball positions", {
+      count = #positions,
+    })
+  end
+  -- Provenance rides the story-effect family's own member hashes: the ball
+  -- model is compiled by that producer, so its sources are already recorded.
+  return {
+    machineModelMemberId = source.machineModelMemberId,
+    models = { descriptor },
+    ballAnimation = clip.name,
+    ballAnimationFrameCount = clip.frameCount,
+    ballPositions = positions,
+    spawnIntervalSourceFrames = source.spawnIntervalSourceFrames,
+    placementSound = source.placementSound,
+  }
+end
+
 function Compiler.compile(romFs, hashLua)
   assert(romFs and romFs.openNarc, "field-effect compiler requires RomFs")
   hashLua = hashLua or Hashing.hashLua
@@ -847,6 +895,7 @@ function Compiler.compile(romFs, hashLua)
   -- this bundle.
   local storyEffects = StoryEffectAssetCompiler.compile(romFs, meshes, textures)
   sourceHashesByKind.story_effects = storyEffects.memberHashes
+  local hallOfFameMachine = compileHallOfFameMachine(storyEffects)
   local celebi = CelebiTimeTravelAssetCompiler.compile(romFs)
   sourceHashesByKind.celebi_time_travel = celebi.memberHashes
   local hoOhAppearance = HoOhAppearanceAssetCompiler.compile(romFs)
@@ -965,6 +1014,7 @@ function Compiler.compile(romFs, hashLua)
     },
     follower_transition = transition,
     pokemon_center_heal = centerHeal,
+    hall_of_fame_machine = hallOfFameMachine,
     celebi_time_travel = celebi.definition,
     lugia_appearance = lugiaAppearance.definition,
   }
@@ -1044,6 +1094,11 @@ function Compiler.compile(romFs, hashLua)
         kind = "healing",
         definition = "pokemon_center_heal",
         path = FieldEffectAssetCache.definitionPath("pokemon_center_heal"),
+      },
+      hall_of_fame_machine = {
+        kind = "hall_of_fame",
+        definition = "hall_of_fame_machine",
+        path = FieldEffectAssetCache.definitionPath("hall_of_fame_machine"),
       },
       violet_gym_car = {
         kind = "animated_model",

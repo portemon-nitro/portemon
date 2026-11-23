@@ -17,7 +17,8 @@ local SysInfoState = require("libs.hgss.src.save.SysInfoState")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v15"
+GameSave.SCHEMA = "g4-game-save-v16"
+GameSave.LEGACY_V15_SCHEMA = "g4-game-save-v15"
 GameSave.LEGACY_V14_SCHEMA = "g4-game-save-v14"
 GameSave.LEGACY_V13_SCHEMA = "g4-game-save-v13"
 GameSave.LEGACY_V12_SCHEMA = "g4-game-save-v12"
@@ -43,6 +44,7 @@ local TOP_LEVEL_FIELDS = {
   fieldTravel = true,
   followingMon = true,
   gymmick = true,
+  hallOfFame = true,
   pokegear = true,
   fieldX = true,
   fieldZ = true,
@@ -521,7 +523,28 @@ end
 function GameSave.migrateV14(record)
   assert(type(record) == "table" and record.schema == GameSave.LEGACY_V14_SCHEMA, "GameSave.migrateV14 requires v14")
   local migrated = deepCopy(record)
+  migrated.schema = GameSave.LEGACY_V15_SCHEMA
+  return migrated
+end
+
+-- Pure v15 -> v16 conversion. Only the Hall of Fame delta is applied: v15
+-- records predate the recorded-clear history, so the step initializes the
+-- empty current history and leaves every other field and bucket copied. The
+-- nested SysInfo and game-stats buckets keep their stored shapes until their
+-- own owners migrate them on restore, so no first-clear moment and no League
+-- win is invented here. A predecessor that already carries a Hall of Fame
+-- bucket is malformed, not silently re-migrated.
+---@param record table<string, unknown> a v15 save record
+---@return table<string, unknown> the migrated v16 record
+function GameSave.migrateV15(record)
+  assert(type(record) == "table" and record.schema == GameSave.LEGACY_V15_SCHEMA, "GameSave.migrateV15 requires v15")
+  if record.hallOfFame ~= nil then
+    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v15 save cannot contain a Hall of Fame bucket", {})
+  end
+  local HallOfFameState = require("libs.hgss.src.save.HallOfFameState")
+  local migrated = deepCopy(record)
   migrated.schema = GameSave.SCHEMA
+  migrated.hallOfFame = HallOfFameState.empty():capture()
   return migrated
 end
 
@@ -555,6 +578,7 @@ function GameSave.metadata(record)
     assert(type(record) == "table")
     if
       record.schema ~= GameSave.SCHEMA
+      and record.schema ~= GameSave.LEGACY_V15_SCHEMA
       and record.schema ~= GameSave.LEGACY_V14_SCHEMA
       and record.schema ~= GameSave.LEGACY_V13_SCHEMA
       and record.schema ~= GameSave.LEGACY_V12_SCHEMA
@@ -644,6 +668,7 @@ function GameSave.normalize(record)
     local schema = record.schema
     if
       schema ~= GameSave.SCHEMA
+      and schema ~= GameSave.LEGACY_V15_SCHEMA
       and schema ~= GameSave.LEGACY_V14_SCHEMA
       and schema ~= GameSave.LEGACY_V13_SCHEMA
       and schema ~= GameSave.LEGACY_V12_SCHEMA
@@ -695,6 +720,9 @@ function GameSave.normalize(record)
     end
     if current.schema == GameSave.LEGACY_V14_SCHEMA then
       current = GameSave.migrateV14(current)
+    end
+    if current.schema == GameSave.LEGACY_V15_SCHEMA then
+      current = GameSave.migrateV15(current)
     end
     return canonicalizeCurrent(current)
   end)

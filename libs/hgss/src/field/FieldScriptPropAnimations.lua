@@ -115,10 +115,12 @@ function FieldScriptPropAnimations:clear()
 end
 
 -- The source member id a generated model key names, or nil when the key is
--- not the generated placement identity.
+-- not the generated placement identity. A map placement's model key IS the
+-- source prop identity, so every owner that resolves a prop by build model
+-- reads it here instead of parsing the key itself.
 ---@param modelKey unknown
 ---@return integer|nil
-local function sourceMemberId(modelKey)
+function FieldScriptPropAnimations.sourceMemberId(modelKey)
   local memberId = type(modelKey) == "string" and modelKey:match("^%a+:(%d+):")
   return memberId and tonumber(memberId) or nil
 end
@@ -135,7 +137,7 @@ local function elevatorProp(self)
     return nil
   end
   for _, placement in ipairs(mapProps.placements) do
-    if sourceMemberId(placement.modelKey) == ELEVATOR_PROP_MEMBER then
+    if FieldScriptPropAnimations.sourceMemberId(placement.modelKey) == ELEVATOR_PROP_MEMBER then
       return mapProps:prop(placement.placementIndex)
     end
   end

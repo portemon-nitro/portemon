@@ -462,6 +462,11 @@ function M.restoreOverworld()
   return op("restore_overworld")
 end
 
+function M.pcHallOfFameCount(spec)
+  assert(type(spec) == "table", "Hall of Fame count spec must be a table")
+  return op("pc_hof_count", spec)
+end
+
 function M.pcHallOfFameOpen()
   return op("pc_hof_open")
 end

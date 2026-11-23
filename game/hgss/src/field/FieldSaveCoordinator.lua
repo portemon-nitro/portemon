@@ -79,9 +79,18 @@ end
 
 ---@param self FieldSaveCoordinator
 ---@param allowMenu boolean
+---@param endingOwner boolean? the ending's own publication path
 ---@return table<string, unknown>?, string|table<string, unknown>?
-function FieldSaveCoordinator:capture(allowMenu)
+function FieldSaveCoordinator:_capture(allowMenu, endingOwner)
   local runtime = self.runtime
+  -- The League ending owns the field from its first source tick until it
+  -- publishes or the application closes: no ordinary capture may describe its
+  -- half-applied world. The ending's own transaction is the one caller that
+  -- captures while it runs.
+  local gameClear = runtime.gameClear
+  if endingOwner ~= true and gameClear ~= nil and gameClear:isActive() then
+    return nil, "Save deferred: the League ending owns the field"
+  end
   local pcHost = runtime.pcApplicationHost
   if pcHost ~= nil and pcHost:isActive() then
     return nil, "Save deferred: a PC application is active"
@@ -181,6 +190,7 @@ function FieldSaveCoordinator:capture(allowMenu)
     bag = runtime.bagService:capture(),
     mart = assert(runtime.martService, "field runtime has no mart service"):capture(),
     sysInfo = assert(runtime.sysInfo, "field runtime has no sysInfo state"):capture(),
+    hallOfFame = assert(runtime.hallOfFame, "field runtime has no Hall of Fame history"):capture(),
     mailbox = assert(runtime.mailbox, "field runtime has no mailbox"):capture(),
     photoAlbum = assert(runtime.photoAlbum, "field runtime has no photo album"):capture(),
     fieldPoison = FieldPoisonSave.capture(assert(runtime.fieldPoison, "field runtime has no poison counter")),
@@ -206,6 +216,20 @@ function FieldSaveCoordinator:capture(allowMenu)
   end
 
   return snapshot
+end
+
+---@param self FieldSaveCoordinator
+---@param allowMenu boolean
+---@return table<string, unknown>?, string|table<string, unknown>?
+function FieldSaveCoordinator:capture(allowMenu)
+  return self:_capture(allowMenu, false)
+end
+
+-- The ending's own one-shot candidate: the same settled capture, taken while
+-- the ending owns the field because the ending is its requester.
+---@return table<string, unknown>?, string|table<string, unknown>?
+function FieldSaveCoordinator:captureEndingCandidate()
+  return self:_capture(false, true)
 end
 
 ---@param self FieldSaveCoordinator

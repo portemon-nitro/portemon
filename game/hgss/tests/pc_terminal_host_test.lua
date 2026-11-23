@@ -36,6 +36,7 @@ local function host(calls)
     createStorage = factory,
     createMailbox = factory,
     createPhotoAlbum = factory,
+    createHallOfFame = factory,
   })
 end
 
@@ -118,6 +119,9 @@ function T.invalid_child_factory_result_is_cleaned_up()
     createMailbox = function()
       return {}
     end,
+    createHallOfFame = function()
+      return {}
+    end,
     createPhotoAlbum = function()
       return {}
     end,
@@ -151,6 +155,7 @@ local function gatedHost(calls, activeChild)
     createStorage = factory,
     createMailbox = factory,
     createPhotoAlbum = factory,
+    createHallOfFame = factory,
   })
 end
 

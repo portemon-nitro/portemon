@@ -140,6 +140,9 @@ local function installRoutes(options, game, saveStore, versionId)
       fieldStateOptions(options, saveStore, extraOptions, {
         displayContext = displayContext,
         presentationOverrides = presentationOverrides,
+        -- The League ending hands the host its own main-menu route back: the
+        -- field never exits the process or resumes the disposed source script.
+        returnToMainMenu = returnToMainMenu,
       })
     ))
   end

@@ -850,6 +850,7 @@ function FieldScriptComposition.compose(runtime, options)
     trainerEncounter = runtime.trainerEncounter,
     rocketHideout = runtime.rocketHideoutEffects,
     legendEvents = runtime.legendEventScene,
+    gameClear = runtime.gameClear,
     pokemonCenterHeal = runtime.pokemonCenterHeal,
     blackout = {
       loader = runtime.mapLoader,

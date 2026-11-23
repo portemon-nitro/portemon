@@ -1335,6 +1335,7 @@ local function pcHallOfFameOpen()
   return { op = "pc_hof_open" }
 end
 
+
 local function waitInputOrTicks(ins)
   return { op = "wait_input_or_ticks", ticks = Operands.operandValue(ins.operands[1]) }
 end
@@ -2202,6 +2203,14 @@ FieldHandlers[530] = require("romdump.src.digest.script.lowering.StoryHandlers")
 FieldHandlers[619] = require("romdump.src.digest.script.lowering.StoryHandlers").rocketCostumeFlagCheck
 FieldHandlers[620] = require("romdump.src.digest.script.lowering.StoryHandlers").rocketCostumeFlagAction
 FieldHandlers[783] = require("romdump.src.digest.script.lowering.StoryHandlers").setFollowMonInhibitState
+-- The Hall of Fame entry-count query and the League ending ride the same leaf
+-- for the local-budget reason: the count writes the output variable it names,
+-- the machine animation reads its party count through ScriptGetVar, and the
+-- credits read one raw halfword.
+FieldHandlers[550] = require("romdump.src.digest.script.lowering.StoryHandlers").hallOfFameEntryCount
+FieldHandlers[481] = require("romdump.src.digest.script.lowering.StoryHandlers").giveRibbon
+FieldHandlers[514] = require("romdump.src.digest.script.lowering.StoryHandlers").hallOfFameAnim
+FieldHandlers[163] = require("romdump.src.digest.script.lowering.StoryHandlers").hofCredits
 FieldHandlers[784] = FieldServiceHandlers.scriptOverlayCmd
 
 -- The seventeen dex entries ride the cohesive PokedexHandlers leaf. This

@@ -198,10 +198,17 @@ return S.script({
       },
       no = {},
     }),
+    -- The source closes the terminal cover, opens the showcase over the
+    -- darkened screen and restores the overworld behind the same cover before
+    -- the shell returns to its root menu.
+    S.fadeScreen({ direction = "out", color = "black", duration = 6, speed = 1 }),
+    S.waitFade(),
     S.pcTerminalEffect({ action = "release", prop = "pc_terminal" }),
     S.pcHallOfFameOpen(),
     S.restoreOverworld(),
   }, terminalOn(), {
+    S.fadeScreen({ direction = "in", color = "black", duration = 6, speed = 1 }),
+    S.waitFade(),
     S.goto_({ target = "root" }),
 
     -- Log off.

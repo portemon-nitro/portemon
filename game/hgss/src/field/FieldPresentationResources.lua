@@ -872,7 +872,7 @@ function FieldPresentationResources.new(runtime)
     -- wing effect, the Mystri Stage, the Sinjoh Unown circle and egg cutscenes
     -- and the Arceus montage's prepared layers and sprite.
     local legendDefinitions = {}
-    for _, kind in ipairs({ "legend_wing", "sinjoh_stage", "sinjoh_unown", "sinjoh_egg" }) do
+    for _, kind in ipairs({ "legend_wing", "sinjoh_stage", "sinjoh_unown", "sinjoh_egg", "hall_of_fame_machine" }) do
       if fieldEffectAssets.effects[kind] ~= nil then
         legendDefinitions[kind] = fieldEffectAssets.effects[kind]
       end
@@ -927,8 +927,8 @@ function FieldPresentationResources.new(runtime)
     if mechanismRenderer ~= nil and runtime.legendEventScene ~= nil and next(legendDefinitions) ~= nil then
       self.gymMechanismRenderer = self.gymMechanismRenderer or mechanismRenderer
       local legendRenderer = mechanismRenderer
-      local function newSceneModel(kind, _part, index)
-        return legendRenderer:newSceneModel(kind, index)
+      local function newSceneModel(kind, part, index)
+        return legendRenderer:newSceneModel(kind, index, part)
       end
       runtime.legendEventScene:setModelFactory(newSceneModel)
       if montageDefinition ~= nil then

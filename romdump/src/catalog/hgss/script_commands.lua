@@ -1184,6 +1184,9 @@ return {
       widths = {},
     },
     [163] = {
+      feature = "field",
+      disposition = "supported",
+      classification = "native_wait",
       name = "ScrCmd_HOFCredits",
       widths = {
         [1] = 2,
@@ -3646,9 +3649,8 @@ return {
     [481] = {
       name = "ScrCmd_GiveRibbon",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "contest_ribbon_application",
-      deferredNote = "ribbon identity to stored-bit mapping needs the ribbon application",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3937,6 +3939,9 @@ return {
       widths = {},
     },
     [514] = {
+      feature = "field",
+      disposition = "supported",
+      classification = "native_wait",
       name = "ScrCmd_HallOfFameAnim",
       widths = {
         [1] = 2,
@@ -4199,6 +4204,9 @@ return {
       },
     },
     [550] = {
+      feature = "pc",
+      disposition = "supported",
+      classification = "native_wait",
       name = "ScrCmd_GetHallOfFameEntryCount",
       widths = {
         [1] = 2,

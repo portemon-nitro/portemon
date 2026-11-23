@@ -836,9 +836,75 @@ function T.v13_migration_adds_only_the_gym_union_and_follower_inhibit()
   end
   successor.encounters = encounters
   local envelope = GameSave.migrateV14(successor)
-  Assert.equal(envelope.schema, GameSave.SCHEMA, "the v14 step advances the envelope to the current schema")
+  Assert.equal(envelope.schema, GameSave.LEGACY_V15_SCHEMA, "the v14 step advances the envelope to its own successor")
   Assert.deepEqual(envelope.encounters, encounters, "the v14 step leaves the encounter bucket to its own owner")
   Assert.deepEqual(envelope.gymmick, migrated.gymmick, "the v14 step preserves the settled gym union")
+  local current = GameSave.migrateV15(envelope)
+  Assert.equal(current.schema, GameSave.SCHEMA, "the v15 step advances the envelope to the current schema")
+  Assert.deepEqual(current.encounters, encounters, "the v15 step leaves the encounter bucket to its own owner")
+  Assert.deepEqual(current.gymmick, migrated.gymmick, "the v15 step preserves the settled gym union")
+end
+
+-- The v15 step adds the recorded-clear history and nothing else: the bucket
+-- starts empty and every earlier owner passes through, including the roamer
+-- and gym buckets the previous slices introduced. A predecessor that already
+-- carries the bucket is malformed, never silently re-migrated.
+function T.v15_migration_adds_only_the_current_hall_of_fame_history()
+  local HallOfFameState = require("libs.hgss.src.save.HallOfFameState")
+  local GymMechanismState = require("libs.hgss.src.field.GymMechanismState")
+  local encounters = { schema = "hgss-encounter-v2", stateVersion = 2, steps = 7, repelSteps = 2, swarm = true }
+  local source = GameSave.migrateV14({
+    schema = GameSave.LEGACY_V14_SCHEMA,
+    saveId = "save-00000001",
+    versionId = "soulsilver",
+    playTimeSeconds = 0,
+    mapId = 1,
+    fieldX = 0,
+    fieldZ = 0,
+    worldY = 0,
+    surfaceId = 0,
+    terrainDependencyHash = "hash",
+    facing = "south",
+    playerData = { profile = { name = "GOLD", badges = {} } },
+    world = { flags = {}, variables = {} },
+    scripts = { schema = "g4-script-v3" },
+    auxiliaryUi = {},
+    audio = {},
+    mons = { schema = "g4-mons-v3" },
+    bag = {},
+    sysInfo = { schema = "hgss-sys-info-v1", mysteryGiftActive = true },
+    gameStats = {
+      schema = "hgss-stats-v2",
+      stateVersion = 2,
+      uniqueCaught = {},
+      uniqueTotal = 0,
+      score = 0,
+      mailWritten = 0,
+    },
+    gymmick = GymMechanismState.restore(nil):capture(),
+    followingMon = { schema = "hgss-following-mon-v1", inhibited = false },
+    encounters = encounters,
+  })
+  Assert.isNil(source.hallOfFame, "v15 records carry no recorded-clear history")
+  local migrated = GameSave.migrateV15(source)
+  Assert.equal(migrated.schema, GameSave.SCHEMA, "the v15 step advances the envelope to the current schema")
+  Assert.equal(source.schema, GameSave.LEGACY_V15_SCHEMA, "migration leaves its input untouched")
+  Assert.isNil(source.hallOfFame, "migration never mutates its source record")
+  Assert.deepEqual(migrated.hallOfFame, {
+    schema = HallOfFameState.SCHEMA,
+    stateVersion = HallOfFameState.STATE_VERSION,
+    total = 0,
+    records = {},
+  }, "a pre-ending save starts with no recorded clear")
+  Assert.deepEqual(migrated.encounters, encounters, "migration keeps the compiled roamer state")
+  Assert.deepEqual(migrated.gymmick, source.gymmick, "migration keeps the settled gym union")
+  Assert.equal(migrated.sysInfo.schema, "hgss-sys-info-v1", "the nested system-info bucket stays for its own owner")
+  Assert.equal(migrated.gameStats.stateVersion, 2, "the nested stats bucket stays for its own owner")
+  local ok = pcall(GameSave.migrateV15, GameSave.migrateV15(source))
+  Assert.isFalse(ok, "a v15 record that already carries the history is rejected")
+  local normalized = assert(GameSave.normalize(source))
+  Assert.equal(normalized.schema, GameSave.SCHEMA, "normalization chains v15 through the history step")
+  Assert.deepEqual(normalized.hallOfFame, migrated.hallOfFame, "normalization installs the empty history")
 end
 
 -- A current v14 record keeps whatever a settled ride wrote: normalization is

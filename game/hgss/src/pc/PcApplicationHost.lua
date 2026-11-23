@@ -1,4 +1,5 @@
--- Owns the one script-opened Storage, Mailbox, or Photo Album child.
+-- Owns the one script-opened Storage, Mailbox, Photo Album or Hall of Fame
+-- child.
 
 ---@class PcApplicationHost
 ---@field _factories table<string, function>
@@ -12,6 +13,7 @@ local CHILD_FACTORIES = {
   storage = "createStorage",
   mailbox = "createMailbox",
   photoAlbum = "createPhotoAlbum",
+  hallOfFame = "createHallOfFame",
 }
 
 function PcApplicationHost.new(opts)
@@ -24,6 +26,7 @@ function PcApplicationHost.new(opts)
       storage = opts.createStorage,
       mailbox = opts.createMailbox,
       photoAlbum = opts.createPhotoAlbum,
+      hallOfFame = opts.createHallOfFame,
     },
     _nextId = 0,
     _active = nil,
@@ -114,7 +117,11 @@ function PcApplicationHost:step(handle, events)
   if active.result ~= nil then
     return
   end
-  active.child:updateFixed(active.presentationReady and events or {})
+  -- A child that reads immutable snapshots consumes input without waiting for
+  -- its first presented frame; every other child stays input-gated until the
+  -- presentation admits it.
+  local admitsInput = active.presentationReady or active.child.acceptsInputWithoutPresentation == true
+  active.child:updateFixed(admitsInput and events or {})
   local takeResult = active.child.takeResult or active.child.result
   local result = takeResult(active.child)
   if result ~= nil then

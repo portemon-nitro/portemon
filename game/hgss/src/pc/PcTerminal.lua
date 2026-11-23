@@ -1,11 +1,9 @@
 -- Adapts the source PC prop effects and queries to the retained field owners.
 
-local Errors = require("libs.errors.src.Errors")
-local ScriptErrors = require("libs.script.src.errors")
-
 ---@class PcTerminal
 ---@field _mailbox table<string, unknown>
 ---@field _photoAlbum table<string, unknown>
+---@field _hallOfFame table<string, unknown> the saved Hall of Fame history this terminal queries
 ---@field _sourcePolicy table<string, unknown>
 ---@field _resolveTerminalProp fun(propRef: string): table<string, unknown>
 ---@field _activeProp table<string, unknown>?
@@ -22,7 +20,7 @@ local function validatePolicy(policy)
   end
 end
 
----@param options { mailbox: table<string, unknown>, photoAlbum: table<string, unknown>, sourcePolicy: table<string, unknown>, resolveTerminalProp: fun(propRef: string): table<string, unknown> }
+---@param options { mailbox: table<string, unknown>, photoAlbum: table<string, unknown>, hallOfFame: table<string, unknown>, sourcePolicy: table<string, unknown>, resolveTerminalProp: fun(propRef: string): table<string, unknown> }
 ---@return PcTerminal
 function PcTerminal.new(options)
   assert(type(options) == "table", "PC terminal requires its source owners")
@@ -34,11 +32,16 @@ function PcTerminal.new(options)
     type(options.photoAlbum) == "table" and type(options.photoAlbum.usedCount) == "function",
     "PC terminal borrows Photo Album"
   )
+  assert(
+    type(options.hallOfFame) == "table" and type(options.hallOfFame.isAvailable) == "function",
+    "PC terminal borrows the saved Hall of Fame history"
+  )
   validatePolicy(options.sourcePolicy)
   assert(type(options.resolveTerminalProp) == "function", "PC terminal needs canonical prop resolution")
   return setmetatable({
     _mailbox = options.mailbox,
     _photoAlbum = options.photoAlbum,
+    _hallOfFame = options.hallOfFame,
     _sourcePolicy = options.sourcePolicy,
     _resolveTerminalProp = options.resolveTerminalProp,
     _activeProp = nil,
@@ -109,17 +112,19 @@ function PcTerminal:openCapsules()
   -- data mutation, or wait token so the source shell can continue to its next command.
 end
 
+-- ScrCmd_CheckHallOfFameSaveInvalid: the source answers zero only for a
+-- history it can read, and one for a missing or invalid recorded history.
 ---@return integer source invalid or missing record status
 function PcTerminal:hallOfFameStatus()
-  return 1
+  return self._hallOfFame:isAvailable() and 0 or 1
 end
 
-function PcTerminal:openHallOfFame()
-  Errors.raise(
-    ScriptErrors.SCRIPT_UNSUPPORTED_REACHABLE,
-    "Hall of Fame records are not available in this save schema",
-    {}
-  )
+-- ScrCmd_GetHallOfFameEntryCount: the newest recorded number, which is the
+-- source's recorded-clear sequence rather than the retained record count. An
+-- unavailable history answers zero.
+---@return integer
+function PcTerminal:hallOfFameCount()
+  return self._hallOfFame:total()
 end
 
 return PcTerminal

@@ -41,6 +41,7 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field playerOf fun(): table<string, unknown> reads the live field player
 ---@field foregroundScript (fun(): string|nil)?
 ---@field currentScriptBankId (fun(): integer|nil)? the live map's source script bank
+---@field anchorOf fun(modelMemberId: integer): { x: number, y: number, z: number }|nil? the live map's own placed-prop translation by source build model
 
 ---@class LegendEventScene.PartPresentation
 ---@field part integer one-based source part index
@@ -68,6 +69,7 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field private _playerOf fun(): table<string, unknown>
 ---@field private _foregroundScript (fun(): string|nil)?
 ---@field private _currentScriptBankId (fun(): integer|nil)?
+---@field private _anchorOf (fun(modelMemberId: integer): { x: number, y: number, z: number }|nil)?
 ---@field private _modelFactory (fun(kind: string, part: table<string, unknown>, index: integer): table<string, unknown>)?
 ---@field private _montage table<string, unknown>? the prepared montage image owner
 ---@field private _ownerScript string?
@@ -145,6 +147,9 @@ function LegendEventScene.new(options)
   if options.currentScriptBankId ~= nil then
     assert(type(options.currentScriptBankId) == "function", "the map script-bank lookup must be a function")
   end
+  if options.anchorOf ~= nil then
+    assert(type(options.anchorOf) == "function", "the map placement lookup must be a function")
+  end
   return setmetatable({
     _definitions = options.definitions,
     _audio = audio,
@@ -153,6 +158,7 @@ function LegendEventScene.new(options)
     _playerOf = options.playerOf,
     _foregroundScript = options.foregroundScript,
     _currentScriptBankId = options.currentScriptBankId,
+    _anchorOf = options.anchorOf,
     _modelFactory = nil,
     _ownerScript = nil,
     _active = nil,
@@ -247,16 +253,28 @@ end
 function LegendEventScene:_claimModels(definition, kind, onlyIndex)
   local models = {}
   local parts = definition.parts or {}
-  local factory = self._modelFactory
-  if factory == nil then
-    return models
-  end
   for index, part in ipairs(parts) do
     if onlyIndex == nil or index == onlyIndex then
-      models[index] = factory(kind, part, index)
+      models[index] = self:_claimModelPart(kind, part, index)
     end
   end
   return models
+end
+
+-- Claim one presented source part from the composed factory, or nothing in a
+-- headless composition. `part` is the definition's own part record: the
+-- generated scene definitions key theirs by `parts`, while an effect that
+-- publishes a single model hands that model over directly.
+---@param kind string
+---@param part table<string, unknown>
+---@param index integer
+---@return table<string, unknown>|nil
+function LegendEventScene:_claimModelPart(kind, part, index)
+  local factory = self._modelFactory
+  if factory == nil then
+    return nil
+  end
+  return factory(kind, part, index)
 end
 
 -- The composed presentation hands over the prepared montage images once; the
@@ -399,6 +417,40 @@ function LegendEventScene:_beginUnownCircle()
   }
 end
 
+-- ScrCmd_HallOfFameAnim (514): the League ending's own machine effect
+-- (src/field/field_move_effects.c::Task_HallOfFameBallAnim). The room's placed
+-- machine provides the world anchor, one ball prop pops out of the machine for
+-- every registered (non-Egg) party member with the source 16-call cadence
+-- (fifteen waits, then a placement), and the balls' one-shot clip plays to its
+-- own completion before the script continues to the game-clear transaction.
+---@param count integer non-Egg party count the source reads through ScriptGetVar
+function LegendEventScene:_beginHallOfFame(count)
+  local definition = self:_requireDefinition("hall_of_fame_machine")
+  local positions = assert(definition.ballPositions, "the Hall of Fame effect carries its source ball offsets")
+  local anchorOf = self._anchorOf
+  local anchor = anchorOf ~= nil and anchorOf(definition.machineModelMemberId) or nil
+  if anchor == nil then
+    Errors.raise(
+      FieldErrors.FIELD_LEGEND_EFFECT_SOURCE_MISSING,
+      "the Hall of Fame machine placement is missing from the active map",
+      { modelMemberId = definition.machineModelMemberId }
+    )
+  end
+  self._active = {
+    kind = "hall_of_fame_machine",
+    definition = definition,
+    count = count,
+    numPlaced = 0,
+    timer = 0,
+    state = "load",
+    positions = positions,
+    anchor = { x = anchor.x, y = anchor.y, z = anchor.z },
+    balls = {},
+    frames = 0,
+    frameCount = definition.ballAnimationFrameCount,
+  }
+end
+
 -- Begin one blocking source scene. Every definition is resolved before the
 -- scene claims anything, so a missing generated asset faults without leaving a
 -- partial presentation behind.
@@ -412,6 +464,10 @@ function LegendEventScene:begin(action, operands)
   self._ownerScript = self._foregroundScript ~= nil and self._foregroundScript() or nil
   if action == "wing" then
     self:_beginWing(assert(operands.kind, "the wing effect needs its source kind"))
+    return
+  end
+  if action == "hall_of_fame" then
+    self:_beginHallOfFame(assert(operands.count, "the Hall of Fame effect needs its party count"))
     return
   end
   if action == "lance_departure" then
@@ -480,6 +536,93 @@ function LegendEventScene:childComplete()
   end
   active.phase = "loop"
   active.ticks = 0
+end
+
+-- One fixed tick of the Hall of Fame machine, one native task invocation per
+-- tick: load, place a ball, wait out the source interval, then play and wait for
+-- the model's own one-shot clip. A headless composition keeps the identical
+-- cadence and counts the compiled clip's frames itself.
+---@param active table<string, unknown>
+---@return string
+function LegendEventScene:_stepHallOfFame(active)
+  local definition = active.definition --[[@as table<string, unknown>]]
+  local state = active.state
+  if state == "load" then
+    -- The ball is the only model this effect loads; the machine is the map's
+    -- own placement and the scene never claims it.
+    local model = self:_claimModelPart("hall_of_fame_machine", { model = assert(definition.models[1]) }, 1)
+    active.models = model ~= nil and { model } or nil
+    active.state = "place"
+    return "wait"
+  end
+  if state == "place" then
+    local index = active.numPlaced + 1
+    local position = assert(active.positions[index], "the Hall of Fame effect has a ball position per source slot")
+    local anchor = assert(active.anchor)
+    local model = nil
+    if active.models ~= nil then
+      model = active.models[1]
+    end
+    active.balls[index] = {
+      model = model,
+      x = anchor.x + position.offset.x,
+      y = anchor.y + position.offset.y,
+      z = anchor.z + position.offset.z,
+    }
+    self._audio:play(assert(definition.placementSound))
+    active.state = "wait_ball"
+    return "wait"
+  end
+  if state == "wait_ball" then
+    local interval = assert(definition.spawnIntervalSourceFrames)
+    if active.timer < interval then
+      active.timer = active.timer + 1
+      return "wait"
+    end
+    active.timer = 0
+    active.numPlaced = active.numPlaced + 1
+    if active.numPlaced < active.count then
+      active.state = "place"
+    else
+      active.state = "animate"
+    end
+    return "wait"
+  end
+  if state == "animate" then
+    local first = assert(active.balls[1], "the Hall of Fame effect places at least one ball before playing")
+    if first.model ~= nil then
+      first.model:play(assert(definition.ballAnimation))
+    end
+    active.frames = 0
+    active.state = "wait_anim"
+    return "wait"
+  end
+  if state == "wait_anim" then
+    -- The compiled clip's own frame count is the completion gate in both
+    -- compositions: the presented instance plays exactly that clip, so the
+    -- source wait is the same whether or not a model was claimed.
+    active.frames = active.frames + 1
+    if active.frames >= active.frameCount then
+      self:_releaseHallOfFame(active)
+      active.state = "end"
+    end
+    return "wait"
+  end
+  assert(state == "end", "the Hall of Fame effect is a closed state set")
+  return "complete"
+end
+
+---@private
+---@param active table<string, unknown>
+function LegendEventScene:_releaseHallOfFame(active)
+  local balls = active.balls or {}
+  active.balls = {}
+  for _, ball in ipairs(balls) do
+    if ball.model ~= nil then
+      ball.model:dispose()
+    end
+  end
+  active.models = nil
 end
 
 ---@private
@@ -821,6 +964,9 @@ function LegendEventScene:step()
   if active.kind == "legend_wing" then
     return self:_stepWing(active)
   end
+  if active.kind == "hall_of_fame_machine" then
+    return self:_stepHallOfFame(active)
+  end
   if active.kind == "lance_departure" then
     return self:_stepLanceDeparture(active)
   end
@@ -867,7 +1013,24 @@ function LegendEventScene:presentation()
     return {}
   end
   local snapshot = { kind = active.kind } ---@type LegendEventScene.Presentation
-  local models = active.models
+  local balls = active.balls
+  if balls ~= nil then
+    local placed = {}
+    for index, ball in ipairs(balls) do
+      if ball.model ~= nil then
+        placed[#placed + 1] = {
+          part = index,
+          model = ball.model,
+          x = ball.x,
+          y = ball.y,
+          z = ball.z,
+          rotationDegrees = 0,
+        }
+      end
+    end
+    snapshot.parts = placed
+  end
+  local models = balls == nil and active.models or nil
   if models ~= nil then
     local parts = {}
     for index, model in ipairs(models) do
@@ -913,6 +1076,9 @@ function LegendEventScene:cancel(_)
     for _, actorId in ipairs(active.actors) do
       self._actors:setPresentationOffset(actorId, { x = 0, y = 0, z = 0 })
     end
+  end
+  if active.kind == "hall_of_fame_machine" then
+    self:_releaseHallOfFame(active)
   end
   self:_releaseModels()
   self._active = nil

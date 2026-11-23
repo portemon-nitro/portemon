@@ -493,10 +493,10 @@ end
 ---@param kind string scene definition key
 ---@param index integer one-based part index
 ---@return StoryEffectResource
-local function sceneResource(self, kind, index)
+local function sceneResource(self, kind, index, partOverride)
   local definitions = assert(self.definitions and self.definitions.legend, "the renderer carries no legend scenes")
   local definition = assert(definitions[kind], "the renderer has no " .. tostring(kind) .. " scene definition")
-  local part = assert(definition.parts and definition.parts[index], "the scene definition has no such part")
+  local part = partOverride or assert(definition.parts and definition.parts[index], "the scene definition has no such part")
   self._sceneResources = self._sceneResources or {}
   local resources = self._sceneResources[kind]
   if resources == nil then
@@ -528,9 +528,10 @@ end
 -- plays its source clips; the renderer only holds the pooled resources.
 ---@param kind string scene definition key
 ---@param index integer one-based part index
+---@param partOverride table<string, unknown>? an effect that publishes one model instead of keyed parts
 ---@return table<string, unknown> handle
-function StoryEffectRenderer:newSceneModel(kind, index)
-  local resource = sceneResource(self, kind, index)
+function StoryEffectRenderer:newSceneModel(kind, index, partOverride)
+  local resource = sceneResource(self, kind, index, partOverride)
   local pool = self.pool
   local function resolveImage(path, materialId)
     local wrap = assert(resource.wraps[materialId], "scene material wrap is missing")

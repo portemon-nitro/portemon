@@ -16,6 +16,7 @@
 -- byte too.
 
 local Operands = require("romdump.src.digest.script.lowering.Operands")
+local SummarySources = require("romdump.src.config.SummarySources")
 
 ---@class StoryHandlers
 local StoryHandlers = {}
@@ -166,6 +167,46 @@ function StoryHandlers.setFollowMonInhibitState(ins)
   local inhibited = Operands.operandValue(ins.operands[1])
   assert(isByte(inhibited), "follow-mon inhibit selector must be a source byte")
   return { op = "follower_set_inhibited", inhibited = inhibited }
+end
+
+-- ScrCmd_HOFCredits reads one RAW halfword (ScriptReadHalfword, never a script
+-- variable) naming the Red battle's outcome for this ending, then runs the
+-- game-clear task: the script stays blocked until the ending returned.
+function StoryHandlers.hofCredits(ins)
+  local vsRed = Operands.operandValue(ins.operands[1])
+  assert(type(vsRed) == "number" and vsRed % 1 == 0 and vsRed >= 0, "HOFCredits reads one raw halfword")
+  return { op = "hof_credits", vsRed = vsRed }
+end
+
+-- ScrCmd_HallOfFameAnim reads the non-Egg party count through ScriptGetVar and
+-- starts the machine's own blocking ball effect (Task_HallOfFameBallAnim); the
+-- script continues only after the balls' one-shot clip finished.
+function StoryHandlers.hallOfFameAnim(ins)
+  return { op = "hall_of_fame_anim", count = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_GiveRibbon reads the party slot and the source ribbon identity through
+-- ScriptGetVar. The retail ribbon table maps that identity to the mon-data
+-- field the source writes; the summary family already transcribes that same
+-- table (SummarySources.ribbons, source order), so the lowering resolves the
+-- identity once to its stored boxed ribbon bit instead of duplicating it.
+function StoryHandlers.giveRibbon(ins)
+  local ribbonId = Operands.operandValue(ins.operands[2])
+  assert(isByte(ribbonId), "give ribbon names a source ribbon identity")
+  local definition = SummarySources.ribbons[ribbonId + 1]
+  assert(definition ~= nil, "give ribbon names a source ribbon outside the retail table")
+  return {
+    op = "give_ribbon",
+    slot = Operands.varRef(ins.operands[1]),
+    ribbonField = definition.bitGroup,
+    ribbonBit = definition.bit,
+  }
+end
+
+-- ScrCmd_GetHallOfFameEntryCount writes the source's newest recorded number
+-- through ScriptGetVarPointer and returns TRUE, so it costs one source tick.
+function StoryHandlers.hallOfFameEntryCount(ins)
+  return { op = "pc_hof_count", result = Operands.varRef(ins.operands[1]) }
 end
 
 return StoryHandlers

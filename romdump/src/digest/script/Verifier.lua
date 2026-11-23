@@ -233,11 +233,15 @@ local function checkPcOpen(ins, step)
 end
 
 local function checkPcCount(ins, step)
-  local kindByOpcode = { [377] = "mailbox", [616] = "photos", [706] = "hall_of_fame" }
+  local kindByOpcode = { [377] = "mailbox", [616] = "photos", [706] = "hall_of_fame", [550] = "hall_of_fame" }
   local kind = kindByOpcode[ins.opcode]
   if ins.opcode == 706 then
     if step.op ~= "pc_hof_status" or not operandMatches(ins.operands[1].raw, step.result) then
       return "Hall of Fame status output variable changed by translation"
+    end
+  elseif ins.opcode == 550 then
+    if step.op ~= "pc_hof_count" or not operandMatches(ins.operands[1].raw, step.result) then
+      return "Hall of Fame entry-count output variable changed by translation"
     end
   elseif step.op ~= "pc_count" or step.kind ~= kind or not operandMatches(ins.operands[1].raw, step.result) then
     return "PC count output variable changed by translation"
@@ -1133,6 +1137,7 @@ local CHECKERS = {
   [377] = checkPcCount,
   [616] = checkPcCount,
   [706] = checkPcCount,
+  [550] = checkPcCount,
   [500] = checkPcTerminalEffect,
   [501] = checkPcTerminalEffect,
   [502] = checkPcTerminalEffect,

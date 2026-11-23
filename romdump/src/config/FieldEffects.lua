@@ -123,12 +123,37 @@ return {
   -- role here.
   -- The Blackthorn Gym loads build model 120 on its two 5x7 platforms and 121 on
   -- its 4x8 one (GymmickInit_Blackthorn's modelIDs).
+  -- The League ending's Hall of Fame machine effect
+  -- (src/field/field_move_effects.c::HallOfFame_StartBallAnim): the room places
+  -- its machine as build model 38, and the source spawns one Poké Ball build
+  -- model 107 prop per registered party member over the machine's own
+  -- translation, then plays that model's one-shot animation and waits for it.
+  hallOfFame = {
+    mapSymbol = "MAP_POKEMON_LEAGUE_HALL_OF_FAME",
+    machineModelMemberId = 38,
+    ballModelKey = "hall_of_fame_ball",
+    spawnIntervalSourceFrames = 15,
+    placementSound = "SEQ_SE_DP_BOWA",
+    -- gHallOfFameBallOffsets (asm/field_move_effects_data.s), fx32 units where
+    -- one map tile is 16 units: two columns, three depths, above the machine.
+    ballPositionsFx32 = {
+      { role = "northwest", x = -0x4800, y = 0xC000, z = -0x4800 },
+      { role = "northeast", x = 0x4800, y = 0xC000, z = -0x4800 },
+      { role = "west", x = -0x4800, y = 0xC000, z = 0 },
+      { role = "east", x = 0x4800, y = 0xC000, z = 0 },
+      { role = "southwest", x = -0x4800, y = 0xC000, z = 0x4800 },
+      { role = "southeast", x = 0x4800, y = 0xC000, z = 0x4800 },
+    },
+  },
   mechanismPropModels = {
     { key = "violet_gym_car", mapSymbol = "MAP_VIOLET_GYM", modelMemberId = 111 },
     { key = "azalea_gym_spinarak", mapSymbol = "MAP_AZALEA_GYM", modelMemberId = 118 },
     { key = "ecruteak_gym_candle", mapSymbol = "MAP_ECRUTEAK_GYM", modelMemberId = 128 },
     { key = "blackthorn_gym_platform_wide", mapSymbol = "MAP_BLACKTHORN_GYM", modelMemberId = 120 },
     { key = "blackthorn_gym_platform_narrow", mapSymbol = "MAP_BLACKTHORN_GYM", modelMemberId = 121 },
+    -- The League ending's Poké Ball: a transient prop of the Hall of Fame room
+    -- no placement carries, so only its model and source clip travel here.
+    { key = "hall_of_fame_ball", mapSymbol = "MAP_POKEMON_LEAGUE_HALL_OF_FAME", modelMemberId = 107 },
   },
   -- The Rocket hideout's own script-driven field effects
   -- (src/field/script_field_effects.c sTrapEffects and

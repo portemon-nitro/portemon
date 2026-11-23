@@ -1,6 +1,6 @@
 -- Authoritative live game stats: the single durable owner of the unique
--- species counter and the trainer-card score, independent of present
--- party or dex history. Retail increments the unique counter blindly on
+-- species counter, the trainer-card score, and the League-win total,
+-- independent of present party or dex history. Retail increments the unique counter blindly on
 -- every completed evolution (EVO_STATE_REGISTER + shed side product,
 -- unconditional) and scores a receipt iff the species is not yet
 -- dex-caught (GameStats_IncSpeciesCaught). The owner mirrors both: each
@@ -25,7 +25,9 @@
 -- sScoreMods[21] (src/game_stats.c) and the total caps at 99999999 in
 -- GameStats_AddScore (src/game_stats.c:371-379). Scripted score events
 -- enter through ScrCmd_AddSpecialGameStat (src/scrcmd_c.c), whose operand
--- selects a weight from that same sScoreMods table.
+-- selects a weight from that same sScoreMods table. The source's
+-- GAME_STAT_LEAGUE_WINS counter is incremented once by the League ending
+-- (src/game_clear.c::CallTask_GameClear) and persists beside the score.
 
 local Errors = require("libs.errors.src.Errors")
 
@@ -36,6 +38,7 @@ local Errors = require("libs.errors.src.Errors")
 ---@field private _score integer
 ---@field private _mailWritten integer written-Mail total
 ---@field private _stepsBiked integer steps taken on the Bicycle
+---@field private _leagueWins integer recorded League wins
 ---@field private _revision integer
 local GameStats = {}
 GameStats.__index = GameStats
@@ -61,6 +64,10 @@ GameStats.SCORE_CAP = 99999999
 GameStats.MAIL_WRITTEN_CAP = 999999
 -- GAME_STAT_STEPS_BIKED saturates at the extra-wide word ceiling.
 GameStats.STEPS_BIKED_CAP = 999999999
+
+-- GameStats_Inc caps every u16 statistic at GAME_STAT_MAX 9999
+-- (src/game_stats.c).
+GameStats.LEAGUE_WINS_CAP = 9999
 
 -- The source's sScoreMods table (src/game_stats.c), indexed by the
 -- ScrCmd_AddSpecialGameStat operand. It stays private: the score an event
@@ -219,6 +226,7 @@ function GameStats.new(args)
     _score = 0,
     _mailWritten = 0,
     _stepsBiked = 0,
+    _leagueWins = 0,
     _revision = 0,
   }, GameStats)
 end
@@ -243,6 +251,7 @@ function GameStats.restore(bucket, refs)
   stats._score = valid.score
   stats._mailWritten = valid.mailWritten
   stats._stepsBiked = valid.stepsBiked
+  stats._leagueWins = valid.leagueWins
   return stats
 end
 
@@ -309,6 +318,13 @@ function GameStats:countBikedStep()
     self._stepsBiked = self._stepsBiked + 1
     self._revision = self._revision + 1
   end
+end
+
+-- Reads the recorded League-win total: one per completed source clear
+-- (GameStats_Inc(GAME_STAT_LEAGUE_WINS)), capped at the source ceiling.
+---@return integer
+function GameStats:leagueWins()
+  return self._leagueWins
 end
 
 ---@return integer
@@ -393,6 +409,16 @@ function GameStats:prepareChanges(changes)
         end
       end
       observations[index] = { kind = "mail_written" }
+    elseif staged.kind == "league_win" then
+      -- One completed League ending awards the source League-win statistic
+      -- (src/game_clear.c::CallTask_GameClear). It earns no score and marks
+      -- no species.
+      for key in pairs(staged) do
+        if key ~= "kind" then
+          fail("stats observations carry kind and payload records", { field = key })
+        end
+      end
+      observations[index] = { kind = "league_win" }
     elseif staged.kind == "script_score_event" then
       -- One source script score event (ScrCmd_AddSpecialGameStat): the
       -- owner resolves the weight from its private table, so a producer
@@ -416,6 +442,7 @@ function GameStats:prepareChanges(changes)
   local scratchUnique = self._unique
   local scratchScore = self._score
   local scratchMailWritten = self._mailWritten
+  local scratchLeagueWins = self._leagueWins
   local changed = false
   for _, observation in ipairs(observations) do
     if observation.kind == "unique_caught" then
@@ -430,6 +457,11 @@ function GameStats:prepareChanges(changes)
       local total = cappedScore(scratchScore, 1)
       if total ~= scratchScore then
         scratchScore = total
+        changed = true
+      end
+    elseif observation.kind == "league_win" then
+      if scratchLeagueWins < GameStats.LEAGUE_WINS_CAP then
+        scratchLeagueWins = scratchLeagueWins + 1
         changed = true
       end
     elseif observation.kind == "script_score_event" then
@@ -464,6 +496,7 @@ function GameStats:prepareChanges(changes)
     self._unique = scratchUnique
     self._score = scratchScore
     self._mailWritten = scratchMailWritten
+    self._leagueWins = scratchLeagueWins
     if changed then
       self._revision = self._revision + 1
     end
@@ -487,11 +520,17 @@ function GameStats:awardScriptScoreEvent(eventId)
   self:prepareChanges({ observations = { { kind = "script_score_event", event = event } } }):publish()
 end
 
+-- Applies the one source League-win award through the same revisioned
+-- preparation as every other statistic.
+function GameStats:awardLeagueWin()
+  self:prepareChanges({ observations = { { kind = "league_win" } } }):publish()
+end
+
 -- Reads the persistable bucket: the sorted registration set (freshness
 -- authority), the blind unique total, the bounded score, and the
--- bounded written-Mail and steps-biked totals. The result is detached;
--- callers cannot mutate live owner state through it.
----@return table<string, unknown> detached canonical v3 bucket
+-- bounded written-Mail, steps-biked, and League-win totals. The result is
+-- detached; callers cannot mutate live owner state through it.
+---@return table<string, unknown> detached canonical v4 bucket
 function GameStats:bucket()
   local GameStatsSave = require("libs.hgss.src.save.GameStatsSave")
   local uniqueCaught = {}
@@ -507,6 +546,7 @@ function GameStats:bucket()
     score = self._score,
     mailWritten = self._mailWritten,
     stepsBiked = self._stepsBiked,
+    leagueWins = self._leagueWins,
   }
 end
 

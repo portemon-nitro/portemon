@@ -1318,6 +1318,10 @@ local function runScriptPhase(self, inputSnapshot)
   -- them to time the text-speed hold cadence on its script-owned boxes.
   schedulerInput.actionDown = inputSnapshot.actionDown
   schedulerInput.cancelDown = inputSnapshot.cancelDown
+  -- The source START key: menu hosts translate it into their own events, and
+  -- a source surface that owns the field directly (the League ending's credit
+  -- roll) reads the raw edge here.
+  schedulerInput.menuPressed = inputSnapshot.menuPressed
   schedulerInput.menuEvents = nil
   schedulerInput.uiEvents = nil
   -- The script-owned starter modal routes the same normalized UI events to

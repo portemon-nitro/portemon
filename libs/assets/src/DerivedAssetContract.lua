@@ -449,6 +449,14 @@ DerivedAssetContract.fieldEffects = {
   indexSchema = "g4-field-effect-index-v4",
 }
 
+-- The League ending's own bundle: the Hall of Fame registration and showcase
+-- text banks, the credit roll's backgrounds, "The End" screen, page timings and
+-- message lines, published as one selector-free artifact.
+DerivedAssetContract.ending = {
+  format = "ending-cache-v1",
+  indexSchema = "g4-ending-index-v1",
+}
+
 DerivedAssetContract.fieldEmotes = {
   -- v2 drops the anchor offset: the runtime overhead-emote mechanism owns it.
   -- v3 selects the emote model's native model/texture banks and stages them

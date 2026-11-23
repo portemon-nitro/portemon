@@ -1614,6 +1614,48 @@ local function popcount(value)
   return math.floor(count)
 end
 
+-- The source ribbon identity -> stored-boxed-bit binding, produced from the
+-- same retail ribbon table the summary family transcribes. The owner verifies
+-- the binding instead of trusting a caller-supplied bit.
+---@param field string
+---@param bit integer
+---@return boolean
+local function validRibbonBit(field, bit)
+  if type(bit) ~= "number" or bit % 1 ~= 0 or bit < 0 then
+    return false
+  end
+  if field == "gba" then
+    return bit <= 31
+  end
+  if field == "ds1" then
+    return bit <= 27
+  end
+  if field == "ds2" then
+    return bit <= 19
+  end
+  return false
+end
+
+-- ScrCmd_GiveRibbon (src/scrcmd_party.c) sets the named ribbon on the party
+-- slot unconditionally: the source writes TRUE into the ribbon's mon-data
+-- field and has no removal counterpart.
+---@param slot0 integer
+---@param field string
+---@param bit integer
+function HgssMonService:giveRibbon(slot0, field, bit)
+  if not validRibbonBit(field, bit) then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "ribbon binding must address a boxed ribbon bit", {
+      field = field,
+      bit = bit,
+    })
+  end
+  local mon = self:_liveMon(slot0)
+  assert(type(mon.ribbons) == "table", "admitted mons carry their ribbon fields")
+  local place = 2 ^ bit
+  mon.ribbons[field] = mon.ribbons[field] + place - (mon.ribbons[field] % place)
+  self:_store(slot0, mon)
+end
+
 ---@param slot0 integer
 ---@return integer
 function HgssMonService:monRibbonCount(slot0)

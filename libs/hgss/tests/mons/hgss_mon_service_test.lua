@@ -71,4 +71,32 @@ function T.set_mon_form_validates_and_mutates_only_form()
   Assert.equal(service:partyRevision(), invalidRevision, "an invalid form publishes no mutation")
 end
 
+-- ScrCmd_GiveRibbon sets one stored boxed ribbon bit on the named party slot
+-- through the owner, exactly like the source's unconditional mon-data write.
+function T.give_ribbon_sets_the_named_stored_bit_once()
+  local service = newService()
+  Assert.equal(service:monRibbonCount(0), 0, "a new party mon owns no ribbon")
+  service:giveRibbon(0, "ds1", 17)
+  Assert.equal(service:monRibbonCount(0), 1, "the source ribbon bit is stored")
+  local stored = service:partyMon(0)
+  Assert.equal(math.floor(stored.ribbons.ds1 / 2 ^ 17) % 2, 1, "the ribbon lands on its own stored bit")
+  Assert.equal(stored.ribbons.gba, 0, "the other ribbon fields stay untouched")
+  Assert.equal(stored.ribbons.ds2, 0, "the other ribbon fields stay untouched")
+  local revision = service:partyRevision()
+  service:giveRibbon(0, "ds1", 17)
+  Assert.equal(service:monRibbonCount(0), 1, "re-awarding the same ribbon changes nothing")
+  Assert.equal(service:partyRevision(), revision + 1, "the repeated award still publishes its monotone write")
+  service:giveRibbon(0, "gba", 31)
+  service:giveRibbon(0, "ds2", 19)
+  Assert.equal(service:monRibbonCount(0), 3, "every source field keeps its own bit")
+  local err = Assert.throws(function()
+    service:giveRibbon(0, "ds1", 28)
+  end)
+  Assert.isTrue(Errors.is(err), "a bit outside its boxed field is a structured service error")
+  local _, slotErr = pcall(function()
+    service:giveRibbon(3, "ds1", 0)
+  end)
+  Assert.isTrue(Errors.is(slotErr), "a missing party slot is a structured service error")
+end
+
 return { tests = T }
