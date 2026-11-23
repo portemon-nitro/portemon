@@ -4625,6 +4625,137 @@ function T.intro_scene_draws_indexed_pool_art_through_its_palette(scope, context
   pool:release(lease)
 end
 
+-- A mid-battle send-out ball stages its catalog cell as an indexed pool
+-- borrow and flashes through BallThrow_RunThrowArc's palette blend. The
+-- flashed draw must resolve the cell through its staged palette before the
+-- blend: every covered pixel is the source 5-bit blend of the unflashed
+-- palette color (up to the six-bit composite rounding), never a blend of
+-- raw index bytes.
+function T.flashing_send_out_ball_blends_its_indexed_cell_through_its_palette(scope, context)
+  local versionId = readyVersions()[1]
+  if versionId == nil then
+    context:skip("ball flash capture needs staged battle assets")
+  end
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
+  local leaf = assert(BattlePresentationCache.loadBall(cacheFs, "ball:POKE_BALL"), "the capture ball leaf is staged")
+  local frame = assert(leaf.entry.frames[1], "the staged ball carries its closed cell")
+  local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
+  local runtime = SelectedAssetRuntimeFixture.new(cacheFs, scope)
+  local pool = ImageAssetPool.new(cacheFs, {
+    graphics = love.graphics,
+    queue = runtime.preparationQueue,
+    decoded = runtime.decoded,
+  })
+  scope:own({
+    release = function()
+      pcall(function()
+        pool:dispose()
+      end)
+    end,
+  })
+  local token = pool:request(
+    frame.image,
+    { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" },
+    "demand"
+  )
+  local lease
+  for _ = 1, 600 do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      lease = pool:acquire(token)
+      break
+    end
+    assert(status ~= "failed", "the ball cell stages decodably: " .. tostring(failure))
+    love.timer.sleep(0.01)
+  end
+  Assert.notNil(lease, "the ball cell borrows from the pool")
+  Assert.equal(lease.kind, "r8", "the catalog ball cell stages indexed")
+  local BattlePicturePass = require("libs.hgss.src.presentation.BattlePicturePass")
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local pass = scope:own(BattlePicturePass.new(love.graphics))
+  local resources = {
+    graphics = love.graphics,
+    text = {},
+    windows = { drawWindow = function() end },
+    assets = {
+      drawable = function(_, key)
+        return key == frame.drawableKey and lease or nil
+      end,
+      renderPictures = function(_, graphics, pictures)
+        return pass:render(graphics, pictures)
+      end,
+    },
+    frameKey = "unused",
+    sceneImageKey = "unused",
+  }
+  ---@param flash integer? source blend coefficient, nil while the ball is unflashed
+  ---@param visible boolean false renders the pane backdrop alone
+  ---@return love.ImageData rendered detail pane
+  local function render(flash, visible)
+    local canvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
+    love.graphics.setCanvas(canvas)
+    love.graphics.clear(0, 0, 0, 0)
+    BattleRenderer.drawPane(resources, {
+      battlers = {},
+      effectInstances = {},
+      slotGeometry = {},
+      hudSections = {},
+      message = "",
+      openingPresentation = {
+        playerTrainerVisible = false,
+        foeTrainerVisible = false,
+        trainerSlides = {},
+        terrainSlides = {},
+        ballThrow = {
+          selector = "ball:POKE_BALL",
+          x = 128,
+          y = 96,
+          drawableKey = frame.drawableKey,
+          rotation = 0,
+          visible = visible,
+          paletteFlash = flash,
+        },
+      },
+    }, "detail", {}, { x = 0, y = 0, width = 256, height = 192 })
+    love.graphics.setCanvas()
+    return scope:own(canvas:newImageData())
+  end
+  local backdrop = render(nil, false)
+  local plain = render(nil, true)
+  local flashed = render(8, true)
+  ---@param channel number normalized channel under the source blend
+  ---@return number normalized source blend toward white at coefficient eight
+  local function blendTowardWhite(channel)
+    local source5 = math.floor(channel * 31 + 0.5)
+    local blended5 = math.min(31, source5 + math.floor((31 - source5) * 8 / 16))
+    return (blended5 * 8 + math.floor(blended5 / 4)) / 255
+  end
+  -- The six-bit battle composite rounds both draws to its output
+  -- channels, at most two 8-bit units apart from the 5-bit expansion; a
+  -- blend of raw index bytes would miss by far more.
+  local TOLERANCE = 3 / 255
+  local covered = 0
+  for y = 80, 111 do
+    for x = 112, 143 do
+      local r, g, b = plain:getPixel(x, y)
+      local fr, fg, fb = flashed:getPixel(x, y)
+      local br, bg, bb = backdrop:getPixel(x, y)
+      -- The pane backdrop is opaque: the ball covers exactly the pixels
+      -- either draw changes.
+      local plainCovers = r ~= br or g ~= bg or b ~= bb
+      local flashCovers = fr ~= br or fg ~= bg or fb ~= bb
+      if plainCovers or flashCovers then
+        covered = covered + 1
+        Assert.near(fr, blendTowardWhite(r), TOLERANCE, "flashed red is the blend of the palette color")
+        Assert.near(fg, blendTowardWhite(g), TOLERANCE, "flashed green is the blend of the palette color")
+        Assert.near(fb, blendTowardWhite(b), TOLERANCE, "flashed blue is the blend of the palette color")
+      end
+    end
+  end
+  Assert.isTrue(covered > 16, "the ball cell covers its anchor")
+  pool:release(lease)
+end
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = {

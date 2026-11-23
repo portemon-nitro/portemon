@@ -1563,6 +1563,37 @@ local function copyFadeShader(graphics)
   return shader
 end
 
+-- Draws one OBJ image under the source palette blend toward a target
+-- color with the native integer coefficient. An indexed image resolves
+-- through its exact palette first; a nil palette samples straight texels.
+---@param graphics table<string, unknown> injected host graphics
+---@param target number[] blend target as normalized RGB
+---@param coefficient integer source blend coefficient 0..16
+---@param palette table<string, unknown>|userdata|nil exact palette of an indexed image
+---@param paletteOffset integer palette override offset in colors
+---@param image table<string, unknown>|userdata staged pixels under drawing
+---@param ... unknown placement arguments forwarded to the draw call
+local function drawPaletteFaded(graphics, target, coefficient, palette, paletteOffset, image, ...)
+  local previous = graphics.getShader()
+  local shader = copyFadeShader(graphics)
+  graphics.setShader(shader)
+  shader:send("u_fadeTarget", target)
+  shader:send("u_fadeCoefficient", coefficient)
+  if palette ~= nil then
+    shader:send("u_usePalette", true)
+    shader:send("u_paletteCount", palette:getWidth())
+    shader:send("u_palette", palette)
+    shader:send("u_paletteOffset", paletteOffset)
+  else
+    shader:send("u_usePalette", false)
+  end
+  local ok, err = pcall(graphics.draw, image, ...)
+  graphics.setShader(previous)
+  if not ok then
+    error(err, 0)
+  end
+end
+
 -- Draws one copy under the source palette blend toward an RGB555 target
 -- with the native integer coefficients.
 ---@param graphics table<string, unknown> injected host graphics
@@ -1578,30 +1609,16 @@ local function drawFadedCopy(graphics, picture, quad, x, y, scaleX, scaleY)
   local intensity = fade.intensity
   assert(type(color) == "number" and color % 1 == 0, "palette fade carries RGB555 target color")
   assert(type(intensity) == "number" and intensity % 1 == 0, "palette fade carries integer intensity")
-  local previous = graphics.getShader()
-  local shader = copyFadeShader(graphics)
-  graphics.setShader(shader)
-  shader:send("u_fadeTarget", {
+  local palette = nil
+  if picture.imageKind == "r8" then
+    palette = assert(picture.palette, "indexed copy fades require their exact palette")
+  end
+  local paletteOffset = picture.paletteOffset --[[@as integer?]] or 0
+  drawPaletteFaded(graphics, {
     (color % 32) / 31,
     (math.floor(color / 32) % 32) / 31,
     (math.floor(color / 1024) % 32) / 31,
-  })
-  shader:send("u_fadeCoefficient", intensity)
-  if picture.imageKind == "r8" then
-    local palette = picture.palette
-    assert(palette ~= nil, "indexed copy fades require their exact palette")
-    shader:send("u_usePalette", true)
-    shader:send("u_paletteCount", palette:getWidth())
-    shader:send("u_palette", palette)
-    shader:send("u_paletteOffset", numberOr(picture.paletteOffset, 0))
-  else
-    shader:send("u_usePalette", false)
-  end
-  local ok, err = pcall(graphics.draw, picture.image, quad, x, y, 0, scaleX, scaleY)
-  graphics.setShader(previous)
-  if not ok then
-    error(err, 0)
-  end
+  }, intensity, palette, paletteOffset, picture.image, quad, x, y, 0, scaleX, scaleY)
 end
 
 -- One animation sprite copy as a native OBJ fragment. CreateBattlerSprite
@@ -2731,26 +2748,11 @@ local function imageCellExtent(image)
   return width, height
 end
 
--- The source send-out ball flash: the ball cell blends toward white while
--- BallThrow_RunThrowArc's palette blend runs. One shader serves every
--- flashing ball on a graphics namespace.
-local BALL_FLASH_SHADER_PATH = "libs/hgss/src/presentation/shaders/ball_palette_flash.glsl"
-local ballFlashShaders = setmetatable({}, { __mode = "k" })
-
----@param graphics table<string, unknown> injected host graphics
----@return table<string, unknown> compiled ball flash shader
-local function ballFlashShader(graphics)
-  local shader = ballFlashShaders[graphics]
-  if shader == nil then
-    shader = graphics.newShader(ImageAssetPool.withSharedSnippets(readShaderSource(BALL_FLASH_SHADER_PATH)))
-    ballFlashShaders[graphics] = shader
-  end
-  return shader
-end
-
--- Draws the ball cell through the source palette flash when the cue carries
--- one. Pool leases draw their staged pixels under the flash shader (the ball
--- cells stay unindexed RGBA); plain uploaded images draw directly.
+-- Draws the ball cell through the source send-out flash when the cue
+-- carries one: BallThrow_RunThrowArc's palette blend toward white on the
+-- ball's MAIN_OBJ palette. Pool leases draw their staged pixels (indexed
+-- cells through their exact palette) under the shared OBJ palette blend;
+-- plain uploaded images draw directly.
 ---@param graphics table<string, unknown> injected host graphics
 ---@param image table<string, unknown>|userdata staged ball drawable
 ---@param flash integer|nil source blend coefficient 0..16
@@ -2765,9 +2767,9 @@ local function drawBallCell(graphics, image, flash, ...)
     "ball flash is a source blend 0..16"
   )
   local drawable = image
+  local palette = nil
   local sampler = samplerOf(image)
   if sampler ~= nil then
-    assert(sampler.kind ~= "r8", "flashing ball cells are not indexed draws")
     -- Headless descriptors stay drawable-shaped for recording; they carry
     -- no staged pixels to unwrap. A live borrow keeps the shared exact
     -- nearest rule the sampler would have applied.
@@ -2776,17 +2778,14 @@ local function drawBallCell(graphics, image, flash, ...)
       pixels:setFilter("nearest", "nearest")
     end
     drawable = pixels or image
+    if sampler.kind == "r8" then
+      palette = assert(sampler.palette, "indexed ball cells carry their exact palette") --[[@as table<string, unknown>]]
+      if type(palette.setFilter) == "function" then
+        palette:setFilter("nearest", "nearest")
+      end
+    end
   end
-  local previous = graphics.getShader()
-  local shader = ballFlashShader(graphics)
-  graphics.setShader(shader)
-  shader:send("u_target", { 1, 1, 1 })
-  shader:send("u_coefficient", flash)
-  local ok, err = pcall(drawArtwork, graphics, drawable, nil, ...)
-  graphics.setShader(previous)
-  if not ok then
-    error(err, 0)
-  end
+  drawPaletteFaded(graphics, { 1, 1, 1 }, flash, palette, 0, drawable, ...)
 end
 
 -- Draws the thrown Poke Ball sprite over the battlefield. Ball cells are

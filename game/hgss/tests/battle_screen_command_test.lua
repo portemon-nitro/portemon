@@ -363,8 +363,9 @@ function T.ball_palette_flash_draws_through_the_source_blend_shader()
   for _, entry in ipairs(shader.sends) do
     sent[entry.name] = entry.value
   end
-  Assert.deepEqual(sent.u_target, { 1, 1, 1 }, "the blend targets source white")
-  Assert.equal(sent.u_coefficient, 8, "the blend carries the source coefficient")
+  Assert.deepEqual(sent.u_fadeTarget, { 1, 1, 1 }, "the blend targets source white")
+  Assert.equal(sent.u_fadeCoefficient, 8, "the blend carries the source coefficient")
+  Assert.equal(sent.u_usePalette, false, "a straight ball cell samples its texels directly")
   Assert.equal(graphics.getShader(), nil, "the neutral shader returns after the ball draw")
   local drawn = assert(graphics.draws[1], "the flashing ball still draws its staged cell")
   Assert.equal(drawn.image, ball, "the staged ball reaches the shaded draw")
@@ -401,6 +402,42 @@ function T.ball_palette_flash_draws_through_the_source_blend_shader()
   Assert.isTrue(borrowed, "a borrowed ball draws its staged pixels under the flash")
   Assert.deepEqual(filters[1], { "nearest", "nearest" }, "the borrowed ball keeps exact sampling")
   Assert.equal(graphics.shaders[2], nil, "the cached shader serves the borrowed cell")
+  -- An indexed borrow resolves its index bytes through its exact palette
+  -- before the blend, so the flash never shows raw palette slots.
+  local paletteFilters = {}
+  local palette = {
+    getWidth = function()
+      return 16
+    end,
+    setFilter = function(_, min, mag)
+      paletteFilters[#paletteFilters + 1] = { min, mag }
+    end,
+  }
+  resources.assets.drawable = function()
+    return {
+      kind = "r8",
+      width = 16,
+      height = 16,
+      image = raw,
+      palette = palette,
+      drawQuad = function() end,
+      draw = function() end,
+    }
+  end
+  shader.sends = {}
+  view.openingPresentation.ballThrow.paletteFlash = 12
+  BattleRenderer.drawPane(resources, view, "detail", {}, {})
+  sent = {}
+  for _, entry in ipairs(shader.sends) do
+    sent[entry.name] = entry.value
+  end
+  Assert.equal(sent.u_usePalette, true, "an indexed ball cell samples through its palette")
+  Assert.equal(sent.u_palette, palette, "the indexed ball binds its exact palette")
+  Assert.equal(sent.u_paletteCount, 16, "the indexed ball binds its palette width")
+  Assert.equal(sent.u_paletteOffset, 0, "the indexed ball selects its whole palette")
+  Assert.equal(sent.u_fadeCoefficient, 12, "the indexed ball keeps the source coefficient")
+  Assert.deepEqual(paletteFilters[1], { "nearest", "nearest" }, "the indexed palette keeps exact sampling")
+  Assert.equal(graphics.getShader(), nil, "the neutral shader returns after the indexed ball draw")
   view.openingPresentation.ballThrow.paletteFlash = nil
   BattleRenderer.drawPane(resources, view, "detail", {}, {})
   Assert.equal(graphics.shaders[2], nil, "an unflashed ball compiles no shader")

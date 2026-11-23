@@ -5141,6 +5141,7 @@ local function startCue(self, cue)
       cue.arcHeight = BattleTimeline.THROW_ARC_HEIGHT
       state.ballThrow = {
         selector = cue.selector,
+        combatant = cue.combatant,
         x = cue.startX,
         y = cue.startY,
         drawableKey = ballCellKey(ballKey, 0),
@@ -5214,6 +5215,7 @@ local function startCue(self, cue)
     )
     state.ballThrow = {
       selector = cue.selector,
+      combatant = cue.combatant,
       x = 0,
       y = 0,
       drawableKey = ballCellKey(ballKey, 0),
@@ -5686,6 +5688,7 @@ local function tickTrainerExitCue(self, cue)
         if ball == nil or ball.trainerParticipant ~= cue.participant then
           ball = {
             selector = cue.selector,
+            combatant = cue.combatant,
             x = cue.ballX,
             y = cue.ballY,
             drawableKey = ballCellKey(assert(cue.selector:match("^ball:([%w_]+)$")), 0),

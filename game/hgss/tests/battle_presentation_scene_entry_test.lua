@@ -1742,6 +1742,68 @@ function T.trainer_doubles_reveal_binds_visible_slots_and_enemy_gauge()
   rig.screen:dispose()
 end
 
+-- Task_PlayEncounterAnimation outlives its palette fades until the second
+-- emitter retires, so a foe trainer's send-out ball can show while the
+-- encounter planes still drive sampling. The foe ball samples the
+-- MAIN_OBJ instance inserted for its own battler, never the player's: the
+-- doubles layout puts the two own balls at slots 48 and 64 and the foe
+-- balls at 80 and 96.
+function T.foe_trainer_ball_samples_its_own_native_palette_instance()
+  local rig = openEncounterRig()
+  local layer = stagedEncounterLayer(60, 43)
+  local maps = stagedMenuSourceIndices(rig.manifest)
+  layer.menuSourceIndices = maps
+  -- The launch ball leaf stages after the global manifest: its slot
+  -- variants read as single-slot cells at their inserted physical base.
+  layer.sourceMapFor = function(descriptor)
+    if type(descriptor.pixels) == "string" then
+      return descriptor
+    end
+    local path = descriptor.path
+    local slot = tonumber(path:match("^assets/generated/battle/battle%-ball%-.-%-slot%-(%d+)%.rgba8$"))
+    if maps[path] == nil and slot ~= nil then
+      return { plane = "mainObj", width = 16, height = 16, pixels = sourceIndexPixels(16, 16, slot) }
+    end
+    return assert(maps[path], "staged source-index map remains in the staged scene: " .. path)
+  end
+  rig.stage(layer)
+  rig.pump(5)
+  Assert.isTrue(
+    rig.port.enter({ launchId = rig.launchId, kind = "trainer", encounterPaletteRestoreType = "trainer" }),
+    "entry admits the trainer scene"
+  )
+  local opening = trainerDoublesOpening()
+  rig.port.present({ launchId = rig.launchId, packetId = 1, before = opening, after = opening, events = {} })
+  rig.pump(12)
+  local ball = {
+    selector = "ball:POKE_BALL",
+    combatant = 3,
+    x = 192,
+    y = 40,
+    drawableKey = "battle-ball:POKE_BALL:0",
+    rotation = 0,
+    trainerParticipant = 2,
+    visible = true,
+  }
+  local timeline = rig.screen._timeline
+  local realOpening = timeline.openingPresentation
+  function timeline.openingPresentation(self)
+    local presentation = realOpening(self)
+    if type(presentation) == "table" then
+      presentation.ballThrow = ball
+    end
+    return presentation
+  end
+  rig.pump(1)
+  Assert.notNil(rig.screen:view().openingPresentation.encounterPalette, "the encounter planes still drive sampling")
+  Assert.equal(
+    ball.paletteDrawableKey,
+    "battle-palette:ball:80:battle-ball:POKE_BALL:0",
+    "the foe trainer ball samples the first foe ball instance"
+  )
+  rig.screen:dispose()
+end
+
 -- A palette version bump that touches only banks no visible drawable
 -- uses performs no rasterization and keeps every published image: the
 -- screen reuses its sampled rasters and the holder performs no upload.

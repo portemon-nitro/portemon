@@ -8279,7 +8279,10 @@ function BattleScreenState:_updateEncounterPaletteDrawables()
     local ball = opening.ballThrow
     if type(ball) == "table" then
       ball.paletteDrawableKey = nil
-      if ball.visible == true then
+      -- A send-out ball samples the MAIN_OBJ instance inserted for its
+      -- own battler. A capture throw's item ball has no battler instance
+      -- and keeps its staged palette.
+      if ball.visible == true and ball.combatant ~= nil then
         local selector = ball.selector --[[@as string]]
         assert(type(selector) == "string", "visible ball throw names its selector")
         local ballKey = selector:match("^ball:([%w_]+)$")
@@ -8289,12 +8292,15 @@ function BattleScreenState:_updateEncounterPaletteDrawables()
         local layout = assert(layer.nativePaletteLayout, "ball throw has its accepted physical palette layout")
         local selected = nil
         for _, candidate in ipairs(layout.balls) do
-          if candidate.selector == selector and candidate.group == "own" then
+          if candidate.battlerId == ball.combatant then
             selected = candidate
             break
           end
         end
-        assert(selected ~= nil, "visible ball throw resolves to an accepted native palette instance")
+        assert(
+          selected ~= nil and selected.selector == selector,
+          "visible send-out ball resolves to its battler's native palette instance"
+        )
         local selectedPath =
           assert(selected.sourceIndexPaths[frameKey], "visible ball cell has a selected slot variant")
         local key = "battle-palette:ball:" .. tostring(selected.firstSlot) .. ":" .. frameKey
