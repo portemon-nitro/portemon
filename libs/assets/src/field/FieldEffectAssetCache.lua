@@ -681,12 +681,107 @@ end
 -- deterministic declaration checks below, and the fourteen follower
 -- reactions are generated from the same builder so the declared set cannot
 -- drift from the validated set.
+-- One legendary-story scene: each part carries its normalized source model and
+-- the clips of every source phase, with the longest clip of a phase as that
+-- phase's own duration. The scenes publish no placement of their own: the
+-- runtime mechanism owns every transform.
+---@param expectedParts integer
+---@return fun(definition: table<string, unknown>, kind: string): boolean
+local function validLegendSceneDefinition(expectedParts)
+  return function(definition, kind)
+    if definition == nil or type(definition.parts) ~= "table" or #definition.parts ~= expectedParts then
+      return false
+    end
+    for _, key in pairs({ "bgm", "timeline", "layers", "sprite" }) do
+      if definition[key] ~= nil then
+        return false
+      end
+    end
+    if definition.sound ~= nil and (type(definition.sound) ~= "string" or definition.sound == "") then
+      return false
+    end
+    for _, part in ipairs(definition.parts) do
+      if type(part) ~= "table" or type(part.model) ~= "table" or type(part.clips) ~= "table" then
+        return false
+      end
+      for role, clip in pairs(part.clips) do
+        if type(role) ~= "string" or type(clip) ~= "table" or type(clip.ids) ~= "table" or #clip.ids == 0 then
+          return false
+        end
+        if not finiteNumber(clip.frames) or clip.frames < 1 or clip.frames % 1 ~= 0 then
+          return false
+        end
+        for _, id in ipairs(clip.ids) do
+          if type(id) ~= "string" or id == "" then
+            return false
+          end
+        end
+      end
+    end
+    assert(kind ~= nil, "legend scene validation names its kind")
+    return true
+  end
+end
+
+-- The Arceus montage: the source's closed timeline, its own layers and one
+-- prepared sprite image. Every prepared image travels under the effect bundle.
+---@param definition table<string, unknown>
+---@param kind string
+---@return boolean
+local function validArceusCinematicDefinition(definition, kind)
+  if definition == nil or type(definition.timeline) ~= "table" or #definition.timeline == 0 then
+    return false
+  end
+  if type(definition.layers) ~= "table" or type(definition.sprite) ~= "table" then
+    return false
+  end
+  if type(definition.bgm) ~= "string" or definition.bgm == "" then
+    return false
+  end
+  for _, command in ipairs(definition.timeline) do
+    if type(command) ~= "table" or not finiteNumber(command[1]) or command[1] < 0 or command[1] > 19 then
+      return false
+    end
+  end
+  local texturePath = "^assets/generated/field/effects/textures/([0-9a-f]+)%.png$"
+  for fileId, layer in pairs(definition.layers) do
+    if not finiteNumber(fileId) or type(layer) ~= "table" or type(layer.path) ~= "string" then
+      return false
+    end
+    if layer.path:match(texturePath) == nil or not finiteNumber(layer.width) or not finiteNumber(layer.height) then
+      return false
+    end
+  end
+  local sprite = definition.sprite
+  if type(sprite.path) ~= "string" or sprite.path:match(texturePath) == nil then
+    return false
+  end
+  assert(kind ~= nil, "montage validation names its kind")
+  return finiteNumber(sprite.width) and finiteNumber(sprite.height) and sprite.width > 0 and sprite.height > 0
+end
+
 local function followerReactionEntry(selector)
   return {
     key = "follower_reaction_" .. selector,
     entryKind = "reaction",
     validator = validReactionDefinition,
   }
+end
+
+-- The legendary-story scene definitions this family publishes: the model scenes
+-- and the one montage application.
+FieldEffectAssetCache.LEGEND_SCENE_KINDS = {
+  "legend_wing",
+  "sinjoh_stage",
+  "sinjoh_unown",
+  "sinjoh_egg",
+  "arceus_cinematic",
+}
+
+---@param kind string
+---@return string index entry kind
+function FieldEffectAssetCache.legendSceneEntryKind(kind)
+  return kind == "arceus_cinematic" and "montage" or "scene"
 end
 
 local FIELD_EFFECT_INVENTORY = {
@@ -706,6 +801,11 @@ local FIELD_EFFECT_INVENTORY = {
   { key = "celebi_time_travel", entryKind = "cinematic", validator = validCelebiTimeTravelDefinition },
   { key = "ho_oh_appearance", entryKind = "cinematic", validator = validHoOhAppearanceDefinition },
   { key = "lugia_appearance", entryKind = "cinematic", validator = validLugiaAppearanceDefinition },
+  { key = "legend_wing", entryKind = "scene", validator = validLegendSceneDefinition(2) },
+  { key = "sinjoh_stage", entryKind = "scene", validator = validLegendSceneDefinition(3) },
+  { key = "sinjoh_unown", entryKind = "scene", validator = validLegendSceneDefinition(3) },
+  { key = "sinjoh_egg", entryKind = "scene", validator = validLegendSceneDefinition(3) },
+  { key = "arceus_cinematic", entryKind = "montage", validator = validArceusCinematicDefinition },
 }
 for selector = 1, 14 do
   FIELD_EFFECT_INVENTORY[#FIELD_EFFECT_INVENTORY + 1] = followerReactionEntry(selector)
@@ -748,7 +848,7 @@ end
 function FieldEffectAssetCache.isModellessKind(kind)
   for _, spec in ipairs(FIELD_EFFECT_INVENTORY) do
     if spec.key == kind then
-      return spec.entryKind == "overlay"
+      return spec.entryKind == "overlay" or spec.entryKind == "montage"
     end
   end
   return false
@@ -805,6 +905,13 @@ end
 function FieldEffectAssetCache.modelDescriptors(kind, definition, definitionOf)
   local part = PART_SPECS[kind]
   if part == nil then
+    if definition.parts ~= nil then
+      local descriptors = {}
+      for _, scenePart in ipairs(definition.parts) do
+        descriptors[#descriptors + 1] = scenePart.model
+      end
+      return descriptors
+    end
     return definition.models or { definition.model }
   end
   if part.variant == nil then
@@ -891,7 +998,10 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
     if not definitionLoaded or type(definition) ~= "table" then
       return false
     end
-    if (spec.entryKind == "reaction" or spec.entryKind == "cinematic") and not spec.validator(definition, kind) then
+    if
+      (spec.entryKind == "reaction" or spec.entryKind == "cinematic" or spec.entryKind == "scene")
+      and not spec.validator(definition, kind)
+    then
       return false
     end
     local descriptors
@@ -899,6 +1009,21 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
       -- A prepared overlay carries no model: its inventory record is its whole
       -- contract, and its texture already travels in the effect bundle.
       if not spec.validator(definition) then
+        return false
+      end
+      descriptors = {}
+    elseif spec.entryKind == "montage" then
+      -- The montage publishes prepared images instead of models: every layer
+      -- and the sprite are part of the effect bundle's own texture root.
+      if not spec.validator(definition, kind) then
+        return false
+      end
+      for _, layer in pairs(definition.layers) do
+        if not cacheFs:exists(layer.path) then
+          return false
+        end
+      end
+      if not cacheFs:exists(definition.sprite.path) then
         return false
       end
       descriptors = {}
@@ -912,7 +1037,9 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
       end
       descriptors = result
     else
-      descriptors = definition.models or { definition.model }
+      descriptors = FieldEffectAssetCache.modelDescriptors(kind, definition, function(partKind)
+        return sharedParts[PART_SPECS[partKind].shot]
+      end)
       if
         kind ~= "follower_transition"
         and kind ~= "pokemon_center_heal"

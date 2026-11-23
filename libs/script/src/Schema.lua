@@ -59,7 +59,7 @@ Schema.ENUMS = {
   money_action = { "add", "subtract" },
   -- The closed native gym mechanisms this port implements; the source union's
   -- other kinds stay unimplemented rather than named here.
-  gym_mechanism = { "violet", "azalea", "ecruteak", "cianwood", "blackthorn" },
+  gym_mechanism = { "violet", "azalea", "ecruteak", "cianwood", "blackthorn", "sinjoh" },
   money_box_action = { "show", "update", "hide" },
   pc_application = { "storage", "mailbox", "photoAlbum" },
   -- The foreground phone call direction across the shared menu/script
@@ -1886,6 +1886,45 @@ Schema.OPERATIONS = {
     },
   },
   mon_picture_close = { fields = {} },
+  -- ScrCmd_CheckEventKey compares one stored event-key variable against its
+  -- source magic word and writes the answer into the caller's output variable.
+  -- The key's variable identity and magic come from the lowering, so the raw
+  -- key selector never reaches the runtime.
+  check_event_key = {
+    fields = {
+      variable = { type = "string", required = true },
+      magic = { type = "integer", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  -- ScrCmd_CheckGameClearFlag/ScrCmd_SetGameClearFlag read and set the save's
+  -- own game-clear flag in their tick.
+  check_game_clear = {
+    fields = {
+      flag = { type = "string", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  set_game_clear = { fields = { flag = { type = "string", required = true } } },
+  -- The source legendary-story scenes. ScrCmd_ShowLegendaryWing reads its kind
+  -- through ScriptGetVar; ScrCmd_LanceFlyAway names two object ids the same
+  -- way; ScrCmd_Cinematic reads one halfword scene number; the Sinjoh circle
+  -- and egg cutscenes take no operand and one raw variant byte.
+  legend_wing = { fields = { kind = { type = "scalar_or_value", required = true } } },
+  lance_departure = {
+    fields = {
+      first = { type = "scalar_or_value", required = true },
+      second = { type = "scalar_or_value", required = true },
+    },
+  },
+  sinjoh_unown_circle = { fields = {} },
+  sinjoh_egg_cutscene = { fields = { choice = { type = "integer", required = true } } },
+  -- ScrCmd_SinjohFreezeAllModels clears the stage objects' active flags and
+  -- ScrCmd_SinjohSetChosenLegend reads one raw choice byte and blocks on the
+  -- stage's common animation boundary. ScrCmd_MystriStageGymmickInit reuses the
+  -- closed gym init node with its own kind.
+  gym_sinjoh_freeze = { fields = {} },
+  gym_sinjoh_choose = { fields = { choice = { type = "integer", required = true } } },
   -- The source native-roamer creation (opcode 464): one raw source slot index
   -- the field roamer owner materializes and activates.
   create_roamer = { fields = { slot = { type = "integer", required = true } } },

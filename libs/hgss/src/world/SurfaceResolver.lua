@@ -28,6 +28,9 @@ SurfaceResolver.__index = SurfaceResolver
 -- from the current height by 5 << 14 in 16.16 fixed-point tile units.
 local STEP_HEIGHT_LIMIT = 5 * 2 ^ 14 / 2 ^ 16
 local HEIGHT_TIE_EPSILON = 1e-9
+-- A current record's plane must agree with the player's own height this
+-- closely for a crossing source it does not cover to count as a seam.
+local SEAM_PLANE_EPSILON = 0.01
 
 -- True when the error is an ordinary step rejection (the destination surface
 -- is beyond the reachable step height) rather than corrupted or ambiguous
@@ -54,6 +57,52 @@ local function raise(code, message, opts, extra)
   extra.localZ = opts.localZ
   extra.currentSurfaceId = opts.currentSurfaceId
   Errors.raise(code, message, extra)
+end
+
+-- A crossing source that the current plate's rectangle does not cover while
+-- the plate's own plane still passes through the player's height is a seam
+-- between two coincident records (BDHC plate sets overlap at seams, and a
+-- sloped record can reach past a flat neighbour's rectangle). The destination
+-- plan cell records a separate plate over the same ground, so the step is a
+-- continuous walk between two records of one floor, not a corrupted current
+-- surface. Returns the destination record that covers the whole crossing and
+-- stays within the step-height limit of the player's own height, or nil.
+---@param self SurfaceResolver
+---@param opts table<string, unknown>
+---@param current table<string, unknown>
+---@param candidates table[]
+---@return table|nil
+local function continuousSeamRecord(self, opts, current, candidates)
+  local crossing = assert(opts.crossing, "seam resolution requires a crossing")
+  if self.terrain:contains(current.id, crossing.fromX, crossing.fromZ)
+    and self.terrain:contains(current.id, (crossing.fromX + crossing.toX) / 2, (crossing.fromZ + crossing.toZ) / 2)
+  then
+    return nil
+  end
+  local currentY = opts.currentY
+  if currentY == nil then
+    return nil
+  end
+  local planeY = self.terrain:sampleHeight(current.id, crossing.fromX, crossing.fromZ)
+  if math.abs(planeY - currentY) > SEAM_PLANE_EPSILON then
+    -- The player's height is not on the current record's own plane: that is
+    -- the corrupted current-surface case, never a seam.
+    return nil
+  end
+  local edgeX = (crossing.fromX + crossing.toX) / 2
+  local edgeZ = (crossing.fromZ + crossing.toZ) / 2
+  for _, plate in ipairs(candidates) do
+    if plate.id ~= current.id
+      and self.terrain:contains(plate.id, edgeX, edgeZ)
+      and self.terrain:contains(plate.id, opts.localX, opts.localZ)
+    then
+      local destinationY = self.terrain:sampleHeight(plate.id, edgeX, edgeZ)
+      if math.abs(destinationY - currentY) < self.stepHeightLimit then
+        return plate
+      end
+    end
+  end
+  return nil
 end
 
 local function closestUnique(terrain, candidates, localX, localZ, currentY, opts)
@@ -111,6 +160,10 @@ function SurfaceResolver:resolve(opts)
       "crossing requires numeric endpoints"
     )
     if not self.terrain:contains(current.id, crossing.fromX, crossing.fromZ) then
+      local seam = continuousSeamRecord(self, opts, current, candidates)
+      if seam ~= nil then
+        return self.terrain:sample(seam.id, opts.localX, opts.localZ)
+      end
       raise(
         FieldErrors.TERRAIN_SURFACE_DISCONNECTED,
         "current surface does not cover the crossing source",
@@ -130,6 +183,14 @@ function SurfaceResolver:resolve(opts)
     local edgeX = (crossing.fromX + crossing.toX) / 2
     local edgeZ = (crossing.fromZ + crossing.toZ) / 2
     if not self.terrain:contains(current.id, edgeX, edgeZ) then
+      -- The current record's rectangle stops short of the shared edge while its
+      -- plane still passes through the player's height: the destination record
+      -- may cover the whole crossing continuously. Anything else stays a
+      -- corrupted current surface.
+      local seam = continuousSeamRecord(self, opts, current, candidates)
+      if seam ~= nil then
+        return self.terrain:sample(seam.id, opts.localX, opts.localZ)
+      end
       raise(
         FieldErrors.TERRAIN_SURFACE_DISCONNECTED,
         "current surface does not reach the shared edge",

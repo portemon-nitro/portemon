@@ -60,6 +60,7 @@ function GymMechanismTask.create(spec, ctx)
     useLastInteracted = spec.useLastInteracted,
     lastInteractedActor = spec.lastInteractedActor,
     kind = spec.kind,
+    choice = spec.choice,
   })
   return {
     phase = "wait",
@@ -67,6 +68,7 @@ function GymMechanismTask.create(spec, ctx)
     selector = spec.selector,
     switchNumber = spec.switchNumber,
     kind = spec.kind,
+    choice = spec.choice,
   }
 end
 

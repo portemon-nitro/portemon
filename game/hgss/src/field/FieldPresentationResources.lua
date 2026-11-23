@@ -868,12 +868,24 @@ function FieldPresentationResources.new(runtime)
         trapDefinitions[kind] = fieldEffectAssets.effects[kind]
       end
     end
+    -- The legendary-story scenes' own models travel with the same bundle: the
+    -- wing effect, the Mystri Stage, the Sinjoh Unown circle and egg cutscenes
+    -- and the Arceus montage's prepared layers and sprite.
+    local legendDefinitions = {}
+    for _, kind in ipairs({ "legend_wing", "sinjoh_stage", "sinjoh_unown", "sinjoh_egg" }) do
+      if fieldEffectAssets.effects[kind] ~= nil then
+        legendDefinitions[kind] = fieldEffectAssets.effects[kind]
+      end
+    end
+    local montageDefinition = fieldEffectAssets.effects.arceus_cinematic
     local alarmOverlayDefinition = fieldEffectAssets.effects.rocket_alarm_overlay
     local mechanismRenderer = nil
     if
       (carDefinition ~= nil and spiderDefinition ~= nil)
       or next(trapDefinitions) ~= nil
       or alarmOverlayDefinition ~= nil
+      or next(legendDefinitions) ~= nil
+      or montageDefinition ~= nil
     then
       mechanismRenderer = StoryEffectRenderer.new({
         car = carDefinition,
@@ -882,6 +894,8 @@ function FieldPresentationResources.new(runtime)
         platform = platformDefinitions,
         trap = next(trapDefinitions) ~= nil and trapDefinitions or nil,
         overlay = alarmOverlayDefinition ~= nil and alarmOverlayDefinition.overlay or nil,
+        legend = next(legendDefinitions) ~= nil and legendDefinitions or nil,
+        montage = montageDefinition,
       }, entrancePool)
     end
     if mechanismRenderer ~= nil and runtime.gymMechanism ~= nil then
@@ -905,7 +919,21 @@ function FieldPresentationResources.new(runtime)
         spider = newMechanismSpider,
         candle = candleDefinition ~= nil and newMechanismCandle or nil,
         platform = platformDefinitions ~= nil and newMechanismPlatform or nil,
+        sinjohStage = legendDefinitions.sinjoh_stage ~= nil and function(slot)
+          return mechanismRenderer:newSceneModel("sinjoh_stage", slot)
+        end or nil,
       })
+    end
+    if mechanismRenderer ~= nil and runtime.legendEventScene ~= nil and next(legendDefinitions) ~= nil then
+      self.gymMechanismRenderer = self.gymMechanismRenderer or mechanismRenderer
+      local legendRenderer = mechanismRenderer
+      local function newSceneModel(kind, _part, index)
+        return legendRenderer:newSceneModel(kind, index)
+      end
+      runtime.legendEventScene:setModelFactory(newSceneModel)
+      if montageDefinition ~= nil then
+        runtime.legendEventScene:setMontage(legendRenderer:newMontage(montageDefinition))
+      end
     end
     if mechanismRenderer ~= nil and runtime.rocketHideoutEffects ~= nil then
       self.gymMechanismRenderer = self.gymMechanismRenderer or mechanismRenderer

@@ -84,6 +84,8 @@ local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 ---@field traps table<string, table<string, unknown>>
 ---@field overlay StoryEffectOverlay?
 ---@field _trap table<string, unknown>?
+---@field _sceneResources table<string, table<integer, StoryEffectResource>>?
+---@field _montageImages table<string, unknown>?
 local StoryEffectRenderer = {}
 StoryEffectRenderer.__index = StoryEffectRenderer
 
@@ -121,12 +123,13 @@ local function buildResource(pool, definition, label)
   }
 end
 
----@param definitions { car: StoryEffectDefinition?, spider: StoryEffectDefinition?, candle: StoryEffectDefinition?, platform: StoryEffectPlatforms?, trap: table<string, StoryEffectDefinition>?, overlay: table<string, unknown>? } generated effect definitions
+---@param definitions { car: StoryEffectDefinition?, spider: StoryEffectDefinition?, candle: StoryEffectDefinition?, platform: StoryEffectPlatforms?, trap: table<string, StoryEffectDefinition>?, overlay: table<string, unknown>?, legend: table<string, table<string, unknown>>?, montage: table<string, unknown>? } generated effect definitions
 ---@param pool table<string, unknown> GpuAssetPool-shaped mesh/image owner
 ---@return StoryEffectRenderer
 function StoryEffectRenderer.new(definitions, pool)
   assert(
-    type(definitions) == "table" and (definitions.car ~= nil or definitions.trap ~= nil),
+    type(definitions) == "table"
+      and (definitions.car ~= nil or definitions.trap ~= nil or definitions.legend ~= nil or definitions.montage ~= nil),
     "story effect definitions are required for at least one source prop"
   )
   assert(pool and pool.meshFor and pool.sharedImage and pool.build, "field effect asset pool is required")
@@ -389,6 +392,13 @@ function StoryEffectRenderer:drawItems(status)
   if trap ~= nil and self._trap ~= nil then
     appendInstance(items, self._trap, trap)
   end
+  for _, placement in ipairs(status.parts or {}) do
+    local handle = placement.model
+    local record = type(handle) == "table" and handle.record or nil
+    if record ~= nil and record.instance ~= nil then
+      appendInstance(items, record, placement)
+    end
+  end
   for _, placement in ipairs(status.platforms or {}) do
     local record = self.platforms[assert(placement.slot, "a platform placement carries its slot")]
     if record ~= nil then
@@ -469,9 +479,146 @@ function StoryEffectRenderer:dispose()
   self.traps = {}
   self._trap = nil
   self.overlay = nil
+  self._sceneResources = nil
+  self._montageImages = nil
   self.resources = nil
   self.definitions = nil
   self.pool = nil
+end
+
+-- One legendary-story scene part realized over the shared pool: the source
+-- model with every clip record its phases declare. Unlike the mechanism props,
+-- a scene part carries several clips and the scene plays them phase by phase.
+---@param self StoryEffectRenderer
+---@param kind string scene definition key
+---@param index integer one-based part index
+---@return StoryEffectResource
+local function sceneResource(self, kind, index)
+  local definitions = assert(self.definitions and self.definitions.legend, "the renderer carries no legend scenes")
+  local definition = assert(definitions[kind], "the renderer has no " .. tostring(kind) .. " scene definition")
+  local part = assert(definition.parts and definition.parts[index], "the scene definition has no such part")
+  self._sceneResources = self._sceneResources or {}
+  local resources = self._sceneResources[kind]
+  if resources == nil then
+    resources = {}
+    self._sceneResources[kind] = resources
+  end
+  local resource = resources[index]
+  if resource ~= nil then
+    return resource
+  end
+  local descriptor = assert(part.model, "scene part carries its model descriptor")
+  local model = ModelDefinition.fromNitroDescriptor(descriptor)
+  local renderMeshesById = {}
+  for _, mesh in ipairs(model.meshes) do
+    local meshResource = self.pool:meshFor(mesh.geometry)
+    mesh.center = meshResource.center
+    renderMeshesById[mesh.id] = meshResource.mesh
+  end
+  resource = {
+    model = model,
+    renderMeshesById = renderMeshesById,
+    wraps = SceneDescriptor.wrapByMaterial(descriptor.materials),
+  }
+  resources[index] = resource
+  return resource
+end
+
+-- Claim one presented scene part. The scene owns the handle's lifetime and
+-- plays its source clips; the renderer only holds the pooled resources.
+---@param kind string scene definition key
+---@param index integer one-based part index
+---@return table<string, unknown> handle
+function StoryEffectRenderer:newSceneModel(kind, index)
+  local resource = sceneResource(self, kind, index)
+  local pool = self.pool
+  local function resolveImage(path, materialId)
+    local wrap = assert(resource.wraps[materialId], "scene material wrap is missing")
+    return pool:sharedImage(path, wrap.x, wrap.y)
+  end
+  local instance = ModelInstance.new(resource.model, { resolveImage = resolveImage })
+  local record = { instance = instance, resource = resource }
+  local handle = { record = record }
+  function handle:play(name, opts)
+    return instance:play(name, opts)
+  end
+  function handle:updateFixed()
+    instance:updateFixed()
+  end
+  function handle:dispose()
+    handle.record = nil
+  end
+  return handle
+end
+
+-- Claim the Arceus montage's prepared images. The layers are the source's own
+-- rasterized screen records; the sprite is the application's own cell frame.
+---@param definition table<string, unknown> the generated montage definition
+---@return table<string, unknown> handle
+function StoryEffectRenderer:newMontage(definition)
+  assert(type(definition) == "table" and type(definition.layers) == "table", "a montage definition is required")
+  local images = { layers = {}, sprite = nil }
+  for fileId, layer in pairs(definition.layers) do
+    images.layers[fileId] = { image = self.pool:sharedImage(layer.path, "clamp", "clamp"), width = layer.width, height = layer.height }
+  end
+  if definition.sprite ~= nil then
+    images.sprite = {
+      image = self.pool:sharedImage(definition.sprite.path, "clamp", "clamp"),
+      width = definition.sprite.width,
+      height = definition.sprite.height,
+    }
+  end
+  self._montageImages = images
+  local renderer = self
+  local handle = {}
+  function handle:dispose()
+    renderer._montageImages = nil
+  end
+  return handle
+end
+
+-- Paint the montage the scene publishes this tick: the visible source layers in
+-- their own priority order under the scene's blend level, then the application's
+-- own sprite at its source position. Layer and sprite pixels are prepared; this
+-- path only applies the snapshot.
+---@param status LegendEventScene.CinematicPresentation?
+function StoryEffectRenderer:drawMontage(status)
+  local images = self._montageImages
+  if images == nil or status == nil then
+    return false
+  end
+  local graphics = assert(love and love.graphics, "the Arceus montage requires the graphics boundary")
+  local width, height = graphics.getDimensions()
+  local blend = status.blend ~= nil and status.blend.ev or nil
+  local alpha = blend ~= nil and math.max(0, math.min(1, blend / 15)) or 1
+  local ordered = {}
+  for layer, path in pairs(status.layers or {}) do
+    ordered[#ordered + 1] = { layer = layer, path = path, priority = (status.priorities or {})[layer] or 0 }
+  end
+  table.sort(ordered, function(a, b)
+    return a.priority < b.priority
+  end)
+  for _, entry in ipairs(ordered) do
+    local image = images.layers[entry.layer]
+    if image ~= nil then
+      graphics.setColor(1, 1, 1, alpha)
+      graphics.draw(image.image, 0, 0, 0, width / image.width, height / image.height)
+    end
+  end
+  local sprite = status.sprite
+  if sprite ~= nil and sprite.visible == true and images.sprite ~= nil then
+    graphics.setColor(1, 1, 1, 1)
+    graphics.draw(
+      images.sprite.image,
+      sprite.x * (width / 256),
+      sprite.y * (height / 192),
+      0,
+      width / 256,
+      height / 192
+    )
+  end
+  graphics.setColor(1, 1, 1, 1)
+  return true
 end
 
 return StoryEffectRenderer

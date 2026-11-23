@@ -385,6 +385,7 @@ end
 ---@field gymMechanism table<string, unknown>|nil the active gym mechanism the gym task drives (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field trainerEncounter table<string, unknown>|nil the field trainer engagement owner the standard trainer commands read (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field rocketHideout table<string, unknown>|nil the field's Rocket effect owner the trap and alarm tasks drive (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field legendEvents table<string, unknown>|nil the field's legendary-story scene owner the scene task drives (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field blackout { loader: table<string, unknown>, sourceMap: fun(): table<string, unknown> }? blackout flow construction inputs
 ---@field blackoutFlow FieldBlackoutFlow? runtime-owned whiteout presentation and recovery flow
 
@@ -748,6 +749,7 @@ function FieldScripts.new(opts)
       gymMechanism = opts.gymMechanism,
       trainerEncounter = opts.trainerEncounter,
       rocketHideout = opts.rocketHideout,
+      legendEvents = opts.legendEvents,
       -- Optional backends: an absent service faults the operation that
       -- needs it (SCRIPT_SERVICE_MISSING) instead of silently succeeding.
       -- The production game wires real audio/camera/screen/events here when

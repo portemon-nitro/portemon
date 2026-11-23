@@ -466,6 +466,80 @@ function G2dDecoder.decodeScreen(data, opts)
   error(result)
 end
 
+-- One RLCN-wrapped TTLP palette (NNS G2D compressed palette container):
+-- header, TTLP chunk with its own depth and colour byte count, and an optional
+-- PMCP chunk marking a truncated all-transparent palette tail.
+local function decodeRlcnPalette(data, opts)
+  local reader = BinaryReader.new(data, opts.label or "g2d-palette")
+  local size = reader:length()
+  if size < 0x10 or reader:ascii(0, 4) ~= "RLCN" then
+    Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "palette member lacks the RLCN header", { size = size })
+  end
+  if reader:u16le(4) ~= 0xFEFF then
+    Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "palette RLCN byte order is not 0xFEFF", {
+      byteOrder = reader:u16le(4),
+    })
+  end
+  local totalSize = reader:u32le(8)
+  if totalSize ~= size then
+    Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "palette RLCN declares a different size", {
+      declared = totalSize,
+      size = size,
+    })
+  end
+  local ttlpOffset = reader:u16le(0x0C)
+  local chunkCount = reader:u16le(0x0E)
+  if chunkCount < 1 or ttlpOffset + 0x18 > size or reader:ascii(ttlpOffset, 4) ~= "TTLP" then
+    Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "palette RLCN has no valid TTLP chunk", {
+      ttlpOffset = ttlpOffset,
+      size = size,
+    })
+  end
+  local chunkSize = reader:u32le(ttlpOffset + 4)
+  local depth = reader:u32le(ttlpOffset + 8)
+  local paletteBytes = reader:u32le(ttlpOffset + 0x10)
+  local dataOffset = reader:u32le(ttlpOffset + 0x14)
+  -- Single-palette RLCN members carry the advisory depth word 0xA0004 with
+  -- the same colour layout; retail's NNS loader consumes both forms.
+  if depth ~= 3 and depth ~= 4 and depth ~= 0xA0004 then
+    Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "palette RLCN depth is not 4bpp, 8bpp or single-palette", {
+      depth = depth,
+    })
+  end
+  if chunkCount >= 2 then
+    local pcmpOffset = ttlpOffset + chunkSize
+    if pcmpOffset + 8 > size or reader:ascii(pcmpOffset, 4) ~= "PMCP" then
+      Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "palette RLCN compressed-palette chunk is invalid", {
+        pcmpOffset = pcmpOffset,
+        size = size,
+      })
+    end
+    local fullPaletteBytes = depth == 3 and 0x200 or depth == 0xA0004 and 0x20 or 0x2000
+    if ttlpOffset + 8 + dataOffset + paletteBytes > ttlpOffset + chunkSize then
+      if paletteBytes >= fullPaletteBytes then
+        Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "compressed palette size exceeds the full palette", {
+          paletteBytes = paletteBytes,
+          fullPaletteBytes = fullPaletteBytes,
+        })
+      end
+      paletteBytes = fullPaletteBytes - paletteBytes
+    end
+  end
+  local colorsOffset = ttlpOffset + 8 + dataOffset
+  if dataOffset < 8 or colorsOffset + paletteBytes > ttlpOffset + chunkSize or colorsOffset + paletteBytes > size then
+    Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "palette data exceeds the TTLP chunk bounds", {
+      colorsOffset = colorsOffset,
+      paletteBytes = paletteBytes,
+    })
+  end
+  local colorCount = math.floor(paletteBytes / 2)
+  local colors = {}
+  for i = 0, colorCount - 1 do
+    colors[i + 1] = Rgb555.decode(reader:u16le(colorsOffset + i * 2))
+  end
+  return { colors = colors }
+end
+
 ---@param data string
 ---@param opts? { label?: string }
 ---@return { colors: { r: integer, g: integer, b: integer }[] }?
@@ -474,12 +548,19 @@ function G2dDecoder.decodePalette(data, opts)
   assert(type(data) == "string", "G2dDecoder.decodePalette requires a string")
   opts = opts or {}
   if data:sub(1, 4) == "RLCN" then
-    -- RLCN-wrapped TTLP palette data (NNS_G2dGetUnpackedPaletteData).
-    local pal, err = FieldFontDecoder.decodePalette(data, { label = opts.label })
-    if not pal then
-      return nil, err
+    -- RLCN-wrapped TTLP palette data (NNS_G2dGetUnpackedPaletteData). The
+    -- container is the general Nitro compressed-palette form: an 8-bit or
+    -- 4-bit palette of any bank count, whose trailing all-transparent entries
+    -- the converter may have truncated. This is not the font's own palette
+    -- limit: a BG palette carries sixteen 256-colour banks.
+    local ok, pal = pcall(decodeRlcnPalette, data, opts)
+    if not ok then
+      if Errors.is(pal) then
+        return nil, pal
+      end
+      error(pal)
     end
-    return { colors = pal.colors }
+    return pal
   end
   local function decodePaletteBlock()
     local _, blks, reader = blocks(data, { magics = CONTAINER_MAGICS }, opts.label or "g2d-palette")

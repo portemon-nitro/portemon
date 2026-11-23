@@ -3495,10 +3495,14 @@ HANDLERS.hide_object = handleHideObject
 do
   local function handleMonPictureShow(node, run)
     local semantics = semanticsFor(run)
-    requireService(run, "monPicture"):show({
+    local picture = requireService(run, "monPicture")
+    picture:show({
       species = semantics.evaluateValue(node.species, run),
       gender = semantics.evaluateValue(node.gender, run),
     })
+    -- The window lives exactly as long as the environment that opened it: the
+    -- owner task holds it open and a cancelled scene takes it down.
+    run.scheduler:createTask("mon_picture", {}, run.instance, run.tick, run.input)
     return Runtime.OUTCOME_CONTINUE
   end
   local function handleMonPictureClose(_, run)
@@ -3509,9 +3513,83 @@ do
     requireService(run, "roamers"):create(node.slot)
     return Runtime.OUTCOME_CONTINUE
   end
+  -- ScrCmd_CheckEventKey (546): the save's own event key is a script variable
+  -- whose stored value must equal the key's source magic word; the answer
+  -- lands in the caller's output variable in the same tick. ScrCmd_
+  -- CheckGameClearFlag (305) and ScrCmd_SetGameClearFlag (306) read and set
+  -- the game-clear flag they name, also in their own tick.
+  local function handleCheckEventKey(node, run)
+    local stored = requireService(run, "world"):getVar(node.variable)
+    semanticsFor(run).writeRef(node.result, stored == node.magic and 1 or 0, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  local function handleCheckGameClear(node, run)
+    local flag = semanticsFor(run).resolveIdOperand(node.flag, run)
+    local cleared = requireService(run, "world"):isFlagSet(flag)
+    semanticsFor(run).writeRef(node.result, cleared and 1 or 0, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  local function handleSetGameClear(node, run)
+    requireService(run, "world"):setFlag(semanticsFor(run).resolveIdOperand(node.flag, run))
+    return Runtime.OUTCOME_CONTINUE
+  end
   HANDLERS.mon_picture_show = handleMonPictureShow
   HANDLERS.mon_picture_close = handleMonPictureClose
   HANDLERS.create_roamer = handleCreateRoamer
+  HANDLERS.check_event_key = handleCheckEventKey
+  HANDLERS.check_game_clear = handleCheckGameClear
+  HANDLERS.set_game_clear = handleSetGameClear
+end
+
+-- The source legendary-story scenes: ScrCmd_ShowLegendaryWing, ScrCmd_
+-- LanceFlyAway, ScrCmd_Cinematic, ScrCmd_UnownCircle and ScrCmd_
+-- SinjohGetEggCutscene all return TRUE in the source, so they block the script
+-- on the field's one legend scene owner. ScrCmd_SinjohFreezeAllModels settles
+-- in the same tick it is asked for, and ScrCmd_SinjohSetChosenLegend blocks on
+-- the stage's own common animation boundary. The main chunk is at LuaJIT's
+-- local budget, so these handlers live in a block.
+do
+  local function handleLegendWing(node, run)
+    requireForeground(run, node.op)
+    requireService(run, "legendEvents")
+    return blockOnTask(run, "legend_event", {
+      action = "wing",
+      kind = semanticsFor(run).evaluateValue(node.kind, run),
+    })
+  end
+  local function handleLanceDeparture(node, run)
+    requireForeground(run, node.op)
+    requireService(run, "legendEvents")
+    return blockOnTask(run, "legend_event", {
+      action = "lance_departure",
+      first = semanticsFor(run).evaluateValue(node.first, run),
+      second = semanticsFor(run).evaluateValue(node.second, run),
+    })
+  end
+  local function handleUnownCircle(_, run)
+    requireForeground(run, "sinjoh_unown_circle")
+    requireService(run, "legendEvents")
+    return blockOnTask(run, "legend_event", { action = "unown_circle" })
+  end
+  local function handleEggCutscene(node, run)
+    requireForeground(run, node.op)
+    requireService(run, "legendEvents")
+    return blockOnTask(run, "legend_event", { action = "egg_cutscene", choice = node.choice })
+  end
+  local function handleSinjohFreeze(_, run)
+    requireService(run, "gymMechanism"):freezeSinjohStage()
+    return Runtime.OUTCOME_CONTINUE
+  end
+  local function handleSinjohChoose(node, run)
+    requireService(run, "gymMechanism")
+    return blockOnTask(run, "gym_mechanism", { action = "sinjoh_choose", choice = node.choice })
+  end
+  HANDLERS.legend_wing = handleLegendWing
+  HANDLERS.lance_departure = handleLanceDeparture
+  HANDLERS.sinjoh_unown_circle = handleUnownCircle
+  HANDLERS.sinjoh_egg_cutscene = handleEggCutscene
+  HANDLERS.gym_sinjoh_freeze = handleSinjohFreeze
+  HANDLERS.gym_sinjoh_choose = handleSinjohChoose
 end
 HANDLERS.set_object_position = handleSetObjectPosition
 HANDLERS.set_object_facing = handleSetObjectFacing
@@ -3576,6 +3654,13 @@ local LEGEND_CUTSCENE_TASKS = {
 }
 local function handleLegendCutscene(node, run)
   requireForeground(run, node.op)
+  -- ScrCmd_Cinematic scene 2 is the Arceus montage, which this field drives
+  -- through its own legend scene owner; scenes 0 and 1 are the Bell Tower and
+  -- Whirl Islands cinematics the appearance scene runs.
+  if node.op == "legend_cinematic" and node.destination == 2 then
+    requireService(run, "legendEvents")
+    return blockOnTask(run, "legend_event", { action = "arceus_cinematic", kind = 2 })
+  end
   local scene = assert(requireService(run, "legendCutscene"))
   scene:command(node.op, node.destination)
   if LEGEND_CUTSCENE_TASKS[node.op] then

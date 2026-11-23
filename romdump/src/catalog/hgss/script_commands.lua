@@ -2209,12 +2209,18 @@ return {
       widths = {},
     },
     [305] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
+      feature = "field",
       name = "ScrCmd_CheckGameClearFlag",
       widths = {
         [1] = 2,
       },
     },
     [306] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
+      feature = "field",
       name = "ScrCmd_SetGameClearFlag",
       widths = {},
     },
@@ -4167,6 +4173,9 @@ return {
       },
     },
     [546] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
+      feature = "field",
       name = "ScrCmd_CheckEventKey",
       widths = {
         [1] = 1,
@@ -5853,18 +5862,26 @@ return {
     },
     [773] = {
       classification = "yield_to_task",
+      disposition = "supported",
+      feature = "field",
       name = "ScrCmd_Cinematic",
       widths = {
         [1] = 2,
       },
     },
     [774] = {
+      classification = "native_wait",
+      disposition = "supported",
+      feature = "field",
       name = "ScrCmd_ShowLegendaryWing",
       widths = {
         [1] = 2,
       },
     },
     [775] = {
+      classification = "native_wait",
+      disposition = "supported",
+      feature = "field",
       name = "ScrCmd_LanceFlyAway",
       widths = {
         [1] = 2,
@@ -6168,24 +6185,39 @@ return {
       },
     },
     [816] = {
+      classification = "native_wait",
+      disposition = "supported",
+      feature = "field",
       name = "ScrCmd_UnownCircle",
       widths = {},
     },
     [817] = {
+      classification = "native_wait",
+      disposition = "supported",
+      feature = "field",
       name = "ScrCmd_SinjohGetEggCutscene",
       widths = {
         [1] = 1,
       },
     },
     [818] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
+      feature = "field",
       name = "ScrCmd_MystriStageGymmickInit",
       widths = {},
     },
     [819] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
+      feature = "field",
       name = "ScrCmd_SinjohFreezeAllModels",
       widths = {},
     },
     [820] = {
+      classification = "native_wait",
+      disposition = "supported",
+      feature = "field",
       name = "ScrCmd_SinjohSetChosenLegend",
       widths = {
         [1] = 1,

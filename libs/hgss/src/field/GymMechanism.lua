@@ -27,6 +27,7 @@ local AzaleaGym = require("libs.hgss.src.field.gymmick.AzaleaGym")
 local CianwoodGym = require("libs.hgss.src.field.gymmick.CianwoodGym")
 local EcruteakGym = require("libs.hgss.src.field.gymmick.EcruteakGym")
 local BlackthornGym = require("libs.hgss.src.field.gymmick.BlackthornGym")
+local SinjohGym = require("libs.hgss.src.field.gymmick.SinjohGym")
 
 -- The source script environment's trainer attributes the candle commands read
 -- (SCRIPTENV_ENGAGED_TRAINER_0_EVENT): the live trainer engagement owner
@@ -55,6 +56,7 @@ local BlackthornGym = require("libs.hgss.src.field.gymmick.BlackthornGym")
 ---@field spider fun(slot: integer): table<string, unknown>
 ---@field candle (fun(index: integer): table<string, unknown>)? nil when the composition publishes no candle prop
 ---@field platform (fun(slot: integer, kind: string): table<string, unknown>)? nil when the composition publishes no platform prop
+---@field sinjohStage (fun(slot: integer): table<string, unknown>)? nil when the composition publishes no stage prop
 
 -- The immutable presentation snapshot the field draws: where the owned source
 -- props stand this tick. The mechanism owns every transform, so a renderer
@@ -77,6 +79,7 @@ local BlackthornGym = require("libs.hgss.src.field.gymmick.BlackthornGym")
 ---@field spiders GymMechanism.SpiderPlacement[]?
 ---@field candles GymMechanism.CandlePlacement[]?
 ---@field platforms GymMechanism.PlatformPlacement[]?
+---@field sinjoh SinjohGym.Placement[]?
 ---@field fog table<string, unknown>? the gym's own map fog the field applies
 
 ---@class GymMechanism
@@ -100,6 +103,7 @@ local BlackthornGym = require("libs.hgss.src.field.gymmick.BlackthornGym")
 ---@field private _ecruteak EcruteakGym|nil the live candle mechanism of this map
 ---@field private _winch CianwoodGym|nil the live winch cutscene
 ---@field private _blackthorn BlackthornGym|nil the live platform mechanism of this map
+---@field private _sinjoh SinjohGym|nil the live Mystri Stage mechanism of this map
 ---@field private _result integer|nil the source boolean the blocking command answers
 ---@field private _trainerEngagement GymMechanismTrainerEngagement|nil
 local GymMechanism = {}
@@ -154,6 +158,7 @@ function GymMechanism.new(options)
     _ecruteak = nil,
     _winch = nil,
     _blackthorn = nil,
+    _sinjoh = nil,
     _result = nil,
     _trainerEngagement = options.trainerEngagement,
   }, GymMechanism)
@@ -254,7 +259,11 @@ function GymMechanism:isRiding()
     return true
   end
   local ecruteak = self._ecruteak
-  return ecruteak ~= nil and not ecruteak:isExtinguishComplete()
+  if ecruteak ~= nil and not ecruteak:isExtinguishComplete() then
+    return true
+  end
+  local sinjoh = self._sinjoh
+  return sinjoh ~= nil and sinjoh:isWaiting()
 end
 
 -- The presented composition installs the source-model bridge once. A headless
@@ -275,8 +284,20 @@ function GymMechanism:setModelFactory(factory)
       factory.platform == nil or type(factory.platform) == "function",
       "a gym mechanism platform factory creates the source platform props"
     )
+    assert(
+      factory.sinjohStage == nil or type(factory.sinjohStage) == "function",
+      "a gym mechanism stage factory creates the Mystri Stage props"
+    )
   end
   self:_releaseModels()
+  -- The Mystri Stage's own models join its leaf, so a factory change recreates
+  -- that leaf: the composition installs the factory once, before the map's
+  -- stage script can read the phase clock.
+  local sinjoh = self._sinjoh
+  if sinjoh ~= nil then
+    self._sinjoh = nil
+    sinjoh:dispose()
+  end
   self._modelFactory = factory
   self:_syncModels()
 end
@@ -344,6 +365,11 @@ function GymMechanism:_releaseLeaves()
   if blackthorn ~= nil then
     blackthorn:dispose()
   end
+  local sinjoh = self._sinjoh
+  self._sinjoh = nil
+  if sinjoh ~= nil then
+    sinjoh:dispose()
+  end
 end
 
 -- Keep the presented props matched to the settled union the map loaded with.
@@ -360,6 +386,9 @@ function GymMechanism:_syncModels()
   local kind = self._state:kind()
   if kind == GymMechanismState.BLACKTHORN and self._runtimeMap ~= nil and self._blackthorn == nil then
     self:_blackthornGym()
+  end
+  if kind == GymMechanismState.SINJOH and self._runtimeMap ~= nil and self._sinjoh == nil then
+    self:_sinjohGym()
   end
   if factory == nil or self._runtimeMap == nil or kind == GymMechanismState.NONE then
     self:_releaseModels()
@@ -419,6 +448,13 @@ function GymMechanism:_syncModels()
     end
     return
   end
+  if kind == GymMechanismState.SINJOH then
+    self:_releaseCarModel()
+    self:_releaseSpiderModels()
+    self:_releaseCandleModels()
+    self:_releasePlatformModels()
+    return
+  end
   assert(kind == GymMechanismState.CIANWOOD, "the gym mechanism union is closed")
   self:_releaseModels()
 end
@@ -439,12 +475,22 @@ function GymMechanism:updatePresentation()
   for _, model in pairs(self._platformModels) do
     model:updateFixed()
   end
+  local sinjoh = self._sinjoh
+  if sinjoh ~= nil then
+    sinjoh:updatePresentation()
+  end
 end
 
 -- Advance the one gameplay mechanism this field drives without a script: the
 -- Blackthorn platform action a completed step started. Every other mechanism is
 -- driven by its blocking script task.
 function GymMechanism:updateFixed()
+  local sinjoh = self._sinjoh
+  if sinjoh ~= nil then
+    -- The source runs the stage's own SysTask every frame for the whole map
+    -- visit, independent of any script.
+    sinjoh:updateFixed()
+  end
   local blackthorn = self._blackthorn
   if blackthorn == nil then
     return
@@ -546,6 +592,9 @@ function GymMechanism:presentation()
     local blackthorn = self:_blackthornGym()
     return { car = nil, spiders = nil, candles = nil, platforms = blackthorn:presentation() }
   end
+  if kind == GymMechanismState.SINJOH then
+    return { car = nil, spiders = nil, candles = nil, sinjoh = self:_sinjohGym():presentation() }
+  end
   return { car = nil, spiders = nil, candles = nil }
 end
 
@@ -626,6 +675,33 @@ function GymMechanism:_blackthornGym()
     self._blackthorn = blackthorn
   end
   return blackthorn
+end
+
+-- The live Mystri Stage mechanism of this map. The source allocates the stage's
+-- local data at map load (GymmickInit_Sinjoh) and every stage command reads it;
+-- the leaf is only created for a map whose union is Sinjoh.
+---@private
+---@return SinjohGym
+function GymMechanism:_sinjohGym()
+  local sinjoh = self._sinjoh
+  if sinjoh == nil then
+    local factory = self._modelFactory
+    local newStage = factory ~= nil and factory.sinjohStage or nil
+    sinjoh = SinjohGym.new({
+      state = self._state,
+      modelFactory = newStage,
+    })
+    self._sinjoh = sinjoh
+    sinjoh:initialize()
+  end
+  return sinjoh
+end
+
+-- ScrCmd_SinjohFreezeAllModels: clear the three stage objects' active flags in
+-- the same tick; a map with no stage mechanism answers the source assertion.
+function GymMechanism:freezeSinjohStage()
+  requireKind(self, GymMechanismState.SINJOH)
+  self:_sinjohGym():freeze()
 end
 
 -- SCRIPTENV_ENGAGED_TRAINER_0_EVENT: the actor of engagement slot 0. A
@@ -769,6 +845,11 @@ function GymMechanism:begin(action, operands)
     end
     return
   end
+  if action == "sinjoh_choose" then
+    requireKind(self, GymMechanismState.SINJOH)
+    self:_sinjohGym():choose(assert(operands.choice, "the Sinjoh choice needs its raw source value"))
+    return
+  end
   Errors.raise(FieldErrors.FIELD_GYM_MECHANISM_INVALID, "unknown gym mechanism action", { action = tostring(action) })
 end
 
@@ -805,6 +886,14 @@ function GymMechanism:step()
     end
     winch:dispose()
     self._winch = nil
+    return "complete"
+  end
+  local sinjoh = self._sinjoh
+  if sinjoh ~= nil and sinjoh:isWaiting() then
+    sinjoh:updateFixed()
+    if sinjoh:isWaiting() then
+      return "riding"
+    end
     return "complete"
   end
   local ecruteak = self._ecruteak
@@ -845,6 +934,12 @@ function GymMechanism:cancelRide(reason)
   local blackthorn = self._blackthorn
   if blackthorn ~= nil then
     blackthorn:cancel()
+  end
+  local sinjoh = self._sinjoh
+  if sinjoh ~= nil and sinjoh:isWaiting() then
+    -- The source committed the stored choice before the wait; cancelling only
+    -- abandons the pending phase transition.
+    sinjoh:cancelWait()
   end
   local ride = self._active
   if ride == nil then

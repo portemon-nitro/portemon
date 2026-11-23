@@ -251,4 +251,91 @@ function T.current_surface_disconnected_from_the_crossing_is_a_distinct_kind()
   Assert.equal(err.context.kind, "current-inconsistent")
 end
 
+function T.a_coincident_plate_seam_resolves_continuously()
+  -- Two BGHC records cover one floor with different rectangles: the current
+  -- record's plane passes through the player's height but its rectangle stops
+  -- short of the crossing source, while the destination record covers the
+  -- whole crossing within the step limit. That is a seam between overlapping
+  -- records, not a corrupted current surface.
+  local t = terrain({
+    points = {
+      { x = 0, z = -16 },
+      { x = 16, z = 16 },
+      { x = -16, z = -16 },
+      { x = 0, z = 16 },
+    },
+    heights = { TerrainFixture.heightRaw(0), TerrainFixture.heightRaw(1) },
+    plates = {
+      { minPointIndex = 0, maxPointIndex = 1, slopeIndex = 0, heightIndex = 0 },
+      { minPointIndex = 2, maxPointIndex = 3, slopeIndex = 0, heightIndex = 1 },
+    },
+  })
+  local sample = SurfaceResolver.new(t):resolve({
+    localX = 8.5,
+    localZ = 8.5,
+    currentSurfaceId = 0,
+    currentY = 0,
+    crossing = { fromX = 7.5, fromZ = 8.5, toX = 8.5, toZ = 8.5 },
+  })
+  Assert.equal(sample.surfaceId, 1, "the destination record answers the seam crossing")
+  near(sample.worldY, 1, 1e-6)
+end
+
+function T.a_seam_beyond_the_step_height_is_still_rejected()
+  local t = terrain({
+    points = {
+      { x = 0, z = -16 },
+      { x = 16, z = 16 },
+      { x = -16, z = -16 },
+      { x = 0, z = 16 },
+    },
+    heights = { TerrainFixture.heightRaw(0), TerrainFixture.heightRaw(4) },
+    plates = {
+      { minPointIndex = 0, maxPointIndex = 1, slopeIndex = 0, heightIndex = 0 },
+      { minPointIndex = 2, maxPointIndex = 3, slopeIndex = 0, heightIndex = 1 },
+    },
+  })
+  local err = Assert.throws(function()
+    SurfaceResolver.new(t):resolve({
+      localX = 8.5,
+      localZ = 8.5,
+      currentSurfaceId = 0,
+      currentY = 0,
+      crossing = { fromX = 7.5, fromZ = 8.5, toX = 8.5, toZ = 8.5 },
+    })
+  end)
+  Assert.equal(err.code, "TERRAIN_SURFACE_DISCONNECTED")
+  Assert.equal(err.context.kind, "current-inconsistent", "a real step beyond the source limit stays rejected")
+end
+
+function T.a_current_record_off_the_player_height_stays_corruption()
+  -- The current record's own plane does not pass through the player's height:
+  -- the reported terrain state is inconsistent, so the resolver propagates it
+  -- even when a destination record would cover the whole crossing.
+  local t = terrain({
+    points = {
+      { x = 0, z = -16 },
+      { x = 16, z = 16 },
+      { x = -16, z = -16 },
+      { x = 0, z = 16 },
+    },
+    heights = { TerrainFixture.heightRaw(0), TerrainFixture.heightRaw(1) },
+    plates = {
+      { minPointIndex = 0, maxPointIndex = 1, slopeIndex = 0, heightIndex = 0 },
+      { minPointIndex = 2, maxPointIndex = 3, slopeIndex = 0, heightIndex = 1 },
+    },
+  })
+  local err = Assert.throws(function()
+    SurfaceResolver.new(t):resolve({
+      localX = 8.5,
+      localZ = 8.5,
+      currentSurfaceId = 0,
+      currentY = 1,
+      crossing = { fromX = 7.5, fromZ = 8.5, toX = 8.5, toZ = 8.5 },
+    })
+  end)
+  Assert.equal(err.code, "TERRAIN_SURFACE_DISCONNECTED")
+  Assert.equal(err.context.kind, "current-inconsistent")
+end
+
 return { tests = T }

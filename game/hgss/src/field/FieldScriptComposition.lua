@@ -840,12 +840,16 @@ function FieldScriptComposition.compose(runtime, options)
       close = function(_)
         return runtime.monPicture:close()
       end,
+      status = function(_)
+        return runtime.monPicture:status()
+      end,
     },
     overworld = runtime.overworld,
     propAnimations = runtime.propAnimations,
     gymMechanism = runtime.gymMechanism,
     trainerEncounter = runtime.trainerEncounter,
     rocketHideout = runtime.rocketHideoutEffects,
+    legendEvents = runtime.legendEventScene,
     pokemonCenterHeal = runtime.pokemonCenterHeal,
     blackout = {
       loader = runtime.mapLoader,

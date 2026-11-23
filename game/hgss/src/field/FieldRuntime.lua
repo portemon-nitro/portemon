@@ -1753,6 +1753,31 @@ function FieldRuntime:_composeFieldServices(boot)
     foregroundScript = currentForegroundScriptId,
   })
   self.rocketHideoutEffects:bindMap()
+  -- The source legendary-story scenes: the wing effect with its own looping
+  -- clips and map child, Lance's departure, the Sinjoh Unown circle and egg
+  -- cutscenes, and the Arceus montage. One owner per live field; a scene only
+  -- presents the generated definitions the field-effect bundle published, and
+  -- a missing one faults before the scene claims anything.
+  local LegendEventScene = require("libs.hgss.src.field.LegendEventScene")
+  local function currentScriptBankId()
+    local runtimeMap = self.session ~= nil and self.session.currentMap or self.runtimeMap
+    local fieldData = runtimeMap ~= nil and runtimeMap.fieldData or nil
+    local bankId = type(fieldData) == "table" and fieldData.scriptBankId or nil
+    return type(bankId) == "number" and bankId or nil
+  end
+  local effectDefinitions = assert(
+    self.fieldEffectAssets and self.fieldEffectAssets.effects,
+    "the legendary-story scenes require the generated field-effect bundle"
+  )
+  self.legendEventScene = LegendEventScene.new({
+    definitions = effectDefinitions,
+    audio = assert(self.audio or (self.scriptHosts and self.scriptHosts.audio), "the legend scenes need the source audio host"),
+    screen = self.screenFade,
+    actors = self.actors,
+    playerOf = currentMechanismPlayer,
+    foregroundScript = currentForegroundScriptId,
+    currentScriptBankId = currentScriptBankId,
+  })
   self.starterBalls = composeStarterBalls(self)
   self.partySelection = buildPartySelectionHost(self, boot.cacheFs)
   self:_composePartyMenu(boot.cacheFs)
@@ -2436,6 +2461,9 @@ function FieldRuntime:update(dt)
     end
     if self.rocketHideoutEffects then
       self.rocketHideoutEffects:updatePresentation()
+    end
+    if self.legendEventScene then
+      self.legendEventScene:updatePresentation()
     end
     self:_processApricornDate()
     -- The transient banner advances one fixed tick before the session so a
@@ -6256,6 +6284,10 @@ function FieldRuntime:_releaseAll()
   self.windowStyles, self.uiManifest, self.fontDef, self.weatherCatalog = nil, nil, nil, nil
   self.monCatalog, self.monLanguage, self.monService = nil, nil, nil
   self.monPicture = nil
+  if self.legendEventScene ~= nil then
+    self.legendEventScene:cancel("the field retired")
+  end
+  self.legendEventScene = nil
   self.easyChatCatalog, self.easyChatState = nil, nil
   self._easyChatPreparation, self._easyChatBindingId = nil, nil
   self.pokedexCatalog, self.dexKnowledge, self.gameStats = nil, nil, nil

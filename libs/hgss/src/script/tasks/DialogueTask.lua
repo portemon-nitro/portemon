@@ -164,7 +164,9 @@ function DialogueTask.cancel(state, reason, ctx)
   -- The host owns the engine window; leave no box open when the task is
   -- cancelled before its close delay ran.
   if ctx ~= nil and ctx.services ~= nil and ctx.services.dialogue ~= nil and ctx.services.dialogue:isOpen() then
-    ctx.services.dialogue:close(false)
+    -- The host cannot preserve a closed box: a cancelled scene erases its
+    -- window instead of leaving a modal dialogue no script owns.
+    ctx.services.dialogue:close(true)
   end
 end
 

@@ -212,7 +212,11 @@ end
 
 -- Decode the SRT0 record at `record` (absolute within the section reader).
 function Nsbta.decodeRecord(r, record, context)
-  r:assertRange(record, 0x20, "nsbta-record-header")
+  -- The record header itself ends at +0x0F; a record's target table follows and
+  -- each target carries its own 40-byte record. An empty SRT animation (zero
+  -- targets) is a legal 24-byte record, so the header check must not demand
+  -- room for a target the record does not have.
+  r:assertRange(record, 0x10, "nsbta-record-header")
   local numFrame = r:u16le(record + 0x04)
   local ofsTargets = r:u16le(record + 0x0E)
   -- The target count is the byte ObjInitNsBta reads (record + 0x09); the

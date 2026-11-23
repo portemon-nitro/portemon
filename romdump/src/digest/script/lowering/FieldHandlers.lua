@@ -718,11 +718,14 @@ local function bufferTrainerClassName(ins)
   }
 end
 
+-- ScrCmd_BufferSpeciesName reads its species through ScriptGetVar: the
+-- operand is a variable reference whose live value names the species, so it
+-- lowers as a value reference and never as the variable's own symbol.
 local function bufferSpeciesName(ins)
   return {
     op = "buffer_text",
     slot = Operands.operandValue(ins.operands[1]),
-    value = { text = "species_name", value = Operands.operandValue(ins.operands[2]) },
+    value = { text = "species_name", value = Operands.varRef(ins.operands[2]) },
   }
 end
 
@@ -1735,6 +1738,84 @@ function FieldWindowLowering.closeMonPicture()
   return { op = "mon_picture_close" }
 end
 
+-- The save's own two event keys, in source order: ScrCmd_CheckEventKey
+-- (src/scrcmd_c.c) reads the raw key selector and compares that key's stored
+-- script variable against its magic word. The table is a field, not a module
+-- local: this file sits exactly at LuaJIT's 200-local budget.
+FieldWindowLowering.EVENT_KEYS = {
+  { variable = "VAR_UNK_4043", magic = 0x06F2 },
+  { variable = "VAR_UNK_4044", magic = 0xAD7C },
+}
+
+-- ScrCmd_CheckEventKey: one raw key byte selects the stored event key, and the
+-- answer lands in the caller's output variable in the same tick.
+function FieldWindowLowering.checkEventKey(ins)
+  local key = Operands.operandValue(ins.operands[1])
+  local source = assert(FieldWindowLowering.EVENT_KEYS[key + 1], "event key selector names a source event key")
+  return {
+    op = "check_event_key",
+    variable = source.variable,
+    magic = source.magic,
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+-- ScrCmd_ShowLegendaryWing (src/field/script_field_effects.c): reads its kind
+-- through ScriptGetVar and blocks on the effect's own begin/loop/end clips and
+-- on the map child script the loop starts.
+function FieldWindowLowering.showLegendaryWing(ins)
+  return { op = "legend_wing", kind = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_LanceFlyAway (src/field/scrcmd_pokemon_misc.c): two object ids read
+-- through ScriptGetVar, then the source fly-with-object take-off blocks the
+-- script until the cut-in finished.
+function FieldWindowLowering.lanceFlyAway(ins)
+  return {
+    op = "lance_departure",
+    first = Operands.varRef(ins.operands[1]),
+    second = Operands.varRef(ins.operands[2]),
+  }
+end
+
+-- ScrCmd_UnownCircle / ScrCmd_SinjohGetEggCutscene (src/scrcmd_c.c): the first
+-- takes no operand, the second reads its source variant byte. Both block until
+-- the scene returned.
+function FieldWindowLowering.unownCircle()
+  return { op = "sinjoh_unown_circle" }
+end
+
+function FieldWindowLowering.sinjohEggCutscene(ins)
+  return { op = "sinjoh_egg_cutscene", choice = Operands.operandValue(ins.operands[1]) }
+end
+
+-- ScrCmd_MystriStageGymmickInit installs the Sinjoh union, ScrCmd_
+-- SinjohFreezeAllModels clears the stage objects' active flags and ScrCmd_
+-- SinjohSetChosenLegend reads one raw choice byte and blocks on the stage's
+-- common animation boundary.
+function FieldWindowLowering.sinjohInit()
+  return { op = "gym_init", kind = "sinjoh" }
+end
+
+function FieldWindowLowering.sinjohFreeze()
+  return { op = "gym_sinjoh_freeze" }
+end
+
+function FieldWindowLowering.sinjohChoose(ins)
+  return { op = "gym_sinjoh_choose", choice = Operands.operandValue(ins.operands[1]) }
+end
+
+-- ScrCmd_CheckGameClearFlag: reads the save's game-clear flag into the output
+-- variable and returns FALSE.
+function FieldWindowLowering.checkGameClearFlag(ins)
+  return { op = "check_game_clear", flag = "FLAG_GAME_CLEAR", result = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_SetGameClearFlag: sets that same flag and returns FALSE.
+function FieldWindowLowering.setGameClearFlag()
+  return { op = "set_game_clear", flag = "FLAG_GAME_CLEAR" }
+end
+
 local FieldHandlers = {
   [44] = nonNpcMessage,
   [45] = npcMessage,
@@ -1766,6 +1847,16 @@ local FieldHandlers = {
   [452] = FieldWindowLowering.showMonPicture,
   [453] = FieldWindowLowering.closeMonPicture,
   [464] = FieldWindowLowering.createRoamer,
+  [305] = FieldWindowLowering.checkGameClearFlag,
+  [306] = FieldWindowLowering.setGameClearFlag,
+  [546] = FieldWindowLowering.checkEventKey,
+  [774] = FieldWindowLowering.showLegendaryWing,
+  [775] = FieldWindowLowering.lanceFlyAway,
+  [816] = FieldWindowLowering.unownCircle,
+  [817] = FieldWindowLowering.sinjohEggCutscene,
+  [818] = FieldWindowLowering.sinjohInit,
+  [819] = FieldWindowLowering.sinjohFreeze,
+  [820] = FieldWindowLowering.sinjohChoose,
   [104] = facePlayer,
   [105] = getPlayerCoords,
   [106] = getObjectCoords,

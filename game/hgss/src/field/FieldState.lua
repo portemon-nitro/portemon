@@ -1011,6 +1011,12 @@ function FieldState:_worldParts(alpha)
   local rocketEffects = self.runtime.rocketHideoutEffects
   worldParts[17] = (mechanismRenderer and rocketEffects) and mechanismRenderer:drawItems(rocketEffects:presentation())
     or NO_DRAWS
+  -- The legendary-story scenes publish their own per-tick snapshot: the
+  -- presented source models draw through the world queue and the Arceus
+  -- montage's prepared layers draw under this scene's own blend.
+  local legendScene = self.runtime.legendEventScene
+  worldParts[18] = (mechanismRenderer and legendScene) and mechanismRenderer:drawItems(legendScene:presentation())
+    or NO_DRAWS
   return worldParts
 end
 
@@ -1842,6 +1848,9 @@ function FieldState:draw()
   -- modal surface and under the script's own screen covers, exactly where the
   -- source loads it into the main background layer.
   self:_drawRocketAlarmOverlay(resources)
+  -- The Arceus montage's prepared layers paint over the world like the alarm
+  -- overlay: it is the scene's own screen takeover, presented in-field.
+  self:_drawLegendMontage(resources)
   if not legendCinematic then
     self:_drawScriptScreenFadeIfNeeded()
   end
@@ -1961,6 +1970,25 @@ function FieldState:_drawRocketAlarmOverlay(resources)
     return
   end
   renderer:drawAlarmOverlay(effects:presentation())
+end
+
+-- Paint the Arceus montage's prepared layers over the world while the scene
+-- presents them; the scene owns which layers are visible and their blend.
+---@param resources FieldPresentationResources
+function FieldState:_drawLegendMontage(resources)
+  local scene = self.runtime.legendEventScene
+  if scene == nil then
+    return
+  end
+  local presentation = scene:presentation()
+  if presentation.cinematic == nil then
+    return
+  end
+  local renderer = resources.gymMechanismRenderer
+  if renderer == nil then
+    return
+  end
+  renderer:drawMontage(presentation.cinematic)
 end
 
 function FieldState:_drawScriptScreenFadeIfNeeded()

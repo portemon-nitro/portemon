@@ -9,6 +9,7 @@
 --   ecruteak   { candles = {false x4} }                   the four candles' burnt state
 --   cianwood   { winchRaised = boolean }                  the one-shot winch
 --   blackthorn { platforms = {{x,z,rotation} x3} }        the three platforms
+--   sinjoh     { choice = 0..3 }                          the Mystri Stage's unresolved/chosen legend
 --
 -- The source installs a kind through Save_Gymmick_Init (gym init) and clears
 -- the union on every non-connection map entry; here restore/initialize own the
@@ -33,6 +34,7 @@ GymMechanismState.AZALEA = "azalea"
 GymMechanismState.ECRUTEAK = "ecruteak"
 GymMechanismState.CIANWOOD = "cianwood"
 GymMechanismState.BLACKTHORN = "blackthorn"
+GymMechanismState.SINJOH = "sinjoh"
 
 -- The source's spider slots and switch bits (include/gymmick.h).
 GymMechanismState.SPIDER_SLOTS = 4
@@ -60,6 +62,11 @@ GymMechanismState.BLACKTHORN_ROTATIONS = 4
 -- (include/gymmick.h::GymmickUnion.blackthorn).
 GymMechanismState.BLACKTHORN_COORDINATE_MAX = 0xFFFF
 
+-- src/field/gymmick/sinjoh.c::SinjohGymmick_SetChosenLegend stores one raw
+-- choice in the source union: 0 is the unresolved stage, 1..3 name the
+-- pedestal the player stands on.
+GymMechanismState.SINJOH_CHOICES = 4
+
 -- src/gymmick_init.c::InitBlackthornGym places the three platforms.
 GymMechanismState.BLACKTHORN_INITIAL_PLATFORMS = {
   { x = 13, z = 75, rotation = 0 },
@@ -74,6 +81,7 @@ local KINDS = {
   [GymMechanismState.ECRUTEAK] = true,
   [GymMechanismState.CIANWOOD] = true,
   [GymMechanismState.BLACKTHORN] = true,
+  [GymMechanismState.SINJOH] = true,
 }
 
 ---@param message string
@@ -243,6 +251,21 @@ local function checkCianwoodData(data)
   return { winchRaised = data.winchRaised }
 end
 
+---@param data unknown
+---@return table<string, unknown>
+local function checkSinjohData(data)
+  if type(data) ~= "table" then
+    fail("sinjoh mechanism data must be a record", {})
+  end
+  assert(type(data) == "table", "sinjoh data validation reads the record")
+  local choice = data.choice
+  if not isInteger(choice) or choice < 0 or choice >= GymMechanismState.SINJOH_CHOICES then
+    fail("sinjoh choice is outside the source pedestal range", { choice = tostring(choice) })
+  end
+  checkNoUnknownFields(data, { choice = true }, "sinjoh mechanism data")
+  return { choice = choice }
+end
+
 ---@param kind unknown
 ---@param data unknown
 ---@return table<string, unknown> detached record
@@ -269,6 +292,9 @@ local function checkUnion(kind, data)
   end
   if kind == GymMechanismState.BLACKTHORN then
     return checkBlackthornData(data)
+  end
+  if kind == GymMechanismState.SINJOH then
+    return checkSinjohData(data)
   end
   return checkAzaleaData(data)
 end
@@ -310,6 +336,9 @@ function GymMechanismState:initialize(kind)
   elseif kind == GymMechanismState.BLACKTHORN then
     -- InitBlackthornGym places the three source platforms.
     defaults = { platforms = GymMechanismState.BLACKTHORN_INITIAL_PLATFORMS }
+  elseif kind == GymMechanismState.SINJOH then
+    -- GymmickInit_Sinjoh loads the stage and leaves the choice unresolved.
+    defaults = { choice = 0 }
   end
   self._data = checkUnion(kind, defaults)
 end
@@ -500,6 +529,25 @@ function GymMechanismState:advanceBlackthornRotation(index)
   local platforms = assert(self._data.platforms, "a blackthorn union always carries its platforms") --[[@as table[] ]]
   local platform = platforms[slot]
   platform.rotation = (platform.rotation + 1) % GymMechanismState.BLACKTHORN_ROTATIONS
+end
+
+-- The Mystri Stage's chosen pedestal (src/field/gymmick/sinjoh.c): zero while
+-- the stage still waits for a choice, 1..3 once one was stored and activated.
+---@return integer
+function GymMechanismState:sinjohChoice()
+  requireKind(self, GymMechanismState.SINJOH)
+  local choice = self._data.choice
+  assert(isInteger(choice), "a sinjoh union always carries its choice")
+  return choice
+end
+
+---@param choice integer
+function GymMechanismState:setSinjohChoice(choice)
+  requireKind(self, GymMechanismState.SINJOH)
+  if not isInteger(choice) or choice < 0 or choice >= GymMechanismState.SINJOH_CHOICES then
+    fail("sinjoh choice is outside the source pedestal range", { choice = tostring(choice) })
+  end
+  self._data.choice = choice
 end
 
 ---@return table<string, unknown> detached bucket

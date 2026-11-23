@@ -978,6 +978,11 @@ function Compiler.compile(romFs, hashLua)
   end
   effects[FieldEffects.hideoutAlarmOverlay.key] =
     assert(storyEffects.definitions[FieldEffects.hideoutAlarmOverlay.key], "hideout alarm overlay is missing")
+  -- The legendary-story scenes: the wing effect, the Mystri Stage, the Sinjoh
+  -- Unown circle and egg cutscenes and the Arceus montage application.
+  for _, kind in ipairs(FieldEffectAssetCache.LEGEND_SCENE_KINDS) do
+    effects[kind] = assert(storyEffects.definitions[kind], "legend scene definition is missing: " .. kind)
+  end
   -- The Ho-Oh appearance record is published in parts (core, and per
   -- cinematic shot a shared part plus per-variant overlays).
   for kind, definition in pairs(hoOhAppearance.definitions) do
@@ -1084,6 +1089,13 @@ function Compiler.compile(romFs, hashLua)
     definition = FieldEffects.hideoutAlarmOverlay.key,
     path = FieldEffectAssetCache.definitionPath(FieldEffects.hideoutAlarmOverlay.key),
   }
+  for _, kind in ipairs(FieldEffectAssetCache.LEGEND_SCENE_KINDS) do
+    index.effects[kind] = {
+      kind = FieldEffectAssetCache.legendSceneEntryKind(kind),
+      definition = kind,
+      path = FieldEffectAssetCache.definitionPath(kind),
+    }
+  end
   for kind in pairs(hoOhAppearance.definitions) do
     index.effects[kind] = {
       kind = "cinematic",

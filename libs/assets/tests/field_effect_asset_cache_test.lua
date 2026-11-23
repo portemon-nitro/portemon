@@ -282,6 +282,42 @@ local function validLugiaDefinition()
   return { models = models }
 end
 
+
+-- The legendary-story scene definitions this family publishes: the model scenes
+-- and the montage application.
+local function validLegendSceneDefinition(partCount)
+  local parts = {}
+  for index = 1, partCount do
+    local model = validDynamicModel()
+    model.key = "field-effect:legend-part-" .. index
+    parts[index] = {
+      model = model,
+      clips = { joint = { ids = { "joint.trs" }, frames = 3 } },
+    }
+  end
+  return { parts = parts }
+end
+
+local MONTAGE_TEXTURE = "assets/generated/field/effects/textures/0123456789abcdef.png"
+
+local function validArceusDefinition()
+  return {
+    bgm = "SEQ_GS_E_ARCEUS",
+    timeline = { { 12 }, { 6, 0, 58 }, { 0, 2 }, { 19 } },
+    layers = {
+      [58] = { path = MONTAGE_TEXTURE, width = 256, height = 256 },
+    },
+    sprite = { path = MONTAGE_TEXTURE, width = 64, height = 64 },
+  }
+end
+
+local function legendSceneDefinition(kind)
+  if kind == "arceus_cinematic" then
+    return validArceusDefinition()
+  end
+  return validLegendSceneDefinition(kind == "legend_wing" and 2 or 3)
+end
+
 local function isHoOhKind(kind)
   return kind == "ho_oh_appearance" or kind:match("^ho_oh_cinematic_") ~= nil
 end
@@ -309,6 +345,11 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
     "celebi_time_travel",
     "ho_oh_appearance",
     "lugia_appearance",
+    "legend_wing",
+    "sinjoh_stage",
+    "sinjoh_unown",
+    "sinjoh_egg",
+    "arceus_cinematic",
   }) do
     index.effects[kind] = {
       kind = (kind == "warp_entrance" or kind == "surf_attachment") and "model"
@@ -316,6 +357,9 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
         or kind == "pokemon_center_heal" and "healing"
         or kind == "rocket_alarm_overlay" and "overlay"
         or (kind == "celebi_time_travel" or kind == "ho_oh_appearance" or kind == "lugia_appearance") and "cinematic"
+        or kind == "arceus_cinematic" and "montage"
+        or (kind == "legend_wing" or kind == "sinjoh_stage" or kind == "sinjoh_unown" or kind == "sinjoh_egg")
+          and "scene"
         or "animated_model",
       definition = kind,
       path = FieldEffectAssetCache.definitionPath(kind),
@@ -447,6 +491,12 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
       if kind == "lugia_appearance" then
         return extra.lugiaDefinition or validLugiaDefinition()
       end
+      if kind == "legend_wing" or kind == "sinjoh_stage" or kind == "sinjoh_unown" or kind == "sinjoh_egg" then
+        return legendSceneDefinition(kind)
+      end
+      if kind == "arceus_cinematic" then
+        return validArceusDefinition()
+      end
       if kind == "violet_gym_car" or kind == "azalea_gym_spinarak" or kind:match("^rocket_trap_") then
         return validMechanismPropDefinition(kind)
       end
@@ -503,7 +553,7 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
       return definition
     end,
     exists = function(_, path)
-      return present[path] == true
+      return present[path] == true or path == MONTAGE_TEXTURE
     end,
   }
 end
@@ -902,6 +952,31 @@ local function surfCache(surfDefinition, mutateIndex)
         definition = "lugia_appearance",
         path = FieldEffectAssetCache.definitionPath("lugia_appearance"),
       },
+      legend_wing = {
+        kind = "scene",
+        definition = "legend_wing",
+        path = FieldEffectAssetCache.definitionPath("legend_wing"),
+      },
+      sinjoh_stage = {
+        kind = "scene",
+        definition = "sinjoh_stage",
+        path = FieldEffectAssetCache.definitionPath("sinjoh_stage"),
+      },
+      sinjoh_unown = {
+        kind = "scene",
+        definition = "sinjoh_unown",
+        path = FieldEffectAssetCache.definitionPath("sinjoh_unown"),
+      },
+      sinjoh_egg = {
+        kind = "scene",
+        definition = "sinjoh_egg",
+        path = FieldEffectAssetCache.definitionPath("sinjoh_egg"),
+      },
+      arceus_cinematic = {
+        kind = "montage",
+        definition = "arceus_cinematic",
+        path = FieldEffectAssetCache.definitionPath("arceus_cinematic"),
+      },
     },
   }
   for _, kind in ipairs(FieldEffectAssetCache.hoOhPartKinds()) do
@@ -941,6 +1016,12 @@ local function surfCache(surfDefinition, mutateIndex)
       end
       if kind == "lugia_appearance" then
         return validLugiaDefinition()
+      end
+      if kind == "legend_wing" or kind == "sinjoh_stage" or kind == "sinjoh_unown" or kind == "sinjoh_egg" then
+        return legendSceneDefinition(kind)
+      end
+      if kind == "arceus_cinematic" then
+        return validArceusDefinition()
       end
       if kind == "follower_transition" then
         return {
@@ -1015,7 +1096,7 @@ local function surfCache(surfDefinition, mutateIndex)
       error("unexpected field-effect cache path " .. path)
     end,
     exists = function(_, path)
-      return present[path] == true
+      return present[path] == true or path == MONTAGE_TEXTURE
     end,
   }
 end

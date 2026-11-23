@@ -41,6 +41,11 @@ function M.load(cacheFs)
     local definition = assert(cacheFs:loadLua(entry.path), "field-effect definition is missing: " .. kind)
     effects[kind] = definition
   end
+  -- The legendary-story scenes the field script platform drives.
+  for _, kind in ipairs(FieldEffectAssetCache.LEGEND_SCENE_KINDS) do
+    local entry = assert(index.effects[kind], "field-effect index is missing " .. kind)
+    effects[kind] = assert(cacheFs:loadLua(entry.path), "field-effect definition is missing: " .. kind)
+  end
   local healingEntry = assert(index.effects.pokemon_center_heal, "field-effect index is missing pokemon_center_heal")
   assert(
     healingEntry.kind == "healing"
