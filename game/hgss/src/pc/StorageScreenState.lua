@@ -4,6 +4,10 @@ local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local PcStorageActions = require("libs.hgss.src.field.PcStorageActions")
 local StorageInterface = require("game.hgss.src.pc.StorageInterface")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+local PcStorageGeometry = require("libs.hgss.src.ui.PcStorageGeometry")
+local PcStorageGrid = require("libs.hgss.src.ui.PcStorageGrid")
+local MonCache = require("libs.assets.src.MonCache")
+local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 local Mon = require("libs.mons.src.Mon")
 local Personality = require("libs.mons.src.gen4.Personality")
 
@@ -26,11 +30,26 @@ local Personality = require("libs.mons.src.gen4.Personality")
 ---@field _admittedParentView table<string, unknown>?
 ---@field _admittedParentPlan table<string, unknown>?
 ---@field _dexNumber fun(speciesKey: string): integer?
----@field _tray "left"|"closed"
+---@field _tray "left"|"right"|"closed"
+---@field _transferSide "right"?
+---@field _transferGeneration integer
+---@field _transfer { moves: { fromDomain: "box"|"party", from: integer, toDomain: "box"|"party", to: integer, mon: table<string, unknown>? }[] }?
+---@field _boxTray "closed"|"box"|"deposit"
+---@field _trayBox integer
+---@field _boxTrayChangeBox boolean
 ---@field _prompt { kind: "exit"|"continue" }?
 ---@field _notice { id: integer, subject: string? }?
 ---@field _noticedAction table<string, unknown>?
+---@field _resultNotice { id: integer, subject: string? }?
+---@field _noticedResult table<string, unknown>?
+---@field _promptChoice { key: string, choice: string }?
+---@field _drag table<string, unknown>?
+---@field _hint integer?
+---@field _pendingResultAction string?
+---@field _pendingResultItem string?
 ---@field _focus table<string, unknown>
+---@field _grid PcStorageGrid
+---@field _infoVisible boolean
 ---@field _carry table<string, unknown>?
 ---@field _menu { actions: string[], selected: integer, address: table<string, unknown> }?
 ---@field _editor table<string, unknown>?
@@ -121,14 +140,31 @@ function StorageScreenState.new(options)
     _admittedParentView = nil,
     _admittedParentPlan = nil,
     _admittedParentSignature = nil,
-    _focus = { domain = options.mode == 1 and "box" or "party", slot = 0 },
+    -- Deposit starts on the always-open party panel; every other mode starts
+    -- on the first box slot (PCBox_State_Start).
+    _focus = { domain = options.mode == 0 and "party" or "box", slot = 0 },
+    _grid = PcStorageGrid.new(PcStorageGrid.browseLayout(options.mode, options.mode == 0), 0),
+    _infoVisible = true,
     _dexNumber = assert(options.dexNumber, "Storage needs its dex number reader"),
     -- The party tray starts open at the left only in Deposit mode; the other
     -- modes open it from the PARTY button (EB2EC, EC354).
     _tray = options.mode == 0 and "left" or "closed",
+    _transferSide = nil,
+    _transferGeneration = 0,
+    _transfer = nil,
+    _boxTray = "closed",
+    _trayBox = options.mons:activeBox(),
+    _boxTrayChangeBox = false,
     _prompt = nil,
     _notice = nil,
     _noticedAction = nil,
+    _resultNotice = nil,
+    _noticedResult = nil,
+    _promptChoice = nil,
+    _drag = nil,
+    _hint = nil,
+    _pendingResultAction = nil,
+    _pendingResultItem = nil,
     _carry = nil,
     _menu = nil,
     _editor = nil,
@@ -243,8 +279,15 @@ local function refusalMessageId(decision)
   return REFUSAL_MESSAGES[reason]
 end
 
--- Turns a new refusal into the message line that shows until the next input.
+-- Turns a new refusal or item result into the message line that shows until
+-- the next input.
 function StorageScreenState:_syncNotice()
+  local result = self._resultNotice
+  if result ~= nil and result ~= self._noticedResult then
+    self._noticedResult = result
+    self._notice = result
+    return
+  end
   local action = self._lastAction
   if action == self._noticedAction then
     return
@@ -274,6 +317,32 @@ function StorageScreenState:_itemSubject(mon, decision)
   return ok and item.name or nil
 end
 
+-- Resolves one Bag item key to its catalog display name.
+---@param itemKey string?
+---@return string?
+function StorageScreenState:_itemName(itemKey)
+  if itemKey == nil or itemKey == "NONE" then
+    return nil
+  end
+  local ok, item = pcall(function()
+    return self._bag:catalog():item(itemKey)
+  end)
+  return ok and item.name or nil
+end
+
+-- Records the source's item result line after a committed item transfer:
+-- 15 "Took the ...", 16 "... is now being held.", 27 "Placed ... in the Bag.".
+---@param action string
+---@param itemKey string?
+---@param result table<string, unknown>?
+function StorageScreenState:_recordItemResult(action, itemKey, result)
+  if result == nil or (result.kind ~= "changed" and result.kind ~= "unchanged") then
+    return
+  end
+  local id = action == "bagItem" and 27 or action == "giveItem" and 16 or 15
+  self._resultNotice = { id = id, subject = self:_itemName(itemKey) }
+end
+
 ---@return string?
 function StorageScreenState:_pendingSubject()
   local request = self._pendingIntent and self._pendingIntent.request
@@ -295,11 +364,59 @@ function StorageScreenState:_incomingItemSubject(request)
   return ok and item.name or nil
 end
 
+-- The open two-row confirmation prompt and its highlighted row. The source
+-- prompt opens on NO for a release decision and on YES for every other
+-- question; up/down toggles it.
+---@return { key: string, choice: string }?
+function StorageScreenState:_yesNoPrompt()
+  local key
+  if self._prompt ~= nil then
+    key = "prompt:" .. self._prompt.kind
+  elseif self._releaseCheck ~= nil and self._releaseCheck.outcome == "confirm" then
+    key = "release"
+  elseif self._pendingIntent ~= nil then
+    key = "intent"
+  end
+  if key == nil then
+    self._promptChoice = nil
+    return nil
+  end
+  local state = self._promptChoice
+  if state == nil or state.key ~= key then
+    state = { key = key, choice = key == "release" and "no" or "yes" }
+    self._promptChoice = state
+  end
+  return state
+end
+
+-- Resolves the prompt's highlighted row into the generic event the screen
+-- already handles: NO resolves exactly like a cancel.
+---@param event table<string, unknown>
+---@return table<string, unknown>
+function StorageScreenState:_resolvePromptChoice(event)
+  local prompt = self:_yesNoPrompt()
+  if prompt == nil then
+    return event
+  end
+  if event.type == "navigate" and (event.direction == "up" or event.direction == "down") then
+    prompt.choice = prompt.choice == "yes" and "no" or "yes"
+    self:_cue("SEQ_SE_DP_SELECT")
+    return { type = "prompt_choice" }
+  end
+  if event.type == "confirm" and prompt.choice == "no" then
+    return { type = "cancel" }
+  end
+  if event.type == "cancel" or event.type == "confirm" then
+    prompt.choice = event.type == "confirm" and "yes" or "no"
+  end
+  return event
+end
+
 -- The prompt or message line, chosen by what the screen is doing (windows
 -- W37/W39/W40/W38 of ov14_021F84B4 and resolvers F685C, F67B0, F68C0, F6844,
 -- F6928). The browse prompt shows only in Deposit and Withdraw.
 ---@return { id: integer, window: string, subject: string?, yesNo: boolean? }?
-function StorageScreenState:_message()
+local function messageRecord(self)
   if self._prompt ~= nil then
     return { id = self._prompt.kind == "exit" and 11 or 12, window = "W37", yesNo = true }
   end
@@ -307,7 +424,7 @@ function StorageScreenState:_message()
   if check ~= nil and not check.acknowledged then
     if check.outcome == "confirm" then
       return { id = 2, window = "W37", subject = check.name, yesNo = true }
-    elseif check.outcome == "removed" then
+    elseif check.outcome == "released" then
       return { id = check.sequel and 4 or 3, window = "W37", subject = check.name }
     elseif check.outcome == "returned" then
       return { id = check.sequel and 33 or 32, window = "W37", subject = check.sequel and nil or check.name }
@@ -321,7 +438,9 @@ function StorageScreenState:_message()
     if request ~= nil and request.kind == "giveItem" then
       return { id = 26, window = "W37", yesNo = true, subject = self:_incomingItemSubject(request) }
     end
-    return { id = 23, window = "W37", yesNo = true, subject = self:_pendingSubject() }
+    -- Taking asks "Take this ...?"; the BAG half asks "Put away ...?".
+    local id = self._pendingResultAction == "bagItem" and 26 or 23
+    return { id = id, window = "W37", yesNo = true, subject = self:_pendingSubject() }
   end
   if self._notice ~= nil then
     return { id = self._notice.id, window = "W37", subject = self._notice.subject }
@@ -343,8 +462,6 @@ function StorageScreenState:_message()
   if self._carry ~= nil or self._menu ~= nil then
     if self._mode <= 1 and mon ~= nil then
       return { id = 0, window = "W39", subject = Mon.displayName(mon, self._mons:catalog()) }
-    elseif self._mode == 2 and mon ~= nil then
-      return { id = mon.mail ~= nil and next(mon.mail) ~= nil and 56 or 36, window = "W40" }
     end
     return nil
   end
@@ -352,6 +469,26 @@ function StorageScreenState:_message()
     return { id = 18, window = "W39" }
   end
   return nil
+end
+
+-- The prompt or message line with the highlighted row of an open two-row
+-- confirmation attached, so the baked button art can swap its selected row.
+---@return table<string, unknown>?
+function StorageScreenState:_message()
+  if self._hint ~= nil and self._drag ~= nil then
+    return { id = self._hint, window = "W40", yesNo = false }
+  end
+  local message = messageRecord(self)
+  if message == nil or message.yesNo ~= true then
+    return message
+  end
+  return {
+    id = message.id,
+    window = message.window,
+    subject = message.subject,
+    yesNo = true,
+    yesNoChoice = assert(self:_yesNoPrompt()).choice,
+  }
 end
 
 -- The facts the top-screen info panel prints for the carried or highlighted
@@ -371,22 +508,53 @@ function StorageScreenState:_selectedInfo()
     return nil
   end
   local catalog = self._mons:catalog()
+  local item = mon.heldItem ~= "NONE" and self._bag:catalog():item(mon.heldItem) or nil
   local info = {
     nickname = Mon.displayName(mon, catalog),
     egg = mon.isEgg == true,
-    itemName = mon.heldItem ~= "NONE" and self._bag:catalog():item(mon.heldItem).name or nil,
+    itemName = item and item.name or nil,
+    itemDescription = item and item.description or nil,
+    itemIconKey = item and item.icon or nil,
+    -- Eggs show the shared egg picture; everything else resolves the exact
+    -- generated front portrait.
+    portraitSelector = mon.isEgg == true and MonCache.portraitSelector("EGG", 0, "male", false)
+      or SummaryModel.portraitSelectorFor(catalog, mon),
   }
   if not info.egg then
     local species = catalog:species(mon.species)
+    local form = assert(catalog:form(mon.species, assert(mon.form, "stored mons carry their form")))
     info.speciesName = species.name
+    info.types = assert(form.types, "catalog forms carry their types")
     info.level = self._mons:derive(mon).level
     info.dexNumber = self._dexNumber(mon.species)
     local gender = Personality.gender(species.genderRatio, mon.personality)
     info.gender = gender ~= "genderless" and gender or nil
     info.natureName = HgssMonService.natureName(Personality.nature(mon.personality))
     info.abilityName = catalog:ability(mon.ability).name
+    info.moves = {}
+    for slot = 1, 4 do
+      local entry = mon.moves and mon.moves[slot]
+      info.moves[slot] = entry ~= nil and catalog:move(entry.move).name or nil
+    end
   end
   return info
+end
+
+-- The release animation the source currently shows: the shrink/grow phase
+-- with its tick, or the hidden slot after the shrink while the messages run.
+---@return table<string, unknown>?
+function StorageScreenState:_releaseView()
+  local check = self._releaseCheck
+  if check == nil then
+    return nil
+  end
+  if check.outcome == "pending" and check.phase ~= nil then
+    return { phase = check.phase, tick = check.shrink, address = copy(check.address), mon = copy(check.mon) }
+  end
+  if check.outcome == "released" then
+    return { phase = "hidden", address = copy(check.address) }
+  end
+  return nil
 end
 
 function StorageScreenState:_buildView()
@@ -410,6 +578,7 @@ function StorageScreenState:_buildView()
     party[index] = shown
   end
   local metadata = contents.metadata
+  local transferGeneration = self._transferGeneration
   return {
     mode = self._mode,
     state = self._state,
@@ -418,11 +587,24 @@ function StorageScreenState:_buildView()
     boxName = metadata.name or self:_defaultBoxName(),
     boxSlots = boxSlots,
     party = party,
-    info = self:_selectedInfo(),
+    info = self._infoVisible and self:_selectedInfo() or nil,
     tray = self._tray,
+    transferSide = self._transferSide,
+    transferGeneration = transferGeneration,
+    transfer = copy(self._transfer),
+    onTransferComplete = self._transferSide ~= nil and function()
+      if self._transferGeneration == transferGeneration then
+        self._transferSide = nil
+        self._transfer = nil
+      end
+    end or nil,
     message = self:_message(),
     focus = copy(self._focus),
+    cursor = self:_cursorView(),
+    boxTray = self:_boxTrayView(),
+    release = self:_releaseView(),
     carry = copy(self._carry),
+    drag = copy(self._drag),
     menu = copy(self._menu),
     editor = copy(self._editor),
     wallpaperUnlocks = copy(contents.unlocks),
@@ -434,14 +616,64 @@ function StorageScreenState:_view()
   return self:_buildView()
 end
 
-function StorageScreenState:_defaultBoxName()
+---@param box integer?
+---@return string
+function StorageScreenState:_boxName(box)
+  box = box or self._activeBox
   local storage = assert(self._manifest.storage, "Storage borrows its compiled storage manifest")
   local boxNames = assert(storage.boxNames, "Storage manifest carries source box names")
-  if self._activeBox < COMPILED_BOX_NAME_COUNT then
-    return assert(boxNames[self._activeBox + 1], "Storage manifest carries every compiled box name")
+  if box < COMPILED_BOX_NAME_COUNT then
+    return assert(boxNames[box + 1], "Storage manifest carries every compiled box name")
   end
   local format = assert(storage.expansionNameFormat, "Storage manifest carries its expansion name format")
-  return format.prefix .. tostring(format.firstNumber + self._activeBox) .. format.suffix
+  return format.prefix .. tostring(format.firstNumber + box) .. format.suffix
+end
+
+function StorageScreenState:_defaultBoxName()
+  return self:_boxName(self._activeBox)
+end
+
+-- The visible six-box page of the open box tray: names, counts, wallpapers
+-- and one BASE_COLOR dot per occupied slot.
+---@return table<string, unknown>?
+function StorageScreenState:_boxTrayView()
+  if self._boxTray == "closed" then
+    return nil
+  end
+  local catalog = self._mons:catalog()
+  local page = math.floor(self._trayBox / PcStorageGeometry.TRAY_PAGE_SIZE) * PcStorageGeometry.TRAY_PAGE_SIZE
+  local boxes = {}
+  for column = 0, PcStorageGeometry.TRAY_PAGE_SIZE - 1 do
+    local box = page + column
+    local dots, count = {}, 0
+    for slot = 0, 29 do
+      local mon = self._mons:boxMon(box, slot)
+      if mon ~= nil then
+        count = count + 1
+        if mon.isEgg == true then
+          dots[slot + 1] = mon.species == "MANAPHY" and 1 or 8
+        else
+          dots[slot + 1] = catalog:species(mon.species).color
+        end
+      end
+    end
+    local metadata = self._mons:boxMetadata(box)
+    boxes[column + 1] = {
+      box = box,
+      name = self:_boxName(box),
+      count = count,
+      wallpaperId = metadata.wallpaperId,
+      dots = dots,
+      active = box == self._activeBox,
+    }
+  end
+  return {
+    mode = self._boxTray,
+    trayBox = self._trayBox,
+    page = page,
+    boxes = boxes,
+    changeBox = self._boxTrayChangeBox,
+  }
 end
 
 function StorageScreenState:_address(target)
@@ -449,6 +681,137 @@ function StorageScreenState:_address(target)
     return { kind = "party", slot = target.slot }
   end
   return { kind = "box", box = self._activeBox, slot = target.slot }
+end
+
+-- The browse grid depends on the mode and whether the party panel is open;
+-- Deposit keeps the panel open for the whole session.
+---@return string
+function StorageScreenState:_browseLayout()
+  return PcStorageGrid.browseLayout(self._mode, self._tray ~= "closed")
+end
+
+-- Grid node id of one slot in a layout, or nil when the layout does not carry
+-- that custody domain.
+---@param domain "box"|"party"
+---@param slot integer
+---@return integer?
+function StorageScreenState:_nodeForSlot(domain, slot)
+  local layout = self._grid:layoutName()
+  if layout == "deposit" or layout == "moveParty" or layout == "itemParty" then
+    return domain == "party" and slot or nil
+  end
+  if layout == "tray" then
+    return domain == "party" and 30 + slot or slot
+  end
+  if layout == "depositBox" then
+    return nil
+  end
+  return domain == "box" and slot or nil
+end
+
+-- First and last action-row node of the open list in the current layout.
+---@return integer?, integer?
+function StorageScreenState:_menuNodes()
+  local layout = self._grid:layoutName()
+  if layout == "deposit" then
+    return 7, 10
+  elseif layout == "withdraw" then
+    return 34, 37
+  elseif layout == "move" then
+    return 36, 40
+  elseif layout == "moveParty" then
+    return 8, 12
+  elseif layout == "item" then
+    return 36, 36
+  elseif layout == "itemParty" then
+    return 8, 8
+  elseif layout == "boxMenu" then
+    return 9, 10
+  end
+  return nil, nil
+end
+
+-- Where the source sends the cursor when the action list opens.
+---@return integer?
+function StorageScreenState:_firstMenuNode()
+  local first = self:_menuNodes()
+  return first
+end
+
+-- Projects the cursor node onto the selection facts the view publishes:
+-- the highlighted slot, the open list row and the editor's focused control.
+function StorageScreenState:_applyCursorFocus()
+  local node = self._grid:current()
+  local kind = node.kind
+  if kind == "box" then
+    self._focus = { domain = "box", slot = node.index }
+    self._infoVisible = true
+  elseif kind == "party" then
+    self._focus = { domain = "party", slot = node.index }
+    self._infoVisible = true
+  elseif kind == "box_tray" then
+    local page = math.floor(self._trayBox / PcStorageGeometry.TRAY_PAGE_SIZE) * PcStorageGeometry.TRAY_PAGE_SIZE
+    self._trayBox = page + node.index
+    if self._boxTray == "box" then
+      self._boxTrayChangeBox = self._trayBox ~= self._activeBox
+    end
+    self._infoVisible = false
+  elseif kind == "menu" then
+    if self._menu ~= nil then
+      self._menu.selected = node.index + 1
+    end
+    self._infoVisible = true
+  elseif kind == "mark" then
+    local editor = self._editor
+    if editor ~= nil then
+      editor.selected = node.index
+      editor.focus = "marks"
+    end
+    self._infoVisible = false
+  elseif kind == "wallpaper" then
+    local editor = self._editor
+    if editor ~= nil then
+      local pageStart = editor.selected - editor.selected % PcStorageGeometry.WALLPAPER_PAGE_SIZE
+      editor.selected = pageStart + node.index
+      editor.focus = "slots"
+    end
+    self._infoVisible = false
+  elseif kind == "confirm" or kind == "cancel" then
+    local editor = self._editor
+    if editor ~= nil then
+      editor.focus = kind
+    end
+    self._infoVisible = false
+  else
+    self._infoVisible = false
+  end
+end
+
+-- Moves the cursor to a node of the current layout.
+---@param node integer
+function StorageScreenState:_placeCursor(node)
+  self._grid:setNode(node)
+  self:_applyCursorFocus()
+end
+
+-- Restores the browse layout at the selected custody cell.
+function StorageScreenState:_restoreBrowseGrid()
+  local layout = self:_browseLayout()
+  -- The layout decides the node id: a party cell is `30 + slot` in the tray
+  -- layout and `slot` in the browse layouts, so switch first, then resolve.
+  self._grid:setLayout(layout, 0)
+  self._grid:setNode(self:_nodeForSlot(self._focus.domain, self._focus.slot) or 0)
+  self:_applyCursorFocus()
+end
+
+-- The cursor pose and position the source draws: the tracked node anchor
+-- while idle, the quarter-step slide while moving, and the carrying hand
+-- whenever a mon is held.
+---@return { x: integer, y: integer, pose: string }
+function StorageScreenState:_cursorView()
+  local node = self._grid:current()
+  local pose = self._carry ~= nil and "carry" or self._grid:pose()
+  return { x = node.x, y = node.y, pose = pose, layout = self._grid:layoutName(), node = self._grid:index() }
 end
 
 function StorageScreenState:_monVisual(address)
@@ -543,15 +906,29 @@ end
 -- A tap on a mon: Move mode picks it up at once with its list showing, the item
 -- mode picks up the held item directly, and the other modes list actions.
 function StorageScreenState:_openMenu()
+  if self._boxTray ~= "closed" then
+    self._boxTray = "closed"
+    self._boxTrayChangeBox = false
+  end
   local address = self:_address(self._focus)
   local mon = self:_occupant(address)
   if self._mode == 3 then
-    if mon ~= nil then
-      self:_cue("SEQ_SE_DP_BOX02")
+    if mon == nil then
+      self._menu = nil
+      return
     end
-    if mon ~= nil and mon.heldItem ~= "NONE" then
-      self:_beginAction("swapItems", nil, address)
+    -- PCBox_SelectItemModeBoxMon: the item list has one row, BAG when the mon
+    -- already holds something and GIVE when the player can hand one over.
+    self:_cue("SEQ_SE_DP_BOX02")
+    local holding = mon.heldItem ~= "NONE"
+    self._menu = { actions = { holding and "bagItem" or "giveItem" }, selected = 1, address = address }
+    if holding then
+      -- The item remains selected for the BAG action until a new touch starts
+      -- a stylus drag from its own source mon.
+      self._carry = { kind = "items", action = "swapItems", source = address, mon = self:_monVisual(address) }
     end
+    self:_syncGridAvailability()
+    self:_placeCursor(assert(self:_firstMenuNode(), "the item list carries its source row node"))
     return
   end
   local actions = self:_actionsFor(address, mon)
@@ -560,10 +937,12 @@ function StorageScreenState:_openMenu()
     return
   end
   self:_cue("SEQ_SE_DP_BOX02")
+  -- Opening the list only selects the mon; the picked-up hand comes from the
+  -- list's MOVE row (PCBox_SelectMoveModeBoxMon keeps the icon in place).
   self._menu = { actions = actions, selected = 1, address = address }
-  if self._mode == 2 then
-    self._carry = { kind = "mon", action = "move", source = address, mon = self:_monVisual(address) }
-  end
+  self:_syncGridAvailability()
+  -- The source slides the cursor onto the first action row as the list opens.
+  self:_placeCursor(assert(self:_firstMenuNode(), "the open list carries source row nodes"))
 end
 
 -- Arms one release decision from a detached address and a single live
@@ -594,8 +973,12 @@ function StorageScreenState:_startRelease(address)
     self._releaseCheck = {
       address = copy(source),
       name = name,
+      mon = self:_monVisual(source),
       scanned = 0,
       total = self._mons:boxCount() * 30 + 6,
+      shrink = 0,
+      phase = nil,
+      scanOutcome = nil,
       outcome = "confirm",
     }
   else
@@ -618,12 +1001,30 @@ end
 ---@param address table<string, unknown>? the acted-on address when no list is open
 function StorageScreenState:_beginAction(action, data, address)
   local source = address or (self._menu and self._menu.address)
+  -- Terminal refusals return to the list they came from
+  -- (PCBox_State_ReturnToActionMenu), so remember it before clearing.
+  local previousMenu = self._menu
   if action == "move" and self._carry ~= nil and self._carry.action == "move" then
     return
   end
-  if self._carry ~= nil and self._carry.action == "move" and self._mode == 2 then
-    -- Another list entry puts the picked-up mon back first.
+  if self._carry ~= nil and self._carry.action == "move" and self._carry.holding ~= true and self._mode == 2 then
+    -- Another list entry puts a merely selected mon back first; a held mon
+    -- stays on the hand for the summary (summaryFromHolding).
     self._carry = nil
+  end
+  -- Children remember the list they came from: the source returns to the mode
+  -- list after a summary, a held-item pick or a naming screen.
+  if action == "summary" or action == "boxName" or action == "heldItems" or action == "giveItem" then
+    self._returnView = {
+      menu = copy(self._menu),
+      carry = copy(self._carry),
+      boxTray = self._boxTray,
+      trayBox = self._trayBox,
+      changeBox = self._boxTrayChangeBox,
+      layout = self._grid:layoutName(),
+      node = self._grid:index(),
+      focus = copy(self._focus),
+    }
   end
   self._menu = nil
   if action == "wallpaper" or action == "boxName" then
@@ -651,6 +1052,7 @@ function StorageScreenState:_beginAction(action, data, address)
     end
     if probe.kind == "refused" then
       self._lastAction = probe
+      self._menu = previousMenu
       self:_cue("SEQ_SE_DP_BOX03")
       return
     end
@@ -661,8 +1063,25 @@ function StorageScreenState:_beginAction(action, data, address)
       source = source,
       mon = self:_monVisual(source),
     }
+    self:_syncCarryGrid()
+    self:_openDepositSelector()
     return
   elseif action == "withdraw" then
+    -- PCBox_TryWithdraw refuses a full party before the panel slides in.
+    local intent = self:_preview({
+      kind = "withdraw",
+      source = source,
+      destination = { kind = "party", slot = self._mons:partyCount() },
+    })
+    if intent.kind == "refused" then
+      self._lastAction = intent
+      self._menu = previousMenu
+      self:_cue("SEQ_SE_DP_BOX03")
+      return
+    end
+    -- The source slides the party panel in on the right while the mon travels
+    -- into the party's last slot.
+    self._tray = "right"
     self._carry = {
       kind = "mon",
       action = action,
@@ -671,32 +1090,62 @@ function StorageScreenState:_beginAction(action, data, address)
       destination = { kind = "party", slot = self._mons:partyCount() },
     }
   elseif action == "move" then
-    self._carry = { kind = "mon", action = action, source = source, mon = self:_monVisual(source) }
+    -- PCBox_State_ChooseMoveFromBox: the MOVE row slides the box tray open and
+    -- puts the mon on the hand, so the next confirm drops it on a box slot, a
+    -- party slot, or another box's thumbnail.
+    self._carry = {
+      kind = "mon",
+      action = action,
+      source = source,
+      mon = self:_monVisual(source),
+      holding = true,
+    }
+    self._boxTray = "box"
+    self._tray = "right"
+    self._trayBox = self._activeBox
+    self._boxTrayChangeBox = false
+    self._grid:setLayout("tray", 0)
+    self._grid:setNode(self:_nodeForSlot(source.kind, source.slot) or 0)
+    self:_syncGridAvailability()
+    self:_applyCursorFocus()
   elseif action == "swapItems" then
     self._carry = { kind = "items", action = action, source = source, mon = self:_monVisual(source) }
   elseif action == "giveItem" then
     self:_openChild("heldItemPicker", { source = source })
   elseif action == "takeItem" then
+    -- PCBox_TakeHeldItemToBag and its BAG half share the domain transfer; the
+    -- result line differs ("Took the ..." vs "Placed ... in the Bag.").
+    local resultAction = data and data.resultAction or "takeItem"
+    local mon = self:_occupant(source)
+    local itemKey = data and data.item or (mon ~= nil and mon.heldItem or nil)
     local intent = self:_preview({ kind = action, source = source, item = data and data.item })
-    self._lastAction = intent.kind == "allowed" and self._actions:commit(intent) or intent
-    if intent.kind == "confirm" then
-      self._pendingIntent = intent
+    if intent.kind == "allowed" then
+      local result = self._actions:commit(intent)
+      self._lastAction = result
+      self:_recordItemResult(resultAction, itemKey, result)
+    else
+      self._lastAction = intent
+      if intent.kind == "confirm" then
+        self._pendingIntent = intent
+        self._pendingResultAction = resultAction
+        self._pendingResultItem = itemKey
+      end
     end
     if self._lastAction.kind == "refused" then
       self:_cue("SEQ_SE_DP_BOX03")
     end
   elseif action == "bagItem" then
-    -- BAG puts the held item away (mode 3's bottom-right button).
+    -- PCBox_HandleBagGiveCommand's BAG half: put the held item away.
     local carried = self._carry
-    if carried ~= nil and carried.kind == "items" then
-      self._carry = nil
-      self:_beginAction("takeItem", nil, carried.source)
-    end
+    local target = carried ~= nil and carried.source or source
+    self._carry = nil
+    self:_beginAction("takeItem", { resultAction = "bagItem" }, target)
   elseif action == "heldItems" then
     -- One entry that branches on the held item (ov14_021F5EE4 handlers).
     local mon = self:_occupant(source)
     if mon ~= nil and mon.isEgg == true then
       self._lastAction = { kind = "refused", reason = "egg", action = "heldItems" }
+      self._menu = previousMenu
       self:_cue("SEQ_SE_DP_BOX03")
     elseif mon ~= nil and mon.heldItem == "NONE" then
       self:_openChild("heldItemPicker", { source = source })
@@ -705,22 +1154,50 @@ function StorageScreenState:_beginAction(action, data, address)
     end
   elseif action == "release" then
     self:_startRelease(source)
+    if self._releaseCheck ~= nil and self._releaseCheck.outcome ~= "confirm" then
+      self._menu = previousMenu
+    end
   elseif action == "markings" then
     local mon = assert(self:_monVisual(source), "markings edit an occupied address")
-    self._editor = { kind = "markings", source = source, mask = mon.markings, selected = 0 }
+    self._editor = { kind = "markings", source = source, mask = mon.markings, selected = 0, focus = "marks" }
+    self._grid:setLayout("marking", 0)
+    self:_applyCursorFocus()
   elseif action == "wallpaper" then
-    local wallpaperId = self._mons:boxMetadata(self._activeBox).wallpaperId
+    local box = self._boxTray == "box" and self._trayBox or self._activeBox
+    self._boxTray = "closed"
+    self._boxTrayChangeBox = false
+    local wallpaperId = self._mons:boxMetadata(box).wallpaperId
     local selected = wallpaperId >= 32 and wallpaperId - 16 or wallpaperId
-    self._editor = { kind = "wallpaper", box = self._activeBox, selected = selected, focus = "slots" }
+    self._editor = { kind = "wallpaper", box = box, selected = selected, current = selected, focus = "slots" }
+    self._grid:setLayout("wallpaper", selected % PcStorageGeometry.WALLPAPER_PAGE_SIZE)
+    self._grid:setRowCursor(selected % PcStorageGeometry.WALLPAPER_PAGE_SIZE)
+    self:_applyCursorFocus()
   elseif action == "summary" or action == "boxName" then
     self:_openChild(action, { source = source, box = self._activeBox })
   else
     error("unknown Storage action " .. tostring(action), 0)
   end
+  self:_syncCarryGrid()
+end
+
+-- Keeps the cursor on the held mon's cell after a pick-up.
+function StorageScreenState:_syncCarryGrid()
+  local carry = self._carry
+  if carry == nil or carry.source == nil then
+    return
+  end
+  local node = self:_nodeForSlot(carry.source.kind, carry.source.slot)
+  if node ~= nil then
+    self:_placeCursor(node)
+  end
 end
 
 function StorageScreenState:_updateEditor(events)
   local editor = assert(self._editor)
+  local function close()
+    self._editor = nil
+    self:_restoreBrowseGrid()
+  end
   local function submit()
     local action
     if editor.kind == "markings" then
@@ -736,74 +1213,89 @@ function StorageScreenState:_updateEditor(events)
     end
     if action ~= nil then
       self._lastAction = self._actions:commit(self:_preview(action))
-      self._editor = nil
+      if editor.kind == "wallpaper" and editor.box ~= self._activeBox then
+        self._activeBox = editor.box
+        self._actions:commit(self:_preview({ kind = "activeBox", box = editor.box }))
+      end
+      close()
+      return true
     end
+    return false
+  end
+  local function toggleMarking(bit)
+    local power = 2 ^ bit
+    local selected = math.floor(editor.mask / power) % 2 == 1
+    editor.mask = selected and editor.mask - power or editor.mask + power
+    self:_cue("SEQ_SE_DP_DECIDE")
+  end
+  local function placeEditorNode(node)
+    self._grid:setNode(node)
+    self:_applyCursorFocus()
   end
   for _, event in ipairs(events) do
     if event.type == "cancel" then
-      self._editor = nil
+      close()
       return
     elseif event.type == "pointer_cancel" then
       -- Pointer capture cancellation does not change the local draft.
-    elseif event.type == "submit" then
-      if editor.kind == "wallpaper" and editor.focus == "cancel" then
-        self._editor = nil
-        return
-      end
-      submit()
-      if self._editor == nil then
-        return
-      end
-    elseif editor.kind == "markings" and event.type == "navigate" then
-      local delta = (event.direction == "left" and -1) or (event.direction == "right" and 1) or 0
-      editor.selected = math.max(0, math.min(5, editor.selected + delta))
-    elseif editor.kind == "wallpaper" and event.type == "navigate" then
-      -- Left and right wrap among the page's four swatches; down walks to the
-      -- confirm button and then Cancel (ov14_021F8900).
-      local focus = editor.focus
-      if focus == "slots" and (event.direction == "left" or event.direction == "right") then
-        local step = event.direction == "left" and 3 or 1
-        editor.selected = editor.selected - editor.selected % 4 + (editor.selected % 4 + step) % 4
-      elseif event.direction == "down" then
-        editor.focus = focus == "slots" and "confirm" or "cancel"
-      elseif event.direction == "up" then
-        editor.focus = focus == "cancel" and "confirm" or "slots"
-      end
-    elseif event.type == "wallpaper_choice" and editor.kind == "wallpaper" then
-      local choice = event.id
-      if type(choice) == "number" and choice % 1 == 0 and choice >= 0 and choice < 24 then
-        editor.selected, editor.focus = choice, "slots"
-      end
-    elseif event.type == "wallpaper_page" and editor.kind == "wallpaper" then
-      -- The arrows scroll a whole page of four, wrapping across the 24 entries.
-      if event.delta == 1 or event.delta == -1 then
-        editor.selected = (editor.selected + 4 * event.delta) % 24
-      end
-    elseif event.type == "marking_choice" and editor.kind == "markings" then
-      local choice = event.id
-      if type(choice) == "number" and choice % 1 == 0 and choice >= 0 and choice < 6 then
-        editor.selected = choice
-        local bit = 2 ^ choice
-        local selected = math.floor(editor.mask / bit) % 2 == 1
-        editor.mask = selected and editor.mask - bit or editor.mask + bit
+    elseif event.type == "navigate" then
+      local moved = self._grid:move(assert(event.direction))
+      if moved ~= nil then
+        self:_cue("SEQ_SE_DP_SELECT")
+        self:_applyCursorFocus()
       end
     elseif event.type == "confirm" then
+      local kind = self._grid:kind()
       if editor.kind == "markings" then
-        local bit = 2 ^ editor.selected
-        local selected = math.floor(editor.mask / bit) % 2 == 1
-        editor.mask = selected and editor.mask - bit or editor.mask + bit
+        if kind == "mark" then
+          toggleMarking(editor.selected)
+        elseif kind == "confirm" then
+          if submit() then
+            return
+          end
+        else
+          close()
+          return
+        end
       else
-        submit()
-        if self._editor == nil then
+        if kind == "wallpaper" or kind == "confirm" then
+          if submit() then
+            return
+          end
+        else
+          close()
           return
         end
       end
+    elseif event.type == "submit" then
+      if submit() then
+        return
+      end
+    elseif editor.kind == "markings" and event.type == "marking_choice" then
+      local choice = event.id
+      if type(choice) == "number" and choice % 1 == 0 and choice >= 0 and choice < 6 then
+        placeEditorNode(choice)
+        toggleMarking(choice)
+      end
+    elseif editor.kind == "wallpaper" and event.type == "wallpaper_choice" then
+      local choice = event.id
+      if type(choice) == "number" and choice % 1 == 0 and choice >= 0 and choice < 24 then
+        editor.selected = choice
+        local column = choice % PcStorageGeometry.WALLPAPER_PAGE_SIZE
+        placeEditorNode(column)
+        self._grid:setRowCursor(math.floor(column))
+      end
+    elseif editor.kind == "wallpaper" and event.type == "wallpaper_page" then
+      -- The arrows scroll a whole page of four, wrapping across the 24 entries.
+      if event.delta == 1 or event.delta == -1 then
+        editor.selected = (editor.selected + 4 * event.delta) % 24
+        local column = editor.selected % PcStorageGeometry.WALLPAPER_PAGE_SIZE
+        placeEditorNode(column)
+        self._grid:setRowCursor(column)
+      end
     else
       assert(
-        event.type == "navigate"
-          or event.type == "wallpaper_choice"
-          or event.type == "wallpaper_page"
-          or event.type == "marking_choice",
+        event.type == "marking_choice" or event.type == "wallpaper_choice" or event.type == "wallpaper_page",
         "unknown Storage editor input " .. event.type
       )
     end
@@ -824,6 +1316,27 @@ function StorageScreenState:_disposeChild()
   end
 end
 
+-- Restores the list, tray and carried mon a child was opened from, so a
+-- summary or naming screen returns to the same row (PCBox_State_ReturnFrom
+-- Summary / _ReturnFromNamingScreen).
+function StorageScreenState:_restoreReturnView()
+  local saved = self._returnView
+  self._returnView = nil
+  if saved == nil then
+    return false
+  end
+  self._menu = saved.menu
+  self._carry = saved.carry
+  self._boxTray = saved.boxTray
+  self._trayBox = saved.trayBox
+  self._boxTrayChangeBox = saved.changeBox
+  self._focus = saved.focus
+  self._grid:setLayout(saved.layout, saved.node)
+  self:_syncGridAvailability()
+  self:_applyCursorFocus()
+  return true
+end
+
 function StorageScreenState:_updateChild(events)
   local child = assert(self._child)
   child:updateFixed(events)
@@ -838,15 +1351,20 @@ function StorageScreenState:_updateChild(events)
         item = intent.item,
       })
       if decision.kind == "allowed" then
-        self._lastAction = self._actions:commit(decision)
+        local result = self._actions:commit(decision)
+        self._lastAction = result
+        self:_recordItemResult("giveItem", intent.item, result)
       elseif decision.kind == "confirm" then
         self._pendingIntent = decision
+        self._pendingResultAction = "giveItem"
+        self._pendingResultItem = intent.item
         self._lastAction = decision
       else
         self._lastAction = decision
         self:_cue("SEQ_SE_DP_BOX03")
       end
       self:_disposeChild()
+      self:_restoreReturnView()
       return
     end
   end
@@ -864,11 +1382,34 @@ function StorageScreenState:_updateChild(events)
       self._lastAction = self._actions:commit(self:_preview(action))
     end
     self:_disposeChild()
+    if not self:_restoreReturnView() then
+      self:_restoreBrowseGrid()
+    end
   end
 end
 
 function StorageScreenState:_confirmCarry()
   local carry = assert(self._carry)
+  if self._boxTray == "deposit" then
+    self:_confirmDepositSelection()
+    return
+  end
+  if carry.holding == true then
+    local destination = self:_heldDestination()
+    if destination == false then
+      self:_refuseHeldDestination()
+      return
+    end
+    if destination == nil then
+      self._carry, self._menu = nil, nil
+      self._boxTray, self._boxTrayChangeBox = "closed", false
+      self:_cue("SEQ_SE_DP_SELECT")
+      self:_restoreBrowseGrid()
+      return
+    end
+    self:_finishCarry(destination)
+    return
+  end
   if carry.action == "deposit" then
     -- The selector commits into the chosen box's first empty slot; a full
     -- box reports bank-25 msg 13 and keeps the selector open.
@@ -884,12 +1425,59 @@ function StorageScreenState:_confirmCarry()
     if self._lastAction.kind == "changed" or self._lastAction.kind == "unchanged" then
       self._focus, self._carry, self._menu = { domain = "box", slot = slot }, nil, nil
       self:_cue("SEQ_SE_DP_BOX01")
+      self:_restoreBrowseGrid()
     elseif self._lastAction.kind == "refused" then
       self:_cue("SEQ_SE_DP_BOX03")
     end
     return
   end
-  local destination = carry.destination or self:_address(self._focus)
+  self:_finishCarry(carry.destination or self:_address(self._focus))
+end
+
+-- Resolves the hand's grid node into the custody destination the drop names:
+-- a box slot in the active box, a party slot (the party end when the cursor
+-- sits past it), or another box's first empty slot from the tray row.
+-- Returns false when the named box is full, nil when the node is not a drop.
+---@return table<string, unknown>|false|nil
+function StorageScreenState:_heldDestination()
+  local node = self._grid:current()
+  if node.kind == "box" then
+    return { kind = "box", box = self._activeBox, slot = node.index }
+  elseif node.kind == "party" then
+    local count = self._mons:partyCount()
+    return { kind = "party", slot = math.min(node.index, count) }
+  elseif node.kind == "box_tray" then
+    local page = math.floor(self._trayBox / PcStorageGeometry.TRAY_PAGE_SIZE) * PcStorageGeometry.TRAY_PAGE_SIZE
+    local box = page + node.index
+    if box == self._activeBox then
+      return false
+    end
+    local slot = self:_firstEmptySlot(box)
+    if slot == nil then
+      return false
+    end
+    return { kind = "box", box = box, slot = slot }
+  end
+  return nil
+end
+
+function StorageScreenState:_refuseHeldDestination()
+  local carry = assert(self._carry)
+  local node = self._grid:current()
+  local page = math.floor(self._trayBox / PcStorageGeometry.TRAY_PAGE_SIZE) * PcStorageGeometry.TRAY_PAGE_SIZE
+  local activeThumbnail = node.kind == "box_tray" and page + node.index == self._activeBox
+  self._lastAction = {
+    kind = "refused",
+    reason = activeThumbnail and "active_box" or "box_full",
+    action = carry.action,
+  }
+  self:_cue("SEQ_SE_DP_BOX03")
+end
+
+-- Commits one carry onto its destination and closes the hand/tray on success.
+---@param destination table<string, unknown>
+function StorageScreenState:_finishCarry(destination)
+  local carry = assert(self._carry)
   if
     destination.kind == carry.source.kind and destination.kind == "party" and destination.slot == carry.source.slot
     or destination.kind == "box"
@@ -898,6 +1486,9 @@ function StorageScreenState:_confirmCarry()
       and destination.slot == carry.source.slot
   then
     self._carry, self._menu = nil, nil
+    self._boxTray, self._boxTrayChangeBox = "closed", false
+    self._tray = carry.source.kind == "party" and "left" or "closed"
+    self:_restoreBrowseGrid()
     return
   end
   if carry.kind == "items" then
@@ -907,6 +1498,7 @@ function StorageScreenState:_confirmCarry()
     if self._lastAction.kind == "changed" or self._lastAction.kind == "unchanged" then
       self._focus = { domain = destination.kind, slot = destination.slot }
       self:_cue("SEQ_SE_DP_BOX01")
+      self:_restoreBrowseGrid()
     elseif self._lastAction.kind == "refused" then
       self:_cue("SEQ_SE_DP_BOX03")
     end
@@ -918,11 +1510,39 @@ function StorageScreenState:_confirmCarry()
     or carry.action == "withdraw" and "withdraw"
     or occupied and "swap"
     or "move"
+  local displaced = destination.kind == "party" and occupied and self:_monVisual(destination) or nil
   local intent = self:_preview({ kind = kind, source = carry.source, destination = destination })
   self._lastAction = self._actions:commit(intent)
   if self._lastAction.kind == "changed" or self._lastAction.kind == "unchanged" then
+    if destination.kind == "party" and carry.source.kind == "box" then
+      self._transferGeneration = self._transferGeneration + 1
+      self._transferSide = "right"
+      self._transfer = {
+        moves = {
+          {
+            fromDomain = "box",
+            from = carry.source.slot,
+            toDomain = "party",
+            to = destination.slot,
+            mon = copy(carry.mon),
+          },
+        },
+      }
+      if displaced ~= nil then
+        self._transfer.moves[#self._transfer.moves + 1] = {
+          fromDomain = "party",
+          from = destination.slot,
+          toDomain = "box",
+          to = carry.source.slot,
+          mon = copy(displaced),
+        }
+      end
+    end
+    self._tray = carry.source.kind == "party" and "left" or "closed"
+    self._boxTray, self._boxTrayChangeBox = "closed", false
     self._focus, self._carry, self._menu = { domain = destination.kind, slot = destination.slot }, nil, nil
     self:_cue("SEQ_SE_DP_BOX01")
+    self:_restoreBrowseGrid()
   elseif self._lastAction.kind == "refused" then
     self:_cue("SEQ_SE_DP_BOX03")
   end
@@ -958,13 +1578,23 @@ function StorageScreenState:_publishKey(measurement)
     tostring(self._mons:boxRevision()),
     tostring(self._mons:partyRevision()),
     encodeFact(self._focus),
+    self._grid:layoutName(),
+    tostring(self._grid:index()),
+    tostring(self._boxTray),
+    tostring(self._trayBox),
+    tostring(self._boxTrayChangeBox),
     encodeFact(self._carry),
+    encodeFact(self._drag),
     encodeFact(self._menu),
     encodeFact(self._editor),
     encodeFact(self._releaseCheck),
+    tostring(self._hint),
+    tostring(self._promptChoice and self._promptChoice.choice),
     encodeFact(self._prompt),
     encodeFact(self._notice),
     tostring(self._tray),
+    tostring(self._transferSide),
+    tostring(self._transferGeneration),
     tostring(self._childKind),
   }, "\0")
 end
@@ -1008,12 +1638,593 @@ end
 
 -- Slides the party tray out (modes 2 and 3 only: Deposit keeps it open).
 function StorageScreenState:_closeTray()
+  if self._boxTray ~= "closed" then
+    self:_closeBoxTray()
+  end
   if self._mode >= 2 and self._tray ~= "closed" then
     self._tray = "closed"
     if self._focus.domain == "party" then
       self._focus = { domain = "box", slot = 0 }
     end
+    self:_restoreBrowseGrid()
   end
+end
+
+-- Steps the active box from the title plate, matching the source left/right
+-- shortcut that keeps the cursor on the title.
+---@param delta integer
+function StorageScreenState:_switchBox(delta)
+  local count = self._mons:boxCount()
+  self._activeBox = (self._activeBox + delta) % count
+  self._focus = { domain = "box", slot = 0 }
+  self._actions:commit(self:_preview({ kind = "activeBox", box = self._activeBox }))
+  if self._grid:layoutName() ~= "deposit" then
+    self._grid:setNode(30)
+  end
+  self._infoVisible = false
+end
+
+-- Opens the Move/Item box tray at the active box page. The source starts the
+-- cursor on the box slot the player came from; the tray plate shows the
+-- selected column.
+function StorageScreenState:_openBoxTray()
+  if self._mode < 2 or self._boxTray ~= "closed" then
+    return
+  end
+  self._boxTray = "box"
+  self._tray = "right"
+  self._trayBox = self._activeBox
+  self._boxTrayChangeBox = false
+  local carry = self._carry
+  self._grid:setLayout("tray", 0)
+  local node = 37 + self._trayBox % PcStorageGeometry.TRAY_PAGE_SIZE
+  if carry ~= nil and carry.holding == true and carry.source ~= nil then
+    -- The party panel's SWITCH keeps the held mon on the hand and starts the
+    -- tray cursor on its own cell, so the next confirm drops it in a box.
+    node = self:_nodeForSlot(carry.source.kind, carry.source.slot) or node
+  end
+  self._grid:setNode(node)
+  self:_syncGridAvailability()
+  self:_applyCursorFocus()
+end
+
+function StorageScreenState:_closeBoxTray()
+  if self._boxTray == "closed" then
+    return
+  end
+  local carry = self._carry
+  self._boxTray = "closed"
+  self._boxTrayChangeBox = false
+  self._carry = nil
+  self._tray = carry ~= nil and carry.source.kind == "party" and "left" or "closed"
+  self:_restoreBrowseGrid()
+end
+
+-- Stages a deposit: the party mon stays in carry while the selector chooses
+-- the destination box; the active box only changes when the deposit commits.
+function StorageScreenState:_openDepositSelector()
+  self._boxTray = "deposit"
+  self._trayBox = self._activeBox
+  self._boxTrayChangeBox = false
+  self._grid:setLayout("depositBox", self._trayBox % PcStorageGeometry.TRAY_PAGE_SIZE)
+  self:_syncGridAvailability()
+  self:_applyCursorFocus()
+end
+
+-- Cancelling the deposit selector returns to the deposit list on the same
+-- party mon (PCBox_State_DepositBoxSelectClosed -> RETURN_TO_ACTION_MENU).
+function StorageScreenState:_closeDepositSelector()
+  local source = assert(self._carry, "deposit selector retains its source").source
+  self._boxTray = "closed"
+  self._boxTrayChangeBox = false
+  self._carry = nil
+  self._focus = { domain = "party", slot = source.slot }
+  self._menu = {
+    actions = { "deposit", "summary", "markings", "release" },
+    selected = 1,
+    address = copy(source),
+  }
+  local layout = self:_browseLayout()
+  local node = self:_nodeForSlot("party", source.slot) or 0
+  self._grid:setLayout(layout, node)
+  self:_syncGridAvailability()
+  self:_placeCursor(assert(self:_firstMenuNode(), "the deposit list carries source row nodes"))
+end
+
+-- Moves the active box to the staged tray box (the Change Box plate).
+function StorageScreenState:_switchToTrayBox()
+  if self._trayBox == self._activeBox then
+    return
+  end
+  self._activeBox = self._trayBox
+  self._focus = { domain = "box", slot = 0 }
+  self._infoVisible = false
+  self._boxTrayChangeBox = false
+  self._actions:commit(self:_preview({ kind = "activeBox", box = self._activeBox }))
+  self:_syncGridAvailability()
+end
+
+-- Pages the tray by whole six-box pages, keeping the selected column.
+---@param delta integer
+function StorageScreenState:_changeTrayPage(delta)
+  local count = self._mons:boxCount()
+  local column = self._trayBox % PcStorageGeometry.TRAY_PAGE_SIZE
+  self._trayBox = (self._trayBox + delta * PcStorageGeometry.TRAY_PAGE_SIZE) % count
+  self._trayBox = self._trayBox - self._trayBox % PcStorageGeometry.TRAY_PAGE_SIZE + column
+  self._boxTrayChangeBox = self._boxTray == "box" and self._trayBox ~= self._activeBox
+  local layout = self._grid:layoutName()
+  if layout == "depositBox" or layout == "boxMenu" then
+    self._grid:setNode(column)
+  else
+    self._grid:setNode(37 + column)
+  end
+  self:_applyCursorFocus()
+end
+
+-- Confirms the staged deposit box into its first empty slot.
+function StorageScreenState:_confirmDepositSelection()
+  local carry = self._carry
+  if carry == nil or carry.action ~= "deposit" then
+    self:_closeDepositSelector()
+    return
+  end
+  local box = self._trayBox
+  local slot = self:_firstEmptySlot(box)
+  if slot == nil then
+    self._lastAction = { kind = "refused", reason = "box_full", action = "deposit" }
+    self:_cue("SEQ_SE_DP_BOX03")
+    return
+  end
+  local destination = { kind = "box", box = box, slot = slot }
+  local intent = self:_preview({ kind = "deposit", source = carry.source, destination = destination })
+  self._lastAction = self._actions:commit(intent)
+  if self._lastAction.kind == "changed" or self._lastAction.kind == "unchanged" then
+    self._activeBox = box
+    self._actions:commit(self:_preview({ kind = "activeBox", box = box }))
+    self._focus, self._carry, self._menu = { domain = "box", slot = slot }, nil, nil
+    self._boxTray = "closed"
+    self._boxTrayChangeBox = false
+    self:_cue("SEQ_SE_DP_BOX01")
+    self:_restoreBrowseGrid()
+  elseif self._lastAction.kind == "refused" then
+    self:_cue("SEQ_SE_DP_BOX03")
+  end
+end
+
+-- Opens the title plate's Wallpaper / Name pair on the box-menu layout.
+function StorageScreenState:_openTitleMenu()
+  if self._carry ~= nil then
+    return
+  end
+  self._menu = { actions = { "wallpaper", "boxName" }, selected = 1 }
+  self._boxTray = "box"
+  self._trayBox = self._activeBox
+  self._boxTrayChangeBox = false
+  self._grid:setLayout("boxMenu", self._activeBox % PcStorageGeometry.TRAY_PAGE_SIZE)
+  self._grid:setRowCursor(self._activeBox % PcStorageGeometry.TRAY_PAGE_SIZE)
+  self:_syncGridAvailability()
+  self:_applyCursorFocus()
+end
+
+-- Enables only the controls the current layout actually renders. Closed
+-- action lists keep their row nodes inert, so the source cursor bounces back
+-- instead of sliding onto an undrawn row.
+function StorageScreenState:_syncGridAvailability()
+  local layout = self._grid:layoutName()
+  local menuOpen = self._menu ~= nil
+  local function setRange(first, last, enabled)
+    for index = first, last do
+      self._grid:setEnabled(index, enabled)
+    end
+  end
+  if layout == "boxMenu" then
+    return
+  elseif layout == "tray" then
+    self._grid:setEnabled(45, self._boxTrayChangeBox)
+    local holding = self._carry ~= nil and self._carry.holding == true and self._boxTray == "box"
+    self._grid:setEnabled(43, not holding)
+    self._grid:setEnabled(44, not holding)
+  elseif layout == "deposit" then
+    setRange(7, 11, menuOpen)
+  elseif layout == "withdraw" then
+    setRange(34, 38, menuOpen)
+  elseif layout == "move" then
+    setRange(36, 41, menuOpen)
+  elseif layout == "moveParty" then
+    setRange(8, 13, menuOpen)
+  elseif layout == "item" then
+    setRange(36, 37, menuOpen)
+  elseif layout == "itemParty" then
+    setRange(8, 9, menuOpen)
+  end
+end
+
+-- Moves the source cursor one direction through the active grid.
+---@param direction "up"|"down"|"left"|"right"
+function StorageScreenState:_navigate(direction)
+  local node = self._grid:current()
+  if node.kind == "title" and (direction == "left" or direction == "right") then
+    self:_cue("SEQ_SE_DP_SELECT")
+    self:_switchBox(direction == "left" and -1 or 1)
+    return
+  end
+  self:_syncGridAvailability()
+  local before = self._grid:index()
+  local moved = self._grid:move(direction)
+  if moved == nil then
+    return
+  end
+  self:_cue("SEQ_SE_DP_SELECT")
+  if self._grid:layoutName() == "depositBox" and (direction == "left" or direction == "right") then
+    -- PCBox_DepositBoxGridOnKeyMove wraps box-by-box across all boxes, not
+    -- inside the visible six-box page: leaving the first column steps back a
+    -- box and leaving the last column steps forward.
+    local count = self._mons:boxCount()
+    if before == 5 and moved == 0 then
+      self._trayBox = (self._trayBox + 1) % count
+    elseif before == 0 and moved == 5 then
+      self._trayBox = (self._trayBox - 1) % count
+    end
+  end
+  self:_applyCursorFocus()
+end
+
+-- Whether one box holds any mon (the move-party hint's second condition).
+---@param box integer
+---@return boolean
+function StorageScreenState:_boxHasMon(box)
+  for slot = 0, 29 do
+    if self._mons:boxMon(box, slot) ~= nil then
+      return true
+    end
+  end
+  return false
+end
+
+-- The W40 hint the source prints while a party-side drag is held
+-- (PCBox_PrintPanelHint kinds 0..3 and 6..10).
+---@param drag table<string, unknown>
+---@return integer?
+function StorageScreenState:_dragHint(drag)
+  local mon = drag.mon
+  if drag.kind == "items" then
+    return self._actions.hasMail(mon) and 59 or 60
+  end
+  if drag.action == "withdraw" then
+    return self._mons:partyCount() == 6 and 39 or 37
+  end
+  if drag.source.kind ~= "party" then
+    return nil
+  end
+  local lastUsable = self._actions:lastUsableAfterRemoving(drag.source)
+  if drag.action == "deposit" then
+    if not lastUsable then
+      return 58
+    end
+  elseif not lastUsable and not self:_boxHasMon(self._activeBox) then
+    return 58
+  end
+  if self._actions.hasMail(mon) then
+    return 56
+  end
+  if self._actions.hasCapsule(mon) then
+    return 57
+  end
+  if drag.action == "deposit" and self:_firstEmptySlot(self._activeBox) == nil then
+    return 38
+  end
+  return 36
+end
+
+-- Opens one stylus drag from an occupied custody cell. The source picks the
+-- mon up immediately (no threshold): the icon follows the stylus, the hand
+-- cursor hides, and the action list slides out until the drop.
+---@param target table<string, unknown>
+---@param pointerId unknown
+---@param x number
+---@param y number
+---@return boolean started
+function StorageScreenState:_startDrag(target, pointerId, x, y)
+  if self._prompt ~= nil or self._child ~= nil or self._editor ~= nil then
+    return false
+  end
+  local address = self:_address(target)
+  local mon = self:_occupant(address)
+  if mon == nil then
+    return false
+  end
+  local kind, action = "mon", nil
+  if self._mode == 0 then
+    if address.kind ~= "party" then
+      return false
+    end
+    action = "deposit"
+  elseif self._mode == 1 then
+    if address.kind ~= "box" then
+      return false
+    end
+    action = "withdraw"
+  elseif self._mode == 2 then
+    action = "move"
+  else
+    -- PCBox_StartItemModeBoxDrag: a mon without a held item opens GIVE/BAG
+    -- instead; a held item is lifted onto the stylus.
+    if mon.heldItem == "NONE" then
+      return false
+    end
+    kind, action = "items", "swapItems"
+  end
+  local monVisual = self:_monVisual(address)
+  self._focus = { domain = address.kind, slot = address.slot }
+  if address.kind == "box" then
+    self._activeBox = address.box or self._activeBox
+  end
+  self._infoVisible = true
+  self._menu = nil
+  self._drag = {
+    pointerId = pointerId,
+    kind = kind,
+    action = action,
+    source = address,
+    mon = monVisual,
+    x = x or 0,
+    y = y or 0,
+    -- The panel the stylus carries along: party sources keep their panel
+    -- visible until the stylus leaves it; a withdraw drag raises the right
+    -- panel once the stylus leaves the source cell.
+    panelSide = address.kind == "party" and (self._tray ~= "closed" and self._tray or "left") or "right",
+    trayBefore = self._tray,
+    boxTrayBefore = self._boxTray,
+  }
+  self._carry = { kind = kind, action = action, source = copy(address), mon = monVisual }
+  self._hint = self:_dragHint(self._drag)
+  return true
+end
+
+-- Ends the current drag, returning the browse grid to the source cell.
+function StorageScreenState:_endDrag()
+  self._drag = nil
+  self._hint = nil
+  self._carry, self._menu = nil, nil
+  self._boxTray, self._boxTrayChangeBox = "closed", false
+  if self._mode >= 2 and self._tray ~= "closed" then
+    self._tray = "closed"
+  end
+end
+
+-- Restores the source's action list after a drag that never left its cell,
+-- matching the source's slide-in menu on release.
+function StorageScreenState:_returnDragToSource()
+  local drag = assert(self._drag)
+  local source = drag.source
+  local items = drag.kind == "items"
+  local trayWasOpen = drag.boxTrayBefore == "box"
+  self:_endDrag()
+  self._focus = { domain = source.kind, slot = source.slot }
+  if source.kind == "box" then
+    self._activeBox = source.box or self._activeBox
+  end
+  if trayWasOpen and not items then
+    -- A drag that began on the box tray resumes its tray input at the source
+    -- cell instead of closing the tray.
+    self._boxTray = "box"
+    self._trayBox = self._activeBox
+    self._grid:setLayout("tray", 0)
+    self._grid:setNode(self:_nodeForSlot(source.kind, source.slot) or 0)
+    self:_syncGridAvailability()
+    self:_applyCursorFocus()
+    return
+  end
+  self:_restoreBrowseGrid()
+  if not items then
+    self:_openMenu()
+  end
+end
+
+-- Keeps the panel the drag carries in step with the stylus: a party source
+-- lowers its panel once the stylus leaves the panel band, and a withdraw
+-- drag raises the right panel once the stylus leaves the source cell.
+---@param drag table<string, unknown>
+function StorageScreenState:_updateDragPanel(drag)
+  local x, y = drag.x, drag.y
+  if drag.action == "withdraw" then
+    local rect = PcStorageGeometry.boxSlotRect(drag.source.slot)
+    local outside = x < rect.x - 16
+      or x >= rect.x + rect.width + 16
+      or y < rect.y - 16
+      or y >= rect.y + rect.height + 16
+    self._tray = outside and drag.panelSide or "closed"
+    return
+  end
+  if drag.source.kind ~= "party" then
+    if drag.trayBefore ~= "closed" then
+      self._tray = drag.trayBefore
+    end
+    return
+  end
+  local inside = x >= 16 and x < 104 and y >= 48
+  self._tray = inside and drag.panelSide or "closed"
+end
+
+-- Resolves the last held stylus point into the custody drop it names: the
+-- visible party panel's drop rects, a tray thumbnail (its box's first empty
+-- slot), or the box grid. Returns false when a named box is full.
+---@return table<string, unknown>|false|nil
+function StorageScreenState:_dragDestination()
+  local drag = assert(self._drag)
+  local x, y = drag.x, drag.y
+  local partySlot
+  if self._tray == "left" then
+    partySlot = PcStorageGeometry.partyDropSlot(x, y, "left")
+  elseif self._tray == "right" then
+    partySlot = PcStorageGeometry.partyDropSlot(x, y, "right")
+  end
+  if partySlot ~= nil then
+    if drag.action == "deposit" then
+      return drag.source.kind == "party" and drag.source.slot == partySlot and { kind = "party", slot = partySlot }
+        or nil
+    end
+    return { kind = "party", slot = math.min(partySlot, self._mons:partyCount()) }
+  end
+  if drag.action == "deposit" and self._tray ~= "closed" then
+    -- The raised panel covers the box grid; release elsewhere drops back.
+    return nil
+  end
+  if self._boxTray == "box" then
+    local column = PcStorageGeometry.trayDropColumn(x, y, false)
+    if column ~= nil then
+      local page = math.floor(self._trayBox / PcStorageGeometry.TRAY_PAGE_SIZE) * PcStorageGeometry.TRAY_PAGE_SIZE
+      local box = page + column
+      if box == self._activeBox then
+        return nil
+      end
+      if drag.kind == "items" then
+        return nil
+      end
+      local slot = self:_firstEmptySlot(box)
+      if slot == nil then
+        return false
+      end
+      return { kind = "box", box = box, slot = slot }
+    end
+  end
+  if drag.action == "withdraw" and self._tray == "closed" then
+    -- Without the party panel the withdraw drag drops back on its cell.
+    return nil
+  end
+  local slot = PcStorageGeometry.boxDropSlot(x, y)
+  if slot == nil then
+    return nil
+  end
+  return { kind = "box", box = self._activeBox, slot = slot }
+end
+
+-- Starts one stylus drag from an occupied custody cell, or falls back to the
+-- cursor placement and item list the source shows for a mere tap.
+---@param event table<string, unknown>
+function StorageScreenState:_handleStorageTouch(event)
+  if self:_yesNoPrompt() ~= nil then
+    -- An open confirmation owns every press that is not one of its buttons.
+    return
+  end
+  local target = copy(assert(event.target, "mapped Storage touch identifies a target"))
+  local carry = self._carry
+  if carry ~= nil and carry.holding == true then
+    local address = self:_address(target)
+    if address.kind == "box" then
+      self._activeBox = address.box or self._activeBox
+    end
+    local node = self:_nodeForSlot(address.kind, address.slot)
+    if node ~= nil then
+      self._grid:setNode(node)
+      self:_applyCursorFocus()
+      local destination = self:_heldDestination()
+      if destination ~= nil and destination ~= false then
+        self:_finishCarry(destination)
+      elseif destination == false then
+        self:_refuseHeldDestination()
+      end
+    end
+    return
+  end
+  if carry ~= nil and carry.kind == "items" and carry.holding ~= true and self._drag == nil then
+    -- The BAG row is a selection, not a hand-held drop. A touch on another
+    -- mon starts a fresh item-mode drag from that mon.
+    self._carry, self._menu = nil, nil
+    carry = nil
+  end
+  if self._boxTray == "deposit" or carry ~= nil then
+    return
+  end
+  if self:_startDrag(target, event.pointerId, event.x, event.y) then
+    self:_syncCarryGrid()
+    return
+  end
+  self:_touchTarget(target)
+  if self._mode == 3 and self._boxTray == "closed" then
+    self:_openMenu()
+  end
+end
+
+---@param event table<string, unknown>
+function StorageScreenState:_handleDragMove(event)
+  local drag = self._drag
+  if drag == nil or (drag.pointerId ~= nil and event.pointerId ~= nil and event.pointerId ~= drag.pointerId) then
+    return
+  end
+  drag.x, drag.y = event.x, event.y
+  self:_updateDragPanel(drag)
+end
+
+---@param event table<string, unknown>
+function StorageScreenState:_handleDragRelease(event)
+  local drag = self._drag
+  if drag == nil or (drag.pointerId ~= nil and event.pointerId ~= nil and event.pointerId ~= drag.pointerId) then
+    return
+  end
+  drag.x, drag.y = event.x, event.y
+  self:_updateDragPanel(drag)
+  local destination = self:_dragDestination()
+  if destination == nil or destination == false then
+    if destination == false then
+      self._lastAction = { kind = "refused", reason = "box_full", action = drag.action }
+      self:_cue("SEQ_SE_DP_BOX03")
+    end
+    self:_returnDragToSource()
+    return
+  end
+  local source = drag.source
+  local same = destination.kind == source.kind
+    and destination.slot == source.slot
+    and (destination.kind == "party" or destination.box == source.box)
+  if same or (drag.kind == "items" and self:_occupant(destination) == nil) then
+    self:_returnDragToSource()
+    return
+  end
+  self._tray = drag.trayBefore
+  self._boxTray = drag.boxTrayBefore
+  self:_finishCarry(destination)
+  if self._carry ~= nil then
+    -- Pointer capture ended; a refused drop returns custody and presentation
+    -- to the source rather than leaving a ghost attached to a released pen.
+    self:_returnDragToSource()
+    return
+  end
+  self._drag = nil
+  self._hint = nil
+end
+
+-- Cancels an in-flight drag without committing it (pointer capture loss).
+function StorageScreenState:_cancelDrag()
+  local drag = self._drag
+  if drag == nil then
+    return
+  end
+  self:_endDrag()
+  self._tray = drag.trayBefore
+  self._boxTray = drag.boxTrayBefore
+  self._focus = { domain = drag.source.kind, slot = drag.source.slot }
+  self:_restoreBrowseGrid()
+end
+
+-- Places the source cursor on a touched slot; touch never animates the slide.
+---@param target table<string, unknown>
+function StorageScreenState:_touchTarget(target)
+  local domain = target.domain or target.kind
+  local hidden = (self._mode == 0 and domain == "box" and self._carry == nil)
+    or (domain == "party" and self._tray == "closed")
+  if hidden then
+    return
+  end
+  self._focus = { domain = domain, slot = target.slot }
+  if target.box ~= nil then
+    self._activeBox = target.box
+  end
+  local node = self:_nodeForSlot(domain, target.slot)
+  if node ~= nil then
+    self._grid:setNode(node)
+  end
+  self._infoVisible = true
 end
 
 -- Only the box-name editor consumes typed text.
@@ -1040,22 +2251,57 @@ end
 -- Applies the cancel precedence for one cancel event: an armed release first,
 -- then the pending item intent, carry, menu, tray, and finally the prompt.
 function StorageScreenState:_handleCancelInput()
+  if self._boxTray == "deposit" then
+    self:_closeDepositSelector()
+    self:_cue("SEQ_SE_DP_SELECT")
+    return
+  end
   if
     self._releaseCheck ~= nil and (self._releaseCheck.outcome == "confirm" or self._releaseCheck.outcome == "pending")
   then
     self._releaseCheck.outcome = "cancelled"
+    self._releaseCheck.phase = nil
     self._releaseIntent = nil
     self._releaseRevisions = nil
+    self._pendingResultAction, self._pendingResultItem = nil, nil
     self:_cue("SEQ_SE_DP_SELECT")
   elseif self._pendingIntent ~= nil then
     self._pendingIntent = nil
     self:_cue("SEQ_SE_DP_SELECT")
   elseif self._carry ~= nil then
+    local carry = assert(self._carry)
+    local drag = self._drag
+    local boxTrayWasOpen = self._boxTray ~= "closed"
+    if drag ~= nil then
+      self._tray = drag.trayBefore
+      self._boxTray = drag.boxTrayBefore
+    end
+    if carry.action == "withdraw" then
+      self._tray = "closed"
+    end
+    -- A cancelled hold puts the mon back and closes the tray it opened from.
     self._carry, self._menu = nil, nil
+    if boxTrayWasOpen then
+      self._boxTray, self._boxTrayChangeBox = "closed", false
+      self._tray = carry.source.kind == "party" and "left" or "closed"
+    end
+    self._drag, self._hint = nil, nil
     self:_cue("SEQ_SE_DP_SELECT")
+    self:_restoreBrowseGrid()
   elseif self._menu ~= nil then
+    local titleMenu = self._menu.address == nil
     self._menu = nil
     self:_cue("SEQ_SE_DP_SELECT")
+    if titleMenu then
+      self._boxTray = "closed"
+      self._boxTrayChangeBox = false
+      self._grid:setLayout(self:_browseLayout(), 30)
+      self:_applyCursorFocus()
+    else
+      self:_restoreBrowseGrid()
+    end
+  elseif self._boxTray == "box" then
+    self:_closeBoxTray()
   elseif self._mode >= 2 and self._tray ~= "closed" then
     self:_closeTray()
   else
@@ -1073,40 +2319,79 @@ function StorageScreenState:_handleFocusInput(event)
   elseif event.type == "party" then
     if self._mode >= 2 and self._carry == nil then
       self._tray, self._focus = "left", { domain = "party", slot = 0 }
+      self._grid:setLayout(self:_browseLayout(), 0)
+      self:_applyCursorFocus()
     end
   elseif event.type == "tray_close" then
     self:_closeTray()
   elseif event.type == "storage_target" then
-    local target = copy(assert(event.target, "mapped Storage inputs identify a target"))
-    local domain = target.domain or target.kind
-    -- Deposit mode only hit-tests the party tray until a deposit asks where.
-    local hidden = self._mode == 0 and domain == "box" and self._carry == nil
-      or domain == "party" and self._tray == "closed"
-    if not hidden then
-      self._focus = { domain = domain, slot = target.slot }
-      if target.box ~= nil then
-        self._activeBox = target.box
+    self:_touchTarget(copy(assert(event.target, "mapped Storage inputs identify a target")))
+  elseif event.type == "box_title" then
+    self:_openTitleMenu()
+  elseif event.type == "box_tab" or event.type == "box_tray_open" then
+    local holding = self._carry ~= nil and self._carry.holding == true
+    if (self._carry == nil and self._menu == nil) or holding then
+      self:_openBoxTray()
+    end
+  elseif event.type == "box_tray_page" then
+    if self._boxTray ~= "closed" then
+      self:_cue("SEQ_SE_DP_SELECT")
+      self:_changeTrayPage(event.delta == -1 and -1 or 1)
+    end
+  elseif event.type == "box_tray_change" then
+    if self._boxTray == "box" then
+      self:_cue("SEQ_SE_DP_DECIDE")
+      self:_switchToTrayBox()
+      self._grid:setNode(45)
+      self:_applyCursorFocus()
+    end
+  elseif event.type == "box_tray_select" then
+    if self._boxTray ~= "closed" then
+      local column = assert(event.column)
+      local page = math.floor(self._trayBox / PcStorageGeometry.TRAY_PAGE_SIZE) * PcStorageGeometry.TRAY_PAGE_SIZE
+      self._trayBox = page + column
+      self._boxTrayChangeBox = self._boxTray == "box" and self._trayBox ~= self._activeBox
+      self:_syncGridAvailability()
+      if self._boxTray == "deposit" then
+        -- PCBox_SelectDepositBox records the touched column before moving the
+        -- cursor to the OK plate, so returning restores it.
+        self._grid:setRowCursor(column)
+        self._grid:setNode(8)
+      elseif self._grid:layoutName() == "boxMenu" then
+        self._grid:setRowCursor(column)
+        self._grid:setNode(8)
+      elseif self._carry ~= nil and self._carry.holding == true then
+        -- A held mon drops on the thumbnail under the hand.
+        self._grid:setNode(37 + column)
+      elseif self._boxTrayChangeBox then
+        self._grid:setNode(45)
+      else
+        self._grid:setNode(37 + column)
+      end
+      self:_applyCursorFocus()
+      if self._carry ~= nil and self._carry.holding == true then
+        local destination = self:_heldDestination()
+        if destination ~= nil and destination ~= false then
+          self:_finishCarry(destination)
+        elseif destination == false then
+          self:_refuseHeldDestination()
+        end
       end
     end
-  elseif event.type == "box_title" then
-    -- The title plate opens the Wallpaper / Name pair.
-    if self._carry == nil then
-      self._menu = { actions = { "wallpaper", "boxName" }, selected = 1 }
+  elseif event.type == "box_tray_cancel" then
+    if self._boxTray == "deposit" then
+      self:_closeDepositSelector()
+    else
+      self:_closeBoxTray()
+    end
+    self:_cue("SEQ_SE_DP_SELECT")
+  elseif event.type == "box_prev" or event.type == "box_next" then
+    if self._carry == nil and self._menu == nil then
+      self:_cue("SEQ_SE_DP_SELECT")
+      self:_switchBox(event.type == "box_prev" and -1 or 1)
     end
   elseif event.type == "navigate" then
-    local direction = assert(event.direction)
-    self:_cue("SEQ_SE_DP_SELECT")
-    if self._menu ~= nil and self._carry == nil and (direction == "up" or direction == "down") then
-      local delta = direction == "up" and -1 or 1
-      self._menu.selected = math.max(1, math.min(#self._menu.actions, self._menu.selected + delta))
-    elseif direction == "up" or direction == "down" then
-      local delta = direction == "up" and -1 or 1
-      self._focus.slot = math.max(0, math.min(self._focus.domain == "party" and 5 or 29, self._focus.slot + delta))
-    elseif direction == "left" or direction == "right" then
-      self._activeBox = (self._activeBox + (direction == "right" and 1 or -1)) % self._mons:boxCount()
-      self._focus = { domain = self._focus.domain, slot = 0 }
-      self._actions:commit(self:_preview({ kind = "activeBox", box = self._activeBox }))
-    end
+    self:_navigate(assert(event.direction))
   else
     assert(false, "unknown Storage focus event " .. tostring(event.type))
   end
@@ -1116,9 +2401,24 @@ end
 ---@param event table<string, unknown>
 function StorageScreenState:_handleConfirmInput(event)
   if event.type == "confirm" then
-    if self._pendingIntent ~= nil then
-      self._lastAction = self._actions:commit(self._pendingIntent, true)
+    local menuFirst, menuLast = self:_menuNodes()
+    local onMenuRow = menuFirst ~= nil and self._grid:index() >= menuFirst and self._grid:index() <= menuLast
+    if self._menu ~= nil and onMenuRow then
+      local menu = assert(self._menu)
+      local selectedAction = assert(menu.actions[menu.selected], "Storage selection resolves to a menu action")
+      self:_cue("SEQ_SE_DP_DECIDE")
+      self:_beginAction(selectedAction)
+    elseif self._pendingIntent ~= nil then
+      ---@type table<string, unknown>
+      local pending = assert(self._pendingIntent)
+      local result = self._actions:commit(pending, true)
+      self._lastAction = result
+      local request = pending.request
+      assert(type(request) == "table", "a pending item intent names its request")
+      ---@cast request table<string, unknown>
+      self:_recordItemResult(self._pendingResultAction or request.kind, self._pendingResultItem, result)
       self._pendingIntent = nil
+      self._pendingResultAction, self._pendingResultItem = nil, nil
     elseif self._carry ~= nil then
       self:_confirmCarry()
     elseif self._menu ~= nil then
@@ -1127,13 +2427,101 @@ function StorageScreenState:_handleConfirmInput(event)
       self:_cue("SEQ_SE_DP_DECIDE")
       self:_beginAction(selectedAction)
     else
-      self:_openMenu()
+      self:_confirmNode()
     end
   elseif event.type == "action" then
     self:_cue("SEQ_SE_DP_DECIDE")
-    self:_beginAction(assert(event.action), event, self._menu == nil and self:_address(self._focus) or nil)
+    local action = assert(event.action)
+    local carry = self._carry
+    local address = self._menu == nil and self:_address(self._focus) or nil
+    if action == "summary" and carry ~= nil and carry.holding == true then
+      address = carry.source
+    end
+    self:_beginAction(action, event, address)
   else
     assert(false, "unknown Storage input event " .. tostring(event.type))
+  end
+end
+
+-- Confirms the focused source control when no list is open.
+function StorageScreenState:_confirmNode()
+  local node = self._grid:current()
+  local kind = node.kind
+  if kind == "box" or kind == "party" then
+    self:_openMenu()
+  elseif kind == "box_tray" then
+    if self._boxTray == "deposit" then
+      self:_confirmDepositSelection()
+    elseif self._grid:layoutName() == "boxMenu" then
+      if self._trayBox == self._activeBox then
+        self:_cue("SEQ_SE_DP_BOX03")
+      else
+        self._grid:setNode(8)
+        self:_syncGridAvailability()
+        self:_applyCursorFocus()
+      end
+    elseif self._trayBox == self._activeBox then
+      self:_cue("SEQ_SE_DP_BOX03")
+    else
+      self._boxTrayChangeBox = true
+      self:_syncGridAvailability()
+      self._grid:setNode(45)
+      self:_applyCursorFocus()
+    end
+  elseif kind == "title" then
+    if self._grid:layoutName() == "boxMenu" then
+      self:_switchToTrayBox()
+      self._grid:setNode(8)
+      self:_applyCursorFocus()
+    else
+      self:_openTitleMenu()
+    end
+  elseif kind == "return" or kind == "exit" then
+    local layout = self._grid:layoutName()
+    if layout == "tray" then
+      if self._boxTrayChangeBox then
+        self:_switchToTrayBox()
+      else
+        self:_closeBoxTray()
+      end
+    elseif layout == "moveParty" or layout == "itemParty" then
+      self:_closeTray()
+    else
+      self._prompt = { kind = "exit" }
+    end
+  elseif kind == "menu" then
+    local menu = assert(self._menu)
+    self:_cue("SEQ_SE_DP_DECIDE")
+    self:_beginAction(assert(menu.actions[menu.selected]))
+  elseif kind == "menu_exit" then
+    self:_handleCancelInput()
+  elseif kind == "party_button" then
+    if self._carry == nil then
+      self:_handleFocusInput({ type = "party" })
+    end
+  elseif kind == "party_panel_button" then
+    if self._boxTray == "box" then
+      self:_closeBoxTray()
+    else
+      self:_openBoxTray()
+    end
+  elseif kind == "item_button" then
+    local holding = self._carry ~= nil and self._carry.kind == "items"
+    self:_cue("SEQ_SE_DP_DECIDE")
+    self:_beginAction(holding and "bagItem" or "giveItem")
+  elseif kind == "tray_tab" then
+    if self._carry == nil and self._menu == nil then
+      self:_openBoxTray()
+    end
+  elseif kind == "prev_box" or kind == "next_box" or kind == "page_prev" or kind == "page_next" then
+    -- Source touch-only plates; the D-pad keeps the cursor on them.
+    return
+  elseif kind == "confirm" and self._boxTray == "deposit" then
+    self:_confirmDepositSelection()
+  elseif kind == "cancel" and self._boxTray == "deposit" then
+    self:_closeDepositSelector()
+  else
+    error("unhandled Storage focus kind " .. tostring(kind), 0)
   end
 end
 
@@ -1142,6 +2530,10 @@ end
 ---@param event table<string, unknown>
 ---@return boolean
 function StorageScreenState:_dispatchStorageEvent(event)
+  event = self:_resolvePromptChoice(event)
+  if event.type == "prompt_choice" then
+    return false
+  end
   if self._prompt ~= nil then
     self:_resolvePromptInput(event)
     return false
@@ -1153,21 +2545,43 @@ function StorageScreenState:_dispatchStorageEvent(event)
     or eventType == "tray_close"
     or eventType == "storage_target"
     or eventType == "box_title"
+    or eventType == "box_tab"
+    or eventType == "box_prev"
+    or eventType == "box_next"
+    or eventType == "box_tray_open"
+    or eventType == "box_tray_page"
+    or eventType == "box_tray_select"
+    or eventType == "box_tray_change"
+    or eventType == "box_tray_cancel"
     or eventType == "navigate"
   then
     self:_handleFocusInput(event)
+    return false
+  elseif eventType == "storage_touch" then
+    self:_handleStorageTouch(event)
+    return false
+  elseif eventType == "storage_drag_move" then
+    self:_handleDragMove(event)
+    return false
+  elseif eventType == "storage_drag_release" then
+    self:_handleDragRelease(event)
     return false
   elseif eventType == "release" then
     self:_startRelease(assert(event.address))
     return false
   elseif eventType == "confirm" and self._releaseCheck ~= nil and self._releaseCheck.outcome == "confirm" then
+    -- PCBox_ConfirmRelease hides the outline and starts the shrink at once;
+    -- the scan runs alongside it.
     self._releaseCheck.outcome = "pending"
+    self._releaseCheck.phase = "shrink"
+    self._releaseCheck.shrink = 0
     return true
   elseif eventType == "cancel" then
     self:_handleCancelInput()
     return false
   elseif eventType == "pointer_cancel" then
     -- The paired session has already discarded the invalid pointer capture.
+    self:_cancelDrag()
     return false
   end
   self:_handleConfirmInput(event)
@@ -1197,22 +2611,26 @@ function StorageScreenState:_dispatchStorageBatch(events)
   return beganScan, false
 end
 
--- Records the terminal outcome of one finished release scan.
+-- Records what the finished release-check scan learned. The scan never
+-- mutates custody: the source deletes the mon only after the shrink and both
+-- message acknowledgements.
 ---@param check table<string, unknown>
 ---@param result table<string, unknown>
 function StorageScreenState:_settleReleaseResult(check, result)
   if result.kind == "stale" then
-    check.outcome = "stale"
+    check.scanOutcome = "stale"
   elseif result.reason == "hm_return" then
-    check.outcome = "returned"
+    check.scanOutcome = "returned"
   elseif result.kind == "changed" then
-    check.outcome = "removed"
+    check.scanOutcome = "removed"
   else
-    check.outcome = "cancelled"
+    check.scanOutcome = "cancelled"
   end
 end
 
--- Advances the current release scan by exactly one fifteen-address slice.
+-- Advances the release animation and scan together by one fixed tick. The
+-- shrink starts with the confirmation, while the scan visits fifteen
+-- candidate addresses per tick; the mon stays in custody throughout.
 function StorageScreenState:_advanceRelease()
   local check = self._releaseCheck
   if check == nil or check.outcome ~= "pending" then
@@ -1223,15 +2641,49 @@ function StorageScreenState:_advanceRelease()
     or self._releaseRevisions.boxRevision ~= self._mons:boxRevision()
   then
     check.outcome = "stale"
+    check.phase = nil
     self._releaseIntent = nil
     return
   end
-  check.scanned = math.min(check.total, check.scanned + 15)
-  if check.scanned == check.total then
-    local intent = assert(self._releaseIntent)
-    local result = intent.reason == "hm_return" and intent or self._actions:commit(intent, true)
-    self:_settleReleaseResult(check, result)
-    self._releaseIntent = nil
+  if check.scanned < check.total then
+    check.scanned = math.min(check.total, check.scanned + 15)
+    if check.scanned == check.total then
+      -- The scan revalidates custody without mutating it: removal happens
+      -- only after the shrink and both message acknowledgements.
+      local intent = assert(self._releaseIntent)
+      local fresh = self:_preview(intent.request)
+      self:_settleReleaseResult(check, fresh.kind == "confirm" and { kind = "changed" } or fresh)
+      if check.scanOutcome == "stale" then
+        check.outcome = "stale"
+        check.phase = nil
+        self._releaseIntent = nil
+        return
+      end
+    end
+  end
+  if check.phase == "shrink" then
+    if check.shrink < PcStorageGeometry.RELEASE_SHRINK_TICKS then
+      check.shrink = check.shrink + 1
+    end
+    local shrinkComplete = check.shrink >= PcStorageGeometry.RELEASE_SHRINK_TICKS
+    local scanComplete = check.scanned >= check.total
+    if shrinkComplete and scanComplete then
+      if check.scanOutcome == "returned" then
+        check.phase = "grow"
+        check.shrink = 0
+      else
+        check.outcome = "released"
+        check.phase = nil
+      end
+    end
+  elseif check.phase == "grow" then
+    if check.shrink < PcStorageGeometry.RELEASE_GROW_TICKS then
+      check.shrink = check.shrink + 1
+    end
+    if check.shrink >= PcStorageGeometry.RELEASE_GROW_TICKS then
+      check.outcome = "returned"
+      check.phase = nil
+    end
   end
 end
 
@@ -1251,15 +2703,42 @@ function StorageScreenState:updateFixed(events)
     -- A message stays until the next input, then the result is acknowledged.
     self._notice = nil
     local acknowledged = self._releaseCheck
+    local releaseMessageOpen = acknowledged ~= nil
+      and (acknowledged.outcome == "released" or (acknowledged.outcome == "returned" and not acknowledged.acknowledged))
     if acknowledged ~= nil and acknowledged.outcome ~= "confirm" and acknowledged.outcome ~= "pending" then
-      if acknowledged.sequel then
-        acknowledged.acknowledged = true
-      elseif acknowledged.outcome == "removed" or acknowledged.outcome == "returned" then
-        -- The bye-bye/worried follow-up shows once before dismissal.
-        acknowledged.sequel = true
-      else
+      if acknowledged.outcome == "released" then
+        if acknowledged.sequel then
+          -- The bye-bye acknowledgement is when storage finally removes the
+          -- mon (PCBox_State_RemoveReleasedMon).
+          local result = self._actions:commit(assert(self._releaseIntent), true)
+          self._releaseIntent, self._releaseRevisions = nil, nil
+          if result.kind == "changed" then
+            acknowledged.outcome = "removed"
+            acknowledged.acknowledged = true
+            acknowledged.sequel = nil
+          else
+            acknowledged.outcome = "stale"
+            acknowledged.acknowledged = true
+          end
+        else
+          -- The released line is followed by the bye-bye line before removal.
+          acknowledged.sequel = true
+        end
+      elseif acknowledged.outcome == "returned" then
+        if acknowledged.sequel then
+          acknowledged.acknowledged = true
+        else
+          acknowledged.sequel = true
+        end
+      elseif acknowledged.outcome ~= "removed" then
         acknowledged.acknowledged = true
       end
+    end
+    if releaseMessageOpen then
+      -- A release message owns this input: it only dismisses (or finishes)
+      -- the message, never the grid behind it.
+      self:_ensurePublished()
+      return
     end
   end
   if self._child ~= nil then

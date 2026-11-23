@@ -3,6 +3,7 @@
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local PcStorageGeometry = require("libs.hgss.src.ui.PcStorageGeometry")
+local PcStorageGrid = require("libs.hgss.src.ui.PcStorageGrid")
 
 local StorageInterface = {}
 local UPPER = { id = "upper", width = NativeDisplay.WIDTH, height = NativeDisplay.HEIGHT }
@@ -30,16 +31,38 @@ local function geometry(view)
     item = mode == 3,
   }
   local slots = {}
-  for slot = 0, 29 do
-    slots[#slots + 1] = { rect = PcStorageGeometry.boxSlotRect(slot), target = { kind = "box", slot = slot } }
-  end
   local visibleParty = {}
-  if view.tray ~= "closed" then
-    for slot = 0, 5 do
-      visibleParty[#visibleParty + 1] = {
-        rect = PcStorageGeometry.partySlotRect(slot, view.tray),
-        target = { kind = "party", slot = slot },
+  local layout = view.boxTray ~= nil and view.boxTray.mode == "box" and "tray"
+    or view.boxTray ~= nil and view.boxTray.mode == "deposit" and "depositBox"
+    or PcStorageGrid.browseLayout(view.mode, view.tray ~= "closed")
+  for _, node in ipairs(PcStorageGrid.layout(layout)) do
+    if node.kind == "box" then
+      local mon = view.boxSlots and view.boxSlots[node.index + 1]
+      slots[#slots + 1] = {
+        rect = assert(node.hit),
+        target = { kind = "box", slot = node.index },
+        occupied = type(mon) == "table",
       }
+    end
+  end
+  local partyLayout
+  if view.boxTray == nil or view.boxTray.mode ~= "deposit" then
+    if view.tray == "left" then
+      partyLayout = view.mode == 0 and "deposit" or view.mode == 3 and "itemParty" or "moveParty"
+    elseif view.tray == "right" then
+      partyLayout = "tray"
+    end
+  end
+  if partyLayout ~= nil then
+    for _, node in ipairs(PcStorageGrid.layout(partyLayout)) do
+      if node.kind == "party" then
+        local mon = view.party and view.party[node.index + 1]
+        visibleParty[#visibleParty + 1] = {
+          rect = assert(node.hit),
+          target = { kind = "party", slot = node.index },
+          occupied = type(mon) == "table",
+        }
+      end
     end
   end
   local editorChoices = {}
@@ -67,8 +90,13 @@ local function geometry(view)
       { rect = PcStorageGeometry.WALLPAPER_CONFIRM_RECT, target = { type = "submit" } }
     editorChoices[#editorChoices + 1] = { rect = PcStorageGeometry.WALLPAPER_CANCEL_RECT, target = { type = "cancel" } }
   end
-  -- Deposit mode only hit-tests the party tray until a deposit asks where.
-  local boxTouchable = editor == nil and (view.mode ~= 0 or view.carry ~= nil)
+  -- Deposit mode only hit-tests the party tray until a deposit asks where;
+  -- the open deposit selector replaces the box grid with its thumbnail row.
+  -- The Move/Item box tray keeps the grid live behind its strip so a stylus
+  -- can drag a mon out of a box and onto a thumbnail.
+  local boxTouchable = editor == nil
+    and (view.boxTray == nil or view.boxTray.mode == "box")
+    and (view.mode ~= 0 or view.carry ~= nil)
   local menuButtons, controls = {}, {}
   if editor == nil and view.menu ~= nil then
     local count = #view.menu.actions
@@ -86,14 +114,61 @@ local function geometry(view)
   for _, button in ipairs(PcStorageGeometry.bottomButtons(view)) do
     controls[#controls + 1] = { rect = button.rect, target = button.target }
   end
+  local panelLabel = PcStorageGeometry.partyPanelLabel(view)
+  if panelLabel ~= nil then
+    controls[#controls + 1] = { rect = panelLabel, target = panelLabel.target }
+  end
+  if view.boxTray ~= nil then
+    local deposit = view.boxTray.mode == "deposit"
+    for column = 0, PcStorageGeometry.TRAY_PAGE_SIZE - 1 do
+      controls[#controls + 1] = {
+        rect = PcStorageGeometry.trayDropRect(column, deposit),
+        target = { type = "box_tray_select", column = column },
+      }
+    end
+    local trayLayout = deposit and "depositBox" or "tray"
+    local prevNode = deposit and 6 or 43
+    local nextNode = deposit and 7 or 44
+    local holding = view.carry ~= nil and view.carry.holding == true
+    if not holding or deposit then
+      controls[#controls + 1] = {
+        rect = assert(PcStorageGrid.node(trayLayout, prevNode).hit),
+        target = { type = "box_tray_page", delta = -1 },
+      }
+      controls[#controls + 1] = {
+        rect = assert(PcStorageGrid.node(trayLayout, nextNode).hit),
+        target = { type = "box_tray_page", delta = 1 },
+      }
+    end
+    if deposit then
+      controls[#controls + 1] = {
+        rect = PcStorageGeometry.DEPOSIT_CONFIRM_RECT,
+        target = { type = "confirm" },
+      }
+    elseif view.boxTray.changeBox then
+      controls[#controls + 1] = {
+        rect = PcStorageGeometry.TRAY_CHANGE_BOX_RECT,
+        target = { type = "box_tray_change" },
+      }
+    end
+    controls[#controls + 1] = {
+      rect = { x = 192, y = 168, width = 64, height = 24 },
+      target = { type = "box_tray_cancel" },
+    }
+  end
   if editor == nil then
-    if view.carry == nil and view.menu == nil then
+    local browseControlsVisible = view.carry == nil
+      and view.menu == nil
+      and view.boxTray == nil
+      and view.tray == "closed"
+      and view.transferSide == nil
+    if browseControlsVisible then
       controls[#controls + 1] = { rect = PcStorageGeometry.BOX_TITLE_RECT, target = { type = "box_title" } }
     end
-    controls[#controls + 1] =
-      { rect = PcStorageGeometry.BOX_ARROW_RECTS.left, target = { type = "navigate", direction = "left" } }
-    controls[#controls + 1] =
-      { rect = PcStorageGeometry.BOX_ARROW_RECTS.right, target = { type = "navigate", direction = "right" } }
+    if browseControlsVisible and view.message == nil then
+      controls[#controls + 1] = { rect = PcStorageGeometry.BOX_ARROW_RECTS.left, target = { type = "box_prev" } }
+      controls[#controls + 1] = { rect = PcStorageGeometry.BOX_ARROW_RECTS.right, target = { type = "box_next" } }
+    end
   end
   return modeGeometry,
     {
@@ -109,8 +184,28 @@ local function noRender() end
 
 local function noMap() end
 
+local function within(rect, x, y)
+  return x >= rect.x and x < rect.x + rect.width and y >= rect.y and y < rect.y + rect.height
+end
+
 local function mapInput(event, _, plan)
-  if event.type == "pointer_move" or event.type == "pointer_up" or event.type == "pointer_scroll" then
+  if event.type == "pointer_move" or event.type == "pointer_up" then
+    if plan.content.editor ~= nil then
+      -- Editors are tap-only; a captured drag never becomes one of their
+      -- inputs.
+      return nil
+    end
+    -- The session delivers these only to the pane whose content press it
+    -- captured, in pane-local coordinates; the screen owns the drag state and
+    -- resolves the drop from the last held point.
+    return {
+      type = event.type == "pointer_move" and "storage_drag_move" or "storage_drag_release",
+      pointerId = event.pointerId,
+      x = event.x,
+      y = event.y,
+    }
+  end
+  if event.type == "pointer_scroll" then
     return nil
   end
   if event.type ~= "pointer_down" then
@@ -134,15 +229,43 @@ local function mapInput(event, _, plan)
       return hit.target
     end
   end
-  for _, hit in ipairs(plan.content.hitRegions.boxSlots) do
-    local rect = hit.rect
-    if event.x >= rect.x and event.x < rect.x + rect.width and event.y >= rect.y and event.y < rect.y + rect.height then
+  -- The visible party panel owns overlapping hit space above the box grid.
+  for _, hit in ipairs(plan.content.hitRegions.partySlots) do
+    if within(hit.rect, event.x, event.y) then
+      if hit.occupied or plan.content.modeGeometry.carry then
+        return {
+          type = "storage_touch",
+          target = hit.target,
+          pointerId = event.pointerId,
+          x = event.x,
+          y = event.y,
+        }
+      end
       return { type = "storage_target", target = hit.target }
     end
   end
-  for _, hit in ipairs(plan.content.hitRegions.partySlots) do
-    local rect = hit.rect
-    if event.x >= rect.x and event.x < rect.x + rect.width and event.y >= rect.y and event.y < rect.y + rect.height then
+  for _, hit in ipairs(plan.content.hitRegions.boxSlots) do
+    if within(hit.rect, event.x, event.y) then
+      if plan.content.modeGeometry.carry then
+        return {
+          type = "storage_touch",
+          target = hit.target,
+          pointerId = event.pointerId,
+          x = event.x,
+          y = event.y,
+        }
+      end
+      -- An occupied custody cell starts the source drag on touch-down; an
+      -- empty cell only places the cursor.
+      if hit.occupied then
+        return {
+          type = "storage_touch",
+          target = hit.target,
+          pointerId = event.pointerId,
+          x = event.x,
+          y = event.y,
+        }
+      end
       return { type = "storage_target", target = hit.target }
     end
   end
@@ -154,8 +277,12 @@ end
 
 local function renderPlan(resources, snapshot, resolved)
   local renderer = assert(resources.storageRenderer, "Storage rendering borrows its renderer")
+  local animated = renderer:stepAnimation(snapshot)
+  if animated.transferComplete and type(snapshot.onTransferComplete) == "function" then
+    snapshot.onTransferComplete()
+  end
   for _, pane in ipairs(resolved.panes) do
-    renderer:drawPane(snapshot, resources, pane.id, pane.placement)
+    renderer:drawPane(snapshot, resources, pane.id, pane.placement, animated)
   end
 end
 

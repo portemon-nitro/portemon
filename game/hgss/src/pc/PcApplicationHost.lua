@@ -27,6 +27,7 @@ function PcApplicationHost.new(opts)
     },
     _nextId = 0,
     _active = nil,
+    _lastDrawnHandle = nil,
     _disposed = false,
   }, PcApplicationHost)
 end
@@ -174,6 +175,13 @@ end
 function PcApplicationHost:draw(resources)
   local active = assert(self._active, "no PC application is open")
   assert(type(active.child.draw) == "function", "PC child owns its draw route")
+  if active.app == "storage" and self._lastDrawnHandle ~= active.handle then
+    local renderer = resources.storageRenderer
+    if renderer ~= nil and type(renderer.beginSession) == "function" then
+      renderer:beginSession()
+    end
+    self._lastDrawnHandle = active.handle
+  end
   if active.presentationReady then
     if active.app == "storage" then
       active.child:draw(resources, true)

@@ -88,7 +88,11 @@ function T.real_source_compiles_all_wallpaper_and_stationery_variants(romFs, _)
   Assert.isTrue(type(bundle.provenance) == "table", "the compiled family returns source provenance")
   local archives = assert(bundle.provenance.archives)
   local selections = assert(bundle.provenance.selections)
-  Assert.keySet(archives, "mailbox,photoAlbum,stationery,storage", "retained source archive inventory")
+  Assert.keySet(
+    archives,
+    "font,mailbox,photoAlbum,stationery,storage,touch_subwindow",
+    "retained source archive inventory"
+  )
   for _, expected in ipairs({
     { key = "storage", path = "a/0/1/9", memberCount = 87, selectedMemberCount = 87 },
     { key = "mailbox", path = "a/2/5/0", memberCount = 11, selectedMemberCount = 11 },
@@ -517,6 +521,65 @@ assertSelection = function(romFs, selections, selector, path, members, engine, b
   end
   if bg ~= nil then
     Assert.equal(selection.bg, bg, selector .. " preserves the background layer")
+  end
+end
+
+function T.real_source_compiles_tray_thumbnails_and_info_panels(romFs, _)
+  local PcAssetCompiler = require("romdump.src.digest.ui.PcAssetCompiler")
+  local bundle = assert(PcAssetCompiler.compile(romFs), "the PC bundle compiles")
+  local storage = assert(bundle.manifest.storage, "the bundle carries Storage")
+  Assert.equal(storage.ui.movesPanel.width, 96, "the Move info panel keeps its source width")
+  Assert.equal(storage.ui.movesPanel.height, 80, "the Move info panel keeps its source height")
+  Assert.equal(storage.ui.itemPanel.width, 256, "the Item info panel keeps its source width")
+  Assert.equal(storage.ui.itemPanel.height, 72, "the Item info panel keeps its source height")
+  Assert.equal(storage.ui.boxTray.height, 48, "the box tray strip keeps its source height")
+  Assert.equal(storage.ui.depositBoxTray.height, 56, "the Deposit selector strip keeps its source height")
+  for _, role in ipairs({ "prev", "next", "marker", "cursor", "wallpaperCursor", "label" }) do
+    Assert.notNil(storage.ui.tray[role], "the tray animation " .. role .. " compiles")
+  end
+  -- The browsing and menu hands are two-frame source pulses with their own
+  -- tick durations; the carrying hand is a single one-shot frame.
+  for _, pose in ipairs({ "browse", "menu" }) do
+    local animation = assert(storage.ui.cursors[pose], "the " .. pose .. " hand compiles")
+    Assert.equal(#animation.frames, 2, "the " .. pose .. " hand carries both source frames")
+    Assert.isTrue(animation.loop, "the " .. pose .. " hand loops")
+    for _, frame in ipairs(animation.frames) do
+      Assert.equal(frame.duration, 20, "the " .. pose .. " hand holds each frame twenty ticks")
+      Assert.equal(frame.width, 32, "the " .. pose .. " hand keeps its source cell width")
+    end
+  end
+  Assert.equal(#assert(storage.ui.cursors.carry).frames, 1, "the carrying hand is a single source frame")
+  -- The info panel's raw 16x8 bitmaps and the compact 48x32 prompt buttons.
+  Assert.equal(storage.ui.infoGlyphs.lv.width, 16, "Lv. keeps its source bitmap width")
+  Assert.equal(storage.ui.infoGlyphs.lv.height, 8, "Lv. keeps its source bitmap height")
+  Assert.equal(storage.ui.infoGlyphs.no.width, 16, "No. keeps its source bitmap width")
+  for _, key in ipairs({ "yesNormal", "yesSelected", "noNormal", "noSelected" }) do
+    local button = assert(storage.ui.yesNo[key], "the prompt button " .. key .. " compiles")
+    Assert.equal(button.width, 48, "the prompt button keeps the compact source width")
+    Assert.equal(button.height, 32, "the prompt button keeps the compact source height")
+  end
+  for wallpaperId = 0, 23 do
+    local thumbnail = assert(storage.boxThumbnail.variants[wallpaperId], "thumbnail compiles: " .. wallpaperId)
+    Assert.equal(thumbnail.width, 32, "thumbnail keeps its 32px source width: " .. wallpaperId)
+    Assert.equal(thumbnail.height, 32, "thumbnail keeps its 32px source height: " .. wallpaperId)
+  end
+  Assert.notNil(storage.boxThumbnail.locked, "the locked thumbnail compiles")
+  Assert.equal(storage.boxThumbnail.dotOrigin.x, 10, "thumbnail dots start at their source x")
+  Assert.equal(storage.boxThumbnail.dotStep, 2, "thumbnail dots step two pixels")
+  local distinctDots = {}
+  for color = 0, 9 do
+    local dot = assert(storage.boxThumbnail.dots[color], "thumbnail carries BASE_COLOR " .. color)
+    distinctDots[dot.r .. "," .. dot.g .. "," .. dot.b] = true
+  end
+  local distinctCount = 0
+  for _ in pairs(distinctDots) do
+    distinctCount = distinctCount + 1
+  end
+  Assert.equal(distinctCount, 10, "each BASE_COLOR maps to its own thumbnail dot color")
+  for wallpaperId = 0, 23 do
+    local swatch = assert(storage.wallpaperSwatchArt.variants[wallpaperId], "swatch compiles: " .. wallpaperId)
+    Assert.equal(swatch.width, 24, "swatch keeps its 24px source width: " .. wallpaperId)
+    Assert.equal(swatch.height, 24, "swatch keeps its 24px source height: " .. wallpaperId)
   end
 end
 

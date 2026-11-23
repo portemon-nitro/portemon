@@ -545,6 +545,17 @@ function HgssMonService:preparePcChanges(expected, changes)
     if type(changes.party) ~= "table" then
       MonsErrors.raise(MonsErrors.SAVE_INVALID, "PC party replacement must be an array", {})
     end
+    local count, maximum = 0, 0
+    for index in pairs(changes.party) do
+      if type(index) ~= "number" or index < 1 or index % 1 ~= 0 then
+        MonsErrors.raise(MonsErrors.SAVE_INVALID, "PC party replacement must be a dense array", {})
+      end
+      count = count + 1
+      maximum = math.max(maximum, index)
+    end
+    if count ~= maximum then
+      MonsErrors.raise(MonsErrors.SAVE_INVALID, "PC party replacement must be a dense array", {})
+    end
     local checked = {}
     for index, mon in ipairs(changes.party) do
       checked[index] = self:_checked(mon)

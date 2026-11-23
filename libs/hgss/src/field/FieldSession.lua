@@ -69,7 +69,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field terrainEffects FieldTerrainEffectController?
 ---@field playerAvatar FieldPlayerAvatarState? surf-phase owner stepped once per fixed tick
 ---@field progression PlayerProgression? Running Shoes owner and badge reads; absent sessions never run or Surf
----@field partyKnowsMove (fun(move: string): boolean)? whether a party mon knows the field-move key; absent sessions never resolve Surf
+---@field partyKnowsMove (fun(move: string): boolean)? whether a party mon knows the mon catalog's move key (Surf's is SURF); absent sessions never resolve Surf
 ---@field audio { updateField: fun(self: table<string, unknown>), play: fun(self: table<string, unknown>, idOrSymbol: string) }?
 ---@field navigationBoundary table<string, unknown>?
 ---@field fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
@@ -141,7 +141,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field terrainEffects FieldTerrainEffectController?
 ---@field playerAvatar FieldPlayerAvatarState? surf-phase owner stepped once per fixed tick
 ---@field progression PlayerProgression? Running Shoes owner and badge reads; absent sessions never run or Surf
----@field partyKnowsMove (fun(move: string): boolean)? whether a party mon knows the field-move key; absent sessions never resolve Surf
+---@field partyKnowsMove (fun(move: string): boolean)? whether a party mon knows the mon catalog's move key (Surf's is SURF); absent sessions never resolve Surf
 ---@field audio { updateField: fun(self: table<string, unknown>), play: fun(self: table<string, unknown>, idOrSymbol: string) }?
 ---@field initController table<string, unknown>|nil
 ---@field mapEntryStage FieldMapEntryStage? read-only view of mapEntryController state
@@ -1769,7 +1769,7 @@ function FieldSession:updateFixed(inputSnapshot)
       interactionSnapshot.surfAllowed = self.progression ~= nil
         and self.partyKnowsMove ~= nil
         and self.progression:hasBadge("fog")
-        and self.partyKnowsMove("surf")
+        and self.partyKnowsMove("SURF")
       interactionSnapshot.tick = self.tick + 1
       local intent = self.interactions:resolve(interactionSnapshot)
       if intent then

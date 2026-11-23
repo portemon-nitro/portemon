@@ -58,14 +58,17 @@ local function writeRecord(stationeryType)
 end
 
 function PcPresentationFixture.manifest()
-  local function sourceVisual(role, width, height)
+  local function sourceVisualAt(role, width, height, anchorX, anchorY)
     return {
       image = "assets/generated/pc/test-" .. role .. ".png",
       width = width,
       height = height,
-      anchorX = 0,
-      anchorY = 0,
+      anchorX = anchorX,
+      anchorY = anchorY,
     }
+  end
+  local function sourceVisual(role, width, height)
+    return sourceVisualAt(role, width, height, 0, 0)
   end
   local wallpapers = {}
   for wallpaperId = 0, 15 do
@@ -100,7 +103,7 @@ function PcPresentationFixture.manifest()
       write = writeRecord(stationeryType),
     }
   end
-  local windowFrames = { standard = {}, accent = {} }
+  local windowFrames = { standard = {}, accent = {}, fill = { r = 255, g = 247, b = 222 }, accentFill = { r = 255, g = 247, b = 222 } }
   for _, style in ipairs({ "standard", "accent" }) do
     for bank = 0, 1 do
       windowFrames[style]["paletteBank" .. bank] = sourceVisual("frame-" .. style .. "-" .. bank, 96, 8)
@@ -110,12 +113,41 @@ function PcPresentationFixture.manifest()
   for logicalId = 0, 23 do
     wallpaperSwatches.colors[logicalId] = { r = 10 * logicalId, g = 20, b = 30 }
   end
+  local wallpaperSwatchArt = { variants = {}, locked = sourceVisual("wallpaper-swatch-locked", 24, 24) }
+  for logicalId = 0, 23 do
+    wallpaperSwatchArt.variants[logicalId] = sourceVisual("wallpaper-swatch-" .. logicalId, 24, 24)
+  end
+  local boxThumbnail = {
+    variants = {},
+    locked = sourceVisual("box-thumbnail-locked", 32, 32),
+    dots = {},
+    dotOrigin = { x = 10, y = 11 },
+    dotStep = 2,
+  }
+  for logicalId = 0, 23 do
+    boxThumbnail.variants[logicalId] = sourceVisual("box-thumbnail-" .. logicalId, 32, 32)
+  end
+  for color = 0, 9 do
+    boxThumbnail.dots[color] = { r = 10 + color, g = 20, b = 30 }
+  end
   local markings = {}
+  local panelMarkings = {}
   for bit = 0, 5 do
     markings[bit] = {
       clear = sourceVisual("mark-clear-" .. bit, 8, 8),
       set = sourceVisual("mark-set-" .. bit, 8, 8),
     }
+    panelMarkings[bit] = {
+      clear = sourceVisual("panel-mark-clear-" .. bit, 8, 8),
+      set = sourceVisual("panel-mark-set-" .. bit, 8, 8),
+    }
+  end
+  local plates = {}
+  for _, role in ipairs({ "tab", "summary" }) do
+    plates[role] = {}
+    for _, part in ipairs({ "left", "middle", "right" }) do
+      plates[role][part] = sourceVisual("plate-" .. role .. "-" .. part, 8, 24)
+    end
   end
   local textBanks = {}
   for _, bankId in ipairs({ 0, 279, 280, 281, 282, 233 }) do
@@ -169,23 +201,72 @@ function PcPresentationFixture.manifest()
       backgrounds = { default = visual("storage-background") },
       wallpapers = wallpapers,
       wallpaperSwatches = wallpaperSwatches,
+      wallpaperSwatchArt = wallpaperSwatchArt,
+      boxThumbnail = boxThumbnail,
       ui = {
         boxPane = sourceVisual("box-pane", 256, 192),
         infoPane = sourceVisual("info-pane", 256, 192),
         partyTray = sourceVisual("party-tray", 88, 144),
+        partyTrayMove = sourceVisual("party-tray-move", 88, 144),
         markingPanel = sourceVisual("marking-panel", 88, 144),
         wallpaperBar = sourceVisual("wallpaper-bar", 256, 56),
+        movesPanel = sourceVisual("moves-panel", 96, 80),
+        itemPanel = sourceVisual("item-panel", 256, 72),
+        boxTray = sourceVisual("box-tray", 256, 48),
+        depositBoxTray = sourceVisual("deposit-box-tray", 256, 56),
+        itemPanelFill = { r = 13, g = 26, b = 39 },
         arrows = {
           left = sourceVisual("arrow-left", 16, 16),
           right = sourceVisual("arrow-right", 16, 16),
         },
+        -- The browsing and menu hands are source two-frame pulses; the
+        -- carrying hand is a single frame. Every pose names its rendered
+        -- frames and their tick durations.
         cursors = {
-          browse = sourceVisual("cursor-browse", 20, 20),
-          menu = sourceVisual("cursor-menu", 20, 20),
-          carry = sourceVisual("cursor-carry", 20, 20),
+          browse = {
+            loop = true,
+            frames = {
+              { image = "assets/generated/pc/test-cursor-browse-0.png", width = 20, height = 20, anchorX = 0, anchorY = 0, duration = 20 },
+              { image = "assets/generated/pc/test-cursor-browse-1.png", width = 20, height = 20, anchorX = 1, anchorY = 0, duration = 20 },
+            },
+          },
+          menu = {
+            loop = true,
+            frames = {
+              { image = "assets/generated/pc/test-cursor-menu-0.png", width = 20, height = 20, anchorX = 0, anchorY = 0, duration = 20 },
+              { image = "assets/generated/pc/test-cursor-menu-1.png", width = 20, height = 20, anchorX = 1, anchorY = 0, duration = 20 },
+            },
+          },
+          carry = {
+            loop = true,
+            frames = {
+              { image = "assets/generated/pc/test-cursor-carry.png", width = 20, height = 20, anchorX = 0, anchorY = 0, duration = 1 },
+            },
+          },
+        },
+        tray = {
+          prev = sourceVisualAt("tray-prev", 24, 24, -15, -12),
+          next = sourceVisualAt("tray-next", 24, 24, -9, -12),
+          marker = sourceVisualAt("tray-marker", 24, 24, -12, -12),
+          cursor = sourceVisualAt("tray-cursor", 160, 16, -80, -8),
+          wallpaperCursor = sourceVisualAt("tray-wallpaper-cursor", 88, 16, -44, -8),
+          label = sourceVisualAt("tray-label", 16, 16, -8, -4),
+        },
+        -- Raw source bitmaps and the shared baked confirmation buttons.
+        infoGlyphs = {
+          lv = sourceVisual("info-lv", 16, 8),
+          no = sourceVisual("info-no", 16, 8),
+        },
+        yesNo = {
+          yesNormal = sourceVisual("yes-no-yes-normal", 48, 32),
+          yesSelected = sourceVisual("yes-no-yes-selected", 48, 32),
+          noNormal = sourceVisual("yes-no-no-normal", 48, 32),
+          noSelected = sourceVisual("yes-no-no-selected", 48, 32),
         },
         windowFrames = windowFrames,
+        plates = plates,
         markings = markings,
+        panelMarkings = panelMarkings,
       },
       boxNames = boxNames,
       expansionNameFormat = { prefix = "BOX ", suffix = "", firstNumber = 1 },

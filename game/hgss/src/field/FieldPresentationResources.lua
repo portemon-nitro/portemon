@@ -550,6 +550,9 @@ function FieldPresentationResources.new(runtime)
       FieldWindowRenderer.new({ cacheFs = runtime.cacheFs, manifest = runtime.uiManifest, imagePool = sharedImages })
     local textRenderer = FieldTextRenderer.new({ cacheFs = runtime.cacheFs, imagePool = sharedImages })
     self.textRenderer = textRenderer
+    -- PC framed plates print with the source's small button font (font 4)
+    -- while info text and messages keep the field font.
+    self.labelTextRenderer = FieldTextRenderer.new({ cacheFs = runtime.cacheFs, imagePool = sharedImages, fontId = 4 })
     -- The transient area-name banner borrows this one text atlas and the
     -- generated field-entry skins. The renderer holds no image itself; the
     -- selected skin is leased lazily here and released on replacement or
@@ -734,6 +737,7 @@ function FieldPresentationResources.new(runtime)
       cacheFs = runtime.cacheFs,
       manifest = self.pcManifest,
       text = textRenderer,
+      labelText = assert(self.labelTextRenderer, "PC labels borrow the button-font text renderer"),
       imagePool = sharedImages,
     })
     self.mailboxRenderer = MailboxRenderer.new({
@@ -1548,6 +1552,10 @@ function FieldPresentationResources:dispose()
     self._previewImageKey = nil
   end
   self.fieldEntryManifest = nil
+  if self.labelTextRenderer then
+    self.labelTextRenderer:release()
+    self.labelTextRenderer = nil
+  end
   if self.textRenderer then
     self.textRenderer:release()
     self.textRenderer = nil

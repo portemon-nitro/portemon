@@ -9,6 +9,18 @@ PcSources.provenance = {
 
 PcSources.archives = {
   storage = { alias = "NARC_a_0_1_9", path = "a/0/1/9", memberCount = 87, selectedMemberCount = 87 },
+  -- The message-printer glyph bank: member 5 holds the small bitmaps the box
+  -- info panel blits raw ("Lv."/"No."), member 7 the font palette their
+  -- two-bit pixels index.
+  font = { alias = "NARC_graphic_font", path = "a/0/1/6", memberCount = 11, selectedMemberCount = 11 },
+  -- The shared confirmation-prompt art: palette, characters, then the four
+  -- compact 48x32 button tilemaps (and the unused wide shape).
+  touch_subwindow = {
+    alias = "NARC_system_touch_subwindow",
+    path = "a/1/5/2",
+    memberCount = 10,
+    selectedMemberCount = 10,
+  },
   mailbox = { alias = "NARC_a_2_5_0", path = "a/2/5/0", memberCount = 11, selectedMemberCount = 11 },
   -- Member 36 is the shared write-mode button tilemap: the write chrome
   -- pairs it with each type's own character tile set (palette 0..11,
@@ -122,6 +134,39 @@ PcSources.storageWindowFrames = {
   tileCount = 12,
   paletteBankCount = 2,
   destinationPaletteBase = 12,
+  -- PCBox_DrawButtonWindow fills the plate interior with window palette entry 4
+  -- (style 0) or 11 (style 1); both live in member 65 bank 0.
+  fillEntry = 4,
+  accentFillEntry = 11,
+}
+-- PCBox_DrawTabWindow (tray MOVE / SORT ITEMS tab) and PCBox_DrawSummaryButton
+-- compose their plates from member 14 tiles through BG cell palette bank 2:
+-- an 8px left cap, a repeatable 8px middle and an 8px right cap per 8px row.
+PcSources.storagePlateRoles = {
+  tab = {
+    palette = 4,
+    paletteBank = 2,
+    left = { 87, 91, 89 },
+    middle = { 88, 92, 90 },
+    right = { 107, 105, 106 },
+  },
+  summary = {
+    palette = 4,
+    paletteBank = 2,
+    left = { 61, 93, 125 },
+    middle = { 97, 101, 100 },
+    right = { 104, 103, 102 },
+  },
+}
+-- The marking editor writes one 8x8 member-14 tile per mark into the member-10
+-- panel map, keeping the cell's palette bank (member 4 bank 1).
+PcSources.storagePanelMarkings = {
+  character = 14,
+  palette = 4,
+  paletteBank = 1,
+  clearTileBase = 11,
+  setTileBase = 43,
+  count = 6,
 }
 -- ov14_021E895C writes these source tile IDs to BG5 from member 6; ov14_021E5C54
 -- loads member 7 into BG palette bank zero.
@@ -146,10 +191,20 @@ PcSources.storageUiMembers = {
   boxPane = { character = 3, palette = 4, screen = 2 },
   infoPane = { character = 6, palette = 7, screen = 5 },
   partyTray = { character = 14, palette = 4, screen = 9 },
+  -- Move and Move-Items modes load member 8, whose lower band carries the
+  -- SWITCH/EXIT label plate that Deposit/Withdraw's member 9 leaves flat.
+  partyTrayMove = { character = 14, palette = 4, screen = 8 },
   -- The Marking editor's panel strip, drawn to main BG0 at (168,48).
   markingPanel = { character = 14, palette = 4, screen = 10 },
   -- The wallpaper chooser's 256x56 bar with four swatch wells, main BG1 at (0,0).
   wallpaperBar = { character = 14, palette = 4, screen = 13 },
+  -- The Move/Item info panel tilemaps (BG6 cells): 96x80 moves, 256x72 items.
+  movesPanel = { character = 6, palette = 7, screen = 86 },
+  itemPanel = { character = 6, palette = 7, screen = 85 },
+  -- The box tray strip (32x6 or 32x7 tiles): 256x48 in Move/Item, 256x56 in
+  -- Deposit where the selector opens below the party panel.
+  boxTray = { character = 14, palette = 4, screen = 11 },
+  depositBoxTray = { character = 14, palette = 4, screen = 12 },
 }
 -- OBJ set A (ov14_021F44B4): the box arrows are animation 1 (left) and 3
 -- (right). The wallpaper chooser's swatches are flat colors from the 32-color
@@ -165,7 +220,74 @@ PcSources.storageArrows = {
 -- The hand cursor is OBJ set A's anim 8 (browsing), 14 (menu rows and
 -- wallpaper swatches) and 10 (carrying), anchored at the nav-table node.
 PcSources.storageCursorAnimations = { browse = 8, menu = 14, carry = 10 }
-PcSources.storageWallpaperSwatches = { palette = 75, count = 24, lockedIndex = 24 }
+PcSources.storageWallpaperSwatches = { palette = 75, count = 24, colorBase = 16, lockedColorIndex = 0x28 }
+-- Box thumbnails and the wallpaper list swatches are colored character art:
+-- a source palette index is replaced by the wallpaper color before the sprite
+-- is uploaded. PCBox_ColorWallpaperThumbnail uses the logical id + 16, or the
+-- locked entry 0x28; the canonical RGB comes from the wallpaper color palette.
+PcSources.storageBoxThumbnail = {
+  character = 70,
+  palette = 71,
+  size = 32,
+  columns = 4,
+  rows = 4,
+  fillIndex = 8,
+  colorBase = 16,
+  lockedColorIndex = 0x28,
+  -- gPCBoxThumbnailTiles indexed by the mon's BASE_COLOR (0..9); each value
+  -- adds the 0x20 dot-palette base.
+  dotColors = { 14, 15, 5, 2, 13, 12, 6, 11, 10, 9 },
+  dotPaletteBase = 0x20,
+  dotOrigin = { x = 10, y = 11 },
+  dotStep = 2,
+}
+-- The 24x24 swatch is one NCER cell of four objects, not a row-major 3x3 tile
+-- grid: (-12,-12) 16x16 tile 0, (4,-12) 8x16 tile 4, (-12,4) 16x8 tile 6 and
+-- (4,4) 8x8 tile 8 (member 76).
+PcSources.storageWallpaperSwatch = {
+  character = 0x4a,
+  palette = 0x4b,
+  cell = 0x4c,
+  size = 24,
+  fillIndex = 30,
+  colorBase = 16,
+  lockedColorIndex = 0x28,
+}
+-- OBJ set A animations used by the box tray and the wallpaper list: page
+-- arrows 2/4, the current-box marker/selection cursor 5, the tray label 6 and
+-- the wallpaper cursor 7. The hand cursor animations stay separate.
+PcSources.storageTrayAnimations = { prev = 1, next = 3, marker = 0, cursor = 5, wallpaperCursor = 7, label = 6 }
+-- The Item info windows fill with palette member 7 bank 1, index 13
+-- (FillWindowPixelBuffer(window, 13) after PCBox_LoadBgGraphics loads member 7
+-- into SUB BG palette bank 0).
+PcSources.storageItemPanelFill = { palette = 7, paletteBank = 1, entry = 13 }
+-- PCBox_PrintLevel and PCBox_PrintDexNumber blit raw 16x8 bitmaps from the
+-- message-printer glyph bank instead of printing text: MessagePrinter_PrintGlyph
+-- reads NARC_graphic_font member 5 at byte offsets 0x160 (glyph 1, "Lv.") and
+-- 0x1A0 (glyph 2, "No.") with the 4bpp tile layout of that member. The two-bit
+-- pixel values index the member-7 font palette (1 ink, 2 shadow, 0 clear).
+PcSources.storageInfoGlyphs = {
+  character = 5,
+  palette = 7,
+  paletteBank = 0,
+  tiles = { lv = { 11, 2 }, no = { 13, 2 } },
+}
+-- The box screen's confirmation prompts are the shared YesNoPrompt component
+-- (PCBox_ShowYesNoPrompt): shape 0 at tile (25,12), palette slots 8/9, from
+-- NARC_system_touch_subwindow members 0 (palette), 1 (characters) and
+-- 2..5 (YES normal/selected, NO normal/selected tilemaps).
+PcSources.storageYesNo = {
+  alias = "touch_subwindow",
+  paletteMember = 0,
+  charMember = 1,
+  paletteBanks = { 0, 1 },
+  yesNormalScreen = 2,
+  yesSelectedScreen = 3,
+  noNormalScreen = 4,
+  noSelectedScreen = 5,
+  x = 200,
+  y = 96,
+}
 -- Sprite loaders in ov103_021EE2E0 and ov109_021E6EE4 bind these archive
 -- resources to the Mailbox and Photo Album application sprites.
 PcSources.mailboxUiMembers = { character = 7, palette = 10, cell = 8, animation = 9 }
