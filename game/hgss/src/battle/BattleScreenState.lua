@@ -24,13 +24,13 @@ local BattleViewRoster = require("game.hgss.src.battle.BattleViewRoster")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
 local BattleChildApplications = require("game.hgss.src.battle.BattleChildApplications")
+local EvolutionScenePresenter = require("game.hgss.src.battle.EvolutionScenePresenter")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
+local BattleStagedText = require("game.hgss.src.battle.BattleStagedText")
 local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
 local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
-local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
-local Mon = require("libs.mons.src.Mon")
 local Rgb555 = require("libs.codec.src.Rgb555")
 
 ---@class BattleScreenState.GraphicsScope
@@ -109,6 +109,7 @@ local Rgb555 = require("libs.codec.src.Rgb555")
 ---@field _resultMusicSent boolean true once the bound terminal-music beat fired for this screen
 ---@field _completion table<string, unknown>? open capture-nickname completion behind its bound identity
 ---@field _completionChild table<string, unknown>? composed native naming child behind the open completion
+---@field _evolution EvolutionScenePresenter? evolution scene lane behind an open evolution completion
 ---@field _completionResult table<string, unknown>? sealed one-shot completion answer behind consumption
 ---@field _consumedCompletions table<string, boolean> consumed completion identities behind late-result refusal
 ---@field _terminalRequest table<string, unknown>? mirrored terminal request identity behind the completion barrier
@@ -353,72 +354,7 @@ local function copyValue(value)
   return out
 end
 
----@class BattleScreenState.PrinterControls
----@field controls table<integer, table<string, unknown>> ordered source printer controls
----@field glyphCount integer rendered glyph count under substitution
-
----@param manifest table<string, unknown> planning manifest with staged message entries
----@param key string semantic message key
----@param substitutions string[] values for source string-variable tokens
----@param printerControls BattleScreenState.PrinterControls? collect source pause/callback controls
----@return string printable source message: glyphs and line breaks only
-local function stagedBattleText(manifest, key, substitutions, printerControls)
-  local messages = assert(manifest.messages, "battle narration requires staged message entries")
-  local entries = assert(messages.entries, "battle narration requires semantic message entries")
-  local record = assert(entries[key], "battle narration message is staged: " .. key)
-  local sourceTokens = record.tokens --[[@as table<integer, table<string, unknown>>]]
-  local out = {}
-  local substitutionIndex = 1
-  for _, token in ipairs(sourceTokens) do
-    if token.kind == "eos" then
-      break
-    elseif token.kind == "glyph" then
-      out[#out + 1] = token.text
-      if printerControls ~= nil then
-        for _ in Utf8Glyphs.iter(token.text) do
-          printerControls.glyphCount = printerControls.glyphCount + 1
-        end
-      end
-    elseif token.kind == "line_break" then
-      out[#out + 1] = "\n"
-      if printerControls ~= nil then
-        printerControls.glyphCount = printerControls.glyphCount + 1
-      end
-    elseif token.kind == "substitution" then
-      local substitution = assert(substitutions[substitutionIndex], "source message substitution is supplied: " .. key)
-      out[#out + 1] = substitution
-      if printerControls ~= nil then
-        for _ in Utf8Glyphs.iter(substitution) do
-          printerControls.glyphCount = printerControls.glyphCount + 1
-        end
-      end
-      substitutionIndex = substitutionIndex + 1
-    elseif printerControls ~= nil and token.kind == "pause" then
-      printerControls.controls[#printerControls.controls + 1] = {
-        glyphIndex = printerControls.glyphCount,
-        kind = "pause",
-        updates = assert(token.args and token.args[1], "pause tokens carry their update count"),
-      }
-    elseif printerControls ~= nil and token.kind == "printer_callback" then
-      local callback = assert(token.args and token.args[1], "printer callbacks carry their source id")
-      assert(callback >= 1 and callback <= 5, "evolution printer callback ids are source-defined")
-      printerControls.controls[#printerControls.controls + 1] = {
-        glyphIndex = printerControls.glyphCount,
-        kind = "callback",
-        callback = callback,
-        wait = callback == 1 or callback == 2,
-      }
-    end
-    -- Style, pause, printer-callback, continuation, page/prompt-break and
-    -- focus tokens have no glyphs: narration paces itself on the timeline and
-    -- the command child draws its own Yes/No choices.
-  end
-  assert(
-    substitutionIndex == #substitutions + 1,
-    "source message " .. key .. " consumes " .. (substitutionIndex - 1) .. " substitutions, got " .. #substitutions
-  )
-  return table.concat(out)
-end
+local stagedBattleText = BattleStagedText.decode
 
 ---@param screen BattleScreenState screen owning the staged message manifest
 ---@param key string semantic battle message key
@@ -471,54 +407,6 @@ local function sealedBagPocket(cursor)
     return pocket
   end
   return nil
-end
-
----@param screen BattleScreenState screen owning the verified evolution text
----@param completion table<string, unknown> open evolution completion
----@param effect table<string, unknown> staged evolution message request
----@return string source message with committed mon and catalog move names
----@return table<integer, table<string, unknown>> controls at source glyph boundaries
-local function resolveEvolutionText(screen, completion, effect)
-  local messageId = assert(effect.msg, "evolution messages carry their source id") --[[@as integer]]
-  local mon = assert(completion.subject, "evolution messages read their committed subject") --[[@as table<string, unknown>]]
-  local catalog = assert(screen._monCatalog, "evolution messages use their mon catalog") --[[@as MonCatalog]]
-  local shownMon = copyValue(mon)
-  if messageId ~= 915 and messageId ~= 916 and messageId ~= 917 and messageId ~= 918 and messageId ~= 919 then
-    shownMon.species = effect.species or completion.evolvedSpecies
-  end
-  local monName = Mon.displayName(shownMon, catalog)
-  local function moveName(moveKey)
-    local move = catalog:move(assert(moveKey, "evolution message moves name their catalog key"))
-    local name = assert(move.name, "catalog moves carry their localized display name") --[[@as string]]
-    return name
-  end
-  local substitutions = {}
-  if messageId == 915 or messageId == 917 or messageId == 919 or messageId == 1194 then
-    substitutions = { monName }
-  elseif messageId == 918 then
-    local species = catalog:species(assert(effect.species, "evolution congratulations name the target species"))
-    local targetSpeciesName = assert(species.name, "catalog species carry their display name") --[[@as string]]
-    substitutions = { monName, targetSpeciesName }
-  elseif messageId == 4 or messageId == 1193 or messageId == 1198 or messageId == 1202 then
-    substitutions = { monName, moveName(effect.move) }
-  elseif messageId == 1186 or messageId == 1187 or messageId == 1197 then
-    substitutions = { moveName(effect.move) }
-  elseif messageId == 1200 then
-    substitutions = { monName, moveName(effect.move) }
-  elseif
-    messageId ~= 916
-    and messageId ~= 1181
-    and messageId ~= 1182
-    and messageId ~= 1195
-    and messageId ~= 1196
-    and messageId ~= 1199
-    and messageId ~= 1201
-  then
-    error("unknown EvolutionScene message id " .. tostring(messageId), 0)
-  end
-  local controls = { controls = {}, glyphCount = 0 } --[[@as BattleScreenState.PrinterControls]]
-  local text = stagedBattleText(screen._manifest, "evolution/" .. tostring(messageId), substitutions, controls)
-  return text, controls.controls
 end
 
 ---@class BattleScreenState.Options
@@ -1378,6 +1266,7 @@ function BattleScreenState.new(opts)
     _resultMusicSent = false,
     _completion = nil,
     _completionChild = nil,
+    _evolution = nil,
     _completionResult = nil,
     _consumedCompletions = {},
     _terminalRequest = nil,
@@ -3397,16 +3286,8 @@ function BattleScreenState:status()
       kind = open.kind,
       stage = open.stage,
     }
-    if open.kind == "evolution" and self._completionChild ~= nil then
-      local learnOf = self._completionChild.learnPrompt
-      if type(learnOf) == "function" then
-        local okLearn, pending = pcall(learnOf, self._completionChild)
-        if okLearn and pending ~= nil then
-          completion.stage = "learn"
-        else
-          completion.stage = "sequence"
-        end
-      end
+    if open.kind == "evolution" and self._evolution ~= nil then
+      completion.stage = self._evolution:learnPending() and "learn" or "sequence"
     end
     if open.stage == "naming" and self._completionChild ~= nil then
       local namingText = self._completionChild.namingText
@@ -3510,6 +3391,7 @@ function BattleScreenState:openCompletion(intent)
     }
   end
   self._completionChild = nil
+  self._evolution = nil
   self._completionResult = nil
   self:_invalidatePublishedView()
   return true
@@ -3531,6 +3413,10 @@ function BattleScreenState:takeCompletion()
   if self._completionChild ~= nil then
     self._completionChild:dispose()
     self._completionChild = nil
+  end
+  if self._evolution ~= nil then
+    self._evolution:dispose()
+    self._evolution = nil
   end
   if self._completion ~= nil then
     self._consumedCompletions[self._completion.completionId] = true
@@ -3662,563 +3548,94 @@ function BattleScreenState:_openCompletionNaming()
   completion.stage = "naming"
 end
 
--- Opens the native evolution controller for the open completion with
--- its committed subject, party slot, and full frozen trigger context.
--- A composition failure fails the screen loudly so the committed
--- battle result survives instead of skipping a mandatory evolution.
-function BattleScreenState:_openCompletionEvolution()
-  local completion = assert(self._completion, "evolution opens for the open completion")
-  local terminal = self._terminalRequest or { requestId = 0, epoch = 0, controller = "player" }
-  -- The late evolution leaf gates the child: pending holds the committed
-  -- result without opening, terminal faults the screen with its cause,
-  -- and readiness attaches the record to the per-launch view exactly
-  -- once before any particle or graphics lookup.
-  local evolution, evolutionErr = self._assets:ensureEvolution()
-  if evolutionErr ~= nil then
-    self._mode = "failed"
-    self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(evolutionErr)
-    return
-  end
-  if evolution == nil then
-    return
-  end
-  if self._manifest.evolutionParticles == nil then
-    self._manifest.evolutionParticles = evolution.particles
-    self._manifest.evolutionGraphics = evolution.graphics
-  end
-  local stagedParticles = assert(self._manifest.evolutionParticles, "battle evolution stages its SPL scene") --[[@as table<string, unknown>]]
-  local particleSet = {
-    seed = stagedParticles.seed,
-    emitters = copyValue(assert(stagedParticles.emitters, "the SPL scene carries normalized emitters")),
-    textures = {},
-  } --[[@as table<string, unknown>]]
-  local textures = particleSet.textures --[[@as table<integer, table<string, unknown>>]]
-  for _, sourceTexture in
-    ipairs(stagedParticles.textures --[[@as table<integer, table<string, unknown>>]])
-  do
-    local textureId = assert(sourceTexture.id, "SPL texture records carry their source identity") --[[@as integer]]
-    local key = "battle:evolution-particle:" .. tostring(textureId)
-    local drawable, drawableErr = self._assets:drawable(key)
-    if drawableErr ~= nil then
-      self._mode = "failed"
-      self._error = "evolution particle image failed for launch " .. self._launchId .. ": " .. drawableErr
-      return
+-- Returns the evolution scene presenter for the open completion,
+-- creating it on first use. The presenter owns the scene's child,
+-- printer, audio, pose, and palette lane; this screen owns only the
+-- outcome gate and the completion identity it seals.
+---@return EvolutionScenePresenter
+function BattleScreenState:_evolutionLane()
+  local completion = assert(self._completion, "evolution lanes bind the open completion")
+  assert(completion.kind == "evolution", "evolution lanes belong to evolution completions")
+  if self._evolution == nil then
+    local terminal = self._terminalRequest or { requestId = 0, epoch = 0, controller = "player" }
+    local function sceneText(key, substitutions, controls)
+      return stagedBattleText(self._manifest, key, substitutions, controls)
     end
-    if drawable == nil then
-      return
+    -- Cries share the single voice slot with timeline cues; the scene owns
+    -- the handle it waits on, so the slot is released here.
+    local function playSceneCry(cue)
+      self:_playCryCue(cue)
+      local handle = self._waitingCueVoice
+      self._waitingCueVoice = nil
+      return handle
     end
-    textures[#textures + 1] = { id = textureId, drawable = drawable }
+    self._evolution = EvolutionScenePresenter.new({
+      source = "battle",
+      subject = copyValue(completion.subject) --[[@as table<string, unknown>]],
+      context = copyValue(completion.context) --[[@as table<string, unknown>]],
+      partySlot = completion.partySlot --[[@as integer]],
+      sceneId = completion.completionId --[[@as string]],
+      identity = {
+        launchId = self._launchId,
+        requestId = terminal.requestId,
+        epoch = terminal.epoch,
+        controller = terminal.controller,
+      },
+      monCatalog = self._monCatalog --[[@as table<string, unknown>]],
+      splRandomState = self._splRandomState,
+      summary = self._summary,
+      speed = self._battleSpeed,
+      voiced = not self._legacyAudio,
+      manifest = self._manifest,
+      text = sceneText,
+      printer = self._timeline,
+      poses = self._scene,
+      audio = self._battleAudio,
+      playCry = playSceneCry,
+      assets = self._assets,
+    })
   end
-  assert(self._manifest.evolutionGraphics ~= nil, "battle evolution stages its screen graphics")
-  for _, layer in ipairs({ "main", "sub", "menu" }) do
-    local key = "battle:evolution:" .. layer
-    local drawable, drawableErr = self._assets:drawable(key)
-    if drawableErr ~= nil then
-      self._mode = "failed"
-      self._error = "evolution " .. layer .. " image failed for launch " .. self._launchId .. ": " .. drawableErr
-      return
-    end
-    if drawable == nil then
-      return
-    end
-  end
-  local graphics = self._manifest.evolutionGraphics --[[@as table<string, unknown>]]
-  local cursor = assert(graphics.cursor, "EvolutionScene graphics carry their menu cursor") --[[@as table<string, unknown>]]
-  local cursorAnimations = assert(cursor.animations, "EvolutionScene cursors carry idle and selected animations") --[[@as table<string, unknown>]]
-  for _, role in ipairs({ "idle", "select" }) do
-    local animation = assert(cursorAnimations[role], "EvolutionScene cursors carry animation " .. role) --[[@as table<string, unknown>]]
-    for _, frame in
-      ipairs(animation.frames --[[@as table<integer, table<string, unknown>>]])
-    do
-      local key = assert(frame.drawableKey, "evolution cursor frames carry semantic drawable keys") --[[@as string]]
-      local drawable, drawableErr = self._assets:drawable(key)
-      if drawableErr ~= nil then
-        self._mode = "failed"
-        self._error = "evolution cursor image failed for launch " .. self._launchId .. ": " .. drawableErr
-        return
-      end
-      if drawable == nil then
-        return
-      end
-    end
-  end
-  local child, childErr = BattleChildApplications.open({
-    kind = "evolution",
-    purpose = "evolution",
-    launchId = self._launchId,
-    requestId = terminal.requestId,
-    epoch = terminal.epoch,
-    controller = terminal.controller,
-    cancellable = true,
-    subject = copyValue(completion.subject),
-    partySlot = completion.partySlot,
-    context = copyValue(completion.context),
-  }, {
-    monCatalog = self._monCatalog,
-    evolutionParticles = particleSet,
-    splRandomState = self._splRandomState,
-    evolutionCursor = cursorAnimations,
-    summary = self._summary,
-  })
-  if child == nil then
-    self._mode = "failed"
-    self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(childErr)
-    return
-  end
-  self._completionChild = child
-  completion.effectCursor = 0
-  local childView = child:draw()
-  completion.evolvedSpecies = childView.newSpecies
-  local selectors = childView.pokepicSelectors --[[@as table<string, string>?]]
-  if selectors ~= nil then
-    self._assets:addSelectors({ selectors.old, selectors.new })
-    completion.evolutionPictures = {}
-    for _, role in ipairs({ "old", "new" }) do
-      local selector = assert(selectors[role], "evolution Pokepics carry canonical portrait selectors")
-      local attributes = assert(
-        BattleScene.pictureAttributes(self._manifest, selector),
-        "verified evolution portraits carry source Pokepic animation metadata: " .. selector
-      )
-      completion.evolutionPictures[role] = {
-        identity = {
-          combatant = role == "old" and -100 or -101,
-          activation = completion.completionId .. ":" .. role,
-        },
-        animation = assert(attributes.animation, "verified evolution portraits carry their source animation"),
-        started = false,
-      }
-    end
-  end
-  completion.stage = "sequence"
-  -- Edges that arrived before composition replay exactly once in order.
-  -- Replay still meets only its own window: a cancel replayed into the
-  -- entry beat decides nothing, so the holder presses again once the
-  -- transformation beat opens.
-  local pending = completion.pendingInput
-  completion.pendingInput = nil
-  if type(pending) == "table" then
-    for _, event in ipairs(pending) do
-      if type(event) == "table" then
-        local ok, inputErr = pcall(function()
-          child:input({ event })
-        end)
-        if not ok then
-          self._mode = "failed"
-          self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(inputErr)
-          return
-        end
-      end
-    end
-  end
+  return self._evolution
+end
+
+-- Fails the screen once with the evolution launch context.
+---@param err unknown scene failure under report
+function BattleScreenState:_failEvolution(err)
+  self._mode = "failed"
+  self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(err)
 end
 
 -- Routes one mapped semantic input to the open evolution lane. The
--- sequence owns confirm, cancel, and navigate ahead of the battle
--- handlers: confirmation never gates the beats, cancellation decides
--- only where the source method permits it, and navigation steers the
--- pending learned-move picker. Anything the lane refuses falls through.
+-- scene owns confirm, cancel, and navigate ahead of the battle
+-- handlers; anything it refuses falls through.
 ---@param event table<string, unknown> mapped semantic input under routing
 ---@return boolean consumed true while the evolution lane owned the input
 function BattleScreenState:_consumeEvolutionCompletion(event)
-  local completion = assert(self._completion, "evolution input binds the open completion")
-  if
-    event.type ~= "confirm"
-    and event.type ~= "cancel"
-    and event.type ~= "navigate"
-    and event.type ~= "pointer_cancel"
-  then
-    return false
+  if event.type == "child_press" then
+    -- A lower-screen press reaches the scene as its source touch point.
+    event = { type = "pointer_down", pointerId = event.pointerId, x = event.x, y = event.y }
   end
-  local child = self._completionChild
-  if child == nil then
-    -- The lane owns its edges even before the controller composes on
-    -- the next drain: buffer the edge for exactly-once replay at
-    -- composition so a held button neither leaks into the battle
-    -- handlers nor misses the animation window behind it.
-    local buffered = completion.pendingInput
-    if buffered == nil then
-      buffered = {}
-      completion.pendingInput = buffered
-    end
-    if #buffered < 8 then
-      buffered[#buffered + 1] = event
-    end
-    return true
-  end
-  local _ = completion
-  local ok, inputErr = pcall(function()
-    child:input({ event })
-  end)
+  local lane = self:_evolutionLane()
+  local ok, consumed = pcall(lane.input, lane, event)
   if not ok then
-    self._mode = "failed"
-    self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(inputErr)
-  end
-  return true
-end
-
--- Advances the open evolution lane once: the native child steps its
--- presentation clock and its sealed typed answer translates into the
--- bound completion identity. The typed answer never enters the action
--- reply parser or the battle-action child poll.
----@param completion table<string, unknown> open evolution completion under effect dispatch
----@param child table<string, unknown> owned evolution child
----@return boolean completed true when every newly sequenced effect was dispatched
-function BattleScreenState:_dispatchEvolutionEffects(completion, child)
-  local effects = child:effects()
-  local cursor = assert(completion.effectCursor, "evolution effects keep a per-child drain cursor") --[[@as integer]]
-  while cursor < #effects do
-    local effect = effects[cursor + 1]
-    assert(type(effect) == "table", "evolution effects are records")
-    local ok, err = pcall(function()
-      if effect.kind == "message" then
-        local controls = {} ---@type table<integer, table<string, unknown>>
-        completion.message, controls = resolveEvolutionText(self, completion, effect)
-        completion.printerCallbackVoices = {}
-        completion.printerMessageId = self._timeline:announce(completion.message, false, 0, controls)
-        completion.printerEffect = copyValue(effect)
-      elseif effect.kind == "menu" then
-        local options = assert(effect.options, "evolution menus carry both source options") --[[@as integer[] ]]
-        assert(#options == 2, "evolution menus carry top and bottom options")
-        completion.menuLabels = {
-          resolveEvolutionText(self, completion, { msg = options[1], move = effect.move }),
-          resolveEvolutionText(self, completion, { msg = options[2], move = effect.move }),
-        }
-      elseif effect.kind == "cry" then
-        local role = effect.species == completion.evolvedSpecies and "new" or "old"
-        local pictures = completion.evolutionPictures --[[@as table<string, table<string, unknown>>?]]
-        local picture = type(pictures) == "table" and pictures[role] or nil
-        if picture ~= nil then
-          local identity = assert(picture.identity, "evolution picture poses keep a unique scene identity")
-          self._scene:remove(identity.combatant --[[@as integer]], identity.activation)
-          self._scene:picturePose(identity, picture.animation --[[@as table<string, unknown>]])
-          picture.started = true
-        end
-        self:_playCryCue({
-          kind = "cry",
-          species = effect.species,
-          form = effect.form,
-          waitForVoice = not self._legacyAudio,
-        })
-        if not self._legacyAudio then
-          completion.waitingVoice = self._waitingCueVoice
-        end
-      elseif effect.kind == "music_direct" then
-        completion.musicVoice = self._battleAudio:startMusic(assert(effect.name))
-      elseif effect.kind == "stop_bgm" then
-        if completion.musicVoice ~= nil then
-          self._battleAudio:stopVoice(completion.musicVoice --[[@as table<string, unknown>]])
-          completion.musicVoice = nil
-        end
-      elseif effect.kind == "sound" then
-        self._battleAudio:playEffect(assert(effect.name))
-      elseif effect.kind == "fanfare_wait" then
-        local voice = self._battleAudio:playFanfare(assert(effect.name))
-        if not self._legacyAudio then
-          completion.waitingVoice = voice
-          self._waitingCueVoice = voice
-        end
-      elseif effect.kind == "palette" then
-        local channels = assert(effect.channels, "evolution palette requests carry their source channels")
-        local requestIds = assert(effect.requestIds, "evolution palette requests identify each source manager request")
-        local active = completion.paletteFade or {} ---@type table<string, { color: string, coefficient: integer, target: integer, interval: integer, wait: integer, requestId: integer }>
-        for _, channelName in ipairs({ "scene", "pictures" }) do
-          local spec = channels[channelName]
-          if spec ~= nil then
-            local color = assert(spec.color, "palette channels name their blend color")
-            assert(color == "black" or color == "white", "evolution fades target black or white")
-            local from = assert(spec.from, "palette channels carry their source coefficient")
-            local to = assert(spec.to, "palette channels carry their target coefficient")
-            assert(
-              type(from) == "number" and from % 1 == 0 and from >= 0 and from <= 16,
-              "palette start coefficients stay within the source 0..16 range"
-            )
-            assert(
-              type(to) == "number" and to % 1 == 0 and to >= 0 and to <= 16,
-              "palette end coefficients stay within the source 0..16 range"
-            )
-            local interval = channelName == "scene" and spec.rate or spec.duration
-            assert(
-              type(interval) == "number" and interval % 1 == 0 and interval >= 0,
-              "palette channels carry a non-negative source interval"
-            )
-            active[channelName] = {
-              color = color,
-              coefficient = from --[[@as integer]],
-              target = to --[[@as integer]],
-              interval = interval --[[@as integer]],
-              wait = 0,
-              requestId = assert(requestIds[channelName], "palette channels carry their manager request id") --[[@as integer]],
-            }
-          end
-        end
-        assert(next(active) ~= nil, "evolution palette requests fade at least one channel")
-        completion.paletteFade = active
-      end
-    end)
-    if not ok then
-      self._mode = "failed"
-      self._error = "postbattle evolution effect failed for launch " .. self._launchId .. ": " .. tostring(err)
-      return false
-    end
-    cursor = cursor + 1
-    completion.effectCursor = cursor
-    if completion.paletteFade ~= nil or completion.printerMessageId ~= nil then
-      return false
-    end
-  end
-  return true
-end
-
--- The parent battle timeline owns source glyph reveal and its explicit
--- post-print wait. Evolution child clocks resume only after the exact
--- announced line has released its printer.
----@param completion table<string, unknown> open evolution completion
----@param child table<string, unknown> owned evolution child
----@return boolean complete true when no evolution printer owns the scene
-function BattleScreenState:_completeEvolutionPrinter(completion, child)
-  local messageId = completion.printerMessageId
-  if type(messageId) ~= "number" then
+    self:_failEvolution(consumed)
     return true
   end
-  if self._timeline:messageId() ~= messageId or self._timeline:messageActive() then
-    return false
-  end
-  completion.printerMessageId = nil
-  completion.printerEffect = nil
-  completion.printerCallbackVoices = nil
-  completion.message = self._timeline:message()
-  local ok, err = pcall(function()
-    child:completeMessage()
-  end)
-  if not ok then
-    self._mode = "failed"
-    self._error = "postbattle evolution printer failed for launch " .. self._launchId .. ": " .. tostring(err)
-    return false
-  end
-  return true
+  return consumed
 end
 
--- Runs source message callback controls at their exact revealed glyph
--- boundary. Start callbacks are one-shot controls in BattleTimeline;
--- WAIT callbacks query the voice started earlier in the same message.
----@param completion table<string, unknown> evolution message currently printed
----@param messageId integer owning timeline message identity
----@param callback integer source callback id 1..5
----@param controlIndex integer occurrence within the staged message
----@return boolean complete whether a WAIT callback has released
-function BattleScreenState:_evolutionPrinterCallback(completion, messageId, callback, controlIndex)
-  assert(completion.printerMessageId == messageId, "evolution callbacks belong to their active message")
-  local voices = assert(completion.printerCallbackVoices, "evolution messages own their callback voices") --[[@as table<integer, table<string, unknown>>]]
-  if callback == 1 then
-    if self._battleSpeed > 1 then
-      return true
-    end
-    for _, voice in pairs(voices) do
-      if voice.kind == "effect" and not self._battleAudio:voiceComplete(voice) then
-        return false
-      end
-    end
-    return true
-  elseif callback == 2 then
-    if self._battleSpeed > 1 then
-      return true
-    end
-    for _, voice in pairs(voices) do
-      if voice.kind == "fanfare" and not self._battleAudio:voiceComplete(voice) then
-        return false
-      end
-    end
-    return true
-  elseif callback == 3 then
-    assert(voices[controlIndex] == nil, "evolution fanfare callback starts once")
-    voices[controlIndex] = self._battleAudio:playFanfare("SEQ_ME_SHINKAOME")
-  elseif callback == 4 then
-    assert(voices[controlIndex] == nil, "evolution sound callback starts once")
-    voices[controlIndex] = self._battleAudio:playEffect("SEQ_SE_DP_KON")
-  elseif callback == 5 then
-    assert(voices[controlIndex] == nil, "level-up fanfare callback starts once")
-    voices[controlIndex] = self._battleAudio:playFanfare("SEQ_ME_LVUP")
-  else
-    error("unsupported evolution printer callback " .. tostring(callback), 0)
-  end
-  return true
-end
-
--- Advances source palette channels once per accepted source tick. Scene
--- palette fades step by two every `rate + 1` ticks; Pokepic fades step by
--- one every `duration + 1` picture-manager ticks. The source starts each
--- request at its initial coefficient before this clock advances.
----@param completion table<string, unknown> open evolution completion under stepping
----@param child table<string, unknown> owned evolution child under acknowledgement
-function BattleScreenState:_stepEvolutionPalette(completion, child)
-  local channels = completion.paletteFade
-  if type(channels) ~= "table" then
-    return
-  end
-  local completed = {} ---@type { channel: string, requestId: integer }[]
-  for channelName, channel in pairs(channels) do
-    local target = assert(channel.target, "palette channels retain their target") --[[@as number]]
-    local coefficient = assert(channel.coefficient, "palette channels retain their current blend") --[[@as number]]
-    if coefficient ~= target then
-      local wait = assert(channel.wait, "palette channels retain their source delay") --[[@as number]]
-      if wait > 0 then
-        channel.wait = wait - 1
-      else
-        local step = channelName == "scene" and 2 or 1
-        if coefficient < target then
-          coefficient = math.min(target, coefficient + step)
-        else
-          coefficient = math.max(target, coefficient - step)
-        end
-        channel.coefficient = coefficient
-        channel.wait = assert(channel.interval, "palette channels retain their source interval") --[[@as number]]
-        if coefficient == target then
-          completed[#completed + 1] = {
-            channel = channelName,
-            requestId = assert(channel.requestId, "palette channels retain their manager request id") --[[@as integer]],
-          }
-        end
-      end
-    end
-  end
-  for _, request in ipairs(completed) do
-    channels[request.channel] = nil
-    local ok, err = pcall(function()
-      child:completePaletteFade(request.channel, request.requestId)
-    end)
-    if not ok then
-      self._mode = "failed"
-      self._error = "postbattle evolution palette failed for launch " .. self._launchId .. ": " .. tostring(err)
-      return
-    end
-  end
-  if next(channels) == nil then
-    completion.paletteFade = nil
-  end
-end
-
----@param completion table<string, unknown> open evolution completion
----@param role "old"|"new" source Pokepic under reading
----@return { frame: integer, xOffset: integer, active: boolean, step: integer, delay: integer }? current source pose
-function BattleScreenState:_evolutionPicturePose(completion, role)
-  local pictures = completion.evolutionPictures --[[@as table<string, table<string, unknown>>?]]
-  local picture = type(pictures) == "table" and pictures[role] or nil
-  if picture == nil or picture.started ~= true then
-    return nil
-  end
-  return self._scene:picturePose(
-    assert(picture.identity, "evolution picture poses keep their scene identity"),
-    assert(picture.animation, "evolution picture poses keep their source animation")
-  )
-end
-
----@param completion table<string, unknown> open evolution completion under advancing
----@return boolean complete true when an owned cry/fanfare finished
-function BattleScreenState:_evolutionVoiceComplete(completion)
-  local handle = completion.waitingVoice
-  if handle == nil or self._legacyAudio then
-    return true
-  end
-  if self._battleSpeed > 1 then
-    completion.waitingVoice = nil
-    self._waitingCueVoice = nil
-    return true
-  end
-  local ok, complete = pcall(function()
-    return self._battleAudio:voiceComplete(handle --[[@as table<string, unknown>]])
-  end)
-  if not ok then
-    self._mode = "failed"
-    self._error = "postbattle evolution voice failed for launch " .. self._launchId .. ": " .. tostring(complete)
-    return false
-  end
-  if complete == true then
-    completion.waitingVoice = nil
-    self._waitingCueVoice = nil
-    return true
-  end
-  return false
-end
-
--- Advances the open evolution lane once: the native child steps its
--- presentation clock and its sealed typed answer translates into the
--- bound completion identity. The typed answer never enters the action
--- reply parser or the battle-action child poll.
+-- Advances the open evolution lane once and translates its sealed typed
+-- answer into the bound completion identity. The typed answer never enters
+-- the action reply parser or the battle-action child poll.
 ---@param completion table<string, unknown> open evolution completion under advancing
 function BattleScreenState:_drainEvolutionCompletion(completion)
   if not self._outcomeDone then
     return
   end
-  if self._completionChild == nil then
-    self:_openCompletionEvolution()
-    if self._completionChild == nil then
-      return
-    end
-  end
-  if self._assets:state() ~= "ready" then
-    return
-  end
-  local child = assert(self._completionChild, "evolution drains its open child")
-  local okPresentationStep, presentationStepErr = pcall(function()
-    child:stepPresentationSourceTick(1)
-  end)
-  if not okPresentationStep then
-    self._mode = "failed"
-    self._error = "postbattle evolution presentation failed for launch "
-      .. self._launchId
-      .. ": "
-      .. tostring(presentationStepErr)
-    return
-  end
-  if not self:_evolutionVoiceComplete(completion) then
-    return
-  end
-  if not self:_completeEvolutionPrinter(completion, child) then
-    return
-  end
-  if not self:_dispatchEvolutionEffects(completion, child) then
-    return
-  end
-  local childState = child:draw()
-  if childState.phase == "sequence" or (childState.phase == "cancel" and childState.beat == "cancel_cry") then
-    local oldPose = self:_evolutionPicturePose(completion, "old")
-    if oldPose ~= nil and oldPose.active then
-      return
-    end
-  end
-  local newPose = self:_evolutionPicturePose(completion, "new")
-  if newPose ~= nil and newPose.active then
-    return
-  end
-  local okStep, stepErr = pcall(function()
-    child:stepSourceTick(1)
-  end)
-  if not okStep then
-    self._mode = "failed"
-    self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(stepErr)
-    return
-  end
-  if not self:_dispatchEvolutionEffects(completion, child) then
-    return
-  end
-  if completion.waitingVoice ~= nil and not self:_evolutionVoiceComplete(completion) then
-    return
-  end
-  local promptOf = child.learnPrompt
-  if type(promptOf) == "function" then
-    local okPrompt, pending = pcall(promptOf, child)
-    if okPrompt and pending ~= nil then
-      completion.stage = "learn"
-    else
-      completion.stage = "sequence"
-    end
-  end
-  local okTake, result = pcall(function()
-    return child:takeResult()
-  end)
-  if not okTake then
-    self._mode = "failed"
-    self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(result)
+  local lane = self:_evolutionLane()
+  local ok, result = pcall(lane.advance, lane)
+  if not ok then
+    self:_failEvolution(result)
     return
   end
   if result == nil then
@@ -4346,58 +3763,7 @@ function BattleScreenState:_completionChildView(current)
     return current
   end
   if completion.kind == "evolution" then
-    local child = self._completionChild
-    if child == nil then
-      return {
-        kind = "evolution",
-        purpose = "evolution",
-        interactive = false,
-        cancellable = false,
-        application = "evolution",
-        phase = "sequence",
-      } --[[@as table<string, unknown>]]
-    end
-    local inner = child:status()
-    assert(type(inner) == "table", "the evolution child reports its status")
-    local presentation = child:draw()
-    presentation.assetsReady = self._assets:state() == "ready"
-    local evolutionGraphics =
-      assert(self._manifest.evolutionGraphics, "battle evolution carries its staged screen graphics") --[[@as table<string, unknown>]]
-    local menuTextPalette =
-      assert(evolutionGraphics.menuTextPalette, "battle evolution carries EvolutionScene's menu text palette") --[[@as table<string, unknown>]]
-    presentation.menuTextPalette = copyValue(assert(menuTextPalette.colors))
-    local scenePresentation = assert(presentation.presentation, "evolution children carry their renderer state")
-    local printerMessageId = completion.printerMessageId
-    if type(printerMessageId) == "number" then
-      scenePresentation.message = self._timeline:messageId() == printerMessageId and self._timeline:message() or ""
-    else
-      scenePresentation.message = completion.message
-    end
-    scenePresentation.scenePaletteFade = completion.paletteFade ~= nil and copyValue(completion.paletteFade.scene)
-      or nil
-    scenePresentation.picturePaletteFade = completion.paletteFade ~= nil and copyValue(completion.paletteFade.pictures)
-      or nil
-    scenePresentation.paletteFadeComplete = completion.paletteFade == nil
-    if type(presentation.learnMenu) == "table" and completion.menuLabels ~= nil then
-      presentation.learnMenu.topText = completion.menuLabels[1]
-      presentation.learnMenu.bottomText = completion.menuLabels[2]
-    end
-    for _, role in ipairs({ "old", "new" }) do
-      local pose = self:_evolutionPicturePose(completion, role)
-      scenePresentation[role .. "PictureFrame"] = pose ~= nil and pose.frame or 0
-      scenePresentation[role .. "PictureActive"] = pose ~= nil and pose.active or false
-      scenePresentation[role .. "PictureXOffset"] = pose ~= nil and pose.xOffset or 0
-    end
-    return {
-      kind = "evolution",
-      purpose = "evolution",
-      interactive = true,
-      cancellable = inner.canCancel == true,
-      application = "evolution",
-      phase = inner.phase,
-      learn = child:learnPrompt(),
-      presentation = presentation,
-    } --[[@as table<string, unknown>]]
+    return self:_evolutionLane():view()
   end
   if completion.stage == "question" then
     local view = {
@@ -8785,12 +8151,8 @@ function BattleScreenState:updateFixed(dt)
       self._timeline:update(BattleScreenState.SOURCE_FRAME, isAvailable, function(cue)
         return self:_soundCueComplete(cue)
       end, function(messageId, callback, controlIndex)
-        local completion = self._completion
-        assert(
-          completion ~= nil and completion.kind == "evolution",
-          "source printer callbacks belong to evolution messages"
-        )
-        return self:_evolutionPrinterCallback(completion, messageId, callback, controlIndex)
+        assert(self._evolution ~= nil, "source printer callbacks belong to evolution messages")
+        return self._evolution:printerCallback(messageId, callback, controlIndex)
       end)
       for _, name in ipairs(self._timeline:drainSounds()) do
         if not self:_playCue(name) then
@@ -8812,17 +8174,15 @@ function BattleScreenState:updateFixed(dt)
         end
       end
       self._player:stepSourceTick(playerTick)
-      local completion = self._completion
-      local child = self._completionChild
-      local summaryOpen = false
-      if completion ~= nil and completion.kind == "evolution" and child ~= nil then
-        summaryOpen = child:status().phase == "summary"
-      end
-      if not summaryOpen then
+      local evolution = self._evolution
+      if evolution == nil or not evolution:summaryOpen() then
         self._scene:stepHostTick()
       end
-      if completion ~= nil and completion.kind == "evolution" and child ~= nil then
-        self:_stepEvolutionPalette(completion, child)
+      if evolution ~= nil then
+        local okStep, stepErr = pcall(evolution.stepTick, evolution)
+        if not okStep then
+          self:_failEvolution(stepErr)
+        end
       end
       self:_stepEncounterParticles()
       self:_stepBallParticles()
@@ -9122,6 +8482,10 @@ function BattleScreenState:dispose()
   if self._completionChild ~= nil then
     self._completionChild:dispose()
     self._completionChild = nil
+  end
+  if self._evolution ~= nil then
+    self._evolution:dispose()
+    self._evolution = nil
   end
   self._completion = nil
   self._completionResult = nil

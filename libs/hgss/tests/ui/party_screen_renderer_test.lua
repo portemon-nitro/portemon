@@ -202,8 +202,20 @@ local function v5Manifest()
     browse = rect(16, 168, 160, 16),
     context = rect(16, 152, 104, 32),
     action = rect(16, 152, 216, 32),
+    levelUpStats = rect(8, 8, 112, 96),
     prompt = { x = 200, y = 80 },
   }
+  for name, value in pairs({
+    statMaxHp = "MAX HP",
+    statAttack = "ATTACK",
+    statDefense = "DEFENSE",
+    statSpecialAttack = "SP. ATK",
+    statSpecialDefense = "SP. DEF",
+    statSpeed = "SPEED",
+    statPlus = "+",
+  }) do
+    manifest.text.labels[name] = value
+  end
   local function triple(fr, fg, fb, sr, sg, sb, br, bg, bb)
     return {
       foreground = { r = fr, g = fg, b = fb },
@@ -349,6 +361,7 @@ local function presentation(overrides)
     menu = nil,
     menuSlot = nil,
     message = nil,
+    messagePage = 1,
     swap = nil,
     anim = { tick = 0, sequences = {}, sequenceTicks = {}, panelSlide = 0 },
     view = { revision = 1, slots = {} },
@@ -2192,13 +2205,61 @@ end
 -- Action descriptors resolve generated templates in the action window:
 -- the empty-take template expands with its display name, and unknown
 -- keys fail instead of defaulting to invented text.
+function T.level_up_stats_window_draws_gains_then_right_aligned_totals()
+  local manifest = v5Manifest()
+  local texts = {}
+  local window = recordingWindow({})
+  local renderer = PartyScreenRenderer.new({
+    graphics = fakeGraphics(),
+    cacheFs = fakeCacheFs(),
+    manifest = manifest,
+    text = paletteText(texts),
+    window = window,
+    frameIndex = 1,
+  })
+  local resolved = v5Layout(manifest)
+  local stats = {
+    page = "gains",
+    before = { maxHp = 20, attack = 10, defense = 11, specialAttack = 12, specialDefense = 13, speed = 14 },
+    after = { maxHp = 22, attack = 11, defense = 11, specialAttack = 13, specialDefense = 14, speed = 116 },
+  }
+  local status = presentation({ cursorNode = 0, state = "level_up_stats", levelUpStats = stats })
+  status.view.slots[1] = occupiedSlot(0)
+  local function at(value, x, y)
+    for _, call in ipairs(texts) do
+      if call.kind == "palette" and call.value == value and call.x == x and call.y == y then
+        return true
+      end
+    end
+    return false
+  end
+  local box = manifest.windows.levelUpStats
+  renderer:draw(status, resolved, frameIcons({}))
+  Assert.deepEqual(window.draws[#window.draws].box, box, "the stats window uses its generated rectangle")
+  Assert.isTrue(at("MAX HP", box.x, box.y), "stat names start at the window origin")
+  Assert.isTrue(at("SPEED", box.x, box.y + 80), "rows advance 16 pixels in retail order")
+  Assert.isTrue(at("+", box.x + 80, box.y + 16), "the sign prints at x 80")
+  Assert.isTrue(at("2", box.x + 94, box.y), "gains print at x 94")
+  Assert.isTrue(at("102", box.x + 94, box.y + 80), "wide gains keep their left edge")
+  stats.page = "totals"
+  local before = #texts
+  renderer:draw(status, resolved, frameIcons({}))
+  local drawn = {}
+  for index = before + 1, #texts do
+    drawn[texts[index].value] = true
+  end
+  Assert.isNil(drawn["+"], "the totals page drops the sign")
+  Assert.isTrue(at("22", box.x + 104 - 16, box.y), "totals right-align to x 104")
+  Assert.isTrue(at("116", box.x + 104 - 24, box.y + 80), "wider totals shift left")
+end
+
 function T.generated_action_descriptors_render_in_the_action_window()
   local manifest = v5Manifest()
   manifest.text.templates.giveHeldItem = {
     segments = {
       { kind = "name" },
       { kind = "text", value = " was given the " },
-      { kind = "item" },
+      { kind = "item", slot = 1 },
       { kind = "text", value = " to hold." },
     },
   }
@@ -2206,9 +2267,9 @@ function T.generated_action_descriptors_render_in_the_action_window()
     segments = {
       { kind = "name" },
       { kind = "text", value = " held " },
-      { kind = "item" },
+      { kind = "item", slot = 1 },
       { kind = "text", value = " for " },
-      { kind = "item" },
+      { kind = "item", slot = 2 },
     },
   }
   local graphics = fakeGraphics()
@@ -2293,6 +2354,75 @@ function T.generated_action_descriptors_render_in_the_action_window()
     renderer:draw(bad, resolved, frameIcons({}))
   end, "unknown template keys fail instead of defaulting")
   Assert.isTrue(tostring(err):find("noSuchTemplate", 1, true) ~= nil, "the failure names the unknown template key")
+end
+
+-- A paged template prints only its current printer page at the window
+-- top, and a move buffer printed on two pages reads one ordered name.
+function T.paged_templates_draw_only_their_current_page()
+  local manifest = v5Manifest()
+  manifest.text.templates.learnMove = {
+    segments = {
+      { kind = "name" },
+      { kind = "text", value = " wants " },
+      { kind = "move", slot = 1 },
+      { kind = "lineBreak", flow = "prompt" },
+      { kind = "text", value = "Four moves known." },
+      { kind = "lineBreak", flow = "prompt" },
+      { kind = "text", value = "Replace with " },
+      { kind = "move", slot = 1 },
+      { kind = "text", value = "?" },
+    },
+  }
+  local texts = {}
+  local renderer = PartyScreenRenderer.new({
+    graphics = fakeGraphics(),
+    cacheFs = fakeCacheFs(),
+    manifest = manifest,
+    text = paletteText(texts),
+    window = recordingWindow({}),
+    frameIndex = 1,
+  })
+  local resolved = v5Layout(manifest)
+  local box = assert(manifest.windows.action, "the manifest carries the action window")
+  local function drawPage(page)
+    for index = #texts, 1, -1 do
+      texts[index] = nil
+    end
+    local status = presentation({
+      state = "message",
+      message = { templateKey = "learnMove", displayName = "LEAD", moveNames = { "RAZOR LEAF" } },
+      messagePage = page,
+    })
+    status.view.slots[1] = occupiedSlot(0)
+    renderer:draw(status, resolved, frameIcons({}))
+    local drawn = {}
+    for _, call in ipairs(texts) do
+      if
+        call.kind == "palette"
+        and call.x >= box.x
+        and call.x < box.x + box.width
+        and call.y >= box.y
+        and call.y < box.y + box.height
+        and call.value ~= "CANCEL"
+      then
+        drawn[#drawn + 1] = { value = call.value, y = call.y }
+      end
+    end
+    return drawn
+  end
+  local first = drawPage(1)
+  local top = assert(first[1], "the first page draws").y
+  Assert.deepEqual(first, {
+    { value = "LEAD", y = top },
+    { value = " wants ", y = top },
+    { value = "RAZOR LEAF", y = top },
+  }, "the first page prints alone")
+  Assert.deepEqual(drawPage(2), { { value = "Four moves known.", y = top } }, "the second page restarts at the top")
+  Assert.deepEqual(drawPage(3), {
+    { value = "Replace with ", y = top },
+    { value = "RAZOR LEAF", y = top },
+    { value = "?", y = top },
+  }, "the repeated buffer reads the same move name")
 end
 
 -- The generated empty-take template leads with the acting mon's name:

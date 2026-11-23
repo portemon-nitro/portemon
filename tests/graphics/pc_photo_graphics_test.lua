@@ -1068,6 +1068,12 @@ function T.production_album_viewer_borrows_the_live_loader_and_its_image_owner(s
     stored.publish()
     local versionCache = GeneratedCacheFixture.reader(versionId)
     local composition = PartyMenuComposition.create({
+      evolutionWorld = function()
+        return nil
+      end,
+      makeEvolutionScene = function()
+        error("this test opens no evolution scene", 0)
+      end,
       mons = {
         partyCount = function()
           return 1

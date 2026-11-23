@@ -578,6 +578,12 @@ local function openProductionPartyFlow(versionId, summaryManifest)
   local pcManifest = PcPresentationFixture.manifest()
   local mailActions = MailActions.new({ mons = service, mailbox = mailbox, bag = bag, manifest = pcManifest })
   local flow = PartyMenuFlow.new({
+    evolutionWorld = function()
+      return nil
+    end,
+    makeEvolutionScene = function()
+      error("this test opens no evolution scene", 0)
+    end,
     root = "party",
     mons = service,
     bag = bag,
@@ -633,6 +639,12 @@ local function openProductionPartyFlow(versionId, summaryManifest)
     end,
   })
   local flow = PartyMenuFlow.new({
+    evolutionWorld = function()
+      return nil
+    end,
+    makeEvolutionScene = function()
+      error("this test opens no evolution scene", 0)
+    end,
     root = "party",
     mons = service,
     bag = bag,

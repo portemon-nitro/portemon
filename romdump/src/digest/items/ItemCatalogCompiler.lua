@@ -367,8 +367,17 @@ local function normalizePartyUse(nativeId, key, pocketKey, isMachine, decoded)
   if not decoded.partyUse then
     return { kind = "none" }
   end
+  local friendship = nil
+  if party.friendshipLo == true or party.friendshipMed == true or party.friendshipHi == true then
+    friendship = {
+      lo = party.friendshipLoParam,
+      med = party.friendshipMedParam,
+      hi = party.friendshipHiParam,
+    }
+  end
   if party.levelUp == true then
-    return { kind = "deferred", reason = "level_up" }
+    -- The level-up path applies the item's friendship bands after the level.
+    return { kind = "deferred", reason = "level_up", friendship = friendship }
   end
   if party.evolve == true then
     return { kind = "deferred", reason = "evolution" }
@@ -382,14 +391,6 @@ local function normalizePartyUse(nativeId, key, pocketKey, isMachine, decoded)
     return { kind = "revive_all" }
   end
   local mood = ItemSources.PARTY_MOOD_BY_KEY[key] or 0
-  local friendship = nil
-  if party.friendshipLo == true or party.friendshipMed == true or party.friendshipHi == true then
-    friendship = {
-      lo = party.friendshipLoParam,
-      med = party.friendshipMedParam,
-      hi = party.friendshipHiParam,
-    }
-  end
   -- Party-applicable families resolve first; confusion/infatuation cure
   -- bits riding on full-heal items and any other battle-only riders stay
   -- out of the mapped record. Battle-only deferral applies only when no

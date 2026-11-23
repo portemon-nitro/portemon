@@ -5,7 +5,8 @@
 local Errors = {}
 
 ---@alias Errors.Value string|number|boolean|nil|Errors.Context|Errors.Value[]
----@alias Errors.Context table<string, Errors.Value>
+---@class Errors.Context
+---@field [string] Errors.Value
 ---@class Errors.Error
 ---@field code string
 ---@field message string
@@ -13,8 +14,8 @@ local Errors = {}
 
 ---@class Errors
 ---@field new fun(code: string, message: string, context?: Errors.Context): Errors.Error
----@field is fun(value: Errors.Error|Errors.Context|string|number|boolean|nil): boolean
----@field format fun(value: Errors.Error|Errors.Context|string|number|boolean|nil): string
+---@field is fun(value: unknown): boolean
+---@field format fun(value: unknown): string
 ---@field raise fun(code: string, message: string, context?: Errors.Context)
 
 local function formatError(errorObject)
@@ -42,7 +43,7 @@ function Errors.new(code, message, context)
   return result
 end
 
----@param value Errors.Error|Errors.Context|string|number|boolean|nil
+---@param value unknown
 ---@return boolean
 function Errors.is(value)
   return type(value) == "table" and getmetatable(value) == MT
@@ -74,7 +75,7 @@ local function formatValue(value)
   return "{" .. table.concat(parts, ",") .. "}"
 end
 
----@param value Errors.Error|Errors.Context|string|number|boolean|nil
+---@param value unknown
 ---@return string
 function Errors.format(value)
   if not Errors.is(value) then

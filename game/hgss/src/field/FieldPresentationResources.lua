@@ -127,6 +127,8 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field easyChatResources EasyChatPresentationResources? the one lazily owned field editor preparation leaf
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
 ---@field _apricornBoxRenderer ApricornBoxRenderer? owned source graphics and row renderer
+---@field _battleText table<string, unknown>? memoized battle-style text services
+---@field _battleWindows table<string, unknown>? memoized battle-style window services
 ---@field heroRenderer BagHeroRenderer the one bag hero model renderer borrowed by the bag renderer
 ---@field bagRenderer BagRenderer the one field-bag pane renderer
 ---@field bagManifest table<string, unknown> validated native bag presentation geometry
@@ -315,7 +317,7 @@ local function buildPresenters(owner)
       mainId, subId = "interaction", "hero"
     elseif inputKey == "party" then
       mainId, subId = "content", "detail"
-    elseif inputKey == "summary" then
+    elseif inputKey == "summary" or inputKey == "evolution" then
       mainId, subId = "main", "sub"
       summaryExit = true
     elseif inputKey == "apricorn-box" then
@@ -375,7 +377,8 @@ local function buildPresenters(owner)
   -- another application surface.
   ---@param presentation table<string, unknown>?
   ---@param applicationId string
-  local function drawMenuFlow(presentation, applicationId)
+  ---@param runtime FieldRuntime?
+  local function drawMenuFlow(presentation, applicationId, runtime)
     local transition = presentation and presentation.transition
     if transition ~= nil and transition.phase == "menu_return" then
       local hostGraphics = love and love.graphics
@@ -450,6 +453,14 @@ local function buildPresenters(owner)
         windowRenderer = assert(owner.windowRenderer, "Mailbox drawing borrows the shared field-window renderer"),
         applicationFrameIndex = assert(owner.applicationFrameIndex, "Mailbox drawing borrows the selected frame"),
       }, status, plan)
+    elseif inputKey == "evolution" then
+      local text, windows = owner:battleDrawServices(assert(runtime, "evolution drawing borrows the field runtime"))
+      ApplicationPresentation.draw(hostGraphics, {
+        graphics = hostGraphics,
+        text = text,
+        windows = windows,
+        summaryRenderer = assert(owner.summaryRenderer, "evolution drawing borrows the Summary renderer"),
+      }, status, plan)
     elseif inputKey == "easy-chat" or inputKey == "easy-chat-inactive" then
       owner:drawEasyChat(status)
     else
@@ -458,8 +469,8 @@ local function buildPresenters(owner)
     drawMenuFlowTransition(hostGraphics, status.transition, plan)
     drawApplicationFrames(hostGraphics, owner, plan)
   end
-  local function drawPokemon(presentation, _)
-    drawMenuFlow(presentation, FieldApplicationIds.POKEMON)
+  local function drawPokemon(presentation, runtime)
+    drawMenuFlow(presentation, FieldApplicationIds.POKEMON, runtime)
   end
   local function drawTrainerCard(presentation, _)
     local status = assert(presentation, "the card application presents its status")
@@ -473,8 +484,8 @@ local function buildPresenters(owner)
     }, status, plan)
     drawApplicationFrames(hostGraphics, owner, plan)
   end
-  local function drawBag(presentation, _)
-    drawMenuFlow(presentation, FieldApplicationIds.BAG)
+  local function drawBag(presentation, runtime)
+    drawMenuFlow(presentation, FieldApplicationIds.BAG, runtime)
   end
   -- The pokedex presenter draws the committed whole bundle through the
   -- resolved plan: pending initial state keeps the existing host cover
@@ -913,6 +924,68 @@ function FieldPresentationResources:callNoticeRenderer()
   })
   self._callNoticeRenderer = renderer
   return renderer
+end
+
+-- Borrowed battle-style draw services over the shared field renderers:
+-- text measures through the live field font at the field line height, and
+-- window borders resolve the selected application frame through the live
+-- player frame option. Only the player-selected default frame exists in
+-- production; any other key fails explicitly instead of substituting.
+-- One pair serves the field lifetime, so battles and menu-opened evolution
+-- scenes draw through the same services.
+---@param runtime FieldRuntime live owner of the player frame option
+---@return table<string, unknown> text services
+---@return table<string, unknown> window services
+function FieldPresentationResources:battleDrawServices(runtime)
+  if self._battleText ~= nil then
+    return self._battleText, self._battleWindows
+  end
+  local textRenderer = assert(self.textRenderer, "battle text borrows the field text renderer")
+  local battleTextRenderers = assert(self.battleTextRenderers, "battle text has source-role renderers")
+  local windowRenderer = assert(self.windowRenderer, "battle windows borrow the field window renderer")
+  local text = {}
+  text.fontDef = textRenderer.fontDef
+  function text.drawText(content, x, y)
+    return textRenderer:drawText(content, x, y)
+  end
+  function text.drawTextForRole(role, content, x, y, palette)
+    local renderer = assert(battleTextRenderers[role], "battle text role has a source font renderer")
+    if palette ~= nil then
+      return renderer:drawTextWithPalette(content, x, y, palette)
+    end
+    return renderer:drawText(content, x, y)
+  end
+  function text.measureForRole(role, content)
+    local renderer = assert(battleTextRenderers[role], "battle text role has a source font renderer")
+    return { width = renderer:textWidth(content), height = renderer.fontDef.lineHeight }
+  end
+  if type(textRenderer.drawTextWithPalette) == "function" then
+    function text.drawTextWithPalette(content, x, y, palette)
+      return textRenderer:drawTextWithPalette(content, x, y, palette)
+    end
+  end
+  function text.measure(content)
+    return { width = textRenderer:textWidth(content), height = 16 }
+  end
+  function text.windowBackgroundColor()
+    return textRenderer:windowBackgroundColor()
+  end
+  local windows = {}
+  local function frameIndexOf(frameKey)
+    if frameKey == nil or frameKey == "default" then
+      local playerData = assert(runtime.playerData, "battle frames read the player frame option")
+      return assert(playerData.options.textFrame, "battle frames read the player frame option")
+    end
+    error("unknown battle frame: " .. tostring(frameKey), 0)
+  end
+  function windows.drawWindow(box, frameKey, background)
+    return windowRenderer:drawWindow(box, frameIndexOf(frameKey), background)
+  end
+  function windows.drawApplicationFrame(box, frameKey)
+    return windowRenderer:drawApplicationFrame(box, frameIndexOf(frameKey))
+  end
+  self._battleText, self._battleWindows = text, windows
+  return text, windows
 end
 
 -- Draws the current application through its registered presenter. The map is

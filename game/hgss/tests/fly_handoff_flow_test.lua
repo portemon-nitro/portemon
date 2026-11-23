@@ -128,6 +128,12 @@ local function openFlow(Flow, opts)
   local mailbox = Mailbox.new()
   local pcManifest = require("tests.support.PcPresentationFixture").manifest()
   return Flow.new({
+    evolutionWorld = function()
+      return nil
+    end,
+    makeEvolutionScene = function()
+      error("this test opens no evolution scene", 0)
+    end,
     root = "party",
     mons = assert(opts.mons, "the flow borrows the mon service"),
     bag = assert(opts.bag, "the flow borrows the bag service"),

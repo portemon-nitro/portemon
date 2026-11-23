@@ -184,7 +184,7 @@ function T.compiled_presentation_carries_semantic_roles_switch_chrome_and_take_t
   local PartyAssetCompiler = require("romdump.src.digest.ui.PartyAssetCompiler")
   local PartyCache = require("libs.assets.src.PartyCache")
   local bundle = assert(PartyAssetCompiler.compile(romFs))
-  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v7")
+  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v9")
   Assert.deepEqual(bundle.manifest.controls.cancel.textRect, { x = 208, y = 168, width = 40, height = 16 })
   Assert.equal(bundle.manifest.controls.cancel.align, "center")
   local menu = bundle.manifest.contextMenu
@@ -221,7 +221,7 @@ function T.compiled_presentation_carries_semantic_roles_switch_chrome_and_take_t
     { kind = "name" },
     { kind = "text", value = " was given the" },
     { kind = "lineBreak" },
-    { kind = "item" },
+    { kind = "item", slot = 1 },
     { kind = "text", value = " to hold." },
     { kind = "lineBreak", flow = "prompt" },
   }, "the source held-item result preserves its NAME and ITEM substitutions")
@@ -244,6 +244,25 @@ function T.compiled_presentation_carries_semantic_roles_switch_chrome_and_take_t
     { "text", "item", "text", "lineBreak", "text", "item", "text", "lineBreak" },
     "the swap result lowers old then new item bindings around its source text"
   )
+  local function slots(template, kind)
+    local found = {}
+    for _, segment in ipairs(template.segments) do
+      if segment.kind == kind then
+        found[#found + 1] = segment.slot
+      end
+    end
+    return found
+  end
+  Assert.deepEqual(slots(result, "item"), { 1, 2 }, "distinct source buffers read distinct ordered names")
+  local learn = bundle.manifest.text.templates.learnMove
+  Assert.deepEqual(slots(learn, "move"), { 1, 1 }, "a buffer printed twice reads one move name")
+  local pages = 1
+  for _, segment in ipairs(learn.segments) do
+    if segment.kind == "lineBreak" and segment.flow == "prompt" then
+      pages = pages + 1
+    end
+  end
+  Assert.equal(pages, 3, "the delete-a-move question spans three printer pages")
 end
 
 -- Panel nickname/gender text prints over existing panel chrome, so the
@@ -317,7 +336,7 @@ end
 function T.compiled_presentation_carries_the_full_bag_template(romFs, _)
   local PartyAssetCompiler = require("romdump.src.digest.ui.PartyAssetCompiler")
   local bundle = assert(PartyAssetCompiler.compile(romFs))
-  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v7")
+  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v9")
   local template = bundle.manifest.text.templates.bagFull
   Assert.notNil(template, "the full-bag template resolves")
   local words = {}
@@ -352,10 +371,44 @@ function T.compiled_held_mail_template_comes_from_source_bank300_message78(romFs
   Assert.isNil(template.index, "runtime templates omit source message identity")
 end
 
+-- Rare Candy level-up dialogue: bank-300 messages 169-176 label the stats
+-- window, 178 and 61 are the move-learning templates, and the stats window
+-- is the source 14x12 tile rectangle at tile 1,1.
+function T.compiled_level_up_dialogue_assets_come_from_source(romFs, _)
+  local PartyAssetCompiler = require("romdump.src.digest.ui.PartyAssetCompiler")
+  local manifest = assert(PartyAssetCompiler.compile(romFs)).manifest
+  Assert.deepEqual(manifest.windows.levelUpStats, { x = 8, y = 8, width = 112, height = 96 })
+  local labels = manifest.text.labels
+  Assert.equal(labels.statMaxHp, "MAX HP")
+  Assert.equal(labels.statAttack, "ATTACK")
+  Assert.equal(labels.statDefense, "DEFENSE")
+  Assert.equal(labels.statSpecialAttack, "SP. ATK")
+  Assert.equal(labels.statSpecialDefense, "SP. DEF")
+  Assert.equal(labels.statSpeed, "SPEED")
+  Assert.equal(labels.statPlus, "+")
+  local function kinds(template)
+    local out = {}
+    for _, segment in ipairs(template.segments) do
+      out[#out + 1] = segment.kind
+    end
+    return out
+  end
+  local learned = kinds(manifest.text.templates.levelUpLearned)
+  Assert.equal(learned[1], "name", "the learned-at-level-up message names the mon")
+  local forgot = kinds(manifest.text.templates.forgotMove)
+  local moves = 0
+  for _, kind in ipairs(forgot) do
+    if kind == "move" then
+      moves = moves + 1
+    end
+  end
+  Assert.equal(moves, 1, "the forgot message names only the forgotten move")
+end
+
 function T.compiled_party_manifest_declares_the_full_bag_schema(romFs, _)
   local PartyAssetCompiler = require("romdump.src.digest.ui.PartyAssetCompiler")
   local bundle = assert(PartyAssetCompiler.compile(romFs))
-  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v7")
+  Assert.equal(bundle.manifest.schema, "g4-party-presentation-v9")
   Assert.notNil(bundle.manifest.text.templates.bagFull, "the full-bag template resolves")
 end
 

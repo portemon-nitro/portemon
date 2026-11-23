@@ -15,7 +15,7 @@ local BattleDataSchema = require("libs.assets.src.battle.BattleDataSchema")
 ---@class ItemAssetSchema
 local ItemAssetSchema = {}
 
-ItemAssetSchema.CATALOG_SCHEMA = "g4-item-catalog-v4"
+ItemAssetSchema.CATALOG_SCHEMA = "g4-item-catalog-v5"
 ItemAssetSchema.ICON_MANIFEST_SCHEMA = "g4-item-icons-v1"
 
 -- The eight source pockets in native order: native id, occupied-slot
@@ -281,10 +281,14 @@ local function assertPartyUse(key, value, context)
   elseif value.kind == "machine" then
     checkKeys(value, { kind = true }, context, "ITEM_CATALOG_INVALID")
   elseif value.kind == "deferred" then
-    checkKeys(value, { kind = true, reason = true }, context, "ITEM_CATALOG_INVALID")
+    checkKeys(value, { kind = true, reason = true, friendship = true }, context, "ITEM_CATALOG_INVALID")
     if DEFERRED_REASONS[value.reason] ~= true then
       fail("ITEM_CATALOG_INVALID", "item " .. key .. " deferral names an unknown reason", context)
     end
+    if value.friendship ~= nil and value.reason ~= "level_up" then
+      fail("ITEM_CATALOG_INVALID", "item " .. key .. " only a level-up deferral carries friendship", context)
+    end
+    assertFriendship(key, value.friendship, context)
   else
     fail("ITEM_CATALOG_INVALID", "item " .. key .. " partyUse kind must be a closed effect kind", context)
   end

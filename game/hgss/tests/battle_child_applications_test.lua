@@ -361,7 +361,9 @@ function T.evolution_child_wraps_the_native_presentation_state()
   child:dispose()
 end
 
-function T.evolution_cursor_runs_while_hidden_and_keeps_the_source_selection_pose()
+-- Opens an evolution child whose first learn menu is reachable through
+-- advanceUntil; ticks reports the source ticks consumed so far.
+local function openEvolutionMenuChild()
   local root = CatalogFixture.buildAssetRoot()
   local species = root.species
   species.CHIKORITA.forms[0].evolutions = {
@@ -429,6 +431,12 @@ function T.evolution_cursor_runs_while_hidden_and_keeps_the_source_selection_pos
       if child:status().printerPending == true then
         child:completeMessage()
       end
+      if child:status().cryPending == true then
+        child:completeCry()
+      end
+      if child:status().picturePending == true then
+        child:completePicture()
+      end
       child:stepPresentationSourceTick(1)
       child:stepSourceTick(1)
       ticks = ticks + 1
@@ -439,10 +447,17 @@ function T.evolution_cursor_runs_while_hidden_and_keeps_the_source_selection_pos
     end
     error("the evolution cursor test never reached its requested menu")
   end
+  return child, advanceUntil, function()
+    return ticks
+  end
+end
+
+function T.evolution_cursor_runs_while_hidden_and_keeps_the_source_selection_pose()
+  local child, advanceUntil, ticksNow = openEvolutionMenuChild()
   local firstMenu = advanceUntil(function(view)
     return type(view.learnMenu) == "table"
   end)
-  local idleFrame = (ticks % 5) < 2 and 11 or 12
+  local idleFrame = (ticksNow() % 5) < 2 and 11 or 12
   Assert.equal(firstMenu.learnMenu.cursor.role, "idle", "the first menu reveals the scene's original idle animation")
   Assert.equal(firstMenu.learnMenu.cursor.sourceFrame, idleFrame, "the hidden idle cursor has kept its source age")
   child:input({ { type = "navigate", direction = "down" } })
@@ -453,6 +468,43 @@ function T.evolution_cursor_runs_while_hidden_and_keeps_the_source_selection_pos
   Assert.equal(stopMenu.learnMenu.cursor.role, "select", "ShowMenu reveals the completed source selection animation")
   Assert.equal(stopMenu.learnMenu.cursor.sourceFrame, 14, "ShowMenu does not restart the cursor idle animation")
   child:dispose()
+end
+
+-- Retail hit rectangles are half-open {top, bottom, left, right} boxes in
+-- lower-screen coordinates: rows span x 3..250 and y 50..91 / 99..139.
+function T.evolution_learn_menu_taps_select_rows_by_lower_screen_rectangles()
+  local cases = {
+    { x = 3, y = 50, row = 0 },
+    { x = 128, y = 71, row = 0 },
+    { x = 250, y = 91, row = 0 },
+    { x = 3, y = 99, row = 1 },
+    { x = 128, y = 120, row = 1 },
+    { x = 250, y = 139, row = 1 },
+    { x = 72, y = 20, row = nil },
+    { x = 72, y = 170, row = nil },
+    { x = 128, y = 49, row = nil },
+    { x = 128, y = 95, row = nil },
+    { x = 128, y = 140, row = nil },
+    { x = 2, y = 71, row = nil },
+    { x = 251, y = 71, row = nil },
+  }
+  for _, case in ipairs(cases) do
+    local child, advanceUntil = openEvolutionMenuChild()
+    advanceUntil(function(view)
+      return type(view.learnMenu) == "table"
+    end)
+    child:input({ { type = "pointer_down", pointerId = "tap", x = case.x, y = case.y } })
+    local menu = child:draw().learnMenu
+    local label = "tap at " .. case.x .. "," .. case.y
+    if case.row == nil then
+      Assert.isNil(menu.selecting, label .. " outside both rows selects nothing")
+      Assert.equal(menu.focus, 0, label .. " leaves the focus alone")
+    else
+      Assert.isTrue(menu.selecting, label .. " answers its row")
+      Assert.equal(menu.focus, case.row, label .. " focuses the tapped row")
+    end
+    child:dispose()
+  end
 end
 
 function T.bag_child_needs_its_item_catalog()

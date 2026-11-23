@@ -15,6 +15,19 @@ local PartyScreenTheme = {}
 
 PartyScreenTheme.HP_BAR_PIXELS = 48
 
+-- Level-up stats window rows in retail order
+-- (party_context_menu.c PartyMenu_LevelUpPrintStatsChange): the stat key
+-- of the before/after records and the generated manifest label naming it.
+---@type { key: string, label: string }[]
+PartyScreenTheme.LEVEL_UP_STAT_ROWS = {
+  { key = "maxHp", label = "statMaxHp" },
+  { key = "attack", label = "statAttack" },
+  { key = "defense", label = "statDefense" },
+  { key = "specialAttack", label = "statSpecialAttack" },
+  { key = "specialDefense", label = "statSpecialDefense" },
+  { key = "speed", label = "statSpeed" },
+}
+
 -- Shared fill-length computation for the 48-pixel HP bar: quantized
 -- floor pixels with a one-pixel minimum while HP remains. Color tests
 -- elsewhere use this quantized length, never a floating fraction.

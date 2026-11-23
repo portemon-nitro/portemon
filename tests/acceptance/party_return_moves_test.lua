@@ -507,6 +507,12 @@ local function openPartyFlow(game, checkDouble)
   local actions = PartyActions.new({ mons = mons, bag = bag })
   local mailActions = MailActions.new({ mons = mons, mailbox = mailbox, bag = bag, manifest = pcManifest })
   return PartyMenuFlow.new({
+    evolutionWorld = function()
+      return nil
+    end,
+    makeEvolutionScene = function()
+      error("this test opens no evolution scene", 0)
+    end,
     root = "party",
     mons = mons,
     bag = bag,

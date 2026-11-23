@@ -598,10 +598,11 @@ DerivedAssetContract.encounterCatalog = {
 -- party-use metadata (partyUse), so a stale v2 cache without those facts
 -- must fail readiness. v4 adds source item prices plus the Fling and
 -- Natural Gift throw facts (cacheFormat v4), so a stale v3 catalog without
--- those facts must fail readiness.
+-- those facts must fail readiness. v5 carries the friendship bands on
+-- level-up deferrals, so a stale v4 catalog without them must fail readiness.
 DerivedAssetContract.items = {
-  cacheFormat = "item-cache-v4",
-  catalogSchema = "g4-item-catalog-v4",
+  cacheFormat = "item-cache-v5",
+  catalogSchema = "g4-item-catalog-v5",
   indexSchema = "g4-item-index-v1",
   iconManifestSchema = "g4-item-icons-v1",
 }
@@ -685,9 +686,13 @@ DerivedAssetContract.apricornBox = {
 -- the party manifest references no icon pixels.
 -- v7 requires the heldMail refusal template (source bank-300 message 78)
 -- for fresh-letter recipients that already carry Mail.
+-- v8 requires the level-up stats window rectangle, the stat row labels,
+-- and the Rare Candy move-learning templates.
+-- v9 requires the ordered-name slot on every item, quantity, and move
+-- template substitution, so a repeated source buffer reads one name.
 DerivedAssetContract.party = {
   cacheFormat = "party-cache-v1",
-  schema = "g4-party-presentation-v7",
+  schema = "g4-party-presentation-v9",
 }
 
 -- The PC family retains its source-independent Storage, Mailbox, Mail and

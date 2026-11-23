@@ -18,7 +18,7 @@ local SchemaCheck = require("libs.assets.src.SchemaCheck")
 ---@class PartyAssetSchema
 local PartyAssetSchema = {}
 
-PartyAssetSchema.SCHEMA = "g4-party-presentation-v7"
+PartyAssetSchema.SCHEMA = "g4-party-presentation-v9"
 PartyAssetSchema.PANE_WIDTH = 256
 PartyAssetSchema.PANE_HEIGHT = 192
 PartyAssetSchema.SLOT_COUNT = 6
@@ -50,6 +50,9 @@ local SEGMENT_KINDS = {
   lineBreak = true,
 }
 
+-- Substitutions that read one ordered name list per message.
+local SLOTTED_KINDS = { item = true, quantity = true, move = true }
+
 local REQUIRED_RUNTIME_TEMPLATES = {
   "chooseMon",
   "moveTarget",
@@ -70,6 +73,24 @@ local REQUIRED_RUNTIME_TEMPLATES = {
   "fieldMoveHaveFollower",
   "fieldMoveAlreadySurfing",
   "fieldMoveNotNow",
+  "levelUp",
+  "levelUpLearned",
+  "forgotMove",
+  "learned",
+  "learnMove",
+  "forgetMove",
+  "stopTeach",
+  "didNotLearn",
+}
+
+local REQUIRED_RUNTIME_LABELS = {
+  "statMaxHp",
+  "statAttack",
+  "statDefense",
+  "statSpecialAttack",
+  "statSpecialDefense",
+  "statSpeed",
+  "statPlus",
 }
 
 local function fail(message, context)
@@ -476,9 +497,17 @@ local function checkSegment(value, context, what)
   if type(value) ~= "table" then
     fail(what .. " must be a record", context)
   end
-  checkKeys(value, { kind = true, value = true, color = true, flow = true }, context, what)
+  checkKeys(value, { kind = true, value = true, color = true, flow = true, slot = true }, context, what)
   if SEGMENT_KINDS[value.kind] == nil then
     fail(what .. ".kind is outside the text vocabulary", context)
+  end
+  if SLOTTED_KINDS[value.kind] then
+    checkInt(value.slot, context, what .. ".slot")
+    if value.slot < 1 then
+      fail(what .. ".slot must address an ordered name from 1", context)
+    end
+  elseif value.slot ~= nil then
+    fail(what .. ".slot belongs to item, quantity, and move substitutions only", context)
   end
   if value.kind == "lineBreak" then
     if value.flow ~= nil and value.flow ~= "prompt" and value.flow ~= "page" then
@@ -574,11 +603,17 @@ function PartyAssetSchema.assertManifest(manifest)
   if type(root.windows) ~= "table" then
     fail("manifest.windows must be a record", {})
   end
-  checkKeys(root.windows, { browse = true, context = true, action = true, prompt = true }, {}, "manifest.windows")
+  checkKeys(
+    root.windows,
+    { browse = true, context = true, action = true, levelUpStats = true, prompt = true },
+    {},
+    "manifest.windows"
+  )
   local windows = root.windows --[[@as table<string, unknown>]]
   checkRect(windows.browse, {}, "manifest.windows.browse")
   checkRect(windows.context, {}, "manifest.windows.context")
   checkRect(windows.action, {}, "manifest.windows.action")
+  checkRect(windows.levelUpStats, {}, "manifest.windows.levelUpStats")
   checkPanePoint(windows.prompt, {}, "manifest.windows.prompt")
   if type(root.visuals) ~= "table" then
     fail("manifest.visuals must be a record", {})
@@ -775,6 +810,11 @@ function PartyAssetSchema.assertManifest(manifest)
   end
   if type(labels.item) ~= "string" or labels.item == "" then
     fail("manifest.text.labels.item must be display text", {})
+  end
+  for _, name in ipairs(REQUIRED_RUNTIME_LABELS) do
+    if type(labels[name]) ~= "string" or labels[name] == "" then
+      fail("manifest.text.labels." .. name .. " must be display text", {})
+    end
   end
   if type(text.roles) ~= "table" then
     fail("manifest.text.roles must be a record", {})

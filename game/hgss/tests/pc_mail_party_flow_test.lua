@@ -234,6 +234,12 @@ local function makeComposition(attachMail)
   local mailbox = Mailbox.new()
   local GameStats = require("libs.hgss.src.mons.GameStats")
   local composition = PartyMenuComposition.create({
+    evolutionWorld = function()
+      return nil
+    end,
+    makeEvolutionScene = function()
+      error("this test opens no evolution scene", 0)
+    end,
     mons = mons,
     bag = bag,
     mailbox = mailbox,

@@ -36,6 +36,7 @@ local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
 local TrainerCardScreenState = require("game.hgss.src.field.TrainerCardScreenState")
 local OptionsScreenState = require("game.hgss.src.options.OptionsScreenState")
 local ApricornBoxScreenState = require("game.hgss.src.apricorn.ApricornBoxScreenState")
+local FieldEvolutionScene = require("game.hgss.src.field.FieldEvolutionScene")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 
 -- The audio-output sample rate of the production composition (the mixer and
@@ -717,8 +718,50 @@ function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
     local binding = assert(runtime._mailPreparation, "mail opens require the presented preparation binding")
     return binding.prepare(status)
   end
+  local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
+  local function evolutionWorld()
+    return FieldBattleCoordinator.evolutionWorld(runtime)
+  end
+  local summaryContext = summaryContextProvider(runtime, summaryManifest)
+  local evolutionSceneCount = 0
+  local function makeEvolutionScene(request)
+    local binding = assert(runtime._evolutionPresentation, "evolution scenes require the presented preparation binding")
+    evolutionSceneCount = evolutionSceneCount + 1
+    local sceneId = "menu-evolution:" .. evolutionSceneCount
+    local lease = binding.acquire(sceneId)
+    local ok, scene = pcall(FieldEvolutionScene.new, {
+      request = request,
+      sceneId = sceneId,
+      assets = lease.assets,
+      audio = assert(runtime.audio, "evolution scenes voice through the composed field audio"),
+      monCatalog = assert(runtime.monCatalog, "evolution scenes borrow the shared mon catalog"),
+      splRandomState = lease.splRandomState,
+      summary = {
+        mons = assert(runtime.monService, "evolution Summary borrows the live mon service"),
+        manifest = summaryManifest,
+        measureDisplay = measureDisplay,
+        context = summaryContext,
+        readNavigation = readSummaryNavigation,
+        acquirePreparation = acquireSummaryPreparation,
+        effect = playBagSequence,
+        playCry = playSummaryCry,
+      },
+      measureDisplay = measureDisplay,
+      textSpeed = assert(
+        runtime.playerData and runtime.playerData.options.textSpeed,
+        "evolution reads the live text speed"
+      ),
+    })
+    if not ok then
+      lease.assets:dispose()
+      error(scene, 0)
+    end
+    return scene
+  end
   runtime.partyMenu = PartyMenuComposition.create({
     effect = playBagSequence,
+    evolutionWorld = evolutionWorld,
+    makeEvolutionScene = makeEvolutionScene,
     easyChatCatalog = assert(runtime.easyChatCatalog, "the menu composition requires the shared word catalog"),
     openEasyChat = openEasyChat,
     prepareMail = prepareMail,
@@ -728,7 +771,7 @@ function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
     isCryFinished = isFieldCryFinished,
     textPolicyForOpen = textPolicyForOpen,
     summaryManifest = summaryManifest,
-    summaryContext = summaryContextProvider(runtime, summaryManifest),
+    summaryContext = summaryContext,
     dexMode = readLiveDexMode,
     readSummaryNavigation = readSummaryNavigation,
     acquireSummaryPreparation = acquireSummaryPreparation,

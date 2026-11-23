@@ -237,11 +237,15 @@ PartySources.badges = {
 -- (party_context_menu.c): browse is source window 32 (template index 2),
 -- context is source window 33 (template index 3), action is source window 34
 -- (template index 4). Tile units become pixels. The confirm prompt anchors at
--- the source tile-derived position (tile 25,10), in pixels.
+-- the source tile-derived position (tile 25,10), in pixels. The level-up
+-- stats window is source window levelUpStatsWindow (main BG layer 0,
+-- tile 1,1, 14x12 tiles) drawn with the user frame (DrawFrameAndWindow1,
+-- tile base 1, palette 14).
 PartySources.windows = {
   browse = { x = 16, y = 168, width = 160, height = 16 },
   context = { x = 16, y = 152, width = 104, height = 32 },
   action = { x = 16, y = 152, width = 216, height = 32 },
+  levelUpStats = { x = 8, y = 8, width = 112, height = 96 },
   prompt = { x = 200, y = 80 },
 }
 
@@ -431,6 +435,16 @@ PartySources.messages = {
     compatAltLearned = { bank = 300, index = 160 },
     compatAble = { bank = 300, index = 161 },
     compatUnable = { bank = 300, index = 162 },
+    -- Level-up stats window rows and sign
+    -- (party_context_menu.c PartyMenu_LevelUpPrintStatsChange): stat names
+    -- print in HP, Attack, Defense, Sp. Atk, Sp. Def, Speed order.
+    statMaxHp = { bank = 300, index = 169 },
+    statAttack = { bank = 300, index = 170 },
+    statDefense = { bank = 300, index = 171 },
+    statSpecialAttack = { bank = 300, index = 172 },
+    statSpecialDefense = { bank = 300, index = 173 },
+    statSpeed = { bank = 300, index = 174 },
+    statPlus = { bank = 300, index = 175 },
   },
   templates = {
     chooseMon = { bank = 300, index = 29 },
@@ -478,6 +492,12 @@ PartySources.messages = {
     teachKnown = { bank = 300, index = 64 },
     teachIncompatible = { bank = 300, index = 63 },
     levelUp = { bank = 300, index = 177 },
+    -- Rare Candy move learning (party_menu_items.c LevelUpLearnMovesLoop):
+    -- a free slot learns at once (178), a full set asks learnMove (53) and
+    -- forgetMove (60), the forgotten move reads forgotMove (61) before
+    -- learned (62); declining asks stopTeach (56) then didNotLearn (59).
+    levelUpLearned = { bank = 300, index = 178 },
+    forgotMove = { bank = 300, index = 61 },
     fieldMoveConfirm = { bank = 300, index = 139 },
     fieldMoveNotHere = { bank = 300, index = 101 },
     fieldMoveNeedBadge = { bank = 300, index = 77 },

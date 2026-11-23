@@ -205,6 +205,17 @@ local function completePaletteFade(state, channel)
   state:completePaletteFade(selected, requestId)
 end
 
+-- Reports every pending cry and Pokepic animation finished.
+---@param state table<string, unknown> evolution state under acknowledging
+local function completeVoice(state)
+  if state:status().cryPending then
+    state:completeCry()
+  end
+  if state:status().picturePending then
+    state:completePicture()
+  end
+end
+
 ---@param state table<string, unknown> evolution presentation state under driving
 ---@param ticks integer source ticks under driving
 local function advance(state, ticks)
@@ -214,6 +225,7 @@ local function advance(state, ticks)
     elseif state:status().printerPending then
       state:completeMessage()
     end
+    completeVoice(state)
     state:stepSourceTick(1)
   end
 end
@@ -274,6 +286,7 @@ local function finishCancellation(state)
     elseif state:status().printerPending then
       state:completeMessage()
     else
+      completeVoice(state)
       state:stepSourceTick(1)
     end
     if state:status().phase == "settled" then
@@ -530,6 +543,99 @@ function T.permitted_cancel_declines_without_applying()
     { "palette", "palette", 1011, "cry:CHIKORITA", 919, "palette" },
     "cancel restores the picture, stops SHINKA, replays the old cry, prints stopped-evolving, and fades out"
   )
+end
+
+-- Steps one source tick, finishing palettes and printers like the host but
+-- leaving every cry and Pokepic animation running.
+---@param state table<string, unknown> evolution state under driving
+local function stepHoldingVoice(state)
+  if state:status().palettePending then
+    completePaletteFade(state)
+  elseif state:status().printerPending then
+    state:completeMessage()
+  end
+  state:stepSourceTick(1)
+end
+
+---@param state table<string, unknown> evolution state under driving
+---@param role "old"|"new" Pokepic whose cry the scene must start
+local function runUntilCry(state, role)
+  for _ = 1, 400 do
+    local status = state:status()
+    if status.cryPending and status.pictureRole == role then
+      return
+    end
+    stepHoldingVoice(state)
+  end
+  error("the evolution sequence never voiced the " .. role .. " cry")
+end
+
+---@param state table<string, unknown> evolution state under holding
+---@param ticks integer ticks the scene must stay put
+---@return string phase held phase
+---@return string? beat held transformation beat
+local function holdTicks(state, ticks)
+  local phase = state:status().phase
+  local beat = state:draw().beat
+  local effects = state:status().effects
+  for _ = 1, ticks do
+    stepHoldingVoice(state)
+    Assert.equal(state:status().phase, phase, "the held scene keeps its phase")
+    Assert.equal(state:draw().beat, beat, "the held scene keeps its beat")
+    Assert.equal(state:status().effects, effects, "the held scene sequences nothing further")
+  end
+  return phase, beat
+end
+
+function T.cries_and_pokepic_animations_gate_the_transformation_and_the_congratulations()
+  local catalog = evolutionCatalog(graftLevelSlot)
+  local mon = subjectAt(catalog, "CHIKORITA", 16, { moveEntry("TACKLE") })
+  local state = stateFor(catalog, mon)
+  runUntilCry(state, "old")
+  state:completeMessage()
+  Assert.isFalse(state:status().printerPending, "the progress message finished printing")
+  Assert.equal(holdTicks(state, 60), "sequence", "a finished printer alone never starts the transformation")
+  Assert.equal(countKind(state, "music_direct"), 0, "SHINKA waits for the cry and Pokepic animation")
+  state:completeCry()
+  holdTicks(state, 60)
+  Assert.equal(countKind(state, "music_direct"), 0, "a finished cry still waits for the Pokepic animation")
+  state:completePicture()
+  stepHoldingVoice(state)
+  Assert.equal(state:status().phase, "transformation", "all three finished: the transformation starts")
+  Assert.equal(countKind(state, "music_direct"), 1, "SHINKA starts exactly once")
+  runUntilCry(state, "new")
+  holdTicks(state, 60)
+  local earlyIds = messageIds(state)
+  Assert.isTrue(earlyIds[#earlyIds] ~= BattleEvolutionState.MSG_EVOLVED, "no early congratulations")
+  state:completePicture()
+  holdTicks(state, 60)
+  state:completeCry()
+  stepHoldingVoice(state)
+  Assert.equal(state:status().phase, "evolved_message", "the new cry and picture released the scene")
+  local ids = messageIds(state)
+  Assert.equal(ids[#ids], BattleEvolutionState.MSG_EVOLVED, "congratulations print once both finished")
+  runUntilSettled(state, 1200)
+  Assert.isTrue(state:takeResult().choice.evolved, "the gated sequence still evolves")
+end
+
+function T.cancellation_waits_for_the_old_cry_and_picture_before_the_stopped_message()
+  local catalog = evolutionCatalog(graftLevelSlot)
+  local mon = subjectAt(catalog, "CHIKORITA", 16, { moveEntry("TACKLE") })
+  local state = stateFor(catalog, mon)
+  runUntilOscillation(state)
+  state:input({ { type = "cancel" } })
+  runUntilCry(state, "old")
+  Assert.equal(state:draw().beat, "cancel_cry", "the replayed old cry is the cancellation beat")
+  holdTicks(state, 60)
+  state:completeCry()
+  holdTicks(state, 60)
+  state:completePicture()
+  stepHoldingVoice(state)
+  Assert.equal(state:draw().beat, "cancel_wait_message", "the stopped message follows the finished cry")
+  local ids = messageIds(state)
+  Assert.equal(ids[#ids], BattleEvolutionState.MSG_STOPPED, "message 919 prints after the gate")
+  finishCancellation(state)
+  Assert.isFalse(state:takeResult().choice.evolved, "the gated cancellation still declines")
 end
 
 function T.cancel_during_oscillation_can_replace_the_scene_fade_while_pokepic_fades()

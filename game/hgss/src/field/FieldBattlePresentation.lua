@@ -15,6 +15,8 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+local EvolutionScenePresenter = require("game.hgss.src.battle.EvolutionScenePresenter")
+local FieldEvolutionAssets = require("game.hgss.src.field.FieldEvolutionAssets")
 local MonCache = require("libs.assets.src.MonCache")
 local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 local BattleEncounterTransition = require("libs.hgss.src.transition.BattleEncounterTransition")
@@ -2544,7 +2546,9 @@ function FieldBattlePresentation:_preparationServices()
       return false, nil
     end
     local iconKeys = demand.iconKeys or {}
-    if envelope._monIconProvider ~= nil or #iconKeys > 0 then
+    -- A scene-less demand never touches the icon provider: an empty demand
+    -- would retire the icon pages another open application holds.
+    if (envelope._monIconProvider ~= nil and #(demand.scenes or {}) > 0) or #iconKeys > 0 then
       local icons = assert(envelope._monIconProvider, "battle icon demand borrows the field icon provider")
       local iconsReady, iconsFailure = icons:prepareKeys(iconKeys)
       if iconsFailure ~= nil then
@@ -2567,36 +2571,40 @@ function FieldBattlePresentation:_preparationServices()
     if graphics ~= nil then
       local staged = stagedManifest(envelope._manifest)
       assert(staged ~= nil, "a launched battle owns its verified core")
-      -- Fixed art decodes while the remaining launch-specific members
-      -- still pend: every graphical launch draws these paths, so
-      -- preparation enrolls them once per launch and the drawables take
-      -- over each ticket instead of serializing behind the build.
-      for _, key in ipairs(REQUIRED_FIXED_ART) do
-        local path = fixedArt(staged, FIXED_ART[key])
-        if type(path) == "string" then
-          enrollUpload(envelope, path)
+      -- Battle art stages only for demands carrying a scene; a menu-opened
+      -- evolution demands portraits and audio alone.
+      if #(demand.scenes or {}) > 0 then
+        -- Fixed art decodes while the remaining launch-specific members
+        -- still pend: every graphical launch draws these paths, so
+        -- preparation enrolls them once per launch and the drawables take
+        -- over each ticket instead of serializing behind the build.
+        for _, key in ipairs(REQUIRED_FIXED_ART) do
+          local path = fixedArt(staged, FIXED_ART[key])
+          if type(path) == "string" then
+            enrollUpload(envelope, path)
+          end
         end
-      end
-      -- Party wrapper backgrounds decode alongside fixed art so opening
-      -- Summary/Check Moves never serializes behind its first drawable:
-      -- each demanded party:page key enrolls both staged layers.
-      local partySection = type(staged.party) == "table" and staged.party or nil
-      local partyPages = type(partySection) == "table" and partySection.pages or nil
-      if type(partyPages) == "table" then
-        local wantedPages = type(demand.partyPages) == "table" and demand.partyPages or {}
-        for _, wantedKey in ipairs(wantedPages) do
-          for _, page in ipairs(partyPages) do
-            if type(page) == "table" and page.key == wantedKey then
-              local layers = page.layers
-              if type(layers) == "table" then
-                for _, layer in ipairs(layers) do
-                  local imagePath = type(layer) == "table" and layer.image or nil
-                  if type(imagePath) == "string" then
-                    enrollUpload(envelope, imagePath)
+        -- Party wrapper backgrounds decode alongside fixed art so opening
+        -- Summary/Check Moves never serializes behind its first drawable:
+        -- each demanded party:page key enrolls both staged layers.
+        local partySection = type(staged.party) == "table" and staged.party or nil
+        local partyPages = type(partySection) == "table" and partySection.pages or nil
+        if type(partyPages) == "table" then
+          local wantedPages = type(demand.partyPages) == "table" and demand.partyPages or {}
+          for _, wantedKey in ipairs(wantedPages) do
+            for _, page in ipairs(partyPages) do
+              if type(page) == "table" and page.key == wantedKey then
+                local layers = page.layers
+                if type(layers) == "table" then
+                  for _, layer in ipairs(layers) do
+                    local imagePath = type(layer) == "table" and layer.image or nil
+                    if type(imagePath) == "string" then
+                      enrollUpload(envelope, imagePath)
+                    end
                   end
                 end
+                break
               end
-              break
             end
           end
         end
@@ -3937,6 +3945,59 @@ function FieldBattlePresentation:factory()
   return buildPort
 end
 
+-- Resolves sequence symbols to their bank identities through the staged
+-- audio index. A cold or unstaged index resolves nothing.
+---@param cacheFs table<string, unknown> versioned derived cache behind the index
+---@param symbols string[] sequence symbols under resolution
+---@return integer[] bank identities in ascending order
+local function sequenceBanks(cacheFs, symbols)
+  local ok, index = pcall(function()
+    return cacheFs:loadLua(AudioCache.indexPath())
+  end)
+  if not ok or type(index) ~= "table" then
+    return {}
+  end
+  local sequences = index.sequences --[[@as table<integer, table<string, unknown>>?]]
+  local bySymbol = index.sequenceBySymbol --[[@as table<string, integer>?]]
+  if type(sequences) ~= "table" or type(bySymbol) ~= "table" then
+    return {}
+  end
+  local banks, seen = {}, {}
+  for _, symbol in ipairs(symbols) do
+    local id = bySymbol[symbol]
+    local entry = type(id) == "number" and sequences[id] or nil
+    local bank = type(entry) == "table" and entry.bankId or nil
+    if type(bank) == "number" and not seen[bank] then
+      seen[bank] = true
+      banks[#banks + 1] = bank
+    end
+  end
+  table.sort(banks)
+  return banks
+end
+
+-- Leases the asset holder behind one menu-opened evolution scene over this
+-- envelope's preparation services and verified core. The scene owns the
+-- holder and disposes it exactly once.
+---@param sceneId string unique scene identity behind demands and failures
+---@return FieldEvolutionAssets
+function FieldBattlePresentation:evolutionAssets(sceneId)
+  assert(not self._disposed, "the presented battle envelope is disposed")
+  local envelope = self
+  local function verifiedManifest()
+    return envelope:_verifiedManifest()
+  end
+  local function audioBanks()
+    return sequenceBanks(envelope._cacheFs, EvolutionScenePresenter.AUDIO_SEQUENCES)
+  end
+  return FieldEvolutionAssets.new({
+    services = self._services,
+    verifiedManifest = verifiedManifest,
+    audioBanks = audioBanks,
+    sceneId = sceneId,
+  })
+end
+
 -- Admits one launch behind its identity: validates the descriptor shape
 -- and its scene naming, opens cover and music bookkeeping, and either
 -- builds the descriptor screen at once or hands out the pending facade
@@ -4603,17 +4664,6 @@ end
 -- a later-staging index still resolves before the voice.
 ---@return integer[] battle audio bank identities, empty without a staged index
 function FieldBattlePresentation:_audioBanks()
-  local ok, index = pcall(function()
-    return self._cacheFs:loadLua(AudioCache.indexPath())
-  end)
-  if not ok or type(index) ~= "table" then
-    return {}
-  end
-  local sequences = index.sequences --[[@as table<integer, table<string, unknown>>?]]
-  local bySymbol = index.sequenceBySymbol --[[@as table<string, integer>?]]
-  if type(sequences) ~= "table" or type(bySymbol) ~= "table" then
-    return {}
-  end
   local roles = {}
   if type(self._musicRole) == "string" and self._musicRole ~= "" then
     roles[#roles + 1] = self._musicRole
@@ -4621,18 +4671,7 @@ function FieldBattlePresentation:_audioBanks()
   for _, symbol in pairs(BattleAudio.SINK_SOUNDS) do
     roles[#roles + 1] = symbol
   end
-  local banks, seen = {}, {}
-  for _, role in ipairs(roles) do
-    local id = type(role) == "string" and bySymbol[role] or nil
-    local entry = type(id) == "number" and sequences[id] or nil
-    local bank = type(entry) == "table" and entry.bankId or nil
-    if type(bank) == "number" and not seen[bank] then
-      seen[bank] = true
-      banks[#banks + 1] = bank
-    end
-  end
-  table.sort(banks)
-  return banks
+  return sequenceBanks(self._cacheFs, roles)
 end
 
 -- Demands one combatant's portrait page and cry bank at required urgency

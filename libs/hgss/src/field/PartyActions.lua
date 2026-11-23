@@ -1,5 +1,6 @@
 -- Concrete HGSS party action orchestration: give, take and exchange of
--- ordinary held items plus machine move teaching over the borrowed mon
+-- ordinary held items, item effects, machine move teaching, level-up move
+-- learning, and completed evolution publication over the borrowed mon
 -- and bag services. Requests are
 -- value-only records qualified by both owners' revisions; selection
 -- identity is revision plus slot, never nickname, species or PID. Every
@@ -9,6 +10,7 @@
 -- fallible work between them. Discarding a preparation has no effect.
 
 local HeldItemFormPolicy = require("libs.hgss.src.mons.HeldItemFormPolicy")
+local LevelProgression = require("libs.mons.src.gen4.LevelProgression")
 local MachineTeaching = require("libs.hgss.src.mons.MachineTeaching")
 local PartyItemEffects = require("libs.hgss.src.mons.PartyItemEffects")
 
@@ -23,6 +25,15 @@ PartyActions.__index = PartyActions
 ---@field form integer
 ---@field maxHp integer
 
+---@class PartyActionDecision
+---@field kind string
+---@field updates { slot: integer, mon: table<string, unknown> }[]?
+---@field deltas { op: string, item: string, quantity: integer }[]?
+---@field before PartyActionDisplayFacts?
+---@field after PartyActionDisplayFacts?
+---@field feedback table<string, unknown>?
+---@field evolution { mon: table<string, unknown>, additionalMons: table<string, unknown>[], inventoryDeltas: { item: string, delta: integer }[] }?
+
 ---@class PartyActionRequest
 ---@field kind string
 ---@field slot integer
@@ -34,6 +45,8 @@ PartyActions.__index = PartyActions
 ---@field moveSlot integer?
 ---@field targetSlot integer?
 ---@field expectedOldMove string?
+---@field move string? the level-up move a learn request offers
+---@field evolution { mon: table<string, unknown>, additionalMons: table<string, unknown>[], inventoryDeltas: { item: string, delta: integer }[] }? the captured flow result an evolve request publishes
 
 ---@param opts { mons: HgssMonService, bag: HgssBagService }
 ---@return PartyActions
@@ -64,7 +77,7 @@ end
 -- the pure effect policy on copied facts; give/take keep the held-item
 -- exchange below.
 ---@param request PartyActionRequest
----@return { kind: string, updates: { slot: integer, mon: table<string, unknown> }[]?, deltas: { op: string, item: string, quantity: integer }[]?, before: PartyActionDisplayFacts?, after: PartyActionDisplayFacts?, feedback: table<string, unknown>? }
+---@return PartyActionDecision
 function PartyActions:_resolve(request)
   assert(type(request) == "table", "party actions require a request record")
   assert(
@@ -72,8 +85,10 @@ function PartyActions:_resolve(request)
       or request.kind == "take"
       or request.kind == "use_item"
       or request.kind == "transfer_hp"
-      or request.kind == "teach_move",
-    "party action kind must be give, take, use_item, transfer_hp or teach_move"
+      or request.kind == "teach_move"
+      or request.kind == "learn_move"
+      or request.kind == "evolve",
+    "party action kind must be give, take, use_item, transfer_hp, teach_move, learn_move or evolve"
   )
   assert(type(request.slot) == "number" and request.slot % 1 == 0, "party action slot must be an integer")
   if request.partyRevision ~= self._mons:partyRevision() or request.bagRevision ~= self._bag:revision() then
@@ -82,6 +97,12 @@ function PartyActions:_resolve(request)
   local mon = self._mons:partyMon(request.slot)
   if request.kind == "teach_move" then
     return self:_resolveTeach(request, mon)
+  end
+  if request.kind == "learn_move" then
+    return self:_resolveLearn(request, mon)
+  end
+  if request.kind == "evolve" then
+    return self:_resolveEvolve(request)
   end
   if request.kind == "use_item" then
     return self:_resolveUseItem(request, mon)
@@ -177,7 +198,7 @@ end
 -- nothing and consume nothing.
 ---@param request PartyActionRequest
 ---@param mon table<string, unknown>
----@return { kind: string, updates: { slot: integer, mon: table<string, unknown> }[]?, deltas: { op: string, item: string, quantity: integer }[]?, before: PartyActionDisplayFacts?, after: PartyActionDisplayFacts?, feedback: table<string, unknown>? }
+---@return PartyActionDecision
 function PartyActions:_resolveTeach(request, mon)
   assert(type(request.item) == "string", "a teach request names its machine")
   if not self._bag:has(request.item, 1) then
@@ -214,6 +235,72 @@ function PartyActions:_resolveTeach(request, mon)
   }
 end
 
+-- Plans one level-up learning decision (party_menu_items.c
+-- LevelUpLearnMovesLoop): an already-known move is refused, a free slot
+-- appends at base power points, a full set needs a replacement slot, and
+-- a named slot replaces its move. No bag movement.
+---@param request PartyActionRequest
+---@param mon table<string, unknown>
+---@return PartyActionDecision
+function PartyActions:_resolveLearn(request, mon)
+  local move = request.move
+  assert(type(move) == "string" and move ~= "", "a learn request names its move")
+  local catalog = self._mons:catalog()
+  for _, entry in
+    ipairs(mon.moves --[[@as table<integer, table<string, unknown>>]])
+  do
+    if entry.move == move then
+      return { kind = "known" }
+    end
+  end
+  local staged
+  local forgotten = nil
+  if request.moveSlot == nil then
+    local filled = LevelProgression.learn(mon, move, catalog)
+    if not filled.applied then
+      return { kind = "needs_replacement" }
+    end
+    staged = filled.mon
+  else
+    local moves = mon.moves --[[@as table<integer, table<string, unknown>>]]
+    local replaced = moves[request.moveSlot + 1]
+    assert(type(replaced) == "table", "a replacement names an occupied move slot")
+    forgotten = replaced.move
+    staged = LevelProgression.replace(mon, request.moveSlot, move, catalog)
+  end
+  return {
+    kind = "ready",
+    updates = { { slot = request.slot, mon = staged } },
+    deltas = {},
+    before = self:_displayFacts(mon),
+    after = self:_displayFacts(staged),
+    feedback = { bindings = { move = move, forgotten = forgotten } },
+  }
+end
+
+-- Plans the publication of one completed evolution flow result: the
+-- evolved mon, its side products, and the dex and game-stats registration
+-- stage through the mon service while the flow's inventory deltas (and
+-- the evolution item, when an item triggered it) stage through the bag.
+---@param request PartyActionRequest
+---@return PartyActionDecision
+function PartyActions:_resolveEvolve(request)
+  local result = request.evolution
+  assert(type(result) == "table" and type(result.mon) == "table", "an evolve request carries its captured result")
+  local deltas = {}
+  if request.item ~= nil then
+    if not self._bag:has(request.item, 1) then
+      return { kind = "stale" }
+    end
+    deltas[#deltas + 1] = { op = "take", item = request.item, quantity = 1 }
+  end
+  for _, delta in ipairs(result.inventoryDeltas) do
+    assert(delta.delta < 0, "evolution results only spend items")
+    deltas[#deltas + 1] = { op = "take", item = delta.item, quantity = -delta.delta }
+  end
+  return { kind = "ready", deltas = deltas, evolution = result }
+end
+
 -- Plans one item use: single-target effects stage one mon update and take
 -- exactly one item, while revive-all plans every fainted non-egg member
 -- before anything publishes and still consumes once. Pure planning never
@@ -221,14 +308,14 @@ end
 -- service adjustment after planning.
 ---@param request PartyActionRequest
 ---@param mon table<string, unknown>
----@return { kind: string, updates: { slot: integer, mon: table<string, unknown> }[]?, deltas: { op: string, item: string, quantity: integer }[]?, before: PartyActionDisplayFacts?, after: PartyActionDisplayFacts?, feedback: table<string, unknown>? }
+---@return PartyActionDecision
 function PartyActions:_resolveUseItem(request, mon)
   assert(type(request.item) == "string", "a use request names its item")
   local definition = self._bag:catalog():item(request.item)
   if not self._bag:has(request.item, 1) then
     return { kind = "stale" }
   end
-  local context = { location = self._mons:currentMapSection(), catalog = self._mons:catalog() }
+  local context = { location = self._mons:currentMapSection(), catalog = self._mons:catalog(), item = request.item }
   local partyUse = definition.partyUse
   if
     type(partyUse) == "table" and (partyUse --[[@as table<string, unknown>]]).kind == "revive_all"
@@ -266,7 +353,7 @@ end
 ---@param request PartyActionRequest
 ---@param definition table<string, unknown>
 ---@param context table<string, unknown>
----@return { kind: string, updates: { slot: integer, mon: table<string, unknown> }[]?, deltas: { op: string, item: string, quantity: integer }[]?, before: PartyActionDisplayFacts?, after: PartyActionDisplayFacts?, feedback: table<string, unknown>? }
+---@return PartyActionDecision
 function PartyActions:_resolveReviveAll(request, definition, context)
   assert(type(request.item) == "string", "a revive-all request names its item")
   local updates = {}
@@ -303,7 +390,7 @@ end
 -- one party revision with no bag movement and no power-point cost.
 ---@param request PartyActionRequest
 ---@param donor table<string, unknown>
----@return { kind: string, updates: { slot: integer, mon: table<string, unknown> }[]?, deltas: { op: string, item: string, quantity: integer }[]?, before: PartyActionDisplayFacts?, after: PartyActionDisplayFacts?, feedback: table<string, unknown>? }
+---@return PartyActionDecision
 function PartyActions:_resolveTransfer(request, donor)
   assert(
     type(request.targetSlot) == "number" and request.targetSlot % 1 == 0,
@@ -359,8 +446,16 @@ function PartyActions:commit(request)
   if decision.kind ~= "ready" then
     return { kind = decision.kind }
   end
-  assert(decision.updates ~= nil and decision.deltas ~= nil, "a ready decision carries its plan")
-  local monChange, monReason = self._mons:preparePartyChanges(request.partyRevision, decision.updates)
+  assert(decision.deltas ~= nil, "a ready decision carries its plan")
+  local monChange, monReason
+  local evolution = decision.evolution
+  if evolution ~= nil then
+    monChange, monReason =
+      self._mons:prepareEvolution(request.partyRevision, request.slot, evolution.mon, evolution.additionalMons)
+  else
+    assert(decision.updates ~= nil, "a ready decision carries its party updates")
+    monChange, monReason = self._mons:preparePartyChanges(request.partyRevision, decision.updates)
+  end
   if monChange == nil then
     assert(type(monReason) == "string", "a rejected mon preparation names its reason")
     return { kind = monReason }

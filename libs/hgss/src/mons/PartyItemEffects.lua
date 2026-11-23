@@ -16,6 +16,7 @@
 -- matching egg-location bonuses before the held friendship multiplier with
 -- source integer flooring, then clamps to 0..255; mood clamps to -127..127.
 
+local Evolution = require("libs.mons.src.gen4.Evolution")
 local ItemErrors = require("libs.items.src.errors")
 local Moves = require("libs.mons.src.gen4.Moves")
 local PartyUse = require("libs.items.src.PartyUse")
@@ -438,36 +439,6 @@ local function planEv(staged, partyUse)
   return "friendship_check"
 end
 
--- Builds the progression item-use context from the caller-supplied world
--- facts. Every fact must be explicit: when the host has not identified the
--- item or supplied the bag, party, and clock facts, planning stays honestly
--- deferred instead of guessing.
----@param context table<string, unknown>
----@param catalog table<string, unknown>
----@return table<string, unknown>?
-local function deferredItemContext(context, catalog)
-  if type(context.item) ~= "string" or context.item == "" then
-    return nil
-  end
-  if type(context.inventory) ~= "table" then
-    return nil
-  end
-  if type(context.party) ~= "table" then
-    return nil
-  end
-  if type(context.timeOfDay) ~= "string" then
-    return nil
-  end
-  return {
-    catalog = catalog,
-    game = context.game,
-    timeOfDay = context.timeOfDay,
-    location = context.location,
-    party = context.party,
-    inventory = context.inventory,
-  }
-end
-
 ---@param mon table<string, unknown>
 ---@return integer
 ---@return table<integer, table<string, unknown>>
@@ -481,36 +452,42 @@ local function conditionFacts(mon)
   return hp, copyValue(effects)
 end
 
--- Translates one sweet plan into the party-effect vocabulary: decision-free
--- gains stage a ready plan while pending learning or an earned evolution
--- waits on an explicit confirmation instead of answering silently.
----@param planned table<string, unknown>
+-- Plans one Rare Candy use: the staged level and health, the stat-window
+-- and learning facts for the host, then the item's friendship bands. The
+-- host spends the item, runs the learning decisions, and checks evolution
+-- against the final mon.
 ---@param mon table<string, unknown>
+---@param partyUse table<string, unknown>
 ---@param itemKey string
+---@param context table<string, unknown>
+---@param catalog table<string, unknown>
 ---@return table<string, unknown>
-local function translateLevelItem(planned, mon, itemKey)
+local function planLevelUp(mon, partyUse, itemKey, context, catalog)
+  local planned = ProgressionItemUse.planLevelItem(mon, itemKey, { catalog = catalog })
   if not planned.applied then
     return { kind = "no_effect" }
   end
   local hpBefore, effectsBefore = conditionFacts(mon)
-  local crossed = assert(planned.crossedLevels, "level plans report crossed levels")
-  assert(type(crossed) == "table" and #crossed > 0, "applied level plans cross one level")
-  local learning = assert(planned.learningOpportunities, "level plans report learning chances")
-  assert(type(learning) == "table", "level plans report learning chances")
-  local feedback = {
-    slots = { slotFacts(planned.mon, hpBefore, effectsBefore) },
-    textKey = "level_up",
-    bindings = { item = itemKey, level = crossed[#crossed] },
+  local staged = planned.mon --[[@as table<string, unknown>]]
+  applyCompanions(staged, partyUse, context.location --[[@as integer|nil]], catalog)
+  return {
+    kind = "ready",
+    updates = staged,
+    feedback = {
+      slots = { slotFacts(staged, hpBefore, effectsBefore) },
+      textKey = "level_up",
+      bindings = { item = itemKey, level = planned.level },
+      statsBefore = planned.statsBefore,
+      statsAfter = planned.statsAfter,
+      learning = planned.learningOpportunities,
+    },
   }
-  if #learning == 0 and planned.evolution == nil then
-    return { kind = "ready", updates = planned.mon, feedback = feedback }
-  end
-  return { kind = "needs_confirmation", candidate = planned, feedback = feedback }
 end
 
--- Plans one deferred level or evolution item through the progression owner.
--- Eggs stay ineligible; non-progression deferrals stay unavailable; foreign
--- items raise through the progression owner without consuming anything.
+-- Plans one deferred level or evolution item. Eggs stay ineligible and
+-- non-progression deferrals stay unavailable. An evolution item answers
+-- only whether it evolves the mon; the host decides when to evolve and
+-- spend.
 ---@param mon table<string, unknown>
 ---@param partyUse table<string, unknown>
 ---@param context table<string, unknown>
@@ -524,38 +501,24 @@ local function planDeferred(mon, partyUse, context)
     return { kind = "ineligible" }
   end
   local catalog = assert(context.catalog, "effect planning needs a catalog in context")
-  local itemContext = deferredItemContext(context, catalog)
-  if itemContext == nil then
-    return { kind = "feature_unavailable" }
-  end
-  local itemKey = assert(context.item, "identified progression items carry their key")
-  assert(type(itemKey) == "string", "identified progression items carry their key")
+  local itemKey = context.item
+  assert(type(itemKey) == "string" and itemKey ~= "", "progression items carry their key in context")
   if reason == "level_up" then
-    return translateLevelItem(ProgressionItemUse.planLevelItem(mon, itemKey, itemContext), mon, itemKey)
+    return planLevelUp(mon, partyUse, itemKey, context, catalog)
   end
-  local staged = ProgressionItemUse.planEvolutionItem(mon, itemKey, itemContext)
-  if staged == nil then
+  local trigger = { trigger = { kind = "item", item = itemKey } }
+  if Evolution.check(mon, trigger, catalog) == nil then
     return { kind = "no_effect" }
   end
-  local hpBefore, effectsBefore = conditionFacts(mon)
-  return {
-    kind = "needs_confirmation",
-    candidate = staged,
-    feedback = {
-      slots = { slotFacts(copyValue(mon), hpBefore, effectsBefore) },
-      textKey = "evolution_confirm",
-      bindings = { item = itemKey, species = staged.plan.monAfter.species },
-    },
-  }
+  return { kind = "evolution" }
 end
 
 -- Plans a single party-item use on copied facts. Returns a ready plan with
 -- the staged mon and presentation feedback, needs_move when a power-point
 -- item still needs its target move, no_effect when nothing may change,
--- ineligible for the wrong target, needs_confirmation when a progression
--- item earns learning or an evolution the host must confirm, or
--- feature_unavailable for effects the host cannot plan yet. Malformed
--- generated metadata raises loudly.
+-- ineligible for the wrong target, evolution when an evolution item evolves
+-- the mon, or feature_unavailable for effects the host cannot plan yet.
+-- Malformed generated metadata raises loudly.
 ---@param mon table<string, unknown>
 ---@param itemDefinition table<string, unknown>
 ---@param moveSlot integer|nil

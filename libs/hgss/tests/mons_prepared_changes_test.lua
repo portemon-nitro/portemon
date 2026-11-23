@@ -92,7 +92,7 @@ function T.health_adjustment_preserves_damage_across_maximum_changes()
   Assert.equal(adjust(30, 32, 20), 22, "a raised maximum preserves damage")
   Assert.equal(adjust(30, 32, 30), 32, "full health stays full")
   Assert.equal(adjust(30, 28, 30), 28, "a shrunk maximum clamps")
-  Assert.equal(adjust(30, 28, 20), 18, "damage survives a shrink")
+  Assert.equal(adjust(30, 28, 20), 20, "a shrink below the current health leaves it untouched")
   Assert.equal(adjust(30, 32, 0), 0, "the fainted stay fainted")
   Assert.equal(newService():currentMapSection(), 7, "the service reports its configured section")
 end

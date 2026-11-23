@@ -31,6 +31,9 @@
 --     /1201/1202 plus SEQ_ME_LVUP fanfare wait after learning,
 --     1197/1198 after giving up)                            -> "learn"/"fanfare"
 --   CANCEL (StopBGM SHINKA, old cry, message 919)           -> cancel beat
+-- Every voiced cry (WAIT_CRY, NEW_MON_CRY/EVOLVE, CANCEL_WAIT_CRY) holds the
+-- sequence until the host reports the cry finished and the Pokepic animation
+-- it started finished, in addition to any active printer.
 -- The sequence starts on its own: entry runs its music beat, the old
 -- picture animates with its cry, and the transformation beat follows
 -- without any confirmation gate. Only the transformation beat honors
@@ -74,6 +77,9 @@ local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 ---@field _paletteChannels table<string, integer> active request id for each independent palette manager
 ---@field _printerPending boolean active source message awaits printer completion
 ---@field _printerMessageId integer? source message id currently owned by the printer
+---@field _cryPending boolean a voiced cry has not reported completion
+---@field _picturePending boolean the voiced Pokepic's animation has not reported completion
+---@field _pictureRole "old"|"new"? Pokepic whose animation the pending cry started
 ---@field _particles BattleEvolutionParticles? live retail SPL evolution scene
 ---@field _result table<string, unknown>? settled choice record
 ---@field _taken boolean result consumed
@@ -248,6 +254,9 @@ function BattleEvolutionState.new(opts)
     _paletteChannels = {},
     _printerPending = false,
     _printerMessageId = nil,
+    _cryPending = false,
+    _picturePending = false,
+    _pictureRole = nil,
     _particles = opts.particles ~= nil and require("game.hgss.src.battle.BattleEvolutionParticles").new({
       set = opts.particles,
       emitterPosition = { x = 0, y = 0x560 / 4096, z = 0 },
@@ -295,6 +304,12 @@ function BattleEvolutionState:_record(effect)
     assert(not self._printerPending, "source message printers do not overlap")
     self._printerPending = true
     self._printerMessageId = assert(effect.msg, "EvolutionScene messages carry their source id") --[[@as integer]]
+  end
+  if effect.kind == "cry" then
+    assert(not self._cryPending and not self._picturePending, "source cries do not overlap")
+    self._cryPending = true
+    self._picturePending = true
+    self._pictureRole = effect.species == self._newSpecies and "new" or "old"
   end
   if effect.kind == "particles" and self._particles ~= nil then
     for _, emitterId in
@@ -479,6 +494,8 @@ function BattleEvolutionState:stepSourceTick(ticks)
     if
       self._result ~= nil
       or self._printerPending
+      or self._cryPending
+      or self._picturePending
       or self._phase == "learn"
       or self._phase == "stop_menu"
       or self._phase == "summary"
@@ -992,6 +1009,21 @@ function BattleEvolutionState:completePaletteFade(channel, requestId)
   end
 end
 
+-- Reports that the voiced cry finished playing. Each cry gates the scene
+-- together with its printer and Pokepic animation, so the sequence resumes
+-- only after all of them have reported.
+function BattleEvolutionState:completeCry()
+  assert(self._cryPending, "cry completion requires an active source cry")
+  self._cryPending = false
+end
+
+-- Reports that the Pokepic animation started with the cry finished.
+function BattleEvolutionState:completePicture()
+  assert(self._picturePending, "picture completion requires an active source Pokepic animation")
+  self._picturePending = false
+  self._pictureRole = nil
+end
+
 function BattleEvolutionState:completeMessage()
   assert(self._printerPending, "message completion requires an active source printer")
   self._printerPending = false
@@ -1148,6 +1180,9 @@ function BattleEvolutionState:status()
       pictures = self._paletteChannels.pictures,
     },
     printerPending = self._printerPending,
+    cryPending = self._cryPending,
+    picturePending = self._picturePending,
+    pictureRole = self._pictureRole,
   }
 end
 

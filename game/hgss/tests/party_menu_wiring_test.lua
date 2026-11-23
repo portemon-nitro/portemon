@@ -243,6 +243,12 @@ local function compositionDeps(overrides)
   local bag = openBag()
   local GameStats = require("libs.hgss.src.mons.GameStats")
   local deps = {
+    evolutionWorld = function()
+      return nil
+    end,
+    makeEvolutionScene = function()
+      error("this test opens no evolution scene", 0)
+    end,
     mons = mons,
     bag = bag,
     easyChatCatalog = {
@@ -390,12 +396,12 @@ end
 
 function T.tests.deferred_items_explain_without_consuming()
   local root = ItemFixture.buildAssetRoot()
-  root.items.ITEM_421.partyUse = { kind = "deferred", reason = "level_up" }
+  root.items.ITEM_421.partyUse = { kind = "deferred", reason = "form_change" }
   local catalog = ItemCatalog.new(root)
   local bag = HgssBagService.new({ catalog = catalog })
   local facts = BagActionPolicy.fieldFacts(bag, "ITEM_421")
   Assert.equal(facts.useKind, "deferred", "a deferred item keeps its Use entry point")
-  Assert.equal(facts.featureReason, "level_up", "a deferred item names its stable limitation")
+  Assert.equal(facts.featureReason, "form_change", "a deferred item names its stable limitation")
   local mons = openMons(90211)
   local actions = PartyActions.new({ mons = mons, bag = bag })
   Assert.isTrue(bag:add("ITEM_421", 1), "setup must stock the deferred item")

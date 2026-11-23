@@ -232,6 +232,7 @@ function PartyPresentationFixture.manifest()
       browse = { x = 8, y = 144, width = 176, height = 40 },
       context = { x = 152, y = 120, width = 96, height = 64 },
       action = { x = 8, y = 136, width = 176, height = 48 },
+      levelUpStats = { x = 8, y = 8, width = 112, height = 96 },
       prompt = { x = 200, y = 80 },
     },
     visuals = {
@@ -342,6 +343,13 @@ function PartyPresentationFixture.manifest()
         item = "ITEM",
         summary = "SUMMARY",
         quit = "QUIT",
+        statMaxHp = "MAX HP",
+        statAttack = "ATTACK",
+        statDefense = "DEFENSE",
+        statSpecialAttack = "SP. ATK",
+        statSpecialDefense = "SP. DEF",
+        statSpeed = "SPEED",
+        statPlus = "+",
       },
       templates = {
         chooseMon = { segments = { { kind = "text", value = "Choose a POKéMON." } } },
@@ -357,7 +365,7 @@ function PartyPresentationFixture.manifest()
           segments = {
             { kind = "name" },
             { kind = "text", value = " recovered " },
-            { kind = "quantity" },
+            { kind = "quantity", slot = 1 },
             { kind = "text", value = " HP!" },
           },
         },
@@ -381,7 +389,7 @@ function PartyPresentationFixture.manifest()
         },
         ppBoosted = {
           segments = {
-            { kind = "move" },
+            { kind = "move", slot = 1 },
             { kind = "text", value = " PP increased!" },
           },
         },
@@ -389,7 +397,7 @@ function PartyPresentationFixture.manifest()
           segments = {
             { kind = "name" },
             { kind = "text", value = " learned " },
-            { kind = "move" },
+            { kind = "move", slot = 1 },
             { kind = "text", value = "!" },
           },
         },
@@ -397,7 +405,7 @@ function PartyPresentationFixture.manifest()
           segments = {
             { kind = "name" },
             { kind = "text", value = " already knows " },
-            { kind = "move" },
+            { kind = "move", slot = 1 },
             { kind = "text", value = "!" },
           },
         },
@@ -405,7 +413,7 @@ function PartyPresentationFixture.manifest()
           segments = {
             { kind = "name" },
             { kind = "text", value = " cannot learn " },
-            { kind = "move" },
+            { kind = "move", slot = 1 },
             { kind = "text", value = "!" },
           },
         },
@@ -413,11 +421,93 @@ function PartyPresentationFixture.manifest()
           segments = {
             { kind = "name" },
             { kind = "text", value = " grew to LV " },
-            { kind = "quantity" },
+            { kind = "quantity", slot = 1 },
             { kind = "text", value = "!" },
           },
         },
         noEffect = { segments = { { kind = "text", value = "It won't have any effect." } } },
+        levelUpLearned = {
+          segments = {
+            { kind = "name" },
+            { kind = "text", value = " learned " },
+            { kind = "move", slot = 1 },
+            { kind = "text", value = "!" },
+          },
+        },
+        -- Retail shape: the countdown page, then the forgotten move, then a
+        -- trailing "And..." page before the learned message.
+        forgotMove = {
+          segments = {
+            { kind = "text", value = "1, 2, and... Poof!" },
+            { kind = "lineBreak", flow = "prompt" },
+            { kind = "name" },
+            { kind = "text", value = " forgot " },
+            { kind = "move", slot = 1 },
+            { kind = "text", value = "." },
+            { kind = "lineBreak", flow = "prompt" },
+            { kind = "text", value = "And..." },
+            { kind = "lineBreak", flow = "prompt" },
+          },
+        },
+        learnMove = {
+          segments = {
+            { kind = "name" },
+            { kind = "text", value = " wants to learn " },
+            { kind = "move", slot = 1 },
+            { kind = "text", value = "." },
+            { kind = "lineBreak", flow = "prompt" },
+            { kind = "text", value = "It already knows four moves." },
+            { kind = "lineBreak", flow = "prompt" },
+            { kind = "text", value = "Delete a move for " },
+            { kind = "move", slot = 1 },
+            { kind = "text", value = "?" },
+          },
+        },
+        giveHeldItem = {
+          segments = {
+            { kind = "name" },
+            { kind = "text", value = " was given " },
+            { kind = "item", slot = 1 },
+            { kind = "text", value = "." },
+            { kind = "lineBreak", flow = "prompt" },
+          },
+        },
+        switchHeldResult = {
+          segments = {
+            { kind = "text", value = "Took " },
+            { kind = "item", slot = 1 },
+            { kind = "text", value = " for " },
+            { kind = "item", slot = 2 },
+            { kind = "text", value = "." },
+            { kind = "lineBreak", flow = "prompt" },
+          },
+        },
+        switchHeldPrompt = {
+          segments = {
+            { kind = "name" },
+            { kind = "text", value = " already holds " },
+            { kind = "item", slot = 1 },
+            { kind = "text", value = "." },
+            { kind = "lineBreak", flow = "prompt" },
+            { kind = "text", value = "Switch the items?" },
+          },
+        },
+        forgetMove = { segments = { { kind = "text", value = "Which move should be forgotten?" } } },
+        stopTeach = {
+          segments = {
+            { kind = "text", value = "Stop trying to teach " },
+            { kind = "move", slot = 1 },
+            { kind = "text", value = "?" },
+          },
+        },
+        didNotLearn = {
+          segments = {
+            { kind = "name" },
+            { kind = "text", value = " did not learn " },
+            { kind = "move", slot = 1 },
+            { kind = "text", value = "." },
+          },
+        },
       },
       roles = {
         ordinary = textRole(250, 250, 250, 120, 120, 128, 40, 40, 48),

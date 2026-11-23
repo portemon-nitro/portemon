@@ -102,6 +102,12 @@ local function openFlow(game, root)
   local actions = PartyActions.new({ mons = mons, bag = bag })
   local cacheFs = assert(runtime.cacheFs, "field runtime owns its asset filesystem")
   return Flow.new({
+    evolutionWorld = function()
+      return nil
+    end,
+    makeEvolutionScene = function()
+      error("this test opens no evolution scene", 0)
+    end,
     root = root,
     mons = mons,
     bag = bag,

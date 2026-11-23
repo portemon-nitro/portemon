@@ -114,7 +114,7 @@ local function manifest()
     return { image = path, width = width, height = height }
   end
   return {
-    schema = "g4-party-presentation-v7",
+    schema = "g4-party-presentation-v9",
     panes = {
       main = { width = 256, height = 192 },
       sub = { width = 256, height = 192 },
@@ -322,7 +322,7 @@ local function writeReady(cache, marker)
   for _, path in ipairs(PartyCache.referencedPaths(data)) do
     cache:write(path, "pixels")
   end
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v7" })
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v9" })
   cache:write(PartyCache.markerPath(), marker)
 end
 
@@ -344,7 +344,7 @@ function T.incomplete_family_is_not_ready()
   end
   noMarker:writeLua(
     PartyCache.provenancePath(),
-    { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v7" }
+    { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v9" }
   )
   Assert.isFalse(PartyCache.isReady(noMarker, PartyCache.marker("abc", "dep")), "no marker means not ready")
 end
@@ -361,7 +361,7 @@ end
 -- Values are synthetic; only readiness participation is under test.
 local function v7manifest()
   local data = manifest()
-  data.schema = "g4-party-presentation-v7"
+  data.schema = "g4-party-presentation-v9"
   local sequences = {}
   for sequenceNo = 1, 6 do
     sequences[sequenceNo] =
@@ -466,7 +466,7 @@ local function writeReadyV6(cache, marker)
   for _, path in ipairs(PartyCache.referencedPaths(data)) do
     cache:write(path, "pixels")
   end
-  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v7" })
+  cache:writeLua(PartyCache.provenancePath(), { cacheFormat = PartyCache.FORMAT, schema = "g4-party-presentation-v9" })
   cache:write(PartyCache.markerPath(), marker)
 end
 
@@ -476,7 +476,7 @@ function T.complete_v7_family_is_ready()
   writeReadyV6(cache, marker)
   Assert.isTrue(PartyCache.isReady(cache, marker), "the complete v7 family reads as ready")
   local loaded = PartyCache.loadManifest(cache)
-  Assert.equal(loaded.schema, "g4-party-presentation-v7")
+  Assert.equal(loaded.schema, "g4-party-presentation-v9")
 end
 
 function T.context_frame_paths_are_referenced_exactly_once()
