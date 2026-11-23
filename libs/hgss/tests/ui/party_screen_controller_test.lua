@@ -50,6 +50,7 @@ local function fakeLayout(hitTarget)
     menuLayout = generated.menuLayout,
     menuHit = generated.menuHit,
     promptAnchor = generated.promptAnchor,
+    messagePages = generated.messagePages,
   }
 end
 
@@ -449,6 +450,7 @@ local function nativeLayout(hitTarget, menuCount)
     menuLayout = generated.menuLayout,
     menuHit = generated.menuHit,
     promptAnchor = generated.promptAnchor,
+    messagePages = generated.messagePages,
     _menuCount = menuCount,
   }
 end
@@ -548,6 +550,7 @@ local function nativeController(opts)
     promptShape = nativePromptShape(),
     initialFocus = opts.initialFocus,
     initialMessage = opts.initialMessage,
+    resume = opts.resume,
     allowCancel = opts.allowCancel,
     item = opts.item,
     effect = opts.effect,
@@ -2830,7 +2833,11 @@ function T.item_use_animates_the_bar_with_sound_before_its_message()
   controller:completeAction({
     kind = "changed",
     sound = "SEQ_SE_DP_KAIFUKU",
-    feedback = { slots = { { slot = 0, hpBefore = 10, hpAfter = 20 } }, textKey = "hp_restored", bindings = { amount = 10 } },
+    feedback = {
+      slots = { { slot = 0, hpBefore = 10, hpAfter = 20 } },
+      textKey = "hp_restored",
+      bindings = { amount = 10 },
+    },
     message = { templateKey = "hpRestored", displayName = "MON0", quantities = { 10 } },
   })
   Assert.equal(nativeStatus(controller).state, "item_use_anim", "the HP delta arms the bar animation")
@@ -2850,6 +2857,136 @@ function T.item_use_animates_the_bar_with_sound_before_its_message()
   controller:updateFixed({ { type = "confirm" } })
   Assert.equal(nativeStatus(controller).state, "browse", "acknowledgement restores past the retired revision")
   Assert.deepEqual(sounds, { "SEQ_SE_DP_KAIFUKU" }, "the animation sounds exactly once")
+end
+
+local function levelUpStats()
+  return {
+    before = { maxHp = 20, attack = 10, defense = 11, specialAttack = 12, specialDefense = 13, speed = 14 },
+    after = { maxHp = 22, attack = 11, defense = 11, specialAttack = 13, specialDefense = 14, speed = 16 },
+  }
+end
+
+-- Parks an item-target controller in waiting_action over slot 0.
+local function parkedItemTarget(sounds)
+  local controller, _, control = nativeController({
+    context = "item_target",
+    item = { key = "RARE_CANDY", bagRevision = 7 },
+    effect = function(sequence)
+      sounds[#sounds + 1] = sequence
+    end,
+  })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(controller:takeIntent().slot, 0, "the target selection emits its use")
+  drainSounds(sounds)
+  control.setSpecs({})
+  return controller
+end
+
+function T.level_up_stats_pages_advance_on_a_b_and_touch_then_continue()
+  for _, advance in ipairs({
+    { type = "confirm" },
+    { type = "cancel" },
+    { type = "pointer_down", pointerId = "p", x = 3, y = 3 },
+  }) do
+    local sounds = {}
+    local controller = parkedItemTarget(sounds)
+    controller:completeAction({
+      kind = "changed",
+      message = { templateKey = "levelUp", displayName = "MON0", quantities = { 6 } },
+      levelUpStats = levelUpStats(),
+      continues = true,
+    })
+    Assert.equal(nativeStatus(controller).state, "message", "the level-up message shows first")
+    controller:updateFixed({ { type = "confirm" } })
+    local gains = nativeStatus(controller)
+    Assert.equal(gains.state, "level_up_stats", "the acknowledged message opens the stats window")
+    Assert.equal(gains.levelUpStats.page, "gains")
+    Assert.equal(gains.levelUpStats.after.speed, 16)
+    Assert.equal(gains.message.templateKey, "levelUp", "the level-up message stays under the window")
+    Assert.deepEqual(sounds, {}, "opening the window is silent")
+    controller:updateFixed({ advance })
+    Assert.equal(nativeStatus(controller).levelUpStats.page, "totals", "the next input shows the new totals")
+    Assert.deepEqual(sounds, { "SEQ_SE_DP_SELECT" }, "the page change plays select")
+    Assert.isNil(controller:takeIntent(), "nothing continues while the window is open")
+    controller:updateFixed({ advance })
+    Assert.deepEqual(sounds, { "SEQ_SE_DP_SELECT", "SEQ_SE_DP_SELECT" }, "closing plays select")
+    local closed = nativeStatus(controller)
+    Assert.equal(closed.state, "waiting_action", "the continued outcome re-parks")
+    Assert.isNil(closed.levelUpStats, "the window closes")
+    Assert.isNil(closed.message, "the message clears with the window")
+    Assert.deepEqual(controller:takeIntent(), { kind = "continue", slot = 0 })
+    Assert.isNil(controller:takeIntent(), "the continue intent yields once")
+  end
+end
+
+function T.continued_outcome_reparks_and_the_next_outcome_restores_browse()
+  local sounds = {}
+  local controller = parkedItemTarget(sounds)
+  controller:completeAction({ kind = "changed", continues = true })
+  Assert.equal(nativeStatus(controller).state, "waiting_action")
+  Assert.deepEqual(controller:takeIntent(), { kind = "continue", slot = 0 })
+  controller:completeAction({
+    kind = "changed",
+    message = { templateKey = "learned", displayName = "MON0", moveNames = { "TACKLE" } },
+    continues = true,
+  })
+  Assert.equal(nativeStatus(controller).state, "message")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(controller:takeIntent(), { kind = "continue", slot = 0 }, "the message precedes the next continue")
+  controller:completeAction({ kind = "changed" })
+  Assert.equal(nativeStatus(controller).state, "browse", "a final outcome restores past the retired revision")
+end
+
+function T.question_outcome_answers_yes_no_and_cancel()
+  for _, case in ipairs({
+    { events = { { type = "navigate", direction = "up" }, { type = "confirm" } }, choice = "yes" },
+    { events = { { type = "confirm" } }, choice = "no" },
+    { events = { { type = "cancel" } }, choice = "no" },
+  }) do
+    local sounds = {}
+    local controller = parkedItemTarget(sounds)
+    controller:completeAction({
+      kind = "changed",
+      question = { templateKey = "learnMove", displayName = "MON0", moveNames = { "TACKLE" } },
+    })
+    -- The three-page question prints its first pages with no prompt;
+    -- each acknowledgement turns one page with the continue sound.
+    for page = 1, 2 do
+      local paging = nativeStatus(controller)
+      Assert.equal(paging.state, "message", "page " .. page .. " waits for acknowledgement")
+      Assert.equal(paging.messagePage, page)
+      Assert.isNil(paging.prompt, "the prompt waits for the last page")
+      local before = #sounds
+      controller:updateFixed({ { type = "confirm" } })
+      Assert.deepEqual({ sounds[before + 1] }, { "SEQ_SE_DP_SELECT" }, "turning a page plays the continue sound")
+    end
+    local asking = nativeStatus(controller)
+    Assert.equal(asking.state, "confirm", "the last page opens the owned prompt")
+    Assert.equal(asking.messagePage, 3, "the prompt opens over the last page")
+    Assert.equal(asking.message.templateKey, "learnMove", "the question stays visible with its prompt")
+    for _, event in ipairs(case.events) do
+      controller:updateFixed({ event })
+    end
+    for _ = 1, 12 do
+      controller:updateFixed({})
+    end
+    local answered = nativeStatus(controller)
+    Assert.equal(answered.state, "waiting_action", "the answer re-parks")
+    Assert.isNil(answered.prompt, "the prompt closes")
+    Assert.isNil(answered.message)
+    Assert.deepEqual(controller:takeIntent(), { kind = "answer", slot = 0, choice = case.choice })
+  end
+end
+
+function T.resume_option_emits_a_continue_intent_over_the_slot()
+  local controller = nativeController({ resume = { slot = 1 } })
+  Assert.isNil(controller:takeIntent(), "the intent waits for the first interactive tick")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(nativeStatus(controller).state, "waiting_action")
+  Assert.deepEqual(controller:takeIntent(), { kind = "continue", slot = 1 })
+  controller:completeAction({ kind = "no_op" })
+  Assert.equal(nativeStatus(controller).state, "browse", "the resumed dialogue restores browse")
+  Assert.equal(nativeStatus(controller).cursorNode, 1)
 end
 
 return { tests = T }

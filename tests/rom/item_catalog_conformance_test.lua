@@ -398,6 +398,8 @@ function T.money_up_items_share_one_data_driven_held_behavior(romFs, versionId)
     Assert.equal(held.params.holdEffect, 58, key .. " must carry the source hold-effect byte")
   end
   Assert.equal(behavior("SOOTHE_BELL").key, "friendship_up", "the friendship item keeps its own behavior")
+  Assert.equal(behavior("EVERSTONE").key, "prevents_evolution", "Everstone carries the source evolution blocker")
+  Assert.equal(behavior("EVERSTONE").params.holdEffect, 64, "the evolution blocker retains its source effect")
   Assert.equal(behavior("POTION").key, "no_hold_effect", "an effectless item stays behaviorless")
 end
 

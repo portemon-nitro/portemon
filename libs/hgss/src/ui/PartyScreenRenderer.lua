@@ -9,6 +9,7 @@
 local FieldTextWindowRenderer = require("libs.hgss.src.ui.FieldTextWindowRenderer")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local ImageSampling = require("libs.nds.src.love.ImageSampling")
+local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
 local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 
@@ -893,10 +894,10 @@ end
 
 -- Expands one generated message template into window-local text
 -- placements through the ordinary role. Line breaks stack at the source
--- line height; name segments expand the supplied display name, quantity
--- segments expand ordered recovery/level amounts, move segments expand
--- ordered taught/boosted move names. Later segments on one line keep
--- their measured horizontal advance.
+-- line height; name segments expand the supplied display name; item,
+-- quantity, and move segments expand the ordered name their slot
+-- addresses, so a source buffer printed twice reads one name. Later
+-- segments on one line keep their measured horizontal advance.
 ---@param segments table[]
 ---@param displayName string?
 ---@param itemNames string[]?
@@ -907,49 +908,54 @@ function PartyScreenRenderer:_templateOps(segments, displayName, itemNames, quan
   local text = self._text
   local ops = {}
   local cursorX, cursorY = 0, 0
-  local itemIndex = 0
-  local quantityIndex = 0
-  local moveIndex = 0
+  local slotted = { item = itemNames, quantity = quantities, move = moveNames }
   for _, segment in ipairs(assert(segments, "templates carry segments")) do
     assert(type(segment) == "table" and type(segment.kind) == "string", "template segments carry a kind")
+    local value = nil
     if segment.kind == "text" then
-      local value = assert(segment.value, "text segments carry display text")
-      ops[#ops + 1] = { value = value, x = cursorX, y = cursorY }
-      cursorX = cursorX + text:textWidth(value)
+      value = assert(segment.value, "text segments carry display text")
     elseif segment.kind == "lineBreak" then
       cursorX = 0
       cursorY = cursorY + 16
     elseif segment.kind == "name" then
-      local name = assert(displayName, "name segments expand the menu slot display name")
-      ops[#ops + 1] = { value = name, x = cursorX, y = cursorY }
-      cursorX = cursorX + text:textWidth(name)
-    elseif segment.kind == "item" then
-      itemIndex = itemIndex + 1
-      local item = assert(itemNames, "held-item templates receive ordered item names")[itemIndex]
-      assert(type(item) == "string", "each item segment has a matching item name")
-      ops[#ops + 1] = { value = item, x = cursorX, y = cursorY }
-      cursorX = cursorX + text:textWidth(item)
-    elseif segment.kind == "quantity" then
-      quantityIndex = quantityIndex + 1
-      local amount = assert(quantities, "quantity templates receive ordered amounts")[quantityIndex]
-      assert(type(amount) == "number", "each quantity segment has a matching amount")
-      local value = tostring(amount)
-      ops[#ops + 1] = { value = value, x = cursorX, y = cursorY }
-      cursorX = cursorX + text:textWidth(value)
-    elseif segment.kind == "move" then
-      moveIndex = moveIndex + 1
-      local move = assert(moveNames, "move templates receive ordered move names")[moveIndex]
-      assert(type(move) == "string", "each move segment has a matching move name")
-      ops[#ops + 1] = { value = move, x = cursorX, y = cursorY }
-      cursorX = cursorX + text:textWidth(move)
+      value = assert(displayName, "name segments expand the menu slot display name")
+    elseif segment.kind == "item" or segment.kind == "quantity" or segment.kind == "move" then
+      local names =
+        assert(slotted[segment.kind], segment.kind .. " templates receive ordered " .. segment.kind .. " names")
+      local name = names[assert(segment.slot, "ordered substitutions carry their slot")]
+      assert(name ~= nil, "each " .. segment.kind .. " slot has a matching ordered name")
+      value = tostring(name)
     else
       error("party message templates render text, line breaks, names, items, quantities, and moves", 0)
     end
+    if value ~= nil then
+      ops[#ops + 1] = { value = value, x = cursorX, y = cursorY }
+      cursorX = cursorX + text:textWidth(value)
+    end
   end
-  assert(itemNames == nil or itemIndex == #itemNames, "message item names match the template segments")
-  assert(quantities == nil or quantityIndex == #quantities, "message quantities match the template segments")
-  assert(moveNames == nil or moveIndex == #moveNames, "message move names match the template segments")
   return ops
+end
+
+-- Checks that a descriptor supplies exactly the ordered names its whole
+-- template addresses, whichever printer page is on screen.
+---@param key string
+---@param segments table[]
+---@param message { itemNames: string[]?, quantities: integer[]?, moveNames: string[]? }
+local function checkOrderedNames(key, segments, message)
+  local highest = { item = 0, quantity = 0, move = 0 }
+  for _, segment in ipairs(segments) do
+    if highest[segment.kind] ~= nil then
+      highest[segment.kind] = math.max(highest[segment.kind], segment.slot)
+    end
+  end
+  local supplied = { item = message.itemNames, quantity = message.quantities, move = message.moveNames }
+  for kind, slots in pairs(highest) do
+    local names = supplied[kind]
+    assert(
+      (names == nil and slots == 0) or (names ~= nil and #names == slots),
+      key .. " receives one ordered " .. kind .. " name per slot"
+    )
+  end
 end
 
 -- Expands one generated message template at a window origin through the
@@ -1033,9 +1039,11 @@ end
 -- expanded with its display name, ordered item, quantity, and move names.
 -- Literal line breaks stack at the source line height like template line
 -- breaks, so staged battle text never reaches the font as a raw newline glyph.
+-- A template prints only its current printer page.
 ---@param message string|{ templateKey: string, displayName: string?, itemNames: string[]?, quantities: integer[]?, moveNames: string[]? }
+---@param page integer printer page on screen, from 1
 ---@return { value: string, x: number, y: number }[]
-function PartyScreenRenderer:_actionOps(message)
+function PartyScreenRenderer:_actionOps(message, page)
   if type(message) == "string" then
     local lines = {}
     for line in (message .. "\n"):gmatch("([^\n]*)\n") do
@@ -1058,22 +1066,48 @@ function PartyScreenRenderer:_actionOps(message)
   assert(type(key) == "string", "action descriptors name their template")
   local templates = assert(self._manifest.text.templates, "the party manifest carries templates")
   local template = assert(templates[key], "the party manifest carries template " .. key)
-  return self:_templateOps(
-    assert(template.segments, key .. " carries segments"),
-    message.displayName,
-    message.itemNames,
-    message.quantities,
-    message.moveNames
-  )
+  local segments = assert(template.segments, key .. " carries segments")
+  checkOrderedNames(key, segments, message)
+  local pages = PartyScreenLayout.templatePages(segments)
+  assert(type(page) == "number" and pages[page] ~= nil, key .. " prints page " .. tostring(page))
+  return self:_templateOps(pages[page], message.displayName, message.itemNames, message.quantities, message.moveNames)
 end
 
 -- Draws a transient action message through the generated action window.
 ---@param message string|{ templateKey: string, displayName: string?, itemNames: string[]?, quantities: integer[]?, moveNames: string[]? }
-function PartyScreenRenderer:_drawActionMessage(message)
+---@param page integer printer page on screen, from 1
+function PartyScreenRenderer:_drawActionMessage(message, page)
   local manifest = self._manifest
   local windows = assert(manifest.windows, "the party manifest carries windows")
   local box = assert(windows.action, "the party manifest carries the action window")
-  self:_drawLowerWindow(box, self:_actionOps(message))
+  self:_drawLowerWindow(box, self:_actionOps(message, page))
+end
+
+-- Draws the level-up stats window (source window levelUpStatsWindow):
+-- stat names at x 0, then either the "+" sign at x 80 with the gain at
+-- x 94 (gains page) or the new totals right-aligned to x 104 (totals
+-- page), one row per 16 pixels.
+---@param stats { page: "gains"|"totals", before: table<string, integer>, after: table<string, integer> }
+function PartyScreenRenderer:_drawLevelUpStats(stats)
+  local manifest = self._manifest
+  local box = assert(
+    assert(manifest.windows, "the party manifest carries windows").levelUpStats,
+    "the party manifest carries the level-up stats window"
+  )
+  local labels = assert(manifest.text.labels, "the party manifest carries labels")
+  local ops = {}
+  for index, row in ipairs(PartyScreenTheme.LEVEL_UP_STAT_ROWS) do
+    local y = (index - 1) * 16
+    ops[#ops + 1] = { value = assert(labels[row.label], "the party manifest carries " .. row.label), x = 0, y = y }
+    if stats.page == "gains" then
+      ops[#ops + 1] = { value = assert(labels.statPlus, "the party manifest carries statPlus"), x = 80, y = y }
+      ops[#ops + 1] = { value = tostring(stats.after[row.key] - stats.before[row.key]), x = 94, y = y }
+    else
+      local total = tostring(stats.after[row.key])
+      ops[#ops + 1] = { value = total, x = 104 - self._text:textWidth(total), y = y }
+    end
+  end
+  self:_drawLowerWindow(box, ops)
 end
 
 function PartyScreenRenderer:_drawPrompt(promptStatus)
@@ -1445,7 +1479,7 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
     self:_brightenContent()
   end
   if presentation.message ~= nil then
-    self:_drawActionMessage(presentation.message)
+    self:_drawActionMessage(presentation.message, assert(presentation.messagePage, "messages carry their printer page"))
   elseif inMenu then
     local slot = assert(presentation.menuSlot, "menu states remember their slot")
     local record = assert(view.slots[slot + 1], "menu messages address a party slot")
@@ -1467,6 +1501,9 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
       kind,
       layout
     )
+  end
+  if presentation.levelUpStats ~= nil then
+    self:_drawLevelUpStats(presentation.levelUpStats)
   end
   if presentation.state == "confirm" then
     local promptStatus = assert(presentation.prompt, "confirm states carry the prompt status")

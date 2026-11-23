@@ -289,6 +289,12 @@ local function dependencies(overrides)
   local bag = openBag()
   local GameStats = require("libs.hgss.src.mons.GameStats")
   local deps = {
+    evolutionWorld = function()
+      return nil
+    end,
+    makeEvolutionScene = function()
+      error("composition tests open no evolution scene", 0)
+    end,
     mons = mons,
     bag = bag,
     easyChatCatalog = {

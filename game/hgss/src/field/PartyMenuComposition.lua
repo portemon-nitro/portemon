@@ -82,6 +82,8 @@ local PartyMenuComposition = {}
 ---@field readSummaryNavigation fun(): table<string, unknown>? the read-only summary navigation sample
 ---@field acquireSummaryPreparation fun(): table<string, unknown>? the per-open summary lease factory
 ---@field makeApricornBox (fun(mode: string): table<string, unknown>)? the shared Box child factory
+---@field evolutionWorld fun(): table<string, unknown>? the sampled clock and map facts behind evolution checks
+---@field makeEvolutionScene fun(request: table<string, unknown>): table<string, unknown> the field evolution scene factory
 
 -- The menu flow's field-check port: capture the current world facts on
 -- every call, then answer the source eligibility decision. Fresh reads
@@ -160,6 +162,8 @@ function PartyMenuComposition.create(deps)
   local textPolicyForOpen = assert(deps.textPolicyForOpen, "the menu composition resolves its text policy per open")
   assert(type(textPolicyForOpen) == "function", "the menu composition resolves its text policy per open")
   assert(deps.textPolicy == nil, "the boot-time text policy snapshot moved to textPolicyForOpen")
+  assert(type(deps.evolutionWorld) == "function", "the menu composition samples the evolution world facts")
+  assert(type(deps.makeEvolutionScene) == "function", "the menu composition borrows the evolution scene factory")
   if deps.summaryManifest ~= nil then
     assert(type(deps.summaryManifest) == "table", "the menu composition borrows the summary family")
   end
@@ -363,6 +367,8 @@ function PartyMenuComposition.create(deps)
       mailbox = mailbox,
       pcManifest = pcManifest,
       fieldMoves = { check = checkPort },
+      evolutionWorld = deps.evolutionWorld,
+      makeEvolutionScene = deps.makeEvolutionScene,
       assets = assets,
       measureDisplay = measureDisplay,
       overrides = overrides,

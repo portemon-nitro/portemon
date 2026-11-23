@@ -523,6 +523,11 @@ local function openEvolutionRig(opts)
   return rig
 end
 
+-- Reads the composed evolution child behind the screen's scene lane.
+local function evolutionChild(screen)
+  return screen._evolution ~= nil and screen._evolution._child or nil
+end
+
 -- Acknowledges narration through the real screen path exactly as a player
 -- would, so the terminal outcome can be observed and acknowledged.
 ---@param rig table live evolution rig under test driving
@@ -1507,7 +1512,7 @@ function T.committed_evolution_waits_for_its_selected_leaf_while_plain_wins_requ
       for _ = 1, 1200 do
         rig.pump(1)
         ackNarration(rig)
-        Assert.isNil(rig.screen._completionChild, "the committed evolution opens no child while its leaf builds")
+        Assert.isNil(evolutionChild(rig.screen), "the committed evolution opens no child while its leaf builds")
         local completion = rig.screen:status().completion
         if type(completion) == "table" and completion.kind == "evolution" then
           offered = true
@@ -1521,7 +1526,7 @@ function T.committed_evolution_waits_for_its_selected_leaf_while_plain_wins_requ
       for _ = 1, 30 do
         rig.pump(1)
         ackNarration(rig)
-        Assert.isNil(rig.screen._completionChild, "repeated pending polls still open no child")
+        Assert.isNil(evolutionChild(rig.screen), "repeated pending polls still open no child")
       end
       Assert.notNil(rig.screen:status().completion, "the committed result survives the pending leaf")
       Assert.isTrue(evolutionCalls >= 1, "pending polls reach the evolution worker")
@@ -1534,11 +1539,11 @@ function T.committed_evolution_waits_for_its_selected_leaf_while_plain_wins_requ
     evolutionStaged = true
     local offered = driveToEvolution(rig, 1200)
     Assert.equal(offered.kind, "evolution", "the offered completion names the evolution decision")
-    local child = assert(rig.screen._completionChild, "the staged leaf opens its evolution child")
+    local child = assert(evolutionChild(rig.screen), "the staged leaf opens its evolution child")
     for _ = 1, 5 do
       rig.pump(1)
     end
-    Assert.isTrue(rig.screen._completionChild == child, "repeated ready polls open no second child")
+    Assert.isTrue(evolutionChild(rig.screen) == child, "repeated ready polls open no second child")
     runEvolutionHandsFree(rig, 1500)
     Assert.equal(evolutionLoads, 1, "the ready leaf loads once across repeated polls")
     Assert.equal(rig.battle:status().phase, "complete", "the evolved member still returns to the field")
@@ -1577,7 +1582,7 @@ function T.committed_evolution_waits_for_its_selected_leaf_while_plain_wins_requ
       for _ = 1, 1200 do
         rig.pump(1)
         ackNarration(rig)
-        Assert.isNil(rig.screen._completionChild, "the failing leaf opens no child while pending")
+        Assert.isNil(evolutionChild(rig.screen), "the failing leaf opens no child while pending")
         local completion = rig.screen:status().completion
         if type(completion) == "table" and completion.kind == "evolution" then
           offered = true
@@ -1611,7 +1616,7 @@ function T.committed_evolution_waits_for_its_selected_leaf_while_plain_wins_requ
         tostring(status.error):find("synthetic evolution leaf failed", 1, true) ~= nil,
         "the failure names its leaf cause"
       )
-      Assert.isNil(rig.screen._completionChild, "the failed leaf opens no child")
+      Assert.isNil(evolutionChild(rig.screen), "the failed leaf opens no child")
       Assert.isTrue(rig.battle:status().outcomeReceipt.committed, "the committed result survives the failed leaf")
     end)
     rig.battle:dispose()

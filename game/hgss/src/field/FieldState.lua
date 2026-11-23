@@ -58,71 +58,13 @@ local POKEGEAR_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "linear
 ---@field martStockResolver (fun(descriptor: table<string, unknown>, context: table<string, unknown>, catalog: table<string, unknown>): table<string, unknown>)? game-root provider for live script mart stock
 ---@field preparedEntry table<string, unknown>? one-shot staged New Game entry; the runtime claims its loader and queue
 
--- Borrowed battle draw services over the shared field renderers: text
--- measures through the live field font at the field line height, and
--- window borders resolve the selected application frame through the live
--- player frame option. Only the player-selected default frame exists in
--- production; any other key fails explicitly instead of substituting.
----@param state FieldState
----@param resources FieldPresentationResources
----@param runtime FieldRuntime
----@return table<string, unknown> text services
----@return table<string, unknown> window services
-local function battleDrawServices(state, resources, runtime)
-  local textRenderer = assert(resources.textRenderer, "battle text borrows the field text renderer")
-  local battleTextRenderers = assert(resources.battleTextRenderers, "battle text has source-role renderers")
-  local windowRenderer = assert(resources.windowRenderer, "battle windows borrow the field window renderer")
-  local _ = state
-  local text = {}
-  text.fontDef = textRenderer.fontDef
-  function text.drawText(content, x, y)
-    return textRenderer:drawText(content, x, y)
-  end
-  function text.drawTextForRole(role, content, x, y, palette)
-    local renderer = assert(battleTextRenderers[role], "battle text role has a source font renderer")
-    if palette ~= nil then
-      return renderer:drawTextWithPalette(content, x, y, palette)
-    end
-    return renderer:drawText(content, x, y)
-  end
-  function text.measureForRole(role, content)
-    local renderer = assert(battleTextRenderers[role], "battle text role has a source font renderer")
-    return { width = renderer:textWidth(content), height = renderer.fontDef.lineHeight }
-  end
-  if type(textRenderer.drawTextWithPalette) == "function" then
-    function text.drawTextWithPalette(content, x, y, palette)
-      return textRenderer:drawTextWithPalette(content, x, y, palette)
-    end
-  end
-  function text.measure(content)
-    return { width = textRenderer:textWidth(content), height = 16 }
-  end
-  function text.windowBackgroundColor()
-    return textRenderer:windowBackgroundColor()
-  end
-  local windows = {}
-  local function frameIndexOf(frameKey)
-    if frameKey == nil or frameKey == "default" then
-      local playerData = assert(runtime.playerData, "battle frames read the player frame option")
-      return assert(playerData.options.textFrame, "battle frames read the player frame option")
-    end
-    error("unknown battle frame: " .. tostring(frameKey), 0)
-  end
-  function windows.drawWindow(box, frameKey, background)
-    return windowRenderer:drawWindow(box, frameIndexOf(frameKey), background)
-  end
-  function windows.drawApplicationFrame(box, frameKey)
-    return windowRenderer:drawApplicationFrame(box, frameIndexOf(frameKey))
-  end
-  return text, windows
-end
-
 ---@class FieldState
 ---@field runtime FieldRuntime?
 ---@field battleEnvelope FieldBattlePresentation? the field-local presented-battle envelope
 ---@field _battleText table<string, unknown>? borrowed battle text services
 ---@field _battleWindows table<string, unknown>? borrowed battle window services
 ---@field _battlePresentationBinding integer? factory binding identity behind the envelope
+---@field _evolutionPresentationBinding integer? menu evolution lease binding identity behind the envelope
 ---@field presentationResources FieldPresentationResources?
 ---@field _optionsPresentationFactory (fun(): table<string, unknown>)? installed field-lifetime options factory identity
 ---@field _celebiRenderer table<string, unknown>? lazy field-scene model presenter
@@ -270,7 +212,7 @@ function FieldState.new(game, options)
     -- presentation seam (minimal test doubles) keep their headless
     -- behavior instead of failing construction.
     self._battleText, self._battleWindows =
-      battleDrawServices(self, assert(self.presentationResources, "battle draw needs its resources"), runtime)
+      assert(self.presentationResources, "battle draw needs its resources"):battleDrawServices(runtime)
     local function battleDisplay()
       return runtime.presentationDisplay
     end
@@ -351,6 +293,15 @@ function FieldState.new(game, options)
     })
     if type(runtime.bindBattlePresentation) == "function" then
       self._battlePresentationBinding = runtime:bindBattlePresentation(self.battleEnvelope:factory())
+    end
+    if type(runtime.bindEvolutionPresentation) == "function" then
+      local envelope = assert(self.battleEnvelope, "menu evolution borrows the battle presentation services")
+      self._evolutionPresentationBinding = runtime:bindEvolutionPresentation(function(sceneId)
+        return {
+          assets = envelope:evolutionAssets(sceneId),
+          splRandomState = assert(options.splRandomState, "menu evolution borrows the boot SPL stream"),
+        }
+      end)
     end
     -- The Ho-Oh scene renderer exists for the whole session so its models can
     -- be prepared in the background from map entry.
@@ -2529,6 +2480,10 @@ function FieldState:dispose()
       self.runtime:unbindBattlePresentation(self._battlePresentationBinding)
     end
     self._battlePresentationBinding = nil
+  end
+  if self._evolutionPresentationBinding ~= nil and self.runtime ~= nil then
+    self.runtime:unbindEvolutionPresentation(self._evolutionPresentationBinding)
+    self._evolutionPresentationBinding = nil
   end
   self._battleText, self._battleWindows = nil, nil
   self._actorDesiredReady = nil

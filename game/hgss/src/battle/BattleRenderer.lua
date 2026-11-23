@@ -4869,6 +4869,26 @@ local function evolutionPortrait(assets, selector, frame)
   return portrait
 end
 
+-- Draws one evolution Pokepic frame centered on the source picture
+-- center: a page-atlas frame centers on its own frame rectangle, never on
+-- the whole page.
+---@param graphics table<string, unknown> host graphics
+---@param image table<string, unknown> portrait frame from evolutionPortrait
+---@param picture { image: table<string, unknown> } staged pixels behind the frame
+---@param x number center x
+---@param y number center y
+---@param scale number uniform scale
+local function drawEvolutionPortrait(graphics, image, picture, x, y, scale)
+  local width, height
+  if image.quad ~= nil then
+    width = assert(image.frameW, "portrait page frames carry their width") --[[@as number]]
+    height = assert(image.frameH, "portrait page frames carry their height") --[[@as number]]
+  else
+    width, height = picture.image:getDimensions()
+  end
+  drawArtwork(graphics, image, image.quad, x, y, 0, scale, scale, width / 2, height / 2)
+end
+
 ---@param resources table<string, unknown> battle renderer resources
 ---@param state table<string, unknown> evolution child state
 ---@param pane "main"|"sub" Summary pane to render
@@ -4911,8 +4931,8 @@ end
 
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param evolution table<string, unknown> child-owned evolution snapshot
----@param battleView table<string, unknown> complete battle view carrying text palettes
-local function drawEvolutionMain(resources, evolution, battleView)
+---@param textPalette table<string, unknown>? staged narration text palette record carrying its colors
+local function drawEvolutionMain(resources, evolution, textPalette)
   local graphics = assert(resources.graphics, "the evolution render borrows its host graphics")
   local assets = assert(resources.assets, "the evolution render borrows its battle asset holder")
   local state = assert(evolution.presentation, "evolution views carry their child state") --[[@as table<string, unknown>]]
@@ -4932,6 +4952,7 @@ local function drawEvolutionMain(resources, evolution, battleView)
   graphics.setBlendMode("alpha", "alphamultiply")
   graphics.setColor(0, 0, 0, 1)
   graphics.rectangle("fill", 0, 0, 256, 192)
+  graphics.setColor(1, 1, 1, 1)
   local background = assets:drawable("battle:evolution:main")
   if background ~= nil then
     drawArtwork(graphics, background, nil, 0, 0)
@@ -4950,8 +4971,7 @@ local function drawEvolutionMain(resources, evolution, battleView)
         if picture == nil then
           return
         end
-        local width, height = picture.image:getDimensions()
-        drawArtwork(graphics, image, image.quad, center.x + xOffset, center.y, 0, scale, scale, width / 2, height / 2)
+        drawEvolutionPortrait(graphics, image, picture, center.x + xOffset, center.y, scale)
       end
       if selectors ~= nil then
         drawPicture(selectors.old, oldScale, presentation.oldPictureFrame or 0, presentation.oldPictureXOffset or 0)
@@ -4966,7 +4986,8 @@ local function drawEvolutionMain(resources, evolution, battleView)
   local message = presentation.message
   if type(message) == "string" and message ~= "" then
     local graphicsText = assert(resources.text, "evolution messages use the battle text services")
-    local palette = sourcePalette(battleView, "narration", 0, 1, 2, 15)
+    local colors = assert(textPalette, "evolution messages use the staged narration text palette").colors --[[@as table[] ]]
+    local palette = paletteFromColors(colors, 0, 1, 2, 15)
     LogicalSurface.clip(graphics, messageBox, function()
       local row = 0
       for line in
@@ -5086,23 +5107,8 @@ local function drawEvolutionPictureFade(resources, state)
         if image ~= nil then
           local picture = pictureImage(image)
           if picture ~= nil then
-            local width, height = picture.image:getDimensions()
-            drawArtwork(
-              graphics,
-              image,
-              image.quad,
-              center.x
-                + (
-                  presentation[role .. "PictureXOffset"] --[[@as number?]]
-                  or 0
-                ),
-              center.y,
-              0,
-              scale,
-              scale,
-              width / 2,
-              height / 2
-            )
+            local xOffset = presentation[role .. "PictureXOffset"] --[[@as number?]]
+            drawEvolutionPortrait(graphics, image, picture, center.x + (xOffset or 0), center.y, scale)
           end
         end
       end
@@ -5136,6 +5142,28 @@ local function drawEvolutionFade(resources, child, pane)
   graphics.pop()
 end
 
+-- Draws the evolution scene on one source screen from an
+-- EvolutionScenePresenter view: "main" is the top screen, "sub" the
+-- bottom. Waits with a black screen until the view's assets are ready.
+---@param resources table<string, unknown> borrowed application collaborators
+---@param evolutionView table<string, unknown> presenter view carrying its child presentation
+---@param screen "main"|"sub" destination source screen
+---@param textPalette table<string, unknown>? staged narration text palette record behind the scene message
+function BattleRenderer.drawEvolutionScreen(resources, evolutionView, screen, textPalette)
+  assert(screen == "main" or screen == "sub", "evolution scenes draw on the main or sub screen")
+  local presentation = assert(evolutionView.presentation, "evolution views carry their child presentation") --[[@as table<string, unknown>]]
+  if presentation.assetsReady ~= true then
+    drawEvolutionWaiting(assert(resources.graphics, "the evolution render borrows its host graphics"))
+    return
+  end
+  if screen == "main" then
+    drawEvolutionMain(resources, evolutionView, textPalette)
+  else
+    drawEvolutionSub(resources, presentation)
+  end
+  drawEvolutionFade(resources, evolutionView, screen)
+end
+
 -- Draws one pane in its logical space: "detail" for the battlefield,
 -- "interaction" for the lower menu, or "compact" for the single-pane
 -- scene viewport. Unknown pane identities draw nothing.
@@ -5150,16 +5178,14 @@ function BattleRenderer.drawPane(resources, view, paneId, content, placement, co
   assert(type(view) == "table", "pane drawing reads its snapshot")
   local child = view.mode == "child" and view.childView or nil
   if type(child) == "table" and child.kind == "evolution" and type(child.presentation) == "table" then
-    if child.presentation.assetsReady == true then
-      if paneId == "detail" then
-        drawEvolutionMain(resources, child, view)
-        drawEvolutionFade(resources, child, "main")
-      elseif paneId == "interaction" then
-        drawEvolutionSub(resources, child.presentation --[[@as table<string, unknown>]])
-        drawEvolutionFade(resources, child, "sub")
-      end
-    elseif paneId == "detail" or paneId == "interaction" then
-      drawEvolutionWaiting(assert(resources.graphics, "the battle render borrows its host graphics"))
+    if paneId == "detail" or paneId == "interaction" then
+      local palettes = view.textPalettes --[[@as table<string, table<string, unknown>>?]]
+      BattleRenderer.drawEvolutionScreen(
+        resources,
+        child,
+        paneId == "detail" and "main" or "sub",
+        palettes ~= nil and palettes.narration or nil
+      )
     end
   elseif paneId == "compact" then
     drawCompactScene(resources, view, content or {}, compactUI)

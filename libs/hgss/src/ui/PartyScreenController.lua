@@ -7,7 +7,10 @@
 -- five-stage delayed swap that commits swapPartyMons exactly once at its
 -- final tick. Domain actions emit one-shot value-only intents
 -- (takeIntent) and resolve through completeAction; take routes through an
--- owned yes/no confirm. Every transition carries a semantic input epoch:
+-- owned yes/no confirm. Item-use outcomes may continue a flow-owned
+-- dialogue: a level-up stats window (gains page, totals page), a
+-- re-parked "continue" intent, or an owned question answered through an
+-- "answer" intent. Every transition carries a semantic input epoch:
 -- pointer captures store the press epoch and activate only for the same
 -- target, pointer, epoch, and no drag. The controller owns transient
 -- focus, prompts, epoch, swap/alpha clocks, and animation clocks; draw
@@ -49,6 +52,8 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _origin PartyScreenController.Origin?
 ---@field _message string|{ templateKey: string, displayName: string?, itemNames: string[]?, quantities: integer[]?, moveNames: string[]? }?
 ---@field _messageReturn string
+---@field _messagePage integer the printer page the message shows, from 1
+---@field _messageQuestion { kind: "give" }|{ kind: "answer", returnState: string }? the question a paged message opens over its last page
 ---@field _prompt YesNoPromptController?
 ---@field _promptReturn string
 ---@field _promptEntry PartyScreenController.MenuEntry?
@@ -65,6 +70,9 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _panelSlide integer
 ---@field _targetOrigin "menu"|"context"?
 ---@field _giveDisposition "party"|"bag"?
+---@field _tail { levelUpStats: { before: table<string, integer>, after: table<string, integer> }?, question: unknown, continues: boolean }? the outcome presentation that follows the HP animation and result message
+---@field _flowSlot integer? the party slot a continued or questioned outcome addresses
+---@field _levelUpStats { page: "gains"|"totals", before: table<string, integer>, after: table<string, integer> }? the open level-up stats window
 ---@field _itemUseAnim { slots: table<integer, { slot: integer, from: integer, to: integer, current: integer }>, index: integer, message: string|table<string, unknown>|nil, origin: PartyScreenController.Origin }? the retail item-use HP animation: sequential 1-HP-per-tick slots with sound, then message
 local PartyScreenController = {}
 PartyScreenController.__index = PartyScreenController
@@ -117,6 +125,7 @@ PartyScreenController.__index = PartyScreenController
 ---@field item { key: string, bagRevision: integer }?
 ---@field effect fun(sequence: string)? the borrowed Party semantic sound boundary; screens without it stay silent and still transition
 ---@field initialMessage { templateKey: "giveHeldItem"|"switchHeldResult", displayName: string, itemNames: string[] }? initial Party-owned held-item result
+---@field resume { slot: integer }? browse-context entry that resumes a flow-owned dialogue: after construction the controller parks over the slot and emits one continue intent
 
 -- The native switch task slides each travelling slot out from its own
 -- column and back: sixteen tile-steps to full exit, eight pixels per
@@ -265,6 +274,17 @@ function PartyScreenController.new(opts)
       "held-item result names one item for gives and two for switches"
     )
   end
+  if opts.resume ~= nil then
+    assert(opts.context == "browse", "dialogue resumption enters only the browse context")
+    assert(opts.initialMessage == nil and opts.initialFocus == nil, "resumption owns the opening focus and message")
+    assert(
+      type(opts.resume.slot) == "number"
+        and opts.resume.slot % 1 == 0
+        and opts.resume.slot >= 0
+        and opts.resume.slot < 6,
+      "resumption targets a party slot"
+    )
+  end
   local cancellable = opts.allowCancel
   if cancellable == nil then
     cancellable = true
@@ -306,6 +326,8 @@ function PartyScreenController.new(opts)
     _origin = nil,
     _message = opts.initialMessage,
     _messageReturn = "browse",
+    _messagePage = 1,
+    _messageQuestion = nil,
     _prompt = nil,
     _promptReturn = "browse",
     _promptEntry = nil,
@@ -324,6 +346,9 @@ function PartyScreenController.new(opts)
     _targetOrigin = nil,
     _giveDisposition = opts.context == "give_resume" and "party" or (opts.context == "give_target" and "bag" or nil),
     _itemUseAnim = nil,
+    _tail = nil,
+    _flowSlot = nil,
+    _levelUpStats = nil,
   }, PartyScreenController)
   if opts.context == "item_target" or opts.context == "give_target" then
     assert(opts.item ~= nil, "target contexts require the pending item identity")
@@ -339,6 +364,8 @@ function PartyScreenController.new(opts)
       "the give continuation targets a party slot"
     )
     self._state = "give_resume"
+  elseif opts.resume ~= nil then
+    self._state = "resume"
   end
   local view = self:_refresh()
   self._reconciledRevision = view.revision
@@ -357,6 +384,11 @@ function PartyScreenController.new(opts)
   if opts.context == "give_resume" then
     assert(self:_selectable(view, opts.initialFocus), "the give continuation targets an occupied slot")
     self._cursorNode = opts.initialFocus
+  end
+  if opts.resume ~= nil then
+    assert(self:_selectable(view, opts.resume.slot), "resumption targets an occupied slot")
+    self._cursorNode = opts.resume.slot
+    self._flowSlot = opts.resume.slot
   end
   return self
 end
@@ -687,15 +719,25 @@ end
 -- position once the outcome lands.
 ---@param intent table<string, unknown>
 function PartyScreenController:_emitIntent(intent)
-  assert(self._intent == nil, "an intent is already pending")
-  self._intent = intent
-  self._origin = {
+  self:_parkIntent(intent, {
     state = self._state,
     cursorNode = self._cursorNode,
     partyRevision = self._observedRevision,
     menuSlot = self._menuSlot,
     menuIndex = self._menuIndex,
-  }
+  })
+end
+
+-- Publishes one intent over an explicit origin and waits for the flow's
+-- completion. Presentation owned by the previous outcome is gone.
+---@param intent table<string, unknown>
+---@param origin PartyScreenController.Origin
+function PartyScreenController:_parkIntent(intent, origin)
+  assert(self._intent == nil, "an intent is already pending")
+  self._intent = intent
+  self._origin = origin
+  self._message = nil
+  self._levelUpStats = nil
   self:_transition("waiting_action")
 end
 
@@ -732,12 +774,8 @@ function PartyScreenController:_closePrompt()
   self._promptEntry = nil
 end
 
--- Shows a message over the originating flow state; acknowledgement
--- returns there without replaying anything. Either existing literal text
--- or a generated-template descriptor the renderer expands.
 ---@param text string|{ templateKey: string, displayName: string?, itemNames: string[]?, quantities: integer[]?, moveNames: string[]? }
----@param returnState string
-function PartyScreenController:_showMessage(text, returnState)
+local function checkMessage(text)
   if type(text) == "table" then
     assert(type(text.templateKey) == "string" and text.templateKey ~= "", "descriptors name their template")
     assert(text.displayName == nil or type(text.displayName) == "string", "descriptors carry an optional display name")
@@ -762,9 +800,48 @@ function PartyScreenController:_showMessage(text, returnState)
   else
     assert(type(text) == "string" and text ~= "", "messages carry display text")
   end
+end
+
+-- Shows a message over the originating flow state; acknowledgement
+-- returns there without replaying anything. Either existing literal text
+-- or a generated-template descriptor the renderer expands.
+---@param text string|{ templateKey: string, displayName: string?, itemNames: string[]?, quantities: integer[]?, moveNames: string[]? }
+---@param returnState string
+function PartyScreenController:_showMessage(text, returnState)
+  checkMessage(text)
   self._message = text
+  self._messagePage = 1
   self._messageReturn = returnState
   self:_transition("message")
+end
+
+---@return integer printer pages of the current message
+function PartyScreenController:_messagePageCount()
+  local layout = assert(self._layout(), "the party layout is required for message paging")
+  local pages = assert(layout.messagePages, "the party layout pages messages")
+  return pages(assert(self._message, "paging needs a message"))
+end
+
+-- Shows a question's message, opening its yes/no prompt over the last
+-- printer page: earlier pages wait for acknowledgement first.
+---@param text { templateKey: string, displayName: string?, itemNames: string[]?, quantities: integer[]?, moveNames: string[]? }
+---@param question { kind: "give" }|{ kind: "answer", returnState: string }
+function PartyScreenController:_askMessage(text, question)
+  self:_showMessage(text, "browse")
+  self._messageQuestion = question
+  if self:_messagePageCount() == 1 then
+    self:_openMessageQuestion()
+  end
+end
+
+function PartyScreenController:_openMessageQuestion()
+  local question = assert(self._messageQuestion, "the message ends with a question")
+  self._messageQuestion = nil
+  if question.kind == "give" then
+    self:_transition("give_question")
+  else
+    self:_openConfirm({ kind = "answer", label = "answer" }, question.returnState)
+  end
 end
 
 -- Private operation semantics, not a public schema.
@@ -971,7 +1048,7 @@ function PartyScreenController:_advanceItemUseAnim()
     self:_showMessage(message, origin.state)
     return
   end
-  self:_restoreOrigin(origin)
+  self:_endOutcome(origin)
 end
 
 -- Advances the top-panel slide one step toward its state's target.
@@ -1316,6 +1393,10 @@ function PartyScreenController:_confirm()
     self:_acknowledgeMessage()
     return
   end
+  if self._state == "level_up_stats" then
+    self:_advanceLevelUpStats()
+    return
+  end
 end
 
 function PartyScreenController:_cancel()
@@ -1374,6 +1455,10 @@ function PartyScreenController:_cancel()
   end
   if self._state == "message" then
     self:_acknowledgeMessage()
+    return
+  end
+  if self._state == "level_up_stats" then
+    self:_advanceLevelUpStats()
     return
   end
 end
@@ -1440,6 +1525,11 @@ function PartyScreenController:_resolvePrompt()
   local entry = assert(self._promptEntry, "prompt resolution remembers its entry")
   local returnState = self._promptReturn
   self:_closePrompt()
+  if entry.kind == "answer" then
+    assert(result == "yes" or result == "no", "prompts resolve yes or no")
+    self:_answerQuestion(result)
+    return
+  end
   if result == "yes" then
     local slot = assert(self._menuSlot, "prompt intents remember their slot")
     ---@cast slot integer
@@ -1454,6 +1544,7 @@ function PartyScreenController:_resolvePrompt()
   end
   assert(result == "no", "prompts resolve yes or no")
   if self._giveDisposition ~= nil then
+    self._message = nil
     self:_finishGive()
     return
   end
@@ -1467,8 +1558,14 @@ end
 -- interval.
 function PartyScreenController:_declinePrompt()
   local returnState = self._promptReturn
+  local entry = self._promptEntry
   self:_closePrompt()
+  if entry ~= nil and entry.kind == "answer" then
+    self:_answerQuestion("no")
+    return
+  end
   if self._giveDisposition ~= nil then
+    self._message = nil
     self:_finishGive()
     return
   end
@@ -1520,12 +1617,28 @@ end
 -- Acknowledges the message and returns to its caller state without
 -- replaying anything.
 function PartyScreenController:_acknowledgeMessage()
-  self._message = nil
+  if self._messagePage < self:_messagePageCount() then
+    -- The printer wait clears the window for the next page with the
+    -- continue sound (render_text.c TextPrinter_Continue).
+    self._messagePage = self._messagePage + 1
+    self:_requestSelectSound()
+    if self._messagePage == self:_messagePageCount() and self._messageQuestion ~= nil then
+      self:_openMessageQuestion()
+    else
+      self:_transition("message")
+    end
+    return
+  end
   local origin = self._origin
   if origin ~= nil then
+    local tail = self._tail
+    if tail == nil or tail.levelUpStats == nil then
+      self._message = nil
+    end
     self._origin = nil
-    self:_restoreOrigin(origin)
+    self:_endOutcome(origin)
   else
+    self._message = nil
     if self._messageReturn == "give_result" then
       self:_finishGive()
     else
@@ -1626,6 +1739,11 @@ function PartyScreenController:_pointerDown(event)
   if self._pressId ~= nil or self._menuPress ~= nil then
     return
   end
+  if self._state == "level_up_stats" then
+    -- Any new touch advances the stats window, anywhere on screen.
+    self:_advanceLevelUpStats()
+    return
+  end
   assert(type(event.pointerId) == "string", "pointer down needs a pointer id")
   self._pressId = event.pointerId
   self._pressEpoch = self._epoch
@@ -1703,6 +1821,9 @@ function PartyScreenController:_reconcileRevision(view)
     if self._giveDisposition ~= nil then
       self:_finishGive()
       return true
+    end
+    if self._promptEntry.kind == "answer" then
+      return false
     end
     local returnState = self._promptReturn
     self:_closePrompt()
@@ -1854,6 +1975,14 @@ function PartyScreenController:updateFixed(uiInput)
     self:_openGiveConfirm()
     return
   end
+  if self._state == "resume" then
+    self:_parkIntent({ kind = "continue", slot = assert(self._flowSlot) }, {
+      state = "browse",
+      cursorNode = self._cursorNode,
+      partyRevision = self._observedRevision,
+    })
+    return
+  end
   for _, event in ipairs(uiInput) do
     if self._closed then
       break
@@ -1924,6 +2053,8 @@ function PartyScreenController:_dismiss()
     error("party dismiss is a browse-flow edge; pick context never emits it", 2)
   end
   self._itemUseAnim = nil
+  self._tail = nil
+  self._levelUpStats = nil
   self._result = { kind = "closed" }
   self:_transition("closing")
 end
@@ -1946,6 +2077,8 @@ end
 ---@field menuPress { index: integer, phase: "armed"|"pressed"|"selected" }? the armed press gate presentation
 ---@field cancelPress { phase: "armed"|"pressed"|"selected" }? the armed root footer press presentation
 ---@field message string|{ templateKey: string, displayName: string?, itemNames: string[]?, quantities: integer[]?, moveNames: string[]? }?
+---@field messagePage integer the printer page of `message` on screen, from 1
+---@field levelUpStats { page: "gains"|"totals", before: table<string, integer>, after: table<string, integer> }? the open level-up stats window
 ---@field switchSelect { source: integer, candidate: integer|"cancel" }? the locked switch source and current candidate
 ---@field prompt table<string, unknown>?
 ---@field swap table<string, unknown>?
@@ -2071,6 +2204,8 @@ function PartyScreenController:status()
     menuPress = menuPress,
     cancelPress = cancelPress,
     message = self._message,
+    messagePage = self._messagePage,
+    levelUpStats = self._levelUpStats,
     switchSelect = switchSelect,
     prompt = self._prompt and self._prompt:status() or nil,
     swap = swapStatus,
@@ -2114,6 +2249,7 @@ function PartyScreenController:completeAction(outcome)
   local refreshed = self:_refresh()
   self._reconciledRevision = refreshed.revision
   self._origin = nil
+  self:_armTail(outcome, origin)
   if self._giveDisposition ~= nil then
     self._cursorNode = self:_reconciledCursor(self._view, origin.cursorNode)
     if type(outcome.disposition) == "string" then
@@ -2121,7 +2257,7 @@ function PartyScreenController:completeAction(outcome)
     end
     if outcome.kind == "needs_confirmation" then
       assert(type(outcome.message) == "table", "replacement questions carry generated message data")
-      self:_showMessage(outcome.message, "give_question")
+      self:_askMessage(outcome.message, { kind = "give" })
       return
     end
     if type(outcome.message) == "table" then
@@ -2192,7 +2328,7 @@ function PartyScreenController:completeAction(outcome)
     -- their result over browse like retail Take (list_items.c returns to
     -- state 1); target selections (bag item_use from choosing_item_target)
     -- preserve the pick so another mon can follow without re-entering.
-    if origin.state == "choosing_item_target" then
+    if origin.state == "choosing_item_target" or self._tail ~= nil then
       self._origin = origin
       self._cursorNode = self:_reconciledCursor(self._view, origin.cursorNode)
       self:_showMessage(outcome.message, origin.state)
@@ -2208,7 +2344,103 @@ function PartyScreenController:completeAction(outcome)
     self:_showMessage(outcome.text, origin.state)
     return
   end
+  self:_endOutcome(origin)
+end
+
+-- Records the dialogue the outcome continues after its HP animation and
+-- message: levelUpStats (before/after stat records), question (a message
+-- descriptor answered yes/no), or continues (re-park for the flow).
+---@param outcome table<string, unknown>
+---@param origin PartyScreenController.Origin
+function PartyScreenController:_armTail(outcome, origin)
+  self._tail = nil
+  self._flowSlot = nil
+  local stats = outcome.levelUpStats
+  if stats == nil and outcome.question == nil and outcome.continues ~= true then
+    return
+  end
+  if stats ~= nil then
+    assert(type(stats) == "table", "level-up stats carry before and after records")
+    for _, record in ipairs({ stats.before, stats.after }) do
+      assert(type(record) == "table", "level-up stats carry before and after records")
+      for _, row in ipairs(PartyScreenTheme.LEVEL_UP_STAT_ROWS) do
+        assert(type(record[row.key]) == "number", "level-up stat records carry every stat")
+      end
+    end
+  end
+  if outcome.question ~= nil then
+    assert(type(outcome.question) == "table", "questions carry generated message data")
+    checkMessage(outcome.question)
+  end
+  local slot = outcome.slot
+  if slot == nil then
+    slot = origin.menuSlot or origin.cursorNode
+  end
+  assert(type(slot) == "number", "a continued outcome addresses a party slot")
+  self._flowSlot = slot
+  self._tail = {
+    levelUpStats = stats,
+    question = outcome.question,
+    continues = outcome.continues == true,
+  }
+end
+
+-- Ends an outcome's presentation: the level-up stats window opens first,
+-- then a question opens the owned prompt over its message, then a
+-- continuation re-parks for the flow; with nothing left the origin
+-- restores.
+---@param origin PartyScreenController.Origin
+function PartyScreenController:_endOutcome(origin)
+  local tail = self._tail
+  if tail == nil then
+    self:_restoreOrigin(origin)
+    return
+  end
+  self._origin = origin
+  if tail.levelUpStats ~= nil then
+    self._levelUpStats = { page = "gains", before = tail.levelUpStats.before, after = tail.levelUpStats.after }
+    tail.levelUpStats = nil
+    self:_transition("level_up_stats")
+    return
+  end
+  self._tail = nil
+  self._cursorNode = self:_reconciledCursor(self._view, origin.cursorNode)
+  if tail.question ~= nil then
+    self:_askMessage(tail.question, { kind = "answer", returnState = origin.state })
+    return
+  end
+  if tail.continues then
+    self:_parkIntent({ kind = "continue", slot = assert(self._flowSlot) }, origin)
+    return
+  end
+  self._origin = nil
   self:_restoreOrigin(origin)
+end
+
+-- Advances the level-up stats window: the gains page shows the per-stat
+-- increases, A/B or any new touch swaps in the new totals, and the next
+-- one closes the window; both advances play the select sound
+-- (party_menu_items.c LevelUpLearnMovesLoop states 1 and 2).
+function PartyScreenController:_advanceLevelUpStats()
+  local stats = assert(self._levelUpStats, "the stats window is open")
+  self:_requestSelectSound()
+  if stats.page == "gains" then
+    stats.page = "totals"
+    self:_transition("level_up_stats")
+    return
+  end
+  self._levelUpStats = nil
+  self._message = nil
+  self:_endOutcome(assert(self._origin, "the stats window remembers its origin"))
+end
+
+-- Publishes the owned question's answer for the flow to resolve.
+---@param choice "yes"|"no"
+function PartyScreenController:_answerQuestion(choice)
+  self:_parkIntent(
+    { kind = "answer", slot = assert(self._flowSlot), choice = choice },
+    assert(self._origin, "the question remembers its origin")
+  )
 end
 
 -- Restores the pre-intent cursor and menu position after an outcome;

@@ -2559,6 +2559,30 @@ function FieldRuntime:unbindMailPreparation(binding)
   end
 end
 
+-- Installs the evolution presentation factory for the presented lifetime:
+-- the menu composition resolves it per evolution scene because the battle
+-- presentation owner postdates the menu factories. The runtime owns no
+-- graphics here, only the acquire callback plus its binding identity.
+---@param acquire fun(sceneId: string): { assets: FieldEvolutionAssets, splRandomState: table<string, integer> } per-scene lease factory
+---@return integer binding identity for the presented lifetime
+function FieldRuntime:bindEvolutionPresentation(acquire)
+  assert(type(acquire) == "function", "evolution presentation binding requires its acquire function")
+  assert(self._evolutionPresentation == nil, "one evolution presentation binding owns the presented lifetime")
+  self._evolutionBindingId = (self._evolutionBindingId or 0) + 1
+  self._evolutionPresentation = { id = self._evolutionBindingId, acquire = acquire }
+  return self._evolutionBindingId
+end
+
+-- Removes only the matching binding: a stale unbind never drops a
+-- replacement owner.
+---@param binding integer binding identity from bindEvolutionPresentation
+function FieldRuntime:unbindEvolutionPresentation(binding)
+  local current = self._evolutionPresentation
+  if current ~= nil and current.id == binding then
+    self._evolutionPresentation = nil
+  end
+end
+
 -- Installs the field pokedex preparation factory for the presented
 -- lifetime: the logical composition resolves it per pokedex open because
 -- presentation resources postdate the menu factories. The runtime owns no

@@ -48,6 +48,8 @@ local function testItemCatalog()
   local root = ItemFixture.buildAssetRoot()
   local swaps = {
     { from = "ITEM_43", to = "RARE_CANDY" },
+    { from = "ITEM_80", to = "SUN_STONE" },
+    { from = "ITEM_81", to = "MOON_STONE" },
     { from = "ITEM_204", to = "EVERSTONE" },
     { from = "ITEM_210", to = "FIRE_STONE" },
   }
@@ -57,6 +59,11 @@ local function testItemCatalog()
     root.items[swap.from] = nil
     root.items[swap.to] = record
   end
+  root.items.EVERSTONE.heldBehavior = { key = "prevents_evolution", params = { nativeId = 204, holdEffect = 64 } }
+  local alternate = assert(root.items.ITEM_205, "the fixture carries a distinct item identity")
+  root.items.ITEM_205 = nil
+  alternate.heldBehavior = { key = "prevents_evolution", params = { nativeId = 205, holdEffect = 64 } }
+  root.items.ALT_EVERSTONE = alternate
   return ItemCatalog.new(root)
 end
 
@@ -482,7 +489,7 @@ end
 -- Day/night stones, gendered stones, held trade items, and beauty use
 -- the present context, while world-gated triggers never open inside
 -- either game: no location string makes them available.
-function T.day_night_and_world_gated_methods_use_present_context()
+function T.bag_use_answers_only_stones_and_world_gated_methods_stay_closed()
   local Evolution = requirePresent("libs.mons.src.gen4.Evolution", "pure native evolution planning owns eligibility")
   local catalog = buildCatalog(function(root)
     local species = root.species --[[@as table<string, table<string, unknown>>]]
@@ -506,27 +513,16 @@ function T.day_night_and_world_gated_methods_use_present_context()
       catalog
     )
   end
-  local sunNight = Evolution.check(
-    pinLevel(makeMon(catalog, 163, {}), catalog, 12),
-    vectorContext({ timeOfDay = "night", trigger = { kind = "item", item = "SUN_STONE" } }),
-    catalog
-  )
-  Assert.isTrue(sunNight == nil, "the day stone waits for daylight")
-  local sunDay = Evolution.check(
-    pinLevel(makeMon(catalog, 163, {}), catalog, 12),
-    vectorContext({ timeOfDay = "day", trigger = { kind = "item", item = "SUN_STONE" } }),
-    catalog
-  )
-  Assert.notNil(sunDay, "the day stone matches by day")
-  Assert.equal(sunDay.target, "TOTODILE", "the day slot carries its own target")
-  local moon = Evolution.check(
-    pinLevel(makeMon(catalog, 167, {}), catalog, 12),
-    vectorContext({ timeOfDay = "night", trigger = { kind = "item", item = "MOON_STONE" } }),
-    catalog
-  )
-  Assert.notNil(moon, "the night stone matches by night")
-  Assert.equal(moon.target, "EEVEE", "the night slot carries its own target")
-  Assert.isTrue(stoneVector(167, "MOON_STONE") == nil, "the night stone waits for nightfall")
+  for _, timeOfDay in ipairs({ "day", "night" }) do
+    for _, item in ipairs({ "SUN_STONE", "MOON_STONE" }) do
+      local used = Evolution.check(
+        pinLevel(makeMon(catalog, 163, {}), catalog, 12),
+        vectorContext({ timeOfDay = timeOfDay, trigger = { kind = "item", item = item } }),
+        catalog
+      )
+      Assert.isTrue(used == nil, "held day/night methods never answer bag use: " .. item .. " by " .. timeOfDay)
+    end
+  end
   local lad = pinLevel(makeMon(catalog, 173, {}), catalog, 12)
   lad.personality = 50
   local dawnLad = Evolution.check(lad, vectorContext({ trigger = { kind = "item", item = "DAWN_STONE" } }), catalog)
@@ -582,62 +578,74 @@ function T.held_blockers_stop_level_triggers()
   local bare = pinLevel(makeMon(catalog, 211, {}), catalog, 16)
   Assert.notNil(Evolution.check(bare, vectorContext(), catalog), "the bare mon matches its level slot")
   local held = pinLevel(makeMon(catalog, 223, {}), catalog, 16)
-  held.heldItem = "EVERSTONE"
+  held.heldItem = "ALT_EVERSTONE"
   Assert.isTrue(Evolution.check(held, vectorContext(), catalog) == nil, "the held blocker stops the same level trigger")
 end
 
--- The side product needs both a free party slot and a spare ball: with
--- room and a ball the plan stages the extra mon and spends one ball,
--- while a full party or an empty bag still evolves the primary alone
--- with no fallback placement anywhere else.
-function T.side_products_need_a_free_slot_and_a_spare_ball()
+-- The side product derives from the finished mon: it copies the final
+-- moves, applies the source reset list, arrives at one health, and needs
+-- both a free party slot and a Poké Ball, spending exactly one ball.
+function T.side_product_derives_from_the_final_mon_and_needs_room_and_a_ball()
   local Evolution = requirePresent("libs.mons.src.gen4.Evolution", "pure native evolution planning owns eligibility")
   local catalog = buildCatalog(addNincadaLine)
-  local function partyMon(seed)
-    return pinLevel(makeMon(catalog, seed, { species = "NINCADA" }), catalog, 20)
-  end
-  local mon = partyMon(227)
+  local context = CatalogFixture.domainContext(catalog)
+  local mon = pinLevel(makeMon(catalog, 227, { species = "NINCADA" }), catalog, 20)
   local mate = pinLevel(makeMon(catalog, 229, {}), catalog, 9)
   local roomy = vectorContext({ party = { mon, mate }, inventory = { POKE_BALL = 5 } })
   local staged = Evolution.plan(mon, roomy, catalog)
   Assert.notNil(staged, "a level-twenty line member stages a plan")
   Assert.equal(staged.monAfter.species, "NINJASK", "the primary result carries the line target")
-  Assert.equal(#staged.additionalMons, 1, "room plus a ball stages exactly one extra mon")
-  local extra = staged.additionalMons[1]
+  Assert.isTrue(staged.additionalMons == nil, "planning stages no side product")
+  Assert.deepEqual(staged.inventoryDeltas, {}, "planning spends no ball")
+  local final = copy(staged.monAfter)
+  final.moves[#final.moves + 1] = { move = "CUT", pp = 30, ppUps = 0 }
+  final.heldItem = "FIRE_STONE"
+  final.markings = 5
+  final.nickname = "BUZZ"
+  final.shinyLeaves = 3
+  final.mood = 7
+  final.ribbons = { ds1 = 1, gba = 2, ds2 = 3 }
+  final.capsule = { id = 4, seals = { { x = 1, y = 2, graphic = 3 } } }
+  final.origin.ball = "MASTER_BALL"
+  final.condition.effects = { "poison" }
+  -- A damaged living source still yields a one-health extra: the shrunken
+  -- maximum clamps instead of subtracting the lost maximum.
+  final.condition.currentHp = MonStats.derive(final, catalog).maxHp - 3
+  local snapshot = copy(final)
+  local extra, delta = Evolution.shedSideProduct(final, roomy, catalog)
+  Assert.deepEqual(final, snapshot, "building the side product never mutates the final mon")
+  Assert.notNil(extra, "room plus a ball builds the side product")
   Assert.equal(extra.species, "SHEDINJA", "the extra mon is the shed side product")
-  Assert.equal(extra.form, 0, "the extra mon takes the slotted form")
-  Assert.equal(
-    Experience.level(catalog:growthCurve("erratic"), extra.experience),
-    Experience.level(catalog:growthCurve("erratic"), staged.monAfter.experience),
-    "the extra mon shares the primary level"
-  )
-  Assert.equal(extra.condition.currentHp, 1, "the single-health extra arrives full")
+  Assert.equal(extra.form, 0, "the extra mon takes the base form")
+  Assert.deepEqual(extra.moves, final.moves, "the extra mon copies the finalized moves")
+  Assert.equal(extra.experience, final.experience, "the extra mon shares the final level")
+  Assert.equal(extra.origin.ball, "POKE_BALL", "the extra mon is caught in a Poké Ball")
+  Assert.equal(extra.heldItem, "NONE", "the held item clears")
+  Assert.equal(extra.markings, 0, "markings clear")
+  Assert.deepEqual(extra.ribbons, { ds1 = 0, gba = 0, ds2 = 0 }, "ribbons clear")
+  Assert.equal(extra.shinyLeaves, 0, "shiny leaves clear")
+  Assert.equal(extra.mood, 0, "mood clears")
   Assert.isTrue(extra.nickname == nil, "the extra mon starts under the species default name")
-  Mon.validate(extra, CatalogFixture.domainContext(catalog))
-  local spent = false
-  for _, delta in ipairs(staged.inventoryDeltas) do
-    if delta.item == "POKE_BALL" then
-      Assert.equal(delta.delta, -1, "the side product spends exactly one ball")
-      spent = true
-    end
-  end
-  Assert.isTrue(spent, "the ball spend is staged explicitly")
-  Assert.deepEqual(mon, partyMon(227), "planning never mutates its input")
+  Assert.deepEqual(extra.mail, {}, "mail clears")
+  Assert.deepEqual(extra.capsule, { id = 0, seals = {} }, "the ball capsule clears")
+  Assert.deepEqual(extra.condition.effects, {}, "status clears")
+  Assert.equal(extra.condition.currentHp, 1, "the single-health extra has one health")
+  Mon.validate(extra, context)
+  Assert.deepEqual(delta, { item = "POKE_BALL", delta = -1 }, "the side product spends exactly one ball")
   local crowded = { mon }
   for seed = 231, 235 do
     crowded[#crowded + 1] = pinLevel(makeMon(catalog, seed, {}), catalog, 9)
   end
   Assert.equal(#crowded, 6, "the crowded vector fills the party")
-  local full = Evolution.plan(mon, vectorContext({ party = crowded, inventory = { POKE_BALL = 5 } }), catalog)
-  Assert.notNil(full, "a full party still evolves the primary")
-  Assert.equal(#full.additionalMons, 0, "a full party stages no side product")
-  for _, delta in ipairs(full.inventoryDeltas) do
-    Assert.isTrue(delta.item ~= "POKE_BALL", "a full party spends no ball")
-  end
-  local broke = Evolution.plan(mon, vectorContext({ party = { mon, mate }, inventory = {} }), catalog)
-  Assert.notNil(broke, "an empty bag still evolves the primary")
-  Assert.equal(#broke.additionalMons, 0, "no spare ball means no side product")
-  local young = partyMon(241)
+  Assert.isTrue(
+    Evolution.shedSideProduct(final, vectorContext({ party = crowded, inventory = { POKE_BALL = 5 } }), catalog) == nil,
+    "a full party builds no side product"
+  )
+  Assert.isTrue(
+    Evolution.shedSideProduct(final, vectorContext({ party = { mon, mate }, inventory = {} }), catalog) == nil,
+    "no spare ball means no side product"
+  )
+  local young = pinLevel(makeMon(catalog, 241, { species = "NINCADA" }), catalog, 20)
   young.experience = Experience.expFor(catalog:growthCurve("erratic"), 19)
   Assert.isTrue(Evolution.plan(young, roomy, catalog) == nil, "a line member below the slot level stages nothing")
 end
@@ -700,7 +708,7 @@ function T.planned_results_recalculate_through_the_shared_owners()
   Assert.notNil(staged, "a matching mon stages a plan")
   Assert.keySet(
     staged,
-    "additionalMons,canCancel,inventoryDeltas,learningOpportunities,monAfter,monBefore,reason",
+    "canCancel,inventoryDeltas,learningOpportunities,monAfter,monBefore,reason",
     "plans carry exactly the shared result fields"
   )
   Assert.deepEqual(mon, before, "planning never mutates its input")
@@ -708,7 +716,6 @@ function T.planned_results_recalculate_through_the_shared_owners()
   Assert.deepEqual(staged.monBefore, before, "the staged before-image matches the input")
   Assert.equal(staged.reason, "level", "the plan names its native method")
   Assert.isTrue(staged.canCancel, "level results stay cancellable")
-  Assert.deepEqual(staged.additionalMons, {}, "an ordinary plan stages no extra mons")
   Assert.deepEqual(staged.inventoryDeltas, {}, "an ordinary plan spends nothing")
   Assert.equal(staged.monAfter.experience, before.experience, "evolution keeps experience")
   local probe = copy(before)
@@ -868,7 +875,7 @@ function T.held_blockers_stop_trade_but_not_bag_use()
     }
   end)
   local held = pinLevel(makeMon(catalog, 521, {}), catalog, 12)
-  held.heldItem = "EVERSTONE"
+  held.heldItem = "ALT_EVERSTONE"
   Assert.isTrue(
     Evolution.check(held, vectorContext({ trigger = { kind = "trade" } }), catalog) == nil,
     "the held blocker stops trade checks"
@@ -926,8 +933,7 @@ function T.held_day_night_items_are_consumed_by_the_plan()
   Assert.equal(night.monAfter.species, "EEVEE", "the night slot stages its own target")
   Assert.equal(night.monAfter.heldItem, "NONE", "the held night item is consumed")
   Assert.equal(holder.heldItem, "MOON_STONE", "planning keeps the input held item")
-  local stoned =
-    Evolution.plan(holder, vectorContext({ trigger = { kind = "item", item = "FIRE_STONE" } }), catalog)
+  local stoned = Evolution.plan(holder, vectorContext({ trigger = { kind = "item", item = "FIRE_STONE" } }), catalog)
   Assert.notNil(stoned, "a bag stone stages a plan")
   Assert.equal(stoned.monAfter.species, "SHEDINJA", "the stone slot stages its own target")
   Assert.equal(stoned.monAfter.heldItem, "MOON_STONE", "a bag stone leaves the held item untouched")
@@ -966,7 +972,6 @@ function T.shed_slots_need_their_line_sibling()
     Evolution.plan(primary, vectorContext({ party = { primary, mate }, inventory = { POKE_BALL = 5 } }), line)
   Assert.notNil(staged, "the lone line slot still evolves its primary")
   Assert.equal(staged.monAfter.species, "NINJASK", "the primary carries the line target")
-  Assert.deepEqual(staged.additionalMons, {}, "no sibling slot means no side product")
   Assert.deepEqual(staged.inventoryDeltas, {}, "no side product spends no ball")
 end
 
@@ -1149,91 +1154,6 @@ function T.custom_matchers_answer_in_slot_order_while_native_gates_hold()
     Evolution.check(gambler, vectorContext(), volatile)
   end, "a throwing matcher propagates")
   Assert.deepEqual(gambler, gamblerBefore, "a throwing matcher leaves its input alone")
-end
-
--- Ordered candidates share the domain entry point: every matching slot
--- answers in source order with its one-based rule index, the first entry
--- stages identically to the legacy plan, catalog-owned slots are never
--- annotated in place, and eligibility and planning never mutate input.
-function T.candidates_share_the_domain_entry_point_in_source_order()
-  local Evolution = requirePresent("libs.mons.src.gen4.Evolution", "pure native evolution planning owns eligibility")
-  Assert.isTrue(type(Evolution.candidates) == "function", "the domain exposes ordered evolution candidates")
-  Assert.isTrue(type(Evolution.apply) == "function", "the domain applies the selected candidate")
-  local catalog = buildCatalog(function(root)
-    local species = root.species --[[@as table<string, table<string, unknown>>]]
-    local forms = species.CHIKORITA.forms --[[@as table<integer, table<string, unknown>>]]
-    forms[0].evolutions = {
-      { method = "level", level = 16, target = "TOTODILE", form = 0 },
-      { method = "level", level = 10, target = "EEVEE", form = 0 },
-    }
-  end)
-  local grown = pinLevel(makeMon(catalog, 11, {}), catalog, 16)
-  local before = copy(grown)
-  local found = Evolution.candidates(grown, vectorContext(), catalog)
-  Assert.equal(#found, 2, "both matching slots answer")
-  Assert.equal(found[1].target, "TOTODILE", "the first candidate keeps source order")
-  Assert.equal(found[1].ruleIndex, 1, "the first candidate carries its source rule index")
-  Assert.equal(found[2].target, "EEVEE", "the second candidate keeps source order")
-  Assert.equal(found[2].ruleIndex, 2, "the second candidate carries its source rule index")
-  Assert.deepEqual(grown, before, "collecting candidates never mutates its input")
-  local slots = catalog:form("CHIKORITA", 0).evolutions
-  for _, slot in ipairs(slots) do
-    Assert.isTrue(slot.ruleIndex == nil, "catalog-owned slots stay unannotated")
-  end
-  local middle = pinLevel(makeMon(catalog, 23, {}), catalog, 12)
-  local single = Evolution.candidates(middle, vectorContext(), catalog)
-  Assert.equal(#single, 1, "a level-twelve mon answers once")
-  Assert.equal(single[1].ruleIndex, 2, "the surviving candidate keeps its source rule index")
-  local young = pinLevel(makeMon(catalog, 37, {}), catalog, 9)
-  Assert.equal(#Evolution.candidates(young, vectorContext(), catalog), 0, "a level-nine mon answers never")
-  local staged = Evolution.plan(grown, vectorContext(), catalog)
-  local applied = Evolution.apply(grown, found[1], vectorContext(), catalog)
-  Assert.deepEqual(applied, staged, "the first candidate stages identically to the legacy plan")
-  local second = Evolution.apply(grown, found[2], vectorContext(), catalog)
-  Assert.equal(second.monAfter.species, "EEVEE", "the selected candidate stages its own target")
-  Assert.deepEqual(grown, before, "applying never mutates its input")
-end
-
--- Selected candidates are verified against their source slot: invented
--- methods, targets, forms, and out-of-range rule indexes fail loudly
--- instead of staging, and a candidate whose trigger context no longer
--- matches fails as stale instead of staging from dead eligibility.
-function T.apply_rejects_invented_and_stale_candidates()
-  local Evolution = requirePresent("libs.mons.src.gen4.Evolution", "pure native evolution planning owns eligibility")
-  local catalog = buildCatalog(function(root)
-    local species = root.species --[[@as table<string, table<string, unknown>>]]
-    local forms = species.CHIKORITA.forms --[[@as table<integer, table<string, unknown>>]]
-    forms[0].evolutions = {
-      { method = "level", level = 16, target = "TOTODILE", form = 0 },
-    }
-  end)
-  local grown = pinLevel(makeMon(catalog, 11, {}), catalog, 16)
-  local found = Evolution.candidates(grown, vectorContext(), catalog)
-  Assert.equal(#found, 1, "setup: one slot matches")
-  local function invented(overrides)
-    local candidate = {}
-    for key, value in pairs(found[1]) do
-      candidate[key] = value
-    end
-    for key, value in pairs(overrides) do
-      candidate[key] = value
-    end
-    return candidate
-  end
-  Assert.throws(function()
-    Evolution.apply(grown, invented({ method = "stone" }), vectorContext(), catalog)
-  end, "an invented method never stages")
-  Assert.throws(function()
-    Evolution.apply(grown, invented({ target = "EEVEE" }), vectorContext(), catalog)
-  end, "an invented target never stages")
-  Assert.throws(function()
-    Evolution.apply(grown, invented({ ruleIndex = 2 }), vectorContext(), catalog)
-  end, "an out-of-range rule index never stages")
-  local blocked = copy(grown)
-  blocked.heldItem = "EVERSTONE"
-  Assert.throws(function()
-    Evolution.apply(blocked, found[1], vectorContext(), catalog)
-  end, "a blocked trigger fails its candidate as stale")
 end
 
 return { tests = T }

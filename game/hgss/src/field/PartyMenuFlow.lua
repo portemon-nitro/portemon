@@ -8,6 +8,8 @@
 -- production admission of a terminal field request belongs to the host.
 
 local BagCursor = require("libs.hgss.src.items.BagCursor")
+local BagSave = require("libs.hgss.src.save.BagSave")
+local Evolution = require("libs.mons.src.gen4.Evolution")
 local Mon = require("libs.mons.src.Mon")
 local BagScreenState = require("game.hgss.src.field.BagScreenState")
 local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
@@ -32,6 +34,7 @@ local PAGE = {
   MAIL_CONFIRM = "mail_confirm",
   MAIL_ERASE_CONFIRM = "mail_erase_confirm",
   MAIL_COMPOSE = "mail_compose",
+  EVOLUTION = "evolution",
 }
 
 ---@class PartyMenuFlow
@@ -69,6 +72,9 @@ local PAGE = {
 ---@field private _lastChildStatus table<string, unknown>?
 ---@field private _transition PartyMenuFlow.Transition?
 ---@field private _terminalChildStatus table<string, unknown>?
+---@field private _evolutionWorld fun(): table<string, unknown>? the sampled clock and map facts behind evolution checks
+---@field private _makeEvolutionScene fun(request: table<string, unknown>): table<string, unknown> the field evolution scene factory
+---@field private _levelUp PartyMenuFlow.LevelUp? the open Rare Candy learning loop
 ---@field private _disposed boolean
 local PartyMenuFlow = {}
 PartyMenuFlow.__index = PartyMenuFlow
@@ -102,6 +108,24 @@ PartyMenuFlow.__index = PartyMenuFlow
 ---@field child table<string, unknown>
 ---@field childStatus table<string, unknown>? the last drawable outgoing child status
 ---@field parked table<string, unknown> parked Party give child while one Mail child runs
+
+-- The open Rare Candy learning loop (party_menu_items.c
+-- LevelUpLearnMovesLoop): the level-up moves still to offer, the move
+-- awaiting a full-set decision, the open question, and queued messages to
+-- show before the loop advances.
+---@class PartyMenuFlow.LevelUp
+---@field slot integer
+---@field itemKey string
+---@field returnPage string
+---@field partyRevision integer
+---@field bagRevision integer
+---@field moves string[]
+---@field index integer
+---@field pending string?
+---@field asking "learn"|"stop"|nil
+---@field resumeQuestion "learn"|"stop"|nil
+---@field beats table<string, unknown>[]
+---@field replacement { move: string, moveSlot: integer, expectedOldMove: string }? picked move awaiting the learned-message beat
 
 ---@alias PartyMenuFlow.Transition PartyMenuFlow.ReplacementTransition|PartyMenuFlow.TerminalTransition|PartyMenuFlow.MailOpenTransition
 
@@ -324,6 +348,9 @@ function PartyMenuFlow.new(opts)
     _readSummaryNavigation = opts.readSummaryNavigation,
     _acquireSummaryPreparation = opts.acquireSummaryPreparation,
     _makeApricornBox = opts.makeApricornBox,
+    _evolutionWorld = assert(opts.evolutionWorld, "the menu flow samples the evolution world facts"),
+    _makeEvolutionScene = assert(opts.makeEvolutionScene, "the menu flow borrows the evolution scene factory"),
+    _levelUp = nil,
     _effect = opts.effect,
     _playCry = opts.playCry,
     _textPolicy = opts.textPolicy,
@@ -399,9 +426,13 @@ function PartyMenuFlow:_openPage(page, continuation)
     local initialMessage = nil
     local context = "browse"
     local item = nil
+    local resume = nil
     if type(continuation) == "table" then
       focusSlot = continuation.focusSlot
       initialMessage = continuation.initialMessage
+      if continuation.resumeSlot ~= nil then
+        resume = { slot = continuation.resumeSlot }
+      end
       if continuation.operation == "give_from_party" then
         context = "give_resume"
         item = {
@@ -419,6 +450,7 @@ function PartyMenuFlow:_openPage(page, continuation)
       item = item,
       initialFocus = focusSlot,
       initialMessage = initialMessage,
+      resume = resume,
       measureDisplay = measureDisplay,
       prepareIcons = self._prepareIcons,
       cancelIconPreparation = self._cancelIconPreparation,
@@ -487,6 +519,15 @@ function PartyMenuFlow:_openPage(page, continuation)
       playCry = self._playCry,
       textPolicy = self._textPolicy,
       overrides = self._overrides,
+    })
+  end
+  if page == PAGE.EVOLUTION then
+    local cont = assert(continuation, "the evolution scene opens for a staged subject")
+    return self._makeEvolutionScene({
+      slot = assert(cont.slot, "evolution scenes name their party slot"),
+      subject = assert(cont.subject, "evolution scenes carry their subject"),
+      context = assert(cont.context, "evolution scenes carry their trigger context"),
+      source = assert(cont.source, "evolution scenes name their source"),
     })
   end
   if page == PAGE.MAIL_READ then
@@ -1272,7 +1313,7 @@ function PartyMenuFlow:_useCompletion(outcome, slot, itemKey)
     completion.message = {
       templateKey = "levelUp",
       displayName = displayName,
-      quantities = { assert(bindings.level, "level gains name their level") },
+      quantities = { (assert(bindings.level, "level gains name their level")) },
     }
   elseif textKey == "ev_changed" or textKey == "friendship_changed" then
     -- Retail vitamins (positive effort deltas) play the recovery sound
@@ -1423,7 +1464,7 @@ function PartyMenuFlow:_transferCompletion(outcome)
   completion.message = {
     templateKey = "hpRestored",
     displayName = Mon.displayName(self._mons:partyMon(recipient), self._mons:catalog()),
-    quantities = { assert(bindings.amount, "transfers name their received amount") },
+    quantities = { (assert(bindings.amount, "transfers name their received amount")) },
   }
   return completion
 end
@@ -1462,12 +1503,313 @@ function PartyMenuFlow:_routeUse(intent, continuation, itemKey)
     self:_replace(PAGE.MOVE_PICK, continuation)
     return
   end
+  if decision.kind == "evolution" then
+    -- Retail stones (party_menu.c PartyMenu_HandleUseItemOnMon) leave the
+    -- Party menu straight into a non-cancelable item evolution; the stone
+    -- is spent together with the published evolution.
+    self:_openEvolution(slot, { kind = "item", item = itemKey }, "field_item", itemKey, continuation.returnPage)
+    return
+  end
   if decision.kind ~= "ready" then
     self:_completeParty(self:_useCompletion({ kind = decision.kind }, slot, itemKey))
     return
   end
   local outcome = self._partyActions:commit(request)
-  self:_completeParty(self:_useCompletion(outcome, slot, itemKey))
+  local completion = self:_useCompletion(outcome, slot, itemKey)
+  local feedback = outcome.feedback
+  if outcome.kind == "changed" and type(feedback) == "table" and feedback.textKey == "level_up" then
+    -- Retail Rare Candy (party_menu_items.c PartyMenu_ItemUseFunc_LevelUp)
+    -- commits the level and spend first, then shows the stat windows and
+    -- runs the learning loop before the final evolution check.
+    local moves = {}
+    for _, opportunity in ipairs(assert(feedback.learning, "level gains report their learning")) do
+      moves[#moves + 1] = opportunity.move
+    end
+    self._levelUp = {
+      slot = slot,
+      itemKey = itemKey,
+      returnPage = assert(continuation.returnPage, "item uses name their return page"),
+      partyRevision = self._mons:partyRevision(),
+      bagRevision = self._bag:revision(),
+      moves = moves,
+      index = 0,
+      beats = {},
+    }
+    completion.levelUpStats = { before = feedback.statsBefore, after = feedback.statsAfter }
+    completion.continues = true
+  end
+  self:_completeParty(completion)
+end
+
+-- The detached bag quantities behind evolution side-product checks.
+---@return table<string, integer>
+function PartyMenuFlow:_inventorySnapshot()
+  local inventory = {}
+  for _, pocket in ipairs(BagSave.POCKET_ORDER) do
+    for _, entry in ipairs(self._bag:pocketItems(pocket)) do
+      inventory[entry.item] = (inventory[entry.item] or 0) + entry.quantity
+    end
+  end
+  return inventory
+end
+
+-- The evolution trigger context over the live party, bag, and sampled
+-- world facts; nil while the field clock is unreadable.
+---@param trigger table<string, unknown>
+---@return table<string, unknown>?
+function PartyMenuFlow:_evolutionContext(trigger)
+  local world = self._evolutionWorld()
+  if world == nil then
+    return nil
+  end
+  local party = {}
+  for slot = 0, self._mons:partyCount() - 1 do
+    party[#party + 1] = self._mons:partyMon(slot)
+  end
+  return {
+    trigger = trigger,
+    timeOfDay = world.timeOfDay,
+    mapId = world.mapId,
+    location = self._mons:currentMapSection(),
+    party = party,
+    inventory = self:_inventorySnapshot(),
+  }
+end
+
+-- Leaves the Party child for the evolution scene (start_menu.c
+-- Task_StartMenu_Evolution): the scene re-plans from the live subject, and
+-- the Bag reopens after it. Without readable world facts the scene stays
+-- closed and the Bag reopens directly.
+---@param slot integer
+---@param trigger table<string, unknown>
+---@param source string
+---@param itemKey string?
+---@param returnPage string
+function PartyMenuFlow:_openEvolution(slot, trigger, source, itemKey, returnPage)
+  self._levelUp = nil
+  local context = self:_evolutionContext(trigger)
+  if context == nil then
+    self:_replace(returnPage, nil)
+    return
+  end
+  self:_replace(PAGE.EVOLUTION, {
+    slot = slot,
+    subject = self._mons:partyMon(slot),
+    context = context,
+    source = source,
+    itemKey = itemKey,
+    returnPage = returnPage,
+    partyRevision = self._mons:partyRevision(),
+    bagRevision = self._bag:revision(),
+  })
+end
+
+-- Publishes one finished evolution scene and reopens the Bag. A completed
+-- scene publishes the evolved mon with its side products and spends;
+-- a cancelled one publishes nothing.
+---@param result table<string, unknown>
+function PartyMenuFlow:_routeEvolutionResult(result)
+  local continuation = assert(self._continuation, "evolution results resolve their scene request")
+  if result.kind == "evolution_complete" then
+    local outcome = self._partyActions:commit({
+      kind = "evolve",
+      slot = continuation.slot,
+      partyRevision = continuation.partyRevision,
+      bagRevision = continuation.bagRevision,
+      item = continuation.itemKey,
+      evolution = assert(result.staged, "completed evolutions carry their staged result"),
+    })
+    assert(outcome.kind == "changed", "a completed evolution publishes over its pinned revisions")
+  else
+    assert(result.kind == "evolution_cancelled", "evolution scenes complete or cancel")
+  end
+  self:_replace(continuation.returnPage, nil)
+end
+
+-- Advances the Rare Candy learning loop by one beat: queued messages
+-- first, then a pending question after a picker return, then the next
+-- level-up move (free slots learn at once, full sets ask), and finally the
+-- level evolution check on the resulting mon.
+function PartyMenuFlow:_advanceLevelUp()
+  local levelUp = assert(self._levelUp, "learning beats advance an open loop")
+  if levelUp.partyRevision ~= self._mons:partyRevision() or levelUp.bagRevision ~= self._bag:revision() then
+    self._levelUp = nil
+    self:_replace(levelUp.returnPage, nil)
+    return
+  end
+  local beat = table.remove(levelUp.beats, 1)
+  if beat ~= nil then
+    self:_completeParty({ kind = "changed", message = beat, continues = true })
+    return
+  end
+  local replacement = levelUp.replacement
+  if replacement ~= nil then
+    levelUp.replacement = nil
+    local outcome = self._partyActions:commit({
+      kind = "learn_move",
+      slot = levelUp.slot,
+      partyRevision = levelUp.partyRevision,
+      bagRevision = levelUp.bagRevision,
+      move = replacement.move,
+      moveSlot = replacement.moveSlot,
+      expectedOldMove = replacement.expectedOldMove,
+    })
+    if outcome.kind == "stale" then
+      self._levelUp = nil
+      self:_replace(levelUp.returnPage, nil)
+      return
+    end
+    assert(outcome.kind == "changed", "a picked replacement publishes after its forgetting message")
+    levelUp.partyRevision = assert(outcome.partyRevision, "a published move advances the pinned party revision")
+    levelUp.bagRevision = assert(outcome.bagRevision, "a published move advances the pinned bag revision")
+    self:_completeParty({
+      kind = "changed",
+      message = self:_levelUpMessage("learned", { replacement.move }),
+      continues = true,
+    })
+    return
+  end
+  local resume = levelUp.resumeQuestion
+  if resume ~= nil then
+    levelUp.resumeQuestion = nil
+    self:_askLevelUp(resume)
+    return
+  end
+  while true do
+    levelUp.index = levelUp.index + 1
+    local move = levelUp.moves[levelUp.index]
+    if move == nil then
+      break
+    end
+    local outcome = self._partyActions:commit({
+      kind = "learn_move",
+      slot = levelUp.slot,
+      partyRevision = levelUp.partyRevision,
+      bagRevision = levelUp.bagRevision,
+      move = move,
+    })
+    if outcome.kind == "changed" then
+      levelUp.partyRevision = assert(outcome.partyRevision, "a published move advances the pinned party revision")
+      levelUp.bagRevision = assert(outcome.bagRevision, "a published move advances the pinned bag revision")
+      self:_completeParty({
+        kind = "changed",
+        message = self:_levelUpMessage("levelUpLearned", { move }),
+        continues = true,
+      })
+      return
+    end
+    if outcome.kind == "needs_replacement" then
+      levelUp.pending = move
+      self:_askLevelUp("learn")
+      return
+    end
+    assert(outcome.kind == "known", "level-up learning learns, asks, or skips a known move")
+  end
+  local slot = levelUp.slot
+  local returnPage = levelUp.returnPage
+  self._levelUp = nil
+  local context = self:_evolutionContext({ kind = "level" })
+  if context ~= nil and Evolution.check(self._mons:partyMon(slot), context, self._mons:catalog()) ~= nil then
+    self:_openEvolution(slot, { kind = "level" }, "field_level", nil, returnPage)
+    return
+  end
+  self:_replace(returnPage, nil)
+end
+
+---@param templateKey string
+---@param moves string[]
+---@return table<string, unknown>
+function PartyMenuFlow:_levelUpMessage(templateKey, moves)
+  local levelUp = assert(self._levelUp, "learning messages name the loop subject")
+  local moveNames = {}
+  for _, move in ipairs(moves) do
+    moveNames[#moveNames + 1] = assert(self._assets.monCatalog:move(move).name, "the mon catalog names its moves")
+  end
+  return {
+    templateKey = templateKey,
+    displayName = Mon.displayName(self._mons:partyMon(levelUp.slot), self._mons:catalog()),
+    moveNames = moveNames,
+  }
+end
+
+-- Opens one learning question: the full-set delete question (msg 53) or
+-- the stop-trying question (msg 56).
+---@param question "learn"|"stop"
+function PartyMenuFlow:_askLevelUp(question)
+  local levelUp = assert(self._levelUp, "learning questions belong to an open loop")
+  local move = assert(levelUp.pending, "learning questions name the pending move")
+  levelUp.asking = question
+  local templateKey = question == "learn" and "learnMove" or "stopTeach"
+  self:_completeParty({ kind = "changed", question = self:_levelUpMessage(templateKey, { move }) })
+end
+
+-- Routes one learning-loop intent from the Party child: continues advance
+-- the loop and answers resolve the open question. YES to the delete
+-- question opens the protected move picker; NO asks whether to stop; YES
+-- to stopping declines the move.
+---@param intent table<string, unknown>
+function PartyMenuFlow:_routeLevelUpIntent(intent)
+  local levelUp = assert(self._levelUp, "learning intents belong to an open loop")
+  if levelUp.partyRevision ~= self._mons:partyRevision() or levelUp.bagRevision ~= self._bag:revision() then
+    self._levelUp = nil
+    self:_replace(levelUp.returnPage, nil)
+    return
+  end
+  if intent.kind == "continue" then
+    self:_advanceLevelUp()
+    return
+  end
+  assert(intent.kind == "answer", "learning intents continue or answer")
+  local asking = assert(levelUp.asking, "answers resolve an open question")
+  levelUp.asking = nil
+  local move = assert(levelUp.pending, "answers resolve the pending move")
+  if asking == "learn" then
+    if intent.choice == "yes" then
+      self:_replace(PAGE.MOVE_PICK, {
+        operation = "level_up_pick",
+        slot = levelUp.slot,
+        returnPage = levelUp.returnPage,
+        pickerRequest = {
+          context = "replace_machine",
+          protected = protectedRows(self._mons, self._assets.monCatalog, self._assets.itemCatalog, levelUp.slot),
+          prospectiveMove = move,
+        },
+      })
+      return
+    end
+    self:_askLevelUp("stop")
+    return
+  end
+  if intent.choice == "yes" then
+    levelUp.pending = nil
+    self:_completeParty({
+      kind = "changed",
+      message = self:_levelUpMessage("didNotLearn", { move }),
+      continues = true,
+    })
+    return
+  end
+  self:_askLevelUp("learn")
+end
+
+-- Resolves the learning loop's move picker: a chosen row replaces its
+-- move and queues the forgot/learned messages, while backing out asks
+-- whether to stop learning; either way the Party child reopens and
+-- resumes the loop (party_menu_items.c LevelUpDoLearnMove).
+---@param moveSlot integer?
+function PartyMenuFlow:_resolveLevelUpPick(moveSlot)
+  local levelUp = assert(self._levelUp, "learning picks resume an open loop")
+  local move = assert(levelUp.pending, "learning picks resolve the pending move")
+  if moveSlot == nil then
+    levelUp.resumeQuestion = "stop"
+  else
+    local forgotten =
+      assert(self._mons:partyMon(levelUp.slot).moves[moveSlot + 1], "a replacement picks a present move slot")
+    levelUp.replacement = { move = move, moveSlot = moveSlot, expectedOldMove = forgotten.move }
+    levelUp.pending = nil
+    levelUp.beats[#levelUp.beats + 1] = self:_levelUpMessage("forgotMove", { forgotten.move })
+  end
+  self:_replace(PAGE.PARTY_BROWSE, { resumeSlot = levelUp.slot })
 end
 
 -- Resolves the move the selected machine would teach: the item record
@@ -1718,12 +2060,22 @@ function PartyMenuFlow:_routeSummaryResult(result)
     self._continuation = nil
     return
   end
+  local continuation = assert(self._continuation, "picks and cancellations resolve a pending operation")
+  if continuation.operation == "level_up_pick" then
+    local levelUp = assert(self._levelUp, "level-up picks return to an open learning loop")
+    if levelUp.partyRevision ~= self._mons:partyRevision() or levelUp.bagRevision ~= self._bag:revision() then
+      self._levelUp = nil
+      self:_replace(levelUp.returnPage, nil)
+      return
+    end
+    self:_resolveLevelUpPick(result.kind == "move_selected" and result.moveSlot or nil)
+    return
+  end
   if result.kind == "move_selected" then
     self:_resolveMovePick(result)
     return
   end
   assert(result.kind == "cancelled", "summaries return, pick, or cancel")
-  local continuation = assert(self._continuation, "cancellation returns to a pending operation")
   local operation = assert(continuation.operation, "continuations name their operation")
   if operation == PAGE.SUMMARY then
     local slot = assert(continuation.slot, "summary opens on a slot")
@@ -1744,6 +2096,10 @@ end
 ---@param intent table<string, unknown>
 function PartyMenuFlow:_routeIntent(intent)
   assert(type(intent) == "table" and type(intent.kind) == "string", "intents carry their kind")
+  if self._levelUp ~= nil and (intent.kind == "continue" or intent.kind == "answer") then
+    self:_routeLevelUpIntent(intent)
+    return
+  end
   if self._page == PAGE.BAG_BROWSE and (intent.kind == "use" or intent.kind == "give") then
     self:_routeBagIntent(intent)
     return
@@ -1778,6 +2134,10 @@ end
 ---@param result table<string, unknown>
 function PartyMenuFlow:_routeResult(result)
   assert(type(result) == "table" and type(result.kind) == "string", "results carry their kind")
+  if self._page == PAGE.EVOLUTION then
+    self:_routeEvolutionResult(result)
+    return
+  end
   if self._page == PAGE.APRICORN_BOX then
     assert(result.kind == "closed", "the browse Box closes back to the Bag")
     self:_replace(PAGE.BAG_BROWSE, nil)
@@ -1868,7 +2228,7 @@ end
 ---@return table<string, unknown>?
 function PartyMenuFlow:_takeIntent()
   local child = assert(self._child, "intents drain from a live child")
-  if self._page == PAGE.SUMMARY or self._page == PAGE.MOVE_PICK then
+  if self._page == PAGE.SUMMARY or self._page == PAGE.MOVE_PICK or self._page == PAGE.EVOLUTION then
     return nil
   end
   return child:takeIntent()
@@ -2131,6 +2491,7 @@ function PartyMenuFlow:dispose()
   self._picker = nil
   self._transition = nil
   self._terminalChildStatus = nil
+  self._levelUp = nil
   if child ~= nil then
     child:dispose()
   end

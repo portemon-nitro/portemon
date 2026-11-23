@@ -672,6 +672,10 @@ ItemSources.HOLD_EFFECT_FRIENDSHIP_UP = 53
 -- holds it.
 ItemSources.HOLD_EFFECT_MONEY_UP = 58
 
+-- Held items with this effect prevent level and trade evolution unless
+-- the source trigger is direct item use; see pokemon.c GetEvolution.
+ItemSources.HOLD_EFFECT_NO_EVOLVE = 64
+
 -- item_data member layout: fixed 34-byte
 -- rows. Audited field offsets: u16 price at 0, hold-effect byte at 2,
 -- hold-effect parameter at 3, the packed bitfield u16 at 8

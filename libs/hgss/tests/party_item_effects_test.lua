@@ -328,9 +328,9 @@ function T.transfer_rejects_bad_targets()
 end
 
 -- Deferred progression items plan through the progression owner once the
--- host identifies the item and supplies bag, party, and clock facts. The
--- vectors below reuse the real mon and item catalogs with local slot edits
--- only, so delegation is proved against production arithmetic.
+-- host identifies the item. The vectors below reuse the real mon and item
+-- catalogs with local slot edits only, so delegation is proved against
+-- production arithmetic.
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local ProgressionExperience = require("libs.mons.src.gen4.Experience")
 local ProgressionStats = require("libs.mons.src.gen4.MonStats")
@@ -371,20 +371,10 @@ local function progressionMon(catalog, seed, level)
 end
 
 ---@param catalog table mon catalog under test
----@param record table mon record under test
 ---@param item string identified item key for this vector
----@param inventory table<string, integer> bag counts visible to the vector
----@return table<string, unknown> progression planning context with frozen world facts
-local function progressionContext(catalog, record, item, inventory)
-  return {
-    location = 7,
-    catalog = catalog,
-    item = item,
-    inventory = inventory,
-    party = { record },
-    timeOfDay = "day",
-    game = "heartgold",
-  }
+---@return table<string, unknown> progression planning context
+local function progressionContext(catalog, item)
+  return { location = 7, catalog = catalog, item = item }
 end
 
 ---@param reason string deferred party-use reason for this vector
@@ -400,64 +390,97 @@ local function liveDerived(catalog, record)
   return { maxHp = ProgressionStats.derive(record, catalog).maxHp }
 end
 
-function T.deferred_sweets_stage_real_levels()
+local BANDS = { lo = 5, med = 3, hi = 2 }
+
+---@param bands table<string, integer>|nil friendship bands carried by the candy
+---@return table<string, unknown> generated-style Rare Candy definition
+local function candyDefinition(bands)
+  return { nativeId = 43, partyUse = { kind = "deferred", reason = "level_up", friendship = bands } }
+end
+
+function T.deferred_sweets_stage_the_level_and_report_the_windows()
   local catalog = progressionCatalog()
-  local target = progressionMon(catalog, 811, 9)
-  target.moves = {
-    { move = "TACKLE", pp = 35, ppUps = 0 },
-    { move = "GROWL", pp = 40, ppUps = 0 },
-    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
-    { move = "POISONPOWDER", pp = 35, ppUps = 0 },
-  }
+  local target = progressionMon(catalog, 811, 11)
+  target.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  target.condition.currentHp = target.condition.currentHp - 3
   local plan = PartyItemEffects.plan(
     target,
-    deferredDefinition("level_up"),
+    candyDefinition(nil),
     nil,
-    progressionContext(catalog, target, "RARE_CANDY", { RARE_CANDY = 1 }),
+    progressionContext(catalog, "RARE_CANDY"),
     liveDerived(catalog, target)
   )
-  Assert.equal(plan.kind, "ready", "a decision-free sweet stages a ready plan")
-  local species = catalog:species("CHIKORITA")
-  local curve = catalog:growthCurve(species.growthCurve)
-  Assert.equal(
-    plan.updates.experience,
-    ProgressionExperience.expFor(curve, 10),
-    "the staged record carries next-level experience"
-  )
+  Assert.equal(plan.kind, "ready", "a sweet stages a ready plan")
+  local curve = catalog:growthCurve(catalog:species("CHIKORITA").growthCurve)
+  Assert.equal(plan.updates.experience, ProgressionExperience.expFor(curve, 12), "the staged record is one level up")
   Assert.equal(plan.feedback.textKey, "level_up", "the feedback names the level gain")
-  Assert.equal(plan.feedback.bindings.level, 10, "the feedback names the crossed level")
+  Assert.deepEqual(plan.feedback.bindings, { item = "RARE_CANDY", level = 12 }, "the feedback names item and level")
+  Assert.equal(plan.feedback.statsAfter.maxHp, ProgressionStats.derive(plan.updates, catalog).maxHp, "after window")
+  Assert.equal(plan.feedback.statsBefore.maxHp, ProgressionStats.derive(target, catalog).maxHp, "before window")
+  Assert.deepEqual(plan.feedback.learning, { { level = 12, move = "SYNTHESIS" } }, "the new level's move is offered")
+  Assert.equal(plan.feedback.slots[1].hpBefore, target.condition.currentHp, "the slot reports the health before")
+  Assert.equal(plan.feedback.slots[1].hpAfter, plan.updates.condition.currentHp, "the slot reports the health after")
+  Assert.equal(#plan.updates.moves, 1, "learning stays with the host")
+  local capped = progressionMon(catalog, 827, 100)
+  capped.experience = curve[100]
+  Assert.equal(
+    PartyItemEffects.plan(
+      capped,
+      candyDefinition(nil),
+      nil,
+      progressionContext(catalog, "RARE_CANDY"),
+      liveDerived(catalog, capped)
+    ).kind,
+    "no_effect",
+    "a level-100 mon takes no sweet"
+  )
 end
 
-function T.deferred_sweets_wait_on_pending_decisions()
+-- The candy's friendship bands apply after the level, by the band of the
+-- friendship held at use, with the Luxury Ball, egg-location, and held
+-- friendship-boost bonuses and the 255 cap.
+function T.deferred_sweets_apply_their_friendship_bands()
   local catalog = progressionCatalog()
-  local target = progressionMon(catalog, 823, 5)
-  target.moves = {
-    { move = "TACKLE", pp = 35, ppUps = 0 },
-  }
-  local plan = PartyItemEffects.plan(
-    target,
-    deferredDefinition("level_up"),
-    nil,
-    progressionContext(catalog, target, "RARE_CANDY", { RARE_CANDY = 1 }),
-    liveDerived(catalog, target)
+  local function friendshipAfter(friendship, overrides)
+    local target = progressionMon(catalog, 841, 9)
+    target.friendship = friendship
+    target.mood = 0
+    target.origin = { ball = "POKE_BALL" }
+    target.egg = { location = 99 }
+    for key, value in pairs(overrides or {}) do
+      target[key] = value
+    end
+    local plan = PartyItemEffects.plan(
+      target,
+      candyDefinition(BANDS),
+      nil,
+      progressionContext(catalog, "RARE_CANDY"),
+      liveDerived(catalog, target)
+    )
+    Assert.equal(plan.kind, "ready", "the sweet applies")
+    Assert.equal(plan.updates.mood, 0, "the candy defines no mood change")
+    return plan.updates.friendship
+  end
+  Assert.equal(friendshipAfter(99), 99 + 5, "low band")
+  Assert.equal(friendshipAfter(100), 100 + 3, "middle band starts at 100")
+  Assert.equal(friendshipAfter(199), 199 + 3, "middle band ends at 199")
+  Assert.equal(friendshipAfter(200), 200 + 2, "high band starts at 200")
+  Assert.equal(friendshipAfter(254), 255, "the sum caps at 255")
+  Assert.equal(friendshipAfter(255), 255, "a maxed mon stays maxed")
+  Assert.equal(friendshipAfter(50, { origin = { ball = "LUXURY_BALL" } }), 50 + 5 + 1, "luxury ball bonus")
+  Assert.equal(friendshipAfter(50, { egg = { location = 7 } }), 50 + 5 + 1, "egg location bonus")
+  Assert.equal(friendshipAfter(50, { heldItem = "SOOTHE_BELL" }), 50 + math.floor(5 * 150 / 100), "held boost")
+  Assert.equal(
+    friendshipAfter(50, { heldItem = "SOOTHE_BELL", origin = { ball = "LUXURY_BALL" } }),
+    50 + math.floor((5 + 1) * 150 / 100),
+    "boost multiplies after the ball bonus"
   )
-  Assert.equal(plan.kind, "needs_confirmation", "pending learning waits on confirmation")
-  Assert.isTrue(#plan.candidate.learningOpportunities > 0, "the candidate carries the chances")
-  local capped = progressionMon(catalog, 827, 9)
-  local refused = PartyItemEffects.plan(
-    capped,
-    deferredDefinition("level_up"),
-    nil,
-    progressionContext(catalog, capped, "RARE_CANDY", {}),
-    liveDerived(catalog, capped)
-  )
-  Assert.equal(refused.kind, "no_effect", "an empty pocket reports no effect")
 end
 
-function T.deferred_stones_stage_confirmable_plans()
+-- Evolution items only answer whether they evolve the mon.
+function T.deferred_stones_answer_whether_they_evolve_the_mon()
   local root = CatalogFixture.buildAssetRoot()
-  local forms = root.species.CHIKORITA.forms
-  forms[0].evolutions = {
+  root.species.CHIKORITA.forms[0].evolutions = {
     { method = "stone", item = "FIRE_STONE", target = "EEVEE", form = 0 },
   }
   local ItemFixture = require("libs.items.tests.item_fixture")
@@ -470,129 +493,37 @@ function T.deferred_stones_stage_confirmable_plans()
   local MonCatalog = require("libs.mons.src.MonCatalog")
   local catalog = MonCatalog.new(root, ItemCatalog.new(asset))
   local target = progressionMon(catalog, 839, 12)
+  local definition = { nativeId = 210, partyUse = { kind = "deferred", reason = "evolution" } }
   local plan = PartyItemEffects.plan(
     target,
-    { nativeId = 210, partyUse = { kind = "deferred", reason = "evolution" } },
+    definition,
     nil,
-    progressionContext(catalog, target, "FIRE_STONE", { FIRE_STONE = 2 }),
+    progressionContext(catalog, "FIRE_STONE"),
     liveDerived(catalog, target)
   )
-  Assert.equal(plan.kind, "needs_confirmation", "stones wait on confirmation")
-  Assert.equal(plan.candidate.plan.monAfter.species, "EEVEE", "the candidate carries the stone target")
-  Assert.deepEqual(
-    plan.candidate.plan.inventoryDeltas,
-    { { item = "FIRE_STONE", delta = -1 } },
-    "the candidate spends exactly one stone"
-  )
-  Assert.equal(plan.candidate.consumedOnAccept, 1, "accepting spends exactly one")
-  Assert.equal(plan.candidate.consumedOnCancel, 0, "declining spends nothing")
-  local wrong = PartyItemEffects.plan(
-    target,
-    { nativeId = 210, partyUse = { kind = "deferred", reason = "evolution" } },
-    nil,
-    progressionContext(catalog, target, "FIRE_STONE", {}),
-    liveDerived(catalog, target)
-  )
-  Assert.equal(wrong.kind, "no_effect", "an empty pocket reports no effect")
-end
-
--- The deferred sweet surfaces the probe evolution while keeping the
--- decision behind confirmation: a free-slot has_move slot qualified by
--- the just-learned move stages the evolution in the candidate instead of
--- missing it.
-function T.deferred_sweets_surface_probe_evolutions_behind_confirmation()
-  local root = CatalogFixture.buildAssetRoot()
-  root.species.CHIKORITA.forms[0].evolutions = {
-    { method = "has_move", move = "SYNTHESIS", target = "TOTODILE", form = 0 },
-  }
-  local ItemFixture = require("libs.items.tests.item_fixture")
-  local asset = ItemFixture.buildAssetRoot()
-  local sweet = asset.items.ITEM_43
-  assert(sweet ~= nil, "the item fixture carries placeholder ITEM_43")
-  asset.items.ITEM_43 = nil
-  asset.items.RARE_CANDY = sweet
-  local ItemCatalog = require("libs.items.src.ItemCatalog")
-  local MonCatalog = require("libs.mons.src.MonCatalog")
-  local catalog = MonCatalog.new(root, ItemCatalog.new(asset))
-  local target = progressionMon(catalog, 877, 11)
-  target.moves = {
-    { move = "TACKLE", pp = 35, ppUps = 0 },
-    { move = "GROWL", pp = 40, ppUps = 0 },
-  }
-  local plan = PartyItemEffects.plan(
-    target,
-    deferredDefinition("level_up"),
-    nil,
-    progressionContext(catalog, target, "RARE_CANDY", { RARE_CANDY = 1 }),
-    liveDerived(catalog, target)
-  )
-  Assert.equal(plan.kind, "needs_confirmation", "the earned evolution waits on confirmation")
-  Assert.equal(plan.candidate.evolution, "TOTODILE", "the just-learned move qualifies the has_move slot")
-  Assert.deepEqual(
-    plan.candidate.learningOpportunities,
-    { { level = 12, move = "SYNTHESIS" } },
-    "the chance is still staged"
+  Assert.deepEqual(plan, { kind = "evolution" }, "the matching stone evolves the mon")
+  Assert.equal(
+    PartyItemEffects.plan(
+      target,
+      definition,
+      nil,
+      progressionContext(catalog, "WATER_STONE"),
+      liveDerived(catalog, target)
+    ).kind,
+    "no_effect",
+    "a stone with no slot has no effect"
   )
 end
 
--- A full set never reports a silent evolution: the probe cannot learn
--- the undecided move, so the sweet waits on confirmation with the chance
--- staged and no evolution claimed.
-function T.deferred_sweets_hold_full_set_learning_for_confirmation()
-  local root = CatalogFixture.buildAssetRoot()
-  root.species.CHIKORITA.forms[0].evolutions = {
-    { method = "has_move", move = "SYNTHESIS", target = "TOTODILE", form = 0 },
-  }
-  local ItemFixture = require("libs.items.tests.item_fixture")
-  local asset = ItemFixture.buildAssetRoot()
-  local sweet = asset.items.ITEM_43
-  assert(sweet ~= nil, "the item fixture carries placeholder ITEM_43")
-  asset.items.ITEM_43 = nil
-  asset.items.RARE_CANDY = sweet
-  local ItemCatalog = require("libs.items.src.ItemCatalog")
-  local MonCatalog = require("libs.mons.src.MonCatalog")
-  local catalog = MonCatalog.new(root, ItemCatalog.new(asset))
-  local target = progressionMon(catalog, 883, 11)
-  target.moves = {
-    { move = "TACKLE", pp = 35, ppUps = 0 },
-    { move = "GROWL", pp = 40, ppUps = 0 },
-    { move = "RAZOR_LEAF", pp = 25, ppUps = 0 },
-    { move = "POISONPOWDER", pp = 35, ppUps = 0 },
-  }
-  local plan = PartyItemEffects.plan(
-    target,
-    deferredDefinition("level_up"),
-    nil,
-    progressionContext(catalog, target, "RARE_CANDY", { RARE_CANDY = 1 }),
-    liveDerived(catalog, target)
-  )
-  Assert.equal(plan.kind, "needs_confirmation", "pending learning waits on confirmation")
-  Assert.isTrue(#plan.candidate.learningOpportunities > 0, "the candidate carries the chances")
-  Assert.isTrue(plan.candidate.evolution == nil, "the undecided move stages no silent evolution")
-end
-
-function T.deferred_items_without_identified_facts_stay_deferred()
+function T.deferred_items_keep_eggs_and_other_deferrals_out()
   local catalog = progressionCatalog()
   local target = progressionMon(catalog, 853, 9)
-  local bare = { location = 7, catalog = catalog }
-  Assert.equal(
-    PartyItemEffects.plan(target, deferredDefinition("level_up"), nil, bare, liveDerived(catalog, target)).kind,
-    "feature_unavailable",
-    "an unidentified item stays deferred"
-  )
-  local noBag = progressionContext(catalog, target, "RARE_CANDY", { RARE_CANDY = 1 })
-  noBag.inventory = nil
-  Assert.equal(
-    PartyItemEffects.plan(target, deferredDefinition("level_up"), nil, noBag, liveDerived(catalog, target)).kind,
-    "feature_unavailable",
-    "missing bag facts stay deferred"
-  )
   Assert.equal(
     PartyItemEffects.plan(
       target,
       deferredDefinition("battle_only"),
       nil,
-      progressionContext(catalog, target, "RARE_CANDY", { RARE_CANDY = 1 }),
+      progressionContext(catalog, "RARE_CANDY"),
       liveDerived(catalog, target)
     ).kind,
     "feature_unavailable",
@@ -600,17 +531,19 @@ function T.deferred_items_without_identified_facts_stay_deferred()
   )
   local egg = progressionMon(catalog, 859, 9)
   egg.isEgg = true
-  Assert.equal(
-    PartyItemEffects.plan(
-      egg,
-      deferredDefinition("level_up"),
-      nil,
-      progressionContext(catalog, egg, "RARE_CANDY", { RARE_CANDY = 1 }),
-      liveDerived(catalog, egg)
-    ).kind,
-    "ineligible",
-    "eggs stay ineligible"
-  )
+  for _, reason in ipairs({ "level_up", "evolution" }) do
+    Assert.equal(
+      PartyItemEffects.plan(
+        egg,
+        deferredDefinition(reason),
+        nil,
+        progressionContext(catalog, "RARE_CANDY"),
+        liveDerived(catalog, egg)
+      ).kind,
+      "ineligible",
+      "eggs stay ineligible for " .. reason
+    )
+  end
 end
 
 return { tests = T }

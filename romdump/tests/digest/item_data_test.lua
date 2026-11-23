@@ -449,6 +449,22 @@ function T.pins_the_machine_berry_and_mail_ranges()
   Assert.equal(ItemSources.messageBanks.berry, 251)
 end
 
+-- Rare Candy shape: the level-up flag with the source friendship bands.
+-- The deferred record carries the bands and no mood.
+function T.level_up_items_carry_their_friendship_bands()
+  local candy = catalogBytes(0, true, { 0, 0x04, 0, 0, 0, 0, 0x0E }, { 0, 0, 0, 0, 0, 0, 0, 0, 5, 3, 2 })
+  local catalog = assert(compiler().compileCatalog(stubCatalogRom({ [50] = candy }), { versionId = "heartgold" }))
+  local record = assert(catalog.items.RARE_CANDY, "RARE_CANDY must compile")
+  Assert.deepEqual(record.partyUse, {
+    kind = "deferred",
+    reason = "level_up",
+    friendship = { lo = 5, med = 3, hi = 2 },
+  })
+  local bare = catalogBytes(0, true, { 0, 0x04, 0, 0, 0, 0, 0 }, nil)
+  local plain = assert(compiler().compileCatalog(stubCatalogRom({ [50] = bare }), { versionId = "heartgold" }))
+  Assert.deepEqual(plain.items.RARE_CANDY.partyUse, { kind = "deferred", reason = "level_up" })
+end
+
 function T.battle_only_items_carry_their_decoded_battle_use()
   -- X-attack shape: party-use byte set with only the attack-stage
   -- nibble, so party normalization defers to battle-only riders.

@@ -8,6 +8,7 @@ local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Experience = require("libs.mons.src.gen4.Experience")
 local ItemFixture = require("libs.items.tests.item_fixture")
+local ItemCatalog = require("libs.items.src.ItemCatalog")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local MonStats = require("libs.mons.src.gen4.MonStats")
 
@@ -38,8 +39,24 @@ end
 
 ---@return table shared item catalog for the vector roster
 local function testItemCatalog()
-  local ItemFixture = require("libs.items.tests.item_fixture")
-  return ItemFixture.makeCatalog()
+  local root = ItemFixture.buildAssetRoot()
+  local function renamePlaceholder(nativeId, key, heldBehavior)
+    local placeholderKey = "ITEM_" .. nativeId
+    local record = assert(root.items[placeholderKey])
+    root.items[placeholderKey] = nil
+    record.name = key
+    record.nameIndefinite = "a " .. key
+    record.namePlural = key .. "s"
+    record.description = key .. " description"
+    record.heldBehavior = heldBehavior
+    root.items[key] = record
+  end
+  renamePlaceholder(500, "EVERSTONE", {
+    key = "prevents_evolution",
+    params = { nativeId = 500, holdEffect = 64 },
+  })
+  renamePlaceholder(501, "KINGS_ROCK")
+  return ItemCatalog.new(root)
 end
 
 ---@param root table<string, unknown> mutable synthetic mon asset root
@@ -335,6 +352,53 @@ function T.side_products_commit_or_cancel_atomically()
   Assert.equal(Flow.step(cancelled).prompt, "cancelled", "the decline ends cancelled")
   Assert.isTrue(Flow.capture(cancelled) == nil, "the declined capture carries nothing")
   Assert.deepEqual(second, frozen, "declining leaves the whole candidate untouched")
+end
+
+-- The shed side product derives at capture from the finished Ninjask: it
+-- copies a move learned during the post-evolution learning, and a full
+-- party or an empty bag leaves the primary evolving alone.
+function T.side_product_copies_the_final_learned_moves_at_capture()
+  local Flow = requirePresent("libs.hgss.src.mons.EvolutionFlow", "concrete evolution flow owns staging")
+  local root = CatalogFixture.buildAssetRoot()
+  addLineSlots(root)
+  local ninjask = root.species.NINJASK.forms[0].levelUpMoves --[[@as table<integer, table<string, unknown>>]]
+  ninjask[#ninjask + 1] = { level = 20, move = "QUICK_ATTACK" }
+  local catalog = MonCatalog.new(root, testItemCatalog())
+  local mon = pinLevel(makeMon(catalog, 331, { species = "NINCADA" }), catalog, 20)
+  mon.moves = {
+    { move = "SCRATCH", pp = 35, ppUps = 0 },
+    { move = "HARDEN", pp = 30, ppUps = 0 },
+  }
+  local mate = pinLevel(makeMon(catalog, 337, {}), catalog, 9)
+  local function capture(context)
+    local flow = Flow.start(mon, context, catalog)
+    Assert.notNil(flow, "the line member opens a flow")
+    Flow.respond(flow, { choice = "accept" })
+    local prompt = Flow.step(flow)
+    Assert.equal(prompt.prompt, "move_learned", "the post-evolution learning teaches the level move")
+    Flow.respond(flow, { choice = "continue" })
+    Assert.equal(Flow.step(flow).prompt, "complete", "the flow completes after learning")
+    return assert(Flow.capture(flow))
+  end
+  local result = capture(vectorContext({ party = { mon, mate }, inventory = { POKE_BALL = 5 } }))
+  Assert.equal(result.mon.moves[3].move, "QUICK_ATTACK", "the primary learned the level move")
+  Assert.equal(#result.additionalMons, 1, "the capture carries the extra mon")
+  local extra = result.additionalMons[1]
+  Assert.equal(extra.species, "SHEDINJA", "the extra mon is the shed side product")
+  Assert.deepEqual(extra.moves, result.mon.moves, "the extra mon copies the finalized moves")
+  Assert.equal(extra.origin.ball, "POKE_BALL", "the extra mon is caught in a Poké Ball")
+  Assert.equal(extra.condition.currentHp, 1, "the extra mon has one health")
+  Assert.deepEqual(result.inventoryDeltas, { { item = "POKE_BALL", delta = -1 } }, "exactly one ball is spent")
+  local crowded = { mon }
+  for seed = 341, 345 do
+    crowded[#crowded + 1] = pinLevel(makeMon(catalog, seed, {}), catalog, 9)
+  end
+  local full = capture(vectorContext({ party = crowded, inventory = { POKE_BALL = 5 } }))
+  Assert.deepEqual(full.additionalMons, {}, "a full party stages no side product")
+  Assert.deepEqual(full.inventoryDeltas, {}, "a full party spends no ball")
+  local broke = capture(vectorContext({ party = { mon, mate }, inventory = {} }))
+  Assert.deepEqual(broke.additionalMons, {}, "no ball stages no side product")
+  Assert.deepEqual(broke.inventoryDeltas, {}, "no ball spends nothing")
 end
 
 -- Post-battle eligibility rechecks final roster state behind the terminal

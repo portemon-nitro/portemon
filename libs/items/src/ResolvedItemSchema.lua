@@ -222,10 +222,14 @@ local function assertPartyUse(key, value, context)
   elseif value.kind == "machine" then
     checkKeys(value, { kind = true }, context)
   elseif value.kind == "deferred" then
-    checkKeys(value, { kind = true, reason = true }, context)
+    checkKeys(value, { kind = true, reason = true, friendship = true }, context)
     if DEFERRED_REASONS[value.reason] ~= true then
       fail("item " .. key .. " deferral names an unknown reason", context)
     end
+    if value.friendship ~= nil and value.reason ~= "level_up" then
+      fail("item " .. key .. " only a level-up deferral carries friendship", context)
+    end
+    assertFriendship(key, value.friendship, context)
   else
     fail("item " .. key .. " partyUse kind must be a closed effect kind", context)
   end
@@ -463,8 +467,8 @@ function ResolvedItemSchema.assertCatalog(catalog)
   end
   -- Composed roots may carry mod metadata beyond the engine-known
   -- members; every known member below stays typed and versioned.
-  if catalog.schema ~= "g4-item-catalog-v4" then
-    fail("catalog schema must be g4-item-catalog-v4", context)
+  if catalog.schema ~= "g4-item-catalog-v5" then
+    fail("catalog schema must be g4-item-catalog-v5", context)
   end
   if type(catalog.version) ~= "table" then
     fail("catalog version must be a record", context)

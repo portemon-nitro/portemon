@@ -5,8 +5,9 @@
 -- default touch rects with right 0 encoding the 256 pane edge. Context
 -- menus resolve to one generated source-shaped record per entry through
 -- the menu class (top-level 2..8, subcontext 2..5) and count; prompt
--- placement rides the generated yes/no anchor. The shared default column
--- order stays available to nonvisual script selection.
+-- placement rides the generated yes/no anchor. Generated message
+-- templates split into printer pages at their prompt breaks. The shared
+-- default column order stays available to nonvisual script selection.
 -- Pure module: no love, no I/O.
 
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
@@ -24,12 +25,36 @@ local PartyScreenLayout = {}
 ---@field menuLayout fun(kind: "topLevel"|"subcontext", count: integer): table[]
 ---@field menuHit fun(kind: "topLevel"|"subcontext", count: integer, x: number, y: number): { index: integer }?
 ---@field promptAnchor { x: integer, y: integer }
+---@field messagePages fun(message: string|{ templateKey: string }): integer printer pages one action message shows
 ---@field compact boolean always true: native geometry never reflows
 
 ---@class PartyScreenLayout.Hit
 ---@field kind "slot"|"action"|"cancel"
 ---@field slot integer?
 ---@field action string?
+
+-- Splits generated template segments into printer pages. A prompt break
+-- (source 0x25BC, render_text.c printer state 2) waits for a button,
+-- clears the window, and restarts at its top line, so each break closes
+-- one page; a trailing break is only the final wait and opens no page.
+---@param segments table[]
+---@return table[][] pages in print order, each a segment list
+function PartyScreenLayout.templatePages(segments)
+  assert(type(segments) == "table", "templates carry segments")
+  local pages = { {} }
+  for _, segment in ipairs(segments) do
+    if segment.kind == "lineBreak" and segment.flow == "prompt" then
+      pages[#pages + 1] = {}
+    else
+      local page = pages[#pages]
+      page[#page + 1] = segment
+    end
+  end
+  if #pages > 1 and #pages[#pages] == 0 then
+    pages[#pages] = nil
+  end
+  return pages
+end
 
 ---@param rect ScreenTopology.Rectangle
 ---@return ScreenTopology.Rectangle
@@ -255,6 +280,19 @@ function PartyScreenLayout.resolve(spec)
     return nil
   end
 
+  ---@param message string|{ templateKey: string }
+  ---@return integer
+  local function messagePages(message)
+    if type(message) == "string" then
+      return 1
+    end
+    local text = assert(manifest.text, "the party manifest carries text")
+    local templates = assert(text.templates, "the party manifest carries templates")
+    local template =
+      assert(templates[message.templateKey], "the party manifest carries template " .. message.templateKey)
+    return #PartyScreenLayout.templatePages(template.segments)
+  end
+
   return {
     frame = frame,
     slotRects = slotRects,
@@ -264,6 +302,7 @@ function PartyScreenLayout.resolve(spec)
     menuLayout = menuLayout,
     menuHit = menuHit,
     promptAnchor = manifestPromptAnchor(manifest),
+    messagePages = messagePages,
     compact = true,
   }
 end

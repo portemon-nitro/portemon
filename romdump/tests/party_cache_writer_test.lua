@@ -101,7 +101,7 @@ local function manifest()
     subcontext[count] = layout(count, false)
   end
   return {
-    schema = "g4-party-presentation-v7",
+    schema = "g4-party-presentation-v9",
     panes = {
       main = { width = 256, height = 192 },
       sub = { width = 256, height = 192 },
@@ -111,6 +111,7 @@ local function manifest()
       browse = { x = 16, y = 168, width = 160, height = 16 },
       context = { x = 16, y = 152, width = 104, height = 32 },
       action = { x = 16, y = 152, width = 216, height = 32 },
+      levelUpStats = { x = 8, y = 8, width = 112, height = 96 },
       prompt = { x = 200, y = 80 },
     },
     contextMenu = {
@@ -244,7 +245,19 @@ local function manifest()
       },
     },
     text = {
-      labels = { cancel = "Cancel", male = "M", female = "F", item = "ITEM" },
+      labels = {
+        cancel = "Cancel",
+        male = "M",
+        female = "F",
+        item = "ITEM",
+        statMaxHp = "MAX HP",
+        statAttack = "ATTACK",
+        statDefense = "DEFENSE",
+        statSpecialAttack = "SP. ATK",
+        statSpecialDefense = "SP. DEF",
+        statSpeed = "SPEED",
+        statPlus = "+",
+      },
       templates = {
         switchPrompt = { segments = { { kind = "text", value = "Switch?" } } },
         chooseMon = { segments = { { kind = "text", value = "Choose a POKEMON." } } },
@@ -266,6 +279,14 @@ local function manifest()
         fieldMoveHaveFollower = { segments = { { kind = "text", value = "Someone is with you." } } },
         fieldMoveAlreadySurfing = { segments = { { kind = "text", value = "Already surfing." } } },
         fieldMoveNotNow = { segments = { { kind = "text", value = "Not the place." } } },
+        levelUp = { segments = { { kind = "text", value = "Grew." } } },
+        levelUpLearned = { segments = { { kind = "text", value = "Learned." } } },
+        forgotMove = { segments = { { kind = "text", value = "Forgot." } } },
+        learned = { segments = { { kind = "text", value = "Learned." } } },
+        learnMove = { segments = { { kind = "text", value = "Learn?" } } },
+        forgetMove = { segments = { { kind = "text", value = "Forget?" } } },
+        stopTeach = { segments = { { kind = "text", value = "Stop?" } } },
+        didNotLearn = { segments = { { kind = "text", value = "Did not." } } },
       },
       roles = { ordinary = role(), male = role(), female = role() },
       messageRole = role(),
@@ -322,12 +343,15 @@ function T.writes_the_class_and_reports_ready()
   local PartyCache, PartyCacheWriter = contracts()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = PartyCache.marker("abc", "dep")
-  Assert.isTrue(ResidentArtifactFixture.publish(cache, "party", "global", function(artifact)
+  Assert.isTrue(
+    ResidentArtifactFixture.publish(cache, "party", "global", function(artifact)
       return PartyCacheWriter.stage(artifact, bundle(marker))
-    end), "publication reports success")
+    end),
+    "publication reports success"
+  )
   Assert.isTrue(PartyCache.isReady(cache, marker), "ready after write")
   local loaded = PartyCache.loadManifest(cache)
-  Assert.equal(loaded.schema, "g4-party-presentation-v7", "the published manifest loads back")
+  Assert.equal(loaded.schema, "g4-party-presentation-v9", "the published manifest loads back")
   Assert.notNil(loaded.text.templates.bagFull, "the published manifest carries the full-bag template")
   Assert.notNil(loaded.text.templates.heldMail, "the published manifest carries the held-Mail template")
   Assert.notNil(loaded.text.templates.takeHeldItem, "the published manifest carries the take-success template")
@@ -357,8 +381,8 @@ function T.failed_rebuild_preserves_the_previous_artifact()
   local cache = CacheFs.forVersion("heartgold", backend)
   local firstMarker = PartyCache.marker("abc", "dep")
   ResidentArtifactFixture.publish(cache, "party", "global", function(artifact)
-      return PartyCacheWriter.stage(artifact, bundle(firstMarker))
-    end)
+    return PartyCacheWriter.stage(artifact, bundle(firstMarker))
+  end)
 
   local broken = bundle(PartyCache.marker("abc", "new-dep"))
   broken.manifest = nil

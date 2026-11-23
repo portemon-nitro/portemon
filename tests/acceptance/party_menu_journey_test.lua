@@ -3,8 +3,9 @@
 -- Give/Take round trips conserve through live services, a UI-driven swap
 -- plus Summary survives save/reload, deferred items stay safe and
 -- non-consuming, and script selection answers through the live runtime
--- host. Stops before GPU rendering like every acceptance path. Deferred
--- capabilities (evolution, level-up items, mail, contests, storage,
+-- host. Evolution stones and Rare Candies run the real evolution scene
+-- from the Bag before it reopens. Stops before GPU rendering like every
+-- acceptance path. Deferred capabilities (mail, contests, storage,
 -- battles) are out of scope and stay refused; journeys below never
 -- convert them into successes.
 
@@ -13,6 +14,9 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+local BattleEvolutionState = require("game.hgss.src.battle.BattleEvolutionState")
+local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
+local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
 local FieldState = require("game.hgss.src.field.FieldState")
 local GameSave = require("libs.hgss.src.save.GameSave")
 
@@ -29,6 +33,20 @@ local T = {
       "map:7",
       "summary:global",
       "move-icons:global",
+      "battle-presentation:global",
+      "battle-evolution:global",
+      -- Evolution cries: the standard sequence and each species used by
+      -- the field evolution journeys below.
+      "audio-bank:1",
+      "audio-bank:4",
+      "audio-bank:5",
+      "audio-bank:133",
+      "audio-bank:136",
+      "audio-bank:190",
+      "audio-bank:290",
+      "audio-bank:291",
+      "audio-bank:292",
+      "audio-bank:424",
     },
     tags = { "party", "bag", "journey" },
   },
@@ -70,11 +88,12 @@ local function bindSummaryLease(game)
   end)
 end
 
-local function withGame(fn)
+local function withGame(fn, fieldOptions)
   local game = AcceptanceHarness.new():boot({
     versionId = AcceptanceHarness.defaultVersion(),
     map = "MAP_BURNED_TOWER_1F",
     save = "fresh",
+    fieldOptions = fieldOptions,
   })
   local ok, err = xpcall(function()
     game:waitForFieldEntry()
@@ -635,55 +654,297 @@ function T.tests.production_swap_summary_save_reload_persists(context)
   end)
 end
 
-function T.tests.production_deferred_use_reports_without_consuming(context)
+-- Parks the borrowed cursor on a stocked item and selects it on the
+-- browse page, ready for its action menu.
+local function selectBagItem(game, flow, itemKey)
+  local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+  local cursor = assert(game.runtime.bagCursor, "field runtime owns the live bag cursor")
+  -- Find the stocked pocket and index through the live inventory,
+  -- then park the borrowed cursor exactly on the item.
+  local itemPocket, itemIndex = nil, nil
+  for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
+    for index, entry in ipairs(bag:pocketItems(pocket)) do
+      if entry.item == itemKey then
+        itemPocket = pocket
+        itemIndex = index - 1
+      end
+    end
+  end
+  Assert.notNil(itemPocket, "the stocked item must live in some pocket")
+  cursor:setPocket(itemPocket)
+  cursor:setPosition(itemPocket, assert(itemIndex, "item index resolved"))
+  driveUntil(flow, "the bag browse page", 30, function(current)
+    return current.page == "bag_browse"
+  end)
+  -- The page opens on the tab strip: enter the stocked pocket first,
+  -- then step down to the item with a tight bound (the walk is short and
+  -- cannot wander off-page).
+  gotoPocket(flow, itemPocket)
+  local selected = nil
+  for _ = 1, 6 do
+    selected = flowChild(flowStatus(flow)).selected
+    if selected ~= nil and selected.item == itemKey then
+      break
+    end
+    drive(flow, { { type = "navigate", direction = "down" } })
+  end
+  Assert.equal(selected ~= nil and selected.item, itemKey, "the stocked item must be reachable")
+end
+
+function T.tests.production_item_use_consumes_nothing_before_a_target_is_chosen(context)
   requireVersions(context)
   withGame(function(game)
     giftPair(game)
     local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
-    Assert.isTrue(bag:add("RARE_CANDY", 2), "the deferred fixture must stock rare candies")
+    Assert.isTrue(bag:add("RARE_CANDY", 2), "the fixture must stock rare candies")
     local mons = assert(game.runtime.monService, "field runtime owns the live mon service")
     local monRevision = mons:partyRevision()
     local bagRevision = bag:revision()
     local flow = composition(game).makeBagFlow()
-    local cursor = assert(game.runtime.bagCursor, "field runtime owns the live bag cursor")
-    -- Find the stocked pocket and index through the live inventory,
-    -- then park the borrowed cursor exactly on the candy.
-    local candyPocket, candyIndex = nil, nil
-    for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
-      for index, entry in ipairs(bag:pocketItems(pocket)) do
-        if entry.item == "RARE_CANDY" then
-          candyPocket = pocket
-          candyIndex = index - 1
-        end
-      end
-    end
-    Assert.notNil(candyPocket, "the stocked candy must live in some pocket")
-    cursor:setPocket(candyPocket)
-    cursor:setPosition(candyPocket, assert(candyIndex, "candy index resolved"))
-    driveUntil(flow, "the bag browse page", 30, function(current)
-      return current.page == "bag_browse"
-    end)
-    -- The page opens on the tab strip: enter the stocked pocket first,
-    -- then step down to the candy with a tight bound (it is the only
-    -- stocked entry, so the walk is short and cannot wander off-page).
-    gotoPocket(flow, candyPocket)
-    local selected = nil
-    for _ = 1, 6 do
-      selected = flowChild(flowStatus(flow)).selected
-      if selected ~= nil and selected.item == "RARE_CANDY" then
-        break
-      end
-      drive(flow, { { type = "navigate", direction = "down" } })
-    end
-    Assert.equal(selected ~= nil and selected.item, "RARE_CANDY", "the stocked candy must be reachable")
+    selectBagItem(game, flow, "RARE_CANDY")
     local status = chooseBagAction(flow, "use")
-    Assert.isTrue(status.open, "a deferred use must not crash the flow")
-    Assert.equal(bag:quantity("RARE_CANDY"), 2, "a deferred use consumes nothing")
-    Assert.equal(mons:partyRevision(), monRevision, "a deferred use publishes no mon revision")
-    Assert.equal(bag:revision(), bagRevision, "a deferred use publishes no bag revision")
-    Assert.isNil(flow:takeResult(), "a deferred use reports no terminal result")
+    Assert.equal(status.page, "party_item_target", "Use opens the party target page")
+    Assert.equal(bag:quantity("RARE_CANDY"), 2, "choosing Use consumes nothing")
+    Assert.equal(mons:partyRevision(), monRevision, "choosing Use publishes no mon revision")
+    Assert.equal(bag:revision(), bagRevision, "choosing Use publishes no bag revision")
+    Assert.isNil(flow:takeResult(), "choosing Use reports no terminal result")
     flow:dispose()
   end)
+end
+
+-- Evolution voices (cries, fanfares, music) complete on the production
+-- audio stack over a deterministic recording output host.
+local function evolutionAudio()
+  return { audioHost = "production", audioOutput = FakeAudioOutput.new() }
+end
+
+-- Binds the headless evolution presentation the menu composition resolves
+-- per scene, over the production battle presentation services and the
+-- prepared cache: nothing draws, so no image resolves.
+---@param game table<string, unknown> booted acceptance game
+---@return FieldBattlePresentation envelope owner of the bound services
+local function bindEvolutionPresentation(game)
+  local runtime = game.runtime
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = assert(runtime.cacheFs, "the runtime owns its cache"),
+    windows = {},
+    text = {},
+    derivedAssets = runtime.derivedAssets,
+    monCatalog = runtime.monCatalog,
+    itemCatalog = runtime.itemCatalog,
+    measureDisplay = function()
+      return runtime.presentationDisplay
+    end,
+  })
+  runtime:bindEvolutionPresentation(function(sceneId)
+    return { assets = envelope:evolutionAssets(sceneId), splRandomState = { state = 0 } }
+  end)
+  return envelope
+end
+
+-- Drives the flow until it leaves the evolution scene for the Bag,
+-- acknowledging Rare Candy messages, declining any move it offers, and
+-- optionally cancelling the scene.
+-- Returns the field music values observed while the scene was the page.
+local function driveThroughEvolution(game, flow, cancelScene)
+  local sceneMusic = {}
+  local sawScene = false
+  local confirmTick = 0
+  for _ = 1, 6000 do
+    local status = flowStatus(flow)
+    local events = {}
+    if status.page == "evolution" then
+      sawScene = true
+      sceneMusic[game.runtime.audio:currentMusic() or "silence"] = true
+      if cancelScene then
+        events = { { type = "cancel" } }
+      end
+    elseif status.page == "party_item_target" and status.child ~= nil then
+      local state = status.child.state
+      if state == "message" or state == "level_up_stats" then
+        events = { { type = "confirm" } }
+      elseif state == "confirm" then
+        if status.child.message.templateKey == "learnMove" then
+          events = { { type = "cancel" } }
+        else
+          -- The stop-teaching question: select Yes, then accept it.
+          confirmTick = confirmTick + 1
+          events = { confirmTick % 2 == 1 and { type = "navigate", direction = "up" } or { type = "confirm" } }
+        end
+      end
+    elseif status.page == "bag_browse" and sawScene then
+      return sceneMusic
+    end
+    flow:updateFixed(events)
+    game:step()
+  end
+  local last = flowStatus(flow)
+  error(
+    "the flow never returns to the Bag after its evolution scene: page "
+      .. tostring(last.page)
+      .. " state "
+      .. tostring(last.child and last.child.state)
+      .. " phase "
+      .. tostring(last.child and last.child.evolution and last.child.evolution.phase),
+    0
+  )
+end
+
+local function useOnLead(game, flow, itemKey)
+  selectBagItem(game, flow, itemKey)
+  local status = chooseBagAction(flow, "use")
+  Assert.equal(status.page, "party_item_target", "Use opens the party target page")
+  drainOpen(flow)
+  drive(flow, { { type = "confirm" } })
+end
+
+function T.tests.production_evolution_stone_runs_the_scene_and_restores_the_map_music(context)
+  requireVersions(context)
+  withGame(function(game)
+    local envelope = bindEvolutionPresentation(game)
+    local mons = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+    Assert.isTrue(mons:giveMon({ species = "EEVEE", level = 20 }), "the evolving fixture joins the party")
+    Assert.isTrue(bag:add("FIRE_STONE", 2), "the fixture must stock fire stones")
+    local audio = assert(game.runtime.audio, "field runtime owns the composed audio")
+    local fieldMusic = audio:currentMusic()
+    Assert.notNil(fieldMusic, "the map plays field music before the scene")
+    local flow = composition(game).makeBagFlow()
+    useOnLead(game, flow, "FIRE_STONE")
+    local sceneMusic = driveThroughEvolution(game, flow, false)
+    Assert.equal(mons:partyMon(0).species, "FLAREON", "the stone evolves Eevee into Flareon")
+    Assert.equal(bag:quantity("FIRE_STONE"), 1, "exactly one stone is spent")
+    Assert.equal(flowStatus(flow).page, "bag_browse", "the Bag reopens after the scene")
+    Assert.isTrue(
+      sceneMusic[BattleEvolutionState.SEQ_GS_SHINKA] == true,
+      "the scene plays the evolution music over the held field music"
+    )
+    Assert.equal(audio:currentMusic(), fieldMusic, "the map music returns after the scene")
+    flow:dispose()
+    envelope:dispose()
+  end, evolutionAudio())
+end
+
+function T.tests.production_rare_candy_level_evolution_is_cancelable_after_the_level_is_spent(context)
+  requireVersions(context)
+  withGame(function(game)
+    local envelope = bindEvolutionPresentation(game)
+    local mons = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+    Assert.isTrue(mons:giveMon({ species = "CHARMANDER", level = 15 }), "the evolving fixture joins the party")
+    Assert.isTrue(bag:add("RARE_CANDY", 2), "the fixture must stock rare candies")
+    local audio = assert(game.runtime.audio, "field runtime owns the composed audio")
+    local fieldMusic = audio:currentMusic()
+    local flow = composition(game).makeBagFlow()
+    useOnLead(game, flow, "RARE_CANDY")
+    driveThroughEvolution(game, flow, true)
+    Assert.equal(mons:partyMon(0).species, "CHARMANDER", "cancelling the scene keeps the species")
+    Assert.equal(mons:derive(mons:partyMon(0)).level, 16, "cancelling the scene keeps the level")
+    Assert.equal(bag:quantity("RARE_CANDY"), 1, "the candy stays spent")
+    Assert.equal(flowStatus(flow).page, "bag_browse", "the Bag reopens after the cancelled scene")
+    Assert.equal(audio:currentMusic(), fieldMusic, "the map music returns after the scene")
+    flow:dispose()
+    envelope:dispose()
+  end, evolutionAudio())
+end
+
+function T.tests.production_rare_candy_replacement_unlocks_the_move_gated_evolution(context)
+  requireVersions(context)
+  withGame(function(game)
+    local envelope = bindEvolutionPresentation(game)
+    local mons = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+    Assert.isTrue(mons:giveMon({ species = "AIPOM", level = 31 }), "the evolving fixture joins the party")
+    Assert.isTrue(bag:add("RARE_CANDY", 1), "the fixture must stock a rare candy")
+    local fieldMusic = assert(game.runtime.audio:currentMusic(), "the field plays music before the scene")
+    local flow = composition(game).makeBagFlow()
+    useOnLead(game, flow, "RARE_CANDY")
+    local sawScene = false
+    local learnedMove = false
+    local selectedLearn = false
+    for _ = 1, 7000 do
+      local status = flowStatus(flow)
+      local events = {}
+      if status.page == "evolution" then
+        sawScene = true
+      elseif status.page == "party_item_target" and status.child ~= nil then
+        if status.child.state == "message" or status.child.state == "level_up_stats" then
+          if status.child.message ~= nil and status.child.message.templateKey == "learned" then
+            learnedMove = true
+            local knowsDoubleHit = false
+            for _, entry in ipairs(mons:partyMon(0).moves) do
+              knowsDoubleHit = knowsDoubleHit or entry.move == "DOUBLE_HIT"
+            end
+            Assert.isTrue(knowsDoubleHit, "the replacement has published before its learned message")
+          end
+          events = { { type = "confirm" } }
+        elseif status.child.state == "confirm" and status.child.message.templateKey == "learnMove" then
+          if selectedLearn then
+            events = { { type = "confirm" } }
+          else
+            selectedLearn = true
+            events = { { type = "navigate", direction = "up" } }
+          end
+        elseif status.child.state == "confirm" then
+          events = { { type = "confirm" } }
+        end
+      elseif status.page == "move_pick" and status.transition == nil then
+        events = { { type = "confirm" } }
+      elseif status.page == "bag_browse" and sawScene then
+        break
+      end
+      flow:updateFixed(events)
+      game:step()
+    end
+    Assert.isTrue(sawScene, "the post-learning level check opens the evolution scene")
+    Assert.isTrue(learnedMove, "the move replacement reaches its learned message")
+    Assert.equal(mons:partyMon(0).species, "AMBIPOM", "the newly learned move unlocks Aipom's evolution")
+    Assert.equal(bag:quantity("RARE_CANDY"), 0, "the candy is spent exactly once")
+    Assert.equal(flowStatus(flow).page, "bag_browse", "the Bag reopens after evolution")
+    Assert.equal(game.runtime.audio:currentMusic(), fieldMusic, "the map music returns after evolution")
+    flow:dispose()
+    envelope:dispose()
+  end, evolutionAudio())
+end
+
+function T.tests.production_rare_candy_creates_shedinja_and_spends_one_ball(context)
+  requireVersions(context)
+  withGame(function(game)
+    local envelope = bindEvolutionPresentation(game)
+    local mons = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+    Assert.isTrue(mons:giveMon({ species = "NINCADA", level = 19 }), "the evolving fixture joins the party")
+    Assert.isTrue(bag:add("RARE_CANDY", 1), "the fixture must stock a rare candy")
+    Assert.isTrue(bag:add("POKE_BALL", 2), "the side product needs a spare Poké Ball")
+    local fieldMusic = assert(game.runtime.audio:currentMusic(), "the field plays music before the scene")
+    local flow = composition(game).makeBagFlow()
+    useOnLead(game, flow, "RARE_CANDY")
+    driveThroughEvolution(game, flow, false)
+    Assert.equal(mons:partyCount(), 2, "the side product joins the free party slot")
+    Assert.equal(mons:partyMon(0).species, "NINJASK", "Nincada evolves into Ninjask")
+    Assert.equal(mons:partyMon(1).species, "SHEDINJA", "the source creates Shedinja as a side product")
+    Assert.equal(mons:derive(mons:partyMon(0)).level, 20, "the primary keeps the Rare Candy level")
+    Assert.equal(mons:derive(mons:partyMon(1)).maxHp, 1, "the side product keeps Shedinja's one-point HP")
+    Assert.equal(mons:partyMon(1).condition.currentHp, 1, "the side product arrives at one HP")
+    Assert.isTrue(mons:hasSeenSpecies("NINJASK"), "the primary evolution registers in the Pokédex")
+    Assert.isTrue(mons:hasSeenSpecies("SHEDINJA"), "the side product registers in the Pokédex")
+    Assert.equal(bag:quantity("RARE_CANDY"), 0, "the candy is spent exactly once")
+    Assert.equal(bag:quantity("POKE_BALL"), 1, "exactly one Poké Ball is spent")
+    Assert.equal(flowStatus(flow).page, "bag_browse", "the Bag reopens after both products publish")
+    Assert.equal(game.runtime.audio:currentMusic(), fieldMusic, "the map music returns after evolution")
+    flow:dispose()
+    envelope:dispose()
+    Assert.notNil(game.runtime:captureGameSave(), "the published side product settles into a capturable save")
+    game:restart()
+    game:waitForFieldEntry()
+    local restoredMons = assert(game.runtime.monService, "the restarted runtime restores the live party")
+    local restoredBag = assert(game.runtime.bagService, "the restarted runtime restores the live bag")
+    Assert.equal(restoredMons:partyCount(), 2, "both evolution products survive save reload")
+    Assert.equal(restoredMons:partyMon(0).species, "NINJASK", "the primary evolution survives save reload")
+    Assert.equal(restoredMons:partyMon(1).species, "SHEDINJA", "the side product survives save reload")
+    Assert.equal(restoredBag:quantity("POKE_BALL"), 1, "the Poké Ball spend survives save reload")
+    Assert.equal(restoredBag:quantity("RARE_CANDY"), 0, "the Rare Candy spend survives save reload")
+  end, evolutionAudio())
 end
 
 function T.tests.production_script_selection_answers_through_the_live_host(context)

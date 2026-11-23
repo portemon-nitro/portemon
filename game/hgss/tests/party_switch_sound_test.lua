@@ -93,6 +93,12 @@ local function openPartyFlow(service, effect)
   local mailbox = Mailbox.new()
   local pcManifest = require("tests.support.PcPresentationFixture").manifest()
   local flow = Flow.new({
+    evolutionWorld = function()
+      return nil
+    end,
+    makeEvolutionScene = function()
+      error("this test opens no evolution scene", 0)
+    end,
     root = "party",
     mons = service,
     bag = bag,

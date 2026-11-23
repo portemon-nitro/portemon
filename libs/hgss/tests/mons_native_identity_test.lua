@@ -529,7 +529,11 @@ function T.staged_health_follows_the_new_maximum_and_survives_failed_derivation(
   lowered.condition.currentHp = oldMax - 2
   local healed = service:refreshStagedHp(lowered, oldMax)
   Assert.isTrue(healed == lowered, "recalculation finalizes the staged record in place")
-  Assert.equal(healed.condition.currentHp, newMax - 2, "living mons keep their damage across the new maximum")
+  Assert.equal(
+    healed.condition.currentHp,
+    math.min(oldMax - 2, newMax),
+    "a shrunken maximum clamps living health like retail CalcMonStats"
+  )
 
   local fainted = copyRecord(fresh)
   fainted.experience = 0

@@ -59,6 +59,15 @@ local function childRegions(child)
   if type(child) ~= "table" or child.interactive ~= true then
     return nil
   end
+  -- The evolution learn menu tests its source rectangles against the
+  -- full lower-screen touch point itself.
+  if child.kind == "evolution" then
+    local presentation = child.presentation --[[@as table<string, unknown>?]]
+    if type(presentation) == "table" and type(presentation.learnMenu) == "table" then
+      return { { id = "native", x = 0, y = 0, w = 256, h = 192 } }
+    end
+    return nil
+  end
   local native = child.native --[[@as table<string, unknown>?]]
   -- The native roster resolves through the full-surface native tap:
   -- wrapper pages own their transcribed hitbox regions instead, since

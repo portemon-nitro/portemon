@@ -953,6 +953,26 @@ local function lowerSegments(bank, bankId, index, role, allowFlow)
       segments[#segments + 1] = { kind = "text", value = "\n" }
     end
   end
+  -- Ordered-name slots per substitution kind: each distinct source string
+  -- buffer gets the next slot at first use, so a buffer printed twice
+  -- reads one name while distinct buffers read distinct names.
+  local slots = { item = {}, move = {}, quantity = {} }
+  local function substitute(kind, token)
+    flush()
+    local buffer = token.args and token.args[1]
+    if type(buffer) ~= "number" then
+      sourceError("party substitution names no string buffer", { role = role, bank = bankId, index = index })
+    end
+    local byBuffer = slots[kind]
+    if byBuffer[buffer] == nil then
+      local count = 0
+      for _ in pairs(byBuffer) do
+        count = count + 1
+      end
+      byBuffer[buffer] = count + 1
+    end
+    segments[#segments + 1] = { kind = kind, slot = byBuffer[buffer] }
+  end
   for _, token in ipairs(messageTokens(bank, bankId, index, role)) do
     if token.kind == "eos" then
       break
@@ -978,14 +998,11 @@ local function lowerSegments(bank, bankId, index, role, allowFlow)
       and token.kind == "substitution"
       and token.control == ITEM_SUBSTITUTION
     then
-      flush()
-      segments[#segments + 1] = { kind = "item" }
+      substitute("item", token)
     elseif token.kind == "substitution" and token.control == MOVE_SUBSTITUTION then
-      flush()
-      segments[#segments + 1] = { kind = "move" }
+      substitute("move", token)
     elseif token.kind == "substitution" and token.control == QUANTITY_SUBSTITUTION then
-      flush()
-      segments[#segments + 1] = { kind = "quantity" }
+      substitute("quantity", token)
     elseif token.kind == "pause" or token.kind == "printer_callback" then
       -- Retail item-use copies carry timed waits the Party controller owns
       -- through its message acknowledgement: drop them from the lowered

@@ -143,6 +143,12 @@ local function openFlow(game, root)
   local MailActions = require("libs.hgss.src.field.MailActions")
   local pcManifest = require("libs.assets.src.PcCache").loadManifest(cacheFs)
   return Flow.new({
+    evolutionWorld = function()
+      return nil
+    end,
+    makeEvolutionScene = function()
+      error("this test opens no evolution scene", 0)
+    end,
     root = root,
     mons = mons,
     bag = bag,

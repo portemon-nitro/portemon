@@ -261,6 +261,17 @@ local function v3manifest()
   data.text.labels.male = "M"
   data.text.labels.female = "F"
   data.text.labels.item = "ITEM"
+  for name, value in pairs({
+    statMaxHp = "MAX HP",
+    statAttack = "ATTACK",
+    statDefense = "DEFENSE",
+    statSpecialAttack = "SP. ATK",
+    statSpecialDefense = "SP. DEF",
+    statSpeed = "SPEED",
+    statPlus = "+",
+  }) do
+    data.text.labels[name] = value
+  end
   data.numberGlyphs.placement = {
     level = { x = 5, y = 2 },
     current = { x = 0, y = 2 },
@@ -271,6 +282,7 @@ local function v3manifest()
     browse = rect(16, 168, 160, 16),
     context = rect(8, 64, 128, 24),
     action = rect(8, 120, 160, 16),
+    levelUpStats = rect(8, 8, 112, 96),
     prompt = { x = 200, y = 80 },
   }
   local topLevel = {}
@@ -315,7 +327,7 @@ end
 
 local function v7manifest()
   local data = v3manifest()
-  data.schema = "g4-party-presentation-v7"
+  data.schema = "g4-party-presentation-v9"
   local commandRaised = textRoleTriple(colorRef(248, 248, 248), colorRef(88, 88, 88), colorRef(0, 0, 0))
   local commandDepressed = textRoleTriple(colorRef(248, 248, 248), colorRef(88, 88, 88), colorRef(40, 40, 40))
   local fieldRaised = textRoleTriple(colorRef(132, 197, 247), colorRef(0, 82, 165), colorRef(0, 0, 0))
@@ -352,6 +364,14 @@ local function v7manifest()
     { "fieldMoveHaveFollower", "You can't use that when you have someone with you." },
     { "fieldMoveAlreadySurfing", "You're already surfing." },
     { "fieldMoveNotNow", "This isn't the place for that!" },
+    { "levelUp", "Grew." },
+    { "levelUpLearned", "Learned." },
+    { "forgotMove", "Forgot." },
+    { "learned", "Learned." },
+    { "learnMove", "Learn?" },
+    { "forgetMove", "Forget which?" },
+    { "stopTeach", "Stop?" },
+    { "didNotLearn", "Did not learn." },
   }
   for _, entry in ipairs(runtimeMessages) do
     data.text.templates[entry[1]] = { segments = { { kind = "text", value = entry[2] } } }
@@ -542,7 +562,7 @@ function T.schema_rejects_source_identities_in_the_runtime_manifest()
 end
 
 function T.schema_identity_is_the_current_contract()
-  Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v7")
+  Assert.equal(PartyAssetSchema.SCHEMA, "g4-party-presentation-v9")
   Assert.equal(PartyAssetSchema.SCHEMA, DerivedAssetContract.party.schema)
   Assert.equal(PartyCache.FORMAT, DerivedAssetContract.party.cacheFormat)
 end
@@ -676,6 +696,14 @@ function T.runtime_messages_are_required_at_the_schema_boundary()
     "fieldMoveHaveFollower",
     "fieldMoveAlreadySurfing",
     "fieldMoveNotNow",
+    "levelUp",
+    "levelUpLearned",
+    "forgotMove",
+    "learned",
+    "learnMove",
+    "forgetMove",
+    "stopTeach",
+    "didNotLearn",
   }
   Assert.isTrue(PartyAssetSchema.isValidManifest(v7manifest()), "the complete family is valid")
   local accepted = {}
@@ -695,6 +723,32 @@ function T.runtime_messages_are_required_at_the_schema_boundary()
   local hollow = v7manifest()
   hollow.text.templates.takeNoItem = { segments = {} }
   Assert.isFalse(PartyAssetSchema.isValidManifest(hollow), "a required template without segments stays invalid")
+end
+
+function T.level_up_stats_window_and_labels_are_required()
+  local noWindow = v7manifest()
+  noWindow.windows.levelUpStats = nil
+  Assert.isFalse(PartyAssetSchema.isValidManifest(noWindow), "the stats window rectangle is required")
+  local noLabel = v7manifest()
+  noLabel.text.labels.statSpeed = nil
+  Assert.isFalse(PartyAssetSchema.isValidManifest(noLabel), "the stat row labels are required")
+end
+
+function T.template_substitutions_address_ordered_name_slots()
+  local slotted = v7manifest()
+  slotted.text.templates.switchPrompt = {
+    segments = { { kind = "move", slot = 1 }, { kind = "text", value = "?" }, { kind = "move", slot = 1 } },
+  }
+  Assert.isTrue(PartyAssetSchema.isValidManifest(slotted), "a repeated slot reads one ordered name")
+  local unslotted = v7manifest()
+  unslotted.text.templates.switchPrompt = { segments = { { kind = "item" } } }
+  Assert.isFalse(PartyAssetSchema.isValidManifest(unslotted), "substitutions name their ordered slot")
+  local zero = v7manifest()
+  zero.text.templates.switchPrompt = { segments = { { kind = "quantity", slot = 0 } } }
+  Assert.isFalse(PartyAssetSchema.isValidManifest(zero), "slots count from one")
+  local stray = v7manifest()
+  stray.text.templates.switchPrompt = { segments = { { kind = "name", slot = 1 } } }
+  Assert.isFalse(PartyAssetSchema.isValidManifest(stray), "only ordered substitutions carry slots")
 end
 
 function T.unlisted_message_templates_remain_valid()

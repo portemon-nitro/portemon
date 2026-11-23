@@ -463,6 +463,12 @@ local function boxDeps(overrides)
   local mons = openMons()
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local deps = {
+    evolutionWorld = function()
+      return nil
+    end,
+    makeEvolutionScene = function()
+      error("this test opens no evolution scene", 0)
+    end,
     mons = mons,
     bag = bag,
     easyChatCatalog = {

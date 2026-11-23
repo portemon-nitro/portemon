@@ -1,9 +1,8 @@
 -- Pure native evolution eligibility and candidate planning.
 -- Source: the retail ROM GetMonEvolution (ordered slot scan, first match wins) composed
 -- with the existing Experience/MonStats/Personality owners. Level, trade, and
--- bag-item uses each answer only their own trigger family, except the
--- day/night-gated items, which answer both a matching bag use and a level-up
--- while holding the item. World-gated methods never open: no HeartGold or
+-- bag-item uses each answer only their own trigger family; the day/night
+-- held items answer level-up only. World-gated methods never open: no HeartGold or
 -- SoulSilver location maps to them. Planning copies everything it stages and
 -- never mutates its input; publication belongs to the caller.
 
@@ -17,10 +16,10 @@ local Evolution = {}
 
 local FRIENDSHIP_THRESHOLD = 220
 local PARTY_MAX = 6
-local EVERSTONE_KEY = "EVERSTONE"
 local SPARE_BALL_KEY = "POKE_BALL"
 local NINJASK_METHOD = "level_ninjask"
 local SHEDINJA_METHOD = "level_shedinja"
+local SHEDINJA_SPECIES = "SHEDINJA"
 
 local KNOWN_METHODS = {
   friendship = true,
@@ -161,8 +160,8 @@ end
 -- Level-up answers the native EVOCTX_LEVELUP family: bonds, plain and
 -- conditional level slots, beauty, held day/night items, known moves, and
 -- party species. The shed side-product slot never matches on its own; the
--- source reports its method without a target, so planning derives the extra
--- from the sibling slot instead. Stone and trade slots never answer here.
+-- source reports its method without a target; the extra is built after the
+-- evolution completes by shedSideProduct. Stone and trade slots never answer here.
 ---@param slot table<string, unknown>
 ---@param mon table<string, unknown>
 ---@param context table<string, unknown>
@@ -233,17 +232,16 @@ end
 
 -- Bag-item use answers the native item family: retail handles
 -- EVOCTX_ITEM_CHECK and EVOCTX_ITEM_USE in one shared case, so a single
--- item trigger kind covers both. Plain and gendered stones plus the
--- day/night-gated items each require their own item; retail reports an
--- internal method_ret of 0 on this path, so the staged reason stays
--- method-keyed. Level, trade, and world slots never answer here.
+-- item trigger kind covers both. Only plain and gendered stones answer,
+-- each requiring its own item; retail reports an internal method_ret of 0
+-- on this path, so the staged reason stays method-keyed. Level, trade,
+-- held-item, and world slots never answer here.
 ---@param slot table<string, unknown>
 ---@param mon table<string, unknown>
----@param context table<string, unknown>
 ---@param catalog table<string, unknown>
 ---@param usedItem string
 ---@return boolean
-local function matchesItemUse(slot, mon, context, catalog, usedItem)
+local function matchesItemUse(slot, mon, catalog, usedItem)
   local method = slot.method
   if method == "stone" then
     return slot.item == usedItem
@@ -251,10 +249,6 @@ local function matchesItemUse(slot, mon, context, catalog, usedItem)
     return slot.item == usedItem and monGender(mon, catalog) == "male"
   elseif method == "stone_female" then
     return slot.item == usedItem and monGender(mon, catalog) == "female"
-  elseif method == "item_day" then
-    return slot.item == usedItem and context.timeOfDay == "day"
-  elseif method == "item_night" then
-    return slot.item == usedItem and context.timeOfDay == "night"
   end
   checkKnownMethod(method)
   return false
@@ -302,8 +296,14 @@ local function triggerSlots(mon, context, catalog)
   if mon.species == "PICHU" and mon.form == 1 then
     return nil
   end
-  if mon.heldItem == EVERSTONE_KEY and kind ~= "item" and mon.species ~= "KADABRA" then
-    return nil
+  if kind ~= "item" and mon.species ~= "KADABRA" then
+    local heldItem = assert(mon.heldItem, "evolution checks read the held-item key")
+    if heldItem ~= "NONE" then
+      local behavior = catalog:item(heldItem).heldBehavior
+      if type(behavior) == "table" and behavior.key == "prevents_evolution" then
+        return nil
+      end
+    end
   end
   local form = catalog:form(mon.species, mon.form)
   local slots = assert(form.evolutions, "evolution checks read the ordered form slots")
@@ -340,7 +340,7 @@ local function slotMatches(slot, mon, context, catalog, kind, level, usedItem)
   elseif kind == "level" then
     return matchesLevel(slot, mon, context, catalog, assert(level, "level checks derive the level"))
   elseif kind == "item" then
-    return matchesItemUse(slot, mon, context, catalog, assert(usedItem, "item uses name their item"))
+    return matchesItemUse(slot, mon, catalog, assert(usedItem, "item uses name their item"))
   end
   return matchesTrade(slot, mon)
 end
@@ -366,33 +366,6 @@ function Evolution.check(mon, context, catalog)
     end
   end
   return nil
-end
-
--- Collects every matching evolution slot in source order, each annotated
--- with its one-based rule index into the ordered form slots. Eligibility
--- stays with this owner; the visual sequence walks the returned order and
--- never treats the first entry as universally correct. The input is never
--- mutated and catalog-owned slot records are never annotated in place.
----@param mon table<string, unknown>
----@param context table<string, unknown>
----@param catalog table<string, unknown>
----@return table<integer, table<string, unknown>> ordered matching candidates with ruleIndex
-function Evolution.candidates(mon, context, catalog)
-  local slots, kind, level, usedItem = triggerSlots(mon, context, catalog)
-  local found = {}
-  if slots == nil then
-    return found
-  end
-  assert(type(kind) == "string", "triggers name their kind")
-  for ruleIndex, slot in ipairs(slots) do
-    if slotMatches(slot, mon, context, catalog, kind, level, usedItem) then
-      local candidate = copyValue(slot)
-      assert(type(candidate) == "table", "candidates copy their slot")
-      candidate.ruleIndex = ruleIndex
-      found[#found + 1] = candidate
-    end
-  end
-  return found
 end
 
 -- Applies the nickname policy to a private copy: custom names survive onto
@@ -451,50 +424,50 @@ function Evolution.learningOpportunities(staged, catalog)
   return opportunities
 end
 
--- Stages the shed side product when the primary slot opens the line: the
--- sibling shed slot names the extra, which needs a free party slot and a
--- spare ball. Anything missing still evolves the primary alone.
----@param mon table<string, unknown>
----@param monBefore table<string, unknown>
+-- Builds the shed side product from the finished Ninjask, after its
+-- post-evolution learning: a copy of the final mon with the source reset
+-- list applied (evolution_scene.c EvolutionScene_ApplyEvolutionEffects).
+-- Needs a free party slot and a Poké Ball in the bag; returns nil without
+-- either, otherwise the new mon and the one-ball inventory delta.
+---@param finalMon table<string, unknown>
 ---@param context table<string, unknown>
 ---@param catalog table<string, unknown>
----@return table<string, unknown>?
-local function shedinjaSideProduct(mon, monBefore, context, catalog)
-  local form = catalog:form(mon.species, mon.form)
-  local slots = assert(form.evolutions, "side products read the ordered form slots")
-  local sideSlot = nil
-  for _, candidate in ipairs(slots) do
-    if candidate.method == SHEDINJA_METHOD then
-      sideSlot = candidate
-      break
-    end
-  end
-  if sideSlot == nil then
-    return nil
-  end
+---@return table<string, unknown>? sideProduct
+---@return table<string, unknown>? inventoryDelta
+function Evolution.shedSideProduct(finalMon, context, catalog)
+  checkMon(finalMon)
+  assert(type(context) == "table", "side products read a trigger context")
+  assert(catalog ~= nil, "side products read a catalog")
   local party = assert(context.party, "side products read the party facts")
   assert(type(party) == "table", "party facts form an array")
-  if #party >= PARTY_MAX then
-    return nil
-  end
   local inventory = assert(context.inventory, "side products read the inventory facts")
   assert(type(inventory) == "table", "inventory facts form a record")
-  if (inventory[SPARE_BALL_KEY] or 0) < 1 then
+  if #party >= PARTY_MAX or (inventory[SPARE_BALL_KEY] or 0) < 1 then
     return nil
   end
-  local extra = copyValue(monBefore)
-  assert(type(extra) == "table", "side products copy the pre-evolution mon")
-  extra.species = sideSlot.target
-  extra.form = sideSlot.form
-  local sideForm = catalog:form(sideSlot.target, sideSlot.form)
-  local abilities = assert(sideForm.abilities, "side products read the target abilities")
+  local extra = copyValue(finalMon)
+  assert(type(extra) == "table", "side products copy the evolved mon")
+  local beforeMaxHp = MonStats.derive(finalMon, catalog).maxHp
+  extra.species = SHEDINJA_SPECIES
+  extra.form = 0
+  local abilities = assert(catalog:form(SHEDINJA_SPECIES, 0).abilities, "side products read the target abilities")
   assert(type(abilities) == "table", "target abilities form an array")
-  extra.ability = abilities[Personality.abilitySlot(#abilities, mon.personality)]
+  extra.ability = abilities[Personality.abilitySlot(#abilities, extra.personality)]
+  extra.origin.ball = SPARE_BALL_KEY
+  extra.heldItem = "NONE"
+  extra.markings = 0
+  extra.ribbons = { ds1 = 0, gba = 0, ds2 = 0 }
+  extra.shinyLeaves = 0
+  extra.mood = 0
   extra.nickname = nil
+  extra.mail = {}
+  extra.capsule = { id = 0, seals = {} }
   local condition = assert(extra.condition, "side products carry the condition record")
   assert(type(condition) == "table", "side products carry the condition record")
-  condition.currentHp = 1
-  return extra
+  condition.effects = {}
+  condition.currentHp =
+    MonStats.adjustHpForMaxChange(beforeMaxHp, MonStats.derive(extra, catalog).maxHp, condition.currentHp)
+  return extra, { item = SPARE_BALL_KEY, delta = -1 }
 end
 
 -- Stages the full candidate result for one authoritative slot. Experience
@@ -504,10 +477,9 @@ end
 -- mutated.
 ---@param mon table<string, unknown>
 ---@param slot table<string, unknown>
----@param context table<string, unknown>
 ---@param catalog table<string, unknown>
 ---@return table<string, unknown>
-local function stageSlot(mon, slot, context, catalog)
+local function stageSlot(mon, slot, catalog)
   local monBefore = copyValue(mon)
   assert(type(monBefore) == "table", "planning copies the pre-evolution mon")
   local staged = copyValue(mon)
@@ -531,20 +503,10 @@ local function stageSlot(mon, slot, context, catalog)
   if slot.method == "trade_item" or slot.method == "item_day" or slot.method == "item_night" then
     monAfter.heldItem = "NONE"
   end
-  local additionalMons = {}
-  local inventoryDeltas = {}
-  if slot.method == NINJASK_METHOD then
-    local extra = shedinjaSideProduct(mon, monBefore, context, catalog)
-    if extra ~= nil then
-      additionalMons = { extra }
-      inventoryDeltas = { { item = SPARE_BALL_KEY, delta = -1 } }
-    end
-  end
   return {
     monBefore = monBefore,
     monAfter = monAfter,
-    additionalMons = additionalMons,
-    inventoryDeltas = inventoryDeltas,
+    inventoryDeltas = {},
     learningOpportunities = Evolution.learningOpportunities(monAfter, catalog),
     canCancel = slot.method ~= "trade" and slot.method ~= "trade_item",
     reason = slot.method,
@@ -552,8 +514,7 @@ local function stageSlot(mon, slot, context, catalog)
 end
 
 -- Stages the full candidate result for the first matching slot, or nil when
--- nothing matches. Shares the single staging path with apply, so the first
--- match and an explicitly selected candidate stage identical records.
+-- nothing matches.
 ---@param mon table<string, unknown>
 ---@param context table<string, unknown>
 ---@param catalog table<string, unknown>
@@ -563,38 +524,7 @@ function Evolution.plan(mon, context, catalog)
   if slot == nil then
     return nil
   end
-  return stageSlot(mon, slot, context, catalog)
-end
-
--- Applies the explicitly selected native candidate and stages its complete
--- domain result: all returned mons and consumption publish as one staged
--- operation, never sequential partial writes. The candidate must be a
--- record previously returned by candidates: its rule index resolves the
--- authoritative catalog slot and the method, target, and form must agree,
--- so no invented candidate can stage. A candidate whose trigger context no
--- longer matches (blockers, changed trigger) fails loudly instead of
--- staging from stale eligibility. Publication belongs to the caller; the
--- input is never mutated.
----@param mon table<string, unknown>
----@param candidate table<string, unknown>
----@param context table<string, unknown>
----@param catalog table<string, unknown>
----@return table<string, unknown>
-function Evolution.apply(mon, candidate, context, catalog)
-  assert(type(candidate) == "table", "evolution applies a selected candidate")
-  local ruleIndex = candidate.ruleIndex
-  assert(
-    type(ruleIndex) == "number" and ruleIndex % 1 == 0 and ruleIndex >= 1,
-    "evolution candidates carry their source rule index"
-  )
-  local slots, _, _, _ = triggerSlots(mon, context, catalog)
-  assert(slots ~= nil, "stale evolution candidates never stage")
-  local slot = slots[ruleIndex]
-  assert(type(slot) == "table", "evolution candidates resolve their source slot")
-  assert(slot.method == candidate.method, "evolution candidates keep their source method")
-  assert(slot.target == candidate.target, "evolution candidates keep their source target")
-  assert(slot.form == candidate.form, "evolution candidates keep their source form")
-  return stageSlot(mon, slot, context, catalog)
+  return stageSlot(mon, slot, catalog)
 end
 
 return Evolution

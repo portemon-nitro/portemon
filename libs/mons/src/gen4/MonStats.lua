@@ -49,7 +49,7 @@ end
 -- Source maximum-health adjustment for a recalculated mon
 -- (retail ROM CalcMonStats tail): a
 -- fainted mon keeps zero health; a living mon keeps its damage by gaining
--- the maximum change, clamped down when the maximum shrinks.
+-- a raised maximum's increase, while a shrunken maximum only clamps.
 ---@param oldMaxHp integer
 ---@param newMaxHp integer
 ---@param currentHp integer
@@ -70,14 +70,10 @@ function MonStats.adjustHpForMaxChange(oldMaxHp, newMaxHp, currentHp)
   if currentHp == 0 then
     return 0
   end
-  local adjusted = currentHp + newMaxHp - oldMaxHp
-  if adjusted > newMaxHp then
-    return newMaxHp
+  if newMaxHp < oldMaxHp then
+    return math.min(currentHp, newMaxHp)
   end
-  if adjusted < 0 then
-    return 0
-  end
-  return adjusted
+  return currentHp + newMaxHp - oldMaxHp
 end
 
 return MonStats

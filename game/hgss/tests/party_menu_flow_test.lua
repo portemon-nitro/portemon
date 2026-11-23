@@ -277,6 +277,12 @@ local function openFlow(Flow, opts)
       return true
     end,
     pcManifest = pcManifest,
+    evolutionWorld = function()
+      return { timeOfDay = "day" }
+    end,
+    makeEvolutionScene = opts.makeEvolutionScene or function()
+      error("flow tests open no evolution scene", 0)
+    end,
     fieldMoves = opts.fieldMoves or {
       check = function(_)
         return { kind = "ok" }
@@ -286,14 +292,18 @@ local function openFlow(Flow, opts)
       bagManifest = bagManifest(),
       partyManifest = assert(opts.partyManifest, "the flow borrows the party manifest"),
       uiManifest = FieldUiFixture.manifest(),
-      monCatalog = {
+      monCatalog = opts.monCatalog or {
         moveByNativeId = function()
           error("test catalog lookup is not exercised", 0)
         end,
       },
       itemCatalog = opts.bag:catalog(),
+      summaryManifest = opts.summary and opts.summary.manifest,
       heroGender = "male",
     },
+    summaryContext = opts.summary and opts.summary.context,
+    readSummaryNavigation = opts.summary and opts.summary.readNavigation,
+    acquireSummaryPreparation = opts.summary and opts.summary.acquirePreparation,
     measureDisplay = stubMeasurement,
     prepareIcons = assert(opts.prepareIcons, "the flow test supplies icon preparation"),
     cancelIconPreparation = assert(opts.cancelIconPreparation, "the flow test supplies preparation release"),
@@ -1677,6 +1687,439 @@ function T.tests.bag_give_full_pocket_failure_shows_feedback_then_rewinds(contex
     Assert.isNil(rig.flow:takeResult(), "the failure reports no terminal result")
     rig.flow:dispose()
   end
+end
+
+-- Progression catalogs: a Rare Candy and a Fire Stone over a Chikorita
+-- line that evolves at level six or with the stone, so one candy from
+-- level five learns its level-six move and then evolves.
+-- The synthetic Summary family behind presented move pickers: every
+-- preparation demand is ready at once.
+local function syntheticSummary(mons)
+  local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
+  local family = SummaryPresentationFixture.manifest()
+  return {
+    manifest = family,
+    context = function()
+      return SummaryPresentationFixture.context(mons:partyCount())
+    end,
+    readNavigation = function()
+      return nil
+    end,
+    acquirePreparation = function()
+      local lease = {}
+      function lease:prepare(demand)
+        return { kind = "ready", key = demand.key, assets = { manifest = family } }
+      end
+      function lease:release() end
+      return lease
+    end,
+  }
+end
+
+local function progressionRig(versionId, makeEvolutionScene, level)
+  local ItemCatalog = require("libs.items.src.ItemCatalog")
+  local MonCatalog = require("libs.mons.src.MonCatalog")
+  local itemRoot = ItemFixture.buildAssetRoot()
+  local function record(nativeId, key, partyUse)
+    local entry = itemRoot.items["ITEM_" .. nativeId]
+    itemRoot.items["ITEM_" .. nativeId] = nil
+    entry.name = key
+    entry.selectable = true
+    entry.pocket = "items"
+    entry.partyUse = partyUse
+    itemRoot.items[key] = entry
+  end
+  record(50, "RARE_CANDY", { kind = "deferred", reason = "level_up", friendship = { lo = 5, med = 3, hi = 2 } })
+  record(82, "FIRE_STONE", { kind = "deferred", reason = "evolution" })
+  local itemCatalog = ItemCatalog.new(itemRoot)
+  local monRoot = CatalogFixture.buildAssetRoot()
+  monRoot.species.CHIKORITA.forms[0].evolutions = {
+    { method = "level", level = 6, target = "TOTODILE", form = 0 },
+    { method = "stone", item = "FIRE_STONE", target = "TOTODILE", form = 0 },
+  }
+  local catalog = MonCatalog.new(monRoot, itemCatalog)
+  local mons = HgssMonService.new({
+    catalog = catalog,
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xF1000002):capture()),
+    profile = CatalogFixture.profile(),
+    game = "heartgold",
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+  })
+  Assert.isTrue(mons:giveMon({
+    species = "CHIKORITA",
+    level = level or 5,
+    heldItem = "NONE",
+    form = 0,
+    location = 7,
+    date = CatalogFixture.metDate(),
+  }))
+  local bag = HgssBagService.new({ catalog = itemCatalog })
+  local cursor = BagCursor.new()
+  local actions = PartyActions.new({ mons = mons, bag = bag })
+  local icons = recordingIcons()
+  local flow = openFlow(requireFlow(), {
+    root = "bag",
+    mons = mons,
+    bag = bag,
+    bagCursor = cursor,
+    partyActions = actions,
+    monCatalog = catalog,
+    makeEvolutionScene = makeEvolutionScene,
+    partyManifest = PartyCache.loadManifest(GeneratedCacheFixture.reader(versionId)),
+    summary = syntheticSummary(mons),
+    prepareIcons = icons.prepare,
+    cancelIconPreparation = icons.cancel,
+  })
+  return { flow = flow, mons = mons, bag = bag, cursor = cursor, actions = actions, catalog = catalog }
+end
+
+-- A scene double that runs the real evolution flow to completion over the
+-- request it was opened with and reports the captured result once.
+local function completingScene(catalog, opened)
+  local EvolutionFlow = require("libs.hgss.src.mons.EvolutionFlow")
+  return function(request)
+    opened[#opened + 1] = request
+    local result = nil
+    local child = {}
+    function child.updateFixed()
+      if result ~= nil then
+        return
+      end
+      local flow = assert(EvolutionFlow.start(request.subject, request.context, catalog))
+      EvolutionFlow.respond(flow, { choice = "accept" })
+      while EvolutionFlow.step(flow).prompt ~= "complete" do
+        EvolutionFlow.respond(flow, { choice = "continue" })
+      end
+      result = { kind = "evolution_complete", staged = EvolutionFlow.capture(flow) }
+    end
+    function child.status()
+      return { open = true }
+    end
+    function child.takeResult()
+      local taken = result
+      result = nil
+      return taken
+    end
+    function child.cancelPointerCapture() end
+    function child.dispose() end
+    return child
+  end
+end
+
+local function useFromBag(rig, itemKey)
+  rig.cursor:setPocket("items")
+  rig.cursor:setPosition("items", 0)
+  drive(rig, {})
+  drive(rig, { { type = "confirm" } })
+  local status = driveToAction(rig, "use")
+  Assert.equal(status.page, "party_item_target", itemKey .. " opens the party target page")
+  settleParty(rig)
+  return drive(rig, { { type = "confirm" } })
+end
+
+local function untilChildState(rig, state)
+  return driveUntil(rig, "party state " .. state, 40, function(current)
+    return current.child ~= nil and current.child.state == state
+  end)
+end
+
+function T.tests.rare_candy_shows_its_stats_learns_then_evolves_before_the_bag(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and prepared assets")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  local opened = {}
+  local rig
+  rig = progressionRig(versions[1], function(request)
+    return completingScene(rig.catalog, opened)(request)
+  end)
+  Assert.isTrue(rig.bag:add("RARE_CANDY", 2))
+  useFromBag(rig, "RARE_CANDY")
+  Assert.equal(rig.bag:quantity("RARE_CANDY"), 1, "the candy spends once before any dialogue")
+  Assert.equal(rig.mons:derive(rig.mons:partyMon(0)).level, 6, "the level publishes with the spend")
+  local status = untilChildState(rig, "message")
+  Assert.equal(partyChild(status).message.templateKey, "levelUp")
+  drive(rig, { { type = "confirm" } })
+  status = untilChildState(rig, "level_up_stats")
+  Assert.equal(partyChild(status).levelUpStats.page, "gains")
+  drive(rig, { { type = "confirm" } })
+  Assert.equal(partyChild(liveStatus(rig)).levelUpStats.page, "totals")
+  drive(rig, { { type = "confirm" } })
+  status = untilChildState(rig, "message")
+  Assert.equal(partyChild(status).message.templateKey, "levelUpLearned", "the free slot learns its level move")
+  Assert.equal(rig.mons:partyMon(0).moves[3].move, "RAZOR_LEAF")
+  Assert.equal(#opened, 0, "evolution waits for every learning decision")
+  drive(rig, { { type = "confirm" } })
+  status = driveUntil(rig, "the reopened Bag", 60, function(current)
+    return current.page == "bag_browse"
+  end)
+  Assert.equal(#opened, 1, "the final mon opens one level evolution scene")
+  Assert.equal(opened[1].source, "field_level")
+  Assert.equal(rig.mons:partyMon(0).species, "TOTODILE", "the completed scene publishes the evolved mon")
+  Assert.equal(rig.mons:partyMon(0).moves[3].move, "RAZOR_LEAF", "the learned move survives evolution")
+  Assert.equal(rig.bag:quantity("RARE_CANDY"), 1, "evolution never spends another candy")
+  rig.flow:dispose()
+end
+
+function T.tests.evolution_stone_spends_only_with_its_published_evolution(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and prepared assets")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  local opened = {}
+  local rig
+  rig = progressionRig(versions[1], function(request)
+    return completingScene(rig.catalog, opened)(request)
+  end)
+  Assert.isTrue(rig.bag:add("FIRE_STONE", 1))
+  useFromBag(rig, "FIRE_STONE")
+  driveUntil(rig, "the evolution scene", 30, function(current)
+    return current.page == "evolution"
+  end)
+  Assert.equal(opened[1].source, "field_item", "stones open a non-cancelable item evolution")
+  Assert.equal(opened[1].context.trigger.item, "FIRE_STONE")
+  Assert.equal(rig.bag:quantity("FIRE_STONE"), 1, "the scene opens before any spend")
+  driveUntil(rig, "the reopened Bag", 30, function(current)
+    return current.page == "bag_browse"
+  end)
+  Assert.equal(rig.mons:partyMon(0).species, "TOTODILE")
+  Assert.equal(rig.bag:quantity("FIRE_STONE"), 0, "the stone spends with the published evolution")
+  rig.flow:dispose()
+end
+
+-- Pages through the three-page delete-a-move question: the Yes/No
+-- prompt opens only over its last printer page.
+local function askToDeleteAMove(rig)
+  local status = untilChildState(rig, "message")
+  Assert.equal(partyChild(status).message.templateKey, "learnMove", "a full set asks to delete a move")
+  for page = 1, 2 do
+    Assert.equal(partyChild(liveStatus(rig)).messagePage, page, "the question prints page " .. page)
+    Assert.isNil(partyChild(liveStatus(rig)).prompt, "the prompt waits for the last page")
+    drive(rig, { { type = "confirm" } })
+  end
+  status = untilChildState(rig, "confirm")
+  Assert.equal(partyChild(status).messagePage, 3, "the prompt opens over the last page")
+  return status
+end
+
+function T.tests.rare_candy_full_move_set_decline_keeps_the_moves_and_still_evolves(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and prepared assets")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  local opened = {}
+  local rig
+  rig = progressionRig(versions[1], function(request)
+    return completingScene(rig.catalog, opened)(request)
+  end, 11)
+  local movesBefore = {}
+  for index, entry in ipairs(rig.mons:partyMon(0).moves) do
+    movesBefore[index] = entry.move
+  end
+  Assert.equal(#movesBefore, 4, "the level-eleven fixture knows four moves")
+  Assert.isTrue(rig.bag:add("RARE_CANDY", 1))
+  useFromBag(rig, "RARE_CANDY")
+  untilChildState(rig, "message")
+  drive(rig, { { type = "confirm" } })
+  untilChildState(rig, "level_up_stats")
+  drive(rig, { { type = "confirm" } })
+  drive(rig, { { type = "confirm" } })
+  local status = askToDeleteAMove(rig)
+  Assert.equal(partyChild(status).message.templateKey, "learnMove", "a full set asks to delete a move")
+  drive(rig, { { type = "cancel" } })
+  status = untilChildState(rig, "confirm")
+  Assert.equal(partyChild(status).message.templateKey, "stopTeach", "declining asks whether to stop")
+  drive(rig, { { type = "navigate", direction = "up" } })
+  drive(rig, { { type = "confirm" } })
+  status = untilChildState(rig, "message")
+  Assert.equal(partyChild(status).message.templateKey, "didNotLearn")
+  Assert.equal(#opened, 0, "the evolution check waits for the decision")
+  drive(rig, { { type = "confirm" } })
+  driveUntil(rig, "the reopened Bag", 60, function(current)
+    return current.page == "bag_browse"
+  end)
+  Assert.equal(#opened, 1, "the declined move still leaves the level evolution")
+  for index, move in ipairs(movesBefore) do
+    Assert.equal(rig.mons:partyMon(0).moves[index].move, move, "declining keeps every move")
+  end
+  rig.flow:dispose()
+end
+
+-- Accepting the delete-a-move question hands off to the move picker; the
+-- picked row is replaced, the Party child resumes over the same mon with
+-- the paged forgot message and then the learned one, and only then does
+-- the final level evolution check open its scene before the Bag returns.
+function T.tests.rare_candy_picked_move_is_forgotten_then_learned_before_evolving(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and prepared assets")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  local opened = {}
+  local rig
+  rig = progressionRig(versions[1], function(request)
+    return completingScene(rig.catalog, opened)(request)
+  end, 11)
+  local movesBefore = {}
+  for index, entry in ipairs(rig.mons:partyMon(0).moves) do
+    movesBefore[index] = entry.move
+  end
+  Assert.isTrue(rig.bag:add("RARE_CANDY", 1))
+  useFromBag(rig, "RARE_CANDY")
+  untilChildState(rig, "message")
+  drive(rig, { { type = "confirm" } })
+  untilChildState(rig, "level_up_stats")
+  drive(rig, { { type = "confirm" } })
+  drive(rig, { { type = "confirm" } })
+  local status = askToDeleteAMove(rig)
+  local learning = partyChild(status).message.moveNames[1]
+  drive(rig, { { type = "navigate", direction = "up" } })
+  drive(rig, { { type = "confirm" } })
+  driveUntil(rig, "the move picker", 60, function(current)
+    return current.page == "move_pick" and current.transition == nil
+  end)
+  for _ = 1, 12 do
+    rig.flow:updateFixed({})
+  end
+  Assert.equal(#rig.mons:partyMon(0).moves, 4, "the picker publishes nothing before a row is chosen")
+  drive(rig, { { type = "confirm" } })
+  status = driveUntil(rig, "the resumed forgot message", 60, function(current)
+    return current.page == "party_browse"
+      and current.child ~= nil
+      and current.child.state == "message"
+      and current.child.message.templateKey == "forgotMove"
+  end)
+  local forgotten = assert(rig.catalog:move(movesBefore[1]).name, "the fixture names its moves")
+  Assert.deepEqual(partyChild(status).message.moveNames, { forgotten }, "the forgot message names the picked move")
+  for index, move in ipairs(movesBefore) do
+    Assert.equal(
+      rig.mons:partyMon(0).moves[index].move,
+      move,
+      "the source moveset remains live while the forgetting message displays"
+    )
+  end
+  for index = 2, 4 do
+    Assert.equal(rig.mons:partyMon(0).moves[index].move, movesBefore[index], "other rows keep their moves")
+  end
+  local pages = 0
+  repeat
+    pages = pages + 1
+    Assert.equal(partyChild(liveStatus(rig)).messagePage, pages, "the forgot message turns one page per press")
+    drive(rig, { { type = "confirm" } })
+    status = liveStatus(rig)
+  until partyChild(status).message == nil or partyChild(status).message.templateKey ~= "forgotMove"
+  Assert.isTrue(pages > 1, "the forgot message spans several printer pages")
+  status = untilChildState(rig, "message")
+  Assert.equal(partyChild(status).message.templateKey, "learned", "the learned message follows the forgot pages")
+  Assert.equal(
+    rig.catalog:move(rig.mons:partyMon(0).moves[1].move).name,
+    learning,
+    "the picked row learns before the learned message"
+  )
+  Assert.equal(#opened, 0, "evolution waits for the learning messages")
+  drive(rig, { { type = "confirm" } })
+  driveUntil(rig, "the reopened Bag", 60, function(current)
+    return current.page == "bag_browse"
+  end)
+  Assert.equal(#opened, 1, "the final mon opens one level evolution scene")
+  Assert.equal(rig.mons:partyMon(0).species, "TOTODILE")
+  Assert.equal(
+    rig.catalog:move(rig.mons:partyMon(0).moves[1].move).name,
+    learning,
+    "the learned move survives evolution"
+  )
+  rig.flow:dispose()
+end
+
+function T.tests.rare_candy_aborts_a_stale_replacement_after_the_forgot_message(context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    if context ~= nil and type(context.hasCapability) == "function" then
+      context:skip("requires rom_dump and prepared assets")
+    end
+    error("menu flow needs a ready versioned cache", 0)
+  end
+  local opened = {}
+  local rig
+  rig = progressionRig(versions[1], function(request)
+    return completingScene(rig.catalog, opened)(request)
+  end, 11)
+  Assert.isTrue(rig.bag:add("RARE_CANDY", 1))
+  useFromBag(rig, "RARE_CANDY")
+  untilChildState(rig, "message")
+  drive(rig, { { type = "confirm" } })
+  untilChildState(rig, "level_up_stats")
+  drive(rig, { { type = "confirm" } })
+  drive(rig, { { type = "confirm" } })
+  askToDeleteAMove(rig)
+  drive(rig, { { type = "navigate", direction = "up" } })
+  drive(rig, { { type = "confirm" } })
+  driveUntil(rig, "the move picker", 60, function(current)
+    return current.page == "move_pick" and current.transition == nil
+  end)
+  for _ = 1, 12 do
+    rig.flow:updateFixed({})
+  end
+  drive(rig, { { type = "confirm" } })
+  local status = driveUntil(rig, "the resumed forgot message", 60, function(current)
+    return current.page == "party_browse"
+      and current.child ~= nil
+      and current.child.state == "message"
+      and current.child.message.templateKey == "forgotMove"
+  end)
+  local currentMon = rig.mons:partyMon(0)
+  local previousMove = currentMon.moves[1].move
+  local replacementMove = previousMove == "CUT" and "TACKLE" or "CUT"
+  currentMon.moves[1].move = replacementMove
+  local preparation, _ = rig.mons:preparePartyChanges(rig.mons:partyRevision(), {
+    { slot = 0, mon = currentMon },
+  })
+  Assert.notNil(preparation, "the external move change stages")
+  assert(preparation ~= nil, "the external move change is staged")
+  Assert.isTrue(preparation.isCurrent(), "the staged external change remains current")
+  preparation.publish()
+
+  while partyChild(status).message ~= nil and partyChild(status).message.templateKey == "forgotMove" do
+    drive(rig, { { type = "confirm" } })
+    status = liveStatus(rig)
+  end
+  for _ = 1, 100 do
+    status = liveStatus(rig)
+    if status.page == "bag_browse" then
+      break
+    end
+    if status.child ~= nil and status.child.state == "message" then
+      drive(rig, { { type = "confirm" } })
+    else
+      rig.flow:updateFixed({})
+    end
+  end
+  status = liveStatus(rig)
+  Assert.equal(status.page, "bag_browse", "the stale loop returns to a valid Bag page")
+  Assert.equal(
+    rig.mons:partyMon(0).moves[1].move,
+    replacementMove,
+    "the stale pick leaves the changed move untouched"
+  )
+  Assert.equal(#opened, 0, "a stale learning loop does not evolve the changed mon")
+  Assert.equal(rig.bag:quantity("RARE_CANDY"), 0, "the already used candy stays spent")
+  rig.flow:dispose()
 end
 
 return T

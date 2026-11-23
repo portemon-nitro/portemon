@@ -183,7 +183,7 @@ end
 
 function T.catalogs_require_held_item_action_metadata()
   local ItemAssetSchema = schema()
-  Assert.equal(ItemAssetSchema.CATALOG_SCHEMA, "g4-item-catalog-v4")
+  Assert.equal(ItemAssetSchema.CATALOG_SCHEMA, "g4-item-catalog-v5")
   Assert.isTrue(ItemAssetSchema.isValidCatalog(validRoot()))
   for _, key in ipairs({ "isHm", "canHold", "heldFormEffect" }) do
     local root = validRoot()
@@ -307,6 +307,21 @@ function T.catalogs_require_party_use_metadata()
   local badReason = validRoot()
   badReason.items.POTION.partyUse = { kind = "deferred", reason = "later" }
   Assert.isFalse(ItemAssetSchema.isValidCatalog(badReason), "an unknown deferral reason must be rejected")
+  local candy = validRoot()
+  candy.items.POTION.partyUse = {
+    kind = "deferred",
+    reason = "level_up",
+    friendship = { lo = 5, med = 3, hi = 2 },
+  }
+  Assert.isTrue(ItemAssetSchema.isValidCatalog(candy), "a level-up deferral may carry friendship bands")
+  candy.items.POTION.partyUse.reason = "evolution"
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(candy), "other deferrals carry no friendship")
+  candy.items.POTION.partyUse = {
+    kind = "deferred",
+    reason = "level_up",
+    friendship = { lo = 5, med = 3 },
+  }
+  Assert.isFalse(ItemAssetSchema.isValidCatalog(candy), "friendship bands stay complete")
 end
 
 -- A complete in-battle rider record: no cures, no screen, one attack

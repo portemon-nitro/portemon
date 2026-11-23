@@ -91,6 +91,7 @@ function EvolutionFlow.start(mon, context, catalog)
   return {
     _plan = plan,
     _catalog = catalog,
+    _context = context,
     _staged = staged,
     _confirmed = false,
     _cancelled = false,
@@ -210,8 +211,9 @@ function EvolutionFlow.respond(flow, reply)
 end
 
 -- Captures the staged result once the flow is accepted and complete;
--- anything earlier, or any cancelled flow, captures nothing. Repeated
--- captures stage nothing further.
+-- anything earlier, or any cancelled flow, captures nothing. The shed side
+-- product derives from the final learned mon, and its ball joins the plan's
+-- own spends. Repeated captures stage nothing further.
 ---@param flow table<string, unknown>
 ---@return table<string, unknown>?
 function EvolutionFlow.capture(flow)
@@ -220,10 +222,19 @@ function EvolutionFlow.capture(flow)
     return nil
   end
   if flow._result == nil then
+    local additionalMons = {}
+    local inventoryDeltas = copyValue(flow._plan.inventoryDeltas)
+    if flow._plan.reason == "level_ninjask" then
+      local extra, ballDelta = Evolution.shedSideProduct(flow._staged, flow._context, flow._catalog)
+      if extra ~= nil then
+        additionalMons[1] = extra
+        inventoryDeltas[#inventoryDeltas + 1] = ballDelta
+      end
+    end
     flow._result = {
       mon = flow._staged,
-      additionalMons = flow._plan.additionalMons,
-      inventoryDeltas = flow._plan.inventoryDeltas,
+      additionalMons = additionalMons,
+      inventoryDeltas = inventoryDeltas,
     }
   end
   return flow._result

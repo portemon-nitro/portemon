@@ -105,6 +105,7 @@ end
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
 ---@field initialFocus integer|"cancel"? the opening cursor (defaults to the nearest selectable node)
 ---@field initialMessage { templateKey: "giveHeldItem"|"switchHeldResult", displayName: string, itemNames: string[] }? Party-owned held-item result on entry
+---@field resume { slot: integer }? browse-only resumption of a flow-owned dialogue: the controller emits a continue intent for the slot once interactive
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 ---@field prepareIcons fun(iconKeys: string[]): boolean, string? required icon preparation collaborator
 ---@field cancelIconPreparation fun() required preparation release collaborator
@@ -213,6 +214,7 @@ function PartyScreenState.new(opts)
       context = context,
       initialFocus = opts.initialFocus,
       initialMessage = opts.initialMessage,
+      resume = opts.resume,
       allowCancel = canCancel,
       model = {
         refresh = refreshModel,

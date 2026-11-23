@@ -3387,6 +3387,7 @@ local function openEvolutionChild(intent, services)
     mon = copyValue(mon),
     context = context,
     catalog = catalog,
+    source = intent.source,
     particles = services.evolutionParticles,
     splRandomState = services.splRandomState,
   })
@@ -3507,6 +3508,12 @@ local function openEvolutionChild(intent, services)
   end
   function child:completeMessage()
     self._state:completeMessage()
+  end
+  function child:completeCry()
+    self._state:completeCry()
+  end
+  function child:completePicture()
+    self._state:completePicture()
   end
   function child:_setCursorFrame(index)
     local playback = assert(self._cursorPlayback, "evolution cursor playback is initialized with the scene")
@@ -3660,11 +3667,15 @@ local function openEvolutionChild(intent, services)
             end
           end
         elseif event.type == "pointer_down" then
+          -- Lower-screen local coordinates against the source's half-open
+          -- {top, bottom, left, right} rectangles.
           local choice = nil
-          if event.x >= 50 and event.x <= 92 and event.y >= 3 and event.y <= 251 then
-            choice = 0
-          elseif event.x >= 99 and event.x <= 140 and event.y >= 3 and event.y <= 251 then
-            choice = 1
+          if type(event.x) == "number" and type(event.y) == "number" and event.x >= 3 and event.x < 251 then
+            if event.y >= 50 and event.y < 92 then
+              choice = 0
+            elseif event.y >= 99 and event.y < 140 then
+              choice = 1
+            end
           end
           if choice ~= nil then
             menu.focus = choice

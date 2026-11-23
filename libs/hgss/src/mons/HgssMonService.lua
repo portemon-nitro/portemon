@@ -798,6 +798,70 @@ function HgssMonService:receiveMon(mon)
   return self:_receiveAdmitted(self:_checked(mon))
 end
 
+-- Stages one completed out-of-battle evolution as a single preparation:
+-- the evolved record replaces its party slot, side products append to the
+-- party, and every non-egg result stages a caught dex observation plus a
+-- blind unique count and register score (retail EVO_STATE_REGISTER and
+-- the shed side product in evolution_scene.c). Returns nil and "stale"
+-- when the party moved since the expected revision; publication lands
+-- party, dex, and stats together or not at all.
+---@param expectedRevision integer
+---@param slot0 integer
+---@param mon table<string, unknown>
+---@param additionalMons table<string, unknown>[]
+---@return { isCurrent: fun(): boolean, publish: fun() }|nil, string|nil
+function HgssMonService:prepareEvolution(expectedRevision, slot0, mon, additionalMons)
+  assert(type(additionalMons) == "table", "evolution preparation names its side products")
+  local partyPrep, stale = self:preparePartyBatch(expectedRevision, { { slot = slot0, mon = mon } }, additionalMons)
+  if partyPrep == nil then
+    return nil, stale
+  end
+  local dexObservations = {}
+  local statsObservations = {}
+  local counted = {}
+  local results = { mon }
+  for _, extra in ipairs(additionalMons) do
+    results[#results + 1] = extra
+  end
+  for _, result in ipairs(results) do
+    if result.isEgg ~= true then
+      if self._dex ~= nil then
+        dexObservations[#dexObservations + 1] = { kind = "caught", specimen = self._dex:describe(result) }
+      end
+      if self._stats ~= nil then
+        local species = self._stats:describe(result).species
+        if not counted[species] then
+          counted[species] = true
+          statsObservations[#statsObservations + 1] = { kind = "unique_caught", species = species }
+          statsObservations[#statsObservations + 1] = {
+            kind = "score",
+            species = species,
+            event = GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT,
+            points = GameStats.SCORE_POINTS[GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT],
+          }
+        end
+      end
+    end
+  end
+  local dexPrep = nil
+  if #dexObservations > 0 then
+    dexPrep = self._dex:prepareChanges({ observations = dexObservations })
+  end
+  local statsPrep = nil
+  if #statsObservations > 0 then
+    statsPrep = self._stats:prepareChanges({ observations = statsObservations })
+  end
+  local function isCurrent()
+    return partyPrep.isCurrent()
+      and (dexPrep == nil or dexPrep.isCurrent())
+      and (statsPrep == nil or statsPrep.isCurrent())
+  end
+  local function publish()
+    publishStaged(partyPrep, dexPrep, statsPrep)
+  end
+  return { isCurrent = isCurrent, publish = publish }
+end
+
 -- Synthetic sighting of one semantic species: creates the normal
 -- level-50 form-zero temporary specimen through the exact generation
 -- (four draws, no insertion) and records its seen fact only, keeping

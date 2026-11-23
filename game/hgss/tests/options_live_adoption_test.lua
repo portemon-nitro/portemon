@@ -264,6 +264,12 @@ local function openHarness()
   local Composition = require("game.hgss.src.field.PartyMenuComposition")
   local GameStats = require("libs.hgss.src.mons.GameStats")
   local composition = Composition.create({
+    evolutionWorld = function()
+      return nil
+    end,
+    makeEvolutionScene = function()
+      error("this test opens no evolution scene", 0)
+    end,
     mons = openMons(),
     bag = bag,
     easyChatCatalog = {

@@ -34,15 +34,15 @@ local function fieldRuntime(self)
   return assert(self.runtime, "field battle coordinator is disposed")
 end
 
--- Freezes the evolution world facts at battle composition: the encounter
--- clock band the gameplay already uses, with morning folded into day
--- for the source morning/day check, plus the standing map identity.
--- Reads only, never the live clock after return; without a readable
--- field clock or map the context stays absent and no evolution stages.
----@param self FieldBattleCoordinator
----@return table<string, unknown>? frozen evolution context for the launched battle
-local function frozenEvolutionContext(self)
-  local runtime = self.runtime
+-- Samples the evolution world facts the field owns: the encounter clock
+-- band the gameplay already uses, with morning folded into day for the
+-- source morning/day check, plus the standing map identity. Battles
+-- freeze one sample at composition; out-of-battle item evolutions sample
+-- at use. Without a readable field clock the context stays absent and no
+-- evolution stages.
+---@param runtime FieldRuntime?
+---@return table<string, unknown>? evolution world facts
+function FieldBattleCoordinator.evolutionWorld(runtime)
   if type(runtime) ~= "table" then
     return nil
   end
@@ -320,7 +320,7 @@ function FieldBattleCoordinator:startBattle(args)
   }
   -- The frozen evolution clock and map ride the same composition into
   -- the runtime; an unreadable field simply stages no evolution.
-  local evolutionContext = frozenEvolutionContext(self)
+  local evolutionContext = FieldBattleCoordinator.evolutionWorld(self.runtime)
   if evolutionContext ~= nil then
     battleArgs.evolutionContext = evolutionContext
   end
