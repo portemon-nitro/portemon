@@ -780,8 +780,7 @@ function T.partial_page_sets_report_staged_readiness_levels()
     marker = MonCache.marker("synthetic-rom-sha", "portrait-page-0"),
   }
   local portraitPageId = portraitBundle.pageId or 0
-  local portraitArtifact =
-    newArtifact(cache, generation, "mon-portrait-page", tostring(portraitPageId))
+  local portraitArtifact = newArtifact(cache, generation, "mon-portrait-page", tostring(portraitPageId))
   local portraitMarker = MonCacheWriter.stagePage(portraitArtifact, portraitBundle)
   if type(portraitMarker) ~= "string" then
     portraitMarker = portraitBundle.marker

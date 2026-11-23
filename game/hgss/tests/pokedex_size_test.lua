@@ -377,11 +377,7 @@ function T.restart_finishes_its_old_motion_before_a_fresh_drop()
   tick(controller, { { type = "activate", action = "size-restart" } })
   -- The restart rebuilds the check like the source re-entry: the fresh
   -- setup starts the figures back at their start with a level beam.
-  Assert.equal(
-    controller:view().size.figures[1].y,
-    -16,
-    "the restart rebuilds the figures back at their start"
-  )
+  Assert.equal(controller:view().size.figures[1].y, -16, "the restart rebuilds the figures back at their start")
   Assert.equal(weightOf(controller).beamAngle, 0, "the restart rebuilds a level beam")
   local replayed = false
   for _ = 1, 240 do

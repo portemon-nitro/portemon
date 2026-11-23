@@ -1057,7 +1057,11 @@ function T.selection_frame_and_scroll_arrows_draw_in_pixels(scope)
     local cornerFrame2 = { leaseBytes(scope, resources.images, "assets/generated/pokegear/phone-sprite-phone-3-2.png") }
     Assert.isTrue(
       (cornerPixel[1] == cornerFrame1[1] and cornerPixel[2] == cornerFrame1[2] and cornerPixel[3] == cornerFrame1[3])
-        or (cornerPixel[1] == cornerFrame2[1] and cornerPixel[2] == cornerFrame2[2] and cornerPixel[3] == cornerFrame2[3]),
+        or (
+          cornerPixel[1] == cornerFrame2[1]
+          and cornerPixel[2] == cornerFrame2[2]
+          and cornerPixel[3] == cornerFrame2[3]
+        ),
       "the selected row shows its blinking corner sprite"
     )
   end

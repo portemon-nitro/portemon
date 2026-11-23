@@ -743,13 +743,8 @@ function T.sample_keys_hash_the_binary_identity_of_pcm_timer_and_loop()
   }
   local seen = {}
   for _, tuple in ipairs(tuples) do
-    local tupleKey = AudioCompiler.sampleKey(
-      tuple.pcm,
-      tuple.baseTimer,
-      tuple.loopEnabled,
-      tuple.loopStartFrame,
-      tuple.loopEndFrame
-    )
+    local tupleKey =
+      AudioCompiler.sampleKey(tuple.pcm, tuple.baseTimer, tuple.loopEnabled, tuple.loopStartFrame, tuple.loopEndFrame)
     Assert.equal(
       tupleKey,
       binarySampleKey(tuple.pcm, tuple.baseTimer, tuple.loopEnabled, tuple.loopStartFrame, tuple.loopEndFrame),
@@ -825,13 +820,8 @@ function T.compiled_sample_keys_match_the_binary_identity()
   local expected = {}
   for _, memberBytes in ipairs({ pcm8Member(), pcm16Member(), adpcmMember() }) do
     local wave = assert(Swav.decode(memberBytes, "fixture"))
-    local key = binarySampleKey(
-      wave.pcm16le,
-      wave.baseTimer,
-      wave.loopEnabled,
-      wave.loop.startFrame,
-      wave.loop.endFrame
-    )
+    local key =
+      binarySampleKey(wave.pcm16le, wave.baseTimer, wave.loopEnabled, wave.loop.startFrame, wave.loop.endFrame)
     Assert.notNil(bundle.samples[key], "the batch bundle carries the binary-identity sample")
     Assert.equal(bundle.samples[key], wave.pcm16le, "the binary-identity key addresses the decoded PCM bytes")
     expected[key] = wave.pcm16le

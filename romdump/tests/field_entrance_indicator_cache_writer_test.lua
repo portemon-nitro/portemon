@@ -12,9 +12,11 @@ local T = { tests = {} }
 ---@param bundle table<string, unknown>
 ---@return string marker
 local function publish(cacheFs, bundle)
-  return (ResidentArtifactFixture.publish(cacheFs, "field-effects", "global", function(artifact)
-    return Writer.stage(artifact, bundle)
-  end))
+  return (
+    ResidentArtifactFixture.publish(cacheFs, "field-effects", "global", function(artifact)
+      return Writer.stage(artifact, bundle)
+    end)
+  )
 end
 
 local MESH_BANK = "G4GX-bank-bytes"

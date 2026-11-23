@@ -310,9 +310,8 @@ function T.effect_background_tasks_install_and_remove_the_staged_layer_through_t
     "the factory-driven load paints its staged pixels through the 4bpp plane"
   )
   load:dispose()
-  local cleanup = assert(
-    Factory.create("battle-presentation-resource-cleanup", { values = { 9, 0x1234 } }, context, services)
-  )
+  local cleanup =
+    assert(Factory.create("battle-presentation-resource-cleanup", { values = { 9, 0x1234 } }, context, services))
   cleanup:stepSourceTick({ tick = 1 })
   Assert.equal(cleanup:status(), "complete", "the staged cleanup retires on its first tick")
   Assert.deepEqual(

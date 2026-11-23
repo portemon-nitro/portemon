@@ -228,7 +228,11 @@ function T.versioned_move_keys_replay_the_frozen_learning_flow(context)
     drive(declined, { type = "confirm" })
     local refused = declined:takeResult()
     Assert.notNil(refused, "confirming the staged decline seals its fragment on " .. versionId)
-    Assert.equal(refused.reply.choices[1].payload.decision, "decline", "the reply declines without replacing on " .. versionId)
+    Assert.equal(
+      refused.reply.choices[1].payload.decision,
+      "decline",
+      "the reply declines without replacing on " .. versionId
+    )
     declined:dispose()
   end
 end

@@ -233,8 +233,7 @@ local function layeredBackgrounds()
   for _, state in ipairs({ "action", "quantity" }) do
     local pockets = {}
     for _, pocket in ipairs(POCKETS) do
-      pockets[pocket] =
-        imageRef("assets/generated/bag/background-" .. state .. "-overlay-" .. pocket .. ".png")
+      pockets[pocket] = imageRef("assets/generated/bag/background-" .. state .. "-overlay-" .. pocket .. ".png")
     end
     overlays[state] = pockets
   end
@@ -959,10 +958,7 @@ function T.layered_backgrounds_share_bases_rows_and_overlays_across_states()
     counts[path] = (counts[path] or 0) + 1
   end
   for _, pocket in ipairs(POCKETS) do
-    local browseEntry = assert(
-      manifest.interactive.backgrounds.browse[pocket],
-      "browse covers pocket " .. pocket
-    )
+    local browseEntry = assert(manifest.interactive.backgrounds.browse[pocket], "browse covers pocket " .. pocket)
     Assert.equal(browseEntry.base.width, 256, "pocket " .. pocket .. " base keeps the pane width")
     Assert.equal(browseEntry.base.height, 192, "pocket " .. pocket .. " base keeps the pane height")
     Assert.equal(#browseEntry.rows, 3, "pocket " .. pocket .. " publishes three row patches")
@@ -986,10 +982,8 @@ function T.layered_backgrounds_share_bases_rows_and_overlays_across_states()
       Assert.equal(counts[overlay], 1, overlay .. " must be referenced exactly once")
     end
   end
-  local cells = assert(
-    manifest.interactive.backgrounds.browseCells,
-    "the layered manifest carries its six browse cell rects"
-  )
+  local cells =
+    assert(manifest.interactive.backgrounds.browseCells, "the layered manifest carries its six browse cell rects")
   Assert.equal(#cells, 6, "browse publishes all six cell placements")
   for index, cell in ipairs(cells) do
     Assert.equal(cell.width, 124, "browse cell " .. index .. " keeps the audited art width")

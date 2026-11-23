@@ -179,11 +179,7 @@ local function nativeContent()
   local builder = ContentBuilder.new()
   NativeTypeChart.install(builder, "shift-offer-tests")
   local behaviors = BattleBehaviorBuilder.new()
-  behaviors:registerRuleset(
-    Executor.RULESET,
-    { key = Executor.RULESET, chart = Executor.RULESET },
-    "shift-offer-tests"
-  )
+  behaviors:registerRuleset(Executor.RULESET, { key = Executor.RULESET, chart = Executor.RULESET }, "shift-offer-tests")
   return BattleContent.new(builder:freeze(), behaviors:freeze())
 end
 
@@ -254,7 +250,9 @@ local function tacticSpeciesFacts(seeds)
     end
     local formRecord = catalog:form(species, form)
     local types = {}
-    for _, key in ipairs(formRecord.types --[[@as string[] ]]) do
+    for _, key in
+      ipairs(formRecord.types --[[@as string[] ]])
+    do
       types[#types + 1] = key
     end
     bucket[form] = {
@@ -402,11 +400,7 @@ function T.shift_style_freezes_the_foe_arrival_behind_one_offer()
   Assert.notNil(stay, "the offer carries its stay fragment")
   Assert.isTrue(switches >= 1, "the offer carries its legal switches")
   Assert.equal((stay --[[@as table<string, unknown>]]).kind, "confirm", "staying confirms")
-  Assert.deepEqual(
-    (stay --[[@as table<string, unknown>]]).payload,
-    {},
-    "staying carries an empty payload"
-  )
+  Assert.deepEqual((stay --[[@as table<string, unknown>]]).payload, {}, "staying carries an empty payload")
   local reply = SessionFixture.replyFor(request --[[@as table]], { stay })
   local ok, replyErr = session:submit(reply)
   Assert.isTrue(ok, "the stay is accepted: " .. tostring(replyErr))

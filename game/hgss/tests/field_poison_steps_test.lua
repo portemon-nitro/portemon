@@ -147,12 +147,18 @@ local function poisonRuntime(overrides)
     monService = fakeMonService({ poisonedMon(20), healthyMon() }),
     fieldPoison = FieldPoison.new(),
     poisonEffect = FieldPoisonEffect.new(),
-    audio = { played = {}, play = function(self, symbol)
-      self.played[#self.played + 1] = symbol
-    end },
-    camera = { shakes = {}, startShake = function(self, spec)
-      self.shakes[#self.shakes + 1] = spec
-    end },
+    audio = {
+      played = {},
+      play = function(self, symbol)
+        self.played[#self.played + 1] = symbol
+      end,
+    },
+    camera = {
+      shakes = {},
+      startShake = function(self, spec)
+        self.shakes[#self.shakes + 1] = spec
+      end,
+    },
     scripts = {
       dialogueHost = {
         resolved = {},
@@ -161,17 +167,24 @@ local function poisonRuntime(overrides)
           return { tokens = {} }
         end,
       },
-      client = { started = {}, startApplicationScript = function(self, scriptId, tick)
-        self.started[#self.started + 1] = { scriptId = scriptId, tick = tick }
-        return "started-application-script"
-      end },
-      worldState = { rng = { nextRaw = function()
-        return 0
-      end } },
+      client = {
+        started = {},
+        startApplicationScript = function(self, scriptId, tick)
+          self.started[#self.started + 1] = { scriptId = scriptId, tick = tick }
+          return "started-application-script"
+        end,
+      },
+      worldState = { rng = {
+        nextRaw = function()
+          return 0
+        end,
+      } },
     },
-    localClock = { nowLocal = function()
-      return { year = 2026, month = 1, day = 1, hour = 12 }
-    end },
+    localClock = {
+      nowLocal = function()
+        return { year = 2026, month = 1, day = 1, hour = 12 }
+      end,
+    },
     dialogue = dialogue,
   }, FieldRuntime))
   for key, value in pairs(overrides or {}) do
@@ -198,9 +211,14 @@ function T.tests.damage_tick_runs_every_fourth_step_through_the_live_party()
   Assert.equal(runtime.monService:partyMon(0).condition.currentHp, 19, "poison drains one HP")
   Assert.equal(runtime.monService:partyMon(1).condition.currentHp, 20, "healthy mons are untouched")
   Assert.deepEqual(runtime.audio.played, { "SEQ_SE_DP_DOKU2" }, "the damage tick plays the poison jingle")
-  Assert.equal(#runtime.camera.shakes, 0, "the damage tick never shakes the camera: poison wobbles the 3D layer via HBlank")
+  Assert.equal(
+    #runtime.camera.shakes,
+    0,
+    "the damage tick never shakes the camera: poison wobbles the 3D layer via HBlank"
+  )
   Assert.isTrue(runtime.poisonEffect:isActive(), "the damage tick starts the HBlank wobble")
-  local offsets = assert(runtime.poisonEffect:frame(), "the started wobble publishes its scanline frame").scanlineOffsets
+  local offsets =
+    assert(runtime.poisonEffect:frame(), "the started wobble publishes its scanline frame").scanlineOffsets
   Assert.equal(#offsets, 192, "the wobble covers every native scanline")
   Assert.equal(#runtime.dialogue.opened, 0, "plain damage opens no message")
   Assert.equal(runtime.encounters.attempts, 4, "every step including the damage tick resolves its encounter")

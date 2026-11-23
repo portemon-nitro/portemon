@@ -952,7 +952,11 @@ function T.encounter_palette_reuses_one_evaluation_across_same_tick_reads()
       Assert.equal(reread.version, first.version, battleType .. " frame " .. frame .. " keeps its version")
       for _, plane in ipairs({ "mainBg", "subBg" }) do
         for index = 1, #first[plane] do
-          Assert.equal(reread[plane][index], first[plane][index], battleType .. " frame " .. frame .. " " .. plane .. " reread matches")
+          Assert.equal(
+            reread[plane][index],
+            first[plane][index],
+            battleType .. " frame " .. frame .. " " .. plane .. " reread matches"
+          )
         end
       end
       for index, word in pairs(first.mainObj) do
@@ -966,7 +970,11 @@ function T.encounter_palette_reuses_one_evaluation_across_same_tick_reads()
       Assert.isTrue(first.version - previousVersion <= 1, battleType .. " frame " .. frame .. " advances at most once")
       previousVersion = first.version
       palette:tick(frame)
-      Assert.equal(palette:snapshot().version, previousVersion, battleType .. " frame " .. frame .. " retick is a no-op")
+      Assert.equal(
+        palette:snapshot().version,
+        previousVersion,
+        battleType .. " frame " .. frame .. " retick is a no-op"
+      )
     end
     local before = palette:snapshot()
     before.mainBg[113] = -1

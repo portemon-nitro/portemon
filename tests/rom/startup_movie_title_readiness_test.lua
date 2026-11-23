@@ -114,10 +114,7 @@ local function stageTitle(cacheFs, bundle)
   local marker, err = writer.stageTitle(artifact, bundle, JOURNEY_GENERATION)
   Assert.notNil(marker, "the title stages its package: " .. tostring(err))
   artifact:finishSuccess({ marker = marker })
-  Assert.isTrue(
-    ResidentArtifactFixture.materialize(artifact),
-    "the title publishes its package"
-  )
+  Assert.isTrue(ResidentArtifactFixture.materialize(artifact), "the title publishes its package")
 end
 
 local function journey(versionId)

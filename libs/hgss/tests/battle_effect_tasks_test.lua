@@ -428,7 +428,12 @@ function T.palette_fade_interpolates_holds_and_clears_on_return()
     return task:status() == "complete"
   end
   local task = assert(
-    BattleEffectTasks.create("pokemon-picture-and-battle-palette-fade", fadeArgs(10, 200, 300), occurrenceContext(), services)
+    BattleEffectTasks.create(
+      "pokemon-picture-and-battle-palette-fade",
+      fadeArgs(10, 200, 300),
+      occurrenceContext(),
+      services
+    )
   )
   Assert.equal(task:status(), "pending", "palette fades open pending")
   task:stepSourceTick({ tick = 1 })
@@ -454,14 +459,24 @@ function T.palette_fade_interpolates_holds_and_clears_on_return()
   task:dispose()
   -- A Leer-style darken holds its own end coefficient the same way.
   local darken = assert(
-    BattleEffectTasks.create("pokemon-picture-and-battle-palette-fade", fadeArgs(0, 12, 0), occurrenceContext(), services)
+    BattleEffectTasks.create(
+      "pokemon-picture-and-battle-palette-fade",
+      fadeArgs(0, 12, 0),
+      occurrenceContext(),
+      services
+    )
   )
   Assert.isTrue(runToCompletion(darken), "the darken reaches its own completion")
   Assert.equal(compositorOf().battlefieldFade.amount, 12, "the darken holds its compiled end coefficient")
   darken:dispose()
   -- The scripted return fade clears the held palette.
   local back = assert(
-    BattleEffectTasks.create("pokemon-picture-and-battle-palette-fade", fadeArgs(12, 0, 0), occurrenceContext(), services)
+    BattleEffectTasks.create(
+      "pokemon-picture-and-battle-palette-fade",
+      fadeArgs(12, 0, 0),
+      occurrenceContext(),
+      services
+    )
   )
   Assert.isTrue(runToCompletion(back), "the return fade reaches its own completion")
   local settled = compositorOf()
@@ -566,12 +581,7 @@ function T.attacker_obj_window_task_drives_the_compositor_window_seam()
   local cancelScene = sceneWithPair()
   local cancelServices, _ = journalServices(cancelScene)
   local cancelling = assert(
-    BattleEffectTasks.create(
-      "battle-visual-show-attacker-obj-window-sprites",
-      {},
-      occurrenceContext(),
-      cancelServices
-    )
+    BattleEffectTasks.create("battle-visual-show-attacker-obj-window-sprites", {}, occurrenceContext(), cancelServices)
   )
   for _ = 1, 11 do
     cancelling:stepSourceTick({ tick = 1 })
@@ -2466,12 +2476,8 @@ function T.managed_sprite_frame_loop_owns_the_manager_draw_window()
     not pcall(BattleEffectTasks.create, "managed-sprite-draw-loop", { parameters = {} }, {}, services),
     "a frame loop needs its source frame count"
   )
-  local task = assert(BattleEffectTasks.create(
-    "managed-sprite-draw-loop",
-    { parameters = { frameTicks = 3 } },
-    {},
-    services
-  ))
+  local task =
+    assert(BattleEffectTasks.create("managed-sprite-draw-loop", { parameters = { frameTicks = 3 } }, {}, services))
   Assert.equal(copyDraws(scene), true, "the loop opens its manager draw window")
   task:stepSourceTick({ tick = 1 })
   Assert.equal(task:status(), "running", "the loop keeps drawing through its frame count")
@@ -2484,12 +2490,14 @@ function T.managed_sprite_frame_loop_owns_the_manager_draw_window()
   task:dispose()
 
   local withdrawn = stagedScene()
-  local cancelled = assert(BattleEffectTasks.create(
-    "managed-sprite-draw-loop",
-    { parameters = { frameTicks = 5 } },
-    {},
-    { scene = withdrawn, audio = {}, resources = {} }
-  ))
+  local cancelled = assert(
+    BattleEffectTasks.create(
+      "managed-sprite-draw-loop",
+      { parameters = { frameTicks = 5 } },
+      {},
+      { scene = withdrawn, audio = {}, resources = {} }
+    )
+  )
   Assert.equal(copyDraws(withdrawn), true, "the loop opens its window before the withdrawal")
   cancelled:cancel("withdrawn")
   Assert.equal(cancelled:status(), "cancelled", "cancellation lands on cancelled")

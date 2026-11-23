@@ -277,8 +277,7 @@ function T.compile_keeps_child_draw_and_rotation_kinds_including_polygon_modes()
   local directional = compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(1 * 128 + 2 * 8))
   Assert.equal(directional.particles.emitters[1].child.drawType, 1, "a directional child keeps its draw kind")
   Assert.equal(directional.particles.emitters[1].child.rotationType, 2, "a spinning child keeps its rotation kind")
-  local polygon, polygonErr =
-    compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(2 * 128))
+  local polygon, polygonErr = compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(2 * 128))
   Assert.notNil(polygon, "a polygon child compiles: " .. tostring(polygonErr))
   local polygonChild = assert(polygon.particles.emitters[1].child, "the polygon child normalizes")
   Assert.equal(polygonChild.drawType, 2, "the polygon child keeps its draw kind")
@@ -286,11 +285,7 @@ function T.compile_keeps_child_draw_and_rotation_kinds_including_polygon_modes()
   Assert.equal(polygonChild.polygonPlane, "xy", "the polygon plane keeps its source selection")
   local spun, spunErr = compileOne(emitterBase(SELF_DEST + USE_CHILD, 0) .. childBlock(3 * 8))
   Assert.notNil(spun, "a recycled-rotation child compiles: " .. tostring(spunErr))
-  Assert.equal(
-    spun.particles.emitters[1].child.rotationType,
-    3,
-    "the child keeps the recycled rotation kind"
-  )
+  Assert.equal(spun.particles.emitters[1].child.rotationType, 3, "the child keeps the recycled rotation kind")
 end
 
 return { tests = T }

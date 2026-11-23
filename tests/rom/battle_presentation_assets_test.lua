@@ -644,22 +644,49 @@ function T.battle_bag_screen_and_widgets_stage_into_the_global_bundle(romFs, ver
     Assert.notNil(images[page.image], versionId .. ": bag page " .. index .. " stages its image")
   end
   for key, count in pairs({ message = 1, useItem = 4, pocketMenu = 5, itemList = 26 }) do
-    Assert.equal(#(assert(bag.windows, "the bag stages its windows")[key]), count, versionId .. ": staged bag window " .. key .. " keeps its count")
+    Assert.equal(
+      #assert(bag.windows, "the bag stages its windows")[key],
+      count,
+      versionId .. ": staged bag window " .. key .. " keeps its count"
+    )
   end
   for key, count in pairs({ pocketMenu = 6, itemList = 9, useItem = 2 }) do
-    Assert.equal(#(assert(bag.hitboxes, "the bag stages its hitboxes")[key]), count, versionId .. ": staged bag hitbox " .. key .. " keeps its order")
+    Assert.equal(
+      #assert(bag.hitboxes, "the bag stages its hitboxes")[key],
+      count,
+      versionId .. ": staged bag hitbox " .. key .. " keeps its order"
+    )
   end
-  Assert.deepEqual(assert(bag.entryIds, "the bag stages its entry ids").name, { 9 }, versionId .. ": the staged item-name template is msg 9")
+  Assert.deepEqual(
+    assert(bag.entryIds, "the bag stages its entry ids").name,
+    { 9 },
+    versionId .. ": the staged item-name template is msg 9"
+  )
   Assert.equal(#bag.entryIds.quantity, 12, versionId .. ": twelve staged quantity slots stage")
-  local list = assert(assert(bag.icons, versionId .. ": the bag stages its item icon spots").list, versionId .. ": the bag stages its list icon spots")
+  local list = assert(
+    assert(bag.icons, versionId .. ": the bag stages its item icon spots").list,
+    versionId .. ": the bag stages its list icon spots"
+  )
   Assert.equal(#list, 6, versionId .. ": the bag stages six list icon spots")
   Assert.deepEqual({ list[1].x, list[1].y }, { 44, 45 }, versionId .. ": the first list icon spot matches retail")
   Assert.deepEqual({ list[6].x, list[6].y }, { 172, 141 }, versionId .. ": the last list icon spot matches retail")
-  Assert.deepEqual({ bag.icons.lastUsed.x, bag.icons.lastUsed.y }, { 24, 178 }, versionId .. ": the last-used spot matches retail")
-  Assert.deepEqual({ bag.icons.useItem.x, bag.icons.useItem.y }, { 40, 44 }, versionId .. ": the use-item spot matches retail")
+  Assert.deepEqual(
+    { bag.icons.lastUsed.x, bag.icons.lastUsed.y },
+    { 24, 178 },
+    versionId .. ": the last-used spot matches retail"
+  )
+  Assert.deepEqual(
+    { bag.icons.useItem.x, bag.icons.useItem.y },
+    { 40, 44 },
+    versionId .. ": the use-item spot matches retail"
+  )
   local fingers = assert(bag.tutorialFinger, versionId .. ": the bag stages its tutorial finger spots")
   Assert.equal(#fingers, 3, versionId .. ": the bag stages one finger spot per browser page")
-  Assert.deepEqual({ fingers[1].x, fingers[1].y }, { 192, 24 }, versionId .. ": the pocket-menu finger spot matches retail")
+  Assert.deepEqual(
+    { fingers[1].x, fingers[1].y },
+    { 192, 24 },
+    versionId .. ": the pocket-menu finger spot matches retail"
+  )
   local finger = assert(bag.finger, versionId .. ": the global bundle stages the finger art")
   Assert.isTrue(type(finger.image) == "string", versionId .. ": the finger stages its image")
   Assert.notNil(images[finger.image], versionId .. ": the finger image is inventoried")
@@ -667,7 +694,10 @@ function T.battle_bag_screen_and_widgets_stage_into_the_global_bundle(romFs, ver
   for _, corner in ipairs({ "tl", "tr", "bl", "br" }) do
     local record = assert(cursor[corner], versionId .. ": the cursor stages its " .. corner .. " corner")
     Assert.notNil(images[record.image], versionId .. ": the " .. corner .. " corner image is inventoried")
-    Assert.isTrue(#assert(record.frames, "the corner stages frames") >= 1, versionId .. ": the " .. corner .. " corner stages at least one frame")
+    Assert.isTrue(
+      #assert(record.frames, "the corner stages frames") >= 1,
+      versionId .. ": the " .. corner .. " corner stages at least one frame"
+    )
   end
   local faces = assert(bag.buttons, versionId .. ": the bag stages its button faces")
   local expected = {}
@@ -686,7 +716,11 @@ function T.battle_bag_screen_and_widgets_stage_into_the_global_bundle(romFs, ver
     return n
   end)(), versionId .. ": every staged button face stages exactly once")
   local roles = assert(bundle.manifest.messages.roles, versionId .. ": the catalog stages its text roles")
-  Assert.equal(#assert(roles.bag.palette.colors), 192, versionId .. ": the bag palette stages twelve sixteen-color banks")
+  Assert.equal(
+    #assert(roles.bag.palette.colors),
+    192,
+    versionId .. ": the bag palette stages twelve sixteen-color banks"
+  )
   Assert.equal(
     #assert(roles.party.palette.colors),
     256,
@@ -723,21 +757,65 @@ function T.battle_bag_and_party_messages_stage_with_source_placeholders(romFs, v
   }) do
     Assert.notNil(entries[key], versionId .. ": " .. key .. " stages from its source bank")
   end
-  Assert.equal(stagedSubstitutions(entries, "battle/bag/message/no-aim-doubles"), 0, versionId .. ": doubles aim carries no placeholder")
-  Assert.equal(stagedSubstitutions(entries, "battle/bag/message/embargo"), 2, versionId .. ": embargo names its move and mon")
-  Assert.equal(stagedSubstitutions(entries, "battle/bag/message/no-stealing"), 1, versionId .. ": trainer escapes name the player")
-  Assert.equal(stagedSubstitutions(entries, "battle/narration/identified"), 2, versionId .. ": identification names its attacker and defender")
-  Assert.equal(stagedSubstitutions(entries, "battle/narration/aimed"), 2, versionId .. ": the aim line names its attacker and defender")
+  Assert.equal(
+    stagedSubstitutions(entries, "battle/bag/message/no-aim-doubles"),
+    0,
+    versionId .. ": doubles aim carries no placeholder"
+  )
+  Assert.equal(
+    stagedSubstitutions(entries, "battle/bag/message/embargo"),
+    2,
+    versionId .. ": embargo names its move and mon"
+  )
+  Assert.equal(
+    stagedSubstitutions(entries, "battle/bag/message/no-stealing"),
+    1,
+    versionId .. ": trainer escapes name the player"
+  )
+  Assert.equal(
+    stagedSubstitutions(entries, "battle/narration/identified"),
+    2,
+    versionId .. ": identification names its attacker and defender"
+  )
+  Assert.equal(
+    stagedSubstitutions(entries, "battle/narration/aimed"),
+    2,
+    versionId .. ": the aim line names its attacker and defender"
+  )
   for slot = 0, 5 do
-    Assert.equal(stagedSubstitutions(entries, "battle/party/mon-name/" .. slot), 1, versionId .. ": mon-name " .. slot .. " carries its nickname")
+    Assert.equal(
+      stagedSubstitutions(entries, "battle/party/mon-name/" .. slot),
+      1,
+      versionId .. ": mon-name " .. slot .. " carries its nickname"
+    )
   end
   for slot = 0, 4 do
-    Assert.equal(stagedSubstitutions(entries, "battle/party/move-name/" .. slot), 1, versionId .. ": move-name " .. slot .. " carries its name")
+    Assert.equal(
+      stagedSubstitutions(entries, "battle/party/move-name/" .. slot),
+      1,
+      versionId .. ": move-name " .. slot .. " carries its name"
+    )
   end
-  Assert.equal(stagedSubstitutions(entries, "battle/party/gender/male"), 0, versionId .. ": the male symbol carries no placeholder")
-  Assert.equal(stagedSubstitutions(entries, "battle/party/stat/level"), 0, versionId .. ": the level label carries no placeholder")
-  Assert.equal(stagedSubstitutions(entries, "battle/party/stat/hp-slash"), 0, versionId .. ": the HP slash carries no placeholder")
-  Assert.equal(stagedSubstitutions(entries, "battle/party/move/pp-slash"), 0, versionId .. ": the PP slash carries no placeholder")
+  Assert.equal(
+    stagedSubstitutions(entries, "battle/party/gender/male"),
+    0,
+    versionId .. ": the male symbol carries no placeholder"
+  )
+  Assert.equal(
+    stagedSubstitutions(entries, "battle/party/stat/level"),
+    0,
+    versionId .. ": the level label carries no placeholder"
+  )
+  Assert.equal(
+    stagedSubstitutions(entries, "battle/party/stat/hp-slash"),
+    0,
+    versionId .. ": the HP slash carries no placeholder"
+  )
+  Assert.equal(
+    stagedSubstitutions(entries, "battle/party/move/pp-slash"),
+    0,
+    versionId .. ": the PP slash carries no placeholder"
+  )
 end
 
 -- Retail battle-party screen (battle_party_menu.c
@@ -761,7 +839,11 @@ function T.battle_party_exp_tiles_stage_the_draw_exp_bar_cells(romFs, versionId)
   end)
   Assert.isTrue(ok, versionId .. ": the party screens compile (" .. tostring(section) .. ")")
   assert(type(section) == "table", "the party screens compiled")
-  Assert.equal(#assert(section.expTiles, versionId .. ": the party stages its exp tiles"), 9, versionId .. ": nine fill levels stage")
+  Assert.equal(
+    #assert(section.expTiles, versionId .. ": the party stages its exp tiles"),
+    9,
+    versionId .. ": nine fill levels stage"
+  )
   local function pixel(tile, x, y)
     local o = (y * tile.width + x) * 4 + 1
     return string.byte(tile.pixels, o, o + 3)
@@ -784,18 +866,23 @@ function T.battle_party_exp_tiles_stage_the_draw_exp_bar_cells(romFs, versionId)
   local full = staged["party-exp-8"]
   local grey = "4A4A4AFF"
   Assert.equal(rowBytes(empty, 0), string.rep(grey .. " ", 7) .. grey, versionId .. ": the empty top border stays grey")
-  Assert.equal(rowBytes(empty, 5), string.rep(grey .. " ", 7) .. grey, versionId .. ": the empty bottom border stays grey")
+  Assert.equal(
+    rowBytes(empty, 5),
+    string.rep(grey .. " ", 7) .. grey,
+    versionId .. ": the empty bottom border stays grey"
+  )
   Assert.equal(rowBytes(full, 0), string.rep(grey .. " ", 7) .. grey, versionId .. ": the full top border stays grey")
   local cream = "FFF7E6FF"
   Assert.equal(rowBytes(empty, 2), string.rep(cream .. " ", 7) .. cream, versionId .. ": the empty body stays cream")
   local darkBlue = "006BE6FF"
-  Assert.equal(rowBytes(full, 1), string.rep(darkBlue .. " ", 7) .. darkBlue, versionId .. ": the full row fills dark blue")
+  Assert.equal(
+    rowBytes(full, 1),
+    string.rep(darkBlue .. " ", 7) .. darkBlue,
+    versionId .. ": the full row fills dark blue"
+  )
   local blue = "529CFFFF"
   Assert.equal(rowBytes(full, 2), string.rep(blue .. " ", 7) .. blue, versionId .. ": the full body fills blue")
-  Assert.isTrue(
-    rowBytes(empty, 1) ~= rowBytes(full, 1),
-    versionId .. ": empty and full levels paint different fills"
-  )
+  Assert.isTrue(rowBytes(empty, 1) ~= rowBytes(full, 1), versionId .. ": empty and full levels paint different fills")
 end
 
 function T.battle_party_screen_decodes_from_source_members(romFs, versionId)
@@ -879,10 +966,7 @@ function T.battle_party_screen_decodes_from_source_members(romFs, versionId)
     screen.cursorBoxes.forgetMove,
     versionId .. ": the contest forget page aliases the forget-move cursor boxes"
   )
-  local positions = assert(
-    screen.spritePositions,
-    versionId .. ": the party screen stages its sprite icon positions"
-  )
+  local positions = assert(screen.spritePositions, versionId .. ": the party screen stages its sprite icon positions")
   for key, count in pairs({
     listIcons = 6,
     listStatusIcons = 6,
@@ -928,11 +1012,7 @@ function T.battle_party_screen_decodes_from_source_members(romFs, versionId)
   local fixed = assert(positions.fixed, versionId .. ": the sprite positions stage their fixed anchors")
   Assert.deepEqual({ fixed.monIcon.x, fixed.monIcon.y }, { 24, 12 }, versionId .. ": the mon icon anchor")
   Assert.deepEqual({ fixed.statusIcon.x, fixed.statusIcon.y }, { 198, 20 }, versionId .. ": the status icon anchor")
-  Assert.deepEqual(
-    { fixed.monMenuIcon.x, fixed.monMenuIcon.y },
-    { 128, 72 },
-    versionId .. ": the mon-menu icon anchor"
-  )
+  Assert.deepEqual({ fixed.monMenuIcon.x, fixed.monMenuIcon.y }, { 128, 72 }, versionId .. ": the mon-menu icon anchor")
   Assert.deepEqual(
     { fixed.summaryHeldItem.x, fixed.summaryHeldItem.y },
     { 20, 132 },
@@ -948,16 +1028,8 @@ function T.battle_party_screen_decodes_from_source_members(romFs, versionId)
     { 24, 88 },
     versionId .. ": the category icon anchor"
   )
-  Assert.deepEqual(
-    { fixed.heldItemDelta.x, fixed.heldItemDelta.y },
-    { 8, 8 },
-    versionId .. ": the held-item delta"
-  )
-  Assert.deepEqual(
-    { fixed.capsuleDelta.x, fixed.capsuleDelta.y },
-    { 16, 8 },
-    versionId .. ": the capsule delta"
-  )
+  Assert.deepEqual({ fixed.heldItemDelta.x, fixed.heldItemDelta.y }, { 8, 8 }, versionId .. ": the held-item delta")
+  Assert.deepEqual({ fixed.capsuleDelta.x, fixed.capsuleDelta.y }, { 16, 8 }, versionId .. ": the capsule delta")
   local first = screen.hitboxes.partyList[1]
   Assert.deepEqual(
     { first.top, first.bottom, first.left, first.right },
@@ -996,7 +1068,10 @@ function T.battle_party_screen_and_widgets_stage_into_the_global_bundle(romFs, v
   local images = assert(bundle.manifest.menus.images, versionId .. ": the catalog stages its menu image inventory")
   local stagedKeys = {}
   for index, page in ipairs(pages) do
-    Assert.isTrue(type(page.key) == "string" and page.key ~= "", versionId .. ": party page " .. index .. " names its key")
+    Assert.isTrue(
+      type(page.key) == "string" and page.key ~= "",
+      versionId .. ": party page " .. index .. " names its key"
+    )
     stagedKeys[page.key] = true
     for _, layer in ipairs(assert(page.layers, versionId .. ": party page " .. page.key .. " stages its layers")) do
       Assert.notNil(images[layer.image], versionId .. ": party page " .. page.key .. " stages its layer image")
@@ -1012,16 +1087,32 @@ function T.battle_party_screen_and_widgets_stage_into_the_global_bundle(romFs, v
     Assert.isTrue(stagedKeys[key] == true, versionId .. ": " .. key .. " stages into the bundle")
   end
   for key, count in pairs({ base = 2, partyList = 6, monMenu = 4, summary = 35, checkMoves = 11, moveDetail = 17 }) do
-    Assert.equal(#(assert(party.windows, "the party stages its windows")[key]), count, versionId .. ": staged party window " .. key .. " keeps its count")
+    Assert.equal(
+      #assert(party.windows, "the party stages its windows")[key],
+      count,
+      versionId .. ": staged party window " .. key .. " keeps its count"
+    )
   end
   for key, count in pairs({ restorePP = 5, learnMove = 6, forgetMove = 12, contestForgetMove = 7 }) do
-    Assert.equal(#(assert(party.windows, "the party stages its windows")[key]), count, versionId .. ": staged party window " .. key .. " keeps its AddPageWindows count")
+    Assert.equal(
+      #assert(party.windows, "the party stages its windows")[key],
+      count,
+      versionId .. ": staged party window " .. key .. " keeps its AddPageWindows count"
+    )
   end
   for key, count in pairs({ partyList = 6, monMenu = 3, summary = 3, checkMoves = 7, moveDetail = 4 }) do
-    Assert.equal(#(assert(party.hitboxes, "the party stages its hitboxes")[key]), count, versionId .. ": staged party hitbox " .. key .. " keeps its order")
+    Assert.equal(
+      #assert(party.hitboxes, "the party stages its hitboxes")[key],
+      count,
+      versionId .. ": staged party hitbox " .. key .. " keeps its order"
+    )
   end
   for key, count in pairs({ restorePP = 4, learnMove = 6, forgetMove = 2 }) do
-    Assert.equal(#(assert(party.hitboxes, "the party stages its hitboxes")[key]), count, versionId .. ": staged party hitbox " .. key .. " keeps its Handle input order")
+    Assert.equal(
+      #assert(party.hitboxes, "the party stages its hitboxes")[key],
+      count,
+      versionId .. ": staged party hitbox " .. key .. " keeps its Handle input order"
+    )
   end
   Assert.isNil(
     party.hitboxes.learnMoveContest,
@@ -1032,7 +1123,11 @@ function T.battle_party_screen_and_widgets_stage_into_the_global_bundle(romFs, v
     versionId .. ": the staged contest forget page reuses the forget-move hitbox table"
   )
   for key, count in pairs({ restorePP = 5, learnMove = 7, forgetMove = 3, learnMoveContest = 7, forgetMoveContest = 3 }) do
-    Assert.equal(#(assert(party.cursorBoxes, "the party stages its cursor boxes")[key]), count, versionId .. ": staged party cursor " .. key .. " keeps its page boxes")
+    Assert.equal(
+      #assert(party.cursorBoxes, "the party stages its cursor boxes")[key],
+      count,
+      versionId .. ": staged party cursor " .. key .. " keeps its page boxes"
+    )
   end
   Assert.deepEqual(
     party.cursorBoxes.learnMoveContest,
@@ -1044,10 +1139,8 @@ function T.battle_party_screen_and_widgets_stage_into_the_global_bundle(romFs, v
     party.cursorBoxes.forgetMove,
     versionId .. ": the staged contest forget page aliases the forget-move cursor boxes"
   )
-  local stagedPositions = assert(
-    party.spritePositions,
-    versionId .. ": the staged party carries its sprite icon positions"
-  )
+  local stagedPositions =
+    assert(party.spritePositions, versionId .. ": the staged party carries its sprite icon positions")
   for key, count in pairs({
     listIcons = 6,
     listStatusIcons = 6,
@@ -1070,7 +1163,11 @@ function T.battle_party_screen_and_widgets_stage_into_the_global_bundle(romFs, v
     { 88, 176 },
     versionId .. ": the staged new-move icon spot matches retail"
   )
-  Assert.equal(#assert(party.buttonRects, "the party stages its button rects"), 34, versionId .. ": the staged party keeps its 34 button rects")
+  Assert.equal(
+    #assert(party.buttonRects, "the party stages its button rects"),
+    34,
+    versionId .. ": the staged party keeps its 34 button rects"
+  )
   local faces = assert(party.buttons, versionId .. ": the party stages its button faces")
   local expected = {}
   for _, staged in ipairs(Sources.PARTY_BUTTON_FACES.staged) do
@@ -1102,10 +1199,8 @@ function T.battle_party_screen_and_widgets_stage_into_the_global_bundle(romFs, v
   -- (gender-symbol colors 154-157 of member 23 landing on font slots
   -- 7/8 and 3/4); every staged bank matches the dump.
   local partySource = assert(Sources.PARTY_SCREEN, versionId .. ": the source catalog carries its party screen")
-  local partyPalette = assert(
-    bundle.manifest.messages.roles.party.palette,
-    versionId .. ": the catalog stages its party printer palette"
-  )
+  local partyPalette =
+    assert(bundle.manifest.messages.roles.party.palette, versionId .. ": the catalog stages its party printer palette")
   Assert.equal(#partyPalette.colors, 256, versionId .. ": the party palette stages sixteen sixteen-color banks")
   local screenArchive = assert(Sources.TEXT_PALETTES.party.base, versionId .. ": the party palette names its base")
   Assert.equal(screenArchive.narc, "NARC_a_0_7_1", versionId .. ": the party base names the screen archive")
@@ -1122,12 +1217,11 @@ function T.battle_party_screen_and_widgets_stage_into_the_global_bundle(romFs, v
   )
   local patch = assert(Sources.TEXT_PALETTES.party.patch, versionId .. ": the party palette names its patch")
   for slot, sourceIndex in pairs(patch.slots) do
-    local want = assert(screenPalette.colors[sourceIndex + 1], versionId .. ": the screen member carries color " .. sourceIndex)
+    local want =
+      assert(screenPalette.colors[sourceIndex + 1], versionId .. ": the screen member carries color " .. sourceIndex)
     -- The patch lands in the font bank (SUB_BG bank 13), not bank 0.
-    local got = assert(
-      partyPalette.colors[13 * 16 + slot + 1],
-      versionId .. ": the staged bank 13 carries slot " .. slot
-    )
+    local got =
+      assert(partyPalette.colors[13 * 16 + slot + 1], versionId .. ": the staged bank 13 carries slot " .. slot)
     Assert.deepEqual(
       { got.r, got.g, got.b },
       { want.r, want.g, want.b },
@@ -1144,10 +1238,8 @@ function T.battle_party_screen_and_widgets_stage_into_the_global_bundle(romFs, v
   for slot = 0, 15 do
     if patch.slots[slot] == nil then
       local want = assert(fontPalette.colors[slot + 1], versionId .. ": the font member carries color " .. slot)
-      local got = assert(
-        partyPalette.colors[13 * 16 + slot + 1],
-        versionId .. ": the staged bank 13 carries font slot " .. slot
-      )
+      local got =
+        assert(partyPalette.colors[13 * 16 + slot + 1], versionId .. ": the staged bank 13 carries font slot " .. slot)
       Assert.deepEqual(
         { got.r, got.g, got.b },
         { want.r, want.g, want.b },

@@ -1139,11 +1139,7 @@ function T.attached_menus_follow_the_resolved_reference_scale_across_zoom_and_re
   viewport:resize(750, 900)
   scale:resize(viewport.referenceFrame.height)
   local portrait = menuContext()
-  Assert.equal(
-    portrait.preferredScale,
-    4,
-    "a portrait resize preserves the manual offset on its own nominal baseline"
-  )
+  Assert.equal(portrait.preferredScale, 4, "a portrait resize preserves the manual offset on its own nominal baseline")
   Assert.deepEqual(portrait.bounds, viewport.referenceFrame, "menus track the refitted reference frame")
   Assert.equal(viewport.worldViewport.width, 750, "the world rectangle keeps its own width")
   Assert.equal(viewport.worldViewport.height, 900, "the world rectangle keeps its own height")

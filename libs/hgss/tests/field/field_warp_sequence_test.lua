@@ -298,11 +298,7 @@ function T.fly_arrival_holds_the_landing_until_the_climb_zoom_and_effect_settle(
   FieldWarpSequence.stepArrival(sequence, port)
   port.zoomIsDone = false
   port.landingIsDone = true
-  Assert.equal(
-    FieldWarpSequence.stepArrival(sequence, port),
-    "running",
-    "an unfinished landing zoom holds the arrival"
-  )
+  Assert.equal(FieldWarpSequence.stepArrival(sequence, port), "running", "an unfinished landing zoom holds the arrival")
   port.zoomIsDone = true
   port.landingHasClimbed = true
   Assert.equal(FieldWarpSequence.stepArrival(sequence, port), "running")
@@ -453,10 +449,7 @@ function T.grounded_warps_never_touch_the_fly_cutin_or_landing()
     port.fadeIsDone = false
     FieldWarpSequence.stepArrival(sequence, port)
     for _, event in ipairs(port.events) do
-      Assert.isTrue(
-        event ~= "landing_start",
-        kind .. " leaves the fly landing untouched: " .. event
-      )
+      Assert.isTrue(event ~= "landing_start", kind .. " leaves the fly landing untouched: " .. event)
     end
   end
   local rope = FieldWarpSequence.new("escape_rope")
@@ -469,10 +462,7 @@ function T.grounded_warps_never_touch_the_fly_cutin_or_landing()
     end
     ropePort.fadeIsDone = true
   end
-  Assert.isNil(
-    indexOf(ropePort, "cutin_start"),
-    "escape rope never shows a cut-in"
-  )
+  Assert.isNil(indexOf(ropePort, "cutin_start"), "escape rope never shows a cut-in")
   Assert.isNil(indexOf(ropePort, "cry"), "escape rope never cries")
 end
 

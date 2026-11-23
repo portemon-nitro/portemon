@@ -492,11 +492,7 @@ function T.restricted_bags_refuse_with_their_retail_message()
     for _ = 1, 10 do
       fixture.screen:updateFixed(TICK)
     end
-    Assert.equal(
-      fixture.screen:view().selection,
-      "bag",
-      "setup: the " .. case.label .. " cursor rests on Bag"
-    )
+    Assert.equal(fixture.screen:view().selection, "bag", "setup: the " .. case.label .. " cursor rests on Bag")
     fixture.screen:input({ { type = "confirm" } })
     for _ = 1, 10 do
       fixture.screen:updateFixed(TICK)

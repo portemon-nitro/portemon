@@ -72,10 +72,16 @@ function T.connected_strike_admits_with_signed_damage_and_hit_ordinal()
     hitCycle = 1,
   }
   local packet = packetFor(before, before, {
-    rawEvent(4, "struck", { kind = "move", key = "TACKLE" }, { target = 2, hitIndex = 2, damage = 12, calculated = 14 },
-      { { combatant = 1, activation = 7 } }, { { combatant = 2, activation = 9 } },
+    rawEvent(
+      4,
+      "struck",
+      { kind = "move", key = "TACKLE" },
+      { target = 2, hitIndex = 2, damage = 12, calculated = 14 },
+      { { combatant = 1, activation = 7 } },
+      { { combatant = 2, activation = 9 } },
       { selected = "TACKLE", executed = "TACKLE", phase = "direct", hitOrdinal = 2, hitCount = 3, power = 35 },
-      { context = {}, execution = execution }),
+      { context = {}, execution = execution }
+    ),
   }, "selection-probe", 1)
   local requests = select(packet, packet.events[1], geometry)
   Assert.equal(#requests, 1, "the strike selects one frozen request")
@@ -99,23 +105,31 @@ function T.connected_strike_admits_with_signed_damage_and_hit_ordinal()
   Assert.equal(request.playback.topology.attacker.slot, "solo-player", "the attacker keeps its event slot")
   Assert.equal(request.playback.topology.defender.slot, "solo-enemy", "the strike freezes its native defender")
   Assert.equal(#request.playback.topology.targets, 1, "the strike keeps its ordered targets")
-  Assert.deepEqual(
-    request.playback.identity,
-    request.identity,
-    "the playback identity equals the request identity"
-  )
+  Assert.deepEqual(request.playback.identity, request.identity, "the playback identity equals the request identity")
 end
 
 function T.blocked_and_unconnected_strikes_omit_with_gate_reasons()
   local geometry = ManifestFixture.manifest().battlefield.slots
   local before = views()
   local packet = packetFor(before, before, {
-    rawEvent(5, "struck", { kind = "move", key = "TACKLE" }, { target = 2, hitIndex = 1, damage = 0, calculated = 0 },
-      { { combatant = 1, activation = 7 } }, { { combatant = 2, activation = 9 } },
-      { selected = "TACKLE", executed = "TACKLE", phase = "direct" }),
-    rawEvent(6, "protected", { kind = "move", key = "TACKLE" }, { target = 1 },
-      { { combatant = 2, activation = 9 } }, { { combatant = 1, activation = 7 } },
-      { selected = "TACKLE", executed = "TACKLE", phase = "direct" }),
+    rawEvent(
+      5,
+      "struck",
+      { kind = "move", key = "TACKLE" },
+      { target = 2, hitIndex = 1, damage = 0, calculated = 0 },
+      { { combatant = 1, activation = 7 } },
+      { { combatant = 2, activation = 9 } },
+      { selected = "TACKLE", executed = "TACKLE", phase = "direct" }
+    ),
+    rawEvent(
+      6,
+      "protected",
+      { kind = "move", key = "TACKLE" },
+      { target = 1 },
+      { { combatant = 2, activation = 9 } },
+      { { combatant = 1, activation = 7 } },
+      { selected = "TACKLE", executed = "TACKLE", phase = "direct" }
+    ),
   }, "selection-probe", 2)
   local unconnected = select(packet, packet.events[1], geometry)
   Assert.equal(unconnected[1].disposition, "omit:unconnected-strike", "the scoreless strike omits its root")
@@ -159,15 +173,26 @@ function T.charge_release_keeps_variant_one_and_native_defender()
     hitCycle = 1,
   }
   local packet = packetFor(before, before, {
-    rawEvent(7, "charged", { kind = "move", key = "FLY" }, { target = 1 },
-      { { combatant = 1, activation = 7 } }, { { combatant = 1, activation = 7 } },
+    rawEvent(
+      7,
+      "charged",
+      { kind = "move", key = "FLY" },
+      { target = 1 },
+      { { combatant = 1, activation = 7 } },
+      { { combatant = 1, activation = 7 } },
       { selected = "FLY", executed = "FLY", phase = "charge" },
-      { context = {}, execution = chargeStart }),
-    rawEvent(8, "struck", { kind = "move", key = "FLY" },
+      { context = {}, execution = chargeStart }
+    ),
+    rawEvent(
+      8,
+      "struck",
+      { kind = "move", key = "FLY" },
       { target = 2, hitIndex = 1, damage = 22, calculated = 22, release = true },
-      { { combatant = 1, activation = 7 } }, { { combatant = 2, activation = 9 } },
+      { { combatant = 1, activation = 7 } },
+      { { combatant = 2, activation = 9 } },
       { selected = "FLY", executed = "FLY", phase = "direct" },
-      { context = {}, execution = chargeRelease }),
+      { context = {}, execution = chargeRelease }
+    ),
   }, "selection-probe", 3)
   local charge = select(packet, packet.events[1], geometry)
   Assert.equal(charge[1].disposition, "admit", "the charge start admits its root")
@@ -200,12 +225,26 @@ function T.applied_sleep_admits_while_rest_uses_its_own_move()
     application = "rest",
   }
   local packet = packetFor(before, before, {
-    rawEvent(9, "status", { kind = "move", key = "HYPNOSIS" }, { target = 2, key = "sleep" },
-      { { combatant = 1, activation = 7 } }, { { combatant = 2, activation = 9 } }, nil,
-      { context = {}, operation = appliedOperation }),
-    rawEvent(10, "status", { kind = "move", key = "REST" }, { target = 1, key = "sleep" },
-      { { combatant = 1, activation = 7 } }, { { combatant = 1, activation = 7 } }, nil,
-      { context = {}, operation = restOperation }),
+    rawEvent(
+      9,
+      "status",
+      { kind = "move", key = "HYPNOSIS" },
+      { target = 2, key = "sleep" },
+      { { combatant = 1, activation = 7 } },
+      { { combatant = 2, activation = 9 } },
+      nil,
+      { context = {}, operation = appliedOperation }
+    ),
+    rawEvent(
+      10,
+      "status",
+      { kind = "move", key = "REST" },
+      { target = 1, key = "sleep" },
+      { { combatant = 1, activation = 7 } },
+      { { combatant = 1, activation = 7 } },
+      nil,
+      { context = {}, operation = restOperation }
+    ),
   }, "selection-probe", 4)
   local applied = select(packet, packet.events[1], geometry)
   Assert.equal(applied[1].disposition, "admit", "the applied condition admits its feedback root")
@@ -244,12 +283,26 @@ function T.side_effect_feedback_pictures_its_subject_not_the_move_user()
     application = "standard",
   }
   local packet = packetFor(before, before, {
-    rawEvent(9, "stage", { kind = "move", key = "GROWL" }, { target = 2, stat = "attack", before = 0, after = -1 },
-      { { combatant = 1, activation = 7 } }, { { combatant = 2, activation = 9 } }, nil,
-      { context = {}, operation = changed }),
-    rawEvent(10, "status", { kind = "move", key = "HYPNOSIS" }, { target = 2, key = "sleep" },
-      { { combatant = 1, activation = 7 } }, { { combatant = 2, activation = 9 } }, nil,
-      { context = {}, operation = appliedOperation }),
+    rawEvent(
+      9,
+      "stage",
+      { kind = "move", key = "GROWL" },
+      { target = 2, stat = "attack", before = 0, after = -1 },
+      { { combatant = 1, activation = 7 } },
+      { { combatant = 2, activation = 9 } },
+      nil,
+      { context = {}, operation = changed }
+    ),
+    rawEvent(
+      10,
+      "status",
+      { kind = "move", key = "HYPNOSIS" },
+      { target = 2, key = "sleep" },
+      { { combatant = 1, activation = 7 } },
+      { { combatant = 2, activation = 9 } },
+      nil,
+      { context = {}, operation = appliedOperation }
+    ),
   }, "selection-probe", 4)
   local requests = select(packet, packet.events[1], geometry)
   Assert.equal(requests[1].effectKey, "BATTLE_ANIMATION_STAT_DROP", "the drop selects its feedback member")
@@ -295,12 +348,26 @@ function T.stage_group_admits_only_its_first_feedback()
     feedbackOwner = false,
   }
   local packet = packetFor(before, before, {
-    rawEvent(9, "stage", { kind = "move", key = "TICKLE" }, { target = 2, stat = "attack", before = 0, after = -1 },
-      { { combatant = 1, activation = 7 } }, { { combatant = 2, activation = 9 } }, nil,
-      { context = {}, operation = first }),
-    rawEvent(10, "stage", { kind = "move", key = "TICKLE" }, { target = 2, stat = "defense", before = 0, after = -1 },
-      { { combatant = 1, activation = 7 } }, { { combatant = 2, activation = 9 } }, nil,
-      { context = {}, operation = second }),
+    rawEvent(
+      9,
+      "stage",
+      { kind = "move", key = "TICKLE" },
+      { target = 2, stat = "attack", before = 0, after = -1 },
+      { { combatant = 1, activation = 7 } },
+      { { combatant = 2, activation = 9 } },
+      nil,
+      { context = {}, operation = first }
+    ),
+    rawEvent(
+      10,
+      "stage",
+      { kind = "move", key = "TICKLE" },
+      { target = 2, stat = "defense", before = 0, after = -1 },
+      { { combatant = 1, activation = 7 } },
+      { { combatant = 2, activation = 9 } },
+      nil,
+      { context = {}, operation = second }
+    ),
   }, "selection-probe", 4)
   local owned = select(packet, packet.events[1], geometry)
   Assert.equal(owned[1].effectKey, "BATTLE_ANIMATION_STAT_DROP", "the group owner selects the drop root")
@@ -327,10 +394,16 @@ function T.experience_admits_per_boundary_for_the_active_recipient()
     boundaries = { { fromLevel = 8, toLevel = 9, expSegment = 1 } },
   }
   local packet = packetFor(before, before, {
-    rawEvent(11, "exp", { kind = "progression", combatant = 2 },
+    rawEvent(
+      11,
+      "exp",
+      { kind = "progression", combatant = 2 },
       { combatant = 1, gained = 120, expSegments = { { level = 8 } }, levelUps = { { level = 9 } } },
-      { { combatant = 2, activation = 9 } }, { { combatant = 1, activation = 7 } }, nil,
-      { context = {}, operation = awarded }),
+      { { combatant = 2, activation = 9 } },
+      { { combatant = 1, activation = 7 } },
+      nil,
+      { context = {}, operation = awarded }
+    ),
   }, "selection-probe", 5)
   local requests = select(packet, packet.events[1], geometry)
   Assert.equal(#requests, 1, "one crossed level selects one request")
@@ -344,9 +417,14 @@ function T.reserve_experience_omits_without_an_event_time_slot()
   local geometry = ManifestFixture.manifest().battlefield.slots
   local before = views()
   local packet = packetFor(before, before, {
-    rawEvent(12, "exp", { kind = "progression", combatant = 2 },
+    rawEvent(
+      12,
+      "exp",
+      { kind = "progression", combatant = 2 },
       { combatant = 9, gained = 60, expSegments = {}, levelUps = {} },
-      { { combatant = 2 } }, { { combatant = 9 } }),
+      { { combatant = 2 } },
+      { { combatant = 9 } }
+    ),
   }, "selection-probe", 6)
   local requests = select(packet, packet.events[1], geometry)
   Assert.equal(#requests, 1, "the reserve award still selects its disposition")
@@ -368,11 +446,24 @@ function T.weather_residual_admits_while_unknown_residuals_omit()
     passOrdinal = 1,
   }
   local packet = packetFor(before, before, {
-    rawEvent(13, "tick", { kind = "residual", key = "sandstorm" }, { combatant = 2, key = "sandstorm", amount = 5 },
-      { { combatant = 2, activation = 9 } }, { { combatant = 2, activation = 9 } }, nil,
-      { context = {}, operation = storm }),
-    rawEvent(14, "tick", { kind = "residual", key = "mystery" }, { combatant = 2, key = "mystery", amount = 5 },
-      { { combatant = 2, activation = 9 } }, { { combatant = 2, activation = 9 } }),
+    rawEvent(
+      13,
+      "tick",
+      { kind = "residual", key = "sandstorm" },
+      { combatant = 2, key = "sandstorm", amount = 5 },
+      { { combatant = 2, activation = 9 } },
+      { { combatant = 2, activation = 9 } },
+      nil,
+      { context = {}, operation = storm }
+    ),
+    rawEvent(
+      14,
+      "tick",
+      { kind = "residual", key = "mystery" },
+      { combatant = 2, key = "mystery", amount = 5 },
+      { { combatant = 2, activation = 9 } },
+      { { combatant = 2, activation = 9 } }
+    ),
   }, "selection-probe", 7)
   local storm = select(packet, packet.events[1], geometry)
   Assert.equal(storm[1].disposition, "admit", "the sandstorm continuation admits its root")
@@ -416,10 +507,16 @@ function T.transform_keeps_its_donor_appearance()
     },
   }
   local packet = packetFor(before, before, {
-    rawEvent(15, "transformed", { kind = "move", key = "TRANSFORM" }, { target = 1, copiedFrom = 2 },
-      { { combatant = 1, activation = 7 } }, { { combatant = 1, activation = 7 } },
+    rawEvent(
+      15,
+      "transformed",
+      { kind = "move", key = "TRANSFORM" },
+      { target = 1, copiedFrom = 2 },
+      { { combatant = 1, activation = 7 } },
+      { { combatant = 1, activation = 7 } },
       { selected = "TRANSFORM", executed = "TRANSFORM", phase = "direct" },
-      { context = {}, execution = transformExecution, operation = transformOperation }),
+      { context = {}, execution = transformExecution, operation = transformOperation }
+    ),
   }, "selection-probe", 8)
   local requests = select(packet, packet.events[1], geometry)
   Assert.equal(requests[1].disposition, "admit", "the donor change admits its root")
@@ -432,9 +529,15 @@ function T.switch_intent_omits_while_missing_roles_fail_loudly()
   local geometry = ManifestFixture.manifest().battlefield.slots
   local before = views()
   local packet = packetFor(before, before, {
-    rawEvent(16, "switch-intent", { kind = "move", key = "U_TURN" }, { target = 1, mode = "strike-and-leave" },
-      { { combatant = 1, activation = 7 } }, { { combatant = 1, activation = 7 } },
-      { selected = "U_TURN", executed = "U_TURN", phase = "direct" }),
+    rawEvent(
+      16,
+      "switch-intent",
+      { kind = "move", key = "U_TURN" },
+      { target = 1, mode = "strike-and-leave" },
+      { { combatant = 1, activation = 7 } },
+      { { combatant = 1, activation = 7 } },
+      { selected = "U_TURN", executed = "U_TURN", phase = "direct" }
+    ),
   }, "selection-probe", 9)
   local requests = select(packet, packet.events[1], geometry)
   Assert.equal(requests[1].disposition, "omit:intent-not-a-root", "the intent itself carries no root")
@@ -466,9 +569,15 @@ function T.redelivery_selects_identical_content_without_packet_identity()
   local geometry = ManifestFixture.manifest().battlefield.slots
   local before = views()
   local packet = packetFor(before, before, {
-    rawEvent(17, "struck", { kind = "move", key = "TACKLE" }, { target = 2, hitIndex = 1, damage = 9, calculated = 11 },
-      { { combatant = 1, activation = 7 } }, { { combatant = 2, activation = 9 } },
-      { selected = "TACKLE", executed = "TACKLE", phase = "direct", power = 35 }),
+    rawEvent(
+      17,
+      "struck",
+      { kind = "move", key = "TACKLE" },
+      { target = 2, hitIndex = 1, damage = 9, calculated = 11 },
+      { { combatant = 1, activation = 7 } },
+      { { combatant = 2, activation = 9 } },
+      { selected = "TACKLE", executed = "TACKLE", phase = "direct", power = 35 }
+    ),
   }, "selection-probe", 10)
   local first = select(packet, packet.events[1], geometry)
   local replayed = BattlePresentationFlow.animationPlayback({

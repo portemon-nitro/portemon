@@ -261,10 +261,7 @@ function T.a_divergent_replacement_zero_compiles_as_its_own_asset()
   Assert.equal(#material.textureSwap.steps, 2)
   Assert.equal(material.textureSwap.steps[1].durationTicks, 1)
   Assert.equal(material.textureSwap.steps[2].durationTicks, 1)
-  Assert.isTrue(
-    material.textureSwap.steps[1].texture.file ~= material.texture.file,
-    "step zero is not the base image"
-  )
+  Assert.isTrue(material.textureSwap.steps[1].texture.file ~= material.texture.file, "step zero is not the base image")
   Assert.equal(textureRgba(material.textureSwap.steps[1].texture, scene.textures), solidPixels(0, 255, 0))
   Assert.equal(textureRgba(material.textureSwap.steps[2].texture, scene.textures), solidPixels(0, 0, 255))
 end

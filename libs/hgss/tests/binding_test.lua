@@ -863,7 +863,10 @@ function T.application_scripts_may_carry_the_actor_the_menu_move_targets()
     scheduler = scheduler,
   })
   client:startApplicationScript("common.menu_rock_smash", 5, { selfActor = "map:54:object:3" })
-  Assert.deepEqual(started, { type = "application", scriptId = "common.menu_rock_smash", selfActor = "map:54:object:3" })
+  Assert.deepEqual(
+    started,
+    { type = "application", scriptId = "common.menu_rock_smash", selfActor = "map:54:object:3" }
+  )
   client:startApplicationScript("common.menu_strength", 6)
   Assert.deepEqual(started, { type = "application", scriptId = "common.menu_strength" })
 end

@@ -1128,7 +1128,6 @@ function T.box_tray_draws_its_panel_thumbnails_plate_and_dots()
   Assert.isTrue(drew("b24:76", 224, 172), "the tray's EXIT plate labels the corner button")
 end
 
-
 -- The framed plates assemble the eight named frame cells around a flat
 -- interior fill instead of stretching the tile atlas (PCBox_DrawButtonWindow).
 function T.framed_plates_assemble_source_cells_and_fill_the_interior()
@@ -1185,8 +1184,10 @@ function T.framed_plates_assemble_source_cells_and_fill_the_interior()
     { rect.x + 72, rect.y },
     { rect.x + 72, rect.y + 16 },
   }) do
-    Assert.isTrue(seen[position[1] .. "," .. position[2]] == true,
-      "a frame cell draws at " .. position[1] .. "," .. position[2])
+    Assert.isTrue(
+      seen[position[1] .. "," .. position[2]] == true,
+      "a frame cell draws at " .. position[1] .. "," .. position[2]
+    )
   end
 end
 
@@ -1315,7 +1316,10 @@ function T.hand_cursor_alternates_its_two_source_frames()
   }
   admit(renderer, cursorView)
   local frameImages = { renderer._images[browse.frames[1].image], renderer._images[browse.frames[2].image] }
-  Assert.isTrue(frameImages[1] ~= nil and frameImages[1] ~= frameImages[2], "the two frames name different source cells")
+  Assert.isTrue(
+    frameImages[1] ~= nil and frameImages[1] ~= frameImages[2],
+    "the two frames name different source cells"
+  )
   local function cursorImageAfter(advance)
     for _ = 1, advance do
       renderer:stepAnimation(cursorView)
@@ -1355,7 +1359,8 @@ local function recordingIcons()
     quadFor = function()
       return { icon = true }
     end,
-  }, image
+  },
+    image
 end
 
 function T.selected_icon_outline_draws_eight_silhouette_copies_behind_the_icon()
@@ -1455,7 +1460,11 @@ function T.held_item_outline_wraps_the_item_icon_in_item_mode()
   Assert.deepEqual({ icon.color[1], icon.color[2], icon.color[3] }, { 1, 1, 1 }, "the item keeps its own colours")
   for index = 1, 8 do
     local copy = assert(itemDraws[index], "item outline copy " .. index)
-    Assert.deepEqual({ copy.color[1], copy.color[2], copy.color[3] }, { 0, 0, 0 }, "item outline copies are silhouettes")
+    Assert.deepEqual(
+      { copy.color[1], copy.color[2], copy.color[3] },
+      { 0, 0, 0 },
+      "item outline copies are silhouettes"
+    )
     Assert.isTrue(
       math.abs(copy.x - icon.x) <= 1 and math.abs(copy.y - icon.y) <= 1 and (copy.x ~= icon.x or copy.y ~= icon.y),
       "item outline copy " .. index .. " sits in the one-pixel neighbourhood"

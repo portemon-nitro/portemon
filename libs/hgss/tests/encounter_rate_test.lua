@@ -108,9 +108,7 @@ function T.held_items_take_two_thirds_after_flutes()
   -- Order is ability, flute, then held: arena trap doubles forty to
   -- eighty, black halves to forty, cleanse takes two thirds to twenty-six.
   Assert.equal(
-    TableRate.tableRate(
-      facts({ baseRate = 40, leadAbility = "arena_trap", flute = "black", heldItem = "CLEANSE_TAG" })
-    ),
+    TableRate.tableRate(facts({ baseRate = 40, leadAbility = "arena_trap", flute = "black", heldItem = "CLEANSE_TAG" })),
     26
   )
 end
@@ -142,7 +140,10 @@ function T.fishing_friendship_boosts_the_bite_rate()
   Assert.equal(TableRate.tableRate(facts({ isFishing = true, friendship = 250, followActive = false })), 30)
   Assert.equal(TableRate.tableRate(facts({ friendship = 250, followActive = true })), 30)
   -- The native unsigned byte wraps: a boosted bite past 255 wraps around.
-  Assert.equal(TableRate.tableRate(facts({ baseRate = 250, isFishing = true, friendship = 250, followActive = true })), 44)
+  Assert.equal(
+    TableRate.tableRate(facts({ baseRate = 250, isFishing = true, friendship = 250, followActive = true })),
+    44
+  )
   -- An empty bite rate refuses before the boost, matching the native
   -- early return.
   Assert.equal(TableRate.tableRate(facts({ baseRate = 0, isFishing = true, friendship = 250, followActive = true })), 0)

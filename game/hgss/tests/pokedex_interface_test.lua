@@ -223,10 +223,8 @@ function T.native_cover_footer_and_switch_map_their_own_commands()
   lockedView.nationalUnlocked = false
   local lockedSession = ApplicationPresentation.new(Interface.browser())
   local lockedPlan = lockedSession:resolve(measurementFor("wide"), sessionView(lockedView))
-  local lockedPress = lockedSession:mapInput(
-    { hostTap(lockedPlan, "controls", "pointer_down", 127, 128, 199) },
-    lockedView
-  )
+  local lockedPress =
+    lockedSession:mapInput({ hostTap(lockedPlan, "controls", "pointer_down", 127, 128, 199) }, lockedView)
   Assert.equal(#lockedPress, 1, "the locked switch region maps to exactly one command")
   Assert.equal(lockedPress[1].type, "drag", "a locked dex treats the switch press as a cover swipe")
   local switch = tap(127, 128)
@@ -234,10 +232,8 @@ function T.native_cover_footer_and_switch_map_their_own_commands()
   Assert.equal(switch[1].action, "mode", "the mode switch toggles the dex mode")
   Assert.equal(switch[1].value, "national", "a johto cover switches toward national mode")
   local nationalSession, nationalPlan, nationalView = planOn("cover", "national")
-  local back = nationalSession:mapInput(
-    { hostTap(nationalPlan, "controls", "pointer_down", 127, 128, 201) },
-    nationalView
-  )
+  local back =
+    nationalSession:mapInput({ hostTap(nationalPlan, "controls", "pointer_down", 127, 128, 201) }, nationalView)
   Assert.equal(back[1].value, "johto", "a national cover switches back toward johto")
   local swipe = tap(20, 40)
   Assert.equal(#swipe, 1, "the cover body press starts the source swipe")

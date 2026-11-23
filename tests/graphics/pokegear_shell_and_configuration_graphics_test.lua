@@ -108,8 +108,7 @@ local function fixtureManifest()
   local phoneListPalette, phoneListPaletteDim, phoneTooltipPalette, phoneWindowPalette = {}, {}, {}, {}
   local phoneMenuPalette = {}
   for index = 1, 16 do
-    phoneMenuPalette[index] =
-      { r = (index * 23) % 256, g = (index * 51 + 60) % 256, b = (index * 11 + 90) % 256 }
+    phoneMenuPalette[index] = { r = (index * 23) % 256, g = (index * 51 + 60) % 256, b = (index * 11 + 90) % 256 }
   end
   local radioMain, radioSecond, radioUpper = {}, {}, {}
   local mapForeground, mapUpper = {}, {}

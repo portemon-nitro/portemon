@@ -306,10 +306,7 @@ function T.battle_item_icons_resolve_through_the_shared_provider()
   Assert.equal(width, 32, "bag icons keep their staged width")
   Assert.equal(height, 32, "bag icons keep their staged height")
   for _, key in ipairs({ "battle:item-icon:", "battle:item-icon", "battle:bogus:POTION" }) do
-    Assert.isNil(
-      envelope._services.drawable(key),
-      "a malformed icon key resolves to nothing: " .. key
-    )
+    Assert.isNil(envelope._services.drawable(key), "a malformed icon key resolves to nothing: " .. key)
   end
   envelope:dispose()
 end
@@ -647,11 +644,7 @@ function T.visible_source_maps_read_once_and_unused_variants_stay_closed()
   Assert.equal(cacheFs.reads[commandSource.path], 1, "selected source bytes load exactly once")
   local moves = manifest.menus.moves.screens[1]
   local unusedVariant = moves.moveButtons[2].sourceIndices.types.fire.pressed.path
-  Assert.equal(
-    cacheFs.reads[unusedVariant] or 0,
-    0,
-    "requesting command art opens no unused move-variant file"
-  )
+  Assert.equal(cacheFs.reads[unusedVariant] or 0, 0, "requesting command art opens no unused move-variant file")
   Assert.equal(
     cacheFs.reads[record.terrainSprites.player.sourceIndices.path] or 0,
     0,
@@ -703,16 +696,10 @@ function T.tutorial_finger_resolves_its_staged_image()
   -- it instead of nil-matching.
   local BattleBagPockets = require("game.hgss.src.battle.BattleBagPockets")
   local native = { open = true, tutorial = true, bagPage = "pocket_menu", fingerTicks = 0 }
-  local finger = assert(
-    BattleBagPockets.fingerDraw(native),
-    "the lesson auto-play projects its finger"
-  )
+  local finger = assert(BattleBagPockets.fingerDraw(native), "the lesson auto-play projects its finger")
   Assert.equal(finger.key, "battle:finger", "the auto-play finger names its drawable")
   Assert.deepEqual({ finger.x, finger.y }, { 192, 24 }, "the auto-play finger centers on its balls spot")
-  Assert.notNil(
-    envelope._services.drawable(finger.key),
-    "the auto-play finger demand resolves instead of nil-matching"
-  )
+  Assert.notNil(envelope._services.drawable(finger.key), "the auto-play finger demand resolves instead of nil-matching")
   envelope:dispose()
 end
 
@@ -777,17 +764,12 @@ function T.battle_detail_icons_resolve_through_their_staged_manifests()
     statusVisual.image,
     "the poison status icon resolves its staged party image"
   )
-  local handle = assert(
-    envelope._services.drawable("battle:status-icon:poison"),
-    "the status icon hands out its drawable"
-  )
+  local handle =
+    assert(envelope._services.drawable("battle:status-icon:poison"), "the status icon hands out its drawable")
   local width, height = handle:getDimensions()
   Assert.equal(width, 24, "status icons keep their staged width")
   Assert.equal(height, 8, "status icons keep their staged height")
-  Assert.isNil(
-    resolvedPath(envelope, pool, "battle:status-icon:bogus"),
-    "an unknown status resolves to nothing"
-  )
+  Assert.isNil(resolvedPath(envelope, pool, "battle:status-icon:bogus"), "an unknown status resolves to nothing")
   envelope:dispose()
 end
 

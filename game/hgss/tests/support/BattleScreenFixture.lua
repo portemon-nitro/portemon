@@ -35,7 +35,12 @@ local function completeView(view, battleKind)
       end
     end
   end
-  if battleKind ~= "wild" and type(view.participants) == "table" and #view.participants == 0 and #view.foeTrainers > 0 then
+  if
+    battleKind ~= "wild"
+    and type(view.participants) == "table"
+    and #view.participants == 0
+    and #view.foeTrainers > 0
+  then
     local foes = view.foes or {}
     for index, trainer in ipairs(view.foeTrainers) do
       local foe = foes[math.min(index, #foes)]

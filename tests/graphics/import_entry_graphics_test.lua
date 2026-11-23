@@ -126,9 +126,11 @@ function T.unavailable_picker_leaves_card_inert_but_keeps_file_drop(_)
     state:keypressed("return")
     state:keypressed("space")
     Assert.equal(pickerCalls, 0, "without a native bridge no gesture opens a picker")
-    state:filedropped({ getFilename = function()
-      return "dropped.nds"
-    end })
+    state:filedropped({
+      getFilename = function()
+        return "dropped.nds"
+      end,
+    })
     Assert.equal(importer.drops, 1, "file drops still reach the importer")
   end, debug.traceback)
   love.graphics.getDimensions = original
@@ -433,18 +435,20 @@ function T.centered_copy_leaves_balanced_space_on_the_real_card(scope)
         local firstY, lastBottom = measuredBlock(recorded)
         local topPad = firstY - (box.top + 16)
         local bottomPad = reservedTop - lastBottom
-        Assert.isTrue(
-          lastBottom <= reservedTop + 1,
-          where .. ": copy overlaps the reserved progress band"
-        )
+        Assert.isTrue(lastBottom <= reservedTop + 1, where .. ": copy overlaps the reserved progress band")
         Assert.isTrue(
           topPad >= 8,
-          where .. ": copy still starts at the top inset instead of moving toward the center, top pad "
+          where
+            .. ": copy still starts at the top inset instead of moving toward the center, top pad "
             .. tostring(topPad)
         )
         Assert.isTrue(
           math.abs(topPad - bottomPad) <= 12,
-          where .. ": copy leaves unbalanced space, top pad " .. tostring(topPad) .. " bottom pad " .. tostring(bottomPad)
+          where
+            .. ": copy leaves unbalanced space, top pad "
+            .. tostring(topPad)
+            .. " bottom pad "
+            .. tostring(bottomPad)
         )
       end
     end
@@ -499,8 +503,7 @@ function T.compact_card_acknowledges_the_dropped_file_on_the_first_frame(scope)
   local cardRun = 0
   for x = 0, width - 1 do
     local red, green, blue = image:getPixel(x, middleY)
-    local isCard = math.abs(red - 0.10) < 0.02 and math.abs(green - 0.16) < 0.02
-      and math.abs(blue - 0.20) < 0.02
+    local isCard = math.abs(red - 0.10) < 0.02 and math.abs(green - 0.16) < 0.02 and math.abs(blue - 0.20) < 0.02
     if isCard then
       cardRun = cardRun + 1
     end
@@ -515,10 +518,7 @@ function T.compact_card_acknowledges_the_dropped_file_on_the_first_frame(scope)
     "the first post-input frame acknowledges the file, got: " .. copy
   )
   Assert.isTrue(copy:find("soulsilver.nds", 1, true) ~= nil, "the receipt names the dropped file")
-  Assert.isTrue(
-    copy:find("ROM accepted", 1, true) == nil,
-    "an unvalidated receipt never claims acceptance"
-  )
+  Assert.isTrue(copy:find("ROM accepted", 1, true) == nil, "an unvalidated receipt never claims acceptance")
 end
 
 return GraphicsSmoke.suite(T)

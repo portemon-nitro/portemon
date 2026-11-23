@@ -213,12 +213,7 @@ function T.member_completion_requires_resource_readback_before_marker()
   end
 
   local artifact = preparation(cache, "0", "outer-a")
-  local ok = pcall(
-    ScriptCacheWriter.stageMember,
-    artifact,
-    currentPlan,
-    member(0, "stable.script", GENERATION_A)
-  )
+  local ok = pcall(ScriptCacheWriter.stageMember, artifact, currentPlan, member(0, "stable.script", GENERATION_A))
   LuaEmitter.emitMember = realEmitMember
   Assert.isFalse(ok, "a member must not complete when its emitted bundle fails readback")
   artifact:abort()
@@ -237,12 +232,7 @@ function T.member_readback_requires_the_planned_resource_identity()
   end
 
   local artifact = preparation(cache, "0", "outer-a")
-  local ok = pcall(
-    ScriptCacheWriter.stageMember,
-    artifact,
-    currentPlan,
-    member(0, "stable.script", GENERATION_A)
-  )
+  local ok = pcall(ScriptCacheWriter.stageMember, artifact, currentPlan, member(0, "stable.script", GENERATION_A))
   LuaEmitter.emitMember = realEmitMember
   Assert.isFalse(ok, "a member must not complete when its serialized resource identity is wrong")
   artifact:abort()

@@ -1213,11 +1213,7 @@ function T.concurrent_picture_epochs_share_one_portrait_image_and_enroll_before_
   )
   local waitingAgain = assert(first:prepare(demandA), "prepare reports its lease state")
   Assert.equal(waitingAgain.kind, "pending", "the second round still waits on the icon pages")
-  Assert.equal(
-    poolInner.uploads,
-    pinnedChrome + 2,
-    "the second round borrows nothing new beside pinned chrome"
-  )
+  Assert.equal(poolInner.uploads, pinnedChrome + 2, "the second round borrows nothing new beside pinned chrome")
   Assert.equal(
     poolInner:stats().outstandingLeases,
     pinnedChrome + 2,
@@ -1801,11 +1797,7 @@ function T.idle_rounds_stage_static_chrome_before_the_first_open()
   firstDemand.chrome = {}
   local ready = prepareToTerminal(lease, firstDemand)
   Assert.equal(ready.kind, "ready", "the first open still prepares through its ordinary demand path")
-  Assert.equal(
-    poolInner.uploads,
-    idleUploads,
-    "the first open builds no new physical images for already-staged chrome"
-  )
+  Assert.equal(poolInner.uploads, idleUploads, "the first open builds no new physical images for already-staged chrome")
   lease:release()
   owner:release()
 end
@@ -1820,10 +1812,7 @@ function T.revision_change_warms_new_portraits_without_evicting_watched_pages()
   local second = MonCache.portraitSelector("TOTODILE", 0, "male", false)
   local setup = exactComposition({ [first] = portraitEntry(3), [second] = portraitEntry(12) })
   local owner = setup.owner
-  Assert.isTrue(
-    type(owner.advanceWarmup) == "function",
-    "the summary owner predicts the live party across idle rounds"
-  )
+  Assert.isTrue(type(owner.advanceWarmup) == "function", "the summary owner predicts the live party across idle rounds")
   local poolInner = assert(setup.helper.poolInner, "the doubles carry the pool census")
   local function settleWarm(selectors)
     local settled = false
@@ -1854,10 +1843,7 @@ function T.revision_change_warms_new_portraits_without_evicting_watched_pages()
   )
   local rewatched = prepareToTerminal(leaseA, exactDemand("party-a-again", { first }))
   Assert.equal(rewatched.kind, "ready", "the watched lease stays usable after unrelated staging")
-  Assert.isTrue(
-    rewatched.assets.portraits:image(first) == pageA,
-    "unrelated staging never swaps the watched picture"
-  )
+  Assert.isTrue(rewatched.assets.portraits:image(first) == pageA, "unrelated staging never swaps the watched picture")
   leaseA:release()
   settleWarm({ second })
   poolInner:prune()
@@ -1869,11 +1855,7 @@ function T.revision_change_warms_new_portraits_without_evicting_watched_pages()
   owner:release()
   poolInner:prune()
   Assert.equal(pageB.releaseCount, 1, "the current page frees exactly once with its owner")
-  Assert.equal(
-    poolInner:stats().physicalImages,
-    0,
-    "every staged image reclaims with no leak and no double free"
-  )
+  Assert.equal(poolInner:stats().physicalImages, 0, "every staged image reclaims with no leak and no double free")
 end
 
 return {

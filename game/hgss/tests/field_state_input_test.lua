@@ -191,7 +191,16 @@ end
 function T.shared_binding_aliases_drive_field_action_cancel_and_menu()
   local calls = {}
   local input = {}
-  for _, name in ipairs({ "pressAction", "releaseAction", "pressCancel", "releaseCancel", "pressMenu", "releaseMenu", "pressUiButton", "releaseUiButton" }) do
+  for _, name in ipairs({
+    "pressAction",
+    "releaseAction",
+    "pressCancel",
+    "releaseCancel",
+    "pressMenu",
+    "releaseMenu",
+    "pressUiButton",
+    "releaseUiButton",
+  }) do
     input[name] = function(_, ...)
       calls[#calls + 1] = { name, ... }
     end

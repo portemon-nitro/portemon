@@ -14,31 +14,26 @@ local function collaborators(observer)
   function audio.play(name)
     return name
   end
-  function audio.stop(_name)
-  end
+  function audio.stop(_name) end
   function audio.isFinished(name)
     return audio.done[name] == true
   end
   local tasks = {}
   function tasks.create(_kind, _args, _context, _services)
     local task = { _state = "complete" }
-    function task.stepSourceTick(_tick)
-    end
+    function task.stepSourceTick(_tick) end
     function task.status()
       return task._state
     end
-    function task.cancel(_reason)
-    end
-    function task.dispose()
-    end
+    function task.cancel(_reason) end
+    function task.dispose() end
     return task
   end
   local resources = {}
   function resources.resolve(key)
     return { key = key, lease = key }
   end
-  function resources.release(_lease)
-  end
+  function resources.release(_lease) end
   local services = nil
   if observer ~= nil then
     services = {
@@ -86,9 +81,12 @@ function T.every_accepted_tick_invokes_draw_then_publish_in_order()
     tasks = helpers.tasks,
     services = helpers.services,
   }))
-  local handle = assert(player:start(packet(), programOf({
-    { op = "play-sound", sound = "phase-cue" },
-  })))
+  local handle = assert(player:start(
+    packet(),
+    programOf({
+      { op = "play-sound", sound = "phase-cue" },
+    })
+  ))
   player:stepSourceTick({ tick = 1 })
   helpers.audio.done["phase-cue"] = true
   player:stepSourceTick({ tick = 2 })

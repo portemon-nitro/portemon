@@ -804,7 +804,11 @@ function T.compact_inspector_shields_every_background_input()
   gate.open = true
   screen:updateFixed({})
   openAndCancelEntry(screen)
-  Assert.equal(screen:status().view.page, "grid", "cover confirm opens the entry and cancel returns to the committed grid")
+  Assert.equal(
+    screen:status().view.page,
+    "grid",
+    "cover confirm opens the entry and cancel returns to the committed grid"
+  )
   screen:updateFixed({ { type = "inspect" } })
   Assert.isTrue(screen:status().compact.inspect, "the inspect action opens the panel")
   local key = screen:status().view.key
@@ -1156,8 +1160,7 @@ function T.forms_and_compare_demands_stage_their_variant_icon_keys()
   function controller:takeResult()
     return nil
   end
-  function controller:dispose()
-  end
+  function controller:dispose() end
   local lease = { prepared = {}, released = 0 }
   function lease:prepare(demand)
     assert(type(demand) == "table" and demand.key ~= nil, "the screen prepares keyed demands")
@@ -1198,10 +1201,7 @@ function T.forms_and_compare_demands_stage_their_variant_icon_keys()
   -- proves the window retired.
   Assert.isFalse(hasKey(second, "UNOWN/f1"), "icons scrolled out of the window retire")
   for form = 2, 7 do
-    Assert.isTrue(
-      hasKey(second, "UNOWN/f" .. form),
-      "the scrolled window demands its visible variant icon f" .. form
-    )
+    Assert.isTrue(hasKey(second, "UNOWN/f" .. form), "the scrolled window demands its visible variant icon f" .. form)
   end
   local third = lease.prepared[3]
   Assert.isTrue(hasKey(third, "UNOWN/f2"), "the compare demand stages the left compared icon")
@@ -1230,10 +1230,8 @@ function T.forced_dispose_restores_an_applied_duck_exactly_once()
     measureDisplay = function()
       return compactMeasurement()
     end,
-    effect = function()
-    end,
-    playCry = function()
-    end,
+    effect = function() end,
+    playCry = function() end,
     commitResume = function()
       return true
     end,
@@ -1267,10 +1265,8 @@ function T.normal_close_and_dispose_share_a_single_restore()
     measureDisplay = function()
       return compactMeasurement()
     end,
-    effect = function()
-    end,
-    playCry = function()
-    end,
+    effect = function() end,
+    playCry = function() end,
     commitResume = function()
       return true
     end,
@@ -1339,10 +1335,8 @@ function T.failing_restore_still_releases_owned_resources()
     measureDisplay = function()
       return { width = 512, height = 384, layout = "dual" }
     end,
-    effect = function()
-    end,
-    playCry = function()
-    end,
+    effect = function() end,
+    playCry = function() end,
     commitResume = function()
       return true
     end,

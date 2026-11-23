@@ -478,13 +478,9 @@ function T.scene_off_transform_still_plays_and_updates_appearance()
   local donorFrozen = false
   for _, record in pairs(rig.screen._timeline._ledger) do
     local frozen = record.request ~= nil and record.request.playback or nil
-    local attacker = type(frozen) == "table" and type(frozen.topology) == "table"
-      and frozen.topology.attacker
-      or nil
+    local attacker = type(frozen) == "table" and type(frozen.topology) == "table" and frozen.topology.attacker or nil
     local appearance = type(attacker) == "table" and attacker.appearance or nil
-    if
-      record.disposition == "admit" and type(appearance) == "table" and appearance.species == "EEVEE"
-    then
+    if record.disposition == "admit" and type(appearance) == "table" and appearance.species == "EEVEE" then
       donorFrozen = true
     end
   end
@@ -509,32 +505,35 @@ function T.scene_off_preserves_faint_and_capture_intake()
     end,
   })
   timeline:reset(sceneView(100))
-  Assert.isTrue(timeline:present({
-    launchId = "scene-required-probe",
-    packetId = 1,
-    events = {
-      {
-        sequence = 1,
-        kind = "fainted",
-        cause = { key = "TACKLE" },
-        audience = "public",
-        actors = { { combatant = 1 } },
-        targets = { { combatant = 2 } },
-        payload = { target = 2 },
+  Assert.isTrue(
+    timeline:present({
+      launchId = "scene-required-probe",
+      packetId = 1,
+      events = {
+        {
+          sequence = 1,
+          kind = "fainted",
+          cause = { key = "TACKLE" },
+          audience = "public",
+          actors = { { combatant = 1 } },
+          targets = { { combatant = 2 } },
+          payload = { target = 2 },
+        },
+        {
+          sequence = 2,
+          kind = "throw",
+          cause = { key = "POKE_BALL" },
+          audience = "public",
+          actors = { { combatant = 1 } },
+          targets = { { combatant = 2 } },
+          payload = { ball = "POKE_BALL" },
+        },
       },
-      {
-        sequence = 2,
-        kind = "throw",
-        cause = { key = "POKE_BALL" },
-        audience = "public",
-        actors = { { combatant = 1 } },
-        targets = { { combatant = 2 } },
-        payload = { ball = "POKE_BALL" },
-      },
-    },
-    before = sceneView(100),
-    after = sceneView(0),
-  }), "the required packet is accepted under Scene Off")
+      before = sceneView(100),
+      after = sceneView(0),
+    }),
+    "the required packet is accepted under Scene Off"
+  )
   for _ = 1, 3000 do
     timeline:update(TICK, function(_)
       return true
@@ -569,13 +568,16 @@ function T.scene_defaults_to_on_without_a_snapshot()
   }
   local timeline = BattleTimelineFixture.new({ effects = effects })
   timeline:reset(sceneView(100))
-  Assert.isTrue(timeline:present({
-    launchId = "scene-default-probe",
-    packetId = 1,
-    events = { struckEvent(1, 45, "TACKLE", nil, 2, 14, 86) },
-    before = sceneView(100),
-    after = sceneView(86),
-  }), "the effect-keyed strike is accepted")
+  Assert.isTrue(
+    timeline:present({
+      launchId = "scene-default-probe",
+      packetId = 1,
+      events = { struckEvent(1, 45, "TACKLE", nil, 2, 14, 86) },
+      before = sceneView(100),
+      after = sceneView(86),
+    }),
+    "the effect-keyed strike is accepted"
+  )
   for _ = 1, 3000 do
     timeline:update(TICK, function(_)
       return true

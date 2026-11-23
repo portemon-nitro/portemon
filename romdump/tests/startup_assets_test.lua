@@ -287,10 +287,7 @@ function T.title_stage_failure_keeps_the_previous_live_output()
   artifact:abort()
   Assert.equal(cacheFs:read(liveAsset), "previous mesh", "the previous live asset remains intact")
   Assert.equal(cacheFs:loadLua(titlePath).generationId, "previous-generation", "the previous live title remains intact")
-  Assert.isNil(
-    ArtifactState.read(facts, "startup-title", "global"),
-    "a failed family stage commits no completion fact"
-  )
+  Assert.isNil(ArtifactState.read(facts, "startup-title", "global"), "a failed family stage commits no completion fact")
 end
 
 function T.title_manifest_requires_all_model_assets_under_its_owned_root()
@@ -1765,10 +1762,7 @@ function T.opening_scene_staged_failure_keeps_the_previous_live_output()
   Assert.isFalse(stageOk, "the refused scene bundle fails the scene 4 restage: " .. tostring(failure))
   Assert.equal(artifact:status(), "open", "a failed scene stage never seals its private output")
   artifact:abort()
-  Assert.isNil(
-    ArtifactState.read(facts, "opening-scene", "4"),
-    "a failed scene stage commits no completion fact"
-  )
+  Assert.isNil(ArtifactState.read(facts, "opening-scene", "4"), "a failed scene stage commits no completion fact")
   Assert.equal(
     cacheFs:loadLua(manifestPath).generationId,
     goodGeneration,
@@ -2185,10 +2179,7 @@ function T.opening_scene_writer_publishes_typed_bundles_atomically()
   )
   Assert.notNil(marker, "the typed scene stages its numbered package: " .. tostring(stageErr))
   artifact:finishSuccess({ marker = marker })
-  Assert.isTrue(
-    ResidentArtifactFixture.materialize(artifact),
-    "the typed scene publishes its numbered package"
-  )
+  Assert.isTrue(ResidentArtifactFixture.materialize(artifact), "the typed scene publishes its numbered package")
   local loaded, loadErr = StartupAssetCache.loadOpeningScene(cacheFs, 1, "heartgold")
   Assert.notNil(loaded, "the staged typed scene reads back ready: " .. tostring(loadErr))
   local blend = nil

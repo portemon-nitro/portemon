@@ -527,10 +527,7 @@ function T.backdrops_derive_from_the_audited_base_screens(romFs, versionId)
   Assert.equal(headerRgba, expectedBand(7, 2, 17, 0, 3), "the header shell band matches MAIN rows 0..23")
   Assert.equal(footerRgba, expectedBand(7, 2, 17, 21, 3), "the footer shell band matches MAIN rows 168..191")
   Assert.equal(previewRgba, expectedRgba(8, 3, 19, true), "the preview backdrop matches the SUB base")
-  Assert.isTrue(
-    headerRgba ~= expectedBand(7, 2, 17, 21, 3),
-    "the header band is not the footer band"
-  )
+  Assert.isTrue(headerRgba ~= expectedBand(7, 2, 17, 21, 3), "the header band is not the footer band")
   Assert.isTrue(headerRgba ~= previewRgba, "the shell bands carry rasters distinct from the preview")
   local function assertOpaque(rgba, what)
     for index = 4, #rgba, 4 do
@@ -563,8 +560,8 @@ function T.field_ui_compilation_publishes_ready_options(romFs, versionId)
   Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest), "the extended class still validates")
   local cache = CacheFs.forVersion(versionId, FakeCache.new())
   ResidentArtifactFixture.publish(cache, "field-ui", "global", function(artifact)
-      return FieldUiCacheWriter.stage(artifact, bundle)
-    end)
+    return FieldUiCacheWriter.stage(artifact, bundle)
+  end)
   Assert.isTrue(FieldUiAssetCache.isReady(cache, bundle.marker), "every indexed file is ready after publication")
   local broken = assert(FieldUiCompiler.compile(romFs))
   broken.manifest.options = nil
@@ -919,7 +916,8 @@ function T.row_plates_flatten_interior_to_band_backing(romFs, versionId)
   end
   local oddRgba = plateRgba("/options-row-odd.png", 24)
   local evenRgba = plateRgba("/options-row-even.png", 24)
-  local frameBytes = assert(bundle.files[FieldUiAssetCache.assetDir() .. "/options-row-frame.png"], "row-frame is staged")
+  local frameBytes =
+    assert(bundle.files[FieldUiAssetCache.assetDir() .. "/options-row-frame.png"], "row-frame is staged")
   local frameWidth, frameHeight, frameRgba = PngReader.rgba(frameBytes)
   Assert.equal(frameWidth, 256, "row-frame width")
   Assert.equal(frameHeight, 72, "row-frame height")
@@ -946,11 +944,7 @@ function T.row_plates_flatten_interior_to_band_backing(romFs, versionId)
       end
     end
   end
-  Assert.equal(
-    pixel(frameRgba, 256, 8, 36),
-    flats.odd,
-    "the frame interior shares the odd band backing"
-  )
+  Assert.equal(pixel(frameRgba, 256, 8, 36), flats.odd, "the frame interior shares the odd band backing")
   for y = 1, 70 do
     for x = 4, 251 do
       Assert.equal(
@@ -961,7 +955,6 @@ function T.row_plates_flatten_interior_to_band_backing(romFs, versionId)
     end
   end
 end
-
 
 local suite = RomSuite.fromFacts(T)
 suite.metadata.capabilities = { "rom_dump" }

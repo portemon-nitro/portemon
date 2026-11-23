@@ -213,10 +213,9 @@ local function optionsWith(overrides)
   for key, value in pairs(overrides or {}) do
     options[key] = value
   end
-  options.actors.takeCommittedSteps = options.actors.takeCommittedSteps
-    or function()
-      return nil
-    end
+  options.actors.takeCommittedSteps = options.actors.takeCommittedSteps or function()
+    return nil
+  end
   return options
 end
 

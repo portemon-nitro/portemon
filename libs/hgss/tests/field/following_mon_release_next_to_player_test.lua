@@ -326,7 +326,11 @@ function T.swap_exchanges_the_player_and_follower_tiles_and_faces_them_at_each_o
   local w = world("ALLOW")
   local partnerId = installFollower(w, 0)
   w.manager:show(partnerId)
-  w.manager:setPosition(partnerId, { fieldX = PLAYER_TILE.fieldX, fieldZ = PLAYER_TILE.fieldZ + 1 }, { scripted = true })
+  w.manager:setPosition(
+    partnerId,
+    { fieldX = PLAYER_TILE.fieldX, fieldZ = PLAYER_TILE.fieldZ + 1 },
+    { scripted = true }
+  )
   w.controller:swapPositionsWithPlayer()
   local player = w.player.current
   Assert.equal(player.fieldX, PLAYER_TILE.fieldX)
@@ -344,7 +348,11 @@ end
 function T.swap_requires_an_adjacent_follower()
   local w = world("ALLOW")
   local partnerId = installFollower(w, 0)
-  w.manager:setPosition(partnerId, { fieldX = PLAYER_TILE.fieldX + 3, fieldZ = PLAYER_TILE.fieldZ }, { scripted = true })
+  w.manager:setPosition(
+    partnerId,
+    { fieldX = PLAYER_TILE.fieldX + 3, fieldZ = PLAYER_TILE.fieldZ },
+    { scripted = true }
+  )
   Assert.throws(function()
     w.controller:swapPositionsWithPlayer()
   end)

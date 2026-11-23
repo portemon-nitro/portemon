@@ -21,8 +21,23 @@ function T.metatile_behavior_names_cover_navigation_categories()
 end
 
 function T.surfable_water_matches_the_source_flag_table()
-  local surfable = { [16]=true,[17]=true,[18]=true,[19]=true,[20]=true,[21]=true,[25]=true,[42]=true,
-    [80]=true,[81]=true,[82]=true,[83]=true,[115]=true,[120]=true,[124]=true }
+  local surfable = {
+    [16] = true,
+    [17] = true,
+    [18] = true,
+    [19] = true,
+    [20] = true,
+    [21] = true,
+    [25] = true,
+    [42] = true,
+    [80] = true,
+    [81] = true,
+    [82] = true,
+    [83] = true,
+    [115] = true,
+    [120] = true,
+    [124] = true,
+  }
   for behavior = 0, 255 do
     Assert.equal(MetatileBehavior.isSurfableWater(behavior), surfable[behavior] == true, "behavior " .. behavior)
   end

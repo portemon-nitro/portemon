@@ -392,8 +392,7 @@ end
 
 function T.ordered_tile_selection_renders_each_tile_side_by_side()
   local palette = paletteData(16)
-  local result =
-    rasterizer().renderTiles(charData({ solidTile4(2), solidTile4(3) }), palette, { 0, 1 })
+  local result = rasterizer().renderTiles(charData({ solidTile4(2), solidTile4(3) }), palette, { 0, 1 })
   Assert.equal(result.width, 16)
   Assert.equal(result.height, 8)
   Assert.equal(#result.pixels, 16 * 8 * 4)
@@ -416,13 +415,8 @@ function T.tile_strip_renders_the_selected_run_with_the_bank_palette()
   for index, color in ipairs(palette.colors) do
     before[index] = { r = color.r, g = color.g, b = color.b }
   end
-  local result = rasterizer().renderTileStrip(
-    charData({ solidTile4(0), solidTile4(1), solidTile4(2) }),
-    palette,
-    1,
-    2,
-    1
-  )
+  local result =
+    rasterizer().renderTileStrip(charData({ solidTile4(0), solidTile4(1), solidTile4(2) }), palette, 1, 2, 1)
   Assert.equal(result.width, 16)
   Assert.equal(result.height, 8)
   Assert.equal(#result.pixels, 16 * 8 * 4)
@@ -550,8 +544,16 @@ function T.malformed_cells_transforms_and_frames_are_typed_errors()
   local palette = paletteData(16)
   local cells = { cells = { cell(0) } }
   local function frameWith(overrides)
-    local frame =
-      { cell = 0, duration = 4, element = "affine", translateX = 0, translateY = 0, scaleX = 1, scaleY = 1, rotation = 0 }
+    local frame = {
+      cell = 0,
+      duration = 4,
+      element = "affine",
+      translateX = 0,
+      translateY = 0,
+      scaleX = 1,
+      scaleY = 1,
+      rotation = 0,
+    }
     for key, value in pairs(overrides) do
       frame[key] = value
     end

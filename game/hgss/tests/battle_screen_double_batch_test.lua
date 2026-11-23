@@ -267,30 +267,27 @@ local function openDoubleRig(opts)
     return record
   end
   local trainerId = launchId .. "-rival"
-  local scenario = ScenarioFactory.fromTrainer(
-    {
-      id = launchId .. "-scenario",
-      trainers = {
-        {
-          id = trainerId,
-          class = 2,
-          party = {
-            foeRecord(foeSpecies[1], foeLevels[1], 0x5EED0001),
-            foeRecord(foeSpecies[2], foeLevels[2], 0x5EED0002),
-          },
-          partyLevels = { 4, 4 },
-          prizeMoney = { trainerClass = 2, classRate = 4 },
-          aiPasses = {},
-          doubleBattle = true,
+  local scenario = ScenarioFactory.fromTrainer({
+    id = launchId .. "-scenario",
+    trainers = {
+      {
+        id = trainerId,
+        class = 2,
+        party = {
+          foeRecord(foeSpecies[1], foeLevels[1], 0x5EED0001),
+          foeRecord(foeSpecies[2], foeLevels[2], 0x5EED0002),
         },
+        partyLevels = { 4, 4 },
+        prizeMoney = { trainerClass = 2, classRate = 4 },
+        aiPasses = {},
+        doubleBattle = true,
       },
     },
-    {
-      party = party,
-      bag = bag,
-      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
-    }
-  )
+  }, {
+    party = party,
+    bag = bag,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local manifest = battleManifest()
   manifest.hud.doubles = testDoublesHud()
   if opts.missingHud then
@@ -309,7 +306,9 @@ local function openDoubleRig(opts)
       return rig.measurement
     end,
     itemCatalog = ItemFixture.makeCatalog(),
-    battleMenus = { party = { manifest = PartyPresentationFixture.manifest(), renderer = rig.partyRenderer, icons = {} } },
+    battleMenus = {
+      party = { manifest = PartyPresentationFixture.manifest(), renderer = rig.partyRenderer, icons = {} },
+    },
     assets = rig.assets,
     text = rig.text,
     windows = rig.windows,
@@ -586,8 +585,10 @@ local function childRow(rig, id)
     local slot = tonumber(id:match("^party:(%d+)$") or "")
     local native = child.native --[[@as table<string, unknown>?]]
     local view = type(native) == "table" and native.view or nil
-    local record = type(view) == "table" and type(slot) == "number" and type(view.slots) == "table"
-      and view.slots[slot + 1]
+    local record = type(view) == "table"
+        and type(slot) == "number"
+        and type(view.slots) == "table"
+        and view.slots[slot + 1]
       or nil
     if type(record) == "table" and record.occupied == true then
       return { id = id, enabled = record.eligible == true, occupied = true }
@@ -617,8 +618,10 @@ local function focusedNativeSlot(child, focus)
   local slot = tonumber(focus:match("^party:(%d+)$") or "")
   local native = child.native --[[@as table<string, unknown>?]]
   local view = type(native) == "table" and native.view or nil
-  local record = type(view) == "table" and type(slot) == "number" and type(view.slots) == "table"
-    and view.slots[slot + 1]
+  local record = type(view) == "table"
+      and type(slot) == "number"
+      and type(view.slots) == "table"
+      and view.slots[slot + 1]
     or nil
   if type(record) ~= "table" or record.occupied ~= true then
     return nil
@@ -733,7 +736,7 @@ function T.one_serving_and_one_exchange_share_a_single_reply()
   Assert.notNil(servingRow, "the stocked serving stays selectable")
   local servingId = servingRow.id --[[@as string]]
   chooseEnabledChildRow(rig)
-Assert.equal(rig.screen:status().mode, "command", "staging the serving returns for the second lead")
+  Assert.equal(rig.screen:status().mode, "command", "staging the serving returns for the second lead")
   Assert.equal(#rig.submits, 0, "the staged serving submits nothing")
   Assert.equal(rig.bag:quantity("POTION"), 1, "staging the serving spends no stock")
   local staged = rig.screen:view().staged
@@ -912,7 +915,9 @@ function T.two_fainted_leads_are_replaced_without_partial_submit()
       return rig.measurement
     end,
     itemCatalog = ItemFixture.makeCatalog(),
-    battleMenus = { party = { manifest = PartyPresentationFixture.manifest(), renderer = rig.partyRenderer, icons = {} } },
+    battleMenus = {
+      party = { manifest = PartyPresentationFixture.manifest(), renderer = rig.partyRenderer, icons = {} },
+    },
     assets = rig.assets,
     text = rig.text,
     windows = rig.windows,
@@ -1323,7 +1328,9 @@ local function openTargetLabelRig(layout, launchId, requestId)
     measureDisplay = function()
       return rig.measurement
     end,
-    battleMenus = { party = { manifest = PartyPresentationFixture.manifest(), renderer = rig.partyRenderer, icons = {} } },
+    battleMenus = {
+      party = { manifest = PartyPresentationFixture.manifest(), renderer = rig.partyRenderer, icons = {} },
+    },
     assets = rig.assets,
     text = rig.text,
     windows = rig.windows,

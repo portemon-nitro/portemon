@@ -233,10 +233,8 @@ function T.failure_seals_a_transport_record_and_drops_output()
   local artifact = newArtifact("party", "global", newFacts())
   artifact:write("data/generated/party/manifest.lua", "return {}\n")
   local Errors = require("libs.errors.src.Errors")
-  local record = artifact:finishFailure(
-    Errors.new("PARTY_CACHE_BUNDLE_INVALID", "bad bundle", { path = "manifest" }),
-    "trace"
-  )
+  local record =
+    artifact:finishFailure(Errors.new("PARTY_CACHE_BUNDLE_INVALID", "bad bundle", { path = "manifest" }), "trace")
   Assert.equal(record.code, "PARTY_CACHE_BUNDLE_INVALID", "a typed cause keeps its code")
   Assert.equal(record.traceback, "trace", "the throw-site trace rides along")
   Assert.isNil(artifact:read("data/generated/party/manifest.lua"), "failed output is released")

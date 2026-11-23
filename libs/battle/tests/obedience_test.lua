@@ -160,10 +160,7 @@ function T.obedience_counts_the_open_badge_set_with_a_full_set_cap()
       stream = BattleRng.new(FIXED_SEED),
     })
   end
-  Assert.isTrue(
-    obeyWith({ zephyr = true, hive = true }, 30).obeys,
-    "two owned keys obey at the two-badge tier"
-  )
+  Assert.isTrue(obeyWith({ zephyr = true, hive = true }, 30).obeys, "two owned keys obey at the two-badge tier")
   Assert.equal(
     obeyWith({ zephyr = true, hive = true }, 30).executingMove,
     "TACKLE",

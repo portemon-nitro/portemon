@@ -184,9 +184,12 @@ function T.writes_the_class_and_reports_ready()
   local writer = requireWriter()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = SummaryCache.marker("abc", "dep")
-  Assert.isTrue(ResidentArtifactFixture.publish(cache, "summary", "global", function(artifact)
-    return writer.stage(artifact, validBundle(marker))
-  end), "publication reports success")
+  Assert.isTrue(
+    ResidentArtifactFixture.publish(cache, "summary", "global", function(artifact)
+      return writer.stage(artifact, validBundle(marker))
+    end),
+    "publication reports success"
+  )
   Assert.isTrue(SummaryCache.isReady(cache, marker), "the family reads ready after publication")
   local loaded = SummaryCache.loadManifest(cache)
   Assert.equal(loaded.schema, SUMMARY_SCHEMA, "the published manifest loads back under its schema")
@@ -200,8 +203,8 @@ function T.rejects_a_malformed_class_without_publishing()
   bad.manifest = { schema = "g4-party-presentation-v6" }
   local err = Assert.throws(function()
     ResidentArtifactFixture.publish(cache, "summary", "global", function(artifact)
-    return writer.stage(artifact, bad)
-  end)
+      return writer.stage(artifact, bad)
+    end)
   end)
   Assert.isTrue(Errors.is(err), "a malformed class must fail structurally")
   Assert.isNil(cache:read(SummaryCache.markerPath()), "no ready marker follows a rejected publication")
@@ -224,8 +227,8 @@ function T.failed_rebuild_preserves_the_previous_artifact()
   broken.manifest = nil
   Assert.throws(function()
     ResidentArtifactFixture.publish(cache, "summary", "global", function(artifact)
-    return writer.stage(artifact, broken)
-  end)
+      return writer.stage(artifact, broken)
+    end)
   end)
   Assert.isTrue(SummaryCache.isReady(cache, firstMarker), "the previous artifact remains ready")
   Assert.equal(cache:read(SummaryCache.markerPath()), firstMarker, "the new marker never reached the live tree")
@@ -262,8 +265,8 @@ function T.summary_publication_leaves_sibling_families_untouched()
   broken.manifest = { schema = "not-a-summary-schema" }
   Assert.throws(function()
     ResidentArtifactFixture.publish(cache, "summary", "global", function(artifact)
-    return writer.stage(artifact, broken)
-  end)
+      return writer.stage(artifact, broken)
+    end)
   end)
   Assert.equal(cache:read(PartyCache.manifestPath()), "party-sentinel", "sibling payload survives summary work")
   Assert.equal(
@@ -281,9 +284,12 @@ function T.superseded_cache_markers_never_read_ready()
   local writer = requireWriter()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = SummaryCache.marker("abc", "dep")
-  Assert.isTrue(ResidentArtifactFixture.publish(cache, "summary", "global", function(artifact)
-    return writer.stage(artifact, validBundle(marker))
-  end), "publication reports success")
+  Assert.isTrue(
+    ResidentArtifactFixture.publish(cache, "summary", "global", function(artifact)
+      return writer.stage(artifact, validBundle(marker))
+    end),
+    "publication reports success"
+  )
   Assert.isFalse(
     SummaryCache.isReady(cache, "g4-summary-cache-v1:abc:dep"),
     "pixels published before the cursor correction never read ready"

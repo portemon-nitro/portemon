@@ -827,11 +827,7 @@ function T.kings_rock_rolls_ten_percent()
       {},
       key .. " stays silent without a contact flag even on a low roll"
     )
-    Assert.deepEqual(
-      flinched(key, fixedStream(6550), true),
-      {},
-      key .. " rolls percent: 6550 % 100 stays silent"
-    )
+    Assert.deepEqual(flinched(key, fixedStream(6550), true), {}, key .. " rolls percent: 6550 % 100 stays silent")
     Assert.deepEqual(flinched(key, fixedStream(65535), true), {}, key .. " stays silent on a high roll")
     Assert.deepEqual(flinched(key, nil, true), {}, key .. " stays silent without a stream")
   end

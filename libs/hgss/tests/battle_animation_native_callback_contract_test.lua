@@ -47,8 +47,7 @@ local function factoryServices(scene)
     audio.played[#audio.played + 1] = name
     return name
   end
-  function audio.stop(_name)
-  end
+  function audio.stop(_name) end
   function audio.isFinished(_name)
     return true
   end

@@ -54,12 +54,8 @@ function T.compiled_bag_layers_share_state_overlays_and_move_bases(romFs)
     (quantityOverlay[POCKET] or {}).image,
     "the quantity overlay resolves one pocket layer shared across every visible count"
   )
-  Assert.isTrue(
-    quantityLayer ~= actionLayer,
-    "quantity layers its own overlay over the retained selected-item surface"
-  )
-  local moveBase =
-    assert((move[POCKET] or {})[1], "the move background resolves its count base without baked origins")
+  Assert.isTrue(quantityLayer ~= actionLayer, "quantity layers its own overlay over the retained selected-item surface")
+  local moveBase = assert((move[POCKET] or {})[1], "the move background resolves its count base without baked origins")
   Assert.isTrue(actionLayer ~= moveBase.image, "action and move publish distinct retail state surfaces")
   local shared = assert((move[POCKET] or {})[0], "move resolves its shared unmutated base")
   Assert.isTrue(

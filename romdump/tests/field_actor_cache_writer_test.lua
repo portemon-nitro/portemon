@@ -95,9 +95,12 @@ end
 function T.writes_visuals_atlases_and_marker()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local b = bundle({ 0, 29 })
-  Assert.equal(ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
+  Assert.equal(
+    ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
       return FieldActorCacheWriter.stage(artifact, b)
-    end), b.marker)
+    end),
+    b.marker
+  )
   Assert.isTrue(FieldActorCache.isReady(cache, b.marker), "ready after write")
   Assert.isTrue(cache:exists(FieldActorCache.atlasPath(29), "file"))
   Assert.equal(cache:loadLua(FieldActorCache.visualPath(0)).spriteId, 0)
@@ -108,8 +111,8 @@ function T.is_not_ready_for_a_different_marker()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local b = bundle({ 0 })
   ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
-      return FieldActorCacheWriter.stage(artifact, b)
-    end)
+    return FieldActorCacheWriter.stage(artifact, b)
+  end)
   Assert.isFalse(FieldActorCache.isReady(cache, FieldActorCache.marker("abc", "other")))
 end
 
@@ -117,8 +120,8 @@ function T.is_not_ready_when_an_atlas_is_missing()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local b = bundle({ 0, 29 })
   ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
-      return FieldActorCacheWriter.stage(artifact, b)
-    end)
+    return FieldActorCacheWriter.stage(artifact, b)
+  end)
   cache:remove(FieldActorCache.atlasPath(29))
   Assert.isFalse(FieldActorCache.isReady(cache, b.marker))
 end
@@ -161,8 +164,8 @@ function T.failed_rebuild_preserves_the_previous_artifact()
   local cache = CacheFs.forVersion("heartgold", backend)
   local first = bundle({ 0, 29 })
   ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
-      return FieldActorCacheWriter.stage(artifact, first)
-    end)
+    return FieldActorCacheWriter.stage(artifact, first)
+  end)
   -- A rebuild whose bundle cannot produce a complete class fails while it
   -- stages: the private output is discarded and the published class keeps
   -- both its marker and its payload.
@@ -180,8 +183,8 @@ function T.failed_rebuild_preserves_the_previous_artifact()
   local retry = bundle({ 0, 29 })
   retry.marker = FieldActorCache.marker("abc", "new-dep")
   ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
-      return FieldActorCacheWriter.stage(artifact, retry)
-    end)
+    return FieldActorCacheWriter.stage(artifact, retry)
+  end)
   Assert.isTrue(FieldActorCache.isReady(cache, retry.marker), "a successful retry publishes the new artifact")
 end
 

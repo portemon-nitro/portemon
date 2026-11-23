@@ -242,7 +242,10 @@ function T.completion_and_disposal_commit_exactly_once_and_release_once()
   local foe = foeRecord("TOTODILE", 4, 0x5EED0003)
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
+    {
+      party = party,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    }
   )
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = BattleRuntime.new({
@@ -510,7 +513,11 @@ local function healingBattle(species, level, seed)
   local foe = foeRecord(species, level, seed)
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = "attempt-item-" .. seed, mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
+    {
+      party = party,
+      bag = bag,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    }
   )
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = BattleRuntime.new({
@@ -603,24 +610,16 @@ function T.session_item_facts_project_exactly_the_referenced_party_use()
   }
   local facts = battle:_sessionItemFacts(record)
   local catalog = party:catalog()
-  Assert.deepEqual(
-    facts.POTION,
-    {
-      partyUse = catalog:item("POTION").partyUse,
-      pocket = "medicine",
-      battleUseFunc = catalog:item("POTION").battleUseFunc,
-    },
-    "the repeated key projects its generated party use once"
-  )
-  Assert.deepEqual(
-    facts.CHERI_BERRY,
-    {
-      partyUse = catalog:item("CHERI_BERRY").partyUse,
-      pocket = "berries",
-      battleUseFunc = catalog:item("CHERI_BERRY").battleUseFunc,
-    },
-    "the berry key projects its generated party use"
-  )
+  Assert.deepEqual(facts.POTION, {
+    partyUse = catalog:item("POTION").partyUse,
+    pocket = "medicine",
+    battleUseFunc = catalog:item("POTION").battleUseFunc,
+  }, "the repeated key projects its generated party use once")
+  Assert.deepEqual(facts.CHERI_BERRY, {
+    partyUse = catalog:item("CHERI_BERRY").partyUse,
+    pocket = "berries",
+    battleUseFunc = catalog:item("CHERI_BERRY").battleUseFunc,
+  }, "the berry key projects its generated party use")
   local projected = 0
   for _ in pairs(facts) do
     projected = projected + 1
@@ -1325,8 +1324,7 @@ end
 -- rebuilding the ruleset, type chart, and formats every launch, while
 -- each battle still opens its own live session.
 function T.native_bindings_are_built_once_and_shared_across_sessions()
-  local HgssBattleContent =
-    requirePresent("game.hgss.src.battle.HgssBattleContent", "immutable native battle bindings")
+  local HgssBattleContent = requirePresent("game.hgss.src.battle.HgssBattleContent", "immutable native battle bindings")
   local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime sharing its native bindings")
   local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
   local ContentBuilder = require("libs.content.src.ContentBuilder")
@@ -1360,8 +1358,10 @@ function T.native_bindings_are_built_once_and_shared_across_sessions()
     local launch = { id = "launch-shared-bindings-" .. index, kind = "wild", payload = preparedWild() }
     local party = newPartyOwner()
     local foe = foeRecord(species, 4, 0x5EED0010 + index)
-    local scenario =
-      ScenarioFactory.fromEncounter({ attemptId = launch.id .. "-attempt", mon = foe }, { party = party })
+    local scenario = ScenarioFactory.fromEncounter(
+      { attemptId = launch.id .. "-attempt", mon = foe },
+      { party = party }
+    )
     local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
     battles[#battles + 1] = BattleRuntime.new({
       request = launch,
@@ -1411,8 +1411,10 @@ function T.successive_battles_keep_isolated_facts_and_replay_equal_seeds()
     if heldItem ~= nil then
       foe.heldItem = heldItem
     end
-    local scenario =
-      ScenarioFactory.fromEncounter({ attemptId = launch.id .. "-attempt", mon = foe }, { party = party })
+    local scenario = ScenarioFactory.fromEncounter(
+      { attemptId = launch.id .. "-attempt", mon = foe },
+      { party = party }
+    )
     local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
     local battle = BattleRuntime.new({
       request = launch,
@@ -1453,10 +1455,7 @@ function T.successive_battles_keep_isolated_facts_and_replay_equal_seeds()
     firstRequest.legalChoices,
     "an identical later battle replays its admitted vocabulary"
   )
-  Assert.isFalse(
-    rawequal(firstBattle._session, secondBattle._session),
-    "replayed battles never share a live session"
-  )
+  Assert.isFalse(rawequal(firstBattle._session, secondBattle._session), "replayed battles never share a live session")
 
   -- A battle with a different foe and different facts still opens
   -- normally beside them.

@@ -1294,7 +1294,10 @@ end
 -- candidate is discarded whole and takes the ordinary source route instead.
 function T.current_complete_snapshot_boots_without_source_io()
   local status, detail, opens, held, backend = driveBootGate(
-    capturedCut({ complete = true, sources = { { path = "data/generated/maps/61.lua", text = "return { map = 61 }\n" } } })
+    capturedCut({
+      complete = true,
+      sources = { { path = "data/generated/maps/61.lua", text = "return { map = 61 }\n" } },
+    })
   )
   Assert.equal(status, "ready", "a strictly current complete cut boots with no source")
   Assert.isNil(detail, "a fast boot carries no failure detail")
@@ -1344,7 +1347,10 @@ function T.refused_snapshot_candidate_never_blocks_selection()
   Assert.notNil(worker.snapshot.lastError, "the discarded candidate leaves its typed diagnostic")
   Assert.equal(worker.complete, false, "a refused candidate proves no completeness")
   local status = service:bootSourceStatus(epoch)
-  Assert.isTrue(status == "ready" or status == "source-required", "the boot takes its ordinary route: " .. tostring(status))
+  Assert.isTrue(
+    status == "ready" or status == "source-required",
+    "the boot takes its ordinary route: " .. tostring(status)
+  )
   local reader = assert(service:getCacheFs(epoch), "the empty initial installation still produced a reader")
   Assert.isNil(reader:read("data/generated/maps/61.lua"), "no bytes were installed from the refused candidate")
   service:shutdown()
@@ -1730,7 +1736,11 @@ function T.snapshot_coalescing_advances_only_the_captured_sequence()
     error = { code = "CACHE_ARCHIVE_REPLACE_FAILED", message = "synthetic promotion failure" },
   })
   worker:step()
-  Assert.equal(worker.snapshot.persistedSequence, first.sequence, "a failed later capture keeps the earlier persistence")
+  Assert.equal(
+    worker.snapshot.persistedSequence,
+    first.sequence,
+    "a failed later capture keeps the earlier persistence"
+  )
 
   -- An active capture is what retirement must cancel; a capture that was only
   -- pending is simply dropped.
@@ -2000,11 +2010,7 @@ function T.a_saved_snapshot_decides_the_boot_route_from_its_coverage()
     -- A complete matching snapshot is all the boot needs.
     local complete = assert(SnapshotBootFixture.open(completeRoot, identity), "the complete snapshot hydrates")
     local admitted = remember(bootFromSaved({ identity = identity, candidate = complete }))
-    Assert.equal(
-      admitted.status,
-      "ready",
-      "a complete matching snapshot admits the boot with no source work at all"
-    )
+    Assert.equal(admitted.status, "ready", "a complete matching snapshot admits the boot with no source work at all")
     Assert.equal(admitted.opens, 0, "an admitted snapshot boot opens no source file")
     Assert.notNil(admitted.pool, "the admitted boot owns its compiler pool")
     Assert.isNil(
@@ -2032,11 +2038,7 @@ function T.a_saved_snapshot_decides_the_boot_route_from_its_coverage()
     )
     partial = assert(partial)
     local denied = remember(bootFromSaved({ identity = identity, candidate = partial }))
-    Assert.equal(
-      denied.status,
-      "source-required",
-      "a partial snapshot alone never admits the offline boot"
-    )
+    Assert.equal(denied.status, "source-required", "a partial snapshot alone never admits the offline boot")
     Assert.equal(denied.detail.code, "ROM_SOURCE_REQUIRED", "the partial boot names the source it needs")
     local supplied = remember(bootFromSaved({ identity = identity, candidate = partial, offerSource = true }))
     Assert.equal(supplied.status, "ready", "a verified source completes the partial boot")
@@ -2069,10 +2071,7 @@ function T.a_saved_snapshot_decides_the_boot_route_from_its_coverage()
       "a rejected snapshot takes the rebuild route and asks for the source"
     )
     local emptyReader = installedReader(rebuilt.service, rebuilt.epoch)
-    Assert.isNil(
-      emptyReader:resolveAsset(BOOT_ATLAS_PATH),
-      "a rejected snapshot installs none of its bytes"
-    )
+    Assert.isNil(emptyReader:resolveAsset(BOOT_ATLAS_PATH), "a rejected snapshot installs none of its bytes")
     Assert.isNil(emptyReader:resolveAsset(BOOT_SCENE_PATH), "a rejected snapshot installs no partial coverage")
     Assert.isTrue(rebuilt.service:requestBootSource(rebuilt.epoch), "the boot may ask its gate again")
     rebuilt.service:update()
@@ -2461,10 +2460,7 @@ function T.one_captured_snapshot_and_one_pending_indication_keep_persistence_hon
   local ok, err = pcall(function()
     drive.request({ requestKind = "milestone", name = "new-game-intro", urgency = "required" })
     drive.commit(3, 600)
-    Assert.isTrue(
-      drive.installedSequence() >= 7,
-      "the drive committed work beyond the sequence it hydrated"
-    )
+    Assert.isTrue(drive.installedSequence() >= 7, "the drive committed work beyond the sequence it hydrated")
     -- Settle every outstanding dispatch and completion fact before the capture
     -- is forced: what the cut must name is the state that exists then.
     local settled = -1

@@ -282,10 +282,7 @@ function T.spl_decoder_exposes_child_block_contents()
   local member = blob(1, 1, { record }, { textureBlock() })
   local decoded, err = SplResource.decode(member)
   Assert.notNil(decoded, "the child member decodes: " .. tostring(err))
-  local childRecord = assert(
-    decoded.emitters[1].child,
-    "the emitter keeps its decoded child block"
-  )
+  local childRecord = assert(decoded.emitters[1].child, "the emitter keeps its decoded child block")
   Assert.equal(childRecord.flag, 0x0006, "the child keeps its flag")
   Assert.equal(childRecord.life, 7, "the child keeps its lifespan")
   Assert.equal(childRecord.velRatio, 0, "the child keeps its velocity ratio")
@@ -296,16 +293,11 @@ function T.spl_decoder_exposes_child_block_contents()
   Assert.equal(childRecord.texNo, 8, "the child keeps its texture selection")
   Assert.equal(childRecord.texRepeatS, 1, "the child keeps its horizontal texture repeat")
   Assert.equal(childRecord.texRepeatT, 1, "the child keeps its vertical texture repeat")
-  Assert.deepEqual(
-    childRecord.colorRgb,
-    { r = 31, g = 31, b = 31 },
-    "the child keeps its color channels"
-  )
+  Assert.deepEqual(childRecord.colorRgb, { r = 31, g = 31, b = 31 }, "the child keeps its color channels")
 end
 
 function T.spl_decoder_rejects_reserved_child_flag_bits()
-  local child = u16(0x1000)
-    .. string.rep("\0", 18)
+  local child = u16(0x1000) .. string.rep("\0", 18)
   local flag = 2 ^ 16
   local record = tailEmitter(flag, {}, child)
   local member = blob(1, 1, { record }, { textureBlock() })

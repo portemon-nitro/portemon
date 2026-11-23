@@ -178,20 +178,26 @@ function T.spread_move_in_doubles_names_each_target_with_stable_activation()
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local launch =
     { id = "launch-packet-spread-doubles", kind = "trainer", payload = { trainer = "rival-packet-spread" } }
-  local scenario = ScenarioFactory.fromTrainer({
-    id = "packet-spread-doubles",
-    trainers = {
-      {
-        id = "rival-packet-spread",
-        class = 2,
-        party = { foeRecord("TOTODILE", 4, 0x5EED0011), foeRecord("CHIKORITA", 4, 0x5EED0012) },
-        partyLevels = { 4, 4 },
-        prizeMoney = { trainerClass = 2, classRate = 4 },
-        aiPasses = {},
-        doubleBattle = true,
+  local scenario = ScenarioFactory.fromTrainer(
+    {
+      id = "packet-spread-doubles",
+      trainers = {
+        {
+          id = "rival-packet-spread",
+          class = 2,
+          party = { foeRecord("TOTODILE", 4, 0x5EED0011), foeRecord("CHIKORITA", 4, 0x5EED0012) },
+          partyLevels = { 4, 4 },
+          prizeMoney = { trainerClass = 2, classRate = 4 },
+          aiPasses = {},
+          doubleBattle = true,
+        },
       },
     },
-  }, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } })
+    {
+      party = party,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    }
+  )
   local record = {
     ready = true,
     enters = 0,
@@ -298,7 +304,11 @@ function T.duplicate_packets_execute_once_and_stale_activations_never_unblock()
   }
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foeRecord("EEVEE", 4, 0x5EED0042) },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
+    {
+      party = party,
+      bag = bag,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    }
   )
   local record = {
     ready = true,
@@ -403,7 +413,11 @@ function T.identical_seeds_keep_mechanics_identical_across_presentation_pacing()
     }
     local twinScenario = ScenarioFactory.fromEncounter(
       { attemptId = launch.id .. "-attempt", mon = foe },
-      { party = twinParty, bag = twinBag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
+      {
+        party = twinParty,
+        bag = twinBag,
+        player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+      }
     )
     local held = {
       ready = not delayed,
@@ -500,23 +514,29 @@ function T.trainer_payloads_expose_only_visible_battler_facts()
   })
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local launch = { id = "launch-packet-hidden", kind = "trainer", payload = { trainer = "rival-packet-hidden" } }
-  local scenario = ScenarioFactory.fromTrainer({
-    id = "packet-hidden",
-    trainers = {
-      {
-        id = "rival-packet-hidden",
-        class = 2,
-        party = {
-          foeRecord("TOTODILE", 5, 0x5EED00A1),
-          foeRecord("CHIKORITA", 5, 0x5EED00A2),
-          foeRecord("EEVEE", 5, 0x5EED00A3),
+  local scenario = ScenarioFactory.fromTrainer(
+    {
+      id = "packet-hidden",
+      trainers = {
+        {
+          id = "rival-packet-hidden",
+          class = 2,
+          party = {
+            foeRecord("TOTODILE", 5, 0x5EED00A1),
+            foeRecord("CHIKORITA", 5, 0x5EED00A2),
+            foeRecord("EEVEE", 5, 0x5EED00A3),
+          },
+          partyLevels = { 5, 5, 5 },
+          prizeMoney = { trainerClass = 2, classRate = 4 },
+          aiPasses = {},
         },
-        partyLevels = { 5, 5, 5 },
-        prizeMoney = { trainerClass = 2, classRate = 4 },
-        aiPasses = {},
       },
     },
-  }, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } })
+    {
+      party = party,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    }
+  )
   local record = {
     ready = true,
     enters = 0,
@@ -896,7 +916,13 @@ function T.failure_replay_and_called_move_branches_stay_single_shot()
         move = { selected = "THUNDER_WAVE", executed = "THUNDER_WAVE", phase = "direct" },
         payload = { user = 1, targets = 1 },
         seed = 101,
-        execution = branchExecution("THUNDER_WAVE", "use", { combatant = 1, activation = 1 }, { combatant = 2, activation = 2 }, { { combatant = 2, activation = 2 } }),
+        execution = branchExecution(
+          "THUNDER_WAVE",
+          "use",
+          { combatant = 1, activation = 1 },
+          { combatant = 2, activation = 2 },
+          { { combatant = 2, activation = 2 } }
+        ),
       }),
     })
     Assert.equal(countStarts(started, "THUNDER_WAVE"), 1, "the status use admits one visual")
@@ -947,7 +973,13 @@ function T.failure_replay_and_called_move_branches_stay_single_shot()
         move = { selected = "RAZOR_WIND", executed = "RAZOR_WIND", phase = "charge" },
         payload = { target = 1 },
         seed = 104,
-        execution = branchExecution("RAZOR_WIND", "charge-start", { combatant = 1, activation = 1 }, { combatant = 1, activation = 1 }, { { combatant = 1, activation = 1 } }),
+        execution = branchExecution(
+          "RAZOR_WIND",
+          "charge-start",
+          { combatant = 1, activation = 1 },
+          { combatant = 1, activation = 1 },
+          { { combatant = 1, activation = 1 } }
+        ),
       }),
       branchEvent({
         sequence = 2,
@@ -959,7 +991,14 @@ function T.failure_replay_and_called_move_branches_stay_single_shot()
         payload = { target = 2, damage = 9, hitIndex = 1 },
         hp = { [1] = 60, [2] = 51 },
         seed = 105,
-        execution = branchExecution("RAZOR_WIND", "charge-release", { combatant = 1, activation = 1 }, { combatant = 2, activation = 2 }, { { combatant = 2, activation = 2 } }, { damage = -9, power = 80, friendship = 70, hitOrdinal = 1, hitCount = 1, hitCycle = 1 }),
+        execution = branchExecution(
+          "RAZOR_WIND",
+          "charge-release",
+          { combatant = 1, activation = 1 },
+          { combatant = 2, activation = 2 },
+          { { combatant = 2, activation = 2 } },
+          { damage = -9, power = 80, friendship = 70, hitOrdinal = 1, hitCount = 1, hitCycle = 1 }
+        ),
       }),
     })
     Assert.equal(countStarts(started, "RAZOR_WIND"), 2, "charge and strike halves stay distinct")
@@ -979,7 +1018,14 @@ function T.failure_replay_and_called_move_branches_stay_single_shot()
         targets = { { combatant = 2 } },
         hp = { [1] = 60, [2] = 52, [4] = 60 },
         seed = 106,
-        execution = branchExecution("TACKLE", "use", { combatant = 1, activation = 1 }, { combatant = 2, activation = 2 }, { { combatant = 2, activation = 2 } }, { damage = -8, power = 35, friendship = 70, hitOrdinal = 1, hitCount = 1, hitCycle = 1 }),
+        execution = branchExecution(
+          "TACKLE",
+          "use",
+          { combatant = 1, activation = 1 },
+          { combatant = 2, activation = 2 },
+          { { combatant = 2, activation = 2 } },
+          { damage = -8, power = 35, friendship = 70, hitOrdinal = 1, hitCount = 1, hitCycle = 1 }
+        ),
       }),
       branchEvent({
         sequence = 2,
@@ -1030,7 +1076,14 @@ function T.failure_replay_and_called_move_branches_stay_single_shot()
         payload = { target = 2, damage = 8, hitIndex = 1 },
         hp = { [1] = 60, [2] = 52 },
         seed = 108,
-        execution = branchExecution("TACKLE", "use", { combatant = 1, activation = 1 }, { combatant = 2, activation = 2 }, { { combatant = 2, activation = 2 } }, { damage = -8, power = 35, friendship = 70, hitOrdinal = 1, hitCount = 1, hitCycle = 1 }),
+        execution = branchExecution(
+          "TACKLE",
+          "use",
+          { combatant = 1, activation = 1 },
+          { combatant = 2, activation = 2 },
+          { { combatant = 2, activation = 2 } },
+          { damage = -8, power = 35, friendship = 70, hitOrdinal = 1, hitCount = 1, hitCycle = 1 }
+        ),
       }),
     }
     local first = BattlePresentationModel.packet(
@@ -1070,7 +1123,14 @@ function T.failure_replay_and_called_move_branches_stay_single_shot()
         move = { selected = "METRONOME", executed = "TACKLE", phase = "direct" },
         payload = { user = 1, targets = 1 },
         seed = 109,
-        execution = branchExecution("TACKLE", "use", { combatant = 1, activation = 1 }, { combatant = 2, activation = 2 }, { { combatant = 2, activation = 2 } }, { selected = "METRONOME" }),
+        execution = branchExecution(
+          "TACKLE",
+          "use",
+          { combatant = 1, activation = 1 },
+          { combatant = 2, activation = 2 },
+          { { combatant = 2, activation = 2 } },
+          { selected = "METRONOME" }
+        ),
       }),
     })
     Assert.equal(countStarts(started, "TACKLE"), 1, "the called move visualizes its executed identity")
@@ -1110,8 +1170,9 @@ end
 function T.presentation_view_projects_own_summary_facts()
   local catalog = CatalogFixture.makeCatalog()
   local factory = CatalogFixture.makeFactory(0x44444444, catalog)
-  local mon =
-    tackleOnly(factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 20, ability = "RUN_AWAY" })))
+  local mon = tackleOnly(
+    factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 20, ability = "RUN_AWAY" }))
+  )
   local snapshot = {
     combatants = {
       [1] = {

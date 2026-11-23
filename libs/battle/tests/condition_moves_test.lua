@@ -1152,10 +1152,7 @@ function T.destiny_knot_reciprocates_infatuation()
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "attract connects across genders")
   Assert.isTrue(probe.ctx:hasBattleEffect(2, "infatuation"), "attract infatuates the defender")
-  Assert.isTrue(
-    probe.ctx:hasBattleEffect(1, "infatuation"),
-    "the knot infatuates the user back"
-  )
+  Assert.isTrue(probe.ctx:hasBattleEffect(1, "infatuation"), "the knot infatuates the user back")
 end
 
 return { tests = T }

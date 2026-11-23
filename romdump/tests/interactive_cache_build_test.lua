@@ -713,7 +713,8 @@ local function stageSummaryReply(env, bankIds, bankMarkers)
   local marker = nil
   local sealed = nil
   withHost(env.host, function()
-    local artifact = ResidentArtifactFixture.new(env.pool:cacheFs(), "message-summary", "global", env.session.generationId)
+    local artifact =
+      ResidentArtifactFixture.new(env.pool:cacheFs(), "message-summary", "global", env.session.generationId)
     local index = { schema = FieldMessageCache.INDEX_SCHEMA, version = "heartgold", bankIds = bankIds }
     marker = FieldMessageCacheWriter.stageSummary(artifact, index, bankMarkers)
     sealed = artifact:finishSuccess({ marker = marker })
@@ -843,15 +844,21 @@ function T.shared_prerequisite_inherits_urgent_demand()
   requestJob(env, "audio-summary", "global", "required")
   pumpSession(env, 1)
   Assert.deepEqual(env.host.dispatched, { "audio-catalog:global" }, "the catalog proves first for worker reuse")
-  local _, audioCatalogSealed = ResidentArtifactFixture.seal(env.pool:cacheFs(), "audio-catalog", "global", function(artifact)
-    local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
-    local AudioFixture = require("tests.support.AudioFixture").bundle()
-    return AudioCacheWriter.stageCatalog(artifact, { index = AudioFixture.index, bankPlans = {} }, {
-      romSha1 = "rom-sha",
-      sdatSha1 = "dep-sha",
-      sdatFileId = 3,
-    })
-  end, env.session.generationId)
+  local _, audioCatalogSealed = ResidentArtifactFixture.seal(
+    env.pool:cacheFs(),
+    "audio-catalog",
+    "global",
+    function(artifact)
+      local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
+      local AudioFixture = require("tests.support.AudioFixture").bundle()
+      return AudioCacheWriter.stageCatalog(artifact, { index = AudioFixture.index, bankPlans = {} }, {
+        romSha1 = "rom-sha",
+        sdatSha1 = "dep-sha",
+        sdatFileId = 3,
+      })
+    end,
+    env.session.generationId
+  )
   replyToDispatch(env, "audio-catalog", "global", "prepared", audioCatalogSealed)
   pumpSession(env, 2)
   Assert.deepEqual(
@@ -2226,13 +2233,7 @@ local function stageSessionLayout(cacheFs, generation)
   ResidentArtifactFixture.publish(cacheFs, "mon-layout", "global", function(artifact)
     return MonCacheWriter.stageLayout(artifact, {
       icons = sessionLayoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
-      portraits = sessionLayoutManifest(
-        MonCache.PORTRAIT_MANIFEST_SCHEMA,
-        MonCache.portraitPagePath(0),
-        640,
-        320,
-        80
-      ),
+      portraits = sessionLayoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
       marker = "slim-session-layout-marker",
       pagePlans = {
         iconPages = { [0] = sessionIconPagePlan(0) },

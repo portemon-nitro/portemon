@@ -2442,7 +2442,6 @@ function T.sale_refusal_acknowledgement_keeps_the_completed_message()
   control:dispose()
 end
 
-
 function T.sale_and_toss_flows_commit_exactly_once_across_substates()
   local bag = service()
   Assert.isTrue(bag:add("POTION", 5))

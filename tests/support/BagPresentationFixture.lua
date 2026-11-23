@@ -171,7 +171,8 @@ function BagPresentationFixture.manifest()
     local overlayName = state == "actionOverlay" and "action" or "quantity"
     local pockets = {}
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
-      pockets[pocket] = bagImageRef("assets/generated/bag/background-" .. overlayName .. "-overlay-" .. pocket .. ".png")
+      pockets[pocket] =
+        bagImageRef("assets/generated/bag/background-" .. overlayName .. "-overlay-" .. pocket .. ".png")
     end
     backgrounds[state] = pockets
   end
@@ -194,8 +195,7 @@ function BagPresentationFixture.manifest()
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
       local counts = {}
       for count = 0, 4 do
-        counts[count] =
-          bagImageRef("assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. ".png")
+        counts[count] = bagImageRef("assets/generated/bag/background-move-" .. pocket .. "-count-" .. count .. ".png")
       end
       counts[5] = counts[0]
       counts[6] = counts[0]
@@ -228,8 +228,11 @@ function BagPresentationFixture.manifest()
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
       local rows = {}
       for row = 0, 2 do
-        rows[#rows + 1] =
-          { image = "assets/generated/bag/background-browse-row-" .. pocket .. "-" .. row .. ".png", width = 124, height = 38 }
+        rows[#rows + 1] = {
+          image = "assets/generated/bag/background-browse-row-" .. pocket .. "-" .. row .. ".png",
+          width = 124,
+          height = 38,
+        }
       end
       browse[pocket] = {
         base = bagImageRef("assets/generated/bag/background-browse-base-" .. pocket .. ".png"),

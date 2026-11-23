@@ -1043,12 +1043,10 @@ local function stageMonLayout(cacheFs, generation, marker, icons, pagePlans)
   local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
   ResidentArtifactFixture.publish(cacheFs, "mon-layout", "global", function(artifact)
     return MonCacheWriter.stageLayout(artifact, {
-      icons = icons
-        or layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
+      icons = icons or layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
       portraits = layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
       marker = marker,
-      pagePlans = pagePlans
-        or { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
+      pagePlans = pagePlans or { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
       generationId = generation,
     })
   end, generation)

@@ -277,8 +277,8 @@ function T.rejects_a_malformed_page_without_publishing()
   badKind.kind = "sprites"
   Assert.throws(function()
     publish(cache, "mon-icon-page", "0", function(artifact)
-    return MonCacheWriter.stagePage(artifact, badKind)
-  end)
+      return MonCacheWriter.stagePage(artifact, badKind)
+    end)
   end)
   Assert.isFalse(MonCache.isPageReady(cache, "icons", 0, "bad-kind-marker"), "a mislabeled page never stages")
 end
@@ -298,8 +298,8 @@ function T.failed_rebuild_preserves_the_previous_artifact()
   broken.pixels = "short"
   Assert.throws(function()
     publish(cache, "mon-icon-page", "0", function(artifact)
-    return MonCacheWriter.stagePage(artifact, broken)
-  end)
+      return MonCacheWriter.stagePage(artifact, broken)
+    end)
   end)
   Assert.isTrue(MonCache.isPageReady(cache, "icons", 0, firstMarker), "the previous page remains ready")
   Assert.equal(
@@ -414,16 +414,15 @@ function T.failed_layout_handoff_preserves_the_previous_layout()
   end)
   local bad = pagePlans()
   bad.iconPages[0].combos = {}
-  local ok, stageErr =
-    pcall(publish, cache, "mon-layout", "global", function(artifact)
-      return MonCacheWriter.stageLayout(artifact, {
-        icons = icons(),
-        portraits = portraits(),
-        marker = firstMarker,
-        pagePlans = bad,
-        generationId = "test-generation",
-      })
-    end)
+  local ok, stageErr = pcall(publish, cache, "mon-layout", "global", function(artifact)
+    return MonCacheWriter.stageLayout(artifact, {
+      icons = icons(),
+      portraits = portraits(),
+      marker = firstMarker,
+      pagePlans = bad,
+      generationId = "test-generation",
+    })
+  end)
   Assert.isFalse(ok, "an empty page record must not stage: " .. tostring(stageErr))
   Assert.isTrue(MonCache.isLayoutReady(cache, firstMarker), "the previous layout remains ready")
   local ready, _ = MonCacheWriter.isLayoutSourceReady(cache, "test-generation", firstMarker)

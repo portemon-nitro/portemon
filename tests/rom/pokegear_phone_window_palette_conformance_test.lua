@@ -63,7 +63,8 @@ end
 ---@param role string
 ---@return table palette record
 local function decodeNclrMember(archive, memberId, role)
-  local palette = G2dDecoder.decodePalette(readMemberBytes(archive, memberId, role), { label = "phone-window:" .. role })
+  local palette =
+    G2dDecoder.decodePalette(readMemberBytes(archive, memberId, role), { label = "phone-window:" .. role })
   Assert.notNil(palette, role .. " NCLR member " .. memberId .. " must decode")
   return assert(palette)
 end
@@ -173,7 +174,8 @@ function T.phone_sprite_pixels_match_corrected_source_cells(romFs, versionId)
   local sprites = assert(manifest.phone.sprites, versionId .. " publishes its phone sprite sets").phone
   local selection = assert(PokegearSources.phoneSprites.phone, "the producer names its phone OBJ set")
   local character = G2dDecoder.decodeChar(readMemberBytes(phone, selection.char, "phone.obj.character"), {})
-  local palette = G2dDecoder.decodePalette(readMemberBytes(phone, PokegearSources.phoneSpritePalette, "phone.obj.palette"), {})
+  local palette =
+    G2dDecoder.decodePalette(readMemberBytes(phone, PokegearSources.phoneSpritePalette, "phone.obj.palette"), {})
   local cellBytes = readMemberBytes(phone, selection.cell, "phone.obj.cell")
   local cells = G2dDecoder.decodeCell(cellBytes, {})
   local mapping = G2dDecoder.decodeCellMapping(cellBytes, { label = "phone-window:obj-cell" })
@@ -273,13 +275,14 @@ function T.phone_dim_variants_follow_the_source_blend(romFs, versionId)
       local dark = assert(phone[role][skin], "skin " .. skin .. " carries its " .. role .. " plane")
       Assert.equal(dark.width, bright.width, "skin " .. skin .. " " .. role .. " keeps its plane width")
       Assert.equal(dark.height, bright.height, "skin " .. skin .. " " .. role .. " keeps its plane height")
-      local _, _, brightRgba = PngReader.rgba(assert(bundle.assets[bright.image], "skin " .. skin .. " stages its lower plane"))
-      local _, _, darkRgba = PngReader.rgba(assert(bundle.assets[dark.image], "skin " .. skin .. " stages its " .. role .. " plane"))
+      local _, _, brightRgba =
+        PngReader.rgba(assert(bundle.assets[bright.image], "skin " .. skin .. " stages its lower plane"))
+      local _, _, darkRgba =
+        PngReader.rgba(assert(bundle.assets[dark.image], "skin " .. skin .. " stages its " .. role .. " plane"))
       Assert.isTrue(brightRgba ~= darkRgba, "skin " .. skin .. " " .. role .. " differs from its bright original")
     end
     local shellBright = assert(manifest.shell.foreground[skin], "skin " .. skin .. " carries its strip plane")
-    local shellDark =
-      assert(phone.dimShellForeground[skin], "skin " .. skin .. " carries its dimmed strip plane")
+    local shellDark = assert(phone.dimShellForeground[skin], "skin " .. skin .. " carries its dimmed strip plane")
     local _, _, shellBrightRgba =
       PngReader.rgba(assert(bundle.assets[shellBright.image], "skin " .. skin .. " stages its strip plane"))
     local _, _, shellDarkRgba =

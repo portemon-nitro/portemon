@@ -386,11 +386,19 @@ PokedexSources.spriteBanks = {
   ["search.order"] = { [14] = { default = 0 } },
   ["search.name"] = { [14] = { default = 0 } },
   ["search.type"] = { [14] = { default = 0 } },
-  ["search.height"] = { [14] = { default = 0, [42] = 1, [43] = 1, [54] = 1, [56] = 1, [57] = 1, [59] = 1, [68] = 1, [69] = 1 } },
-  ["search.weight"] = { [14] = { default = 0, [42] = 1, [43] = 1, [54] = 1, [56] = 1, [57] = 1, [59] = 1, [68] = 1, [69] = 1 } },
+  ["search.height"] = {
+    [14] = { default = 0, [42] = 1, [43] = 1, [54] = 1, [56] = 1, [57] = 1, [59] = 1, [68] = 1, [69] = 1 },
+  },
+  ["search.weight"] = {
+    [14] = { default = 0, [42] = 1, [43] = 1, [54] = 1, [56] = 1, [57] = 1, [59] = 1, [68] = 1, [69] = 1 },
+  },
   ["search.area"] = { [14] = { default = 0 } },
   ["search.shape"] = { [14] = { default = 0 }, [74] = { default = 0 } },
-  ["entry.area"] = { [14] = { default = 1, [4] = 4, [27] = 3, [28] = 0 }, [117] = { default = 0 }, [121] = { default = 0 } },
+  ["entry.area"] = {
+    [14] = { default = 1, [4] = 4, [27] = 3, [28] = 0 },
+    [117] = { default = 0 },
+    [121] = { default = 0 },
+  },
   ["entry.size"] = { [14] = { default = 1, [4] = 4 }, [113] = { default = 0 } },
   ["entry.forms"] = { [14] = { default = 1, [4] = 4, [67] = 0 } },
   ["entry.compare"] = { [14] = { default = 1, [4] = 4, [67] = 0 } },
@@ -1360,17 +1368,22 @@ local searchOrderWindows = {
 for _, name in ipairs({ "numerical", "alphabetical", "heaviest", "lightest", "tallest", "shortest" }) do
   searchOrderWindows[#searchOrderWindows + 1] = "search.option-order-" .. name
 end
-local searchLetterWindows = { "search.criteria", "search.feedback",
-  "search.feedback-detail", "search.title-letter", "search.current-letter" }
+local searchLetterWindows =
+  { "search.criteria", "search.feedback", "search.feedback-detail", "search.title-letter", "search.current-letter" }
 for position = 0, 26 do
   local label = position < 26 and string.char(string.byte("A") + position) or "unrestricted"
   searchLetterWindows[#searchLetterWindows + 1] = "search.option-letter-" .. label
 end
 searchLetterWindows[#searchLetterWindows + 1] = "search.button-ok"
 searchLetterWindows[#searchLetterWindows + 1] = "search.button-cancel"
-local searchTypeWindows =
-  { "search.criteria", "search.feedback",
-  "search.feedback-detail", "search.title-type", "search.current-type-1", "search.current-type-2" }
+local searchTypeWindows = {
+  "search.criteria",
+  "search.feedback",
+  "search.feedback-detail",
+  "search.title-type",
+  "search.current-type-1",
+  "search.current-type-2",
+}
 for _, name in ipairs(PokedexSources.typeOrder) do
   searchTypeWindows[#searchTypeWindows + 1] = "search.option-type-" .. name
 end
@@ -1381,7 +1394,7 @@ local function searchSliderWindows(criterion)
   return {
     "search.criteria",
     "search.feedback",
-  "search.feedback-detail",
+    "search.feedback-detail",
     "search.title-" .. criterion,
     "search.current-" .. criterion .. "-min",
     "search.current-" .. criterion .. "-max",
@@ -1401,9 +1414,14 @@ local searchAreaWindows = {
 for _, name in ipairs({ "johto", "kanto", "unknown", "unrestricted" }) do
   searchAreaWindows[#searchAreaWindows + 1] = "search.option-area-" .. name
 end
-local searchShapeWindows =
-  { "search.criteria", "search.feedback",
-  "search.feedback-detail", "search.title-shape", "search.button-ok", "search.button-cancel" }
+local searchShapeWindows = {
+  "search.criteria",
+  "search.feedback",
+  "search.feedback-detail",
+  "search.title-shape",
+  "search.button-ok",
+  "search.button-cancel",
+}
 local resultsWindows = {
   "search.results",
   "grid.selected-number",
@@ -1817,10 +1835,57 @@ local areaCursor = cursorChoices({ 39, 39, 39, 39, 36, 36 })
 local sliderCursor = cursorChoices({ 63, 63, 36, 36 })
 local shapeCursor = cursorChoices({ 35, 35, 35, 35, 35, 35, 35, 35, 35, 35, 35, 35, 35, 35, 35, 36, 36 })
 local typeCursor = cursorChoices({
-  39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 36, 36,
+  39,
+  39,
+  39,
+  39,
+  39,
+  39,
+  39,
+  39,
+  39,
+  39,
+  39,
+  39,
+  39,
+  39,
+  39,
+  39,
+  39,
+  39,
+  36,
+  36,
 })
 local letterCursor = cursorChoices({
-  41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 36, 36,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  41,
+  36,
+  36,
 })
 
 local function searchSubjects(extra)

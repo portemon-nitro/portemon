@@ -82,10 +82,7 @@ function T.tutorial_strikes_miss_without_a_roll()
   local Accuracy = accuracyOwner()
   local BattleRng = streamOwner()
   local lesson = BattleRng.new(1)
-  local missed = Accuracy.resolve(
-    { accuracy = 100, target = target(1), cause = cause(), tutorial = true },
-    lesson
-  )
+  local missed = Accuracy.resolve({ accuracy = 100, target = target(1), cause = cause(), tutorial = true }, lesson)
   Assert.equal(missed.kind, "miss", "the lesson strike misses")
   Assert.equal(missed.reason, "tutorial", "the lesson miss names its tutorial")
   Assert.equal(lesson:capture().calls, 0, "the lesson spends no accuracy draw")

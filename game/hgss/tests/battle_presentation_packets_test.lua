@@ -287,7 +287,11 @@ function T.production_deliveries_replay_exactly_once_end_to_end()
   }
   local scenario = ScenarioFactory.fromEncounter(
     { attemptId = launch.id .. "-attempt", mon = foe },
-    { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" } }
+    {
+      party = party,
+      bag = bag,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    }
   )
   local held = { ready = true, packets = {} }
   local port = {

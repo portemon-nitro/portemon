@@ -1201,12 +1201,12 @@ function T.encounter_keeps_the_lower_tilemaps_up_without_a_wash()
   local running = snapshot({
     mode = "intro",
     battleKind = "wild",
-      commands = {
-        { id = "fight", enabled = true, label = "FIGHT" },
-        { id = "bag", enabled = true, label = "BAG" },
-        { id = "pokemon", enabled = true, label = "POKEMON" },
-        { id = "run", enabled = true, label = "RUN" },
-      },
+    commands = {
+      { id = "fight", enabled = true, label = "FIGHT" },
+      { id = "bag", enabled = true, label = "BAG" },
+      { id = "pokemon", enabled = true, label = "POKEMON" },
+      { id = "run", enabled = true, label = "RUN" },
+    },
     openingPresentation = {
       playerTrainerVisible = true,
       foeTrainerVisible = false,
@@ -1225,12 +1225,12 @@ function T.encounter_keeps_the_lower_tilemaps_up_without_a_wash()
   local revealed = snapshot({
     mode = "intro",
     battleKind = "wild",
-      commands = {
-        { id = "fight", enabled = true, label = "FIGHT" },
-        { id = "bag", enabled = true, label = "BAG" },
-        { id = "pokemon", enabled = true, label = "POKEMON" },
-        { id = "run", enabled = true, label = "RUN" },
-      },
+    commands = {
+      { id = "fight", enabled = true, label = "FIGHT" },
+      { id = "bag", enabled = true, label = "BAG" },
+      { id = "pokemon", enabled = true, label = "POKEMON" },
+      { id = "run", enabled = true, label = "RUN" },
+    },
     openingPresentation = {
       playerTrainerVisible = true,
       foeTrainerVisible = false,
@@ -1248,12 +1248,12 @@ function T.encounter_keeps_the_lower_tilemaps_up_without_a_wash()
   local settled = snapshot({
     mode = "command",
     battleKind = "wild",
-      commands = {
-        { id = "fight", enabled = true, label = "FIGHT" },
-        { id = "bag", enabled = true, label = "BAG" },
-        { id = "pokemon", enabled = true, label = "POKEMON" },
-        { id = "run", enabled = true, label = "RUN" },
-      },
+    commands = {
+      { id = "fight", enabled = true, label = "FIGHT" },
+      { id = "bag", enabled = true, label = "BAG" },
+      { id = "pokemon", enabled = true, label = "POKEMON" },
+      { id = "run", enabled = true, label = "RUN" },
+    },
     openingPresentation = {
       playerTrainerVisible = false,
       foeTrainerVisible = false,
@@ -1323,7 +1323,6 @@ function T.command_menu_paints_only_in_command_modes()
   end
 end
 
-
 -- One typed composition frame carries the detail pane: particle
 -- polygons precede battler pictures in native submission order, planes
 -- and OBJ fragments carry content callbacks, and the layout stays
@@ -1353,7 +1352,6 @@ function T.detail_draw_builds_one_typed_composition_frame()
   Assert.isTrue(#frame.objects > 0, "HUD content rides OBJ fragments")
   Assert.notNil(frame.animation, "compositor state rides the frame")
 end
-
 
 -- The native menu slide reaches the sub-engine frame exactly once: the
 -- outside regions become window records and the per-plane scroll rides

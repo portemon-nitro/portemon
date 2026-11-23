@@ -373,7 +373,9 @@ function T.running_shoes_focus_draws_the_apricorn_selection_cursor_above_the_but
   })
   local button = assert(manifest.startMenu.runningShoes.button, "the fixture carries the shoes button")
   local frameWidth, frameHeight = 12, 12
-  local expectedX = button.anchor.x + (assert(button.off, "the button carries its off visual").rect.width - frameWidth) / 2 + 8
+  local expectedX = button.anchor.x
+    + (assert(button.off, "the button carries its off visual").rect.width - frameWidth) / 2
+    + 8
   local expectedY = button.anchor.y - frameHeight + 12
   local firstImages = {}
   for _, locked in ipairs({ false, true }) do

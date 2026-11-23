@@ -622,17 +622,11 @@ function T.picture_animation_restarts_from_its_first_step_on_demand()
   }
   -- The lazy start is covered next door; here it only stages the task
   -- the restart must replay after the stop sentinel retires it.
-  Assert.isTrue(
-    scene:picturePose(battler, animation).active,
-    "the task runs before its stop sentinel retires it"
-  )
+  Assert.isTrue(scene:picturePose(battler, animation).active, "the task runs before its stop sentinel retires it")
   for _ = 1, 3 do
     scene:stepSourceTick()
   end
-  Assert.isFalse(
-    scene:picturePose(battler, animation).active,
-    "the short animation retires to its stop sentinel"
-  )
+  Assert.isFalse(scene:picturePose(battler, animation).active, "the short animation retires to its stop sentinel")
   local restarted = scene:startPictureAnimation(battler, animation)
   Assert.deepEqual(restarted, {
     frame = 1,
@@ -683,11 +677,7 @@ function T.picture_motion_replays_baked_samples_from_its_delay_and_holds_termina
   Assert.equal(held.dy, -4, "the program lifts vertically")
   Assert.equal(held.scaleX, 1.125, "the program stretches horizontally")
   Assert.equal(held.rotationTurns, 0.25, "the program carries its quarter turn")
-  Assert.deepEqual(
-    assert(held.paletteBlend).target,
-    { r = 31, g = 31, b = 31 },
-    "the program carries its fade target"
-  )
+  Assert.deepEqual(assert(held.paletteBlend).target, { r = 31, g = 31, b = 31 }, "the program carries its fade target")
   scene:stepSourceTick()
   scene:stepSourceTick()
   held = assert(scene:motionPose(battler), "the terminal sample holds past its end")
@@ -808,11 +798,7 @@ function T.native_hud_icon_selectors_map_status_gender_and_caught()
   for _, alias in ipairs({ "toxic", "bad-poison" }) do
     local patches = BattleScene.hudIconPatchTiles(variantSpans, 0, alias, nil, nil)
     for index, patch in ipairs(patches) do
-      Assert.equal(
-        patch.sourceTile,
-        50 + (index - 1),
-        alias .. " shares the poisoned source component"
-      )
+      Assert.equal(patch.sourceTile, 50 + (index - 1), alias .. " shares the poisoned source component")
     end
   end
   local genders = {
@@ -1428,10 +1414,7 @@ function T.wrapper_display_policy_freezes_health_tasks_while_its_root_runs()
   )
   scene:setWrapperDisplayPolicy({ suspendHealthbarUpdates = false, updateBattlerG3 = false })
   scene:stepHostTick()
-  Assert.isTrue(
-    scene:gaugeTaskValue("health") ~= healthBefore,
-    "restoring the default resumes healthbar updates"
-  )
+  Assert.isTrue(scene:gaugeTaskValue("health") ~= healthBefore, "restoring the default resumes healthbar updates")
   local bad = { suspendHealthbarUpdates = true }
   local ok = pcall(scene.setWrapperDisplayPolicy, scene, bad)
   Assert.isFalse(ok, "a half-named wrapper policy never installs")

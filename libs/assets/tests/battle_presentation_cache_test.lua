@@ -287,10 +287,7 @@ end
 
 local function stageSourceIndices(cache, sourceIndices)
   for _, variant in pairs(sourceIndices.variants) do
-    cache:write(
-      variant.path,
-      string.rep(string.char(0, 0, 0, 0), sourceIndices.width * sourceIndices.height)
-    )
+    cache:write(variant.path, string.rep(string.char(0, 0, 0, 0), sourceIndices.width * sourceIndices.height))
   end
 end
 
@@ -1193,10 +1190,7 @@ function T.edited_readable_records_load_while_strict_audits_reject_them()
   local cache = staging()
   local manifest = ManifestFixture.manifest()
   stageBattle(cache, manifest, sceneKey)
-  Assert.isTrue(
-    BattlePresentationCache.isGlobalReady(cache, "marker"),
-    "the staged global audits ready before edits"
-  )
+  Assert.isTrue(BattlePresentationCache.isGlobalReady(cache, "marker"), "the staged global audits ready before edits")
   Assert.isTrue(
     BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"),
     "the staged scene audits ready before edits"
@@ -1206,11 +1200,7 @@ function T.edited_readable_records_load_while_strict_audits_reject_them()
   editedManifest.audioRoles = "edited-by-mod"
   cache:writeLua(BattlePresentationCache.manifestPath(), editedManifest)
   local reloadedManifest = assert(BattlePresentationCache.load(cache))
-  Assert.equal(
-    reloadedManifest.audioRoles,
-    "edited-by-mod",
-    "a readable manifest edit loads without repair"
-  )
+  Assert.equal(reloadedManifest.audioRoles, "edited-by-mod", "a readable manifest edit loads without repair")
   Assert.isFalse(
     BattlePresentationCache.isGlobalReady(cache, "marker"),
     "the same manifest edit fails the explicit global audit"
@@ -1220,11 +1210,7 @@ function T.edited_readable_records_load_while_strict_audits_reject_them()
   scene.key = "general/grass/night"
   cache:writeLua(BattlePresentationCache.scenePath(sceneKey), scene)
   local editedScene = assert(BattlePresentationCache.loadScene(cache, sceneKey))
-  Assert.equal(
-    editedScene.key,
-    "general/grass/night",
-    "a renamed scene record still loads under its staged path"
-  )
+  Assert.equal(editedScene.key, "general/grass/night", "a renamed scene record still loads under its staged path")
   Assert.isFalse(
     BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"),
     "the renamed scene fails the explicit scene audit"
@@ -1259,11 +1245,7 @@ function T.edited_readable_records_load_while_strict_audits_reject_them()
   trainerRecord.selector = "front:OTHER"
   cache:writeLua(BattlePresentationCache.trainerPicturePath(trainerSelector), trainerRecord)
   local editedTrainer = assert(BattlePresentationCache.loadTrainerPicture(cache, trainerSelector))
-  Assert.equal(
-    editedTrainer.selector,
-    "front:OTHER",
-    "a renamed trainer leaf still loads under its staged selector"
-  )
+  Assert.equal(editedTrainer.selector, "front:OTHER", "a renamed trainer leaf still loads under its staged selector")
   Assert.isFalse(
     BattlePresentationCache.isTrainerPictureReady(cache, trainerSelector, "leaf-marker"),
     "the renamed trainer leaf fails the explicit trainer audit"
@@ -1289,11 +1271,7 @@ function T.edited_readable_records_load_while_strict_audits_reject_them()
   ballRecord.selector = "ball:GREAT_BALL"
   cache:writeLua(BattlePresentationCache.ballPath(ballSelector), ballRecord)
   local editedBall = assert(BattlePresentationCache.loadBall(cache, ballSelector))
-  Assert.equal(
-    editedBall.selector,
-    "ball:GREAT_BALL",
-    "a renamed ball leaf still loads under its staged selector"
-  )
+  Assert.equal(editedBall.selector, "ball:GREAT_BALL", "a renamed ball leaf still loads under its staged selector")
   Assert.isFalse(
     BattlePresentationCache.isBallReady(cache, ballSelector, "leaf-marker"),
     "the renamed ball leaf fails the explicit ball audit"
@@ -1321,11 +1299,7 @@ function T.edited_readable_records_load_while_strict_audits_reject_them()
   stagedEvolution.kind = "not-evolution"
   cache:writeLua(BattlePresentationCache.evolutionPath(), stagedEvolution)
   local editedEvolution = assert(BattlePresentationCache.loadEvolution(cache))
-  Assert.equal(
-    editedEvolution.kind,
-    "not-evolution",
-    "an edited evolution bundle still loads"
-  )
+  Assert.equal(editedEvolution.kind, "not-evolution", "an edited evolution bundle still loads")
   Assert.isFalse(
     BattlePresentationCache.isEvolutionReady(cache, "leaf-marker"),
     "the edited evolution bundle fails the explicit evolution audit"
@@ -1415,14 +1389,8 @@ function T.edited_readable_records_load_while_strict_audits_reject_them()
     type(missingSceneErr) == "string" and missingSceneErr:find(sceneKey, 1, true) ~= nil,
     "the missing scene names its requested key"
   )
-  Assert.isNil(
-    cache:read(BattlePresentationCache.scenePath(sceneKey)),
-    "a failed scene load stages no replacement"
-  )
-  Assert.isFalse(
-    BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"),
-    "a removed scene never audits ready"
-  )
+  Assert.isNil(cache:read(BattlePresentationCache.scenePath(sceneKey)), "a failed scene load stages no replacement")
+  Assert.isFalse(BattlePresentationCache.isSceneReady(cache, sceneKey, "marker"), "a removed scene never audits ready")
 end
 
 return { tests = T }

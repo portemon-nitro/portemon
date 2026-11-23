@@ -602,7 +602,8 @@ function T.release_actor_unpauses_the_follower_only_for_the_partner()
   end
 
   local partnerRun, partnerEnv, partnerPaused = releaseSetup("field:partner")
-  local outcome = Runtime.executeNode({ op = "release_actor", actor = { ref = "actor", special = "partner" } }, partnerRun)
+  local outcome =
+    Runtime.executeNode({ op = "release_actor", actor = { ref = "actor", special = "partner" } }, partnerRun)
   Assert.equal(outcome, Runtime.OUTCOME_CONTINUE, "the partner release continues in the same tick")
   Assert.deepEqual(partnerPaused, { false }, "releasing the partner unpauses the follower exactly once")
   Assert.equal(

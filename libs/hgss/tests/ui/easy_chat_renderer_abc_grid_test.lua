@@ -15,7 +15,11 @@ local T = {
 
 local function textOwner(positions)
   return {
-    fontDef = { glyphs = {}, letterSpacing = 0, palette = { { r = 1, g = 1, b = 1 }, { r = 1, g = 1, b = 1 }, { r = 0, g = 0, b = 0 }, { r = 0, g = 0, b = 0 } } },
+    fontDef = {
+      glyphs = {},
+      letterSpacing = 0,
+      palette = { { r = 1, g = 1, b = 1 }, { r = 1, g = 1, b = 1 }, { r = 0, g = 0, b = 0 }, { r = 0, g = 0, b = 0 } },
+    },
     _graphics = {
       newQuad = function()
         return {}

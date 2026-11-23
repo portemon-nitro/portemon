@@ -210,7 +210,10 @@ function T.escape_rope_refuses_per_the_item_check_before_any_plan()
   Assert.isFalse(runtime:isBusy())
   local escorted = contextWith()
   escorted.humanFollower = true
-  Assert.equal(runtime:queue({ move = "escape_rope", context = escorted, travel = travelWith(nil) }).kind, "have_follower")
+  Assert.equal(
+    runtime:queue({ move = "escape_rope", context = escorted, travel = travelWith(nil) }).kind,
+    "have_follower"
+  )
 end
 
 function T.warping_runs_departure_then_one_warp_then_arrival_before_done()

@@ -160,7 +160,11 @@ function T.single_speed_runs_one_complete_quantum_per_accepted_tick()
     end
     Assert.equal(host.advances, 3, "one launch advance runs per accepted source tick")
     Assert.equal(screen.updates, 3, "one screen quantum runs per accepted source tick")
-    Assert.deepEqual(order, { "host", "screen", "host", "screen", "host", "screen" }, "quanta keep host-then-screen order")
+    Assert.deepEqual(
+      order,
+      { "host", "screen", "host", "screen", "host", "screen" },
+      "quanta keep host-then-screen order"
+    )
     for index, dt in ipairs(screen.dts) do
       Assert.equal(dt, FRAME, "quantum " .. index .. " steps exactly one source quantum")
     end
@@ -214,13 +218,11 @@ function T.speed_runs_the_transition_era_at_single_rate_before_handoff()
     status = function()
       return { phase = phase }
     end,
-    stepSourceTick = function()
-    end,
+    stepSourceTick = function() end,
     frame = function()
       return {}
     end,
-    dispose = function()
-    end,
+    dispose = function() end,
   }
   local ok, failure = xpcall(function()
     envelope:updateFixed(FRAME)

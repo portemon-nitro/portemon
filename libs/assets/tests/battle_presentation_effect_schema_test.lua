@@ -161,10 +161,7 @@ function T.visual_task_background_load_carries_its_staged_slots()
     resourceKeys = { character = "synthetic-bg-character" },
     runtimeSelection = "battle-background-screen-selection",
   }
-  Assert.isFalse(
-    Schema.isValidEffect(partial),
-    "a background load with an incomplete slot closure never validates"
-  )
+  Assert.isFalse(Schema.isValidEffect(partial), "a background load with an incomplete slot closure never validates")
 end
 
 function T.effect_cache_paths_live_in_the_existing_family()

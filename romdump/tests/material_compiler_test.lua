@@ -113,14 +113,8 @@ function T.one_pack_encodes_one_shared_texture_bank()
   -- whatever material asked for it, and the bank carries the named texels and
   -- palette the material selected.
   local pack = buildPack()
-  local first = MaterialCompiler.compile(
-    { { index = 0, name = "a", textureName = "t", paletteName = "p" } },
-    pack
-  )
-  local second = MaterialCompiler.compile(
-    { { index = 0, name = "b", textureName = "t", paletteName = "p" } },
-    pack
-  )
+  local first = MaterialCompiler.compile({ { index = 0, name = "a", textureName = "t", paletteName = "p" } }, pack)
+  local second = MaterialCompiler.compile({ { index = 0, name = "b", textureName = "t", paletteName = "p" } }, pack)
   local firstKey = compiledBank(first.textures)
   local secondKey = compiledBank(second.textures)
   Assert.equal(secondKey, firstKey, "the same source pack keeps one bank identity")
@@ -135,10 +129,7 @@ end
 
 function T.bank_identity_is_the_pack_content_not_the_material_binding()
   local function keyFor(pack)
-    local out = MaterialCompiler.compile(
-      { { index = 0, name = "a", textureName = "t", paletteName = "p" } },
-      pack
-    )
+    local out = MaterialCompiler.compile({ { index = 0, name = "a", textureName = "t", paletteName = "p" } }, pack)
     return compiledBank(out.textures)
   end
 

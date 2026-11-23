@@ -51,7 +51,10 @@ function T.evolution_source_compiles_thirteen_emitters_and_embeds_texture_pixels
       alphaUsage = { hasZero = true, hasPartial = false, hasOpaque = false },
     },
   }, "the payload exposes normalized texture metadata and a cache path")
-  Assert.isTrue(type(pngs[particles.textures[1].image]) == "string", "decoded texture pixels are embedded as a staged PNG")
+  Assert.isTrue(
+    type(pngs[particles.textures[1].image]) == "string",
+    "decoded texture pixels are embedded as a staged PNG"
+  )
   Assert.equal(provenance.archiveSymbol, source.archiveSymbol, "producer provenance records the selected archive")
   Assert.equal(provenance.memberId, source.memberId, "producer provenance records the selected member")
   Assert.isTrue(type(provenance.particleMemberHash) == "string", "producer provenance records the member content hash")
@@ -63,7 +66,10 @@ function T.evolution_source_rejects_a_member_with_the_wrong_emitter_count()
   local romFs = romFsForMember(SplMemberFixture.member(12, 1))
   local ok, failure = pcall(BattlePresentationCompiler.compileEvolutionParticles, romFs)
   Assert.isFalse(ok, "a source member without all thirteen emitters fails compilation")
-  Assert.isTrue(tostring(failure):find("BATTLE_PARTICLES_INVALID", 1, true) ~= nil, "the error identifies invalid particle source data")
+  Assert.isTrue(
+    tostring(failure):find("BATTLE_PARTICLES_INVALID", 1, true) ~= nil,
+    "the error identifies invalid particle source data"
+  )
 end
 
 return { tests = T }

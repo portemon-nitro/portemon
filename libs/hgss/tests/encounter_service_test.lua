@@ -345,8 +345,12 @@ function T.repel_never_arms_off_the_step_path()
   Assert.equal(fish.encounter.mons[1].mon.met.level, 5)
   -- Seed 0 consults the full rock rate and selects the first rock slot
   -- at level 18: below the level-25 lead, but rock smash never arms repel.
-  local smashContext =
-    Fixture.context({ method = "rock_smash", movement = "field_move", mapId = 15, lead = Fixture.mon("TOTODILE", 25, 11) })
+  local smashContext = Fixture.context({
+    method = "rock_smash",
+    movement = "field_move",
+    mapId = 15,
+    lead = Fixture.mon("TOTODILE", 25, 11),
+  })
   smashContext.modifiers = Fixture.modifiers({ repel = true })
   local smashed = attemptResult(host, smashContext, Fixture.spyStream(0))
   Assert.equal(smashed.kind, "prepared", "rock smash ignores an armed repel")
@@ -426,7 +430,10 @@ function T.lead_hustle_reselects_the_slot_level_on_land()
   Assert.equal(reselectMon.species, "TOTODILE")
   Assert.equal(reselectMon.met.level, 11, "the check reseats the highest sibling")
   Assert.equal(reselectMon.personality, 2914935349)
-  Assert.deepEqual(reselectMon.ivs, { hp = 15, attack = 2, defense = 6, speed = 17, specialAttack = 25, specialDefense = 11 })
+  Assert.deepEqual(
+    reselectMon.ivs,
+    { hp = 15, attack = 2, defense = 6, speed = 17, specialAttack = 25, specialDefense = 11 }
+  )
   Assert.equal(reselectStream:calls(), 9, "the reselect draws its check after slot selection")
   Assert.deepEqual(reselectStream:labels(), {
     "movement",
@@ -798,11 +805,8 @@ end
 function T.field_move_rock_smash_consults_its_table_without_counting_a_step()
   local host = service()
   local stream = Fixture.spyStream(0)
-  local result = attemptResult(
-    host,
-    Fixture.context({ mapId = 15, method = "rock_smash", movement = "field_move" }),
-    stream
-  )
+  local result =
+    attemptResult(host, Fixture.context({ mapId = 15, method = "rock_smash", movement = "field_move" }), stream)
   Assert.equal(result.kind, "prepared")
   Assert.equal(result.stateDelta.steps, 0, "field-move attempts never advance the step counter")
   Assert.deepEqual({ stream:labels()[1], stream:labels()[2], stream:labels()[3] }, { "opportunity", "slot", "level" })
@@ -878,7 +882,8 @@ function T.headbutt_draws_its_slot_and_level_from_the_supplied_slots()
   Assert.isTrue(mon.met.level >= 5 and mon.met.level <= 7)
   -- Deterrence reaches headbutt: a level-12 intimidating lead deters
   -- the level-7 wild on an even check after three draws.
-  local waryContext = Fixture.context({ method = "headbutt", movement = "field_move", lead = Fixture.mon("TOTODILE", 12, 11) })
+  local waryContext =
+    Fixture.context({ method = "headbutt", movement = "field_move", lead = Fixture.mon("TOTODILE", 12, 11) })
   waryContext.modifiers = Fixture.modifiers({ headbutt = { slots = slots }, leadAbility = "intimidate" })
   local waryStream = Fixture.spyStream(10)
   local wary = attemptResult(host, waryContext, waryStream)
@@ -898,7 +903,10 @@ function T.headbutt_draws_its_slot_and_level_from_the_supplied_slots()
   Assert.equal(repelledMon.species, "EEVEE")
   Assert.equal(repelledMon.met.level, 7)
   Assert.equal(repelledMon.personality, 2112968538)
-  Assert.deepEqual(repelledMon.ivs, { hp = 15, attack = 20, defense = 16, speed = 8, specialAttack = 11, specialDefense = 10 })
+  Assert.deepEqual(
+    repelledMon.ivs,
+    { hp = 15, attack = 20, defense = 16, speed = 8, specialAttack = 11, specialDefense = 10 }
+  )
   Assert.equal(repelledStream:calls(), 7)
   Assert.deepEqual(repelledStream:labels(), {
     "slot",
@@ -1048,19 +1056,15 @@ function T.roamer_step_attempts_take_the_tile_opportunity_rolls()
   -- A surf tile stages its own table rate: member 11 carries no surf
   -- rate, so the attempt misses before any draw.
   local surfStream = Fixture.spyStream(0)
-  local surfMiss =
-    attemptResult(host, roamerAttemptContext(11, { tileMethod = "surf" }), surfStream)
+  local surfMiss = attemptResult(host, roamerAttemptContext(11, { tileMethod = "surf" }), surfStream)
   Assert.equal(surfMiss.kind, "none")
   Assert.equal(surfMiss.reason, "no_opportunity")
   Assert.equal(surfStream:calls(), 0, "an empty tile rate draws nothing")
   -- Repel suppresses a roamer below the lead without deterrence draws:
   -- the stored EEVEE at 20 falls below a level-25 lead.
   local highStream = Fixture.spyStream(0)
-  local high = attemptResult(
-    host,
-    roamerAttemptContext(11, { repel = true }, Fixture.mon("TOTODILE", 25, 11)),
-    highStream
-  )
+  local high =
+    attemptResult(host, roamerAttemptContext(11, { repel = true }, Fixture.mon("TOTODILE", 25, 11)), highStream)
   Assert.equal(high.kind, "none", "repel suppresses the lower roamer")
   Assert.equal(high.reason, "repel")
   Assert.equal(highStream:calls(), 2, "roamer repel draws no suppression check")

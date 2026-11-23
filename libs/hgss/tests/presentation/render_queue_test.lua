@@ -746,16 +746,12 @@ function T.manual_scratch_keeps_translucent_submission_order_against_opposing_ex
     sortBounds = bounds(-1, 1, 7, 9, -1, 1),
   })
   local manual = RenderQueue.newScratch({ sortMode = "manual" })
-  Assert.isTrue(
-    manual ~= nil,
-    "the queue admits the battle manual sort mode on its existing scratch"
-  )
+  Assert.isTrue(manual ~= nil, "the queue admits the battle manual sort mode on its existing scratch")
   local queue = RenderQueue.buildInto({ { submittedFirst, submittedSecond } }, IDENTITY, ortho, ortho, manual)
   Assert.deepEqual(
     ids(queue, "blended"),
     { "submitted-first", "submitted-second" },
-    "manual mode preserves native submission order for translucent polygons "
-      .. "instead of automatic screen-Y sorting"
+    "manual mode preserves native submission order for translucent polygons " .. "instead of automatic screen-Y sorting"
   )
 end
 
@@ -769,10 +765,7 @@ function T.manual_queue_publishes_one_ordered_opaque_sequence()
   })
   local manual = RenderQueue.newScratch({ sortMode = "manual" })
   local queue = RenderQueue.buildInto({ { high, low } }, IDENTITY, ortho, ortho, manual)
-  Assert.notNil(
-    queue.opaqueOrder,
-    "manual mode publishes one ordered opaque sequence for the shared 3D pass"
-  )
+  Assert.notNil(queue.opaqueOrder, "manual mode publishes one ordered opaque sequence for the shared 3D pass")
   local ordered = {}
   for _, entry in ipairs(queue.opaqueOrder) do
     ordered[#ordered + 1] = entry.item.id
@@ -780,8 +773,7 @@ function T.manual_queue_publishes_one_ordered_opaque_sequence()
   Assert.deepEqual(
     ordered,
     { "low-opaque", "high-cutout" },
-    "the shared opaque sequence follows native bottom/top extents across classes, "
-      .. "not submission order"
+    "the shared opaque sequence follows native bottom/top extents across classes, " .. "not submission order"
   )
 end
 
@@ -800,10 +792,7 @@ function T.manual_queue_prefers_clipped_projected_bounds_over_model_boxes()
   })
   local manual = RenderQueue.newScratch({ sortMode = "manual" })
   local queue = RenderQueue.buildInto({ { clippedBottom, boxedTop } }, IDENTITY, ortho, ortho, manual)
-  Assert.notNil(
-    queue.opaqueOrder,
-    "manual mode publishes one ordered opaque sequence for the shared 3D pass"
-  )
+  Assert.notNil(queue.opaqueOrder, "manual mode publishes one ordered opaque sequence for the shared 3D pass")
   local ordered = {}
   for _, entry in ipairs(queue.opaqueOrder) do
     ordered[#ordered + 1] = entry.item.id

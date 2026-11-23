@@ -116,11 +116,7 @@ end
 
 local function assertServedBytes(candidate, payloads, label)
   local served = SnapshotBootFixture.bytes(candidate)
-  Assert.deepEqual(
-    sortedKeys(served),
-    sortedKeys(payloads),
-    label .. ": the snapshot serves exactly its covered paths"
-  )
+  Assert.deepEqual(sortedKeys(served), sortedKeys(payloads), label .. ": the snapshot serves exactly its covered paths")
   for path, expected in pairs(payloads) do
     Assert.equal(served[path], expected, label .. ": the served bytes are the saved member bytes: " .. path)
   end
@@ -232,11 +228,7 @@ function T.a_partial_snapshot_hydrates_only_its_covered_work()
     Assert.equal(hydrated.sequence, 5, "the partial snapshot carries its own captured sequence")
     Assert.equal(hydrated.complete, false, "a partial snapshot never claims the whole corpus")
     Assert.equal(hydrated.firstPlay, false, "an unfinished cut carries no first-play fact it did not prove")
-    Assert.deepEqual(
-      SnapshotArchive.sorted(hydrated.milestones or {}),
-      {},
-      "an unfinished cut proves no milestone"
-    )
+    Assert.deepEqual(SnapshotArchive.sorted(hydrated.milestones or {}), {}, "an unfinished cut proves no milestone")
 
     assertServedBytes(hydrated, payloads, "partial snapshot")
     local served = SnapshotBootFixture.bytes(hydrated)
@@ -314,43 +306,55 @@ function T.a_damaged_snapshot_yields_no_candidate()
     assertRejected("flipped member byte", goodBytes:sub(1, at + 4) .. "X" .. goodBytes:sub(at + 6))
 
     -- One manifest row declares a size the member does not have.
-    assertRejected("declared size mismatch", rebuild(function(parsed)
-      for _, entry in ipairs(parsed.entries) do
-        if entry.path == SCENE_PATH then
-          entry.uncompressedSize = entry.uncompressedSize + 1
-          return
+    assertRejected(
+      "declared size mismatch",
+      rebuild(function(parsed)
+        for _, entry in ipairs(parsed.entries) do
+          if entry.path == SCENE_PATH then
+            entry.uncompressedSize = entry.uncompressedSize + 1
+            return
+          end
         end
-      end
-      error("the manifest lists the scene member")
-    end))
+        error("the manifest lists the scene member")
+      end)
+    )
 
     -- The manifest lists the same logical path twice.
-    assertRejected("duplicate manifest row", rebuild(function(parsed)
-      parsed.entries[#parsed.entries + 1] = {
-        path = parsed.entries[1].path,
-        uncompressedSize = parsed.entries[1].uncompressedSize,
-        unsignedCrc32 = parsed.entries[1].unsignedCrc32,
-      }
-      sortEntries(parsed)
-    end))
+    assertRejected(
+      "duplicate manifest row",
+      rebuild(function(parsed)
+        parsed.entries[#parsed.entries + 1] = {
+          path = parsed.entries[1].path,
+          uncompressedSize = parsed.entries[1].uncompressedSize,
+          unsignedCrc32 = parsed.entries[1].unsignedCrc32,
+        }
+        sortEntries(parsed)
+      end)
+    )
 
     -- The manifest names a path outside the generated roots.
-    assertRejected("path outside the generated roots", rebuild(function(parsed)
-      parsed.entries[#parsed.entries + 1] = {
-        path = "data/generated/../../escape.lua",
-        uncompressedSize = 1,
-        unsignedCrc32 = 0,
-      }
-      sortEntries(parsed)
-    end))
+    assertRejected(
+      "path outside the generated roots",
+      rebuild(function(parsed)
+        parsed.entries[#parsed.entries + 1] = {
+          path = "data/generated/../../escape.lua",
+          uncompressedSize = 1,
+          unsignedCrc32 = 0,
+        }
+        sortEntries(parsed)
+      end)
+    )
 
     -- The container itself is truncated.
     assertRejected("truncated central directory", goodBytes:sub(1, #goodBytes - 40))
 
     -- The manifest describes another generation.
-    assertRejected("stale generation identity", rebuild(function(parsed)
-      parsed.identity.romSha1 = string.rep("d", 40)
-    end))
+    assertRejected(
+      "stale generation identity",
+      rebuild(function(parsed)
+        parsed.identity.romSha1 = string.rep("d", 40)
+      end)
+    )
   end)
 end
 
@@ -380,10 +384,7 @@ function T.a_boot_prefers_the_backup_and_never_boots_an_orphan_temporary()
     )
 
     Assert.isTrue(love.filesystem.remove(root .. "/cache.zip.bak"), "the backup is removed for the second boot")
-    Assert.isNil(
-      SnapshotBootFixture.open(root, identity),
-      "an unfinished temporary is never booted as a snapshot"
-    )
+    Assert.isNil(SnapshotBootFixture.open(root, identity), "an unfinished temporary is never booted as a snapshot")
   end)
 end
 

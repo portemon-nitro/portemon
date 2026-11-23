@@ -492,11 +492,15 @@ function T.one_snapshot_carries_exactly_the_cut_it_was_given()
 
     local paths = SnapshotArchive.memberPaths(index)
     Assert.equal(#paths, 3, "the manifest lists the committed payloads and not itself")
-    Assert.deepEqual(SnapshotArchive.sorted(paths), SnapshotArchive.sorted({
-      "data/generated/field/30/scene.lua",
-      "data/generated/scripts/30.lua",
-      SHARED_PATH,
-    }), "the manifest lists exactly the cut's payloads")
+    Assert.deepEqual(
+      SnapshotArchive.sorted(paths),
+      SnapshotArchive.sorted({
+        "data/generated/field/30/scene.lua",
+        "data/generated/scripts/30.lua",
+        SHARED_PATH,
+      }),
+      "the manifest lists exactly the cut's payloads"
+    )
     Assert.equal(paths[1], "assets/generated/field/30/atlas.png", "manifest entries are sorted by path")
     Assert.isNil(members["cache-index.lua"], "the index is not one of its own entries")
 
@@ -504,26 +508,46 @@ function T.one_snapshot_carries_exactly_the_cut_it_was_given()
       local expected = assert(payloads[entry.path], "the manifest names only cut payloads: " .. entry.path)
       Assert.equal(members[entry.path], expected, "the member holds the committed bytes: " .. entry.path)
       Assert.equal(entry.uncompressedSize, #expected, "the manifest reports the checked size: " .. entry.path)
-      Assert.equal(entry.unsignedCrc32, SnapshotArchive.crc32(expected), "the manifest reports the member's CRC: " .. entry.path)
+      Assert.equal(
+        entry.unsignedCrc32,
+        SnapshotArchive.crc32(expected),
+        "the manifest reports the member's CRC: " .. entry.path
+      )
     end
 
     Assert.equal(#index.artifacts, 2, "both committed artifacts are captured")
     local map = assert(artifactNamed(index, "map", "30"), "the map artifact is captured under its canonical key")
     Assert.equal(map.marker, "map-ready", "the artifact keeps its completion marker")
     Assert.deepEqual(SnapshotArchive.sorted(map.dependencies), {}, "the artifact keeps its dependency facts")
-    Assert.deepEqual(SnapshotArchive.sorted(map.ownedRoots), { "data/generated/field/30" }, "the artifact keeps its owned roots")
+    Assert.deepEqual(
+      SnapshotArchive.sorted(map.ownedRoots),
+      { "data/generated/field/30" },
+      "the artifact keeps its owned roots"
+    )
     Assert.deepEqual(SnapshotArchive.sorted(map.sharedPaths), { SHARED_PATH }, "the artifact keeps its shared paths")
-    Assert.deepEqual(artifactFiles(index, map), SnapshotArchive.sorted({
-      "data/generated/field/30/scene.lua",
-      SHARED_PATH,
-    }), "the artifact's file indexes name its own published payloads")
+    Assert.deepEqual(
+      artifactFiles(index, map),
+      SnapshotArchive.sorted({
+        "data/generated/field/30/scene.lua",
+        SHARED_PATH,
+      }),
+      "the artifact's file indexes name its own published payloads"
+    )
 
     local script = assert(artifactNamed(index, "script", "main"), "the dependent artifact is captured under its key")
-    Assert.deepEqual(SnapshotArchive.sorted(script.dependencies), { "map:30" }, "the dependent artifact keeps its canonical dependency")
-    Assert.deepEqual(artifactFiles(index, script), SnapshotArchive.sorted({
-      "data/generated/scripts/30.lua",
-      SHARED_PATH,
-    }), "the dependent artifact names the payload both artifacts share")
+    Assert.deepEqual(
+      SnapshotArchive.sorted(script.dependencies),
+      { "map:30" },
+      "the dependent artifact keeps its canonical dependency"
+    )
+    Assert.deepEqual(
+      artifactFiles(index, script),
+      SnapshotArchive.sorted({
+        "data/generated/scripts/30.lua",
+        SHARED_PATH,
+      }),
+      "the dependent artifact names the payload both artifacts share"
+    )
 
     local sharedRows = 0
     for _, entry in ipairs(index.entries) do
@@ -623,8 +647,16 @@ function T.an_owned_output_two_artifacts_publish_is_one_hydrated_entry()
     for _, key in ipairs({ "TACKLE", "SCRATCH" }) do
       local artifact = assert(artifactNamed(index, "battle-effect", key), "the artifact is captured: " .. key)
       Assert.deepEqual(artifactFiles(index, artifact), { ownedPath }, "the artifact names its own payload: " .. key)
-      Assert.deepEqual(SnapshotArchive.sorted(artifact.ownedRoots), { ownedPath }, "the artifact keeps its owned root: " .. key)
-      Assert.deepEqual(SnapshotArchive.sorted(artifact.sharedPaths), {}, "the artifact declares no shared path: " .. key)
+      Assert.deepEqual(
+        SnapshotArchive.sorted(artifact.ownedRoots),
+        { ownedPath },
+        "the artifact keeps its owned root: " .. key
+      )
+      Assert.deepEqual(
+        SnapshotArchive.sorted(artifact.sharedPaths),
+        {},
+        "the artifact declares no shared path: " .. key
+      )
     end
 
     local hydration, failure = CacheArchive.open(versionId, identity)
@@ -695,10 +727,14 @@ function T.a_later_cut_replaces_the_previous_snapshot_and_owns_its_bytes()
 
     local index, members = SnapshotArchive.read(versionId)
     Assert.equal(index.sequence, 5, "the canonical archive is the latest captured cut")
-    Assert.deepEqual(SnapshotArchive.sorted(SnapshotArchive.memberPaths(index)), SnapshotArchive.sorted({
-      "data/generated/field/30/scene.lua",
-      "data/generated/field/30/atlas.png",
-    }), "the latest cut's payloads replace the earlier cut's payloads")
+    Assert.deepEqual(
+      SnapshotArchive.sorted(SnapshotArchive.memberPaths(index)),
+      SnapshotArchive.sorted({
+        "data/generated/field/30/scene.lua",
+        "data/generated/field/30/atlas.png",
+      }),
+      "the latest cut's payloads replace the earlier cut's payloads"
+    )
     Assert.isNil(members["data/generated/field/29/scene.lua"], "an earlier cut's payload is not carried forward")
     Assert.equal(members["data/generated/field/30/atlas.png"], "NEW", "the writer kept the bytes it was handed")
     Assert.equal(index.firstPlay, true, "the later cut's first-play fact replaces the earlier one")
@@ -922,13 +958,14 @@ function T.leftover_rotation_files_never_cost_the_only_recoverable_snapshot()
     for _, operation in ipairs(operations) do
       local path = type(operation.path) == "string" and operation.path or ""
       local destination = type(operation.destination) == "string" and operation.destination or ""
-      if operation.op == "rename" and path:find("cache.zip.new", 1, true) and destination:find("cache.zip", 1, true) then
+      if
+        operation.op == "rename"
+        and path:find("cache.zip.new", 1, true)
+        and destination:find("cache.zip", 1, true)
+      then
         promoted = true
       elseif operation.op == "remove" and path:find("cache.zip.bak", 1, true) and not promoted then
-        Assert.isTrue(
-          false,
-          "the writer must not remove the only recoverable snapshot before a replacement exists"
-        )
+        Assert.isTrue(false, "the writer must not remove the only recoverable snapshot before a replacement exists")
       end
     end
     local index, members = SnapshotArchive.read(versionId)

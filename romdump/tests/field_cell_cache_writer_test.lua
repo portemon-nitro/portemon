@@ -115,15 +115,20 @@ end
 local function publishClass(cache, b)
   local descriptor = b.index.matrices[1].cells[1]
   local cellKey = descriptor.matrixMemberId .. ":" .. descriptor.index
-  ResidentArtifactFixture.publish(cache, "field-cell", descriptor.matrixMemberId .. "-" .. descriptor.index, function(artifact)
-    FieldCellCacheWriter.stagePrepared(artifact, descriptor, {
-      cell = b.cells[cellKey],
-      meshes = b.meshes,
-      textures = b.textures,
-      models = b.models,
-    })
-    return b.cells[cellKey].cellMarker
-  end)
+  ResidentArtifactFixture.publish(
+    cache,
+    "field-cell",
+    descriptor.matrixMemberId .. "-" .. descriptor.index,
+    function(artifact)
+      FieldCellCacheWriter.stagePrepared(artifact, descriptor, {
+        cell = b.cells[cellKey],
+        meshes = b.meshes,
+        textures = b.textures,
+        models = b.models,
+      })
+      return b.cells[cellKey].cellMarker
+    end
+  )
   return ResidentArtifactFixture.publish(cache, "field-cell-index", "global", function(artifact)
     FieldCellCacheWriter.stageIndex(artifact, b.index)
     artifact:write(FieldCellCache.indexMarkerPath(), b.marker)

@@ -577,14 +577,15 @@ function T.miss_immunity_charge_substitute_and_transform_select_distinct_request
     Assert.isNil(event.flowKey, "no kind writes a flow route: " .. tostring(event.kind))
     Assert.isNil(event.effectKey, "no kind writes an effect route: " .. tostring(event.kind))
     Assert.isNil(event.suppression, "no kind writes suppression flags: " .. tostring(event.kind))
-    local presentation = assert(
-      event.presentation,
-      "every material event freezes its presentation facts: " .. tostring(event.kind)
-    )
+    local presentation =
+      assert(event.presentation, "every material event freezes its presentation facts: " .. tostring(event.kind))
     local execution = presentation.execution --[[@as table<string, unknown>?]]
     if event.kind == "struck" then
       Assert.isTrue(type(execution) == "table", "connected strikes carry their execution moment")
-      seenMoments[(execution --[[@as table<string, unknown>]]).executedMove .. "\0" .. tostring(event.sequence)] = true
+      seenMoments[
+        (execution --[[@as table<string, unknown>]]).executedMove .. "\0" .. tostring(event.sequence)
+      ] =
+        true
     elseif event.kind == "missed" or event.kind == "protected" then
       Assert.isNil(execution, "unconnected branches carry no execution moment: " .. tostring(event.kind))
     end
@@ -663,7 +664,13 @@ function T.emit_projects_optional_semantic_facts_beside_the_payload()
   local BattleContext = require("libs.battle.src.BattleContext")
   local state = factsState()
   local ctx = BattleContext.wrap(state)
-  local event = ctx:emit("struck", { key = "TACKLE", kind = "move", combatant = 1 }, { target = 2, damage = 14 }, nil, strikeFacts())
+  local event = ctx:emit(
+    "struck",
+    { key = "TACKLE", kind = "move", combatant = 1 },
+    { target = 2, damage = 14 },
+    nil,
+    strikeFacts()
+  )
   local presentation = assert(event.presentation, "the emission projects its presentation facts")
   local execution = assert(presentation.execution, "the strike projects its execution moment")
   Assert.equal(execution.selectedMove, "TACKLE", "the execution keeps its selected identity")
@@ -704,15 +711,24 @@ function T.emit_rejects_non_plain_semantic_facts()
   local ctx = BattleContext.wrap(state)
   local bad = strikeFacts()
   bad.execution.attacker = setmetatable({ combatant = 1, activation = 1 }, {})
-  Assert.isFalse(pcall(ctx.emit, ctx, "struck", { kind = "move" }, { target = 2 }, nil, bad), "metatables never enter facts")
+  Assert.isFalse(
+    pcall(ctx.emit, ctx, "struck", { kind = "move" }, { target = 2 }, nil, bad),
+    "metatables never enter facts"
+  )
   local fn = strikeFacts()
   fn.execution.defender = function()
     return 1
   end
-  Assert.isFalse(pcall(ctx.emit, ctx, "struck", { kind = "move" }, { target = 2 }, nil, fn), "functions never enter facts")
+  Assert.isFalse(
+    pcall(ctx.emit, ctx, "struck", { kind = "move" }, { target = 2 }, nil, fn),
+    "functions never enter facts"
+  )
   local nan = strikeFacts()
   nan.execution.damage = 0 / 0
-  Assert.isFalse(pcall(ctx.emit, ctx, "struck", { kind = "move" }, { target = 2 }, nil, nan), "non-finite numbers never enter facts")
+  Assert.isFalse(
+    pcall(ctx.emit, ctx, "struck", { kind = "move" }, { target = 2 }, nil, nan),
+    "non-finite numbers never enter facts"
+  )
   Assert.equal(#state.outbox, 0, "rejected facts emit nothing")
 end
 
@@ -796,20 +812,15 @@ function T.presentation_shapes_reject_malformed_records()
   local partial = strikeFacts()
   partial.context = {}
   partial.execution.hitCycle = nil
-  Assert.isFalse(
-    pcall(BattleProtocol.validateEvent, eventWith(partial)),
-    "hit fields travel together or not at all"
-  )
+  Assert.isFalse(pcall(BattleProtocol.validateEvent, eventWith(partial)), "hit fields travel together or not at all")
   local over = strikeFacts()
   over.context = {}
   over.execution.hitOrdinal = 3
-  Assert.isFalse(
-    pcall(BattleProtocol.validateEvent, eventWith(over)),
-    "hit ordinals stay within their connected total"
-  )
+  Assert.isFalse(pcall(BattleProtocol.validateEvent, eventWith(over)), "hit ordinals stay within their connected total")
   local unknown = { context = {}, operation = { kind = "victory-lap", subject = { combatant = 1, activation = 1 } } }
   Assert.isFalse(pcall(BattleProtocol.validateEvent, eventWith(unknown)), "operation kinds stay closed")
-  local badKind = { context = {}, healthChanges = { { combatant = 1, before = 1, after = 0, maxHp = 1, kind = "doll" } } }
+  local badKind =
+    { context = {}, healthChanges = { { combatant = 1, before = 1, after = 0, maxHp = 1, kind = "doll" } } }
   Assert.isFalse(
     pcall(BattleProtocol.validateEvent, eventWith(badKind)),
     "health changes distinguish body from substitute only"

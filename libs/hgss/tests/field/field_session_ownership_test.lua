@@ -97,10 +97,9 @@ local function makeSession(opts)
       end,
     }
   ) --[[@as FieldActorManager]]
-  actors.takeCommittedSteps = actors.takeCommittedSteps
-    or function()
-      return nil
-    end
+  actors.takeCommittedSteps = actors.takeCommittedSteps or function()
+    return nil
+  end
   local scheduler = opts.scheduler
     or {
       step = function() end,

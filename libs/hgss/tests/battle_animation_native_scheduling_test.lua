@@ -15,8 +15,7 @@ local function collaborators()
   function audio.play(name)
     shared.sequence[#shared.sequence + 1] = "sound"
   end
-  function audio.stop(_name)
-  end
+  function audio.stop(_name) end
   function audio.isFinished(name)
     return audio.done[name] == true
   end
@@ -37,16 +36,14 @@ local function collaborators()
     function record.cancel(_reason)
       record._state = "cancelled"
     end
-    function record.dispose()
-    end
+    function record.dispose() end
     return record
   end
   local resources = {}
   function resources.resolve(key)
     return { key = key, lease = key }
   end
-  function resources.release(_lease)
-  end
+  function resources.release(_lease) end
   return { audio = audio, tasks = tasks, resources = resources, shared = shared }
 end
 
@@ -95,11 +92,7 @@ function T.counter_waits_observe_task_retirement_on_the_next_tick()
   Assert.equal(soundsIn(helpers.shared.sequence), 0, "the counter wait parks while its task runs")
   helpers.shared.spawned[1].finish()
   player:stepSourceTick({ tick = 2 })
-  Assert.equal(
-    soundsIn(helpers.shared.sequence),
-    0,
-    "retirement later in the tick is observed on the following tick"
-  )
+  Assert.equal(soundsIn(helpers.shared.sequence), 0, "retirement later in the tick is observed on the following tick")
   player:stepSourceTick({ tick = 3 })
   Assert.equal(soundsIn(helpers.shared.sequence), 1, "the drained counter wait releases its chain")
   helpers.audio.done["counter-cue"] = true
@@ -132,10 +125,7 @@ function T.spawned_tasks_read_live_shared_cells()
   }))
   player:stepSourceTick({ tick = 1 })
   local context = assert(helpers.shared.contexts[1], "spawns carry their occurrence context")
-  Assert.isTrue(
-    type(context.liveParam) == "function",
-    "spawned tasks read live shared cells instead of a frozen copy"
-  )
+  Assert.isTrue(type(context.liveParam) == "function", "spawned tasks read live shared cells instead of a frozen copy")
   Assert.equal(context.liveParam(0), 7, "live reads observe writes from later commands")
 end
 

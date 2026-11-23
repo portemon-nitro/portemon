@@ -1801,10 +1801,7 @@ function T.tests.slider_numeric_slot_never_edits_while_the_visible_rail_clamps()
       break
     end
   end
-  Assert.isTrue(
-    middleX ~= nil and middleX >= 160 and middleX <= 247,
-    "a middle stop resolves on the visible rail"
-  )
+  Assert.isTrue(middleX ~= nil and middleX >= 160 and middleX <= 247, "a middle stop resolves on the visible rail")
   local pane = presentationPane(status, "content")
   local previewsBefore = opened.port.previews
   local slotHx, slotHy = hostForLogical(pane, 120, 156)
@@ -1853,10 +1850,7 @@ function T.tests.slider_numeric_slot_never_edits_while_the_visible_rail_clamps()
   local scrolledOffset = assert(content.scrollOffset, "the scrolled plan carries its offset")
   Assert.isTrue(scrolledOffset > 0, "the list rests scrolled")
   local volumeTop = 24 + (120 - scrolledOffset)
-  Assert.isNil(
-    Interface.hitTest(content, 120, volumeTop + 12),
-    "the scrolled value slot arms no stop"
-  )
+  Assert.isNil(Interface.hitTest(content, 120, volumeTop + 12), "the scrolled value slot arms no stop")
   Assert.isNil(Interface.hitTest(content, 158, volumeTop + 12), "the scrolled gap arms no stop")
   local scrolledMin = Interface.hitTest(content, 160, volumeTop + 12)
   Assert.isTrue(
@@ -1888,11 +1882,7 @@ function T.tests.published_slider_geometry_matches_the_shared_track_math()
     local control = assert(row.control, id .. " carries its control")
     local published = assert(control.slider, id .. " carries its resolved rail")
     local window = assert(control.valueWindow, id .. " carries its numeric window")
-    Assert.equal(
-      window.x + window.width + 4,
-      published.rect.x,
-      id .. " leaves a gap between the value and the rail"
-    )
+    Assert.equal(window.x + window.width + 4, published.rect.x, id .. " leaves a gap between the value and the rail")
     local statusRow = rowById(opened.state:status(), id)
     local fresh = Slider.resolve({
       rect = published.rect,
@@ -1901,11 +1891,7 @@ function T.tests.published_slider_geometry_matches_the_shared_track_math()
       knobExtent = published.thumbRect.width,
     })
     Assert.deepEqual(published, fresh, id .. " publishes the shared track resolution")
-    Assert.equal(
-      Slider.indexAt(published, published.rect.x),
-      1,
-      id .. " starts its track at the first stop"
-    )
+    Assert.equal(Slider.indexAt(published, published.rect.x), 1, id .. " starts its track at the first stop")
     Assert.equal(
       Slider.indexAt(published, published.rect.x + published.rect.width - 1),
       Interface.valueCount(id),
@@ -2142,16 +2128,8 @@ function T.tests.touch_focuses_the_touched_row_for_keyboard_continuation()
   Assert.equal(rowById(state:status(), "soundMode").value, "mono", "the matching release selects the touched choice")
   Assert.equal(state:status().focusId, "soundMode", "the release keeps the touched row focused")
   state:updateFixed({ { type = "navigate", direction = "left" } })
-  Assert.equal(
-    rowById(state:status(), "soundMode").value,
-    "stereo",
-    "keyboard left edits the touched row next"
-  )
-  Assert.equal(
-    rowById(state:status(), "textSpeed").value,
-    "fastest",
-    "keyboard left leaves the previous row alone"
-  )
+  Assert.equal(rowById(state:status(), "soundMode").value, "stereo", "keyboard left edits the touched row next")
+  Assert.equal(rowById(state:status(), "textSpeed").value, "fastest", "keyboard left leaves the previous row alone")
   status = state:status()
   content = assert(status.presentation.content, "the plan carries its content")
   pane = presentationPane(status, "content")
@@ -2190,11 +2168,7 @@ function T.tests.touch_focuses_the_touched_row_for_keyboard_continuation()
   state:updateFixed({ { type = "pointer_up", pointerId = "touch:3", x = frameHx, y = frameHy } })
   Assert.equal(state:status().focusId, "textFrame", "releasing the arrow keeps the frame focused")
   state:updateFixed({ { type = "direct-select", row = "soundMode", index = 1 } })
-  Assert.equal(
-    state:status().focusId,
-    "textFrame",
-    "a synthetic semantic selection never moves row focus"
-  )
+  Assert.equal(state:status().focusId, "textFrame", "a synthetic semantic selection never moves row focus")
 end
 
 -- A held press keeps the list still until release: the touched row or
@@ -2273,21 +2247,13 @@ function T.tests.held_pointer_keeps_list_still_until_release_then_reveals()
   Assert.equal(state:status().focusId, "textFrame", "a second pointer never steals the held focus")
   state:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = shx, y = shy } })
   Assert.isNil(state:takeResult(), "the second pointer closes nothing")
-  Assert.equal(
-    rowById(state:status(), "soundMode").value,
-    "stereo",
-    "the second pointer edits no value"
-  )
+  Assert.equal(rowById(state:status(), "soundMode").value, "stereo", "the second pointer edits no value")
   state:updateFixed({ { type = "pointer_move", pointerId = "touch:0", x = hx, y = hy } })
   Assert.equal(state:status().scrollOffset, 32, "holding the press never reflows the list")
   state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = hx, y = hy } })
   Assert.equal(state:status().focusId, "textFrame", "releasing the arrow keeps the frame focused")
   Assert.equal(rowById(state:status(), "textFrame").value, 19, "the matching release steps the frame once")
-  Assert.equal(
-    state:status().scrollOffset,
-    72,
-    "the release reveals the whole frame item once settled"
-  )
+  Assert.equal(state:status().scrollOffset, 72, "the release reveals the whole frame item once settled")
   Assert.isNil(state:takeResult(), "an arrow release closes nothing")
   status = state:status()
   content = assert(status.presentation.content, "the revealed plan carries its list")

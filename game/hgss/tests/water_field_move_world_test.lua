@@ -332,7 +332,8 @@ local function runWaterfall(rig, plan)
   rig.world:beginTraversalSegment(runtimePlan)
   while player:isScriptedMoving() do
     player:updateFixed({})
-    samples[#samples + 1] = { y = player.worldY, z = player.worldZ, walking = player:presentationState().locomotionActive }
+    samples[#samples + 1] =
+      { y = player.worldY, z = player.worldZ, walking = player:presentationState().locomotionActive }
     Assert.isTrue(#samples <= 200, "the fall must settle")
   end
   rig.world:commitTraversalSegment(runtimePlan)

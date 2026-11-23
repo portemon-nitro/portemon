@@ -31,10 +31,8 @@ local function phoneDimSection()
   for skin = 0, 5 do
     local suffix = "-skin-" .. skin .. ".png"
     section.foregroundDim[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim" .. suffix)
-    section.foregroundDimChoice[skin] =
-      visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
-    section.dimShellForeground[skin] =
-      visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
+    section.foregroundDimChoice[skin] = visualRef("assets/generated/pokegear/phone-foreground-dim-choice" .. suffix)
+    section.dimShellForeground[skin] = visualRef("assets/generated/pokegear/phone-dim-shell-foreground" .. suffix)
     local palette = {}
     for index = 1, 16 do
       palette[index] = { r = index, g = index, b = index }
@@ -168,9 +166,12 @@ function T.failed_rebuild_preserves_the_prior_ready_family_and_warm_reads_avoid_
   local cacheFs = CacheFs.forVersion("heartgold", backend)
   local oldMarker = PokegearCache.marker("rom-sha", "deps-sha")
   local oldBundle = syntheticBundle(oldMarker)
-  Assert.isTrue(ResidentArtifactFixture.publish(cacheFs, "pokegear", "global", function(artifact)
+  Assert.isTrue(
+    ResidentArtifactFixture.publish(cacheFs, "pokegear", "global", function(artifact)
       return PokegearCacheWriter.stage(artifact, oldBundle)
-    end), "the first publication must succeed")
+    end),
+    "the first publication must succeed"
+  )
   Assert.isTrue(PokegearCache.isReady(cacheFs, oldMarker), "the first publication must report its family ready")
 
   -- A late backend failure must not report success and must leave the
@@ -185,9 +186,12 @@ function T.failed_rebuild_preserves_the_prior_ready_family_and_warm_reads_avoid_
 
   -- A successful rebuild publishes a complete receipt: every referenced
   -- path is present under the new marker.
-  Assert.isTrue(ResidentArtifactFixture.publish(cacheFs, "pokegear", "global", function(artifact)
+  Assert.isTrue(
+    ResidentArtifactFixture.publish(cacheFs, "pokegear", "global", function(artifact)
       return PokegearCacheWriter.stage(artifact, syntheticBundle(newMarker))
-    end), "the retry must succeed")
+    end),
+    "the retry must succeed"
+  )
   Assert.isTrue(PokegearCache.isReady(cacheFs, newMarker), "the retried publication must report ready")
   local published = PokegearCache.loadManifest(cacheFs)
   for _, path in ipairs(referencedPaths(PokegearCache, published, syntheticBundle(newMarker))) do

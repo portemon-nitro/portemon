@@ -379,7 +379,16 @@ local function writeFieldRecord(c, mapId, events, audioPolicy, schema)
     wildEncounterMemberId = 0,
     rockSmash = {
       odds = 0,
-      items = { "MAX_ETHER", "REVIVE", "HEART_SCALE", "RED_SHARD", "BLUE_SHARD", "GREEN_SHARD", "YELLOW_SHARD", "STAR_PIECE" },
+      items = {
+        "MAX_ETHER",
+        "REVIVE",
+        "HEART_SCALE",
+        "RED_SHARD",
+        "BLUE_SHARD",
+        "GREEN_SHARD",
+        "YELLOW_SHARD",
+        "STAR_PIECE",
+      },
     },
     headbutt = { regularTrees = {}, secretTrees = {}, slots = { common = {}, rare = {}, secret = {} } },
     fieldUse = {

@@ -1172,11 +1172,7 @@ function T.animated_hierarchy_reaches_static_and_billboard_draw_items()
   instance.poseState = reset
   Assert.isTrue(reset == live, "the reset reuses the same pose containers")
   Assert.equal(reset.drawMatrices["root.seg"].position[13], 0, "stopping the clip restores the bind pose")
-  Assert.equal(
-    snapshot.drawMatrices["root.seg"].position[13],
-    10 / 16,
-    "the snapshot keeps its animated values"
-  )
+  Assert.equal(snapshot.drawMatrices["root.seg"].position[13], 10 / 16, "the snapshot keeps its animated values")
   local resetItems = instance:drawItems({ ["root.seg"] = {}, ["arm.seg"] = {} })
   Assert.equal(resetItems[1].transform[13], 0, "no stale animated transform survives the reset")
 end

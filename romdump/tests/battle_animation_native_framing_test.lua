@@ -56,11 +56,7 @@ function T.attacker_presence_branch_consumes_one_word()
   local ok, program = pcall(compileStream, "attacker-presence-branch-frame", { 87, 1, 0, 4 })
   Assert.isTrue(ok, "one-word attacker branch framing decodes without a provenance failure")
   local decoded = assert(program)
-  Assert.equal(
-    #decoded.instructions,
-    2,
-    "the branch operand word never decodes as a phantom third command"
-  )
+  Assert.equal(#decoded.instructions, 2, "the branch operand word never decodes as a phantom third command")
   Assert.deepEqual(offsetsOf(decoded), { 0, 8 }, "the command after the branch operand starts at byte 8")
 end
 

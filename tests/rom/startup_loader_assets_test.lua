@@ -33,11 +33,7 @@ local function sharedCatalogCompilesOnceForEveryPair(romFs, versionId)
   Assert.equal(#captured, 1, "the shared catalog decodes through exactly one sprite request")
   local pairCount = StartupAssetCache.walkerPairCount()
   local followersPerHero = pairCount / 2
-  Assert.equal(
-    #captured[1],
-    followersPerHero + 2,
-    "the shared catalog decodes one source sprite per walking subject"
-  )
+  Assert.equal(#captured[1], followersPerHero + 2, "the shared catalog decodes one source sprite per walking subject")
   local manifest = bundle.manifest
   Assert.equal(manifest.schema, "g4-startup-walker-v2", "the shared catalog carries the versioned schema")
   Assert.equal(manifest.versionId, versionId, "the shared catalog carries its edition")

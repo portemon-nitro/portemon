@@ -212,10 +212,7 @@ function T.tests.door_entry_lands_on_the_warp_tile_with_the_follower_hidden_unti
         and actor.fieldZ == vacated.fieldZ
         and followingMon:isMovementSettled()
     end, 180)
-    Assert.isTrue(
-      game.runtime.actors:isVisible(id),
-      "the first trail step re-shows the follower on the vacated tile"
-    )
+    Assert.isTrue(game.runtime.actors:isVisible(id), "the first trail step re-shows the follower on the vacated tile")
   end, { recordingScriptHosts = true })
 end
 

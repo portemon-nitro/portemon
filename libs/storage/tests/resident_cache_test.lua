@@ -70,10 +70,7 @@ function T.committed_bytes_are_visible_only_after_one_commit()
   Assert.isTrue(resolved.path:find("^data/generated/") ~= nil, "a resident path stays a logical generated path")
 
   local borrowed = assert(owner:readData(scene.path), "a committed entry lends its bytes")
-  Assert.isTrue(
-    borrowed == resolved.data,
-    "the resolved reference and the lent bytes are one buffer, never a copy"
-  )
+  Assert.isTrue(borrowed == resolved.data, "the resolved reference and the lent bytes are one buffer, never a copy")
   Assert.equal(borrowed:getSize(), scene.size, "the lent buffer reports the committed payload size")
   Assert.equal(borrowed:getString(), scene.data:getString(), "the lent buffer holds the committed bytes")
   Assert.isTrue(owner:readData(atlas.path) == atlas.data, "every committed entry lends its own buffer")

@@ -774,18 +774,12 @@ function T.entry_key_tabs_follow_the_retail_per_screen_map()
   controller:drainEffects()
   press(controller, { { type = "navigate", direction = "right" } })
   Assert.equal(controller:view().page, "size", "area right reaches size on a caught entry")
-  Assert.isTrue(
-    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
-    "the area tab key plays the cursor tone"
-  )
+  Assert.isTrue(hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"), "the area tab key plays the cursor tone")
   press(controller, { { type = "navigate", direction = "left" } })
   Assert.equal(controller:view().page, "area", "size left returns to area")
   press(controller, { { type = "navigate", direction = "left" } })
   Assert.equal(controller:view().page, "return", "area left reaches the back tab")
-  Assert.isTrue(
-    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
-    "the back tab key plays the cursor tone"
-  )
+  Assert.isTrue(hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"), "the back tab key plays the cursor tone")
   press(controller, { { type = "navigate", direction = "left" } })
   Assert.equal(controller:view().page, "forms", "back left reaches forms")
   press(controller, { { type = "navigate", direction = "right" } })
@@ -1701,9 +1695,7 @@ function T.empty_search_publishes_no_feedback_count()
     tick(controller, {})
     for _, slot in ipairs(controller:view().text) do
       Assert.isTrue(
-        type(slot) ~= "table"
-          or slot.role ~= "search.feedback-detail"
-          or slot.messageId ~= 15,
+        type(slot) ~= "table" or slot.role ~= "search.feedback-detail" or slot.messageId ~= 15,
         "no feedback phase publishes a count for zero results"
       )
     end
@@ -2575,20 +2567,14 @@ function T.retail_key_moves_and_touch_opens_play_their_list_tones()
   press(controller, { { type = "r" } })
   idle(controller, 16)
   Assert.equal(controller:view().grid.page, 1, "page-next turns the page")
-  Assert.isTrue(
-    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
-    "a page turn plays the touch tone"
-  )
+  Assert.isTrue(hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"), "a page turn plays the touch tone")
   press(controller, { { type = "r" } })
   Assert.equal(controller:view().grid.page, 1, "page-next clamps at the last page")
   Assert.deepEqual(drainSoundRoles(controller), {}, "a clamped page turn stays silent")
   press(controller, { { type = "l" } })
   idle(controller, 16)
   Assert.equal(controller:view().grid.page, 0, "page-prev turns the page")
-  Assert.isTrue(
-    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
-    "page-prev plays the touch tone"
-  )
+  Assert.isTrue(hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"), "page-prev plays the touch tone")
   press(controller, { { type = "activate", action = "grid-slot", value = 2 } })
   Assert.isTrue(
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
@@ -2605,10 +2591,7 @@ function T.retail_key_moves_and_touch_opens_play_their_list_tones()
   press(controller, { { type = "activate", action = "grid-slot", value = 0 } })
   idle(controller, 12)
   Assert.equal(controller:view().page, "area", "a same-tap seen slot opens its entry")
-  Assert.isTrue(
-    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
-    "a touch entry open plays the touch tone"
-  )
+  Assert.isTrue(hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"), "a touch entry open plays the touch tone")
   press(controller, { { type = "cancel" } })
   Assert.equal(controller:view().page, "grid", "cancelling the entry returns to the grid")
   Assert.isTrue(
@@ -2678,10 +2661,7 @@ function T.retail_cover_plays_decide_mode_and_search_tones()
   press(controller, { { type = "confirm" } })
   idle(controller, 10)
   Assert.equal(controller:view().page, "area", "cover confirm opens the cursor entry directly")
-  Assert.isTrue(
-    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_BUTTON01"),
-    "cover confirm plays the decide tone"
-  )
+  Assert.isTrue(hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_BUTTON01"), "cover confirm plays the decide tone")
   press(controller, { { type = "cancel" } })
   idle(controller, 40)
   Assert.equal(controller:view().page, "grid", "cancelling the entry restores its grid origin")
@@ -2692,14 +2672,8 @@ function T.retail_cover_plays_decide_mode_and_search_tones()
   idle(closer, 40)
   Assert.deepEqual(closer:takeResult(), { kind = "close" }, "cover cancel closes the application")
   local closing = drainSoundRoles(closer)
-  Assert.isTrue(
-    hasSoundRole(closing, "SEQ_SE_GS_GEARCANCEL"),
-    "closing the cover plays the cancel tone"
-  )
-  Assert.isTrue(
-    hasSoundRole(closing, "music:restore"),
-    "closing restores the field music"
-  )
+  Assert.isTrue(hasSoundRole(closing, "SEQ_SE_GS_GEARCANCEL"), "closing the cover plays the cancel tone")
+  Assert.isTrue(hasSoundRole(closing, "music:restore"), "closing restores the field music")
   closer:dispose()
 end
 
@@ -2837,11 +2811,7 @@ function T.retail_entry_pages_play_key_and_touch_tones()
   )
   press(controller, { { type = "l" } })
   Assert.equal(controller:view().area.region, "johto", "the johto key stays inert on johto")
-  Assert.deepEqual(
-    drainSoundRoles(controller),
-    {},
-    "a region switch with no change stays silent"
-  )
+  Assert.deepEqual(drainSoundRoles(controller), {}, "a region switch with no change stays silent")
   press(controller, { { type = "r" } })
   idle(controller, 8)
   Assert.equal(controller:view().area.region, "kanto", "the kanto key switches regions")
@@ -2856,10 +2826,7 @@ function T.retail_entry_pages_play_key_and_touch_tones()
     "cycling tabs by key plays the cursor tone"
   )
   idle(controller, 60)
-  Assert.isTrue(
-    controller:view().size.weight.phase ~= "setup",
-    "the weight figures have started their drop"
-  )
+  Assert.isTrue(controller:view().size.weight.phase ~= "setup", "the weight figures have started their drop")
   controller:drainEffects()
   press(controller, { { type = "activate", action = "size-restart", value = 0 } })
   Assert.isTrue(
@@ -2939,18 +2906,10 @@ function T.retail_forms_and_comparison_play_key_and_touch_tones()
     "switching the compare side by key plays the cursor tone"
   )
   press(controller, { { type = "navigate", direction = "right" } })
-  Assert.deepEqual(
-    drainSoundRoles(controller),
-    {},
-    "an unchanged compare side stays silent"
-  )
+  Assert.deepEqual(drainSoundRoles(controller), {}, "an unchanged compare side stays silent")
   press(controller, { { type = "navigate", direction = "left" } })
   Assert.equal(controller:view().forms.comparison.activeSide, 0, "left switches back to the left side")
-  Assert.deepEqual(
-    controller:view().forms.comparison.indices,
-    before.indices,
-    "switching back steps no form either"
-  )
+  Assert.deepEqual(controller:view().forms.comparison.indices, before.indices, "switching back steps no form either")
   Assert.isTrue(
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
     "switching back by key plays the cursor tone"
@@ -3061,10 +3020,7 @@ function T.size_confirm_always_restarts_the_finished_weight_check()
     "confirming the restart plays the cursor tone"
   )
   idle(controller, 60)
-  Assert.isTrue(
-    controller:view().size.weight.phase ~= "setup",
-    "the rebuilt check has started its drop"
-  )
+  Assert.isTrue(controller:view().size.weight.phase ~= "setup", "the rebuilt check has started its drop")
   controller:drainEffects()
   press(controller, { { type = "activate", action = "size-restart" } })
   Assert.equal(controller:view().size.weight.phase, "setup", "touching restart rebuilds the check")
@@ -3182,22 +3138,14 @@ function T.retail_search_plays_key_and_touch_tones_with_found_chime()
   Assert.equal(controller:view().search.editor.endpoint, "min", "down selects the lower handle")
   drainSoundRoles(controller)
   press(controller, { { type = "navigate", direction = "right" } })
-  Assert.equal(
-    controller:view().search.criteria.height.min,
-    1,
-    "the right step raises the height floor"
-  )
+  Assert.equal(controller:view().search.criteria.height.min, 1, "the right step raises the height floor")
   Assert.isTrue(
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
     "stepping the slider by key plays the touch tone"
   )
   press(controller, { { type = "navigate", direction = "left" } })
   press(controller, { { type = "navigate", direction = "left" } })
-  Assert.equal(
-    controller:view().search.criteria.height.min,
-    0,
-    "the left steps lower the height floor to its clamp"
-  )
+  Assert.equal(controller:view().search.criteria.height.min, 0, "the left steps lower the height floor to its clamp")
   Assert.deepEqual(
     drainSoundRoles(controller),
     { "SEQ_SE_GS_ZKN04" },
@@ -3206,11 +3154,7 @@ function T.retail_search_plays_key_and_touch_tones_with_found_chime()
   tick(controller, { { type = "drag", target = "height-min", phase = "begin", value = 10 } })
   Assert.deepEqual(drainSoundRoles(controller), {}, "beginning the slider drag stays silent")
   tick(controller, { { type = "drag", target = "height-min", phase = "move", value = 78 } })
-  Assert.equal(
-    controller:view().search.criteria.height.min,
-    78,
-    "the drag stages the captured bound"
-  )
+  Assert.equal(controller:view().search.criteria.height.min, 78, "the drag stages the captured bound")
   Assert.isTrue(
     hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN03"),
     "dragging the slider plays the cursor tone on change"
@@ -3225,10 +3169,7 @@ function T.retail_search_plays_key_and_touch_tones_with_found_chime()
     "committing the editor plays the touch tone"
   )
   press(controller, { { type = "activate", action = "search-reset" } })
-  Assert.isTrue(
-    hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"),
-    "touching reset plays the touch tone"
-  )
+  Assert.isTrue(hasSoundRole(drainSoundRoles(controller), "SEQ_SE_GS_ZKN04"), "touching reset plays the touch tone")
   for _ = 1, 4 do
     press(controller, { { type = "navigate", direction = "down" } })
   end
@@ -3237,21 +3178,12 @@ function T.retail_search_plays_key_and_touch_tones_with_found_chime()
   press(controller, { { type = "start" } })
   Assert.notNil(controller:view().search.feedback, "search start enters the feedback sequence")
   local started = drainSoundRoles(controller)
-  Assert.isFalse(
-    hasSoundRole(started, "SEQ_SE_GS_BUTTON01"),
-    "search start runs without the decide tone"
-  )
-  Assert.isTrue(
-    hasSoundRole(started, "SEQ_SE_DP_Z_SEARCH"),
-    "search start keeps its search tone"
-  )
+  Assert.isFalse(hasSoundRole(started, "SEQ_SE_GS_BUTTON01"), "search start runs without the decide tone")
+  Assert.isTrue(hasSoundRole(started, "SEQ_SE_DP_Z_SEARCH"), "search start keeps its search tone")
   idle(controller, 200)
   Assert.equal(controller:view().page, "results", "the completed search lands on the result grid")
   local finished = drainSoundRoles(controller)
-  Assert.isTrue(
-    hasSoundRole(finished, "SEQ_SE_GS_ZUKAN06"),
-    "the completed search chimes its results-found tone"
-  )
+  Assert.isTrue(hasSoundRole(finished, "SEQ_SE_GS_ZUKAN06"), "the completed search chimes its results-found tone")
   controller:dispose()
 end
 
@@ -3554,11 +3486,7 @@ function T.unmoved_comparison_gestures_stay_silent()
   Assert.equal(#controller:view().forms.variants, 2, "the pair list carries two seen forms")
   press(controller, { { type = "activate", action = "compare" } })
   Assert.notNil(controller:view().forms.comparison, "the touch compare opens the two-form comparison")
-  Assert.deepEqual(
-    controller:view().forms.comparison.indices,
-    { 0, 1 },
-    "the pair starts from the current row outward"
-  )
+  Assert.deepEqual(controller:view().forms.comparison.indices, { 0, 1 }, "the pair starts from the current row outward")
   controller:drainEffects()
   press(controller, { { type = "navigate", direction = "up" } })
   Assert.deepEqual(drainSoundRoles(controller), {}, "key cycling a pair stays silent")
@@ -3596,20 +3524,14 @@ function T.moved_comparison_gestures_keep_their_key_and_touch_tones()
   press(controller, { { type = "navigate", direction = "down" } })
   Assert.deepEqual(drainSoundRoles(controller), { "SEQ_SE_GS_ZKN03" }, "a key cycle plays one cursor tone")
   local stepped = controller:view().forms.comparison.indices
-  Assert.isTrue(
-    stepped[1] ~= startFirst or stepped[2] ~= startSecond,
-    "the key cycle moves an index"
-  )
+  Assert.isTrue(stepped[1] ~= startFirst or stepped[2] ~= startSecond, "the key cycle moves an index")
   press(controller, { { type = "navigate", direction = "right" } })
   Assert.equal(controller:view().forms.comparison.activeSide, 1, "the key switch moves the active side")
   Assert.deepEqual(drainSoundRoles(controller), { "SEQ_SE_GS_ZKN03" }, "a key side switch plays one cursor tone")
   press(controller, { { type = "activate", action = "compare-cycle", side = 1, delta = 1 } })
   Assert.deepEqual(drainSoundRoles(controller), { "SEQ_SE_GS_ZKN04" }, "a touch cycle plays one touch tone")
   local touched = controller:view().forms.comparison.indices
-  Assert.isTrue(
-    touched[1] ~= stepped[1] or touched[2] ~= stepped[2],
-    "the touch cycle moves an index"
-  )
+  Assert.isTrue(touched[1] ~= stepped[1] or touched[2] ~= stepped[2], "the touch cycle moves an index")
   press(controller, { { type = "activate", action = "compare-side", value = 0 } })
   Assert.equal(controller:view().forms.comparison.activeSide, 0, "the touch selection moves the active side")
   Assert.deepEqual(drainSoundRoles(controller), { "SEQ_SE_GS_ZKN04" }, "a touch side selection plays one touch tone")

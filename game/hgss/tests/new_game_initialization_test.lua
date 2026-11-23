@@ -63,28 +63,23 @@ end
 local function finalizedCandidate()
   local eventState = FieldEventState.new()
   eventState:setFlag(flags.FLAG_UNK_960)
-  local playerData = assert(
-    PlayerData.validate(
-      {
-        profile = {
-          name = "GOLD",
-          gender = 0,
-          trainerId = 1234,
-          money = 3000,
-          badges = {},
-          nationalDex = false,
-          runningShoes = false,
-          runningShoesLock = false,
-          rivalName = "Silver",
-        },
-        options = PlayerData.defaultOptions(),
-      },
-      {
-        charmap = { G = 1, O = 2, L = 3, D = 4, S = 5, i = 6, l = 7, v = 8, e = 9, r = 10 },
-        frameIndexes = { [0] = true },
-      }
-    )
-  )
+  local playerData = assert(PlayerData.validate({
+    profile = {
+      name = "GOLD",
+      gender = 0,
+      trainerId = 1234,
+      money = 3000,
+      badges = {},
+      nationalDex = false,
+      runningShoes = false,
+      runningShoesLock = false,
+      rivalName = "Silver",
+    },
+    options = PlayerData.defaultOptions(),
+  }, {
+    charmap = { G = 1, O = 2, L = 3, D = 4, S = 5, i = 6, l = 7, v = 8, e = 9, r = 10 },
+    frameIndexes = { [0] = true },
+  }))
   return {
     saveId = "save-00000001",
     versionId = "heartgold",

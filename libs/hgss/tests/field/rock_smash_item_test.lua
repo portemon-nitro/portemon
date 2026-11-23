@@ -16,10 +16,9 @@ local function scripted(...)
   return function()
     drawn = drawn + 1
     return assert(values[drawn], "unexpected extra draw")
-  end,
-    function()
-      return drawn
-    end
+  end, function()
+    return drawn
+  end
 end
 
 local function roll(opts, ...)
@@ -41,7 +40,20 @@ function T.zero_odds_draws_nothing()
 end
 
 function T.hit_roll_below_the_odds_then_the_index_ladder_picks_the_item()
-  local expected = { [0] = "A", [24] = "A", [25] = "B", [44] = "B", [45] = "C", [54] = "C", [55] = "D", [74] = "E", [84] = "F", [94] = "G", [95] = "H", [99] = "H" }
+  local expected = {
+    [0] = "A",
+    [24] = "A",
+    [25] = "B",
+    [44] = "B",
+    [45] = "C",
+    [54] = "C",
+    [55] = "D",
+    [74] = "E",
+    [84] = "F",
+    [94] = "G",
+    [95] = "H",
+    [99] = "H",
+  }
   for index, item in pairs(expected) do
     local found, drawn = roll({ odds = 50 }, 49, index)
     Assert.equal(found, item, "index roll " .. index)

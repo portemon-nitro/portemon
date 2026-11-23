@@ -103,7 +103,8 @@ function PcPresentationFixture.manifest()
       write = writeRecord(stationeryType),
     }
   end
-  local windowFrames = { standard = {}, accent = {}, fill = { r = 255, g = 247, b = 222 }, accentFill = { r = 255, g = 247, b = 222 } }
+  local windowFrames =
+    { standard = {}, accent = {}, fill = { r = 255, g = 247, b = 222 }, accentFill = { r = 255, g = 247, b = 222 } }
   for _, style in ipairs({ "standard", "accent" }) do
     for bank = 0, 1 do
       windowFrames[style]["paletteBank" .. bank] = sourceVisual("frame-" .. style .. "-" .. bank, 96, 8)
@@ -226,21 +227,56 @@ function PcPresentationFixture.manifest()
           browse = {
             loop = true,
             frames = {
-              { image = "assets/generated/pc/test-cursor-browse-0.png", width = 20, height = 20, anchorX = 0, anchorY = 0, duration = 20 },
-              { image = "assets/generated/pc/test-cursor-browse-1.png", width = 20, height = 20, anchorX = 1, anchorY = 0, duration = 20 },
+              {
+                image = "assets/generated/pc/test-cursor-browse-0.png",
+                width = 20,
+                height = 20,
+                anchorX = 0,
+                anchorY = 0,
+                duration = 20,
+              },
+              {
+                image = "assets/generated/pc/test-cursor-browse-1.png",
+                width = 20,
+                height = 20,
+                anchorX = 1,
+                anchorY = 0,
+                duration = 20,
+              },
             },
           },
           menu = {
             loop = true,
             frames = {
-              { image = "assets/generated/pc/test-cursor-menu-0.png", width = 20, height = 20, anchorX = 0, anchorY = 0, duration = 20 },
-              { image = "assets/generated/pc/test-cursor-menu-1.png", width = 20, height = 20, anchorX = 1, anchorY = 0, duration = 20 },
+              {
+                image = "assets/generated/pc/test-cursor-menu-0.png",
+                width = 20,
+                height = 20,
+                anchorX = 0,
+                anchorY = 0,
+                duration = 20,
+              },
+              {
+                image = "assets/generated/pc/test-cursor-menu-1.png",
+                width = 20,
+                height = 20,
+                anchorX = 1,
+                anchorY = 0,
+                duration = 20,
+              },
             },
           },
           carry = {
             loop = true,
             frames = {
-              { image = "assets/generated/pc/test-cursor-carry.png", width = 20, height = 20, anchorX = 0, anchorY = 0, duration = 1 },
+              {
+                image = "assets/generated/pc/test-cursor-carry.png",
+                width = 20,
+                height = 20,
+                anchorX = 0,
+                anchorY = 0,
+                duration = 1,
+              },
             },
           },
         },

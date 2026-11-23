@@ -102,10 +102,50 @@ end
 
 local function fullMoves()
   return {
-    { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35, power = 35, accuracy = 100, category = "physical", type = "NORMAL", description = "A test tackle." },
-    { move = "GROWL", name = "Growl", pp = 40, maxPp = 40, power = 0, accuracy = 100, category = "status", type = "NORMAL", description = "A test growl." },
-    { move = "SWIFT", name = "Swift", pp = 20, maxPp = 20, power = 60, accuracy = 0, category = "special", type = "NORMAL", description = "A test swift." },
-    { move = "REST", name = "Rest", pp = 10, maxPp = 10, power = 0, accuracy = 0, category = "status", type = "PSYCHIC", description = "A test rest." },
+    {
+      move = "TACKLE",
+      name = "Tackle",
+      pp = 35,
+      maxPp = 35,
+      power = 35,
+      accuracy = 100,
+      category = "physical",
+      type = "NORMAL",
+      description = "A test tackle.",
+    },
+    {
+      move = "GROWL",
+      name = "Growl",
+      pp = 40,
+      maxPp = 40,
+      power = 0,
+      accuracy = 100,
+      category = "status",
+      type = "NORMAL",
+      description = "A test growl.",
+    },
+    {
+      move = "SWIFT",
+      name = "Swift",
+      pp = 20,
+      maxPp = 20,
+      power = 60,
+      accuracy = 0,
+      category = "special",
+      type = "NORMAL",
+      description = "A test swift.",
+    },
+    {
+      move = "REST",
+      name = "Rest",
+      pp = 10,
+      maxPp = 10,
+      power = 0,
+      accuracy = 0,
+      category = "status",
+      type = "PSYCHIC",
+      description = "A test rest.",
+    },
   }
 end
 
@@ -215,7 +255,10 @@ local function partySection()
 end
 
 local function openMonMenu(flows, slot)
-  Assert.isTrue(flows:open(partyIntent({ party = { leadRecord(), backRecord() }, options = switchOptions(2) })), "the party opens")
+  Assert.isTrue(
+    flows:open(partyIntent({ party = { leadRecord(), backRecord() }, options = switchOptions(2) })),
+    "the party opens"
+  )
   Assert.isTrue(flows:activateControl("party:" .. tostring(slot)), "the slot takes its tap")
   flows:tick()
   local view = flows:status().childView
@@ -530,7 +573,10 @@ function T.summary_fills_a_normalized_green_hp_bar()
     hasRect(200, 52, 48, 1, light, "the light bottom bar row")
     for _, rect in ipairs(graphics.rectangles) do
       if rect.mode == "fill" and rect.w == 48 and rect.h <= 2 then
-        Assert.isTrue(rect.color[1] <= 1 and rect.color[2] <= 1 and rect.color[3] <= 1, painter .. " normalizes bar ink")
+        Assert.isTrue(
+          rect.color[1] <= 1 and rect.color[2] <= 1 and rect.color[3] <= 1,
+          painter .. " normalizes bar ink"
+        )
       end
     end
     flows:dispose()

@@ -830,7 +830,10 @@ function T.money_box_draws_its_source_frame_beside_dialogue_until_it_closes()
   scheduler:createForeground(assert(platform.composition:effective("test.draw_money_box")), nil, 100)
   step() -- show at tile (3,5)
   local shown = drawAndClear()
-  Assert.isTrue(drawsSourceMoneyFrame(shown, 3, 5), "the money box draws its 10x4-tile frame at the source tile position")
+  Assert.isTrue(
+    drawsSourceMoneyFrame(shown, 3, 5),
+    "the money box draws its 10x4-tile frame at the source tile position"
+  )
   Assert.isTrue(
     sinkText(shown):find("MONEY", 1, true) ~= nil,
     "the first row is the source money label, drew: " .. sinkText(shown)

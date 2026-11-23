@@ -647,10 +647,7 @@ function T.tests.party_warmup_refresh_rewarms_without_a_party_change()
 
   runtime:refreshPartyWarmup()
   runtime:update(1 / 60)
-  Assert.isTrue(
-    #hostCalls > count,
-    "battle admission refreshes the bench near demands without a party change"
-  )
+  Assert.isTrue(#hostCalls > count, "battle admission refreshes the bench near demands without a party change")
   local nearAudio = false
   for index = count + 1, #hostCalls do
     local call = hostCalls[index]

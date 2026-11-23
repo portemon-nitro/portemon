@@ -395,7 +395,15 @@ local function waitForBattleRequest(rig, wanted)
     rig.pump(4)
   end
   error(
-    "the battle never asked for " .. wanted .. " (phase=" .. tostring(lastPhase) .. ", kind=" .. tostring(lastKind) .. ", error=" .. tostring(lastError) .. ")",
+    "the battle never asked for "
+      .. wanted
+      .. " (phase="
+      .. tostring(lastPhase)
+      .. ", kind="
+      .. tostring(lastKind)
+      .. ", error="
+      .. tostring(lastError)
+      .. ")",
     0
   )
 end
@@ -446,14 +454,13 @@ function T.malformed_style_rejects_battle_admission()
   local closing = rig.battle:status()
   Assert.isTrue(
     closing.phase == "failed",
-    "the malformed style fails preparation (phase=" .. tostring(closing.phase) .. " error=" .. tostring(
-      closing.error
-    ) .. ")"
+    "the malformed style fails preparation (phase="
+      .. tostring(closing.phase)
+      .. " error="
+      .. tostring(closing.error)
+      .. ")"
   )
-  Assert.isTrue(
-    tostring(closing.error):find("shift or set", 1, true) ~= nil,
-    "the failure names the admitted styles"
-  )
+  Assert.isTrue(tostring(closing.error):find("shift or set", 1, true) ~= nil, "the failure names the admitted styles")
 end
 
 -- The screen asks the held offer through its own prompt: Yes opens the

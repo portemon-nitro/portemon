@@ -45,16 +45,40 @@ end
 
 local function cell()
   local object = u16(0x00D8) .. u16(0x01D8) .. u16(0)
-  local payload = u16(1) .. u16(0) .. u32(0x18) .. u32(1) .. string.rep("\0", 12) .. u16(1) .. u16(0) .. u32(0) .. object
+  local payload = u16(1)
+    .. u16(0)
+    .. u32(0x18)
+    .. u32(1)
+    .. string.rep("\0", 12)
+    .. u16(1)
+    .. u16(0)
+    .. u32(0)
+    .. object
   return container("RECN", { magic = "CEBK", bytes = payload })
 end
 
 local function animation()
   local header = u16(4) .. u16(6) .. u32(0x18) .. u32(0x58) .. u32(0x88) .. string.rep("\0", 8)
-  local sequences = u16(1) .. u16(0) .. u32(0x00010000) .. u32(1) .. u32(0)
-    .. u16(2) .. u16(0) .. u32(0x00010000) .. u32(1) .. u32(8)
-    .. u16(1) .. u16(0) .. u32(0x00010000) .. u32(1) .. u32(24)
-    .. u16(2) .. u16(0) .. u32(0x00010000) .. u32(1) .. u32(32)
+  local sequences = u16(1)
+    .. u16(0)
+    .. u32(0x00010000)
+    .. u32(1)
+    .. u32(0)
+    .. u16(2)
+    .. u16(0)
+    .. u32(0x00010000)
+    .. u32(1)
+    .. u32(8)
+    .. u16(1)
+    .. u16(0)
+    .. u32(0x00010000)
+    .. u32(1)
+    .. u32(24)
+    .. u16(2)
+    .. u16(0)
+    .. u32(0x00010000)
+    .. u32(1)
+    .. u32(32)
   local durations = { 2, 3, 6, 4, 5, 7 }
   local frames = {}
   local frameData = {}
@@ -62,7 +86,10 @@ local function animation()
     frames[#frames + 1] = u32((frameIndex - 1) * 4) .. u16(duration) .. u16(0)
     frameData[#frameData + 1] = u16(0) .. u16(0)
   end
-  return container("RNAN", { magic = "ABNK", bytes = header .. sequences .. table.concat(frames) .. table.concat(frameData) })
+  return container(
+    "RNAN",
+    { magic = "ABNK", bytes = header .. sequences .. table.concat(frames) .. table.concat(frameData) }
+  )
 end
 
 function T.evolution_graphics_compiles_exact_main_and_sub_members_to_screen_rasters()
@@ -108,26 +135,78 @@ function T.evolution_graphics_compiles_exact_main_and_sub_members_to_screen_rast
   Assert.equal(compiled.provenance.menu.members.characters, 1, "the menu sub CHAR comes from member 1")
   Assert.equal(compiled.provenance.menu.members.screen, 10, "the sub menu map comes from member 10")
   Assert.equal(compiled.provenance.menu.paletteMember, 15, "the sub menu palette comes from member 15")
-  Assert.equal(#compiled.records.menuTextPalette.colors, 16, "the evolution printer exposes its loaded 16-color font bank")
-  Assert.deepEqual(compiled.records.menuTextPalette.colors[2], { r = 8, g = 0, b = 0 }, "menu foreground RGB comes from font palette slot 1")
-  Assert.deepEqual(compiled.records.menuTextPalette.colors[3], { r = 16, g = 0, b = 0 }, "menu shadow RGB comes from font palette slot 2")
-  Assert.equal(compiled.provenance.menuTextPalette.archiveSymbol, "NARC_graphic_font", "menu font palette source remains producer provenance")
+  Assert.equal(
+    #compiled.records.menuTextPalette.colors,
+    16,
+    "the evolution printer exposes its loaded 16-color font bank"
+  )
+  Assert.deepEqual(
+    compiled.records.menuTextPalette.colors[2],
+    { r = 8, g = 0, b = 0 },
+    "menu foreground RGB comes from font palette slot 1"
+  )
+  Assert.deepEqual(
+    compiled.records.menuTextPalette.colors[3],
+    { r = 16, g = 0, b = 0 },
+    "menu shadow RGB comes from font palette slot 2"
+  )
+  Assert.equal(
+    compiled.provenance.menuTextPalette.archiveSymbol,
+    "NARC_graphic_font",
+    "menu font palette source remains producer provenance"
+  )
   Assert.equal(compiled.provenance.menuTextPalette.memberId, 9, "menu font palette member remains producer provenance")
-  Assert.equal(compiled.provenance.menuTextPalette.destinationBank, 15, "menu font destination bank remains producer provenance")
-  Assert.equal(compiled.records.cursor.animations.idle.frames[1].sourceFrame, 0, "the idle cursor retains source frame indices")
-  Assert.equal(compiled.records.cursor.animations.idle.frames[1].durationTicks, 3, "the idle cursor retains source frame duration")
-  Assert.equal(compiled.records.cursor.animations.idle.frames[2].durationTicks, 6, "the idle cursor uses retail animation 1")
-  Assert.equal(compiled.records.cursor.animations.select.frames[1].durationTicks, 5, "the select cursor uses retail animation 3")
-  Assert.equal(compiled.records.cursor.animations.select.frames[2].durationTicks, 7, "the select cursor preserves completion timing")
-  Assert.equal(compiled.records.cursor.animations.idle.frames[1].drawableKey, "battle:evolution-cursor:idle:0", "idle frames have semantic drawable keys")
-  Assert.equal(compiled.records.cursor.animations.select.frames[1].image, "assets/generated/battle/evolution-cursor-select-0.png", "select frames name normalized images")
+  Assert.equal(
+    compiled.provenance.menuTextPalette.destinationBank,
+    15,
+    "menu font destination bank remains producer provenance"
+  )
+  Assert.equal(
+    compiled.records.cursor.animations.idle.frames[1].sourceFrame,
+    0,
+    "the idle cursor retains source frame indices"
+  )
+  Assert.equal(
+    compiled.records.cursor.animations.idle.frames[1].durationTicks,
+    3,
+    "the idle cursor retains source frame duration"
+  )
+  Assert.equal(
+    compiled.records.cursor.animations.idle.frames[2].durationTicks,
+    6,
+    "the idle cursor uses retail animation 1"
+  )
+  Assert.equal(
+    compiled.records.cursor.animations.select.frames[1].durationTicks,
+    5,
+    "the select cursor uses retail animation 3"
+  )
+  Assert.equal(
+    compiled.records.cursor.animations.select.frames[2].durationTicks,
+    7,
+    "the select cursor preserves completion timing"
+  )
+  Assert.equal(
+    compiled.records.cursor.animations.idle.frames[1].drawableKey,
+    "battle:evolution-cursor:idle:0",
+    "idle frames have semantic drawable keys"
+  )
+  Assert.equal(
+    compiled.records.cursor.animations.select.frames[1].image,
+    "assets/generated/battle/evolution-cursor-select-0.png",
+    "select frames name normalized images"
+  )
   Assert.equal(compiled.provenance.cursor.members.palette, 11, "cursor palette member stays producer provenance")
   Assert.equal(compiled.provenance.cursor.members.characters, 12, "cursor character member stays producer provenance")
   Assert.equal(compiled.provenance.cursor.members.cell, 13, "cursor cell member stays producer provenance")
   Assert.equal(compiled.provenance.cursor.members.animation, 14, "cursor animation member stays producer provenance")
   Assert.equal(compiled.provenance.cursor.sequences.idle, 1, "the cursor idle sequence stays producer provenance")
   Assert.equal(compiled.provenance.cursor.sequences.select, 3, "the cursor select sequence stays producer provenance")
-  Assert.equal(compiled.images["cursor-idle-0"].width, 8, "cursor source frames are rasterized from the decoded source cell")
+  Assert.equal(
+    compiled.images["cursor-idle-0"].width,
+    8,
+    "cursor source frames are rasterized from the decoded source cell"
+  )
 end
 
 function T.evolution_messages_are_tokenized_under_semantic_keys_with_producer_source_selection()
@@ -164,7 +243,10 @@ function T.evolution_messages_are_tokenized_under_semantic_keys_with_producer_so
   local entries, provenance = compiler.compileEvolutionMessageEntries(bank)
   for _, messageId in ipairs(expected) do
     local key = "evolution/" .. tostring(messageId)
-    Assert.isTrue(type(entries[key].tokens) == "table", "every scene message is passed through the authoritative tokenizer")
+    Assert.isTrue(
+      type(entries[key].tokens) == "table",
+      "every scene message is passed through the authoritative tokenizer"
+    )
     Assert.equal(provenance[key].bankRole, "scriptController", "source bank role remains producer provenance")
     Assert.equal(provenance[key].memberId, 197, "physical message bank member stays out of runtime records")
     Assert.equal(provenance[key].messageId, messageId, "producer provenance names the retail message id")
@@ -173,12 +255,7 @@ function T.evolution_messages_are_tokenized_under_semantic_keys_with_producer_so
     local key = "evolution/" .. tostring(messageId)
     local hasMove = false
     for _, token in ipairs(entries[key].tokens) do
-      if
-        token.kind == "substitution"
-        and token.control == 0x0106
-        and token.args[1] == 0
-        and token.args[2] == 0
-      then
+      if token.kind == "substitution" and token.control == 0x0106 and token.args[1] == 0 and token.args[2] == 0 then
         hasMove = true
       end
     end
@@ -225,8 +302,7 @@ function T.retail_evolution_cursor_rasters_match_the_source_composite(context)
     end
     Assert.equal(
       table.concat(sizes, ","),
-      animationRole == "idle"
-        and "0@256x48@-128,-24@4@0"
+      animationRole == "idle" and "0@256x48@-128,-24@4@0"
         or "0@1x1@0,0@4@0,1@256x48@-128,-24@4@0,2@1x1@0,0@4@0,3@256x48@-128,-24@2@0"
     )
     Assert.deepEqual(compiled.provenance.cursor.sequences, { idle = 1, select = 3 }, "source sequences are exact")
@@ -235,16 +311,12 @@ function T.retail_evolution_cursor_rasters_match_the_source_composite(context)
   Assert.equal(#compiled.records.cursor.animations.select.frames, 4, "retail selection retains its four-frame sequence")
   Assert.equal(compiled.records.cursor.animations.idle.playMode, "forward_loop", "the idle cursor loops")
   Assert.equal(compiled.records.cursor.animations.select.playMode, "forward", "the select cursor terminates")
-  Assert.deepEqual(
-    {
-      compiled.records.cursor.animations.select.frames[1].durationTicks,
-      compiled.records.cursor.animations.select.frames[2].durationTicks,
-      compiled.records.cursor.animations.select.frames[3].durationTicks,
-      compiled.records.cursor.animations.select.frames[4].durationTicks,
-    },
-    { 4, 4, 4, 2 },
-    "selection retains the retail completion timing"
-  )
+  Assert.deepEqual({
+    compiled.records.cursor.animations.select.frames[1].durationTicks,
+    compiled.records.cursor.animations.select.frames[2].durationTicks,
+    compiled.records.cursor.animations.select.frames[3].durationTicks,
+    compiled.records.cursor.animations.select.frames[4].durationTicks,
+  }, { 4, 4, 4, 2 }, "selection retains the retail completion timing")
 end
 
 return { tests = T }

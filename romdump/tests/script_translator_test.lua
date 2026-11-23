@@ -181,7 +181,8 @@ end
 -- member coverage record, and the resource validates.
 T["member bundle emitter determinism and validation"] = function()
   local _, steps, report = translate(labSignMember(), 843, 0)
-  local resource = { api = 1, id = "vanilla.hgss.scr_seq.0843.script_009", metadata = { generated = true }, steps = steps }
+  local resource =
+    { api = 1, id = "vanilla.hgss.scr_seq.0843.script_009", metadata = { generated = true }, steps = steps }
   local member = {
     memberId = 843,
     resources = {

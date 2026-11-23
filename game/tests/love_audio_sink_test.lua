@@ -245,7 +245,6 @@ local function queuedChunkMarkers(source)
   return markers
 end
 
-
 local function sinkFor(host, renderer)
   return LoveAudioSink.new({
     audio = host,

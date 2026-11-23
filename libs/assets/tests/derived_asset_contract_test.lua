@@ -103,10 +103,7 @@ function T.cache_modules_consume_the_contract_constants()
   Assert.equal(SummaryCache.SCHEMA, DerivedAssetContract.summary.schema)
   Assert.equal(StarterChoiceAssetCache.FORMAT, DerivedAssetContract.starterChoice.cacheFormat)
   Assert.equal(StarterChoiceAssetCache.SCHEMA, DerivedAssetContract.starterChoice.schema)
-  Assert.equal(
-    FieldMoveCutInBannerAssetCache.FORMAT,
-    DerivedAssetContract.fieldMoveCutInBanner.cacheFormat
-  )
+  Assert.equal(FieldMoveCutInBannerAssetCache.FORMAT, DerivedAssetContract.fieldMoveCutInBanner.cacheFormat)
   Assert.equal(FieldMoveCutInBannerAssetCache.SCHEMA, DerivedAssetContract.fieldMoveCutInBanner.schema)
 end
 

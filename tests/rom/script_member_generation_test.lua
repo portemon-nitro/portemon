@@ -62,10 +62,7 @@ local function buildGeneration(romFs, plan, order, cache)
     "the complete generation must publish its summary"
   )
   summary:finishSuccess({ marker = plan.marker })
-  Assert.isTrue(
-    ResidentArtifactFixture.materialize(summary),
-    "the complete generation must activate"
-  )
+  Assert.isTrue(ResidentArtifactFixture.materialize(summary), "the complete generation must activate")
 end
 
 -- One readable member bundle per nonempty member, the single active index, and

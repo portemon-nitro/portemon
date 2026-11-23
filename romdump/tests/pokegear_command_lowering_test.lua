@@ -139,8 +139,16 @@ function T.tests.town_map_and_calls_lower_to_their_tasks()
   local setup = lowerSingle(430, { "VAR_SPECIAL_x8004", "VAR_SPECIAL_x8005", "VAR_SPECIAL_x8006" })
   Assert.equal(setup.op, "phone_set_call")
   Assert.deepEqual(setup.contact, { value = "var", id = "VAR_SPECIAL_x8004" }, "setup operands stay references")
-  Assert.deepEqual(setup.scriptedCall, { value = "var", id = "VAR_SPECIAL_x8005" }, "the scripted marker stays a reference")
-  Assert.deepEqual(setup.callScriptID, { value = "var", id = "VAR_SPECIAL_x8006" }, "the script identity stays a reference")
+  Assert.deepEqual(
+    setup.scriptedCall,
+    { value = "var", id = "VAR_SPECIAL_x8005" },
+    "the scripted marker stays a reference"
+  )
+  Assert.deepEqual(
+    setup.callScriptID,
+    { value = "var", id = "VAR_SPECIAL_x8006" },
+    "the script identity stays a reference"
+  )
   Assert.equal(lowerSingle(431, {}).op, "phone_run_call", "run stays a separate blocking operation")
 end
 

@@ -276,7 +276,20 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
   end
   local openingGraphics = FakeGraphics.new({})
   screen:draw({ graphics = openingGraphics })
-  do local kinds = {} for _, e in ipairs(openingGraphics.draws) do local d = e.kind .. ":" .. type(e.image) .. ":" .. tostring(e.meshTexture ~= nil) .. ":" .. tostring(e.meshVertices ~= nil) kinds[#kinds+1] = d end print("DEBUG-OPENING-KINDS: n=" .. #openingGraphics.draws .. "\n" .. table.concat(kinds, "\n")) end
+  do
+    local kinds = {}
+    for _, e in ipairs(openingGraphics.draws) do
+      local d = e.kind
+        .. ":"
+        .. type(e.image)
+        .. ":"
+        .. tostring(e.meshTexture ~= nil)
+        .. ":"
+        .. tostring(e.meshVertices ~= nil)
+      kinds[#kinds + 1] = d
+    end
+    print("DEBUG-OPENING-KINDS: n=" .. #openingGraphics.draws .. "\n" .. table.concat(kinds, "\n"))
+  end
   local openingRattata = drawsOf(openingGraphics.draws, "mon:RATTATA/f0/male/plain")
   local sourceSelector = core.pictures.selectors["pokemon/RATTATA/form-0/male/front"]
   local sourceAttributes = core.pictures.attributes[sourceSelector.attributes]

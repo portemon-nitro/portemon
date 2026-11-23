@@ -578,10 +578,7 @@ function T.successful_trainer_job_stages_publishes_and_reads_ready()
   Assert.isTrue(type(outcome.sealed.marker) == "string", "execution seals a marker")
   ResidentArtifactFixture.mirror(cacheFs, outcome.sealed)
   ResidentArtifactFixture.commitFact(facts, outcome.sealed)
-  Assert.isTrue(
-    ArtifactJobs.validate(cacheFs, facts, "trainers", "global", {}, nil),
-    "the published stage reads ready"
-  )
+  Assert.isTrue(ArtifactJobs.validate(cacheFs, facts, "trainers", "global", {}, nil), "the published stage reads ready")
   local expected = assert(TrainerCatalogCompiler.compile(nativeInput({
     [8] = { data = header, members = members },
   })))

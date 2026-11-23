@@ -228,8 +228,7 @@ function T.dynamic_compile_reports_the_authored_uv_divisor()
 
   -- A material that authored a zero width has no texture to normalize
   -- against, so it reports no divisor and its UVs stay as authored.
-  local untextured =
-    assert(Nsbmd.decode(NsbmdFixture.buildBillboardQuad({ origWidth = 0, origHeight = 0 }))).models[1]
+  local untextured = assert(Nsbmd.decode(NsbmdFixture.buildBillboardQuad({ origWidth = 0, origHeight = 0 }))).models[1]
   local untexturedDescriptor = NsbmdDynamicModel.compile(untextured)
   local untexturedIndex = assert(untexturedDescriptor.meshes[1].materialIndex)
   Assert.isNil(

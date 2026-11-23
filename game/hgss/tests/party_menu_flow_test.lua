@@ -2112,11 +2112,7 @@ function T.tests.rare_candy_aborts_a_stale_replacement_after_the_forgot_message(
   end
   status = liveStatus(rig)
   Assert.equal(status.page, "bag_browse", "the stale loop returns to a valid Bag page")
-  Assert.equal(
-    rig.mons:partyMon(0).moves[1].move,
-    replacementMove,
-    "the stale pick leaves the changed move untouched"
-  )
+  Assert.equal(rig.mons:partyMon(0).moves[1].move, replacementMove, "the stale pick leaves the changed move untouched")
   Assert.equal(#opened, 0, "a stale learning loop does not evolve the changed mon")
   Assert.equal(rig.bag:quantity("RARE_CANDY"), 0, "the already used candy stays spent")
   rig.flow:dispose()

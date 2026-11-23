@@ -168,10 +168,7 @@ function T.level_up_stats_window_draws_over_the_hud()
 
   local leveled = composedFrame({ rows = { { label = "Max. HP", value = "+3" } } })
   Assert.equal(leveled.animation.priority.window, windowPriority, "the stat window keeps its top BG priority")
-  Assert.isTrue(
-    leveled.objects[1].objPriority > windowPriority,
-    "the HUD drops behind the open level-up stat window"
-  )
+  Assert.isTrue(leveled.objects[1].objPriority > windowPriority, "the HUD drops behind the open level-up stat window")
 end
 
 -- Strip quads segregate by graphics namespace and strip dimensions: the same
@@ -201,12 +198,17 @@ function T.strip_quads_segregate_by_graphics_namespace_and_strip_dimensions()
   local objects = { { tile = 0, width = 256, height = 64, x = 0, y = 0 } }
   local view = {
     hudPatchSpans = {
-      nickname = { { sideType = 0, spans = {
-        { tile = 0, count = 8 },
-        { tile = 8, count = 8 },
-        { tile = 16, count = 8 },
-        { tile = 24, count = 8 },
-      } } },
+      nickname = {
+        {
+          sideType = 0,
+          spans = {
+            { tile = 0, count = 8 },
+            { tile = 8, count = 8 },
+            { tile = 16, count = 8 },
+            { tile = 24, count = 8 },
+          },
+        },
+      },
       level = { { sideType = 0, spans = { { tile = 100, count = 3 }, { tile = 110, count = 3 } } } },
     },
     textPalettes = { hud = { colors = palette } },
@@ -291,10 +293,7 @@ function T.strip_quads_segregate_by_graphics_namespace_and_strip_dimensions()
     local record = graphicsA.draws[index]
     if record.quad ~= nil then
       position = position + 1
-      Assert.isTrue(
-        record.quad == quadsA[position],
-        "the original width reuses its original quad object"
-      )
+      Assert.isTrue(record.quad == quadsA[position], "the original width reuses its original quad object")
     end
   end
   Assert.equal(position, #quadsA, "the redraw draws the full original quad sequence")

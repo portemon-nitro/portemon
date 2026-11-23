@@ -75,8 +75,7 @@ function T.nonempty_member_publishes_one_ordered_bundle()
   Assert.equal(
     #bundles,
     1,
-    "a nonempty script member publishes exactly one Lua bundle; published files: "
-      .. table.concat(files, ", ")
+    "a nonempty script member publishes exactly one Lua bundle; published files: " .. table.concat(files, ", ")
   )
   Assert.equal(
     #perScript,

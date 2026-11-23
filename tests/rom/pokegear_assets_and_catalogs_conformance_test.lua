@@ -115,10 +115,8 @@ local function compileFamily(romFs, versionId)
   if cached == nil then
     local loaded, PokegearAssetCompiler = pcall(require, "romdump.src.digest.ui.PokegearAssetCompiler")
     Assert.isTrue(loaded, "the pokegear family compiler must be published")
-    cached = assert(
-      PokegearAssetCompiler.compile(romFs, versionId),
-      "the pokegear family must compile from the owned dump"
-    )
+    cached =
+      assert(PokegearAssetCompiler.compile(romFs, versionId), "the pokegear family must compile from the owned dump")
     compiledByVersion[versionId] = cached
   end
   return cached
@@ -175,15 +173,8 @@ function T.pokegear_world_planes_compile_row_major(romFs, versionId)
   local manifest = assert(compiled.manifest, "the bundle carries its manifest")
   local assets = assert(compiled.assets or compiled.files, "the bundle carries its staged assets")
   local selections = assert(compiled.provenance.selections, "the bundle publishes its selections")
-  local worldSelection = assert(
-    selections["map.world.skin0"],
-    "the bundle publishes the world plane selection"
-  )
-  Assert.equal(
-    worldSelection.members.layout,
-    "linear",
-    "the world plane selection declares the row-major layout"
-  )
+  local worldSelection = assert(selections["map.world.skin0"], "the bundle publishes the world plane selection")
+  Assert.equal(worldSelection.members.layout, "linear", "the world plane selection declares the row-major layout")
   local flySelection = assert(selections["fly.world"], "the bundle publishes the fly world selection")
   Assert.equal(flySelection.members.layout, "linear", "the fly world selection declares the row-major layout")
 
@@ -211,10 +202,7 @@ function T.pokegear_world_planes_compile_row_major(romFs, versionId)
   local skinZero = assert(mapWorld[0], "the map section carries its first skin")
   local staged = assert(assets[skinZero.image], "the staged assets carry the world plane")
   Assert.equal(staged, render("linear"), "the staged world plane matches the row-major render")
-  Assert.isTrue(
-    staged ~= render(nil),
-    "the staged world plane differs from the hardware-blocked reading"
-  )
+  Assert.isTrue(staged ~= render(nil), "the staged world plane differs from the hardware-blocked reading")
 end
 
 -- The shell OBJ set (clock digits, colon, weekday, reception, strip

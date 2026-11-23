@@ -165,10 +165,7 @@ function T.the_ringing_notice_paints_the_compiled_icon_and_caller_bubble(scope)
       end
     end
   end
-  Assert.isTrue(
-    platePixels < plateBand.width * plateBand.height,
-    "the caller name prints over the plate"
-  )
+  Assert.isTrue(platePixels < plateBand.width * plateBand.height, "the caller name prints over the plate")
   Assert.isTrue(
     fieldPixelsKept(painted, { x = 0, y = 0, width = SURFACE_WIDTH, height = originY - 8 }) > 0,
     "field pixels above the notice keep their own color"

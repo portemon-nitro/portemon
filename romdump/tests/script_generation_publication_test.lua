@@ -279,12 +279,7 @@ function T.summary_refuses_to_activate_with_a_missing_member()
     { memberId = 7, id = "second.script" },
   }
   local plan = planFor(GENERATION_A, MARKER_A, specs)
-  stageAndPublishMember(
-    cache,
-    plan,
-    memberFor(0, "stable.script", GENERATION_A),
-    OUTER_GENERATION_A
-  )
+  stageAndPublishMember(cache, plan, memberFor(0, "stable.script", GENERATION_A), OUTER_GENERATION_A)
 
   local artifact = summaryArtifact(cache, OUTER_GENERATION_A)
   local err = Assert.throws(function()
@@ -348,12 +343,7 @@ function T.changed_script_content_no_longer_gates_the_save_envelope()
     memberFor(0, "stable.script", GENERATION_B, { { op = "stop" }, { op = "stop" } }),
     OUTER_GENERATION_B
   )
-  stageAndPublishMember(
-    editedCache,
-    editedPlan,
-    memberFor(1, "second.script", GENERATION_B),
-    OUTER_GENERATION_B
-  )
+  stageAndPublishMember(editedCache, editedPlan, memberFor(1, "second.script", GENERATION_B), OUTER_GENERATION_B)
   stageAndPublishSummary(editedCache, editedPlan, OUTER_GENERATION_B)
   local edited = publishedBundles(editedCache)
   Assert.isTrue(

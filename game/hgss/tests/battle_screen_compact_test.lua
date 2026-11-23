@@ -1207,14 +1207,11 @@ local function openLearnRig(layout)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
   end
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
-  local scenario = ScenarioFactory.fromEncounter(
-    { attemptId = launchId .. "-attempt", mon = foe },
-    {
-      party = owner,
-      bag = bag,
-      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
-    }
-  )
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = launchId .. "-attempt", mon = foe }, {
+    party = owner,
+    bag = bag,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local screen = BattleScreenState.new({
     splRandomState = { state = 0 },
     launchId = launchId,
@@ -1962,7 +1959,11 @@ function T.compact_bag_draws_cursor_corners_around_keyboard_focus()
   local function assertCorners(box, what)
     local corners = cursorDraws()
     Assert.equal(#corners, 4, what .. " frames all four corners")
-    Assert.deepEqual(corners[1], { handle = "battle:cursor-tl", x = box.x - 40, y = box.y - 40 }, what .. " hugs the top-left")
+    Assert.deepEqual(
+      corners[1],
+      { handle = "battle:cursor-tl", x = box.x - 40, y = box.y - 40 },
+      what .. " hugs the top-left"
+    )
     Assert.deepEqual(
       corners[4],
       { handle = "battle:cursor-br", x = box.x + box.w - 40, y = box.y + box.h - 40 },

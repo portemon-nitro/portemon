@@ -98,10 +98,7 @@ end
 
 local function assertNoLegacyGlobalMilestone(calls)
   for _, call in ipairs(calls.milestones) do
-    Assert.isTrue(
-      call.name ~= "startup-loader",
-      "the legacy global loader milestone is never demanded"
-    )
+    Assert.isTrue(call.name ~= "startup-loader", "the legacy global loader milestone is never demanded")
   end
 end
 
@@ -134,8 +131,7 @@ function T.tests.pending_art_stays_retryable_then_adopts_once_without_rerequest(
 end
 
 function T.tests.failed_art_stays_cosmetic_while_required_milestones_stay_authoritative()
-  local state, art, calls =
-    openingState({ behavior = { walkerFailure = "injected walker failure" } })
+  local state, art, calls = openingState({ behavior = { walkerFailure = "injected walker failure" } })
   State._pollLoadingArt(state)
   assertOnlySelectedPair(calls)
   assertNoLegacyGlobalMilestone(calls)
@@ -145,10 +141,7 @@ function T.tests.failed_art_stays_cosmetic_while_required_milestones_stay_author
     "injected walker failure",
     "the pair failure is recorded as a cosmetic diagnostic"
   )
-  Assert.isTrue(
-    State._readyReadiness(state),
-    "the art failure leaves the editor's required milestones authoritative"
-  )
+  Assert.isTrue(State._readyReadiness(state), "the art failure leaves the editor's required milestones authoritative")
   State._pollLoadingArt(state)
   Assert.equal(#calls.walker, 1, "a latched cosmetic failure is never rerequested")
   State.draw(state)
@@ -188,17 +181,9 @@ function T.tests.retry_open_reuses_the_same_selected_pair_with_a_fresh_stage()
     Assert.isFalse(state.loaderArtObserved, "retry rearms the decorative latch")
     Assert.isNil(state.loaderArtFailure, "retry clears the cosmetic diagnostic")
     Assert.equal(#captured, 1, "retry builds exactly one fresh stage")
-    Assert.equal(
-      captured[1].pairIndex,
-      PAIR_INDEX,
-      "the retried stage names the same selected pair"
-    )
+    Assert.equal(captured[1].pairIndex, PAIR_INDEX, "the retried stage names the same selected pair")
     State._pollLoadingArt(state)
-    Assert.equal(
-      host.calls.walker[1].urgency,
-      "near",
-      "the retried opening demands the shared visuals again"
-    )
+    Assert.equal(host.calls.walker[1].urgency, "near", "the retried opening demands the shared visuals again")
   end)
   rawset(Presentation, "new", originalNew)
   Assert.isTrue(ok, "the retry path composes: " .. tostring(err))

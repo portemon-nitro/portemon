@@ -214,7 +214,9 @@ function T.tests.transfer_started_during_a_scroll_completes_after_the_scroll()
   animator:step(view({ activeBox = 0, boxSlots = { mon(20) } }))
   local nextBox = view({ activeBox = 1, boxSlots = { boxed } })
   animator:step(nextBox)
-  for _ = 2, 4 do animator:step(nextBox) end
+  for _ = 2, 4 do
+    animator:step(nextBox)
+  end
   local transferred = view({
     activeBox = 1,
     boxSlots = { false },
@@ -223,9 +225,13 @@ function T.tests.transfer_started_during_a_scroll_completes_after_the_scroll()
     transferGeneration = 1,
     transfer = { moves = { { fromDomain = "box", from = 0, toDomain = "party", to = 0, mon = boxed } } },
   })
-  for _ = 1, 19 do animator:step(transferred) end
+  for _ = 1, 19 do
+    animator:step(transferred)
+  end
   local completion
-  for _ = 1, 8 do completion = animator:step(transferred) end
+  for _ = 1, 8 do
+    completion = animator:step(transferred)
+  end
   Assert.isTrue(completion.transferComplete == true, "the mid-scroll transfer completes after its flight")
 end
 

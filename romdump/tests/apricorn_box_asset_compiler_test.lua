@@ -157,7 +157,17 @@ function T.compiler_emits_source_panes_rows_and_the_action_menu_atlas(romFs, ver
   for _, dependency in ipairs(bundle.provenance.dependencies) do
     if type(dependency.role) == "string" and dependency.role:find("-", 1, true) ~= nil then
       local memberId = tonumber(string.match(dependency.name, ":member:(%d+)$"))
-      if memberId ~= nil and (dependency.role == "upper-palette" or dependency.role == "upper-char" or dependency.role == "upper-screen" or dependency.role == "lower-palette" or dependency.role == "lower-char" or dependency.role == "lower-screen") then
+      if
+        memberId ~= nil
+        and (
+          dependency.role == "upper-palette"
+          or dependency.role == "upper-char"
+          or dependency.role == "upper-screen"
+          or dependency.role == "lower-palette"
+          or dependency.role == "lower-char"
+          or dependency.role == "lower-screen"
+        )
+      then
         memberByRole[dependency.role] = memberId
       end
     end

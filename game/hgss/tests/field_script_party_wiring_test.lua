@@ -183,7 +183,8 @@ function T.compose_threads_the_script_mart_host()
 end
 
 function T.compose_threads_the_party_selection_host()
-  local seen = {}  local double = {
+  local seen = {}
+  local double = {
     new = function(opts)
       seen.opts = opts
       return { scheduler = {}, worldState = {}, blackoutFlow = {}, moneyBox = {} }

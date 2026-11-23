@@ -4679,11 +4679,7 @@ function T.typed_pointer_render_matches_table_render_across_interval_boundaries(
     Assert.equal(tonumber(head[index - 1]), expected[index], "first chunk sample " .. index .. " matches")
   end
   for index = 1, 600 * 2 do
-    Assert.equal(
-      tonumber(tail[index - 1]),
-      expected[400 * 2 + index],
-      "continued chunk sample " .. index .. " matches"
-    )
+    Assert.equal(tonumber(tail[index - 1]), expected[400 * 2 + index], "continued chunk sample " .. index .. " matches")
   end
 end
 

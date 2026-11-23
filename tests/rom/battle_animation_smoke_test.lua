@@ -96,8 +96,7 @@ function T.roots_carry_source_display_policy_from_real_rom(romFs, versionId)
   local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
   local factory = require("libs.hgss.src.presentation.BattleEffectTasks")
   local sources = require("romdump.src.config.BattleAnimationSources")
-  local tackle =
-    assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, "TACKLE")
+  local tackle = assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, "TACKLE")
   Assert.deepEqual(
     tackle.displayPolicy,
     { suspendHealthbarUpdates = false, updateBattlerG3 = false },
@@ -116,15 +115,27 @@ function T.roots_carry_source_display_policy_from_real_rom(romFs, versionId)
     { suspendHealthbarUpdates = true, updateBattlerG3 = false },
     "FIRE_PUNCH suspends healthbar updates without battler G3 updates"
   )
-  local magma =
-    assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, "BATTLE_ANIMATION_DAMAGE_MAGMA_STORM")
+  local magma = assertEffectClosesThroughItsSelectedMember(
+    compiler,
+    factory,
+    sources,
+    romFs,
+    versionId,
+    "BATTLE_ANIMATION_DAMAGE_MAGMA_STORM"
+  )
   Assert.deepEqual(
     magma.displayPolicy,
     { suspendHealthbarUpdates = true, updateBattlerG3 = true },
     "magma storm suspends with battler G3 updates"
   )
-  local whirlpool =
-    assertEffectClosesThroughItsSelectedMember(compiler, factory, sources, romFs, versionId, "BATTLE_ANIMATION_DAMAGE_WHIRLPOOL")
+  local whirlpool = assertEffectClosesThroughItsSelectedMember(
+    compiler,
+    factory,
+    sources,
+    romFs,
+    versionId,
+    "BATTLE_ANIMATION_DAMAGE_WHIRLPOOL"
+  )
   Assert.deepEqual(
     whirlpool.displayPolicy,
     { suspendHealthbarUpdates = true, updateBattlerG3 = true },
@@ -209,8 +220,18 @@ function T.particle_effects_stage_compiled_emitters_textures_and_placements(romF
     if expected.key == "TACKLE" then
       -- sBattleAnimEmitterPositions[solo player][kind 0][perspective 0]
       -- is the first retail vector: x -9616, y -5464 in 1/4096 world units.
-      Assert.near(payload.placements["solo-player"][1][1].x, -9616 / 4096, 1e-9, "the placement table keeps the retail x")
-      Assert.near(payload.placements["solo-player"][1][1].y, -5464 / 4096, 1e-9, "the placement table keeps the retail y")
+      Assert.near(
+        payload.placements["solo-player"][1][1].x,
+        -9616 / 4096,
+        1e-9,
+        "the placement table keeps the retail x"
+      )
+      Assert.near(
+        payload.placements["solo-player"][1][1].y,
+        -5464 / 4096,
+        1e-9,
+        "the placement table keeps the retail y"
+      )
     end
   end
 end

@@ -169,9 +169,12 @@ function T.tests.incoming_calls_lock_the_field_until_their_source_hangup()
       Assert.equal(trigger.contact, elm.key, "the Elm trigger rings its owner")
       state:registerContact(elm.key)
       calls:setTrigger(trigger.key, true)
-      Assert.isTrue(advanceMinutes(function()
-        return calls:notification() ~= false
-      end, 30), "the ambient trigger rings after its minutes")
+      Assert.isTrue(
+        advanceMinutes(function()
+          return calls:notification() ~= false
+        end, 30),
+        "the ambient trigger rings after its minutes"
+      )
       local notice = calls:notification()
       Assert.equal((notice --[[@as table]]).contactKey, elm.key, "the ring names the trigger owner")
 
@@ -232,26 +235,33 @@ function T.tests.incoming_calls_lock_the_field_until_their_source_hangup()
       calls:setTrigger(trigger.key, true)
       local sceneScript = nil
       local tones = 0
-      Assert.isTrue(advanceMinutes(function()
-        if host:isActive() then
-          return true
-        end
-        local notice = calls:notification()
-        if notice == false then
-          return false
-        end
-        local snapshot = game:snapshot()
-        sceneScript = sceneScript or snapshot.foregroundScript
-        Assert.equal((notice --[[@as table]]).contactKey, trigger.contact, "the caller window names the forced caller")
-        Assert.isTrue(snapshot.fieldLocked, "the call scene script owns the field while it rings")
-        Assert.equal(snapshot.screenFade.coefficient, 0, "no field cover hides the caller window")
-        for _, effect in ipairs(game:hostEffects()) do
-          if effect == "audio:SEQ_SE_GS_PHONE0" then
-            tones = tones + 1
+      Assert.isTrue(
+        advanceMinutes(function()
+          if host:isActive() then
+            return true
           end
-        end
-        return false
-      end, 120), "a forced trigger publishes its caller window while it rings")
+          local notice = calls:notification()
+          if notice == false then
+            return false
+          end
+          local snapshot = game:snapshot()
+          sceneScript = sceneScript or snapshot.foregroundScript
+          Assert.equal(
+            (notice --[[@as table]]).contactKey,
+            trigger.contact,
+            "the caller window names the forced caller"
+          )
+          Assert.isTrue(snapshot.fieldLocked, "the call scene script owns the field while it rings")
+          Assert.equal(snapshot.screenFade.coefficient, 0, "no field cover hides the caller window")
+          for _, effect in ipairs(game:hostEffects()) do
+            if effect == "audio:SEQ_SE_GS_PHONE0" then
+              tones = tones + 1
+            end
+          end
+          return false
+        end, 120),
+        "a forced trigger publishes its caller window while it rings"
+      )
       Assert.equal(
         sceneScript,
         "vanilla.hgss.scr_seq.0003.script_047",

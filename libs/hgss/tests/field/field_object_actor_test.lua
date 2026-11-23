@@ -711,12 +711,7 @@ function T.scripted_walk_rebases_its_render_baseline_without_the_stepper()
     "the second advance draws from the first advance's endpoint, not the walk start"
   )
   Assert.near(assert(sampled.z), 5.5, 1e-9, "unmoved axes keep their baseline")
-  Assert.near(
-    a:getWorldPosition().x,
-    6.5 + 2 / 8,
-    1e-9,
-    "the rebased advance still lands the world position"
-  )
+  Assert.near(a:getWorldPosition().x, 6.5 + 2 / 8, 1e-9, "the rebased advance still lands the world position")
 end
 
 return { tests = T }

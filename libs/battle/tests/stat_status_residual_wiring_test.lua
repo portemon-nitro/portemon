@@ -1505,11 +1505,7 @@ function T.pursuit_strikes_the_departing_target_before_its_switch()
   Assert.equal(frame.status, "waiting", "the Pursuit switch turn completes")
   local damage = strikeDamage(events, "PURSUIT")
   Assert.notNil(damage, "Pursuit hits the selected switcher before departure")
-  Assert.isTrue(
-    damage --[[@as integer]]
-      > 0,
-    "the switch interception deals damage"
-  )
+  Assert.isTrue(damage --[[@as integer]] > 0, "the switch interception deals damage")
   local strikeIndex, switchIndex = nil, nil
   for index, event in ipairs(events) do
     if event.kind == "struck" and event.cause.key == "PURSUIT" then
@@ -1547,8 +1543,7 @@ function T.pursuit_strikes_the_departing_target_before_its_switch()
   local ordinaryDamage = strikeDamage(ordinaryEvents, "PURSUIT")
   Assert.notNil(ordinaryDamage, "Pursuit also lands on a target that stays")
   Assert.isTrue(
-    damage --[[@as integer]]
-      > ordinaryDamage --[[@as integer]],
+    damage --[[@as integer]] > ordinaryDamage --[[@as integer]],
     "Pursuit doubles its power against the departing target"
   )
   ordinary:dispose()
@@ -1915,11 +1910,7 @@ function T.future_sight_and_doom_desire_land_after_the_native_delay()
     )
     local impact = strikeDamage(impactEvents, delayedMove)
     Assert.notNil(impact, "the field-extra phase resolves the delayed strike")
-    Assert.isTrue(
-      impact --[[@as integer]]
-        > 0,
-      "the delayed hit reduces target health"
-    )
+    Assert.isTrue(impact --[[@as integer]] > 0, "the delayed hit reduces target health")
     Assert.equal(
       combatantOf(session:capture(), targetId).hp,
       initialHp - impact --[[@as integer]],
@@ -3566,10 +3557,13 @@ function T.sticky_barb_drains_after_the_condition_tick()
   local beta = movesetCombatant(2, 31, { moveSlot("WILL_O_WISP", 40) })
   beta.mon.ability = "NONE"
   local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
-  local frame, events = playTurn(session, strikeAnswer({
-    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
-    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-  }))
+  local frame, events = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
   Assert.equal(frame.status, "waiting", "the burn-and-barb turn settles")
   local burnAt = eventIndex(events, "tick", function(event)
     local payload = event.payload --[[@as table<string, unknown>]]
@@ -3583,11 +3577,7 @@ function T.sticky_barb_drains_after_the_condition_tick()
   Assert.notNil(barbAt, "the barb drains")
   Assert.isTrue(
     barbAt --[[@as integer]] > burnAt --[[@as integer]],
-    "the barb drains behind the burn tick (burn at "
-      .. tostring(burnAt)
-      .. ", barb at "
-      .. tostring(barbAt)
-      .. ")"
+    "the barb drains behind the burn tick (burn at " .. tostring(burnAt) .. ", barb at " .. tostring(barbAt) .. ")"
   )
   session:dispose()
 end
@@ -3723,10 +3713,13 @@ function T.pivot_pinch_berry_rides_the_bench_then_spends_on_arrival()
   Assert.isTrue(parked.hp * 4 > parked.maxHp, "the holder stays above pinch range")
   -- The holder pivots into Jaboca: the recoil opens the pinch, but
   -- the leaver never answers the mid-turn sweep.
-  local pivotFrame, pivotEvents = playTurn(session, strikeAnswer({
-    alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
-    beta = { slot = 2, target = SessionFixture.positionTarget(1) },
-  }))
+  local pivotFrame, pivotEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 2, target = SessionFixture.positionTarget(1) },
+    })
+  )
   Assert.equal(pivotFrame.status, "waiting", "the pivot pauses for its replacement")
   Assert.isNil(
     eventIndex(pivotEvents, "stage", function(event)
@@ -3740,9 +3733,8 @@ function T.pivot_pinch_berry_rides_the_bench_then_spends_on_arrival()
     "the leaver keeps its berry"
   )
   for _, request in ipairs(pivotFrame.request.requests) do
-    local ok, err = session:submit(
-      SessionFixture.replyFor(request, { SessionFixture.switchChoice(request.actors[1], 3) })
-    )
+    local ok, err =
+      session:submit(SessionFixture.replyFor(request, { SessionFixture.switchChoice(request.actors[1], 3) }))
     Assert.isTrue(ok, "the pivot replacement is accepted")
     Assert.isNil(err, "the accepted pivot has no input error")
   end
@@ -3750,22 +3742,20 @@ function T.pivot_pinch_berry_rides_the_bench_then_spends_on_arrival()
   Assert.equal(settled.status, "waiting", "the pivot turn settles")
   local benched = combatantOf(session:capture(), 1)
   Assert.isTrue(benched.hp * 4 <= benched.maxHp, "the recoil opens the pinch")
-  Assert.equal(
-    (benched.mon --[[@as table<string, unknown>]]).heldItem,
-    "SALAC_BERRY",
-    "the benched berry stays intact"
-  )
+  Assert.equal((benched.mon --[[@as table<string, unknown>]]).heldItem, "SALAC_BERRY", "the benched berry stays intact")
   -- The reserve pivots the holder back in; the post-switch sweep
   -- spends the berry on arrival, ahead of the foe's move.
-  local backFrame, _ = playTurn(session, strikeAnswer({
-    alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
-    beta = { slot = 2, target = SessionFixture.positionTarget(1) },
-  }))
+  local backFrame, _ = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 2, target = SessionFixture.positionTarget(1) },
+    })
+  )
   Assert.equal(backFrame.status, "waiting", "the return pivot pauses for its replacement")
   for _, request in ipairs(backFrame.request.requests) do
-    local ok, err = session:submit(
-      SessionFixture.replyFor(request, { SessionFixture.switchChoice(request.actors[1], 1) })
-    )
+    local ok, err =
+      session:submit(SessionFixture.replyFor(request, { SessionFixture.switchChoice(request.actors[1], 1) }))
     Assert.isTrue(ok, "the return replacement is accepted")
     Assert.isNil(err, "the accepted return carries no input error")
   end

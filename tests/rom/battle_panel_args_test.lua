@@ -34,11 +34,7 @@ function T.panel_script_words_lower_onto_the_invocation(romFs, versionId)
         and instruction.taskKind == "battle-sprite-panel-slide"
       then
         panels = panels + 1
-        Assert.deepEqual(
-          instruction.args,
-          EXPECTED_ARGS[key],
-          key .. " lowers its script graphic and target words"
-        )
+        Assert.deepEqual(instruction.args, EXPECTED_ARGS[key], key .. " lowers its script graphic and target words")
       end
     end
     Assert.isTrue(panels >= 1, key .. " stages at least one panel run")

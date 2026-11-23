@@ -60,8 +60,7 @@ local function stubServices()
     end
     return services.images[key]
   end
-  function services.release(_)
-  end
+  function services.release(_) end
   return services
 end
 
@@ -74,10 +73,7 @@ local function newScreen(battleSpeed, state)
   local opts = {
     launchId = "voice-hold-probe",
     splRandomState = { state = 0 },
-    manifest = ManifestFixture.launchView(
-      { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
-      { "ball:POKE_BALL" }
-    ),
+    manifest = ManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" }, { "ball:POKE_BALL" }),
     model = BattlePresentationModel,
     submit = function()
       return true
@@ -223,10 +219,7 @@ function T.tracked_send_out_cries_stage_the_single_voice_slot()
     Assert.notNil(screen._waitingCueVoice, "held cries stage the single voice slot")
     screen._waitingCueVoice = nil
     screen:_playCryCue({ species = "EEVEE", speciesKey = "EEVEE", foe = false, trackVoice = true })
-    Assert.notNil(
-      screen._waitingCueVoice,
-      "tracked send-out cries stage the slot without gating the queue"
-    )
+    Assert.notNil(screen._waitingCueVoice, "tracked send-out cries stage the slot without gating the queue")
     Assert.isTrue(
       screen:_soundCueComplete({ kind = "cry" }),
       "the tracked stage never gates a cue that waits on nothing"
@@ -255,12 +248,10 @@ function T.fast_rate_retires_positioned_sound_tasks_without_arming_escape()
   local screen = newScreen(4, { effectDone = false })
   local ok, failure = xpcall(function()
     for _, symbol in ipairs({ "SEQ_SE_DP_209", "SEQ_SE_DP_209" }) do
-      local task = assert(
-        BattleEffectTasks.create("positioned-sound-motion", {
-          sound = symbol,
-          values = { 0, 0, 0, 0 },
-        }, {}, { audio = screen._player._audio })
-      )
+      local task = assert(BattleEffectTasks.create("positioned-sound-motion", {
+        sound = symbol,
+        values = { 0, 0, 0, 0 },
+      }, {}, { audio = screen._player._audio }))
       for _ = 1, 100 do
         task:stepSourceTick({ tick = 1 })
         if task:status() == "complete" then
@@ -330,8 +321,7 @@ local function admitWithSpeed(speed)
   function host.submit(_)
     return true
   end
-  function host.notify(_, _)
-  end
+  function host.notify(_, _) end
   local descriptor = {
     launchId = "voice-hold-wiring",
     kind = "wild",

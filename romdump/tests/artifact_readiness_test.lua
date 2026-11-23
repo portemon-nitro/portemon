@@ -1628,10 +1628,7 @@ function T.damaged_mon_page_fails_controlled_audit_until_the_leaf_is_restored()
   })
   Assert.equal(restoredMarker, family.iconMarker, "restoration keeps the staged page identity")
   leaf:finishSuccess({ marker = restoredMarker })
-  Assert.isTrue(
-    ResidentArtifactFixture.materialize(leaf),
-    "the restored leaf publishes"
-  )
+  Assert.isTrue(ResidentArtifactFixture.materialize(leaf), "the restored leaf publishes")
 
   Assert.equal(cache:read(MonCache.iconPagePath(0)), family.iconPng, "the restored bytes match the staged image")
   Assert.isTrue(MonCache.isPageReady(cache, "icons", 0, family.iconMarker), "the restored page reads ready")
@@ -1640,11 +1637,7 @@ function T.damaged_mon_page_fails_controlled_audit_until_the_leaf_is_restored()
   Assert.isTrue(availableAfter, "the controlled audit passes after the leaf repair, got: " .. tostring(reasonAfter))
   Assert.equal(cache:read(MonCache.portraitPagePath(0)), siblingBytes, "the sibling bytes survive the leaf repair")
   Assert.deepEqual(iconFact, facts.records["mon-icon-page:0"], "the repaired page keeps its previous fact")
-  Assert.equal(
-    portraitFact,
-    facts.records["mon-portrait-page:0"],
-    "the sibling page fact survives the leaf repair"
-  )
+  Assert.equal(portraitFact, facts.records["mon-portrait-page:0"], "the sibling page fact survives the leaf repair")
   Assert.equal(summaryFact, facts.records["mon-summary:global"], "the summary fact survives the leaf repair")
 end
 

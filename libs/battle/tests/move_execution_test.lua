@@ -605,10 +605,7 @@ function T.scopes_restore_the_outer_pin_on_success_and_error()
       drain(ctx, tackleNode(nil, { "combat" }))
     end, "a strike without combat facts fails")
     local message = type(failure) == "table" and failure.message or tostring(failure)
-    Assert.isTrue(
-      type(message) == "string" and message ~= "",
-      "the original handler failure rethrows with its message"
-    )
+    Assert.isTrue(type(message) == "string" and message ~= "", "the original handler failure rethrows with its message")
     Assert.isTrue(ctx:moveScope() == outer, "a failed strike restores its outer pin by identity")
   end
 end

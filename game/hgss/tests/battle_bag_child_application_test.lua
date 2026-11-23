@@ -215,12 +215,7 @@ function T.versioned_item_catalogs_replay_the_stocked_bag_flow(context)
     end
     Assert.isNil(flows:takeResult(), "staging the serving seals no reply on " .. versionId)
     local staged = flows:status()
-    Assert.equal(
-      staged.stagedItem,
-      "POTION",
-      "the staged key is remembered on " .. versionId
-        .. ")"
-    )
+    Assert.equal(staged.stagedItem, "POTION", "the staged key is remembered on " .. versionId .. ")")
     Assert.deepEqual(inventory, { POTION = 5 }, "browsing never mutates the detached stock on " .. versionId)
     drive(flows, { type = "cancel" })
     Assert.equal(flows:status().childView.bagPage, "item_list", "the restored browser lists on " .. versionId)
@@ -275,11 +270,7 @@ function T.tutorial_bag_auto_plays_behind_the_finger()
     "the finger starts over the balls button"
   )
   drive(flows, { type = "navigate", direction = "right" })
-  Assert.equal(
-    flows:status().childView.focusId,
-    "bagpocket:0",
-    "navigation never moves the lesson finger"
-  )
+  Assert.equal(flows:status().childView.focusId, "bagpocket:0", "navigation never moves the lesson finger")
   drive(flows, { type = "cancel" })
   Assert.isNil(flows:takeResult(), "cancel never leaves the lesson")
   Assert.equal(flows:status().childView.bagPage, "pocket_menu", "cancel keeps the pocket menu")
@@ -302,11 +293,7 @@ function T.tutorial_bag_auto_plays_behind_the_finger()
   flows:tick()
   settlePress(flows)
   Assert.equal(flows:status().childView.bagPage, "use_item", "the second touch opens the use page")
-  Assert.deepEqual(
-    { x = fingerSpot().x, y = fingerSpot().y },
-    { x = 104, y = 152 },
-    "the finger follows to USE"
-  )
+  Assert.deepEqual({ x = fingerSpot().x, y = fingerSpot().y }, { x = 104, y = 152 }, "the finger follows to USE")
   Assert.isTrue(flows:activateControl("use"), "the finger touch taps USE")
   flows:tick()
   Assert.deepEqual(
@@ -368,10 +355,7 @@ function T.cursor_hides_until_keys_and_clears_on_touch()
   Assert.equal(flows:status().childView.focusId, "bagpocket:2", "the second key walks the pocket cursor")
   Assert.isTrue(flows:activateControl("bagpocket:2"), "touch takes the balls pocket")
   flows:tick()
-  Assert.isFalse(
-    flows:status().childView.native.cursorActive,
-    "touch clears the cursor while the tap still travels"
-  )
+  Assert.isFalse(flows:status().childView.native.cursorActive, "touch clears the cursor while the tap still travels")
   settlePress(flows)
   Assert.equal(flows:status().childView.bagPage, "item_list", "the touch still turns the page")
   flows:dispose()

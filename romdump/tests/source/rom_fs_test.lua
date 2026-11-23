@@ -296,24 +296,18 @@ function T.direct_metadata_keeps_its_record_shape_with_data_derived_identity()
     Assert.equal(metadata.title, header.title)
     Assert.equal(metadata.headerSize, header.headerSize)
     Assert.equal(metadata.usedRomSize, header.usedRomSize)
-    Assert.deepEqual(
-      metadata.arm9,
-      {
-        offset = header.arm9.offset,
-        size = header.arm9.size,
-        entryAddress = header.arm9.entryAddress,
-        ramAddress = header.arm9.ramAddress,
-      }
-    )
-    Assert.deepEqual(
-      metadata.arm7,
-      {
-        offset = header.arm7.offset,
-        size = header.arm7.size,
-        entryAddress = header.arm7.entryAddress,
-        ramAddress = header.arm7.ramAddress,
-      }
-    )
+    Assert.deepEqual(metadata.arm9, {
+      offset = header.arm9.offset,
+      size = header.arm9.size,
+      entryAddress = header.arm9.entryAddress,
+      ramAddress = header.arm9.ramAddress,
+    })
+    Assert.deepEqual(metadata.arm7, {
+      offset = header.arm7.offset,
+      size = header.arm7.size,
+      entryAddress = header.arm7.entryAddress,
+      ramAddress = header.arm7.ramAddress,
+    })
     fs:close()
   end)
 end

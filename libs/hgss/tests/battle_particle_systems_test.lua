@@ -171,12 +171,8 @@ end
 
 local function loadSystem(scene, systemPayload, ctx)
   local svc, journal = services(scene, systemPayload or payload())
-  local task = BattleEffectTasks.create(
-    BattleEffectTasks.PARTICLE_SYSTEM_KIND,
-    { systemIndex = 0, resource = "system" },
-    ctx,
-    svc
-  )
+  local task =
+    BattleEffectTasks.create(BattleEffectTasks.PARTICLE_SYSTEM_KIND, { systemIndex = 0, resource = "system" }, ctx, svc)
   return task, journal
 end
 
@@ -244,25 +240,15 @@ function T.system_loads_publishes_compiled_texture_metadata_for_classification_a
   }, ctx)
   local view = scene:particleSystems()[1]
   Assert.notNil(view, "the loaded system is registered for drawing")
-  Assert.deepEqual(
-    view.textureAlphaUsage[0],
-    usage,
-    "compiled per-texture alpha usage rides the draw view"
-  )
-  Assert.isNil(
-    view.textureAlphaUsage[1],
-    "textures without compiled usage fall back to the picture blanket"
-  )
+  Assert.deepEqual(view.textureAlphaUsage[0], usage, "compiled per-texture alpha usage rides the draw view")
+  Assert.isNil(view.textureAlphaUsage[1], "textures without compiled usage fall back to the picture blanket")
   Assert.deepEqual(
     journal.wraps["texture/0"],
     { "mirroredrepeat", "mirroredrepeat" },
     "mirrored-repeat textures mirror their tiled viewport"
   )
   Assert.deepEqual(journal.wraps["texture/1"], { "repeat", "repeat" }, "repeat textures keep their sampler")
-  Assert.isNil(
-    journal.wraps["texture/2"],
-    "textures without a compiled sampler keep the upload borrow"
-  )
+  Assert.isNil(journal.wraps["texture/2"], "textures without a compiled sampler keep the upload borrow")
   system:free()
   system:dispose()
 end
@@ -282,12 +268,7 @@ function T.unsupported_members_fail_loudly_and_release_the_lease()
   local ctx = context()
   local svc, journal = services(scene, { unsupported = "draw kind 2" })
   Assert.throws(function()
-    BattleEffectTasks.create(
-      BattleEffectTasks.PARTICLE_SYSTEM_KIND,
-      { systemIndex = 0, resource = "system" },
-      ctx,
-      svc
-    )
+    BattleEffectTasks.create(BattleEffectTasks.PARTICLE_SYSTEM_KIND, { systemIndex = 0, resource = "system" }, ctx, svc)
   end, "an uncompilable particle member fails instead of playing nothing")
   Assert.equal(#journal.released, #journal.acquired, "the failed load releases its lease")
   Assert.equal(#scene:particleSystems(), 0, "nothing is registered for drawing")
@@ -305,17 +286,12 @@ function T.configured_emitters_place_by_battler_kind_and_configured_axis()
   atoms.axisTables.mode10[2] = { x = 4000 / 4096, y = 0, z = 0 }
   atoms.axisTables.mode8[2] = { x = 0, y = 2000 / 4096, z = 1000 / 4096 }
   local system = loadSystem(scene, atoms, ctx)
-  local emitter = assert(BattleEffectTasks.create(
-    BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-    {
-      systemIndex = 0,
-      emitter = 0,
-      actionProfile = "particle-emitter-battler-class-camera-position",
-      emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 16, axisMode = 10, flags = 0, cameraMode = 0 },
-    },
-    ctx,
-    {}
-  ))
+  local emitter = assert(BattleEffectTasks.create(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
+    systemIndex = 0,
+    emitter = 0,
+    actionProfile = "particle-emitter-battler-class-camera-position",
+    emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 16, axisMode = 10, flags = 0, cameraMode = 0 },
+  }, ctx, {}))
   local runtime = system.simulation.emitters[1]
   Assert.notNil(runtime, "the configured emitter joins the simulation")
   Assert.equal(runtime.x, 10, "kind 4 of the attacker slot stages the emitter x")
@@ -340,12 +316,14 @@ function T.defender_side_callbacks_place_over_the_defender_side()
   local scene = BattleScene.new()
   local ctx = context()
   local system = loadSystem(scene, nil, ctx)
-  local emitter = assert(BattleEffectTasks.create(
-    BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-    { systemIndex = 0, emitter = 0, actionProfile = "particle-emitter-battler-pair-orientation" },
-    ctx,
-    {}
-  ))
+  local emitter = assert(
+    BattleEffectTasks.create(
+      BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
+      { systemIndex = 0, emitter = 0, actionProfile = "particle-emitter-battler-pair-orientation" },
+      ctx,
+      {}
+    )
+  )
   local runtime = system.simulation.emitters[1]
   Assert.notNil(runtime, "the defender-side emitter joins the simulation")
   Assert.equal(runtime.x, -2, "the foe-side defender resolves the enemy solo placement")
@@ -361,18 +339,13 @@ function T.configured_offset_modes_apply_their_signed_script_block()
   local atoms = payload()
   atoms.placements["solo-player"][1][1] = { x = 100, y = 0, z = 0 }
   local system = loadSystem(scene, atoms, ctx)
-  local emitter = assert(BattleEffectTasks.create(
-    BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-    {
-      systemIndex = 0,
-      emitter = 0,
-      actionProfile = "particle-emitter-battler-class-camera-position",
-      emitterConfig = { zMode = 0, battlerOrder = 1, positionMode = 5, axisMode = 0, flags = 0, cameraMode = 0 },
-      emitterOffset = { x = 4096, y = 0, z = 0, ignoreSide = 0 },
-    },
-    ctx,
-    {}
-  ))
+  local emitter = assert(BattleEffectTasks.create(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
+    systemIndex = 0,
+    emitter = 0,
+    actionProfile = "particle-emitter-battler-class-camera-position",
+    emitterConfig = { zMode = 0, battlerOrder = 1, positionMode = 5, axisMode = 0, flags = 0, cameraMode = 0 },
+    emitterOffset = { x = 4096, y = 0, z = 0, ignoreSide = 0 },
+  }, ctx, {}))
   local runtime = system.simulation.emitters[1]
   Assert.notNil(runtime, "the configured emitter joins the simulation")
   Assert.equal(runtime.x, 99, "the foe-side order mirrors the script offset against kind 0")
@@ -430,11 +403,7 @@ function T.emitter_creation_fails_loudly_outside_the_replay_vocabulary()
     "a flipped creation negates the manager camera up once instead of failing"
   )
   local twice = createEmitter(ctx, { continuationSlot = 4 })
-  Assert.equal(
-    system.simulation.camera.upY,
-    4096,
-    "a second flipped creation toggles the camera up back"
-  )
+  Assert.equal(system.simulation.camera.upY, 4096, "a second flipped creation toggles the camera up back")
   flipped:cancel("test")
   flipped:dispose()
   twice:cancel("test")
@@ -556,12 +525,7 @@ function T.path_task_fails_without_an_emitter_and_the_curved_path_needs_one_stag
   end
   Assert.equal(curved:status(), "complete", "the curve completes once its motion ends and the particles fade")
   Assert.throws(function()
-    BattleEffectTasks.create(
-      BattleEffectTasks.EMITTER_CURVED_PATH_KIND,
-      curveArgs({ curveControl = 0 }),
-      ctx,
-      {}
-    )
+    BattleEffectTasks.create(BattleEffectTasks.EMITTER_CURVED_PATH_KIND, curveArgs({ curveControl = 0 }), ctx, {})
   end, "a zero-duration curve fails")
   system:dispose()
 end
@@ -583,7 +547,8 @@ function T.relative_offset_emitters_shift_the_resource_base_without_random_draws
   Assert.isTrue(
     ok,
     "relative-offset emitters execute their source offsets instead of rejecting "
-      .. "the callback: " .. tostring(emitter)
+      .. "the callback: "
+      .. tostring(emitter)
   )
   if ok then
     local runtime = system.simulation.emitters[1]
@@ -603,23 +568,14 @@ function T.configured_flag_masks_target_the_shared_field()
   local scene = BattleScene.new()
   local ctx = context()
   local system = loadSystem(scene, nil, ctx)
-  local ok, emitter = pcall(
-    BattleEffectTasks.create,
-    BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-    {
-      systemIndex = 0,
-      emitter = 0,
-      actionProfile = "particle-emitter-battler-class-camera-position",
-      emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = 2, cameraMode = 0 },
-      fieldScripts = { { mask = 2, mode = 1, ignoreSide = 0, x = 100, y = -200, z = 50 } },
-    },
-    ctx,
-    {}
-  )
-  Assert.isTrue(
-    ok,
-    "configured flag masks stage their field instead of rejecting the mask: " .. tostring(emitter)
-  )
+  local ok, emitter = pcall(BattleEffectTasks.create, BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
+    systemIndex = 0,
+    emitter = 0,
+    actionProfile = "particle-emitter-battler-class-camera-position",
+    emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = 2, cameraMode = 0 },
+    fieldScripts = { { mask = 2, mode = 1, ignoreSide = 0, x = 100, y = -200, z = 50 } },
+  }, ctx, {})
+  Assert.isTrue(ok, "configured flag masks stage their field instead of rejecting the mask: " .. tostring(emitter))
   if ok then
     emitter:cancel("test")
     emitter:dispose()
@@ -633,22 +589,13 @@ function T.configured_camera_presets_replace_the_angle_without_rolling()
   local scene = BattleScene.new()
   local ctx = context()
   local system = loadSystem(scene, nil, ctx)
-  local ok, emitter = pcall(
-    BattleEffectTasks.create,
-    BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-    {
-      systemIndex = 0,
-      emitter = 0,
-      actionProfile = "particle-emitter-battler-class-camera-position",
-      emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = 0, cameraMode = 1 },
-    },
-    ctx,
-    {}
-  )
-  Assert.isTrue(
-    ok,
-    "configured camera presets execute instead of rejecting the camera mode: " .. tostring(emitter)
-  )
+  local ok, emitter = pcall(BattleEffectTasks.create, BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
+    systemIndex = 0,
+    emitter = 0,
+    actionProfile = "particle-emitter-battler-class-camera-position",
+    emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = 0, cameraMode = 1 },
+  }, ctx, {})
+  Assert.isTrue(ok, "configured camera presets execute instead of rejecting the camera mode: " .. tostring(emitter))
   if ok then
     emitter:cancel("test")
     emitter:dispose()
@@ -664,19 +611,14 @@ function T.configured_gravity_reaches_same_ordinal_emitters_only()
   local staged = payload({ emitterRecord({ persistent = true }) })
   local system = loadSystem(scene, staged, ctx)
   local function configured(slot)
-    return BattleEffectTasks.create(
-      BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-      {
-        systemIndex = 0,
-        emitter = 0,
-        continuationSlot = slot,
-        actionProfile = "particle-emitter-battler-class-camera-position",
-        emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = 2, cameraMode = 0 },
-        fieldScripts = { { mask = 2, mode = 1, ignoreSide = 0, x = 0, y = -4096, z = 0 } },
-      },
-      ctx,
-      {}
-    )
+    return BattleEffectTasks.create(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
+      systemIndex = 0,
+      emitter = 0,
+      continuationSlot = slot,
+      actionProfile = "particle-emitter-battler-class-camera-position",
+      emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = 2, cameraMode = 0 },
+      fieldScripts = { { mask = 2, mode = 1, ignoreSide = 0, x = 0, y = -4096, z = 0 } },
+    }, ctx, {})
   end
   local first, second = configured(0), configured(1)
   for tick = 1, 3 do
@@ -704,18 +646,13 @@ function T.configured_gravity_fallthrough_subtracts_the_configured_position()
   local scene = BattleScene.new()
   local ctx = context()
   local system = loadSystem(scene, nil, ctx)
-  local emitter = BattleEffectTasks.create(
-    BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-    {
-      systemIndex = 0,
-      emitter = 0,
-      actionProfile = "particle-emitter-battler-class-camera-position",
-      emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = 2, cameraMode = 0 },
-      fieldScripts = { { mask = 2, mode = 0, ignoreSide = 0, x = 0, y = 0, z = 0 } },
-    },
-    ctx,
-    {}
-  )
+  local emitter = BattleEffectTasks.create(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
+    systemIndex = 0,
+    emitter = 0,
+    actionProfile = "particle-emitter-battler-class-camera-position",
+    emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = 2, cameraMode = 0 },
+    fieldScripts = { { mask = 2, mode = 0, ignoreSide = 0, x = 0, y = 0, z = 0 } },
+  }, ctx, {})
   local gravity = nil
   for _, field in ipairs(system.simulation.resources[1].fields) do
     if field.kind == "gravity" then
@@ -733,19 +670,14 @@ function T.configured_gravity_fallthrough_subtracts_the_configured_position()
   emitter:cancel("test")
   emitter:dispose()
   Assert.throws(function()
-    BattleEffectTasks.create(
-      BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-      {
-        systemIndex = 0,
-        emitter = 0,
-        continuationSlot = 2,
-        actionProfile = "particle-emitter-battler-class-camera-position",
-        emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 0, axisMode = 0, flags = 2, cameraMode = 0 },
-        fieldScripts = { { mask = 2, mode = 0, ignoreSide = 0, x = 0, y = 0, z = 0 } },
-      },
-      ctx,
-      {}
-    )
+    BattleEffectTasks.create(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
+      systemIndex = 0,
+      emitter = 0,
+      continuationSlot = 2,
+      actionProfile = "particle-emitter-battler-class-camera-position",
+      emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 0, axisMode = 0, flags = 2, cameraMode = 0 },
+      fieldScripts = { { mask = 2, mode = 0, ignoreSide = 0, x = 0, y = 0, z = 0 } },
+    }, ctx, {})
   end, "a fallthrough reading position mode 0 rejects its uninitialized variable")
   system:dispose()
 end
@@ -757,35 +689,20 @@ function T.configured_z_modes_select_by_defender_type()
   local ctx = context()
   local system = loadSystem(scene, nil, ctx)
   local function configured(zMode, slot)
-    return BattleEffectTasks.create(
-      BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-      {
-        systemIndex = 0,
-        emitter = 0,
-        continuationSlot = slot,
-        actionProfile = "particle-emitter-battler-class-camera-position",
-        emitterConfig = { zMode = zMode, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = 0, cameraMode = 0 },
-      },
-      ctx,
-      {}
-    )
+    return BattleEffectTasks.create(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
+      systemIndex = 0,
+      emitter = 0,
+      continuationSlot = slot,
+      actionProfile = "particle-emitter-battler-class-camera-position",
+      emitterConfig = { zMode = zMode, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = 0, cameraMode = 0 },
+    }, ctx, {})
   end
   local one = configured(1, 0)
-  Assert.near(
-    system.simulation.emitters[1].z,
-    -5120 / 4096,
-    1e-9,
-    "z mode 1 uses -5120 for a nonzero defender type"
-  )
+  Assert.near(system.simulation.emitters[1].z, -5120 / 4096, 1e-9, "z mode 1 uses -5120 for a nonzero defender type")
   one:cancel("test")
   one:dispose()
   local two = configured(2, 1)
-  Assert.near(
-    system.simulation.emitters[1].z,
-    -5376 / 4096,
-    1e-9,
-    "z mode 2 uses -5376 for a nonzero defender type"
-  )
+  Assert.near(system.simulation.emitters[1].z, -5376 / 4096, 1e-9, "z mode 2 uses -5376 for a nonzero defender type")
   two:cancel("test")
   two:dispose()
   Assert.throws(function()
@@ -807,7 +724,14 @@ function T.configured_camera_modes_drive_the_manager_camera()
       emitter = 0,
       continuationSlot = slot,
       actionProfile = "particle-emitter-battler-class-camera-position",
-      emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = 0, cameraMode = cameraMode },
+      emitterConfig = {
+        zMode = 0,
+        battlerOrder = 2,
+        positionMode = 1,
+        axisMode = 0,
+        flags = 0,
+        cameraMode = cameraMode,
+      },
     }
     for key, value in pairs(extra or {}) do
       args[key] = value
@@ -853,18 +777,13 @@ function T.production_randomized_position_profile_shares_the_offset_handler()
   local ctx = context()
   local system = loadSystem(scene, payload({ emitterRecord({ persistent = true }) }), ctx)
   local before = system.simulation.randomState.state
-  local emitter = BattleEffectTasks.create(
-    BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-    {
-      systemIndex = 0,
-      emitter = 0,
-      actionProfile = "particle-emitter-randomized-position",
-      offsetX = 3,
-      offsetY = -2,
-    },
-    ctx,
-    {}
-  )
+  local emitter = BattleEffectTasks.create(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
+    systemIndex = 0,
+    emitter = 0,
+    actionProfile = "particle-emitter-randomized-position",
+    offsetX = 3,
+    offsetY = -2,
+  }, ctx, {})
   local runtime = system.simulation.emitters[1]
   Assert.near(runtime.x, 3 * 172 / 4096, 1e-9, "the production profile shifts the base by pixel offsets")
   Assert.near(runtime.y, -2 * 172 / 4096, 1e-9, "both axes shift")
@@ -914,7 +833,14 @@ function T.configured_position_modes_cover_all_defined_kinds_and_tables()
   local function configured(positionMode, extra)
     local args = {
       continuationSlot = 0,
-      emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = positionMode, axisMode = 0, flags = 0, cameraMode = 0 },
+      emitterConfig = {
+        zMode = 0,
+        battlerOrder = 2,
+        positionMode = positionMode,
+        axisMode = 0,
+        flags = 0,
+        cameraMode = 0,
+      },
     }
     for key, value in pairs(extra or {}) do
       args[key] = value
@@ -954,7 +880,11 @@ function T.configured_position_modes_cover_all_defined_kinds_and_tables()
     { 34, attackerKinds[1][1] },
   }
   for index, case in ipairs(cases) do
-    expectPlaced(configured(case[1]), case[2], "position mode " .. case[1] .. " places its staged vector (case " .. index .. ")")
+    expectPlaced(
+      configured(case[1]),
+      case[2],
+      "position mode " .. case[1] .. " places its staged vector (case " .. index .. ")"
+    )
   end
   local offset = { x = 4096, y = -8192, z = 12288, ignoreSide = 0 }
   expectPlaced(
@@ -1006,30 +936,28 @@ function T.configured_position_modes_cover_all_defined_kinds_and_tables()
   local foeSystem = loadSystem(foeScene, foeStaged, foeCtx)
   local foeOffset = { x = 0, y = 0, z = 12288, ignoreSide = 0 }
   local function foePlaced(positionMode)
-    local emitter = BattleEffectTasks.create(
-      BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-      {
-        systemIndex = 0,
-        emitter = 0,
-        continuationSlot = 0,
-        actionProfile = "particle-emitter-battler-class-camera-position",
-        emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = positionMode, axisMode = 0, flags = 0, cameraMode = 0 },
-        emitterOffset = foeOffset,
+    local emitter = BattleEffectTasks.create(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
+      systemIndex = 0,
+      emitter = 0,
+      continuationSlot = 0,
+      actionProfile = "particle-emitter-battler-class-camera-position",
+      emitterConfig = {
+        zMode = 0,
+        battlerOrder = 2,
+        positionMode = positionMode,
+        axisMode = 0,
+        flags = 0,
+        cameraMode = 0,
       },
-      foeCtx,
-      {}
-    )
+      emitterOffset = foeOffset,
+    }, foeCtx, {})
     local runtime = foeSystem.simulation.emitters[#foeSystem.simulation.emitters]
     local position = { x = runtime.x, y = runtime.y, z = runtime.z }
     emitter:cancel("test")
     emitter:dispose()
     return position
   end
-  Assert.deepEqual(
-    foePlaced(3),
-    { x = 0, y = 0, z = 3 },
-    "position mode 3 leaves the offset z unmirrored"
-  )
+  Assert.deepEqual(foePlaced(3), { x = 0, y = 0, z = 3 }, "position mode 3 leaves the offset z unmirrored")
   Assert.deepEqual(
     foePlaced(4),
     { x = -2 + 0, y = -1 + 0, z = 0 - 3 },
@@ -1056,18 +984,13 @@ function T.configured_axis_modes_cover_tables_rows_and_literals()
   staged.emitterTables.axisPositions[1] = { x = 11, y = 12 }
   local system = loadSystem(scene, staged, ctx)
   local function expectAxis(axisMode, expected, message)
-    local emitter = BattleEffectTasks.create(
-      BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-      {
-        systemIndex = 0,
-        emitter = 0,
-        continuationSlot = 0,
-        actionProfile = "particle-emitter-battler-class-camera-position",
-        emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = axisMode, flags = 0, cameraMode = 0 },
-      },
-      ctx,
-      {}
-    )
+    local emitter = BattleEffectTasks.create(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
+      systemIndex = 0,
+      emitter = 0,
+      continuationSlot = 0,
+      actionProfile = "particle-emitter-battler-class-camera-position",
+      emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = axisMode, flags = 0, cameraMode = 0 },
+    }, ctx, {})
     local runtime = system.simulation.emitters[#system.simulation.emitters]
     Assert.deepEqual({ x = runtime.axis.x, y = runtime.axis.y, z = runtime.axis.z }, expected, message)
     emitter:cancel("test")
@@ -1106,25 +1029,30 @@ function T.configured_static_axis_rows_follow_the_native_flag_choices()
     local ctx = staticCtx
     ctx.topology.attacker = { slot = attackerSlot }
     ctx.topology.targets = { { slot = defenderSlot } }
-    local emitter = BattleEffectTasks.create(
-      BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-      {
-        systemIndex = 0,
-        emitter = 0,
-        continuationSlot = 0,
-        actionProfile = "particle-emitter-battler-class-camera-position",
-        emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 6, flags = 0, cameraMode = 0 },
-      },
-      ctx,
-      {}
-    )
+    local emitter = BattleEffectTasks.create(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
+      systemIndex = 0,
+      emitter = 0,
+      continuationSlot = 0,
+      actionProfile = "particle-emitter-battler-class-camera-position",
+      emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 6, flags = 0, cameraMode = 0 },
+    }, ctx, {})
     local runtime = system.simulation.emitters[#system.simulation.emitters]
     Assert.deepEqual({ x = runtime.axis.x, y = runtime.axis.y, z = runtime.axis.z }, expected, message)
     emitter:cancel("test")
     emitter:dispose()
   end
-  expectStaticAxis("solo-enemy", "solo-player", { x = -1, y = -2, z = -3 }, "solo enemy attacker negates row a without its flag")
-  expectStaticAxis("player-side-slot-1", "enemy-side-slot-1", { x = 0, y = 0, z = 0 }, "same-side doubles keep the zeroed row b")
+  expectStaticAxis(
+    "solo-enemy",
+    "solo-player",
+    { x = -1, y = -2, z = -3 },
+    "solo enemy attacker negates row a without its flag"
+  )
+  expectStaticAxis(
+    "player-side-slot-1",
+    "enemy-side-slot-1",
+    { x = 0, y = 0, z = 0 },
+    "same-side doubles keep the zeroed row b"
+  )
   expectStaticAxis(
     "enemy-side-slot-1",
     "enemy-side-slot-2",
@@ -1144,19 +1072,14 @@ function T.configured_field_masks_cover_magnet_spin_and_convergence()
   local staged = payload({ emitterRecord({ persistent = true }) })
   local system = loadSystem(scene, staged, ctx)
   local function configuredField(mask, script, slot)
-    return BattleEffectTasks.create(
-      BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-      {
-        systemIndex = 0,
-        emitter = 0,
-        continuationSlot = slot or 0,
-        actionProfile = "particle-emitter-battler-class-camera-position",
-        emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = mask, cameraMode = 0 },
-        fieldScripts = { script },
-      },
-      ctx,
-      {}
-    )
+    return BattleEffectTasks.create(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
+      systemIndex = 0,
+      emitter = 0,
+      continuationSlot = slot or 0,
+      actionProfile = "particle-emitter-battler-class-camera-position",
+      emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = mask, cameraMode = 0 },
+      fieldScripts = { script },
+    }, ctx, {})
   end
   local function sharedField(fieldKind)
     for _, field in ipairs(system.simulation.resources[1].fields) do
@@ -1205,38 +1128,28 @@ function T.configured_field_masks_cover_magnet_spin_and_convergence()
   ratio:cancel("test")
   ratio:dispose()
   Assert.throws(function()
-    BattleEffectTasks.create(
-      BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-      {
-        systemIndex = 0,
-        emitter = 0,
-        continuationSlot = 6,
-        actionProfile = "particle-emitter-battler-class-camera-position",
-        emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 0, axisMode = 0, flags = 16, cameraMode = 0 },
-        fieldScripts = { { mask = 16, mode = 1, ignoreSide = 0, x = 0, y = 0, z = 0 } },
-      },
-      ctx,
-      {}
-    )
+    BattleEffectTasks.create(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
+      systemIndex = 0,
+      emitter = 0,
+      continuationSlot = 6,
+      actionProfile = "particle-emitter-battler-class-camera-position",
+      emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 0, axisMode = 0, flags = 16, cameraMode = 0 },
+      fieldScripts = { { mask = 16, mode = 1, ignoreSide = 0, x = 0, y = 0, z = 0 } },
+    }, ctx, {})
   end, "a magnet target reading position mode 0 rejects its uninitialized variable")
   local foeCtx = context()
   foeCtx.topology.attacker = { slot = "solo-enemy" }
   foeCtx.topology.targets = { { slot = "solo-player" } }
   local foeScene = BattleScene.new()
   local foeSystem = loadSystem(foeScene, payload({ emitterRecord({ persistent = true }) }), foeCtx)
-  local foeSpin = BattleEffectTasks.create(
-    BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-    {
-      systemIndex = 0,
-      emitter = 0,
-      continuationSlot = 0,
-      actionProfile = "particle-emitter-battler-class-camera-position",
-      emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = 128, cameraMode = 0 },
-      fieldScripts = { { mask = 128, mode = 1, ignoreSide = 0, x = 100, y = 0, z = 0 } },
-    },
-    foeCtx,
-    {}
-  )
+  local foeSpin = BattleEffectTasks.create(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
+    systemIndex = 0,
+    emitter = 0,
+    continuationSlot = 0,
+    actionProfile = "particle-emitter-battler-class-camera-position",
+    emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = 128, cameraMode = 0 },
+    fieldScripts = { { mask = 128, mode = 1, ignoreSide = 0, x = 100, y = 0, z = 0 } },
+  }, foeCtx, {})
   local foeAxis = nil
   for _, field in ipairs(foeSystem.simulation.resources[1].fields) do
     if field.kind == "spin" then
@@ -1246,19 +1159,14 @@ function T.configured_field_masks_cover_magnet_spin_and_convergence()
   Assert.equal(foeAxis, 100, "the spin axis ignores the enemy side sign")
   foeSpin:cancel("test")
   foeSpin:dispose()
-  local foeAngle = BattleEffectTasks.create(
-    BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
-    {
-      systemIndex = 0,
-      emitter = 0,
-      continuationSlot = 1,
-      actionProfile = "particle-emitter-battler-class-camera-position",
-      emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = 64, cameraMode = 0 },
-      fieldScripts = { { mask = 64, mode = 1, ignoreSide = 0, x = 100, y = 0, z = 0 } },
-    },
-    foeCtx,
-    {}
-  )
+  local foeAngle = BattleEffectTasks.create(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
+    systemIndex = 0,
+    emitter = 0,
+    continuationSlot = 1,
+    actionProfile = "particle-emitter-battler-class-camera-position",
+    emitterConfig = { zMode = 0, battlerOrder = 2, positionMode = 1, axisMode = 0, flags = 64, cameraMode = 0 },
+    fieldScripts = { { mask = 64, mode = 1, ignoreSide = 0, x = 100, y = 0, z = 0 } },
+  }, foeCtx, {})
   local foeRotation = nil
   for _, field in ipairs(foeSystem.simulation.resources[1].fields) do
     if field.kind == "spin" then
@@ -1448,10 +1356,7 @@ function T.draw_phase_captures_pre_advance_geometry_and_advances_exactly_once()
   }, ctx)
   local view = scene:particleSystems()[1]
   local sim = view.simulation
-  Assert.notNil(
-    SplParticleSimulation.addEmitter(sim, 0, nil),
-    "the draw phase captures a live emitter"
-  )
+  Assert.notNil(SplParticleSimulation.addEmitter(sim, 0, nil), "the draw phase captures a live emitter")
   -- Before the first draw phase the compositor falls back to the live systems.
   Assert.equal(#scene:drawParticleSystems(), 1, "drawing falls back to the live systems before capture")
   BattleParticleSystems.stepSourceDrawPhase(scene)
@@ -1474,10 +1379,7 @@ function T.draw_phase_captures_pre_advance_geometry_and_advances_exactly_once()
     x1,
     "the published frame shows the exact pre-update positions"
   )
-  Assert.isTrue(
-    sim.emitters[1].particles[1].x ~= x1,
-    "the live simulation advanced underneath the published frame"
-  )
+  Assert.isTrue(sim.emitters[1].particles[1].x ~= x1, "the live simulation advanced underneath the published frame")
   Assert.equal(sim.emitters[1].age, 2, "the second draw phase advances exactly once more")
   -- Repeated draws of one published frame stay stable without
   -- advancing the simulation or its random stream.
@@ -1507,11 +1409,7 @@ function T.draw_phase_captures_pre_advance_geometry_and_advances_exactly_once()
   )
   BattleParticleSystems.stepSourceDrawPhase(scene)
   published = scene:drawParticleSystems()
-  Assert.equal(
-    #published[1].simulation.emitters,
-    0,
-    "the retired emitter clears on the following frame"
-  )
+  Assert.equal(#published[1].simulation.emitters, 0, "the retired emitter clears on the following frame")
   system:free()
   system:dispose()
 end

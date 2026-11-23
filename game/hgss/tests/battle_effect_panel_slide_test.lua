@@ -114,10 +114,7 @@ function T.panel_slide_installs_scrolls_blends_and_cleans_up()
   Assert.notNil(setup.stripe, "the setup tick installs the stripe layer")
   Assert.equal(setup.stripe.scrollY, 3, "the stripe scrolls by its velocity on the first tick")
   Assert.equal(setup.stripe.scrollX, 0, "the down scroll carries no horizontal velocity")
-  local compositor = assert(
-    setup.main and setup.main.compositor,
-    "the setup tick publishes its main-engine compositor"
-  )
+  local compositor = assert(setup.main and setup.main.compositor, "the setup tick publishes its main-engine compositor")
   Assert.notNil(compositor.blend, "the setup tick stages the stripe blend")
   Assert.equal(compositor.blend.eva, 12, "the blend holds the compiled start A coefficient")
   Assert.equal(compositor.blend.evb, 4, "the blend holds the compiled start B coefficient")
@@ -131,16 +128,9 @@ function T.panel_slide_installs_scrolls_blends_and_cleans_up()
   Assert.equal(priority.transition, 1, "the stripe rides above the mon like the native base priority")
   Assert.equal(priority.world3d, 2, "the mon rides below the stripe like the native sprite priority")
   local objWindow = assert(compositor.windows.objWindow, "the setup tick stages the object window")
-  Assert.isTrue(
-    objWindow.mask.world3d == true,
-    "the inside mask keeps the mon visible as the blend partner"
-  )
+  Assert.isTrue(objWindow.mask.world3d == true, "the inside mask keeps the mon visible as the blend partner")
   Assert.notNil(setup.objWindowSilhouette, "the setup tick names the silhouette battler")
-  Assert.equal(
-    setup.objWindowSilhouette.combatant,
-    1,
-    "the default target silhouettes the occurrence attacker"
-  )
+  Assert.equal(setup.objWindowSilhouette.combatant, 1, "the default target silhouettes the occurrence attacker")
   for tick = 2, 36 do
     task:stepSourceTick({ tick = 1 })
     Assert.equal(task:status(), "running", "the timed slide keeps running before its final source tick")

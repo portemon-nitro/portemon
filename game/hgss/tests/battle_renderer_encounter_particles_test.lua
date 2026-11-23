@@ -129,10 +129,7 @@ function T.live_particles_draw_over_the_palette_faded_scene()
   local idle = {}
   drawDetail(recordingGraphics(idle), { encounterParticleSystems = {} })
   for _, entry in ipairs(idle) do
-    Assert.isTrue(
-      entry.kind ~= "draw" or entry.image == COMPOSITE_LAYER,
-      "an idle encounter draws no particle quads"
-    )
+    Assert.isTrue(entry.kind ~= "draw" or entry.image == COMPOSITE_LAYER, "an idle encounter draws no particle quads")
   end
   local systems, images = runningSystems()
   local scene = {}

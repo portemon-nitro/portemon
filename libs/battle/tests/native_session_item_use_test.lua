@@ -595,7 +595,6 @@ function T.repeated_screening_servings_refuse_at_commit()
   session:dispose()
 end
 
-
 ---@param actorOptions table<string, unknown> one actor's projected options under search
 ---@param item string item key under search
 ---@param holder integer combatant receiving the serving
@@ -609,7 +608,9 @@ local function itemOptionsBySlot(actorOptions, item, holder)
     local payload = choice.payload --[[@as table<string, unknown>]]
     if choice.kind == "item" and payload.item == item and targetsHolder(payload.target, holder) then
       Assert.isTrue(type(payload.moveSlot) == "number", "one-move PP options name their move slot")
-      found[payload.moveSlot --[[@as integer]]] = option
+      found[
+        payload.moveSlot --[[@as integer]]
+      ] = option
     end
   end
   return found
@@ -626,8 +627,12 @@ function T.one_move_pp_servings_select_their_move()
   lead.mon.moves = { { move = "TACKLE", pp = 5, ppUps = 0 }, { move = "GROWL", pp = 40, ppUps = 0 } }
   local pack = SessionFixture.inventory("party", { 1 }, { ETHER = 1 })
   local facts = { ETHER = { partyUse = { kind = "pp", target = "one", restore = 10, mood = 0 } } }
-  local scenario =
-    itemScenario({ lead }, { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) }, pack, facts)
+  local scenario = itemScenario(
+    { lead },
+    { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) },
+    pack,
+    facts
+  )
   local CatalogFixture = require("libs.mons.tests.catalog_fixture")
   scenario.moveFacts.GROWL = CatalogFixture.makeCatalog():move("GROWL")
   local session = Executor.new(scenario, content)
@@ -689,8 +694,7 @@ function T.embargoed_servings_refuse_with_embargo_reason()
     POTION = { partyUse = medicineFacts({ kind = "fixed", amount = 20 }, noCures()), battleUseFunc = 2 },
     GUARD_SPEC = guardServingFacts().GUARD_SPEC,
   }
-  local scenario =
-    itemScenario({ lead }, { foe, leveledCombatant(4, 43, "EEVEE", 5) }, pack, facts)
+  local scenario = itemScenario({ lead }, { foe, leveledCombatant(4, 43, "EEVEE", 5) }, pack, facts)
   local CatalogFixture = require("libs.mons.tests.catalog_fixture")
   local catalog = CatalogFixture.makeCatalog()
   scenario.moveFacts.GROWL = catalog:move("GROWL")

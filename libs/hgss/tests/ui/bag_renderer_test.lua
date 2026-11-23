@@ -1086,10 +1086,7 @@ function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
     wasDrawn(graphics, draw._images["background:browse:balls:base"]),
     "browse uses the pocket-specific background"
   )
-  Assert.isTrue(
-    wasDrawn(graphics, draw._images["browseRow:balls:0"]),
-    "browse draws its visible row patch"
-  )
+  Assert.isTrue(wasDrawn(graphics, draw._images["browseRow:balls:0"]), "browse draws its visible row patch")
   Assert.equal(#graphics.rectangles, 0, "item focus never falls back to primitive outlines")
   local itemFocus = manifested.interactive.focus.items
   local focusX, focusY = focusOrigin(itemFocus, itemFocus.targets[1])
@@ -1114,15 +1111,13 @@ function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
       record.actionNode = 0
     end
     admitted(draw, record, plan(true), { icons = icons() })
-    local keys = state == "action_menu" and { "background:browse:balls:base", "browseRow:balls:0", "overlay:action:balls" }
+    local keys = state == "action_menu"
+        and { "background:browse:balls:base", "browseRow:balls:0", "overlay:action:balls" }
       or state == "toss_quantity" and { "background:browse:balls:base", "browseRow:balls:0", "overlay:quantity:balls" }
       or state == "toss_confirm" and { "background:browse:balls:base", "browseRow:balls:0", "overlay:action:balls" }
       or { "background:move:balls:2", "moveMarker:balls:low" }
     for _, key in ipairs(keys) do
-      Assert.isTrue(
-        wasDrawn(graphics, draw._images[key]),
-        state .. " draws its pocket-specific layer " .. key
-      )
+      Assert.isTrue(wasDrawn(graphics, draw._images[key]), state .. " draws its pocket-specific layer " .. key)
     end
   end
   draw:release()
@@ -2672,10 +2667,7 @@ function T.tabs_draw_at_source_anchors_with_focus_only_while_tabbed()
   admitted(draw, unfocused, singlePane(), { icons = icons() })
   Assert.isTrue(wasDrawn(graphics, draw._images["background:browse:balls:base"]), "item focus keeps the browse base")
   Assert.isTrue(wasDrawn(graphics, draw._images["strip:balls"]), "item focus keeps the active pocket strip")
-  Assert.isFalse(
-    staticDrawnAt(graphics, focusX, focusY),
-    "the tab focus follows semantic focus, not pocket identity"
-  )
+  Assert.isFalse(staticDrawnAt(graphics, focusX, focusY), "the tab focus follows semantic focus, not pocket identity")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   draw:release()
 end
@@ -4704,10 +4696,7 @@ function T.revisiting_an_admitted_menu_keeps_common_art_and_draws_at_once()
     wasDrawn(graphics, draw._images["overlay:action:balls"]),
     "the revisited menu draws its new-state overlay"
   )
-  Assert.isTrue(
-    wasDrawn(graphics, browseBackground),
-    "the revisited menu keeps drawing the shared browse base"
-  )
+  Assert.isTrue(wasDrawn(graphics, browseBackground), "the revisited menu keeps drawing the shared browse base")
   Assert.isTrue(directlyBuiltCount(graphics, graphics.draws) == 0, "the revisited composition borrows every visual")
   Assert.isTrue(
     state.requests - requestsBefore < 8,

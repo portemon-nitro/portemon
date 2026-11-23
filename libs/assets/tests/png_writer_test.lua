@@ -154,10 +154,7 @@ function T.rejects_bad_dimensions()
 end
 
 function T.decodes_back_to_the_same_pixels()
-  local pixels = px(10, 20, 30, 255)
-    .. px(200, 150, 100, 128)
-    .. px(0, 0, 0, 0)
-    .. px(255, 128, 64, 0)
+  local pixels = px(10, 20, 30, 255) .. px(200, 150, 100, 128) .. px(0, 0, 0, 0) .. px(255, 128, 64, 0)
   assertRoundTrip(2, 2, pixels, "roundtrip.png")
 end
 
@@ -335,8 +332,7 @@ function T.complete_envelope_reports_dimensions_only_for_whole_images()
   for i = 0, 256 do
     wide[#wide + 1] = px(i % 256, math.floor(i / 256), 77, 255)
   end
-  local fallbackWidth, fallbackHeight =
-    PngWriter.completeDimensions(PngEncoder.encode(257, 1, table.concat(wide)))
+  local fallbackWidth, fallbackHeight = PngWriter.completeDimensions(PngEncoder.encode(257, 1, table.concat(wide)))
   Assert.equal(fallbackWidth, 257, "a complete truecolor image reports its width")
   Assert.equal(fallbackHeight, 1, "a complete truecolor image reports its height")
 end

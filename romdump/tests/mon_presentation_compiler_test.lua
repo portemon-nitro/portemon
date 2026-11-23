@@ -559,7 +559,8 @@ function T.portrait_pages_publish_index_planes_and_base_palettes()
   end
   scanned[1] = 0x0102
   local catalog = catalogWithPlannedRepresentatives()
-  local planned = assert(MonPresentationCompiler.plan(uniformFs(catalog, charContainer(wordsToBytes(scanned))), catalog))
+  local planned =
+    assert(MonPresentationCompiler.plan(uniformFs(catalog, charContainer(wordsToBytes(scanned))), catalog))
   local pagePlan = assert(planned.portraitPages[0], "the first portrait page is planned")
   local fs = uniformFs(catalog, charContainer(wordsToBytes(scanned)))
   local first = assert(MonPresentationCompiler.compilePage(fs, "portraits", pagePlan))

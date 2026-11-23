@@ -2686,7 +2686,8 @@ function T.deferred_png_continuation_gates_parent_publication()
         ArtifactJobs.priorityFor("sweep"),
         "png encoding continues at the existing sweep priority"
       )
-      local images = assert(continuation.pending and continuation.pending.images, "the continuation carries the unwritten images")
+      local images =
+        assert(continuation.pending and continuation.pending.images, "the continuation carries the unwritten images")
       Assert.equal(#images, 1, "each unwritten image is handed over once")
       Assert.equal(images[1].relativePath, imagePath, "the continuation keeps the pending output path")
       local carried = assert(continuation.pending.entries, "the continuation carries the parent's private output")
@@ -2710,10 +2711,7 @@ function T.deferred_png_continuation_gates_parent_publication()
       })
       pool:update()
       Assert.isTrue(pool:status("map:60") ~= "ready", "a stale result cannot settle the pending parent")
-      Assert.isNil(
-        ArtifactState.read(pool:artifactFacts(), "map", "60"),
-        "a stale result commits no fact"
-      )
+      Assert.isNil(ArtifactState.read(pool:artifactFacts(), "map", "60"), "a stale result commits no fact")
       Assert.isNil(pool:cacheFs():resolveAsset(scenePath), "a stale result commits no bytes")
       pool.fatalError = nil
       Assert.equal(pool:status("map:60"), "images", "the pinned parent still owns its worker")
@@ -2867,10 +2865,7 @@ function T.deferred_png_continuation_failure_publishes_nothing()
       pool:update()
       pool:update()
       Assert.equal(pool:status("map:61"), "failed", "a failed continuation settles the parent as failed")
-      Assert.isNil(
-        ArtifactState.read(pool:artifactFacts(), "map", "61"),
-        "a failed continuation commits no fact"
-      )
+      Assert.isNil(ArtifactState.read(pool:artifactFacts(), "map", "61"), "a failed continuation commits no fact")
       Assert.isNil(pool:cacheFs():resolveAsset(scenePath), "a failed continuation commits no bytes")
       Assert.equal(
         pool:cacheFs():readData("data/generated/maps/60/complete"):getString(),
@@ -2886,7 +2881,6 @@ function T.deferred_png_continuation_failure_publishes_nothing()
     error(err, 0)
   end
 end
-
 
 -- A selection that is retired while one of its workers is still encoding a
 -- deferred image keeps that physical slot until the continuation settles
@@ -3017,10 +3011,7 @@ function T.a_retired_continuation_holds_its_slot_while_a_pending_cut_keeps_its_b
         -- it, and the one shared source is already gone even though that
         -- continuation is still owed.
         Assert.isTrue(pool:retireSelection(1), "the selection retires while the continuation is pending")
-        Assert.isNil(
-          pool.sharedSource,
-          "retirement releases the shared source while a continuation still owes work"
-        )
+        Assert.isNil(pool.sharedSource, "retirement releases the shared source while a continuation still owes work")
         pool:selectGeneration({ versionId = "synthretire", generationId = generation }, 2)
         pool:request(sourceMapJob("synthretire", generation, 2, "63", 63, 0))
         local waitingState, waitingDetails = pool:status("map:63")
@@ -3082,6 +3073,5 @@ function T.a_retired_continuation_holds_its_slot_while_a_pending_cut_keeps_its_b
     end
   end)
 end
-
 
 return { tests = T }

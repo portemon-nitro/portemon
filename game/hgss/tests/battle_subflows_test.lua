@@ -360,10 +360,7 @@ end
 ---@param flows table<string, unknown> coordinator resting on the open bag child
 ---@param index integer zero-based battle pocket under opening
 local function openBattlePocket(flows, index)
-  Assert.isTrue(
-    flows:activateControl("bagpocket:" .. tostring(index)),
-    "the battle pocket takes its tap"
-  )
+  Assert.isTrue(flows:activateControl("bagpocket:" .. tostring(index)), "the battle pocket takes its tap")
   flows:tick()
   settlePress(flows)
 end
@@ -536,11 +533,7 @@ function T.bag_refused_rows_explain_themselves_without_sealing()
   -- Retail TryUseItem answers USE on a refused item with its message
   -- page (ShowMessage, nextState 8), never the use-item confirmation.
   Assert.equal(flows:status().childView.bagPage, "message", "the refusal opens the message page")
-  Assert.equal(
-    flows:status().childView.notice,
-    "the attendant blocks its use",
-    "the message names its kernel reason"
-  )
+  Assert.equal(flows:status().childView.notice, "the attendant blocks its use", "the message names its kernel reason")
   flows:dispose()
 end
 
@@ -641,7 +634,8 @@ function T.bag_try_use_item_refusals_resolve_their_staged_keys()
   Assert.equal(
     medicineReason ~= nil and medicineReason.reason or nil,
     "MARKER:battle/bag/message/embargo#2",
-    "embargo resolves its staged key with its move and holder, got " .. tostring(medicineReason ~= nil and medicineReason.reason or "no-row")
+    "embargo resolves its staged key with its move and holder, got "
+      .. tostring(medicineReason ~= nil and medicineReason.reason or "no-row")
   )
   -- The tap entry left the cursor inactive, so the first B only
   -- activates before the second returns to the pocket menu.
@@ -1448,7 +1442,17 @@ local function summaryRoster()
       specialDefense = 10,
       nextExp = 37,
       moves = {
-        { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35, power = 35, accuracy = 100, category = "physical", type = "NORMAL", description = "A test tackle." },
+        {
+          move = "TACKLE",
+          name = "Tackle",
+          pp = 35,
+          maxPp = 35,
+          power = 35,
+          accuracy = 100,
+          category = "physical",
+          type = "NORMAL",
+          description = "A test tackle.",
+        },
       },
     },
     { combatant = 2, slot = 1, name = "BACK", level = 5, hp = 10, maxHp = 18 },
@@ -1458,10 +1462,7 @@ end
 ---@param flows table<string, unknown> coordinator under test driving
 ---@return table<string, unknown> open summary page view
 local function openLeadSummary(flows)
-  Assert.isTrue(
-    flows:open(partyIntent({ party = summaryRoster(), options = switchOptions(2) })),
-    "the party opens"
-  )
+  Assert.isTrue(flows:open(partyIntent({ party = summaryRoster(), options = switchOptions(2) })), "the party opens")
   Assert.isTrue(flows:activateControl("party:0"), "the lead takes its tap")
   flows:tick()
   Assert.equal(flows:status().childView.partyPage, "mon_menu", "selecting a mon opens its menu")
@@ -1541,11 +1542,7 @@ function T.party_summary_shows_its_staged_stat_block()
     "MARKER:battle/party/stat/level-value#1",
     "level resolves its value with its count"
   )
-  Assert.equal(
-    byRole["exp-label"].text,
-    "MARKER:battle/party/stat/exp#0",
-    "remaining experience resolves its label"
-  )
+  Assert.equal(byRole["exp-label"].text, "MARKER:battle/party/stat/exp#0", "remaining experience resolves its label")
   Assert.equal(
     byRole["exp-value"].text,
     "MARKER:battle/party/stat/exp-value#1",
@@ -1558,38 +1555,22 @@ function T.party_summary_shows_its_staged_stat_block()
     "HP resolves its staged current part"
   )
   Assert.equal(byRole["hp-value"].slash, "MARKER:battle/party/stat/hp-slash#0", "HP resolves its staged slash")
-  Assert.equal(
-    byRole["hp-value"].max,
-    "MARKER:battle/party/stat/hp-max#1",
-    "HP resolves its staged maximum part"
-  )
+  Assert.equal(byRole["hp-value"].max, "MARKER:battle/party/stat/hp-max#1", "HP resolves its staged maximum part")
   Assert.equal(byRole["hp-bar"].current, 30, "the HP bar carries live current hit points")
   Assert.equal(byRole["hp-bar"].max, 30, "the HP bar carries live maximum hit points")
-  Assert.equal(
-    byRole["attack-label"].text,
-    "MARKER:battle/party/stat/attack#0",
-    "attack resolves its staged label"
-  )
+  Assert.equal(byRole["attack-label"].text, "MARKER:battle/party/stat/attack#0", "attack resolves its staged label")
   Assert.equal(
     byRole["attack-value"].text,
     "MARKER:battle/party/stat/attack-value#1",
     "attack resolves its staged value with its stat"
   )
-  Assert.equal(
-    byRole["defense-label"].text,
-    "MARKER:battle/party/stat/defense#0",
-    "defense resolves its staged label"
-  )
+  Assert.equal(byRole["defense-label"].text, "MARKER:battle/party/stat/defense#0", "defense resolves its staged label")
   Assert.equal(
     byRole["defense-value"].text,
     "MARKER:battle/party/stat/defense-value#1",
     "defense resolves its staged value with its stat"
   )
-  Assert.equal(
-    byRole["speed-label"].text,
-    "MARKER:battle/party/stat/speed#0",
-    "speed resolves its staged label"
-  )
+  Assert.equal(byRole["speed-label"].text, "MARKER:battle/party/stat/speed#0", "speed resolves its staged label")
   Assert.equal(
     byRole["speed-value"].text,
     "MARKER:battle/party/stat/speed-value#1",
@@ -1625,11 +1606,7 @@ function T.party_summary_shows_its_staged_stat_block()
     "MARKER:battle/party/item/name#1",
     "the held item resolves its staged template with its name"
   )
-  Assert.equal(
-    byRole["button"].text,
-    "MARKER:battle/party/button/check-moves#0",
-    "summary links onward to check-moves"
-  )
+  Assert.equal(byRole["button"].text, "MARKER:battle/party/button/check-moves#0", "summary links onward to check-moves")
   Assert.equal(byRole["ability-desc"].text, "", "no catalog description leaves the ability window empty")
   flows:dispose()
 end
@@ -1683,22 +1660,14 @@ function T.party_move_list_labels_resolve_their_staged_names()
     "MARKER:battle/party/move-name/0#1",
     "the move resolves its staged per-slot template with its name"
   )
-  Assert.equal(
-    byRole["move-pp:0"].label,
-    "MARKER:battle/party/move/pp#0",
-    "the move keeps its staged PP label"
-  )
+  Assert.equal(byRole["move-pp:0"].label, "MARKER:battle/party/move/pp#0", "the move keeps its staged PP label")
   Assert.equal(
     byRole["move-pp:0"].current,
     "MARKER:battle/party/move/pp-current#1",
     "the move keeps its staged current part"
   )
   Assert.equal(byRole["move-pp:0"].slash, "MARKER:battle/party/move/pp-slash#0", "the move keeps its slash")
-  Assert.equal(
-    byRole["move-pp:0"].max,
-    "MARKER:battle/party/move/pp-max#1",
-    "the move keeps its staged maximum part"
-  )
+  Assert.equal(byRole["move-pp:0"].max, "MARKER:battle/party/move/pp-max#1", "the move keeps its staged maximum part")
   Assert.equal(byRole["move-pp:0"].currentCount, 35, "the PP window carries current PP")
   Assert.equal(byRole["move-pp:0"].maxCount, 35, "the PP window carries maximum PP")
   flows:dispose()
@@ -1755,11 +1724,7 @@ function T.party_move_detail_shows_its_staged_words()
     "the detail PP resolves its current part"
   )
   Assert.equal(byRole["pp-value"].slash, "MARKER:battle/party/move/pp-slash#0", "the detail PP resolves its slash")
-  Assert.equal(
-    byRole["pp-value"].max,
-    "MARKER:battle/party/move/pp-max#1",
-    "the detail PP resolves its maximum part"
-  )
+  Assert.equal(byRole["pp-value"].max, "MARKER:battle/party/move/pp-max#1", "the detail PP resolves its maximum part")
   flows:dispose()
 end
 
@@ -1988,7 +1953,9 @@ function T.party_eggs_offer_only_shift_and_back()
   -- (IsSelectedMonEgg guards): only SHIFT and cancel remain.
   local native = menu.native --[[@as table<string, unknown>]]
   local kinds = {}
-  for _, entry in ipairs(native.menu --[[@as table<integer, table<string, unknown>>]]) do
+  for _, entry in
+    ipairs(native.menu --[[@as table<integer, table<string, unknown>>]])
+  do
     kinds[#kinds + 1] = entry.kind
   end
   Assert.deepEqual(kinds, { "switch", "quit" }, "eggs hide summary and check-moves")
@@ -2136,11 +2103,7 @@ function T.party_disabled_shifts_refuse_with_their_retail_messages()
       flows:tick()
     end
     Assert.isNil(flows:takeResult(), case.name .. " SHIFT seals nothing" .. tag)
-    Assert.equal(
-      flows:status().childView.partyPage,
-      "mon_menu",
-      case.name .. " SHIFT stays in the mon menu" .. tag
-    )
+    Assert.equal(flows:status().childView.partyPage, "mon_menu", case.name .. " SHIFT stays in the mon menu" .. tag)
     local native = flows._composed._controller:status()
     Assert.equal(native.state, "message", case.name .. " SHIFT shows its retail message" .. tag)
     Assert.equal(native.message, case.want, case.name .. " names its target" .. tag)
@@ -2199,7 +2162,16 @@ function T.party_move_detail_shows_move_description_with_catalog()
       maxHp = 30,
       ability = "RUN_AWAY",
       moves = {
-        { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35, power = 35, accuracy = 100, category = "physical", description = "A test move description." },
+        {
+          move = "TACKLE",
+          name = "Tackle",
+          pp = 35,
+          maxPp = 35,
+          power = 35,
+          accuracy = 100,
+          category = "physical",
+          description = "A test move description.",
+        },
       },
     },
     { combatant = 2, slot = 1, name = "BACK", level = 5, hp = 10, maxHp = 18 },
@@ -2289,17 +2261,9 @@ function T.party_summary_projects_the_retail_page_model()
     "the gender symbol resolves its staged key"
   )
   Assert.equal(byRole["level-value"].text, "MARKER:battle/party/stat/level-value#1", "level value stages its count")
-  Assert.equal(
-    byRole["hp-value"].current,
-    "MARKER:battle/party/stat/hp-current#1",
-    "HP stages its staged current part"
-  )
+  Assert.equal(byRole["hp-value"].current, "MARKER:battle/party/stat/hp-current#1", "HP stages its staged current part")
   Assert.equal(byRole["hp-value"].slash, "MARKER:battle/party/stat/hp-slash#0", "HP stages its staged slash")
-  Assert.equal(
-    byRole["hp-value"].max,
-    "MARKER:battle/party/stat/hp-max#1",
-    "HP stages its staged maximum part"
-  )
+  Assert.equal(byRole["hp-value"].max, "MARKER:battle/party/stat/hp-max#1", "HP stages its staged maximum part")
   local bar = byRole["hp-bar"]
   Assert.equal(bar.current, 30, "the HP bar carries live current hit points")
   Assert.equal(bar.max, 30, "the HP bar carries live maximum hit points")
@@ -2473,10 +2437,50 @@ local function spriteRoster()
       condition = "poison",
       heldItem = "POTION",
       moves = {
-        { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35, power = 35, accuracy = 100, category = "physical", type = "NORMAL", description = "A test tackle." },
-        { move = "GROWL", name = "Growl", pp = 40, maxPp = 40, power = 0, accuracy = 100, category = "status", type = "NORMAL", description = "A test growl." },
-        { move = "SWIFT", name = "Swift", pp = 20, maxPp = 20, power = 60, accuracy = 0, category = "special", type = "NORMAL", description = "A test swift." },
-        { move = "REST", name = "Rest", pp = 10, maxPp = 10, power = 0, accuracy = 0, category = "status", type = "PSYCHIC", description = "A test rest." },
+        {
+          move = "TACKLE",
+          name = "Tackle",
+          pp = 35,
+          maxPp = 35,
+          power = 35,
+          accuracy = 100,
+          category = "physical",
+          type = "NORMAL",
+          description = "A test tackle.",
+        },
+        {
+          move = "GROWL",
+          name = "Growl",
+          pp = 40,
+          maxPp = 40,
+          power = 0,
+          accuracy = 100,
+          category = "status",
+          type = "NORMAL",
+          description = "A test growl.",
+        },
+        {
+          move = "SWIFT",
+          name = "Swift",
+          pp = 20,
+          maxPp = 20,
+          power = 60,
+          accuracy = 0,
+          category = "special",
+          type = "NORMAL",
+          description = "A test swift.",
+        },
+        {
+          move = "REST",
+          name = "Rest",
+          pp = 10,
+          maxPp = 10,
+          power = 0,
+          accuracy = 0,
+          category = "status",
+          type = "PSYCHIC",
+          description = "A test rest.",
+        },
       },
     },
     { combatant = 2, slot = 1, name = "BACK", level = 5, hp = 10, maxHp = 18 },
@@ -2644,11 +2648,7 @@ function T.party_mon_menu_projects_the_retail_full_screen_page()
   Assert.equal(menu.pageSlot, 0, "the menu names its mon")
   Assert.isTrue(menu.pageIsEgg ~= true, "the lead is no egg")
   local byRole = windowsByRole(menu)
-  Assert.equal(
-    byRole["mon-name"].text,
-    "LEAD",
-    "the mon name resolves through its staged template"
-  )
+  Assert.equal(byRole["mon-name"].text, "LEAD", "the mon name resolves through its staged template")
   Assert.equal(byRole["shift-button"].text, "SHIFT", "SHIFT resolves its button label")
   Assert.equal(byRole["summary-button"].text, "SUMMARY", "SUMMARY resolves its button label")
   Assert.equal(byRole["moves-button"].text, "CHECK MOVES", "CHECK MOVES resolves its button label")
@@ -2658,7 +2658,9 @@ function T.party_mon_menu_projects_the_retail_full_screen_page()
     { kind = "held-item", key = "POTION", x = 136, y = 80 },
   }, "the mon menu stages its retail sprite anchors without status or type icons")
   local regionIds = {}
-  for _, region in ipairs(menu.pageRegions --[[@as table<integer, table<string, unknown>>]]) do
+  for _, region in
+    ipairs(menu.pageRegions --[[@as table<integer, table<string, unknown>>]])
+  do
     regionIds[#regionIds + 1] = region.id
   end
   Assert.deepEqual(regionIds, { "switch", "summary", "moves", "back" }, "hit regions follow the decomp order")
@@ -2669,7 +2671,9 @@ function T.party_mon_menu_projects_the_retail_full_screen_page()
     Assert.equal(box.palette, 9, "mon-menu window boxes keep their palette-9 bank")
   end
   local faceButtons = {}
-  for button in pairs(menu.pageButtonRects --[[@as table<integer, table<string, unknown>>]]) do
+  for button in
+    pairs(menu.pageButtonRects --[[@as table<integer, table<string, unknown>>]])
+  do
     faceButtons[#faceButtons + 1] = button
   end
   table.sort(faceButtons)

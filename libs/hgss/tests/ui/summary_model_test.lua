@@ -846,10 +846,7 @@ function T.roster_rows_carry_ball_and_ribbon_images_for_chrome_demand()
       earnedRibbon = assert(entry.art.image, "ribbon entries carry their visuals")
     end
   end
-  Assert.isTrue(
-    type(earnedRibbon) == "string",
-    "the fixture family plans the earned ds1 ribbon"
-  )
+  Assert.isTrue(type(earnedRibbon) == "string", "the fixture family plans the earned ds1 ribbon")
   Assert.deepEqual(
     facts.roster[1].ribbonImages,
     { earnedRibbon },

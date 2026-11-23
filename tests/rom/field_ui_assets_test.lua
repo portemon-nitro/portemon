@@ -99,8 +99,8 @@ function T.compiled_ui_assets_are_ready_and_stable(romFs, version)
   local second = assert(FieldUiCompiler.compile(romFs))
   Assert.equal(second.marker, bundle.marker)
   ResidentArtifactFixture.publish(cache, "field-ui", "global", function(artifact)
-      return FieldUiCacheWriter.stage(artifact, bundle)
-    end)
+    return FieldUiCacheWriter.stage(artifact, bundle)
+  end)
   Assert.isTrue(FieldUiAssetCache.isReady(cache, bundle.marker), "every indexed file is ready after publication")
   Assert.isFalse(FieldUiAssetCache.isReady(cache, bundle.marker .. "-stale"))
 end
@@ -413,8 +413,8 @@ function T.two_row_prompt_resources_compile_to_semantic_button_states(romFs, ver
   -- readiness proof reads exactly the sealed bytes this test staged.
   local cache = CacheFs.forVersion(version, FakeCache.new())
   ResidentArtifactFixture.publish(cache, "field-ui", "global", function(artifact)
-      return FieldUiCacheWriter.stage(artifact, bundle)
-    end)
+    return FieldUiCacheWriter.stage(artifact, bundle)
+  end)
   Assert.isTrue(FieldUiAssetCache.isReady(cache, bundle.marker), "every prompt file is ready after publication")
 end
 

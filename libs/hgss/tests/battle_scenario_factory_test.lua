@@ -239,11 +239,7 @@ function T.production_scenarios_carry_the_full_eligible_roster_with_a_conscious_
     -- (SortItemsIntoPockets appends in bag-slot order): the player
     -- stock carries that order beside its quantities so the battle bag
     -- lists medicine before balls exactly like the field bag.
-    Assert.deepEqual(
-      stock.slotOrder,
-      { "POTION", "POKE_BALL" },
-      "the player stock carries its bag slot order"
-    )
+    Assert.deepEqual(stock.slotOrder, { "POTION", "POKE_BALL" }, "the player stock carries its bag slot order")
   end
   Assert.equal(
     trainer.participants[2].roster[1].id,

@@ -210,9 +210,15 @@ function T.a_started_wild_battle_suspends_the_script_on_the_battle_task()
   Assert.deepEqual(run.scheduler.created.spec, { kind = "wild", details = details })
   Assert.equal(stored[0x800C], 0, "a battle leaves the item result cleared")
   local headbutt = runWith({ fieldMoveAftermath = aftermathDouble({ kind = "battle", details = details }) })
-  Assert.equal(Runtime.executeNode({ op = "try_headbutt_encounter", result = var(0x800C) }, headbutt), Runtime.OUTCOME_BLOCK)
+  Assert.equal(
+    Runtime.executeNode({ op = "try_headbutt_encounter", result = var(0x800C) }, headbutt),
+    Runtime.OUTCOME_BLOCK
+  )
   local struck, storedHeadbutt = runWith({ fieldMoveAftermath = aftermathDouble({ kind = "none" }) })
-  Assert.equal(Runtime.executeNode({ op = "try_headbutt_encounter", result = var(0x800C) }, struck), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(
+    Runtime.executeNode({ op = "try_headbutt_encounter", result = var(0x800C) }, struck),
+    Runtime.OUTCOME_CONTINUE
+  )
   Assert.equal(storedHeadbutt[0x800C], 0)
 end
 

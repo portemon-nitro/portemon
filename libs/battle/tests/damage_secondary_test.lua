@@ -1802,10 +1802,7 @@ function T.defender_held_items_scale_the_incoming_strike()
   local plainSpecial = runPreparedStrike("THUNDERBOLT", specialFacts(), FIXED_SEED, resistedSpecial)
   Assert.equal(plainSpecial.outcome.result, "hit", "the special probe connects")
   local scaledFacts = { foeSpecies = "CLAMPERL", defenderTypes = { [2] = { "grass" } } }
-  local scaled = runPreparedStrike("THUNDERBOLT", specialFacts(), FIXED_SEED, scaledFacts, function(
-    _,
-    ctx
-  )
+  local scaled = runPreparedStrike("THUNDERBOLT", specialFacts(), FIXED_SEED, scaledFacts, function(_, ctx)
     ctx:setHeldItem(2, "DEEPSEASCALE")
   end)
   Assert.equal(scaled.outcome.result, "hit", "the scaled special probe connects")
@@ -1824,10 +1821,7 @@ function T.defender_held_items_scale_the_incoming_strike()
   local plainPhysical = runPreparedStrike("TACKLE", physicalFacts(), FIXED_SEED, resistedPhysical)
   Assert.equal(plainPhysical.outcome.result, "hit", "the physical probe connects")
   local powderedFacts = { foeSpecies = "DITTO", defenderTypes = { [2] = { "rock" } } }
-  local powdered = runPreparedStrike("TACKLE", physicalFacts(), FIXED_SEED, powderedFacts, function(
-    _,
-    ctx
-  )
+  local powdered = runPreparedStrike("TACKLE", physicalFacts(), FIXED_SEED, powderedFacts, function(_, ctx)
     ctx:setHeldItem(2, "METAL_POWDER")
   end)
   Assert.equal(powdered.outcome.result, "hit", "the powdered physical probe connects")
@@ -1840,10 +1834,7 @@ function T.defender_held_items_scale_the_incoming_strike()
       .. ")"
   )
   local dewedFacts = { foeSpecies = "LATIAS", defenderTypes = { [2] = { "grass" } } }
-  local dewed = runPreparedStrike("THUNDERBOLT", specialFacts(), FIXED_SEED, dewedFacts, function(
-    _,
-    ctx
-  )
+  local dewed = runPreparedStrike("THUNDERBOLT", specialFacts(), FIXED_SEED, dewedFacts, function(_, ctx)
     ctx:setHeldItem(2, "SOUL_DEW")
   end)
   Assert.equal(dewed.outcome.result, "hit", "the dewed special probe connects")
@@ -1869,13 +1860,9 @@ function T.defender_scaling_honors_frontier_and_transform()
   local plainFacts = { foeSpecies = "LATIAS", defenderTypes = { [2] = { "grass" } } }
   local plain = runPreparedStrike("THUNDERBOLT", specialFacts(), FIXED_SEED, plainFacts)
   local frontierFacts = { foeSpecies = "LATIAS", frontier = true, defenderTypes = { [2] = { "grass" } } }
-  local frontierDewed =
-    runPreparedStrike("THUNDERBOLT", specialFacts(), FIXED_SEED, frontierFacts, function(
-      _,
-      ctx
-    )
-      ctx:setHeldItem(2, "SOUL_DEW")
-    end)
+  local frontierDewed = runPreparedStrike("THUNDERBOLT", specialFacts(), FIXED_SEED, frontierFacts, function(_, ctx)
+    ctx:setHeldItem(2, "SOUL_DEW")
+  end)
   Assert.equal(frontierDewed.outcome.result, "hit", "the frontier probe connects")
   Assert.equal(
     frontierDewed.dealt,
@@ -1887,23 +1874,19 @@ function T.defender_scaling_honors_frontier_and_transform()
       .. ")"
   )
   local ghostFacts = function()
-    return moveFacts(
-      "SHADOW_BALL",
-      { power = 20, accuracy = 100, category = "special", moveType = "ghost" }
-    )
+    return moveFacts("SHADOW_BALL", { power = 20, accuracy = 100, category = "special", moveType = "ghost" })
   end
   local giratinaPlain = runPreparedStrike("SHADOW_BALL", ghostFacts(), FIXED_SEED, {
     userSpecies = "GIRATINA",
     defenderTypes = { [2] = { "fighting" } },
   })
   Assert.equal(giratinaPlain.outcome.result, "hit", "the origin probe connects")
-  local transformed =
-    runPreparedStrike("SHADOW_BALL", ghostFacts(), FIXED_SEED, {
-      heldItem = "GRISEOUS_ORB",
-      userSpecies = "GIRATINA",
-      userTransformed = true,
-      defenderTypes = { [2] = { "fighting" } },
-    })
+  local transformed = runPreparedStrike("SHADOW_BALL", ghostFacts(), FIXED_SEED, {
+    heldItem = "GRISEOUS_ORB",
+    userSpecies = "GIRATINA",
+    userTransformed = true,
+    defenderTypes = { [2] = { "fighting" } },
+  })
   Assert.equal(transformed.outcome.result, "hit", "the transformed probe connects")
   Assert.equal(
     transformed.dealt,
@@ -1914,12 +1897,11 @@ function T.defender_scaling_honors_frontier_and_transform()
       .. tostring(transformed.dealt)
       .. ")"
   )
-  local origin =
-    runPreparedStrike("SHADOW_BALL", ghostFacts(), FIXED_SEED, {
-      heldItem = "GRISEOUS_ORB",
-      userSpecies = "GIRATINA",
-      defenderTypes = { [2] = { "fighting" } },
-    })
+  local origin = runPreparedStrike("SHADOW_BALL", ghostFacts(), FIXED_SEED, {
+    heldItem = "GRISEOUS_ORB",
+    userSpecies = "GIRATINA",
+    defenderTypes = { [2] = { "fighting" } },
+  })
   Assert.equal(origin.outcome.result, "hit", "the untransformed origin probe connects")
   Assert.isTrue(
     origin.dealt --[[@as integer]] > giratinaPlain.dealt --[[@as integer]],
@@ -1939,11 +1921,9 @@ function T.metronome_item_scales_with_consecutive_use()
   local facts = function()
     return moveFacts("TACKLE", { power = 20, accuracy = 100, category = "physical", moveType = "normal" })
   end
-  local first =
-    runPreparedStrike("TACKLE", facts(), FIXED_SEED, { heldItem = "METRONOME", metronomeTurns = 0 })
+  local first = runPreparedStrike("TACKLE", facts(), FIXED_SEED, { heldItem = "METRONOME", metronomeTurns = 0 })
   Assert.equal(first.outcome.result, "hit", "the opening metronome strike connects")
-  local second =
-    runPreparedStrike("TACKLE", facts(), FIXED_SEED, { heldItem = "METRONOME", metronomeTurns = 1 })
+  local second = runPreparedStrike("TACKLE", facts(), FIXED_SEED, { heldItem = "METRONOME", metronomeTurns = 1 })
   Assert.equal(second.outcome.result, "hit", "the repeated metronome strike connects")
   Assert.isTrue(
     second.dealt --[[@as integer]] > first.dealt --[[@as integer]],
@@ -1977,17 +1957,11 @@ function T.zoom_lens_boosts_accuracy_only_when_moving_last()
   local function duelFor(movedLast)
     return { foeActed = movedLast, foeHurt = false, userHurt = false }
   end
-  local first = runPreparedStrike("TACKLE", facts(), seed --[[@as integer]], { duel = duelFor(false) }, function(
-    _,
-    ctx
-  )
+  local first = runPreparedStrike("TACKLE", facts(), seed --[[@as integer]], { duel = duelFor(false) }, function(_, ctx)
     ctx:setHeldItem(1, "ZOOM_LENS")
   end)
   Assert.equal(first.outcome.result, "missed", "zoom lens misses moving first")
-  local last = runPreparedStrike("TACKLE", facts(), seed --[[@as integer]], { duel = duelFor(true) }, function(
-    _,
-    ctx
-  )
+  local last = runPreparedStrike("TACKLE", facts(), seed --[[@as integer]], { duel = duelFor(true) }, function(_, ctx)
     ctx:setHeldItem(1, "ZOOM_LENS")
   end)
   Assert.equal(last.outcome.result, "hit", "zoom lens connects moving last")
@@ -2060,11 +2034,7 @@ function T.draining_a_heal_blocked_holder_restores_nothing()
   Assert.equal(blocked.outcome.result, "hit", "the blocked drain connects")
   Assert.isTrue(blocked.dealt --[[@as integer]] > 0, "the blocked drain still deals damage")
   local ceiling = blocked.ctx:entryOf(1).maxHp --[[@as integer]]
-  Assert.equal(
-    blocked.ctx:damage(1, 0, { kind = "probe" }).before,
-    ceiling - 20,
-    "the blocked drain restores nothing"
-  )
+  Assert.equal(blocked.ctx:damage(1, 0, { kind = "probe" }).before, ceiling - 20, "the blocked drain restores nothing")
 end
 
 -- Shell Bell stays silent on a full-health holder: the native
@@ -2078,7 +2048,9 @@ function T.shell_bell_stays_silent_on_a_full_health_holder()
   local probe = runPreparedStrike("TACKLE", facts(), FIXED_SEED, { heldItem = "SHELL_BELL" })
   Assert.equal(probe.outcome.result, "hit", "the ringing strike connects")
   local announced = false
-  for _, event in ipairs(probe.state.outbox --[[@as table<integer, table<string, unknown>>]]) do
+  for _, event in
+    ipairs(probe.state.outbox --[[@as table<integer, table<string, unknown>>]])
+  do
     local record = event --[[@as table<string, unknown>]]
     if record.kind == "healed" then
       announced = true
@@ -2104,7 +2076,8 @@ function T.rowap_and_jaboca_answer_their_matching_splits()
     end
     return recoil
   end
-  local specialFacts = moveFacts("THUNDERBOLT", { power = 30, accuracy = 100, category = "special", moveType = "electric" })
+  local specialFacts =
+    moveFacts("THUNDERBOLT", { power = 30, accuracy = 100, category = "special", moveType = "electric" })
   local rowap = runPreparedStrike("THUNDERBOLT", specialFacts, FIXED_SEED, nil, function(_, ctx)
     ctx:setHeldItem(2, "ROWAP_BERRY")
   end)
@@ -2220,7 +2193,9 @@ function T.kings_rock_flinches_through_the_u_turn_pivot()
   local probe = runPreparedStrike("U_TURN", facts, FIXED_SEED, { heldItem = "KINGS_ROCK", stream = stream })
   Assert.equal(probe.outcome.result, "hit", "the pivot strike connects")
   local flinched = false
-  for _, event in ipairs(probe.state.outbox --[[@as table<integer, table<string, unknown>>]]) do
+  for _, event in
+    ipairs(probe.state.outbox --[[@as table<integer, table<string, unknown>>]])
+  do
     local record = event --[[@as table<string, unknown>]]
     if record.kind == "flinch" then
       local payload = record.payload --[[@as table<string, unknown>]]
@@ -2253,15 +2228,13 @@ function T.contact_abilities_answer_the_u_turn_pivot()
       return 1
     end,
   }
-  local probe = runPreparedStrike(
-    "U_TURN",
-    facts,
-    FIXED_SEED,
-    { abilities = { user = "NONE", foe = "STATIC" }, stream = stream }
-  )
+  local probe =
+    runPreparedStrike("U_TURN", facts, FIXED_SEED, { abilities = { user = "NONE", foe = "STATIC" }, stream = stream })
   Assert.equal(probe.outcome.result, "hit", "the pivot strike connects")
   local sparked = false
-  for _, event in ipairs(probe.state.outbox --[[@as table<integer, table<string, unknown>>]]) do
+  for _, event in
+    ipairs(probe.state.outbox --[[@as table<integer, table<string, unknown>>]])
+  do
     local record = event --[[@as table<string, unknown>]]
     if record.kind == "ability" then
       local payload = record.payload --[[@as table<string, unknown>]]
@@ -2291,7 +2264,9 @@ function T.u_turn_strikes_for_damage_before_pivoting()
   Assert.equal(probe.outcome.result, "hit", "the pivot strike connects")
   Assert.isTrue(probe.dealt --[[@as integer]] > 0, "u-turn deals striker damage")
   local pivoted = false
-  for _, event in ipairs(probe.state.outbox --[[@as table<integer, table<string, unknown>>]]) do
+  for _, event in
+    ipairs(probe.state.outbox --[[@as table<integer, table<string, unknown>>]])
+  do
     local record = event --[[@as table<string, unknown>]]
     if record.kind == "switch-intent" then
       pivoted = true
@@ -2325,7 +2300,9 @@ function T.knockout_pivot_strikes_keep_the_user_in_place()
   ---@param probe table finished probe under inspection
   ---@return boolean true when the probe announced a strike-and-leave intent
   local function pivoted(probe)
-    for _, event in ipairs(probe.state.outbox --[[@as table<integer, table<string, unknown>>]]) do
+    for _, event in
+      ipairs(probe.state.outbox --[[@as table<integer, table<string, unknown>>]])
+    do
       local record = event --[[@as table<string, unknown>]]
       if record.kind == "switch-intent" then
         return true
@@ -2345,22 +2322,12 @@ function T.knockout_pivot_strikes_keep_the_user_in_place()
   if recoil < 1 then
     recoil = 1
   end
-  local backlash = runPreparedStrike("U_TURN", facts(), FIXED_SEED, { heldItem = "LIFE_ORB" }, function(
-    _,
-    ctx
-  )
+  local backlash = runPreparedStrike("U_TURN", facts(), FIXED_SEED, { heldItem = "LIFE_ORB" }, function(_, ctx)
     ctx:damage(1, ceiling - recoil, { kind = "probe" })
   end)
   Assert.equal(backlash.outcome.result, "hit", "the recoiling pivot connects")
-  Assert.equal(
-    backlash.ctx:damage(1, 0, { kind = "probe" }).after,
-    0,
-    "the backlash fells its user"
-  )
-  Assert.isTrue(
-    backlash.ctx:damage(2, 0, { kind = "probe" }).after > 0,
-    "the defender survives the recoil leg"
-  )
+  Assert.equal(backlash.ctx:damage(1, 0, { kind = "probe" }).after, 0, "the backlash fells its user")
+  Assert.isTrue(backlash.ctx:damage(2, 0, { kind = "probe" }).after > 0, "the defender survives the recoil leg")
   Assert.isFalse(pivoted(backlash), "the recoil knockout announces no pivot")
 end
 

@@ -1100,11 +1100,7 @@ function T.call_window_paints_its_information_plane_and_owed_choice_only()
       quads[record.path] = (quads[record.path] or 0) + 1
     end
   end
-  Assert.deepEqual(
-    images,
-    { ["test-upper"] = 1 },
-    "the call window paints its information plane and no card plane"
-  )
+  Assert.deepEqual(images, { ["test-upper"] = 1 }, "the call window paints its information plane and no card plane")
   Assert.isTrue((quads["menu-tiles"] or 0) > 0, "an owed choice paints its shared list-menu frame")
   Assert.equal(callTextDraws({ nameText, classText }), 2, "the caller name and its message print")
   Assert.equal(rowBandFills(graphics), 0, "the call window never paints contact row bands")

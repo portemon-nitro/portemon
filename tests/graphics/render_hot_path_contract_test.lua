@@ -293,12 +293,17 @@ function T.battle_strip_draws_reuse_identical_quads_across_frames()
   local objects = { { tile = 0, width = 256, height = 64, x = 0, y = 0 } }
   local view = {
     hudPatchSpans = {
-      nickname = { { sideType = 0, spans = {
-        { tile = 0, count = 8 },
-        { tile = 8, count = 8 },
-        { tile = 16, count = 8 },
-        { tile = 24, count = 8 },
-      } } },
+      nickname = {
+        {
+          sideType = 0,
+          spans = {
+            { tile = 0, count = 8 },
+            { tile = 8, count = 8 },
+            { tile = 16, count = 8 },
+            { tile = 24, count = 8 },
+          },
+        },
+      },
       level = { { sideType = 0, spans = { { tile = 100, count = 3 }, { tile = 110, count = 3 } } } },
     },
     textPalettes = { hud = { colors = palette } },

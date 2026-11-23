@@ -2187,11 +2187,7 @@ function T.settled_idle_work_rests_without_new_interest_or_reads()
   Assert.equal(pool.uploads, snapshot.uploads, "settled idle uploads no new images")
   Assert.equal(producerCalls.count, snapshot.producer, "settled idle reissues no producer demand")
   Assert.equal(cacheLoads.count, snapshot.loads, "settled idle reloads no manifests")
-  Assert.equal(
-    manifestReads.count,
-    snapshot.manifest,
-    "settled idle re-reads no static manifest state"
-  )
+  Assert.equal(manifestReads.count, snapshot.manifest, "settled idle re-reads no static manifest state")
   owner:release()
   Assert.equal(pool:stats().outstandingLeases, 0, "close returns every adopted image interest")
 end

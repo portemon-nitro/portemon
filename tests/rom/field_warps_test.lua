@@ -106,7 +106,8 @@ function T.elevator_anchor_resolves_the_scripted_floor_destination(romFs)
   -- The floor's return warp is the door into the elevator: its destination
   -- record on the elevator map is the 0x100 anchor, so the arrival is the one
   -- that records the entrance the anchor later leaves through.
-  local backTrigger = assert(classificationAt(firstFloor, 3, 2), "the floor warp tile carries a transition classification")
+  local backTrigger =
+    assert(classificationAt(firstFloor, 3, 2), "the floor warp tile carries a transition classification")
   Assert.equal(backTrigger.kind, "door", "the floor returns through the elevator door")
 
   local unset = Assert.throws(function()

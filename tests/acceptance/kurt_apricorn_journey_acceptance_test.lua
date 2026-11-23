@@ -497,8 +497,20 @@ end
 
 function T.tests.yellow_and_blue_rows_keep_their_native_apricorn_and_ball_identities()
   local cases = {
-    { rowIndex = 2, apricornKey = "YLW_APRICORN", otherKey = "BLU_APRICORN", ballKey = "MOON_BALL", label = "Ylw Apricorn" },
-    { rowIndex = 3, apricornKey = "BLU_APRICORN", otherKey = "YLW_APRICORN", ballKey = "LURE_BALL", label = "Blu Apricorn" },
+    {
+      rowIndex = 2,
+      apricornKey = "YLW_APRICORN",
+      otherKey = "BLU_APRICORN",
+      ballKey = "MOON_BALL",
+      label = "Ylw Apricorn",
+    },
+    {
+      rowIndex = 3,
+      apricornKey = "BLU_APRICORN",
+      otherKey = "YLW_APRICORN",
+      ballKey = "LURE_BALL",
+      label = "Blu Apricorn",
+    },
   }
   for _, case in ipairs(cases) do
     local date = { year = 2000, month = 1, day = 1, hour = 12, minute = 0, second = 0 }

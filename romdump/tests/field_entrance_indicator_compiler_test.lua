@@ -62,7 +62,11 @@ local function installCenterHealingMocks()
             batches = { { geometry = { file = MapAssetCache.modelBankPath("mesh"), drawIndex = 0 } } },
           },
           materials = {
-            { id = 0, name = "effect", texture = { file = MapAssetCache.textureBankPath("texture"), textureName = "effect" } },
+            {
+              id = 0,
+              name = "effect",
+              texture = { file = MapAssetCache.textureBankPath("texture"), textureName = "effect" },
+            },
           },
           animations = { { name = name, frameCount = name == "moniter_mb" and 32 or 16 } },
         }
@@ -628,7 +632,11 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
           batches = { { geometry = { file = MapAssetCache.modelBankPath("mesh"), drawIndex = 0 } } },
         },
         materials = {
-          { id = 0, name = "effect", texture = { file = MapAssetCache.textureBankPath("texture"), textureName = "effect" } },
+          {
+            id = 0,
+            name = "effect",
+            texture = { file = MapAssetCache.textureBankPath("texture"), textureName = "effect" },
+          },
         },
         animations = animResult.clips,
       }, {}

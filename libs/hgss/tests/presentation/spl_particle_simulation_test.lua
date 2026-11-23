@@ -359,15 +359,9 @@ end
 function T.tests.simulations_borrow_their_boot_stream_record()
   local boot = { state = 0 }
   local ok, sim = pcall(SplParticleSimulation.new, boot, 0, {})
-  Assert.isTrue(
-    ok,
-    "simulations borrow one boot stream record instead of a numeric seed: " .. tostring(sim)
-  )
+  Assert.isTrue(ok, "simulations borrow one boot stream record instead of a numeric seed: " .. tostring(sim))
   if ok then
-    Assert.isTrue(
-      sim.randomState == boot,
-      "draws advance the borrowed boot record the whole boot shares"
-    )
+    Assert.isTrue(sim.randomState == boot, "draws advance the borrowed boot record the whole boot shares")
   end
 end
 
@@ -398,7 +392,14 @@ function T.tests.a_full_particle_pool_generates_nothing_and_draws_nothing()
   local sim = SplParticleSimulation.new(
     boot,
     0,
-    { record({ persistent = true, emitterLife = 0, particleLife = 10000, generation = { countFx = 10 * 4096, interval = 1 } }) }
+    {
+      record({
+        persistent = true,
+        emitterLife = 0,
+        particleLife = 10000,
+        generation = { countFx = 10 * 4096, interval = 1 },
+      }),
+    }
   )
   for _ = 1, 20 do
     SplParticleSimulation.addEmitter(sim, 0, nil)
@@ -447,10 +448,7 @@ function T.tests.retained_placements_keep_the_recycled_node_position()
   end
   local last = runtime.particles[1]
   Assert.notNil(last, "the particle still lives on its third tick")
-  Assert.isTrue(
-    math.sqrt(last.x ^ 2 + last.y ^ 2 + last.z ^ 2) > 1,
-    "the live particle moved away from the origin"
-  )
+  Assert.isTrue(math.sqrt(last.x ^ 2 + last.y ^ 2 + last.z ^ 2) > 1, "the live particle moved away from the origin")
   for _ = 1, 2 do
     SplParticleSimulation.advance(sim)
   end
@@ -530,7 +528,15 @@ function T.tests.random_fields_fire_on_their_interval_with_three_draws()
   local sim = SplParticleSimulation.new(
     boot,
     0,
-    { record({ persistent = true, emitterLife = 0, particleLife = 100, fields = { field }, generation = { countFx = 4096, interval = 100 } }) }
+    {
+      record({
+        persistent = true,
+        emitterLife = 0,
+        particleLife = 100,
+        fields = { field },
+        generation = { countFx = 4096, interval = 100 },
+      }),
+    }
   )
   local runtime = SplParticleSimulation.addEmitter(sim, 0, nil)
   SplParticleSimulation.advance(sim)
@@ -555,7 +561,15 @@ function T.tests.random_fields_skip_off_interval_ticks_without_draws()
   local sim = SplParticleSimulation.new(
     boot,
     0,
-    { record({ persistent = true, emitterLife = 0, particleLife = 100, fields = { field }, generation = { countFx = 4096, interval = 100 } }) }
+    {
+      record({
+        persistent = true,
+        emitterLife = 0,
+        particleLife = 100,
+        fields = { field },
+        generation = { countFx = 4096, interval = 100 },
+      }),
+    }
   )
   SplParticleSimulation.addEmitter(sim, 0, nil)
   SplParticleSimulation.advance(sim)
@@ -656,8 +670,7 @@ function T.tests.per_manager_clones_isolate_fields_from_siblings_and_the_cache()
   local first = SplParticleSimulation.new(bootA, 0, { cached })
   local second = SplParticleSimulation.new(bootB, 0, { cached })
   Assert.isTrue(first.resources[1] ~= cached, "the manager clones its resource record")
-  first.resources[1].fields[#first.resources[1].fields + 1] =
-    { kind = "gravity", magnitude = { x = 0, y = -1, z = 0 } }
+  first.resources[1].fields[#first.resources[1].fields + 1] = { kind = "gravity", magnitude = { x = 0, y = -1, z = 0 } }
   Assert.equal(#second.resources[1].fields, 0, "a sibling manager keeps its own fields")
   Assert.equal(#cached.fields, 0, "the cached payload stays immutable")
   SplParticleSimulation.addEmitter(first, 0, nil)
@@ -676,7 +689,14 @@ function T.tests.cycling_polygon_identities_wrap_from_sixty_three_to_six()
   local sim = SplParticleSimulation.new(
     boot,
     0,
-    { record({ persistent = true, emitterLife = 0, particleLife = 200, generation = { countFx = 4096, interval = 200 } }) }
+    {
+      record({
+        persistent = true,
+        emitterLife = 0,
+        particleLife = 200,
+        generation = { countFx = 4096, interval = 200 },
+      }),
+    }
   )
   local runtime = SplParticleSimulation.addEmitter(sim, 0, nil)
   local seen = {}

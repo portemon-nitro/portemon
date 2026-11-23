@@ -691,33 +691,69 @@ function T.source_field_primitive_operands_must_survive_translation()
         node.actor = { ref = "actor", special = "player" }
       end,
     },
-    { opcode = 109, item = 1, mutate = function(node)
-      node.movementType = "stationary"
-    end },
-    { opcode = 240, item = 2, mutate = function(node)
-      node.fieldX = 3
-    end },
-    { opcode = 241, item = 3, mutate = function(node)
-      node.result = { value = "var", id = 0x4009 }
-    end },
-    { opcode = 242, item = 4, mutate = function(node)
-      node.result = node.floor
-    end },
-    { opcode = 242, item = 4, mutate = function(node)
-      node.tileY = 7
-    end },
-    { opcode = 342, item = 5, mutate = function(node)
-      node.fieldZ = 0
-    end },
-    { opcode = 344, item = 6, mutate = function(node)
-      node.direction = { value = "var", id = 0x8008 }
-    end },
-    { opcode = 488, item = 7, mutate = function(node)
-      node.length = 6
-    end },
-    { opcode = 522, item = 8, mutate = function(node)
-      node.result = { value = "var", id = 0x4009 }
-    end },
+    {
+      opcode = 109,
+      item = 1,
+      mutate = function(node)
+        node.movementType = "stationary"
+      end,
+    },
+    {
+      opcode = 240,
+      item = 2,
+      mutate = function(node)
+        node.fieldX = 3
+      end,
+    },
+    {
+      opcode = 241,
+      item = 3,
+      mutate = function(node)
+        node.result = { value = "var", id = 0x4009 }
+      end,
+    },
+    {
+      opcode = 242,
+      item = 4,
+      mutate = function(node)
+        node.result = node.floor
+      end,
+    },
+    {
+      opcode = 242,
+      item = 4,
+      mutate = function(node)
+        node.tileY = 7
+      end,
+    },
+    {
+      opcode = 342,
+      item = 5,
+      mutate = function(node)
+        node.fieldZ = 0
+      end,
+    },
+    {
+      opcode = 344,
+      item = 6,
+      mutate = function(node)
+        node.direction = { value = "var", id = 0x8008 }
+      end,
+    },
+    {
+      opcode = 488,
+      item = 7,
+      mutate = function(node)
+        node.length = 6
+      end,
+    },
+    {
+      opcode = 522,
+      item = 8,
+      mutate = function(node)
+        node.result = { value = "var", id = 0x4009 }
+      end,
+    },
   }
   for _, case in ipairs(cases) do
     local mutatedScript, mutatedIr, mutated = lower()

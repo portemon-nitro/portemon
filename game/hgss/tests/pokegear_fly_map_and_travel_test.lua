@@ -827,20 +827,12 @@ function T.tests.taps_outside_the_fly_menu_keep_it_open()
   selector:updateFixed({ { type = "pointer_up", pointerId = "t", x = 8, y = 8 } })
   Assert.notNil(selector:status().view.menu, "a tap outside the menu frame keeps it open")
   Assert.isNil(selector:takeResult(), "the outside tap settles no terminal")
-  Assert.equal(
-    selector:status().view.prompt,
-    "Fly to Landmark 41?",
-    "the open menu keeps naming the destination"
-  )
+  Assert.equal(selector:status().view.prompt, "Fly to Landmark 41?", "the open menu keeps naming the destination")
   selector:updateFixed({ { type = "navigate", direction = "down" } })
   selector:updateFixed({ { type = "confirm" } })
   Assert.isNil(selector:status().view.menu, "Quit closes the menu")
   Assert.isNil(selector:takeResult(), "Quit settles no destination")
-  Assert.equal(
-    selector:status().view.prompt,
-    "Choose your destination.",
-    "quitting restores the neutral prompt"
-  )
+  Assert.equal(selector:status().view.prompt, "Choose your destination.", "quitting restores the neutral prompt")
   selector:dispose()
 end
 

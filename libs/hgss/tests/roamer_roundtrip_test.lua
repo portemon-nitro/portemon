@@ -60,7 +60,8 @@ function T.repel_steps_decrement_once_per_committed_step()
   Assert.equal(armed:capture().repelSteps, 0, "the spent counter persists")
 end
 
-function T.roamer_encounters_reuse_the_stored_identity()  local state, stored = roamingState()
+function T.roamer_encounters_reuse_the_stored_identity()
+  local state, stored = roamingState()
   local found = state:prepareEncounter("roamer-eevee")
   Assert.equal(found.key, "roamer-eevee")
   Assert.equal(found.location, 11)

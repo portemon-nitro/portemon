@@ -163,7 +163,8 @@ function T.tests.start_menu_offers_party_once_owned_and_returns_to_field()
     -- disabled until the first mon is owned.
     grantStarter(game)
     openStartMenu(game)
-    local emptyAction = assert(actionById(menuStatus(game), POKEMON_ACTION), "the starter unlock draws the party action")
+    local emptyAction =
+      assert(actionById(menuStatus(game), POKEMON_ACTION), "the starter unlock draws the party action")
     Assert.isFalse(emptyAction.enabled, "an empty party must not offer a usable party route")
     closeStartMenu(game)
     local closed = game:snapshot()

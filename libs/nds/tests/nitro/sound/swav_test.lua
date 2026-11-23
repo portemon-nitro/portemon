@@ -166,16 +166,9 @@ end
 -- loud positive run sticks at 0x7FFF and a loud negative run at -0x7FFF.
 function T.swav_clips_adpcm_predictor_at_signed_bounds()
   local loud = decodeOrFail(SwarFixture.adpcmRaw(32760, 88, string.rep("\a", 4), { sampleRate = 22050 }))
-  Assert.deepEqual(
-    pcm16Samples(loud.pcm16le),
-    { 32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767 }
-  )
-  local quiet =
-    decodeOrFail(SwarFixture.adpcmRaw(-32760, 88, string.rep("\255", 4), { sampleRate = 22050 }))
-  Assert.deepEqual(
-    pcm16Samples(quiet.pcm16le),
-    { -32767, -32767, -32767, -32767, -32767, -32767, -32767, -32767 }
-  )
+  Assert.deepEqual(pcm16Samples(loud.pcm16le), { 32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767 })
+  local quiet = decodeOrFail(SwarFixture.adpcmRaw(-32760, 88, string.rep("\255", 4), { sampleRate = 22050 }))
+  Assert.deepEqual(pcm16Samples(quiet.pcm16le), { -32767, -32767, -32767, -32767, -32767, -32767, -32767, -32767 })
 end
 
 -- The greedy encoder round-trips exactly for constant signals (zero

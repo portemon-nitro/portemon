@@ -80,10 +80,8 @@ local function startLive(program)
   local scene = sceneWithPair()
   local journal = { acquired = {}, released = {} }
   local audio = {}
-  function audio.play(_name)
-  end
-  function audio.stop(_name)
-  end
+  function audio.play(_name) end
+  function audio.stop(_name) end
   function audio.isFinished(_name)
     return true
   end

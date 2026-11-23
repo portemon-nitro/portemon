@@ -779,19 +779,16 @@ function T.declined_nickname_keeps_default_name_and_finished_battle()
   local caughtPersonality = caught.personality
   local foe = makeFoe("EEVEE", 4, 0xDEC11E02)
   local launchId = "launch-declined-nickname"
-  local scenario = ScenarioFactory.fromEncounter(
-    { attemptId = launchId .. "-attempt", mon = foe },
-    {
-      party = party,
-      player = {
-        trainerId = 99,
-        trainerName = "MINT",
-        language = "french",
-        trainerClassKey = "PKMN_TRAINER_ETHAN",
-        metBill = false,
-      },
-    }
-  )
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = launchId .. "-attempt", mon = foe }, {
+    party = party,
+    player = {
+      trainerId = 99,
+      trainerName = "MINT",
+      language = "french",
+      trainerClassKey = "PKMN_TRAINER_ETHAN",
+      metBill = false,
+    },
+  })
   local record = { enters = 0, packets = {}, leaves = 0, disposed = 0, opened = {}, answered = {} }
   local battle = BattleRuntime.new({
     request = {
@@ -863,13 +860,10 @@ function T.stale_revision_before_rename_keeps_committed_mon()
   local caught = factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 4 }))
   local foe = makeFoe("EEVEE", 4, 0x57A1E002)
   local launchId = "launch-stale-rename"
-  local scenario = ScenarioFactory.fromEncounter(
-    { attemptId = launchId .. "-attempt", mon = foe },
-    {
-      party = party,
-      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
-    }
-  )
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = launchId .. "-attempt", mon = foe }, {
+    party = party,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local record = { enters = 0, packets = {}, leaves = 0, disposed = 0, opened = {}, answered = {} }
   local port = decliningPort(record)
   -- The port answers with a typed name instead of a decline so the stale

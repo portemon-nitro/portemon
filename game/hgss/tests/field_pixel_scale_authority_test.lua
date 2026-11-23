@@ -88,22 +88,11 @@ T.tests.production_projection_uses_the_resolved_scale_and_fitted_reference_heigh
 end
 
 local function assertCameraFollowsAllocatedGrid(runtime, nominal, physical, allocW, allocH, ratio)
-  Assert.notNil(
-    runtime.viewport.pixelGrid,
-    "the field viewport must publish one integer source grid before drawing"
-  )
+  Assert.notNil(runtime.viewport.pixelGrid, "the field viewport must publish one integer source grid before drawing")
   local grid = runtime.viewport.pixelGrid
   Assert.equal(grid.allocationWidth, allocW, "the published grid must allocate the ceil-covered raster width")
-  Assert.equal(
-    grid.allocationHeight,
-    allocH,
-    "the published grid must allocate the ceil-covered raster height"
-  )
-  Assert.equal(
-    grid.placement.pixelScale,
-    physical,
-    "the published grid must carry the whole-physical-pixel scale"
-  )
+  Assert.equal(grid.allocationHeight, allocH, "the published grid must allocate the ceil-covered raster height")
+  Assert.equal(grid.placement.pixelScale, physical, "the published grid must carry the whole-physical-pixel scale")
   Assert.equal(grid.placement.pixelRatio, ratio, "the published grid must carry the measured pixel ratio")
   Assert.near(
     grid.placement.scale * grid.placement.pixelRatio,
@@ -122,12 +111,7 @@ local function assertCameraFollowsAllocatedGrid(runtime, nominal, physical, allo
     1e-9,
     "the live camera must project the allocated source aspect, not the host rectangle"
   )
-  Assert.near(
-    runtime.camera.zoom,
-    192 / allocH,
-    1e-9,
-    "the live camera must zoom to the allocated source height"
-  )
+  Assert.near(runtime.camera.zoom, 192 / allocH, 1e-9, "the live camera must zoom to the allocated source height")
 end
 
 local function ratioDisplayContext(ratio, width, height)
@@ -198,10 +182,7 @@ T.tests.staged_map_camera_reuses_the_published_grid_projection = function()
   withProductionRuntime(function(game)
     local runtime = game.runtime
     resize(game, 1366, 768)
-    Assert.notNil(
-      runtime.viewport.pixelGrid,
-      "the live viewport must publish its source grid before staging a swap"
-    )
+    Assert.notNil(runtime.viewport.pixelGrid, "the live viewport must publish its source grid before staging a swap")
     runtime.fieldPixelScale:zoomIn()
     runtime:applyFieldPixelScaleChange()
     local grid = runtime.viewport.pixelGrid
@@ -215,8 +196,7 @@ T.tests.staged_map_camera_reuses_the_published_grid_projection = function()
       surfaceId = player.surfaceId,
       worldY = player.worldY,
     }
-    local coordinator =
-      assert(runtime.worldSwapCoordinator, "the field runtime must own its world-swap coordinator")
+    local coordinator = assert(runtime.worldSwapCoordinator, "the field runtime must own its world-swap coordinator")
     local previousFade = runtime.transition.fadeAlpha
     runtime.transition.fadeAlpha = 1
     local preparedOk, prepared = pcall(function()
@@ -246,12 +226,7 @@ T.tests.staged_map_camera_reuses_the_published_grid_projection = function()
         1e-12,
         "the staged and live cameras must agree exactly at one grid"
       )
-      Assert.near(
-        camera.zoom,
-        runtime.camera.zoom,
-        1e-12,
-        "the staged and live cameras must agree exactly at one grid"
-      )
+      Assert.near(camera.zoom, runtime.camera.zoom, 1e-12, "the staged and live cameras must agree exactly at one grid")
       Assert.equal(
         runtime.fieldPixelScale:resolvedScale(),
         nominal,

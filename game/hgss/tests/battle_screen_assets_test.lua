@@ -1373,8 +1373,7 @@ local function layoutOnlyCache(portraitEntries)
     end
   end
   table.sort(pageIds)
-  cache.lua[MonCache.portraitManifestPath()] =
-    { entries = portraitEntries, pages = pages, pageIds = pageIds }
+  cache.lua[MonCache.portraitManifestPath()] = { entries = portraitEntries, pages = pages, pageIds = pageIds }
   function cache:loadLua(path)
     self.loadedPaths[#self.loadedPaths + 1] = path
     return self.lua[path]
@@ -2193,11 +2192,7 @@ function T.selected_effect_demand_reaches_ready_only_through_staged_closure()
   })
   Assert.equal(owned:demandEffect("TACKLE"), false, "the unstaged effect polls pending without failing")
   host.answers["TACKLE"] = "ready"
-  Assert.equal(
-    owned:demandEffect("TACKLE"),
-    true,
-    "a ready worker reads ready without preloading marker or payloads"
-  )
+  Assert.equal(owned:demandEffect("TACKLE"), true, "a ready worker reads ready without preloading marker or payloads")
   cache:write(BattlePresentationCache.effectMarkerPath("TACKLE"), "probe-marker")
   Assert.equal(owned:demandEffect("TACKLE"), true, "the marked effect stays ready")
   cache:writeLua(texturePath, { width = 4, height = 4, rgba8888 = textureBytes })
@@ -2509,10 +2504,7 @@ function T.party_page_demand_names_the_retail_backgrounds()
   end
   local battle = holder(nil, assets)
   battle:update()
-  local pages = assert(
-    observed ~= nil and observed.partyPages,
-    "the launch demand stages party page backgrounds"
-  )
+  local pages = assert(observed ~= nil and observed.partyPages, "the launch demand stages party page backgrounds")
   for _, key in ipairs({ "party:page/summary", "party:page/check-moves", "party:page/move-detail" }) do
     local found = false
     for _, staged in ipairs(pages) do

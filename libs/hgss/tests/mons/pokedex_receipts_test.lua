@@ -399,13 +399,13 @@ function T.duplicate_species_receipt_counts_nothing()
   requireReceipt(service)
   local factory = CatalogFixture.makeFactory(0xC0FFEE04, monCatalog)
   Assert.isTrue(
-    service:receiveMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", personality = 0 })))
-    , "setup receives the fresh species"
+    service:receiveMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", personality = 0 }))),
+    "setup receives the fresh species"
   )
   local revision = stats:revision()
   Assert.isTrue(
-    service:receiveMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", personality = 1 })))
-    , "a duplicate-species receipt still enters the party"
+    service:receiveMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", personality = 1 }))),
+    "a duplicate-species receipt still enters the party"
   )
   Assert.equal(service:partyCount(), 2, "the duplicate receipt is appended")
   Assert.equal(stats:uniqueCount(), 0, "the duplicate receipt advances no unique count")

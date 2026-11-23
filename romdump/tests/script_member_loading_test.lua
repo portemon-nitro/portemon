@@ -191,11 +191,7 @@ function T.lazy_member_loading_keeps_overrides_and_generation_isolation()
 
   local romFsB = ScriptCacheBuildFixture.romFs(generationBMembers())
   local planB = publishGeneration(romFsB, cache, GENERATION_B, OUTER_B, "generation-b")
-  Assert.equal(
-    planB.members[1].scripts[1].id,
-    firstId,
-    "the new generation keeps the logical script ids"
-  )
+  Assert.equal(planB.members[1].scripts[1].id, firstId, "the new generation keeps the logical script ids")
 
   local readsBeforeB = #memberReads
   local registryB, selectionB = ScriptLoader.buildRegistry(cache, overrideFs(overrideId), requireShim, { lazy = true })
@@ -207,11 +203,7 @@ function T.lazy_member_loading_keeps_overrides_and_generation_isolation()
   -- The lowered DSL carries the canonical sndseq symbol of the source operand,
   -- so the two generations' operands must resolve to distinct symbols.
   Assert.isTrue(ScriptSounds.byId[1501] ~= ScriptSounds.byId[1500], "the fixture operands are distinct sounds")
-  Assert.equal(
-    reloaded.steps[1].sound,
-    ScriptSounds.byId[1501],
-    "the new generation returns its own compiled bytes"
-  )
+  Assert.equal(reloaded.steps[1].sound, ScriptSounds.byId[1501], "the new generation returns its own compiled bytes")
   Assert.equal(
     #memberReads,
     readsBeforeB + 1,
@@ -219,11 +211,7 @@ function T.lazy_member_loading_keeps_overrides_and_generation_isolation()
   )
 
   local retained = assert(registry:base(firstId))
-  Assert.equal(
-    retained.steps[1].sound,
-    ScriptSounds.byId[1500],
-    "the earlier registry keeps its own parsed member"
-  )
+  Assert.equal(retained.steps[1].sound, ScriptSounds.byId[1500], "the earlier registry keeps its own parsed member")
 end
 
 return { metadata = { capabilities = {} }, tests = T }

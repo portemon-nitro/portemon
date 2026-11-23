@@ -85,11 +85,7 @@ function T.copy_slots_snapshot_the_creation_time_portrait_selector()
     end
   end
   Assert.notNil(frozen, "the bound copy carries its frozen selector")
-  Assert.equal(
-    frozen.frozenSelector,
-    "LEAD/0/male/plain/back",
-    "the frozen selector is the creation-time portrait"
-  )
+  Assert.equal(frozen.frozenSelector, "LEAD/0/male/plain/back", "the frozen selector is the creation-time portrait")
   Assert.equal(frozen.follow, true, "the slot retains the source follow flag")
   -- A later live mutation of the same activation never rewrites the
   -- frozen copy.
@@ -100,11 +96,7 @@ function T.copy_slots_snapshot_the_creation_time_portrait_selector()
       refrozen = view.picture
     end
   end
-  Assert.equal(
-    refrozen.frozenSelector,
-    "LEAD/0/male/plain/back",
-    "the frozen copy ignores later live portrait changes"
-  )
+  Assert.equal(refrozen.frozenSelector, "LEAD/0/male/plain/back", "the frozen copy ignores later live portrait changes")
 end
 
 function T.copy_slots_snapshot_bound_sources_and_ignore_unbound_ones()

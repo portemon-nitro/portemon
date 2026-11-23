@@ -1085,10 +1085,7 @@ function T.tests.covered_entry_waits_for_readiness_and_holds_music()
       -- Construction holds full cover: the entry blanket releases
       -- atomically on the accepted tick that publishes the first native
       -- battle visual, never as an alpha blend over live source frames.
-      Assert.isTrue(
-        type(cover) == "table" and cover.coefficient == 16,
-        "the battle starts under full entry cover"
-      )
+      Assert.isTrue(type(cover) == "table" and cover.coefficient == 16, "the battle starts under full entry cover")
       -- The wild role starts once and survives presentation pumping and
       -- a layout change without restarting.
       local function wildPlays()

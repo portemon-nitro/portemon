@@ -16,7 +16,8 @@ local T = {}
 
 function T.field_stock_sorts_into_battle_pockets_with_hidden_excluded()
   local catalog = ItemFixture.makeCatalog()
-  local groups = BattleBagPockets.group({ POTION = 5, POKE_BALL = 3, SMOKE_BALL = 1, CHERI_BERRY = 2, SOOTHE_BELL = 1 }, catalog)
+  local groups =
+    BattleBagPockets.group({ POTION = 5, POKE_BALL = 3, SMOKE_BALL = 1, CHERI_BERRY = 2, SOOTHE_BELL = 1 }, catalog)
   local function keys(list)
     local out = {}
     for _, entry in ipairs(list) do
@@ -53,19 +54,9 @@ function T.hit_testing_matches_the_retail_hitbox_order()
   -- Retail hit testing is an unsigned range check (touchscreen.c
   -- FindRectAtPoint): taps above or left of a box never hit it, even
   -- when they fall inside its width/height span.
-  Assert.isNil(
-    BattleBagPockets.hitIndex(pockets.pocketMenu, 200, 0),
-    "taps above the balls button hit nothing"
-  )
-  Assert.isNil(
-    BattleBagPockets.hitIndex(pockets.itemList, 127, 31),
-    "taps left of the second cell hit nothing"
-  )
-  Assert.equal(
-    BattleBagPockets.hitIndex(pockets.pocketMenu, 200, 43),
-    2,
-    "taps inside the balls button still hit"
-  )
+  Assert.isNil(BattleBagPockets.hitIndex(pockets.pocketMenu, 200, 0), "taps above the balls button hit nothing")
+  Assert.isNil(BattleBagPockets.hitIndex(pockets.itemList, 127, 31), "taps left of the second cell hit nothing")
+  Assert.equal(BattleBagPockets.hitIndex(pockets.pocketMenu, 200, 43), 2, "taps inside the balls button still hit")
   local regions = BattleBagPockets.hitRegions("pocket_menu")
   Assert.equal(#regions, 6, "the pocket menu exposes six regions")
   Assert.equal(regions[3].id, "bagpocket:2", "regions name pockets in hitbox order")

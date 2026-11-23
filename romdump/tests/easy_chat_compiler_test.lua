@@ -164,42 +164,36 @@ local function messageMembers(templateSlots)
     members[memberId + 1] = FieldMessageBank.encodeForTests({ GLYPH_A }, 7)
   end
   for _ = 1, 12 do
-    members[282 + 1] = FieldMessageBank.encodeForTests(
-      {
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-      },
-      7
-    )
-    members[283 + 1] = FieldMessageBank.encodeForTests(
-      {
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-        GLYPH_A,
-      },
-      7
-    )
+    members[282 + 1] = FieldMessageBank.encodeForTests({
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+    }, 7)
+    members[283 + 1] = FieldMessageBank.encodeForTests({
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+      GLYPH_A,
+    }, 7)
   end
   members[284 + 1] = FieldMessageBank.encodeForTests({ GLYPH_A, GLYPH_A, GLYPH_A }, 7)
   for index, bankId in ipairs(WORD_BANK_IDS) do

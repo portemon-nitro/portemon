@@ -288,11 +288,7 @@ function T.trainer_player_throw_draws_from_the_backpic_anchor_and_ticks_the_thro
   Assert.isTrue(#cells >= 3, "the release ticks the source throw cycle through multiple cells")
   for position, key in ipairs(cells) do
     local cell = (position - 1) % #THROW_DURATIONS
-    Assert.equal(
-      key,
-      "battle-ball:POKE_BALL:" .. tostring(cell),
-      "the trainer's throw walks its source cells in order"
-    )
+    Assert.equal(key, "battle-ball:POKE_BALL:" .. tostring(cell), "the trainer's throw walks its source cells in order")
   end
 end
 

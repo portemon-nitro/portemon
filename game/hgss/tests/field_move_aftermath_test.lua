@@ -8,7 +8,8 @@ local FieldMoveAftermath = require("game.hgss.src.field.FieldMoveAftermath")
 
 local T = {}
 
-local ITEMS = { "MAX_ETHER", "REVIVE", "HEART_SCALE", "RED_SHARD", "BLUE_SHARD", "GREEN_SHARD", "YELLOW_SHARD", "STAR_PIECE" }
+local ITEMS =
+  { "MAX_ETHER", "REVIVE", "HEART_SCALE", "RED_SHARD", "BLUE_SHARD", "GREEN_SHARD", "YELLOW_SHARD", "STAR_PIECE" }
 
 local function slots()
   local out = {}

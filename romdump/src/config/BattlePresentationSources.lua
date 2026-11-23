@@ -1373,40 +1373,40 @@ BattlePresentationSources.PARTY_HITBOXES = {
 -- 27 new-move, 28-29 forget, 30-33 move-tab). DrawButton repaints the
 -- named rect through BuildButtonTilemap.
 BattlePresentationSources.PARTY_BUTTON_RECTS = {
-    { x = 0, y = 0, w = 16, h = 6 },
-    { x = 16, y = 1, w = 16, h = 6 },
-    { x = 0, y = 6, w = 16, h = 6 },
-    { x = 16, y = 7, w = 16, h = 6 },
-    { x = 0, y = 12, w = 16, h = 6 },
-    { x = 16, y = 13, w = 16, h = 6 },
-    { x = 27, y = 19, w = 5, h = 5 },
-    { x = 1, y = 1, w = 30, h = 17 },
-    { x = 0, y = 19, w = 13, h = 5 },
-    { x = 12, y = 19, w = 13, h = 5 },
-    { x = 13, y = 19, w = 13, h = 5 },
-    { x = 12, y = 19, w = 13, h = 5 },
-    { x = 0, y = 19, w = 5, h = 5 },
-    { x = 5, y = 19, w = 5, h = 5 },
-    { x = 0, y = 6, w = 16, h = 6 },
-    { x = 16, y = 6, w = 16, h = 6 },
-    { x = 0, y = 12, w = 16, h = 6 },
-    { x = 16, y = 12, w = 16, h = 6 },
-    { x = 23, y = 0, w = 9, h = 4 },
-    { x = 0, y = 6, w = 16, h = 6 },
-    { x = 16, y = 6, w = 16, h = 6 },
-    { x = 0, y = 12, w = 16, h = 6 },
-    { x = 16, y = 12, w = 16, h = 6 },
-    { x = 0, y = 6, w = 16, h = 6 },
-    { x = 16, y = 6, w = 16, h = 6 },
-    { x = 0, y = 12, w = 16, h = 6 },
-    { x = 16, y = 12, w = 16, h = 6 },
-    { x = 8, y = 18, w = 16, h = 6 },
-    { x = 0, y = 19, w = 26, h = 5 },
-    { x = 0, y = 19, w = 26, h = 5 },
-    { x = 11, y = 19, w = 5, h = 2 },
-    { x = 16, y = 19, w = 5, h = 2 },
-    { x = 11, y = 21, w = 5, h = 2 },
-    { x = 16, y = 21, w = 5, h = 2 },
+  { x = 0, y = 0, w = 16, h = 6 },
+  { x = 16, y = 1, w = 16, h = 6 },
+  { x = 0, y = 6, w = 16, h = 6 },
+  { x = 16, y = 7, w = 16, h = 6 },
+  { x = 0, y = 12, w = 16, h = 6 },
+  { x = 16, y = 13, w = 16, h = 6 },
+  { x = 27, y = 19, w = 5, h = 5 },
+  { x = 1, y = 1, w = 30, h = 17 },
+  { x = 0, y = 19, w = 13, h = 5 },
+  { x = 12, y = 19, w = 13, h = 5 },
+  { x = 13, y = 19, w = 13, h = 5 },
+  { x = 12, y = 19, w = 13, h = 5 },
+  { x = 0, y = 19, w = 5, h = 5 },
+  { x = 5, y = 19, w = 5, h = 5 },
+  { x = 0, y = 6, w = 16, h = 6 },
+  { x = 16, y = 6, w = 16, h = 6 },
+  { x = 0, y = 12, w = 16, h = 6 },
+  { x = 16, y = 12, w = 16, h = 6 },
+  { x = 23, y = 0, w = 9, h = 4 },
+  { x = 0, y = 6, w = 16, h = 6 },
+  { x = 16, y = 6, w = 16, h = 6 },
+  { x = 0, y = 12, w = 16, h = 6 },
+  { x = 16, y = 12, w = 16, h = 6 },
+  { x = 0, y = 6, w = 16, h = 6 },
+  { x = 16, y = 6, w = 16, h = 6 },
+  { x = 0, y = 12, w = 16, h = 6 },
+  { x = 16, y = 12, w = 16, h = 6 },
+  { x = 8, y = 18, w = 16, h = 6 },
+  { x = 0, y = 19, w = 26, h = 5 },
+  { x = 0, y = 19, w = 26, h = 5 },
+  { x = 11, y = 19, w = 5, h = 2 },
+  { x = 16, y = 19, w = 5, h = 2 },
+  { x = 11, y = 21, w = 5, h = 2 },
+  { x = 16, y = 21, w = 5, h = 2 },
 }
 
 -- Retail battle-party d-pad cursor boxes transcribed from
@@ -1485,8 +1485,7 @@ BattlePresentationSources.PARTY_CURSOR_BOXES = {
 -- cursor tables through gBattlePartyPageCursorBoxes. The aliases share
 -- the staged tables above; no box is transcribed twice.
 BattlePresentationSources.PARTY_CURSOR_BOXES.learnMoveContest = BattlePresentationSources.PARTY_CURSOR_BOXES.learnMove
-BattlePresentationSources.PARTY_CURSOR_BOXES.forgetMoveContest =
-  BattlePresentationSources.PARTY_CURSOR_BOXES.forgetMove
+BattlePresentationSources.PARTY_CURSOR_BOXES.forgetMoveContest = BattlePresentationSources.PARTY_CURSOR_BOXES.forgetMove
 
 -- Retail battle-party sprite icon positions transcribed from
 -- asm/battle_menu_data.s BattlePartyMenuPos pairs (x, y i32 LE) and the

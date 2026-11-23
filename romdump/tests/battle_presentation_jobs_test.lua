@@ -113,12 +113,8 @@ function T.global_build_keeps_detached_families_behind_safe_keyed_leaf_receipts(
   -- marker lands last, the recorded roots prove ownership, and staged records
   -- read back through the artifact itself.
   local function newStage(kind, key)
-    local artifact = ResidentArtifactFixture.new(
-      CacheFs.forVersion("heartgold", FakeCache.new()),
-      kind,
-      key,
-      "provider-gate"
-    )
+    local artifact =
+      ResidentArtifactFixture.new(CacheFs.forVersion("heartgold", FakeCache.new()), kind, key, "provider-gate")
     local stage = { artifact = artifact, files = {}, owned = {}, order = {} }
     local nesting = 0
     local realWrite, realWriteLua = artifact.write, artifact.writeLua

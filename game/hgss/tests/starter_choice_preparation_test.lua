@@ -1269,16 +1269,13 @@ function T.absent_portrait_page_fails_preparation_without_substitution()
     end,
   }
   local failure = Assert.throws(function()
-    host:advancePresentationPreparation(
-      {
-        assetPreparation = queue,
-        decoded = PREPARATION_DECODED,
-        gxRenderer = backend,
-        derivedAssets = derivedAssets,
-        imageAssets = images,
-      },
-      1
-    )
+    host:advancePresentationPreparation({
+      assetPreparation = queue,
+      decoded = PREPARATION_DECODED,
+      gxRenderer = backend,
+      derivedAssets = derivedAssets,
+      imageAssets = images,
+    }, 1)
   end, "an absent portrait page fails instead of substituting content")
   Assert.isTrue(
     tostring(failure):find("portrait page 0", 1, true) ~= nil,

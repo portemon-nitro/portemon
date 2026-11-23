@@ -180,10 +180,8 @@ end
 -- transformed or semi-invulnerable defender copies nothing.
 function T.transform_fails_before_root_or_marker_for_gated_defenders()
   local Execution = executionOwner("the shared move continuation owns hit progression")
-  local SequenceMoveState = SessionFixture.requirePresent(
-    "libs.battle.src.gen4.SequenceMoveState",
-    "sequence state owns its charge facts"
-  )
+  local SequenceMoveState =
+    SessionFixture.requirePresent("libs.battle.src.gen4.SequenceMoveState", "sequence state owns its charge facts")
   local function transformAs(actor, target)
     local inputs = frameInputs("TRANSFORM", 0)
     inputs.actor = { combatant = actor }

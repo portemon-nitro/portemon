@@ -186,14 +186,26 @@ function T.shared_source_model_and_texture_reuse_one_bank_across_compiles()
   local model, pack = fixtures()
   local firstMeshes, firstTextures = {}, {}
   local secondMeshes, secondTextures = {}, {}
-  local first = ModelAssetCompiler.compileModel(model, pack, firstMeshes, firstTextures, compileContext({
-    mapId = 61,
-    role = "map",
-  }))
-  local second = ModelAssetCompiler.compileModel(model, pack, secondMeshes, secondTextures, compileContext({
-    mapId = 84,
-    role = "neighbor",
-  }))
+  local first = ModelAssetCompiler.compileModel(
+    model,
+    pack,
+    firstMeshes,
+    firstTextures,
+    compileContext({
+      mapId = 61,
+      role = "map",
+    })
+  )
+  local second = ModelAssetCompiler.compileModel(
+    model,
+    pack,
+    secondMeshes,
+    secondTextures,
+    compileContext({
+      mapId = 84,
+      role = "neighbor",
+    })
+  )
 
   local firstBanks = compiledBank(firstMeshes)
   local secondBanks = compiledBank(secondMeshes)
@@ -289,12 +301,15 @@ function T.sequenced_shape_draws_record_the_carried_engine_state()
   local scratch = GxDisplayList.newScratch()
   local seen = {}
   for index, draw in ipairs(bank.draws) do
-    local geom = assert(GxDisplayList.decode(rawBytes(draw.commands), {
-      arena = arena,
-      scratch = scratch,
-      initialState = { color = draw.seedColor, normal = draw.seedNormal, colorSource = draw.seedColorSource },
-      matrix = draw.matrix,
-    }), "draw " .. index .. " replays")
+    local geom = assert(
+      GxDisplayList.decode(rawBytes(draw.commands), {
+        arena = arena,
+        scratch = scratch,
+        initialState = { color = draw.seedColor, normal = draw.seedNormal, colorSource = draw.seedColorSource },
+        matrix = draw.matrix,
+      }),
+      "draw " .. index .. " replays"
+    )
     local attrib = geom.slice.arena.attrib[geom.slice.vertexOffset]
     seen[index] = { r = attrib.r, g = attrib.g, b = attrib.b, colorSource = attrib.colorSource }
   end

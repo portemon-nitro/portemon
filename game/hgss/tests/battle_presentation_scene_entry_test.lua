@@ -176,8 +176,7 @@ local function stagedEncounterLayer(firstLife, secondLife, withholdSet)
         alphaUsage = texture.alphaUsage,
       }
     end
-    layer.encounterParticles[setIndex] =
-      { startTick = set.startTick, emitters = set.emitters, textures = textures }
+    layer.encounterParticles[setIndex] = { startTick = set.startTick, emitters = set.emitters, textures = textures }
   end
   return layer
 end
@@ -783,7 +782,9 @@ function T.screen_draws_source_sampled_terrain_under_untinted_encounter_particle
     local sourceParticle = nil
     -- The overlay comparison reads the same published frame the draw
     -- submitted: no step runs between the successful draw and this view.
-    for _, system in ipairs(assert(publishedView, "the submitted particle rides a published frame").encounterParticleSystems) do
+    for _, system in
+      ipairs(assert(publishedView, "the submitted particle rides a published frame").encounterParticleSystems)
+    do
       if system.textures[0] ~= nil and system.textures[0].image.handle == sourceParticleImage.handle then
         sourceParticle = system
         break
@@ -1072,11 +1073,7 @@ function T.ready_presentation_runs_the_opening_once_from_the_first_source_tick()
   -- The published draw frame still carries the retired first system's
   -- terminal geometry for this frame, so liveness probes read the live
   -- owner while the snapshot feeds the compositor.
-  Assert.equal(
-    #rig.screen._encounterParticles:systems(),
-    1,
-    "the retired first system leaves the second running"
-  )
+  Assert.equal(#rig.screen._encounterParticles:systems(), 1, "the retired first system leaves the second running")
   rig.pump(1)
   local sixtySecond = rig.screen:view()
   Assert.equal(sixtySecond.openingPresentation.encounterFrame, 62, "the task reaches the second retirement tick")
@@ -1275,10 +1272,8 @@ function T.encounter_intro_uploads_follow_visible_palette_changes()
   Assert.equal(frame11.openingPresentation.encounterFrame, 11, "frame 11 publishes the changed palette")
   Assert.isTrue(#rig.fadedRasters > beforeDraw, "a visible palette change uploads a replacement")
   Assert.isTrue(paletteUploadCount() > paletteUploadsBeforeDraw, "frame 11 uploads changed indexed plane pixels")
-  local frame11Word = assert(
-    frame11.openingPresentation.encounterPalette.mainBg[121],
-    "the visible source color is staged"
-  )
+  local frame11Word =
+    assert(frame11.openingPresentation.encounterPalette.mainBg[121], "the visible source color is staged")
   local frame11Expected = Rgb555.decode(frame11Word)
   Assert.deepEqual(
     { rig.fadedRasters[#rig.fadedRasters]:pixel(0, 0) },

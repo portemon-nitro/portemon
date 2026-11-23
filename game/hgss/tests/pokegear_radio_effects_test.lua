@@ -335,11 +335,7 @@ function T.tests.music_shifts_movement_rates_by_twenty_five_points_before_the_ca
     end
     return Rate.movementRate(facts)
   end
-  Assert.equal(
-    movement({ radio = "march" }),
-    45,
-    "march raises the walking movement rate by twenty-five points"
-  )
+  Assert.equal(movement({ radio = "march" }), 45, "march raises the walking movement rate by twenty-five points")
   Assert.equal(
     movement({ radio = "lullaby" }),
     100,
@@ -360,11 +356,7 @@ function T.tests.music_shifts_movement_rates_by_twenty_five_points_before_the_ca
     100,
     "the movement rate caps at one hundred"
   )
-  Assert.equal(
-    movement({ radio = "lullaby", reverseTurnSteps = 4 }),
-    55,
-    "turn steps apply before the music"
-  )
+  Assert.equal(movement({ radio = "lullaby", reverseTurnSteps = 4 }), 55, "turn steps apply before the music")
 end
 
 function T.tests.music_never_reaches_fishing_or_rock_smash_attempts()
@@ -388,20 +380,9 @@ function T.tests.music_never_reaches_fishing_or_rock_smash_attempts()
     return signature(host:attempt(context, stream), stream:calls())
   end
   for _, seed in ipairs({ 0, 1, 3 }) do
-    local silentFish = attempt(
-      "fish",
-      "fish",
-      14,
-      EncounterFixture.modifiers({ rod = "old_rod", radio = "none" }),
-      seed
-    )
-    local silentRock = attempt(
-      "rock_smash",
-      "field_move",
-      15,
-      EncounterFixture.modifiers({ radio = "none" }),
-      seed
-    )
+    local silentFish =
+      attempt("fish", "fish", 14, EncounterFixture.modifiers({ rod = "old_rod", radio = "none" }), seed)
+    local silentRock = attempt("rock_smash", "field_move", 15, EncounterFixture.modifiers({ radio = "none" }), seed)
     for _, radio in ipairs({ "march", "lullaby" }) do
       Assert.equal(
         attempt("fish", "fish", 14, EncounterFixture.modifiers({ rod = "old_rod", radio = radio }), seed),

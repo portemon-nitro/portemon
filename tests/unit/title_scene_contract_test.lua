@@ -146,28 +146,16 @@ function T.title_camera_steps_each_waypoint_then_wraps_its_script()
   for _ = 1, 30 do
     scene:updateFixed()
   end
-  Assert.deepEqual(
-    viewNow(),
-    worldView({ 10, 0, 0 }, target),
-    "the second waypoint wait holds its pose"
-  )
+  Assert.deepEqual(viewNow(), worldView({ 10, 0, 0 }, target), "the second waypoint wait holds its pose")
   for _ = 1, 4 do
     scene:updateFixed()
   end
-  Assert.deepEqual(
-    viewNow(),
-    worldView({ 10, 20, 0 }, target),
-    "the second waypoint completes after four steps"
-  )
+  Assert.deepEqual(viewNow(), worldView({ 10, 20, 0 }, target), "the second waypoint completes after four steps")
   for _ = 1, 30 do
     scene:updateFixed()
   end
   scene:updateFixed()
-  Assert.deepEqual(
-    viewNow(),
-    worldView({ 10, 15, 0 }, target),
-    "the script wraps back to its first waypoint"
-  )
+  Assert.deepEqual(viewNow(), worldView({ 10, 15, 0 }, target), "the script wraps back to its first waypoint")
 end
 
 function T.title_camera_scales_source_units_once_and_keeps_authored_pose()

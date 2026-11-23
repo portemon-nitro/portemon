@@ -88,10 +88,8 @@ function SnapshotArchive.read(versionId, fileName)
   local fileData = love.filesystem.newFileData(bytes, "snapshot-" .. mounts .. ".zip")
   Assert.isTrue(love.filesystem.mount(fileData, mountedAs), "the snapshot must be a mountable zip")
   local ok, index, members = pcall(function()
-    local indexText = assert(
-      love.filesystem.read(mountedAs .. "/cache-index.lua"),
-      "the archive must carry its cache-index.lua member"
-    )
+    local indexText =
+      assert(love.filesystem.read(mountedAs .. "/cache-index.lua"), "the archive must carry its cache-index.lua member")
     local parsed = SnapshotArchive.parseIndex(indexText)
     local readMembers = {}
     for _, entry in ipairs(parsed.entries) do

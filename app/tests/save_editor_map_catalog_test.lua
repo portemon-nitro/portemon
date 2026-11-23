@@ -194,17 +194,13 @@ function T.tests.route_and_battle_frontier_prefixes_share_only_their_explicit_gr
   Assert.equal(filtered[1].row.mapId, 11, "filter results preserve the source map identity")
   local nestedRouteMatches = projectedRows(catalog:maps("location:group:routes", "route"))
   Assert.equal(#nestedRouteMatches, 5, "every accepted route symbol remains available through the group filter")
-  Assert.deepEqual(
-    {
-      nestedRouteMatches[1].row.mapId,
-      nestedRouteMatches[2].row.mapId,
-      nestedRouteMatches[3].row.mapId,
-      nestedRouteMatches[4].row.mapId,
-      nestedRouteMatches[5].row.mapId,
-    },
-    { 19, 18, 10, 11, 20 },
-    "route filtering returns each matching source leaf in deterministic display order"
-  )
+  Assert.deepEqual({
+    nestedRouteMatches[1].row.mapId,
+    nestedRouteMatches[2].row.mapId,
+    nestedRouteMatches[3].row.mapId,
+    nestedRouteMatches[4].row.mapId,
+    nestedRouteMatches[5].row.mapId,
+  }, { 19, 18, 10, 11, 20 }, "route filtering returns each matching source leaf in deterministic display order")
 end
 
 function T.tests.incremental_catalog_preparation_limits_summary_reads_per_advance()

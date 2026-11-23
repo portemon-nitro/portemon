@@ -495,7 +495,8 @@ function T.transformed_request_freezes_the_donor_appearance()
   local request = assert(started[1].request, "setup: the cue carries its ledgered request")
   Assert.equal(request.disposition, "admit", "setup: the transform admits its root")
   local appearance = assert(
-    type(request.playback) == "table" and type(request.playback.topology.attacker) == "table"
+    type(request.playback) == "table"
+      and type(request.playback.topology.attacker) == "table"
       and request.playback.topology.attacker.appearance,
     "setup: the transform freezes its donor appearance for later calls"
   )

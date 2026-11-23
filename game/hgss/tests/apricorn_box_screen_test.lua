@@ -376,11 +376,7 @@ function T.tests.kurt_quantity_exposes_the_panel_message_slot()
     screen:updateFixed({})
   end
   Assert.equal(screen:status().phase, "confirm")
-  Assert.equal(
-    screen:status().confirmationText,
-    "Give 1 Wht Apricorn?",
-    "a single Apricorn keeps the singular label"
-  )
+  Assert.equal(screen:status().confirmationText, "Give 1 Wht Apricorn?", "a single Apricorn keeps the singular label")
   screen:dispose()
 end
 

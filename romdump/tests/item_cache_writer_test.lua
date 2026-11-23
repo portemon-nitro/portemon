@@ -55,9 +55,12 @@ function T.writes_the_class_and_reports_ready()
   local ItemCache, ItemCacheWriter = contracts()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local marker = ItemCache.marker("abc", "dep")
-  Assert.equal(ResidentArtifactFixture.publish(cache, "items", "global", function(artifact)
+  Assert.equal(
+    ResidentArtifactFixture.publish(cache, "items", "global", function(artifact)
       return ItemCacheWriter.stage(artifact, bundle(marker))
-    end), marker)
+    end),
+    marker
+  )
   Assert.isTrue(ItemCache.isReady(cache, marker), "ready after write")
   local catalog = ItemCache.loadCatalog(cache)
   Assert.equal(catalog.items.POTION.nativeId, 17, "the published catalog loads back")
@@ -86,8 +89,8 @@ function T.failed_rebuild_preserves_the_previous_artifact()
   local cache = CacheFs.forVersion("heartgold", backend)
   local firstMarker = ItemCache.marker("abc", "dep")
   ResidentArtifactFixture.publish(cache, "items", "global", function(artifact)
-      return ItemCacheWriter.stage(artifact, bundle(firstMarker))
-    end)
+    return ItemCacheWriter.stage(artifact, bundle(firstMarker))
+  end)
 
   local broken = bundle(ItemCache.marker("abc", "new-dep"))
   broken.catalog = nil
@@ -107,8 +110,8 @@ function T.v3_item_marker_is_not_ready_under_the_current_item_identity()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local previousMarker = "item-cache-v3:abc:dep"
   ResidentArtifactFixture.publish(cache, "items", "global", function(artifact)
-      return ItemCacheWriter.stage(artifact, bundle(previousMarker))
-    end)
+    return ItemCacheWriter.stage(artifact, bundle(previousMarker))
+  end)
 
   Assert.isFalse(
     ItemCache.isReady(cache, ItemCache.marker("abc", "dep")),
@@ -140,8 +143,7 @@ function T.stages_through_a_prepared_artifact_without_touching_live_before_publi
   )
   local deferred = assert(artifact:pendingImages()[1], "the icon atlas is deferred to the continuation")
   Assert.equal(deferred.relativePath, ItemCache.iconImagePath())
-  artifact
-    :write(deferred.relativePath, PngWriter.encode(deferred.width, deferred.height, deferred.rgba:getString()))
+  artifact:write(deferred.relativePath, PngWriter.encode(deferred.width, deferred.height, deferred.rgba:getString()))
   artifact:finishSuccess({ marker = marker })
   ResidentArtifactFixture.materialize(artifact)
   Assert.isTrue(ItemCache.isReady(cache, marker), "the published class reads ready")
@@ -193,8 +195,8 @@ function T.icon_atlas_stays_a_plain_png_with_identical_pixels_and_rectangles()
   local second = builtBundle()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   ResidentArtifactFixture.publish(cache, "items", "global", function(artifact)
-      return ItemCacheWriter.stage(artifact, first)
-    end)
+    return ItemCacheWriter.stage(artifact, first)
+  end)
   local published = assert(cache:read(ItemCache.iconImagePath()), "the atlas image is published")
   Assert.equal(published:sub(1, 4), "\137PNG", "the atlas is one plain PNG file on disk")
 
@@ -215,8 +217,8 @@ function T.icon_atlas_stays_a_plain_png_with_identical_pixels_and_rectangles()
 
   local otherCache = CacheFs.forVersion("heartgold", FakeCache.new())
   ResidentArtifactFixture.publish(otherCache, "items", "global", function(artifact)
-      return ItemCacheWriter.stage(artifact, second)
-    end)
+    return ItemCacheWriter.stage(artifact, second)
+  end)
   Assert.equal(
     assert(otherCache:read(ItemCache.iconImagePath())),
     published,

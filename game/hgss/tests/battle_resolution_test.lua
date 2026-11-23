@@ -251,8 +251,19 @@ function T.trainer_win_pays_the_native_prize_once_without_injected_inputs()
       aiPasses = {},
     },
   }
-  local scenario =
-    trainerScenario(trainers, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN", metBill = false } })
+  local scenario = trainerScenario(
+    trainers,
+    {
+      party = party,
+      player = {
+        trainerId = 99,
+        trainerName = "MINT",
+        language = "french",
+        trainerClassKey = "PKMN_TRAINER_ETHAN",
+        metBill = false,
+      },
+    }
+  )
   local battle = BattleRuntime.new({
     request = { id = "launch-native-prize", kind = "trainer", payload = { trainer = "rival-early" } },
     scenario = scenario,
@@ -270,8 +281,19 @@ function T.trainer_win_pays_the_native_prize_once_without_injected_inputs()
   battle:dispose()
   -- Replaying the same terminal outcome under its launch identity reuses
   -- the recorded receipt instead of crediting the prize a second time.
-  local replayScenario =
-    trainerScenario(trainers, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN", metBill = false } })
+  local replayScenario = trainerScenario(
+    trainers,
+    {
+      party = party,
+      player = {
+        trainerId = 99,
+        trainerName = "MINT",
+        language = "french",
+        trainerClassKey = "PKMN_TRAINER_ETHAN",
+        metBill = false,
+      },
+    }
+  )
   local replay = BattleRuntime.new({
     request = { id = "launch-native-prize", kind = "trainer", payload = { trainer = "rival-early" } },
     scenario = replayScenario,
@@ -295,17 +317,29 @@ function T.trainer_win_doubles_the_prize_while_a_money_up_holder_stands()
   -- multiplier doubles the same native prize once.
   local foe = foeRecord("TOTODILE", 4, 0x5EED0002, 1, "AMULET_COIN")
   foe.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
-  local scenario = trainerScenario({
+  local scenario = trainerScenario(
     {
-      id = "rival-coin",
-      class = 2,
-      party = { foe },
-      partyLevels = { 4 },
-      prizeMoney = { trainerClass = 2, classRate = 4 },
-      program = { key = "rival_opening", revision = "native-1", instructions = {}, entryPoints = {} },
-      aiPasses = {},
+      {
+        id = "rival-coin",
+        class = 2,
+        party = { foe },
+        partyLevels = { 4 },
+        prizeMoney = { trainerClass = 2, classRate = 4 },
+        program = { key = "rival_opening", revision = "native-1", instructions = {}, entryPoints = {} },
+        aiPasses = {},
+      },
     },
-  }, { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN", metBill = false } })
+    {
+      party = party,
+      player = {
+        trainerId = 99,
+        trainerName = "MINT",
+        language = "french",
+        trainerClassKey = "PKMN_TRAINER_ETHAN",
+        metBill = false,
+      },
+    }
+  )
   local battle = BattleRuntime.new({
     request = { id = "launch-coin-prize", kind = "trainer", payload = { trainer = "rival-coin" } },
     scenario = scenario,
@@ -360,7 +394,16 @@ function T.capture_stages_party_dex_and_bag_through_the_committer()
   local launch = { id = "launch-capture-wire", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
   local scenario = ScenarioFactory.fromEncounter(
     launch.payload,
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN", metBill = false } }
+    {
+      party = party,
+      player = {
+        trainerId = 99,
+        trainerName = "MINT",
+        language = "french",
+        trainerClassKey = "PKMN_TRAINER_ETHAN",
+        metBill = false,
+      },
+    }
   )
   local battle = BattleRuntime.new({
     request = launch,
@@ -410,7 +453,16 @@ function T.full_party_capture_spills_into_the_first_empty_box_slot()
   local launch = { id = "launch-full-party-wire", kind = "wild", payload = { species = "EEVEE", level = 4, mon = foe } }
   local scenario = ScenarioFactory.fromEncounter(
     launch.payload,
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN", metBill = false } }
+    {
+      party = party,
+      player = {
+        trainerId = 99,
+        trainerName = "MINT",
+        language = "french",
+        trainerClassKey = "PKMN_TRAINER_ETHAN",
+        metBill = false,
+      },
+    }
   )
   local caught = foeRecord("EEVEE", 4, 0xAAAA0002)
   local battle = BattleRuntime.new({
@@ -451,7 +503,16 @@ function T.roamer_battle_advances_the_roamer_revision()
     { id = "launch-roamer-wire", kind = "wild", payload = { species = "EEVEE", level = 14, mon = standin } }
   local scenario = ScenarioFactory.fromEncounter(
     launch.payload,
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN", metBill = false } }
+    {
+      party = party,
+      player = {
+        trainerId = 99,
+        trainerName = "MINT",
+        language = "french",
+        trainerClassKey = "PKMN_TRAINER_ETHAN",
+        metBill = false,
+      },
+    }
   )
   -- The roaming record tracks its own battle health; the scenario foe is a
   -- 1-HP stand-in so the executed battle settles the standing. The stand-in
@@ -482,7 +543,16 @@ function T.unknown_capture_species_fails_the_resolution()
     { id = "launch-unknown-capture", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
   local scenario = ScenarioFactory.fromEncounter(
     launch.payload,
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN", metBill = false } }
+    {
+      party = party,
+      player = {
+        trainerId = 99,
+        trainerName = "MINT",
+        language = "french",
+        trainerClassKey = "PKMN_TRAINER_ETHAN",
+        metBill = false,
+      },
+    }
   )
   local bogus = foeRecord("EEVEE", 4, 0xAAAA0003)
   bogus.species = "MISSINGNO"
@@ -511,7 +581,16 @@ function T.unstaged_dex_reference_fails_the_resolution()
   local launch = { id = "launch-unstaged-dex", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
   local scenario = ScenarioFactory.fromEncounter(
     launch.payload,
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN", metBill = false } }
+    {
+      party = party,
+      player = {
+        trainerId = 99,
+        trainerName = "MINT",
+        language = "french",
+        trainerClassKey = "PKMN_TRAINER_ETHAN",
+        metBill = false,
+      },
+    }
   )
   local battle = BattleRuntime.new({
     request = launch,
@@ -657,7 +736,16 @@ function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
     { id = "launch-thrown-capture", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
   local scenario = ScenarioFactory.fromEncounter(
     launch.payload,
-    { party = party, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN", metBill = false } }
+    {
+      party = party,
+      player = {
+        trainerId = 99,
+        trainerName = "MINT",
+        language = "french",
+        trainerClassKey = "PKMN_TRAINER_ETHAN",
+        metBill = false,
+      },
+    }
   )
   local battle = BattleRuntime.new({
     request = launch,
@@ -710,7 +798,16 @@ function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
     { id = "launch-thrown-capture-full", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = fullFoe } }
   local fullScenario = ScenarioFactory.fromEncounter(
     fullLaunch.payload,
-    { party = fullParty, player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN", metBill = false } }
+    {
+      party = fullParty,
+      player = {
+        trainerId = 99,
+        trainerName = "MINT",
+        language = "french",
+        trainerClassKey = "PKMN_TRAINER_ETHAN",
+        metBill = false,
+      },
+    }
   )
   local fullBattle = BattleRuntime.new({
     request = fullLaunch,

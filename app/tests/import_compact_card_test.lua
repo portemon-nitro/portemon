@@ -95,10 +95,7 @@ function T.compact_card_fits_its_copy_with_modest_padding()
     end)
     local card = cardFill(rects, width, height)
     Assert.notNil(card, "the import view draws one card above its background")
-    Assert.isTrue(
-      card.width <= CARD_MAX_WIDTH,
-      "the import card stays compact, got width " .. tostring(card.width)
-    )
+    Assert.isTrue(card.width <= CARD_MAX_WIDTH, "the import card stays compact, got width " .. tostring(card.width))
     Assert.isTrue(
       card.height <= CARD_MAX_HEIGHT,
       "the import card stays content-fit, got height " .. tostring(card.height)
@@ -170,18 +167,12 @@ function T.rejected_drop_reports_a_concise_failure_on_the_first_frame()
   local _, copy = captureDraw(800, 600, function()
     state:draw()
   end)
-  Assert.isTrue(
-    copy:find("notes.txt", 1, true) ~= nil,
-    "the rejection names the dropped file, got: " .. copy
-  )
+  Assert.isTrue(copy:find("notes.txt", 1, true) ~= nil, "the rejection names the dropped file, got: " .. copy)
   Assert.isTrue(
     copy:lower():find("not a", 1, true) ~= nil or copy:lower():find("rejected", 1, true) ~= nil,
     "the rejection states the file was not accepted"
   )
-  Assert.isTrue(
-    copy:find("File received", 1, true) == nil,
-    "a rejected file is never acknowledged as received"
-  )
+  Assert.isTrue(copy:find("File received", 1, true) == nil, "a rejected file is never acknowledged as received")
 end
 
 function T.busy_import_rejects_a_second_drop_without_resetting_progress()
@@ -203,10 +194,7 @@ function T.busy_import_rejects_a_second_drop_without_resetting_progress()
     lowered:find("reject", 1, true) ~= nil,
     "a busy drop reports its rejection on the first frame, got: " .. copy
   )
-  Assert.isTrue(
-    copy:find("File received", 1, true) == nil,
-    "a rejected drop never claims receipt"
-  )
+  Assert.isTrue(copy:find("File received", 1, true) == nil, "a rejected drop never claims receipt")
   Assert.isTrue(
     copy:find("Verifying ROM", 1, true) ~= nil,
     "the rejection preserves the running verification progress, got: " .. copy
@@ -246,10 +234,7 @@ function T.verification_progress_is_a_monotonic_bar_without_internal_jargon()
     table.sort(signature)
     local flat = table.concat(signature, "|")
     if previousSignature ~= nil then
-      Assert.isTrue(
-        flat ~= previousSignature,
-        "verification progress visibly advances its bar between ticks"
-      )
+      Assert.isTrue(flat ~= previousSignature, "verification progress visibly advances its bar between ticks")
       Assert.isTrue(widest >= previousWidest, "the verification bar never moves backwards")
     end
     previousSignature = flat
@@ -472,10 +457,7 @@ local function assertBalancedCopy(where, card, firstY, lastBottom, reservedTop)
   local contentTop = card.y + 16
   local topPad = firstY - contentTop
   local bottomPad = reservedTop - lastBottom
-  Assert.isTrue(
-    lastBottom <= reservedTop + 1,
-    where .. ": copy overlaps the reserved progress band"
-  )
+  Assert.isTrue(lastBottom <= reservedTop + 1, where .. ": copy overlaps the reserved progress band")
   Assert.isTrue(
     topPad >= 8,
     where .. ": copy still starts at the top inset instead of moving toward the center, top pad " .. tostring(topPad)
@@ -589,8 +571,7 @@ end
 
 function T.failure_copy_stays_legible_inside_the_card()
   local importer = scriptImporter()
-  importer.snapshot =
-    { state = "error", errorCode = "IMPORT_NOT_NDS", error = "not a Nintendo DS ROM" }
+  importer.snapshot = { state = "error", errorCode = "IMPORT_NOT_NDS", error = "not a Nintendo DS ROM" }
   do
     local state = ImportState.new(importer, nil)
     local rects, rows = captureTextLayout(800, 600, function()
@@ -612,8 +593,7 @@ function T.failure_copy_stays_legible_inside_the_card()
   end
   do
     local narrow = scriptImporter()
-    narrow.snapshot =
-      { state = "error", errorCode = "IMPORT_NOT_NDS", error = "not a Nintendo DS ROM cartridge image" }
+    narrow.snapshot = { state = "error", errorCode = "IMPORT_NOT_NDS", error = "not a Nintendo DS ROM cartridge image" }
     local state = ImportState.new(narrow, nil, pickerOptions(true))
     local rects, rows = captureTextLayout(240, 480, function()
       state:draw()
@@ -766,10 +746,7 @@ function T.verified_source_waits_on_artwork_without_claiming_completion()
   )
   Assert.isTrue(copy:find("100%%") == nil, "no completion fraction is shown before the pair is resident")
   for _, premature in ipairs({ "ROM accepted", "complete" }) do
-    Assert.isTrue(
-      copy:find(premature, 1, true) == nil,
-      "artwork wait never claims the handoff, found: " .. premature
-    )
+    Assert.isTrue(copy:find(premature, 1, true) == nil, "artwork wait never claims the handoff, found: " .. premature)
   end
 end
 
@@ -789,10 +766,7 @@ function T.artwork_failure_distinguishes_retryable_from_escape_only()
   end)
   local retryCard = assert(cardFill(retryRects, 800, 600), "the retryable card still draws")
   local retryFirst, retryLast = textBlock(retryRows)
-  Assert.isTrue(
-    retryLast <= retryCard.y + retryCard.height - 4,
-    "retryable failure copy stays inside the card"
-  )
+  Assert.isTrue(retryLast <= retryCard.y + retryCard.height - 4, "retryable failure copy stays inside the card")
   local _, terminalCopy = captureDraw(800, 600, function()
     state:draw({ stage = "artwork", failure = "synthetic worker failure", retryable = false })
   end)
@@ -816,14 +790,8 @@ function T.artwork_failure_distinguishes_retryable_from_escape_only()
   end)
   local plainCard = assert(cardFill(plainRects, 800, 600), "the escape-only card still draws")
   local plainFirst, plainLast = textBlock(plainRows)
-  Assert.isTrue(
-    plainFirst >= plainCard.y + 16,
-    "escape-only failure copy never starts above the top inset"
-  )
-  Assert.isTrue(
-    plainLast <= plainCard.y + plainCard.height - 4,
-    "escape-only failure copy stays inside the card"
-  )
+  Assert.isTrue(plainFirst >= plainCard.y + 16, "escape-only failure copy never starts above the top inset")
+  Assert.isTrue(plainLast <= plainCard.y + plainCard.height - 4, "escape-only failure copy stays inside the card")
 end
 
 return { tests = T }

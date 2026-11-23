@@ -1028,7 +1028,8 @@ function T.battle_bag_lists_in_carried_slot_order()
 end
 function T.target_picker_disposes_alone_behind_the_retained_browser()
   local catalog = ItemFixture.makeCatalog()
-  local child, openErr = BattleChildApplications.open(bagIntent({ POTION = 5 }), nativePartyServices({ itemCatalog = catalog }))
+  local child, openErr =
+    BattleChildApplications.open(bagIntent({ POTION = 5 }), nativePartyServices({ itemCatalog = catalog }))
   Assert.notNil(child, "the stocked bag composes: " .. tostring(openErr))
   assert(child ~= nil, "the bag child composes")
   child:openTarget("POTION")

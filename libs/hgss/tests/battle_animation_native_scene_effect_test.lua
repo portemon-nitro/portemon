@@ -426,10 +426,13 @@ local function runSpriteDraw(scene, playback, mode, loopIndex, slot)
     tasks = helpers.tasks,
     services = { onNativeFrame = function() end },
   }))
-  local handle = assert(player:start(playback, programOf({
-    { op = "start-sprite-effect", mode = mode, values = { loopIndex, slot }, taskKind = "managed-sprite-draw-loop" },
-    { op = "reset-blend-alpha" },
-  })))
+  local handle = assert(player:start(
+    playback,
+    programOf({
+      { op = "start-sprite-effect", mode = mode, values = { loopIndex, slot }, taskKind = "managed-sprite-draw-loop" },
+      { op = "reset-blend-alpha" },
+    })
+  ))
   for _ = 1, 8 do
     player:stepSourceTick({ tick = 1 })
     if player:status(handle) ~= "running" and player:status(handle) ~= "waiting" then
@@ -534,11 +537,19 @@ function T.sprite_draw_stop_deactivates_only_the_loop()
     tasks = helpers.tasks,
     services = { onNativeFrame = function() end },
   }))
-  local handle = assert(player:start(playback, programOf({
-    { op = "start-sprite-effect", mode = "first-battler-class-priority-gate", values = { 0, 4 }, taskKind = "managed-sprite-draw-loop" },
-    { op = "clear-effect-slot", values = { 0 } },
-    { op = "reset-blend-alpha" },
-  })))
+  local handle = assert(player:start(
+    playback,
+    programOf({
+      {
+        op = "start-sprite-effect",
+        mode = "first-battler-class-priority-gate",
+        values = { 0, 4 },
+        taskKind = "managed-sprite-draw-loop",
+      },
+      { op = "clear-effect-slot", values = { 0 } },
+      { op = "reset-blend-alpha" },
+    })
+  ))
   for _ = 1, 8 do
     player:stepSourceTick({ tick = 1 })
     if player:status(handle) == "complete" then
@@ -561,10 +572,13 @@ function T.move_programs_install_and_restore_the_system_blend()
     tasks = helpers.tasks,
     services = { onNativeFrame = function() end },
   }))
-  local handle = assert(player:start(packet(), programOf({
-    { op = "interpreter-wait", values = { 1 } },
-    { op = "reset-blend-alpha" },
-  })))
+  local handle = assert(player:start(
+    packet(),
+    programOf({
+      { op = "interpreter-wait", values = { 1 } },
+      { op = "reset-blend-alpha" },
+    })
+  ))
   local frame = scene:animationFrame()
   local blend = assert(frame.main.systemBlend, "the move installs the source default blend")
   Assert.deepEqual(blend.blend, { mode = "alpha", eva = 8, evb = 8, evy = 0 }, "the default blend uses the source pair")

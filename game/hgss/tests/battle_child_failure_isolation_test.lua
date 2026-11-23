@@ -190,7 +190,8 @@ function T.versioned_rosters_replay_the_frozen_failure_isolation_flow(context)
       kind = "replacement",
       actors = { { combatant = 1, activation = 5, kind = "replacement", choices = {} } },
     }
-    local ok, openErr = failed:open(partyIntent({ party = roster, purpose = "replacement", cancellable = false, options = empty }))
+    local ok, openErr =
+      failed:open(partyIntent({ party = roster, purpose = "replacement", cancellable = false, options = empty }))
     Assert.isFalse(ok == true, "no invented reserve ever opens on " .. versionId)
     Assert.isTrue(type(openErr) == "string" and openErr ~= "", "the failure names itself on " .. versionId)
     Assert.isFalse(failed:status().active, "no child owns input after the failure on " .. versionId)

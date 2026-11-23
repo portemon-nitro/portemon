@@ -197,16 +197,20 @@ function T.panel_run_drives_the_transition_plane_and_nothing_without_it()
   local baseDrawable = assets.drawable
   assets.drawable = function(_, key)
     if key == "mon:TESTMON" then
-      return { frames = { {
-        image = pageImage,
-        lease = lease,
-        frameX = 8,
-        frameY = 16,
-        frameW = 80,
-        frameH = 80,
-        width = 80,
-        height = 80,
-      } } }
+      return {
+        frames = {
+          {
+            image = pageImage,
+            lease = lease,
+            frameX = 8,
+            frameY = 16,
+            frameW = 80,
+            frameH = 80,
+            width = 80,
+            height = 80,
+          },
+        },
+      }
     end
     return baseDrawable(_, key)
   end

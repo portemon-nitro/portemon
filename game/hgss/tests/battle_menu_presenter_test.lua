@@ -23,11 +23,7 @@ function T.draw_plane_renders_one_layer_without_owning_blend_state()
   local graphics = FakeGraphics.new({})
   local assets = fakeAssets()
   BattleMenuPresenter.drawPlane(graphics, assets, "command", {}, { index = 1, layer = { plane = 0, priority = 2 } })
-  Assert.equal(
-    graphics.draws[1].image.key,
-    "menu:command:screen:1",
-    "the plane entry draws its own staged tilemap"
-  )
+  Assert.equal(graphics.draws[1].image.key, "menu:command:screen:1", "the plane entry draws its own staged tilemap")
   Assert.equal(#graphics.canvases, 0, "a plane draw allocates no blend target")
   Assert.equal(#graphics.shaders, 0, "a plane draw owns no blend shader")
 end

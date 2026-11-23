@@ -76,11 +76,7 @@ function T.box_panes_and_row_animation_frames_are_source_backed(romFs, versionId
   for rowIndex, row in ipairs(bundle.manifest.rows) do
     Assert.equal(row.apricornKey, ROW_KEYS[rowIndex], "visible row has its native Apricorn identity")
     Assert.equal(row.nameMessageId, rowIndex + 6, "visible row points to its native source label")
-    Assert.equal(
-      row.itemId,
-      ROW_ITEM_IDS[rowIndex],
-      "visible row carries its native item identity for plural lookup"
-    )
+    Assert.equal(row.itemId, ROW_ITEM_IDS[rowIndex], "visible row carries its native item identity for plural lookup")
     Assert.equal(FieldMessageAsset.message(messages, row.nameMessageId).text, ROW_LABELS[rowIndex])
     local source = ApricornBoxSources.geometry.rowIcons[rowIndex]
     Assert.equal(row.icon.x, source.x)

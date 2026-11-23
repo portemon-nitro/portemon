@@ -53,34 +53,26 @@ end
 
 function T.move_marker_rects_lower_the_audited_origin_rows_to_pixels()
   local geometry = BagPresentationCompiler.compileGeometry(BagSources)
-  Assert.deepEqual(
-    assert(geometry.moveMarkerRects, "compiled geometry includes the move origin marker rects"),
-    {
-      { x = 0, y = 32, width = 128, height = 48 },
-      { x = 128, y = 32, width = 128, height = 48 },
-      { x = 0, y = 72, width = 128, height = 48 },
-      { x = 128, y = 72, width = 128, height = 48 },
-      { x = 0, y = 112, width = 128, height = 48 },
-      { x = 128, y = 112, width = 128, height = 48 },
-    },
-    "marker rects lower the six audited tile rows at eight pixels per tile"
-  )
+  Assert.deepEqual(assert(geometry.moveMarkerRects, "compiled geometry includes the move origin marker rects"), {
+    { x = 0, y = 32, width = 128, height = 48 },
+    { x = 128, y = 32, width = 128, height = 48 },
+    { x = 0, y = 72, width = 128, height = 48 },
+    { x = 128, y = 72, width = 128, height = 48 },
+    { x = 0, y = 112, width = 128, height = 48 },
+    { x = 128, y = 112, width = 128, height = 48 },
+  }, "marker rects lower the six audited tile rows at eight pixels per tile")
 end
 
 function T.browse_cell_rects_lower_the_audited_slot_art_bounds()
   local geometry = BagPresentationCompiler.compileGeometry(BagSources)
-  Assert.deepEqual(
-    assert(geometry.browseCellRects, "compiled geometry includes the browse cell rects"),
-    {
-      { x = 2, y = 37, width = 124, height = 38 },
-      { x = 130, y = 37, width = 124, height = 38 },
-      { x = 2, y = 77, width = 124, height = 38 },
-      { x = 130, y = 77, width = 124, height = 38 },
-      { x = 2, y = 117, width = 124, height = 38 },
-      { x = 130, y = 117, width = 124, height = 38 },
-    },
-    "cell rects carry the audited slot-art bounds left-to-right, top-to-bottom"
-  )
+  Assert.deepEqual(assert(geometry.browseCellRects, "compiled geometry includes the browse cell rects"), {
+    { x = 2, y = 37, width = 124, height = 38 },
+    { x = 130, y = 37, width = 124, height = 38 },
+    { x = 2, y = 77, width = 124, height = 38 },
+    { x = 130, y = 77, width = 124, height = 38 },
+    { x = 2, y = 117, width = 124, height = 38 },
+    { x = 130, y = 117, width = 124, height = 38 },
+  }, "cell rects carry the audited slot-art bounds left-to-right, top-to-bottom")
 end
 
 function T.sale_geometry_compiles_two_digits_and_four_source_controls()

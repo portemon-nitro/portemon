@@ -685,7 +685,10 @@ function T.tests.touch_template_arrows_and_slider_drag()
   local before = view(controller).template
   tap(controller, 24, 64)
   local afterArrow = view(controller).template
-  Assert.isTrue(afterArrow.bank ~= before.bank or afterArrow.number ~= before.number, "the left arrow moves the template")
+  Assert.isTrue(
+    afterArrow.bank ~= before.bank or afterArrow.number ~= before.number,
+    "the left arrow moves the template"
+  )
   local thumbX = thumbXFor(afterArrow)
   send(controller, { { type = "touch", phase = "down", x = thumbX, y = 64, pane = "controls" } })
   send(controller, { { type = "touch", phase = "move", x = thumbX + 20, y = 64, pane = "controls" } })

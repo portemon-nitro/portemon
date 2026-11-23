@@ -497,11 +497,7 @@ function T.move_warp_event_leaves_field_domain_siblings_untouched_at_a_nonzero_o
 
   service:moveWarpEvent(0, 2, 3)
   Assert.notNil(WarpSystem.findAt(sourceMap, 642, 363), "the moved warp lands at origin + source cell")
-  Assert.deepEqual(
-    WarpSystem.findAt(sourceMap, 648, 372),
-    siblings[1],
-    "the first sibling keeps its field coordinates"
-  )
+  Assert.deepEqual(WarpSystem.findAt(sourceMap, 648, 372), siblings[1], "the first sibling keeps its field coordinates")
   Assert.deepEqual(
     WarpSystem.findAt(sourceMap, 656, 388),
     siblings[2],

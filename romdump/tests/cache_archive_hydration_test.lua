@@ -136,7 +136,10 @@ function T.hydration_round_trips_and_rejects_damage()
   -- Every hydration in this process mounts its own archive: a repeat of the
   -- same candidate still serves its members instead of an empty mount.
   local again, againFailure = CacheArchive.open(versionId, gen)
-  Assert.isNil(againFailure, "a repeated hydration of the same candidate serves it: " .. tostring(againFailure and againFailure.message))
+  Assert.isNil(
+    againFailure,
+    "a repeated hydration of the same candidate serves it: " .. tostring(againFailure and againFailure.message)
+  )
   Assert.equal(#assert(again).entries, 2, "a repeated hydration serves every member")
 
   local otherGeneration = assert(identity())

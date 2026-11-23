@@ -89,8 +89,7 @@ function T.picture_shake_leaves_the_viewport_parked_without_the_background_flag(
   local moved = (foe.pictureXOffset or 0) ~= 0 or (foe.pictureYOffset or 0) ~= 0
   Assert.isTrue(moved, "the opposing battler picture carries the shake displacement")
   local attacker = scene:pictureState({ combatant = 1, activation = 1 })
-  local attackerMoved = attacker ~= nil
-    and ((attacker.pictureXOffset or 0) ~= 0 or (attacker.pictureYOffset or 0) ~= 0)
+  local attackerMoved = attacker ~= nil and ((attacker.pictureXOffset or 0) ~= 0 or (attacker.pictureYOffset or 0) ~= 0)
   Assert.isFalse(attackerMoved, "the unaddressed attacker picture stays parked")
   for _ = 1, 16 do
     if task:status() == "complete" then

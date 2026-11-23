@@ -195,16 +195,9 @@ function T.type_coercion_collects_only_matching_slots()
     return { "normal" }
   end
   Assert.deepEqual(Selection.matchingTypeSlots(slots, "steel", typeOf), { 2, 4 })
-  Assert.deepEqual(
-    Selection.matchingTypeSlots(slots, "electric", typeOf),
-    { 2, 4 },
-    "either base type matches"
-  )
+  Assert.deepEqual(Selection.matchingTypeSlots(slots, "electric", typeOf), { 2, 4 }, "either base type matches")
   Assert.deepEqual(Selection.matchingTypeSlots(slots, "grass", typeOf), { 1 })
-  Assert.isNil(
-    Selection.matchingTypeSlots(slots, "fire", typeOf),
-    "no matching slot falls through to the normal roll"
-  )
+  Assert.isNil(Selection.matchingTypeSlots(slots, "fire", typeOf), "no matching slot falls through to the normal roll")
   local uniform = {
     { species = "MAGNEMITE", form = 0, minLevel = 5, maxLevel = 5, weight = 50 },
     { species = "MAGNETON", form = 0, minLevel = 7, maxLevel = 7, weight = 50 },
@@ -411,10 +404,7 @@ function T.wild_creation_follows_the_four_draw_identity_order()
   Assert.equal(Personality.gender(31, mon.personality), "female", "gender follows the low personality byte")
   Assert.equal(mon.heldItem, "NONE")
   Assert.equal(stream:calls(), 5, "identity takes four draws plus the single held-item roll")
-  Assert.deepEqual(
-    stream:labels(),
-    { "personality_low", "personality_high", "iv_first", "iv_second", "held_item" }
-  )
+  Assert.deepEqual(stream:labels(), { "personality_low", "personality_high", "iv_first", "iv_second", "held_item" })
   for _, cause in ipairs(stream:causes()) do
     Assert.isTrue(type(cause) == "table" and cause.kind == "encounter", "every draw carries its semantic cause")
   end
@@ -436,7 +426,10 @@ function T.wild_creation_assigns_held_items_from_the_species_entries()
   -- 88, inside the common window below ninety-five.
   local common = factory:create("EEVEE", 8, Fixture.spyStream(2), wildOptions())
   Assert.equal(common.personality, 1858306956)
-  Assert.deepEqual(common.ivs, { hp = 12, attack = 27, defense = 20, speed = 29, specialAttack = 13, specialDefense = 3 })
+  Assert.deepEqual(
+    common.ivs,
+    { hp = 12, attack = 27, defense = 20, speed = 29, specialAttack = 13, specialDefense = 3 }
+  )
   Assert.equal(common.ability, "RUN_AWAY")
   Assert.equal(common.heldItem, "SITRUS_BERRY", "a common-window roll keeps the common entry")
   -- Seed 20 draws: personality 9086/7730, ivs 23619/51762, held roll
@@ -472,7 +465,10 @@ function T.wild_creation_compound_eyes_widens_the_held_windows()
   -- 92, common without eyes but rare once eighty opens the rare window.
   local common = factory:create("EEVEE", 8, Fixture.spyStream(11), wildOptions())
   Assert.equal(common.personality, 1182520197)
-  Assert.deepEqual(common.ivs, { hp = 24, attack = 30, defense = 21, speed = 24, specialAttack = 31, specialDefense = 26 })
+  Assert.deepEqual(
+    common.ivs,
+    { hp = 24, attack = 30, defense = 21, speed = 24, specialAttack = 31, specialDefense = 26 }
+  )
   Assert.equal(common.heldItem, "SITRUS_BERRY")
   local rare = factory:create("EEVEE", 8, Fixture.spyStream(11), wildOptions(eyed))
   Assert.equal(rare.personality, 1182520197, "the rare window replays the same identity")

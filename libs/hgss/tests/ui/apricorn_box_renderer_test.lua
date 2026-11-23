@@ -287,10 +287,19 @@ function T.tests.upper_pane_carries_the_selected_description()
   local textFake = text()
   local instance = renderer(textFake)
   instance:drawPane(view(), { id = "upper" })
-  Assert.isTrue(hasPlain(textFake.plain, "Grn Apricorn", 16, 136), "description line one sits at the source window origin")
+  Assert.isTrue(
+    hasPlain(textFake.plain, "Grn Apricorn", 16, 136),
+    "description line one sits at the source window origin"
+  )
   Assert.isTrue(hasPlain(textFake.plain, "A green Apricorn.", 16, 152), "description line two advances one text row")
-  Assert.isTrue(hasPlain(textFake.plain, "It has a mysterious, aromatic scent.", 16, 168), "description line three fills the window")
-  Assert.isFalse(hasPlain(textFake.plain, "Collected Apricorns are inside.", 24, 8), "the header stays on the lower pane")
+  Assert.isTrue(
+    hasPlain(textFake.plain, "It has a mysterious, aromatic scent.", 16, 168),
+    "description line three fills the window"
+  )
+  Assert.isFalse(
+    hasPlain(textFake.plain, "Collected Apricorns are inside.", 24, 8),
+    "the header stays on the lower pane"
+  )
   for _, call in ipairs(textFake.paletted) do
     Assert.isFalse(call.text == "Apricorn Box", "the title stays on the lower pane")
   end
@@ -302,7 +311,10 @@ function T.tests.lower_pane_carries_header_stock_and_chrome_but_skips_empty_rows
   local instance, graphicsFake = renderer(textFake)
   local status = view()
   instance:drawPane(status, { id = "lower" })
-  Assert.isTrue(hasPlain(textFake.plain, "Collected Apricorns are inside.", 24, 8), "the header sits at the source window origin")
+  Assert.isTrue(
+    hasPlain(textFake.plain, "Collected Apricorns are inside.", 24, 8),
+    "the header sits at the source window origin"
+  )
   Assert.isFalse(hasPlain(textFake.plain, "Grn Apricorn", 16, 136), "the description stays on the upper pane")
   local title, close = nil, nil
   for _, call in ipairs(textFake.paletted) do
@@ -436,10 +448,7 @@ function T.tests.quantity_feedback_replays_pressed_art_bounce_and_dimming()
     "the resting CANCEL button keeps its normal sequence"
   )
   local touched = drawnImageAt(graphicsFake.draws, 87, 120)
-  Assert.isTrue(
-    touched ~= nil and touched:find("cursor-26b", 1, true) ~= nil,
-    "the touched arrow advances its bounce"
-  )
+  Assert.isTrue(touched ~= nil and touched:find("cursor-26b", 1, true) ~= nil, "the touched arrow advances its bounce")
   local resting = drawnImageAt(graphicsFake.draws, 87, 80)
   Assert.isTrue(
     resting ~= nil and resting:find("cursor-24.png", 1, true) ~= nil,

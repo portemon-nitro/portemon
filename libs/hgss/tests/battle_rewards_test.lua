@@ -187,11 +187,7 @@ function T.blackout_caps_the_corrected_debit_to_money_on_hand()
   )
   local overfull = Rewards.planLoss({ money = 100000, partyLevels = { 10 }, badges = 17 })
   local fullSet = Rewards.planLoss({ money = 100000, partyLevels = { 10 }, badges = 8 })
-  Assert.equal(
-    overfull.amount,
-    fullSet.amount,
-    "a badge count past eight shares the eight-badge penalty"
-  )
+  Assert.equal(overfull.amount, fullSet.amount, "a badge count past eight shares the eight-badge penalty")
 end
 
 function T.post_battle_effects_drop_defeat_gated_awards()

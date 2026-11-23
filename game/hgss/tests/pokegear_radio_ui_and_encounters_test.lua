@@ -484,9 +484,7 @@ function T.tests.radio_card_plays_its_source_tones()
   live.controller:updateFixed({ { type = "navigate", direction = "up" } })
   Assert.equal(#effects, walked, "walking the dial plays no card tone")
   local cursor = live.controller:status().cursor
-  live.controller:updateFixed(
-    { { type = "pointer_down", pointerId = "t", x = cursor.x, y = cursor.y } }
-  )
+  live.controller:updateFixed({ { type = "pointer_down", pointerId = "t", x = cursor.x, y = cursor.y } })
   Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCURSOR", "touching the tuner plays the cursor tone")
   live.controller:updateFixed({ { type = "pointer_up", pointerId = "t", x = cursor.x, y = cursor.y } })
   Assert.equal(#effects, walked + 1, "releasing the drag plays nothing further")

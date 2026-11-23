@@ -107,11 +107,7 @@ function T.started_systems_use_the_source_orthographic_camera()
   local res = resolver(stagedParticles(), { value = true })
   owner:step({ { effect = "seal", ballKey = "POKE_BALL", battlerType = 0 } }, {}, res)
   Assert.equal(#owner:systems(), 1, "the seal system starts on its cue tick")
-  Assert.equal(
-    owner:systems()[1].simulation.camera.perspective,
-    1,
-    "the seal system selects the orthographic camera"
-  )
+  Assert.equal(owner:systems()[1].simulation.camera.perspective, 1, "the seal system selects the orthographic camera")
 end
 
 function T.started_systems_carry_the_compiled_alpha_usage()
@@ -157,17 +153,9 @@ function T.draw_systems_publish_the_pre_advance_frame()
   owner:step({ { effect = "seal", ballKey = "POKE_BALL", battlerType = 0 } }, {}, res)
   local live = owner:systems()[1].simulation
   local published = owner:drawSystems()[1].simulation
-  Assert.equal(
-    #published.emitters,
-    #live.emitters,
-    "the first capture precedes the first simulation tick"
-  )
+  Assert.equal(#published.emitters, #live.emitters, "the first capture precedes the first simulation tick")
   for index in ipairs(published.emitters) do
-    Assert.equal(
-      #published.emitters[index].particles,
-      0,
-      "newborn emitters carry no particles before their first tick"
-    )
+    Assert.equal(#published.emitters[index].particles, 0, "newborn emitters carry no particles before their first tick")
   end
   Assert.isTrue(#live.emitters[1].particles > 0, "the live simulation advanced once underneath")
 end

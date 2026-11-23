@@ -1467,7 +1467,8 @@ function T.an_observation_waits_for_installed_bytes_and_the_reader_shares_them()
   local identity = probeIdentity()
   local scene = residentEntry(identity, "data/generated/field/30/scene.lua", "return { mapId = 30 }\n")
   local atlas = residentEntry(identity, "assets/generated/field/30/atlas.png", "PNGDATA")
-  local requestId = assert(service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" }))
+  local requestId =
+    assert(service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" }))
   service:update()
 
   -- The controller's terminal answer for the second publication arrives before
@@ -1880,7 +1881,8 @@ function T.a_real_thread_installs_every_part_before_readiness_is_observed()
   local hold = assert(host.newChannel())
   local identity = probeIdentity()
   local epoch = assert(service:select({ versionId = "heartgold", development = true }))
-  local requestId = assert(service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" }))
+  local requestId =
+    assert(service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" }))
   service:update()
 
   local thread = assert(host.newThread(PUBLISHER_THREAD))

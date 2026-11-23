@@ -323,10 +323,7 @@ function T.lead_swap_mid_walk_reseats_the_replacement_and_keeps_interpolated_ste
     for _ = 1, 32 do
       local committed = ordinaryTick(w, "south")
       local worldZ = swapped:getWorldPosition().z
-      Assert.isTrue(
-        math.abs(worldZ - startZ) <= 1,
-        "the follower travels at most one tile per step, never a teleport"
-      )
+      Assert.isTrue(math.abs(worldZ - startZ) <= 1, "the follower travels at most one tile per step, never a teleport")
       if committed then
         break
       end
@@ -1199,10 +1196,7 @@ function T.arrival_rejoin_reveals_on_a_transition_mode_trail_step()
     Assert.isFalse(w.mgr:isVisible(partnerId), movementType .. " starts from the hidden arrival state")
     w.controller:setMovementType(movementType)
     driveScriptedWalk(w, "south", "normal")
-    Assert.isTrue(
-      w.mgr:isVisible(partnerId),
-      movementType .. " must reveal the hidden arrival on its trail step"
-    )
+    Assert.isTrue(w.mgr:isVisible(partnerId), movementType .. " must reveal the hidden arrival on its trail step")
     Assert.isTrue(w.controller:isMovementSettled(), movementType .. " settles after the scripted step")
     w.mgr:dispose()
   end
@@ -2785,16 +2779,8 @@ function T.map_change_mid_step_reveals_the_hidden_arrival_on_its_first_step()
   tick(w, 12)
   Assert.isTrue(w.controller:isMovementSettled(), "the follower trail settles after the map change")
   hidden = assert(w.mgr:getById(partnerId), "the partner survives the map change")
-  Assert.equal(
-    hidden:getFieldPosition().fieldX,
-    vacated.fieldX,
-    "the revealed follower trails onto the vacated tile"
-  )
-  Assert.equal(
-    hidden:getFieldPosition().fieldZ,
-    vacated.fieldZ,
-    "the revealed follower trails onto the vacated tile"
-  )
+  Assert.equal(hidden:getFieldPosition().fieldX, vacated.fieldX, "the revealed follower trails onto the vacated tile")
+  Assert.equal(hidden:getFieldPosition().fieldZ, vacated.fieldZ, "the revealed follower trails onto the vacated tile")
   w.mgr:dispose()
 end
 

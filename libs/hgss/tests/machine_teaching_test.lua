@@ -267,7 +267,11 @@ function T.teaching_stores_plain_entries_and_grants_no_field_permission()
     Assert.isTrue(entry.ppUps >= 0 and entry.ppUps <= 3, "power-point ups stay plain counts")
   end
   local FieldMovePolicy = require("libs.hgss.src.field.FieldMovePolicy")
-  Assert.equal(FieldMovePolicy.check("cut", { badges = {} }).kind, "need_badge", "teaching never marks field permission")
+  Assert.equal(
+    FieldMovePolicy.check("cut", { badges = {} }).kind,
+    "need_badge",
+    "teaching never marks field permission"
+  )
 end
 
 return { tests = T }

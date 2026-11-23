@@ -1115,7 +1115,10 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
         handles[#handles + 1] = type(image) == "table" and tostring(image.handle) or type(image)
       end
     end
-    Assert.isTrue(wasDrawn(playerBack), "the player battler draws from its own back image (have: " .. table.concat(handles, ",") .. ")")
+    Assert.isTrue(
+      wasDrawn(playerBack),
+      "the player battler draws from its own back image (have: " .. table.concat(handles, ",") .. ")"
+    )
   end
   Assert.isTrue(wasDrawn(enemyFront), "the enemy battler draws from its own front image")
   Assert.isTrue(#rig.windows.calls > 0, "narration and menus draw through the selected window frame")

@@ -176,11 +176,7 @@ function T.draw_systems_publish_the_pre_advance_frame()
   end
   owner:step(2, sets)
   published = owner:drawSystems()[1].simulation
-  Assert.equal(
-    #published.emitters[1].particles,
-    #before,
-    "the second capture shows the previous live state"
-  )
+  Assert.equal(#published.emitters[1].particles, #before, "the second capture shows the previous live state")
   for index, particle in ipairs(published.emitters[1].particles) do
     Assert.equal(particle.x, before[index], "published particles hold pre-update positions")
   end

@@ -276,11 +276,7 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
   Assert.equal(singleRequest.identity.ordinal, 1, "the first hit numbers its source call from one")
   Assert.equal(singleRequest.effectKey, "tackle-strike", "the request carries its executed key")
   Assert.equal(singleRequest.disposition, "admit", "the connected strike admits its root")
-  Assert.equal(
-    singleRequest.anchor.stage,
-    "after-announcement",
-    "the strike anchors after its attack announcement"
-  )
+  Assert.equal(singleRequest.anchor.stage, "after-announcement", "the strike anchors after its attack announcement")
   local singleAttacker = singleRequest.playback.topology.attacker
   Assert.equal(singleAttacker.combatant, 1, "the single attacker keeps its combatant")
   Assert.equal(singleAttacker.activation, 7, "the single attacker keeps its activation")
@@ -320,14 +316,26 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
     "enemy-side-slot-1",
     "the first spread target takes its double slot"
   )
-  Assert.equal(doubleRequests[1].playback.topology.targets[1].sideType, 3, "the first spread target takes its side type")
+  Assert.equal(
+    doubleRequests[1].playback.topology.targets[1].sideType,
+    3,
+    "the first spread target takes its side type"
+  )
   Assert.equal(
     doubleRequests[1].playback.topology.targets[2].slot,
     "enemy-side-slot-2",
     "the second spread target takes its double slot"
   )
-  Assert.equal(doubleRequests[1].playback.topology.targets[2].sideType, 5, "the second spread target takes its side type")
-  Assert.equal(doubleRequests[1].playback.topology.targets[2].activation, 10, "the second spread target keeps its own activation")
+  Assert.equal(
+    doubleRequests[1].playback.topology.targets[2].sideType,
+    5,
+    "the second spread target takes its side type"
+  )
+  Assert.equal(
+    doubleRequests[1].playback.topology.targets[2].activation,
+    10,
+    "the second spread target keeps its own activation"
+  )
 
   local replacedPacket = packetFor({
     own = { { combatant = 1, activation = 7, side = 1, position = 1 } },
@@ -346,10 +354,18 @@ function T.event_time_topology_binds_stable_slots_for_singles_doubles_and_replac
     9,
     "a hit against a departed target keeps its pre-event activation"
   )
-  Assert.equal(replacedRequests[1].playback.topology.targets[1].slot, "solo-enemy", "the departed target keeps its event-time slot")
+  Assert.equal(
+    replacedRequests[1].playback.topology.targets[1].slot,
+    "solo-enemy",
+    "the departed target keeps its event-time slot"
+  )
 
   singlePacket.before.foes[1].activation = 999
-  Assert.equal(singleRequest.playback.topology.targets[1].activation, 9, "the admitted topology never follows later view edits")
+  Assert.equal(
+    singleRequest.playback.topology.targets[1].activation,
+    9,
+    "the admitted topology never follows later view edits"
+  )
   local replayPacket = packetFor({
     own = { { combatant = 1, activation = 7, side = 1, position = 1 } },
     foes = { { combatant = 2, activation = 12, side = 2, position = 2 } },
@@ -752,14 +768,22 @@ function T.event_time_sides_select_the_side_branches()
     }, { actionId = 11, hitIndex = 1, effectKey = "side-branch-strike", visualSeed = 77 }),
   }, "side-branch-probe", 12)
   local outwardRequests = BattlePresentationFlow.animationPlayback(outward, outward.events[1], geometry)
-  Assert.equal(outwardRequests[1].playback.topology.attacker.slot, "solo-player", "the outward strike keeps its player-side user")
+  Assert.equal(
+    outwardRequests[1].playback.topology.attacker.slot,
+    "solo-player",
+    "the outward strike keeps its player-side user"
+  )
   local inward = packetFor(views, views, {
     strikeEvent(13, { { combatant = 2, activation = 9, side = 2, position = 2 } }, {
       { combatant = 1, activation = 7, side = 1, position = 1 },
     }, { actionId = 12, hitIndex = 1, effectKey = "side-branch-reply", visualSeed = 78 }),
   }, "side-branch-probe", 13)
   local inwardRequests = BattlePresentationFlow.animationPlayback(inward, inward.events[1], geometry)
-  Assert.equal(inwardRequests[1].playback.topology.attacker.slot, "solo-enemy", "the reply strike keeps its foe-side user")
+  Assert.equal(
+    inwardRequests[1].playback.topology.attacker.slot,
+    "solo-enemy",
+    "the reply strike keeps its foe-side user"
+  )
   local doubleViews = {
     own = {
       { combatant = 1, activation = 7, side = 1, position = 1 },
@@ -776,7 +800,11 @@ function T.event_time_sides_select_the_side_branches()
     }, { actionId = 13, hitIndex = 1, effectKey = "side-branch-aid", visualSeed = 79 }),
   }, "side-branch-probe", 14)
   local allyRequests = BattlePresentationFlow.animationPlayback(allyAid, allyAid.events[1], geometry)
-  Assert.equal(allyRequests[1].playback.topology.targets[1].slot, "player-side-slot-2", "the ally aid keeps its same-side target")
+  Assert.equal(
+    allyRequests[1].playback.topology.targets[1].slot,
+    "player-side-slot-2",
+    "the ally aid keeps its same-side target"
+  )
 
   local Player = playerModule()
   local scene = sceneWithPair()
@@ -818,11 +846,13 @@ function T.event_time_sides_select_the_side_branches()
     subprograms = {},
     taskKinds = {},
   }
-  local outwardHandle = assert(player:start(occurrenceFor(outward, outward.events[1], outwardRequests[1]), predicateProgram))
+  local outwardHandle =
+    assert(player:start(occurrenceFor(outward, outward.events[1], outwardRequests[1]), predicateProgram))
   player:stepSourceTick({ tick = 1 })
   Assert.deepEqual(played, { "user-player-cue" }, "the player-side user takes the ordinary branch")
   Assert.equal(player:status(outwardHandle), "waiting", "the outward predicate settles on its branch")
-  local inwardHandle = assert(player:start(occurrenceFor(inward, inward.events[1], inwardRequests[1]), predicateProgram))
+  local inwardHandle =
+    assert(player:start(occurrenceFor(inward, inward.events[1], inwardRequests[1]), predicateProgram))
   player:stepSourceTick({ tick = 2 })
   Assert.equal(played[#played], "user-foe-cue", "the foe-side user takes the special branch")
   Assert.equal(player:status(inwardHandle), "waiting", "the reply predicate settles on its branch")
@@ -837,7 +867,8 @@ function T.event_time_sides_select_the_side_branches()
     subprograms = {},
     taskKinds = {},
   }
-  local crossHandle = assert(player:start(occurrenceFor(outward, outward.events[1], outwardRequests[1]), equalityProgram))
+  local crossHandle =
+    assert(player:start(occurrenceFor(outward, outward.events[1], outwardRequests[1]), equalityProgram))
   player:stepSourceTick({ tick = 3 })
   Assert.equal(played[#played], "cross-side-cue", "the cross-side pair falls through")
   Assert.equal(player:status(crossHandle), "waiting", "the cross-side equality settles on its branch")

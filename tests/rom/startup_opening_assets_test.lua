@@ -231,7 +231,11 @@ local function sourceOpeningScenesCompileToFiveIndependentVersionedBundles(romFs
   local generationId = "opening-scene-independence"
   for sceneNumber = 1, 5 do
     local identity = ArtifactState.key("opening-scene", tostring(sceneNumber))
-    Assert.equal(identity, "opening-scene:" .. tostring(sceneNumber), "scene " .. sceneNumber .. " carries its own fact identity")
+    Assert.equal(
+      identity,
+      "opening-scene:" .. tostring(sceneNumber),
+      "scene " .. sceneNumber .. " carries its own fact identity"
+    )
     local bundle = compileScene(romFs, versionId, sceneNumber)
     checkSceneBundle(bundle, versionId, sceneNumber)
     stageScene(cacheFs, generationId, bundle, sceneNumber)
@@ -463,11 +467,7 @@ local function sourceOpeningAssetsKeepLayeredModelsParticlesAndFailedStagesPrese
     liveManifest,
     "a failed scene 4 stage preserves its previous good manifest"
   )
-  Assert.equal(
-    ArtifactState.read(facts, "opening-scene", "4"),
-    liveFact,
-    "a failed scene 4 stage commits no new fact"
-  )
+  Assert.equal(ArtifactState.read(facts, "opening-scene", "4"), liveFact, "a failed scene 4 stage commits no new fact")
   local sibling = loadScene(cacheFs, 2, versionId)
   Assert.equal(sibling.sceneNumber, 2, "a failed scene 4 stage leaves its sibling scene untouched")
 end
@@ -2577,11 +2577,7 @@ local function sceneFiveRunsShutterScrollAndWhiteFadeInSourceOrder(romFs, versio
   Assert.equal(fade.direction, "out", "the closing fade runs out")
   Assert.equal(fade.ticks, 50, "the closing fade runs its 50 source steps")
   Assert.equal(fade.effect, "fade-white", "the white fade owns the closing wait identity")
-  Assert.equal(
-    fade.terminal,
-    "hold",
-    "the closing fade holds white like the sticky source brightness register"
-  )
+  Assert.equal(fade.terminal, "hold", "the closing fade holds white like the sticky source brightness register")
   Assert.deepEqual(waitFadeOut.events, {}, "the closing wait starts no effect on entry")
   Assert.equal(waitFadeOut["until"].kind, "effect", "scene completion waits on the fade task")
   Assert.equal(waitFadeOut["until"].effect, "fade-white", "scene completion waits on the white fade alone")

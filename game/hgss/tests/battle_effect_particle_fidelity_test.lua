@@ -219,7 +219,11 @@ local function probeEffectRecord(archivePath, texturePath, archiveIdentity, text
           systemIndex = 0,
           taskKind = "battle-particle-system",
         },
-        { op = "wait-interpreter-counter", cursorRule = "pending-redispatch-current-opcode; zero-advances-past-current-opcode", branchTarget = 2 },
+        {
+          op = "wait-interpreter-counter",
+          cursorRule = "pending-redispatch-current-opcode; zero-advances-past-current-opcode",
+          branchTarget = 2,
+        },
         {
           op = "create-parameterized-battler-effect",
           actionProfile = "particle-emitter-target-battler-relative",
@@ -573,8 +577,12 @@ function T.failed_texture_rolls_back_the_production_system()
   local Factory = effectFactoryModule()
   local scene = sceneWithPair()
   local journal = { acquired = {}, released = {} }
-  local services =
-    { scene = scene, audio = {}, resources = journaledHolderServices(owned, effect, journal), splRandomState = { state = 0 } }
+  local services = {
+    scene = scene,
+    audio = {},
+    resources = journaledHolderServices(owned, effect, journal),
+    splRandomState = { state = 0 },
+  }
   local built, failure = pcall(
     Factory.create,
     "battle-particle-system",

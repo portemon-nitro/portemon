@@ -14,7 +14,6 @@ local BattlePresentationManifestFixture = require("tests.support.BattlePresentat
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
-
 -- Drains one typed composition frame through the recording boundary so
 -- compact content assertions observe production draws without GPU.
 ---@param graphics table recording graphics boundary under drawing
@@ -1106,11 +1105,8 @@ function T.two_option_dock_adapts_the_source_answers_to_one_surface()
     )
     Assert.isTrue(dock.content.y + 32 <= top.y, "the question keeps its two lines above the answers" .. tag)
     for _, row in ipairs({ top, bottom }) do
-      local press = plan.mapInput(
-        { type = "pointer_down", pointerId = "tap:" .. row.id, x = row.x + 8, y = row.y + 8 },
-        view,
-        plan
-      )
+      local press =
+        plan.mapInput({ type = "pointer_down", pointerId = "tap:" .. row.id, x = row.x + 8, y = row.y + 8 }, view, plan)
       Assert.notNil(press, "the " .. row.id .. " row claims its tap" .. tag)
       Assert.equal(press.control.id, row.id, "the tap names its own answer cell" .. tag)
       Assert.equal(press.control.scope, case.mode, "the tap answers under the offer's own scope" .. tag)
@@ -1174,7 +1170,6 @@ function T.multi_actor_docks_name_the_acting_battler()
     end
   end
 end
-
 
 -- One battlefield transform fits the native lattice inside the scene
 -- rectangle: every world picture, particle, background and managed

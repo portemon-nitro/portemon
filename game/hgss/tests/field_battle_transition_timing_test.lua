@@ -70,10 +70,7 @@ function T.host_cover_does_not_claim_transition_music_without_a_selected_effect(
 
     Assert.deepEqual(music, {}, "host cover does not invent a transition music operation")
     Assert.isNil(envelope:musicNote(), "no transition music result exists without a selected effect")
-    Assert.isTrue(
-      envelope:cover().coefficient > 0,
-      "the host safety cover still advances without a selected effect"
-    )
+    Assert.isTrue(envelope:cover().coefficient > 0, "the host safety cover still advances without a selected effect")
     Assert.equal(host.advances, 1, "the coordinator advances once on the same source tick")
     Assert.equal(#notifications, 0, "no full-cover handoff is reported on the initialization tick")
   end, debug.traceback)
@@ -279,10 +276,7 @@ function T.transition_music_stays_coupled_to_effect_init_across_bank_readiness()
     Assert.deepEqual(music, { "trainer" }, "battle music voices synchronously with effect init")
     Assert.equal(envelope:musicNote(), "started:trainer", "the staged track result is retained")
     envelope:_stepCover()
-    Assert.isTrue(
-      envelope:cover().coefficient > 0,
-      "cover advances only after the coupled transition and music start"
-    )
+    Assert.isTrue(envelope:cover().coefficient > 0, "cover advances only after the coupled transition and music start")
     for _ = 1, 3 do
       envelope:_stepTransition()
     end

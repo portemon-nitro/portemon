@@ -110,11 +110,7 @@ function T.tests.opening_theme_plays_once_and_yields_to_the_title_theme()
     titleRecord = { crySpeciesId = 250 },
     audioComposition = audio,
   })
-  Assert.equal(
-    type(session.beginOpening),
-    "function",
-    "the session owns the movie opening cue"
-  )
+  Assert.equal(type(session.beginOpening), "function", "the session owns the movie opening cue")
   session:beginOpening()
   session:beginOpening()
   Assert.deepEqual(events, {

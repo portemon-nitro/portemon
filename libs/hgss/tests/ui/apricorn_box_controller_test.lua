@@ -202,11 +202,7 @@ function T.tests.browse_row_navigation_and_touch_produce_source_feedback()
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   controller:updateFixed({ { type = "touch_row", index = 1 } })
   Assert.equal(controller:status().selectedIndex, 1)
-  Assert.equal(
-    table.concat(sounds, ","),
-    "1500,1515",
-    "navigation and row selection use their source cues"
-  )
+  Assert.equal(table.concat(sounds, ","), "1500,1515", "navigation and row selection use their source cues")
 end
 
 function T.tests.confirmation_owns_input_and_publishes_yes_after_prompt_blink()
@@ -332,11 +328,7 @@ function T.tests.quantity_arrow_touch_replays_its_bounce()
     controller:updateFixed({})
   end
   controller:updateFixed({ { type = "quantity_control", index = 4 } })
-  Assert.deepEqual(
-    controller:status().arrowFlashes,
-    { [2] = 0 },
-    "the touched arrow restarts its bounce"
-  )
+  Assert.deepEqual(controller:status().arrowFlashes, { [2] = 0 }, "the touched arrow restarts its bounce")
   controller:updateFixed({})
   controller:updateFixed({})
   Assert.equal(controller:status().arrowFlashes[2], 2, "the bounce advances on fixed ticks")

@@ -33,7 +33,10 @@ T.tests["rewrites compiled geometry and texture references into the emote root"]
         unresolved = {},
         batches = { { geometry = { file = MapAssetCache.modelBankPath("mesh"), drawIndex = 0 } } },
         materials = {
-          { name = "exclamation", texture = { file = MapAssetCache.textureBankPath("texture"), textureName = "exclamation" } },
+          {
+            name = "exclamation",
+            texture = { file = MapAssetCache.textureBankPath("texture"), textureName = "exclamation" },
+          },
         },
       }
     end,

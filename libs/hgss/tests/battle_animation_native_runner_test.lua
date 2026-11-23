@@ -15,8 +15,7 @@ local function collaborators()
   function audio.play(name)
     log.played[#log.played + 1] = name
   end
-  function audio.stop(_name)
-  end
+  function audio.stop(_name) end
   function audio.isFinished(name)
     return audio.done[name] == true
   end
@@ -24,24 +23,21 @@ local function collaborators()
   function tasks.create(kind, _args, _context, _services)
     log.created = log.created + 1
     local task = { _state = "complete" }
-    function task.stepSourceTick(_tick)
-    end
+    function task.stepSourceTick(_tick) end
     function task.status()
       return task._state
     end
     function task.cancel(_reason)
       task._state = "cancelled"
     end
-    function task.dispose()
-    end
+    function task.dispose() end
     return task
   end
   local resources = {}
   function resources.resolve(key)
     return { key = key, lease = key }
   end
-  function resources.release(_lease)
-  end
+  function resources.release(_lease) end
   return { audio = audio, tasks = tasks, resources = resources, log = log }
 end
 
@@ -115,17 +111,20 @@ function T.empty_loops_wrap_their_counter_instead_of_hanging()
     tasks = helpers.tasks,
     services = { onNativeFrame = function() end },
   }))
-  local handle, reason = player:start(packet(), programOf({
-    { op = "reserve-loop-slot", values = { 0 }, branchTarget = 2, resumeTarget = 2 },
-    {
-      op = "schedule-battle-task",
-      taskKind = "battle-background-blend-transition",
-      taskInputRule = "loop-rule",
-      values = { 1 },
-    },
-    { op = "advance-loop-slot" },
-    { op = "reset-blend-alpha" },
-  }))
+  local handle, reason = player:start(
+    packet(),
+    programOf({
+      { op = "reserve-loop-slot", values = { 0 }, branchTarget = 2, resumeTarget = 2 },
+      {
+        op = "schedule-battle-task",
+        taskKind = "battle-background-blend-transition",
+        taskInputRule = "loop-rule",
+        values = { 1 },
+      },
+      { op = "advance-loop-slot" },
+      { op = "reset-blend-alpha" },
+    })
+  )
   Assert.notNil(handle, "a zero-count loop admits and wraps: " .. tostring(reason))
   for _ = 1, 300 do
     player:stepSourceTick({ tick = 1 })

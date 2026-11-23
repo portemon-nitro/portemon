@@ -59,8 +59,8 @@ function T.a_fresh_clear_hide_flag_materializes_and_draws_the_real_elm_actor(rom
   local actorBundle = assert(FieldActorCompiler.compile(romFs))
   local cache = CacheFs.forVersion(version, FakeCache.new())
   ResidentArtifactFixture.publish(cache, "actors", "global", function(artifact)
-      return FieldActorCacheWriter.stage(artifact, actorBundle)
-    end)
+    return FieldActorCacheWriter.stage(artifact, actorBundle)
+  end)
   local assets = FieldActorAssetProvider.new(cache, { graphics = stubGraphics() })
 
   -- A genuinely fresh save: no flag has ever been written, so

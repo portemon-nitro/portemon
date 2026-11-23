@@ -83,15 +83,7 @@ end
 local function cursorPaints(shell)
   local graphics = recordingGraphics()
   local images, content = stubImages(graphics)
-  PokegearConfigureRenderer.drawPane(
-    graphics,
-    images,
-    nil,
-    content,
-    setupView(),
-    { 0, 1, 2, 3, 4, 5 },
-    shell
-  )
+  PokegearConfigureRenderer.drawPane(graphics, images, nil, content, setupView(), { 0, 1, 2, 3, 4, 5 }, shell)
   for _, path in ipairs(graphics._records) do
     if type(path) == "string" and path:find("test-corner-", 1, true) == 1 then
       return true

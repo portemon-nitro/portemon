@@ -154,10 +154,7 @@ function T.attack_announcement_releases_its_visual_without_a_product_hold()
   Assert.equal(timeline:message(), "LEAD used Tackle!", "the attack line reveals")
   advance(timeline)
   advance(timeline)
-  Assert.isTrue(
-    timeline:settled(),
-    "the revealed attack line releases its visual without a product hold"
-  )
+  Assert.isTrue(timeline:settled(), "the revealed attack line releases its visual without a product hold")
 end
 
 -- A narration page without a retail script wait behind it carries no
@@ -212,7 +209,11 @@ function T.source_printer_controls_hold_at_exact_glyph_boundaries()
   Assert.equal(callbacks[1].message, "A", "the callback fires after exactly one glyph")
   Assert.equal(callbacks[2].callback, 4, "the post-pause control starts the poof sound")
   Assert.equal(callbacks[2].message, "AB", "pause and sound remain at their source boundary")
-  Assert.equal(callbacks[2].tick - callbacks[1].tick, 3, "PAUSE 4 consumes exactly four printer updates before its callback")
+  Assert.equal(
+    callbacks[2].tick - callbacks[1].tick,
+    3,
+    "PAUSE 4 consumes exactly four printer updates before its callback"
+  )
   Assert.equal(callbacks[3].callback, 2, "the terminal wait probes the fanfare")
   Assert.equal(callbacks[3].message, "ABCD", "terminal wait begins after the final glyph")
   Assert.isTrue(timeline:messageActive(), "the final callback still owns the printer")
@@ -271,11 +272,7 @@ function T.super_effective_pre_message_hold_answers_acknowledgement()
       end
     end
     Assert.isTrue(timeline:settled(), "the super-effective sequence drains")
-    Assert.equal(
-      quiet,
-      16,
-      "one health tick plus the fifteen-tick effectiveness beat run without narration"
-    )
+    Assert.equal(quiet, 16, "one health tick plus the fifteen-tick effectiveness beat run without narration")
   end
   do
     local timeline = struckTimeline()
@@ -296,10 +293,7 @@ function T.super_effective_pre_message_hold_answers_acknowledgement()
     for _ = 1, 3 do
       advance(timeline)
     end
-    Assert.isTrue(
-      timeline:messageActive(),
-      "skipping the beat reaches the effectiveness line within three ticks"
-    )
+    Assert.isTrue(timeline:messageActive(), "skipping the beat reaches the effectiveness line within three ticks")
   end
 end
 
@@ -347,11 +341,7 @@ function T.trainer_blocked_lines_hold_the_source_thirty_frame_beat()
       break
     end
   end
-  Assert.equal(
-    timeline:message(),
-    "The Trainer blocked the Ball!",
-    "the blocked line reveals"
-  )
+  Assert.equal(timeline:message(), "The Trainer blocked the Ball!", "the blocked line reveals")
   for _ = 1, 29 do
     advance(timeline)
   end
@@ -365,10 +355,7 @@ function T.trainer_blocked_lines_hold_the_source_thirty_frame_beat()
       break
     end
   end
-  Assert.isTrue(
-    timeline:message():find("thief", 1, true) ~= nil,
-    "the refusal line follows the blocked line"
-  )
+  Assert.isTrue(timeline:message():find("thief", 1, true) ~= nil, "the refusal line follows the blocked line")
   for _ = 1, 20 do
     advance(timeline)
   end
@@ -428,10 +415,7 @@ function T.gotcha_overlaps_its_fanfare_and_holds_the_source_tail()
   for _ = 1, 3 do
     advance(timeline, neverFinishes)
   end
-  Assert.isTrue(
-    timeline:message() ~= "",
-    "the Gotcha line starts printing while its fanfare is still voicing"
-  )
+  Assert.isTrue(timeline:message() ~= "", "the Gotcha line starts printing while its fanfare is still voicing")
   for _ = 1, 200 do
     advance(timeline, neverFinishes)
     if timeline:message() == "Gotcha! FOE was caught!" then
@@ -442,10 +426,7 @@ function T.gotcha_overlaps_its_fanfare_and_holds_the_source_tail()
   for _ = 1, 70 do
     advance(timeline, neverFinishes)
   end
-  Assert.isTrue(
-    timeline:messageActive(),
-    "the Gotcha line holds its auto-scroll plus thirty-frame tail"
-  )
+  Assert.isTrue(timeline:messageActive(), "the Gotcha line holds its auto-scroll plus thirty-frame tail")
   drain(timeline, 200, neverFinishes)
   Assert.isTrue(timeline:settled(), "the capture drains once the tail completes")
 end
@@ -544,10 +525,7 @@ function T.level_up_line_auto_scrolls_before_its_summary()
   for _ = 1, 40 do
     advance(timeline, alwaysFinishes)
   end
-  Assert.isNil(
-    timeline:levelUpStats(),
-    "the summary waits out the level line auto-scroll"
-  )
+  Assert.isNil(timeline:levelUpStats(), "the summary waits out the level line auto-scroll")
   Assert.isTrue(timeline:messageActive(), "the level line is still showing")
 end
 
@@ -583,10 +561,7 @@ function T.wild_intro_settles_without_a_trailing_product_wait()
   end
   Assert.notNil(revealTick, "the player send-out reveals")
   Assert.notNil(hideTick, "the intro hides its trainers")
-  Assert.isTrue(
-    hideTick - revealTick <= 120,
-    "the send-out settles into the hide without a trailing product wait"
-  )
+  Assert.isTrue(hideTick - revealTick <= 120, "the send-out settles into the hide without a trailing product wait")
 end
 
 -- BallThrow_CaptureStateOpen bursts the ball open where the throw arc ended;
