@@ -208,6 +208,45 @@ function T.simultaneous_trainers_keep_their_double_engagement()
   Assert.deepEqual(scenario.positions[4].eligibleParticipants, { 3 })
 end
 
+-- A partner battle fields the ally as its own participant on the player's
+-- side with its own roster and trainer controller: one active position each,
+-- while the enemies keep their own parties and prize shares.
+function T.partner_battles_field_the_ally_on_the_player_side()
+  local scenario = ScenarioFactory.fromTrainer({
+    trainer = 479,
+    trainer2 = 499,
+    trainers = {
+      { id = 479, party = { fullRecord() }, prizeMoney = { trainerClass = 114, classRate = 20 }, partyLevels = { 30 } },
+      { id = 499, party = { fullRecord() }, prizeMoney = { trainerClass = 55, classRate = 8 }, partyLevels = { 28 } },
+    },
+    partner = { id = 675, party = { fullRecord(), fullRecord() } },
+  }, {})
+  Assert.equal(scenario.kind, "trainer")
+  Assert.equal(scenario.format, "double", "a partner battle fights as a double battle")
+  Assert.equal(#scenario.sides[1].participants, 2, "the player's side holds the player and the ally")
+  Assert.equal(#scenario.positions, 4)
+  Assert.equal(scenario.positions[1].side, 1)
+  Assert.equal(scenario.positions[2].side, 1, "the ally opens the side's second position")
+  Assert.equal(scenario.positions[3].side, 2)
+  Assert.equal(scenario.positions[4].side, 2)
+  Assert.deepEqual(scenario.positions[1].eligibleParticipants, { 1 }, "the player opens exactly one position")
+  local allyId = scenario.positions[2].eligibleParticipants[1]
+  local ally = nil
+  for _, participant in ipairs(scenario.participants) do
+    if participant.id == allyId then
+      ally = participant
+    end
+  end
+  ally = assert(ally, "the ally participant is published")
+  Assert.equal(ally.side, 1)
+  Assert.equal(ally.controller, "trainer:675", "the ally answers through a trainer controller")
+  Assert.equal(#ally.roster, 2, "the ally keeps its own party")
+  Assert.equal(#scenario.trainer, 2, "only the opponents carry prize shares")
+  for _, entry in ipairs(scenario.trainer) do
+    Assert.isTrue(entry.id == 479 or entry.id == 499, "the ally never becomes a defeated trainer")
+  end
+end
+
 function T.production_scenarios_carry_the_full_eligible_roster_with_a_conscious_lead()
   local party = mixedParty()
   local bag = stockedBag()

@@ -160,7 +160,7 @@ function T.normalizes_hidden_item_source_rows_before_script_identity()
   end
 
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60))
-  Assert.equal(bundle.field.schema, "g4-field-map-v17")
+  Assert.equal(bundle.field.schema, "g4-field-map-v18")
   Assert.equal(arm9Reads, 1)
   Assert.deepEqual(bundle.field.events.background[1].hiddenItem, { itemId = 17, quantity = 1, flagId = 800 })
   Assert.equal(bundle.field.events.background[1].scriptId, "common.hiddenitem_t20_potion")
@@ -837,6 +837,78 @@ function T.rejects_a_scripted_reuse_of_an_object_event_id()
   Assert.equal(err.context.mapId, 60)
   Assert.equal(err.context.mapSymbol, "MAP_NEW_BARK")
   Assert.equal(err.context.objectEventId, 5)
+end
+
+-- include/constants/std_script.h trainer groups: an object whose raw script id
+-- sits in a trainer group addresses that group's shared trainer scripts, so the
+-- produced record carries the native trainer identity, the engagement-pair
+-- slot, the authored sight, the shared approach scene identity, and the shared
+-- talk body as its peer interaction script. The approach sentinel at
+-- LAST_TRAINER_INDEX is a scene, never a trainer, and objects outside the
+-- groups keep their own script identity.
+function T.publishes_native_trainer_subject_and_shared_scripts()
+  local member = Builder.build({
+    objectEvents = {
+      objectEvent({
+        objectEventId = 0,
+        type = 1,
+        scriptId = 3046,
+        facingDirection = 1,
+        param0 = 3,
+        x = 10,
+        z = 20,
+      }),
+      objectEvent({ objectEventId = 1, type = 2, scriptId = 5046, param0 = 5, x = 11, z = 21 }),
+      objectEvent({ objectEventId = 2, spriteId = 99, scriptId = 9 }),
+      objectEvent({ objectEventId = 3, type = 1, scriptId = 3739, param0 = 1 }),
+    },
+  })
+  local romFs = FieldMapDataFixture.build({ zoneEventsMember = member })
+  local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, function()
+    return "hash"
+  end, function()
+    return "dependency"
+  end))
+  local objects = bundle.field.events.objects
+  Assert.equal(#objects, 4)
+
+  local lead = objects[1]
+  Assert.equal(lead.scriptId, "vanilla.hgss.scr_seq.0953.script_738", "a trainer talks through the shared body")
+  Assert.deepEqual(lead.trainer, {
+    trainerId = 47,
+    partner = "first",
+    sightType = 1,
+    sightRange = 3,
+    approachScript = "vanilla.hgss.scr_seq.0953.script_739",
+  })
+
+  local partner = objects[2]
+  Assert.equal(partner.trainer.trainerId, 47, "the second group names the same native trainer")
+  Assert.equal(partner.trainer.partner, "second", "the second group fills the pair's second slot")
+  Assert.equal(partner.trainer.sightType, 2, "an all-direction sight type survives as itself")
+
+  Assert.isNil(objects[3].trainer, "a non-trainer object carries no trainer subject")
+  Assert.equal(objects[3].scriptId, 9, "a non-trainer object keeps its own script identity")
+
+  Assert.equal(
+    objects[4].scriptId,
+    "vanilla.hgss.scr_seq.0953.script_739",
+    "the approach sentinel addresses the approach scene"
+  )
+  Assert.isNil(objects[4].trainer, "the approach sentinel is never a trainer")
+end
+
+-- The map's native region rides the field record so the encounter-music policy
+-- can pick the source's Johto or Kanto variant.
+function T.publishes_the_map_region()
+  local romFs = FieldMapDataFixture.build()
+  local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, function()
+    return "hash"
+  end, function()
+    return "dependency"
+  end))
+  Assert.equal(bundle.field.region, "JOHTO")
+  Assert.isTrue(FieldMapDataCache.hasRegion(bundle.field.region))
 end
 
 return { tests = T }

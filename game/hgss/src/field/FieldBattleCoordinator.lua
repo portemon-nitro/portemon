@@ -96,6 +96,33 @@ local function releaseScriptedTransfer(self, launch)
   self._battleLaunch = nil
 end
 
+-- The two authored trainer-battle selectors a launch payload may carry
+-- (src/scrcmd_battle.c::ScrCmd_TrainerBattle's trailing bytes). Both are raw
+-- source bytes: zero means the branch is off.
+---@param request table<string, unknown> launch request carrying its payload
+---@return boolean
+local function sourceHealOnLoss(request)
+  local payload = request.payload
+  local selector = type(payload) == "table" and (payload --[[@as table<string, unknown>]]).healOnLoss or nil
+  if selector == nil then
+    return false
+  end
+  assert(type(selector) == "number", "the heal-on-loss selector is a source byte")
+  return selector ~= 0
+end
+
+---@param request table<string, unknown> launch request carrying its payload
+---@return integer? the follow-mon send-out slot selector, nil when absent
+local function sourceFollowSlot(request)
+  local payload = request.payload
+  local selector = type(payload) == "table" and (payload --[[@as table<string, unknown>]]).followSlot or nil
+  if selector == nil then
+    return nil
+  end
+  assert(type(selector) == "number", "the follow-slot selector is a source byte")
+  return selector
+end
+
 local NEXT_BATTLE_LAUNCH_ID = 0
 
 -- Outdoor background identities selecting source-daylight scenes; every
@@ -398,6 +425,7 @@ function FieldBattleCoordinator:updateBattle()
       result = launch.result,
       sourceResult = launch.sourceResult,
       nativeOutcome = launch.nativeOutcome,
+      rewards = launch.rewards,
     }
     self._battleReceipt = launch
     self._battleLaunch = nil
@@ -440,9 +468,20 @@ function FieldBattleCoordinator:updateBattle()
       result = decision.result,
       sourceResult = decision.sourceResult,
       nativeOutcome = decision.nativeOutcome,
+      -- The committed consequence plan is part of the settled receipt the
+      -- field publishes beside the outcome words.
+      rewards = launch ~= nil and launch.rewards or decision.receipt.rewards,
     }
     if launch == nil then
       self._lastBattleResult = published
+    elseif not decision.successful and launch.sourceHealOnLoss == true then
+      -- src/encounter.c::Task_StartEncounter: the single-opponent branch that
+      -- carries BATTLE_TYPE_11 heals the published party and restores the
+      -- field before the authored script continues.
+      self:_healPublishedPartyOnLoss(launch)
+      launch.phase = "restoring"
+      self._lastBattleResult = published
+      fieldRuntime(self).overworld:requestRestore()
     elseif not decision.successful then
       launch.phase = "complete"
       launch.committed = true
@@ -520,7 +559,21 @@ function FieldBattleCoordinator:_updatePresentedBattle(launch)
     end
     local result = launch.result
     if result == "loss" or result == "draw" then
-      if launch.scripted == true then
+      if launch.sourceHealOnLoss == true then
+        -- src/encounter.c::Task_StartEncounter: the single-opponent branch that
+        -- carries BATTLE_TYPE_11 heals the published party, restores the field
+        -- and only then lets the authored script continue. An ordinary
+        -- scripted defeat leaves both to the authored script.
+        self:_healPublishedPartyOnLoss(launch)
+        self._lastBattleResult = {
+          result = result,
+          sourceResult = launch.sourceResult,
+          nativeOutcome = launch.nativeOutcome,
+          rewards = launch.rewards,
+        }
+        fieldRuntime(self).overworld:requestRestore()
+        launch.phase = "restoring"
+      elseif launch.scripted == true then
         -- Scripted defeat publishes its receipt while absent for the
         -- authored continuation and transfers hold and cover there. The
         -- battle reference releases now (settle loops observe the owned
@@ -533,6 +586,7 @@ function FieldBattleCoordinator:_updatePresentedBattle(launch)
           result = result,
           sourceResult = launch.sourceResult,
           nativeOutcome = launch.nativeOutcome,
+          rewards = launch.rewards,
         }
         self._battleReceipt = launch
         self.battleRuntime = nil
@@ -584,6 +638,23 @@ function FieldBattleCoordinator:_updatePresentedBattle(launch)
     self:_finishScriptedTransfer(launch)
     return
   end
+end
+
+-- src/encounter.c::Task_StartEncounter heals the canonical party of an
+-- authored single-opponent battle that carries BATTLE_TYPE_11, in place and
+-- once per settled defeat. The party owner publishes its own mutation; the
+-- launch record only remembers that the heal already ran.
+---@param launch table<string, unknown> presented launch record
+function FieldBattleCoordinator:_healPublishedPartyOnLoss(launch)
+  if launch.healedOnLoss == true then
+    return
+  end
+  launch.healedOnLoss = true
+  local mons = fieldRuntime(self).monService
+  if type(mons) ~= "table" or type(mons.healParty) ~= "function" then
+    error("the heal-on-loss branch requires the live party owner", 0)
+  end
+  mons:healParty()
 end
 
 -- Starts the existing whiteout recovery exactly once for an automatically
@@ -766,7 +837,13 @@ function FieldBattleCoordinator:launchBattle(spec)
   end
   assert(self._battlePresentationWithdrawn ~= true, "presented launches require their factory binding")
   fieldRuntime(self).overworld:requestLeave()
-  self._battleLaunch = { launchId = launchId, phase = "leaving", request = request }
+  self._battleLaunch = {
+    launchId = launchId,
+    phase = "leaving",
+    request = request,
+    sourceHealOnLoss = sourceHealOnLoss(request),
+    sourceFollowSlot = sourceFollowSlot(request),
+  }
   return launchId
 end
 
@@ -835,6 +912,10 @@ function FieldBattleCoordinator:launchPresentedBattle(launchId, request, method)
     recovery = nil,
     recoveryFollowup = false,
     transferBlackoutSeen = false,
+    -- The source launch's own single-opponent heal selector
+    -- (BATTLE_TYPE_11) and the follow-mon send-out selector.
+    sourceHealOnLoss = sourceHealOnLoss(request),
+    sourceFollowSlot = sourceFollowSlot(request),
   }
   local function presentedStatus()
     return self:_presentedLaunchStatus(launchId)
@@ -1555,6 +1636,7 @@ function FieldBattleCoordinator:_publishPresentedReceipt(launch)
     result = launch.result,
     sourceResult = launch.sourceResult,
     nativeOutcome = launch.nativeOutcome,
+    rewards = launch.rewards,
   }
   self._battleReceipt = launch
   launch.phase = "complete"

@@ -107,6 +107,10 @@ local YIELD_OPS = {
   -- The source battle result query returns TRUE, and its lowered node writes the
   -- code and yields the one tick the source spends before the next command.
   battle_result = true,
+  -- The source trainer approach poll and the encounter-music command both
+  -- return TRUE (wait one frame) after their same-tick write/play.
+  trainer_approach_step = true,
+  trainer_encounter_music = true,
   stop = true,
   fashion_title_word = true,
 }

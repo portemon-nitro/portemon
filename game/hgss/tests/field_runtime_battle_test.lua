@@ -1294,6 +1294,97 @@ function T.scenarios_carry_the_follower_slot_for_send_outs()
   )
 end
 
+-- The third raw byte of a trainer launch selects the source's BATTLE_TYPE_11
+-- branch: a loss or a draw heals the published party and returns the field
+-- before the authored script continues, exactly once. Without the byte the
+-- authored script owns both, and an ordinary continuing battle keeps its
+-- restored field path.
+function T.trainer_launch_heal_byte_heals_and_restores_on_a_defeat()
+  for _, resultWord in ipairs({ "loss", "draw" }) do
+    local healed = 0
+    local runtime = fakeRuntime({
+      monService = {
+        partyRevision = function()
+          return 7
+        end,
+        healParty = function()
+          healed = healed + 1
+        end,
+      },
+    })
+    local coordinator = runtime.battleCoordinator
+    coordinator:launchBattle({ kind = "trainer", details = { trainer = 700, trainer2 = 0, healOnLoss = 1 } })
+    local launch = assert(coordinator._battleLaunch, "the launch owns its record")
+    Assert.isTrue(launch.sourceHealOnLoss, "the third raw byte reaches the launch record")
+    Assert.isNil(launch.sourceFollowSlot, "an absent fourth byte selects no follow send-out")
+    runtime.overworld:updateFixed() -- the field is absent when the battle starts
+    launch.phase = "active"
+    coordinator.battleRuntime = {
+      update = function() end,
+      status = function()
+        return { phase = "complete" }
+      end,
+      dispose = function() end,
+    }
+    runtime.acceptCommittedBattleStatus = function(_, _, _, _)
+      return {
+        result = resultWord,
+        sourceResult = 0,
+        nativeOutcome = resultWord == "loss" and 2 or 3,
+        successful = false,
+        receipt = { rewards = {} },
+      }
+    end
+    coordinator:updateBattle()
+    Assert.equal(healed, 1, "the " .. resultWord .. " heals the canonical party exactly once")
+    Assert.equal(runtime.overworld:phase(), "restoring", "the field return precedes the authored continuation")
+    Assert.equal(runtime:lastBattleResult().result, resultWord, "the settled receipt names the source result")
+    Assert.equal(coordinator._battleLaunch, launch, "the script keeps its launch until the field returns")
+
+    runtime.overworld:updateFixed()
+    coordinator:updateBattle()
+    Assert.isNil(coordinator._battleLaunch, "the returned field releases the launch")
+    Assert.equal(coordinator._battleReceipt, launch, "the committed receipt names the launch")
+    Assert.equal(healed, 1, "the heal never repeats across the return ticks")
+  end
+
+  local ordinaryHealed = 0
+  local ordinary = fakeRuntime({
+    monService = {
+      partyRevision = function()
+        return 7
+      end,
+      healParty = function()
+        ordinaryHealed = ordinaryHealed + 1
+      end,
+    },
+  })
+  local plainCoordinator = ordinary.battleCoordinator
+  plainCoordinator:launchBattle({ kind = "trainer", details = { trainer = 700, trainer2 = 0, healOnLoss = 0 } })
+  local plainLaunch = assert(plainCoordinator._battleLaunch, "the ordinary launch owns its record")
+  Assert.isFalse(plainLaunch.sourceHealOnLoss, "a zero heal byte leaves the branch off")
+  plainLaunch.phase = "active"
+  plainCoordinator.battleRuntime = {
+    update = function() end,
+    status = function()
+      return { phase = "complete" }
+    end,
+    dispose = function() end,
+  }
+  ordinary.acceptCommittedBattleStatus = function()
+    return {
+      result = "loss",
+      sourceResult = 0,
+      nativeOutcome = 2,
+      successful = false,
+      receipt = { rewards = {} },
+    }
+  end
+  plainCoordinator:updateBattle()
+  Assert.equal(ordinaryHealed, 0, "an ordinary authored defeat leaves its healing to the source script")
+  Assert.isNil(plainCoordinator._battleLaunch, "an ordinary authored defeat returns control at once")
+end
+
 function T.committed_steps_name_the_live_party_lead_facts()
   local EncounterFixture = require("libs.hgss.tests.encounter_fixture")
   local RoamerState = EncounterFixture.requirePresent(

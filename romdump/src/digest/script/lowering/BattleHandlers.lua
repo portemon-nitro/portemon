@@ -13,6 +13,11 @@ local Operands = require("romdump.src.digest.script.lowering.Operands")
 ---@class FieldBattleHandlers
 local BattleHandlers = {}
 
+-- ScrCmd_TrainerBattle (src/scrcmd_battle.c): both opponent trainer numbers
+-- are read through ScriptGetVar; the third raw byte enables the source's
+-- BATTLE_TYPE_11 single-opponent branch and the fourth selects its follow-mon
+-- send-out slot. The first opponent is the leading trainer, the second the
+-- native double partner when it names a different trainer.
 ---@param ins table<string, unknown> decoded instruction record
 ---@return table<string, unknown>
 function BattleHandlers.trainerBattle(ins)
@@ -21,8 +26,27 @@ function BattleHandlers.trainerBattle(ins)
     kind = "trainer",
     details = {
       trainer = Operands.varRef(ins.operands[1]),
-      encounter = Operands.varRef(ins.operands[2]),
-      args = { Operands.operandValue(ins.operands[3]), Operands.operandValue(ins.operands[4]) },
+      trainer2 = Operands.varRef(ins.operands[2]),
+      healOnLoss = Operands.operandValue(ins.operands[3]),
+      followSlot = Operands.operandValue(ins.operands[4]),
+    },
+  }
+end
+
+-- ScrCmd_MultiBattle (src/scrcmd_battle.c): the leading operand is the ally
+-- trainer fighting beside the player, then the two opponent trainers, then the
+-- follow-mon selector byte. The source passes a4 = 0 for this form.
+---@param ins table<string, unknown> decoded instruction record
+---@return table<string, unknown>
+function BattleHandlers.multiBattle(ins)
+  return {
+    op = "battle_launch",
+    kind = "trainer",
+    details = {
+      partner = Operands.varRef(ins.operands[1]),
+      trainer = Operands.varRef(ins.operands[2]),
+      trainer2 = Operands.varRef(ins.operands[3]),
+      followSlot = Operands.operandValue(ins.operands[4]),
     },
   }
 end

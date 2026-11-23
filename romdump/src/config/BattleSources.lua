@@ -463,4 +463,92 @@ BattleSources.encounterSources = {
   },
 }
 
+-- Native trainer field speech, src/trainer_data.c::GetTrainerMessageByIdPair:
+-- member 0 of the offset archive carries one little-endian u16 byte offset per
+-- trainer into member 0 of the pair archive, whose records are
+-- { trainerIndex, messageKind }. A trainer's scan starts at its own offset and
+-- stops at the first record naming another trainer; a matched record's own
+-- zero-based index names the msgdata bank 728 message, and an unmatched pair
+-- answers no message.
+BattleSources.trainerFieldMessages = {
+  offsetNarc = "NARC_poketool_trmsg_trtblofs",
+  pairNarc = "NARC_poketool_trmsg_trtbl",
+  memberId = 0,
+  offsetSize = 2,
+  pairSize = 4,
+  messageBank = 728,
+}
+
+-- src/field_bgm.c::FieldBGM_GetEyesMeetForTrainer and its
+-- sTrainerEncounterMusicParam table: the trainer class selects the eyes-meet
+-- sequence for the Johto and Kanto region variants, and a class outside the
+-- table keeps the source default. Class identities stay symbolic here; the
+-- numeric projection below reuses the pinned class table above.
+local TRAINER_ENCOUNTER_MUSIC = {
+  { "YOUNGSTER", "SEQ_GS_EYE_J_SHOUNEN", "SEQ_GS_EYE_J_SHOUNEN" },
+  { "LASS", "SEQ_GS_EYE_K_SHOUJO", "SEQ_GS_EYE_K_SHOUJO" },
+  { "CAMPER", "SEQ_GS_EYE_J_SHOUNEN", "SEQ_GS_EYE_J_SHOUNEN" },
+  { "PICNICKER", "SEQ_GS_EYE_K_SHOUJO", "SEQ_GS_EYE_K_SHOUJO" },
+  { "BUG_CATCHER", "SEQ_GS_EYE_J_SHOUNEN", "SEQ_GS_EYE_J_SHOUNEN" },
+  { "TWINS", "SEQ_GS_EYE_K_SHOUJO", "SEQ_GS_EYE_K_SHOUJO" },
+  { "HIKER", "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  { "FISHERMAN", "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  { "BLACK_BELT", "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  { "POKEFAN_M", "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  { "POKEFAN", "SEQ_GS_EYE_J_SHOUJO", "SEQ_GS_EYE_J_SHOUJO" },
+  { "ACE_TRAINER_M", "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  { "ACE_TRAINER_F", "SEQ_GS_EYE_J_SHOUJO", "SEQ_GS_EYE_J_SHOUJO" },
+  { "BIRD_KEEPER_GS", "SEQ_GS_EYE_J_SHOUNEN", "SEQ_GS_EYE_J_SHOUNEN" },
+  { "JUGGLER", "SEQ_GS_EYE_J_AYASHII", "SEQ_GS_EYE_J_AYASHII" },
+  { "GENTLEMAN", "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  { "BEAUTY", "SEQ_GS_EYE_J_SHOUJO", "SEQ_GS_EYE_J_SHOUJO" },
+  { "POLICEMAN", "SEQ_GS_EYE_K_SHOUNEN", "SEQ_GS_EYE_K_SHOUNEN" },
+  { "SWIMMER_M", "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  { "SWIMMER_F", "SEQ_GS_EYE_J_SHOUJO", "SEQ_GS_EYE_J_SHOUJO" },
+  { "SAILOR", "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  { "KIMONO_GIRL", "SEQ_GS_EYE_MAIKO", "SEQ_GS_EYE_MAIKO" },
+  { "PSYCHIC_M", "SEQ_GS_EYE_J_SHOUNEN", "SEQ_GS_EYE_J_SHOUNEN" },
+  { "GUITARIST", "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  { "TEAM_ROCKET", "SEQ_GS_EYE_ROCKET", "SEQ_GS_EYE_ROCKET" },
+  { "SKIER", "SEQ_GS_EYE_J_SHOUJO", "SEQ_GS_EYE_J_SHOUJO" },
+  { "SCHOOL_KID_M", "SEQ_GS_EYE_J_SHOUNEN", "SEQ_GS_EYE_J_SHOUNEN" },
+  { "TEAM_ROCKET_F", "SEQ_GS_EYE_ROCKET", "SEQ_GS_EYE_ROCKET" },
+  { "BURGLAR", "SEQ_GS_EYE_J_AYASHII", "SEQ_GS_EYE_J_AYASHII" },
+  { "FIREBREATHER", "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  { "BIKER", "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  { "POKE_MANIAC", "SEQ_GS_EYE_J_AYASHII", "SEQ_GS_EYE_J_AYASHII" },
+  { "TEACHER", "SEQ_GS_EYE_J_SHOUJO", "SEQ_GS_EYE_J_SHOUJO" },
+  { "SUPER_NERD", "SEQ_GS_EYE_J_AYASHII", "SEQ_GS_EYE_J_AYASHII" },
+  { "SAGE", "SEQ_GS_EYE_BOUZU", "SEQ_GS_EYE_BOUZU" },
+  { "MEDIUM", "SEQ_GS_EYE_BOUZU", "SEQ_GS_EYE_BOUZU" },
+  { "SCIENTIST_GS", "SEQ_GS_EYE_ROCKET", "SEQ_GS_EYE_J_AYASHII" },
+  { "BOARDER", "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  { "DOUBLE_TEAM", "SEQ_GS_EYE_K_SHOUNEN", "SEQ_GS_EYE_K_SHOUNEN" },
+  { "YOUNG_COUPLE", "SEQ_GS_EYE_J_SHOUJO", "SEQ_GS_EYE_J_SHOUJO" },
+  { "EXECUTIVE_ARCHER", "SEQ_GS_EYE_ROCKET", "SEQ_GS_EYE_ROCKET" },
+  { "EXECUTIVE_ARIANA", "SEQ_GS_EYE_ROCKET", "SEQ_GS_EYE_ROCKET" },
+  { "EXECUTIVE_PROTON", "SEQ_GS_EYE_ROCKET", "SEQ_GS_EYE_ROCKET" },
+  { "EXECUTIVE_PETREL", "SEQ_GS_EYE_ROCKET", "SEQ_GS_EYE_ROCKET" },
+}
+
+---@type table<integer, { johto: string, kanto: string }>
+BattleSources.trainerEncounterMusic = { default = { johto = "SEQ_GS_EYE_J_SHOUNEN", kanto = "SEQ_GS_EYE_J_SHOUNEN" } }
+
+-- The regions a field map header reports, in the source's own order: the
+-- encounter-music selector indexes the two-variant table above.
+BattleSources.trainerEncounterMusicRegions = { "johto", "kanto" }
+
+do
+  local classNumberByKey = {}
+  for classNumber, key in pairs(BattleSources.trainerClassKeys) do
+    classNumberByKey[key] = classNumber
+  end
+  local byClass = BattleSources.trainerEncounterMusic --[[@as table<integer, table<string, string>>]]
+  for _, row in ipairs(TRAINER_ENCOUNTER_MUSIC) do
+    local classNumber =
+      assert(classNumberByKey[row[1]], "encounter music names a pinned trainer class: " .. tostring(row[1]))
+    byClass[classNumber] = { johto = row[2], kanto = row[3] }
+  end
+end
+
 return BattleSources

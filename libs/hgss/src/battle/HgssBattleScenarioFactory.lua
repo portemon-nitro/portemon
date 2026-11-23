@@ -551,6 +551,13 @@ local function assemble(payload, heart)
     playerParticipant.inventoryId = heart.playerInventoryId
   end
   local participants = { playerParticipant }
+  -- A partner battle fields the ally as its own participant on the player's
+  -- side with its own roster and controller; the player keeps exactly one
+  -- active position of its own.
+  if heart.ally ~= nil then
+    local ally = heart.ally --[[@as table<string, unknown>]]
+    sides[1].participants[#sides[1].participants + 1] = ally.id
+  end
   for index, enemy in
     ipairs(heart.enemies --[[@as table<integer, table<string, unknown>>]])
   do
@@ -560,6 +567,13 @@ local function assemble(payload, heart)
       "enemy membership follows participant order"
     )
   end
+  if heart.ally ~= nil then
+    -- Participant identities index their own list: the ally joins after the
+    -- opponents at its own identity so every lookup by identity stays exact.
+    local ally = heart.ally --[[@as table<string, unknown>]]
+    assert(participants[ally.id] == nil, "partner participant identities are unique")
+    participants[ally.id] = ally
+  end
   -- Player positions open first, then enemy positions, each in
   -- deterministic order with exactly one occupant from an eligible
   -- participant roster.
@@ -567,6 +581,15 @@ local function assemble(payload, heart)
   for _, occupant in ipairs(playerOpeners) do
     assert(type(occupant) == "number", "player openers name their combatant")
     positions[#positions + 1] = { id = #positions + 1, side = 1, eligibleParticipants = { 1 }, occupant = occupant }
+  end
+  if heart.ally ~= nil and heart.allyOpener ~= nil then
+    local ally = heart.ally --[[@as table<string, unknown>]]
+    positions[#positions + 1] = {
+      id = #positions + 1,
+      side = 1,
+      eligibleParticipants = { ally.id },
+      occupant = heart.allyOpener,
+    }
   end
   for _, slot in ipairs(enemySlots) do
     local entry = slot --[[@as table<string, unknown>]]
@@ -728,8 +751,17 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
     error("trainer battles never downgrade a native double battle to a single", 0)
   end
   local doubles = nativeDouble or payload.format == "double"
+  local partner = payload.partner
+  assert(partner == nil or type(partner) == "table", "a partner battle names its ally trainer")
+  if partner ~= nil then
+    -- A source multi battle fields the player and the ally on one side: one
+    -- active position each, so the player opens a single position.
+    doubles = true
+  end
   local snapshot = snapshotParty(context.party)
-  local players, playerOpeners = playerRoster(snapshot, doubles and 2 or 1)
+  -- A partner battle opens one player position beside the ally's, so the
+  -- player side fields exactly one own battler of its own.
+  local players, playerOpeners = playerRoster(snapshot, doubles and partner == nil and 2 or 1)
   local inventories = {}
   local playerInventoryId = nil ---@type string?
   if snapshot ~= nil then
@@ -745,6 +777,53 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
   local enemies = {}
   local enemyIds = {}
   local combatantId = #players
+  -- The ally of a partner battle: its own participant and roster, answered by
+  -- the same trainer controller seam as the opponents. It never shares the
+  -- player's inventory, prizes or persisted roster.
+  local ally = nil
+  local allyOpener = nil
+  if partner ~= nil then
+    local allyRoster = {}
+    for _, member in
+      ipairs(partner.party --[[@as table<integer, unknown>]])
+    do
+      if not isFullRecord(member) then
+        error("partner parties carry full mon records", 0)
+      end
+      combatantId = combatantId + 1
+      allyRoster[#allyRoster + 1] = {
+        id = combatantId,
+        mon = copyValue(member),
+        source = { kind = "trainer", owner = "ally", key = tostring(partner.id) },
+      }
+    end
+    if #allyRoster == 0 then
+      error("partner battles require their ally party records", 0)
+    end
+    local allyContext = {}
+    if partner.aiPasses ~= nil then
+      allyContext.aiPasses = copyValue(partner.aiPasses)
+    end
+    if partner.items ~= nil then
+      allyContext.trainerItems = copyValue(partner.items)
+    end
+    local allyId = #trainers + 2
+    ally = {
+      id = allyId,
+      side = 1,
+      controller = "trainer:" .. tostring(partner.id),
+      roster = allyRoster,
+      context = allyContext,
+    }
+    local stock = trainerStock(partner.items)
+    if stock ~= nil then
+      local inventoryId = "partner-items"
+      inventories[#inventories + 1] = { id = inventoryId, owners = { allyId }, quantities = stock }
+      ally.inventoryId = inventoryId
+    end
+    local lead = consciousOpenerIndices(allyRoster, 1, "partner battles require a conscious ally lead")[1]
+    allyOpener = (allyRoster[lead] --[[@as table<string, unknown>]]).id
+  end
   for index, trainer in ipairs(trainers) do
     assert(type(trainer) == "table", "trainer entries stay records")
     local entry = trainer --[[@as table<string, unknown>]]
@@ -841,6 +920,8 @@ function HgssBattleScenarioFactory.fromTrainer(payload, ctx)
     attemptId = attemptId,
     kind = "trainer",
     format = payload.format or (doubles and "double" or "single"),
+    ally = ally,
+    allyOpener = allyOpener,
     enemyIds = enemyIds,
     players = players,
     playerOpeners = playerOpeners,

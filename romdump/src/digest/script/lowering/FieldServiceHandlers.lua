@@ -58,6 +58,91 @@ function FieldServiceHandlers.checkTrainerFlag(ins)
   return { op = "compare", left = { value = "flag_value", flag = trainerFlagValue(ins) }, right = 1 }
 end
 
+-- The native standard-trainer command family (src/scrcmd_battle.c and
+-- src/scrcmd_c.c). Slot indices, trainer identities and message kinds are read
+-- through ScriptGetVar; slots 0 and 1 name the two possible simultaneous
+-- engagements of one native trainer scene. The running script's own trainer
+-- context queries (212/215/216/217) read the detached launch trigger, not an
+-- operand. 574 reads its destination variable first and the object operand
+-- second, exactly like the source.
+function FieldServiceHandlers.trainerApproachStart(ins)
+  return { op = "trainer_approach_start", index = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.trainerApproachStep(ins)
+  return {
+    op = "trainer_approach_step",
+    index = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function FieldServiceHandlers.trainerEncounterType(ins)
+  return { op = "trainer_encounter_type", result = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.trainerEngagementNumber(ins)
+  return {
+    op = "trainer_engagement_number",
+    index = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function FieldServiceHandlers.trainerActiveNumber(ins)
+  return { op = "trainer_active_number", result = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.trainerMessage(ins)
+  return {
+    op = "trainer_message",
+    trainer = Operands.varRef(ins.operands[1]),
+    kind = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function FieldServiceHandlers.trainerMessageParams(ins)
+  return {
+    op = "trainer_message_params",
+    intro = Operands.varRef(ins.operands[1]),
+    after = Operands.varRef(ins.operands[2]),
+    shortIntro = Operands.varRef(ins.operands[3]),
+  }
+end
+
+function FieldServiceHandlers.trainerRematchMessageParams(ins)
+  return {
+    op = "trainer_rematch_message_params",
+    intro = Operands.varRef(ins.operands[1]),
+    after = Operands.varRef(ins.operands[2]),
+    shortIntro = Operands.varRef(ins.operands[3]),
+  }
+end
+
+function FieldServiceHandlers.trainerIsDouble(ins)
+  return { op = "trainer_is_double", result = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.trainerEncounterMusic(ins)
+  return { op = "trainer_encounter_music", trainer = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.partyCanDoubleBattle(ins)
+  return { op = "party_can_double_battle", result = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.trainerLastTalkedMovement()
+  return { op = "trainer_last_talked_movement" }
+end
+
+function FieldServiceHandlers.objectMovementType(ins)
+  return {
+    op = "object_movement_type",
+    actor = Operands.actorRef(ins.operands[2]),
+    result = Operands.varRef(ins.operands[1]),
+  }
+end
+
 -- ScrCmd_NameRival (143) blocks the parent script on the shared field naming
 -- screen and returns the native no-input result to its destination variable.
 function FieldServiceHandlers.nameRival(ins)

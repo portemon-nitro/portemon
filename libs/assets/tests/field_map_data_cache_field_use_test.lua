@@ -80,6 +80,84 @@ function T.partial_policy_fails_readiness()
   Assert.isFalse(FieldMapDataCache.isReady(cache, 60, bundle.marker))
 end
 
+-- A produced trainer object carries its closed subject record (native
+-- identity, engagement-pair slot, authored sight, shared approach scene) and
+-- the map carries its native region. Both are generated-data contracts: a
+-- record with an extra key, a broken identity, or no region is corruption and
+-- fails readiness instead of reading as an untrained object or an unknown
+-- region.
+local function trainerBundle()
+  local Builder = require("tests.support.ZoneEventsBuilder")
+  local member = Builder.build({
+    objectEvents = {
+      {
+        objectEventId = 5,
+        spriteId = 348,
+        movement = 0,
+        type = 1,
+        eventFlag = 0,
+        scriptId = 3046,
+        facingDirection = 1,
+        param0 = 3,
+        param1 = 0,
+        param2 = 0,
+        xRange = 0,
+        yRange = 0,
+        x = 4,
+        z = 6,
+        y = 0,
+      },
+    },
+  })
+  local bundle, err = FieldMapDataCompiler.compile(Fixture.build({ zoneEventsMember = member }), 60)
+  Assert.isTrue(bundle ~= nil, "compile failed: " .. tostring(err and err.message or err))
+  return assert(bundle)
+end
+
+function T.trainer_subject_and_region_pass_readiness()
+  local bundle = trainerBundle()
+  local object = assert(bundle.field.events.objects[1])
+  Assert.equal(object.trainer.trainerId, 47)
+  Assert.isTrue(FieldMapDataCache.hasRequiredEvents(bundle.field.events))
+  Assert.isTrue(FieldMapDataCache.hasRegion(bundle.field.region))
+  Assert.isTrue(FieldMapDataCache.isReady(publishedCache(bundle), 60, bundle.marker))
+end
+
+function T.malformed_trainer_subject_fails_readiness()
+  local mutations = {
+    function(trainer)
+      trainer.extra = 1
+    end,
+    function(trainer)
+      trainer.partner = "third"
+    end,
+    function(trainer)
+      trainer.trainerId = 0
+    end,
+    function(trainer)
+      trainer.approachScript = nil
+    end,
+    function(trainer)
+      trainer.sightType = 4
+    end,
+  }
+  for index, mutate in ipairs(mutations) do
+    local bundle = trainerBundle()
+    mutate(bundle.field.events.objects[1].trainer)
+    Assert.isFalse(FieldMapDataCache.hasRequiredEvents(bundle.field.events), "mutation " .. index)
+    Assert.isFalse(FieldMapDataCache.isReady(publishedCache(bundle), 60, bundle.marker), "mutation " .. index)
+  end
+end
+
+function T.absent_region_fails_readiness()
+  local bundle = compile(60)
+  bundle.field.region = nil
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  FieldMapDataCacheWriter.write(cache, bundle)
+  Assert.isFalse(FieldMapDataCache.hasRegion(nil))
+  Assert.isFalse(FieldMapDataCache.isReady(cache, 60, bundle.marker))
+end
+
 function T.old_schema_fails_readiness()
   local bundle = compile(60)
   bundle.field.schema = "g4-field-map-v10"

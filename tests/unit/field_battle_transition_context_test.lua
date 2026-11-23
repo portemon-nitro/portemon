@@ -85,6 +85,8 @@ function T.trainer_context_reads_class_without_materializing_party()
         doubleBattle = true,
       },
     },
+    nativeMovementByType = { stationary = 0 },
+    fieldMessageBank = 728,
   })
   local coordinator = setmetatable({
     runtime = { _trainerCatalog = catalog, playerData = { profile = { gender = 1 } } },

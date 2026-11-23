@@ -17,6 +17,7 @@ local charmap = require("romdump.src.catalog.hgss.charmap")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local ScriptMembers = require("romdump.src.catalog.hgss.script_members")
 local manifest = require("romdump.src.config.FieldMessages")
+local BattleSources = require("romdump.src.config.BattleSources")
 
 -- Oak's scripted opening introduction reads its dialogue directly from this
 -- bank (game/hgss/src/newgame/OakIntroComposition.lua). The opening script bank is
@@ -205,6 +206,10 @@ function FieldMessageCompiler.requiredBankIds()
   set[211] = true
   set[30] = true
   set[435] = true
+  -- Trainer field speech is addressed by trainer/message-kind pair rather than
+  -- any map header or script bank (src/trainer_data.c::GetTrainerMessageByIdPair
+  -- reads msgdata bank 728 through the trainer message table).
+  set[BattleSources.trainerFieldMessages.messageBank] = true
   -- Apricorn Box labels are addressed directly by the generated source manifest.
   set[APRICORN_BOX_MESSAGE_BANK] = true
   -- The Kurt confirm header pluralizes through bank 224

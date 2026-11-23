@@ -32,6 +32,21 @@ local APRICORN_KEYS = {
   WHT_APRICORN = true,
   BLK_APRICORN = true,
 }
+-- The native regions a map header reports, in the source's own zero-based
+-- order; the field's encounter-music policy selects the matching variant.
+local REGIONS = { JOHTO = 0, KANTO = 1 }
+-- A produced trainer object carries the closed subject record the runtime
+-- engagement owner reads: its native trainer identity, which engagement slot
+-- of a double pair it fills, its authored sight, and the shared approach scene
+-- it starts. Malformed or extra keys are generated-data corruption.
+local TRAINER_KEYS = {
+  trainerId = true,
+  partner = true,
+  sightType = true,
+  sightRange = true,
+  approachScript = true,
+}
+local TRAINER_PARTNERS = { first = true, second = true }
 
 ---@param value unknown
 ---@return boolean
@@ -59,6 +74,36 @@ local function isMovementRange(value)
     and value ~= -math.huge
     and value % 1 == 0
     and value >= -1
+end
+
+-- A trainer object's produced subject record. Absent on every other object.
+---@param object table<string, unknown>
+---@return boolean
+local function hasTrainerSubject(object)
+  local trainer = object.trainer
+  if trainer == nil then
+    return true
+  end
+  return type(trainer) == "table"
+    and hasOnlyKeys(trainer, TRAINER_KEYS)
+    and Validate.isNonNegativeInteger(trainer.trainerId)
+    and trainer.trainerId >= 1
+    and type(trainer.partner) == "string"
+    and TRAINER_PARTNERS[trainer.partner] == true
+    and type(trainer.sightType) == "number"
+    and trainer.sightType % 1 == 0
+    and trainer.sightType >= 0
+    and trainer.sightType <= 3
+    and Validate.isNonNegativeInteger(trainer.sightRange)
+    and trainer.sightRange <= 0xFFFF
+    and hasString(trainer.approachScript)
+    and hasString(object.scriptId)
+end
+
+---@param region unknown
+---@return boolean
+function FieldMapDataCache.hasRegion(region)
+  return type(region) == "string" and REGIONS[region] ~= nil
 end
 
 local function hasInitScripts(field)
@@ -311,6 +356,7 @@ function FieldMapDataCache.beginRequiredEventsValidation(events)
             and FieldObjectMovement.isType(value.movementType)
             and isMovementRange(value.xRange)
             and isMovementRange(value.yRange)
+            and hasTrainerSubject(value)
           if self._valid and value.apricorn ~= nil then
             local apricorn = value.apricorn
             self._valid = value.scriptId == "common.apricorn_tree"
@@ -757,6 +803,7 @@ function FieldMapDataCache.isReady(cacheFs, mapId, expectedMarker)
     or not FieldMapDataCache.hasRenderEnvironment(field.renderEnvironment)
     or not FieldMapDataCache.hasBattleBackground(field.battleBackground)
     or not FieldMapDataCache.hasEncounterMember(field.wildEncounterMemberId)
+    or not FieldMapDataCache.hasRegion(field.region)
     or not FieldMapDataCache.hasRockSmash(field.rockSmash)
     or not FieldMapDataCache.hasHeadbutt(field.headbutt)
   then

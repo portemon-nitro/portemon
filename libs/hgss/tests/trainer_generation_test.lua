@@ -75,7 +75,12 @@ end
 ---@param programs table<string, table>|nil selection programs keyed by program key
 ---@return table compiled catalog input honoring the producer schema
 local function compiledInput(trainers, programs)
-  return { trainers = trainers, programs = programs or {} }
+  return {
+    trainers = trainers,
+    programs = programs or {},
+    nativeMovementByType = { stationary = 0 },
+    fieldMessageBank = 728,
+  }
 end
 
 ---@param key string|integer
@@ -551,6 +556,8 @@ function T.numeric_trainer_launches_resolve_their_compiled_party_into_the_scenar
       }),
     },
     programs = {},
+    nativeMovementByType = { stationary = 0 },
+    fieldMessageBank = 728,
   })
   local runtime = fieldLaunchRuntime({
     monCatalog = monCatalog,
@@ -578,6 +585,128 @@ function T.numeric_trainer_launches_resolve_their_compiled_party_into_the_scenar
   Assert.isTrue(identity == 8 or identity == "trainer:8", "the native identity survives resolution")
 end
 
+-- The two-opponent launch selectors follow
+-- src/encounter.c::SetupAndStartTrainerBattle: no second identity fields one
+-- opponent, a different second identity fields two, and the same identity
+-- fields the native one-trainer double instead of two generated copies.
+function T.opponent_identity_selectors_shape_the_native_battle()
+  local Catalog = requirePresent(CATALOG_MODULE, "immutable trainer templates resolve runtime content keys")
+  requirePresent(FACTORY_MODULE, "source trainer generation builds native parties")
+  local monCatalog = vectorMonCatalog()
+  local trainerCatalog = Catalog.new({
+    trainers = {
+      [8] = numericTrainerRecord({ vectorMember() }),
+      [9] = numericTrainerRecord({ vectorMember(), vectorMember({ species = "TOTODILE", level = 7 }) }),
+    },
+    programs = {},
+    nativeMovementByType = { stationary = 0 },
+    fieldMessageBank = 728,
+  })
+  local runtime = fieldLaunchRuntime({
+    monCatalog = monCatalog,
+    _trainerCatalog = trainerCatalog,
+    _trainerFactory = vectorFactory(trainerCatalog, monCatalog),
+  })
+
+  local single = runtime:buildBattleScenario({ kind = "trainer", payload = { trainer = 8, trainer2 = 0 } })
+  Assert.equal(single.format, "single", "no second identity keeps the single battle")
+  Assert.equal(#single.trainer, 1)
+
+  local paired = runtime:buildBattleScenario({ kind = "trainer", payload = { trainer = 8, trainer2 = 9 } })
+  Assert.equal(paired.format, "double", "two identities field a doubles battle")
+  Assert.equal(#paired.trainer, 2, "each opponent keeps its own party and prize share")
+  Assert.equal(#paired.participants, 3, "two opponents join the enemy side")
+  Assert.equal(#paired.positions, 4, "two own and two enemy positions")
+
+  local same = runtime:buildBattleScenario({ kind = "trainer", payload = { trainer = 9, trainer2 = 9 } })
+  Assert.equal(same.format, "double", "an equal pair fights as the native one-trainer double")
+  Assert.equal(#same.trainer, 1, "the same trainer stays one entry, never two generated copies")
+  Assert.equal(#same.participants, 2, "one opponent participant fields both enemy positions")
+  Assert.equal(#same.positions, 4)
+end
+
+-- A partner-battle launch carries the ally beside the two opponents: the ally
+-- joins the player's side and never appears among the defeated trainers.
+function T.partner_launches_field_the_ally_beside_the_opponents()
+  local Catalog = requirePresent(CATALOG_MODULE, "immutable trainer templates resolve runtime content keys")
+  requirePresent(FACTORY_MODULE, "source trainer generation builds native parties")
+  local monCatalog = vectorMonCatalog()
+  local trainerCatalog = Catalog.new({
+    trainers = {
+      [479] = numericTrainerRecord({ vectorMember() }),
+      [499] = numericTrainerRecord({ vectorMember() }),
+      [675] = numericTrainerRecord({ vectorMember() }),
+    },
+    programs = {},
+    nativeMovementByType = { stationary = 0 },
+    fieldMessageBank = 728,
+  })
+  local runtime = fieldLaunchRuntime({
+    monCatalog = monCatalog,
+    _trainerCatalog = trainerCatalog,
+    _trainerFactory = vectorFactory(trainerCatalog, monCatalog),
+  })
+  local scenario =
+    runtime:buildBattleScenario({ kind = "trainer", payload = { partner = 675, trainer = 479, trainer2 = 499 } })
+  Assert.equal(scenario.format, "double")
+  Assert.equal(#scenario.sides[1].participants, 2, "the ally joins the player's side")
+  Assert.equal(#scenario.trainer, 2, "only the opponents settle prize shares")
+  for _, entry in ipairs(scenario.trainer) do
+    Assert.isTrue(entry.id == 479 or entry.id == 499, "the ally never settles as a defeated trainer")
+  end
+end
+
+-- The fourth raw byte of a trainer launch selects the source follow-mon
+-- send-out position: a single-opponent launch sends the follower out at the
+-- player's own position, while a multi battle leaves the follower's live slot
+-- alone because the ally position never shares the player's roster.
+function T.follow_slot_byte_selects_the_player_send_out_position()
+  local Catalog = requirePresent(CATALOG_MODULE, "immutable trainer templates resolve runtime content keys")
+  requirePresent(FACTORY_MODULE, "source trainer generation builds native parties")
+  local monCatalog = vectorMonCatalog()
+  local trainerCatalog = Catalog.new({
+    trainers = {
+      [8] = numericTrainerRecord({ vectorMember() }),
+      [479] = numericTrainerRecord({ vectorMember() }),
+      [499] = numericTrainerRecord({ vectorMember() }),
+      [675] = numericTrainerRecord({ vectorMember() }),
+    },
+    programs = {},
+    nativeMovementByType = { stationary = 0 },
+    fieldMessageBank = 728,
+  })
+  local runtime = fieldLaunchRuntime({
+    monCatalog = monCatalog,
+    _trainerCatalog = trainerCatalog,
+    _trainerFactory = vectorFactory(trainerCatalog, monCatalog),
+    monService = {
+      partyCount = function()
+        return 2
+      end,
+      leadAliveSlot = function()
+        return 1
+      end,
+    },
+    followingMon = {
+      isActive = function()
+        return true
+      end,
+    },
+  })
+
+  local single = runtime:buildBattleScenario({
+    kind = "trainer",
+    payload = { trainer = 8, trainer2 = 0, followSlot = 1 },
+  })
+  Assert.equal(single.followMonSlot, 0, "the single-opponent launch sends the follower out at the player's position")
+
+  local partner = runtime:buildBattleScenario({
+    kind = "trainer",
+    payload = { partner = 675, trainer = 479, trainer2 = 499, followSlot = 1 },
+  })
+  Assert.equal(partner.followMonSlot, 1, "a multi battle leaves the follower's live slot to the ally position")
+end
+
 -- Unknown trainer identities fail during launch preparation with the
 -- missing identity named: no generic party stands in, and no battle
 -- lifetime starts.
@@ -590,6 +719,8 @@ function T.unknown_trainer_identities_fail_before_a_battle_starts()
       [8] = numericTrainerRecord({ vectorMember() }),
     },
     programs = {},
+    nativeMovementByType = { stationary = 0 },
+    fieldMessageBank = 728,
   })
   local runtime = fieldLaunchRuntime({
     monCatalog = monCatalog,
@@ -661,6 +792,8 @@ function T.native_generation_follows_the_source_seed_and_identity_formula()
       }, { trainerClass = 1, nameReference = { trainerIndex = 9 } }),
     },
     programs = {},
+    nativeMovementByType = { stationary = 0 },
+    fieldMessageBank = 728,
   })
   local factory = vectorFactory(trainerCatalog, monCatalog)
   local stream = spyStream(FIXED_SEED)
@@ -740,6 +873,48 @@ function T.native_generation_follows_the_source_seed_and_identity_formula()
     Assert.deepEqual(mon.ivs, replayedMons[index].ivs, "slot " .. index .. " replays its individual values")
     Assert.deepEqual(mon.moves, replayedMons[index].moves, "slot " .. index .. " replays its moves")
   end
+end
+
+-- The catalog answers the source trainer-script queries: the double-battle
+-- mark from the trainer record, the eyes-meet sequence per native region, the
+-- field speech index per message kind (nil when the source carries no pair),
+-- and the native selector behind a semantic movement profile.
+function T.catalog_answers_double_music_speech_and_movement_queries()
+  local Catalog = requirePresent(CATALOG_MODULE, "immutable trainer templates resolve runtime content keys")
+  local catalog = Catalog.new({
+    trainers = {
+      [81] = trainerRecord("twins", { plainMember(), plainMember() }, {
+        doubleBattle = true,
+        encounterMusic = { johto = "SEQ_GS_EYE_K_SHOUJO", kanto = "SEQ_GS_EYE_K_SHOUJO" },
+        fieldMessages = { [0] = 12, [2] = 40 },
+      }),
+      [7] = trainerRecord("camper", { plainMember() }),
+    },
+    nativeMovementByType = { stationary = 0, look_south = 15, disguise_grass = 54 },
+    fieldMessageBank = 728,
+  })
+  Assert.isTrue(Catalog.isDouble(catalog, 81), "the source double mark survives as the double query")
+  Assert.isFalse(Catalog.isDouble(catalog, 7), "an ordinary trainer is no double trainer")
+  Assert.isFalse(Catalog.isDouble(catalog, 999), "an unknown trainer is no double trainer")
+  Assert.equal(Catalog.encounterMusic(catalog, 81, "johto"), "SEQ_GS_EYE_K_SHOUJO")
+  Assert.isNil(Catalog.encounterMusic(catalog, 7, "johto"), "a record without the sequence answers none")
+  Assert.deepEqual(Catalog.fieldMessage(catalog, 81, 0), { bank = 728, id = 12 })
+  Assert.deepEqual(Catalog.fieldMessage(catalog, 81, 2), { bank = 728, id = 40 })
+  Assert.isNil(Catalog.fieldMessage(catalog, 81, 7), "an absent pair answers no message")
+  Assert.isNil(Catalog.fieldMessage(catalog, 7, 0), "a trainer without speech answers no message")
+  Assert.equal(Catalog.nativeMovement(catalog, "look_south"), 15)
+  Assert.isNil(Catalog.nativeMovement(catalog, "unknown_profile"))
+  Assert.equal(Catalog.movementType(catalog, 15), "look_south", "the inverse answers the semantic profile")
+  Assert.isNil(Catalog.movementType(catalog, 12), "a selector the table does not carry answers nil")
+end
+
+-- The movement inverse is produced data: a catalog without it is malformed
+-- rather than silently movement-free.
+function T.catalog_requires_the_native_movement_inverse()
+  local Catalog = requirePresent(CATALOG_MODULE, "immutable trainer templates resolve runtime content keys")
+  local ok, err = pcall(Catalog.new, { trainers = { [8] = trainerRecord("youngster", { plainMember() }) } })
+  Assert.isFalse(ok, "a catalog without the movement inverse never constructs")
+  Assert.isTrue(tostring(err):find("movement inverse", 1, true) ~= nil, "the failure names the missing inverse")
 end
 
 return { tests = T }

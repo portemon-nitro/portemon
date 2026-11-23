@@ -1980,6 +1980,137 @@ function HANDLERS.gym_candle_extinguish(node, run)
   })
 end
 
+-- The native trainer engagement family. Slot indices, trainer identities and
+-- message kinds evaluate before any output is written; the one trainer
+-- engagement service owns the engagement slots, the source approach state and
+-- the trainer catalog lookups. Queries answer in their own tick, the approach
+-- start returns in its own tick, the approach poll yields exactly one source
+-- tick, and the field message blocks only until its print completes.
+--
+-- The source reads the running script's own trainer identity, message
+-- parameters and double mark from the script environment its launch carried,
+-- so those handlers hand the detached launch trigger to the service instead
+-- of an operand.
+do
+  local function trainerFor(run)
+    return requireService(run, "trainerEncounter")
+  end
+
+  local function triggerFor(run)
+    return run.instance.trigger
+  end
+
+  local function handleTrainerApproachStart(node, run)
+    requireForeground(run, "trainer_approach_start")
+    trainerFor(run):startApproach(semanticsFor(run).evaluateValue(node.index, run))
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleTrainerApproachStep(node, run)
+    requireForeground(run, "trainer_approach_step")
+    local index = semanticsFor(run).evaluateValue(node.index, run)
+    semanticsFor(run).writeRef(node.result, trainerFor(run):stepApproach(index), run)
+    return Runtime.OUTCOME_YIELD_TICK
+  end
+
+  local function handleTrainerEncounterType(node, run)
+    semanticsFor(run).writeRef(node.result, trainerFor(run):encounterType(), run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleTrainerEngagementNumber(node, run)
+    local index = semanticsFor(run).evaluateValue(node.index, run)
+    semanticsFor(run).writeRef(node.result, trainerFor(run):engagementTrainer(index), run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleTrainerActiveNumber(node, run)
+    semanticsFor(run).writeRef(node.result, trainerFor(run):activeTrainerNumber(triggerFor(run)), run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  -- The source trainer message prints the pair's field speech with the
+  -- print-only native wait. A missing pair has no readable speech, so the
+  -- command spends its own tick without a print.
+  local function handleTrainerMessage(node, run)
+    requireForeground(run, "trainer_message")
+    local semantics = semanticsFor(run)
+    local trainer = semantics.evaluateValue(node.trainer, run)
+    local kind = semantics.evaluateValue(node.kind, run)
+    local location = trainerFor(run):fieldMessage(trainer, kind)
+    if location == nil then
+      return Runtime.OUTCOME_YIELD_TICK
+    end
+    local message = { message = "external", bank = location.bank, id = location.id }
+    return blockOnTask(run, "dialogue", {
+      node = { op = "message", message = message, bindings = node.bindings },
+    })
+  end
+
+  local function writeMessageParams(node, run, params)
+    local semantics = semanticsFor(run)
+    semantics.writeRef(node.intro, params.intro, run)
+    semantics.writeRef(node.after, params.after, run)
+    semantics.writeRef(node.shortIntro, params.shortIntro, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleTrainerMessageParams(node, run)
+    writeMessageParams(node, run, trainerFor(run):messageParams(triggerFor(run), false))
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleTrainerRematchMessageParams(node, run)
+    writeMessageParams(node, run, trainerFor(run):messageParams(triggerFor(run), true))
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleTrainerIsDouble(node, run)
+    local isDouble = trainerFor(run):isDoubleTrainer(triggerFor(run))
+    semanticsFor(run).writeRef(node.result, isDouble and 1 or 0, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleTrainerEncounterMusic(node, run)
+    local trainer = semanticsFor(run).evaluateValue(node.trainer, run)
+    requireForeground(run, "trainer_encounter_music")
+    requireService(run, "audio"):temporaryMusic(trainerFor(run):encounterMusic(trainer))
+    return Runtime.OUTCOME_YIELD_TICK
+  end
+
+  local function handlePartyCanDoubleBattle(node, run)
+    semanticsFor(run).writeRef(node.result, monsFor(run):countAliveMons() >= 2 and 1 or 0, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleTrainerLastTalkedMovement(_, run)
+    requireForeground(run, "trainer_last_talked_movement")
+    trainerFor(run):lastTalkedMovement(triggerFor(run))
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleObjectMovementType(node, run)
+    local semantics = semanticsFor(run)
+    local actorId = semantics.requireActor(node.actor, run)
+    semantics.writeRef(node.result, trainerFor(run):movementSelector(actorId), run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  HANDLERS.trainer_approach_start = handleTrainerApproachStart
+  HANDLERS.trainer_approach_step = handleTrainerApproachStep
+  HANDLERS.trainer_encounter_type = handleTrainerEncounterType
+  HANDLERS.trainer_engagement_number = handleTrainerEngagementNumber
+  HANDLERS.trainer_active_number = handleTrainerActiveNumber
+  HANDLERS.trainer_message = handleTrainerMessage
+  HANDLERS.trainer_message_params = handleTrainerMessageParams
+  HANDLERS.trainer_rematch_message_params = handleTrainerRematchMessageParams
+  HANDLERS.trainer_is_double = handleTrainerIsDouble
+  HANDLERS.trainer_encounter_music = handleTrainerEncounterMusic
+  HANDLERS.party_can_double_battle = handlePartyCanDoubleBattle
+  HANDLERS.trainer_last_talked_movement = handleTrainerLastTalkedMovement
+  HANDLERS.object_movement_type = handleObjectMovementType
+end
+
 -- The Cianwood winch answers its own output variable with the source boolean:
 -- the task carries the completed write, so the value lands before the next
 -- command runs.

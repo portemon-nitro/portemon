@@ -17,6 +17,7 @@ local LuaWriter = require("libs.codec.src.LuaWriter")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local ScriptMembers = require("romdump.src.catalog.hgss.script_members")
 local PokegearSources = require("romdump.src.config.PokegearSources")
+local BattleSources = require("romdump.src.config.BattleSources")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 
 local T = {}
@@ -86,6 +87,10 @@ local function sourceReferenceBankIds()
   ids[730] = true
   ids[731] = true
   ids[738] = true
+  -- Native trainer field speech resolves through the trainer message pair
+  -- table, which names its message in this bank; see FieldMessageCompiler's
+  -- required bank set.
+  ids[BattleSources.trainerFieldMessages.messageBank] = true
   local out = {}
   for bankId in pairs(ids) do
     out[#out + 1] = bankId

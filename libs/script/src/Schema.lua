@@ -1145,6 +1145,69 @@ Schema.OPERATIONS = {
   -- The Cianwood winch: one blocking command that writes its source boolean
   -- into the caller's output variable.
   gym_winch = { fields = { result = { type = "value", required = true } } },
+  -- The native trainer engagement family. An engagement slot index is read
+  -- through ScriptGetVar like the source reads it; the trainer identity and
+  -- message kind operands are likewise value-or-literal. Queries write in
+  -- their own tick, the approach start returns in its own tick, and the
+  -- approach step yields exactly one source tick per poll.
+  trainer_approach_start = { fields = { index = { type = "scalar_or_value", required = true } } },
+  trainer_approach_step = {
+    fields = {
+      index = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  trainer_encounter_type = { fields = { result = { type = "value", required = true } } },
+  trainer_engagement_number = {
+    fields = {
+      index = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  -- The running trainer script's own native trainer number, from the detached
+  -- context its launch carried.
+  trainer_active_number = { fields = { result = { type = "value", required = true } } },
+  -- ScrCmd_TrainerMessage prints the source pair's field speech with the
+  -- native print-only wait; a missing pair has no speech to print.
+  trainer_message = {
+    fields = {
+      trainer = { type = "scalar_or_value", required = true },
+      kind = { type = "scalar_or_value", required = true },
+    },
+  },
+  -- The source's three ordered message-kind outputs: intro, after-battle and
+  -- single-mon refusal for an ordinary trainer, or the first/second double
+  -- pair variants. The rematch form answers the phone-rematch kinds.
+  trainer_message_params = {
+    fields = {
+      intro = { type = "value", required = true },
+      after = { type = "value", required = true },
+      shortIntro = { type = "value", required = true },
+    },
+  },
+  trainer_rematch_message_params = {
+    fields = {
+      intro = { type = "value", required = true },
+      after = { type = "value", required = true },
+      shortIntro = { type = "value", required = true },
+    },
+  },
+  trainer_is_double = { fields = { result = { type = "value", required = true } } },
+  -- ScrCmd_EncounterMusic saves the field music and plays the trainer class's
+  -- eyes-meet sequence for the map's native region, then waits one tick.
+  trainer_encounter_music = { fields = { trainer = { type = "scalar_or_value", required = true } } },
+  party_can_double_battle = { fields = { result = { type = "value", required = true } } },
+  -- ScrCmd_SetLastTalkedTrainerMovement rewrites the talked-to trainer's live
+  -- movement from its facing, including its double-battle pair partner.
+  trainer_last_talked_movement = { fields = {} },
+  -- ScrCmd_GetObjectMovementType answers the actor's own current native
+  -- movement selector.
+  object_movement_type = {
+    fields = {
+      actor = { type = "actor", default = "last_talked" },
+      result = { type = "value", required = true },
+    },
+  },
   -- The Rocket hideout's own source commands. The trap effect and the alarm are
   -- blocking native animations, so they ride the one registered effect owner and
   -- complete only after their source clips and sound finished. The trap kind is

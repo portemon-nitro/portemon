@@ -32,8 +32,9 @@ function T.trainer_battle_lowers_to_a_blocking_launch()
   Assert.equal(launch.op, "battle_launch")
   Assert.equal(launch.kind, "trainer")
   Assert.equal(launch.details.trainer, 7, "the leading identity rides its operand")
-  Assert.equal(launch.details.encounter, 3)
-  Assert.equal(#launch.details.args, 2, "trailing operands survive opaquely")
+  Assert.equal(launch.details.trainer2, 3, "the second identity is the double-battle opponent")
+  Assert.equal(launch.details.healOnLoss, 1, "the third raw byte selects the source heal-on-loss branch")
+  Assert.equal(launch.details.followSlot, 0, "the fourth raw byte selects the follow-mon send-out slot")
   Assert.equal(CommandCatalog.disposition(213), "supported")
   Assert.equal(CommandCatalog.classification(213), "native_wait", "launches block like the source")
 end
@@ -41,7 +42,7 @@ end
 function T.trainer_variables_lower_to_references()
   local launch = lowerSingle(213, { 0x4007, 0x800C, 1, 0 })
   Assert.equal(launch.details.trainer.value, "var", "variable operands keep their reference")
-  Assert.equal(launch.details.encounter.value, "var")
+  Assert.equal(launch.details.trainer2.value, "var", "the second opponent keeps its reference too")
 end
 
 function T.wild_battle_lowers_to_a_blocking_launch()

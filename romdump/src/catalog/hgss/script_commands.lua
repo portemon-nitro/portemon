@@ -1217,42 +1217,38 @@ return {
       widths = {},
     },
     [168] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_GetTrainerPathToPlayer",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer approach needs the field trainer application",
       widths = {
         [1] = 2,
       },
     },
     [169] = {
+      classification = "yield_next_tick",
+      disposition = "supported",
       name = "ScrCmd_TrainerStepTowardsPlayer",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer approach needs the field trainer application",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [170] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_GetTrainerEyeType",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer approach needs the field trainer application",
       widths = {
         [1] = 2,
       },
     },
     [171] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_GetEyeTrainerNum",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer approach needs the field trainer application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1570,11 +1566,10 @@ return {
       },
     },
     [212] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_GetTrainerNum",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer approach needs the field trainer application",
       widths = {
         [1] = 2,
       },
@@ -1592,22 +1587,20 @@ return {
       },
     },
     [214] = {
+      classification = "native_wait",
+      disposition = "supported",
       name = "ScrCmd_TrainerMessage",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer battle messages need the battle presentation application",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [215] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_GetTrainerMsgParams",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer battle messages need the battle presentation application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1615,11 +1608,10 @@ return {
       },
     },
     [216] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_GetRematchMsgParams",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer battle messages need the battle presentation application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1627,21 +1619,19 @@ return {
       },
     },
     [217] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_TrainerIsDoubleBattle",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "double-battle trainer checks need the battle application",
       widths = {
         [1] = 2,
       },
     },
     [218] = {
+      classification = "yield_next_tick",
+      disposition = "supported",
       name = "ScrCmd_EncounterMusic",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "encounter music needs the battle music application",
       widths = {
         [1] = 2,
       },
@@ -1674,11 +1664,10 @@ return {
       },
     },
     [222] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_PartyCheckForDouble",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "double-battle party rules need the battle engine",
       widths = {
         [1] = 2,
       },
@@ -3414,6 +3403,8 @@ return {
       widths = {},
     },
     [454] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_SetLastTalkedTrainerMovement",
       widths = {},
     },
@@ -4279,11 +4270,10 @@ return {
       },
     },
     [562] = {
+      classification = "native_wait",
+      disposition = "supported",
       name = "ScrCmd_MultiBattle",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "multi battles need the special battle application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4374,6 +4364,8 @@ return {
       widths = {},
     },
     [574] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_GetObjectMovementType",
       widths = {
         [1] = 2,

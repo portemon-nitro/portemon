@@ -623,4 +623,261 @@ function T.gym_mechanism_nodes_require_their_owner()
   Assert.equal(err.code, ScriptErrors.SCRIPT_SERVICE_MISSING)
 end
 
+-- The native trainer engagement family: the approach start returns in its own
+-- tick, the approach poll yields exactly one source tick after its same-tick
+-- write, and every query answers in the tick that runs it. The trainer
+-- identity and message kind operands are evaluated before the service reads
+-- them, exactly like ScriptGetVar.
+function T.trainer_approach_and_queries_run_in_their_source_ticks()
+  local written = {}
+  local calls = {}
+  local trigger = { kind = "object", selfActor = "map:80:object:5" }
+  local run = runState({
+    trainerEncounter = {
+      startApproach = function(_, index)
+        calls[#calls + 1] = { op = "start", index = index }
+      end,
+      stepApproach = function(_, index)
+        calls[#calls + 1] = { op = "step", index = index }
+        return 0
+      end,
+      encounterType = function()
+        return 1
+      end,
+      engagementTrainer = function(_, index)
+        return 40 + index
+      end,
+      activeTrainerNumber = function(_, context)
+        Assert.equal(context, trigger, "the running script carries its own launch context")
+        return 46
+      end,
+      isDoubleTrainer = function()
+        return true
+      end,
+    },
+    mons = {
+      countAliveMons = function()
+        return 2
+      end,
+    },
+  }, written)
+  run.instance.trigger = trigger
+  local values = { SLOT = 1 }
+  run.semantics.evaluateValue = function(value)
+    if type(value) == "table" then
+      return values[value.id]
+    end
+    return value
+  end
+
+  Assert.equal(
+    Runtime.executeNode({ op = "trainer_approach_start", index = { id = "SLOT" } }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "the approach start answers in its own tick"
+  )
+  Assert.deepEqual(calls[1], { op = "start", index = 1 }, "the slot variable is evaluated before the call")
+
+  Assert.equal(
+    Runtime.executeNode({
+      op = "trainer_approach_step",
+      index = { id = "SLOT" },
+      result = { value = "var", id = "VAR_RESULT" },
+    }, run),
+    Runtime.OUTCOME_YIELD_TICK,
+    "the approach poll spends one source tick"
+  )
+  Assert.equal(written.VAR_RESULT, 0, "the poll answers its native false while the approach runs")
+  Assert.equal(calls[2].op, "step")
+
+  Assert.equal(
+    Runtime.executeNode({ op = "trainer_encounter_type", result = { value = "var", id = "VAR_TYPE" } }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(written.VAR_TYPE, 1)
+
+  Assert.equal(
+    Runtime.executeNode({
+      op = "trainer_engagement_number",
+      index = { id = "SLOT" },
+      result = { value = "var", id = "VAR_TRAINER" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(written.VAR_TRAINER, 41, "the engagement slot answers its own native trainer")
+
+  Assert.equal(
+    Runtime.executeNode({ op = "trainer_active_number", result = { value = "var", id = "VAR_OWN" } }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(written.VAR_OWN, 46)
+
+  Assert.equal(
+    Runtime.executeNode({ op = "trainer_is_double", result = { value = "var", id = "VAR_DOUBLE" } }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(written.VAR_DOUBLE, 1, "the source boolean writes as one")
+
+  Assert.equal(
+    Runtime.executeNode({ op = "party_can_double_battle", result = { value = "var", id = "VAR_PARTY" } }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(written.VAR_PARTY, 1, "two living mons field a double battle")
+end
+
+-- The source message parameters write their three ordered outputs in the same
+-- tick: ordinary kinds, the double pair's slot variants, and the phone
+-- rematch kinds.
+function T.trainer_message_parameters_write_their_three_kinds_same_tick()
+  local written = {}
+  local run = runState({
+    trainerEncounter = {
+      messageParams = function(_, _, rematch)
+        Assert.isFalse(rematch, "the ordinary command reads the ordinary kinds")
+        return { intro = 3, after = 5, shortIntro = 6 }
+      end,
+    },
+  }, written)
+  run.instance.trigger = { kind = "object", selfActor = "map:41:object:0" }
+  Assert.equal(
+    Runtime.executeNode({
+      op = "trainer_message_params",
+      intro = { value = "var", id = "VAR_INTRO" },
+      after = { value = "var", id = "VAR_AFTER" },
+      shortIntro = { value = "var", id = "VAR_SHORT" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.deepEqual(
+    { written.VAR_INTRO, written.VAR_AFTER, written.VAR_SHORT },
+    { 3, 5, 6 },
+    "the pair's first slot kinds land in their source order"
+  )
+
+  run.services.trainerEncounter.messageParams = function(_, _, rematch)
+    Assert.isTrue(rematch, "the rematch command asks for the phone-rematch kinds")
+    return { intro = 18, after = 0, shortIntro = 6 }
+  end
+  Runtime.executeNode({
+    op = "trainer_rematch_message_params",
+    intro = { value = "var", id = "VAR_INTRO" },
+    after = { value = "var", id = "VAR_AFTER" },
+    shortIntro = { value = "var", id = "VAR_SHORT" },
+  }, run)
+  Assert.deepEqual({ written.VAR_INTRO, written.VAR_SHORT }, { 18, 6 })
+end
+
+-- ScrCmd_TrainerMessage prints the source pair's field speech through the
+-- shared dialogue task with the native print-only wait. A trainer whose pair
+-- the source does not carry has no readable speech: the command spends its own
+-- tick instead of borrowing another trainer's message.
+function T.trainer_message_prints_field_speech_and_empty_pairs_spend_their_tick()
+  local written = {}
+  local asked = {}
+  local location = { bank = 728, id = 40 }
+  local run = runState({
+    trainerEncounter = {
+      fieldMessage = function(_, trainer, kind)
+        asked[#asked + 1] = { trainer = trainer, kind = kind }
+        return location
+      end,
+    },
+    dialogue = {},
+  }, written)
+  run.semantics.evaluateValue = function(value)
+    return value
+  end
+  Assert.equal(
+    Runtime.executeNode({ op = "trainer_message", trainer = 46, kind = 2, bindings = {} }, run),
+    Runtime.OUTCOME_BLOCK,
+    "the field speech blocks until its print completes"
+  )
+  Assert.equal(run.blockTaskId.type, "dialogue")
+  Assert.deepEqual(asked[1], { trainer = 46, kind = 2 }, "the pair reads the script's own trainer and kind")
+  local taskNode = run.blockTaskId.spec.node
+  Assert.equal(taskNode.op, "message")
+  Assert.deepEqual(taskNode.message, { message = "external", bank = 728, id = 40 })
+
+  location = nil
+  run.blockTaskId = nil
+  Assert.equal(
+    Runtime.executeNode({ op = "trainer_message", trainer = 46, kind = 7 }, run),
+    Runtime.OUTCOME_YIELD_TICK,
+    "a missing pair spends the source's own tick"
+  )
+  Assert.isNil(run.blockTaskId, "the missing pair opens no print")
+  Assert.deepEqual(asked[2], { trainer = 46, kind = 7 }, "the missing pair keeps its own trainer and kind")
+end
+
+-- ScrCmd_EncounterMusic starts the trainer class's eyes-meet sequence and
+-- returns TRUE, spending one source tick.
+function T.trainer_encounter_music_plays_the_catalog_sequence_and_yields_one_tick()
+  local written = {}
+  local played = nil
+  local run = runState({
+    trainerEncounter = {
+      encounterMusic = function(_, trainer)
+        Assert.equal(trainer, 46)
+        return "SEQ_GS_EYE_BOUZU"
+      end,
+    },
+    audio = {
+      temporaryMusic = function(_, sequence)
+        played = sequence
+      end,
+    },
+  }, written)
+  run.semantics.evaluateValue = function(value)
+    return value
+  end
+  Assert.equal(
+    Runtime.executeNode({ op = "trainer_encounter_music", trainer = 46 }, run),
+    Runtime.OUTCOME_YIELD_TICK,
+    "the eyes-meet sequence spends the source's one tick"
+  )
+  Assert.equal(played, "SEQ_GS_EYE_BOUZU")
+end
+
+-- ScrCmd_SetLastTalkedTrainerMovement rewrites the talked-to trainer's live
+-- movement from the launch context in its own tick, and
+-- ScrCmd_GetObjectMovementType answers the named actor's current native
+-- selector in its own tick.
+function T.trainer_movement_commands_read_the_script_context_and_named_actor()
+  local written = {}
+  local calls = {}
+  local run = runState({
+    trainerEncounter = {
+      lastTalkedMovement = function(_, trigger)
+        calls[#calls + 1] = { op = "last_talked", trigger = trigger }
+      end,
+      movementSelector = function(_, actorId)
+        calls[#calls + 1] = { op = "selector", actor = actorId }
+        return 17
+      end,
+    },
+  }, written)
+  run.instance.trigger = { kind = "object", selfActor = "map:80:object:5" }
+  run.semantics.evaluateValue = function(value)
+    return value
+  end
+  run.semantics.requireActor = function(ref)
+    Assert.deepEqual(ref, { ref = "actor", special = "last_talked" }, "the movement read names its actor operand")
+    return "map:80:object:5"
+  end
+
+  Assert.equal(Runtime.executeNode({ op = "trainer_last_talked_movement" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(calls[1].op, "last_talked")
+  Assert.equal(calls[1].trigger, run.instance.trigger, "the talk movement reads the launch context")
+
+  Assert.equal(
+    Runtime.executeNode({
+      op = "object_movement_type",
+      actor = { ref = "actor", special = "last_talked" },
+      result = { value = "var", id = "VAR_MOVEMENT" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(written.VAR_MOVEMENT, 17, "the selector lands in the destination variable")
+  Assert.equal(calls[2].actor, "map:80:object:5")
+end
+
 return { tests = T }

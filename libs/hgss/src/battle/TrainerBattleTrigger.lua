@@ -1,30 +1,56 @@
--- Source trainer sight and approach planning. Given the player tile and the
--- known trainer placements, check reports which undefeated trainers engage
--- this tick; prepare turns an engagement into a trainer-battle launch
--- request. This module only plans: approach movement and the ensuing
--- script run belong to the field/script owners, which consume the returned
--- launch identity. Defeated trainers never re-engage, and trainers engaging
--- on the same tick stay simultaneous (the native double engagement) instead
--- of collapsing into one fight.
+-- Source trainer sight and engagement selection (src/map_object_behavior.c:
+-- TrainerSight_FindPlayer, CheckSeenByNpcTrainers and TryGetSeenByNpcTrainers).
+-- This module only plans: it decides which trainers see the player along their
+-- own directional rays and which native engagement shape the scene opens with.
+-- Actor motion, the approach scene and the battles belong to the field/script
+-- owners, which consume the returned plan.
 --
 -- Facts shape (plain data from the actor/world owners):
 --   facts = {
---     player = { fieldX: integer, fieldZ: integer },
+--     player = { fieldX: integer, fieldZ: integer, facing: string },
+--     doublesEligible = boolean,
 --     trainers = {
---       { id: string, fieldX: integer, fieldZ: integer,
---         range: integer?, defeated: boolean? }, ...
+--       { id: string, fieldX: integer, fieldZ: integer, trainerId: integer,
+--         partner: "first"|"second", sightType: integer, direction: string?,
+--         range: integer, defeated: boolean?, isDouble: boolean?,
+--         sightBlocked: fun(direction: string, distance: integer): boolean }, ...
 --     },
 --   }
--- Sight is the Chebyshev tile distance against the trainer's range (the
--- generated eye data supplies the range; trainers without one never
--- engage). Ordering follows the facts array.
+-- Sight is the source's own directional rule, never tile proximity: a trainer
+-- of sight type 1 looks along its facing, a type 2 trainer looks in all four
+-- directions, and types 0 and 3 never sight. The player must stand on that
+-- exact row or column inside the trainer's range, and every tile between the
+-- two must stay clear (the caller resolves collision through sightBlocked,
+-- which also verifies the player endpoint).
+--
+-- Selection follows TryGetSeenByNpcTrainers: the first sighted trainer in
+-- source order decides the shape. A trainer whose own record marks a double
+-- battle engages only with at least two usable party mons, and then engages
+-- together with its pair partner as the native one-trainer double. Every other
+-- trainer engages alone, or together with the next sighted trainer as two
+-- independent opponents when the party can field a double.
 
 ---@class TrainerBattleTrigger
 local TrainerBattleTrigger = {}
 
--- Trainers without an explicit sight range never engage: sight without a
--- range is missing data, not adjacent aggression.
-TrainerBattleTrigger.DEFAULT_RANGE = nil
+-- The source direction order DIR_NORTH..DIR_EAST: an all-direction sight tier
+-- scans in this order.
+TrainerBattleTrigger.DIRECTIONS = { "north", "south", "west", "east" }
+
+-- The engagement shapes the approach scene reads through ScrCmd_GetTrainerEyeType.
+TrainerBattleTrigger.ENCOUNTER_SINGLE = 0
+TrainerBattleTrigger.ENCOUNTER_DOUBLE_PAIR = 1
+TrainerBattleTrigger.ENCOUNTER_TWO_TRAINERS = 2
+
+-- Source direction deltas: north decreases fieldZ.
+local DIRECTION_DELTAS = {
+  north = { x = 0, z = -1 },
+  south = { x = 0, z = 1 },
+  west = { x = -1, z = 0 },
+  east = { x = 1, z = 0 },
+}
+
+local TRAINER_SIGHT_TYPES = { [1] = true, [2] = true }
 
 ---@param value unknown
 ---@return boolean
@@ -39,93 +65,169 @@ local function checkTrainer(trainer, index)
   local entry = trainer --[[@as table<string, unknown>]]
   assert(type(entry.id) == "string" and entry.id ~= "", "trainer facts name their trainer")
   assert(isTile(entry.fieldX) and isTile(entry.fieldZ), "trainer facts carry integer tiles")
-  if entry.range ~= nil then
-    assert(
-      type(entry.range) == "number" and entry.range % 1 == 0 and entry.range >= 0,
-      "trainer sight ranges stay non-negative integers"
-    )
-  end
-  if entry.defeated ~= nil then
-    assert(type(entry.defeated) == "boolean", "trainer defeat flags stay boolean")
-  end
+  assert(type(entry.trainerId) == "number" and entry.trainerId % 1 == 0, "trainer facts carry their native identity")
+  assert(
+    type(entry.range) == "number" and entry.range % 1 == 0 and entry.range >= 0,
+    "trainer sight ranges stay integral"
+  )
+  assert(type(entry.sightType) == "number", "trainer facts carry their sight type")
+  assert(type(entry.sightBlocked) == "function", "trainer facts resolve their sight occlusion")
   assert(index >= 1, "trainer order follows the facts array")
 end
 
+-- The distance along one direction when the player stands on that exact ray,
+-- or nil when the player is off the row/column or outside the range
+-- (TrainerSight_GetDistance{North,South,West,East}).
 ---@param trainer table<string, unknown>
 ---@param player table<string, unknown>
----@return boolean true when the trainer's sight reaches the player tile
-local function engages(trainer, player)
-  if trainer.defeated == true then
-    return false
+---@param direction string
+---@return integer?
+local function rayDistance(trainer, player, direction)
+  local delta = DIRECTION_DELTAS[direction]
+  if delta == nil then
+    return nil
   end
-  if trainer.range == nil then
-    return false
+  local fieldX = trainer.fieldX --[[@as integer]]
+  local fieldZ = trainer.fieldZ --[[@as integer]]
+  local targetX = player.fieldX --[[@as integer]]
+  local targetZ = player.fieldZ --[[@as integer]]
+  if delta.x ~= 0 then
+    if fieldZ ~= targetZ then
+      return nil
+    end
+    local distance = (targetX - fieldX) * delta.x
+    if
+      distance >= 1 and distance <= trainer.range --[[@as integer]]
+    then
+      return distance
+    end
+    return nil
   end
-  local distance = math.max(math.abs(trainer.fieldX - player.fieldX), math.abs(trainer.fieldZ - player.fieldZ))
-  return distance <= trainer.range
+  if fieldX ~= targetX then
+    return nil
+  end
+  local distance = (targetZ - fieldZ) * delta.z
+  if
+    distance >= 1 and distance <= trainer.range --[[@as integer]]
+  then
+    return distance
+  end
+  return nil
 end
 
--- Reports the trainers engaging this tick, or nil when none do. Defeated
--- trainers and trainers without sight data never engage; every engaging
--- trainer is listed, so a simultaneous pair survives as a pair.
----@param facts { player: table<string, unknown>, trainers: table<string, unknown>[] }
----@return { trainers: table<string, unknown>[] }? the engagement, or nil
+-- The direction and distance one trainer sights the player along, or nil when
+-- it does not see the player at all (TrainerSight_FindPlayer).
+---@param trainer table<string, unknown>
+---@param player table<string, unknown>
+---@return { direction: string, distance: integer }?
+local function sightOf(trainer, player)
+  local sightType = trainer.sightType
+  local directions
+  if sightType == 1 then
+    local facing = trainer.direction
+    if type(facing) ~= "string" then
+      return nil
+    end
+    directions = { facing }
+  elseif sightType == 2 then
+    directions = TrainerBattleTrigger.DIRECTIONS
+  else
+    return nil
+  end
+  for _, direction in ipairs(directions) do
+    local distance = rayDistance(trainer, player, direction)
+    if distance ~= nil then
+      local blocked = trainer.sightBlocked --[[@as fun(direction: string, distance: integer): boolean]]
+      if not blocked(direction, distance) then
+        return { direction = direction, distance = distance }
+      end
+    end
+  end
+  return nil
+end
+
+---@param trainer table<string, unknown>
+---@param sight { direction: string, distance: integer }
+---@return table<string, unknown>
+local function slotFor(trainer, sight)
+  return {
+    id = trainer.id,
+    trainerId = trainer.trainerId,
+    partner = trainer.partner,
+    direction = sight.direction,
+    distance = sight.distance,
+  }
+end
+
+-- Plans this tick's native engagement, or nil when no eligible trainer sees the
+-- player. See the module comment for the exact shape rules.
+---@param facts { player: table<string, unknown>, doublesEligible: boolean?, trainers: table<string, unknown>[] }
+---@return { encounterType: integer, slots: table<string, unknown>[] }? the engagement plan, or nil
 function TrainerBattleTrigger.check(facts)
   assert(type(facts) == "table", "trainer sight reads its facts record")
-  assert(type(facts.player) == "table", "trainer sight reads the player tile")
   local player = facts.player --[[@as table<string, unknown>]]
+  assert(type(player) == "table", "trainer sight reads the player tile")
   assert(isTile(player.fieldX) and isTile(player.fieldZ), "the player tile stays integral")
   assert(type(facts.trainers) == "table", "trainer sight reads the trainer list")
-  local engaging = {}
+  local doublesEligible = facts.doublesEligible == true
+
+  local sighted = {} ---@type table<integer, { direction: string, distance: integer }?>
+  local firstIndex = nil
   for index, trainer in ipairs(facts.trainers) do
     checkTrainer(trainer, index)
     local entry = trainer --[[@as table<string, unknown>]]
-    if engages(entry, player) then
-      engaging[#engaging + 1] = { id = entry.id, fieldX = entry.fieldX, fieldZ = entry.fieldZ }
+    if entry.defeated ~= true and TRAINER_SIGHT_TYPES[entry.sightType] == true then
+      local sight = sightOf(entry, player)
+      if sight ~= nil then
+        sighted[index] = sight
+        firstIndex = firstIndex or index
+      end
     end
   end
-  if #engaging == 0 then
+  if firstIndex == nil then
     return nil
   end
-  return { trainers = engaging }
-end
-
--- Turns an engagement into a trainer-battle launch request. A lone trainer
--- launches its single battle; a simultaneous engagement launches one battle
--- carrying every engaging trainer, preserving the native double. The launch
--- identity comes from the caller (opts.launchId) or names the engaging
--- trainers; flags quoted here are the defeated markers the post-battle
--- script owns, never set by planning.
----@param sighting { trainers: table<string, unknown>[] }
----@param opts table<string, unknown>?
----@return { launch: table<string, unknown>, trainers: string[] }
-function TrainerBattleTrigger.prepare(sighting, opts)
-  assert(type(sighting) == "table" and type(sighting.trainers) == "table", "preparation consumes an engagement")
-  assert(#sighting.trainers > 0, "preparation consumes a non-empty engagement")
-  local options = opts or {}
-  assert(type(options) == "table", "preparation options stay a record")
-  local ids = {}
-  for _, trainer in ipairs(sighting.trainers) do
-    assert(type(trainer) == "table" and type(trainer.id) == "string", "engagements carry trainer identities")
-    ids[#ids + 1] = trainer.id
+  local first = facts.trainers[firstIndex] --[[@as table<string, unknown>]]
+  local firstSight = sighted[firstIndex] --[[@as { direction: string, distance: integer }]]
+  if first.isDouble == true then
+    if not doublesEligible then
+      return nil
+    end
+    local partnerIndex = nil
+    for index, trainer in ipairs(facts.trainers) do
+      local entry = trainer --[[@as table<string, unknown>]]
+      if
+        index ~= firstIndex
+        and entry.defeated ~= true
+        and TRAINER_SIGHT_TYPES[entry.sightType] == true
+        and entry.trainerId == first.trainerId
+      then
+        partnerIndex = index
+        break
+      end
+    end
+    assert(partnerIndex ~= nil, "a double-battle trainer engages with its own pair partner")
+    local partner = facts.trainers[partnerIndex] --[[@as table<string, unknown>]]
+    return {
+      encounterType = TrainerBattleTrigger.ENCOUNTER_DOUBLE_PAIR,
+      slots = { slotFor(first, firstSight), slotFor(partner, firstSight) },
+    }
   end
-  local launchId = options.launchId
-  if launchId == nil then
-    launchId = "trainer:" .. table.concat(ids, "+")
-  end
-  assert(type(launchId) == "string" and launchId ~= "", "trainer launches carry their identity")
-  local payload = {}
-  if #ids == 1 then
-    payload.trainer = ids[1]
-  else
-    payload.trainers = {}
-    for _, id in ipairs(ids) do
-      payload.trainers[#payload.trainers + 1] = { id = id }
+  if doublesEligible then
+    for index, trainer in ipairs(facts.trainers) do
+      local sight = sighted[index]
+      if index ~= firstIndex and sight ~= nil then
+        local second = trainer --[[@as table<string, unknown>]]
+        return {
+          encounterType = TrainerBattleTrigger.ENCOUNTER_TWO_TRAINERS,
+          slots = { slotFor(first, firstSight), slotFor(second, sight) },
+        }
+      end
     end
   end
   return {
-    launch = { id = launchId, kind = "trainer", payload = payload },
-    trainers = ids,
+    encounterType = TrainerBattleTrigger.ENCOUNTER_SINGLE,
+    slots = { slotFor(first, firstSight) },
   }
 end
 

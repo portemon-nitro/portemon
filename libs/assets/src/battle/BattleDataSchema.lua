@@ -9,6 +9,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local Validate = require("libs.assets.src.Validate")
+local FieldObjectMovement = require("libs.assets.src.field.FieldObjectMovement")
 
 ---@class BattleDataSchema
 local BattleDataSchema = {}
@@ -260,6 +261,8 @@ local function assertTrainerRecord(trainerIndex, record)
     prizeMoney = true,
     messageSelectors = true,
     loseSpeechSelector = true,
+    encounterMusic = true,
+    fieldMessages = true,
   }, context, "BATTLE_DATA_INVALID", "trainer " .. tostring(trainerIndex))
   checkInt(record.trainerClass, 0, nil, context, "BATTLE_DATA_INVALID", "trainer class")
   assertNameReference(record.nameReference, context)
@@ -300,6 +303,28 @@ local function assertTrainerRecord(trainerIndex, record)
   then
     fail("BATTLE_DATA_INVALID", "trainer lose speech uses an opaque semantic selector", context)
   end
+  -- The source eyes-meet selector answers one canonical sequence per native
+  -- region (src/field_bgm.c::FieldBGM_GetEyesMeetForTrainer).
+  checkRecord(
+    record.encounterMusic,
+    { johto = true, kanto = true },
+    context,
+    "BATTLE_DATA_INVALID",
+    "trainer encounterMusic"
+  )
+  checkNonEmptyString(record.encounterMusic.johto, context, "BATTLE_DATA_INVALID", "trainer encounterMusic.johto")
+  checkNonEmptyString(record.encounterMusic.kanto, context, "BATTLE_DATA_INVALID", "trainer encounterMusic.kanto")
+  -- Native field speech: source message kind to the msgdata bank message index
+  -- the pair archive selects. A trainer without pairs carries none.
+  if record.fieldMessages ~= nil then
+    if type(record.fieldMessages) ~= "table" then
+      fail("BATTLE_DATA_INVALID", "trainer fieldMessages must be a record when present", context)
+    end
+    for kind, messageIndex in pairs(record.fieldMessages) do
+      checkInt(kind, 0, 20, context, "BATTLE_DATA_INVALID", "trainer field message kind")
+      checkInt(messageIndex, 0, nil, context, "BATTLE_DATA_INVALID", "trainer field message index")
+    end
+  end
 end
 
 -- Projected trainer catalog: one version plus every trainer record keyed by
@@ -310,6 +335,8 @@ function BattleDataSchema.assertTrainerCatalog(compiled)
     schema = true,
     version = true,
     trainers = true,
+    nativeMovementByType = true,
+    fieldMessageBank = true,
   }, context, "BATTLE_DATA_INVALID", "trainer catalog")
   checkNonEmptyString(compiled.schema, context, "BATTLE_DATA_INVALID", "trainer catalog schema")
   checkRecord(compiled.version, { id = true }, context, "BATTLE_DATA_INVALID", "trainer catalog version")
@@ -320,6 +347,29 @@ function BattleDataSchema.assertTrainerCatalog(compiled)
       fail("BATTLE_DATA_INVALID", "trainer keys must be integer identities", context)
     end
     assertTrainerRecord(trainerIndex, record)
+  end
+  -- The closed inverse of the producer's source movement selectors: a semantic
+  -- movement profile maps back to exactly one native selector in 0..56.
+  checkRecord(
+    compiled.nativeMovementByType,
+    nil,
+    context,
+    "BATTLE_DATA_INVALID",
+    "trainer catalog nativeMovementByType"
+  )
+  checkInt(compiled.fieldMessageBank, 0, nil, context, "BATTLE_DATA_INVALID", "trainer message bank")
+  local seen = {}
+  for semanticType, rawMovement in pairs(compiled.nativeMovementByType) do
+    if type(semanticType) ~= "string" or not FieldObjectMovement.isType(semanticType) then
+      fail("BATTLE_DATA_INVALID", "native movement keys name source movement profiles", context)
+    end
+    if not Validate.isNonNegativeInteger(rawMovement) or rawMovement > 56 then
+      fail("BATTLE_DATA_INVALID", "native movement selectors stay in the source's 0..56 range", context)
+    end
+    if seen[rawMovement] == true then
+      fail("BATTLE_DATA_INVALID", "native movement selectors map from exactly one profile", context)
+    end
+    seen[rawMovement] = true
   end
   return true
 end

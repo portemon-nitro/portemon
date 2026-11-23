@@ -10,14 +10,36 @@ local PLAYER_GENDER_MALE = 0
 local SPRITE_HERO = 0
 local SPRITE_HEROINE = 97
 -- Retail `include/constants/flags.h::TRAINER_FLAG_BASE`: a defeated trainer
--- persists as the ordinary numeric event flag above this offset. The source
--- reads a 16-bit trainer number, but the flag store keys are unsigned 16-bit
--- too, so only numbers whose computed flag id stays in that domain are
--- referenceable; a larger number faults at the reference instead of naming a
--- flag the store would reject later.
+-- persists as the ordinary numeric event flag above this offset.
 local TRAINER_FLAG_BASE = 0x550
 local FLAG_ID_MAX = 0xFFFF
 local MAX_SOURCE_TRAINER = FLAG_ID_MAX - TRAINER_FLAG_BASE
+
+-- The ordinary numeric event flag a defeated trainer persists as
+-- (include/constants/flags.h::TRAINER_FLAG_BASE). The source reads a 16-bit
+-- trainer number, but the flag store keys are unsigned 16-bit too, so only
+-- numbers whose computed flag id stays in that domain are referenceable; a
+-- larger number faults at the reference instead of naming a flag the store
+-- would reject later.
+---@param trainer unknown
+---@param scriptId string|nil
+---@return integer
+function RuntimeValues.trainerFlagId(trainer, scriptId)
+  if
+    type(trainer) ~= "number"
+    or trainer ~= trainer
+    or trainer % 1 ~= 0
+    or trainer < 0
+    or trainer > MAX_SOURCE_TRAINER
+  then
+    Errors.raise(
+      ScriptErrors.SCRIPT_INVALID_REFERENCE,
+      "trainer number must resolve to an event flag id",
+      { scriptId = scriptId, trainer = tostring(trainer) }
+    )
+  end
+  return TRAINER_FLAG_BASE + trainer
+end
 
 local SEMANTIC_STYLES = {
   sign = "hgss.signpost",
@@ -155,24 +177,8 @@ function RuntimeValues.evaluateValue(v, run)
     return run.services.world:isFlagSet(flagId) and 1 or 0
   elseif kind == "trainer_flag_id" then
     -- ScriptGetVar semantics: the trainer number is a literal or a live
-    -- variable. A number whose computed flag id would leave the event-flag
-    -- domain is an attributed reference fault instead of a wrapped or
-    -- clamped flag.
-    local trainer = RuntimeValues.evaluateValue(v.trainer, run)
-    if
-      type(trainer) ~= "number"
-      or trainer ~= trainer
-      or trainer % 1 ~= 0
-      or trainer < 0
-      or trainer > MAX_SOURCE_TRAINER
-    then
-      Errors.raise(
-        ScriptErrors.SCRIPT_INVALID_REFERENCE,
-        "trainer number must resolve to an event flag id",
-        { scriptId = run.instance.scriptId, trainer = tostring(trainer) }
-      )
-    end
-    return TRAINER_FLAG_BASE + trainer
+    -- variable.
+    return RuntimeValues.trainerFlagId(RuntimeValues.evaluateValue(v.trainer, run), run.instance.scriptId)
   elseif kind == "player_gender_value" then
     return run.services.player:gender()
   elseif kind == "friend_sprite_value" then

@@ -421,6 +421,7 @@ function Game:snapshot()
         fieldZ = committed.fieldZ,
         surfaceId = actor:getSurfaceId(),
         facing = actor.facing,
+        spriteId = actor.spriteId,
       }
       if actor:isSolid() then
         occupancy[committed.fieldX .. ":" .. committed.fieldZ] = actor.actorId

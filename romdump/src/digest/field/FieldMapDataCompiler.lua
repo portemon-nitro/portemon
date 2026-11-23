@@ -25,6 +25,7 @@ local HgssObjectMovement = require("romdump.src.digest.field.HgssObjectMovement"
 local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
 local FieldMoveEncounterData = require("romdump.src.digest.field.FieldMoveEncounterData")
 local ApricornSources = require("romdump.src.config.ApricornSources")
+local ScriptIdentity = require("libs.assets.src.ScriptIdentity")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local HiddenItemParams = require("romdump.src.digest.field.HiddenItemParams")
 
@@ -43,6 +44,68 @@ local STANDARD_SCRIPTS = SourceCatalog.catalog()
 -- never derives a script identity from a raw source number for these events,
 -- and never needs the std-script catalog to resolve one.
 local NO_SCRIPT_ID = 0xFFFF
+
+-- include/constants/std_script.h: an object whose raw script id falls inside a
+-- trainer group addresses that group's shared trainer scripts rather than this
+-- map's own bank. Every trainer entry of a group aliases the one talk body, the
+-- entry at LAST_TRAINER_INDEX is the approach scene, and a trainer's native
+-- identity is its own offset plus FIRST_TRAINER_INDEX. The two groups differ
+-- only in which engagement slot of a native double pair the object fills.
+local FIRST_TRAINER_INDEX = 1
+local LAST_TRAINER_INDEX = 740
+local TRAINER_RANGES = {
+  { rangeStart = 3000, partner = "first" },
+  { rangeStart = 5000, partner = "second" },
+}
+local TRAINER_SCRIPT_MEMBER = 953
+local TRAINER_TALK_SCRIPT_INDEX = 738
+local TRAINER_APPROACH_SCRIPT_INDEX = 739
+
+-- src/map_object_behavior.c::MapObject_GetTrainerSightType: object types 4..8
+-- see along their facing like type 1, while types 0 and 3 never sight. The
+-- sight reach is the object's own param0.
+local TRAINER_SIGHT_TYPES = {
+  [0] = 0,
+  [1] = 1,
+  [2] = 2,
+  [3] = 3,
+  [4] = 1,
+  [5] = 1,
+  [6] = 1,
+  [7] = 1,
+  [8] = 1,
+}
+
+-- The public identity of one shared trainer script. Runtime composition reads
+-- these ids; no consumer re-derives them from a source number.
+---@param scriptIndex integer
+---@return string
+local function trainerScriptId(scriptIndex)
+  return ScriptIdentity.formatVanilla(TRAINER_SCRIPT_MEMBER, scriptIndex)
+end
+
+-- Resolves a raw object script id inside a trainer group.
+---@param rawScriptId unknown
+---@return { trainerId: integer, partner: string, approachScript: string }|{ approachScript: string }|nil
+local function trainerSubject(rawScriptId)
+  if type(rawScriptId) ~= "number" then
+    return nil
+  end
+  for _, range in ipairs(TRAINER_RANGES) do
+    local scriptIndex = rawScriptId - range.rangeStart
+    if scriptIndex == LAST_TRAINER_INDEX - FIRST_TRAINER_INDEX then
+      return { approachScript = trainerScriptId(TRAINER_APPROACH_SCRIPT_INDEX) }
+    end
+    if scriptIndex >= 0 and scriptIndex < LAST_TRAINER_INDEX - FIRST_TRAINER_INDEX then
+      return {
+        trainerId = scriptIndex + FIRST_TRAINER_INDEX,
+        partner = range.partner,
+        approachScript = trainerScriptId(TRAINER_APPROACH_SCRIPT_INDEX),
+      }
+    end
+  end
+  return nil
+end
 
 ---@param decoded table<string, unknown> decoded zone-event member
 local function normalizeUnboundScripts(decoded)
@@ -118,6 +181,24 @@ local function semanticObjectEvent(event, map, index)
     end
   end
   object.movementType = movementType
+  local subject = trainerSubject(event.scriptId)
+  if subject ~= nil then
+    if subject.trainerId == nil then
+      -- The approach sentinel is the engine's own approach scene, never a
+      -- trainer's interaction body.
+      object.scriptId = subject.approachScript
+    else
+      local sightType = TRAINER_SIGHT_TYPES[event.type] or event.type
+      object.scriptId = trainerScriptId(TRAINER_TALK_SCRIPT_INDEX)
+      object.trainer = {
+        trainerId = subject.trainerId,
+        partner = subject.partner,
+        sightType = sightType,
+        sightRange = event.param0,
+        approachScript = subject.approachScript,
+      }
+    end
+  end
   if event.scriptId == "common.apricorn_tree" then
     local treeIndex = event.param0
     local apricornKey = type(treeIndex) == "number" and ApricornSources.treeByIndex[treeIndex] or nil
@@ -605,6 +686,9 @@ local function compileMap(romFs, map, source, headerSource, sha1hex, hashLua, ge
     -- traversal allowances, and source exceptions) projected from the
     -- frozen header facts above; see fieldUsePolicy.
     fieldUse = fieldUsePolicy(map, environment),
+    -- The native region a map belongs to: the source's encounter-music table
+    -- answers a Johto and a Kanto variant per trainer class.
+    region = map.region,
     -- Map-header message/script associations (via the
     -- frozen catalog). Runtime code must never branch on map IDs to choose a
     -- bank; it reads these fields.

@@ -249,8 +249,11 @@ function T.trainer_catalogs_carry_only_compact_real_item_lists()
           prizeMoney = { trainerClass = CLASS_YOUNGSTER, classRate = 4 },
           messageSelectors = { intro = 0, lose = 1, after = 2 },
           loseSpeechSelector = TrainerCatalogCompiler.loseSpeechSelector(8),
+          encounterMusic = { johto = "SEQ_GS_EYE_J_SHOUNEN", kanto = "SEQ_GS_EYE_J_SHOUNEN" },
         },
       },
+      nativeMovementByType = { stationary = 0 },
+      fieldMessageBank = 728,
     }
   end
   for _, items in ipairs({
@@ -560,6 +563,12 @@ function T.successful_trainer_job_stages_publishes_and_reads_ready()
       if alias == "trainer_parties" then
         return narcFor(members, 9)
       end
+      if alias == "NARC_poketool_trmsg_trtblofs" then
+        return narcFor(string.rep("\0", 18), 1)
+      end
+      if alias == "NARC_poketool_trmsg_trtbl" then
+        return narcFor("", 1)
+      end
       return nil, "unknown archive " .. tostring(alias)
     end,
   }
@@ -631,6 +640,86 @@ function T.stale_trainer_family_markers_never_read_ready()
   cacheFs:write(BattleDataCache.trainersMarkerPath(), "trainer-catalog-cache-v1:" .. sha .. ":" .. dep)
   Assert.isFalse(BattleDataCache.isTrainersReady(cacheFs, expected), "the previous family marker never reads ready")
   Assert.deepEqual(BattleDataCache.loadTrainers(cacheFs), fresh, "the fresh catalog loads exactly")
+end
+
+-- Native field speech, encounter music and the movement inverse ride the
+-- compiled trainer catalog. The vectors here are written out from the native
+-- tables: the offset member addresses one u16 per trainer, the pair member
+-- carries { trainerIndex, messageKind } records whose own index names the
+-- bank 728 message, a scan stops at the first record naming another trainer,
+-- and a class outside the eyes-meet table keeps the source default.
+function T.publishes_field_speech_encounter_music_and_the_movement_inverse()
+  local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
+  local BattleDataSchema = require("libs.assets.src.battle.BattleDataSchema")
+
+  local function u16Table(values)
+    local bytes = ""
+    for _, value in ipairs(values) do
+      bytes = bytes .. u16(value)
+    end
+    return bytes
+  end
+
+  local function pairRecords(records)
+    local bytes = ""
+    for _, record in ipairs(records) do
+      bytes = bytes .. u16(record[1]) .. u16(record[2])
+    end
+    return bytes
+  end
+
+  local input = nativeInput({
+    [1] = { data = trdata(TRTYPE_MON, CLASS_RIVAL, 1, {}, 0, 0), members = plainMember(30, 5, 152) },
+    [8] = { data = trdata(TRTYPE_MON, CLASS_YOUNGSTER, 1, {}, 0, 0), members = plainMember(30, 5, 19) },
+  })
+  input.messages = {
+    -- Trainer 0 has no record of its own (its offset points at trainer 1's),
+    -- trainers 1..7 point at trainer 8's record, and trainer 8 owns the last
+    -- record of the pair member.
+    offsets = u16Table({ 0, 0, 8, 8, 8, 8, 8, 8, 8 }),
+    pairs = pairRecords({ { 1, 0 }, { 1, 2 }, { 8, 0 } }),
+  }
+  local compiled = assert(TrainerCatalogCompiler.compile(input))
+  Assert.deepEqual(compiled.trainers[1].fieldMessages, { [0] = 0, [2] = 1 })
+  Assert.deepEqual(compiled.trainers[8].fieldMessages, { [0] = 2 })
+  Assert.isNil(compiled.trainers[8].fieldMessages[2], "the source carries no such pair")
+
+  Assert.deepEqual(compiled.trainers[8].encounterMusic, {
+    johto = "SEQ_GS_EYE_J_SHOUNEN",
+    kanto = "SEQ_GS_EYE_J_SHOUNEN",
+  })
+  Assert.deepEqual(
+    compiled.trainers[1].encounterMusic,
+    { johto = "SEQ_GS_EYE_J_SHOUNEN", kanto = "SEQ_GS_EYE_J_SHOUNEN" },
+    "a class outside the eyes-meet table keeps the source default"
+  )
+
+  Assert.equal(compiled.nativeMovementByType.stationary, 0)
+  Assert.equal(compiled.nativeMovementByType.look_south, 15)
+  Assert.equal(compiled.nativeMovementByType.disguise_grass, 54)
+  assert(BattleDataSchema.assertTrainerCatalog(compiled) ~= false, "the augmented catalog passes the schema")
+end
+
+-- A malformed offset or pair table fails the compile instead of guessing a
+-- message index.
+function T.rejects_malformed_field_speech_tables()
+  local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
+  local base = nativeInput({
+    [8] = { data = trdata(TRTYPE_MON, CLASS_YOUNGSTER, 1, {}, 0, 0), members = plainMember(30, 5, 19) },
+  })
+  local misaligned = { versionId = "heartgold", trainers = base.trainers, messages = { offsets = "\0", pairs = "" } }
+  local compiled, err = TrainerCatalogCompiler.compile(misaligned)
+  Assert.isNil(compiled, "a misaligned offset table never compiles")
+  Assert.equal(assert(err).code, "TRAINER_MESSAGES_INVALID")
+
+  local beyond = {
+    versionId = "heartgold",
+    trainers = base.trainers,
+    messages = { offsets = string.char(0, 0, 4, 0), pairs = "" },
+  }
+  local rejected, beyondErr = TrainerCatalogCompiler.compile(beyond)
+  Assert.isNil(rejected, "an offset beyond the pair member never compiles")
+  Assert.equal(assert(beyondErr).code, "TRAINER_MESSAGES_INVALID")
 end
 
 return { tests = T }

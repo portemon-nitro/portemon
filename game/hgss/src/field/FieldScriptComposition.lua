@@ -831,6 +831,7 @@ function FieldScriptComposition.compose(runtime, options)
     overworld = runtime.overworld,
     propAnimations = runtime.propAnimations,
     gymMechanism = runtime.gymMechanism,
+    trainerEncounter = runtime.trainerEncounter,
     rocketHideout = runtime.rocketHideoutEffects,
     pokemonCenterHeal = runtime.pokemonCenterHeal,
     blackout = {

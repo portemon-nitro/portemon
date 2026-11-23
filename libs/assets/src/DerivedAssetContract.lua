@@ -206,6 +206,10 @@
 -- fieldUi schema 2: the generated field-UI manifest drops the sounds
 -- section (the branch no longer compiles Start Menu effects).
 --
+-- messages cacheFormat v4: native trainer field speech requires the trainer
+-- message bank in every compiled set, so a stale index without it must not
+-- pass readiness.
+--
 -- messages cacheFormat v2: YESNO tokens classify as focus_indicator in the
 -- persisted bank streams (runtime playback rejects the old
 -- unsupported_control classification), so a stale bank must not be misread.
@@ -346,7 +350,11 @@ DerivedAssetContract.fieldMapData = {
   -- v16 carries ROM-derived item, quantity, and collection flag records for
   -- hidden background events.
   -- v17 adds the map header's bike permission to the field-use policy.
-  fieldSchema = "g4-field-map-v17",
+  -- v18 carries the map's native region and, on trainer objects, the closed
+  -- trainer subject (native identity, engagement-pair slot, authored sight,
+  -- and the shared approach scene identity) with the shared trainer talk body
+  -- as the object's peer interaction script.
+  fieldSchema = "g4-field-map-v18",
   -- The teleport landing index is a separate family-level record carrying
   -- cited spawn-keyed outdoor arrival destinations (never source numeric
   -- identities); the runtime return planner reads it, never producer data.

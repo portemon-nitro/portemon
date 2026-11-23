@@ -938,6 +938,21 @@ function BattleRuntime:_sessionMoveFacts(moveKeys, speciesForms)
   if ok then
     facts["STRUGGLE"] = sessionMoveFacts(fallback)
   end
+  -- A metronome call draws a raw native move identity and resolves it through
+  -- the move facts, so a battle whose combatants carry that calling move
+  -- provisions the whole catalog: the draw must never land on a move the
+  -- session happened not to reference.
+  if facts["METRONOME"] ~= nil and type(source.moveKeys) == "function" then
+    local allKeys = source.moveKeys --[[@as fun(self: table<string, unknown>): string[] ]]
+    for _, key in ipairs(allKeys(source)) do
+      local record = moveByName(source, key) --[[@as table<string, unknown>]]
+      -- Native move identity zero is the catalog's "no move" placeholder: the
+      -- source draw only ever names a real identity.
+      if facts[key] == nil and type(record.nativeId) == "number" and record.nativeId >= 1 then
+        facts[key] = sessionMoveFacts(record)
+      end
+    end
+  end
   return facts
 end
 
@@ -1403,13 +1418,24 @@ end
 local function survivorSides(snapshot)
   local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>]]
   local participants = snapshot.participants --[[@as table<integer, table<string, unknown>>]]
+  -- The player's own side is the side the player-controlled participant
+  -- stands on; a partner fighting beside the player shares that side and never
+  -- counts as an opponent.
+  local playerSide = nil
+  for _, participant in pairs(participants) do
+    if type(participant) == "table" and participant.controller == BattleRuntime.PLAYER_CONTROLLER then
+      playerSide = participant.side
+      break
+    end
+  end
+  assert(playerSide ~= nil, "a battle outcome requires the player's own side")
   local playerAlive, enemyAlive = false, false
   for _, combatant in pairs(combatants) do
     if type(combatant.hp) == "number" and combatant.hp > 0 then
       local participant = participants[
         combatant.participant --[[@as integer]]
       ]
-      if participant ~= nil and participant.controller == BattleRuntime.PLAYER_CONTROLLER then
+      if participant ~= nil and participant.side == playerSide then
         playerAlive = true
       else
         enemyAlive = true

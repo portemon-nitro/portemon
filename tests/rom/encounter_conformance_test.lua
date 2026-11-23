@@ -272,6 +272,8 @@ function T.native_trainer_generation_maps_difficulty_applies_overrides_and_names
       },
     },
     programs = {},
+    nativeMovementByType = { stationary = 0 },
+    fieldMessageBank = 728,
   })
   local CatalogFixture = require("libs.mons.tests.catalog_fixture")
   local ItemFixture = require("libs.items.tests.item_fixture")

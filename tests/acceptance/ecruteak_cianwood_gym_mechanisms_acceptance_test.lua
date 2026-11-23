@@ -132,10 +132,13 @@ local function withGame(options, context, fn)
   end
 end
 
-local function withEcruteakGame(context, fn)
+---@param context table test context
+---@param fn fun(game: table)
+---@param spawn table? override for a scenario that must start off every trainer's sight
+local function withEcruteakGame(context, fn, spawn)
   withGame({
     map = ECRUTEAK_MAP,
-    spawn = ECRUTEAK_APPROACH,
+    spawn = spawn or ECRUTEAK_APPROACH,
     worldState = function(worldState)
       worldState:setVar(ECRUTEAK_ENTRY_SCENE_VAR, 1)
     end,
@@ -354,6 +357,9 @@ function T.tests.cianwood_winch_state_survives_continue_without_a_source_reinit(
 end
 
 function T.tests.ecruteak_gym_state_survives_continue_and_reinitializes_on_a_committed_warp(context)
+  -- The source medium trainer watches this gym's own approach tile, so this
+  -- scenario starts beside the push entry instead: it walks, saves and warps a
+  -- settled gym, and native trainer engagement would own the field first.
   withEcruteakGame(context, function(game)
     Assert.equal(
       #game:recordsForScript(ECRUTEAK_INIT_SCRIPT, "script.error"),
@@ -400,7 +406,7 @@ function T.tests.ecruteak_gym_state_survives_continue_and_reinitializes_on_a_com
       "the gym's own init script completes again: " .. failureText(game, ECRUTEAK_INIT_SCRIPT)
     )
     Assert.equal(actorCount(game), actorsBefore, "the re-entered gym publishes no duplicate map object")
-  end)
+  end, { fieldX = 12, fieldZ = 20 })
 end
 
 return T

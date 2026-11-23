@@ -15,6 +15,7 @@ local Errors = require("libs.errors.src.Errors")
 local MonSources = require("romdump.src.config.MonSources")
 local ItemSources = require("romdump.src.config.ItemSources")
 local BattleSources = require("romdump.src.config.BattleSources")
+local HgssObjectMovement = require("romdump.src.digest.field.HgssObjectMovement")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local BattleDataSchema = require("libs.assets.src.battle.BattleDataSchema")
 local Hashing = require("romdump.src.digest.Hashing")
@@ -44,6 +45,90 @@ local function must(value, err)
     error(err, 0)
   end
   return value
+end
+
+-- The closed inverse of the producer's source movement selectors: every raw
+-- selector 0..56 names one semantic movement profile, so a runtime actor's
+-- current semantic movement type resolves back to the native selector a source
+-- script compares against without decoding ROM data at runtime.
+---@return table<string, integer>
+function TrainerCatalogCompiler.nativeMovementByType()
+  local inverse = {}
+  for rawMovement = 0, 56 do
+    local semanticType = HgssObjectMovement.semanticType(rawMovement)
+    assert(inverse[semanticType] == nil, "source movement profiles stay unique: " .. semanticType)
+    inverse[semanticType] = rawMovement
+  end
+  return inverse
+end
+
+-- Decodes the native trainer field-speech tables (src/trainer_data.c::
+-- GetTrainerMessageByIdPair). The offset member carries one u16 byte offset
+-- per trainer; the pair member carries { trainerIndex, messageKind } records
+-- whose own zero-based index names the message in bank 728. Each trainer's
+-- scan starts at its own offset and stops at the first record naming another
+-- trainer, exactly like the native loop. A trainer without a pair answers nil.
+---@param offsets string member bytes of the offset archive
+---@param pairs string member bytes of the pair archive
+---@return table<integer, table<integer, integer>>|nil, Errors.Error|nil
+function TrainerCatalogCompiler.decodeFieldMessages(offsets, pairs)
+  local source = BattleSources.trainerFieldMessages
+  if type(offsets) ~= "string" or #offsets % source.offsetSize ~= 0 then
+    return nil,
+      Errors.new("TRAINER_MESSAGES_INVALID", "trainer message offsets are not an aligned u16 table", {
+        size = type(offsets) == "string" and #offsets or nil,
+      })
+  end
+  if type(pairs) ~= "string" or #pairs % source.pairSize ~= 0 then
+    return nil,
+      Errors.new("TRAINER_MESSAGES_INVALID", "trainer message pairs are not an aligned record table", {
+        size = type(pairs) == "string" and #pairs or nil,
+      })
+  end
+  local pairCount = math.floor(#pairs / source.pairSize)
+  local records = {}
+  local pairReader = BinaryReader.new(pairs, "trainer message pairs")
+  for index = 0, pairCount - 1 do
+    local offset = index * source.pairSize
+    records[index] = { trainer = pairReader:u16le(offset), kind = pairReader:u16le(offset + 2) }
+  end
+  local offsetReader = BinaryReader.new(offsets, "trainer message offsets")
+  local trainerCount = math.floor(#offsets / source.offsetSize)
+  local messages = {}
+  for trainerIndex = 0, trainerCount - 1 do
+    local start = offsetReader:u16le(trainerIndex * source.offsetSize)
+    if start > #pairs or start % source.pairSize ~= 0 then
+      return nil,
+        Errors.new("TRAINER_MESSAGES_INVALID", "trainer " .. trainerIndex .. " has an out-of-range message offset", {
+          trainer = trainerIndex,
+          offset = start,
+        })
+    end
+    local kinds = nil
+    local cursor = math.floor(start / source.pairSize)
+    while cursor < pairCount do
+      local record = records[cursor]
+      if record.trainer ~= trainerIndex then
+        break
+      end
+      kinds = kinds or {}
+      if kinds[record.kind] == nil then
+        kinds[record.kind] = cursor
+      end
+      cursor = cursor + 1
+    end
+    if kinds ~= nil then
+      messages[trainerIndex] = kinds
+    end
+  end
+  return messages
+end
+
+---@param trainerClass integer numeric trainer class identity
+---@return { johto: string, kanto: string }
+function TrainerCatalogCompiler.encounterMusic(trainerClass)
+  local music = BattleSources.trainerEncounterMusic --[[@as { default: { johto: string, kanto: string }, [integer]: { johto: string, kanto: string } }]]
+  return assert(music[trainerClass] or music.default, "every trainer class answers an eyes-meet sequence")
 end
 
 -- Decode one 20-byte TRDATA header into normalized source values.
@@ -203,7 +288,7 @@ end
 -- one header plus its concatenated party members per trainer index with its
 -- supported game. Malformed headers, truncated members, and unknown
 -- references fail before anything is published.
----@param nativeInput { versionId: string, trainers: table<integer, { data: string, members: string }> }
+---@param nativeInput { versionId: string, trainers: table<integer, { data: string, members: string }>, messages?: { offsets: string, pairs: string } }
 ---@return table<string, unknown>|nil, Errors.Error|nil
 function TrainerCatalogCompiler.compile(nativeInput)
   local versionId = nativeInput.versionId
@@ -215,6 +300,22 @@ function TrainerCatalogCompiler.compile(nativeInput)
   end
   if type(nativeInput.trainers) ~= "table" then
     return nil, Errors.new("TRAINER_INPUT_INVALID", "trainer input carries no trainer records", {})
+  end
+  local fieldMessages = nil
+  if nativeInput.messages ~= nil then
+    if
+      type(nativeInput.messages) ~= "table"
+      or type(nativeInput.messages.offsets) ~= "string"
+      or type(nativeInput.messages.pairs) ~= "string"
+    then
+      return nil, Errors.new("TRAINER_INPUT_INVALID", "trainer message input carries its two member payloads", {})
+    end
+    local decodedMessages, messagesErr =
+      TrainerCatalogCompiler.decodeFieldMessages(nativeInput.messages.offsets, nativeInput.messages.pairs)
+    if decodedMessages == nil then
+      return nil, messagesErr
+    end
+    fieldMessages = decodedMessages
   end
   local trainers = {}
   local ok, result = pcall(function()
@@ -301,12 +402,16 @@ function TrainerCatalogCompiler.compile(nativeInput)
         prizeMoney = { trainerClass = header.trainerClass, classRate = classRate },
         messageSelectors = { intro = 0, lose = 1, after = 2 },
         loseSpeechSelector = TrainerCatalogCompiler.loseSpeechSelector(trainerIndex),
+        encounterMusic = TrainerCatalogCompiler.encounterMusic(header.trainerClass),
+        fieldMessages = fieldMessages ~= nil and fieldMessages[trainerIndex] or nil,
       }
     end
     local compiled = {
       schema = BattleDataCache.TRAINER_SCHEMA,
       version = { id = versionId },
       trainers = trainers,
+      nativeMovementByType = TrainerCatalogCompiler.nativeMovementByType(),
+      fieldMessageBank = BattleSources.trainerFieldMessages.messageBank,
     }
     must(BattleDataSchema.assertTrainerCatalog(compiled))
     return compiled
@@ -343,6 +448,15 @@ function TrainerCatalogCompiler.compileFromDump(romFs, opts)
   if parties == nil then
     return nil, partiesErr
   end
+  local messageSource = BattleSources.trainerFieldMessages
+  local offsets, offsetsErr = romFs:openNarc(messageSource.offsetNarc)
+  if offsets == nil then
+    return nil, offsetsErr
+  end
+  local pairsArchive, pairsErr = romFs:openNarc(messageSource.pairNarc)
+  if pairsArchive == nil then
+    return nil, pairsErr
+  end
   local ok, result = pcall(function()
     local records = {}
     local count = headers:memberCount()
@@ -354,7 +468,13 @@ function TrainerCatalogCompiler.compileFromDump(romFs, opts)
         records[trainerIndex] = { data = data, members = members }
       end
     end
-    return must(TrainerCatalogCompiler.compile({ versionId = versionId, trainers = records }))
+    local messageOffsets = must(offsets:readMember(messageSource.memberId))
+    local messagePairs = must(pairsArchive:readMember(messageSource.memberId))
+    return must(TrainerCatalogCompiler.compile({
+      versionId = versionId,
+      trainers = records,
+      messages = { offsets = messageOffsets, pairs = messagePairs },
+    }))
   end)
   if not ok then
     if Errors.is(result) then

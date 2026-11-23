@@ -602,6 +602,7 @@ end
 ---@field pendingEncounter table<string, unknown>? prepared unconsumed encounter
 ---@field _trainerCatalog table<string, unknown>? composed immutable trainer template catalog (nil before composition)
 ---@field _trainerFactory table<string, unknown>? composed native trainer party materializer (nil before composition)
+---@field trainerEncounter TrainerEncounterCoordinator? the source trainer engagement owner (nil before composition)
 ---@field _encounterCatalog table<string, unknown>? composed immutable encounter table catalog (nil before composition)
 ---@field _battleHost table<string, unknown>? narrow battle host for script battle tasks
 ---@field roamerState table<string, unknown>? the owned roamer and encounter persistence
@@ -1664,6 +1665,13 @@ function FieldRuntime:_composeFieldServices(boot)
   local function currentForegroundScriptId()
     return self.scripts ~= nil and self.scripts.scheduler:foregroundScriptId() or nil
   end
+  -- The candle commands read the source script environment's
+  -- engaged-trainer attribute. The trainer engagement owner is composed
+  -- after this mechanism, so the attribute reads the live owner on demand.
+  local function engagedTrainerActor()
+    local engagement = self.trainerEncounter
+    return engagement ~= nil and engagement:engagedActor() or nil
+  end
   -- The one follower-transition owner: composed before the following-mon
   -- controller so the controller can hold it as its required
   -- recall-transition collaborator.
@@ -1686,11 +1694,7 @@ function FieldRuntime:_composeFieldServices(boot)
     audio = self.audio or (self.scriptHosts and self.scriptHosts.audio),
     camera = self.camera,
     foregroundScript = currentForegroundScriptId,
-    -- The candle commands read the source script environment's
-    -- engaged-trainer attribute. No live owner publishes one yet, so the
-    -- mechanism has no engaged actor and reports the source's own
-    -- missing-trainer path instead of inventing one; the engagement owner
-    -- supplies `trainerEngagement` here.
+    trainerEngagement = { engagedActor = engagedTrainerActor },
   })
   -- The initial map's own union decides which runtime-loaded source props the
   -- mechanism presents, exactly like the source map init loading them.
@@ -1784,6 +1788,86 @@ function FieldRuntime:_composeFieldServices(boot)
   -- single child, its readiness, and its result lease.
   local EasyChatScriptHost = require("game.hgss.src.easychat.EasyChatScriptHost")
   self.easyChatScriptHost = EasyChatScriptHost.new({ runtime = self })
+  -- The one trainer engagement owner: source sight, the two engagement slots,
+  -- their approaches, and the trainer-script queries. Composed before the
+  -- script platform so the standard trainer scene resolves it as its service.
+  local TrainerEncounterCoordinator = require("game.hgss.src.field.TrainerEncounterCoordinator")
+  local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
+  local function currentPlayerFacing()
+    return self.player
+  end
+  local function currentTrainerMap()
+    return self.session ~= nil and self.session.currentMap or self.runtimeMap
+  end
+  local function sessionTick()
+    return self.session ~= nil and self.session.tick or 0
+  end
+  local function currentTrainerCatalog()
+    return self._trainerCatalog
+  end
+  local function trainerWorldState()
+    local scripts = self.scripts
+    assert(scripts ~= nil, "trainer engagement needs the script platform")
+    return scripts.worldState
+  end
+  local function startTrainerScene(scriptId)
+    if self.scripts == nil then
+      return false
+    end
+    return self.scripts.client:startSceneScript(scriptId, sessionTick()) ~= nil
+  end
+  local function trainerScriptActive()
+    return self.scripts ~= nil and self.scripts.scheduler:foregroundEnvironmentId() ~= nil
+  end
+  local function trainerBattleActive()
+    return self.battleCoordinator ~= nil
+      and (self.battleCoordinator:activeBattle() ~= nil or self.battleCoordinator:hasLaunch())
+  end
+  local function trainerDoublesEligible()
+    return self.monService:countAliveMons() >= 2
+  end
+  -- The source checks trainer sight from the field's own input frame: map
+  -- entry, transitions, a held field, and any script ownership all precede
+  -- the check, so none of them may start an engagement.
+  local function trainerFieldReady()
+    if self.session == nil then
+      return false
+    end
+    if self.transition == nil or self.transition.phase ~= FieldTransition.PHASES.idle then
+      return false
+    end
+    local entry = self.session.mapEntryController
+    if entry ~= nil and entry:isActive() then
+      return false
+    end
+    if self.scripts ~= nil and self.scripts.scheduler:playerInputOwned() then
+      return false
+    end
+    return true
+  end
+  local function currentTrainerRegion()
+    local map = currentTrainerMap()
+    local region = map ~= nil and map.fieldData ~= nil and map.fieldData.region or nil
+    assert(type(region) == "string", "the live map carries its native region")
+    return region == "KANTO" and "kanto" or "johto"
+  end
+  local function currentTerrainEffects()
+    return self.fieldTerrainEffectController
+  end
+  self.trainerEncounter = TrainerEncounterCoordinator.new({
+    actors = self.actors,
+    catalog = currentTrainerCatalog,
+    playerOf = currentPlayerFacing,
+    currentMap = currentTrainerMap,
+    world = trainerWorldState,
+    startScene = startTrainerScene,
+    scriptActive = trainerScriptActive,
+    battleActive = trainerBattleActive,
+    doublesEligible = trainerDoublesEligible,
+    fieldReady = trainerFieldReady,
+    region = currentTrainerRegion,
+    effects = currentTerrainEffects,
+  })
   local scriptComposition = require("game.hgss.src.field.FieldScriptComposition").compose(self, {
     cacheFs = boot.cacheFs,
     layoutMessage = boot.layoutMessage,
@@ -2346,6 +2430,13 @@ function FieldRuntime:update(dt)
     -- until the next tick, even while a transition holds input.
     if self.mapNameBanner then
       self.mapNameBanner:updateFixed()
+    end
+    -- The source checks trainer sight at the head of every field input
+    -- frame, before a step could start, and advances the running approaches
+    -- on the same fixed tick.
+    if self.trainerEncounter then
+      self.trainerEncounter:updateFixed()
+      self.trainerEncounter:tryEngage()
     end
     -- The shortcut cluster slides out while the start menu is open and
     -- whenever a cutscene, dialogue, or other modal holds the field.
@@ -3839,6 +3930,20 @@ function FieldRuntime:buildBattleScenario(request)
   assert(type(request) == "table" and type(request.kind) == "string", "scenario builds need their request")
   local scenario = self:_buildBattleScenarioFragment(request)
   local followMonSlot = self:_launchFollowMonSlot()
+  local payload = request.payload
+  local selector = type(payload) == "table" and (payload --[[@as table<string, unknown>]]).followSlot or nil
+  if
+    type(selector) == "number"
+    and selector ~= 0
+    and (payload --[[@as table<string, unknown>]]).partner == nil
+  then
+    -- src/encounter.c::SetupAndStartTrainerBattle: a deliberate send-out
+    -- selector names the follower's own party slot for the position the
+    -- battle type selects (the single player position). A multi battle names
+    -- the ally position instead, which never shares the player's roster here,
+    -- so only the single-opponent branch rewrites the player's own send-out.
+    followMonSlot = 0
+  end
   if type(followMonSlot) == "number" then
     scenario.followMonSlot = followMonSlot
   end
@@ -4078,13 +4183,28 @@ end
 -- materializer into detached bundles retaining the native identity, class,
 -- ordered party, and controller metadata. Unknown identities fail before
 -- any battle publishes; nothing here invents a party.
+--
+-- The payload's two opponent identities follow
+-- src/encounter.c::SetupAndStartTrainerBattle: a second identity naming a
+-- different trainer fields two opponents, the same identity fields the native
+-- one-trainer double, and no second identity keeps the single-opponent battle.
 ---@param payload table<string, unknown>
 ---@return table<string, unknown> scenario-ready trainer payload
 function FieldRuntime:_trainerPayload(payload)
   assert(type(payload) == "table", "trainer launches carry their payload")
   local source = payload.trainers
   if source == nil then
-    source = { { id = payload.trainer, party = payload.party } }
+    local second = payload.trainer2
+    local doubles = type(second) == "number" and second ~= 0
+    if doubles and second == payload.trainer then
+      -- One native trainer on both opponent slots: a marked single entry,
+      -- never two generated copies of the same party.
+      source = { { id = payload.trainer, party = payload.party, doubleBattle = true } }
+    elseif doubles then
+      source = { { id = payload.trainer, party = payload.party }, { id = second } }
+    else
+      source = { { id = payload.trainer, party = payload.party } }
+    end
   end
   assert(type(source) == "table" and #source > 0, "trainer battles field at least one trainer")
   local factory = assert(self._trainerFactory, "trainer launches require their composed trainer materializer")
@@ -4137,15 +4257,37 @@ function FieldRuntime:_trainerPayload(payload)
         prizeMoney = bundle.prizeMoney,
         aiPasses = bundle.aiPasses,
         items = bundle.items,
-        doubleBattle = bundle.doubleBattle,
+        -- The launch's own double mark (one trainer on both opponent slots)
+        -- survives beside the trainer record's own mark.
+        doubleBattle = item.doubleBattle == true or bundle.doubleBattle,
       }
     end
+  end
+  local partner = nil
+  local partnerId = payload.partner
+  if type(partnerId) == "number" and partnerId ~= 0 then
+    local bundle = factory:build({
+      trainerKey = partnerId,
+      rivalName = rivalName,
+      storyVariant = payload.storyVariant,
+      rng = stream,
+    })
+    partner = {
+      id = partnerId,
+      class = bundle.trainerClass,
+      name = bundle.name,
+      party = bundle.mons,
+      partyLevels = bundle.partyLevels,
+      aiPasses = bundle.aiPasses,
+      items = bundle.items,
+    }
   end
   return {
     attemptId = payload.attemptId,
     id = payload.id,
     format = payload.format,
     trainers = resolved,
+    partner = partner,
     inventories = payload.inventories,
     environment = payload.environment,
     formatState = payload.formatState,
@@ -4185,6 +4327,9 @@ function FieldRuntime:acceptCommittedBattleStatus(launch, battle, status)
     launch.result = result
     launch.sourceResult = sourceResult
     launch.nativeOutcome = nativeOutcome
+    -- The committed consequence plan rides the launch record so the
+    -- settled battle publishes one observable receipt.
+    launch.rewards = receipt.rewards
     self.battleCoordinator:adoptCommittedPlayerMoney(launch, receipt)
   end
   return {
@@ -5767,6 +5912,10 @@ function FieldRuntime:_releaseAll()
     self.rocketHideoutEffects:unbind()
   end
   self.rocketHideoutEffects = nil
+  if self.trainerEncounter then
+    self.trainerEncounter:dispose()
+  end
+  self.trainerEncounter = nil
   if self.gymMechanism then
     self.gymMechanism:unbind()
   end

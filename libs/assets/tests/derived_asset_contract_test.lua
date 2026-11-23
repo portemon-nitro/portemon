@@ -185,6 +185,8 @@ local function validBattlePayloads()
       schema = BattleDataCache.TRAINER_SCHEMA,
       version = { id = "test" },
       trainers = {},
+      nativeMovementByType = { stationary = 0 },
+      fieldMessageBank = 728,
     },
     encounters = {
       schema = BattleDataCache.ENCOUNTER_SCHEMA,

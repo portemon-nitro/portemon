@@ -23,7 +23,11 @@ local function template(trainerClass)
 end
 
 local function capture(trainerClass, trainerId)
-  local catalog = HgssTrainerCatalog.new({ trainers = { [7] = template(trainerClass) } })
+  local catalog = HgssTrainerCatalog.new({
+    trainers = { [7] = template(trainerClass) },
+    nativeMovementByType = { stationary = 0 },
+    fieldMessageBank = 728,
+  })
   local owner = FieldBattleCoordinator.new({
     playerData = { profile = { gender = 0 } },
     _trainerCatalog = catalog,
