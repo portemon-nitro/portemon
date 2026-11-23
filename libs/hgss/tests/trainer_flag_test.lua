@@ -26,6 +26,10 @@ local CATALOGS = {
     VAR_SECOND_CHECK = 0x4007,
     VAR_GENERIC_SEEN = 0x4008,
     VAR_CLEARED = 0x4009,
+    SPECIAL_VAR_FLAG_ID = 0x8006,
+    SPECIAL_VAR_FLAG_CHECK = 0x8007,
+    SPECIAL_VAR_CONDITION_CHECK = 0x8008,
+    SPECIAL_VAR_DIRECT_CHECK = 0x8009,
   },
 }
 
@@ -33,6 +37,10 @@ local T = {}
 
 local function trainerFlag(trainer)
   return { value = "trainer_flag_id", trainer = trainer }
+end
+
+local function variableRef(name)
+  return { value = "var", id = name }
 end
 
 local function worldServices(world)
@@ -256,6 +264,94 @@ function T.repeated_trainer_flag_writes_converge_on_one_event_flag()
   })
   Assert.equal(second.world:getVar("VAR_CLEARED"), 1, "repeated writes leave one cleared event flag")
   Assert.isFalse(second.world:isFlagSet(TRAINER_FLAG_BASE + 3))
+end
+
+-- Source SetFlagVar/ClearFlagVar operands name a variable whose current value
+-- is the flag ID. The variable address remains a destination only for var
+-- writes and copies.
+function T.variable_backed_flag_writes_use_the_contained_flag_id()
+  local h = harness()
+  h.world:setVar("SPECIAL_VAR_FLAG_ID", 800)
+  local changes = {}
+  h.world:events():subscribe(function(change)
+    if change.kind == "flag" then
+      changes[#changes + 1] = change
+    end
+  end)
+
+  run(h, "test.variable_flag_set", {
+    S.setFlag({ flag = variableRef("SPECIAL_VAR_FLAG_ID") }),
+    S.setFlag({ flag = variableRef("SPECIAL_VAR_FLAG_ID") }),
+  })
+  local afterSet = { namedFlag = h.world:isFlagSet(800), addressFlag = h.world:isFlagSet(0x8006) }
+
+  run(h, "test.variable_flag_clear", {
+    S.clearFlag({ flag = variableRef("SPECIAL_VAR_FLAG_ID") }),
+    S.clearFlag({ flag = variableRef("SPECIAL_VAR_FLAG_ID") }),
+  }, 101)
+  local afterClear = { namedFlag = h.world:isFlagSet(800), addressFlag = h.world:isFlagSet(0x8006) }
+  Assert.deepEqual(afterSet, { namedFlag = true, addressFlag = false }, "SetFlagVar uses the contained flag ID")
+  Assert.deepEqual(afterClear, { namedFlag = false, addressFlag = false }, "ClearFlagVar uses the contained flag ID")
+  Assert.equal(#changes, 2, "idempotent world writes publish only the real set and clear")
+  Assert.equal(changes[1].id, 800)
+  Assert.equal(changes[2].id, 800)
+end
+
+-- Both the flag_value value reference and dynamic flag condition evaluate the
+-- same nested variable once, while leaving it available to later commands.
+function T.variable_backed_flag_reads_and_conditions_use_the_contained_flag_id()
+  local h = harness()
+  h.world:setVar("SPECIAL_VAR_FLAG_ID", 800)
+  h.world:setFlag(800)
+
+  local function check(id, tick)
+    run(h, id, {
+      S.setVar({ variable = "SPECIAL_VAR_FLAG_CHECK", value = S.flagValue(variableRef("SPECIAL_VAR_FLAG_ID")) }),
+      S.if_({
+        condition = S.flag(variableRef("SPECIAL_VAR_FLAG_ID")),
+        yes = { S.setVar({ variable = "SPECIAL_VAR_CONDITION_CHECK", value = 1 }) },
+      }),
+    }, tick)
+    return {
+      flagValue = h.world:getVar("SPECIAL_VAR_FLAG_CHECK"),
+      condition = h.world:getVar("SPECIAL_VAR_CONDITION_CHECK"),
+      source = h.world:getVar("SPECIAL_VAR_FLAG_ID"),
+    }
+  end
+
+  local whenSet = check("test.variable_flag_read_set", 100)
+  h.world:clearFlag(800)
+  h.world:setFlag(0x8006)
+  h.world:setVar("SPECIAL_VAR_FLAG_CHECK", 0)
+  h.world:setVar("SPECIAL_VAR_CONDITION_CHECK", 0)
+  local whenClear = check("test.variable_flag_read_clear", 101)
+  Assert.deepEqual(whenSet, { flagValue = 1, condition = 1, source = 800 })
+  Assert.deepEqual(whenClear, { flagValue = 0, condition = 0, source = 800 })
+end
+
+-- Direct numeric and named IDs keep literal meaning. Variable destinations
+-- still identify their own address when set or copied.
+function T.direct_flag_ids_and_variable_destinations_remain_distinct()
+  local h = harness()
+  h.world:setVar("SPECIAL_VAR_FLAG_ID", 800)
+  h.world:setVar("SPECIAL_VAR_FLAG_CHECK", 11)
+  run(h, "test.direct_flag_and_destinations", {
+    S.setFlag({ flag = 0x8006 }),
+    S.setFlag({ flag = "FLAG_GOT_STARTER" }),
+    S.setVar({ variable = variableRef("SPECIAL_VAR_FLAG_CHECK"), value = 23 }),
+    S.copyVar({ destination = variableRef("SPECIAL_VAR_FLAG_ID"), source = variableRef("SPECIAL_VAR_FLAG_CHECK") }),
+    S.if_({
+      condition = S.flag(0x8006),
+      yes = { S.setVar({ variable = "SPECIAL_VAR_DIRECT_CHECK", value = 1 }) },
+    }),
+  })
+
+  Assert.isTrue(h.world:isFlagSet(0x8006), "a direct numeric flag remains literal")
+  Assert.isTrue(h.world:isFlagSet(0x801), "a named flag still resolves through the catalog")
+  Assert.isFalse(h.world:isFlagSet(800), "direct literal 0x8006 does not dereference variable 0x8006")
+  Assert.equal(h.world:getVar("SPECIAL_VAR_FLAG_ID"), 23, "copy_var writes to the variable address")
+  Assert.equal(h.world:getVar("SPECIAL_VAR_FLAG_CHECK"), 23, "set_var writes to the variable address")
+  Assert.equal(h.world:getVar("SPECIAL_VAR_DIRECT_CHECK"), 1, "the direct literal flag condition succeeds")
 end
 
 -- The trainer flag is persisted world state: a save capture carries it and a

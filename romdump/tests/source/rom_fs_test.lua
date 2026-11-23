@@ -124,6 +124,25 @@ function T.reads_by_file_id_and_source_path()
   Assert.equal(fs:read(soundFileId), fs:readSourcePath("data/sound/gs_sound_data.sdat"))
 end
 
+function T.reads_only_the_header_bounded_main_arm9_image()
+  local spec = directSpec()
+  spec.arm9 = "MAIN-ARM9-BYTES"
+  spec.arm7 = "DIFFERENT-ARM7-BYTES"
+  spec.overlays9 = { "OVERLAY-BYTES" }
+  local cartridge = openDirectCartridge(spec)
+  local backend = FakeCache.new()
+  withDirectVersion(cartridge.info, function()
+    local fs = openDirectFs(cartridge, backend)
+    Assert.equal(type(fs.readArm9), "function", "RomFs exposes a bounded main ARM9 read")
+    Assert.equal(fs:readArm9(), spec.arm9)
+    Assert.isNil(next(backend.files), "main ARM9 reads must not retain extracted bytes")
+    fs:close()
+    local bytes, err = fs:readArm9()
+    Assert.isNil(bytes)
+    Assert.equal(assert(err).code, "ROMFS_ARM9_READ_FAILED")
+  end)
+end
+
 function T.info_resolves_source_path_and_file_id()
   local fs = openFs()
   Assert.equal(fs:info("a/0/4/1").fileId, 5)

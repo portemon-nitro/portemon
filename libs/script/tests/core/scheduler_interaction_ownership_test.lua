@@ -59,6 +59,7 @@ local function harness()
       return composition:effective(id)
     end,
     scheduler = scheduler,
+    worldState = services.world,
     scriptBankId = 0,
   })
   return {

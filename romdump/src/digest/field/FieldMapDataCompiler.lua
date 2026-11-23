@@ -26,6 +26,7 @@ local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
 local FieldMoveEncounterData = require("romdump.src.digest.field.FieldMoveEncounterData")
 local ApricornSources = require("romdump.src.config.ApricornSources")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+local HiddenItemParams = require("romdump.src.digest.field.HiddenItemParams")
 
 local FieldMapDataCompiler = {}
 
@@ -52,6 +53,45 @@ local function normalizeUnboundScripts(decoded)
       elseif STANDARD_SCRIPTS.namesById[event.scriptId] ~= nil then
         event.scriptId = SourceCatalog.commonPublicId(STANDARD_SCRIPTS, event.scriptId)
       end
+    end
+  end
+end
+
+local function hiddenItemParamsSupplier(romFs)
+  local byIndex
+  local function getHiddenItemParams()
+    if byIndex == nil then
+      local result, err = HiddenItemParams.load(romFs)
+      if result == nil then
+        error(err, 0)
+      end
+      byIndex = result
+    end
+    return byIndex
+  end
+  return getHiddenItemParams
+end
+
+local function normalizeHiddenItems(decoded, map, getHiddenItemParams)
+  for _, event in ipairs(decoded.backgroundEvents) do
+    if event.type == 2 then
+      local index = event.hiddenItemIndex
+      assert(type(index) == "number" and index % 1 == 0 and index >= 0 and index <= 230)
+      local sourceItem = getHiddenItemParams()[index]
+      if sourceItem == nil then
+        Errors.raise("FIELD_MAP_HIDDEN_ITEM_SOURCE_MISSING", "source table has no hidden-item index", {
+          mapId = map.id,
+          mapSymbol = map.symbol,
+          sourceIndex = index,
+        })
+      end
+      local resolvedItem = assert(sourceItem)
+      event.hiddenItem = {
+        itemId = resolvedItem.itemId,
+        quantity = resolvedItem.quantity,
+        flagId = 800 + index,
+      }
+      event.hiddenItemIndex = nil
     end
   end
 end
@@ -490,13 +530,14 @@ local function encounterMemberFor(map)
   return source
 end
 
-local function compileMap(romFs, map, source, headerSource, sha1hex, hashLua)
+local function compileMap(romFs, map, source, headerSource, sha1hex, hashLua, getHiddenItemParams)
   local memberBytes = must(source.archive:readMember(map.eventMemberId))
   local decoded = must(ZoneEvents.decode(memberBytes, {
     mapId = map.id,
     eventMemberId = map.eventMemberId,
     source = "fielddata_eventdata_zone_event",
   }))
+  normalizeHiddenItems(decoded, map, getHiddenItemParams)
   normalizeUnboundScripts(decoded)
 
   local memberSha1 = sha1hex(memberBytes)
@@ -616,13 +657,16 @@ local function _compile(romFs, idOrSymbol, sha1hex, hashLua)
   assert(romFs and romFs.read and romFs.openNarc and romFs.resolvedNarc, "compile requires a RomFs-shaped object")
   sha1hex = sha1hex or Hashing.sha1hex
   hashLua = hashLua or Hashing.hashLua
+  ---@type fun(): table<integer, { itemId: integer, quantity: integer }>
+  local getHiddenItemParams = hiddenItemParamsSupplier(romFs)
   return compileMap(
     romFs,
     MapCatalog.require(idOrSymbol),
     loadSource(romFs, sha1hex),
     loadHeaderSource(romFs, sha1hex),
     sha1hex,
-    hashLua
+    hashLua,
+    getHiddenItemParams
   )
 end
 
@@ -655,6 +699,8 @@ function FieldMapDataCompiler.newSession(romFs, sha1hex, hashLua)
   hashLua = hashLua or Hashing.hashLua
   local source = loadSource(romFs, sha1hex)
   local headerSource = loadHeaderSource(romFs, sha1hex)
+  ---@type (fun(): table<integer, { itemId: integer, quantity: integer }>)?
+  local getHiddenItemParams = hiddenItemParamsSupplier(romFs)
   local closed = false
   local session = {}
   ---@param idOrSymbol string|integer
@@ -664,8 +710,17 @@ function FieldMapDataCompiler.newSession(romFs, sha1hex, hashLua)
     if closed then
       return nil
     end
+    local getHiddenItemParamsForCompile = assert(getHiddenItemParams)
     local ok, result = pcall(function()
-      return compileMap(romFs, MapCatalog.require(idOrSymbol), source, headerSource, sha1hex, hashLua)
+      return compileMap(
+        romFs,
+        MapCatalog.require(idOrSymbol),
+        source,
+        headerSource,
+        sha1hex,
+        hashLua,
+        getHiddenItemParamsForCompile
+      )
     end)
     if ok then
       return result
@@ -677,6 +732,7 @@ function FieldMapDataCompiler.newSession(romFs, sha1hex, hashLua)
   end
   function session:close()
     closed = true
+    getHiddenItemParams = nil
   end
   return session
 end

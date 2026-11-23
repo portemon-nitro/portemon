@@ -222,6 +222,34 @@ T["member bundle emitter determinism and validation"] = function()
   Assert.isTrue(ok, tostring(validateErr))
 end
 
+T["member emitter shares repeated step graphs across distinct resources"] = function()
+  local steps = {}
+  for index = 1, 300 do
+    steps[index] = { op = "alias_step", marker = string.format("source-step-%03d", index), value = index }
+  end
+  local resources = {}
+  for scriptIndex = 0, 255 do
+    local id = string.format("vanilla.hgss.scr_seq.0145.script_%03d", scriptIndex)
+    resources[#resources + 1] = {
+      id = id,
+      scriptIndex = scriptIndex,
+      resource = { api = 1, id = id, steps = steps },
+      directDependencies = { audioSequences = {}, scriptTargets = {}, assetNeeds = {} },
+    }
+  end
+  local text = LuaEmitter.emitMember({ resources = resources, coverage = { scripts = {} } })
+  local chunk, parseErr = loadstring(text, "alias-member")
+  Assert.notNil(chunk, parseErr)
+  setfenv(chunk, { require = require })
+  local bundle = chunk()
+  Assert.equal(#bundle.scripts, 256)
+  for index, script in ipairs(bundle.scripts) do
+    Assert.equal(script.id, resources[index].id)
+    Assert.equal(#script.steps, 300)
+    Assert.equal(script.steps, bundle.scripts[1].steps, "each resource must preserve the shared source graph")
+  end
+end
+
 T["retained compiler uses injected hashing and counts coverage once"] = function()
   local member = ScriptFixture.member({
     scripts = {

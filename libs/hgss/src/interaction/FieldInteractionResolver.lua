@@ -18,8 +18,7 @@
 -- numbers and strings only) or nil. An object is eligible regardless of its
 -- raw scriptId. Raw script id 0 remains eligible for an intent and is
 -- canonicalized by the runtime bindings to the inert runtime script. Hidden-
--- item background events are skipped because their pickup scripts depend on
--- collection flags that are not tracked (see `isHiddenItem`).
+-- item background events use their live collection flag and ignore direction.
 -- Pure domain module: no love dependency.
 
 local Errors = require("libs.errors.src.Errors")
@@ -31,6 +30,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@class FieldInteractionResolver
 ---@field actorAt fun(mapId: integer, candidate: FieldOccupancyCandidate): table<string, unknown>|nil
 ---@field targetMapAt fun(fieldX: integer, fieldZ: integer, currentMap: RuntimeFieldMap): RuntimeFieldMap
+---@field eventState FieldEventState
 ---@field _surfaceResolver SurfaceResolver?
 local FieldInteractionResolver = {}
 FieldInteractionResolver.__index = FieldInteractionResolver
@@ -44,6 +44,7 @@ FieldInteractionResolver.__index = FieldInteractionResolver
 ---@field eventIndex integer
 ---@field type integer
 ---@field direction integer
+---@field hiddenItem { itemId: integer, quantity: integer, flagId: integer }?
 
 ---@class InteractionIntent
 ---@field kind "object"|"background"
@@ -74,6 +75,7 @@ FieldInteractionResolver.__index = FieldInteractionResolver
 ---@class FieldInteractionResolverOptions
 ---@field actorAt fun(mapId: integer, candidate: FieldOccupancyCandidate): table<string, unknown>|nil
 ---@field targetMapAt fun(fieldX: integer, fieldZ: integer, currentMap: RuntimeFieldMap): RuntimeFieldMap
+---@field eventState FieldEventState
 
 -- Named facing -> raw player-facing code. Raw codes match the zone-event
 -- decoder's DIRECTIONS table (0 north, 1 south, 2 west, 3 east).
@@ -83,14 +85,12 @@ FieldInteractionResolver.RAW_FACING = { north = 0, south = 1, west = 2, east = 3
 -- in the retail ROM.
 FieldInteractionResolver.BACKGROUND_DIRECTION_WILDCARD = 4
 
--- Normalized event marker for the hidden-item family. Hidden items carry
--- pickup scripts whose collection-flag state is not tracked yet, so the
--- family is declared noninteractive: the resolver never emits an intent for
--- it. `isHiddenItem` is the single owner of this classification.
+-- Normalized event data for the hidden-item family. `isHiddenItem` is the
+-- single owner of this classification.
 ---@param event table<string, unknown>
 ---@return boolean
 function FieldInteractionResolver.isHiddenItem(event)
-  return event.hiddenItem == true
+  return event.hiddenItem ~= nil
 end
 
 -- Player facing raw code -> background event raw direction codes that
@@ -143,9 +143,14 @@ function FieldInteractionResolver.new(opts)
     type(opts) == "table" and type(opts.actorAt) == "function" and type(opts.targetMapAt) == "function",
     "FieldInteractionResolver requires actor and target-map lookups"
   )
+  assert(
+    type(opts.eventState) == "table" and type(opts.eventState.isFlagSet) == "function",
+    "FieldInteractionResolver requires the live field event state"
+  )
   return setmetatable({
     actorAt = opts.actorAt,
     targetMapAt = opts.targetMapAt,
+    eventState = opts.eventState,
     _surfaceResolver = nil,
   }, FieldInteractionResolver)
 end
@@ -213,22 +218,22 @@ function FieldInteractionResolver:_resolveFacingCell(snapshot, targetX, targetZ)
 end
 
 -- Scans background events in source order and returns the first eligible
--- record, or nil. Type-2 records (the hidden-item family) are skipped because
--- their collection state is not tracked; raw script-id-0 records are allowed
--- through and later canonicalized to the inert runtime script. Every other
--- type must pass the raw direction compatibility check.
+-- record, or nil. Hidden items use their collection flag and ignore direction;
+-- all other records must pass the raw direction compatibility check.
 function FieldInteractionResolver:_firstEligibleBackground(map, snapshot, targetX, targetZ)
   local events = assert(map.fieldData.events.background, "runtime map background events required")
   local playerRaw =
     assert(FieldInteractionResolver.RAW_FACING[snapshot.facing], "unknown player facing " .. tostring(snapshot.facing))
   for _, event in ipairs(events) do
-    if
-      event.x == targetX
-      and event.z == targetZ
-      and not FieldInteractionResolver.isHiddenItem(event)
-      and FieldInteractionResolver.backgroundDirectionCompatible(playerRaw, event.directionRaw)
-    then
-      return event
+    if event.x == targetX and event.z == targetZ then
+      if FieldInteractionResolver.isHiddenItem(event) then
+        local hiddenItem = assert(event.hiddenItem)
+        if not self.eventState:isFlagSet(hiddenItem.flagId) then
+          return event
+        end
+      elseif FieldInteractionResolver.backgroundDirectionCompatible(playerRaw, event.directionRaw) then
+        return event
+      end
     end
   end
   return nil
@@ -375,6 +380,14 @@ function FieldInteractionResolver:resolve(snapshot)
       type = event.type,
       direction = event.directionRaw,
     }
+    if FieldInteractionResolver.isHiddenItem(event) then
+      local hiddenItem = assert(event.hiddenItem)
+      intent.background.hiddenItem = {
+        itemId = hiddenItem.itemId,
+        quantity = hiddenItem.quantity,
+        flagId = hiddenItem.flagId,
+      }
+    end
     return intent
   end
 

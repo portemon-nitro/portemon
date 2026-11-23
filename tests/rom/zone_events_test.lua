@@ -30,4 +30,30 @@ function T.target_members_compile_completely_and_deterministically(romFs)
   end
 end
 
+function T.hidden_item_map_and_keyed_arm9_records_match_the_cartridge(romFs)
+  local HiddenItemParams = require("romdump.src.digest.field.HiddenItemParams")
+  local byIndex = assert(HiddenItemParams.load(romFs))
+  local count, quantitySum = 0, 0
+  for index = 0, 230 do
+    local item = assert(byIndex[index], "missing hidden-item index " .. tostring(index))
+    count = count + 1
+    quantitySum = quantitySum + item.quantity
+  end
+  Assert.equal(count, 231)
+  Assert.equal(quantitySum, 231)
+  Assert.equal(byIndex[225].itemId, 92, "index 225 is resolved by its source index")
+  Assert.equal(byIndex[230].itemId, 53)
+
+  local bundle = assert(FieldMapDataCompiler.compile(romFs, 60))
+  local matches = {}
+  for _, event in ipairs(bundle.field.events.background) do
+    if event.type == 2 and event.x == 682 and event.z == 391 then
+      matches[#matches + 1] = event
+    end
+  end
+  Assert.equal(#matches, 1)
+  Assert.deepEqual(matches[1].hiddenItem, { itemId = 17, quantity = 1, flagId = 800 })
+  Assert.equal(matches[1].scriptId, "common.hiddenitem_t20_potion")
+end
+
 return require("tests.rom.support.RomSuite").fromFacts(T)

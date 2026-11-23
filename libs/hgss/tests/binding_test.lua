@@ -50,6 +50,13 @@ local function backgroundIntent(mapId, eventIndex, playerFacing, rawScriptId)
   }
 end
 
+local function hiddenItemIntent()
+  local intent = backgroundIntent(60, 0, "north", "common.hiddenitem_t20_potion")
+  intent.background.type = 2
+  intent.background.hiddenItem = { itemId = 17, quantity = 1, flagId = 800 }
+  return intent
+end
+
 local function platform()
   local services = FakeServices.new()
   local registry = Registry.new()
@@ -115,6 +122,7 @@ T["partner interaction starts the following-mon script"] = function()
       return p.composition:effective(id)
     end,
     scheduler = p.scheduler,
+    worldState = p.services.world,
   })
   local intent = objectIntent(61, "field:partner", "north", 0)
   intent.object.objectEventId = 253
@@ -152,6 +160,7 @@ T["client starts script in trigger tick"] = function()
       return p.composition:effective(id)
     end,
     scheduler = p.scheduler,
+    worldState = p.services.world,
   })
   local result = client:consume(objectIntent(57, "obj_T20_gswoman1", "north"), 100)
   Assert.equal(result, ScriptInteractionClient.RESULTS.started)
@@ -165,6 +174,44 @@ T["client starts script in trigger tick"] = function()
   Assert.equal(instance.trigger.selfActor, "obj_T20_gswoman1")
 end
 
+T["hidden item launch seeds its source variables"] = function()
+  local p = platform()
+  local resource = script("common.hiddenitem_t20_potion", { S.waitTicks({ ticks = 1 }), S.stop() })
+  p.registry:installBase(resource.id, resource, "generated")
+  local client = ScriptInteractionClient.new({
+    bindings = Bindings.new(),
+    compose = function(id)
+      return p.composition:effective(id)
+    end,
+    scheduler = p.scheduler,
+    worldState = p.services.world,
+  })
+
+  Assert.equal(client:consume(hiddenItemIntent(), 100), ScriptInteractionClient.RESULTS.started)
+  Assert.deepEqual(p.services.world.calls, {
+    { op = "setVar", id = 0x8000, value = 17 },
+    { op = "setVar", id = 0x8001, value = 1 },
+    { op = "setVar", id = 0x8002, value = 800 },
+  })
+  Assert.equal(client:consume(hiddenItemIntent(), 101), ScriptInteractionClient.RESULTS.blocked)
+  Assert.equal(#p.services.world.calls, 3, "a blocked launch must not replace the active hidden-item inputs")
+end
+
+T["unmapped hidden item does not seed source variables"] = function()
+  local p = platform()
+  local client = ScriptInteractionClient.new({
+    bindings = Bindings.new(),
+    compose = function()
+      return nil
+    end,
+    scheduler = p.scheduler,
+    worldState = p.services.world,
+  })
+
+  Assert.equal(client:consume(hiddenItemIntent(), 100), ScriptInteractionClient.RESULTS.unmapped)
+  Assert.deepEqual(p.services.world.calls, {})
+end
+
 T["client starts the closed PC standard interaction without field bindings"] = function()
   local p = platform()
   local resource = script("common.pokecenter_pc", { S.waitTicks({ ticks = 1 }), S.stop() })
@@ -175,6 +222,7 @@ T["client starts the closed PC standard interaction without field bindings"] = f
       return p.composition:effective(id)
     end,
     scheduler = p.scheduler,
+    worldState = p.services.world,
   })
   Assert.equal(
     client:consume({ kind = "standard", scriptId = "common.pokecenter_pc", playerFacing = "north" }, 100),
@@ -199,6 +247,7 @@ T["interaction while locked"] = function()
       return p.composition:effective(id)
     end,
     scheduler = p.scheduler,
+    worldState = p.services.world,
   })
   Assert.equal(
     client:consume(objectIntent(57, "obj_T20_gswoman1", "north"), 100),
@@ -220,6 +269,7 @@ T["unmapped intent falls through"] = function()
       return p.composition:effective(id)
     end,
     scheduler = p.scheduler,
+    worldState = p.services.world,
   })
   Assert.equal(client:consume(objectIntent(57, "obj_unmapped", "north"), 100), ScriptInteractionClient.RESULTS.unmapped)
   Assert.isNil(p.scheduler:foregroundEnvironmentId())
@@ -576,6 +626,7 @@ T["session script phase"] = function()
       return p.composition:effective(id)
     end,
     scheduler = p.scheduler,
+    worldState = p.services.world,
   })
   local moved = 0
   local player = {
@@ -818,6 +869,7 @@ T["application script starts with a foreground claim"] = function()
       return p.composition:effective(id)
     end,
     scheduler = p.scheduler,
+    worldState = p.services.world,
   })
   local started = client:startApplicationScript(entryId, 100)
   Assert.isTrue(type(started) == "string" and started ~= "", "admission returns an instance id")
@@ -835,6 +887,7 @@ T["application script starts with a foreground claim"] = function()
         return nil
       end,
       scheduler = fresh.scheduler,
+      worldState = fresh.services.world,
     })
     lonely:startApplicationScript(entryId, 100)
   end)
@@ -861,6 +914,7 @@ function T.application_scripts_may_carry_the_actor_the_menu_move_targets()
       return {}
     end,
     scheduler = scheduler,
+    worldState = FakeServices.new().world,
   })
   client:startApplicationScript("common.menu_rock_smash", 5, { selfActor = "map:54:object:3" })
   Assert.deepEqual(

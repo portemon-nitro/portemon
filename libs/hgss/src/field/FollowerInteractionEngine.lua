@@ -170,8 +170,11 @@ end
 local function uncollectedHiddenItemCount(background, world)
   local hidden = 0
   for _, event in ipairs(background) do
-    if event.type == 2 and event.hiddenItemFlagId and not world:isFlagSet(event.hiddenItemFlagId) then
-      hidden = hidden + 1
+    if event.type == 2 then
+      local hiddenItem = assert(event.hiddenItem, "type-2 background event requires a normalized hidden item")
+      if not world:isFlagSet(hiddenItem.flagId) then
+        hidden = hidden + 1
+      end
     end
   end
   return hidden

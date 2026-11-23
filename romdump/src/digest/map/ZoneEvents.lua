@@ -87,21 +87,20 @@ local function decodeBackground(reader, offset, index)
     index = index,
     scriptId = scriptId,
     type = eventType,
-    hiddenItem = eventType == 2,
     x = s32(reader:u32le(offset + 4)),
     z = s32(reader:u32le(offset + 8)),
     y = s32(reader:u32le(offset + 12)),
     directionRaw = directionRaw,
     direction = DIRECTIONS[directionRaw] or "unknown",
   }
-  if event.hiddenItem then
-    if scriptId < 8000 or scriptId >= 9000 then
+  if eventType == 2 then
+    if scriptId < 8000 or scriptId > 8230 then
       Errors.raise("ZONE_EVENTS_HIDDEN_ITEM_SCRIPT_INVALID", "hidden item standard script is out of range", {
         scriptId = scriptId,
         recordIndex = index,
       })
     end
-    event.hiddenItemFlagId = 800 + (scriptId - 8000)
+    event.hiddenItemIndex = scriptId - 8000
   end
   return event
 end

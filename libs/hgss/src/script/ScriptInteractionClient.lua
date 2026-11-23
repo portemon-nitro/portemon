@@ -12,6 +12,7 @@
 ---@field private _bindings table<string, unknown>
 ---@field private _compose fun(scriptId: string): table<string, unknown>|nil
 ---@field private _scheduler Scheduler
+---@field private _worldState WorldState
 ---@field private _initLifecycleActive boolean
 ---@field private _initLifecycleInstanceId string|nil
 local ScriptInteractionClient = {}
@@ -66,13 +67,19 @@ end
 ---@return ScriptInteractionClient
 function ScriptInteractionClient.new(opts)
   assert(
-    opts and opts.bindings and opts.compose and opts.scheduler,
-    "interaction client requires bindings, compose, and scheduler"
+    opts
+      and opts.bindings
+      and opts.compose
+      and opts.scheduler
+      and type(opts.worldState) == "table"
+      and type(opts.worldState.setVar) == "function",
+    "interaction client requires bindings, compose, scheduler, and world state"
   )
   return setmetatable({
     _bindings = opts.bindings,
     _compose = opts.compose,
     _scheduler = opts.scheduler,
+    _worldState = opts.worldState,
     _scriptBankId = opts.scriptBankId,
     _initLifecycleActive = false,
     _initLifecycleInstanceId = nil,
@@ -243,6 +250,19 @@ function ScriptInteractionClient:consume(intent, tick)
   local hit = self:resolve(intent)
   if hit == nil then
     return ScriptInteractionClient.RESULTS.unmapped
+  end
+  if intent.kind == "background" and type(intent.background) == "table" and intent.background.type == 2 then
+    local hiddenItem = intent.background.hiddenItem
+    assert(type(hiddenItem) == "table", "hidden-item intent requires normalized source data")
+    assert(
+      type(hiddenItem.itemId) == "number"
+        and type(hiddenItem.quantity) == "number"
+        and type(hiddenItem.flagId) == "number",
+      "hidden-item intent requires item, quantity, and collection flag"
+    )
+    self._worldState:setVar(0x8000, hiddenItem.itemId)
+    self._worldState:setVar(0x8001, hiddenItem.quantity)
+    self._worldState:setVar(0x8002, hiddenItem.flagId)
   end
   -- The root was selected by field/player/world event arbitration: it owns
   -- player input for its whole environment lifetime, with or without an

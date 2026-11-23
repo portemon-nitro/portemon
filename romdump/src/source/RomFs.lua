@@ -24,6 +24,7 @@ local OVERLAY_INDEX_SCHEMA = 1
 ---@class RomFs
 ---@field private _version string
 ---@field private _metadata table<string, unknown>
+---@field readArm9 fun(self: RomFs): string?, Errors.Error?
 local RomFs = {}
 RomFs.__index = RomFs
 
@@ -260,6 +261,43 @@ end
 function RomFs:readSourcePath(sourcePath)
   assert(type(sourcePath) == "string", "readSourcePath requires a string")
   return self:read(sourcePath)
+end
+
+-- Read only the header-bounded main ARM9 image; overlays remain separate files.
+function RomFs:readArm9()
+  local rom = self._rom
+  local metadata = self._metadata
+  local arm9 = metadata and metadata.arm9
+  local offset = arm9 and arm9.offset
+  local size = arm9 and arm9.size
+  local context = { version = self._version, offset = offset, size = size }
+  if
+    rom == nil
+    or type(offset) ~= "number"
+    or offset % 1 ~= 0
+    or offset < 0
+    or type(size) ~= "number"
+    or size % 1 ~= 0
+    or size <= 0
+  then
+    return nil, Errors.new("ROMFS_ARM9_READ_FAILED", "main ARM9 source is unavailable", context)
+  end
+
+  local ok, bytes, readErr = pcall(function()
+    return rom:read(offset, size)
+  end)
+  if not ok then
+    if Errors.is(bytes) then
+      context.cause = bytes.code
+      return nil, Errors.new("ROMFS_ARM9_READ_FAILED", "main ARM9 source read failed", context)
+    end
+    error(bytes, 0)
+  end
+  if type(bytes) ~= "string" or #bytes ~= size then
+    context.cause = Errors.is(readErr) and readErr.code or nil
+    return nil, Errors.new("ROMFS_ARM9_READ_FAILED", "main ARM9 read returned an incomplete image", context)
+  end
+  return bytes
 end
 
 -- Resolve an imported ARM overlay by its CPU and zero-based overlayId. Overlay

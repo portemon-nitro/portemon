@@ -38,7 +38,7 @@ local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "map-data:45", "map-data:88", "map:88" },
+    derivedAssets = { "field-runtime", "map-data:45", "map-data:88", "map:88", "message-bank:626" },
     tags = { "field", "bag" },
   },
   tests = {},

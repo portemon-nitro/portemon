@@ -75,16 +75,28 @@ local function map(backgrounds, facingBehavior)
 end
 
 local function bgEvent(index, scriptId, x, z, directionRaw, eventType)
+  local hiddenItem
+  if eventType == 2 then
+    hiddenItem = { itemId = 17 + index, quantity = 1, flagId = 800 + index }
+  end
   return {
     index = index,
     scriptId = scriptId,
     type = eventType or 0,
-    hiddenItem = (eventType or 0) == 2,
+    hiddenItem = hiddenItem,
     x = x,
     z = z,
     y = 0,
     directionRaw = directionRaw,
     direction = "unknown",
+  }
+end
+
+local function eventState(flags)
+  return {
+    isFlagSet = function(_, flagId)
+      return flags and flags[flagId] == true or false
+    end,
   }
 end
 
@@ -156,7 +168,7 @@ local function terrainMap(plates, backgrounds)
 end
 
 -- resolver with an actor lookup table keyed by "x:z"
-local function resolver(actorsByCell)
+local function resolver(actorsByCell, state)
   local actorAt = function(_, candidate)
     local entry = actorsByCell and actorsByCell[candidate.fieldX .. ":" .. candidate.fieldZ]
     return entry and entry.surfaceId == candidate.surfaceId and entry.actor or nil
@@ -166,6 +178,7 @@ local function resolver(actorsByCell)
     targetMapAt = function(_, _, currentMap)
       return currentMap
     end,
+    eventState = state or eventState(),
   })
 end
 
@@ -406,27 +419,13 @@ function T.vertical_and_horizontal_direction_rows()
     local cell = facingCells[case.facing]
     for _, raw in ipairs(case.compatible) do
       local m = map({ bgEvent(0, 6, cell[1], cell[2], raw) })
-      local intent = FieldInteractionResolver.new({
-        actorAt = function()
-          return nil
-        end,
-        targetMapAt = function(_, _, currentMap)
-          return currentMap
-        end,
-      }):resolve(baseSnapshot({ runtimeMap = m, facing = case.facing }))
+      local intent = resolver():resolve(baseSnapshot({ runtimeMap = m, facing = case.facing }))
       assert(intent, "facing " .. case.facing .. " accepts raw " .. raw)
       Assert.equal(intent.kind, "background")
     end
     for _, raw in ipairs(case.incompatible) do
       local m = map({ bgEvent(0, 6, cell[1], cell[2], raw) })
-      local intent = FieldInteractionResolver.new({
-        actorAt = function()
-          return nil
-        end,
-        targetMapAt = function(_, _, currentMap)
-          return currentMap
-        end,
-      }):resolve(baseSnapshot({ runtimeMap = m, facing = case.facing }))
+      local intent = resolver():resolve(baseSnapshot({ runtimeMap = m, facing = case.facing }))
       Assert.isNil(intent, "facing " .. case.facing .. " rejects raw " .. raw)
     end
   end
@@ -445,10 +444,10 @@ end
 -- accidental eligibility gap: the named predicate is its single owner.
 function T.is_hidden_item_identifies_the_hidden_item_marker()
   Assert.isTrue(
-    FieldInteractionResolver.isHiddenItem({ hiddenItem = true }),
-    "the hidden-item marker identifies the noninteractive family"
+    FieldInteractionResolver.isHiddenItem({ hiddenItem = { itemId = 17, quantity = 1, flagId = 800 } }),
+    "the normalized hidden-item payload identifies the family"
   )
-  Assert.isFalse(FieldInteractionResolver.isHiddenItem({ hiddenItem = false }))
+  Assert.isFalse(FieldInteractionResolver.isHiddenItem({ hiddenItem = nil }))
   Assert.isFalse(FieldInteractionResolver.isHiddenItem({ type = 2 }))
 end
 
@@ -464,23 +463,29 @@ function T.resolving_across_maps_never_reuses_stale_terrain_state()
   Assert.equal(second.background.eventIndex, 0)
 end
 
--- The hidden-item family is declared noninteractive (hidden-item pickup depends
--- on collection flags that are not tracked); it resolves to nothing rather
--- than emitting an intent the client could never bind.
-function T.hidden_item_background_events_are_skipped()
-  local m = map({ bgEvent(0, 100, 4, 13, 4, 2) })
+-- Hidden-item eligibility reads live collection state and ignores the source
+-- direction byte; the intent copies the normalized payload rather than
+-- retaining the cache-owned record table.
+function T.uncollected_hidden_item_is_eligible_independent_of_direction()
+  local event = bgEvent(0, 8000, 4, 13, 3, 2)
+  local m = map({ event })
   local r = resolver()
-  Assert.isNil(r:resolve(baseSnapshot({ runtimeMap = m })))
+  local intent = assert(r:resolve(baseSnapshot({ runtimeMap = m })))
+  Assert.equal(intent.kind, "background")
+  Assert.equal(intent.scriptId, 8000)
+  Assert.deepEqual(intent.background.hiddenItem, { itemId = 17, quantity = 1, flagId = 800 })
+  Assert.isFalse(intent.background.hiddenItem == event.hiddenItem, "the intent must copy normalized source values")
 end
 
-function T.hidden_item_does_not_block_a_later_compatible_event()
+function T.collected_hidden_item_allows_the_next_eligible_source_event()
+  local flags = { [800] = true }
   local m = map({
-    bgEvent(0, 100, 4, 13, 4, 2),
+    bgEvent(0, 8000, 4, 13, 4, 2),
     bgEvent(1, 6, 4, 13, 0),
   })
-  local r = resolver()
+  local r = resolver(nil, eventState(flags))
   local intent = r:resolve(baseSnapshot({ runtimeMap = m }))
-  assert(intent, "the hidden-item record is skipped, the later compatible one wins")
+  assert(intent, "the collected source event does not hide a later compatible event")
   Assert.equal(intent.kind, "background")
   Assert.equal(intent.background.eventIndex, 1)
 end
@@ -550,6 +555,7 @@ function T.actor_on_another_surface_is_ineligible()
     targetMapAt = function(_, _, currentMap)
       return currentMap
     end,
+    eventState = eventState(),
   })
   local intent = r:resolve(baseSnapshot({ runtimeMap = m }))
   assert(intent, "the background on the reachable surface wins")
@@ -643,6 +649,7 @@ function T.cross_map_background_uses_target_events_and_identity()
       Assert.equal(currentMap, source)
       return target
     end,
+    eventState = eventState(),
   })
 
   local intent = assert(crossMapResolver:resolve(baseSnapshot({ runtimeMap = source })))
@@ -679,6 +686,7 @@ function T.cross_map_object_keeps_priority_and_forwards_stable_surface_identity(
     targetMapAt = function()
       return target
     end,
+    eventState = eventState(),
   })
 
   local intent = assert(crossMapResolver:resolve(baseSnapshot({ runtimeMap = source })))

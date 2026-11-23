@@ -817,6 +817,7 @@ function FieldScripts.new(opts)
     bindings = bindings,
     compose = compose,
     scheduler = scheduler,
+    worldState = worldState,
     scriptBankId = opts.sourceMap.fieldData.scriptBankId,
   })
   platform.initController = MapInitScriptController.new({

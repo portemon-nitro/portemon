@@ -151,7 +151,7 @@ function RuntimeValues.evaluateValue(v, run)
   elseif kind == "scaled_coordinate" then
     return RuntimeValues.evaluateValue(v.coordinate, run) + 32 * v.chunkOffset
   elseif kind == "flag_value" then
-    local flagId = RuntimeValues.resolveIdOperand(v.flag, run)
+    local flagId = RuntimeValues.evaluateValue(v.flag, run)
     return run.services.world:isFlagSet(flagId) and 1 or 0
   elseif kind == "trainer_flag_id" then
     -- ScriptGetVar semantics: the trainer number is a literal or a live
@@ -394,7 +394,7 @@ function RuntimeValues.evaluateCondition(condition, run)
       { scriptId = run.instance.scriptId }
     )
   elseif kind == "flag" then
-    local flagId = RuntimeValues.resolveIdOperand(condition.id, run)
+    local flagId = RuntimeValues.evaluateValue(condition.id, run)
     return run.services.world:isFlagSet(flagId) == condition.expected
   elseif kind == "not" then
     return not RuntimeValues.evaluateCondition(condition.operand, run)
