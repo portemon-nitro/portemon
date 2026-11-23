@@ -118,6 +118,11 @@ local function fakeMenu()
   return menu
 end
 
+local function resizeWindow(width, height)
+  active.windowWidth, active.windowHeight = width, height
+  App.resize(width, height)
+end
+
 local function withStartup(fn)
   local saved = {
     state = App.state,
@@ -378,9 +383,12 @@ local function withStartup(fn)
     if active.titleTimeoutFrames ~= nil then
       bundle.timeline = { start = { activeDurationFrames = active.titleTimeoutFrames } }
     end
+    -- Like the real build, the scene lays out for the dimensions it began with.
     local scene = {
       versionId = options.versionId,
       bundle = bundle,
+      width = options.width,
+      height = options.height,
       ticks = 0,
       draws = 0,
       disposed = 0,
@@ -402,6 +410,7 @@ local function withStartup(fn)
     function scene:resize(width, height)
       self.resizes = self.resizes or {}
       self.resizes[#self.resizes + 1] = { width, height }
+      self.width, self.height = width, height
     end
     function scene:dispose()
       self.disposed = self.disposed + 1
@@ -410,8 +419,9 @@ local function withStartup(fn)
     return fakeTitleBuild(scene)
   end
   MainMenuComposition.new = fakeMenu
+  -- The fake window: `resizeWindow` changes it the way LÖVE reports a resize.
   love.graphics.getDimensions = function()
-    return 800, 600
+    return active.windowWidth or 800, active.windowHeight or 600
   end
   love.graphics.getDPIScale = function()
     return 1
@@ -1349,7 +1359,7 @@ function T.tests.resize_during_fade_keeps_clocks_and_overlay()
       active.sceneReady[sceneNumber] = true
     end
     pumpUntilMovie(state)
-    App.resize(1024, 768)
+    resizeWindow(1024, 768)
     Assert.equal(state.phase, "movie", "resize keeps the movie clock")
     Assert.equal(state.width, 1024, "resize reaches the startup dimensions")
     while state.movie ~= nil and not state.movie:isFinished() do
@@ -1357,12 +1367,18 @@ function T.tests.resize_during_fade_keeps_clocks_and_overlay()
     end
     App.update(SourceTick.DT)
     pumpTitleEntry(state)
+    local title = assert(state.title, "the movie hands off to the adopted title")
+    Assert.deepEqual(
+      { title.width, title.height },
+      { 1024, 768 },
+      "a resize while the title was still staged reaches the adopted title"
+    )
     App.keypressed("return", "return", false)
     active.bootstrapReady = true
     App.update(SourceTick.DT)
     Assert.isTrue(state.phase == "fadeOut" or state.phase == "fadeIn", "the latched skip starts the fade")
     local phase, frame = state.phase, state.fadeFrame
-    App.resize(640, 480)
+    resizeWindow(640, 480)
     Assert.equal(state.phase, phase, "resize during the fade keeps the phase")
     Assert.equal(state.fadeFrame, frame, "resize during the fade keeps the fade clock")
     App.update(SourceTick.DT)

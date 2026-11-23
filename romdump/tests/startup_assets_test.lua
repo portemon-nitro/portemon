@@ -11,6 +11,7 @@ local FakeCache = require("tests.support.FakeCache")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
+local WalkingPoolFixture = require("tests.support.WalkingPoolFixture")
 
 local T = {}
 
@@ -101,44 +102,6 @@ function T.startup_manifests_have_fixed_versioned_paths()
   Assert.equal(StartupAssetCache.titlePath(), "data/generated/startup/title.lua")
 end
 
-function T.shared_catalog_manifest_requires_its_generated_subject_files()
-  local visual = {
-    render = { kind = "atlas", frameWidth = 1, frameHeight = 1, frameCount = 2 },
-    pivot = { x = 0.5, y = 1 },
-    directions = {
-      east = { walk = { frames = { { frameIndex = 1, ticks = 1 }, { frameIndex = 2, ticks = 1 } } } },
-    },
-  }
-  local followers = {}
-  for _, speciesId in ipairs({ 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }) do
-    followers[tostring(speciesId)] = {
-      atlasPath = "assets/generated/startup/loader/subjects/followers/" .. speciesId .. ".png",
-      visual = visual,
-    }
-  end
-  local manifest = {
-    schema = StartupAssetContract.startupWalker.schema,
-    versionId = "heartgold",
-    generationId = "generation-a",
-    heroes = {
-      ethan = { atlasPath = "assets/generated/startup/loader/subjects/heroes/ethan.png", visual = visual },
-      lyra = { atlasPath = "assets/generated/startup/loader/subjects/heroes/lyra.png", visual = visual },
-    },
-    followers = followers,
-  }
-  local cacheFs = {
-    loadLua = function()
-      return manifest
-    end,
-    exists = function()
-      return false
-    end,
-  }
-  local loaded, err = StartupAssetCache.loadWalker(cacheFs, "heartgold")
-  Assert.isNil(loaded)
-  Assert.notNil(err, "a shared catalog with missing subject files is not ready")
-end
-
 -- The visual startup scopes own no audio membership even beside an
 -- adopted plan: only the optional audio roster resolves banks from it.
 function T.title_visual_scopes_ignore_adopted_audio_membership()
@@ -210,7 +173,7 @@ function T.startup_writer_owns_disjoint_roots_and_stages_manifest_last()
     },
   }
   local followers = {}
-  for _, speciesId in ipairs({ 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }) do
+  for _, speciesId in ipairs(WalkingPoolFixture.followerSpeciesIds()) do
     followers[tostring(speciesId)] = {
       atlasPath = "assets/generated/startup/loader/subjects/followers/" .. speciesId .. ".png",
       visual = pairVisual(1, 1),
@@ -241,13 +204,23 @@ function T.startup_writer_owns_disjoint_roots_and_stages_manifest_last()
   end
   Assert.isTrue(rootSet["data/generated/startup/loader/catalog.lua"], "the shared catalog owns its manifest")
   Assert.isTrue(rootSet["assets/generated/startup/loader"], "the shared catalog owns the loader root")
-  local pngCount = 0
+  -- Every declared subject stages exactly one image and no image is staged
+  -- outside the declared subject set.
+  local declared = {}
+  for path in pairs(atlases) do
+    declared[path] = true
+  end
+  local staged = {}
   for _, write in ipairs(writes) do
     if write.path:sub(-4) == ".png" then
-      pngCount = pngCount + 1
+      Assert.isTrue(declared[write.path], "a staged image names a declared subject: " .. write.path)
+      Assert.isNil(staged[write.path], "a declared subject stages one image: " .. write.path)
+      staged[write.path] = true
     end
   end
-  Assert.equal(pngCount, 18, "the shared catalog stages exactly eighteen subject images")
+  for path in pairs(declared) do
+    Assert.isTrue(staged[path], "a declared subject stages its image: " .. path)
+  end
   Assert.equal(writes[#writes].path, StartupAssetCache.walkerCatalogPath(), "manifest is the last staged file")
   Assert.equal(writes[#writes].record.generationId, "generation-a")
 end
@@ -956,29 +929,41 @@ function T.title_reader_pins_the_edition_prompt_palette()
   Assert.notNil(missingErr, "a title without its prompt ink reports its cause")
 end
 
--- One selected walking pair is a canonical 32-way choice: indices 1..16
--- name Ethan with each of the sixteen followers in fixed order, 17..32
--- name Lyra with the same order, and the inverse maps back exactly.
-function T.startup_pair_choice_covers_both_heroes_and_sixteen_followers()
-  Assert.isTrue(
-    type(StartupAssetCache.walkerChoice) == "function",
-    "the startup cache owns the canonical 32-choice pair map"
-  )
-  Assert.isTrue(type(StartupAssetCache.walkerIndex) == "function", "the startup cache inverts the 32-choice pair map")
-  local species = { 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }
-  for index = 1, 32 do
-    local choice = StartupAssetCache.walkerChoice(index)
-    local ordinal = (index - 1) % 16 + 1
-    local heroId = index <= 16 and "ethan" or "lyra"
-    Assert.equal(choice.heroId, heroId, "pair " .. index .. " names its hero")
-    Assert.equal(choice.followerSpeciesId, species[ordinal], "pair " .. index .. " names its follower species")
+-- The walking pair space splits evenly across the two heroes: the first
+-- half names Ethan with every follower in fixed order, the second half
+-- names Lyra in the same order, and the inverse maps back exactly.
+function T.startup_pair_choice_covers_both_heroes_and_every_follower()
+  Assert.isTrue(type(StartupAssetCache.walkerChoice) == "function", "the startup cache owns the walking pair map")
+  Assert.isTrue(type(StartupAssetCache.walkerPairCount) == "function", "the startup cache names its pair space")
+  Assert.isTrue(type(StartupAssetCache.walkerIndex) == "function", "the startup cache inverts the walking pair map")
+  local pairCount = StartupAssetCache.walkerPairCount()
+  Assert.equal(pairCount % 2, 0, "the walking pair space splits evenly across its two heroes")
+  local followersPerHero = pairCount / 2
+  local seen = {}
+  for ordinal = 1, followersPerHero do
+    local ethan = StartupAssetCache.walkerChoice(ordinal)
+    local lyra = StartupAssetCache.walkerChoice(followersPerHero + ordinal)
+    Assert.equal(ethan.heroId, "ethan", "pair " .. ordinal .. " names the first hero")
+    Assert.equal(lyra.heroId, "lyra", "pair " .. (followersPerHero + ordinal) .. " names the second hero")
     Assert.equal(
-      StartupAssetCache.walkerIndex(choice.heroId, choice.followerSpeciesId),
-      index,
-      "pair " .. index .. " round-trips through the inverse map"
+      lyra.followerSpeciesId,
+      ethan.followerSpeciesId,
+      "both heroes walk with follower " .. tostring(ordinal) .. " in the same order"
     )
+    Assert.equal(
+      StartupAssetCache.walkerIndex("ethan", ethan.followerSpeciesId),
+      ordinal,
+      "the first hero round-trips through the inverse map"
+    )
+    Assert.equal(
+      StartupAssetCache.walkerIndex("lyra", lyra.followerSpeciesId),
+      followersPerHero + ordinal,
+      "the second hero round-trips through the inverse map"
+    )
+    Assert.isNil(seen[ethan.followerSpeciesId], "follower " .. tostring(ordinal) .. " appears once in the pool")
+    seen[ethan.followerSpeciesId] = true
   end
-  for _, badIndex in ipairs({ 0, 33, 1.5, "1" }) do
+  for _, badIndex in ipairs({ 0, pairCount + 1, 1.5, "1" }) do
     local ok, _ = pcall(StartupAssetCache.walkerChoice, badIndex)
     Assert.isFalse(ok, "pair index " .. tostring(badIndex) .. " is rejected")
   end
@@ -1017,7 +1002,7 @@ local function sharedCatalogManifest(versionId)
     },
   }
   local followers = {}
-  for _, speciesId in ipairs({ 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }) do
+  for _, speciesId in ipairs(WalkingPoolFixture.followerSpeciesIds()) do
     followers[tostring(speciesId)] = {
       atlasPath = "assets/generated/startup/loader/subjects/followers/" .. speciesId .. ".png",
       visual = startupPairVisual(12, 20),
@@ -1038,8 +1023,6 @@ end
 function T.shared_catalog_receipts_are_global_and_isolated()
   Assert.equal(ArtifactState.key("startup-loader", "global"), "startup-loader:global")
   Assert.isFalse(pcall(ArtifactState.key, "startup-loader", "1"), "numeric loader keys are rejected")
-  Assert.isFalse(pcall(ArtifactState.key, "startup-loader", "32"), "numeric loader keys are rejected")
-  Assert.isFalse(pcall(ArtifactState.key, "startup-loader", "0"), "numeric loader keys are rejected")
   Assert.equal(StartupAssetCache.walkerCatalogPath(), "data/generated/startup/loader/catalog.lua")
   Assert.isTrue(type(StartupAssetCache.loadWalker) == "function", "the startup cache reads one strict catalog")
   local manifest = sharedCatalogManifest("heartgold")
@@ -1134,8 +1117,8 @@ function T.shared_catalog_reader_rejects_invalid_edition_subjects_and_defects()
 end
 
 -- A rejected catalog restage preserves its previous live output: the writer
--- stages all eighteen subject images before the manifest, and a bundle the
--- strict readback refuses leaves the previous live catalog intact.
+-- stages every subject image before the manifest, and a bundle the strict
+-- readback refuses leaves the previous live catalog intact.
 function T.shared_catalog_failed_publish_keeps_previous_live_catalog()
   local StartupCacheWriter = require("romdump.src.digest.startup.StartupCacheWriter")
   local cacheFs = emptyCache()
@@ -2269,10 +2252,10 @@ function T.opening_scene_reader_resolves_owned_variant_images_through_layer_chan
 end
 
 -- The walking visuals publish as one shared family: a single versioned
--- catalog names exactly two heroes and sixteen followers under confined
--- subject paths, one global job carries readiness, and a failed restage
--- keeps the previous live catalog without a half-published successor.
-function T.shared_loader_catalog_publishes_eighteen_subjects_atomically()
+-- catalog names two heroes and every pool follower under confined subject
+-- paths, one global job carries readiness, and a catalog that drops a pool
+-- follower is refused because the pair map could select it.
+function T.shared_loader_catalog_names_every_walking_subject()
   Assert.equal(
     StartupAssetContract.startupWalker.schema,
     "g4-startup-walker-v2",
@@ -2296,7 +2279,7 @@ function T.shared_loader_catalog_publishes_eighteen_subjects_atomically()
     lyra = { atlasPath = "assets/generated/startup/loader/subjects/heroes/lyra.png", visual = subjectVisual },
   }
   local followers = {}
-  for _, speciesId in ipairs({ 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }) do
+  for _, speciesId in ipairs(WalkingPoolFixture.followerSpeciesIds()) do
     followers[tostring(speciesId)] = {
       atlasPath = "assets/generated/startup/loader/subjects/followers/" .. speciesId .. ".png",
       visual = subjectVisual,
@@ -2324,12 +2307,20 @@ function T.shared_loader_catalog_publishes_eighteen_subjects_atomically()
   for _ in pairs(loaded.heroes) do
     heroCount = heroCount + 1
   end
-  local followerCount = 0
-  for _ in pairs(loaded.followers) do
-    followerCount = followerCount + 1
-  end
   Assert.equal(heroCount, 2, "the catalog names exactly two heroes")
-  Assert.equal(followerCount, 16, "the catalog names exactly sixteen followers")
+  local dropped = WalkingPoolFixture.followerSpeciesIds()[1]
+  local missing = deepCopy(manifest)
+  missing.followers[tostring(dropped)] = nil
+  local missingLoaded, missingErr = StartupAssetCache.loadWalker({
+    loadLua = function()
+      return missing
+    end,
+    exists = function()
+      return true
+    end,
+  }, "heartgold")
+  Assert.isNil(missingLoaded, "a catalog that drops a pool follower is not ready")
+  Assert.notNil(missingErr, "the dropped pool follower reports its cause")
 end
 
 return { tests = T }

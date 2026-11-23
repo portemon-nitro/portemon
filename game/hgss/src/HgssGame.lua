@@ -20,12 +20,13 @@ local MonCache = require("libs.assets.src.MonCache")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local ItemCache = require("libs.assets.src.ItemCache")
 local ItemCatalog = require("libs.items.src.ItemCatalog")
+local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 
 ---@class HgssGameOptions
 ---@field versionId string
 ---@field cacheFs table<string, unknown> selected epoch's installed generated view
 ---@field assetRuntime { cacheFs: table<string, unknown>, decoded: table<string, unknown>, preparationQueue: table<string, unknown> } borrowed selected CPU runtime
----@field startupPairIndex integer selected 1..32 walking pair, forwarded to entry loading stages
+---@field startupPairIndex integer selected walking pair, forwarded to entry loading stages
 ---@field entry HgssGameEntry
 ---@field onExit fun(result: table<string, unknown>|nil)
 ---@field development boolean?
@@ -171,8 +172,8 @@ local function installRoutes(options, game, saveStore, versionId)
     type(startupPairIndex) == "number"
       and startupPairIndex % 1 == 0
       and startupPairIndex >= 1
-      and startupPairIndex <= 32,
-    "HgssGame requires the selected walking pair 1..32"
+      and startupPairIndex <= StartupAssetCache.walkerPairCount(),
+    "HgssGame requires the selected walking pair 1.." .. tostring(StartupAssetCache.walkerPairCount())
   )
   local function enterPreparation(preparationOptions)
     game:setState(FieldPreparationState.new({

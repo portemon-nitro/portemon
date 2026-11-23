@@ -23,6 +23,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local SaveFs = require("libs.storage.src.SaveFs")
 local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 
 -- Idle retention for the selected epoch's decoded CPU owner: charged, shared
 -- decoded results, never the resident base bytes themselves.
@@ -36,7 +37,7 @@ local ASSET_RUNTIME_IDLE_BYTES = 64 * 1024 * 1024
 ---@field service CacheService|nil process-owned cache controller service shared by every selection
 ---@field epoch integer latest borrowed controller epoch, monotonically increasing
 ---@field pendingQuiesce table<string, integer>|nil unacknowledged source-close barrier for import
----@field pairIndex integer? selected-epoch walking pair 1..32, chosen once per selection
+---@field pairIndex integer? selected-epoch walking pair, chosen once per selection
 ---@field _importReceipt string? received filename latched synchronously on drop/picker input
 ---@field _pendingImport table<string, unknown>? deferred import descriptor awaiting its receipt paint
 ---@field selectedVersionId string? currently selected game version
@@ -391,11 +392,14 @@ end
 -- The session's selected walking pair, chosen once per selected epoch by the
 -- import/selection flow. Game and editor loading journeys only forward it;
 -- they never reselect or randomize a pair locally.
----@return integer selected 1..32 walking pair
+---@return integer selected walking pair within the loading stage's pool
 local function selectedPairIndex()
   local pairIndex = App.pairIndex
   assert(
-    type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
+    type(pairIndex) == "number"
+      and pairIndex % 1 == 0
+      and pairIndex >= 1
+      and pairIndex <= HgssLoadingPresentation.walkerPairCount(),
     "selection has no walking pair"
   )
   return pairIndex --[[@as integer]]
@@ -778,7 +782,7 @@ function App._selectVersion(versionId, options)
   -- fresh random pair once per selection, independent of the published
   -- catalog. Later journeys (menu returns, New Game, Continue, editor,
   -- late GPU adoption) reuse it, never reroll.
-  App.pairIndex = math.floor(love.math.random(1, 32))
+  App.pairIndex = math.floor(love.math.random(1, HgssLoadingPresentation.walkerPairCount()))
   -- One SPL stream per selected boot: the opening movie consumes it before
   -- any game exists, so the App boot owner spans that lifetime. Reset only
   -- when a new boot is selected; independent from gameplay random state.

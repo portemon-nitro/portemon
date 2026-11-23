@@ -77,6 +77,13 @@ function StartupCacheWriter.stageLoader(artifact, bundle, generationId)
   local assetRoot = "assets/generated/startup/loader"
   local manifestPath = StartupAssetCache.walkerCatalogPath()
   local manifest = copyManifest(bundle.manifest, generationId)
+  -- One atlas per walking subject: the two heroes plus every catalog
+  -- follower the manifest names. The strict readback below rejects a
+  -- manifest whose follower set does not cover the whole catalog.
+  local subjectCount = 2
+  for _ in pairs(assert(manifest.followers, "loader bundle requires its follower subjects")) do
+    subjectCount = subjectCount + 1
+  end
   local count = 0
   local files = {}
   for path, atlas in pairs(bundle.atlases) do
@@ -93,7 +100,7 @@ function StartupCacheWriter.stageLoader(artifact, bundle, generationId)
     files[path] = PngWriter.encode(atlas.width, atlas.height, atlas.pixels)
     count = count + 1
   end
-  assert(count == 18, "one shared catalog stages exactly eighteen atlases")
+  assert(count == subjectCount, "one shared catalog stages one atlas per walking subject")
   local stage = artifact
   artifact:addOwnedRoot(manifestPath)
   artifact:addOwnedRoot(assetRoot)

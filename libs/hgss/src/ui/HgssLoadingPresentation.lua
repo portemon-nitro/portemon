@@ -168,6 +168,14 @@ local function chooseCaption(random)
   return math.floor(value * #CAPTIONS) + 1
 end
 
+-- The walking pairs this stage can show. The generated catalog owns the
+-- follower list, so the selection shell reads the pool size through the stage
+-- that draws it instead of restating a pair count.
+---@return integer
+function HgssLoadingPresentation.walkerPairCount()
+  return StartupAssetCache.walkerPairCount()
+end
+
 ---@param options HgssLoadingPresentation.Options
 ---@return HgssLoadingPresentation
 function HgssLoadingPresentation.new(options)
@@ -180,8 +188,8 @@ function HgssLoadingPresentation.new(options)
       type(options.pairIndex) == "number"
         and options.pairIndex % 1 == 0
         and options.pairIndex >= 1
-        and options.pairIndex <= 32,
-      "walking pair index must be an integer 1..32"
+        and options.pairIndex <= StartupAssetCache.walkerPairCount(),
+      "walking pair index must be an integer 1.." .. tostring(StartupAssetCache.walkerPairCount())
     )
   end
   local random = options.random or love.math.random

@@ -8,18 +8,20 @@ local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
+local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 
 local T = {}
 
-local PAIR_INDEX = 32
+-- The pool's last pair: every owner that forwards the selection accepts it.
+local PAIR_INDEX = HgssLoadingPresentation.walkerPairCount()
 local VERSION_ID = "soulsilver"
 
 local function keyedHost(behavior)
   behavior = behavior or {}
   local calls = { walker = {}, milestones = {} }
   local host = {}
-  -- The typed pair demand is a plain dot call carrying the caller's 1..32
-  -- selection; anything else (including a colon-passed self) fails the
+  -- The typed pair demand is a plain dot call carrying the caller's walking
+  -- pair selection; anything else (including a colon-passed self) fails the
   -- pair identity assertions below.
   function host.requestStartupWalker(urgency)
     calls.walker[#calls.walker + 1] = { urgency = urgency }

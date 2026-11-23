@@ -4,10 +4,12 @@
 
 local Assert = require("tests.support.Assert")
 local NewGamePreparationState = require("game.hgss.src.newgame.NewGamePreparationState")
+local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 
 local T = {}
 
-local PAIR_INDEX = 32
+-- The pool's last pair: every owner that forwards the selection accepts it.
+local PAIR_INDEX = HgssLoadingPresentation.walkerPairCount()
 local VERSION_ID = "soulsilver"
 
 local function pendingHost()
@@ -237,8 +239,10 @@ function T.constructor_validates_its_composition()
     NewGamePreparationState.new(options)
   end, "a missing walking pair is rejected, never generated")
   Assert.throws(function()
-    NewGamePreparationState.new(entryOptions(pendingHost(), { startupPairIndex = 33 }))
-  end, "a pair outside 1..32 is rejected")
+    NewGamePreparationState.new(
+      entryOptions(pendingHost(), { startupPairIndex = HgssLoadingPresentation.walkerPairCount() + 1 })
+    )
+  end, "a pair outside the walking pair space is rejected")
 end
 
 -- Records the status payload the owned themed stage is drawn with, without

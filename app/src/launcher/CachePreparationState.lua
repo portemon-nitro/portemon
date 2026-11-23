@@ -25,7 +25,7 @@ local ImportState = require("app.src.launcher.ImportState")
 ---@field pendingImportName string? quiescence only: sanitized received filename shown while draining
 ---@field versionId string? boot-source only: the selected game version shown in the blocked instruction
 ---@field mismatch string? boot-source only: wrong-version diagnostic shown while staying blocked
----@field pairIndex integer? boot-source only: the selected-epoch walking pair 1..32
+---@field pairIndex integer? boot-source only: the selected-epoch walking pair
 ---@field freshImport boolean? boot-source only: cold first import holds its card until the pair is drawable
 ---@field importStatus { state: string?, progress: number?, versionId: string?, displayName: string?, sourceName: string? }? cold only: frozen verified importer snapshot behind the card
 ---@field importReceipt string? cold only: received filename shown on the retained card
@@ -138,7 +138,10 @@ end
 ---@param pairIndex unknown
 ---@return boolean whether the value names a selectable walking pair
 local function validPairIndex(pairIndex)
-  return type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32
+  return type(pairIndex) == "number"
+    and pairIndex % 1 == 0
+    and pairIndex >= 1
+    and pairIndex <= HgssLoadingPresentation.walkerPairCount()
 end
 
 ---@param service table<string, function> the process cache service
@@ -186,7 +189,7 @@ function CachePreparationState.new(options)
     )
     assert(
       options.pairIndex == nil or validPairIndex(options.pairIndex),
-      "boot-source walking pair must be an integer 1..32"
+      "boot-source walking pair must be an integer 1.." .. tostring(HgssLoadingPresentation.walkerPairCount())
     )
     assert(
       options.freshImport == nil or type(options.freshImport) == "boolean",

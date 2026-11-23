@@ -6,10 +6,12 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local State = require("app.src.saveeditor.SaveEditorState")
+local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 
 local T = { tests = {} }
 
-local PAIR_INDEX = 32
+-- The pool's last pair: every owner that forwards the selection accepts it.
+local PAIR_INDEX = HgssLoadingPresentation.walkerPairCount()
 local VERSION_ID = "soulsilver"
 
 local function fakeLoading()
@@ -46,7 +48,7 @@ local function keyedHost(behavior)
   local host = {
     calls = calls,
     -- The shared visual demand is a plain dot call carrying only the
-    -- urgency; the caller's 1..32 selection stays local to the
+    -- urgency; the caller's walking pair selection stays local to the
     -- presentation lookup below.
     requestStartupWalker = function(urgency)
       calls.walker[#calls.walker + 1] = { urgency = urgency }

@@ -244,7 +244,7 @@ function DerivedAssetProvisioner.new(options)
     end,
     -- The shared walking visuals for the loading stage (dot call): the
     -- worker compiles the one global subject catalog, and readiness
-    -- observes only the global receipt. The caller keeps its 1..32
+    -- observes only the global receipt. The caller keeps its walking-pair
     -- selection locally for presentation lookup. A ready worker result
     -- reads true; anything else reads pending with retained attribution.
     requestStartupWalker = function(urgency)

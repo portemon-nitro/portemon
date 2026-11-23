@@ -175,9 +175,10 @@ function T.tests.movie_first_borrowed_session_plays_one_edition_cry_without_inve
   local savedProvisioner = App.provisioner
   local savedSession = App.startupAudioSession
   local savedError = App.startupAudioError
+  local savedRuntime = App._assetRuntime
   local cases = {
-    { versionId = "heartgold", species = 250 },
-    { versionId = "soulsilver", species = 249 },
+    { epoch = 41, versionId = "heartgold", species = 250 },
+    { epoch = 42, versionId = "soulsilver", species = 249 },
   }
   local ok, failure = xpcall(function()
     for _, case in ipairs(cases) do
@@ -204,15 +205,17 @@ function T.tests.movie_first_borrowed_session_plays_one_edition_cry_without_inve
       GameAudio.compose = function(_)
         return { sound = sound, sink = nil }
       end
-      App.epoch = 41
+      App.epoch = case.epoch
       App.selectedVersionId = case.versionId
+      -- The audio owner borrows the selection's published CPU runtime. This
+      -- suite owns the audio lifetime, never runtime acquisition, so it holds
+      -- the runtime the selection would publish: a fixture-only generated view
+      -- over no payloads, which the stubbed composition reads nothing from.
+      App._assetRuntime = {
+        epoch = case.epoch,
+        cacheFs = GeneratedCacheFixture.resident(case.versionId, {}).reader,
+      }
       App.provisioner = {
-        -- The session is built against the epoch's installed generated view;
-        -- this fixture answers one resident reader over no payloads because
-        -- GameAudio.compose is stubbed above and reads nothing from it.
-        getCacheFs = function()
-          return GeneratedCacheFixture.resident(case.versionId, {}).reader
-        end,
         gameHost = function()
           return {
             requestMilestone = function()
@@ -224,7 +227,7 @@ function T.tests.movie_first_borrowed_session_plays_one_edition_cry_without_inve
       App.startupAudioSession = nil
       App.startupAudioError = nil
       local session = App._ensureStartupAudio(case.versionId, App.epoch, nil)
-      Assert.notNil(session, "movie-first audio starts without its title record")
+      Assert.notNil(session, "movie-first audio starts without its title record: " .. tostring(App.startupAudioError))
       session:beginOpening()
       local same = App._ensureStartupAudio(case.versionId, App.epoch, { crySpeciesId = case.species })
       Assert.equal(same, session, "the title handoff reuses its movie-first session")
@@ -254,6 +257,7 @@ function T.tests.movie_first_borrowed_session_plays_one_edition_cry_without_inve
   App.provisioner = savedProvisioner
   App.startupAudioSession = savedSession
   App.startupAudioError = savedError
+  App._assetRuntime = savedRuntime
   if not ok then
     error(failure, 0)
   end

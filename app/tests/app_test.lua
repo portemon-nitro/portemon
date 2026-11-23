@@ -9,6 +9,7 @@
 local Assert = require("tests.support.Assert")
 local RomImporter = require("romdump.src.source.RomImporter")
 local HgssGame = require("game.hgss.src.HgssGame")
+local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
@@ -117,7 +118,6 @@ local function withAppHarness(opts, ready, fn)
   local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
   local originalTitleNew = HgssTitleScene.new
   local originalTitleBegin = HgssTitleScene.begin
-  local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
   local originalLoadingNew = HgssLoadingPresentation.new
   local graphics = love.graphics
   local originalPrint = graphics.print
@@ -1397,7 +1397,10 @@ function T.cold_import_startup_hold_transfers_the_adopted_presenter()
     Assert.equal(getmetatable(wait).__index, CachePreparationState, "the pending pair keeps the boot wait installed")
     Assert.isTrue(wait.freshImport, "the fresh import holds its card")
     local chosen = assert(App.pairIndex, "the selection chooses one walking pair")
-    Assert.isTrue(chosen >= 1 and chosen <= 32, "the chosen pair index names one of 32 pairs")
+    Assert.isTrue(
+      chosen >= 1 and chosen <= HgssLoadingPresentation.walkerPairCount(),
+      "the chosen pair index names one of the stage's walking pairs"
+    )
     App.update(0.016)
     Assert.equal(App.state, wait, "the admitted gate alone never leaves the cold card")
     Assert.isNil(wait.artFailure, "a pending pair is not a failure")

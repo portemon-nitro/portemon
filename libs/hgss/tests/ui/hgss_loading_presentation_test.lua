@@ -7,6 +7,8 @@ local Presentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local PngWriter = require("tests.support.PngEncoder")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
+local WalkingPoolFixture = require("tests.support.WalkingPoolFixture")
 
 local T = {}
 
@@ -27,9 +29,9 @@ local function visual(frameWidth, frameHeight)
   }
 end
 
-local SPECIES_IDS = { 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }
+local SPECIES_IDS = WalkingPoolFixture.followerSpeciesIds()
 
-local function cache(versionId, _)
+local function cache(versionId)
   local heroes = {
     ethan = {
       atlasPath = "assets/generated/startup/loader/subjects/heroes/ethan.png",
@@ -134,7 +136,7 @@ function T.allocation_failure_leaves_static_view_and_releases_staged_images()
       return 0.5
     end,
   })
-  Assert.isFalse(presentation:adoptGeneratedAssets(cache(nil, 1)))
+  Assert.isFalse(presentation:adoptGeneratedAssets(cache(nil)))
   Assert.equal(#graphics.images, 1)
   for _, image in ipairs(graphics.images) do
     Assert.equal(image.releaseCount, 1)
@@ -156,7 +158,7 @@ function T.mismatched_version_manifest_never_acquires_images()
       return 0
     end,
   })
-  Assert.isFalse(presentation:adoptGeneratedAssets(cache("heartgold", 1)))
+  Assert.isFalse(presentation:adoptGeneratedAssets(cache("heartgold")))
   Assert.equal(#graphics.images, 0, "a stale edition cannot authorize loader images")
   graphics.printfCalls = {}
   local mark = #graphics.rectangles
@@ -211,13 +213,13 @@ function T.repeated_adoption_reuses_the_first_walking_pair()
       return 0
     end,
   })
-  Assert.isTrue(presentation:adoptGeneratedAssets(cache(nil, 1)))
+  Assert.isTrue(presentation:adoptGeneratedAssets(cache(nil)))
   Assert.equal(randomCalls, 1, "the opening caption draws the random stream once")
-  Assert.isTrue(presentation:adoptGeneratedAssets(cache(nil, 1)))
+  Assert.isTrue(presentation:adoptGeneratedAssets(cache(nil)))
   Assert.equal(randomCalls, 1, "a repeated adoption never reselects the walking pair")
   Assert.equal(#host.images, 2, "a repeated adoption acquires no additional images")
   Assert.equal(presentation.heroId, "ethan")
-  Assert.equal(presentation.follower.speciesId, 1)
+  Assert.equal(presentation.follower.speciesId, StartupAssetCache.walkerChoice(1).followerSpeciesId)
   Assert.equal(presentation.pairIndex, 1, "the adopted presenter never changes its pair")
   presentation:dispose()
   for _, image in ipairs(host.images) do
@@ -270,7 +272,7 @@ function T.failed_adoption_keeps_the_same_stage_and_recovers_on_retry()
     return fills
   end
   local expectedFills = freshFills()
-  Assert.isFalse(presentation:adoptGeneratedAssets(cache(nil, 1)))
+  Assert.isFalse(presentation:adoptGeneratedAssets(cache(nil)))
   Assert.equal(randomCalls, 1, "the failed adoption keeps its opening caption draw")
   Assert.equal(#host.images, 1, "the failed adoption staged one image before the failure")
   for _, image in ipairs(host.images) do
@@ -283,9 +285,9 @@ function T.failed_adoption_keeps_the_same_stage_and_recovers_on_retry()
   Assert.isFalse(hasLineRectangle(host, mark), "the failed adoption draws no outlined card")
   Assert.isTrue(#drawnCopy(host) > 0, "the failed adoption keeps the flavor caption")
   host.failOnImageCall = nil
-  Assert.isTrue(presentation:adoptGeneratedAssets(cache(nil, 1)), "retrying adoption recovers the walking pair")
+  Assert.isTrue(presentation:adoptGeneratedAssets(cache(nil)), "retrying adoption recovers the walking pair")
   Assert.equal(presentation.heroId, "ethan")
-  Assert.equal(presentation.follower.speciesId, 1)
+  Assert.equal(presentation.follower.speciesId, StartupAssetCache.walkerChoice(1).followerSpeciesId)
   Assert.equal(#host.images, 3, "the retry stages exactly its own duo")
   presentation:dispose()
   for _, image in ipairs(host.images) do
@@ -330,7 +332,7 @@ function T.responsive_layout_uses_safe_regions_and_routes_dual_copy_to_auxiliary
   Assert.equal(wide.configuration, "wide")
   Assert.equal(wide.primaryBounds.x, 12)
   Assert.equal(wide.primaryBounds.y, 8)
-  Assert.isTrue(wide:adoptGeneratedAssets(cache(nil, 1)))
+  Assert.isTrue(wide:adoptGeneratedAssets(cache(nil)))
   wide:draw()
   Assert.isTrue(#wide.graphics.draws > 0, "the wide layout walks the adopted pair")
   wide:dispose()
@@ -341,7 +343,7 @@ function T.responsive_layout_uses_safe_regions_and_routes_dual_copy_to_auxiliary
   tall:dispose()
 
   local small = make(192, 144)
-  Assert.isTrue(small:adoptGeneratedAssets(cache(nil, 1)))
+  Assert.isTrue(small:adoptGeneratedAssets(cache(nil)))
   small:draw()
   Assert.equal(
     small.graphics.draws[#small.graphics.draws].sx,
@@ -437,11 +439,15 @@ function T.edition_themed_stages_stay_card_free_before_sprite_art()
 end
 
 function T.adopted_walking_pair_keeps_the_same_full_bleed_stage()
+  -- Any pool pair would do; the second hero's half is named through the pool
+  -- map so the expectation follows the catalog instead of a fixed index.
+  local pairIndex = StartupAssetCache.walkerIndex("lyra", WalkingPoolFixture.followerSpeciesIds()[1])
+  local choice = StartupAssetCache.walkerChoice(pairIndex)
   local randomCalls = 0
   local host = graphics()
   local presentation = Presentation.new({
     versionId = "heartgold",
-    pairIndex = 19,
+    pairIndex = pairIndex,
     width = 480,
     height = 360,
     graphics = host,
@@ -454,9 +460,9 @@ function T.adopted_walking_pair_keeps_the_same_full_bleed_stage()
   presentation:draw()
   local preFills = fillColors(host, mark)
   Assert.isTrue(drawnCopy(host):find("Preparing", 1, true) == nil, "the pre-art stage shows no generic headline")
-  Assert.isTrue(presentation:adoptGeneratedAssets(cache(nil, 19)))
-  Assert.equal(presentation.heroId, "lyra", "the chosen pair fixes its hero")
-  Assert.equal(presentation.follower.speciesId, 7, "the chosen pair fixes its follower")
+  Assert.isTrue(presentation:adoptGeneratedAssets(cache(nil)))
+  Assert.equal(presentation.heroId, choice.heroId, "the chosen pair fixes its hero")
+  Assert.equal(presentation.follower.speciesId, choice.followerSpeciesId, "the chosen pair fixes its follower")
   Assert.equal(randomCalls, 1, "the opening caption draws the random stream once")
   mark = #host.rectangles
   local drawsMark = #host.draws
@@ -497,10 +503,10 @@ function T.adopted_walking_pair_keeps_the_same_full_bleed_stage()
   presentation:update(8)
   host.printfCalls = {}
   presentation:draw()
-  Assert.equal(presentation.heroId, "lyra", "captions never reselect the walking pair")
-  Assert.equal(presentation.follower.speciesId, 7, "captions never reselect the walking pair")
+  Assert.equal(presentation.heroId, choice.heroId, "captions never reselect the walking pair")
+  Assert.equal(presentation.follower.speciesId, choice.followerSpeciesId, "captions never reselect the walking pair")
   Assert.equal(randomCalls, 1, "caption ticks never consume the stream again")
-  Assert.equal(presentation.pairIndex, 19, "the adopted presenter never changes its pair")
+  Assert.equal(presentation.pairIndex, pairIndex, "the adopted presenter never changes its pair")
   presentation:dispose()
   Assert.equal(#host.images, 2, "the stage owns exactly its duo images")
   for _, image in ipairs(host.images) do

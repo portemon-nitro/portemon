@@ -10,6 +10,7 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local PngWriter = require("tests.support.PngEncoder")
 local Presentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
+local WalkingPoolFixture = require("tests.support.WalkingPoolFixture")
 
 local WIDTH, HEIGHT = 480, 360
 
@@ -118,7 +119,7 @@ local function startupTransparentAtlas(frameWidth, frameHeight)
   return PngWriter.encode(width, frameHeight, table.concat(parts))
 end
 
-local function startupPairCacheFs(_, versionId)
+local function startupPairCacheFs(versionId)
   local heroes = {
     ethan = {
       atlasPath = "assets/generated/startup/loader/subjects/heroes/ethan.png",
@@ -137,7 +138,7 @@ local function startupPairCacheFs(_, versionId)
   }) do
     files[path] = startupTransparentAtlas(16, 24)
   end
-  for _, speciesId in ipairs({ 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }) do
+  for _, speciesId in ipairs(WalkingPoolFixture.followerSpeciesIds()) do
     local path = "assets/generated/startup/loader/subjects/followers/" .. speciesId .. ".png"
     followers[tostring(speciesId)] = { atlasPath = path, visual = startupPairVisual(12, 20) }
     files[path] = startupTransparentAtlas(12, 20)
@@ -190,7 +191,7 @@ function T.startup_pair_paints_transparent_sprites_over_the_live_stage(scope)
   })
   local pre = renderStage(scope, presentation)
   Assert.isTrue(
-    presentation:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
+    presentation:adoptGeneratedAssets(startupPairCacheFs("heartgold")),
     "the chosen pair adopts its two transparent atlases"
   )
   local post = renderStage(scope, presentation)
@@ -235,7 +236,7 @@ function T.startup_stage_opens_on_a_random_line_and_stays_animated(scope)
     "the opening flavor line follows the injected random stream"
   )
   Assert.isTrue(
-    first:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
+    first:adoptGeneratedAssets(startupPairCacheFs("heartgold")),
     "the chosen pair adopts its two transparent atlases"
   )
   local adopted = renderStage(scope, first)
@@ -260,7 +261,7 @@ function T.walking_pair_keeps_source_cadence_with_lift(scope)
     end,
   })
   Assert.isTrue(
-    presentation:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
+    presentation:adoptGeneratedAssets(startupPairCacheFs("heartgold")),
     "the chosen pair adopts its two transparent atlases"
   )
   local heroFrameWidth, followerFrameWidth = 16, 12
@@ -420,7 +421,7 @@ function T.tall_flavor_caption_sits_beside_pair_with_readable_type(scope)
       })
       presentations[#presentations + 1] = presentation
       Assert.isTrue(
-        presentation:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
+        presentation:adoptGeneratedAssets(startupPairCacheFs("heartgold")),
         "the chosen pair adopts its two transparent atlases"
       )
       checkCaption(
@@ -442,7 +443,7 @@ function T.tall_flavor_caption_sits_beside_pair_with_readable_type(scope)
   })
   presentations[#presentations + 1] = resized
   Assert.isTrue(
-    resized:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
+    resized:adoptGeneratedAssets(startupPairCacheFs("heartgold")),
     "the chosen pair adopts its two transparent atlases"
   )
   resized:resize(360, 640)
@@ -466,7 +467,7 @@ function T.decorative_stage_prints_only_flavor_without_progress_copy(scope)
     end,
   })
   Assert.isTrue(
-    presentation:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
+    presentation:adoptGeneratedAssets(startupPairCacheFs("heartgold")),
     "the chosen pair adopts its two transparent atlases"
   )
   local function renderedLinesAndPixels(status)
@@ -602,7 +603,7 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
       end,
     })
     Assert.isTrue(
-      presentation:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
+      presentation:adoptGeneratedAssets(startupPairCacheFs("heartgold")),
       "the chosen pair adopts its two transparent atlases"
     )
     local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
@@ -975,7 +976,7 @@ function T.blocked_wait_keeps_the_matching_rom_remedy_visible(scope)
 end
 
 function T.failed_pair_adoption_releases_staged_art_without_half_published_sprites(scope)
-  local good = startupPairCacheFs(5, "heartgold")
+  local good = startupPairCacheFs("heartgold")
   local followerPath = "assets/generated/startup/loader/subjects/followers/155.png"
   local bad = {
     loadLua = good.loadLua,
@@ -1030,7 +1031,7 @@ function T.failed_pair_adoption_releases_staged_art_without_half_published_sprit
   Assert.notNil(presentation.follower, "the retried adoption publishes the follower")
 end
 
-function T.walker_phase_survives_adoption_and_resize_across_all_choices(scope)
+function T.walker_phase_survives_adoption_and_resize_at_the_pool_edges(scope)
   local presentation = Presentation.new({
     versionId = "heartgold",
     width = WIDTH,
@@ -1047,7 +1048,7 @@ function T.walker_phase_survives_adoption_and_resize_across_all_choices(scope)
   })
   presentation.elapsed = 0.05
   Assert.isTrue(
-    presentation:adoptGeneratedAssets(startupPairCacheFs(5, "heartgold")),
+    presentation:adoptGeneratedAssets(startupPairCacheFs("heartgold")),
     "the chosen pair adopts its two transparent atlases"
   )
   local heroBefore = presentation:_frameIndex("hero")
@@ -1068,7 +1069,11 @@ function T.walker_phase_survives_adoption_and_resize_across_all_choices(scope)
   love.graphics.setCanvas()
   love.graphics.pop()
   local shared = scope:own(love.graphics.newCanvas(WIDTH, HEIGHT))
-  for pairIndex = 1, 32 do
+  -- The pool's hero boundary and both ends: drawing depends only on the
+  -- adopted atlas geometry, so the whole pool is not re-drawn here. Every
+  -- pair resolves through the compiled catalog in the ROM layer.
+  local pairCount = Presentation.walkerPairCount()
+  for _, pairIndex in ipairs({ 1, pairCount / 2, pairCount / 2 + 1, pairCount }) do
     local choice = Presentation.new({
       versionId = "heartgold",
       width = WIDTH,
@@ -1079,7 +1084,7 @@ function T.walker_phase_survives_adoption_and_resize_across_all_choices(scope)
       end,
     })
     Assert.isTrue(
-      choice:adoptGeneratedAssets(startupPairCacheFs(pairIndex, "heartgold")),
+      choice:adoptGeneratedAssets(startupPairCacheFs("heartgold")),
       "walker choice " .. pairIndex .. " adopts its two transparent atlases"
     )
     love.graphics.push("all")
@@ -1111,7 +1116,7 @@ local function sizedPairCacheFs(followerWidth, versionId)
   }) do
     files[path] = startupTransparentAtlas(16, 24)
   end
-  for _, speciesId in ipairs({ 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }) do
+  for _, speciesId in ipairs(WalkingPoolFixture.followerSpeciesIds()) do
     local path = "assets/generated/startup/loader/subjects/followers/" .. speciesId .. ".png"
     followers[tostring(speciesId)] = { atlasPath = path, visual = startupPairVisual(followerWidth, 20) }
     files[path] = startupTransparentAtlas(followerWidth, 20)

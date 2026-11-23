@@ -7,10 +7,12 @@ local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local NewGamePreparationState = require("game.hgss.src.newgame.NewGamePreparationState")
+local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 
 local T = {}
 
-local PAIR_INDEX = 32
+-- The pool's last pair: every owner that forwards the selection accepts it.
+local PAIR_INDEX = HgssLoadingPresentation.walkerPairCount()
 local VERSION_ID = "soulsilver"
 
 local function keyedHost(overrides)
@@ -32,7 +34,7 @@ local function keyedHost(overrides)
   local calls = { walker = {}, milestones = {} }
   local host = {}
   -- The C01 typed pair demand is a plain dot call carrying the caller's
-  -- 1..32 selection; anything else (including a colon-passed self) fails
+  -- walking pair selection; anything else (including a colon-passed self) fails
   -- the pair identity assertions below.
   function host.requestStartupWalker(urgency)
     calls.walker[#calls.walker + 1] = { urgency = urgency }

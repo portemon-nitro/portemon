@@ -576,6 +576,9 @@ function StartupTitleState:_adoptTitle()
     return
   end
   self.title = assert(result)
+  -- The build laid out for the dimensions it began with; resizes while it was
+  -- staged only reached this state.
+  self.title:resize(self.width, self.height)
   self.titleElapsed = 0
   self.titleEntry = TITLE_ENTRY_CALLS
   self.titleAnimating = false

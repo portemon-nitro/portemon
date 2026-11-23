@@ -138,7 +138,7 @@ function T.startup_walker_requests_reject_any_pair_selector()
 end
 
 -- With no published manifest at all the epoch keeps one random fallback
--- pair and demands exactly that pair: the scan never precaches all 32.
+-- pair and demands exactly that pair: the scan never precaches the pool.
 function T.no_published_manifest_falls_back_to_one_random_pair()
   local App = require("app.src.App")
   local StartupAssetCache = require("libs.assets.src.StartupAssetCache")

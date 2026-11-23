@@ -21,7 +21,7 @@ local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentatio
 ---@field saveId string? Continue only: the catalog-visible save to load on the first update
 ---@field candidate table<string, unknown>? New Game only: the finalized Oak candidate
 ---@field versionId string selected game version, carried for diagnostics
----@field startupPairIndex integer selected 1..32 walking pair, decorative only
+---@field startupPairIndex integer selected walking pair, decorative only
 ---@field derivedAssets table<string, function> semantic derived-asset host
 ---@field saveStore table<string, unknown>? Continue only: the normalizing save store
 ---@field createLoader fun(): table<string, unknown> loader factory owned by the HGSS composition
@@ -74,8 +74,8 @@ function FieldPreparationState.new(options)
     type(options.startupPairIndex) == "number"
       and options.startupPairIndex % 1 == 0
       and options.startupPairIndex >= 1
-      and options.startupPairIndex <= 32,
-    "field preparation requires the selected walking pair 1..32"
+      and options.startupPairIndex <= HgssLoadingPresentation.walkerPairCount(),
+    "field preparation requires the selected walking pair 1.." .. tostring(HgssLoadingPresentation.walkerPairCount())
   )
   assert(type(options.derivedAssets) == "table", "field preparation requires the derived-asset host")
   assert(type(options.createLoader) == "function", "field preparation requires its metadata-only loader factory")

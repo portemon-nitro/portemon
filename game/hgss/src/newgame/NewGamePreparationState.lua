@@ -24,7 +24,7 @@ local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentatio
 ---@class NewGamePreparationOptions
 ---@field versionId string selected game version, carried for the decorative stage
 ---@field cacheFs table<string, unknown> selected epoch's installed generated view
----@field startupPairIndex integer selected 1..32 walking pair, decorative only
+---@field startupPairIndex integer selected walking pair, decorative only
 ---@field derivedAssets table<string, function> semantic derived-asset host
 ---@field onReady fun() compose the New Game candidate and Oak intro
 ---@field onCancel fun()? return to the owning menu
@@ -57,8 +57,8 @@ function NewGamePreparationState.new(options)
     type(options.startupPairIndex) == "number"
       and options.startupPairIndex % 1 == 0
       and options.startupPairIndex >= 1
-      and options.startupPairIndex <= 32,
-    "New Game preparation requires the selected walking pair 1..32"
+      and options.startupPairIndex <= HgssLoadingPresentation.walkerPairCount(),
+    "New Game preparation requires the selected walking pair 1.." .. tostring(HgssLoadingPresentation.walkerPairCount())
   )
   assert(type(options.derivedAssets) == "table", "New Game preparation requires the derived-asset host")
   assert(type(options.onReady) == "function", "New Game preparation requires its ready transfer")

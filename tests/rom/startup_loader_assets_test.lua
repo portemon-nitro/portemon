@@ -31,7 +31,13 @@ local function sharedCatalogCompilesOnceForEveryPair(romFs, versionId)
   Assert.isTrue(ok, "the shared catalog compiles: " .. tostring(bundleOrErr))
   local bundle = bundleOrErr
   Assert.equal(#captured, 1, "the shared catalog decodes through exactly one sprite request")
-  Assert.equal(#captured[1], 18, "the shared catalog decodes exactly eighteen source sprites")
+  local pairCount = StartupAssetCache.walkerPairCount()
+  local followersPerHero = pairCount / 2
+  Assert.equal(
+    #captured[1],
+    followersPerHero + 2,
+    "the shared catalog decodes one source sprite per walking subject"
+  )
   local manifest = bundle.manifest
   Assert.equal(manifest.schema, "g4-startup-walker-v2", "the shared catalog carries the versioned schema")
   Assert.equal(manifest.versionId, versionId, "the shared catalog carries its edition")
@@ -44,7 +50,7 @@ local function sharedCatalogCompilesOnceForEveryPair(romFs, versionId)
   for _ in pairs(manifest.followers) do
     followerCount = followerCount + 1
   end
-  Assert.equal(followerCount, 16, "the shared catalog carries sixteen followers")
+  Assert.equal(followerCount, followersPerHero, "the shared catalog carries every catalog follower")
   local atlasCount = 0
   for path, atlas in pairs(bundle.atlases) do
     atlasCount = atlasCount + 1
@@ -55,8 +61,8 @@ local function sharedCatalogCompilesOnceForEveryPair(romFs, versionId)
     Assert.isTrue(type(atlas.pixels) == "string" and #atlas.pixels > 0, "shared atlas carries pixels")
     Assert.isTrue(hasTransparentTexel(atlas.pixels), "shared atlas keeps transparent pixels")
   end
-  Assert.equal(atlasCount, 18, "the shared catalog stages exactly eighteen atlases")
-  for pairIndex = 1, 32 do
+  Assert.equal(atlasCount, followersPerHero + 2, "the shared catalog stages one atlas per walking subject")
+  for pairIndex = 1, pairCount do
     local choice = StartupAssetCache.walkerChoice(pairIndex)
     Assert.notNil(
       manifest.heroes[choice.heroId],

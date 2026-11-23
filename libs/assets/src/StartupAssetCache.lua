@@ -9,9 +9,12 @@ local StartupAssetCache = {}
 
 local TITLE_PATH = "data/generated/startup/title.lua"
 
--- Canonical 32-choice walking pair: indices 1..16 name Ethan with each of
--- sixteen followers in fixed order, 17..32 name Lyra with the same order.
-local FOLLOWER_SPECIES_IDS = { 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183 }
+-- Canonical walking pair: every follower below walks with Ethan in the first
+-- half of the pair space and with Lyra in the second half, in this fixed
+-- order. The ordered list is the positional source for the pair arithmetic;
+-- add a follower here and the whole pair space follows.
+local FOLLOWER_SPECIES_IDS = { 1, 4, 7, 152, 155, 158, 252, 255, 258, 387, 390, 393, 133, 25, 143, 183, 43 }
+local FOLLOWER_COUNT = #FOLLOWER_SPECIES_IDS
 -- Follower species membership by id; the ordered list above stays the
 -- positional source for pair arithmetic.
 local FOLLOWER_SPECIES = {}
@@ -507,12 +510,13 @@ end
 ---@param pairIndex integer
 ---@return { heroId: string, followerSpeciesId: integer }
 function StartupAssetCache.walkerChoice(pairIndex)
+  local pairCount = StartupAssetCache.walkerPairCount()
   assert(
-    type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32,
-    "walking pair index must be an integer 1..32"
+    type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= pairCount,
+    "walking pair index must be an integer 1.." .. tostring(pairCount)
   )
-  local ordinal = (pairIndex - 1) % 16 + 1
-  local heroId = pairIndex <= 16 and "ethan" or "lyra"
+  local ordinal = (pairIndex - 1) % FOLLOWER_COUNT + 1
+  local heroId = pairIndex <= FOLLOWER_COUNT and "ethan" or "lyra"
   return { heroId = heroId, followerSpeciesId = FOLLOWER_SPECIES_IDS[ordinal] }
 end
 
@@ -529,11 +533,19 @@ function StartupAssetCache.walkerIndex(heroId, speciesId)
       break
     end
   end
-  assert(ordinal ~= nil, "walking pair species is not one of the sixteen followers")
+  assert(ordinal ~= nil, "walking pair species is not one of the catalog followers")
   if heroId == "ethan" then
     return ordinal
   end
-  return 16 + ordinal
+  return FOLLOWER_COUNT + ordinal
+end
+
+-- Both heroes walk with every catalog follower, so the pair space is twice
+-- the follower list. Selection, validation, and the producer's compiled pair
+-- closure all read its size from here instead of restating it.
+---@return integer
+function StartupAssetCache.walkerPairCount()
+  return FOLLOWER_COUNT * 2
 end
 
 ---@return string
@@ -2231,7 +2243,7 @@ function StartupAssetCache.loadWalker(cacheFs, versionId)
   end
   local followers = bundle.followers
   if type(followers) ~= "table" then
-    return nil, invalid("walking catalog followers must name sixteen species", path)
+    return nil, invalid("walking catalog followers must name every catalog follower", path)
   end
   local followerCount = 0
   for key, follower in pairs(followers) do
@@ -2248,8 +2260,8 @@ function StartupAssetCache.loadWalker(cacheFs, versionId)
       return nil, invalid("walking catalog follower atlas is missing", follower.atlasPath)
     end
   end
-  if followerCount ~= 16 then
-    return nil, invalid("walking catalog followers must name sixteen species", path)
+  if followerCount ~= FOLLOWER_COUNT then
+    return nil, invalid("walking catalog followers must name every catalog follower", path)
   end
   return bundle
 end

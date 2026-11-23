@@ -40,7 +40,7 @@ local function selectedSpriteIds()
     lyra = PlayerAvatar.statesForGender(1).walking,
   }
   local followerSpecies = {}
-  for pairIndex = 1, 32 do
+  for pairIndex = 1, StartupAssetCache.walkerPairCount() do
     local choice = StartupAssetCache.walkerChoice(pairIndex)
     followerSpecies[choice.followerSpeciesId] = true
   end
