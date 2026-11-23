@@ -94,14 +94,14 @@ function T.opcode_606_releases_next_to_the_player_in_the_same_tick()
   Assert.isNil(node.command, "runtime dispatch carries no source opcode")
 end
 
-function T.opcode_599_is_a_blocking_recall_distinct_from_opcode_608()
+function T.opcode_599_starts_the_nonblocking_hop_into_ball_task()
   -- Retail 599 is FollowMonHopIntoBall (yield one tick, background task)
   -- and 600 is FollowMonRecall (blocking until settled); 608 is the
   -- same-tick ball-release transition visual.
   Assert.equal(CommandCatalog.disposition(599), "supported")
   Assert.equal(CommandCatalog.classification(599), CommandCatalog.YIELD)
   Assert.deepEqual(CommandCatalog.widths(599), {})
-  Assert.equal(lowerSingle(599, {}).op, "yield_tick")
+  Assert.equal(lowerSingle(599, {}).op, "follower_hop_into_ball")
   Assert.equal(CommandCatalog.disposition(600), "supported")
   Assert.equal(CommandCatalog.classification(600), CommandCatalog.NATIVE_WAIT)
   Assert.deepEqual(CommandCatalog.widths(600), {})

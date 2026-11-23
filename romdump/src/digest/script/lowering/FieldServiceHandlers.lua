@@ -362,7 +362,9 @@ function FieldServiceHandlers.followMonResetMovement(_)
 end
 
 function FieldServiceHandlers.followerHopIntoBall(_)
-  return { op = "yield_tick" }
+  -- ScrCmd_FollowMonHopIntoBall starts its own field task and yields one
+  -- script tick while that presentation continues in the field owner.
+  return { op = "follower_hop_into_ball" }
 end
 
 function FieldServiceHandlers.followerMoveToPlayer(_)

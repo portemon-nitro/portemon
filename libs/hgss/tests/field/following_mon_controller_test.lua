@@ -363,6 +363,31 @@ function T.stationary_follower_owns_no_presentation_action()
   w.mgr:dispose()
 end
 
+function T.hop_into_ball_arcs_to_the_player_then_hides_the_follower()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.controller:partnerActorId(), "setup installs the partner")
+  local actor = assert(w.mgr:getById(partnerId), "the partner actor is required")
+  local start = actor:getFieldPosition()
+
+  Assert.isTrue(w.controller:hopIntoBall(), "an active visible lead starts the hop")
+  tick(w, 4)
+  Assert.isTrue(actor:getPresentationOffset().y > 0, "the hop has a visible upward arc")
+  local duringHop = actor:getFieldPosition()
+  Assert.equal(duringHop.fieldX, start.fieldX, "the hop keeps the logical X tile in place")
+  Assert.equal(duringHop.fieldZ, start.fieldZ, "the hop keeps the logical Z tile in place")
+
+  tick(w, 4)
+  local landed = actor:getFieldPosition()
+  Assert.equal(landed.fieldX, w.player.fieldX, "the hop lands on the player's X tile")
+  Assert.equal(landed.fieldZ, w.player.fieldZ, "the hop lands on the player's Z tile")
+  Assert.equal(actor.facing, "north", "the nurse-facing hop lands facing north")
+  Assert.deepEqual(actor:getPresentationOffset(), { x = 0, y = 0, z = 0 }, "landing clears the hop offset")
+  Assert.isFalse(actor:isVisible(), "the lead hides for the nurse animation")
+  w.mgr:dispose()
+end
+
 function T.eligible_lead_installs_behind_the_player()
   local w = world()
   Assert.isFalse(w.controller:isActive(), "an empty party is not active")

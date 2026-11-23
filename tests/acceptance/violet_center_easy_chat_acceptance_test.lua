@@ -1406,6 +1406,20 @@ function T.tests.local_center_paths_stay_usable_around_an_egg()
     local damaged = service:removeMon(0)
     damaged.condition.currentHp = 1
     Assert.isTrue(service:addMon(damaged), "the damaged starter returns to its production party")
+    local followingMon = assert(game.runtime.followingMon, "the field owns the active party lead")
+    local partnerId = assert(followingMon:partnerActorId(), "the party lead is visible before nursing")
+    local partner = assert(game.runtime.actors:getById(partnerId), "the party lead actor is live before nursing")
+    local startPosition = partner:getFieldPosition()
+    local sawHopArc = false
+    local originalStep = game.step
+    game.step = function(self, ...)
+      local result = originalStep(self, ...)
+      local currentPartner = game.runtime.actors:getById(partnerId)
+      if currentPartner ~= nil then
+        sawHopArc = sawHopArc or currentPartner:getPresentationOffset().y > 0
+      end
+      return result
+    end
     -- The nurse counter faces across its blocked frontage from the
     -- spawn tile, which neighbor-tile search cannot stand on.
     talkFrom(game, NURSE_SCRIPT, { fieldX = 8, fieldZ = 13 }, "north")
@@ -1428,6 +1442,19 @@ function T.tests.local_center_paths_stay_usable_around_an_egg()
     end
     Assert.equal(flow:status().count, 1, "the healing machine counts only the non-Egg party")
     Assert.isTrue(settleToFree(game), "the nurse interaction releases the field")
+    game.step = originalStep
+    partner = assert(game.runtime.actors:getById(partnerId), "the nursed party lead stays addressable")
+    local nursedPosition = partner:getFieldPosition()
+    local player = game:snapshot().player
+    Assert.isTrue(sawHopArc, "FollowMonHopIntoBall presents the lead's visible hop arc")
+    Assert.isTrue(
+      startPosition.fieldX ~= nursedPosition.fieldX or startPosition.fieldZ ~= nursedPosition.fieldZ,
+      "FollowMonHopIntoBall moves the visible lead from its tile behind the player"
+    )
+    Assert.equal(nursedPosition.fieldX, player.fieldX, "the lead finishes the hop on the player tile")
+    Assert.equal(nursedPosition.fieldZ, player.fieldZ, "the lead finishes the hop on the player tile")
+    Assert.equal(partner.facing, "north", "the lead faces into the Center after the hop")
+    Assert.isFalse(game.runtime.actors:isVisible(partnerId), "the lead enters its ball until the next trail step")
     assertNoFaults(game, "the nurse interaction")
     Assert.equal(
       service:partyMon(1).condition.currentHp,

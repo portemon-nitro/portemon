@@ -115,6 +115,65 @@ function T.narration_window_uses_its_live_source_scroll()
   Assert.equal(drawnWindow.y, 101, "the retail message window begins 51 pixels below its resting position")
 end
 
+-- Retail raises the level-up stat window's BG over the HP boxes by
+-- dropping every box to OAM priority 1 while the window is open, so the
+-- window covers the player box instead of drawing under it.
+function T.level_up_stats_window_draws_over_the_hud()
+  local palette = {}
+  for index = 0, 15 do
+    palette[index + 1] = { r = index, g = index, b = index }
+  end
+  local graphics = {}
+  function graphics.getColor()
+    return 1, 1, 1, 1
+  end
+  function graphics.setColor() end
+  function graphics.transformPoint(x, y)
+    return x, y
+  end
+  function graphics.push() end
+  function graphics.pop() end
+  function graphics.intersectScissor() end
+  function graphics.draw() end
+  local function composedFrame(levelUpStats)
+    local captured = nil
+    BattleRenderer.drawPane({
+      graphics = graphics,
+      text = { drawTextForRole = function() end },
+      windows = { drawWindow = function() end },
+      assets = {
+        drawable = function()
+          return nil
+        end,
+        renderPictures = function(_, _, frame)
+          captured = frame
+          return { handle = "picture-composite" }
+        end,
+      },
+      frameKey = "default",
+    }, {
+      battlers = {},
+      effectInstances = {},
+      hudPatchSpans = {},
+      message = "message",
+      levelUpStats = levelUpStats,
+      textPalettes = { narration = { colors = palette } },
+    }, "detail", {})
+    return assert(captured, "the detail pane composes one main frame")
+  end
+
+  local plain = composedFrame(nil)
+  local windowPriority = plain.animation.priority.window --[[@as integer]]
+  Assert.equal(plain.objects[1].objPriority, windowPriority, "the HUD shares the window's top priority and wins ties")
+
+  local leveled = composedFrame({ rows = { { label = "Max. HP", value = "+3" } } })
+  Assert.equal(leveled.animation.priority.window, windowPriority, "the stat window keeps its top BG priority")
+  Assert.isTrue(
+    leveled.objects[1].objPriority > windowPriority,
+    "the HUD drops behind the open level-up stat window"
+  )
+end
+
 -- Strip quads segregate by graphics namespace and strip dimensions: the same
 -- tile index through another namespace allocates a distinct quad, a modded
 -- wider strip allocates wider geometry, and returning to the original width

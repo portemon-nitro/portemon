@@ -2959,9 +2959,11 @@ local function drawDetail(resources, view)
       )
     end
   end
+  -- While the level-up stat window is open, the source drops every HP
+  -- box to OAM priority 1 so the window plane covers them.
   local objects = {
     {
-      objPriority = 0,
+      objPriority = view.levelUpStats ~= nil and 1 or 0,
       submissionOrder = 1,
       oamMode = "normal",
       draw = drawDetailObjects,

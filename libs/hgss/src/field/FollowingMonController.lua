@@ -49,6 +49,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field _movementType string persistent follower map-object movement mode
 ---@field _lastFollowerCommand { direction: string, speed: string }? last real follower walk; descriptive only, never an obligation
 ---@field _action { progress: integer, duration: integer }?
+---@field _hopIntoBall { actorId: string, mapId: integer, frame: integer }? active nurse-healing follower hop
 ---@field _suspended boolean
 ---@field new fun(opts: FollowingMonControllerOptions): FollowingMonController
 ---@field isEnabled fun(self: FollowingMonController): boolean
@@ -64,6 +65,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field settleMovement fun(self: FollowingMonController)
 ---@field resetMovement fun(self: FollowingMonController)
 ---@field isPartnerVisible fun(self: FollowingMonController): boolean
+---@field hopIntoBall fun(self: FollowingMonController): boolean
 ---@field hideUntilNextStep fun(self: FollowingMonController): table<string, unknown>
 ---@field restoreCutsceneHide fun(self: FollowingMonController, lease: table<string, unknown>): boolean
 ---@field classifyRecallGeometry fun(self: FollowingMonController): { mirror: boolean, nextState: integer }
@@ -108,6 +110,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field _enqueueReplay fun(self: FollowingMonController, mapId: integer, direction: string, speed: string)
 ---@field _driveQueue fun(self: FollowingMonController, mapId: integer)
 ---@field _advanceAction fun(self: FollowingMonController)
+---@field _advanceHopIntoBall fun(self: FollowingMonController, mapId: integer)
 
 FollowingMonController.PARTNER_NUMERIC_ID = 253
 FollowingMonController.MAX_QUEUED_ANCHORS = 8
@@ -140,6 +143,10 @@ local BURROWING_BLOCKED_MAPS = {
 }
 
 local BURROWING_SPECIES = { DIGLETT = true, DUGTRIO = true }
+
+-- Eight source updates in FollowMonHopIntoBall's HOP_STATE_JUMP. The actor
+-- crosses from its trail tile to the player tile while following this arc.
+local HOP_INTO_BALL_HEIGHTS = { 1 / 16, 2 / 16, 2 / 16, 3 / 16, 3 / 16, 2 / 16, 2 / 16, 0 }
 
 -- The source player-relative placement offsets: 0 north, 1 south, 2 west,
 -- 3 east. Any other selector keeps the copied player tile unchanged.
@@ -240,6 +247,7 @@ function FollowingMonController.new(opts)
     _movementType = "follow_player",
     _lastFollowerCommand = nil,
     _action = nil,
+    _hopIntoBall = nil,
     _suspended = false,
   }, FollowingMonController)
   ---@cast self FollowingMonController
@@ -564,6 +572,10 @@ end
 function FollowingMonController:_publish(mapId)
   local partnerId = self._actors:partnerId()
   if partnerId ~= nil then
+    if self._hopIntoBall ~= nil and self._hopIntoBall.actorId == partnerId then
+      self._actors:clearPresentationOffset(partnerId)
+      self._hopIntoBall = nil
+    end
     self._actors:cancelScriptedMovement(partnerId)
     self._action = nil
     local anchor = self._playerOf():committedAnchor()
@@ -714,6 +726,7 @@ function FollowingMonController:_handleMapChange(mapId, coveredRebuild)
   self._lastMovementTransactionRevision = 0
   self._consumedStep = nil
   self._ledgeLanding = nil
+  self._hopIntoBall = nil
   self._paused = false
 end
 
@@ -1262,6 +1275,56 @@ function FollowingMonController:update()
   self:_observePlayer(mapId)
   self:_driveQueue(mapId)
   self:_advanceAction()
+  self:_advanceHopIntoBall(mapId)
+end
+
+-- Start the background presentation behind ScrCmd_FollowMonHopIntoBall.
+-- The script yields one tick after calling this; the field update advances
+-- the hop independently while the nurse script continues.
+---@return boolean started
+function FollowingMonController:hopIntoBall()
+  if not self:isActive() or not self:isPartnerVisible() then
+    return false
+  end
+  assert(self._hopIntoBall == nil, "the follower is already hopping into a ball")
+  local actorId = assert(self:partnerActorId(), "the active follower actor is required")
+  self._paused = false
+  self._hopIntoBall = { actorId = actorId, mapId = assert(self._actors.currentMapId), frame = 0 }
+  return true
+end
+
+-- Advance the eight source hop updates as a transient actor offset, then
+-- settle the lead onto the player tile and hide it until its next trail step.
+---@param mapId integer
+function FollowingMonController:_advanceHopIntoBall(mapId)
+  local hop = self._hopIntoBall
+  if hop == nil or self._action ~= nil or #self._queue > 0 then
+    return
+  end
+  if hop.mapId ~= mapId or self._actors:partnerId() ~= hop.actorId then
+    self._hopIntoBall = nil
+    return
+  end
+  local actor = self._actors:getById(hop.actorId)
+  if actor == nil then
+    self._hopIntoBall = nil
+    return
+  end
+  hop.frame = hop.frame + 1
+  local position = actor:getFieldPosition()
+  local anchor = self._playerOf():committedAnchor()
+  local progress = hop.frame / #HOP_INTO_BALL_HEIGHTS
+  self._actors:setPresentationOffset(hop.actorId, {
+    x = (anchor.fieldX - position.fieldX) * progress,
+    y = HOP_INTO_BALL_HEIGHTS[hop.frame],
+    z = (anchor.fieldZ - position.fieldZ) * progress,
+  })
+  if hop.frame == #HOP_INTO_BALL_HEIGHTS then
+    self._actors:clearPresentationOffset(hop.actorId)
+    self:repositionRelativeToPlayer(9, 0)
+    self:hideUntilNextStep()
+    self._hopIntoBall = nil
+  end
 end
 
 -- Clear the actor before the old map leaves residency. The manager retires
@@ -1278,6 +1341,7 @@ function FollowingMonController:handleMapExit()
   self._movementType = "follow_player"
   self._lastFollowerCommand = nil
   self._recallTransitionPending = false
+  self._hopIntoBall = nil
   self._actors:clearPartner()
   self._published = nil
   self._pendingHiddenLead = nil

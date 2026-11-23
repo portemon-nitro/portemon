@@ -1783,6 +1783,7 @@ Schema.OPERATIONS = {
   },
   follower_transition = { fields = {} },
   follower_recall = { fields = {} },
+  follower_hop_into_ball = { fields = {} },
   follower_move_to_player = { fields = {} },
   game_version = {
     fields = {

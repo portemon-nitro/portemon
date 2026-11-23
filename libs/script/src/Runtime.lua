@@ -1439,6 +1439,7 @@ end
 ---@field recallToPlayer fun(self: RuntimeFollowingMon): boolean
 ---@field isNextToPlayer fun(self: RuntimeFollowingMon): boolean
 ---@field isInactiveOrVisible fun(self: RuntimeFollowingMon): boolean
+---@field hopIntoBall fun(self: RuntimeFollowingMon): boolean
 ---@field isEventTrigger fun(self: RuntimeFollowingMon, kind: string, param: unknown): boolean
 
 do
@@ -1510,6 +1511,11 @@ do
     local owner = requireService(run, "followerTransition") --[[@as RuntimeFollowerTransition]]
     owner:start()
     return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleFollowerHopIntoBall(_, run)
+    followingMonFor(run):hopIntoBall()
+    return Runtime.OUTCOME_YIELD_TICK
   end
 
   local function handleFollowerRecall(_, run)
@@ -1682,6 +1688,7 @@ do
   HANDLERS.follower_reposition = handleFollowerReposition
   HANDLERS.follower_is_event_trigger = handleFollowerIsEventTrigger
   HANDLERS.follower_transition = handleFollowerTransition
+  HANDLERS.follower_hop_into_ball = handleFollowerHopIntoBall
   HANDLERS.follower_recall = handleFollowerRecall
   HANDLERS.follower_move_to_player = handleFollowerMoveToPlayer
   HANDLERS.game_version = handleGameVersion

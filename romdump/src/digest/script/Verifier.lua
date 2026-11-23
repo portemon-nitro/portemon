@@ -88,6 +88,7 @@ local BLOCKING_OPS = {
 -- Operations that end the run phase: yield boundaries and stops.
 local YIELD_OPS = {
   yield_tick = true,
+  follower_hop_into_ball = true,
   lock_all = true,
   release_all = true,
   follower_reset_movement = true,
