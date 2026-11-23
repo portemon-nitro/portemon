@@ -524,7 +524,7 @@ local function handleCallCommon(node, run)
 end
 
 local function handleSetFlag(node, run)
-  local flagId = semanticsFor(run).resolveIdOperand(node.flag, run)
+  local flagId = semanticsFor(run).evaluateValue(node.flag, run)
   run.services.world:setFlag(flagId)
   if run.services.actors and run.services.actors.syncPresence then
     run.services.actors:syncPresence()
@@ -533,7 +533,7 @@ local function handleSetFlag(node, run)
 end
 
 local function handleClearFlag(node, run)
-  local flagId = semanticsFor(run).resolveIdOperand(node.flag, run)
+  local flagId = semanticsFor(run).evaluateValue(node.flag, run)
   run.services.world:clearFlag(flagId)
   if run.services.actors and run.services.actors.syncPresence then
     run.services.actors:syncPresence()

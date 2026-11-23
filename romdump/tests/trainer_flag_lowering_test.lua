@@ -29,7 +29,10 @@ local function lower(instructions)
   end
   local script = { label = "_ENTRY", instructions = built }
   local memberIr = { member = 5, scripts = { [0] = script }, movements = {} }
-  return SemanticLowering.lowerScript(script, memberIr, { stdCatalog = SourceCatalog.catalog() })
+  local lowered = SemanticLowering.lowerScript(script, memberIr, { stdCatalog = SourceCatalog.catalog() })
+  local steps = Structurer.structure(lowered, 0)
+  local report = Verifier.verifyScript(steps, script, memberIr, lowered.omissions)
+  return lowered, report
 end
 
 -- Translate and verify one synthetic script holding the given
@@ -171,5 +174,41 @@ function tests.variable_trainer_number_survives_the_branch_fold()
     value = "flag_value",
     flag = trainerValue({ value = "var", id = 0x8008 }),
   })
+end
+
+-- The existing SetFlagVar/ClearFlagVar/SetVarFromFlag commands retain their
+-- variable-reference identity through lowering; direct flags remain literal.
+function tests.variable_backed_flag_commands_keep_source_operand_identity()
+  local lowered, report = lower({
+    { 30, { { raw = 0x8006 } }, 0x20 },
+    { 31, { { raw = 0x8006 } }, 0x24 },
+    { 33, { { raw = 0x8006 } }, 0x28 },
+    { 34, { { raw = 0x8006 } }, 0x2C },
+    { 35, { { raw = 0x8006 }, { raw = 0x8007 } }, 0x30 },
+  })
+
+  Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "source flag operands must verify")
+  Assert.isTrue(report.complete)
+  Assert.deepEqual(lowered.items, {
+    { op = "set_flag", flag = 0x8006, provenance = { offsets = { 0x20 }, opcodes = { 30 } } },
+    { op = "clear_flag", flag = 0x8006, provenance = { offsets = { 0x24 }, opcodes = { 31 } } },
+    {
+      op = "set_flag",
+      flag = { value = "var", id = 0x8006 },
+      provenance = { offsets = { 0x28 }, opcodes = { 33 } },
+    },
+    {
+      op = "clear_flag",
+      flag = { value = "var", id = 0x8006 },
+      provenance = { offsets = { 0x2C }, opcodes = { 34 } },
+    },
+    {
+      op = "set_var",
+      variable = { value = "var", id = 0x8007 },
+      value = { value = "flag_value", flag = { value = "var", id = 0x8006 } },
+      provenance = { offsets = { 0x30 }, opcodes = { 35 } },
+    },
+  })
+  Assert.equal(#lowered.unsupported, 0)
 end
 return { tests = tests }
