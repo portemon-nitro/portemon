@@ -9,6 +9,7 @@ local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local ScriptDialogueHost = require("libs.hgss.src.script.ScriptDialogueHost")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
+local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local FieldMessageFixture = require("tests.support.FieldMessageFixture")
 local FieldYesNoController = require("libs.hgss.src.ui.FieldYesNoController")
 
@@ -818,14 +819,15 @@ end
 -- precomputed one-page layout. The message provider carries a plain
 -- two-glyph message the host resolves; the controller layout decides the
 -- boundary shape under test.
-local function productionHostWithPages(pages)
+local function productionHostWithPages(pages, opts)
+  opts = opts or {}
   local provider = assert(FieldMessageFixture.provider({ [901] = nameBankMessages("AB", "AB") }))
   local controller = FieldDialogueController.new({
     audio = { play = function() end },
     layout = function()
       return { pages = pages, warnings = {}, lineHeight = 16, lineSpacing = 0 }
     end,
-    policy = { interGlyphDelay = 0, glyphBudget = 1, abAcceleration = true },
+    policy = opts.policy or { interGlyphDelay = 0, glyphBudget = 1, abAcceleration = true },
     continueCursor = CURSOR,
   })
   local hostObject = ScriptDialogueHost.new({
@@ -985,6 +987,43 @@ function T.hold_preserves_the_prompt_clear_handoff_until_script_closure()
   Assert.isTrue(hostObject:isOpen(), "the handoff stays modal for the child UI")
   hostObject:close(true)
   Assert.isFalse(hostObject:isOpen(), "script closure releases the held prompt")
+end
+
+-- TURBO hold-to-advance across a script-owned message: a held source turns
+-- the printer's own page boundaries, while the final close edge surfaces as
+-- the deferred duty of the script task that owns it.
+function T.turbo_hold_advance_turns_pages_and_defers_the_script_owned_close()
+  local hostObject, controller = productionHostWithPages({
+    hostPage({ hostLine({ hostGlyph("A", 1) }) }, "prompt"),
+    hostPage({ hostLine({ hostGlyph("B", 2) }) }, "eos"),
+  }, { policy = TextSpeedPolicy.forSpeed("fastest") })
+  local cadence = TextSpeedPolicy.forSpeed("fastest").holdAdvanceTicks
+  openTestMessage(hostObject)
+  Assert.equal(revealToWait(hostObject, controller).state, "WAITING_BOUNDARY")
+  for _ = 1, cadence - 1 do
+    hostObject:advance({ actionDown = true })
+    Assert.equal(controller:status().state, "WAITING_BOUNDARY", "nothing turns before the cadence")
+    Assert.isFalse(hostObject:holdAdvanceDue())
+  end
+  hostObject:advance({ actionDown = true })
+  Assert.equal(controller:status().state, "REVEALING", "the held source turns the page")
+  Assert.equal(controller:status().pageIndex, 2)
+  Assert.equal(revealToWait(hostObject, controller).state, "WAITING_CLOSE")
+  for _ = 1, cadence - 1 do
+    hostObject:advance({ actionDown = true })
+    Assert.equal(controller:status().state, "WAITING_CLOSE")
+    Assert.isFalse(hostObject:holdAdvanceDue())
+  end
+  hostObject:advance({ actionDown = true })
+  Assert.equal(
+    controller:status().state,
+    "WAITING_CLOSE",
+    "the script owner keeps the close edge instead of the controller closing the window"
+  )
+  Assert.isTrue(hostObject:holdAdvanceDue(), "the cadence reports the deferred close edge")
+  Assert.isTrue(hostObject:printProgress().done, "the deferred close is printer completion")
+  hostObject:close(true)
+  Assert.isFalse(hostObject:isOpen(), "script closure releases the box the held source finished")
 end
 
 return { tests = T }

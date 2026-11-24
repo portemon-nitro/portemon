@@ -10,10 +10,11 @@
 ---@field printTicks integer
 ---@field calls table[]
 ---@field player table|nil
+---@field holdAdvance boolean the text-speed hold cadence reported for this tick
 local FakeDialogueHost = {}
 FakeDialogueHost.__index = FakeDialogueHost
 
----@param opts table|nil { printTicks, player }
+---@param opts table|nil { printTicks, player, holdAdvance }
 ---@return FakeDialogueHost
 function FakeDialogueHost.new(opts)
   opts = opts or {}
@@ -23,6 +24,7 @@ function FakeDialogueHost.new(opts)
     printTicks = opts.printTicks or 2,
     calls = {},
     player = opts.player,
+    holdAdvance = opts.holdAdvance == true,
   }, FakeDialogueHost)
 end
 
@@ -55,6 +57,14 @@ end
 function FakeDialogueHost:printProgress()
   local done = self.printRemaining <= 0
   return { pageIndex = 0, glyphIndex = done and 0 or 1, done = done }
+end
+
+-- The text-speed hold cadence for this tick: a box hands its close edge to
+-- the script task that owns it, so the task applies the synthesized edge
+-- instead of the controller closing itself. An open box reports it; a closed
+-- one reports nothing.
+function FakeDialogueHost:holdAdvanceDue()
+  return self.open and self.holdAdvance
 end
 
 function FakeDialogueHost:close(erase)

@@ -1132,7 +1132,7 @@ function T.tests.preview_lifetime_follows_the_menu_close()
   local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
   Assert.deepEqual(
     TextSpeedPolicy.forSpeed("mid"),
-    { interGlyphDelay = 4, glyphBudget = 1, abAcceleration = true },
+    { interGlyphDelay = 4, glyphBudget = 1, abAcceleration = true, holdAdvanceTicks = 0 },
     "the committed gameplay cadence is untouched"
   )
   local freshPrinter = livePrinter("mid")

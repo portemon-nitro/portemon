@@ -836,7 +836,15 @@ function ScriptDialogueHost:advance(input)
     actionDown = input.actionDown == true,
     cancelPressed = input.pressedCancel == true and not printerDone,
     cancelDown = input.cancelDown == true,
-  })
+  }, true)
+end
+
+-- The held-source continuation edge the current tick synthesized for this
+-- box. A script-owned box owns its own close edge, so the dialogue task reads
+-- the deferred edge here instead of letting the controller close the window.
+---@return boolean
+function ScriptDialogueHost:holdAdvanceDue()
+  return self:isOpen() and self._controller:holdAdvanceDue()
 end
 
 return ScriptDialogueHost

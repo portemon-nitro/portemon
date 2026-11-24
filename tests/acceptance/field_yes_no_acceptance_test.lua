@@ -442,4 +442,32 @@ function T.tests.cancelling_message_bearing_field_yes_no_releases_owned_dialogue
   end)
 end
 
+-- TURBO hold-to-advance never answers a field question: a held Action walks
+-- the message a script prints and leaves the script's choice waiting for its
+-- own fresh selection.
+function T.tests.turbo_hold_advance_never_answers_a_field_question()
+  withGame(singleDisplay(640, 480), function(game)
+    game:waitForFieldEntry()
+    game:startScript("acceptance.field_yes_no")
+    game.runtime:pressAction("acceptance")
+    game:advanceUntil("the held source reaches the script's choice", function()
+      return game.runtime.scripts.dialogueHost:yesNoPresentation() ~= nil
+    end, 480)
+    for _ = 1, 60 do
+      game:step()
+    end
+    Assert.isTrue(
+      game.runtime.scripts.dialogueHost:yesNoPresentation() ~= nil,
+      "a held Action must never answer a question"
+    )
+    Assert.equal(game.runtime.scripts.worldState:getVar(VAR_FIRST_RESULT), 0, "the held source writes no choice result")
+    game.runtime:releaseAction("acceptance")
+    pressDirection(game, "south")
+    pressAction(game)
+    game:advanceUntil("a fresh confirm writes the selected source result", function()
+      return game.runtime.scripts.worldState:getVar(VAR_FIRST_RESULT) == 1
+    end, 120)
+  end)
+end
+
 return T

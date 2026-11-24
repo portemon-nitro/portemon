@@ -35,9 +35,24 @@ function WaitInputTask.create(spec, ctx)
   }
 end
 
+---@param state table<string, unknown>
+---@param button string
+---@return boolean
+local function watches(state, button)
+  for _, candidate in ipairs(state.buttons) do
+    if candidate == button then
+      return true
+    end
+  end
+  return false
+end
+
 -- Read one immutable input edge: the action/cancel buttons (the fixed-tick
 -- snapshot's pressedAction/pressedCancel) and optionally the pressed
--- direction.
+-- direction. A text-speed policy that carries the held-source cadence
+-- supplies the acknowledgement of an open message box, so a held button can
+-- finish the message whose wait this is; a wait with no open box reads only
+-- fresh edges.
 ---@param state table<string, unknown>
 ---@param ctx table<string, unknown>
 ---@return string|nil a|b|direction
@@ -54,6 +69,13 @@ local function readEdge(state, ctx)
   end
   if edge ~= nil then
     return edge
+  end
+  local services = ctx.services
+  local dialogue = type(services) == "table" and services.dialogue or nil
+  if dialogue ~= nil and type(dialogue.holdAdvanceDue) == "function" and watches(state, "a") then
+    if dialogue:holdAdvanceDue() then
+      return "a"
+    end
   end
   if state.allowDpad and input.pressedDirection then
     return input.pressedDirection

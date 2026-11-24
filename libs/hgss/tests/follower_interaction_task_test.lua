@@ -152,6 +152,11 @@ local function fixture(programs, options)
     end
     return { done = self.finished }
   end
+  -- The text-speed hold cadence: this follower scenario passes no synthesized
+  -- continuation edge, so every wait needs its own fresh press.
+  function dialogue:holdAdvanceDue()
+    return false
+  end
   function dialogue:close()
     self.open = false
     self.closes = self.closes + 1

@@ -41,6 +41,8 @@ local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 ---@field _cursorTicksPerPhase integer
 ---@field _cursorCycleIndex integer
 ---@field _cursorTicksIntoPhase integer
+---@field _holdAdvanceCounter integer consecutive held ticks spent in a continuation wait
+---@field _holdAdvanceDue boolean true when the last stepped tick synthesized a held-source continuation edge
 local FieldDialogueController = {}
 FieldDialogueController.__index = FieldDialogueController
 
@@ -145,7 +147,12 @@ function FieldDialogueController.new(opts)
     "FieldDialogueController requires an audio host with play"
   )
   local policy = opts.policy
-    or (opts.printerDelay and { interGlyphDelay = opts.printerDelay, glyphBudget = 1, abAcceleration = true })
+    or (opts.printerDelay and {
+      interGlyphDelay = opts.printerDelay,
+      glyphBudget = 1,
+      abAcceleration = true,
+      holdAdvanceTicks = 0,
+    })
     or TextSpeedPolicy.forSpeed("fastest")
   local cursorSource = opts.continueCursor
   assert(cursorSource, "FieldDialogueController requires continueCursor from the validated field-UI manifest")
@@ -194,6 +201,8 @@ function FieldDialogueController.new(opts)
     _cursorTicksPerPhase = cursorTicks,
     _cursorCycleIndex = 1,
     _cursorTicksIntoPhase = 0,
+    _holdAdvanceCounter = 0,
+    _holdAdvanceDue = false,
     _presentation = nil,
     _presentationDirty = true,
   }, FieldDialogueController)
@@ -208,7 +217,7 @@ end
 -- copied table keeps later external edits from retiming this controller.
 -- An open request keeps the policy it opened with; changing defaults
 -- mid-request is an invariant fault with no mutation.
----@param policy { interGlyphDelay: integer, glyphBudget: integer, abAcceleration: boolean }
+---@param policy { interGlyphDelay: integer, glyphBudget: integer, abAcceleration: boolean, holdAdvanceTicks: integer? }
 function FieldDialogueController:setPolicy(policy)
   assert(type(policy) == "table", "dialogue policy must be a record")
   assert(
@@ -217,6 +226,11 @@ function FieldDialogueController:setPolicy(policy)
       and type(policy.abAcceleration) == "boolean",
     "dialogue policy carries the printer cadence shape"
   )
+  local holdAdvanceTicks = policy.holdAdvanceTicks or 0
+  assert(
+    type(holdAdvanceTicks) == "number" and holdAdvanceTicks >= 0 and holdAdvanceTicks % 1 == 0,
+    "dialogue policy hold cadence must be a non-negative integer"
+  )
   if self:isModal() then
     Errors.raise(
       FieldErrors.DIALOGUE_ALREADY_OPEN,
@@ -224,10 +238,12 @@ function FieldDialogueController:setPolicy(policy)
       { requestId = self._request and self._request.id }
     )
   end
+  self._holdAdvanceDue = false
   self._policy = {
     interGlyphDelay = policy.interGlyphDelay,
     glyphBudget = policy.glyphBudget,
     abAcceleration = policy.abAcceleration,
+    holdAdvanceTicks = holdAdvanceTicks,
   }
   self:_invalidatePresentation()
 end
@@ -703,13 +719,54 @@ function FieldDialogueController:_printerSubstep(sourceNew, sourceHeld)
   return false
 end
 
+-- Held-source continuation cadence for one fixed tick. A policy that
+-- carries holdAdvanceTicks lets a reader keep Action/Cancel held instead of
+-- pressing it per page: the wait synthesizes the same continuation edge a
+-- fresh press would produce once the cadence elapses. Reveal acceleration and
+-- cancellation keep their fresh-press contracts, and a fresh press restarts
+-- the cadence so a tap can never ride an accumulated count.
+---@param sourceNew boolean
+---@param sourceHeld boolean
+---@return boolean due
+function FieldDialogueController:_holdAdvanceTick(sourceNew, sourceHeld)
+  local cadence = self._policy.holdAdvanceTicks or 0
+  local waiting = self._state == "WAITING_BOUNDARY" or self._state == "WAITING_CLOSE"
+  if cadence <= 0 or sourceNew or not sourceHeld or not waiting then
+    self._holdAdvanceCounter = 0
+    self._holdAdvanceDue = false
+    return false
+  end
+  self._holdAdvanceCounter = self._holdAdvanceCounter + 1
+  if self._holdAdvanceCounter < cadence then
+    self._holdAdvanceDue = false
+    return false
+  end
+  self._holdAdvanceCounter = 0
+  self._holdAdvanceDue = true
+  return true
+end
+
+-- True when the last stepped tick synthesized a continuation edge from the
+-- held source. A caller that keeps the close edge in its own script task
+-- applies that deferred edge itself instead of letting the controller close
+-- the window out from under the script's close handoff.
+---@return boolean
+function FieldDialogueController:holdAdvanceDue()
+  return self._holdAdvanceDue
+end
+
 -- One fixed simulation tick. snapshot = { actionPressed, cancelPressed }
--- (the FieldInput snapshot edges this controller reads). Returns the
--- terminal result when this tick finished the dialogue, else nil.
+-- (the FieldInput snapshot edges this controller reads). Returns the terminal
+-- result when this tick finished the dialogue, else nil. `deferClose` states
+-- that the caller's script task owns this box's close edge, so a synthesized
+-- held edge is reported through holdAdvanceDue instead of closing the window.
+-- Callers that step the box themselves leave it false: an orphaned script box
+-- returns to field ownership, and the field owns its final close edge.
 
 ---@param snapshot FieldDialogueController.Input?
+---@param deferClose boolean?
 ---@return FieldDialogueController.Result?
-function FieldDialogueController:step(snapshot)
+function FieldDialogueController:step(snapshot, deferClose)
   if self._state == "CLOSED" then
     return nil
   end
@@ -719,6 +776,7 @@ function FieldDialogueController:step(snapshot)
   snapshot = snapshot or {}
   local sourceNew = snapshot.actionPressed == true or (not self._request.allowCancel and snapshot.cancelPressed == true)
   local sourceHeld = snapshot.actionDown == true or (not self._request.allowCancel and snapshot.cancelDown == true)
+  self._holdAdvanceDue = false
 
   if self._request.allowCancel and snapshot.cancelPressed and self._state ~= "CLOSING" then
     self._state = "CLOSED"
@@ -752,7 +810,9 @@ function FieldDialogueController:step(snapshot)
       end
     end
   elseif self._state == "WAITING_BOUNDARY" or self._state == "WAITING_CLOSE" then
-    if sourceNew then
+    local holdAdvance = self:_holdAdvanceTick(sourceNew, sourceHeld)
+    local deferred = deferClose == true and self._state == "WAITING_CLOSE"
+    if sourceNew or (holdAdvance and not deferred) then
       self._audio:play("SEQ_SE_DP_SELECT")
       if self._state == "WAITING_BOUNDARY" then
         local page = assert(self._pages[self._pageIndex])

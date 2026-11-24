@@ -45,6 +45,7 @@ local function harness(opts)
   local host = FakeDialogueHost.new({
     printTicks = opts.printTicks or 2,
     player = services.player,
+    holdAdvance = opts.holdAdvance,
   })
   services.dialogue = host
   services.advanceAsync = function()
@@ -164,6 +165,76 @@ T["input waits read edges only"] = function()
   Assert.isFalse(h.host:isOpen())
   h.scheduler:step(106, {})
   Assert.equal(h.services.world:getVar("VAR_AFTER"), 1)
+end
+
+-- 2b. A text-speed policy that carries the held-source cadence hands the
+-- dialogue task the synthesized edge: a held Action closes the message
+-- without a fresh press, while a following question still needs its own
+-- confirm.
+T["turbo hold advance closes the message but never answers the question"] = function()
+  local h = harness({ printTicks = 1, holdAdvance = true })
+  startForeground(
+    h,
+    script("test.turbo_hold", {
+      locals = { accepted = "serializable" },
+      steps = {
+        S.say({ message = "msg.test" }),
+        S.askYesNo({ message = "msg.choose", result = S.local_("accepted") }),
+        S.if_({
+          condition = S.eq(S.local_("accepted"), 0),
+          yes = { S.setVar({ variable = "VAR_AFTER", value = 1 }) },
+          no = { S.setVar({ variable = "VAR_AFTER", value = 2 }) },
+        }),
+        S.stop(),
+      },
+    }),
+    100
+  )
+  h.scheduler:step(100, {})
+  h.scheduler:step(101, {})
+  h.scheduler:step(102, {})
+  -- The armed wait takes the host's held-source edge: close defers one tick.
+  h.scheduler:step(103, {})
+  Assert.isTrue(h.host:isOpen(), "the close still defers one tick after the held edge")
+  h.scheduler:step(104, {})
+  Assert.isFalse(h.host:isOpen(), "the held source closes the message without a fresh press")
+  for tick = 105, 116 do
+    h.scheduler:step(tick, {})
+  end
+  Assert.equal(h.services.world:getVar("VAR_AFTER"), 0, "the held source never answers the choice")
+  for tick = 117, 124 do
+    h.scheduler:step(tick, { uiEvents = { { type = "confirm" } } })
+    if h.services.world:getVar("VAR_AFTER") ~= 0 then
+      break
+    end
+  end
+  Assert.equal(h.services.world:getVar("VAR_AFTER"), 1, "a fresh confirm answers the choice")
+end
+
+-- 2c. A held text-advance edge acknowledges the open message box a wait_input
+-- waits on; the same held state never satisfies a wait with no open box, so a
+-- bare input wait keeps its fresh-press contract.
+T["held text advance acknowledges an open message but not a bare wait"] = function()
+  local function run(withOpenBox)
+    local h = harness({ holdAdvance = withOpenBox })
+    h.host.open = withOpenBox
+    startForeground(
+      h,
+      script("test.hold_wait_" .. tostring(withOpenBox), {
+        S.waitInput({ buttons = { "a", "b" } }),
+        S.setVar({ variable = "VAR_AFTER", value = 1 }),
+        S.stop(),
+      }),
+      100
+    )
+    h.scheduler:step(100, {})
+    for tick = 101, 106 do
+      h.scheduler:step(tick, {})
+    end
+    return h.services.world:getVar("VAR_AFTER")
+  end
+  Assert.equal(run(true), 1, "the open message's held continuation edge acknowledges its wait")
+  Assert.equal(run(false), 0, "a wait with no open message still needs a fresh press")
 end
 
 -- 3. The interaction-triggering edge cannot satisfy a wait created by the

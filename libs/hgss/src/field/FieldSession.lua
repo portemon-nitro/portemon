@@ -1276,6 +1276,10 @@ local function runScriptPhase(self, inputSnapshot)
   schedulerInput.pressedDirection = inputSnapshot.pressedDirection
   schedulerInput.pressedAction = inputSnapshot.actionPressed
   schedulerInput.pressedCancel = inputSnapshot.cancelPressed
+  -- Held button facts travel with the edges: the script dialogue host needs
+  -- them to time the text-speed hold cadence on its script-owned boxes.
+  schedulerInput.actionDown = inputSnapshot.actionDown
+  schedulerInput.cancelDown = inputSnapshot.cancelDown
   schedulerInput.menuEvents = nil
   schedulerInput.uiEvents = nil
   -- The script-owned starter modal routes the same normalized UI events to

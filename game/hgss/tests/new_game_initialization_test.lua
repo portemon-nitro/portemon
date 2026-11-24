@@ -104,7 +104,7 @@ local function deepCopy(value)
   return copy
 end
 
-function T.applying_startup_flags_preserves_finalized_player_and_fast_options()
+function T.applying_startup_flags_preserves_finalized_player_and_new_game_text_speed()
   local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
   local candidate = finalizedCandidate()
   local playerDataBefore = deepCopy(candidate.playerData)
@@ -122,7 +122,7 @@ function T.applying_startup_flags_preserves_finalized_player_and_fast_options()
 
   Assert.deepEqual(result.playerData, playerDataBefore)
   Assert.deepEqual(result.options, optionsBefore)
-  Assert.equal(result.playerData.options.textSpeed, "fastest")
+  Assert.equal(result.playerData.options.textSpeed, "fast")
   Assert.isTrue(result.worldState:isFlagSet(flags.FLAG_UNK_960), "the opening flag must survive startup initialization")
   Assert.isTrue(result.worldState:isFlagSet(flags.FLAG_HIDE_PLAYERS_ROOM_BRONZE_TROPHY))
   Assert.isTrue(result.worldState:isFlagSet(flags.FLAG_HIDE_PLAYERS_ROOM_SILVER_TROPHY))

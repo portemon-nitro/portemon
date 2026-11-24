@@ -197,9 +197,11 @@ function PlayerData.validate(record, context)
   error(result)
 end
 
+-- New games open on FAST: quick to read while every page still waits for
+-- the reader, leaving the TURBO stop an explicit player choice.
 function PlayerData.defaultOptions()
   return {
-    textSpeed = "fastest",
+    textSpeed = "fast",
     textFrame = 0,
     battleStyle = PlayerData.DEFAULT_BATTLE_STYLE,
     battleScene = PlayerData.DEFAULT_BATTLE_SCENE,

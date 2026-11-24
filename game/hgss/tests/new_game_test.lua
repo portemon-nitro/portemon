@@ -103,7 +103,7 @@ function T.new_candidate_uses_source_owned_opening_state()
   })
   Assert.equal(candidate.profileDraft.money, 3000)
   Assert.deepEqual(candidate.options, {
-    textSpeed = "fastest",
+    textSpeed = "fast",
     textFrame = 0,
     battleStyle = "shift",
     battleScene = true,

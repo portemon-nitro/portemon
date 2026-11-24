@@ -40,6 +40,7 @@ local function controller(pages, opts)
       interGlyphDelay = (opts.printerDelay or 2) - 1,
       glyphBudget = 1,
       abAcceleration = true,
+      holdAdvanceTicks = opts.holdAdvanceTicks or 0,
     },
     audio = opts.audio or { play = function() end },
     continueCursor = opts.continueCursor or CURSOR,
@@ -429,6 +430,135 @@ function T.held_action_does_not_skip_multiple_pages()
   Assert.equal(c:status().state, "WAITING_CLOSE")
   c:step({ actionDown = true })
   Assert.equal(c:status().state, "WAITING_CLOSE")
+end
+
+-- A held source walks a TURBO message exactly like repeated presses: every
+-- continuation wait turns itself after the policy cadence, and the final wait
+-- closes the box. Nothing advances before the cadence elapses.
+function T.turbo_hold_advance_turns_pages_and_closes_on_cadence()
+  local played = {}
+  local c = controller({
+    page({ line({ glyph("A", 1) }) }, "prompt"),
+    page({ line({ glyph("B", 2) }) }, "eos"),
+  }, {
+    printerDelay = 1,
+    holdAdvanceTicks = 3,
+    audio = {
+      play = function(_, soundRef)
+        played[#played + 1] = soundRef
+      end,
+    },
+  })
+  local completed = 0
+  c:open(request("hold", message())):onComplete(function()
+    completed = completed + 1
+  end)
+  c:step({})
+  Assert.equal(c:status().state, "WAITING_BOUNDARY")
+  for held = 1, 2 do
+    c:step({ actionDown = true })
+    Assert.equal(c:status().state, "WAITING_BOUNDARY", "held tick " .. held .. " precedes the cadence")
+    Assert.equal(#played, 0, "no page turns before the cadence")
+  end
+  c:step({ actionDown = true })
+  Assert.equal(c:status().state, "REVEALING", "the cadence turns the page without a fresh press")
+  Assert.equal(c:status().pageIndex, 2)
+  Assert.equal(#played, 1, "a synthesized continuation plays the select sound")
+  c:step({ actionDown = true })
+  Assert.equal(c:status().state, "WAITING_CLOSE")
+  for _ = 1, 2 do
+    c:step({ actionDown = true })
+    Assert.equal(c:status().state, "WAITING_CLOSE", "the close wait keeps its own cadence")
+  end
+  c:step({ actionDown = true })
+  Assert.equal(c:status().state, "CLOSING", "the held source closes the finished message")
+  c:step({ actionDown = true })
+  Assert.equal(c:status().state, "CLOSED")
+  Assert.equal(completed, 1, "the held source completes the request exactly once")
+  Assert.equal(#played, 2, "each synthesized continuation plays once")
+end
+
+-- Releasing the source restarts the cadence, so a tap between holds can never
+-- ride an already accumulated count into an immediate page turn.
+function T.releasing_the_source_restarts_the_hold_cadence()
+  local c = controller({ page({ line({ glyph("A", 1) }) }, "prompt"), page({ line({ glyph("B", 2) }) }, "eos") }, {
+    printerDelay = 1,
+    holdAdvanceTicks = 3,
+  })
+  c:open(request("hold-release", message()))
+  c:step({})
+  c:step({ actionDown = true })
+  c:step({ actionDown = true })
+  c:step({})
+  for held = 1, 2 do
+    c:step({ actionDown = true })
+    Assert.equal(c:status().state, "WAITING_BOUNDARY", "the release cleared the accumulated ticks " .. held)
+  end
+  c:step({ actionDown = true })
+  Assert.equal(c:status().state, "REVEALING")
+end
+
+-- A script-owned box hands its close edge to the script task, so the cadence
+-- reports the deferred edge instead of closing the window out from under the
+-- script's close handoff. Page boundaries still belong to the printer, and an
+-- orphaned box returns to field ownership, whose own step closes it.
+function T.script_owned_close_defers_the_hold_advance_to_the_script_owner()
+  local c = controller({ page({ line({ glyph("A", 1) }) }, "prompt"), page({ line({ glyph("B", 2) }) }, "eos") }, {
+    printerDelay = 1,
+    holdAdvanceTicks = 3,
+  })
+  local req = request("script-hold", message())
+  req.metadata = { scriptOwned = true }
+  c:open(req)
+  c:step({}, true)
+  Assert.equal(c:status().state, "WAITING_BOUNDARY")
+  for _ = 1, 3 do
+    c:step({ actionDown = true }, true)
+  end
+  Assert.equal(c:status().pageIndex, 2, "a script-owned page boundary still turns on the cadence")
+  c:step({ actionDown = true }, true)
+  Assert.equal(c:status().state, "WAITING_CLOSE")
+  for _ = 1, 2 do
+    c:step({ actionDown = true }, true)
+    Assert.isFalse(c:holdAdvanceDue(), "quiet held ticks report no deferred edge")
+  end
+  c:step({ actionDown = true }, true)
+  Assert.equal(c:status().state, "WAITING_CLOSE", "the script owner keeps the close edge")
+  Assert.isTrue(c:holdAdvanceDue(), "the cadence hands the deferred edge to the script owner")
+  for _ = 1, 3 do
+    c:step({ actionDown = true })
+  end
+  Assert.equal(c:status().state, "CLOSING", "the field owner closes the orphaned box on the cadence")
+  c:step({})
+  Assert.equal(c:status().state, "CLOSED")
+end
+
+-- Cancel is a held continuation source only where cancel cannot act: a
+-- cancellable box still needs its own fresh cancel press.
+function T.held_cancel_advances_only_boxed_text_without_a_cancel_action()
+  local locked = controller({ page({ line({ glyph("A", 1) }) }, "eos") }, {
+    printerDelay = 1,
+    holdAdvanceTicks = 2,
+  })
+  locked:open(request("locked", message(), false))
+  locked:step({})
+  locked:step({ cancelDown = true })
+  Assert.equal(locked:status().state, "WAITING_CLOSE")
+  locked:step({ cancelDown = true })
+  Assert.equal(locked:status().state, "CLOSING", "holding B advances a message B cannot cancel")
+
+  local cancellable = controller({ page({ line({ glyph("A", 1) }) }, "eos") }, {
+    printerDelay = 1,
+    holdAdvanceTicks = 2,
+  })
+  cancellable:open(request("cancellable", message(), true))
+  cancellable:step({})
+  for _ = 1, 6 do
+    cancellable:step({ cancelDown = true })
+  end
+  Assert.equal(cancellable:status().state, "WAITING_CLOSE", "a cancellable box keeps B as cancel only")
+  cancellable:step({ cancelPressed = true })
+  Assert.equal(cancellable:status().state, "CLOSED", "a fresh cancel press still cancels")
 end
 
 function T.final_action_closes_and_completes_exactly_once()

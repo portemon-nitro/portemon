@@ -163,12 +163,12 @@ function T.tests.production_dialogue_continuation_emits_select_sound()
   end
 end
 
--- Typed Trainer Tips remain on the shared printer policy: the fresh-player
--- speed is observable through the production player-data bucket, and a held
+-- Typed Trainer Tips remain on the shared printer policy: the fixture's
+-- player-data speed is observable through the production bucket, and a held
 -- confirmation cannot instantly fill a live typed tip.
 function T.tests.trainer_tip_uses_shared_speed_policy_and_not_task_fill()
   withReadyVersion(function(game)
-    Assert.equal(game.runtime.playerData.options.textSpeed, "fastest", "fresh player data must use fastest text speed")
+    Assert.equal(game.runtime.playerData.options.textSpeed, "fastest", "the acceptance fixture boots at the TURBO stop")
     Assert.isNil(
       game.runtime.scripts.composition:effective("demo.signpost"),
       "acceptance signpost fixtures must not be installed in the production registry"
@@ -195,6 +195,31 @@ function T.tests.trainer_tip_uses_shared_speed_policy_and_not_task_fill()
       "fastest Trainer Tips must use the shared two-glyph printer budget per 60 Hz update; delta="
         .. tostring(after.revealedGlyphs - before.revealedGlyphs)
     )
+  end)
+end
+
+-- TURBO hold-to-advance through the production field composition: the
+-- fixture boots at the TURBO stop, so one held Action carries the ROM-backed
+-- message through its continuation waits and its final close without any
+-- further press edge.
+function T.tests.turbo_hold_advance_carries_the_message_through_its_waits()
+  withReadyVersion(function(game)
+    openVanillaDialogue(game)
+    game.runtime:pressAction("acceptance")
+    local sawWait, closed = false, false
+    for _ = 1, 1200 do
+      local snapshot = game:step()
+      if snapshot.dialogue.modal and snapshot.dialogue.waiting then
+        sawWait = true
+      end
+      if not snapshot.dialogue.modal then
+        closed = true
+        break
+      end
+    end
+    game.runtime:releaseAction("acceptance")
+    Assert.isTrue(sawWait, "the held source must reach a continuation wait")
+    Assert.isTrue(closed, "a held Action must carry the TURBO message to its close")
   end)
 end
 

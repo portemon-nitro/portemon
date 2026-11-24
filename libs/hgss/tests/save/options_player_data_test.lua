@@ -35,7 +35,7 @@ end
 
 local function options(overrides)
   local value = {
-    textSpeed = "fastest",
+    textSpeed = "fast",
     textFrame = 0,
     battleStyle = "shift",
     battleScene = true,
@@ -83,7 +83,7 @@ end
 
 function T.default_options_carry_the_full_six_field_record()
   Assert.deepEqual(options(), {
-    textSpeed = "fastest",
+    textSpeed = "fast",
     textFrame = 0,
     battleStyle = "shift",
     battleScene = true,
@@ -91,6 +91,12 @@ function T.default_options_carry_the_full_six_field_record()
     battleSpeed = 1,
   })
   Assert.deepEqual(PlayerData.defaultOptions(), options())
+end
+
+-- A new game opens on FAST: quick to read, still a fresh press per page, so
+-- the TURBO stop stays an explicit player choice.
+function T.new_games_default_to_the_fast_text_speed()
+  Assert.equal(PlayerData.defaultOptions().textSpeed, "fast")
 end
 
 function T.validate_options_round_trips_a_canonical_detached_copy()

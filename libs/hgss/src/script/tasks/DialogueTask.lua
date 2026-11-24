@@ -120,7 +120,10 @@ function DialogueTask._advance(state, ctx)
   end
   if phase == "input_armed" then
     local input = ctx.input or {}
-    local edge = (input.pressedAction or input.pressedCancel) and true or false
+    -- A held Action/Cancel on a text-speed policy that carries the hold
+    -- cadence reaches this wait through the host: the controller defers the
+    -- close edge to the script task that owns it.
+    local edge = (input.pressedAction or input.pressedCancel or host:holdAdvanceDue()) and true or false
     if edge then
       state.phase = "close_delay"
       state.phaseReadyInTicks = 1
