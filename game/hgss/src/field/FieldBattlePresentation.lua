@@ -2785,6 +2785,12 @@ function FieldBattlePresentation:_preparationServices()
     end
     if iconKey ~= nil then
       local icons = assert(envelope._monIconProvider, "battle command icons borrow the field icon provider")
+      -- Icon pages stage asynchronously behind the demand: a page still
+      -- preparing answers unavailable so the battle frame skips the icon
+      -- instead of raising mid-draw, and the icon appears once adopted.
+      if not icons:isPrepared(iconKey) then
+        return nil
+      end
       local dimensions = icons:dimensions(iconKey)
       local handle = icons:handleFor(iconKey)
       local frameIndex = frameIndexText ~= nil and tonumber(frameIndexText) or 1

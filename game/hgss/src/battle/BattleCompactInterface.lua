@@ -52,7 +52,6 @@ local TWO_OPTION_OUTER = { x = 0, y = 100, width = 256, height = 92 }
 local TWO_OPTION_QUESTION_LINES = 2
 local TWO_OPTION_ROW_HEIGHT = 20
 local COMMAND_IDS = { "fight", "bag", "pokemon", "run" }
-local COMMAND_LABELS = { fight = "FIGHT", bag = "BAG", pokemon = "POKEMON", run = "RUN" }
 local COMMAND_CELL_WIDTH = 64
 local COMMAND_CELL_HEIGHT = 20
 local MOVE_GRID_X = 8
@@ -1100,25 +1099,6 @@ local function wrapPrompt(text, message, maxWidth, maxLines)
   return lines
 end
 
----@param view table<string, unknown> internal semantic snapshot under drawing
----@param id string command identity under drawing
----@return string label wording for one command
-local function commandLabel(view, id)
-  if type(view.commands) == "table" then
-    for _, command in ipairs(view.commands) do
-      if type(command) == "table" and command.id == id then
-        if type(command.label) == "string" and command.label ~= "" then
-          return command.label
-        end
-        if type(command.name) == "string" and command.name ~= "" then
-          return command.name
-        end
-      end
-    end
-  end
-  return COMMAND_LABELS[id] or id
-end
-
 ---@param graphics table<string, unknown> injected host graphics
 ---@param background number[] shared window background under filling
 ---@param box table<string, unknown> half-open rect under filling
@@ -1180,34 +1160,40 @@ local function drawCommandDock(resources, view, content)
   for index, line in ipairs(promptLines) do
     drawLabel(text, line, PROMPT_ORIGIN.x, promptY + (index - 1) * 16)
   end
+  -- Surface facts follow native slot order even when their identities
+  -- replace the ordinary command in that slot.
+  local commands = type(view.commands) == "table" and view.commands or nil
   for index, id in ipairs(COMMAND_IDS) do
-    local column = (index - 1) % 2
-    local row = math.floor((index - 1) / 2)
-    local label = commandLabel(view, id)
-    if view.selection == id then
-      label = CURSOR .. " " .. label
-    end
-    local x = COMMAND_OUTER.x + 16 + column * COMMAND_CELL_WIDTH
-    local y = COMMAND_OUTER.y + 10 + row * COMMAND_CELL_HEIGHT
-    if id == "fight" and type(view.commandIcon) == "table" then
-      local iconFacts = view.commandIcon --[[@as table<string, unknown>]]
-      local assets = assert(resources.assets, "the compact render borrows its icon assets")
-      local icon =
-        assets:drawable("battle:icon:" .. tostring(iconFacts.key) .. ":frame:" .. tostring(iconFacts.frameIndex or 1))
-      if icon ~= nil then
-        local draw = assert(icon.draw, "the party icon uses the shared palette-exact draw handle")
-        LogicalSurface.clip(
-          resources.graphics,
-          { x = x, y = y, width = COMMAND_CELL_WIDTH, height = COMMAND_CELL_HEIGHT },
-          function()
-            draw(icon, resources.graphics, x + 2, y + 2, 0, 0.5, 0.5)
-          end
-        )
-        x = x + 20
+    local command = commands ~= nil and commands[index] or nil
+    if type(command) == "table" then
+      local column = (index - 1) % 2
+      local row = math.floor((index - 1) / 2)
+      local label = assert(command.label, "offered command controls carry their source label")
+      if view.selection == command.id then
+        label = CURSOR .. " " .. label
       end
+      local x = COMMAND_OUTER.x + 16 + column * COMMAND_CELL_WIDTH
+      local y = COMMAND_OUTER.y + 10 + row * COMMAND_CELL_HEIGHT
+      if id == "fight" and type(view.commandIcon) == "table" then
+        local iconFacts = view.commandIcon --[[@as table<string, unknown>]]
+        local assets = assert(resources.assets, "the compact render borrows its icon assets")
+        local icon =
+          assets:drawable("battle:icon:" .. tostring(iconFacts.key) .. ":frame:" .. tostring(iconFacts.frameIndex or 1))
+        if icon ~= nil then
+          local draw = assert(icon.draw, "the party icon uses the shared palette-exact draw handle")
+          LogicalSurface.clip(
+            resources.graphics,
+            { x = x, y = y, width = COMMAND_CELL_WIDTH, height = COMMAND_CELL_HEIGHT },
+            function()
+              draw(icon, resources.graphics, x + 2, y + 2, 0, 0.5, 0.5)
+            end
+          )
+          x = x + 20
+        end
+      end
+      drawLabel(text, label, x, y)
+      drawLabelFinger(resources, view, id, x, y)
     end
-    drawLabel(text, label, x, y)
-    drawLabelFinger(resources, view, id, x, y)
   end
   windows.drawApplicationFrame(content.prompt.content, frame)
   windows.drawApplicationFrame(content.commands.content, frame)

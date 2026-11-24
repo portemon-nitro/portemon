@@ -173,10 +173,10 @@ local function snapshot(mode, overrides)
       { combatant = 3, side = 2, hp = 57, maxHp = 57, visible = true, name = "FOE", level = 20, shakeDx = 0 },
     },
     commands = {
-      { id = "fight", enabled = true },
-      { id = "bag", enabled = true },
-      { id = "pokemon", enabled = true },
-      { id = "run", enabled = true },
+      { id = "fight", enabled = true, label = "FIGHT" },
+      { id = "bag", enabled = true, label = "BAG" },
+      { id = "pokemon", enabled = true, label = "POKEMON" },
+      { id = "run", enabled = true, label = "RUN" },
     },
     moves = {
       { slot = 0, name = "TACKLE", pp = 35, maxPp = 35, moveType = "NORMAL", enabled = true },

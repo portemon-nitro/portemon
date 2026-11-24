@@ -3822,7 +3822,8 @@ local function translateThrow(self, event)
   local ballKey = payload.ball --[[@as string]]
   local ball = itemName(self, ballKey)
   -- subscript_0011_ThrowBall: msg_0197_00857 names the throwing trainer and
-  -- finishes before StartCatchMonTask launches the ball with SEQ_SE_DP_THROW.
+  -- finishes before StartCatchMonTask launches the ball with SEQ_SE_DP_NAGERU
+  -- (numeric sequence 1802; retail battle source names it SEQ_SE_DP_THROW).
   local who = assert(self._playerName, "capture narration carries the player trainer name")
   enqueueMessage(self, messageText(self, "battle/narration/throw-ball", { who, ball }), false, 0)
   enqueue(self, { kind = "sound", cue = effectCue(BattleAudio.SINK_SOUNDS.throw), duration = 0 })

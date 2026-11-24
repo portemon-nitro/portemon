@@ -401,6 +401,19 @@ end
 -- native low-HP warning and EXP/level-up jingles will drive: staged
 -- symbols dispatch with handle scope while an unstaged symbol fails
 -- with its identity instead of playing silently.
+function T.capture_throw_voices_the_rom_indexed_capture_sound()
+  -- Numeric sequence 1802 voices the capture throw: the retail battle
+  -- source names it SEQ_SE_DP_THROW (battle_command.c PlaySE call
+  -- sites) while the ROM SDAT SYMB indexes the same slot as
+  -- SEQ_SE_DP_NAGERU. The runtime provider resolves by the indexed
+  -- symbol, so the sink role must carry the ROM-indexed name.
+  Assert.equal(
+    BattleAudio.SINK_SOUNDS.throw,
+    "SEQ_SE_DP_NAGERU",
+    "the capture throw voices the ROM-indexed sequence 1802"
+  )
+end
+
 function T.warning_and_progression_voices_keep_their_operation_contract()
   local voice, player = adapterOverEngine({ "synthetic-operation-low-hp", "synthetic-operation-exp" })
   local warning = voice:playEffect("synthetic-operation-low-hp")

@@ -36,7 +36,6 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 ---@field movieVideoStarted boolean true once the movie has advanced its first tick
 ---@field openingObserved boolean[]
 ---@field openingStarted boolean
----@field promotedScenes boolean
 ---@field promotedBootstrap boolean
 ---@field sceneError unknown?
 ---@field sceneFailed boolean
@@ -106,8 +105,11 @@ local FADE_IN_FRAMES = 18
 -- drawable.
 local LOADER_DWELL_SECONDS = 0.8
 -- Title geometry realization budget per update: one prepared mesh upload per
--- frame, so the title handoff never uploads a whole model in one frame.
+-- frame, so the title handoff never uploads a whole model in one frame. A
+-- loader-owned title build gates movie admission, so it advances several
+-- units per update while it is the only visible work.
 local TITLE_BUILD_WORK_UNITS = 1
+local TITLE_LOAD_WORK_UNITS = 4
 local DWELL_DT_CAP = 0.25
 local OPENING_SCENE_COUNT = 5
 
@@ -206,7 +208,6 @@ function StartupTitleState.new(options)
     movieVideoStarted = false,
     openingObserved = { false, false, false, false, false },
     openingStarted = false,
-    promotedScenes = false,
     promotedBootstrap = false,
     sceneError = nil,
     sceneFailed = false,
@@ -275,28 +276,19 @@ function StartupTitleState:_startRequests()
     return
   end
   self.requested = true
-  -- The five numbered opening scenes are demanded first: scene 1 starts
-  -- required while scenes 2..5 start near and are promoted to required
-  -- before playback. Optional audio is an independent near demand: it
-  -- never gates the visuals.
-  do
-    local ready, failure = self:_requestOpeningScene(1, "required")
+  -- All five numbered opening scenes are demanded as required from the start:
+  -- every one of them gates movie admission, so a near lane for scenes 2..5
+  -- would only delay the same closure. Optional audio is an independent near
+  -- demand: it never gates the visuals, only the soundtrack acknowledgement at
+  -- admission.
+  for sceneNumber = 1, OPENING_SCENE_COUNT do
+    local ready, failure = self:_requestOpeningScene(sceneNumber, "required")
     if failure ~= nil then
       self.sceneError = failure
       self.sceneFailed = true
       self.phase = "error"
     else
-      self.openingObserved[1] = ready
-    end
-    for sceneNumber = 2, OPENING_SCENE_COUNT do
-      local sceneReady, sceneFailure = self:_requestOpeningScene(sceneNumber, "near")
-      if sceneFailure ~= nil then
-        self.sceneError = sceneFailure
-        self.sceneFailed = true
-        self.phase = "error"
-      else
-        self.openingObserved[sceneNumber] = sceneReady
-      end
+      self.openingObserved[sceneNumber] = ready
     end
   end
   -- Request order preserves title priority ahead of broad menu/gameplay
@@ -338,9 +330,8 @@ function StartupTitleState:_startRequests()
   self:_maybeStartAudio()
 end
 
--- Polls the five numbered scene demands, promotes scenes 2..5 to required
--- once scene 1 is ready, and constructs the movie only after all five
--- validated packages are current. A terminal worker failure becomes a
+-- Polls the five numbered scene demands and constructs the movie only after
+-- all five validated packages are current. A terminal worker failure becomes a
 -- visible recoverable error; pending scenes simply keep the loader.
 function StartupTitleState:_pollOpeningScenes()
   if self.sceneFailed or self.movie ~= nil or self.movieCompleted then
@@ -348,11 +339,7 @@ function StartupTitleState:_pollOpeningScenes()
   end
   local allReady = true
   for sceneNumber = 1, OPENING_SCENE_COUNT do
-    local urgency = "required"
-    if sceneNumber > 1 and not self.promotedScenes then
-      urgency = "near"
-    end
-    local ready, failure = self:_requestOpeningScene(sceneNumber, urgency)
+    local ready, failure = self:_requestOpeningScene(sceneNumber, "required")
     if failure ~= nil then
       self.sceneError = failure
       self.sceneFailed = true
@@ -363,9 +350,6 @@ function StartupTitleState:_pollOpeningScenes()
     if not ready then
       allReady = false
     end
-  end
-  if self.openingObserved[1] then
-    self.promotedScenes = true
   end
   if allReady and self.phase == "loading" then
     self:_adoptMovie()
@@ -409,22 +393,18 @@ function StartupTitleState:_adoptMovie()
   end
   self.movie = assert(movie)
   self.movieScenes = scenes
-  -- A zero-length movie completes synchronously instead of waiting a tick.
-  if movie:isFinished() then
-    self:_finishMovie()
-    return
-  end
-  -- Otherwise the fully acquired movie stays staged behind the visible
-  -- loader at its first frame: update() enters the movie phase on the next
-  -- eligible update (at once on a warm entry, after the minimum beat on a
-  -- genuinely new import). No source tick advances and no movie frame
-  -- draws before that handoff.
+  -- The fully acquired movie stays staged behind the visible loader until the
+  -- title presentation is realized and the soundtrack acknowledges its start.
+  -- A zero-length session is staged the same way and handed over without ever
+  -- assuming the movie phase, so no loader appears between the two retail
+  -- presentations. No source tick advances and no movie frame draws before
+  -- that handoff.
 end
 
--- Enters the staged movie as soon as it is drawable. A genuinely new
--- import keeps one bounded loader beat so freshly adopted art stays
--- visible; a warm entry whose movie is already staged enters on the next
--- eligible update with no cosmetic wait. The staged movie is fully
+-- Enters the staged movie as soon as it is drawable and the title handoff is
+-- guaranteed. A genuinely new import keeps one bounded loader beat so freshly
+-- adopted art stays visible; a warm entry whose movie is already staged enters
+-- on the next eligible update with no cosmetic wait. The staged movie is fully
 -- acquired, so the first playable source frame draws directly at the
 -- transition with no interstitial.
 function StartupTitleState:_maybeEnterMovie()
@@ -434,7 +414,20 @@ function StartupTitleState:_maybeEnterMovie()
   if self.initialImport and self.loaderVisibleTime < LOADER_DWELL_SECONDS then
     return
   end
+  -- Admission invariant: the opening plays only once its successor presentation
+  -- is completely realized and owned here, so movie completion transfers
+  -- directly to the title with no loader and no synchronous build. The
+  -- soundtrack is confirmed only after that, so it never starts early while
+  -- the title is still being prepared.
+  if self.title == nil then
+    return
+  end
   if not self:_confirmSoundtrackStart() then
+    return
+  end
+  local movie = assert(self.movie)
+  if movie:isFinished() then
+    self:_finishMovie()
     return
   end
   self.phase = "movie"
@@ -442,10 +435,6 @@ function StartupTitleState:_maybeEnterMovie()
   -- black for the retail INIT beat before the first video tick.
   self.movieLeadIn = MOVIE_LEAD_IN_TICKS
   self.movieVideoStarted = false
-  local movie = assert(self.movie)
-  if movie:isFinished() then
-    self:_finishMovie()
-  end
 end
 
 -- Confirms the staged movie's soundtrack start without advancing a tick.
@@ -486,9 +475,10 @@ function StartupTitleState:openingAudioFailed(reason)
   self.phase = "error"
 end
 
--- Retires the finished or skipped movie exactly once. An independently
--- ready title follows; otherwise the retained loader stays visible rather
--- than a black interstitial.
+-- Retires the finished or skipped movie exactly once and hands the retained
+-- title over directly. Admission guarantees a realized title, so the ordinary
+-- handoff presents it in the same update; a title that lost its stage keeps the
+-- loader while its rebuild is advanced.
 function StartupTitleState:_finishMovie()
   local movie = self.movie
   if movie == nil then
@@ -497,9 +487,10 @@ function StartupTitleState:_finishMovie()
   self.movie = nil
   self.movieCompleted = true
   movie:dispose()
-  -- The staged title takes over as soon as its build is ready; a build still
-  -- in progress (or a title milestone still being validated) keeps the loader
-  -- visible and is advanced by the next polling update.
+  if self.title ~= nil then
+    self:_presentTitle()
+    return
+  end
   self.phase = "loading"
   self:_pollTitleBuild()
 end
@@ -535,15 +526,17 @@ function StartupTitleState:_beginTitleBuild()
   self.titleObserved = true
 end
 
--- Advances the staged title build by one bounded main-thread work unit and
--- hands the finished scene over once the cinematic has handed off.
+-- Advances the staged title build with the budget its current cover allows and
+-- adopts the finished scene. The loader owns the admission critical path, so it
+-- advances more units per update than an interactive handoff would.
 function StartupTitleState:_pollTitleBuild()
   local build = self.titleBuild
   if build == nil then
     return
   end
   if not build:isReady() then
-    local ok, failure = pcall(build.advance, build, TITLE_BUILD_WORK_UNITS)
+    local budget = self.phase == "loading" and TITLE_LOAD_WORK_UNITS or TITLE_BUILD_WORK_UNITS
+    local ok, failure = pcall(build.advance, build, budget)
     if not ok then
       self.titleError = failure
       self.phase = "error"
@@ -555,9 +548,7 @@ function StartupTitleState:_pollTitleBuild()
       return
     end
   end
-  if self.movieCompleted then
-    self:_adoptTitle()
-  end
+  self:_adoptTitle()
 end
 
 function StartupTitleState:_adoptTitle()
@@ -579,6 +570,20 @@ function StartupTitleState:_adoptTitle()
   -- The build laid out for the dimensions it began with; resizes while it was
   -- staged only reached this state.
   self.title:resize(self.width, self.height)
+  -- A title realized while the opening plays is retained behind it and
+  -- presented by the movie handoff; otherwise it presents right away.
+  if self.movieCompleted then
+    self:_presentTitle()
+  end
+end
+
+-- Makes the retained title the visible presentation, starting its retail entry
+-- cadence from zero. Called once by the movie handoff, or by adoption when no
+-- opening is staged in front of it.
+function StartupTitleState:_presentTitle()
+  if self.phase ~= "loading" and self.phase ~= "movie" then
+    return
+  end
   self.titleElapsed = 0
   self.titleEntry = TITLE_ENTRY_CALLS
   self.titleAnimating = false
@@ -743,7 +748,9 @@ end
 
 -- Re-enters the movie loop on title idle timeout. The title GPU graph is
 -- released before the movie scenes are re-acquired; the epoch, the staged
--- menu, and bootstrap readiness survive the loop.
+-- menu, and bootstrap readiness survive the loop. The next presentation is
+-- rebuilt behind the loader, so the loop is admitted through exactly the same
+-- title-realized invariant as the first cycle.
 function StartupTitleState:_reenterMovie()
   if not self:_live() or self.phase ~= "title" or self.skipRequested then
     return
@@ -784,18 +791,9 @@ function StartupTitleState:_reenterMovie()
   if self.audio ~= nil and type(self.audio.beginMovieCycle) == "function" then
     self.audio.beginMovieCycle()
   end
-  -- The idle loop admits through the same soundtrack confirmation as
-  -- normal entry; a rejected start holds the loader instead of playing
-  -- silently, and later updates retry the admission.
+  -- The loader covers the title rebuild and the soundtrack acknowledgement;
+  -- the next updates admit the staged movie through _maybeEnterMovie.
   self.phase = "loading"
-  if self:_confirmSoundtrackStart() then
-    self.phase = "movie"
-    self.movieLeadIn = MOVIE_LEAD_IN_TICKS
-    self.movieVideoStarted = false
-    if movie:isFinished() then
-      self:_finishMovie()
-    end
-  end
 end
 
 -- Ownership order only: detach before callback, never restore once the

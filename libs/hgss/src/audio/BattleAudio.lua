@@ -46,7 +46,12 @@ BattleAudio.SINK_SOUNDS = {
   impactWeak = "SEQ_SE_DP_KOUKA_L",
   shake = "SEQ_SE_DP_BOWA",
   recovery = "SEQ_SE_DP_KAIFUKU",
-  throw = "SEQ_SE_DP_THROW",
+  -- Numeric sequence 1802 voices the capture throw. Retail battle
+  -- source names it SEQ_SE_DP_THROW (battle_command.c and
+  -- battle_controller_opponent.c PlaySE call sites) while the ROM SDAT
+  -- SYMB indexes the same slot as SEQ_SE_DP_NAGERU; the provider
+  -- resolves by the indexed symbol, so the role carries the ROM name.
+  throw = "SEQ_SE_DP_NAGERU",
   captureOpen = "SEQ_SE_DP_BOWA4",
   ballBounce1 = "SEQ_SE_DP_KON",
   ballBounce2 = "SEQ_SE_DP_KON2",

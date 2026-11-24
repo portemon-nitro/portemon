@@ -796,7 +796,7 @@ return {
     [1799] = "SEQ_SE_DP_BOWA3",
     [1800] = "SEQ_SE_DP_BOWA4",
     [1801] = "SEQ_SE_DP_GETTING",
-    [1802] = "SEQ_SE_DP_THROW",
+    [1802] = "SEQ_SE_DP_NAGERU",
     [1803] = "SEQ_SE_DP_EXP",
     [1804] = "SEQ_SE_DP_EXPMAX",
     [1805] = "SEQ_SE_DP_EXPMAX2",

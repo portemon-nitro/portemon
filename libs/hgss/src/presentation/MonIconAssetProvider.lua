@@ -414,6 +414,18 @@ function MonIconAssetProvider:dimensions(iconKey)
   return { width = entry.width, height = entry.height }
 end
 
+-- Read-only availability probe: true while the selector's page is adopted.
+-- Consumers that must not draw an unprepared page ask here and hold
+-- instead; the getters above stay loud so a demand never silently drifts
+-- away from the drawn keys.
+---@param iconKey string
+---@return boolean prepared
+function MonIconAssetProvider:isPrepared(iconKey)
+  assert(not self._released, "the icon provider is released")
+  local entry = entryFor(self._manifest, iconKey)
+  return self._handles[entry.pageId] ~= nil
+end
+
 -- Returns every adopted page lease exactly once; quads and sampling
 -- handles reference no resources of their own, so dropping the caches is
 -- sufficient. Safe to call repeatedly. Pending interest is abandoned

@@ -2555,12 +2555,22 @@ local function snapshotCommandIcon(self, acting, latest)
       end
     end
     if iconRecord == nil then
+      -- The lead the command menu will show: the lowest party slot when the
+      -- own roster carries party sources, otherwise the first active own
+      -- battler (scripted lessons field no party slot). Demanding its icon
+      -- from the first published roster lets the page prepare while the
+      -- opening plays instead of reopening the demand on the menu frame.
+      local withoutSlot = nil
       for _, record in ipairs(latest.own) do
-        if type(record) == "table" and record.active ~= false and type(record.slot) == "number" then
-          iconRecord = record
-          break
+        if type(record) == "table" and record.active ~= false then
+          if type(record.slot) == "number" then
+            iconRecord = record
+            break
+          end
+          withoutSlot = withoutSlot or record
         end
       end
+      iconRecord = iconRecord or withoutSlot
     end
     if
       iconRecord ~= nil

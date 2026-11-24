@@ -209,7 +209,7 @@ function T.capture_choreography_emits_its_ordered_audio_intents()
     end
   end
   Assert.deepEqual(order, {
-    "SEQ_SE_DP_THROW",
+    "SEQ_SE_DP_NAGERU",
     "SEQ_SE_DP_BOWA4",
     "SEQ_SE_DP_KON",
     "SEQ_SE_DP_KON",

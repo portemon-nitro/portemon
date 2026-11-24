@@ -27,8 +27,9 @@ local ORDINARY_IDS = { fight = true, bag = true, pokemon = true, run = true }
 
 ---@return table preparation double resolving every key synthetically
 local function stubAssets()
-  local assets = { images = {} }
-  function assets.prepare(_)
+  local assets = { images = {}, demands = {} }
+  function assets.prepare(demand)
+    assets.demands[#assets.demands + 1] = demand
     return true
   end
   function assets.drawable(key)
@@ -88,14 +89,18 @@ local function compactMeasurement()
 end
 
 ---@param launchId string owning launch identity
+---@param options table<string, unknown>? extra screen collaborators (monIconProvider, ...)
 ---@return table live screen plus its presentation port and launch identity
-local function openScreen(launchId)
+local function openScreen(launchId, options)
+  local extra = options or {}
+  local assets = stubAssets()
   local audio = { plays = {} }
   function audio.play(name)
     audio.plays[#audio.plays + 1] = name
     return true
   end
   local submitted = {}
+  local text = recordingText()
   local screen = BattleScreenState.new({
     splRandomState = { state = 0 },
     launchId = launchId,
@@ -110,17 +115,25 @@ local function openScreen(launchId)
     end,
     measureDisplay = compactMeasurement,
     itemCatalog = ItemFixture.makeCatalog(),
-    assets = stubAssets(),
-    text = recordingText(),
+    assets = assets,
+    text = text,
     windows = recordingWindows(),
     audio = audio,
+    monIconProvider = extra.monIconProvider,
   })
   -- Preparation resolves on fixed updates, so the port acknowledges
   -- entry only after the holder reaches ready: settle first.
   for _ = 1, 10 do
     screen:updateFixed(TICK)
   end
-  return { screen = screen, port = screen:presentationPort(), launchId = launchId, submitted = submitted }
+  return {
+    screen = screen,
+    port = screen:presentationPort(),
+    launchId = launchId,
+    submitted = submitted,
+    assets = assets,
+    text = text,
+  }
 end
 
 ---@param combatant integer stable battler identity
@@ -226,6 +239,17 @@ local function isOrdinarySurface(ids)
   return true
 end
 
+---@param fixture table open screen fixture resting on its command view
+---@return table<string, boolean> labels drawn by the compact command dock
+local function compactCommandLabels(fixture)
+  fixture.screen:draw({ graphics = FakeGraphics.new({}) })
+  local labels = {}
+  for _, drawn in ipairs(fixture.text.draws) do
+    labels[drawn.content:gsub("^‣ ", "")] = true
+  end
+  return labels
+end
+
 ---@return table[] ordinary detached command choices with run permitted
 local function ordinaryChoices()
   return {
@@ -270,6 +294,14 @@ function T.safari_presentation_uses_its_own_controls()
   Assert.isTrue(status.request ~= nil, "setup: the safari fixture exposes its decision request")
   local ids = commandIds(fixture.screen:view())
   Assert.isFalse(isOrdinarySurface(ids), "the safari surface never shows the ordinary four-command set")
+  local labels = compactCommandLabels(fixture)
+  Assert.isTrue(labels.BALL == true, "the compact safari draws its staged ball label")
+  Assert.isTrue(labels.BAIT == true, "the compact safari draws its staged bait label")
+  Assert.isTrue(labels.MUD == true, "the compact safari draws its staged mud label")
+  Assert.isTrue(labels.RUN == true, "the compact safari draws its staged run label")
+  Assert.isNil(labels.FIGHT, "the compact safari does not draw the replaced Fight label")
+  Assert.isNil(labels.BAG, "the compact safari does not draw the replaced Bag label")
+  Assert.isNil(labels.POKEMON, "the compact safari does not draw the replaced Pokemon label")
   fixture.screen:dispose()
 end
 
@@ -325,6 +357,39 @@ function T.tutorial_presentation_restricts_its_command_family()
   fixture.screen:dispose()
 end
 
+-- The command icon's page is demanded from the first published own
+-- roster, not the first command request: the acting lead's icon stages
+-- while the opening plays instead of reopening the asset demand on the
+-- frame the menu appears. Scripted lessons field no party slot, so the
+-- demand falls back to the first active own battler.
+function T.command_icon_demand_starts_with_the_first_own_roster()
+  local fixture = openScreen("special-context-icon-demand", { monIconProvider = {} })
+  Assert.isTrue(
+    fixture.port.enter({ launchId = fixture.launchId, kind = "scripted", tutorial = true }),
+    "setup: the marked scripted launch enters"
+  )
+  local view = {
+    own = { battlerRecord(1, 1, "EEVEE", "LEADA", "EEVEE/0/male/plain/back") },
+    foes = { battlerRecord(3, 2, "RATTATA", "FOEX", "RATTATA/0/male/plain/front") },
+  }
+  fixture.port.present({ launchId = fixture.launchId, packetId = 1, events = {}, before = view, after = view })
+  for _ = 1, 5 do
+    fixture.screen:updateFixed(TICK)
+  end
+  Assert.equal(fixture.screen:status().mode ~= "command", true, "setup: the opening has not reached the menu")
+  local demand = fixture.assets.demands[#fixture.assets.demands]
+  Assert.notNil(demand, "the opening asserts its resource demand")
+  local demanded = {}
+  for _, iconKey in ipairs(demand.iconKeys or {}) do
+    demanded[iconKey] = true
+  end
+  Assert.isTrue(
+    demanded["EEVEE/f0"] == true,
+    "the acting lead's icon page is demanded before the command menu opens"
+  )
+  fixture.screen:dispose()
+end
+
 -- The scripted lesson reaches the same tutorial surface behind its
 -- marker: a scripted launch carrying the tutorial flag offers only
 -- fight and bag, never a new launch kind.
@@ -342,6 +407,11 @@ function T.scripted_tutorial_marker_reaches_the_lesson_surface()
   Assert.isTrue(ids.bag == true, "the lesson offers its scripted bag")
   Assert.isTrue(ids.pokemon == nil, "the lesson never offers party selection")
   Assert.isTrue(ids.run == nil, "the lesson never offers flight")
+  local labels = compactCommandLabels(fixture)
+  Assert.isTrue(labels.FIGHT == true, "the compact lesson draws its offered Fight control")
+  Assert.isTrue(labels.BAG == true, "the compact lesson draws its offered Bag control")
+  Assert.isNil(labels.POKEMON, "the compact lesson draws no unavailable Pokemon control")
+  Assert.isNil(labels.RUN, "the compact lesson draws no unavailable Run control")
   fixture.screen:dispose()
 end
 

@@ -3024,13 +3024,13 @@ local function drawControls(resources, view, layout, regions)
       end
     end
   end
-  local commandsById = {}
+  -- Surface facts follow native slot order even when their identities
+  -- replace the ordinary command in that slot.
+  local commandsBySlot = {}
   if type(view.commands) == "table" then
-    for _, command in ipairs(view.commands) do
+    for index, command in ipairs(view.commands) do
       if type(command) == "table" and type(command.id) == "string" then
-        commandsById[
-          command.id --[[@as string]]
-        ] = command
+        commandsBySlot[index] = command
       end
     end
   end
@@ -3046,24 +3046,26 @@ local function drawControls(resources, view, layout, regions)
     drawRoleText(text, role, content, x, anchor.y - 8 + offsetY, palette)
   end
   local drawRegions = layout == "target" and BattleMenuRegions.forLayout("target") or regions
-  for _, region in ipairs(drawRegions) do
+  for index, region in ipairs(drawRegions) do
     local box = region --[[@as table<string, unknown>]]
     local id = box.id --[[@as string]]
-    local pressed = armed ~= nil and armed.id == id and armed.scope == layout
+    local command = commandsBySlot[index]
+    local controlId = layout == "command" and command ~= nil and command.id or id
+    local pressed = armed ~= nil and armed.id == controlId and armed.scope == layout
     local offsetY = pressed and -2 or 0
-    if feedback ~= nil and feedback.id == id and feedback.scope == layout then
+    if feedback ~= nil and feedback.id == controlId and feedback.scope == layout then
       offsetY = feedback.offsetY --[[@as number]]
     end
     local art = assets:drawable("menu:" .. layout .. ":" .. id)
     local slot = id:match("^move:(%d+)$")
-    if slot ~= nil and movesBySlot[tonumber(slot)] == nil then
-      -- Missing move slots stay visibly empty: no art, no label.
+    if (layout == "command" and command == nil) or (slot ~= nil and movesBySlot[tonumber(slot)] == nil) then
+      -- Missing command and move slots stay visibly empty: no art, no label.
     else
       if art ~= nil then
         drawArtwork(graphics, art, nil, box.x --[[@as number]], box.y --[[@as number]])
       end
       if layout == "command" and COMMAND_ANCHORS[id] ~= nil then
-        local entry = assert(commandsById[id], "command controls carry their source facts")
+        local entry = assert(command, "offered command controls carry their source facts")
         local slots = COMMAND_SLOTS[id]
         if id == "fight" and type(view.commandIcon) == "table" then
           local iconFacts = view.commandIcon --[[@as table<string, unknown>]]
@@ -3160,7 +3162,7 @@ local function drawControls(resources, view, layout, regions)
           )
         end
       elseif id:match("^target:") ~= nil then
-        local index = tonumber(id:match("^target:(%d+)$")) --[[@as integer]]
+        local targetIndex = tonumber(id:match("^target:(%d+)$")) --[[@as integer]]
         local candidate = targetCandidate(view, id)
         if candidate ~= nil then
           local gender = candidate.gender
@@ -3171,7 +3173,7 @@ local function drawControls(resources, view, layout, regions)
           label(
             "menu",
             name .. marker,
-            TARGET_ANCHORS[index + 1],
+            TARGET_ANCHORS[targetIndex + 1],
             true,
             offsetY,
             sourcePalette(view, "menu", 6, opponent and 1 or 4, opponent and 2 or 5, opponent and 3 or 6)

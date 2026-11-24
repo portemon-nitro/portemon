@@ -425,6 +425,27 @@ end
 
 -- An unknown icon key fails the round as a visible error instead of
 -- enrolling partial page work or raising through the update boundary.
+-- A consumer that must not draw an unprepared page asks the read-only
+-- availability probe instead of catching the getter's loud error: the
+-- selector answers unavailable until its page adopts and stays
+-- unavailable for any page outside the current demand.
+function T.availability_probe_reports_only_adopted_pages()
+  local pool, _, _ = iconPool()
+  local provider = MonIconAssetProvider.new(seedPaged(), {
+    graphics = stubGraphics(),
+    imagePool = pool,
+    derivedAssets = readyDerivedAssets(),
+  })
+  Assert.isFalse(provider:isPrepared("CHIKORITA/f0"), "an undemanded page is unavailable")
+  prepareUntilReady(provider, { "CHIKORITA/f0" })
+  Assert.isTrue(provider:isPrepared("CHIKORITA/f0"), "the adopted page answers available")
+  Assert.isFalse(provider:isPrepared("TOTODILE/f0"), "a page outside the demand stays unavailable")
+  prepareUntilReady(provider, { "TOTODILE/f0" })
+  Assert.isTrue(provider:isPrepared("TOTODILE/f0"), "the newly demanded page answers available")
+  Assert.isFalse(provider:isPrepared("CHIKORITA/f0"), "the replaced demand answers unavailable")
+  provider:release()
+end
+
 function T.unknown_keys_fail_preparation_loudly()
   local pool, inner, requested = iconPool()
   local compiled = {}

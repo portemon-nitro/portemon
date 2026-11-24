@@ -2469,6 +2469,55 @@ local function drawNativePane(paneId, view, layout, held, doublesHud, graphicsOv
   return { graphics = graphics, text = text, windows = windows, pictures = pictureRecords }
 end
 
+-- Command facts follow the four native slots even when a launch replaces
+-- their identities. A restricted surface leaves the remaining slots empty
+-- instead of inventing ordinary labels for controls it does not offer.
+function T.command_controls_draw_only_the_offered_surface_slots()
+  local tutorial = drawNativePane(
+    "interaction",
+    nativeView({
+      commands = {
+        { id = "fight", enabled = true, label = "FIGHT" },
+        { id = "bag", enabled = true, label = "BAG" },
+      },
+    }),
+    "command"
+  )
+  local tutorialLabels = {}
+  for _, entry in ipairs(tutorial.text.draws) do
+    tutorialLabels[entry.content] = true
+  end
+  Assert.isTrue(tutorialLabels.FIGHT == true, "the restricted surface draws Fight from its first slot")
+  Assert.isTrue(tutorialLabels.BAG == true, "the restricted surface draws Bag from its second slot")
+  Assert.isNil(tutorialLabels.POKEMON, "the restricted surface leaves the third command slot empty")
+  Assert.isNil(tutorialLabels.RUN, "the restricted surface leaves the fourth command slot empty")
+
+  local safari = drawNativePane(
+    "interaction",
+    nativeView({
+      selection = "safari-ball",
+      commands = {
+        { id = "safari-ball", enabled = true, label = "BALL" },
+        { id = "safari-bait", enabled = true, label = "BAIT" },
+        { id = "safari-mud", enabled = true, label = "MUD" },
+        { id = "run", enabled = true, label = "RUN" },
+      },
+    }),
+    "command"
+  )
+  local safariLabels = {}
+  for _, entry in ipairs(safari.text.draws) do
+    safariLabels[entry.content] = true
+  end
+  Assert.isTrue(safariLabels.BALL == true, "the Fight slot draws its staged ball label")
+  Assert.isTrue(safariLabels.BAIT == true, "the Bag slot draws its staged bait label")
+  Assert.isTrue(safariLabels.MUD == true, "the Pokemon slot draws its staged mud label")
+  Assert.isTrue(safariLabels.RUN == true, "the Run slot keeps its staged run label")
+  Assert.isNil(safariLabels.FIGHT, "a relabelled slot does not also draw the ordinary Fight label")
+  Assert.isNil(safariLabels.BAG, "a relabelled slot does not also draw the ordinary Bag label")
+  Assert.isNil(safariLabels.POKEMON, "a relabelled slot does not also draw the ordinary Pokemon label")
+end
+
 ---@param pictures table[] rendered source picture records
 ---@param handle string staged drawable identity
 ---@return table[] matching source picture records

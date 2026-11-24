@@ -8,8 +8,12 @@
 local Assert = require("tests.support.Assert")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
+local CacheFs = require("libs.storage.src.CacheFs")
+local FakeCache = require("tests.support.FakeCache")
 local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
+local MonCache = require("libs.assets.src.MonCache")
+local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
 
 local T = {}
@@ -144,9 +148,10 @@ end
 
 ---@param staged table<string, unknown>? staged manifest the cache answers, nil for the planning inventory
 ---@param battleMenus table<string, unknown>? borrowed field bag and party services behind icon keys
+---@param monIconProvider table<string, unknown>? shared field icon page provider behind battle icons
 ---@return FieldBattlePresentation
 ---@return table<string, unknown> recording pool
-local function envelopeFor(staged, headless, battleMenus)
+local function envelopeFor(staged, headless, battleMenus, monIconProvider)
   local cacheFs = { versionId = "staged-art-probe" }
   function cacheFs:loadLua(path)
     if path == BattlePresentationCache.manifestPath() then
@@ -182,6 +187,7 @@ local function envelopeFor(staged, headless, battleMenus)
     graphics = graphics,
     imagePool = pool,
     battleMenus = battleMenus,
+    monIconProvider = monIconProvider,
   })
   return envelope, pool
 end
@@ -770,6 +776,107 @@ function T.battle_detail_icons_resolve_through_their_staged_manifests()
   Assert.equal(width, 24, "status icons keep their staged width")
   Assert.equal(height, 8, "status icons keep their staged height")
   Assert.isNil(resolvedPath(envelope, pool, "battle:status-icon:bogus"), "an unknown status resolves to nothing")
+  envelope:dispose()
+end
+
+-- A shared field icon page provider whose demand the test drives directly:
+-- one manifest page behind CHIKORITA/f0 and one behind TOTODILE/f0, with
+-- the shared image owner answering ready only on its second poll so the
+-- still-preparing window stays observable.
+---@return table<string, unknown> real icon page provider over a synthetic cache
+local function iconPageProvider()
+  local function pageEntry(pageId, x, y)
+    return {
+      x = x,
+      y = y,
+      width = 32,
+      height = 32,
+      frames = { { x = x, y = y, width = 32, height = 32, duration = 1 } },
+      pageId = pageId,
+    }
+  end
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  cache:writeLua(MonCache.iconManifestPath(), {
+    schema = MonCache.ICON_MANIFEST_SCHEMA,
+    version = { id = "heartgold", language = "english" },
+    pages = {
+      [0] = { pageId = 0, image = MonCache.iconPagePath(0), width = 256, height = 128 },
+      [1] = { pageId = 1, image = MonCache.iconPagePath(1), width = 256, height = 128 },
+    },
+    pageIds = { 0, 1 },
+    entries = {
+      ["CHIKORITA/f0"] = pageEntry(0, 0, 0),
+      ["TOTODILE/f0"] = pageEntry(1, 64, 0),
+    },
+    representative = { "CHIKORITA/f0", "TOTODILE/f0" },
+  })
+  cache:write(MonCache.iconPagePath(0), "page-zero-bytes")
+  cache:write(MonCache.iconPagePath(1), "page-one-bytes")
+  local polls = 0
+  local pool = {}
+  function pool:request(path, _, _)
+    return path
+  end
+  function pool:poll(_)
+    polls = polls + 1
+    return polls > 1 and "ready" or "pending"
+  end
+  function pool:acquire(_)
+    local image = {
+      getWidth = function()
+        return 256
+      end,
+      getHeight = function()
+        return 128
+      end,
+    }
+    return { image = image, width = 256, height = 128, kind = "rgba8" }
+  end
+  function pool:release(_) end
+  function pool:cancel(_) end
+  return MonIconAssetProvider.new(cache, {
+    graphics = {
+      newImage = function()
+        return {}
+      end,
+      newQuad = function(x, y, width, height)
+        return { x = x, y = y, width = width, height = height }
+      end,
+    },
+    imagePool = pool,
+    derivedAssets = {
+      requestIconPage = function()
+        return true
+      end,
+    },
+  })
+end
+
+-- Battle mon icons ride the shared field icon provider, whose pages stage
+-- asynchronously. A page still preparing answers unavailable so a live
+-- battle frame skips the icon instead of raising mid-draw, and the same
+-- key draws once its page adopts. Unknown selectors still fail loudly.
+function T.battle_icons_wait_for_their_prepared_page()
+  local icons = iconPageProvider()
+  local envelope = envelopeFor(stagedManifest(), false, nil, icons)
+  local key = "battle:icon:CHIKORITA/f0:frame:1"
+  local unprepared, unpreparedFailure = envelope._services.drawable(key)
+  Assert.isNil(unprepared, "an undemanded icon page answers unavailable")
+  Assert.isNil(unpreparedFailure, "an undemanded icon page is not a failure")
+  Assert.isFalse(icons:prepareKeys({ "CHIKORITA/f0" }), "the demanded page stays preparing")
+  Assert.isNil(envelope._services.drawable(key), "a preparing icon page answers unavailable")
+  Assert.isTrue(icons:prepareKeys({ "CHIKORITA/f0" }), "the demanded page adopts on the next round")
+  local handle, failure = envelope._services.drawable(key)
+  Assert.isNil(failure, "the adopted icon page resolves without failure")
+  Assert.notNil(handle, "the adopted icon page hands out its drawable")
+  local width, height = handle:getDimensions()
+  Assert.equal(width, 32, "battle icons keep their staged width")
+  Assert.equal(height, 32, "battle icons keep their staged height")
+  local unknownOk = pcall(function()
+    return envelope._services.drawable("battle:icon:MISSINGNO/f0:frame:1")
+  end)
+  Assert.isFalse(unknownOk, "an unknown icon selector still fails loudly")
+  icons:release()
   envelope:dispose()
 end
 
