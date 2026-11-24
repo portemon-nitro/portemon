@@ -53,6 +53,7 @@ local TASK_MODULES = {
   "libs.hgss.src.script.tasks.MonPictureTask",
   "libs.hgss.src.script.tasks.PokemonCenterHealTask",
   "libs.hgss.src.script.tasks.EggHatchTask",
+  "libs.hgss.src.script.tasks.NpcTradeTask",
   "libs.hgss.src.script.tasks.BattleTask",
   "libs.hgss.src.script.tasks.WhiteoutTask",
   "libs.hgss.src.script.tasks.CelebiTimeTravelTask",

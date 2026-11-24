@@ -2204,6 +2204,18 @@ FieldHandlers[776] = require("romdump.src.digest.script.lowering.PokemonCareHand
 FieldHandlers[777] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").monIsFromTogepiEgg
 FieldHandlers[690] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").sanitizeMon
 FieldHandlers[715] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").updateObjects
+-- The NPC exchange and loan family: the trade context, its three queries, the
+-- blocking exchange, the release, the in-game-trade party picker, and the two
+-- loan commands.
+FieldHandlers[470] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").loadNpcTrade
+FieldHandlers[471] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").offeredSpecies
+FieldHandlers[472] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").requestedSpecies
+FieldHandlers[612] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").unusedFlag
+FieldHandlers[473] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").npcTradeExec
+FieldHandlers[474] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").npcTradeEnd
+FieldHandlers[566] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").choosePartyMonForTrade
+FieldHandlers[362] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").giveLoanMon
+FieldHandlers[363] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").checkReturnLoanMon
 -- The gym mechanism family rides the cohesive StoryHandlers leaf for the same
 -- local-budget reason: the init commands install their own closed kind, the
 -- lift and candle binding carry no operands, the selector-driven commands read

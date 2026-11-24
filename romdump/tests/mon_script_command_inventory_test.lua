@@ -159,7 +159,7 @@ function T.non_command_table_entry_keeps_its_independent_identity()
 end
 
 function T.absent_parent_commands_stay_out_of_the_supported_set()
-  for _, opcode in ipairs({ 452, 816 }) do
+  for _, opcode in ipairs({ 468, 567 }) do
     local tagged = assert(ScriptCommands.byOpcode[opcode], "the pinned catalog names opcode " .. opcode)
     Assert.isTrue(
       tagged.disposition ~= "supported",

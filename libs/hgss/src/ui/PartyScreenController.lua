@@ -21,7 +21,7 @@ local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
 local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 
 ---@class PartyScreenController
----@field _context "browse"|"pick"|"battle_pick"|"item_target"|"give_target"|"give_resume"|"daycare_store"
+---@field _context "browse"|"pick"|"battle_pick"|"item_target"|"give_target"|"give_resume"|"daycare_store"|"npc_trade"
 ---@field _model PartyScreenController.Model
 ---@field _facts PartyScreenController.View? the retained projection owned by refreshFacts
 ---@field _factsModel PartyScreenController.Model? the model that produced the retained projection
@@ -57,7 +57,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _prompt YesNoPromptController?
 ---@field _promptReturn string
 ---@field _promptEntry PartyScreenController.MenuEntry?
----@field _careStoreSlot integer? the Day Care slot whose capsule confirmation is open
+---@field _capsuleSlot integer? the party slot whose capsule confirmation is open
 ---@field _result PartyScreenController.Result?
 ---@field _closed boolean
 ---@field _tick integer
@@ -115,7 +115,7 @@ PartyScreenController.__index = PartyScreenController
 ---@field slot integer?
 
 ---@class PartyScreenController.Options
----@field context "browse"|"pick"|"battle_pick"|"item_target"|"give_target"|"give_resume"|"daycare_store"
+---@field context "browse"|"pick"|"battle_pick"|"item_target"|"give_target"|"give_resume"|"daycare_store"|"npc_trade"
 ---@field initialFocus integer|"cancel"?
 ---@field allowCancel boolean?
 ---@field model PartyScreenController.Model
@@ -230,7 +230,8 @@ function PartyScreenController.new(opts)
       or opts.context == "item_target"
       or opts.context == "give_target"
       or opts.context == "give_resume"
-      or opts.context == "daycare_store",
+      or opts.context == "daycare_store"
+      or opts.context == "npc_trade",
     "the party controller requires a named party context"
   )
   assert(
@@ -333,7 +334,7 @@ function PartyScreenController.new(opts)
     _prompt = nil,
     _promptReturn = "browse",
     _promptEntry = nil,
-    _careStoreSlot = nil,
+    _capsuleSlot = nil,
     _result = nil,
     _closed = false,
     _tick = 0,
@@ -1096,7 +1097,7 @@ end
 function PartyScreenController:_confirmSlotTarget()
   local node = self._cursorNode
   if node == "cancel" then
-    if self._context == "pick" or self._context == "battle_pick" then
+    if self._context == "pick" or self._context == "battle_pick" or self._context == "npc_trade" then
       self:_cancelPick()
       return
     end
@@ -1145,6 +1146,22 @@ function PartyScreenController:_confirmSlotTarget()
   assert(isSlotNode(node), "targets resolve to party slots")
   if self._context == "pick" or self._context == "battle_pick" then
     ---@cast node integer
+    self._result = { kind = "selected", slot = node }
+    self:_transition("closing")
+    return
+  end
+  if self._context == "npc_trade" then
+    ---@cast node integer
+    -- PartyMenu_ConfirmRemoveCapsule: a record carrying a ball capsule asks the
+    -- source removal question and a decline returns to the picker; every other
+    -- record is accepted directly.
+    local record = assert(self._view.slots[node + 1], "the trade picker reads visible slots")
+    if record.capsule ~= nil then
+      self._capsuleSlot = node
+      self._menuSlot = node
+      self:_openConfirm({ kind = "npc_trade", label = "" }, "browse")
+      return
+    end
     self._result = { kind = "selected", slot = node }
     self:_transition("closing")
     return
@@ -1323,7 +1340,7 @@ function PartyScreenController:_activateCareEntry(entry, slot)
   end
   local record = assert(self._view.slots[slot + 1], "care rows open over visible slots")
   if record.capsule ~= nil then
-    self._careStoreSlot = slot
+    self._capsuleSlot = slot
     self:_openConfirm({ kind = "store", label = entry.label }, "context")
     return
   end
@@ -1409,7 +1426,7 @@ function PartyScreenController:_confirm()
     end
     return
   end
-  if self._context == "pick" then
+  if self._context == "pick" or self._context == "npc_trade" then
     self:_confirmSlotTarget()
     return
   end
@@ -1451,7 +1468,12 @@ end
 
 function PartyScreenController:_cancel()
   if self._state == "browse" then
-    if self._context == "pick" or self._context == "battle_pick" or self._context == "daycare_store" then
+    if
+      self._context == "pick"
+      or self._context == "battle_pick"
+      or self._context == "daycare_store"
+      or self._context == "npc_trade"
+    then
       self:_cancelPick()
       return
     end
@@ -1586,7 +1608,7 @@ function PartyScreenController:_resolvePrompt()
     -- The source capsule confirmation removes the capsule and accepts the
     -- slot: the capsule removal is a canonical mon change the host commits
     -- through the mon owner, and this screen accepts the slot once it landed.
-    if self._careStoreSlot ~= nil and entry.kind == "store" then
+    if self._capsuleSlot ~= nil and (entry.kind == "store" or entry.kind == "npc_trade") then
       self:_emitIntent({ kind = "remove_capsule", slot = slot, partyRevision = self._observedRevision })
       local intentOrigin = assert(self._origin, "emitted intents park their origin")
       intentOrigin.state = returnState
@@ -1625,8 +1647,8 @@ function PartyScreenController:_declinePrompt()
   end
   -- Declining the capsule confirmation closes the context menu and returns to
   -- the slot list, exactly like the source's own no branch.
-  if self._careStoreSlot ~= nil then
-    self._careStoreSlot = nil
+  if self._capsuleSlot ~= nil then
+    self._capsuleSlot = nil
     self:_clearCareMenu()
     self:_transition("browse")
     return
@@ -2316,9 +2338,9 @@ function PartyScreenController:completeAction(outcome)
   local refreshed = self:_refresh()
   self._reconciledRevision = refreshed.revision
   self._origin = nil
-  if self._careStoreSlot ~= nil then
-    local careSlot = self._careStoreSlot
-    self._careStoreSlot = nil
+  if self._capsuleSlot ~= nil then
+    local careSlot = self._capsuleSlot
+    self._capsuleSlot = nil
     assert(outcome.kind == "changed", "the capsule confirmation reports its canonical change")
     self:_clearCareMenu()
     self._result = { kind = "selected", slot = careSlot, action = 0 }

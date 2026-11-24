@@ -374,6 +374,21 @@ local function decodeScreenBlock(data, opts)
   end
   local width = reader:u16le(blk.payload)
   local height = reader:u16le(blk.payload + 2)
+  -- The header's colour mode describes the palette arrangement, not the map
+  -- entry width: a 256-colour *text* background still stores two bytes per
+  -- entry (tile index plus flips and a 256-colour bank index), while a
+  -- 256-colour *affine* background stores the tile index alone in one byte.
+  -- The map width therefore follows the caller's background template, which
+  -- knows its own type (GfGfxLoader_LoadScrnData loads into a
+  -- GF_BG_TYPE_TEXT or GF_BG_TYPE_AFFINE layer): pass entryBytes = 1 for an
+  -- affine 256-colour map, and the default two bytes everywhere else.
+  local colorMode = reader:u32le(blk.payload + 4) % 16
+  local bytesPerEntry = opts.entryBytes == nil and 2 or opts.entryBytes
+  if bytesPerEntry ~= 1 and bytesPerEntry ~= 2 then
+    Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "SCRN entry width must be one or two bytes", {
+      entryBytes = bytesPerEntry,
+    })
+  end
   local dataSize = reader:u32le(blk.payload + 8)
   if width == 0 or height == 0 or width % 8 ~= 0 or height % 8 ~= 0 then
     Errors.raise(
@@ -382,15 +397,17 @@ local function decodeScreenBlock(data, opts)
       { width = width, height = height }
     )
   end
-  -- The entry bytes must match the tile geometry exactly: metadata describing
-  -- one geometry while supplying another amount of map data is malformed.
-  local expectedBytes = width / 8 * (height / 8) * 2
+  -- The entry bytes must match the tile geometry and colour mode exactly:
+  -- metadata describing one geometry while supplying another amount of map
+  -- data is malformed.
+  local expectedBytes = width / 8 * (height / 8) * bytesPerEntry
   if dataSize ~= expectedBytes then
     Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "SCRN data size does not match the screen dimensions", {
       width = width,
       height = height,
       dataSize = dataSize,
       expectedBytes = expectedBytes,
+      bytesPerEntry = bytesPerEntry,
     })
   end
   if 12 + dataSize > blk.size then
@@ -405,31 +422,42 @@ local function decodeScreenBlock(data, opts)
   -- row-major, and other widths are not hardware block layouts. Screens
   -- retail reads piece-wise through CopyToBgTilemapRect (stride = width/8)
   -- instead of a VRAM upload, such as the pokegear world map, store
-  -- row-major: pass layout "linear" to keep the stored order.
+  -- row-major: pass layout "linear" to keep the stored order. The blocked
+  -- order belongs to the two-byte text form only: a 256-colour map stores one
+  -- byte per entry and has no palette bits to split a screen block on.
   local layout = opts.layout or "hardware-blocks"
   assert(
     layout == "hardware-blocks" or layout == "linear",
     "screen layouts are hardware-blocks or linear, got " .. tostring(opts.layout)
   )
-  local blocked = width == 512 and height % 256 == 0 and layout == "hardware-blocks"
+  local blocked = bytesPerEntry == 2 and width == 512 and height % 256 == 0 and layout == "hardware-blocks"
   local entries = {}
-  local count = math.floor(dataSize / 2)
+  local count = math.floor(dataSize / bytesPerEntry)
   for i = 0, count - 1 do
-    local e = reader:u16le(blk.payload + 12 + i * 2)
     local position = i
     if blocked then
       local blockIndex, within = math.floor(i / 1024), i % 1024
       local row = math.floor(blockIndex / 2) * 32 + math.floor(within / 32)
       position = row * 64 + (blockIndex % 2) * 32 + within % 32
     end
-    entries[position + 1] = {
-      tile = e % 1024,
-      flipH = math.floor(e / 1024) % 2 == 1,
-      flipV = math.floor(e / 2048) % 2 == 1,
-      palette = math.floor(e / 4096),
-    }
+    if bytesPerEntry == 1 then
+      entries[position + 1] = {
+        tile = reader:u8(blk.payload + 12 + i),
+        flipH = false,
+        flipV = false,
+        palette = 0,
+      }
+    else
+      local e = reader:u16le(blk.payload + 12 + i * 2)
+      entries[position + 1] = {
+        tile = e % 1024,
+        flipH = math.floor(e / 1024) % 2 == 1,
+        flipV = math.floor(e / 2048) % 2 == 1,
+        palette = math.floor(e / 4096),
+      }
+    end
   end
-  return { width = width, height = height, entries = entries }
+  return { width = width, height = height, entries = entries, colorMode = colorMode }
 end
 
 ---@param data string
@@ -450,8 +478,8 @@ function G2dDecoder.decodeChar(data, opts)
 end
 
 ---@param data string
----@param opts? { label?: string, layout?: string }
----@return { width: integer, height: integer, entries: table[] }?
+---@param opts? { label?: string, layout?: string, entryBytes?: integer }
+---@return { width: integer, height: integer, entries: table[], colorMode: integer }?
 ---@return Errors.Error?
 function G2dDecoder.decodeScreen(data, opts)
   assert(type(data) == "string", "G2dDecoder.decodeScreen requires a string")
@@ -526,6 +554,24 @@ local function decodeRlcnPalette(data, opts)
     end
   end
   local colorsOffset = ttlpOffset + 8 + dataOffset
+  if paletteBytes == 0 then
+    -- An 8bpp TTLP member stores its whole palette and leaves the advisory
+    -- byte count zero; the chunk bounds then carry the real colour count.
+    -- Retail's trade-sequence backdrops are the evidenced case: their depth-4
+    -- members hold a full 256-colour palette behind a zero byte count.
+    if colorsOffset > ttlpOffset + chunkSize then
+      Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "palette colour offset exceeds the TTLP chunk", {
+        colorsOffset = colorsOffset,
+        chunkSize = chunkSize,
+      })
+    end
+    paletteBytes = ttlpOffset + chunkSize - colorsOffset
+    if paletteBytes % 2 ~= 0 then
+      Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "palette colour bytes are not whole colours", {
+        paletteBytes = paletteBytes,
+      })
+    end
+  end
   if dataOffset < 8 or colorsOffset + paletteBytes > ttlpOffset + chunkSize or colorsOffset + paletteBytes > size then
     Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "palette data exceeds the TTLP chunk bounds", {
       colorsOffset = colorsOffset,

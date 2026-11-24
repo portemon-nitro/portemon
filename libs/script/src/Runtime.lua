@@ -3732,6 +3732,98 @@ do
   HANDLERS.set_game_clear = handleSetGameClear
 end
 
+-- The NPC exchange family: ScrCmd_LoadNPCTrade parks the trade identity on the
+-- script instance, but only after the generated record resolved, so an unknown
+-- identity faults where it was named. The three queries publish the parked
+-- record's native identities in the same tick, ScrCmd_NPCTradeExec blocks the
+-- script on the exchange application, and ScrCmd_NPCTradeEnd releases the
+-- parked context. GiveLoanMon hands the loaned record out in the same tick and
+-- CheckReturnLoanMon writes the source priority code. The main chunk is at
+-- LuaJIT's local budget, so these handlers are anonymous closures in a block.
+do
+  local PARKED_TRADE_KEY = "__npc_trade"
+
+  -- The script instance's own trade context: the parked identity or a typed
+  -- fault, so a script that reads the record without loading it cannot resolve
+  -- a plausible default.
+  local function parkedTrade(run)
+    local instance = assert(run.instance, "NPC trade commands run on a script instance")
+    local tradeId = instance.locals[PARKED_TRADE_KEY]
+    if type(tradeId) ~= "number" then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the script holds no NPC trade context", {
+        scriptId = instance.scriptId,
+      })
+    end
+    return tradeId --[[@as integer]]
+  end
+
+  HANDLERS.npc_trade_load = function(node, run)
+    local tradeId = node.tradeId
+    if type(tradeId) ~= "number" or tradeId % 1 ~= 0 then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the NPC trade identity must be a byte", {
+        scriptId = run.instance.scriptId,
+        tradeId = tradeId,
+      })
+    end
+    assert(run.instance.locals ~= nil, "the script instance carries locals")
+    -- The generated record resolves before the context exists.
+    requireService(run, "npcTrade"):tradeIdentity(tradeId)
+    run.instance.locals[PARKED_TRADE_KEY] = tradeId
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  HANDLERS.npc_trade_offered_species = function(node, run)
+    local identity = requireService(run, "npcTrade"):tradeIdentity(parkedTrade(run))
+    local species = requireService(run, "mons"):catalog():species(identity.offeredSpecies)
+    semanticsFor(run).writeRef(node.result, species.nativeId, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  HANDLERS.npc_trade_requested_species = function(node, run)
+    local identity = requireService(run, "npcTrade"):tradeIdentity(parkedTrade(run))
+    local species = requireService(run, "mons"):catalog():species(identity.requestedSpecies)
+    semanticsFor(run).writeRef(node.result, species.nativeId, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  HANDLERS.npc_trade_unused_flag = function(node, run)
+    local identity = requireService(run, "npcTrade"):tradeIdentity(parkedTrade(run))
+    semanticsFor(run).writeRef(node.result, identity.unusedFlag, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  HANDLERS.npc_trade_exec = function(node, run)
+    requireForeground(run, "npc_trade_exec")
+    local tradeId = parkedTrade(run)
+    local slot = evalField(node, run, "slot")
+    if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or slot > 5 then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the NPC exchange names a party position", {
+        scriptId = run.instance.scriptId,
+        slot = slot,
+      })
+    end
+    return blockOnTask(run, "npc_trade", { tradeId = tradeId, slot = slot })
+  end
+
+  HANDLERS.npc_trade_end = function(_, run)
+    local tradeId = parkedTrade(run)
+    assert(type(tradeId) == "number", "a parked NPC trade context resolved")
+    run.instance.locals[PARKED_TRADE_KEY] = nil
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  HANDLERS.give_loan_mon = function(node, run)
+    requireService(run, "npcTrade"):giveLoan({ tradeId = node.tradeId, level = node.level, mapId = node.mapId })
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  HANDLERS.check_return_loan_mon = function(node, run)
+    local result = requireService(run, "npcTrade"):checkReturn(node.tradeId, evalField(node, run, "slot"))
+    semanticsFor(run).writeRef(node.result, result, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+end
+
 -- The source legendary-story scenes: ScrCmd_ShowLegendaryWing, ScrCmd_
 -- LanceFlyAway, ScrCmd_Cinematic, ScrCmd_UnownCircle and ScrCmd_
 -- SinjohGetEggCutscene all return TRUE in the source, so they block the script

@@ -143,15 +143,22 @@ function T.contest_selector_rides_as_a_raw_immediate_byte()
   Assert.equal(widths[2], 1, "the selector operand stays one byte wide")
 end
 
-function T.loan_give_and_check_defer_to_the_trade_application()
-  for _, opcode in ipairs({ 362, 363 }) do
-    local tagged = assert(ScriptCommands.byOpcode[opcode])
-    Assert.equal(tagged.disposition, "deferred")
-    Assert.equal(tagged.deferredReason, "trade")
-    local node = lowerSingle(opcode, { 6, 20, 75 })
-    Assert.equal(node.op, "unsupported")
-    Assert.equal(node.command, opcode)
-  end
+-- The loan pair reads its raw operands: the trade identity and level as
+-- literal bytes, the map identity as a literal halfword, and the return check's
+-- party slot through ScriptGetVar.
+function T.loan_give_and_check_lower_to_their_own_operations()
+  local give = lowerSingle(362, { 6, 20, 75 })
+  Assert.equal(give.op, "give_loan_mon", "the loan gift runs its own operation")
+  Assert.equal(give.tradeId, 6, "the trade identity stays a literal byte")
+  Assert.equal(give.level, 20, "the level stays a literal byte")
+  Assert.equal(give.mapId, 75, "the map identity stays a literal halfword")
+
+  local check = lowerSingle(363, { 6, 0x800F, 0x8010 })
+  Assert.equal(check.op, "check_return_loan_mon", "the return check runs its own operation")
+  Assert.equal(check.tradeId, 6, "the trade identity stays a literal byte")
+  Assert.deepEqual(check.slot, { value = "var", id = 0x800F }, "the party slot stays a variable reference")
+  Assert.deepEqual(check.result, { value = "var", id = 0x8010 }, "the result stays an output reference")
+
   local remove = lowerSingle(364, { 0x8000 })
   Assert.equal(remove.op, "return_loan_mon", "removal stays a real semantic operation")
 end

@@ -349,6 +349,7 @@ end
 ---@field bicycle table<string, unknown>|nil the bike mount/dismount service (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field monNaming table<string, unknown>|nil the shared field naming host behind nickname and rival naming commands (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field pokemonCare table<string, unknown>|nil the script-owned care child host behind the hatch application (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field npcTrade table<string, unknown>|nil the NPC exchange and loan owner behind the trade commands (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field celebiCinematic table<string, unknown>|nil runtime-owned Celebi scene service used by the time-travel task
 ---@field legendCutscene table<string, unknown>|nil runtime-owned legend cutscene command state
@@ -794,6 +795,7 @@ function FieldScripts.new(opts)
       fieldMoveCue = FieldMoveCue.new(opts.mons),
       monNaming = opts.monNaming,
       pokemonCare = opts.pokemonCare,
+      npcTrade = opts.npcTrade,
       rivalDefaultName = rivalDefaultName,
       followingMon = opts.followingMon,
       celebiCinematic = opts.celebiCinematic,

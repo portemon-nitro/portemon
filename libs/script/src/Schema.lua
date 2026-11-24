@@ -98,7 +98,7 @@ Schema.ENUMS = {
   -- The closed party-screen selection policies: the ordinary occupied-slot
   -- pick and the Day Care store/Summary context the source opens for a
   -- deposit.
-  party_select_policy = { "occupied", "daycare_store" },
+  party_select_policy = { "occupied", "daycare_store", "npc_trade" },
   pc_terminal_action = { "start", "on", "off", "wait", "release" },
   -- The three persistent follower map-object movement modes opcode 604 may
   -- select; raw source selectors never appear past the generated boundary.
@@ -1908,6 +1908,53 @@ Schema.OPERATIONS = {
   -- application until the presentation, the hatch receipt and the optional
   -- nickname question finish and the field is restored.
   egg_hatch_anim = { fields = {} },
+  -- The NPC exchange family. ScrCmd_LoadNPCTrade parks the trade identity on the
+  -- script instance; the three queries read that parked record and write their
+  -- native identity in the same tick; ScrCmd_NPCTradeExec blocks the script on
+  -- the exchange application for one party slot; ScrCmd_NPCTradeEnd releases the
+  -- parked context. GiveLoanMon and CheckReturnLoanMon read their own raw
+  -- operands: the loaned record is handed out in the same tick, and the return
+  -- check writes the source priority code.
+  npc_trade_load = {
+    fields = {
+      tradeId = { type = "integer", required = true },
+    },
+  },
+  npc_trade_offered_species = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  npc_trade_requested_species = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  npc_trade_unused_flag = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  npc_trade_exec = {
+    fields = {
+      slot = { type = "value", required = true },
+    },
+  },
+  npc_trade_end = { fields = {} },
+  give_loan_mon = {
+    fields = {
+      tradeId = { type = "integer", required = true },
+      level = { type = "integer", required = true },
+      mapId = { type = "integer", required = true },
+    },
+  },
+  check_return_loan_mon = {
+    fields = {
+      tradeId = { type = "integer", required = true },
+      slot = { type = "value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
   -- The original Togepi gift carries no operands and runs in the same tick:
   -- the source checks party room before any creation draw.
   give_togepi_egg = { fields = {} },

@@ -30,6 +30,10 @@ PartySelectTask.ELIGIBILITY_OCCUPIED = "occupied"
 -- picker, but confirming a parent opens the source care menu and the chosen
 -- row reports the source action beside the slot.
 PartySelectTask.ELIGIBILITY_DAYCARE_STORE = "daycare_store"
+-- The in-game trade context (PartyMenu_LaunchApp_InGameTrade): the same
+-- occupied-slot list, where confirming a record that carries a ball capsule
+-- asks the source removal question first. It reports only the slot.
+PartySelectTask.ELIGIBILITY_NPC_TRADE = "npc_trade"
 
 -- The source action a completed selection reports: Store accepts the slot
 -- with action 0, Summary exits with action 1, and a cancellation reports the
@@ -40,6 +44,7 @@ PartySelectTask.ACTION_SUMMARY = 1
 local POLICIES = {
   occupied = true,
   daycare_store = true,
+  npc_trade = true,
 }
 
 ---@param policy string

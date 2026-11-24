@@ -48,15 +48,25 @@ function T.togepi_egg_command_runs_with_its_source_timing()
   Assert.equal(node.op, "give_togepi_egg", "the gift lowers to its own operation")
 end
 
-function T.trade_command_defers_with_its_dependency_and_fails_at_runtime()
-  local tagged = assert(ScriptCommands.byOpcode[473])
-  Assert.equal(tagged.disposition, "deferred", "the trade command waits for its owner")
-  Assert.equal(tagged.deferredReason, "trade", "the trade command names its dependency")
-  local node = lowerSingle(473)
+function T.a_deferred_command_keeps_its_dependency_and_fails_at_runtime()
+  local tagged = assert(ScriptCommands.byOpcode[468])
+  Assert.equal(tagged.disposition, "deferred", "the tutor command waits for its owner")
+  Assert.equal(tagged.deferredReason, "party_special_application", "the tutor command names its dependency")
+  local node = lowerSingle(468)
   Assert.equal(node.op, "unsupported", "the deferred command lowers explicitly")
   local failure = reachError(node)
   Assert.equal(failure.code, ScriptErrors.SCRIPT_UNSUPPORTED_REACHABLE, "the runtime names the reach")
-  Assert.equal(failure.context.command, 473, "the error names the source command")
+  Assert.equal(failure.context.command, 468, "the error names the source command")
+end
+
+-- The exchange itself is executable now: the command lowers to its own
+-- blocking operation instead of the explicit unsupported node.
+function T.the_exchange_command_lowers_to_its_own_operation()
+  local tagged = assert(ScriptCommands.byOpcode[473])
+  Assert.equal(tagged.disposition, "supported", "the exchange runs its own application")
+  Assert.equal(tagged.classification, "native_wait", "the exchange blocks the script")
+  local node = lowerSingle(473)
+  Assert.equal(node.op, "npc_trade_exec", "the exchange lowers to its own operation")
 end
 
 return { tests = T }

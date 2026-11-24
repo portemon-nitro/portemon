@@ -232,6 +232,80 @@ function G2dRasterizer.renderTileGrid(charData, paletteData, firstTile, columns,
   }, source)
 end
 
+-- Blit one tile's palette indices into an index plane: one byte per pixel,
+-- with 0 wherever no pixel is drawn (the source's own transparency slot).
+local function blitTileIndices(indices, atlasWidth, destX, destY, charData, tileIndex, flipH, flipV, source)
+  local depth = charData.depth
+  local tileBytes = depth == 3 and 32 or 64
+  local tileCount = math.floor(#charData.tiles / tileBytes)
+  if tileIndex < 0 or tileIndex >= tileCount then
+    Errors.raise(
+      G2dRasterizer.ERROR.SOURCE_INVALID,
+      "tile reference exceeds the decoded char data",
+      { tile = tileIndex, available = tileCount, source = source }
+    )
+  end
+  local tileString = charData.tiles
+  local bytes = ffi.cast("const uint8_t *", tileString)
+  local base = tileIndex * tileBytes
+  for sourceY = 0, 7 do
+    local destRow = flipV and (7 - sourceY) or sourceY
+    for sourceX = 0, 7 do
+      local destCol = flipH and (7 - sourceX) or sourceX
+      local v
+      if depth == 3 then
+        local byte = bytes[base + sourceY * 4 + math.floor(sourceX / 2)]
+        if sourceX % 2 == 0 then
+          v = byte % 16
+        else
+          v = math.floor(byte / 16)
+        end
+      else
+        v = bytes[base + sourceY * 8 + sourceX]
+      end
+      indices[(destY + destRow) * atlasWidth + destX + destCol] = v
+    end
+  end
+end
+
+-- Rasterize one decoded screen as palette indices: one byte per pixel in the
+-- layer's own palette space. Consumers that recolor palette slots at draw
+-- time (the trade sequence's link pulses walk the layer's own slots) need the
+-- indices, not the resolved colors.
+---@param charData G2dRasterizer.CharData
+---@param screenData G2dRasterizer.ScreenData
+---@param source G2dRasterizer.SourceContext|nil diagnostic context forwarded into failures
+---@return { width: integer, height: integer, indices: string }
+function G2dRasterizer.renderScreenIndices(charData, screenData, source)
+  assert(charData ~= nil and screenData ~= nil, "index rasterization requires decoded records")
+  local width = screenData.width
+  local height = screenData.height
+  local columns = width / 8
+  local rows = height / 8
+  if
+    type(width) ~= "number"
+    or type(height) ~= "number"
+    or width % 8 ~= 0
+    or height % 8 ~= 0
+    or #screenData.entries ~= columns * rows
+  then
+    Errors.raise(
+      G2dRasterizer.ERROR.SOURCE_INVALID,
+      "screen entries do not match the declared screen dimensions",
+      { width = width, height = height, entries = #screenData.entries, source = source }
+    )
+  end
+  local indices = ffi.new("uint8_t[?]", width * height)
+  ffi.fill(indices, width * height, 0)
+  for row = 0, rows - 1 do
+    for col = 0, columns - 1 do
+      local entry = screenData.entries[row * columns + col + 1]
+      blitTileIndices(indices, width, col * 8, row * 8, charData, entry.tile, entry.flipH, entry.flipV, source)
+    end
+  end
+  return { width = width, height = height, indices = ffi.string(indices, width * height) }
+end
+
 -- Render selected background tiles in their source order. The HGSS shared
 -- touchscreen list menu selects these standalone border tiles by character
 -- offset instead of storing a screen map for the control.

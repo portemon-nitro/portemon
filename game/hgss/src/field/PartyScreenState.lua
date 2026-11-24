@@ -144,7 +144,8 @@ function PartyScreenState.new(opts)
       or context == "item_target"
       or context == "give_target"
       or context == "give_resume"
-      or context == "daycare_store",
+      or context == "daycare_store"
+      or context == "npc_trade",
     "the party screen requires a named context"
   )
   local targetPromptKey = opts.targetPromptKey

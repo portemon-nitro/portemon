@@ -2638,9 +2638,7 @@ return {
     [362] = {
       name = "ScrCmd_GiveLoanMon",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "trade",
-      deferredNote = "the loaned-mon table and NPC OT transfer need the trade application",
+      disposition = "supported",
       classification = "continue_same_tick",
       widths = {
         [1] = 1,
@@ -2651,9 +2649,7 @@ return {
     [363] = {
       name = "ScrCmd_CheckReturnLoanMon",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "trade",
-      deferredNote = "the loaned-mon table and NPC OT transfer need the trade application",
+      disposition = "supported",
       classification = "continue_same_tick",
       widths = {
         [1] = 1,
@@ -3538,50 +3534,46 @@ return {
       },
     },
     [470] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_LoadNPCTrade",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "trade",
-      deferredNote = "trade needs the trade application and OT transfer",
+      disposition = "supported",
       widths = {
         [1] = 1,
       },
     },
     [471] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_GetOfferedSpecies",
-      disposition = "deferred",
-      deferredReason = "trade",
-      deferredNote = "NPC trade species need the trade application and OT transfer",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
     },
     [472] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_NPCTradeGetReqSpecies",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "trade",
-      deferredNote = "trade needs the trade application and OT transfer",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
     },
     [473] = {
+      classification = "native_wait",
       name = "ScrCmd_NPCTradeExec",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "trade",
-      deferredNote = "trade needs the trade application and OT transfer",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
     },
     [474] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_NPCTradeEnd",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "trade",
-      deferredNote = "trade needs the trade application and OT transfer",
+      disposition = "supported",
       widths = {},
     },
     [475] = {
@@ -4322,7 +4314,10 @@ return {
       },
     },
     [566] = {
+      classification = "native_wait",
       name = "ScrCmd_ChoosePartyMonForTrade",
+      feature = "mons",
+      disposition = "supported",
       widths = {},
     },
     [567] = {
@@ -4654,7 +4649,10 @@ return {
       },
     },
     [612] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_GetNPCTradeUnusedFlag",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },

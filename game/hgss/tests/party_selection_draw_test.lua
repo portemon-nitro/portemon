@@ -342,6 +342,22 @@ local function compositionRuntime()
       runtime.summaryPreparation = nil
     end
   end
+  -- The recording care seam mirrors the production runtime binding: the
+  -- presented field installs the per-open care lease factory and a headless
+  -- runtime installs none. This suite draws the party picker only, so the
+  -- callback is recorded and never invoked.
+  runtime.bindPokemonCarePresentation = function(_, acquire)
+    assert(type(acquire) == "function", "care presentation binding requires its acquire function")
+    assert(runtime.carePreparation == nil, "one care presentation binding owns the presented lifetime")
+    runtime.carePreparation = { id = 1, acquire = acquire }
+    return runtime.carePreparation.id
+  end
+  runtime.unbindPokemonCarePresentation = function(_, binding)
+    local current = runtime.carePreparation
+    if current ~= nil and current.id == binding then
+      runtime.carePreparation = nil
+    end
+  end
   -- The recording pokedex seam mirrors the production runtime binding:
   -- one live acquire callback with an identity, removed only by its own
   -- identity so a stale unbind can never drop a replacement owner.

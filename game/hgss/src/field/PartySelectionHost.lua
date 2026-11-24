@@ -16,10 +16,12 @@ local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
 local ScriptErrors = require("libs.script.src.errors")
 
 -- The closed selection policy -> party-screen context map: the ordinary
--- occupied-slot pick and the source Day Care store context.
+-- occupied-slot pick, the source Day Care store context, and the source in-game
+-- trade context whose capsule confirmation belongs to the pick itself.
 local CONTEXT_BY_POLICY = {
   occupied = "pick",
   daycare_store = "daycare_store",
+  npc_trade = "npc_trade",
 }
 
 ---@class PartySelectionHost

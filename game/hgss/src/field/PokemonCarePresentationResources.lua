@@ -1,5 +1,5 @@
--- The field's hatch presentation owner: one per-open lease over the generated
--- hatch manifest and its staged images. Preparation advances the shared image
+-- The field's care presentation owner: one per-open lease over the generated
+-- manifest of the open care application and its staged images. Preparation advances the shared image
 -- pool without blocking, commits one whole renderer bundle when every demanded
 -- image is ready, and returns each acquired image lease exactly once on
 -- release. Borrowed image pool, text renderer, window renderer and cache are
@@ -7,6 +7,9 @@
 -- of drawing a blank scene.
 
 local EggHatchRenderer = require("libs.hgss.src.ui.EggHatchRenderer")
+local MonCache = require("libs.assets.src.MonCache")
+local NpcTradeRenderer = require("libs.hgss.src.ui.NpcTradeRenderer")
+local PokemonCareInterface = require("libs.hgss.src.ui.PokemonCareInterface")
 local PokemonCareCache = require("libs.assets.src.PokemonCareCache")
 
 local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
@@ -89,19 +92,30 @@ local function prepareLease(owner, lease, request)
   if lease._presentation ~= nil then
     return { kind = "ready", presentation = lease._presentation }
   end
+  local trade = request.kind == PokemonCareInterface.KINDS.trade
   if lease._manifest == nil then
-    local ok, manifest = pcall(PokemonCareCache.loadHatchManifest, owner._cacheFs)
+    local loader = trade and PokemonCareCache.loadTradeManifest or PokemonCareCache.loadHatchManifest
+    local ok, manifest = pcall(loader, owner._cacheFs)
     if not ok or type(manifest) ~= "table" then
       owner:_releaseLeaseInterests(lease)
-      return { kind = "failed", error = "the hatch presentation manifest is unavailable: " .. tostring(manifest) }
+      return { kind = "failed", error = "the care presentation manifest is unavailable: " .. tostring(manifest) }
     end
     lease._manifest = manifest
+    local paths = trade and PokemonCareCache.referencedTradePaths(manifest)
+      or PokemonCareCache.referencedHatchPaths(manifest)
+    if trade then
+      local pictures, pages = tradePictures(owner._cacheFs, manifest, request)
+      lease._pictures = pictures
+      for _, page in ipairs(pages) do
+        paths[#paths + 1] = page
+      end
+    end
     local pool = owner._imagePool
-    for _, path in ipairs(PokemonCareCache.referencedHatchPaths(manifest)) do
+    for _, path in ipairs(paths) do
       local requested, token = pcall(pool.request, pool, path, POOLED_SAMPLER, "demand")
       if not requested then
         owner:_releaseLeaseInterests(lease)
-        return { kind = "failed", error = "hatch image request failed: " .. tostring(token) }
+        return { kind = "failed", error = "care image request failed: " .. tostring(token) }
       end
       lease._tokens[path] = token
       lease._pendingTokens[#lease._pendingTokens + 1] = token
@@ -136,27 +150,69 @@ local function prepareLease(owner, lease, request)
     images[path] = (type(acquired) == "table" and acquired.image) or acquired
   end
   local manifest = assert(lease._manifest, "prepared leases resolve their manifest before commit")
-  local rendererOk, renderer = pcall(EggHatchRenderer.new, {
+  local rendererOptions = {
     graphics = owner._graphics,
+    cacheFs = owner._cacheFs,
     manifest = manifest,
     images = images,
+    pictures = lease._pictures,
     text = owner._text,
     window = owner._window,
     fontDef = owner._fontDef,
     frameIndex = owner._frameIndex,
-  })
+  }
+  local rendererOk, renderer = pcall(trade and NpcTradeRenderer.new or EggHatchRenderer.new, rendererOptions)
   if not rendererOk then
     owner:_releaseLeaseInterests(lease)
-    return { kind = "failed", error = "hatch renderer failed: " .. tostring(renderer) }
+    return { kind = "failed", error = "care renderer failed: " .. tostring(renderer) }
   end
   local presentation = {
     renderer = renderer,
     images = images,
     manifest = manifest,
-    name = assert(request.nickname, "the hatch request carries the hatched name"),
+    name = trade and request.playerName or assert(request.nickname, "the hatch request carries the hatched name"),
   }
   lease._presentation = presentation
   return { kind = "ready", presentation = presentation }
+end
+
+-- The mon portraits a trade scene draws, per detached subject: the generated
+-- page that carries the subject's own selector, its first frame rectangle, and
+-- the source's front picture height for that selector. The height only depends
+-- on species, form and gender, so shiny selectors share the plain entry.
+---@param cacheFs table<string, unknown>
+---@param manifest table<string, unknown> trade manifest
+---@param request table<string, unknown> trade request
+---@return table<string, table<string, unknown>> pictures
+---@return string[] pagePaths
+local function tradePictures(cacheFs, manifest, request)
+  local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
+  local entries = assert(type(portraits) == "table" and portraits.entries, "the mon portrait family is published")
+  local heights = assert(assert(manifest.pictures, "the trade manifest carries its pictures") --[[@as table]]).heights
+  local pictures = {}
+  local pages = {}
+  for _, subjectKey in ipairs({ "outgoing", "incoming" }) do
+    local subject = assert(request[subjectKey], "the trade request carries both subjects") --[[@as table]]
+    local selector = MonCache.portraitSelector(subject.speciesKey, subject.form, subject.gender, subject.shiny)
+    local entry = assert(
+      entries[selector],
+      "the mon portrait family carries the trade picture " .. tostring(selector)
+    ) --[[@as table]]
+    local frame = assert(assert(entry.frames)[1], "a portrait entry carries its first frame") --[[@as table]]
+    local plain = MonCache.portraitSelector(subject.speciesKey, subject.form, subject.gender, false)
+    local height = assert(
+      heights[plain],
+      "the trade manifest carries the picture height for " .. tostring(plain)
+    ) --[[@as integer]]
+    local page = MonCache.portraitPagePath(assert(entry.pageId, "a portrait entry names its page") --[[@as integer]])
+    pictures[subjectKey] = {
+      page = page,
+      frame = { x = frame.x, y = frame.y, width = frame.width, height = frame.height },
+      height = height,
+    }
+    pages[#pages + 1] = page
+  end
+  return pictures, pages
 end
 
 -- Acquires the one active per-open lease. A second concurrent acquire is a
@@ -172,6 +228,7 @@ function PokemonCarePresentationResources:acquire(request)
     _request = request,
     _released = false,
     _manifest = nil,
+    _pictures = nil,
     _tokens = {},
     _pendingTokens = {},
     _acquired = {},

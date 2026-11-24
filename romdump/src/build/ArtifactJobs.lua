@@ -1007,11 +1007,14 @@ local function executePokemonCare(artifact, context)
   local hatch = compileOrRaise(function()
     return PokemonCareAssetCompiler.compileHatch(romFs)
   end, "care hatch presentation")
+  local trade = compileOrRaise(function()
+    return PokemonCareAssetCompiler.compileTrade(romFs)
+  end, "care trade presentation")
   local marker = PokemonCareCache.marker(
     romFs:metadata().sha1,
-    Hashing.hashLua({ catalog = catalog, hatch = hatch.manifest })
+    Hashing.hashLua({ catalog = catalog, hatch = hatch.manifest, trade = trade.manifest })
   )
-  return PokemonCareCacheWriter.stage(artifact, catalog, hatch, marker)
+  return PokemonCareCacheWriter.stage(artifact, catalog, hatch, trade, marker)
 end
 
 ---@param check ArtifactJobs.ReadinessCheck

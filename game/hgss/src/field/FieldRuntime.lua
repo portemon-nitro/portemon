@@ -595,6 +595,8 @@ end
 ---@field sysInfo SysInfoState live system-info state (mystery-gift flag and first clear) restored from the save
 ---@field hallOfFame HallOfFameState live Hall of Fame history restored from the save
 ---@field daycare DaycareService? the one Day Care custody/step/service owner (nil before composition / after teardown)
+---@field npcTrade NpcTradeService? the one NPC exchange and loan owner (nil before composition / after teardown)
+---@field gameClear table<string, unknown>? the League ending coordinator (nil before composition / after teardown)
 ---@field followerInteractionCatalog table<string, unknown> generated follower interaction rules
 ---@field followerReactionTicks table<string, integer> follower reaction emote kind -> emote action duration
 ---@field bagService HgssBagService the live bag/inventory service
@@ -1885,6 +1887,29 @@ function FieldRuntime:_composeFieldServices(boot)
     currentMap = currentDaycareMap,
   })
   self:_composePartyMenu(boot.cacheFs)
+  -- The one NPC exchange and loan owner: the generated trade records, the
+  -- created offered record and the loan/letter receipts over the canonical mon
+  -- service. The meeting memo of a loan reads the map section of the source map
+  -- id operand through the generated world manifest.
+  local NpcTradeService = require("libs.hgss.src.field.NpcTradeService")
+  local function mapSectionOfMapId(mapId)
+    assert(type(mapId) == "number" and mapId % 1 == 0, "a loan map operand names a map identity")
+    local world = self.mapLoader and self.mapLoader.world or nil
+    assert(type(world) == "table", "the loan memo needs the generated world manifest")
+    local index = world.byId[mapId]
+    local record = index ~= nil and world.maps[index] or nil
+    assert(type(record) == "table", "the loan memo needs a generated record for map " .. tostring(mapId))
+    local section = record.mapSectionNativeId
+    assert(type(section) == "number" and section % 1 == 0, "a loan map carries its native map section")
+    return section
+  end
+  self.npcTrade = NpcTradeService.new({
+    trades = assert(self.careCatalog.trades, "the care catalog carries the NPC trade records"),
+    mons = self.monService,
+    identity = { language = self.monLanguage, game = self.versionId },
+    mapSectionOf = mapSectionOfMapId,
+    date = monMetDate,
+  })
   local ApricornBoxHost = require("game.hgss.src.apricorn.ApricornBoxHost")
   self.kurtBoxHost = ApricornBoxHost.new({
     makeApricornBox = assert(
@@ -2044,6 +2069,7 @@ function FieldRuntime:_composeFieldServices(boot)
     fieldMoves = self.partyMenu.fieldMoves,
     monNaming = self.monNaming,
     pokemonCare = self.pokemonCareHost,
+    npcTrade = self.npcTrade,
     followingMon = self.followingMon,
     followerInteractionCatalog = self.followerInteractionCatalog,
     followerReactionTicks = self.followerReactionTicks,
@@ -6707,7 +6733,7 @@ function FieldRuntime:_releaseAll()
   self.mailbox, self.photoAlbum, self.sysInfo = nil, nil, nil
   self.hallOfFame = nil
   self.fieldPoison, self.poisonEffect, self.poisonCure = nil, nil, nil
-  self.daycare, self.daycareState, self.careCatalog = nil, nil, nil
+  self.daycare, self.daycareState, self.careCatalog, self.npcTrade = nil, nil, nil, nil
   if self.pokegear ~= nil then
     self.pokegear:dispose()
   end

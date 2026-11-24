@@ -149,7 +149,6 @@ local FAMILY = {
 -- applications.
 local LATER_OWNED = {
   [727] = "following_mon",
-  [783] = "following_mon",
 }
 
 local function entry(opcode)
@@ -198,6 +197,32 @@ function T.later_owned_commands_wait_with_their_current_dependency()
   end
 end
 
+-- The NPC exchange family is supported with its source timing: the trade
+-- context and its two queries and release continue in the same tick, the
+-- exchange and the in-game-trade picker wait on their applications, and the two
+-- loan commands answer in their own tick.
+function T.npc_trade_commands_are_supported_with_source_timing()
+  local cases = {
+    [362] = { classification = "continue_same_tick", widths = { 1, 1, 2 } },
+    [363] = { classification = "continue_same_tick", widths = { 1, 2, 2 } },
+    [470] = { classification = "continue_same_tick", widths = { 1 } },
+    [471] = { classification = "continue_same_tick", widths = { 2 } },
+    [472] = { classification = "continue_same_tick", widths = { 2 } },
+    [473] = { classification = "native_wait", widths = { 2 } },
+    [474] = { classification = "continue_same_tick", widths = {} },
+    [566] = { classification = "native_wait", widths = {} },
+    [612] = { classification = "continue_same_tick", widths = { 2 } },
+  }
+  for opcode, expected in pairs(cases) do
+    local tagged = entry(opcode)
+    Assert.equal(tagged.disposition, "supported", "opcode " .. opcode .. " is executable")
+    Assert.equal(tagged.feature, "mons", "opcode " .. opcode .. " names its semantic owner")
+    Assert.equal(tagged.classification, expected.classification, "opcode " .. opcode .. " keeps source timing")
+    Assert.deepEqual(tagged.widths, expected.widths, "opcode " .. opcode .. " keeps source operands")
+    Assert.isNil(tagged.deferredReason, "opcode " .. opcode .. " is no longer deferred")
+  end
+end
+
 function T.gift_command_is_supported_with_real_semantics()
   local tagged = entry(137)
   Assert.equal(tagged.disposition, "supported", "the gift command is supported here")
@@ -224,7 +249,7 @@ function T.interaction_and_shiny_leaf_commands_are_supported_with_source_timing(
 end
 
 function T.deferred_commands_lower_to_explicit_unsupported_nodes()
-  for _, opcode in ipairs({ 470 }) do
+  for _, opcode in ipairs({ 781 }) do
     local tagged = entry(opcode)
     Assert.equal(tagged.disposition, "deferred", "opcode " .. opcode .. " is deferred")
     local items = lowerSingle(opcode)

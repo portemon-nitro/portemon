@@ -86,6 +86,11 @@ MonSources.versionLanguages = {
 -- FOLLOWER_VISUAL_ID_BASE + model offset, which cannot collide with generated
 -- map actor IDs (the live actor index stays below 1100; source follower
 -- sprite IDs occupy 428..993).
+-- Picture height archives (GetMonPicHeightBySpeciesGenderForm): base species
+-- read NARC_poketool_pokegra_height, alternate forms the _o archive.
+MonSources.PICTURE_HEIGHT_NARC = "NARC_poketool_pokegra_height"
+MonSources.PICTURE_HEIGHT_OTHER_NARC = "NARC_poketool_pokegra_height_o"
+
 MonSources.FOLLOWER_SPRITE_BASE = 428
 MonSources.FOLLOWER_SPRITE_MAX = 993
 MonSources.FOLLOWER_VISUAL_ID_BASE = 20000
@@ -3571,6 +3576,64 @@ function MonSources.portraitIds(speciesId, gender, facing, shiny, form)
     charMemberId = speciesId * 6 + facing + (isFemale and 0 or 1),
     palMemberId = shinyBit + speciesId * 6 + 4,
   }
+end
+
+-- Front-picture height member selection ported from
+-- GetMonPicHeightBySpeciesGenderForm (src/pokemon.c): base species read the
+-- height archive at speciesId * 4 + facing + gender, the alternate-form
+-- species read their own block of the special height archive. Returns the
+-- source NARC alias and member id; the member carries one byte.
+local PICTURE_HEIGHT_BASES = {
+  DEOXYS = 0x00,
+  UNOWN = 0x08,
+  CASTFORM = 0x40,
+  BURMY = 0x48,
+  WORMADAM = 0x4E,
+  SHELLOS = 0x54,
+  GASTRODON = 0x58,
+  CHERRIM = 0x5C,
+  ARCEUS = 0x60,
+  SHAYMIN = 0x88,
+  ROTOM = 0x8C,
+  GIRATINA = 0x98,
+  PICHU = 0x9C,
+}
+
+---@param speciesId integer
+---@param gender "male"|"female"
+---@param facing integer 0 (back) or 2 (front)
+---@param form integer
+---@return string archiveSymbol
+---@return integer memberId
+function MonSources.pictureHeightIds(speciesId, gender, facing, form)
+  assert(gender == "male" or gender == "female", "picture height gender must be male or female")
+  assert(facing == 0 or facing == 2, "picture height facing must be 0 (back) or 2 (front)")
+  local key = MonSources.speciesKeys[speciesId]
+  assert(type(key) == "string", "picture height names a known species")
+  local isFemale = gender == "female"
+  local halfFacing = math.floor(facing / 2)
+  if speciesId == MonSources.EGG_SPECIES then
+    return MonSources.PICTURE_HEIGHT_OTHER_NARC, 0x84 + form
+  elseif speciesId == MonSources.BAD_EGG_SPECIES then
+    return MonSources.PICTURE_HEIGHT_OTHER_NARC, 0x84
+  end
+  if key == "BURMY" or key == "WORMADAM" or key == "ARCEUS" then
+    return MonSources.PICTURE_HEIGHT_OTHER_NARC, assert(PICTURE_HEIGHT_BASES[key]) + halfFacing + form * 2
+  elseif key == "SHELLOS" or key == "GASTRODON" or key == "CHERRIM" then
+    return MonSources.PICTURE_HEIGHT_OTHER_NARC, assert(PICTURE_HEIGHT_BASES[key]) + facing + form
+  elseif key == "CASTFORM" then
+    return MonSources.PICTURE_HEIGHT_OTHER_NARC, assert(PICTURE_HEIGHT_BASES[key]) + 2 * facing + form
+  elseif
+    key == "DEOXYS"
+    or key == "UNOWN"
+    or key == "SHAYMIN"
+    or key == "ROTOM"
+    or key == "GIRATINA"
+    or key == "PICHU"
+  then
+    return MonSources.PICTURE_HEIGHT_OTHER_NARC, assert(PICTURE_HEIGHT_BASES[key]) + halfFacing + form * 2
+  end
+  return MonSources.PICTURE_HEIGHT_NARC, speciesId * 4 + facing + (isFemale and 0 or 1)
 end
 
 -- Follower model-offset lookup ported from SpeciesToOverworldModelIndexOffset. Species outside 0..493 have no follower model.

@@ -12,8 +12,14 @@
 -- source group; see romdump/src/config/PokemonCareSources.lua.
 
 local Errors = require("libs.errors.src.Errors")
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
+local ModelAssetCompiler = require("romdump.src.digest.model.ModelAssetCompiler")
+local MonCache = require("libs.assets.src.MonCache")
+local MonSources = require("romdump.src.config.MonSources")
+local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
+local Hashing = require("romdump.src.digest.Hashing")
 local PngWriter = require("romdump.src.digest.PngEncoder")
 local PokemonCareAssetSchema = require("libs.assets.src.PokemonCareAssetSchema")
 local PokemonCareCache = require("libs.assets.src.PokemonCareCache")
@@ -35,6 +41,12 @@ PokemonCareAssetCompiler.ERROR = {
 local SPECIES_NAME_MARKER = "{name}"
 local SPECIES_STRVAR = FieldMessageText.STRVAR_1
 local SPECIES_FIELD = 0
+-- The trade sequence fills message-format buffers 0..2 with the sent mon's
+-- nickname, the received mon's nickname and the player's name; the compiled
+-- lines keep those positions as printable markers.
+local TRADE_SENT_MARKER = "{sent}"
+local TRADE_RECEIVED_MARKER = "{received}"
+local TRADE_PLAYER_MARKER = "{player}"
 
 ---@param message string
 ---@param context table<string, unknown>|nil
@@ -55,9 +67,10 @@ end
 ---@param kind string
 ---@param bytes string
 ---@param role string
+---@param decodeOptions table<string, unknown>?
 ---@return table
-local function decode(kind, bytes, role)
-  return UiAssetHelpers.decode(kind, bytes, role, "hatch", sourceError)
+local function decode(kind, bytes, role, decodeOptions)
+  return UiAssetHelpers.decode(kind, bytes, role, "hatch", sourceError, decodeOptions)
 end
 
 ---@param path string
@@ -80,16 +93,19 @@ local function framePath(base, index)
   return string.format("%s/%s-%d.png", PokemonCareCache.hatchDir(), base, index)
 end
 
--- Realizes every frame of one sprite group's source animation sequence in
--- source order, retaining its per-frame duration.
+-- Decodes one sprite group's source members: the character tiles, the
+-- sixteen-colour palette bank the sprites draw with, the cell bank and the
+-- animation bank.
 ---@param archive table<string, unknown>
 ---@param group table<string, unknown>
 ---@param role string
+---@param archiveLabel string
 ---@param dependencies table<string, unknown>[]
----@param assets table<string, string>
----@return table<string, unknown>
-local function compileSpriteGroup(archive, group, role, dependencies, assets)
-  local archiveLabel = "hatch-art"
+---@return table<string, unknown> charData
+---@return table[] palette
+---@return table<string, unknown> cellData
+---@return table<string, unknown> animation
+local function decodeSpriteGroup(archive, group, role, archiveLabel, dependencies)
   local charData = decode(
     "decodeChar",
     readMember(archive, assert(group.char --[[@as integer]]), role .. "-char", dependencies, archiveLabel),
@@ -120,40 +136,114 @@ local function compileSpriteGroup(archive, group, role, dependencies, assets)
     readMember(archive, assert(group.anim --[[@as integer]]), role .. "-anim", dependencies, archiveLabel),
     role .. "-anim"
   )
-  local sequenceNo = assert(group.sequence --[[@as integer]], "the sprite group names its sequence")
+  return charData, palette, cellData, animation
+end
+
+-- True when one animation frame resolves to a cell with no objects: the
+-- source shows nothing on that frame (the sprite animations carry blank
+-- frames), so the frame publishes its blank mark instead of pixels nobody
+-- authored.
+---@param cellData table<string, unknown>
+---@param animationFrame table<string, unknown>
+---@return boolean
+local function isBlankFrame(cellData, animationFrame)
+  local cellId = animationFrame.cell
+  if type(cellId) ~= "number" then
+    return false
+  end
+  local cell = (cellData.cells --[[@as table[] ]])[cellId + 1]
+  return type(cell) == "table" and (type(cell.objs) ~= "table" or #cell.objs == 0)
+end
+
+-- Realizes every frame of one decoded animation sequence in source order,
+-- retaining its per-frame duration. A blank source frame keeps only its mark
+-- and timing when the caller admits blank frames.
+---@param charData table<string, unknown>
+---@param palette table[]
+---@param cellData table<string, unknown>
+---@param sequence table<string, unknown>
+---@param role string frame path role of this sequence
+---@param directory string staged directory the frames live under
+---@param assets table<string, string>
+---@param allowBlank boolean whether blank source frames are published as marks
+---@return table<string, unknown> { frames = ... }
+local function compileAnimationFrames(charData, palette, cellData, sequence, role, directory, assets, allowBlank)
+  local frames = {}
+  for frameIndex in ipairs(sequence.frames) do
+    local sourceFrame = assert(sequence.frames[frameIndex] --[[@as table<string, unknown>]])
+    local duration = sourceFrame.duration
+    if type(duration) ~= "number" or duration % 1 ~= 0 or duration < 0 then
+      sourceError("frame timing is invalid", { role = role, frame = frameIndex - 1 })
+    end
+    if allowBlank and isBlankFrame(cellData, sourceFrame) then
+      frames[frameIndex] = { blank = true, durationTicks = duration }
+    else
+      local ok, rendered = pcall(
+        G2dRasterizer.renderAnimationFrame,
+        charData,
+        { colors = palette },
+        cellData,
+        sequence,
+        frameIndex,
+        { role = role, frame = frameIndex - 1 },
+        nil
+      )
+      if not ok then
+        if Errors.is(rendered) then
+          sourceError(role .. " does not rasterize: " .. tostring(rendered), { role = role })
+        end
+        error(rendered, 0)
+      end
+      local image = rendered --[[@as { width: integer, height: integer, pixels: string }]]
+      local path = string.format("%s/%s-%d.png", directory, role, frameIndex - 1)
+      local frame = stageImage(path, image, assets)
+      frame.durationTicks = duration
+      frames[frameIndex] = frame
+    end
+  end
+  return { frames = frames }
+end
+
+-- One sequence of a sprite group, from its decoded members.
+---@param animation table<string, unknown>
+---@param sequenceNo integer zero-based animation sequence identity
+---@param role string frame path role of this sequence
+---@param directory string staged directory the frames live under
+---@param charData table<string, unknown>
+---@param palette table[]
+---@param cellData table<string, unknown>
+---@param assets table<string, string>
+---@param allowBlank boolean? whether blank source frames are published as marks
+---@return table<string, unknown> { frames = ... }
+local function compileSequence(animation, sequenceNo, role, directory, charData, palette, cellData, assets, allowBlank)
   local sequence = animation.anims[sequenceNo + 1]
   if sequence == nil then
     sourceError("sprite animation sequence is missing", { role = role, sequence = sequenceNo })
   end
-  assert(sequence ~= nil, "missing animation sequences fail above")
-  local frames = {}
-  for frameIndex in ipairs(sequence.frames) do
-    local ok, rendered = pcall(
-      G2dRasterizer.renderAnimationFrame,
-      charData,
-      { colors = palette },
-      cellData,
-      sequence,
-      frameIndex,
-      { role = role, frame = frameIndex - 1 },
-      nil
-    )
-    if not ok then
-      if Errors.is(rendered) then
-        sourceError(role .. " does not rasterize: " .. tostring(rendered), { role = role })
-      end
-      error(rendered, 0)
-    end
-    local image = rendered --[[@as { width: integer, height: integer, pixels: string }]]
-    local frame = stageImage(framePath(role, frameIndex - 1), image, assets)
-    local duration = sequence.frames[frameIndex].duration
-    if type(duration) ~= "number" or duration % 1 ~= 0 or duration < 0 then
-      sourceError("frame timing is invalid", { role = role, frame = frameIndex - 1 })
-    end
-    frame.durationTicks = duration
-    frames[frameIndex] = frame
-  end
-  return { frames = frames }
+  return compileAnimationFrames(
+    charData,
+    palette,
+    cellData,
+    assert(sequence --[[@as table<string, unknown>]]),
+    role,
+    directory,
+    assets,
+    allowBlank
+  )
+end
+
+-- Realizes every frame of one hatch sprite group's source animation sequence.
+---@param archive table<string, unknown>
+---@param group table<string, unknown>
+---@param role string
+---@param dependencies table<string, unknown>[]
+---@param assets table<string, string>
+---@return table<string, unknown>
+local function compileSpriteGroup(archive, group, role, dependencies, assets)
+  local charData, palette, cellData, animation =
+    decodeSpriteGroup(archive, group, role, "hatch-art", dependencies)
+  local sequenceNo = assert(group.sequence --[[@as integer]], "the sprite group names its sequence")
+  return compileSequence(animation, sequenceNo, role, PokemonCareCache.hatchDir(), charData, palette, cellData, assets)
 end
 
 -- The scene's background: one composed 256x192 surface from the source char,
@@ -362,6 +452,493 @@ function PokemonCareAssetCompiler.compileHatch(romFs)
     local valid, validationErr = pcall(PokemonCareAssetSchema.assertHatchManifest, manifest)
     if not valid then
       sourceError("compiled manifest is invalid", { cause = tostring(validationErr) })
+    end
+    return { manifest = manifest, assets = assets, dependencies = dependencies }
+  end)
+  if ok then
+    return bundle --[[@as table<string, unknown>]]
+  end
+  if Errors.is(bundle) then
+    return nil, bundle --[[@as Errors.Error]]
+  end
+  error(bundle, 0)
+end
+
+-- Compiles the app71 trade sequence's generated presentation: every source
+-- scene's own composed layers, the source message-window geometry and the four
+-- bank-179 lines the in-game trade prints. Each layer is rasterized from the
+-- exact members the native scene loads
+-- (src/application/trade_sequence/trade_sequence_{send,depart,recede,exchange,
+-- approach,arrive,receive}.c) under that scene's own palette-load rules: the
+-- depart/arrive map layer is the 256-colour affine surface whose palette takes
+-- its second block from the time-of-day offset, the outdoor layer shifts one
+-- colour bank per time of day, and the 256x16 layer loads one 256-colour bank.
+-- Pure module: no love dependency, no runtime import.
+
+-- One layer's 256-colour palette under the source's partial loads. Each load
+-- places `colors` palette entries at `firstColor`, reading the member from
+-- `source` (0 for the first bank, or the time-of-day byte offset).
+---@param loads table[]
+---@param paletteOffsets table<string, integer>?
+---@param variant string?
+---@param paletteColors table[]
+---@return table[]
+local function tradePlacedPalette(loads, paletteOffsets, variant, paletteColors)
+  local colors = {}
+  for _, load in ipairs(loads) do
+    local first = 0
+    if load.source == "timeOfDay" then
+      local offsets = assert(paletteOffsets, "a time-of-day palette load names its offsets")
+      local offsetBytes = assert(offsets[assert(variant, "a time-of-day palette load names its variant")], nil)
+      assert(offsetBytes % 2 == 0, "palette byte offsets are whole colours")
+      first = offsetBytes / 2
+    else
+      first = assert(load.source --[[@as integer]], "a palette load names its source offset")
+    end
+    local target = load.firstColor == nil and 0 or assert(load.firstColor --[[@as integer]])
+    for index = 0, assert(load.colors --[[@as integer]]) - 1 do
+      local color = paletteColors[first + index + 1]
+      if color ~= nil then
+        colors[target + index + 1] = color
+      end
+    end
+  end
+  return colors
+end
+
+-- One layer's 16-colour palette shifted by whole colour banks: the source
+-- loads the member from a later bank into hardware slot zero, so the screen's
+-- own bank indices read that shifted range.
+---@param paletteColors table[]
+---@param bankShift integer
+---@return table[]
+local function tradeShiftedPalette(paletteColors, bankShift)
+  local colors = {}
+  for index = 1, #paletteColors do
+    colors[index] = paletteColors[index + bankShift * 16] or paletteColors[index]
+  end
+  return colors
+end
+
+---@param archive table<string, unknown>
+---@param layerSource table<string, unknown>
+---@param role string
+---@param dependencies table<string, unknown>[]
+---@param assets table<string, string>
+---@return table<string, unknown> one layer manifest record
+local function compileTradeLayer(archive, layerSource, role, dependencies, assets)
+  local archiveLabel = "trade-art"
+  local charData = decode(
+    "decodeChar",
+    readMember(archive, assert(layerSource.char --[[@as integer]]), role .. "-char", dependencies, archiveLabel),
+    role .. "-char"
+  )
+  local paletteData = decode(
+    "decodePalette",
+    readMember(archive, assert(layerSource.palette --[[@as integer]]), role .. "-palette", dependencies, archiveLabel),
+    role .. "-palette"
+  )
+  -- An affine layer is the source's 256-colour background, whose map stores
+  -- one tile-index byte per entry; every text layer stores two.
+  local screenData = decode(
+    "decodeScreen",
+    readMember(archive, assert(layerSource.screen --[[@as integer]]), role .. "-screen", dependencies, archiveLabel),
+    role .. "-screen",
+    layerSource.affine == true and { entryBytes = 1 } or nil
+  )
+  local paletteColors = assert(paletteData.colors) --[[@as table[] ]]
+  local affine = layerSource.affine == true
+  -- The affine layers publish their palette indices too: the source's link
+  -- pulses walk the layer's own palette slots, and only an index plane lets a
+  -- consumer resolve a slot back to its pixels.
+  local indexPath = nil
+  if affine then
+    local plane = G2dRasterizer.renderScreenIndices(charData, screenData, { role = role .. "-indices" })
+    indexPath = PokemonCareCache.tradeIndexPath(role)
+    assets[indexPath] = plane.indices
+  end
+
+  ---@param variant string?
+  ---@return table<string, unknown>
+  local function compose(variant)
+    local colors
+    if layerSource.paletteLoads ~= nil then
+      colors = tradePlacedPalette(
+        layerSource.paletteLoads --[[@as table[] ]],
+        layerSource.paletteOffsets --[[@as table<string, integer>? ]],
+        variant,
+        paletteColors
+      )
+    elseif layerSource.paletteOffsets ~= nil then
+      local offsets = layerSource.paletteOffsets --[[@as table<string, integer> ]]
+      local offsetBytes = assert(offsets[assert(variant, "a time-of-day layer names its variant")], nil)
+      assert(offsetBytes % 32 == 0, "16-colour layer offsets are whole banks")
+      colors = tradeShiftedPalette(paletteColors, offsetBytes / 32)
+    else
+      colors = paletteColors
+    end
+    local image = UiAssetHelpers.rasterizeScreen(
+      charData,
+      colors,
+      screenData,
+      variant ~= nil and (role .. "-" .. variant) or role,
+      sourceError
+    )
+    local path = string.format("%s/%s%s.png", PokemonCareCache.tradeDir(), role, variant ~= nil and ("-" .. variant) or "")
+    return stageImage(path, image, assets)
+  end
+
+  local record = {}
+  if layerSource.paletteOffsets ~= nil then
+    local variants = {}
+    for _, variantName in ipairs(PokemonCareSources.tradeBackdropNames) do
+      if (layerSource.paletteOffsets --[[@as table<string, integer> ]])[variantName] ~= nil then
+        variants[variantName] = compose(variantName)
+      end
+    end
+    record.variants = variants
+  else
+    local image = compose(nil)
+    record.image = image.image
+    record.width = image.width
+    record.height = image.height
+  end
+  if affine then
+    record.affine = true
+    record.indices = assert(indexPath, "an affine layer publishes its index plane")
+  end
+  return record
+end
+
+-- The complete trade scene inventory: every phase the sequence plays, with its
+-- source layers in native draw order.
+---@param archive table<string, unknown>
+---@param dependencies table<string, unknown>[]
+---@param assets table<string, string>
+---@return table<string, unknown>
+local function compileTradeScenes(archive, dependencies, assets)
+  local scenes = {}
+  for _, phase in ipairs(PokemonCareSources.tradePhaseOrder) do
+    local source = assert(PokemonCareSources.tradeScenes[phase], "every played phase names its source scene")
+    local layers = {}
+    for index, layerSource in ipairs(source.layers --[[@as table[] ]]) do
+      layers[index] = compileTradeLayer(archive, layerSource, phase .. "-" .. index, dependencies, assets)
+    end
+    scenes[phase] = { layers = layers }
+  end
+  return scenes
+end
+
+-- One trade sprite sheet: its decoded members read once, then every animation
+-- sequence its scenes select. Each published sequence names its own source
+-- sequence index, so the runtime selects exactly the sequence the scene sets
+-- with Sprite_SetAnimCtrlSeq.
+---@param archive table<string, unknown>
+---@param sheet table<string, unknown>
+---@param key string sheet identity in the manifest
+---@param dependencies table<string, unknown>[]
+---@param assets table<string, string>
+---@return table<string, unknown> { sequences = ... }
+local function compileTradeSpriteSheet(archive, sheet, key, dependencies, assets)
+  local charData, palette, cellData, animation = decodeSpriteGroup(archive, sheet, key, "trade-art", dependencies)
+  local sequences = {}
+  for _, sequenceNo in ipairs(sheet.sequences --[[@as integer[] ]]) do
+    local compiled = compileSequence(
+      animation,
+      sequenceNo,
+      key .. "-" .. tostring(sequenceNo),
+      PokemonCareCache.tradeDir(),
+      charData,
+      palette,
+      cellData,
+      assets,
+      true
+    )
+    sequences[#sequences + 1] = { sequence = sequenceNo, frames = compiled.frames }
+  end
+  return { sequences = sequences }
+end
+
+-- The trade scene's Poke Ball model: the single model of member 27, compiled
+-- into normalized batches/materials whose geometry and textures are staged
+-- under the trade family's own content-addressed paths. The runtime realizes
+-- it through the shared model stack (GpuAssetPool, ModelDefinition,
+-- ModelInstance), exactly like every other generated model.
+---@param archive table<string, unknown>
+---@param dependencies table<string, unknown>[]
+---@param assets table<string, string>
+---@return table<string, unknown> model descriptor
+local function compileTradeBalloon(archive, dependencies, assets)
+  local memberId = assert(PokemonCareSources.tradeArt.balloonMember --[[@as integer]])
+  local bytes = readMember(archive, memberId, "balloon-model", dependencies, "trade-art")
+  local decoded = Nsbmd.decode(bytes, { alias = "NARC_a_0_8_9", memberId = memberId, section = "trade-balloon" })
+  if decoded == nil then
+    sourceError("the trade balloon model does not decode", { memberId = memberId })
+  end
+  local model = assert(decoded, "decoded balloon source exists").models[1]
+  if model == nil or decoded.embeddedTextures == nil then
+    sourceError("the trade balloon model carries no model or textures", { memberId = memberId })
+  end
+  assert(model ~= nil, "missing balloon models fail above")
+  do
+    local nodes = model.nodes or {}
+    for index, node in ipairs(nodes) do
+      print("DBG node", index, node.scaleX, node.scaleY, node.scaleZ, node.transX, node.transY, node.transZ)
+    end
+    print("DBG model shapes", #(model.shapes or {}), "info", model.info and model.info.posScale, model.info and model.info.invPosScale)
+  end
+  local meshes, textures = {}, {}
+  local compiled = ModelAssetCompiler.compileModel(model, decoded.embeddedTextures, meshes, textures, {
+    role = "trade-balloon",
+    modelArchive = "NARC_a_0_8_9",
+    modelMemberId = memberId,
+    modelName = model.name,
+    textureArchive = "NARC_a_0_8_9",
+    textureMemberId = memberId,
+    finalizeMeshes = true,
+  })
+  if #compiled.unresolved > 0 then
+    sourceError("the trade balloon model has unresolved materials", {
+      memberId = memberId,
+      unresolved = #compiled.unresolved,
+    })
+  end
+  for sha1, mesh in pairs(meshes) do
+    assets[PokemonCareCache.tradeGeometryPath(sha1)] = mesh
+  end
+  for key, texture in pairs(textures) do
+    assets[PokemonCareCache.tradeTexturePath(key)] = texture.data
+  end
+  local descriptor = {
+    schema = ModelAsset.SCHEMA,
+    key = "trade-balloon",
+    kind = "static",
+    batches = compiled.batches,
+    materials = compiled.materials,
+  }
+  for _, batch in ipairs(descriptor.batches) do
+    local sha1 = assert(batch.geometry:match("/([^/]+)%.g4mesh$"), "compiled balloon geometry path is malformed")
+    batch.geometry = PokemonCareCache.tradeGeometryPath(sha1)
+  end
+  for _, material in ipairs(descriptor.materials) do
+    if material.texture ~= nil then
+      local sha1 = assert(material.texture:match("/([^/]+)%.png$"), "compiled balloon texture path is malformed")
+      material.texture = PokemonCareCache.tradeTexturePath(sha1)
+    end
+  end
+  ModelAsset.validate(descriptor)
+  return descriptor
+end
+
+-- The front picture height of every portrait the mon family publishes, keyed
+-- by that selector: the source anchors a Pokepic's 80x80 frame so its bottom
+-- sits at height + 80 (GetBoxMonPicHeightEx). The height only depends on
+-- species, form and gender, so shiny selectors share the plain entry.
+---@param romFs table<string, unknown>
+---@param dependencies table<string, unknown>[]
+---@return table<string, integer> height by portrait selector
+local function compileTradePictureHeights(romFs, dependencies)
+  local base, baseErr = romFs:openNarc(MonSources.PICTURE_HEIGHT_NARC)
+  if base == nil then
+    sourceError("the picture height archive is unavailable", { archive = MonSources.PICTURE_HEIGHT_NARC, cause = baseErr })
+  end
+  local other, otherErr = romFs:openNarc(MonSources.PICTURE_HEIGHT_OTHER_NARC)
+  if other == nil then
+    sourceError("the special picture height archive is unavailable", {
+      archive = MonSources.PICTURE_HEIGHT_OTHER_NARC,
+      cause = otherErr,
+    })
+  end
+  assert(base ~= nil and other ~= nil, "missing height archives fail above")
+  local archives = {
+    [MonSources.PICTURE_HEIGHT_NARC] = base,
+    [MonSources.PICTURE_HEIGHT_OTHER_NARC] = other,
+  }
+  local facing = assert(PokemonCareSources.tradePicture.facing --[[@as integer]])
+  local heights = {}
+  for speciesId = 1, MonSources.MAX_SPECIES do
+    local speciesKey = assert(MonSources.speciesKeys[speciesId], "every species carries its key")
+    for _, form in ipairs(MonSources.runtimeForms(speciesId)) do
+      for _, gender in ipairs({ "male", "female" }) do
+        local symbol, memberId = MonSources.pictureHeightIds(speciesId, gender, facing, form)
+        local archive = assert(archives[symbol], "picture heights read a known archive")
+        -- Height members are one plain byte, so they are read raw: the shared
+        -- member reader decompresses LZ10 payloads by their 0x10 header, and a
+        -- legitimate height of 16 would look like one.
+        local bytes, readErr = archive:readMember(memberId)
+        if bytes == nil then
+          sourceError("a picture height member is unreadable", {
+            archive = symbol,
+            memberId = memberId,
+            cause = tostring(readErr),
+          })
+        end
+        assert(bytes ~= nil, "unreadable height members fail above")
+        dependencies[#dependencies + 1] = {
+          name = symbol .. ":member:" .. memberId,
+          role = "picture-height",
+          sha1 = Hashing.sha1hex(bytes),
+        }
+        -- Members past a species' portrait block are empty: those selectors
+        -- have no generated portrait, so they carry no height either.
+        if #bytes == 1 then
+          heights[MonCache.portraitSelector(speciesKey, form, gender, false)] = string.byte(bytes, 1)
+        elseif #bytes ~= 0 then
+          sourceError("a picture height member carries at most one byte", {
+            archive = symbol,
+            memberId = memberId,
+            size = #bytes,
+          })
+        end
+      end
+    end
+  end
+  return heights
+end
+
+-- Lowers one trade-sequence line: literal text with the three source
+-- message-format buffers the sequence fills (the sent mon's nickname, the
+-- received mon's nickname and the player's name) kept as printable markers.
+---@param bank table<string, unknown>
+---@param bankId integer
+---@param messageId integer
+---@param role string
+---@param dependencies table<string, unknown>[]
+---@return { id: integer, text: string, align: string? }
+local function compileTradeMessage(bank, bankId, messageId, role, dependencies)
+  local tokens = UiAssetHelpers.messageTokens(bank, bankId, messageId, role, "trade", sourceError)
+  local pieces = {}
+  local align = nil
+  for _, token in ipairs(tokens) do
+    local typed = token --[[@as table<string, unknown>]]
+    if typed.kind == "substitution" then
+      -- The sequence's lines name the message-format buffers it fills: field 0
+      -- with buffer 0 or 1 is a subject's nickname, and field 3 with buffer 2 is
+      -- the trade profile's player name.
+      local field = type(typed.control) == "number" and typed.name == "STRVAR_1" and typed.control
+          - FieldMessageText.STRVAR_1
+        or nil
+      local args = typed.args --[[@as table|nil ]]
+      local buffer = type(args) == "table" and args[1] or nil
+      local marker = nil
+      if field == 0 and buffer == 0 then
+        marker = TRADE_SENT_MARKER
+      elseif field == 0 and buffer == 1 then
+        marker = TRADE_RECEIVED_MARKER
+      elseif field == 3 and buffer == 2 then
+        marker = TRADE_PLAYER_MARKER
+      end
+      if marker == nil then
+        sourceError("trade line carries an unsupported substitution", {
+          role = role,
+          messageId = messageId,
+          control = typed.control,
+          args = typed.args,
+        })
+      end
+      assert(marker ~= nil, "unsupported substitutions fail above")
+      pieces[#pieces + 1] = marker
+    elseif typed.kind == "glyph" then
+      local text = typed.text
+      if type(text) ~= "string" then
+        sourceError("glyph token carries no text", { role = role, messageId = messageId })
+      end
+      assert(type(text) == "string")
+      pieces[#pieces + 1] = text
+    elseif typed.kind == "line_break" then
+      pieces[#pieces + 1] = "\n"
+    elseif typed.kind == "eos" then
+      break
+    elseif typed.kind == "focus_indicator" then
+      -- The source end-of-line prompt marker; the compiled line keeps only
+      -- its printable text.
+    elseif typed.control == FieldMessageText.ALN_CENTER then
+      align = "center"
+    elseif typed.control == FieldMessageText.ALN_RIGHT then
+      align = "right"
+    else
+      sourceError("trade line carries an unsupported token", {
+        role = role,
+        messageId = messageId,
+        kind = typed.kind,
+        code = typed.code,
+        args = typed.args,
+        control = typed.control,
+      })
+    end
+  end
+  local text = table.concat(pieces)
+  text = text:gsub("\n+$", "")
+  if text:match("^%s*$") ~= nil then
+    sourceError("trade line prints nothing", { role = role, messageId = messageId })
+  end
+  local line = { id = messageId, text = text }
+  if align ~= nil then
+    line.align = align
+  end
+  return line
+end
+
+-- Compiles the trade sequence presentation from one cartridge view.
+---@param romFs table<string, unknown>
+---@return table<string, unknown>|nil bundle, Errors.Error|nil failure
+function PokemonCareAssetCompiler.compileTrade(romFs)
+  local dependencies = {}
+  local assets = {}
+  local ok, bundle = pcall(function()
+    local art = PokemonCareSources.tradeArt
+    local archive, openErr = romFs:openNarc(art.alias)
+    if archive == nil then
+      sourceError("trade art archive is unavailable", { archive = art.alias, cause = openErr })
+    end
+    assert(archive ~= nil, "missing art archives fail above")
+
+    local messagesSource = PokemonCareSources.tradeSequenceMessages
+    local messageArchive, messageErr = romFs:openNarc(messagesSource.alias)
+    if messageArchive == nil then
+      sourceError("trade message archive is unavailable", { archive = messagesSource.alias, cause = messageErr })
+    end
+    assert(messageArchive ~= nil, "missing message archives fail above")
+    local bank = UiAssetHelpers.readMessageBank(
+      messageArchive,
+      messagesSource.memberId,
+      "trade-sequence-messages",
+      dependencies,
+      "trade",
+      sourceError
+    )
+    local lines = PokemonCareSources.tradeSequenceLines
+    local window = art.window
+    local sprites = PokemonCareSources.tradeSprites
+    local manifest = {
+      schema = PokemonCareAssetSchema.TRADE_SCHEMA,
+      window = {
+        x = window.x * 8,
+        y = window.y * 8,
+        width = window.width * 8,
+        height = window.height * 8,
+      },
+      scenes = compileTradeScenes(archive, dependencies, assets),
+      sprites = {
+        effect = compileTradeSpriteSheet(archive, sprites.effect, "effect", dependencies, assets),
+      },
+      balloon = { model = compileTradeBalloon(archive, dependencies, assets) },
+      pictures = {
+        baseY = assert(PokemonCareSources.tradePicture.baseY --[[@as integer]]),
+        sentTileX = assert(PokemonCareSources.tradePicture.sentTileX --[[@as integer]]),
+        receivedTileX = assert(PokemonCareSources.tradePicture.receivedTileX --[[@as integer]]),
+        heights = compileTradePictureHeights(romFs, dependencies),
+      },
+      messages = {
+        send = compileTradeMessage(bank, messagesSource.memberId, lines.send, "send", dependencies),
+        farewell = compileTradeMessage(bank, messagesSource.memberId, lines.farewell, "farewell", dependencies),
+        received = compileTradeMessage(bank, messagesSource.memberId, lines.received, "received", dependencies),
+        takeCare = compileTradeMessage(bank, messagesSource.memberId, lines.takeCare, "take-care", dependencies),
+      },
+    }
+    local valid, validationErr = pcall(PokemonCareAssetSchema.assertTradeManifest, manifest)
+    if not valid then
+      sourceError("compiled trade manifest is invalid", { cause = tostring(validationErr) })
     end
     return { manifest = manifest, assets = assets, dependencies = dependencies }
   end)

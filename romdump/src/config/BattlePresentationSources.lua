@@ -3869,25 +3869,9 @@ addTransitionQuartet(1, 10, 12, 11, { 46 })
 -- here as the staged 4bpp run's leading 384 tiles.
 BattlePresentationSources.LOWER_USED_TILES = 384
 
--- Height-member formulas are the species switch in
--- GetMonPicHeightBySpeciesGenderForm (src/pokemon.c). Values are source
--- member identities and stay in this producer catalog.
-local SPECIAL_HEIGHT_BASES = {
-  DEOXYS = 0x00,
-  UNOWN = 0x08,
-  CASTFORM = 0x40,
-  BURMY = 0x48,
-  WORMADAM = 0x4E,
-  SHELLOS = 0x54,
-  GASTRODON = 0x58,
-  CHERRIM = 0x5C,
-  ARCEUS = 0x60,
-  SHAYMIN = 0x88,
-  ROTOM = 0x8C,
-  GIRATINA = 0x98,
-  PICHU = 0x9C,
-}
-
+-- Height-member formulas follow the species switch in
+-- GetMonPicHeightBySpeciesGenderForm (src/pokemon.c); the mon source catalog
+-- owns the single implementation.
 ---@param speciesId integer source species identity
 ---@param speciesKey string semantic species key
 ---@param form integer normalized runtime form
@@ -3896,32 +3880,12 @@ local SPECIAL_HEIGHT_BASES = {
 ---@return string archiveSymbol
 ---@return integer memberId
 function BattlePresentationSources.pictureHeightSource(speciesId, speciesKey, form, facing, gender)
-  assert(facing == 0 or facing == 2, "picture facing must be 0 (back) or 2 (front)")
-  assert(gender == "male" or gender == "female", "picture gender must be male or female")
-  local halfFacing = facing / 2
-  if speciesKey == "EGG" then
-    return BattlePresentationSources.PICTURE_HEIGHT_OTHER_NARC, 0x84 + form
-  elseif speciesKey == "BAD_EGG" then
-    return BattlePresentationSources.PICTURE_HEIGHT_OTHER_NARC, 0x84
-  elseif speciesKey == "CASTFORM" then
-    return BattlePresentationSources.PICTURE_HEIGHT_OTHER_NARC, 0x40 + 2 * facing + form
-  elseif speciesKey == "SHELLOS" or speciesKey == "GASTRODON" or speciesKey == "CHERRIM" then
-    return BattlePresentationSources.PICTURE_HEIGHT_OTHER_NARC, assert(SPECIAL_HEIGHT_BASES[speciesKey]) + facing + form
-  elseif
-    speciesKey == "DEOXYS"
-    or speciesKey == "UNOWN"
-    or speciesKey == "BURMY"
-    or speciesKey == "WORMADAM"
-    or speciesKey == "ARCEUS"
-    or speciesKey == "SHAYMIN"
-    or speciesKey == "ROTOM"
-    or speciesKey == "GIRATINA"
-    or speciesKey == "PICHU"
-  then
-    return BattlePresentationSources.PICTURE_HEIGHT_OTHER_NARC,
-      assert(SPECIAL_HEIGHT_BASES[speciesKey]) + halfFacing + form * 2
+  assert(MonSources.speciesKeys[speciesId] == speciesKey, "picture height names the same species key")
+  local symbol, memberId = MonSources.pictureHeightIds(speciesId, gender, facing, form)
+  if symbol == MonSources.PICTURE_HEIGHT_OTHER_NARC then
+    return BattlePresentationSources.PICTURE_HEIGHT_OTHER_NARC, memberId
   end
-  return BattlePresentationSources.PICTURE_HEIGHT_NARC, speciesId * 4 + facing + (gender == "female" and 0 or 1)
+  return BattlePresentationSources.PICTURE_HEIGHT_NARC, memberId
 end
 
 local backgroundIndex = {}

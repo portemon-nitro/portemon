@@ -885,6 +885,67 @@ function HgssMonService:prepareEvolution(expectedRevision, slot0, mon, additiona
   return { isCurrent = isCurrent, publish = publish }
 end
 
+-- The source NPC exchange receipt (NPCTrade_ReceiveMonToSlot): the created
+-- record replaces the selected party slot in one revision and the Pokedex
+-- records the caught species with its register score while the species is
+-- still fresh. Party, Dex and statistics publish together after every
+-- candidate is current, so a repeated exchange or a presentation failure can
+-- never publish twice. The source copies the record into the slot without the
+-- Aprijuice modifiers; a freshly created trade record carries none.
+---@param slot0 integer
+---@param mon table<string, unknown>
+function HgssMonService:exchangePartyMon(slot0, mon)
+  checkSlotNumber(slot0, "NPC trade")
+  local admitted = self:_checked(mon)
+  local dexPrep = nil
+  local dex = self._dex
+  if type(dex) == "table" and admitted.isEgg ~= true then
+    dexPrep = dex:prepareChanges({
+      observations = { { kind = "caught", specimen = dex:describe(admitted) } },
+    })
+  end
+  local statsPrep = nil
+  local statsObservations = self:_statsObservations(admitted)
+  if statsObservations ~= nil then
+    local stats = self._stats
+    assert(type(stats) == "table", "mon service stats is the game-stats owner")
+    statsPrep = stats:prepareChanges({ observations = statsObservations })
+  end
+  local partyPrep, stale = self:preparePartyChanges(self._party:revision(), { { slot = slot0, mon = admitted } })
+  if partyPrep == nil then
+    assert(stale == "stale", "party preparation reports its staleness")
+    MonsErrors.raise(MonsErrors.SAVE_INVALID, "party changed during the NPC exchange", { slot = slot0 })
+  end
+  assert(partyPrep ~= nil, "the NPC exchange stages its party update")
+  publishStaged(partyPrep, dexPrep, statsPrep)
+end
+
+-- One source NPC trade record from its generated identity: the catalog's
+-- semantic keys and the caller's resolved meeting memo and level go to the
+-- factory's own policy. Nothing is published here.
+---@param request table<string, unknown>
+---@return table<string, unknown>
+function HgssMonService:createNpcTradeMon(request)
+  assert(type(request) == "table", "NPC trade creation requires a request record")
+  local identity = assert(request.identity, "NPC trade creation requires its generated identity")
+  assert(type(identity) == "table", "NPC trade creation requires its generated identity")
+  return self._factory:createNpcTrade({
+    species = identity.offeredSpecies,
+    level = request.level,
+    personality = identity.personality,
+    otId = identity.otId,
+    otName = identity.otName,
+    otGender = identity.otGender,
+    language = identity.language,
+    heldItem = identity.heldItem,
+    nickname = identity.nickname,
+    ivs = identity.ivs,
+    contest = identity.contest,
+    location = request.location,
+    date = self:_metDate(request),
+  })
+end
+
 -- Synthetic sighting of one semantic species: creates the normal
 -- level-50 form-zero temporary specimen through the exact generation
 -- (four draws, no insertion) and records its seen fact only, keeping

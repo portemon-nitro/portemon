@@ -525,4 +525,61 @@ function MonFactory:createSpikyEarPichu(request)
   return self:_finish(mon)
 end
 
+-- Source _CreateTradeMon (src/npc_trade.c): the NPC's own record is created
+-- with the table's fixed personality, so ordinary creation spends exactly the
+-- two individual-value draws and then every identity column is written over
+-- the generated one -- the six individual values, the five contest values, the
+-- held item, the custom nickname, the OT name, the OT gender and the record
+-- language. The ability stays the one ordinary creation derived from the
+-- personality and the form, and the source's unused ability and sheen columns
+-- are never applied. The meeting memo is the caller's resolved strategy. The
+-- caller owns party publication.
+---@param request { species: string, level: integer, personality: integer, otId: integer, otName: string, otGender: integer, language: string, heldItem: string, nickname: string, ivs: table<string, integer>, contest: table<string, integer>, location: integer, date: { year: integer, month: integer, day: integer } }
+---@return table<string, unknown>
+function MonFactory:createNpcTrade(request)
+  assert(type(request) == "table", "NPC trade creation requires a request record")
+  local mon = self:_normalRecord({
+    species = request.species,
+    level = request.level,
+    form = 0,
+    profile = {
+      name = request.otName,
+      gender = request.otGender,
+      trainerId = request.otId,
+    },
+    ball = "POKE_BALL",
+    location = request.location,
+    terrain = 0,
+    date = request.date,
+    personality = request.personality,
+  })
+  mon.ivs = {
+    hp = request.ivs.hp,
+    attack = request.ivs.attack,
+    defense = request.ivs.defense,
+    speed = request.ivs.speed,
+    specialAttack = request.ivs.specialAttack,
+    specialDefense = request.ivs.specialDefense,
+  }
+  mon.contest = {
+    cool = request.contest.cool,
+    beauty = request.contest.beauty,
+    cute = request.contest.cute,
+    smart = request.contest.smart,
+    tough = request.contest.tough,
+    sheen = 0,
+  }
+  mon.heldItem = request.heldItem
+  mon.nickname = request.nickname
+  mon.origin.trainerName = request.otName
+  mon.origin.trainerGender = request.otGender
+  mon.origin.language = request.language
+  -- The replaced individual values change the derived maximum, so the record
+  -- keeps its own full health from the values it now carries.
+  local form = self._catalog:form(request.species, mon.form)
+  local derived = Stats.calculate(form.baseStats, mon.ivs, mon.evs, request.level, Personality.nature(mon.personality))
+  mon.condition = { currentHp = derived.hp, effects = {} }
+  return self:_finish(mon)
+end
+
 return MonFactory

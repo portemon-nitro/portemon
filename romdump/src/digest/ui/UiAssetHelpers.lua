@@ -53,8 +53,15 @@ end
 ---@param kindWord string compiler label word namespacing the decode label
 ---@param sourceError fun(message: string, context: table<string, unknown>?) compiler-specific source failure
 ---@return table<string, unknown> decoded record
-function UiAssetHelpers.decode(kind, bytes, role, kindWord, sourceError)
-  local record, err = G2dDecoder[kind](bytes, { label = kindWord .. ":" .. role })
+---@param decodeOptions table<string, unknown>? format options for decoders whose
+---   geometry the caller's source template settles (a 256-colour affine map's
+---   one-byte entries, for instance)
+function UiAssetHelpers.decode(kind, bytes, role, kindWord, sourceError, decodeOptions)
+  local options = { label = kindWord .. ":" .. role }
+  for key, value in pairs(decodeOptions or {}) do
+    options[key] = value
+  end
+  local record, err = G2dDecoder[kind](bytes, options)
   if not record then
     assert(err)
     sourceError(role .. " does not decode: " .. err.message, { role = role, cause = err.code })

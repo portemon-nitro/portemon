@@ -1,5 +1,6 @@
 -- The single script-owned care child: one request, one scene, one terminal
--- result. The blocking task owns the source lifecycle and the save policy;
+-- result. Two closed application kinds exist: the egg hatch scene and the app71
+-- trade sequence. The blocking task owns the source lifecycle and the save policy;
 -- this host owns only the child handle, its presentation bundle and its result
 -- lease. The scene advances on the owning scheduler tick, so the field never
 -- steps it, and the renderer only reads its snapshots. Stale handles and
@@ -7,13 +8,14 @@
 -- imported by libs/script.
 
 local EggHatchState = require("game.hgss.src.field.EggHatchState")
+local NpcTradeState = require("game.hgss.src.field.NpcTradeState")
 local PokemonCareInterface = require("libs.hgss.src.ui.PokemonCareInterface")
 
 ---@class PokemonCareScriptHost
 ---@field private _runtime table<string, unknown> owning field runtime behind the presentation binding
 ---@field private _nextId integer handle identity counter
----@field private _active { handle: table<string, unknown>, state: EggHatchState, lease: table<string, unknown>?, request: PokemonCareHatchRequest }? live child
----@field private _last { handle: table<string, unknown>, result: PokemonCareHatchResult? }? retained terminal result behind the just-closed child
+---@field private _active { handle: table<string, unknown>, state: table<string, unknown>, lease: table<string, unknown>?, request: table<string, unknown> }? live child
+---@field private _last { handle: table<string, unknown>, result: table<string, unknown>? }? retained terminal result behind the just-closed child
 ---@field private _disposed boolean teardown flag
 local PokemonCareScriptHost = {}
 PokemonCareScriptHost.__index = PokemonCareScriptHost
@@ -37,24 +39,31 @@ end
 -- composition has none, so the scene still runs its source frames and waits
 -- while the renderer reports no bundle. A failed acquisition surfaces as the
 -- scene's own preparation error instead of a silent blank screen.
----@param request PokemonCareHatchRequest
+---@param request table<string, unknown> the closed application request
 ---@return table<string, unknown> handle live child identity
 function PokemonCareScriptHost:open(request)
   assert(not self._disposed, "disposed care host cannot open a child")
   assert(self._active == nil, "a care application already owns the script modal")
-  local typed = PokemonCareInterface.assertHatchRequest(request)
+  assert(type(request) == "table", "care applications open from a request record")
   local runtime = self._runtime
   local audio = assert(runtime.audio or (runtime.scriptHosts and runtime.scriptHosts.audio), "care host needs the source audio host")
   self._nextId = self._nextId + 1
   local handle = { id = self._nextId }
-  local state = EggHatchState.new({
-    variant = typed.variant,
-    species = typed.species,
-    form = typed.form,
-    audio = audio,
-    hatched = { messageId = 0, frames = 1 },
-    question = { messageId = 1, frames = 1 },
-  })
+  local typed, state
+  if request.kind == PokemonCareInterface.KINDS.trade then
+    typed = PokemonCareInterface.assertTradeRequest(request)
+    state = NpcTradeState.new({ request = typed, audio = audio })
+  else
+    typed = PokemonCareInterface.assertHatchRequest(request)
+    state = EggHatchState.new({
+      variant = typed.variant,
+      species = typed.species,
+      form = typed.form,
+      audio = audio,
+      hatched = { messageId = 0, frames = 1 },
+      question = { messageId = 1, frames = 1 },
+    })
+  end
   local lease = nil
   if type(runtime.acquirePokemonCarePresentation) == "function" then
     lease = runtime:acquirePokemonCarePresentation(typed)
@@ -74,7 +83,7 @@ function PokemonCareScriptHost:activeHandle()
 end
 
 ---@param handle table<string, unknown>
----@return { handle: table<string, unknown>, state: EggHatchState, lease: table<string, unknown>?, request: PokemonCareHatchRequest }
+---@return { handle: table<string, unknown>, state: table<string, unknown>, lease: table<string, unknown>?, request: table<string, unknown> }
 local function activeFor(self, handle)
   local active = assert(self._active, "no care application is open")
   assert(handle == active.handle, "care application handle is stale or foreign")
@@ -109,18 +118,20 @@ function PokemonCareScriptHost:step(handle, input)
     return
   end
   local snapshot = active.state:snapshot()
-  local requested = snapshot.particles --[[@as integer[]|nil ]]
-  if requested ~= nil and #requested > 0 then
-    presentation.renderer:emitParticles(assert(snapshot.variant) --[[@as string]], requested)
+  if snapshot.kind == PokemonCareInterface.KINDS.hatch then
+    local requested = snapshot.particles --[[@as integer[]|nil ]]
+    if requested ~= nil and #requested > 0 then
+      presentation.renderer:emitParticles(assert(snapshot.variant) --[[@as string]], requested)
+    end
+    presentation.renderer:updateFixed()
   end
-  presentation.renderer:updateFixed()
 end
 
 -- Reads the terminal result: nil until the scene finished, then the detached
 -- answer. The host caches that publication and serves it until close, so the
 -- owning task and an observer share one terminal read.
 ---@param handle table<string, unknown> live or just-closed child identity
----@return PokemonCareHatchResult? terminal scene result
+---@return table<string, unknown>? terminal scene result
 function PokemonCareScriptHost:result(handle)
   local active = self._active
   if active ~= nil then
@@ -174,7 +185,7 @@ end
 -- Forwards the live scene's immutable snapshot for drawing. Status never
 -- advances the scene.
 ---@param handle table<string, unknown>? live child identity
----@return PokemonCareHatchStatus? scene snapshot
+---@return table<string, unknown>? scene snapshot
 function PokemonCareScriptHost:status(handle)
   local active = self._active
   if active == nil then
@@ -198,7 +209,7 @@ function PokemonCareScriptHost:presentation()
 end
 
 -- The live snapshot the renderer draws, or nil when no child is open.
----@return PokemonCareHatchStatus?
+---@return table<string, unknown>?
 function PokemonCareScriptHost:snapshot()
   local active = self._active
   if active == nil then

@@ -10,12 +10,15 @@ local ItemSources = require("romdump.src.config.ItemSources")
 local MonSources = require("romdump.src.config.MonSources")
 local PokemonCareAssetSchema = require("libs.assets.src.PokemonCareAssetSchema")
 local PokemonCareSources = require("romdump.src.config.PokemonCareSources")
+local UiAssetHelpers = require("romdump.src.digest.ui.UiAssetHelpers")
 
 ---@class PokemonCareCatalogCompiler
 local PokemonCareCatalogCompiler = {}
 
 local EGG_SPECIES = PokemonCareSources.eggSpeciesSource
 local EGG_MOVES = PokemonCareSources.eggMoveSource
+local TRADE_TABLE = PokemonCareSources.tradeTable
+local TRADE_MESSAGES = PokemonCareSources.tradeMessages
 
 local SPECIES_KEYS = {}
 for _, key in pairs(MonSources.speciesKeys) do
@@ -44,6 +47,24 @@ local function speciesKey(speciesId, context)
       sourceError("POKEMON_CARE_BAD_SPECIES", "unknown species identity " .. tostring(speciesId), context)
   end
   return key
+end
+
+-- The shared UI producer helpers report through a message/context callback
+-- rather than this compiler's code-first signature.
+---@param message string
+---@param context table<string, unknown>?
+local function uiSourceError(message, context)
+  sourceError("POKEMON_CARE_SOURCE_INVALID", message, context or {})
+end
+
+---@param archive table<string, unknown>
+---@param memberId integer
+---@param role string
+---@param dependencies table<string, unknown>[]
+---@param archiveLabel string
+---@return string
+local function readMember(archive, memberId, role, dependencies, archiveLabel)
+  return UiAssetHelpers.readMember(archive, memberId, role, dependencies, archiveLabel, uiSourceError)
 end
 
 -- ReadFromPersonalPmsNarc: one u16 per species at species * 2.
@@ -210,6 +231,209 @@ local function checkIncenseRows()
   return rows
 end
 
+-- The source NPC trade table (_CreateTradeMon, src/npc_trade.c): one fixed
+-- member per NpcTradeNum holding 21 ints -- offered species, the six
+-- individual values, the unused ability, the OT id, the five contest values,
+-- the fixed personality, the held item, the OT gender, the unused sheen, the
+-- language, the requested species and the unused flag. The nickname and the
+-- OT name are message bank 200 entries at the trade's own index and at
+-- NPC_TRADE_OT_NUM(tradeNum). The source's unused ability and sheen columns are
+-- deliberately not published: ordinary creation derives the ability and the
+-- sheen stays zero.
+---@param tokens table<string, unknown>[]
+---@param role string
+---@param bankId integer
+---@param index integer
+---@return string|nil, Errors.Error|nil
+local function tradeName(tokens, role, bankId, index)
+  local pieces = {}
+  for _, token in ipairs(tokens) do
+    local typed = token --[[@as table<string, unknown>]]
+    if typed.kind == "glyph" then
+      local text = typed.text
+      if type(text) ~= "string" then
+        return nil,
+          sourceError("POKEMON_CARE_SOURCE_INVALID", "the trade name glyph carries no text", {
+            role = role,
+            bank = bankId,
+            index = index,
+          })
+      end
+      assert(type(text) == "string")
+      pieces[#pieces + 1] = text
+    elseif typed.kind == "eos" then
+      break
+    else
+      return nil,
+        sourceError("POKEMON_CARE_SOURCE_INVALID", "the trade name carries an unsupported token", {
+          role = role,
+          bank = bankId,
+          index = index,
+          kind = typed.kind,
+        })
+    end
+  end
+  local name = table.concat(pieces)
+  if name:match("^%s*$") ~= nil then
+    return nil,
+      sourceError("POKEMON_CARE_SOURCE_INVALID", "the trade name prints nothing", {
+        role = role,
+        bank = bankId,
+        index = index,
+      })
+  end
+  return name
+end
+
+---@param romFs table<string, unknown>
+---@param dependencies table<string, unknown>[]
+---@return table<string, unknown>[]|nil, Errors.Error|nil
+local function readTrades(romFs, dependencies)
+  local archive, openErr = romFs:openNarc(TRADE_TABLE.alias)
+  if archive == nil then
+    return nil,
+      sourceError("POKEMON_CARE_SOURCE_MISSING", "the NPC trade archive is unavailable", {
+        archive = TRADE_TABLE.alias,
+        cause = openErr,
+      })
+  end
+  assert(archive ~= nil, "missing trade archives fail above")
+  local messagesArchive, messagesErr = romFs:openNarc(TRADE_MESSAGES.alias)
+  if messagesArchive == nil then
+    return nil,
+      sourceError("POKEMON_CARE_SOURCE_MISSING", "the trade message archive is unavailable", {
+        archive = TRADE_MESSAGES.alias,
+        cause = messagesErr,
+      })
+  end
+  assert(messagesArchive ~= nil, "missing message archives fail above")
+  local bank = UiAssetHelpers.readMessageBank(
+    messagesArchive,
+    TRADE_MESSAGES.memberId,
+    "trade-names",
+    dependencies,
+    "trade",
+    uiSourceError
+  )
+  local trades = {}
+  for tradeId = 0, TRADE_TABLE.count - 1 do
+    local role = "trade-" .. tradeId
+    local member = readMember(archive, tradeId, role, dependencies, "trade-table")
+    if #member < TRADE_TABLE.entrySize then
+      return nil,
+        sourceError("POKEMON_CARE_SOURCE_TRUNCATED", "the trade record is shorter than its source layout", {
+          table = TRADE_TABLE.path,
+          memberId = tradeId,
+          size = #member,
+        })
+    end
+    local reader = BinaryReader.new(member, TRADE_TABLE.path .. ":" .. tradeId)
+    ---@param index integer zero-based int column
+    ---@return integer
+    local function column(index)
+      return reader:u32le(index * 4)
+    end
+    local context = { table = TRADE_TABLE.path, memberId = tradeId }
+    local offered, offeredErr = speciesKey(column(0), context)
+    if offered == nil then
+      return nil, offeredErr
+    end
+    local requested, requestedErr = speciesKey(column(19), context)
+    if requested == nil then
+      return nil, requestedErr
+    end
+    local heldItem = ItemSources.itemKeys[column(15)]
+    if heldItem == nil then
+      return nil,
+        sourceError("POKEMON_CARE_BAD_ITEM", "the trade record names an unknown held item", {
+          table = TRADE_TABLE.path,
+          memberId = tradeId,
+          item = column(15),
+        })
+    end
+    local language = PokemonCareSources.tradeLanguages[column(18)]
+    if language == nil then
+      return nil,
+        sourceError("POKEMON_CARE_SOURCE_INVALID", "the trade record names an unknown language", {
+          table = TRADE_TABLE.path,
+          memberId = tradeId,
+          language = column(18),
+        })
+    end
+    local otGender = column(16)
+    if otGender ~= 0 and otGender ~= 1 then
+      return nil,
+        sourceError("POKEMON_CARE_SOURCE_INVALID", "the trade record names an unknown OT gender", {
+          table = TRADE_TABLE.path,
+          memberId = tradeId,
+          gender = otGender,
+        })
+    end
+    local nickname, nicknameErr = tradeName(
+      UiAssetHelpers.messageTokens(bank, TRADE_MESSAGES.memberId, tradeId, role .. "-nickname", "trade", uiSourceError),
+      role .. "-nickname",
+      TRADE_MESSAGES.memberId,
+      tradeId
+    )
+    if nickname == nil then
+      return nil, nicknameErr
+    end
+    local otIndex = tradeId + TRADE_MESSAGES.otNameOffset
+    local otName, otNameErr = tradeName(
+      UiAssetHelpers.messageTokens(
+        bank,
+        TRADE_MESSAGES.memberId,
+        otIndex,
+        role .. "-ot-name",
+        "trade",
+        uiSourceError
+      ),
+      role .. "-ot-name",
+      TRADE_MESSAGES.memberId,
+      otIndex
+    )
+    if otName == nil then
+      return nil, otNameErr
+    end
+    trades[#trades + 1] = {
+      offeredSpecies = offered,
+      requestedSpecies = requested,
+      personality = column(14),
+      otId = column(8),
+      ivs = {
+        hp = column(1),
+        attack = column(2),
+        defense = column(3),
+        speed = column(4),
+        specialAttack = column(5),
+        specialDefense = column(6),
+      },
+      contest = {
+        cool = column(9),
+        beauty = column(10),
+        cute = column(11),
+        smart = column(12),
+        tough = column(13),
+      },
+      heldItem = heldItem,
+      otGender = otGender,
+      language = language,
+      nickname = nickname,
+      otName = otName,
+      unusedFlag = column(20),
+    }
+  end
+  if #trades ~= TRADE_TABLE.count then
+    return nil,
+      sourceError("POKEMON_CARE_SOURCE_INVALID", "the trade archive does not carry every source record", {
+        table = TRADE_TABLE.path,
+        count = #trades,
+      })
+  end
+  assert(#trades > 0, "the trade table carries its records")
+  return trades
+end
+
 -- Compile the care catalog from one cartridge view.
 ---@param romFs table<string, unknown>
 ---@return table<string, unknown>|nil, Errors.Error|nil
@@ -227,11 +451,16 @@ function PokemonCareCatalogCompiler.compile(romFs)
   if incense == nil then
     return nil, incenseErr
   end
+  local trades, tradesErr = readTrades(romFs, {})
+  if trades == nil then
+    return nil, tradesErr
+  end
   local catalog = {
     schema = PokemonCareAssetSchema.CATALOG_SCHEMA,
     eggSpecies = eggSpecies,
     eggMoves = eggMoves,
     incense = incense,
+    trades = trades,
   }
   local valid, validationErr = pcall(PokemonCareAssetSchema.assertCatalog, catalog)
   if not valid then

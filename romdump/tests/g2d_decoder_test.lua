@@ -10,6 +10,7 @@
 
 local Assert = require("tests.support.Assert")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
+local Rgb555 = require("libs.codec.src.Rgb555")
 
 local T = {}
 
@@ -63,6 +64,18 @@ local function screenBlock(entries, width, height)
   return block("SCRN", u16(width) .. u16(height) .. u32(0) .. u32(#entries * 2) .. table.concat(body))
 end
 
+-- A 256-colour affine screen: one tile-index byte per entry. The header keeps
+-- the source's own colour-mode nibble; the entry width is the caller's
+-- background-template fact, so the fixture passes it to the decoder.
+local function screenBlock256(entries, width, height, colorMode)
+  local body = {}
+  for _, e in ipairs(entries) do
+    body[#body + 1] = string.char(e)
+  end
+  local flags = u32(colorMode or 1)
+  return block("SCRN", u16(width) .. u16(height) .. flags .. u32(#entries) .. table.concat(body))
+end
+
 local function paletteBlock(colors)
   local body = {}
   for _, c in ipairs(colors) do
@@ -100,6 +113,59 @@ function T.screen_chunk_reports_size_and_entries()
   Assert.equal(#scr.entries, 2)
   Assert.deepEqual(scr.entries[1], { tile = 3, flipH = false, flipV = false, palette = 0 })
   Assert.deepEqual(scr.entries[2], { tile = 0, flipH = true, flipV = true, palette = 5 })
+end
+
+-- The retail trade sequence's affine backdrops are 1024x1024 256-colour maps:
+-- one tile-index byte per entry, no flip or palette bits, and the declared
+-- data size is exactly the tile geometry (128x128 entries = 16384 bytes).
+function T.a_256_colour_screen_decodes_one_tile_index_per_entry()
+  local stored = {}
+  for index = 0, 3 do
+    stored[#stored + 1] = index
+  end
+  local scr = assert(G2dDecoder.decodeScreen(container("RCSN", { screenBlock256(stored, 32, 8) }), { entryBytes = 1 }))
+  Assert.equal(scr.width, 32)
+  Assert.equal(scr.height, 8)
+  Assert.equal(scr.colorMode, 1)
+  Assert.deepEqual(scr.entries[1], { tile = 0, flipH = false, flipV = false, palette = 0 })
+  Assert.deepEqual(scr.entries[4], { tile = 3, flipH = false, flipV = false, palette = 0 })
+end
+
+function T.a_1024_square_256_colour_screen_is_a_complete_map()
+  local entries = {}
+  for index = 0, 128 * 128 - 1 do
+    entries[#entries + 1] = index % 40
+  end
+  local scr = assert(
+    G2dDecoder.decodeScreen(
+      container("RCSN", { screenBlock256(entries, 1024, 1024) }),
+      { label = "trade-map", entryBytes = 1 }
+    )
+  )
+  Assert.equal(scr.width, 1024)
+  Assert.equal(scr.height, 1024)
+  Assert.equal(#scr.entries, 128 * 128, "the whole square map decodes")
+  Assert.equal(scr.entries[129].tile, 128 % 40, "entries stay row-major over the map")
+end
+
+-- The caller's entry width is part of the contract: a 256-colour affine map
+-- whose byte count contradicts its geometry still fails, and an unsupported
+-- entry width is refused instead of being guessed from the header.
+function T.a_256_colour_screen_still_validates_its_geometry()
+  local entries = {}
+  for index = 0, 3 do
+    entries[#entries + 1] = index
+  end
+  local truncated = screenBlock256(entries, 32, 16)
+  local decoded, err = G2dDecoder.decodeScreen(container("RCSN", { truncated }), { entryBytes = 1 })
+  Assert.isNil(decoded, "half a map is not a map")
+  Assert.equal(assert(err).code, G2dDecoder.ERROR.CHUNK_INVALID)
+
+  local refused, widthErr = G2dDecoder.decodeScreen(container("RCSN", { screenBlock256(entries, 32, 8) }), {
+    entryBytes = 3,
+  })
+  Assert.isNil(refused, "an unknown entry width is refused")
+  Assert.equal(assert(widthErr).code, G2dDecoder.ERROR.CHUNK_INVALID)
 end
 
 function T.wide_screens_decode_hardware_screen_blocks_into_row_major_entries()
@@ -162,6 +228,58 @@ function T.palette_chunk_decodes_15bit_colors()
   Assert.deepEqual(pal.colors[1], { r = 255, g = 255, b = 255 })
   Assert.deepEqual(pal.colors[2], { r = 0, g = 0, b = 0 })
   Assert.deepEqual(pal.colors[3], { r = 255, g = 0, b = 0 })
+end
+
+-- A retail 8bpp palette member: one RLCN-wrapped TTLP chunk with depth 4 whose
+-- advisory colour byte count is zero and whose chunk bounds carry the real
+-- count. The trade sequence's 256-colour backdrops are the evidenced case.
+---@param words integer[] RGB555 words
+---@param paletteBytes integer advisory byte count placed in the header
+local function palette256(words, paletteBytes)
+  local body = {}
+  for _, word in ipairs(words) do
+    body[#body + 1] = u16(word)
+  end
+  local colors = table.concat(body)
+  local ttlp = "TTLP"
+    .. u32(8 + 0x10 + #colors)
+    .. u32(4)
+    .. u32(0)
+    .. u32(paletteBytes)
+    .. u32(0x10)
+    .. colors
+  return "RLCN" .. string.char(0xFF, 0xFE) .. u16(0x0100) .. u32(0x10 + #ttlp) .. u16(0x10) .. u16(1) .. ttlp
+end
+
+function T.an_8bpp_palette_takes_its_colour_count_from_the_chunk()
+  local words = {}
+  for index = 1, 256 do
+    words[index] = index - 1
+  end
+  local pal = assert(G2dDecoder.decodePalette(palette256(words, 0)))
+  Assert.equal(#pal.colors, 256, "a zero advisory count still publishes the whole stored palette")
+  Assert.deepEqual(pal.colors[1], { r = 0, g = 0, b = 0 }, "the first colour is the fixture's first word")
+  Assert.deepEqual(pal.colors[256], Rgb555.decode(255), "the last colour keeps its stored value")
+
+  -- A colour offset past the chunk stays malformed: the implied count never
+  -- manufactures colours the member does not store.
+  local before = #pal.colors
+  local stray = "RLCN"
+    .. string.char(0xFF, 0xFE)
+    .. u16(0x0100)
+    .. u32(0x10 + 0x18)
+    .. u16(0x10)
+    .. u16(1)
+    .. "TTLP"
+    .. u32(0x18)
+    .. u32(4)
+    .. u32(0)
+    .. u32(0)
+    .. u32(0x40)
+  local truncated, err = G2dDecoder.decodePalette(stray)
+  Assert.isNil(truncated, "a colour offset past the chunk is refused")
+  Assert.equal(assert(err).code, G2dDecoder.ERROR.CHUNK_INVALID)
+  Assert.equal(before, 256, "the valid member keeps its full palette")
 end
 
 -- KBEC: one metatile with two OBJs. Payload: numCells(2), entrySize(2),

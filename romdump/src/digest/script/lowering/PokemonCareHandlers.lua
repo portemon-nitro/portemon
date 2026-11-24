@@ -155,6 +155,68 @@ function PokemonCareHandlers.monIsFromTogepiEgg(ins)
   }
 end
 
+-- ScrCmd_LoadNPCTrade reads its trade identity as a raw byte, so it lowers as
+-- a literal and not as a variable reference.
+function PokemonCareHandlers.loadNpcTrade(ins)
+  return { op = "npc_trade_load", tradeId = Operands.operandValue(ins.operands[1]) }
+end
+
+-- ScrCmd_GetOfferedSpecies publishes the parked record's offered species.
+function PokemonCareHandlers.offeredSpecies(ins)
+  return { op = "npc_trade_offered_species", result = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_NPCTradeGetReqSpecies publishes the species the source script asks the
+-- player for.
+function PokemonCareHandlers.requestedSpecies(ins)
+  return { op = "npc_trade_requested_species", result = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_GetNPCTradeUnusedFlag publishes the record's unused flag column.
+function PokemonCareHandlers.unusedFlag(ins)
+  return { op = "npc_trade_unused_flag", result = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_NPCTradeExec reads the party slot through ScriptGetVar and blocks the
+-- script on the exchange application.
+function PokemonCareHandlers.npcTradeExec(ins)
+  return { op = "npc_trade_exec", slot = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_NPCTradeEnd carries no operands and releases the parked context.
+function PokemonCareHandlers.npcTradeEnd(_)
+  return { op = "npc_trade_end" }
+end
+
+-- ScrCmd_ChoosePartyMonForTrade runs the party screen's in-game-trade context
+-- (PartyMenu_LaunchApp_InGameTrade) and blocks on it; inside that context a
+-- record carrying a ball capsule asks the source removal question first.
+function PokemonCareHandlers.choosePartyMonForTrade(_)
+  return { op = "party_select", policy = "npc_trade" }
+end
+
+-- ScrCmd_GiveLoanMon reads the trade identity and level as raw bytes and the map
+-- identity as a raw halfword; the loaned record is handed out in the same tick.
+function PokemonCareHandlers.giveLoanMon(ins)
+  return {
+    op = "give_loan_mon",
+    tradeId = Operands.operandValue(ins.operands[1]),
+    level = Operands.operandValue(ins.operands[2]),
+    mapId = Operands.operandValue(ins.operands[3]),
+  }
+end
+
+-- ScrCmd_CheckReturnLoanMon reads the trade identity as a raw byte, the party
+-- slot through ScriptGetVar, and writes the source priority code.
+function PokemonCareHandlers.checkReturnLoanMon(ins)
+  return {
+    op = "check_return_loan_mon",
+    tradeId = Operands.operandValue(ins.operands[1]),
+    slot = Operands.varRef(ins.operands[2]),
+    result = Operands.varRef(ins.operands[3]),
+  }
+end
+
 -- ScrCmd_CheckDaycareEgg: the pending-egg answer lands in the output variable.
 function PokemonCareHandlers.checkEgg(ins)
   return { op = "daycare_check_egg", result = Operands.varRef(ins.operands[1]) }
