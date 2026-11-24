@@ -109,6 +109,7 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
     end
   end
   local outcome = NativePassiveBridge.wrap(state):invoke(timing, target, {
+    timing = timing,
     actionCheck = timing == "beforeAction",
     foes = foes,
     explosion = type(pending) == "table"
@@ -118,9 +119,37 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
       ),
   })
   local context = BattleContext.wrap(state)
+  if timing == "beforeAction" then
+    local holder = BattleState.combatant(state, target)
+    local active = holder.active --[[@as table<string, unknown>?]]
+    if
+      active ~= nil
+      and holder.hp > 0
+      and bridge:abilityOf(target) == "SLOW_START"
+      and BattleState.nativeTurn(state) - active.entryTurn --[[@as integer]]
+        >= 5
+      and not context:hasBattleEffect(target, "slowstartended")
+    then
+      context:addBattleEffect(
+        NativeEffectHandlers.definitionFor("slowstartended"),
+        { kind = "active", combatant = target, activation = active.activation },
+        { kind = "system", key = "SLOW_START_END" },
+        { version = 1 }
+      )
+      context:emit("ability", { kind = "ability", key = "SLOW_START_END", combatant = target }, {
+        key = "SLOW_START_END",
+        combatant = target,
+      })
+    end
+  end
   for _, event in ipairs(outcome.events) do
     local answer = event --[[@as table<string, unknown>]]
     local suppressTrigger = false
+    if
+      timing ~= "entry" and (answer.key == "MOLD_BREAKER" or answer.key == "PRESSURE" or answer.key == "SLOW_START")
+    then
+      suppressTrigger = true
+    end
     if timing == "entry" and (answer.key == "FORECAST" or answer.key == "MULTITYPE") then
       suppressTrigger = true
       local holder = BattleState.combatant(state, target)
@@ -183,9 +212,13 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
       bridge = NativePassiveBridge.wrap(state)
       for _, foe in ipairs(foes) do
         local ability = bridge:abilityOf(foe)
-        if ability ~= "CLEAR_BODY" and ability ~= "HYPER_CUTTER" and ability ~= "WHITE_SMOKE" then
-          local entry = context:entryOf(foe)
-          local stages = entry.stages --[[@as table<string, integer>]]
+        local foeEntry = context:entryOf(foe)
+        local stages = foeEntry.stages --[[@as table<string, integer>]]
+        local hasSubstitute = context:hasBattleEffect(foe, "substitute")
+        local hasMist = context:sideEffect(foeEntry.side, "mist") ~= nil
+        local abilityBlocks = ability == "CLEAR_BODY" or ability == "HYPER_CUTTER" or ability == "WHITE_SMOKE"
+        if not hasSubstitute and not hasMist and not abilityBlocks then
+          local entry = foeEntry
           local amount = ability == "SIMPLE" and 2 or 1
           if stages.attack > StatStages.MIN then
             local after = stages.attack - amount
@@ -215,6 +248,18 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
               },
             })
           end
+        elseif not hasSubstitute and stages.attack > StatStages.MIN then
+          local blockedByAbility = abilityBlocks
+          context:emit("ability", {
+            kind = "ability",
+            key = blockedByAbility and "INTIMIDATE_BLOCKED_ABILITY" or "INTIMIDATE_BLOCKED_MIST",
+            combatant = foe,
+          }, {
+            key = blockedByAbility and "INTIMIDATE_BLOCKED_ABILITY" or "INTIMIDATE_BLOCKED_MIST",
+            combatant = foe,
+            source = target,
+            ability = ability,
+          })
         end
       end
     end
@@ -270,6 +315,7 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
             key = "TRACE",
             copiedAbility = copied,
             combatant = target,
+            target = candidates[selected],
           })
         end
       end
@@ -450,7 +496,24 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
       and answer.key ~= "ANTICIPATION"
       and answer.key ~= "FOREWARN"
     then
-      context:emit("ability", { kind = "ability", key = answer.key, combatant = target }, answer)
+      local facts = nil
+      if type(answer.weather) == "string" and answer.weather ~= "none" then
+        local active = context:entryOf(target)
+        facts = {
+          operation = {
+            kind = "weather-started",
+            subject = { combatant = target, activation = active.activation },
+            source = {
+              kind = "ability",
+              key = answer.key,
+              actor = { combatant = target, activation = active.activation },
+            },
+            weather = answer.weather,
+            origin = "entry-ability",
+          },
+        }
+      end
+      context:emit("ability", { kind = "ability", key = answer.key, combatant = target }, answer, nil, facts)
     end
     if answer.loafing == true or answer.prevented == true then
       return answer.key --[[@as string]]

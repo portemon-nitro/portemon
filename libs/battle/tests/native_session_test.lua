@@ -7047,6 +7047,13 @@ function T.trace_copies_an_eligible_ability_only_for_the_active_entry()
   }
   local session = contracts.Battle.newSession(scenario, nativeContent())
   local opening = SessionFixture.driveUntilSettled(session)
+  local tracedTarget = nil
+  for _, event in ipairs(opening.events or {}) do
+    if event.kind == "ability" and event.cause.key == "TRACE" then
+      tracedTarget = event.payload.target
+    end
+  end
+  Assert.equal(tracedTarget, 2, "Trace records the selected source combatant for its message")
   local copied = false
   for _, effect in ipairs(session:capture().effects) do
     if effect.key == "traceability" and effect.scope.combatant == 1 and effect.state.ability == "PRESSURE" then
@@ -7164,6 +7171,64 @@ function T.frisk_randomly_selects_one_of_two_item_holding_opponents()
   end
   Assert.equal(reveals, 1, "Frisk reveals exactly one of two item-bearing opponents")
   session:dispose()
+end
+
+function T.weather_setters_publish_animation_operations_with_source_weather()
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+  for _, case in ipairs({
+    { ability = "DRIZZLE", weather = "rain" },
+    { ability = "SAND_STREAM", weather = "sand" },
+    { ability = "DROUGHT", weather = "sun" },
+    { ability = "SNOW_WARNING", weather = "hail" },
+  }) do
+    local setter = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
+    setter.mon.ability = case.ability
+    local defender = singleMoveCombatant(2, 23, "EEVEE", "TACKLE")
+    local session = projectionDuel(setter, defender, {
+      TACKLE = strikeFacts(0, "normal", 1),
+      STRUGGLE = struggleFacts(),
+    }, species, NATIVE_SEED)
+    local opening = SessionFixture.driveUntilSettled(session)
+    local operation = nil
+    for _, event in ipairs(opening.events or {}) do
+      local presentation = event.presentation
+      if event.kind == "ability" and event.cause.key == case.ability and type(presentation) == "table" then
+        operation = presentation.operation
+      end
+    end
+    Assert.isTrue(type(operation) == "table", case.ability .. " carries a native animation operation")
+    Assert.equal(operation.kind, "weather-started", "weather setter carries the source weather transition")
+    Assert.equal(operation.weather, case.weather, "weather setter selects its own visual root")
+    session:dispose()
+  end
+end
+
+function T.slow_start_mold_breaker_and_pressure_announce_on_entry()
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+  for _, ability in ipairs({ "SLOW_START", "MOLD_BREAKER", "PRESSURE" }) do
+    local entrant = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
+    entrant.mon.ability = ability
+    local defender = singleMoveCombatant(2, 23, "EEVEE", "TACKLE")
+    local session = projectionDuel(entrant, defender, {
+      TACKLE = strikeFacts(0, "normal", 1),
+      STRUGGLE = struggleFacts(),
+    }, species, NATIVE_SEED)
+    local opening = SessionFixture.driveUntilSettled(session)
+    local count = 0
+    for _, event in ipairs(opening.events or {}) do
+      if event.kind == "ability" and event.cause.key == ability then
+        count = count + 1
+      end
+    end
+    Assert.equal(count, 1, ability .. " emits exactly one entry announcement")
+    session:dispose()
+  end
 end
 
 function T.forecast_tracks_weather_changes_and_weather_suppression()
@@ -7565,6 +7630,54 @@ function T.slow_start_halves_speed_for_the_entry_clock()
     end
   end
   Assert.equal(firstUser, 2, "Slow Start halves Speed before the first action order is staged")
+  session:dispose()
+end
+
+function T.slow_start_halves_physical_attack_damage_for_the_first_five_turns()
+  local species = typedSpeciesFacts({
+    { species = "EEVEE", types = { "normal" } },
+    { species = "CHIKORITA", types = { "grass" } },
+  })
+  local function firstStrikeDamage(ability)
+    local striker = singleMoveCombatant(1, 11, "EEVEE", "TACKLE")
+    striker.mon.ability = ability
+    local defender = singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE")
+    local session = projectionDuel(striker, defender, {
+      TACKLE = strikeFacts(40, "normal", 100),
+      STRUGGLE = struggleFacts(),
+    }, species, NATIVE_SEED)
+    playOpeningTurn(session)
+    local damage = damageTaken(session, 2)
+    session:dispose()
+    return damage
+  end
+  Assert.isTrue(
+    firstStrikeDamage("NONE") > firstStrikeDamage("SLOW_START"),
+    "Slow Start halves the effective physical Attack before damage calculation"
+  )
+end
+
+function T.slow_start_ends_once_after_five_native_turns()
+  local striker = singleMoveCombatant(1, 11, "EEVEE", "SPLASH")
+  striker.mon.ability = "SLOW_START"
+  local defender = singleMoveCombatant(2, 23, "CHIKORITA", "SPLASH")
+  local species = typedSpeciesFacts({
+    { species = "EEVEE", types = { "normal" } },
+    { species = "CHIKORITA", types = { "grass" } },
+  })
+  local session = projectionDuel(striker, defender, {
+    SPLASH = { power = 1, accuracy = 100, category = "other", moveType = "normal", priority = 0 },
+    STRUGGLE = struggleFacts(),
+  }, species, NATIVE_SEED)
+  local announcements = 0
+  for _ = 1, 7 do
+    for _, event in ipairs(playOpeningTurn(session)) do
+      if event.kind == "ability" and event.cause.key == "SLOW_START_END" then
+        announcements = announcements + 1
+      end
+    end
+  end
+  Assert.equal(announcements, 1, "the end announcement fires once across the activation")
   session:dispose()
 end
 

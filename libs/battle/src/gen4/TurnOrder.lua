@@ -48,12 +48,33 @@
 ---@class ResidualEntry
 ---@field id integer
 ---@field speed integer
+---@field ability string? entry ability for retail phase ordering
 
 local TurnOrder = {}
 
 local SPEED_TIE_LABEL = "speed_tie"
 local RESIDUAL_TIE_LABEL = "residual_tie"
 local ENTRY_TIE_LABEL = "entry_tie"
+
+local ENTRY_ABILITY_PHASE = {
+  CLOUD_NINE = 0,
+  AIR_LOCK = 0,
+  TRACE = 1,
+  DRIZZLE = 2,
+  SAND_STREAM = 2,
+  DROUGHT = 2,
+  SNOW_WARNING = 2,
+  INTIMIDATE = 3,
+  DOWNLOAD = 4,
+  ANTICIPATION = 5,
+  FOREWARN = 6,
+  FRISK = 7,
+  SLOW_START = 8,
+  MOLD_BREAKER = 9,
+  PRESSURE = 10,
+  FORECAST = 11,
+  MULTITYPE = 11,
+}
 
 ---@param value unknown
 ---@param name string
@@ -267,7 +288,30 @@ end
 ---@param stream BattleRng
 ---@return ResidualEntry[] sequenced entries keeping every member
 function TurnOrder.orderEntryEffects(entries, context, stream)
-  return orderBySampledSpeed(entries, context, stream, ENTRY_TIE_LABEL)
+  local phases = {} ---@type table<integer, ResidualEntry[]>
+  for _, entry in ipairs(entries) do
+    local ability = entry.ability
+    local phase = type(ability) == "string" and ENTRY_ABILITY_PHASE[ability] or nil
+    if phase == nil then
+      phase = 12
+    end
+    local group = phases[phase]
+    if group == nil then
+      group = {}
+      phases[phase] = group
+    end
+    group[#group + 1] = entry
+  end
+  local ordered = {} ---@type ResidualEntry[]
+  for phase = 0, 12 do
+    local group = phases[phase]
+    if group ~= nil then
+      for _, entry in ipairs(orderBySampledSpeed(group, context, stream, ENTRY_TIE_LABEL)) do
+        ordered[#ordered + 1] = entry
+      end
+    end
+  end
+  return ordered
 end
 
 return TurnOrder

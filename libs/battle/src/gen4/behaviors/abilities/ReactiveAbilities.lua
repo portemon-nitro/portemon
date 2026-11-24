@@ -101,6 +101,9 @@ end
 ---@param context table<string, unknown> pre-action context under handling
 ---@return table<string, unknown>? pressure announcement, or nil when unpressured
 local function pressure(instance, context)
+  if context.timing == "entry" then
+    return { kind = "trigger", key = instance.key, combatant = holderOf(instance) }
+  end
   local moveUse = context.moveUse
   if type(moveUse) ~= "table" then
     return nil
@@ -290,6 +293,9 @@ end
 ---@param context table<string, unknown> pre-action context under handling
 ---@return table<string, unknown>? action announcement, or nil when inapplicable
 local function beforeAction(instance, context)
+  if instance.key == "SLOW_START" and context.timing == "entry" then
+    return { kind = "trigger", key = instance.key, combatant = holderOf(instance) }
+  end
   if context.moveUse == nil and context.actionCheck ~= true then
     return nil
   end

@@ -1317,9 +1317,10 @@ function BattleScreenState.new(opts)
   -- resolves display names through the borrowed mon catalog. The
   -- resolver stays optional: views and raw identities cover its absence.
   local moveNameOf = nil
+  local abilityNameOf = nil
   local speciesNameOf = nil
   if type(opts.monCatalog) == "table" and type(opts.monCatalog.move) == "function" then
-    local catalog = opts.monCatalog
+    local catalog = opts.monCatalog --[[@as table<string, unknown>]]
     local lookup = opts.monCatalog.move --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>]]
     local function resolveMoveName(move)
       local ok, facts = pcall(lookup, catalog, move)
@@ -1329,6 +1330,15 @@ function BattleScreenState.new(opts)
       return nil
     end
     moveNameOf = resolveMoveName
+  end
+  if type(opts.monCatalog) == "table" and type(opts.monCatalog.ability) == "function" then
+    local catalog = assert(opts.monCatalog, "ability lookup requires the borrowed catalog")
+    local lookup = opts.monCatalog.ability --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>]]
+    local function resolveAbilityName(ability)
+      local facts = lookup(catalog, ability)
+      return type(facts.name) == "string" and facts.name or nil
+    end
+    abilityNameOf = resolveAbilityName
   end
   if type(opts.monCatalog) == "table" and type(opts.monCatalog.species) == "function" then
     local catalog = opts.monCatalog --[[@as table<string, unknown>]]
@@ -1519,6 +1529,7 @@ function BattleScreenState.new(opts)
     ballThrow = ballThrow,
     trainerPictures = trainerPictures,
     moveName = moveNameOf,
+    abilityName = abilityNameOf,
     speciesName = speciesNameOf,
     itemName = itemNameOf,
     battleItemUse = battleItemUseOf,

@@ -178,26 +178,23 @@ function T.spread_move_in_doubles_names_each_target_with_stable_activation()
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local launch =
     { id = "launch-packet-spread-doubles", kind = "trainer", payload = { trainer = "rival-packet-spread" } }
-  local scenario = ScenarioFactory.fromTrainer(
-    {
-      id = "packet-spread-doubles",
-      trainers = {
-        {
-          id = "rival-packet-spread",
-          class = 2,
-          party = { foeRecord("TOTODILE", 4, 0x5EED0011), foeRecord("CHIKORITA", 4, 0x5EED0012) },
-          partyLevels = { 4, 4 },
-          prizeMoney = { trainerClass = 2, classRate = 4 },
-          aiPasses = {},
-          doubleBattle = true,
-        },
+  local scenario = ScenarioFactory.fromTrainer({
+    id = "packet-spread-doubles",
+    trainers = {
+      {
+        id = "rival-packet-spread",
+        class = 2,
+        party = { foeRecord("TOTODILE", 4, 0x5EED0011), foeRecord("CHIKORITA", 4, 0x5EED0012) },
+        partyLevels = { 4, 4 },
+        prizeMoney = { trainerClass = 2, classRate = 4 },
+        aiPasses = {},
+        doubleBattle = true,
       },
     },
-    {
-      party = party,
-      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
-    }
-  )
+  }, {
+    party = party,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local record = {
     ready = true,
     enters = 0,
@@ -411,14 +408,11 @@ function T.identical_seeds_keep_mechanics_identical_across_presentation_pacing()
         ability = "TORRENT",
       },
     }
-    local twinScenario = ScenarioFactory.fromEncounter(
-      { attemptId = launch.id .. "-attempt", mon = foe },
-      {
-        party = twinParty,
-        bag = twinBag,
-        player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
-      }
-    )
+    local twinScenario = ScenarioFactory.fromEncounter({ attemptId = launch.id .. "-attempt", mon = foe }, {
+      party = twinParty,
+      bag = twinBag,
+      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+    })
     local held = {
       ready = not delayed,
       enters = 0,
@@ -514,29 +508,26 @@ function T.trainer_payloads_expose_only_visible_battler_facts()
   })
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local launch = { id = "launch-packet-hidden", kind = "trainer", payload = { trainer = "rival-packet-hidden" } }
-  local scenario = ScenarioFactory.fromTrainer(
-    {
-      id = "packet-hidden",
-      trainers = {
-        {
-          id = "rival-packet-hidden",
-          class = 2,
-          party = {
-            foeRecord("TOTODILE", 5, 0x5EED00A1),
-            foeRecord("CHIKORITA", 5, 0x5EED00A2),
-            foeRecord("EEVEE", 5, 0x5EED00A3),
-          },
-          partyLevels = { 5, 5, 5 },
-          prizeMoney = { trainerClass = 2, classRate = 4 },
-          aiPasses = {},
+  local scenario = ScenarioFactory.fromTrainer({
+    id = "packet-hidden",
+    trainers = {
+      {
+        id = "rival-packet-hidden",
+        class = 2,
+        party = {
+          foeRecord("TOTODILE", 5, 0x5EED00A1),
+          foeRecord("CHIKORITA", 5, 0x5EED00A2),
+          foeRecord("EEVEE", 5, 0x5EED00A3),
         },
+        partyLevels = { 5, 5, 5 },
+        prizeMoney = { trainerClass = 2, classRate = 4 },
+        aiPasses = {},
       },
     },
-    {
-      party = party,
-      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
-    }
-  )
+  }, {
+    party = party,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local record = {
     ready = true,
     enters = 0,
@@ -1161,6 +1152,46 @@ function T.presentation_view_carries_semantic_foe_trainer_identity()
     playerContext = { trainerClassKey = "PKMN_TRAINER_ETHAN", trainerName = "ETHAN" },
   })
   Assert.isNil(absent.followMonSlot, "launches without a follower carry no slot")
+end
+
+function T.presentation_view_projects_weather_forms_without_mutating_party_mon()
+  local catalog = CatalogFixture.makeCatalog()
+  local castform = { species = "CASTFORM", ability = "FORECAST", form = 0 }
+  local cherrim = { species = "CHERRIM", ability = "FLOWER_GIFT", form = 0 }
+  local function view(weather, suppressant)
+    local combatants = {
+      [1] = { participant = 1, mon = castform, hp = 20, active = { position = 0, activation = 1 } },
+      [2] = { participant = 2, mon = cherrim, hp = 20, active = { position = 1, activation = 2 } },
+    }
+    if suppressant then
+      combatants[3] = {
+        participant = 2,
+        mon = { species = "CLEFAIRY", ability = "CLOUD_NINE", form = 0 },
+        hp = 20,
+        active = { position = 2, activation = 3 },
+      }
+    end
+    return BattlePresentationModel.view({
+      combatants = combatants,
+      combatantOrder = { 1, 2, 3 },
+      participants = {
+        [1] = { side = "player", controller = "player" },
+        [2] = { side = "foe", controller = "opponent" },
+      },
+      environment = { weather = "none" },
+      effects = weather and { { key = weather } } or {},
+    }, {}, { catalog = catalog })
+  end
+  Assert.equal(view("raindance").own[1].form, 2, "Forecast pictures its rainy form")
+  Assert.equal(view("sunnyday").own[1].form, 1, "Forecast pictures its sunny form")
+  Assert.equal(view("hail").own[1].form, 3, "Forecast pictures its snowy form")
+  Assert.equal(view(nil).own[1].form, 0, "Forecast returns to its normal form when weather ends")
+  Assert.equal(view("sunnyday").foes[1].form, 1, "Cherrim opens its flower in sun")
+  Assert.equal(view("raindance").foes[1].form, 0, "Cherrim closes its flower outside sun")
+  Assert.equal(view("sunnyday", true).own[1].form, 0, "Cloud Nine suppresses Forecast form")
+  Assert.equal(view("sunnyday", true).foes[1].form, 0, "Cloud Nine suppresses Cherrim form")
+  Assert.equal(castform.form, 0, "weather forms stay battle-local")
+  Assert.equal(cherrim.form, 0, "Cherrim's party form stays unchanged")
 end
 
 -- The summary page reads its stat block from the presentation view: an

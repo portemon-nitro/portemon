@@ -4,6 +4,9 @@
 local Assert = require("tests.support.Assert")
 local SessionFixture = require("libs.battle.tests.session_fixture")
 local BattleRng = require("libs.battle.src.gen4.BattleRng")
+local BattleState = require("libs.battle.src.BattleState")
+local BattleContext = require("libs.battle.src.BattleContext")
+local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
 
 local T = { tests = {} }
 
@@ -25,6 +28,33 @@ local function liveState()
     inventories = {},
   })
   return contracts.State.create(contracts.Scenario.validate(scenario))
+end
+
+---@param protection "mist"|"substitute"|nil target protection under the entry probe
+---@return table live target entry, emitted ability events, and resulting stage
+local function intimidateEntry(protection)
+  local state = liveState()
+  BattleState.combatant(state, 1).mon.ability = "INTIMIDATE"
+  local ctx = BattleContext.wrap(state)
+  if protection == "substitute" then
+    local target = ctx:entryOf(2)
+    ctx:addBattleEffect(
+      NativeEffectHandlers.definitionFor("substitute"),
+      { kind = "active", combatant = 2, activation = target.activation },
+      { kind = "move", key = "SUBSTITUTE" },
+      { version = 1, hp = 10 }
+    )
+  elseif protection == "mist" then
+    ctx:addBattleEffect(
+      NativeEffectHandlers.definitionFor("mist"),
+      { kind = "side", side = ctx:entryOf(2).side },
+      { kind = "move", key = "MIST" },
+      { version = 1, turns = 5 }
+    )
+  end
+  NativeEffectHandlers.applyPassiveTiming(state, "entry", 1, nil, nil, nil, nil, nil)
+  local events = state.outbox --[[@as table<integer, table<string, unknown>>]]
+  return { stage = ctx:entryOf(2).stages.attack, events = events }
 end
 
 ---@return table session chart covering every native type relation
@@ -120,6 +150,22 @@ function T.tests.clear_body_blocks_an_opponents_attack_drop()
   local probe = runMove("GROWL", facts("GROWL"), { abilities = { foe = "CLEAR_BODY" } })
   Assert.equal(baseline.ctx:entryOf(2).stages.attack, -1, "Growl lowers Attack without an ability guard")
   Assert.equal(probe.ctx:entryOf(2).stages.attack, 0, "Clear Body preserves the target's Attack stage")
+end
+
+function T.tests.intimidate_respects_substitute_and_defender_side_mist()
+  local unprotected = intimidateEntry(nil)
+  local substituted = intimidateEntry("substitute")
+  local misted = intimidateEntry("mist")
+  Assert.equal(unprotected.stage, -1, "Intimidate lowers an unprotected foe's Attack")
+  Assert.equal(substituted.stage, 0, "Substitute blocks Intimidate only for its protected foe")
+  Assert.equal(misted.stage, 0, "the target's side Mist blocks Intimidate")
+  local mistMessage = false
+  for _, event in ipairs(misted.events) do
+    if event.kind == "ability" and event.payload.key == "INTIMIDATE_BLOCKED_MIST" then
+      mistMessage = true
+    end
+  end
+  Assert.isTrue(mistMessage, "Mist protection emits a distinct blocked-effect event")
 end
 
 function T.tests.mold_breaker_bypasses_stat_drop_abilities()

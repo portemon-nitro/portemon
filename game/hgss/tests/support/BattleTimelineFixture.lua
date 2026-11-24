@@ -180,6 +180,9 @@ function BattleTimelineFixture.new(opts)
   opts.moveName = opts.moveName or function(move)
     return move == "TACKLE" and "Tackle" or move
   end
+  opts.abilityName = opts.abilityName or function(ability)
+    return ability
+  end
   opts.itemName = opts.itemName or function(item)
     return item
   end

@@ -95,6 +95,19 @@ local function runStrike(moveKey, extra)
     FISSURE = strikeFacts("FISSURE", "ground"),
     GUILLOTINE = strikeFacts("GUILLOTINE", "normal"),
   }
+  if type(extra.accuracy) == "number" then
+    facts.FISSURE.accuracy = extra.accuracy
+  end
+  if type(extra.lockOnAttacker) == "number" then
+    local entry = ctx:entryOf(2)
+    local handlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
+    ctx:addBattleEffect(
+      handlers.definitionFor("lockon"),
+      { kind = "active", combatant = 2, activation = entry.activation },
+      { kind = "move", key = "LOCK_ON" },
+      { version = 1, attacker = extra.lockOnAttacker }
+    )
+  end
   local beforeFoe = ctx:damage(2, 0, { kind = "probe" }).before
   local inputs = {
     actionId = 901,
@@ -122,7 +135,7 @@ local function runStrike(moveKey, extra)
     attackerTypes = { "normal" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = nativeChart(content),
-    stream = BattleRng.new(HANDLER_SEED),
+    stream = BattleRng.new(extra.seed or HANDLER_SEED),
     abilities = { user = "NONE", foe = "NONE" },
     foeLevel = 50,
   }
@@ -167,6 +180,22 @@ function T.knockout_fails_against_sturdy()
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "failed", "sturdy answers the knockout")
   Assert.isTrue(probe.foeAfter > 0, "the sturdy foe keeps its health")
+end
+
+function T.lock_on_guarantees_an_ohko_only_for_its_original_attacker()
+  local aimed = runStrike("FISSURE", { foeLevel = 50, accuracy = 1, lockOnAttacker = 1 })
+  Assert.equal(aimed.outcome.result, "hit", "the aiming attacker keeps its Lock-On guarantee")
+  local other = runStrike("FISSURE", { foeLevel = 50, accuracy = 1, seed = 2, lockOnAttacker = 3 })
+  Assert.equal(other.outcome.result, "missed", "another attacker must make the OHKO accuracy roll")
+end
+
+function T.no_guard_guarantees_ohko_accuracy_for_either_combatant()
+  local user =
+    runStrike("FISSURE", { foeLevel = 50, accuracy = 1, seed = 2, abilities = { user = "NO_GUARD", foe = "NONE" } })
+  Assert.equal(user.outcome.result, "hit", "the user's No Guard guarantees the OHKO")
+  local foe =
+    runStrike("FISSURE", { foeLevel = 50, accuracy = 1, seed = 2, abilities = { user = "NONE", foe = "NO_GUARD" } })
+  Assert.equal(foe.outcome.result, "hit", "the target's No Guard guarantees the OHKO")
 end
 
 function T.mold_breaker_bypasses_sturdy_for_an_ohko()

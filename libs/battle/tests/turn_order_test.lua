@@ -206,6 +206,24 @@ function T.priority_speed_and_ties_follow_recorded_selection_order()
   Assert.deepEqual(orderIds(entriesAgain), orderIds(entries), "entry sequencing rebuilds identically")
 end
 
+function T.entry_abilities_resolve_by_retail_phase_then_speed()
+  local TurnOrder =
+    SessionFixture.requirePresent("libs.battle.src.gen4.TurnOrder", "entry timing follows retail ability phases")
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled entry ties draw from the battle stream")
+  local entries = TurnOrder.orderEntryEffects({
+    { id = 1, speed = 200, ability = "INTIMIDATE" },
+    { id = 2, speed = 40, ability = "TRACE" },
+    { id = 3, speed = 100, ability = "DRIZZLE" },
+    { id = 4, speed = 80, ability = "DROUGHT" },
+  }, { trickRoom = false }, BattleRng.new(11))
+  Assert.deepEqual(
+    orderIds(entries),
+    { 2, 3, 4, 1 },
+    "Trace precedes weather setters, which precede Intimidate regardless of speed"
+  )
+end
+
 function T.staged_speeds_sample_through_exact_truncation()
   local TurnOrder =
     SessionFixture.requirePresent("libs.battle.src.gen4.TurnOrder", "recorded traversal owns turn and action ordering")

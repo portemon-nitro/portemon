@@ -59,6 +59,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _foeHpMark integer? lead foe health at the last switch-in (source hpTemp)
 ---@field _ownMoves table<string, string> own move display names by combatant and move identity
 ---@field _moveName (fun(move: string): string?)? borrowed move display-name resolver for foe narration
+---@field _abilityName (fun(ability: string): string?)? borrowed ability display-name resolver for ability narration
 ---@field _speciesName (fun(species: string): string?)? borrowed species display-name resolver for tagged narration
 ---@field _itemName (fun(item: string): string?)? borrowed item display-name resolver for use narration
 ---@field _battleItemUse (fun(item: string): table<string, unknown>?)? borrowed generated battle-use facts
@@ -253,6 +254,7 @@ end
 ---@class BattleTimeline.Options
 ---@field sound (fun(cue: table<string, unknown>))? sound-cue sink, drained immediately when supplied
 ---@field moveName (fun(move: string): string?)? display-name resolver for move identities the views never name
+---@field abilityName (fun(ability: string): string?)? display-name resolver for ability identities
 ---@field speciesName (fun(species: string): string?)? display-name resolver for species identities in source tags
 ---@field itemName (fun(item: string): string?)? display-name resolver for item identities
 ---@field battleItemUse (fun(item: string): table<string, unknown>?)? generated battle-use facts for item narration
@@ -294,6 +296,7 @@ function BattleTimeline.new(opts)
   return setmetatable({
     _sound = opts.sound,
     _moveName = opts.moveName,
+    _abilityName = opts.abilityName,
     _speciesName = opts.speciesName,
     _itemName = opts.itemName,
     _battleItemUse = opts.battleItemUse,
@@ -1710,7 +1713,7 @@ end
 -- Flow helpers defined beside the translators that share them.
 local eventObservation
 local foeHealthAt, recallText, enqueueSendOut, speciesOf, enqueueEncounterMessage
-local combatName, moveName
+local combatName, moveName, abilityName
 local tickBallPoof
 
 ---@param self BattleTimeline
@@ -1901,6 +1904,16 @@ function moveName(self, combatant, move)
   local name = self._moveName(move)
   assert(type(name) == "string", "move catalog provides its display name")
   assert(name ~= "", "move catalog provides its display name")
+  return name
+end
+
+---@param self BattleTimeline
+---@param ability string ability identity under lookup
+---@return string catalog display name for the ability identity
+function abilityName(self, ability)
+  assert(type(self._abilityName) == "function", "ability tags resolve through the mon catalog")
+  local name = self._abilityName(ability)
+  assert(type(name) == "string" and name ~= "", "mon catalog provides the ability display name")
   return name
 end
 
@@ -3121,10 +3134,10 @@ local function translateStage(self, event)
   local address = target ~= nil and self._addressing[target] or "own"
   local side = address == "wild" and "wild" or address == "foe" and "foe" or "own"
   local cause = event.cause --[[@as table<string, unknown>?]]
+  local name = combatName(self, assert(target, "stage narration names its target"))
   if type(before) == "number" and type(after) == "number" and after ~= before then
     local shown = type(payload.target) == "number" and self:_shown(payload.target --[[@as integer]]) or nil
     if type(cause) == "table" and cause.kind == "item" and type(cause.item) == "string" then
-      local name = combatName(self, assert(target, "stage narration names its target"))
       if shown ~= nil and shown.side == 1 then
         -- The player's bag task prints msg_0197_01203 and counts 30
         -- frames once printing ends.
@@ -3143,17 +3156,43 @@ local function translateStage(self, event)
       end
       return
     end
+    if type(cause) == "table" and cause.kind == "ability" and cause.key == "INTIMIDATE" then
+      local source = cause.combatant --[[@as integer]]
+      enqueueMessage(
+        self,
+        messageText(self, "battle/ability/intimidate", {
+          combatName(self, source),
+          abilityName(self, "INTIMIDATE"),
+          name,
+          stat,
+        }),
+        false,
+        30,
+        true
+      )
+      return
+    elseif type(cause) == "table" and cause.kind == "ability" and cause.key == "DOWNLOAD" then
+      enqueueMessage(
+        self,
+        messageText(self, "battle/ability/download", {
+          name,
+          abilityName(self, "DOWNLOAD"),
+          stat,
+        }),
+        false,
+        30,
+        true
+      )
+      return
+    end
     local action = after > before and (math.abs(after - before) >= 2 and "up/sharp" or "up/normal")
       or (math.abs(after - before) >= 2 and "down/harsh" or "down/normal")
     local key = "battle/narration/stage/" .. action .. "/" .. side
-    local name = combatName(self, assert(target, "stage narration names its target"))
     -- subscript_0012_UpdateStatStage holds each stat line for 30 frames.
     enqueueMessage(self, messageText(self, key, { name, stat }), false, 30, true)
   elseif before == 6 then
-    local name = combatName(self, assert(target, "stage narration names its target"))
     enqueueMessage(self, messageText(self, "battle/narration/stage/max-up/" .. side, { name, stat }), false, 30, true)
   elseif before == -6 then
-    local name = combatName(self, assert(target, "stage narration names its target"))
     enqueueMessage(self, messageText(self, "battle/narration/stage/max-down/" .. side, { name, stat }), false, 30, true)
   end
 end
@@ -4371,16 +4410,109 @@ end
 -- receives its intentional treatment here. Accounting-only events stay
 -- silent; everything else narrates, moves health, or changes visibility.
 -- Kinds outside this table are genuinely unknown and keep the explicit
--- diagnostic instead of vanishing.
--- Ability activations are accounting-only in the current presentation:
--- cures, stage changes, and flee narration ride their own sibling
--- events, while the ability event itself claims no narration and no
--- visual of its own. Retail ability-activation text is a separate
--- fidelity gap, not a silent failure: the kind is represented here so
--- it never reads as unrepresentable.
+-- diagnostic instead of vanishing. Ability events own their source text
+-- and cue preambles; weather and stage visuals are separately admitted
+-- from their semantic operations.
 local function translateAbility(self, event)
-  local _ = event
-  local _ = self
+  local payload = event.payload --[[@as table<string, unknown>]]
+  local key = payload.key --[[@as string]]
+  local holder = (
+    payload.combatant or (event.cause --[[@as table<string, unknown>]]).combatant
+  ) --[[@as integer]]
+  local name = combatName(self, holder)
+  local abilityKeys = {
+    DRIZZLE = "drizzle",
+    SAND_STREAM = "sand-stream",
+    DROUGHT = "drought",
+    SNOW_WARNING = "snow-warning",
+    SLOW_START = "slow-start",
+    SLOW_START_END = "slow-start-ended",
+    MOLD_BREAKER = "mold-breaker",
+    PRESSURE = "pressure",
+  }
+  local messageKey = abilityKeys[key]
+  if key == "INTIMIDATE_BLOCKED_MIST" then
+    enqueueMessage(self, messageText(self, "battle/ability/blocked-by-mist", { name }), false, 30, true)
+  elseif key == "INTIMIDATE_BLOCKED_ABILITY" then
+    local source = payload.source --[[@as integer]]
+    enqueueMessage(
+      self,
+      messageText(self, "battle/ability/blocked-by-ability", {
+        name,
+        abilityName(self, payload.ability --[[@as string]]),
+        combatName(self, source),
+        abilityName(self, "INTIMIDATE"),
+      }),
+      false,
+      30,
+      true
+    )
+  elseif key == "TRACE" then
+    enqueue(self, { kind = "wait", duration = 15, skippable = true })
+    local target = assert(payload.target, "Trace narration carries its selected opponent")
+    enqueueMessage(
+      self,
+      messageText(self, "battle/ability/trace", {
+        name,
+        combatName(self, target --[[@as integer]]),
+        abilityName(self, payload.copiedAbility --[[@as string]]),
+      }),
+      false,
+      30,
+      true
+    )
+  elseif key == "ANTICIPATION" then
+    enqueueMessage(
+      self,
+      messageText(self, "battle/ability/anticipation", {
+        name,
+        abilityName(self, key),
+      }),
+      false,
+      30,
+      true
+    )
+  elseif key == "FOREWARN" then
+    enqueueMessage(
+      self,
+      messageText(self, "battle/ability/forewarn", {
+        name,
+        abilityName(self, key),
+        moveName(self, holder, payload.move --[[@as string]]),
+      }),
+      false,
+      30,
+      true
+    )
+  elseif key == "FRISK" then
+    enqueue(self, { kind = "wait", duration = 15, skippable = true })
+    enqueueMessage(
+      self,
+      messageText(self, "battle/ability/frisk", {
+        name,
+        itemName(self, payload.item --[[@as string]]),
+      }),
+      false,
+      30,
+      true
+    )
+  elseif key == "SLOW_START_END" then
+    enqueueMessage(self, messageText(self, "battle/ability/slow-start-ended", { name }), false, 30, true)
+  elseif messageKey ~= nil then
+    if key == "SNOW_WARNING" then
+      enqueue(self, { kind = "wait", duration = 15, skippable = true })
+    end
+    enqueueMessage(
+      self,
+      messageText(self, "battle/ability/" .. messageKey, {
+        name,
+        abilityName(self, key),
+      }),
+      false,
+      30,
+      true
+    )
+  end
 end
 
 ---@type table<string, fun(self: BattleTimeline, event: table<string, unknown>)>
@@ -4461,6 +4593,20 @@ local function translateOther(self, event, packet, fresh, narrated)
   end
   if kind == "transformed" then
     translateTransformed(self, event, packet, fresh)
+    return
+  end
+  local presentation = event.presentation
+  local operation = type(presentation) == "table" and presentation.operation or nil
+  local weatherStarts = kind == "ability" and type(operation) == "table" and operation.kind == "weather-started"
+  local stageChanges = kind == "stage" and type(operation) == "table" and operation.kind == "stage-changed"
+  if weatherStarts or stageChanges then
+    -- Retail weather setters and stage changes finish their native
+    -- animation before the associated message; Snow Warning's translator
+    -- adds its distinct 15-tick post-animation wait.
+    enqueueNativeEffect(self, event, packet, fresh)
+    local translate = OTHER_TRANSLATORS[kind]
+    assert(translate ~= nil, "weather ability events have a narration translator")
+    translate(self, event, packet)
     return
   end
   -- Every remaining event narrates before its selected native

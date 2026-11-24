@@ -185,6 +185,146 @@ local function advance(timeline, seconds)
   end)
 end
 
+function T.trace_ability_uses_the_selected_opponent_and_catalog_ability_name()
+  local timeline = BattleTimeline.new({ textSpeed = "fastest" })
+  local after = openingView()
+  local trace = event("ability", {
+    key = "TRACE",
+    combatant = 1,
+    target = 3,
+    copiedAbility = "PRESSURE",
+  }, { [1] = 52, [3] = 57 })
+  Assert.isTrue(timeline:present(packet(1, { trace }, after)), "the Trace event is accepted")
+  for _ = 1, 80 do
+    advance(timeline, TICK)
+  end
+  local message = timeline:message()
+  Assert.isTrue(
+    type(message) == "string" and message:find("LEAD traced FOE’s PRESSURE!", 1, true) ~= nil,
+    "Trace names the chosen donor and copied ability"
+  )
+end
+
+function T.scouting_abilities_render_their_source_names_and_arguments()
+  for _, case in ipairs({
+    {
+      payload = { key = "ANTICIPATION", combatant = 1 },
+      expected = "LEAD’s ANTICIPATION made it shudder!",
+    },
+    {
+      payload = { key = "FOREWARN", combatant = 1, move = "TACKLE" },
+      expected = "LEAD’s FOREWARN alerted it to Tackle!",
+    },
+    {
+      payload = { key = "FRISK", combatant = 1, item = "ORAN_BERRY" },
+      expected = "LEAD frisked its foe and found one ORAN_BERRY!",
+    },
+  }) do
+    local timeline = BattleTimeline.new({ textSpeed = "fastest" })
+    local activated = event("ability", case.payload, { [1] = 52, [3] = 57 })
+    Assert.isTrue(timeline:present(packet(1, { activated }, openingView())), "the scouting activation is accepted")
+    for _ = 1, 80 do
+      advance(timeline, TICK)
+    end
+    local message = timeline:message()
+    Assert.isTrue(
+      type(message) == "string" and message:find(case.expected, 1, true) ~= nil,
+      case.payload.key .. " uses its source name and placeholder order"
+    )
+  end
+end
+
+function T.unknown_ability_events_stay_silent_and_malformed_trace_fails()
+  local timeline = BattleTimeline.new({ textSpeed = "fastest" })
+  local unknown = event("ability", { key = "UNMAPPED_ABILITY", combatant = 1 }, { [1] = 52, [3] = 57 })
+  Assert.isTrue(
+    timeline:present(packet(1, { unknown }, openingView())),
+    "unknown event is accepted without inventing text"
+  )
+  for _ = 1, 80 do
+    advance(timeline, TICK)
+  end
+  Assert.isFalse(timeline:messageActive(), "an unmapped ability has no generic activation banner")
+
+  local malformed = event("ability", { key = "TRACE", combatant = 1 }, { [1] = 52, [3] = 57 })
+  malformed.sequence = 2
+  local accepted, failure = pcall(function()
+    timeline:present(packet(2, { malformed }, openingView()))
+  end)
+  Assert.isFalse(accepted, "known Trace events require their selected donor")
+  Assert.isTrue(tostring(failure):find("selected opponent", 1, true) ~= nil, "failure names the missing producer fact")
+end
+
+function T.intimidate_prevention_messages_distinguish_mist_and_protective_abilities()
+  for _, case in ipairs({
+    {
+      key = "INTIMIDATE_BLOCKED_MIST",
+      payload = { key = "INTIMIDATE_BLOCKED_MIST", combatant = 3 },
+      expected = "FOE is protected by Mist!",
+    },
+    {
+      key = "INTIMIDATE_BLOCKED_ABILITY",
+      payload = {
+        key = "INTIMIDATE_BLOCKED_ABILITY",
+        combatant = 3,
+        source = 1,
+        ability = "CLEAR_BODY",
+      },
+      expected = "FOE’s CLEAR_BODY suppressed LEAD’s INTIMIDATE!",
+    },
+  }) do
+    local timeline = BattleTimeline.new({ textSpeed = "fastest" })
+    local blocked = event("ability", case.payload, { [1] = 52, [3] = 57 })
+    Assert.isTrue(timeline:present(packet(1, { blocked }, openingView())), case.key .. " event is accepted")
+    for _ = 1, 80 do
+      advance(timeline, TICK)
+    end
+    local message = timeline:message()
+    Assert.isTrue(
+      type(message) == "string" and message:find(case.expected, 1, true) ~= nil,
+      case.key .. " selects its source prevention message"
+    )
+  end
+end
+
+function T.intimidate_and_download_stage_changes_use_their_ability_messages()
+  for _, case in ipairs({
+    {
+      key = "INTIMIDATE",
+      cause = { kind = "ability", key = "INTIMIDATE", combatant = 1 },
+      before = 0,
+      after = -1,
+      expected = "LEAD’s INTIMIDATE lowered FOE’s Attack!",
+    },
+    {
+      key = "DOWNLOAD",
+      cause = { kind = "ability", key = "DOWNLOAD", combatant = 1 },
+      before = 0,
+      after = 1,
+      expected = "LEAD’s DOWNLOAD raised its Attack!",
+    },
+  }) do
+    local timeline = BattleTimeline.new({ textSpeed = "fastest" })
+    local after = openingView()
+    local change = event("stage", {
+      target = case.key == "DOWNLOAD" and 1 or 3,
+      stat = "attack",
+      before = case.before,
+      after = case.after,
+    }, { [1] = 52, [3] = 57 })
+    change.cause = case.cause
+    Assert.isTrue(timeline:present(packet(1, { change }, after)), case.key .. " stage is accepted")
+    for _ = 1, 80 do
+      advance(timeline, TICK)
+    end
+    local message = timeline:message()
+    Assert.isTrue(
+      type(message) == "string" and message:find(case.expected, 1, true) ~= nil,
+      case.key .. " uses its source ability wording"
+    )
+  end
+end
+
 ---@param battlers table displayed battler facts under inspection
 ---@param combatant integer
 ---@return table the displayed facts for one combatant

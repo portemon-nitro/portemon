@@ -121,6 +121,54 @@ local function combatAbility(mon)
   return nil
 end
 
+---@param snapshot table<string, unknown> detached battle snapshot under projection
+---@param combatant table<string, unknown> combatant carrying battle-local form facts
+---@return integer? effective battle form for weather-driven species
+local function weatherForm(snapshot, combatant)
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  local species = mon.species
+  local form = mon.form
+  if type(form) ~= "number" or (species ~= "CASTFORM" and species ~= "CHERRIM") then
+    return type(form) == "number" and form or nil
+  end
+  local effects = snapshot.effects --[[@as table<integer, table<string, unknown>>?]]
+  local weather = snapshot.environment --[[@as table<string, unknown>?]]
+  local activeWeather = type(weather) == "table" and weather.weather or nil
+  local suppressed = false
+  local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>]]
+  for _, candidate in pairs(combatants) do
+    local candidateMon = candidate.mon --[[@as table<string, unknown>]]
+    if candidate.active ~= nil and type(candidate.hp) == "number" and candidate.hp > 0 then
+      local ability = combatAbility(candidateMon)
+      suppressed = suppressed or ability == "CLOUD_NINE" or ability == "AIR_LOCK"
+    end
+  end
+  if type(effects) == "table" then
+    local weatherKeys = { raindance = "rain", sunnyday = "sun", hail = "hail", sandstorm = "sand" }
+    for _, effect in ipairs(effects) do
+      local effectWeather = weatherKeys[
+        effect.key --[[@as string]]
+      ]
+      if effectWeather ~= nil then
+        activeWeather = effectWeather
+      end
+    end
+  end
+  if suppressed then
+    activeWeather = "none"
+  end
+  if species == "CASTFORM" and combatAbility(mon) == "FORECAST" then
+    local forms = { sun = 1, rain = 2, hail = 3 }
+    return forms[
+      activeWeather --[[@as string]]
+    ] or 0
+  end
+  if species == "CHERRIM" then
+    return activeWeather == "sun" and 1 or 0
+  end
+  return form --[[@as integer]]
+end
+
 -- The summary page reads the computed battle stats behind its staged
 -- stat values (retail ROM CalcMonStats): level from the growth curve
 -- and stats from the exact stat formula through the shared derivation.
@@ -406,6 +454,9 @@ local function combatantRecord(deps, snapshot, id, own)
   local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>]]
   local combatant = combatants[id] --[[@as table<string, unknown>]]
   local mon = combatant.mon --[[@as table<string, unknown>]]
+  local form = weatherForm(snapshot, combatant)
+  local appearanceMon = copyValue(mon) --[[@as table<string, unknown>]]
+  appearanceMon.form = form
   local species = nil
   if type(mon.species) == "string" then
     species = speciesRecord(deps, mon.species --[[@as string]])
@@ -423,7 +474,7 @@ local function combatantRecord(deps, snapshot, id, own)
     maxHp = ceiling,
     condition = majorConditionOf(mon),
     species = mon.species,
-    form = mon.form,
+    form = form,
     name = visibleName(deps, mon, species),
     level = combatLevel(deps, mon, species),
     selector = own and "back" or "front",
@@ -451,7 +502,7 @@ local function combatantRecord(deps, snapshot, id, own)
   if shiny ~= nil then
     record.shiny = shiny
   end
-  local portrait = portraitSelectorFor(deps, mon, species, own and "back" or "front")
+  local portrait = portraitSelectorFor(deps, appearanceMon, species, own and "back" or "front")
   if portrait ~= nil then
     record.portraitSelector = portrait
   end

@@ -7842,6 +7842,7 @@ function HgssSessionExecutor.new(scenarioRecord, content)
         speed = openingSample.speeds[
           occupant --[[@as integer]]
         ],
+        ability = (BattleState.combatant(live, occupant --[[@as integer]]).mon --[[@as table<string, unknown>]]).ability,
       }
     end
   end

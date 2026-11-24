@@ -17,6 +17,7 @@ local LuaWriter = require("libs.codec.src.LuaWriter")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local ScriptMembers = require("romdump.src.catalog.hgss.script_members")
 local PokegearSources = require("romdump.src.config.PokegearSources")
+local BattlePresentationSources = require("romdump.src.config.BattlePresentationSources")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 
 local T = {}
@@ -30,6 +31,7 @@ local function sourceReferenceBankIds()
     ids[assert(bankId)] = true
   end
   ids[MenuProtocol.STANDARD_MESSAGE_BANK] = true
+  ids[BattlePresentationSources.MESSAGE_BANKS.scriptController] = true
   -- The in-field Start Menu labels resolve from this bank through the
   -- protocol constant; see FieldMessageCompiler's required bank set.
   ids[MenuProtocol.START_MENU_MESSAGE_BANK] = true

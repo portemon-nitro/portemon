@@ -3419,7 +3419,8 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
     local ratio = StatStages.multiplier(effectiveStage, "accuracy")
     accuracy = math.floor(accuracy * ratio.numerator / ratio.denominator)
   end
-  if ctx:hasBattleEffect(defender, "lockon") then
+  local lockOnState = ctx:battleEffectState(defender, "lockon")
+  if type(lockOnState) == "table" and lockOnState.attacker == userOf(frame) then
     accuracy = 0
   end
   local record = frame --[[@as table<string, unknown>]]
@@ -3430,7 +3431,10 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
   local move = locals.move --[[@as table<string, unknown>]]
   local weather = locals.weather --[[@as string]]
   local weatherSuppressed = locals.weatherSuppressed == true
-  local forceHit = ctx:hasBattleEffect(defender, "lockon") or userAbility == "NO_GUARD" or foeAbility == "NO_GUARD"
+  local forceLockOnState = ctx:battleEffectState(defender, "lockon")
+  local forceHit = (type(forceLockOnState) == "table" and forceLockOnState.attacker == userOf(frame))
+    or userAbility == "NO_GUARD"
+    or foeAbility == "NO_GUARD"
   -- Gen IV applies these multipliers after the ordinary stage ratio, in
   -- this order, truncating after every multiplication.
   if accuracy ~= nil and accuracy > 0 then
@@ -4447,7 +4451,9 @@ local function stepOhko(ctx, frame)
   end
   local strike = strikeFactsOf(record)
   local hitChance = combat.level - foeLevel + strike.accuracy
-  if not ctx:hasBattleEffect(defender, "lockon") then
+  local lockOn = ctx:battleEffectState(defender, "lockon")
+  local lockedByUser = type(lockOn) == "table" and lockOn.attacker == userOf(frame)
+  if not lockedByUser and abilities.user ~= "NO_GUARD" and foeAbility ~= "NO_GUARD" then
     local stream = checkStream(record.stream)
     if stream:nextU16("ohko_hit", causeFor(record)) % 100 >= hitChance then
       emitMissed(ctx, record, defender, "accuracy_miss")

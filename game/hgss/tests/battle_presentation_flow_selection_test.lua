@@ -51,6 +51,43 @@ local function select(packet, event, geometry)
   return BattlePresentationFlow.animationPlayback(packet, event, geometry)
 end
 
+function T.weather_setter_ability_selects_native_weather_animation_before_its_message()
+  local geometry = ManifestFixture.manifest().battlefield.slots
+  for _, route in ipairs({
+    { ability = "DRIZZLE", weather = "rain", root = "BATTLE_ANIMATION_WEATHER_RAIN" },
+    { ability = "SAND_STREAM", weather = "sand", root = "BATTLE_ANIMATION_WEATHER_SAND" },
+    { ability = "DROUGHT", weather = "sun", root = "BATTLE_ANIMATION_WEATHER_SUN" },
+    { ability = "SNOW_WARNING", weather = "hail", root = "BATTLE_ANIMATION_WEATHER_HAIL" },
+  }) do
+    local before = views()
+    local presentation = {
+      context = {},
+      operation = {
+        kind = "weather-started",
+        subject = { combatant = 1, activation = 7 },
+        source = {
+          kind = "ability",
+          key = route.ability,
+          actor = { combatant = 1, activation = 7 },
+        },
+        weather = route.weather,
+        origin = "entry-ability",
+      },
+    }
+    local packet = packetFor(before, before, {
+      rawEvent(1, "ability", { kind = "ability", key = route.ability, combatant = 1 }, {
+        key = route.ability,
+        combatant = 1,
+        weather = route.weather,
+      }, { { combatant = 1, activation = 7 } }, {}, nil, presentation),
+    }, "weather-ability", 1)
+    local requests = select(packet, packet.events[1], geometry)
+    Assert.equal(#requests, 1, route.ability .. " selects one weather animation")
+    Assert.equal(requests[1].effectKey, route.root, route.ability .. " selects its native animation")
+    Assert.equal(requests[1].anchor.stage, "before-feedback-message", "the visual precedes narration")
+  end
+end
+
 function T.connected_strike_admits_with_signed_damage_and_hit_ordinal()
   local geometry = ManifestFixture.manifest().battlefield.slots
   local before = views()

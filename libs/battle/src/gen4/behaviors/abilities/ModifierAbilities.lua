@@ -155,6 +155,9 @@ end
 ---@param context table<string, unknown> pre-hit context under handling
 ---@return table<string, unknown>? suppression marker, or nil when inapplicable
 local function moldBreaker(instance, context)
+  if context.timing == "entry" then
+    return { kind = "trigger", key = instance.key, combatant = holderOf(instance) }
+  end
   local hit = context.hit
   if type(hit) ~= "table" then
     return nil
@@ -433,29 +436,9 @@ local function critGuard(instance, context)
   return { kind = "trigger", key = instance.key, combatant = holderOf(instance), critical = "negated" }
 end
 
----@param instance table<string, unknown> dispatched effect instance under handling
----@param context table<string, unknown> damage context under handling
 ---@return table<string, unknown>? endurance announcement, or nil when inapplicable
-local function sturdy(instance, context)
-  if context.lethal ~= true then
-    return nil
-  end
-  local holder = holderOf(instance)
-  local health = context.health
-  local limits = context.maxHealth
-  if type(health) ~= "table" or type(limits) ~= "table" then
-    return nil
-  end
-  local hp = (health --[[@as table<integer, integer>]])[
-    holder --[[@as integer]]
-  ]
-  local maxHp = (limits --[[@as table<integer, integer>]])[
-    holder --[[@as integer]]
-  ]
-  if type(hp) ~= "number" or type(maxHp) ~= "number" or hp ~= maxHp then
-    return nil
-  end
-  return { kind = "trigger", key = instance.key, combatant = holder, endured = true }
+local function sturdy(_, _)
+  return nil
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling

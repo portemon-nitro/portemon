@@ -564,6 +564,26 @@ function BattleContext:hasBattleEffect(combatantId, key)
   return false
 end
 
+---@param combatantId integer combatant identity owning the instance scope
+---@param key string definition identity under the query
+---@return table<string, unknown>? detached live state for the first matching combatant effect
+function BattleContext:battleEffectState(combatantId, key)
+  assert(type(combatantId) == "number", "effect queries require their combatant")
+  assert(type(key) == "string" and key ~= "", "effect queries require their key")
+  local bag = liveBag(self._state)
+  local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
+  local get = bag.get --[[@as fun(self: table<string, unknown>, id: integer): table<string, unknown>?]]
+  for _, record in ipairs(capture(bag)) do
+    local scope = record.scope --[[@as table<string, unknown>]]
+    if record.key == key and scopeAnswersFor(self._state, combatantId, scope) then
+      local instance = get(bag, record.id --[[@as integer]])
+      assert(instance ~= nil, "captured battle effect remains live")
+      return copyValue(instance.state --[[@as table<string, unknown>]]) --[[@as table<string, unknown>]]
+    end
+  end
+  return nil
+end
+
 ---@param positionId integer position identity owning the effect scope
 ---@param key string definition identity under the query
 ---@return boolean true when a live instance names the position and key
