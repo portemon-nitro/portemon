@@ -7,7 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local App = require("app.src.App")
-local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
+local LauncherLoadingPresentation = require("app.src.launcher.LauncherLoadingPresentation")
 local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
 local HgssGame = require("game.hgss.src.HgssGame")
 local StartupAudioSession = require("app.src.audio.StartupAudioSession")
@@ -137,7 +137,7 @@ local function withStartup(fn)
     drawableWidth = App.drawableWidth,
     drawableHeight = App.drawableHeight,
     pixelRatio = App.pixelRatio,
-    loadingNew = HgssLoadingPresentation.new,
+    loadingNew = LauncherLoadingPresentation.new,
     menuNew = MainMenuComposition.new,
     graphicsDimensions = love.graphics.getDimensions,
     graphicsDpi = love.graphics.getDPIScale,
@@ -154,7 +154,6 @@ local function withStartup(fn)
     startupAudioSession = App.startupAudioSession,
     startupAudioError = App.startupAudioError,
     gameFactory = HgssGame.new,
-    recordPlayed = require("app.src.launcher.EditionPreference").recordPlayed,
   }
 
   active = {
@@ -183,12 +182,6 @@ local function withStartup(fn)
     active.requests[#active.requests + 1] = { epoch = epoch, selector = selector }
   end
   function service:observe(_, selector)
-    -- The boot wait demands the selected walking pair as a required
-    -- interest before it transfers: model the healthy worker answer so the
-    -- startup journey under test starts from its transferred loader.
-    if selector.requestKind == "startup-walker" then
-      return true, nil
-    end
     if selector.requestKind == "opening-scene" then
       local sceneNumber = selector.sceneNumber
       local failure = active.sceneFailure[sceneNumber]
@@ -357,7 +350,7 @@ local function withStartup(fn)
     active.audioSessions[#active.audioSessions + 1] = session
     return session
   end
-  HgssLoadingPresentation.new = function()
+  LauncherLoadingPresentation.new = function()
     return fakeLoading()
   end
   -- The launcher stages the title through its build task: the fake scene
@@ -475,7 +468,7 @@ local function withStartup(fn)
   App.drawableWidth = saved.drawableWidth
   App.drawableHeight = saved.drawableHeight
   App.pixelRatio = saved.pixelRatio
-  HgssLoadingPresentation.new = saved.loadingNew
+  LauncherLoadingPresentation.new = saved.loadingNew
   MainMenuComposition.new = saved.menuNew
   love.graphics.getDimensions = saved.graphicsDimensions
   love.graphics.getDPIScale = saved.graphicsDpi
@@ -492,7 +485,6 @@ local function withStartup(fn)
   App.startupAudioSession = saved.startupAudioSession
   App.startupAudioError = saved.startupAudioError
   HgssGame.new = saved.gameFactory
-  require("app.src.launcher.EditionPreference").recordPlayed = saved.recordPlayed
   if not ok then
     error(err, 0)
   end
@@ -540,10 +532,8 @@ local function demandedScenes()
   return scenes
 end
 
--- The transferred loader animates for its minimum beat behind the staged
--- movie before the opening plays: pump boundedly until the handoff instead
--- of assuming one update suffices. The staged movie holds its source clock
--- at zero throughout, so arrival still proves the loader-first ordering.
+-- The transferred loader stays visible only until all five scenes and the
+-- soundtrack acknowledge readiness; arrival proves loader-first ordering.
 ---@param state table the startup state under test
 local function pumpUntilMovie(state)
   for _ = 1, 60 do
@@ -633,96 +623,21 @@ function T.tests.startup_demands_all_five_opening_scenes_and_keeps_one_menu_thro
   end)
 end
 
--- The title compilation milestone gates the opening: a pending title keeps the
--- loader and stages no playable movie even with every opening scene ready, and
--- none of the soundtrack is started ahead of it.
-function T.tests.movie_admission_waits_for_the_title_compilation()
+function T.tests.ready_movie_starts_without_an_import_dwell()
   withStartup(function()
-    active.titleAssetsReady = false
-    local state = startSelection()
-    active.audioReady = true
-    for sceneNumber = 1, 5 do
-      active.sceneReady[sceneNumber] = true
-    end
-    for _ = 1, 60 do
-      App.update(SourceTick.DT)
-    end
-    Assert.equal(state.phase, "loading", "a pending title compilation admits no opening")
-    Assert.notNil(state.movie, "the five ready scenes stay staged behind the loader")
-    Assert.equal(state.movie.ticks, 0, "no source tick advances while the title is pending")
-    Assert.isNil(state.title, "the pending title milestone has no scene")
-    Assert.equal(#active.audioSessions, 0, "the soundtrack never starts ahead of the title")
-
-    active.titleAssetsReady = true
-    pumpUntilMovie(state)
-    Assert.equal(state.phase, "movie", "the realized title releases the staged opening")
-    Assert.notNil(state.title, "the title is owned before the opening plays")
-  end)
-end
-
--- A ready title milestone is not a realized title: the opening waits for the
--- staged title build to finish before it is admitted.
-function T.tests.movie_admission_waits_for_the_title_realization()
-  withStartup(function()
-    active.titleBuildUnits = 16
-    local state = startSelection()
-    active.audioReady = true
-    for sceneNumber = 1, 5 do
-      active.sceneReady[sceneNumber] = true
-    end
-    App.update(SourceTick.DT)
-    Assert.notNil(state.titleBuild, "the title milestone begins the staged build")
-    Assert.isNil(state.title, "an unfinished build owns no scene yet")
-    Assert.equal(state.phase, "loading", "an unfinished title build admits no opening")
-    for _ = 1, 10 do
-      if state.title ~= nil then
-        break
-      end
-      App.update(SourceTick.DT)
-    end
-    Assert.notNil(state.title, "the loader budget realizes the staged title")
-    pumpUntilMovie(state)
-    Assert.equal(state.phase, "movie", "the realized title releases the staged opening")
-  end)
-end
-
-function T.tests.warm_movie_starts_at_once_while_a_true_first_import_keeps_its_beat()
-  withStartup(function()
-    -- Warm: an ordinary selection enters the staged movie on the next
-    -- eligible update with no loader beat.
     local state = startSelection()
     Assert.notNil(state, "the selected edition installs its startup state")
-    -- Both the warm and the cold entry admit through the same
-    -- soundtrack confirmation, so the banks are ready throughout.
     active.audioReady = true
     for sceneNumber = 1, 5 do
       active.sceneReady[sceneNumber] = true
     end
     App.update(SourceTick.DT)
-    Assert.equal(#active.movies, 1, "the warm entry stages the movie behind the loader")
+    Assert.equal(#active.movies, 1, "the ready opening stages behind the transferred loader")
     App.update(SourceTick.DT)
-    Assert.equal(state.phase, "movie", "the warm entry starts the staged movie without a loader beat")
+    Assert.equal(state.phase, "movie", "readiness enters the movie without a decorative import dwell")
     pumpMovieLeadIn()
     App.draw()
-    Assert.isTrue(active.movies[1].draws >= 1, "the entered movie paints its first frame")
-    -- Cold: a genuinely new import keeps one bounded beat so its freshly
-    -- adopted art stays visible before the same handoff.
-    App._selectVersion("heartgold", { freshImport = true })
-    App.update(1 / 60)
-    App.update(SourceTick.DT)
-    local cold = assert(App.state, "the first import installs its startup state")
-    for _ = 1, 15 do
-      App.update(SourceTick.DT)
-      App.draw()
-    end
-    Assert.equal(cold.phase, "loading", "the true first import keeps its bounded beat while fresh")
-    Assert.equal(#active.movies, 2, "the cold entry stages the same movie behind its loader")
-    Assert.equal(active.movies[2].ticks, 0, "the staged movie holds its source clock at zero during the beat")
-    pumpUntilMovie(cold)
-    Assert.equal(cold.phase, "movie", "the cold entry still reaches its staged movie after the beat")
-    pumpMovieLeadIn()
-    App.draw()
-    Assert.isTrue(active.movies[2].draws >= 1, "the first playable source frame draws at the transition")
+    Assert.isTrue(active.movies[1].draws >= 1, "the first playable source frame draws at the transition")
   end)
 end
 
@@ -1253,8 +1168,8 @@ function T.tests.partial_opening_manifest_keeps_the_loader_without_start_or_erro
     Assert.equal(state.phase, "loading", "four of five scenes never install the movie")
     Assert.isNil(state.movie, "a partial manifest constructs no movie session")
     Assert.isNil(state.sceneError, "a partial manifest reports no terminal failure")
-    Assert.notNil(state.title, "the title is realized while the last scene still compiles")
-    Assert.isTrue(state.phase ~= "title", "a realized title never presents before its opening")
+    Assert.equal(state.phase, "loading", "prepared title geometry never presents before the opening")
+    Assert.equal(active.scenes[1].draws, 0, "no title frame paints while the movie is pending")
     local paints = active.paints
     App.draw()
     Assert.isTrue(active.paints > paints, "the loader keeps painting while the last scene compiles")
@@ -1619,6 +1534,109 @@ function T.tests.idle_title_replays_both_music_tracks_before_the_final_cry()
       "the loop ends with one cry and one fade behind the replayed tracks"
     )
     Assert.equal(#active.audioSessions, 1, "one session spans every replayed entry")
+  end)
+end
+
+function T.tests.opening_closure_keeps_scene_one_required_and_promotes_the_other_four()
+  withStartup(function()
+    local state = startSelection()
+    Assert.notNil(state, "the selected edition installs its startup state")
+    local firstUrgency = {}
+    for _, request in ipairs(active.requests) do
+      local selector = request.selector
+      if selector.requestKind == "opening-scene" and firstUrgency[selector.sceneNumber] == nil then
+        firstUrgency[selector.sceneNumber] = selector.urgency
+      end
+    end
+    Assert.equal(firstUrgency[1], "required", "scene one leads the opening closure as required work")
+    for sceneNumber = 2, 5 do
+      Assert.equal(firstUrgency[sceneNumber], "near", "scene " .. sceneNumber .. " starts behind scene one")
+    end
+
+    active.sceneReady[1] = true
+    App.update(SourceTick.DT)
+    local promoted = {}
+    for _, request in ipairs(active.requests) do
+      local selector = request.selector
+      if selector.requestKind == "opening-scene" and selector.sceneNumber > 1 and selector.urgency == "required" then
+        promoted[selector.sceneNumber] = true
+      end
+    end
+    for sceneNumber = 2, 5 do
+      Assert.isTrue(promoted[sceneNumber], "scene " .. sceneNumber .. " promotes after scene one readiness")
+    end
+    Assert.equal(state.phase, "loading", "a partial opening closure never starts the movie")
+  end)
+end
+
+function T.tests.pending_title_preparation_does_not_gate_the_ready_opening()
+  withStartup(function()
+    active.titleAssetsReady = false
+    active.audioReady = true
+    for sceneNumber = 1, 5 do
+      active.sceneReady[sceneNumber] = true
+    end
+    local state = startSelection()
+    pumpUntilMovie(state)
+    Assert.equal(state.phase, "movie", "five ready scenes and acknowledged audio admit the movie without a title")
+    Assert.isNil(state.title, "title preparation remains non-gating background work")
+    Assert.equal(active.loaders[1].disposals, 0, "the loader remains owned until the first movie frame")
+  end)
+end
+
+function T.tests.saved_location_preparation_starts_once_at_movie_entry_and_failure_is_non_gating()
+  withStartup(function()
+    local originalFactory = HgssGame.newSaveLocationPreparation
+    local script = { constructions = 0, polls = 0, disposals = 0, captured = nil }
+    HgssGame.newSaveLocationPreparation = function(options)
+      script.constructions = script.constructions + 1
+      script.captured = options
+      local preparation = {}
+      function preparation:poll()
+        script.polls = script.polls + 1
+        return nil, script.failure
+      end
+      function preparation:dispose()
+        script.disposals = script.disposals + 1
+      end
+      return preparation
+    end
+    local ok, err = xpcall(function()
+      for sceneNumber = 1, 5 do
+        active.sceneReady[sceneNumber] = true
+      end
+      App._selectVersion("heartgold", { entryLocation = { mapId = 60, fieldX = 684, fieldZ = 393 } })
+      for _ = 1, 5 do
+        App.update(SourceTick.DT)
+      end
+      Assert.equal(script.constructions, 0, "pending movie audio starts no saved-location demand")
+      Assert.equal(script.polls, 0, "no speculative job polls before movie entry")
+
+      active.audioReady = true
+      pumpUntilMovie(App.state)
+      Assert.equal(App.state.phase, "movie", "the opening reaches movie entry")
+      Assert.equal(script.constructions, 1, "movie entry creates one saved-location preparation")
+      Assert.deepEqual(
+        script.captured.entryLocation,
+        { mapId = 60, fieldX = 684, fieldZ = 393 },
+        "the job receives only the copied location hint"
+      )
+      for _ = 1, 5 do
+        App.update(SourceTick.DT)
+      end
+      Assert.equal(script.constructions, 1, "repeated movie updates never enroll a duplicate job")
+      Assert.isTrue(script.polls > 0, "the selected epoch polls its optional preparation")
+
+      script.failure = "synthetic saved-location planning failure"
+      App.update(SourceTick.DT)
+      Assert.equal(App.state.phase, "movie", "optional location failure never blocks the movie")
+      Assert.equal(script.disposals, 1, "a failed optional job is released once")
+      Assert.equal(#active.menus, 0, "speculative failure never constructs gameplay or a menu")
+    end, debug.traceback)
+    HgssGame.newSaveLocationPreparation = originalFactory
+    if not ok then
+      error(err, 0)
+    end
   end)
 end
 

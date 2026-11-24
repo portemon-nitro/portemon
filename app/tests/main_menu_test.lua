@@ -15,6 +15,13 @@ local function globalActions()
   return { { id = "new-game", kind = "new_game" } }
 end
 
+local function twoGlobalActions()
+  return {
+    { id = "new-game", kind = "new_game" },
+    { id = "game-selection", kind = "game_selection" },
+  }
+end
+
 local function save(id, canContinue)
   return {
     id = id,
@@ -62,6 +69,104 @@ local function pressAt(menu, logicalX, logicalY)
   local hostX, hostY = LayoutGeometry.logicalToHost(placement, logicalX, logicalY)
   menu:mousepressed(hostX, hostY, 1)
   menu:mousereleased(hostX, hostY, 1)
+end
+
+function T.controller_reaches_both_global_actions_and_returns_their_actual_kinds()
+  local controller = MainMenuController.new(twoGlobalActions(), {})
+  Assert.deepEqual(controller:snapshot().focus, { region = "global", actionId = "new-game" })
+  Assert.deepEqual(controller:activate(), { kind = "new_game" })
+  controller:move("right")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "global", actionId = "game-selection" },
+    "the return action is independently reachable"
+  )
+  Assert.deepEqual(controller:activate(), { kind = "game_selection" }, "activation preserves the action kind")
+  controller:move("left")
+  Assert.deepEqual(controller:snapshot().focus, { region = "global", actionId = "new-game" })
+end
+
+function T.state_filters_other_game_saves_and_keeps_unattributable_recovery_cards()
+  local menu = state({
+    saveStore = {
+      listMetadata = function()
+        return {
+          {
+            saveId = "save-00000001",
+            versionId = "heartgold",
+            playerData = { profile = { name = "GOLD" } },
+            playTimeSeconds = 60,
+          },
+          {
+            saveId = "save-00000002",
+            versionId = "soulsilver",
+            playerData = { profile = { name = "SILVER" } },
+            playTimeSeconds = 120,
+          },
+          {
+            saveId = "save-00000003",
+            versionId = "soulsilver",
+            error = Errors.new("GAME_SAVE_SCHEMA_UNSUPPORTED", "save version is unreadable"),
+          },
+          {
+            saveId = "save-00000004",
+            error = Errors.new("GAME_SAVE_SCHEMA_UNSUPPORTED", "save has no readable version"),
+          },
+        }
+      end,
+    },
+    readyVersions = { "heartgold" },
+    width = 320,
+    height = 180,
+  })
+  local view = menu:view()
+  Assert.equal(#view.globalActions, 2, "the start menu exposes New Game and Back to game selection")
+  Assert.equal(#view.saves, 2, "healthy and corrupt saves from another game are filtered from this game's menu")
+  Assert.equal(view.saves[1].saveId, "save-00000001")
+  Assert.isTrue(view.saves[1].canContinue)
+  Assert.equal(view.saves[2].saveId, "save-00000004")
+  Assert.notNil(view.saves[2].errorSummary, "an unattributable error keeps its recovery affordance")
+  Assert.isTrue(view.saves[2].canDelete)
+
+  local layout = view.layout
+  local newGame = assert(layout.global.actions["new-game"], "New Game needs reachable geometry")
+  local back = assert(layout.global.actions["game-selection"], "the return action needs reachable geometry")
+  Assert.isTrue(
+    newGame.y + newGame.height <= back.y or back.y + back.height <= newGame.y,
+    "global actions do not overlap at the compact height"
+  )
+  Assert.isTrue(
+    layout.saves.viewport.y + layout.saves.viewport.height <= math.min(newGame.y, back.y),
+    "the save list never renders behind either global action"
+  )
+end
+
+function T.gamepad_can_return_from_the_start_menu_without_quitting()
+  local results = {}
+  local menu = state({
+    saveStore = {
+      listMetadata = function()
+        return {}
+      end,
+    },
+    onResult = function(result)
+      results[#results + 1] = result
+    end,
+  })
+  menu.controller:focusGlobal("new-game")
+  menu:gamepadpressed({}, "dpright")
+  Assert.equal(menu:view().focusedId, "game-selection")
+  menu:gamepadpressed({}, "a")
+  Assert.deepEqual(results, { { kind = "game_selection" } })
+
+  menu.controller:focusGlobal("new-game")
+  local back = assert(menu:view().layout.global.actions["game-selection"])
+  pressAt(menu, back.x + back.width / 2, back.y + back.height / 2)
+  Assert.deepEqual(
+    results,
+    { { kind = "game_selection" }, { kind = "game_selection" } },
+    "the same resolved action accepts touch and gamepad input"
+  )
 end
 
 function T.controller_defaults_to_existing_save_and_reaches_global_action()
@@ -341,7 +446,7 @@ function T.state_publishes_separate_catalogs_and_preserves_initial_save_focus()
   })
   local view = menu:view()
   Assert.equal(view.focusedId, "save-00000001")
-  Assert.equal(#view.globalActions, 1)
+  Assert.equal(#view.globalActions, 2)
   Assert.equal(#view.saves, 1)
   Assert.isNil(view.items)
 end
@@ -402,9 +507,8 @@ function T.saves_for_an_unselected_version_cannot_enter_the_editor()
     readyVersions = { "heartgold" },
   })
 
-  local item = assert(menu:view().saves[1])
-  Assert.isFalse(item.canContinue)
-  Assert.isFalse(item.canEdit, "the editor cannot load a save with another version's cache context")
+  Assert.equal(#menu:view().saves, 0, "healthy saves from another game are not managed in this menu")
+  Assert.equal(menu:view().focusedId, "new-game")
 end
 
 function T.state_deletes_unavailable_save_only_after_confirmation()
@@ -1376,7 +1480,7 @@ function T.continue_profile_rows_keep_bottom_padding_inside_the_card()
   local card = assert(drawn.view.layout.saves.cards["save-00000001"])
   local lastBottom = nil
   for _, call in ipairs(drawn.calls) do
-    if call.text ~= "..." and call.text ~= "NEW GAME" then
+    if call.text ~= "..." and call.text ~= "NEW GAME" and call.text ~= "BACK TO GAME" and call.text ~= "SELECTION" then
       local bottom = call.y + PROFILE_LINE_HEIGHT
       if lastBottom == nil or bottom > lastBottom then
         lastBottom = bottom
@@ -2311,7 +2415,7 @@ function T.accepted_menu_gestures_emit_one_borrowed_cue_and_passive_inputs_stay_
   menu:mousereleased(1, 1, 1)
   Assert.equal(cues, 7, "pointer movement and release alone are silent")
 
-  menu:keypressed("right")
+  menu:keypressed("down")
   Assert.equal(cues, 8, "moving back to a save card emits one focus cue")
   menu:keypressed("right")
   Assert.equal(cues, 9, "moving onto the overflow action emits one focus cue")
@@ -2445,21 +2549,25 @@ function T.unchanged_and_disabled_menu_gestures_stay_silent_while_accepted_ones_
   menu:keypressed("down")
   Assert.equal(cues, 2, "wrapping onto New Game emits one cue")
   menu:keypressed("left")
-  Assert.equal(cues, 2, "navigation that keeps New Game focused is silent")
+  Assert.equal(cues, 3, "moving from New Game to Back emits one cue")
+  menu:keypressed("left")
+  Assert.equal(cues, 3, "navigation that keeps Back focused is silent")
   menu:keypressed("x")
-  Assert.equal(cues, 2, "a no-op key on New Game is silent")
+  Assert.equal(cues, 3, "a no-op key on Back is silent")
   menu:keypressed("right")
-  Assert.equal(cues, 3, "returning to the remembered save emits one cue")
+  Assert.equal(cues, 4, "returning to New Game emits one cue")
+  menu:keypressed("right")
+  Assert.equal(cues, 5, "moving from New Game to the remembered save emits one cue")
 
   -- The pointer batch both focuses and activates one save card, so the
   -- whole click still carries a single selection effect.
   local card = assert(menu:view().layout.saves.cards["save-00000002"])
   pressAt(menu, card.body.x + card.body.width / 2, card.body.y + card.body.height / 2)
-  Assert.equal(cues, 4, "a focus-then-activate pointer click emits one cue")
+  Assert.equal(cues, 6, "a focus-then-activate pointer click emits one cue")
   Assert.deepEqual(results, { { kind = "continue", saveId = "save-00000002" } })
   menu:mousemoved(1, 1, 0, 0, false)
   menu:mousereleased(1, 1, 1)
-  Assert.equal(cues, 4, "pointer movement and release alone are silent")
+  Assert.equal(cues, 6, "pointer movement and release alone are silent")
   menu:dispose()
 
   local disabledCues = 0

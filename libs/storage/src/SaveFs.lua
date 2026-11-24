@@ -110,6 +110,20 @@ function SaveFs:exists(relativePath, expectedType)
   return true
 end
 
+-- Returns the published file's backend timestamp without reading its bytes.
+-- Unknown, absent and non-file metadata carry no invented modification time.
+function SaveFs:getModtime(relativePath)
+  local info = self.backend:getInfo(self:resolve(relativePath))
+  if type(info) ~= "table" or info.type ~= "file" then
+    return nil
+  end
+  local modifiedAt = info.modtime
+  if type(modifiedAt) ~= "number" or modifiedAt ~= modifiedAt or math.abs(modifiedAt) == math.huge then
+    return nil
+  end
+  return modifiedAt
+end
+
 -- Removing an absent path is a no-op (reset runs before the first save
 -- exists); removing an existing path that the backend cannot remove raises
 -- SAVE_REMOVE_FAILED.

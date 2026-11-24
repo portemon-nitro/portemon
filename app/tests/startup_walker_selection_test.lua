@@ -143,7 +143,7 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
   local App = require("app.src.App")
   local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
   local CacheFs = require("libs.storage.src.CacheFs")
-  local LoadingModule = require("libs.hgss.src.ui.HgssLoadingPresentation")
+  local LoadingModule = require("app.src.launcher.LauncherLoadingPresentation")
   local HgssGame = require("game.hgss.src.HgssGame")
   local StartupTitleState = require("app.src.launcher.StartupTitleState")
   local saved = {
@@ -313,11 +313,7 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
       App.update(0.016)
     end
     Assert.equal(App.pairIndex, 23, "the epoch keeps its one random fallback pair")
-    Assert.isTrue(#demands >= 1, "the shared visuals are demanded from the worker")
-    for _, demand in ipairs(demands) do
-      Assert.isNil(demand.pairIndex, "the shared demand carries no pair identity")
-      Assert.equal(demand.urgency, "required", "the shared demand stays required")
-    end
+    Assert.deepEqual(demands, {}, "the neutral launcher never demands walking artwork")
     Assert.equal(getmetatable(App.state).__index, StartupTitleState, "the prepared fallback pair completes the handoff")
   end, debug.traceback)
   restore()
@@ -334,7 +330,7 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
   local App = require("app.src.App")
   local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
   local CacheFs = require("libs.storage.src.CacheFs")
-  local LoadingModule = require("libs.hgss.src.ui.HgssLoadingPresentation")
+  local LoadingModule = require("app.src.launcher.LauncherLoadingPresentation")
   local HgssGame = require("game.hgss.src.HgssGame")
   local saved = {
     state = App.state,
@@ -507,11 +503,7 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
     end
     Assert.equal(randomCalls, 2, "each epoch draws exactly once")
     Assert.equal(scanCalls, 0, "selection never scans the published catalog")
-    Assert.isTrue(#demands >= 2, "both epochs demand the shared visuals")
-    for _, demand in ipairs(demands) do
-      Assert.isNil(demand.pairIndex, "the shared demand carries no pair identity")
-      Assert.equal(demand.urgency, "required", "the shared demand stays required")
-    end
+    Assert.deepEqual(demands, {}, "selection draws pairs for later surfaces without gating the launcher")
   end, debug.traceback)
   restore()
   if not ok then

@@ -1,17 +1,23 @@
 -- Holds the selected edition's loader/title while the existing Main Menu is staged.
 
-local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local HgssOpeningMovie = require("libs.hgss.src.presentation.HgssOpeningMovie")
 local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 ---@class StartupTitleLoading
----@field artFailure unknown?
----@field adoptGeneratedAssets fun(self: StartupTitleLoading, cacheFs: table<string, unknown>): boolean, unknown?
 ---@field update fun(self: StartupTitleLoading, dt: number)
 ---@field draw fun(self: StartupTitleLoading, status: table<string, unknown>?)
----@field resize fun(self: StartupTitleLoading, width: number, height: number)
+---@field resize fun(self: StartupTitleLoading, width: number, height: number, safeRect: { x: number, y: number, width: number, height: number }?)
 ---@field dispose fun(self: StartupTitleLoading)
+---@field keypressed fun(self: StartupTitleLoading, key: string, scancode: string?, isrepeat: boolean?)?
+---@field gamepadpressed fun(self: StartupTitleLoading, joystick: unknown, button: string)?
+---@field mousepressed fun(self: StartupTitleLoading, x: number, y: number, button: integer, istouch: boolean?)?
+---@field mousemoved fun(self: StartupTitleLoading, x: number, y: number)?
+---@field mousereleased fun(self: StartupTitleLoading, x: number, y: number, button: integer, istouch: boolean?)?
+---@field touchpressed fun(self: StartupTitleLoading, id: number, x: number, y: number)?
+---@field touchmoved fun(self: StartupTitleLoading, id: number, x: number, y: number)?
+---@field touchreleased fun(self: StartupTitleLoading, id: number, x: number, y: number)?
+---@field focus fun(self: StartupTitleLoading, focused: boolean)?
 
 ---@class StartupTitleState
 ---@field versionId string
@@ -26,7 +32,6 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 ---@field beginWarmup fun()?
 ---@field audio table<string, function>?
 ---@field splRandomState table<string, integer>? borrowed boot stream record shared by one boot
----@field initialImport boolean
 ---@field phase string
 ---@field loading StartupTitleLoading?
 ---@field movie table<string, unknown>?
@@ -98,16 +103,8 @@ local MOVIE_LEAD_IN_TICKS = 2
 local TITLE_ENTRY_CALLS = 3
 local FADE_OUT_FRAMES = 60
 local FADE_IN_FRAMES = 18
--- Minimum visible loader time after transfer before the staged opening
--- may play on a genuinely new import: the adopted walking pair animates
--- behind the loader while the fully acquired movie waits at its first
--- frame. Warm entries skip this beat and enter as soon as the movie is
--- drawable.
-local LOADER_DWELL_SECONDS = 0.8
 -- Title geometry realization budget per update: one prepared mesh upload per
--- frame, so the title handoff never uploads a whole model in one frame. A
--- loader-owned title build gates movie admission, so it advances several
--- units per update while it is the only visible work.
+-- frame. This preparation advances independently of movie admission.
 local TITLE_BUILD_WORK_UNITS = 1
 local TITLE_LOAD_WORK_UNITS = 4
 local DWELL_DT_CAP = 0.25
@@ -127,8 +124,7 @@ local OPENING_SCENE_COUNT = 5
 ---@field beginWarmup (fun())? fires the save-agnostic near/sweep prefetch once at title entry
 ---@field audio table<string, function>? borrowed App-owned callbacks
 ---@field splRandomState table<string, integer>? borrowed boot stream record shared by one boot
----@field initialImport boolean?
----@field loading StartupTitleLoading? one transferred C02 presentation; a default is built only on test/special paths
+---@field loading StartupTitleLoading one transferred neutral loading presentation
 ---@field width number
 ---@field height number
 
@@ -169,21 +165,14 @@ function StartupTitleState.new(options)
     options.splRandomState == nil or type(options.splRandomState) == "table",
     "startup title borrows the boot stream record"
   )
-  -- The normal App path transfers the single live boot presentation; only
-  -- test and special selection paths that never pass C02 build a default.
-  local loading = options.loading
-  if loading ~= nil then
-    assert(
-      type(loading.update) == "function" and type(loading.draw) == "function" and type(loading.dispose) == "function",
-      "the transferred boot presentation is unusable"
-    )
-  else
-    loading = HgssLoadingPresentation.new({
-      versionId = options.versionId,
-      width = options.width,
-      height = options.height,
-    }) --[[@as StartupTitleLoading]]
-  end
+  local loading = assert(options.loading, "startup title requires the transferred neutral loading presentation")
+  assert(
+    type(loading.update) == "function"
+      and type(loading.draw) == "function"
+      and type(loading.resize) == "function"
+      and type(loading.dispose) == "function",
+    "the transferred boot presentation is unusable"
+  )
   local self = setmetatable({
     versionId = options.versionId,
     epoch = options.epoch,
@@ -198,7 +187,6 @@ function StartupTitleState.new(options)
     beginWarmup = options.beginWarmup,
     audio = options.audio,
     splRandomState = options.splRandomState,
-    initialImport = options.initialImport == true,
     phase = "loading",
     loading = loading,
     movie = nil,
@@ -234,6 +222,7 @@ function StartupTitleState.new(options)
     menuAttempted = false,
     accumulator = 0,
     loaderVisibleTime = 0,
+    warmupFired = false,
     fadeFrame = 0,
     pointerCapture = nil,
     canceledPointers = {},
@@ -276,19 +265,24 @@ function StartupTitleState:_startRequests()
     return
   end
   self.requested = true
-  -- All five numbered opening scenes are demanded as required from the start:
-  -- every one of them gates movie admission, so a near lane for scenes 2..5
-  -- would only delay the same closure. Optional audio is an independent near
-  -- demand: it never gates the visuals, only the soundtrack acknowledgement at
-  -- admission.
-  for sceneNumber = 1, OPENING_SCENE_COUNT do
-    local ready, failure = self:_requestOpeningScene(sceneNumber, "required")
-    if failure ~= nil then
-      self.sceneError = failure
+  -- Scene one leads the closure. The remaining scenes start near and are
+  -- promoted together once scene one is ready; all five still gate adoption.
+  local ready, failure = self:_requestOpeningScene(1, "required")
+  if failure ~= nil then
+    self.sceneError = failure
+    self.sceneFailed = true
+    self.phase = "error"
+  else
+    self.openingObserved[1] = ready
+  end
+  for sceneNumber = 2, OPENING_SCENE_COUNT do
+    local sceneReady, sceneFailure = self:_requestOpeningScene(sceneNumber, "near")
+    if sceneFailure ~= nil then
+      self.sceneError = sceneFailure
       self.sceneFailed = true
       self.phase = "error"
     else
-      self.openingObserved[sceneNumber] = ready
+      self.openingObserved[sceneNumber] = sceneReady
     end
   end
   -- Request order preserves title priority ahead of broad menu/gameplay
@@ -296,11 +290,11 @@ function StartupTitleState:_startRequests()
   -- Boot already owns the one shared loader demand and passes the adopted
   -- presentation forward, so the title never demands its own copy.
   do
-    local ready, failure = self:_request("startup-title")
-    if ready then
+    local titleReady, titleFailure = self:_request("startup-title")
+    if titleReady then
       self:_beginTitleBuild()
-    elseif failure ~= nil then
-      self.titleError = failure
+    elseif titleFailure ~= nil then
+      self.titleError = titleFailure
       self.phase = "error"
     end
   end
@@ -318,14 +312,6 @@ function StartupTitleState:_startRequests()
     self.audioObserved = true
     self.audioError = audioFailure
   end
-  -- Save-agnostic gameplay prefetch starts while the cinematic still
-  -- plays: the opening scenes above stay ahead on required/near
-  -- priority, so the movie covers the first worker rounds instead of
-  -- the menu. The product owner supplies the hook; without one the
-  -- title simply plays with no head start.
-  if type(self.beginWarmup) == "function" then
-    self.beginWarmup()
-  end
   self:_notifyTitleReady()
   self:_maybeStartAudio()
 end
@@ -339,7 +325,11 @@ function StartupTitleState:_pollOpeningScenes()
   end
   local allReady = true
   for sceneNumber = 1, OPENING_SCENE_COUNT do
-    local ready, failure = self:_requestOpeningScene(sceneNumber, "required")
+    local urgency = sceneNumber == 1 and "required" or "near"
+    if sceneNumber > 1 and self.openingObserved[1] then
+      urgency = "required"
+    end
+    local ready, failure = self:_requestOpeningScene(sceneNumber, urgency)
     if failure ~= nil then
       self.sceneError = failure
       self.sceneFailed = true
@@ -393,37 +383,24 @@ function StartupTitleState:_adoptMovie()
   end
   self.movie = assert(movie)
   self.movieScenes = scenes
-  -- The fully acquired movie stays staged behind the visible loader until the
-  -- title presentation is realized and the soundtrack acknowledges its start.
-  -- A zero-length session is staged the same way and handed over without ever
-  -- assuming the movie phase, so no loader appears between the two retail
-  -- presentations. No source tick advances and no movie frame draws before
-  -- that handoff.
+  -- The fully acquired movie stays staged behind the visible loader until
+  -- the soundtrack acknowledges its start. Title preparation continues in
+  -- parallel and never delays this admission.
 end
 
--- Enters the staged movie as soon as it is drawable and the title handoff is
--- guaranteed. A genuinely new import keeps one bounded loader beat so freshly
--- adopted art stays visible; a warm entry whose movie is already staged enters
--- on the next eligible update with no cosmetic wait. The staged movie is fully
--- acquired, so the first playable source frame draws directly at the
--- transition with no interstitial.
+-- Enters the staged movie once all five scenes and the soundtrack are ready.
+-- Optional preparation starts at this actual first entry, never while assets
+-- are still pending and never again on attract-loop reentry.
 function StartupTitleState:_maybeEnterMovie()
   if self.phase ~= "loading" or self.movie == nil or not self:_live() then
     return
   end
-  if self.initialImport and self.loaderVisibleTime < LOADER_DWELL_SECONDS then
-    return
-  end
-  -- Admission invariant: the opening plays only once its successor presentation
-  -- is completely realized and owned here, so movie completion transfers
-  -- directly to the title with no loader and no synchronous build. The
-  -- soundtrack is confirmed only after that, so it never starts early while
-  -- the title is still being prepared.
-  if self.title == nil then
-    return
-  end
   if not self:_confirmSoundtrackStart() then
     return
+  end
+  if not self.warmupFired and type(self.beginWarmup) == "function" then
+    self.warmupFired = true
+    self.beginWarmup()
   end
   local movie = assert(self.movie)
   if movie:isFinished() then
@@ -527,8 +504,7 @@ function StartupTitleState:_beginTitleBuild()
 end
 
 -- Advances the staged title build with the budget its current cover allows and
--- adopts the finished scene. The loader owns the admission critical path, so it
--- advances more units per update than an interactive handoff would.
+-- adopts the finished scene without delaying movie admission.
 function StartupTitleState:_pollTitleBuild()
   local build = self.titleBuild
   if build == nil then
@@ -1011,10 +987,10 @@ function StartupTitleState:draw()
   graphics.setColor(1, 1, 1, 1)
 end
 
-function StartupTitleState:resize(width, height)
+function StartupTitleState:resize(width, height, safeRect)
   assert(width > 0 and height > 0, "startup title dimensions must be positive")
   self.width, self.height = width, height
-  self.loading:resize(width, height)
+  self.loading:resize(width, height, safeRect)
   if self.movie ~= nil then
     self.movie:resize(width, height)
   end
@@ -1028,9 +1004,27 @@ function StartupTitleState:resize(width, height)
   self.canceledPointers = {}
 end
 
-function StartupTitleState:_pressPointer(pointerId)
+local function mouseButtonFromPointerId(pointerId)
+  local button = tonumber(pointerId:sub(7))
+  assert(
+    type(button) == "number" and button == button and math.abs(button) < math.huge and button % 1 == 0,
+    "mouse pointer identity must contain an integer button"
+  )
+  return button --[[@as integer]]
+end
+
+function StartupTitleState:_pressPointer(pointerId, x, y)
   if not self:_live() then
     return
+  end
+  if (self.phase == "loading" or self.phase == "error") and self.loading ~= nil then
+    if pointerId:sub(1, 6) == "touch:" and type(self.loading.touchpressed) == "function" then
+      self.loading:touchpressed(pointerId:sub(7), x, y)
+      return
+    elseif pointerId:sub(1, 6) == "mouse:" and type(self.loading.mousepressed) == "function" then
+      self.loading:mousepressed(x, y, mouseButtonFromPointerId(pointerId))
+      return
+    end
   end
   -- The movie owns its own input: a press that skips the movie is captured
   -- and swallowed here so it can never become the newly presented title's
@@ -1118,7 +1112,16 @@ local MODIFIER_KEYS = {
 
 -- Releases one normalized pointer identity. Touch and mouse releases use
 -- the exact identity their press captured, never a doubly prefixed one.
-function StartupTitleState:_releasePointer(pointerId)
+function StartupTitleState:_releasePointer(pointerId, x, y)
+  if (self.phase == "loading" or self.phase == "error") and self.loading ~= nil then
+    if pointerId:sub(1, 6) == "touch:" and type(self.loading.touchreleased) == "function" then
+      self.loading:touchreleased(pointerId:sub(7), x, y)
+      return
+    elseif pointerId:sub(1, 6) == "mouse:" and type(self.loading.mousereleased) == "function" then
+      self.loading:mousereleased(x, y, mouseButtonFromPointerId(pointerId))
+      return
+    end
+  end
   if self.canceledPointers[pointerId] then
     self.canceledPointers[pointerId] = nil
     if self.pointerCapture == pointerId then
@@ -1142,6 +1145,14 @@ function StartupTitleState:keypressed(key, _, isrepeat)
   if isrepeat then
     return
   end
+  if
+    (self.phase == "loading" or self.phase == "error")
+    and self.loading ~= nil
+    and type(self.loading.keypressed) == "function"
+  then
+    self.loading:keypressed(key, _, isrepeat)
+    return
+  end
   if key == "escape" then
     self.phase = "cancelled"
     if self.onCancel ~= nil then
@@ -1158,31 +1169,62 @@ function StartupTitleState:keypressed(key, _, isrepeat)
   end
 end
 
-function StartupTitleState:gamepadpressed(_, _)
+function StartupTitleState:gamepadpressed(joystick, button)
+  if
+    (self.phase == "loading" or self.phase == "error")
+    and self.loading ~= nil
+    and type(self.loading.gamepadpressed) == "function"
+  then
+    self.loading:gamepadpressed(joystick, button)
+    return
+  end
   self:_pressAction()
 end
 
-function StartupTitleState:mousepressed(_, _, button)
+function StartupTitleState:mousepressed(x, y, button)
   if button ~= 1 then
     return
   end
-  self:_pressPointer("mouse:" .. tostring(button))
+  self:_pressPointer("mouse:" .. tostring(button), x, y)
 end
 
-function StartupTitleState:mousereleased(_, _, button)
-  self:_releasePointer("mouse:" .. tostring(button))
+function StartupTitleState:mousemoved(x, y)
+  if
+    (self.phase == "loading" or self.phase == "error")
+    and self.loading ~= nil
+    and type(self.loading.mousemoved) == "function"
+  then
+    self.loading:mousemoved(x, y)
+  end
 end
 
-function StartupTitleState:touchpressed(id, _, _)
-  self:_pressPointer("touch:" .. tostring(id))
+function StartupTitleState:mousereleased(x, y, button)
+  self:_releasePointer("mouse:" .. tostring(button), x, y)
 end
 
-function StartupTitleState:touchreleased(id)
-  self:_releasePointer("touch:" .. tostring(id))
+function StartupTitleState:touchpressed(id, x, y)
+  self:_pressPointer("touch:" .. tostring(id), x, y)
+end
+
+function StartupTitleState:touchmoved(id, x, y)
+  if
+    (self.phase == "loading" or self.phase == "error")
+    and self.loading ~= nil
+    and type(self.loading.touchmoved) == "function"
+  then
+    self.loading:touchmoved(id, x, y)
+  end
+end
+
+function StartupTitleState:touchreleased(id, x, y)
+  self:_releasePointer("touch:" .. tostring(id), x, y)
 end
 
 function StartupTitleState:focus(focused)
   if not focused then
+    if self.loading ~= nil and type(self.loading.focus) == "function" then
+      self.loading:focus(false)
+    end
     self.pointerCapture = nil
     self.canceledPointers = {}
   end

@@ -218,9 +218,18 @@ function MainMenuRenderer:draw(view, plan)
       local globalFocus = view.focus.region == "global"
       local global = assert(shaped.global)
       local shapedGlobal = global --[[@as { actions: table<string, table<string, number>> }]]
-      local newGame = assert(shapedGlobal.actions["new-game"])
-      drawSkinCard(newGame, "normal", globalFocus)
-      drawSkinText("normal", displayUpper("NEW GAME"), newGame.x + CARD_INSET, newGame.y + 10)
+      for _, action in ipairs(assert(view.globalActions)) do
+        local rect = assert(shapedGlobal.actions[action.id], "every global action has resolved geometry")
+        local focused = globalFocus and view.focus.actionId == action.id
+        drawSkinCard(rect, "normal", focused)
+        if action.id == "game-selection" then
+          local firstY = rect.height < 36 and 0 or 2
+          drawSkinText("normal", "BACK TO GAME", rect.x + CARD_INSET, rect.y + firstY)
+          drawSkinText("normal", "SELECTION", rect.x + CARD_INSET, rect.y + firstY + 16)
+        else
+          drawSkinText("normal", displayUpper("New Game"), rect.x + CARD_INSET, rect.y + (rect.height - 16) / 2)
+        end
+      end
 
       if view.popup then
         local popup = assert(layout.popup)

@@ -337,6 +337,19 @@ function GameSaveStore:_loadEnvelope(saveId)
       actual = envelope.saveId,
     })
   end
+  envelope.modifiedAt = self.saveFs:getModtime(self:_gamePath(saveId))
+  if
+    record.schema == GameSave.SCHEMA
+    and type(record.mapId) == "number"
+    and record.mapId >= 0
+    and record.mapId % 1 == 0
+    and type(record.fieldX) == "number"
+    and record.fieldX % 1 == 0
+    and type(record.fieldZ) == "number"
+    and record.fieldZ % 1 == 0
+  then
+    envelope.entryLocation = { mapId = record.mapId, fieldX = record.fieldX, fieldZ = record.fieldZ }
+  end
   return envelope
 end
 

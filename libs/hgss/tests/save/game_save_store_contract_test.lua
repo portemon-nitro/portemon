@@ -947,4 +947,88 @@ function T.invalid_custom_pocket_slots_never_replace_the_published_save()
   Assert.equal(assert(store:load(saveId)).bag.customPockets["alchemy"][1].quantity, 2)
 end
 
+-- Boot choice consumes detached display metadata only. The timestamp belongs
+-- to the catalog-published payload, never its catalog or backup, and a valid
+-- current-schema location is copied without normalizing or mutating the save.
+function T.metadata_attaches_payload_time_and_valid_current_location_without_normalization()
+  local backend = FakeCache.new()
+  local store = newStore(backend)
+  local saveId = store:reserve()
+  store:publishFirst(record(saveId, "heartgold", { mapId = 60, fieldX = 684, fieldZ = 393 }))
+  local payloadPath = gamePath(saveId)
+  local originalBytes = backend.files[payloadPath]
+  local modtimes = {
+    [payloadPath] = 1700000000.5,
+    ["saves/catalog.lua"] = 1900000000,
+    [backupPath(saveId, 1)] = 1800000000,
+    ["saves/games/save-orphan.lua"] = 2000000000,
+  }
+  local originalGetInfo = backend.getInfo
+  local metadataPaths = {}
+  function backend:getInfo(path)
+    metadataPaths[path] = true
+    local info = originalGetInfo(self, path)
+    if info ~= nil and info.type == "file" then
+      info.modtime = modtimes[path]
+    end
+    return info
+  end
+  local originalNormalize = GameSave.normalize
+  local normalizations = 0
+  GameSave.normalize = function(...)
+    normalizations = normalizations + 1
+    return originalNormalize(...)
+  end
+  local ok, err = xpcall(function()
+    local entries = assert(store:listMetadata())
+    local entry = assert(findEntry(entries, saveId))
+    Assert.isNil(entry.error)
+    Assert.equal(entry.modifiedAt, 1700000000.5, "the published payload supplies the boot timestamp")
+    Assert.deepEqual(entry.entryLocation, { mapId = 60, fieldX = 684, fieldZ = 393 }, "the location hint is detached")
+    Assert.equal(normalizations, 0, "metadata listing never normalizes a save")
+    Assert.equal(backend.files[payloadPath], originalBytes, "listing never rewrites the payload")
+    Assert.isTrue(metadataPaths[payloadPath], "the payload timestamp is queried")
+    Assert.isNil(metadataPaths[backupPath(saveId, 1)], "backup timestamps are never candidates")
+    Assert.isNil(metadataPaths["saves/games/save-orphan.lua"], "orphan payloads are never candidates")
+
+    entry.entryLocation.mapId = 999
+    local relisted = assert(findEntry(assert(store:listMetadata()), saveId))
+    Assert.equal(relisted.entryLocation.mapId, 60, "each listing returns a fresh detached hint")
+  end, debug.traceback)
+  GameSave.normalize = originalNormalize
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.metadata_omits_invalid_hints_and_unknown_times_without_hiding_display_entries()
+  local backend = FakeCache.new()
+  local store = newStore(backend)
+  local currentId = store:reserve()
+  local historicalId = store:reserve()
+  local corruptId = store:reserve()
+  store:publishFirst(record(currentId, "heartgold"))
+  store:publishFirst(record(historicalId, "soulsilver"))
+  store:publishFirst(record(corruptId, "heartgold"))
+  backend.files[gamePath(currentId)] =
+    LuaWriter.encode(record(currentId, "heartgold", { mapId = -1, fieldX = 1.5, fieldZ = 2.5 }))
+  backend.files[gamePath(historicalId)] = LuaWriter.encode(v4Payload(historicalId, "soulsilver"))
+  backend.files[gamePath(corruptId)] = "return { schema = 'not-lua-save' }"
+  local beforeCurrent = backend.files[gamePath(currentId)]
+  local beforeHistorical = backend.files[gamePath(historicalId)]
+
+  local entries = assert(store:listMetadata())
+  local current = assert(findEntry(entries, currentId))
+  local historical = assert(findEntry(entries, historicalId))
+  local corrupt = assert(findEntry(entries, corruptId))
+  Assert.isNil(current.error, "an invalid optional hint does not invalidate a display envelope")
+  Assert.isNil(current.modifiedAt, "a host without timestamp metadata stays unknown")
+  Assert.isNil(current.entryLocation, "an invalid location is omitted")
+  Assert.isNil(historical.error, "a known historical envelope remains visible")
+  Assert.isNil(historical.entryLocation, "historical payloads do not gain a current-schema hint")
+  Assert.notNil(corrupt.error, "corrupt entries retain their existing recovery card")
+  Assert.equal(backend.files[gamePath(currentId)], beforeCurrent, "invalid hints cause no save rewrite")
+  Assert.equal(backend.files[gamePath(historicalId)], beforeHistorical, "historical bytes stay untouched")
+end
+
 return { tests = T }

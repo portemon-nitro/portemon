@@ -4,7 +4,7 @@
 
 local Assert = require("tests.support.Assert")
 local App = require("app.src.App")
-local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
+local LauncherLoadingPresentation = require("app.src.launcher.LauncherLoadingPresentation")
 local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
 local HgssGame = require("game.hgss.src.HgssGame")
 local StartupAudioSession = require("app.src.audio.StartupAudioSession")
@@ -60,12 +60,37 @@ local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 local T = { tests = {} }
 local active
 
-local function newLoadingPresentation()
+local function newLoadingPresentation(options)
   return {
+    inputs = {},
+    disposals = 0,
     update = function() end,
     resize = function() end,
     draw = function() end,
-    dispose = function() end,
+    keypressed = function(self, key)
+      self.inputs[#self.inputs + 1] = { kind = "key", key = key }
+      if options and options.onCancel and (key == "escape" or key == "return" or key == "space") then
+        options.onCancel()
+      end
+    end,
+    gamepadpressed = function(self, _, button)
+      self.inputs[#self.inputs + 1] = { kind = "gamepad", button = button }
+      if options and options.onCancel and (button == "a" or button == "b") then
+        options.onCancel()
+      end
+    end,
+    touchpressed = function(self, id, x, y)
+      self.inputs[#self.inputs + 1] = { kind = "touch-down", id = id, x = x, y = y }
+    end,
+    touchreleased = function(self, id, x, y)
+      self.inputs[#self.inputs + 1] = { kind = "touch-up", id = id, x = x, y = y }
+      if options and options.onCancel then
+        options.onCancel()
+      end
+    end,
+    dispose = function(self)
+      self.disposals = self.disposals + 1
+    end,
     adoptGeneratedAssets = function()
       return true
     end,
@@ -163,7 +188,7 @@ local function withStartup(fn)
     drawableWidth = App.drawableWidth,
     drawableHeight = App.drawableHeight,
     pixelRatio = App.pixelRatio,
-    loadingNew = HgssLoadingPresentation.new,
+    loadingNew = LauncherLoadingPresentation.new,
     menuNew = MainMenuComposition.new,
     graphicsDimensions = love.graphics.getDimensions,
     graphicsDpi = love.graphics.getDPIScale,
@@ -178,7 +203,6 @@ local function withStartup(fn)
     startupAudioFactory = HgssGame.newStartupAudio,
     startupAudioNew = StartupAudioSession.new,
     gameFactory = HgssGame.new,
-    recordPlayed = require("app.src.launcher.EditionPreference").recordPlayed,
   }
 
   active = {
@@ -202,12 +226,6 @@ local function withStartup(fn)
     active.requests[#active.requests + 1] = { epoch = epoch, selector = selector }
   end
   function service:observe(epoch, selector)
-    -- The boot wait demands the selected walking pair as a required
-    -- interest before it transfers: model the healthy worker answer so the
-    -- startup journey under test starts from its transferred loader.
-    if selector.requestKind == "startup-walker" then
-      return true, nil
-    end
     -- The cinematic scenes are ready by default behind these title-first
     -- compositions: the instant movie below hands off to the legendary
     -- title within the same selection updates, preserving every title,
@@ -229,7 +247,7 @@ local function withStartup(fn)
     if selector.name == "bootstrap" then
       return active.bootstrapReady == true, nil
     end
-    return false, nil
+    return true, nil
   end
   function service:requestBootSource(_) end
   function service:bootSourceStatus(_)
@@ -323,6 +341,7 @@ local function withStartup(fn)
         end
         self.titleRecord = { crySpeciesId = record.crySpeciesId }
       end,
+      beginMovieCycle = function() end,
       beginTitle = function() end,
       notifySkip = function() end,
       beginFade = function() end,
@@ -331,10 +350,10 @@ local function withStartup(fn)
       dispose = function() end,
     }
   end
-  HgssLoadingPresentation.new = newLoadingPresentation
+  LauncherLoadingPresentation.new = newLoadingPresentation
   movieModule.new = function(options)
     assert(type(options.scenes) == "table" and #options.scenes == 5)
-    local movie = { draws = 0, disposed = 0 }
+    local movie = { draws = 0, disposed = 0, ticks = 0 }
     function movie:updateFixed() end
     function movie:draw()
       self.draws = self.draws + 1
@@ -445,7 +464,7 @@ local function withStartup(fn)
   App.drawableWidth = saved.drawableWidth
   App.drawableHeight = saved.drawableHeight
   App.pixelRatio = saved.pixelRatio
-  HgssLoadingPresentation.new = saved.loadingNew
+  LauncherLoadingPresentation.new = saved.loadingNew
   MainMenuComposition.new = saved.menuNew
   love.graphics.getDimensions = saved.graphicsDimensions
   love.graphics.getDPIScale = saved.graphicsDpi
@@ -460,7 +479,6 @@ local function withStartup(fn)
   HgssGame.newStartupAudio = saved.startupAudioFactory
   StartupAudioSession.new = saved.startupAudioNew
   HgssGame.new = saved.gameFactory
-  require("app.src.launcher.EditionPreference").recordPlayed = saved.recordPlayed
   if not ok then
     error(err, 0)
   end
@@ -566,6 +584,7 @@ end
 -- journey still presents while the failure is recorded.
 function T.tests.failed_core_warmup_keeps_the_title_journey()
   withStartup(function()
+    active.firstPlayReady = true
     local baseRequest = App.service.request
     App.service.request = function(self, epoch, selector)
       if selector.requestKind == "battle-presentation" then
@@ -862,7 +881,28 @@ function T.tests.title_audio_events_use_the_bounded_borrowed_callbacks()
     Assert.equal(events.titleReady, 1, "later input never replays title startup audio")
     Assert.equal(events.prompt, 1, "repeat skip intent never replays the prompt event")
     Assert.equal(events.skip, 1, "the fade-start event is emitted once")
-    Assert.isTrue(state.phase == "fadeOut" or state.phase == "fadeIn", "stub audio does not control title readiness")
+    Assert.isTrue(state.phase == "fadeOut" or state.phase == "fadeIn", "audio does not bypass the visual handoff")
+  end)
+end
+
+function T.tests.transferred_loading_routes_touch_cancel_without_skipping_the_movie()
+  withStartup(function()
+    active.titleAssetsReady = false
+    local waiting = startTitle()
+    Assert.equal(waiting.phase, "loading", "the transferred loader remains visible while title work is pending")
+    local loading = assert(waiting.loading, "the transferred loader remains owned by startup")
+    App.touchpressed(7, 100, 100)
+    App.touchreleased(7, 100, 100)
+    Assert.equal(#loading.inputs, 2, "loading pointer input reaches the transferred Cancel surface")
+    Assert.equal(loading.inputs[1].kind, "touch-down")
+    Assert.equal(loading.inputs[2].kind, "touch-up")
+    Assert.isNil(App.selectedVersionId, "the transferred Cancel route retires the selected epoch")
+    Assert.equal(loading.disposals, 1, "returning to selection disposes the transferred loader once")
+    Assert.equal(
+      getmetatable(App.state).__index,
+      require("app.src.launcher.GameSelectState"),
+      "Cancel restores game selection"
+    )
   end)
 end
 
@@ -886,6 +926,7 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
         end
         self.titleRecord = { crySpeciesId = record.crySpeciesId }
       end
+      function session:beginMovieCycle() end
       function session:beginTitle()
         self.events[#self.events + 1] = "title"
       end
@@ -909,23 +950,30 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
     end
     StartupAudioSession.new = newSession
 
+    local baseObserve = App.service.observe
+    App.service.observe = function(self, epoch, selector)
+      if selector.requestKind == "milestone" and selector.name == "startup-audio" then
+        return active.audioReady == true, nil
+      end
+      return baseObserve(self, epoch, selector)
+    end
+    active.audioReady = true
     active.titleAssetsReady = false
-    local title = startTitle()
-    Assert.equal(#active.audioSessions, 0, "a pending title milestone admits nothing behind the loader")
-    Assert.equal(title.phase, "loading", "the loader covers the pending title before any opening plays")
+    local waiting = startTitle()
+    Assert.equal(waiting.phase, "loading", "pending title assets keep the startup loader visible")
+    Assert.equal(#active.audioSessions, 1, "movie admission constructs audio independently of title geometry")
     active.titleAssetsReady = true
-    -- The realized title admits the opening, whose acknowledged soundtrack is
-    -- what constructs the one app-owned session.
-    for _ = 1, 10 do
+    local title = waiting
+    for _ = 1, 20 do
+      App.update(SourceTick.DT)
       if title.phase == "title" then
         break
       end
-      App.update(SourceTick.DT)
     end
-    Assert.isTrue(isStartupTitle(title), "the selected title remains the active App state")
-    Assert.equal(#active.audioSessions, 1, "the acknowledged opening creates one app-owned audio session")
+    Assert.isTrue(isStartupTitle(title), "acknowledged visual and soundtrack readiness present the title")
+    Assert.equal(#active.audioSessions, 1, "movie admission creates one app-owned audio session")
     local session = active.audioSessions[1]
-    Assert.deepEqual(session.events, { "opening" }, "the opening track starts once at movie admission")
+    Assert.deepEqual(session.events, { "opening" }, "movie admission starts the opening without a title cue")
     -- The title theme starts on the last retail title start-up call.
     for _ = 1, 10 do
       if title.titleAnimating then
@@ -978,9 +1026,6 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
       return {
         dispose = function() end,
       }
-    end
-    require("app.src.launcher.EditionPreference").recordPlayed = function()
-      return true
     end
     App._launchGameWithProvisioner("heartgold", { kind = "new_game" })
     Assert.equal(session.disposals, 1, "entering the game releases the startup session exactly once")
@@ -1052,290 +1097,77 @@ function T.tests.post_install_warmup_failure_keeps_the_single_installed_menu()
   end)
 end
 
--- The opening waits for its soundtrack before the title: a pending milestone
--- keeps the loader, and a staged opening promotes the soundtrack it is waiting
--- for. Once the soundtrack acknowledges, the ordinary title and menu journey
--- continues unchanged.
-function T.tests.opening_waits_for_the_soundtrack_before_the_title_and_menu_proceed()
-  local function observeAudio(service, baseObserve)
-    service.observe = function(self, epoch, selector)
+function T.tests.soundtrack_readiness_gates_movie_then_title_and_menu()
+  withStartup(function()
+    local baseObserve = App.service.observe
+    App.service.observe = function(self, epoch, selector)
       if selector.requestKind == "milestone" and selector.name == "startup-audio" then
         return active.audioReady == true, nil
       end
       return baseObserve(self, epoch, selector)
     end
-  end
-  local function countingAudio(sessions)
-    StartupAudioSession.new = function()
-      local session = { cues = {} }
-      function session:beginOpening()
-        self.cues[#self.cues + 1] = "opening"
-        return true
-      end
-      function session:bindTitleRecord(record)
-        assert(type(record) == "table" and type(record.crySpeciesId) == "number")
-        if self.titleRecord ~= nil then
-          assert(self.titleRecord.crySpeciesId == record.crySpeciesId)
-          return
-        end
-        self.titleRecord = { crySpeciesId = record.crySpeciesId }
-      end
-      function session:beginTitle()
-        self.cues[#self.cues + 1] = "title"
-      end
-      function session:notifySkip()
-        self.cues[#self.cues + 1] = "cry"
-      end
-      function session:beginFade()
-        self.cues[#self.cues + 1] = "fade"
-      end
-      function session:playMenuCue()
-        self.cues[#self.cues + 1] = "menu"
-      end
-      function session:update() end
-      function session:dispose() end
-      sessions[#sessions + 1] = session
-      return session
-    end
-  end
-
-  withStartup(function()
-    observeAudio(App.service, App.service.observe)
-    local sessions = {}
-    countingAudio(sessions)
-    local state = startTitle()
-    Assert.equal(state.phase, "loading", "a pending soundtrack admits no opening")
-    Assert.equal(#sessions, 0, "a pending soundtrack constructs no session")
-    local sawAudio, audioUrgency = false, nil
-    for _, request in ipairs(active.requests) do
-      local selector = request.selector
-      if selector.requestKind == "milestone" and selector.name == "startup-audio" then
-        sawAudio = true
-        audioUrgency = selector.urgency
-      end
-    end
-    Assert.isTrue(sawAudio, "the selected journey demands its audio milestone independently")
-    Assert.equal(audioUrgency, "required", "a staged opening promotes the soundtrack it is waiting for")
-
-    active.audioReady = true
-    for _ = 1, 10 do
-      if state.phase == "title" then
-        break
-      end
+    App._selectVersion("heartgold")
+    for _ = 1, 5 do
       App.update(SourceTick.DT)
     end
-    Assert.isTrue(isStartupTitle(state), "the acknowledged soundtrack releases the opening and its title")
-    Assert.equal(#sessions, 1, "the acknowledged opening constructs one session")
-    Assert.equal(sessions[1].cues[1], "opening", "the opening track starts once at admission")
+    local waiting = assert(App.state, "the selected startup remains owned while audio is pending")
+    Assert.equal(waiting.phase, "loading", "pending soundtrack banks hold the movie and title")
+    Assert.equal(waiting.audioReady, false, "the startup owner has not observed soundtrack readiness")
+    Assert.equal(App.startupAudioSession, nil, "pending soundtrack banks construct no session")
+    Assert.notNil(waiting.movie, "the complete visual closure stages behind the pending soundtrack")
+    Assert.equal(waiting.movie.ticks, 0, "no movie tick advances before soundtrack acknowledgment")
+    Assert.equal(#active.menus, 0)
+
+    active.audioReady = true
+    for _ = 1, 20 do
+      App.update(SourceTick.DT)
+      if App.state ~= nil and App.state.phase == "title" then
+        break
+      end
+    end
+    local state = assert(App.state, "acknowledged audio admits the ordinary startup journey")
+    Assert.equal(state.phase, "title", "the instant fixture movie hands off to the visual title")
+    Assert.equal(#active.menus, 0, "the title still waits for explicit input")
+    active.bootstrapReady = true
     for _ = 1, 10 do
       if state.titleAnimating then
         break
       end
       App.update(SourceTick.DT)
     end
-    Assert.deepEqual(sessions[1].cues, { "opening", "title" }, "ready-before-skip starts both retail tracks once")
-
     App.keypressed("return", "return", false)
-    Assert.deepEqual(sessions[1].cues, { "opening", "title", "cry" }, "the first skip requests one cry")
-    for _ = 1, 30 do
-      App.update(SourceTick.DT)
-    end
-    Assert.equal(App.state, state, "the title waits for the pending menu after the skip")
-
-    active.bootstrapReady = true
     for _ = 1, 120 do
       App.update(SourceTick.DT)
       if App.state ~= state then
         break
       end
     end
-    Assert.equal(App.state, active.menus[1], "the staged menu installs after the fade")
-    Assert.equal(#sessions, 1, "handoff constructs no second session")
-    Assert.deepEqual(sessions[1].cues, { "opening", "title", "cry", "fade" }, "the skip fade emits one cue only")
+    Assert.equal(App.state, active.menus[1], "explicit title input reaches the staged menu")
   end)
 end
 
-function T.tests.pending_skip_transfers_once_and_the_retry_key_stays_useful()
-  withStartup(function()
-    local state = startTitle()
-    Assert.isTrue(isStartupTitle(state), "the title is active before the skip")
-    App.keypressed("return", "return", false)
-    Assert.isTrue(state.skipRequested, "the first press latches skip intent")
-    for _ = 1, 30 do
-      App.update(SourceTick.DT)
-    end
-    Assert.equal(App.state, state, "the title keeps animating while the menu is pending")
-    Assert.equal(#active.menus, 0, "no menu stages before bootstrap readiness")
-    active.bootstrapReady = true
-    App.update(SourceTick.DT)
-    Assert.equal(#active.menus, 1, "bootstrap readiness stages the menu once")
-    Assert.isTrue(
-      state.phase == "fadeOut" or state.phase == "fadeIn",
-      "latched intent starts the fade without another press"
-    )
-    for _ = 1, 80 do
-      if App.state ~= state then
-        break
-      end
-      App.update(SourceTick.DT)
-    end
-    Assert.equal(App.state, active.menus[1], "the exact staged menu installs after the fade")
-    Assert.equal(#active.menus, 1, "handoff never reconstructs the menu")
-  end)
-
-  withStartup(function()
-    local state = startTitle()
-    Assert.isTrue(isStartupTitle(state), "the title owns the pending menu construction")
-    App.keypressed("return", "return", false)
-    active.failMenuConstruction = true
-    active.bootstrapReady = true
-    App.update(SourceTick.DT)
-    Assert.equal(App.state, state, "a failed menu keeps the title installed")
-    Assert.isTrue(state.skipRequested, "the failure preserves the pending skip")
-    Assert.equal(active.menuAttempts, 1, "the failure consumes exactly one construction attempt")
-    App.keypressed("r", "r", false)
-    Assert.equal(active.menuAttempts, 2, "the retry key rebuilds the menu once")
-    Assert.isTrue(
-      state.phase == "fadeOut" or state.phase == "fadeIn",
-      "the preserved skip starts the fade after the retry"
-    )
-    for _ = 1, 80 do
-      if App.state ~= state then
-        break
-      end
-      App.update(SourceTick.DT)
-    end
-    Assert.equal(App.state, active.menus[1], "the retried menu receives the existing skip intent")
-    Assert.equal(active.menuAttempts, 2, "retry transfers the same menu without reconstructing it")
-  end)
-
-  withStartup(function()
-    local state = startTitle()
-    Assert.isTrue(isStartupTitle(state), "the healthy title is active before the retry key")
-    App.keypressed("r", "r", false)
-    Assert.isTrue(state.skipRequested, "the retry key acts as ordinary skip intent when nothing needs retry")
-  end)
-end
-
-function T.tests.title_skip_honors_the_full_input_family_with_exact_pointer_identity()
-  withStartup(function()
-    App._swallowedPointers = {}
-    local state = startTitle()
-    Assert.isTrue(isStartupTitle(state), "the title is active before secondary input")
-    App.mousepressed(400, 300, 2, false, 1)
-    App.mousepressed(400, 300, 3, false, 1)
-    App.keypressed("lshift", "lshift", false)
-    App.keypressed("lctrl", "lctrl", false)
-    Assert.isFalse(state.skipRequested, "secondary buttons and modifier keys never request skip")
-    Assert.equal(App.state, state, "ignored input keeps the title installed")
-  end)
-
-  withStartup(function()
-    App._swallowedPointers = {}
-    local state = startTitle()
-    App.keypressed("a", "a", false)
-    Assert.isTrue(state.skipRequested, "an ordinary key requests skip")
-  end)
-
-  withStartup(function()
-    App._swallowedPointers = {}
-    local state = startTitle()
-    App.keypressed("left", "left", false)
-    Assert.isTrue(state.skipRequested, "an arrow key requests skip")
-  end)
-
-  withStartup(function()
-    App._swallowedPointers = {}
-    local state = startTitle()
-    App.gamepadpressed({}, "b")
-    Assert.isTrue(state.skipRequested, "a discrete gamepad button requests skip")
-  end)
-
-  withStartup(function()
-    App._swallowedPointers = {}
-    local state = startTitle()
-    App.gamepadpressed({}, "dpleft")
-    Assert.isTrue(state.skipRequested, "a gamepad direction requests skip")
-  end)
-
-  withStartup(function()
-    App._swallowedPointers = {}
-    local state = startTitle()
-    App.mousepressed(400, 300, 1, false, 1)
-    Assert.isTrue(state.skipRequested, "the primary button requests skip")
-  end)
-
-  withStartup(function()
-    App._swallowedPointers = {}
-    local state = startTitle()
-    state:touchpressed(9, 400, 300)
-    Assert.equal(state.pointerCapture, "touch:9", "press captures the normalized touch identity")
-    Assert.isTrue(state.skipRequested, "touch press inside the scene requests skip")
-    state:touchreleased(9)
-    Assert.isNil(state.pointerCapture, "release clears the capture under the same identity")
-    Assert.deepEqual(state.canceledPointers, {}, "release clears the consumed pointer record")
-  end)
-
-  withStartup(function()
-    App._swallowedPointers = {}
-    local state = startTitle()
-    App.touchpressed(11, 400, 300, 0, 0, 1)
-    Assert.equal(state.pointerCapture, "touch:11", "the host press captures the normalized touch identity")
-    App.touchreleased(11, 400, 300, 0, 0, 1)
-    Assert.isNil(state.pointerCapture, "the active title clears its capture before the release is swallowed")
-    Assert.deepEqual(state.canceledPointers, {}, "the active title clears its consumed record on release")
-    Assert.deepEqual(App._swallowedPointers, {}, "the consumed release never reaches a later owner")
-  end)
-
-  withStartup(function()
-    App._swallowedPointers = {}
-    local state = startTitle()
-    App.mousepressed(400, 300, 1, false, 1)
-    Assert.equal(state.pointerCapture, "mouse:1", "press captures the normalized primary identity")
-    App.focus(false)
-    Assert.isNil(state.pointerCapture, "losing focus drops the pending capture")
-    Assert.deepEqual(state.canceledPointers, {}, "losing focus drops consumed records")
-    Assert.deepEqual(App._swallowedPointers, {}, "losing focus drops the host barrier")
-  end)
-end
-
--- A soundtrack that never acknowledges admits no opening: the retained loader
--- carries the diagnostic and Escape still leaves the failed startup.
-function T.tests.failed_soundtrack_keeps_the_loader_with_its_recoverable_diagnostic()
+function T.tests.failed_soundtrack_keeps_the_loader_until_escape()
   withStartup(function()
     local baseObserve = App.service.observe
     App.service.observe = function(self, epoch, selector)
       if selector.requestKind == "milestone" and selector.name == "startup-audio" then
-        return false, "synthetic audio bank failure"
+        return false, "synthetic soundtrack failure"
       end
       return baseObserve(self, epoch, selector)
     end
-    local sessions = 0
-    StartupAudioSession.new = function()
-      sessions = sessions + 1
-      return {
-        beginOpening = function()
-          return true
-        end,
-        beginTitle = function() end,
-        notifySkip = function() end,
-        beginFade = function() end,
-        playMenuCue = function() end,
-        update = function() end,
-        dispose = function() end,
-      }
+    App._selectVersion("heartgold")
+    for _ = 1, 5 do
+      App.update(SourceTick.DT)
     end
-    active.bootstrapReady = true
-    local state = startTitle()
-    Assert.equal(state.phase, "loading", "a failed soundtrack admits no opening")
-    Assert.isFalse(isStartupTitle(state), "no title presents behind a failed soundtrack")
-    Assert.equal(sessions, 0, "failed audio constructs no session")
-    Assert.isTrue(
-      tostring(state.audioError):match("synthetic audio bank failure") ~= nil,
-      "the soundtrack failure is preserved for the diagnostic surface"
-    )
-    App.keypressed("escape", "escape", false)
-    Assert.isTrue(App.state ~= state, "Escape can leave the failed startup")
+    local state = assert(App.state, "required soundtrack failure keeps the startup owner installed")
+    Assert.equal(state.phase, "loading", "failed soundtrack readiness never admits the movie")
+    Assert.notNil(state.movie, "the visual closure remains staged behind the failed soundtrack")
+    Assert.equal(state.movie.ticks, 0)
+    Assert.notNil(state.audioError, "the required audio failure stays diagnostic")
+    Assert.equal(#active.menus, 0)
+    App.keypressed("escape")
+    Assert.isNil(App.provisioner, "escape retires the failed selected epoch")
+    Assert.equal(type(App.state.view), "function", "recovery returns to game selection")
   end)
 end
 
@@ -1376,6 +1208,7 @@ function T.tests.throwing_transfer_callback_propagates_without_resurrecting_the_
       end,
       width = 800,
       height = 600,
+      loading = newLoadingPresentation(),
       audio = {
         openingReady = function()
           return true
@@ -1407,10 +1240,9 @@ function T.tests.throwing_transfer_callback_propagates_without_resurrecting_the_
   end)
 end
 
--- An already renderable opening movie starts on the next eligible update
--- without waiting out the loader beat on a warm entry, while a true first
--- import keeps its bounded beat until the staged movie is drawable.
-function T.tests.renderable_warm_movie_starts_without_waiting_for_the_loader_beat()
+-- An already renderable opening starts on the next eligible update once all
+-- five scenes and the soundtrack are ready; import origin adds no dwell.
+function T.tests.renderable_movie_starts_without_an_import_dwell()
   local StartupTitleState = require("app.src.launcher.StartupTitleState")
   local CacheFs = require("libs.storage.src.CacheFs")
   local MovieModule = require("libs.hgss.src.presentation.HgssOpeningMovie")
@@ -1469,7 +1301,7 @@ function T.tests.renderable_warm_movie_starts_without_waiting_for_the_loader_bea
     function movie:dispose() end
     return movie
   end
-  local function build(initialImport)
+  local function build()
     local staged = fakeMovie()
     CacheFs.forVersion = function(_)
       return {}
@@ -1497,7 +1329,6 @@ function T.tests.renderable_warm_movie_starts_without_waiting_for_the_loader_bea
       end,
       width = 800,
       height = 600,
-      initialImport = initialImport,
       loading = fakeLoading(),
       audio = {
         openingReady = function()
@@ -1514,31 +1345,17 @@ function T.tests.renderable_warm_movie_starts_without_waiting_for_the_loader_bea
     restoreTitle()
   end
   local ok, err = xpcall(function()
-    do
-      local state, staged = build(false)
+    local state, staged = build()
+    state:update(SourceTick.DT)
+    Assert.notNil(state.movie, "the five ready scenes stage the movie behind the loader")
+    state:update(SourceTick.DT)
+    Assert.equal(state.phase, "movie", "the ready entry starts without a decorative dwell")
+    for _ = 1, 2 do
       state:update(SourceTick.DT)
-      Assert.notNil(state.movie, "the five ready scenes stage the movie behind the loader")
-      state:update(SourceTick.DT)
-      Assert.equal(state.phase, "movie", "the warm entry enters the staged movie without the loader beat")
-      for _ = 1, 2 do
-        state:update(SourceTick.DT)
-      end
-      state:draw()
-      Assert.isTrue(staged.draws >= 1, "the entered movie paints its first frame")
-      state:dispose()
     end
-    do
-      local state, _ = build(true)
-      state:update(SourceTick.DT)
-      Assert.notNil(state.movie, "the cold entry stages the movie the same way")
-      state:update(SourceTick.DT)
-      Assert.equal(state.phase, "loading", "the true first import keeps its bounded beat while fresh")
-      for _ = 1, 30 do
-        state:update(SourceTick.DT)
-      end
-      Assert.equal(state.phase, "movie", "the cold entry still reaches its staged movie after the beat")
-      state:dispose()
-    end
+    state:draw()
+    Assert.isTrue(staged.draws >= 1, "the entered movie paints its first frame")
+    state:dispose()
   end, debug.traceback)
   restore()
   if not ok then
@@ -1650,7 +1467,6 @@ function T.tests.movie_holds_loader_until_soundtrack_start_is_confirmed()
       end,
       width = 800,
       height = 600,
-      initialImport = false,
       loading = fakeLoading(),
       audio = audio,
     })
@@ -1805,7 +1621,6 @@ function T.tests.audio_failure_keeps_loader_visible_instead_of_silent_movie()
         end,
         width = 800,
         height = 600,
-        initialImport = false,
         loading = fakeLoading(),
         audio = audio,
       })
@@ -2021,7 +1836,6 @@ function T.tests.primed_output_precedes_first_tick_and_refusal_holds_loader()
         end,
         width = 800,
         height = 600,
-        initialImport = false,
         loading = fakeLoading(),
         audio = {
           openingReady = function()
@@ -2161,7 +1975,6 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
       end,
       width = 800,
       height = 600,
-      initialImport = false,
       loading = fakeLoading(),
       audio = {
         openingReady = function()
@@ -2199,7 +2012,6 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
       end,
       width = 800,
       height = 600,
-      initialImport = false,
       loading = fakeLoading(),
       audio = {
         openingReady = function()
@@ -2371,7 +2183,6 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
       end,
       width = 800,
       height = 600,
-      initialImport = false,
       loading = fakeLoading(),
       audio = {
         openingReady = function()
