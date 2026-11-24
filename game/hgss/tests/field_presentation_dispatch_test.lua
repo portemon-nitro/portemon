@@ -525,6 +525,24 @@ local function compositionRuntime()
       runtime.easyChatPreparation = nil
     end
   end
+  -- The care presentation binding follows the same late-bound shape the
+  -- presented field installs for the hatch scene.
+  runtime.pokemonCareBindCalls = {}
+  runtime.pokemonCareUnbindCalls = {}
+  runtime.bindPokemonCarePresentation = function(_, acquire)
+    assert(type(acquire) == "function", "care preparation binding requires its acquire function")
+    assert(runtime.pokemonCarePreparation == nil, "one care preparation binding owns the presented lifetime")
+    runtime.pokemonCareBindCalls[#runtime.pokemonCareBindCalls + 1] = acquire
+    runtime.pokemonCarePreparation = { id = #runtime.pokemonCareBindCalls, acquire = acquire }
+    return runtime.pokemonCarePreparation.id
+  end
+  runtime.unbindPokemonCarePresentation = function(_, binding)
+    runtime.pokemonCareUnbindCalls[#runtime.pokemonCareUnbindCalls + 1] = binding
+    local current = runtime.pokemonCarePreparation
+    if current ~= nil and current.id == binding then
+      runtime.pokemonCarePreparation = nil
+    end
+  end
   -- The recording Mail seam mirrors the production runtime binding:
   -- one live prepare callback with an identity, removed only by its own
   -- identity so a stale unbind can never drop a replacement owner.

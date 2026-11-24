@@ -34,6 +34,7 @@ local FieldMoveAftermath = require("game.hgss.src.field.FieldMoveAftermath")
 ---@field travel table<string, unknown>? the durable travel owner for spawn updates
 ---@field fieldMoves table<string, unknown>? the field-move runtime for task execution
 ---@field monNaming table<string, unknown> the script-owned Pokemon Naming Screen host
+---@field pokemonCare table<string, unknown>? the script-owned care child host behind the hatch application
 ---@field followerTransition table<string, unknown>? the transient follower-transition owner the nonblocking transition command starts
 ---@field starterBalls table<string, unknown>? the Elm starter-ball runtime-prop controller
 ---@field followerInteractionCatalog table<string, unknown> validated generated interaction catalog
@@ -820,6 +821,7 @@ function FieldScriptComposition.compose(runtime, options)
     fishing = runtime.fishingHost,
     bicycle = bicycleService(runtime),
     monNaming = options.monNaming,
+    pokemonCare = options.pokemonCare,
     followerTransition = options.followerTransition,
     starterBalls = options.starterBalls,
     pcApplications = runtime.pcApplicationHost,

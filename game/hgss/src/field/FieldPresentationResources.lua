@@ -138,6 +138,8 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field _easyChatBinding integer? installed editor preparation binding identity
 ---@field _mailBinding integer? installed Mail preparation binding identity
 ---@field easyChatResources EasyChatPresentationResources? the one lazily owned field editor preparation leaf
+---@field _pokemonCareBinding integer? installed care presentation binding identity
+---@field pokemonCareResources PokemonCarePresentationResources? the one care presentation leaf
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
 ---@field _apricornBoxRenderer ApricornBoxRenderer? owned source graphics and row renderer
 ---@field _battleText table<string, unknown>? memoized battle-style text services
@@ -726,6 +728,13 @@ function FieldPresentationResources.new(runtime)
       assert(runtime.bindEasyChatPreparation, "presented editor preparation requires the runtime preparation binding")
     self._easyChatBinding = bindEasyChatPreparation(runtime, function()
       return self:easyChat():acquire()
+    end)
+    -- The care presentation binding is installed by the presented field so a
+    -- headless runtime keeps running the hatch scene without a renderer.
+    local bindCarePreparation =
+      assert(runtime.bindPokemonCarePresentation, "presented care requires the runtime preparation binding")
+    self._pokemonCareBinding = bindCarePreparation(runtime, function(request)
+      return self:pokemonCare():acquire(request)
     end)
     -- Bag presentation resolves eagerly beside the party icons: field entry
     -- boots only when the compiled item/bag caches are present, and the
@@ -1838,12 +1847,14 @@ function FieldPresentationResources:dispose()
   local summaryBinding = self._summaryBinding
   local pokedexBinding = self._pokedexBinding
   local easyChatBinding = self._easyChatBinding
+  local careBinding = self._pokemonCareBinding
   local mailBinding = self._mailBinding
   local presentationRuntime = self._presentationRuntime
   self._partyIconBinding = nil
   self._summaryBinding = nil
   self._pokedexBinding = nil
   self._easyChatBinding = nil
+  self._pokemonCareBinding = nil
   self._mailBinding = nil
   self._presentationRuntime = nil
   if partyIconBinding ~= nil and presentationRuntime ~= nil then
@@ -1874,6 +1885,13 @@ function FieldPresentationResources:dispose()
     )
     unbindEasyChat(presentationRuntime, easyChatBinding)
   end
+  if careBinding ~= nil and presentationRuntime ~= nil then
+    local unbindCare = assert(
+      presentationRuntime.unbindPokemonCarePresentation,
+      "the installed care binding requires its runtime unbinding"
+    )
+    unbindCare(presentationRuntime, careBinding)
+  end
   if mailBinding ~= nil and presentationRuntime ~= nil then
     local unbindMail =
       assert(presentationRuntime.unbindMailPreparation, "the installed Mail binding requires its runtime unbinding")
@@ -1886,6 +1904,10 @@ function FieldPresentationResources:dispose()
   if self.easyChatResources then
     self.easyChatResources:release()
     self.easyChatResources = nil
+  end
+  if self.pokemonCareResources then
+    self.pokemonCareResources:release()
+    self.pokemonCareResources = nil
   end
   if self.summaryResources then
     self.summaryResources:release()
@@ -2134,6 +2156,51 @@ function FieldPresentationResources:easyChat()
   })
   self.easyChatResources = created
   return created
+end
+
+-- The lazily owned hatch presentation leaf: one per-open lease over the
+-- generated hatch family, constructed against the presented runtime's cache
+-- and the shared image owner.
+---@return PokemonCarePresentationResources
+function FieldPresentationResources:pokemonCare()
+  local owned = self.pokemonCareResources
+  if owned ~= nil then
+    return owned
+  end
+  local runtime = assert(self._presentationRuntime, "care preparation borrows the presented runtime")
+  local PokemonCarePresentationResources = require("game.hgss.src.field.PokemonCarePresentationResources")
+  local created = PokemonCarePresentationResources.new({
+    cacheFs = runtime.cacheFs,
+    graphics = assert(love and love.graphics, "care preparation needs the graphics namespace"),
+    imagePool = assert(self._imagePool, "care preparation borrows the shared image owner"),
+    text = assert(self.textRenderer, "care preparation borrows the field text renderer"),
+    window = assert(self.windowRenderer, "care preparation borrows the window renderer"),
+    fontDef = assert(self.textRenderer.fontDef, "care preparation borrows the field font definition"),
+    frameIndex = runtime.playerData and runtime.playerData.options and runtime.playerData.options.textFrame or nil,
+  })
+  self.pokemonCareResources = created
+  return created
+end
+
+-- Draws one hatch snapshot through the committed care bundle. A pending or
+-- failed bundle draws nothing: the scene's own gameplay path never waits for
+-- the renderer.
+---@param status table<string, unknown> the live hatch snapshot
+function FieldPresentationResources:drawPokemonCare(status)
+  assert(type(status) == "table", "the care scene presents its snapshot")
+  if self.pokemonCareResources == nil then
+    return
+  end
+  local runtime = self._presentationRuntime
+  local host = runtime ~= nil and runtime.pokemonCareHost or nil
+  if host == nil then
+    return
+  end
+  local presentation = host:presentation()
+  if presentation == nil then
+    return
+  end
+  presentation.renderer:draw(status, presentation.name)
 end
 
 -- Draws the committed editor bundle through the supplied application

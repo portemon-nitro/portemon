@@ -822,10 +822,15 @@ function T.tests.egg_cycles_follow_party_abilities_and_the_source_date()
     addEgg(staggered, 0, 0)
     addEgg(staggered, 5, 1)
     walkRoomSteps(staggered, 1)
-    local cycle = settledCapture(staggered, "the staggered ready Eggs")
-    Assert.equal(daycareBucket(cycle).eggCycleCounter, 0, "the cycle still completes and resets")
-    Assert.equal(cycle.mons.party.mons[1].friendship, 0, "the first ready Egg keeps its zero count")
-    Assert.equal(cycle.mons.party.mons[2].friendship, 5, "an Egg after the first ready one is untouched")
+    -- The completed cycle with a zero-friendship Egg in front claims the step
+    -- and starts the source hatch scene, so the field is unsavable until that
+    -- scene returns; the owners below are the live production state it left.
+    local hatch = assert(staggered.runtime.daycare:activeHatch(), "a ready Egg claims the completed cycle")
+    Assert.equal(hatch.slot, 0, "the first ready Egg is the one that hatches")
+    Assert.equal(staggered.runtime.daycareState:eggCycleCounter(), 0, "the cycle still completes and resets")
+    Assert.isFalse(mons(staggered):partyMon(0).isEgg, "the first ready Egg becomes its mon")
+    Assert.equal(mons(staggered):partyMon(1).friendship, 5, "an Egg after the first ready one is untouched")
+    Assert.equal(mons(staggered):partyMon(1).isEgg, true, "an Egg after the first ready one stays an Egg")
   end, debug.traceback)
   staggered:close()
   if not staggeredOk then

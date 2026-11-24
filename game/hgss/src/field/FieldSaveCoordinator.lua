@@ -102,6 +102,18 @@ function FieldSaveCoordinator:_capture(allowMenu, endingOwner)
   if easyChatHost ~= nil and easyChatHost:isActive() then
     return nil, "Save deferred: a word editor is active"
   end
+  -- A claimed hatch owns the field from the committed step that converted the
+  -- egg until its receipt published: the converted mon, the spent statistic and
+  -- the unfinished memo must never compose a record that describes neither
+  -- state. The care host extends that denial across its child's own lifetime.
+  local daycare = runtime.daycare
+  if daycare ~= nil and daycare:activeHatch() ~= nil then
+    return nil, "Save deferred: an egg hatch is in progress"
+  end
+  local careHost = runtime.pokemonCareHost
+  if careHost ~= nil and not careHost:isStableForSave() then
+    return nil, "Save deferred: a Pokemon care application is active"
+  end
   -- The composed companion feature denies capture while its script host
   -- holds the feature lease (an accepted or staged call, a town-map
   -- open, or a pending terminal result): live controllers and staged

@@ -56,6 +56,9 @@ GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT = "register_species_caught"
 -- points and the owner verifies them, so no producer can invent a value.
 GameStats.SCORE_POINTS = {
   register_species_caught = 20,
+  -- SCORE_EVENT_HATCHED_EGG 15 carries 7 points via sScoreMods[15]
+  -- (src/game_stats.c).
+  egg_hatched = 7,
 }
 
 -- Retail score ceiling enforced by GameStats_AddScore
@@ -73,8 +76,8 @@ GameStats.LEAGUE_WINS_CAP = 9999
 
 -- The Day Care counters live in the same u16 statistic block:
 -- GAME_STAT_MONS_SENT_TO_DAYCARE is incremented by Save_Daycare_PutMonIn
--- (src/get_egg.c), and GAME_STAT_EGGS_HATCHED belongs to the hatch owner that
--- has not landed yet, so this owner persists it unchanged.
+-- (src/get_egg.c), and GAME_STAT_EGGS_HATCHED by the committed step that
+-- completes an egg's last cycle (src/field/field_control.c).
 GameStats.DAYCARE_DEPOSITS_CAP = 9999
 GameStats.EGGS_HATCHED_CAP = 9999
 
@@ -439,6 +442,17 @@ function GameStats:prepareChanges(changes)
         end
       end
       observations[index] = { kind = "daycare_deposit" }
+    elseif staged.kind == "egg_hatched" then
+      -- One completed Day Care egg hatch increments the source hatch
+      -- statistic and awards the hatch score event
+      -- (src/field/field_control.c::FieldSystem_UpdateDaycare). It marks no
+      -- species as counted and writes no Mail.
+      for key in pairs(staged) do
+        if key ~= "kind" then
+          fail("stats observations carry kind and payload records", { field = key })
+        end
+      end
+      observations[index] = { kind = "egg_hatched", points = GameStats.SCORE_POINTS.egg_hatched }
     elseif staged.kind == "league_win" then
       -- One completed League ending awards the source League-win statistic
       -- (src/game_clear.c::CallTask_GameClear). It earns no score and marks
@@ -474,6 +488,7 @@ function GameStats:prepareChanges(changes)
   local scratchMailWritten = self._mailWritten
   local scratchLeagueWins = self._leagueWins
   local scratchDaycareDeposits = self._daycareDeposits
+  local scratchEggsHatched = self._eggsHatched
   local changed = false
   for _, observation in ipairs(observations) do
     if observation.kind == "unique_caught" then
@@ -493,6 +508,16 @@ function GameStats:prepareChanges(changes)
     elseif observation.kind == "daycare_deposit" then
       if scratchDaycareDeposits < GameStats.DAYCARE_DEPOSITS_CAP then
         scratchDaycareDeposits = scratchDaycareDeposits + 1
+        changed = true
+      end
+    elseif observation.kind == "egg_hatched" then
+      if scratchEggsHatched < GameStats.EGGS_HATCHED_CAP then
+        scratchEggsHatched = scratchEggsHatched + 1
+        changed = true
+      end
+      local total = cappedScore(scratchScore, observation.points)
+      if total ~= scratchScore then
+        scratchScore = total
         changed = true
       end
     elseif observation.kind == "league_win" then
@@ -534,6 +559,7 @@ function GameStats:prepareChanges(changes)
     self._mailWritten = scratchMailWritten
     self._leagueWins = scratchLeagueWins
     self._daycareDeposits = scratchDaycareDeposits
+    self._eggsHatched = scratchEggsHatched
     if changed then
       self._revision = self._revision + 1
     end

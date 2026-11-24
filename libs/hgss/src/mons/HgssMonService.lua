@@ -106,6 +106,12 @@ local NATURE_NAMES = {
 -- Contest value keys in native contest-type order.
 local CONTEST_KEYS = { "cool", "beauty", "cute", "smart", "tough", "sheen" }
 
+-- The source packed gift base (MAPSEC_GIFT 2000) and its mystery-zone section:
+-- a meeting record above the gift base reads the mystery zone
+-- (include/constants/map_sections.h, BoxMonSetTrainerMemo case 6).
+local HGSS_GIFT_LOCATION_BASE = 2000
+local HGSS_MYSTERY_ZONE_SECTION = 0
+
 -- Generated catalog type keys project to the native Gen-IV identities only
 -- when a script result crosses the HGSS adapter boundary.
 local NATIVE_TYPE_IDS = {
@@ -1402,6 +1408,90 @@ function HgssMonService:monMove(slot0, moveSlot0)
   end
   assert(entry ~= nil, "move entry carries the validated move")
   return self._catalog:move(entry.move).nativeId
+end
+
+-- The source hatch reconstruction (HatchEgg_RecreateMon/HatchEggMon) without
+-- any publication: one detached egg record becomes the mon it carried. The
+-- caller stages the party update together with its own custody change, so a
+-- failed hatch claim never leaves a converted record behind.
+---@param mon table<string, unknown> the detached egg record
+---@return table<string, unknown>
+function HgssMonService:buildHatchedMon(mon)
+  local egg = self:_checked(mon)
+  if egg.isEgg ~= true then
+    MonsErrors.raise(MonsErrors.SAVE_INVALID, "hatch reconstruction requires an unhatched egg", {})
+  end
+  return self._factory:createHatchedMon({ egg = egg })
+end
+
+-- The source hatch receipt (HatchEggMon's surviving half and
+-- MonSetTrainerMemo strategy 6): the meeting record becomes the current map
+-- section and today's date under the cleared meeting level the hatch wrote,
+-- the default species name stays in place, and the Pokedex records the caught
+-- species with its register score while the species is still fresh. The party
+-- record and the history publish together after every candidate is current;
+-- no generator draw runs. A map section above the source gift base reads the
+-- mystery zone, exactly like the native clamp.
+---@param slot0 integer
+function HgssMonService:finishHatch(slot0)
+  local mon = self:_liveMon(slot0)
+  if mon.isEgg == true then
+    MonsErrors.raise(MonsErrors.SAVE_INVALID, "hatch receipt requires a hatched record", { slot = slot0 })
+  end
+  local staged = {}
+  for key, value in pairs(mon) do
+    staged[key] = value
+  end
+  local mapSection = self:_currentMapSection()
+  if type(mapSection) ~= "number" or mapSection % 1 ~= 0 or mapSection < 0 then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "the hatch receipt requires the current map section", {})
+  end
+  assert(type(mapSection) == "number", "the hatch receipt resolved its map section")
+  if mapSection > HGSS_GIFT_LOCATION_BASE then
+    mapSection = HGSS_MYSTERY_ZONE_SECTION
+  end
+  staged.met = {
+    location = mapSection,
+    date = self:_metDate({}),
+    level = mon.met.level,
+    terrain = mon.met.terrain,
+  }
+  staged.nickname = nil
+  local dexPrep = nil
+  local dex = self._dex
+  if type(dex) == "table" then
+    dexPrep = dex:prepareChanges({
+      observations = { { kind = "caught", specimen = dex:describe(mon) } },
+    })
+  end
+  local statsPrep = nil
+  local statsObservations = self:_statsObservations(mon)
+  if statsObservations ~= nil then
+    local stats = self._stats
+    assert(type(stats) == "table", "mon service stats is the game-stats owner")
+    statsPrep = stats:prepareChanges({ observations = statsObservations })
+  end
+  local partyPrep, stale = self:preparePartyChanges(self._party:revision(), { { slot = slot0, mon = staged } })
+  if partyPrep == nil then
+    assert(stale == "stale", "party preparation reports its staleness")
+    MonsErrors.raise(MonsErrors.SAVE_INVALID, "party changed during the hatch receipt", { slot = slot0 })
+  end
+  assert(partyPrep ~= nil, "the hatch receipt stages its party update")
+  publishStaged(partyPrep, dexPrep, statsPrep)
+end
+
+-- The original gift egg (ScrCmd_GiveTogepiEgg) without any publication: the
+-- level-one Togepi egg with its source receipt and Extrasensory in the source
+-- move slot. Capacity is checked by the caller before this creation draws.
+---@param request { location: integer, date: MonDate|(fun(): MonDate)|nil }
+---@return table<string, unknown>
+function HgssMonService:createTogepiEgg(request)
+  assert(type(request) == "table", "the gift-egg creation requires a request record")
+  return self._factory:createTogepiEgg({
+    profile = self._profile,
+    location = self:_metLocation(request),
+    date = self:_metDate(request),
+  })
 end
 
 ---@param slot0 integer

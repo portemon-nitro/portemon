@@ -1712,6 +1712,17 @@ function FieldState:draw()
       lg.pop()
     end
   end
+  -- The hatch application is the field's own screen takeover: the source
+  -- leaves the overworld for it, so its generated scene paints over the
+  -- cleared screen and under nothing else. A pending bundle paints nothing;
+  -- the scene's gameplay path never waits for the renderer.
+  local careHost = self.runtime.pokemonCareHost
+  if careHost ~= nil and careHost:isActive() then
+    local careStatus = careHost:snapshot()
+    if careStatus ~= nil and careStatus.presentationReady then
+      resources:drawPokemonCare(careStatus)
+    end
+  end
   -- The retained Start Menu draws first and the foreground child second,
   -- with the paused world beneath both; no application transition overlay
   -- is painted. The unrelated warp fade over the world viewport follows.

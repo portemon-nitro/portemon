@@ -340,6 +340,149 @@ function MonFactory:createBredEgg(request)
   return self:_finish(mon)
 end
 
+-- The Ranger-origin egg receipt location: Mapsec_FromTypeAndIndex with the
+-- external base and index 1. The hatch advances a shiny Manaphy's personality
+-- only for an egg that arrived with this receipt.
+local RANGER_EGG_LOCATION = 3001
+-- The source hatch friendship (HatchEgg_RecreateMon).
+local HATCH_FRIENDSHIP = 120
+
+---@param personality integer
+---@return integer the source PRandom personality mixer
+local function prandom(personality)
+  return U32.add(U32.mul(personality, Breeding.PERSONALITY_MIXER), 1)
+end
+
+-- Source HatchEgg_RecreateMon and HatchEggMon: one party egg becomes the mon it
+-- carried. The species stays at level one with the egg's personality, a
+-- shiny Ranger-origin Manaphy advances that personality with PRandom until the
+-- trainer no longer sees a shiny, and creation consumes exactly the two base
+-- individual-value draws a forced personality leaves in CreateMon. The hatched
+-- record then keeps the egg's moves with their current power points, its
+-- retained individual values, language, met game, markings, Pokerus, fateful
+-- status, original trainer identity, form, and egg and meeting facts; PP Ups
+-- and every other fresh-record field come from level-one creation. It hatches
+-- with the source friendship in a Poke Ball at meeting level zero, no custom
+-- nickname, and the egg flag cleared. The caller owns party publication.
+---@param request { egg: table<string, unknown> }
+---@return table<string, unknown>
+function MonFactory:createHatchedMon(request)
+  assert(type(request) == "table", "hatch creation requires a request record")
+  local egg = assert(request.egg, "hatch creation requires the egg record")
+  if egg.isEgg ~= true then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "hatch creation requires an unhatched egg", {})
+  end
+  local species = egg.species
+  local personality = egg.personality
+  local otId = egg.origin.trainerId
+  if species == "MANAPHY" and egg.egg.location == RANGER_EGG_LOCATION then
+    if Personality.shiny(otId, personality) then
+      repeat
+        personality = prandom(personality)
+      until not Personality.shiny(otId, personality)
+    end
+  end
+  local metDate = egg.met.date
+  local mon = self:_normalRecord({
+    species = species,
+    level = 1,
+    form = 0,
+    profile = {
+      name = egg.origin.trainerName,
+      gender = egg.origin.trainerGender,
+      trainerId = otId,
+    },
+    ball = "POKE_BALL",
+    location = egg.met.location,
+    terrain = egg.met.terrain,
+    date = metDate or egg.egg.date,
+    personality = personality,
+  })
+  local moves = {}
+  for index, entry in ipairs(egg.moves) do
+    moves[index] = { move = entry.move, pp = entry.pp, ppUps = 0 }
+  end
+  mon.moves = moves
+  mon.ivs = {
+    hp = egg.ivs.hp,
+    attack = egg.ivs.attack,
+    defense = egg.ivs.defense,
+    speed = egg.ivs.speed,
+    specialAttack = egg.ivs.specialAttack,
+    specialDefense = egg.ivs.specialDefense,
+  }
+  mon.friendship = HATCH_FRIENDSHIP
+  mon.markings = egg.markings
+  mon.pokerus = egg.pokerus
+  mon.fatefulEncounter = egg.fatefulEncounter
+  mon.form = egg.form
+  if egg.form ~= 0 then
+    -- The stored ability follows the form the egg carried; base and alternate
+    -- forms publish their own slot tables.
+    local formed = self._catalog:form(species, mon.form)
+    mon.ability = formed.abilities[Personality.abilitySlot(#formed.abilities, personality)]
+  end
+  mon.origin = {
+    trainerId = otId,
+    trainerName = egg.origin.trainerName,
+    trainerGender = egg.origin.trainerGender,
+    game = egg.origin.game,
+    ball = "POKE_BALL",
+    language = egg.origin.language,
+  }
+  mon.egg = { location = egg.egg.location }
+  if egg.egg.date ~= nil then
+    mon.egg.date = {
+      year = egg.egg.date.year,
+      month = egg.egg.date.month,
+      day = egg.egg.date.day,
+    }
+  end
+  mon.met = {
+    location = egg.met.location,
+    level = 0,
+    terrain = egg.met.terrain,
+  }
+  if metDate ~= nil then
+    mon.met.date = { year = metDate.year, month = metDate.month, day = metDate.day }
+  end
+  mon.isEgg = false
+  mon.nickname = nil
+  local form = self._catalog:form(species, mon.form)
+  local derived = Stats.calculate(form.baseStats, mon.ivs, mon.evs, 1, Personality.nature(personality))
+  mon.condition = { currentHp = derived.hp, effects = {} }
+  return self:_finish(mon)
+end
+
+-- The original gift egg (ScrCmd_GiveTogepiEgg): SetEggStats builds the
+-- level-one Togepi egg with its source receipt, and Extrasensory fills the
+-- first empty move slot -- or replaces the last move when the set is full --
+-- at the move's own base power points. The caller checks party room and owns
+-- publication plus the recorded gift identity.
+---@param request { profile: { name: string, gender: integer, trainerId: integer }, location: integer, date: { year: integer, month: integer, day: integer } }
+---@return table<string, unknown>
+function MonFactory:createTogepiEgg(request)
+  assert(type(request) == "table", "gift-egg creation requires a request record")
+  local mon = self:_eggRecord({
+    species = "TOGEPI",
+    form = 0,
+    profile = request.profile,
+    location = request.location,
+    date = request.date,
+  })
+  -- The source scans the four move slots for the first empty one and falls
+  -- back to the last slot when the set is already full.
+  local slot = math.min(#mon.moves + 1, Moves.MAX_SLOTS)
+  local definition = self._catalog:move("EXTRASENSORY")
+  local move = { move = "EXTRASENSORY", pp = definition.basePp, ppUps = 0 }
+  if slot <= #mon.moves then
+    mon.moves[slot] = move
+  else
+    mon.moves[#mon.moves + 1] = move
+  end
+  return self:_finish(mon)
+end
+
 -- The source Spiky-Ear Pichu distribution constants in distribution order
 -- (retail ROM): Naughty is nature
 -- 4, and the ability parity must agree with it (source GF_ASSERT).

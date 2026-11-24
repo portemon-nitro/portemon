@@ -568,13 +568,9 @@ function BoxCodec.decode(bytes, context)
     end
     local metLevel = levelByte % 128
     local trainerGender = math.floor(levelByte / 128)
-    -- Level zero is the cleared egg meeting level; ordinary mons keep the
-    -- source minimum of one.
-    if isEgg == true then
-      if metLevel < 0 or metLevel > Stats.MAX_LEVEL then
-        MonsErrors.raise(MonsErrors.CODEC_INVALID, "boxed met level is out of range", {})
-      end
-    elseif metLevel < 1 or metLevel > Stats.MAX_LEVEL then
+    -- The boxed meeting level runs from zero: the source clears it for an
+    -- unhatched egg and writes zero again when a mon hatches.
+    if metLevel < 0 or metLevel > Stats.MAX_LEVEL then
       MonsErrors.raise(MonsErrors.CODEC_INVALID, "boxed met level is out of range", {})
     end
     local moodByte = readerD:u8(31)

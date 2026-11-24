@@ -131,6 +131,30 @@ function PokemonCareHandlers.compatibility(ins)
   return { op = "daycare_compatibility", result = Operands.varRef(ins.operands[1]) }
 end
 
+-- ScrCmd_EggHatchAnim carries no operands and blocks the script on the hatch
+-- application: the source task leaves the overworld, runs the scene, publishes
+-- the receipt, optionally names the mon and restores the field before the next
+-- command runs.
+function PokemonCareHandlers.hatchAnim(_)
+  return { op = "egg_hatch_anim" }
+end
+
+-- ScrCmd_GiveTogepiEgg carries no operands and continues in the same tick; the
+-- source gift checks party room before the date lookup and any creation draw.
+function PokemonCareHandlers.giveTogepiEgg(_)
+  return { op = "give_togepi_egg" }
+end
+
+-- ScrCmd_MonIsFromTogepiEgg: the party slot comes first, the result variable
+-- second, and the matcher answer lands in it in the same tick.
+function PokemonCareHandlers.monIsFromTogepiEgg(ins)
+  return {
+    op = "mon_is_from_togepi_egg",
+    slot = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
 -- ScrCmd_CheckDaycareEgg: the pending-egg answer lands in the output variable.
 function PokemonCareHandlers.checkEgg(ins)
   return { op = "daycare_check_egg", result = Operands.varRef(ins.operands[1]) }

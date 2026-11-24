@@ -2703,11 +2703,10 @@ return {
       },
     },
     [369] = {
+      classification = "native_wait",
       name = "ScrCmd_EggHatchAnim",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "egg_daycare",
-      deferredNote = "egg hatching needs the egg/daycare lifecycle",
+      disposition = "supported",
       widths = {},
     },
     [370] = {
@@ -5891,14 +5890,16 @@ return {
       },
     },
     [776] = {
-      name = "ScrCmd_GiveTogepiEgg",
+      classification = "continue_same_tick",
+      disposition = "supported",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "egg_daycare",
-      deferredNote = "egg gifts need the egg/daycare lifecycle",
+      name = "ScrCmd_GiveTogepiEgg",
       widths = {},
     },
     [777] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
+      feature = "mons",
       name = "ScrCmd_MonIsFromTogepiEgg",
       widths = {
         [1] = 2,

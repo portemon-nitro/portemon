@@ -136,15 +136,29 @@ function T.egg_commands_lower_to_their_source_operations()
   Assert.deepEqual(check.result, sourceVar(0x8004), "the pending answer lands in the output variable")
 end
 
--- Commands whose owner has not landed stay explicit unsupported nodes.
-function T.egg_production_commands_stay_deferred()
-  for _, opcode in ipairs({ 369 }) do
-    local entry = assert(ScriptCommands.byOpcode[opcode], "the catalog names opcode " .. opcode)
-    Assert.equal(entry.disposition, "deferred", "opcode " .. opcode .. " waits for its owner")
-    local step = lowerOne(opcode, { { value = 0x8004, width = 2 } })
-    Assert.equal(step.op, "unsupported", "opcode " .. opcode .. " stays explicit")
-    Assert.equal(step.command, opcode)
-  end
+-- The hatch scene, the original gift and the gift matcher run with their
+-- source timing: the scene blocks the script on its application, the gift and
+-- the matcher continue in the same tick.
+function T.hatch_commands_keep_their_source_timing()
+  local hatch = assert(ScriptCommands.byOpcode[369], "the catalog names the hatch scene")
+  Assert.equal(hatch.disposition, "supported", "the hatch scene owns its application")
+  Assert.equal(hatch.classification, "native_wait", "the hatch scene blocks the script")
+  local step = lowerOne(369)
+  Assert.equal(step.op, "egg_hatch_anim", "the hatch scene lowers to its own operation")
+  Assert.isNil(step.result, "the hatch scene answers no value")
+
+  local gift = assert(ScriptCommands.byOpcode[776], "the catalog names the original gift")
+  Assert.equal(gift.disposition, "supported", "the original gift runs in its source family")
+  Assert.equal(gift.classification, "continue_same_tick", "the gift continues in the same tick")
+  Assert.equal(lowerOne(776).op, "give_togepi_egg")
+
+  local matcher = assert(ScriptCommands.byOpcode[777], "the catalog names the gift matcher")
+  Assert.equal(matcher.disposition, "supported", "the matcher runs in its source family")
+  Assert.equal(matcher.classification, "continue_same_tick", "the matcher writes output in the same tick")
+  local matched = lowerOne(777, { { value = 0x8001, width = 2 }, { value = 0x8004, width = 2 } })
+  Assert.equal(matched.op, "mon_is_from_togepi_egg")
+  Assert.deepEqual(matched.slot, sourceVar(0x8001), "the party slot stays a variable reference")
+  Assert.deepEqual(matched.result, sourceVar(0x8004), "the matcher answer lands in its output variable")
 end
 
 return { tests = T }

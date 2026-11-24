@@ -55,6 +55,47 @@ PokemonCareSources.incenseRows = {
   { baby = "CHINGLING", item = "PURE_INCENSE", parent = "CHIMECHO" },
 }
 
+-- The hatch application's own art (src/application/hatch_egg_gfx.c): the
+-- background char/map/palette, the egg sprite's char/palette/cell/animation,
+-- and the reveal bars' char/palette/cell/animation, all from
+-- NARC_a_1_1_5; the particle resources come from NARC_a_1_1_6 member 0 (egg
+-- scene) and member 1 (Manaphy scene). The message window prints the
+-- src/msgdata/msg/msg_0187 lines.
+PokemonCareSources.hatchArt = {
+  alias = "NARC_a_1_1_5",
+  symbol = "NARC_a_1_1_5",
+  path = "a/1/1/5",
+  background = { char = 0, screen = 1, palette = 8 },
+  egg = { char = 4, palette = 9, cell = 3, anim = 2, paletteBank = 0, sequence = 0 },
+  bars = { char = 7, palette = 10, cell = 6, anim = 5, paletteBank = 0, sequence = 0 },
+}
+
+PokemonCareSources.hatchParticles = {
+  alias = "NARC_a_1_1_6",
+  symbol = "NARC_a_1_1_6",
+  path = "a/1/1/6",
+  egg = { member = 0 },
+  manaphy = { member = 1 },
+}
+
+-- NARC_msgdata_msg member 187: the hatch window's own lines. Message 0 names
+-- the hatched species, message 1 asks about a nickname, and messages 2 and 3
+-- are the yes/no the source shows.
+PokemonCareSources.hatchMessages = {
+  alias = "messages",
+  symbol = "NARC_msgdata_msg",
+  path = "a/0/2/7",
+  memberId = 187,
+  hatched = 0,
+  nicknameQuestion = 1,
+  yes = 2,
+  no = 3,
+}
+
+-- The source message window geometry in tiles
+-- (HatchEggApp_CreateMessageWindow: x 2, y 19, width 27, height 4).
+PokemonCareSources.hatchWindow = { x = 2, y = 19, width = 27, height = 4 }
+
 -- EGG_GENDER_MALE (include/constants/daycare.h): the pending egg personality
 -- bit the Nidoran and Illumise families read as their offspring's gender
 -- split.

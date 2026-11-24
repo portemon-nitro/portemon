@@ -340,23 +340,19 @@ function Mon.validate(record, context)
 
   checkRecord(record.met, MET_FIELDS, "met record")
   checkU16(record.met.location, "met location")
-  -- The source unhatched gift shape clears the meeting record: an absent
-  -- date is legal only for an egg whose location and level are also
-  -- cleared. A present date always uses the real date validator, and an
-  -- egg may rest at level zero while ordinary mons keep the minimum one.
-  local metIsEgg = record.isEgg == true
+  -- The native meeting record uses the same cleared shape for an unhatched
+  -- gift and for a freshly hatched mon: location and level zero, no date. An
+  -- absent date is legal only for that cleared shape. A present date always
+  -- uses the real date validator, and the meeting level runs from zero (the
+  -- source writes zero when a mon hatches) through the level ceiling.
   if record.met.date == nil then
-    if not metIsEgg or record.met.location ~= 0 or record.met.level ~= 0 then
-      MonsErrors.raise(MonsErrors.RECORD_INVALID, "met date is required outside the cleared egg record", {})
+    if record.met.location ~= 0 or record.met.level ~= 0 then
+      MonsErrors.raise(MonsErrors.RECORD_INVALID, "met date is required outside the cleared meeting record", {})
     end
   else
     checkDate(record.met.date, "met date")
   end
-  if metIsEgg then
-    checkIntRange(record.met.level, 0, Stats.MAX_LEVEL, "met level")
-  else
-    checkIntRange(record.met.level, 1, Stats.MAX_LEVEL, "met level")
-  end
+  checkIntRange(record.met.level, 0, Stats.MAX_LEVEL, "met level")
   checkU8(record.met.terrain, "met terrain")
 
   checkOrigin(record.origin, context, catalog)

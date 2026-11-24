@@ -1904,6 +1904,21 @@ Schema.OPERATIONS = {
       result = { type = "value", required = true },
     },
   },
+  -- The source hatch scene: EggHatchAnim blocks the script on the hatch
+  -- application until the presentation, the hatch receipt and the optional
+  -- nickname question finish and the field is restored.
+  egg_hatch_anim = { fields = {} },
+  -- The original Togepi gift carries no operands and runs in the same tick:
+  -- the source checks party room before any creation draw.
+  give_togepi_egg = { fields = {} },
+  -- ScrCmd_MonIsFromTogepiEgg reads the party slot it names and writes the
+  -- source matcher answer to its output variable in the same tick.
+  mon_is_from_togepi_egg = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
   -- Party-screen selection. The launch node blocks on the party_select
   -- task with the source selection policy and opening slot; the completed
   -- slot parks on the script instance for the companion result node, which

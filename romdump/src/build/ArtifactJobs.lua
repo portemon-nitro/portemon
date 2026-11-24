@@ -985,28 +985,33 @@ local function executeSummary(artifact, context)
   return SummaryCacheWriter.stage(artifact, bundle)
 end
 
--- The care family stages the source breeding tables as one semantic catalog:
--- the PMS egg-species table and the personal egg-move list with the source
--- incense pairs. The payload resolves through the shared producer catalogs, so
--- the job carries no compiled-mon prerequisite.
+-- The care family stages the source breeding tables as one semantic catalog
+-- (the PMS egg-species table and the personal egg-move list with the source
+-- incense pairs) beside the hatch application's own generated presentation
+-- (its art, particle resources, and message lines). Both payloads resolve
+-- through the shared producer catalogs, so the job carries no compiled-mon
+-- prerequisite.
 ---@param artifact table<string, unknown>
 ---@param context table<string, unknown>
 ---@return string compiler marker for the receipt
 local function executePokemonCare(artifact, context)
   local Hashing = require("romdump.src.digest.Hashing")
+  local PokemonCareAssetCompiler = require("romdump.src.digest.ui.PokemonCareAssetCompiler")
   local PokemonCareCache = require("libs.assets.src.PokemonCareCache")
+  local PokemonCareCacheWriter = require("romdump.src.digest.ui.PokemonCareCacheWriter")
   local PokemonCareCatalogCompiler = require("romdump.src.digest.mons.PokemonCareCatalogCompiler")
   local romFs = assert(context.romFs, "care jobs require a source reader")
   local catalog = compileOrRaise(function()
     return PokemonCareCatalogCompiler.compile(romFs)
   end, "care catalog")
-  artifact:addOwnedRoot(PokemonCareCache.catalogPath())
-  artifact:addOwnedRoot(PokemonCareCache.markerPath())
-  local stage = artifact:stageFs()
-  stage:writeLua(PokemonCareCache.catalogPath(), catalog)
-  local marker = PokemonCareCache.marker(romFs:metadata().sha1, Hashing.hashLua(catalog))
-  stage:write(PokemonCareCache.markerPath(), marker)
-  return marker
+  local hatch = compileOrRaise(function()
+    return PokemonCareAssetCompiler.compileHatch(romFs)
+  end, "care hatch presentation")
+  local marker = PokemonCareCache.marker(
+    romFs:metadata().sha1,
+    Hashing.hashLua({ catalog = catalog, hatch = hatch.manifest })
+  )
+  return PokemonCareCacheWriter.stage(artifact, catalog, hatch, marker)
 end
 
 ---@param check ArtifactJobs.ReadinessCheck

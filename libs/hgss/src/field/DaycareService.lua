@@ -24,6 +24,14 @@
 -- back, so a query cannot advance custody. The fee itself belongs to the
 -- caller's script: this owner reports the source price only.
 --
+-- The same owner carries the egg-to-mon half of the Day Care: the committed
+-- step whose egg cycle completes converts the first Egg already at zero
+-- friendship (HatchEggMon, before the field leaves for the hatch scene), and
+-- the hatch application's receipt -- the source meeting memo, the default
+-- species name, the Pokedex caught fact and the original-gift Elm call --
+-- finishes exactly once before the field reopens. It also hands out the one
+-- original Togepi gift egg and answers whether a mon descends from it.
+--
 -- Retail sources (tmp/refs/pokeheartgold): src/get_egg.c
 -- (Save_Daycare_PutMonIn, DaycareMon_CopyFromPartySlot,
 -- Save_Daycare_RetrieveMon, Daycare_LearnLevelUpMoves,
@@ -67,10 +75,13 @@ local CYCLE_COUNTER_RANGE = 256
 ---@field private _catalog MonCatalog
 ---@field private _care table<string, unknown> the compiled source breeding tables
 ---@field private _profile table<string, unknown> the owner profile behind the receiving identity
+---@field private _identity { language: string, game: string } the current language and game the gift matcher reads
 ---@field private _date fun(): { year: integer, month: integer, day: integer }
 ---@field private _lc fun(): integer the source linear draw shared with mon creation
 ---@field private _mt fun(): integer the source 32-bit draw shared with the companion feature
----@field private _phone { state: table<string, unknown>, eggTriggerKey: string } the Day-Care call owner
+---@field private _phone { state: table<string, unknown>, eggTriggerKey: string, eggHatchedTriggerKey: string } the phone call owner
+---@field private _events { state: table<string, unknown>, togepiFlagId: integer } the source flag owner for the hatched gift
+---@field private _hatch { slot: integer, subject: table<string, unknown>, finalized: boolean }? the live hatch application's claim
 ---@field private _currentMap fun(): table<string, unknown>|nil
 local DaycareService = {}
 DaycareService.__index = DaycareService
@@ -132,6 +143,9 @@ function DaycareService.new(opts)
     type(trainerId) == "number" and trainerId % 1 == 0 and trainerId >= 0 and trainerId <= U32.MAX,
     "the Day Care service requires an unsigned 32-bit owner trainer identity"
   )
+  local identity = assert(opts.identity, "the Day Care service requires the current language and game")
+  assert(type(identity.language) == "string", "the Day Care service requires the current language")
+  assert(type(identity.game) == "string", "the Day Care service requires the current game")
   local date = assert(opts.date, "the Day Care service requires the native date provider")
   assert(type(date) == "function", "the Day Care service requires the native date provider")
   local lc = assert(opts.lc, "the Day Care service requires the source linear draw")
@@ -141,6 +155,10 @@ function DaycareService.new(opts)
   local phone = assert(opts.phone, "the Day Care service requires the phone state owner")
   assert(type(phone.state) == "table", "the Day Care service requires the phone state owner")
   assert(type(phone.eggTriggerKey) == "string", "the Day Care service requires its call trigger key")
+  assert(type(phone.eggHatchedTriggerKey) == "string", "the Day Care service requires its hatched-egg call key")
+  local events = assert(opts.events, "the Day Care service requires the field event state")
+  assert(type(events.state) == "table", "the Day Care service requires the field event state")
+  assert(type(events.togepiFlagId) == "number", "the Day Care service requires the hatched-gift flag")
   return setmetatable({
     _state = state,
     _mons = mons,
@@ -150,10 +168,13 @@ function DaycareService.new(opts)
     _catalog = catalog,
     _care = care,
     _profile = profile,
+    _identity = identity,
     _date = date,
     _lc = lc,
     _mt = mt,
     _phone = phone,
+    _events = events,
+    _hatch = nil,
     _currentMap = currentMap,
   }, DaycareService)
 end
@@ -609,25 +630,25 @@ end
 -- every Egg loses the source decrement (or one point when its friendship is
 -- below it), and the first Egg already at zero friendship requests its hatch
 -- and stops the walk, leaving later Eggs untouched. Answers the staged party
--- changes and whether a hatch was requested.
+-- changes and the zero-based slot of the Egg that hatches.
 ---@param party table[]
----@return table<string, unknown>[] changes, boolean hatchRequested
+---@return table<string, unknown>[] changes, integer? hatchSlot0
 function DaycareService:_advanceEggFriendship(party)
   local decrement = Breeding.cycleDecrement(party)
   local changes = {}
-  local hatchRequested = false
+  local hatchSlot0 = nil
   for slot0, mon in ipairs(party) do
     if mon.isEgg == true then
       local friendship = mon.friendship
       if friendship == 0 then
-        hatchRequested = true
+        hatchSlot0 = slot0 - 1
         break
       end
       mon.friendship = friendship >= decrement and friendship - decrement or friendship - 1
       changes[#changes + 1] = { slot = slot0 - 1, mon = mon }
     end
   end
-  return changes, hatchRequested
+  return changes, hatchSlot0
 end
 
 -- The one committed-step feed, in the source's own order (HandleDaycareStep):
@@ -660,13 +681,23 @@ function DaycareService:noteCommittedStep()
   local advanced = (counter + 1) % CYCLE_COUNTER_RANGE
   advance.eggCycleCounter = advanced
   local changes = {}
+  local hatchSlot0 = nil
   if advanced == Breeding.cycleLengthFor(self._date()) then
     advance.eggCycleCounter = 0
     local party = {}
     for slot0 = 0, self._mons:partyCount() - 1 do
       party[slot0 + 1] = self._mons:partyMon(slot0)
     end
-    changes = self:_advanceEggFriendship(party)
+    changes, hatchSlot0 = self:_advanceEggFriendship(party)
+    if hatchSlot0 ~= nil then
+      -- HatchEggMon's first half runs as part of this same claim: the egg
+      -- becomes the mon it carried in the publication that also advances the
+      -- cycle progress, so no later step effect can observe an unhatched egg
+      -- waiting in the party.
+      local egg = assert(party[hatchSlot0 + 1], "the hatching slot carries its egg")
+      local hatched = self._mons:buildHatchedMon(egg)
+      changes[#changes + 1] = { slot = hatchSlot0, mon = hatched }
+    end
   end
   local partyPrep = nil
   if #changes > 0 then
@@ -685,6 +716,152 @@ function DaycareService:noteCommittedStep()
   if partyPrep ~= nil then
     partyPrep.publish()
   end
+  if hatchSlot0 ~= nil then
+    assert(self._hatch == nil, "one hatch application owns the Day Care at a time")
+    self._hatch = {
+      slot = hatchSlot0,
+      subject = self:_hatchSubject(hatchSlot0),
+      finalized = false,
+    }
+    return true
+  end
+  return false
+end
+
+-- The hatch application's immutable subject: the hatched record's own party
+-- slot, species, form, personality, derived gender, and nickname fallback.
+---@param slot0 integer
+---@return table<string, unknown>
+function DaycareService:_hatchSubject(slot0)
+  local mon = assert(self._mons:partyMon(slot0), "the hatched record occupies its slot")
+  local species = self._catalog:species(mon.species)
+  return {
+    slot = slot0,
+    species = mon.species,
+    speciesId = species.nativeId,
+    form = mon.form,
+    personality = mon.personality,
+    gender = Personality.gender(species.genderRatio, mon.personality),
+    nickname = self:_displayName(mon),
+    -- The source picks the Manaphy scene by species alone; the shiny reroll
+    -- during reconstruction is the part that also needs the Ranger receipt.
+    variant = mon.species == "MANAPHY" and "manaphy" or "egg",
+  }
+end
+
+-- The live hatch claim, or nil while no egg is waiting for its application.
+---@return { slot: integer, subject: table<string, unknown> }?
+function DaycareService:activeHatch()
+  local hatch = self._hatch
+  if hatch == nil then
+    return nil
+  end
+  local subject = {}
+  for key, value in pairs(hatch.subject) do
+    subject[key] = value
+  end
+  return { slot = hatch.slot, subject = subject }
+end
+
+-- Source UPDATE_MON_INFO: the receipt of a committed hatch publishes exactly
+-- once, before the optional naming screen and before the field reopens. The
+-- meeting memo and the Pokedex receipt come from the mon service, and a mon
+-- that descends from the original Togepi gift raises Elm's egg call and its
+-- story flag. A hatch whose record was already finalized stays untouched.
+function DaycareService:finishHatch()
+  local hatch = self._hatch
+  if hatch == nil then
+    return
+  end
+  if hatch.finalized then
+    return
+  end
+  hatch.finalized = true
+  self._mons:finishHatch(hatch.slot)
+  if self:isTogepiGift(self._mons:partyMon(hatch.slot)) then
+    self:_raiseElmEggHatched()
+  end
+end
+
+-- Source FieldSystem_TryTriggerElmEggHatchedCall: the matcher's own trigger and
+-- story flag, with no registration or timer gate.
+function DaycareService:_raiseElmEggHatched()
+  local phone = self._phone
+  local phoneState = phone.state
+  assert(type(phoneState.setTrigger) == "function", "the hatched egg call needs the phone state owner")
+  phoneState:setTrigger(phone.eggHatchedTriggerKey, true)
+  local events = self._events
+  assert(type(events.state.setFlag) == "function", "the hatched gift needs the field event state")
+  events.state:setFlag(events.togepiFlagId)
+end
+
+-- Releases the live claim after the field is restored. The receipt was already
+-- published, so a later hatch starts from a clean owner.
+function DaycareService:releaseHatch()
+  self._hatch = nil
+end
+
+-- Source MonIsFromTogepiEgg: the species family, the trainer identity, the
+-- current language and game, and the recorded gift personality and gender must
+-- all match. A migrated record without a recorded gift identity never matches.
+---@param mon table<string, unknown>
+---@return boolean
+function DaycareService:isTogepiGift(mon)
+  if type(mon) ~= "table" then
+    return false
+  end
+  local species = mon.species
+  if species ~= "TOGEPI" and species ~= "TOGETIC" and species ~= "TOGEKISS" then
+    return false
+  end
+  local gift = self._state:togepiGift()
+  if gift == nil then
+    return false
+  end
+  local profile = self._profile
+  if mon.origin.trainerId ~= profile.trainerId or mon.origin.trainerGender ~= profile.gender then
+    return false
+  end
+  if mon.origin.language ~= self._identity.language or mon.origin.game ~= self._identity.game then
+    return false
+  end
+  if mon.personality ~= gift.personality then
+    return false
+  end
+  local gender = Personality.gender(self._catalog:species(species).genderRatio, mon.personality)
+  return gift.gender == (gender == "female" and 1 or 0)
+end
+
+-- Source ScrCmd_GiveTogepiEgg: the full party refuses before the creation date
+-- and any generator draw; otherwise the fixed level-one Togepi egg with
+-- Extrasensory joins the party in the same publication that records the gift
+-- personality and source gender code the hatch matcher later compares against.
+---@return boolean whether the egg joined the party
+function DaycareService:giveTogepiEgg()
+  local mons = self._mons
+  if mons:partyCount() >= Party.MAX then
+    return false
+  end
+  local mon = mons:createTogepiEgg({})
+  local partyPrep, partyReason = mons:preparePartyBatch(mons:partyRevision(), {}, { mon })
+  if partyPrep == nil then
+    fail("the original gift lost its party revision: " .. tostring(partyReason), {})
+  end
+  local state = self._state
+  local gender = Personality.gender(self._catalog:species("TOGEPI").genderRatio, mon.personality)
+  local giftPrep, stateReason = state:prepareTogepiGift(
+    state:revision(),
+    mon.personality,
+    gender == "female" and 1 or 0
+  )
+  if giftPrep == nil then
+    fail("the original gift lost its Day Care state: " .. tostring(stateReason), {})
+  end
+  assert(partyPrep.isCurrent(), "the original gift party candidate stayed current")
+  assert(giftPrep.isCurrent(), "the original gift identity candidate stayed current")
+  partyPrep.publish()
+  giftPrep.publish()
+  return true
 end
 
 -- Source GiveEggToPlayer (ScrCmd_GiveDaycareEgg): the stored personality

@@ -21,10 +21,15 @@
 local Errors = require("libs.errors.src.Errors")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 
+---@class DaycareState.TogepiGift
+---@field personality integer the gift egg's personality value
+---@field gender integer the source gender code stored at the gift
+
 ---@class DaycareState
 ---@field private _slots { mon: table<string, unknown>, steps: integer }[]
 ---@field private _pendingEggPid integer
 ---@field private _eggCycleCounter integer
+---@field private _togepiGift DaycareState.TogepiGift? the original gift's recorded identity
 ---@field private _validateMon fun(mon: unknown): table<string, unknown>
 ---@field private _revision integer
 local DaycareState = {}
@@ -43,8 +48,9 @@ DaycareState.STATE_EGG_READY = 1
 DaycareState.STATE_ONE_MON = 2
 DaycareState.STATE_TWO_MONS = 3
 
-local TOP_FIELDS = { schema = true, slots = true, pendingEggPid = true, eggCycleCounter = true }
+local TOP_FIELDS = { schema = true, slots = true, pendingEggPid = true, eggCycleCounter = true, togepiGift = true }
 local SLOT_FIELDS = { mon = true, steps = true }
+local GIFT_FIELDS = { personality = true, gender = true }
 
 ---@param message string
 ---@param context table<string, unknown>
@@ -116,6 +122,23 @@ local function checkSlot(validateMon, value, where)
 end
 
 ---@param validateMon fun(mon: unknown): table<string, unknown>
+-- SaveMisc_SetTogepiPersonalityGender stores the personality and the source
+-- gender code of the one original gift. The bucket keeps them beside custody
+-- because the matcher reads them from the same saved Day Care owner.
+---@param value unknown
+---@return DaycareState.TogepiGift
+local function checkGift(value)
+  if type(value) ~= "table" then
+    fail("day care gift identity must be a record", {})
+  end
+  assert(type(value) == "table")
+  checkFields(value, GIFT_FIELDS, "gift identity")
+  return {
+    personality = checkUnsigned(value.personality, "gift personality", DaycareState.MAX_EGG_PID),
+    gender = checkUnsigned(value.gender, "gift gender", 1),
+  }
+end
+
 ---@param value unknown
 ---@return { mon: table<string, unknown>, steps: integer }[]
 local function checkSlots(validateMon, value)
@@ -170,12 +193,22 @@ end
 ---@param slots { mon: table<string, unknown>, steps: integer }[]
 ---@param pendingEggPid integer
 ---@param eggCycleCounter integer
+---@param togepiGift DaycareState.TogepiGift? the recorded original-gift identity
 ---@return DaycarePreparation
-local function prepareState(state, slots, pendingEggPid, eggCycleCounter)
+local function prepareState(state, slots, pendingEggPid, eggCycleCounter, togepiGift)
   local capturedRevision = state._revision
+  local gift = togepiGift ~= nil and checkGift(togepiGift) or nil
+  local liveGift = state._togepiGift
+  local giftChanged = (gift == nil) ~= (liveGift == nil)
+    or (
+      gift ~= nil
+      and liveGift ~= nil
+      and (gift.personality ~= liveGift.personality or gift.gender ~= liveGift.gender)
+    )
   local changed = #slots ~= #state._slots
     or pendingEggPid ~= state._pendingEggPid
     or eggCycleCounter ~= state._eggCycleCounter
+    or giftChanged
   if not changed then
     for index, slot in ipairs(slots) do
       local live = state._slots[index]
@@ -199,6 +232,7 @@ local function prepareState(state, slots, pendingEggPid, eggCycleCounter)
     state._slots = slots
     state._pendingEggPid = pendingEggPid
     state._eggCycleCounter = eggCycleCounter
+    state._togepiGift = gift
     if changed then
       state._revision = state._revision + 1
     end
@@ -236,6 +270,7 @@ function DaycareState.empty(validateMon)
     _slots = {},
     _pendingEggPid = 0,
     _eggCycleCounter = 0,
+    _togepiGift = nil,
     _validateMon = checkValidator(validateMon, "state"),
     _revision = 0,
   }, DaycareState)
@@ -264,6 +299,7 @@ function DaycareState.restore(bucket, validateMon)
     _slots = checkSlots(checkMon, bucket.slots),
     _pendingEggPid = checkUnsigned(bucket.pendingEggPid, "pending egg pid", DaycareState.MAX_EGG_PID),
     _eggCycleCounter = checkUnsigned(bucket.eggCycleCounter, "egg cycle counter", DaycareState.MAX_EGG_CYCLE),
+    _togepiGift = bucket.togepiGift ~= nil and checkGift(bucket.togepiGift) or nil,
     _validateMon = checkMon,
     _revision = 0,
   }, DaycareState)
@@ -282,6 +318,7 @@ function DaycareState:capture()
     slots = slots,
     pendingEggPid = self._pendingEggPid,
     eggCycleCounter = self._eggCycleCounter,
+    togepiGift = self._togepiGift ~= nil and copyValue(self._togepiGift) or nil,
   }
 end
 
@@ -318,6 +355,15 @@ end
 ---@return integer
 function DaycareState:eggCycleCounter()
   return self._eggCycleCounter
+end
+
+-- The recorded original-gift identity, or nil before the gift was handed out.
+---@return DaycareState.TogepiGift?
+function DaycareState:togepiGift()
+  if self._togepiGift == nil then
+    return nil
+  end
+  return copyValue(self._togepiGift) --[[@as DaycareState.TogepiGift]]
 end
 
 ---@param slot0 integer
@@ -364,7 +410,7 @@ function DaycareState:prepareDeposit(expectedRevision, mon)
   end
   local slots = copySlots(self)
   slots[#slots + 1] = { mon = self._validateMon(mon), steps = 0 }
-  return prepareState(self, slots, self._pendingEggPid, self._eggCycleCounter)
+  return prepareState(self, slots, self._pendingEggPid, self._eggCycleCounter, self._togepiGift)
 end
 
 -- Stages one withdrawal: the candidate hands the detached parent and its
@@ -387,7 +433,7 @@ function DaycareState:prepareWithdraw(expectedRevision, slot0)
   local slots = copySlots(self)
   table.remove(slots, slot0 + 1)
   return {
-    prepared = prepareState(self, slots, self._pendingEggPid, self._eggCycleCounter),
+    prepared = prepareState(self, slots, self._pendingEggPid, self._eggCycleCounter, self._togepiGift),
     mon = copyValue(slot.mon),
     steps = slot.steps,
   }
@@ -423,7 +469,7 @@ function DaycareState:prepareStepAdvance(expectedRevision, advance)
         checkUnsigned(advance.eggCycleCounter, "egg cycle counter", DaycareState.MAX_EGG_CYCLE)
     end
   end
-  return prepareState(self, slots, pendingEggPid, eggCycleCounter)
+  return prepareState(self, slots, pendingEggPid, eggCycleCounter, self._togepiGift)
 end
 
 -- Stages one produced egg identity: only the pending PID changes, exactly like
@@ -440,8 +486,27 @@ function DaycareState:prepareEggPending(expectedRevision, pendingEggPid)
     self,
     copySlots(self),
     checkUnsigned(pendingEggPid, "pending egg pid", DaycareState.MAX_EGG_PID),
-    self._eggCycleCounter
+    self._eggCycleCounter,
+    self._togepiGift
   )
+end
+
+-- Stages SaveMisc_SetTogepiPersonalityGender: the one original gift records its
+-- personality and the source gender code it was created with, so a later hatch
+-- can prove the gift's identity. Custody and egg progress stay untouched.
+---@param expectedRevision integer
+---@param personality integer
+---@param gender integer source gender code
+---@return DaycarePreparation|nil, string|nil
+function DaycareState:prepareTogepiGift(expectedRevision, personality, gender)
+  assert(type(expectedRevision) == "number", "day care gift identity requires the expected revision")
+  if expectedRevision ~= self._revision then
+    return nil, "stale"
+  end
+  return prepareState(self, copySlots(self), self._pendingEggPid, self._eggCycleCounter, {
+    personality = checkUnsigned(personality, "gift personality", DaycareState.MAX_EGG_PID),
+    gender = checkUnsigned(gender, "gift gender", 1),
+  })
 end
 
 -- Stages Save_Daycare_ResetEggStats: the pending identity and the cycle
@@ -453,7 +518,7 @@ function DaycareState:prepareEggReset(expectedRevision)
   if expectedRevision ~= self._revision then
     return nil, "stale"
   end
-  return prepareState(self, copySlots(self), 0, 0)
+  return prepareState(self, copySlots(self), 0, 0, self._togepiGift)
 end
 
 return DaycareState

@@ -39,17 +39,13 @@ local function reachError(node)
   return failure
 end
 
-function T.togepi_egg_command_defers_with_its_dependency_and_fails_at_runtime()
+function T.togepi_egg_command_runs_with_its_source_timing()
   local tagged = assert(ScriptCommands.byOpcode[776])
-  Assert.equal(tagged.disposition, "deferred", "the egg command waits for its owner")
-  Assert.equal(tagged.deferredReason, "egg_daycare", "the egg command names its dependency")
+  Assert.equal(tagged.disposition, "supported", "the egg gift runs in its source family")
+  Assert.equal(tagged.classification, "continue_same_tick", "the gift continues without a wait")
+  Assert.isNil(tagged.deferredReason, "the supported command carries no deferral category")
   local node = lowerSingle(776)
-  Assert.equal(node.op, "unsupported", "the deferred command lowers explicitly")
-  Assert.equal(node.command, 776, "the node keeps the source opcode")
-  Assert.equal(node.originalName, "ScrCmd_GiveTogepiEgg", "the node keeps the source name")
-  local failure = reachError(node)
-  Assert.equal(failure.code, ScriptErrors.SCRIPT_UNSUPPORTED_REACHABLE, "the runtime names the reach")
-  Assert.equal(failure.context.command, 776, "the error names the source command")
+  Assert.equal(node.op, "give_togepi_egg", "the gift lowers to its own operation")
 end
 
 function T.trade_command_defers_with_its_dependency_and_fails_at_runtime()

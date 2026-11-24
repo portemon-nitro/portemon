@@ -688,6 +688,9 @@ end
 ---@field fieldEntranceIndicator FieldEntranceIndicator
 ---@field fieldEntranceIndicatorAsset table<string, unknown>
 ---@field fieldEffectAssets table<string, unknown>
+---@field pokemonCareHost PokemonCareScriptHost? the one script-owned care child host
+---@field _pokemonCarePresentation { id: integer, acquire: fun(request: table): table }? presented care asset binding
+---@field _pokemonCareBindingId integer? care binding identity counter
 ---@field pokemonCenterHeal PokemonCenterHealFlow? source-owned Pokémon Center choreography
 ---@field blackoutFlow FieldBlackoutFlow? runtime-owned whiteout presentation and recovery flow
 ---@field fieldPoison FieldPoison? the overworld poison step counter behind field damage ticks
@@ -1844,6 +1847,10 @@ function FieldRuntime:_composeFieldServices(boot)
   local function currentDaycareMap()
     return self.session ~= nil and self.session.currentMap or self.runtimeMap
   end
+  -- The hatch matcher reads the current language and game the same way the
+  -- source compares them against the saved mon, and the hatched original gift
+  -- raises Elm's call plus its story flag.
+  local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
   self.daycare = DaycareService.new({
     state = self.daycareState,
     mons = self.monService,
@@ -1865,9 +1872,15 @@ function FieldRuntime:_composeFieldServices(boot)
         "daycare_egg_personality"
       )
     end,
+    identity = { language = self.monLanguage, game = self.versionId },
     phone = {
       state = assert(self.pokegearState, "the Day Care needs the companion state"),
-      eggTriggerKey = self:_daycareEggTriggerKey(),
+      eggTriggerKey = self:_pokegearTriggerKey(5),
+      eggHatchedTriggerKey = self:_pokegearTriggerKey(0),
+    },
+    events = {
+      state = assert(self.eventState, "the Day Care needs the field event state"),
+      togepiFlagId = FieldScriptSymbols.flagsByName.FLAG_SYS_HATCHED_TOGEPI_EGG,
     },
     currentMap = currentDaycareMap,
   })
@@ -1926,6 +1939,11 @@ function FieldRuntime:_composeFieldServices(boot)
   -- single child, its readiness, and its result lease.
   local EasyChatScriptHost = require("game.hgss.src.easychat.EasyChatScriptHost")
   self.easyChatScriptHost = EasyChatScriptHost.new({ runtime = self })
+  -- The one script-owned care child host: the hatch task owns the source
+  -- lifecycle, this host owns the child, its presentation lease and its
+  -- terminal result.
+  local PokemonCareScriptHost = require("game.hgss.src.field.PokemonCareScriptHost")
+  self.pokemonCareHost = PokemonCareScriptHost.new({ runtime = self })
   -- The one trainer engagement owner: source sight, the two engagement slots,
   -- their approaches, and the trainer-script queries. Composed before the
   -- script platform so the standard trainer scene resolves it as its service.
@@ -2025,6 +2043,7 @@ function FieldRuntime:_composeFieldServices(boot)
     travel = self.fieldTravel,
     fieldMoves = self.partyMenu.fieldMoves,
     monNaming = self.monNaming,
+    pokemonCare = self.pokemonCareHost,
     followingMon = self.followingMon,
     followerInteractionCatalog = self.followerInteractionCatalog,
     followerReactionTicks = self.followerReactionTicks,
@@ -2488,6 +2507,7 @@ function FieldRuntime:_startFieldSession(boot)
     incomingCalls = assert(self.incomingCalls, "the field session routes the ambient phone opportunity"),
     pokegearApplications = self.pokegear and self.pokegear.scriptHost or nil,
     easyChatScriptHost = self.easyChatScriptHost,
+    pokemonCare = self.pokemonCareHost,
     enterMapActors = enterMapActors,
     autoAcknowledgePresentation = not self.presentation,
     terrainEffects = self.fieldTerrainEffectController,
@@ -2746,6 +2766,7 @@ function FieldRuntime:update(dt)
     -- launch (and its input/foreground hold) synchronously, so the next
     -- tick in this same update already sees the held field.
     self:_consumeCommittedStep()
+    self:_settleEggHatchClaim()
     -- The follower reconciles once per fixed tick, after player and
     -- transition commits inside the session update and before the next
     -- tick's actor finalization and draw reads. The follower transition
@@ -3095,6 +3116,42 @@ function FieldRuntime:unbindEasyChatPreparation(binding)
   if current ~= nil and current.id == binding then
     self._easyChatPreparation = nil
   end
+end
+
+-- Installs the care presentation factory for the presented lifetime: the
+-- gameplay host resolves it per application because presentation resources
+-- postdate the runtime. A headless composition installs nothing, so the scene
+-- runs its source frames with no renderer.
+---@param acquire fun(request: table<string, unknown>): table<string, unknown>
+---@return integer binding identity for the presented lifetime
+function FieldRuntime:bindPokemonCarePresentation(acquire)
+  assert(type(acquire) == "function", "care presentation binding requires its acquire function")
+  assert(self._pokemonCarePresentation == nil, "one care presentation binding owns the presented lifetime")
+  self._pokemonCareBindingId = (self._pokemonCareBindingId or 0) + 1
+  self._pokemonCarePresentation = { id = self._pokemonCareBindingId, acquire = acquire }
+  return self._pokemonCareBindingId
+end
+
+-- Removes only the matching binding: a stale unbind never drops a replacement
+-- owner.
+---@param binding integer binding identity from bindPokemonCarePresentation
+function FieldRuntime:unbindPokemonCarePresentation(binding)
+  local current = self._pokemonCarePresentation
+  if current ~= nil and current.id == binding then
+    self._pokemonCarePresentation = nil
+  end
+end
+
+-- Acquires one care presentation lease through the installed binding, or nil
+-- when this composition presents nothing.
+---@param request table<string, unknown> care application request
+---@return table<string, unknown>? presentation lease
+function FieldRuntime:acquirePokemonCarePresentation(request)
+  local binding = self._pokemonCarePresentation
+  if binding == nil then
+    return nil
+  end
+  return binding.acquire(request)
 end
 
 -- Installs the Mail stationery preparation factory for the presented
@@ -4232,19 +4289,20 @@ end
 -- profile carries one, otherwise a deterministic hash of the save id.
 -- Never host time, so the same game always resumes the same streams.
 ---@return integer
--- The compiled phone-trigger table's Day-Care call key (source slot 5). The
--- Day Care raises that one flag when its step check produces an egg, and the
--- Day-Care Man's own script clears it when he offers the egg.
+-- One compiled phone-trigger key by its source slot: slot 5 is the Day-Care
+-- call the committed-step check raises when it produces an egg, and slot 0 the
+-- call the hatched original gift raises.
+---@param slot integer
 ---@return string
-function FieldRuntime:_daycareEggTriggerKey()
-  local catalog = assert(self.pokegearCatalog, "the Day Care call needs the companion trigger catalog")
+function FieldRuntime:_pokegearTriggerKey(slot)
+  local catalog = assert(self.pokegearCatalog, "the Day Care needs the companion trigger catalog")
   local key = nil
   for _, trigger in ipairs(assert(catalog.callTriggers, "the companion catalog carries its call triggers")) do
-    if trigger.slot == 5 then
+    if trigger.slot == slot then
       key = trigger.key
     end
   end
-  assert(type(key) == "string" and key ~= "", "the companion catalog carries the Day-Care call trigger")
+  assert(type(key) == "string" and key ~= "", "the companion catalog carries phone trigger " .. tostring(slot))
   return key
 end
 
@@ -5272,7 +5330,10 @@ function FieldRuntime:_consumeCommittedStep()
   -- tick and before any repel or encounter attempt. Loaded steps never reached
   -- this seam, so this is the whole counter.
   if self.daycare ~= nil then
-    self.daycare:noteCommittedStep()
+    if self.daycare:noteCommittedStep() then
+      self:_claimEggHatchStep()
+      return
+    end
   end
   local map = session.currentMap --[[@as table<string, unknown>]]
   local method = self:_stepEncounterMethod(map, self.player)
@@ -5355,6 +5416,45 @@ function FieldRuntime:_consumeCommittedStep()
     return
   end
   self:_admitStepEncounter(result.encounter --[[@as table<string, unknown>]], method, roamerKey)
+end
+
+-- The committed step that completes an egg's last cycle claims the step: the
+-- hatch statistic and its source score event publish once, the standard hatch
+-- scene takes the field, and no later step effect -- repel, friendship or a
+-- delayed encounter -- runs for this step. The Day Care owner already
+-- converted the egg in the publication that advanced the cycle. The standard
+-- script identity is std_hatch_egg 2021 (include/constants/std_script.h) as the
+-- compiled corpus names it.
+function FieldRuntime:_claimEggHatchStep()
+  local stats = assert(self.gameStats, "the hatch claim requires the statistics owner")
+  local prepared = stats:prepareChanges({ observations = { { kind = "egg_hatched" } } })
+  prepared.publish()
+  local session = assert(self.session, "the hatch claim requires the field session")
+  local client = assert(self.scripts and self.scripts.client, "the hatch claim requires the script client")
+  local instanceId = client:startSceneScript("common.hatch_egg", session.tick + 1)
+  assert(instanceId ~= nil, "the hatch claim starts the source hatch scene")
+end
+
+-- The hatch claim's teardown: while the standard hatch scene owns the field
+-- the claim stays live, and once that scene ends -- normally, by failure, or
+-- because an interruption cancelled its environment before the care task ever
+-- ran -- the receipt publishes exactly once and the claim releases. The
+-- converted mon and the spent statistic are already committed, so no path may
+-- leave the record half-hatched or the field unsavable.
+function FieldRuntime:_settleEggHatchClaim()
+  local daycare = self.daycare
+  if daycare == nil then
+    return
+  end
+  if daycare:activeHatch() == nil then
+    return
+  end
+  local scheduler = self.scripts and self.scripts.scheduler
+  if scheduler ~= nil and scheduler:foregroundScriptId() == "common.hatch_egg" then
+    return
+  end
+  daycare:finishHatch()
+  daycare:releaseHatch()
 end
 
 -- The source roamer step gate: a committed step that already resolved an
@@ -6472,6 +6572,11 @@ function FieldRuntime:_releaseAll()
   if self.pcApplicationHost then
     self.pcApplicationHost:dispose()
   end
+  if self.pokemonCareHost ~= nil then
+    self.pokemonCareHost:dispose()
+    self.pokemonCareHost = nil
+  end
+  self._pokemonCarePresentation, self._pokemonCareBindingId = nil, nil
   if self.easyChatScriptHost ~= nil then
     self.easyChatScriptHost:dispose()
   end

@@ -1,7 +1,8 @@
--- The generated Day Care care catalog: a strict semantic record carrying the
--- source breeding tables. Validation rejects unknown fields, dangling shells,
--- duplicated entries, and stale schema identities; the cache publishes only
--- validated payloads behind its completion marker.
+-- The generated Day Care care family: a strict semantic catalog carrying the
+-- source breeding tables plus the hatch application's own generated
+-- presentation. Validation rejects unknown fields, dangling shells, duplicated
+-- entries, and stale schema identities; the cache publishes only validated
+-- payloads behind its completion marker.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -21,12 +22,37 @@ local function catalog()
   }
 end
 
+-- One minimal valid hatch presentation payload: the family readiness contract
+-- requires it beside the catalog the same job publishes.
+local function hatchManifest()
+  local image = "data/generated/pokemon-care/hatch/staged.png"
+  local set = {
+    emitters = { { id = 0, textureImage = image } },
+    textures = { { image = image, width = 8, height = 8 } },
+  }
+  return {
+    schema = PokemonCareAssetSchema.HATCH_SCHEMA,
+    background = { image = image, width = 256, height = 256 },
+    window = { x = 16, y = 152, width = 216, height = 32 },
+    egg = { frames = { { image = image, width = 8, height = 8, durationTicks = 1 } } },
+    bars = { frames = { { image = image, width = 8, height = 8, durationTicks = 1 } } },
+    messages = {
+      hatched = { id = 0, text = "{name} hatched!" },
+      nicknameQuestion = { id = 1, text = "Nickname {name}?" },
+      yes = { id = 2, text = "Yes" },
+      no = { id = 3, text = "No" },
+    },
+    particles = { egg = set, manaphy = set },
+  }
+end
+
 local function cacheFs(backend)
   return CacheFs.forVersion("heartgold", backend or FakeCache.new())
 end
 
-local function stage(cacheFsValue, payload, marker)
+local function stage(cacheFsValue, payload, marker, hatch)
   cacheFsValue:writeLua(PokemonCareCache.catalogPath(), payload)
+  cacheFsValue:writeLua(PokemonCareCache.hatchManifestPath(), hatch or hatchManifest())
   cacheFsValue:write(PokemonCareCache.markerPath(), marker)
 end
 
@@ -99,6 +125,43 @@ function T.readiness_proves_the_marker_and_payload()
   local invalidMarker = markerFor("invalid")
   stage(fs, invalid, invalidMarker)
   Assert.isFalse(PokemonCareCache.isReady(fs, invalidMarker), "an invalid payload never reports ready")
+end
+
+function T.hatch_manifest_validation_rejects_unknown_fields_and_stale_schemas()
+  Assert.isTrue(PokemonCareAssetSchema.isValidHatchManifest(hatchManifest()), "the hatch payload validates")
+
+  local extra = hatchManifest()
+  extra.version = "soulsilver"
+  Assert.isFalse(PokemonCareAssetSchema.isValidHatchManifest(extra), "an unknown field fails validation")
+
+  local stale = hatchManifest()
+  stale.schema = "g4-pokemon-care-hatch-v0"
+  Assert.isFalse(PokemonCareAssetSchema.isValidHatchManifest(stale), "a stale schema identity fails validation")
+
+  local noFrames = hatchManifest()
+  noFrames.egg.frames = {}
+  Assert.isFalse(PokemonCareAssetSchema.isValidHatchManifest(noFrames), "an empty animation group fails")
+
+  local noParticles = hatchManifest()
+  noParticles.particles.egg.emitters = {}
+  Assert.isFalse(PokemonCareAssetSchema.isValidHatchManifest(noParticles), "an empty particle set fails")
+
+  local badAlign = hatchManifest()
+  badAlign.messages.yes.align = "left"
+  Assert.isFalse(PokemonCareAssetSchema.isValidHatchManifest(badAlign), "an unknown alignment fails")
+end
+
+function T.readiness_requires_the_hatch_presentation()
+  local fs = cacheFs()
+  local payload = catalog()
+  local marker = markerFor(payload)
+  stage(fs, payload, marker)
+  Assert.isTrue(PokemonCareCache.isReady(fs, marker), "a staged family is ready")
+  local stale = hatchManifest()
+  stale.schema = "g4-pokemon-care-hatch-v0"
+  local withoutHatch = cacheFs()
+  stage(withoutHatch, payload, marker, stale)
+  Assert.isFalse(PokemonCareCache.isReady(withoutHatch, marker), "a family without its hatch payload is not ready")
 end
 
 return { tests = T }

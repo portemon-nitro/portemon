@@ -3637,6 +3637,23 @@ do
     daycareFor(run):receiveEgg()
     return Runtime.OUTCOME_CONTINUE
   end
+  -- The source hatch scene blocks the script until the care application, the
+  -- hatch receipt, the optional nickname question and the field restore all
+  -- finished; only then does the next source command run.
+  HANDLERS.egg_hatch_anim = function(_, run)
+    requireForeground(run, "egg_hatch_anim")
+    return blockOnTask(run, "egg_hatch", {})
+  end
+  HANDLERS.give_togepi_egg = function(_, run)
+    daycareFor(run):giveTogepiEgg()
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.mon_is_from_togepi_egg = function(node, run)
+    local slot = evalField(node, run, "slot")
+    local mon = requireService(run, "mons"):partyMon(slot)
+    semanticsFor(run).writeRef(node.result, daycareFor(run):isTogepiGift(mon) and 1 or 0, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
   HANDLERS.daycare_compatibility = function(node, run)
     semanticsFor(run).writeRef(node.result, daycareFor(run):compatibilityCategory(), run)
     return Runtime.OUTCOME_CONTINUE

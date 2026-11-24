@@ -215,7 +215,7 @@ function T.unrepresentable_records_fail_with_structured_errors()
   throwsCode("MON_RECORD_INVALID", function()
     Mon.validate(
       invalid(function(mon)
-        mon.met.level = 0
+        mon.met.level = 101
       end),
       context
     )
@@ -336,10 +336,22 @@ function T.cleared_egg_meetings_admit_only_their_cleared_shape()
       context
     )
   end)
+  -- The source reuses the cleared meeting shape for a freshly hatched record,
+  -- so the same bytes admit a mon whose egg flag is already clear; the cleared
+  -- shape itself is still the only record allowed to omit its meeting date.
+  local hatched = Mon.validate(
+    invalid(function(mon)
+      mon.isEgg = false
+    end),
+    context
+  )
+  Assert.isFalse(hatched.isEgg, "a hatched record keeps the cleared meeting shape")
+  Assert.isNil(hatched.met.date, "a hatched record carries no meeting date yet")
   throwsCode("MON_RECORD_INVALID", function()
     Mon.validate(
       invalid(function(mon)
         mon.isEgg = false
+        mon.met.location = 12
       end),
       context
     )
@@ -505,15 +517,13 @@ function T.numeric_boundaries_and_domain_relationships_hold_at_the_validation_bo
     mon.condition.currentHp = maxHp + 1
   end)
 
-  -- Met level keeps its 1..100 range at this layer.
+  -- The meeting level spans 0..100 at this layer: the source writes zero when
+  -- a mon hatches and keeps the level it was met at otherwise.
   accepted(function(mon)
-    mon.met.level = 1
+    mon.met.level = 0
   end)
   accepted(function(mon)
     mon.met.level = 100
-  end)
-  rejected(function(mon)
-    mon.met.level = 0
   end)
   rejected(function(mon)
     mon.met.level = 101

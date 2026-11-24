@@ -61,10 +61,21 @@ end
 -- A recording phone owner: the Day-Care call is one trigger flag on the
 -- companion state, so the fixture observes the raise without a phone app.
 local function newPhone()
-  local record = { raised = {}, eggTriggerKey = "gear.trigger.5" }
+  local record = { raised = {}, eggTriggerKey = "gear.trigger.5", eggHatchedTriggerKey = "gear.trigger.0" }
   record.state = {
     setTrigger = function(_, key, active)
       record.raised[#record.raised + 1] = { key = key, active = active }
+    end,
+  }
+  return record
+end
+
+-- The field event state behind the hatched original gift's story flag.
+local function newEvents()
+  local record = { flags = {} }
+  record.state = {
+    setFlag = function(_, flag)
+      record.flags[flag] = true
     end,
   }
   return record
@@ -114,6 +125,7 @@ local function fixture()
     return mons:validateStoredMon(record)
   end)
   local phone = newPhone()
+  local events = newEvents()
   local draws = newDraws()
   local care = newCare()
   local function newService(bagService)
@@ -131,7 +143,9 @@ local function fixture()
       end,
       lc = draws.lc,
       mt = draws.mt,
+      identity = { language = "english", game = "heartgold" },
       phone = phone,
+      events = { state = events.state, togepiFlagId = 2435 },
       currentMap = function()
         return { mapId = 42 }
       end,

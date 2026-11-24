@@ -2199,6 +2199,9 @@ FieldHandlers[365] = require("romdump.src.digest.script.lowering.PokemonCareHand
 FieldHandlers[366] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").giveEgg
 FieldHandlers[387] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").compatibility
 FieldHandlers[388] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").checkEgg
+FieldHandlers[369] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").hatchAnim
+FieldHandlers[776] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").giveTogepiEgg
+FieldHandlers[777] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").monIsFromTogepiEgg
 FieldHandlers[690] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").sanitizeMon
 FieldHandlers[715] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").updateObjects
 -- The gym mechanism family rides the cohesive StoryHandlers leaf for the same

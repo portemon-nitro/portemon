@@ -291,17 +291,21 @@ function T.gift_egg_bytes_carry_the_cleared_meeting_record()
   end)
 
   -- Malformed cleared dates never encode: a partial zero triple, a
-  -- zero level on an ordinary mon, and an absent date outside the
-  -- cleared egg shape all fail at admission.
+  -- meeting level past the source ceiling, and an absent date outside the
+  -- cleared meeting shape all fail at admission. A zero meeting level is the
+  -- source's own hatched record and encodes like any other.
   throwsCode("MON_RECORD_INVALID", function()
     local partial = Mon.validate(egg, context)
     partial.met.date = { year = 2009, month = 0, day = 0 }
     BoxCodec.encode(partial, context)
   end)
+  local hatched = factory:createNormal(CatalogFixture.normalRequest())
+  hatched.met.level = 0
+  Assert.notNil(BoxCodec.encode(hatched, context), "a hatched record encodes its cleared meeting level")
   throwsCode("MON_RECORD_INVALID", function()
-    local ordinary = factory:createNormal(CatalogFixture.normalRequest())
-    ordinary.met.level = 0
-    BoxCodec.encode(ordinary, context)
+    local overLevel = factory:createNormal(CatalogFixture.normalRequest())
+    overLevel.met.level = 101
+    BoxCodec.encode(overLevel, context)
   end)
   throwsCode("MON_RECORD_INVALID", function()
     local dateless = factory:createNormal(CatalogFixture.normalRequest())

@@ -59,6 +59,7 @@ local BLOCKING_OPS = {
   context_choice = true,
   choose_starter = true,
   pokemon_nickname_input = true,
+  egg_hatch_anim = true,
   rival_naming = true,
   party_select = true,
   menu_exec = true,
