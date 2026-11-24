@@ -74,14 +74,15 @@ local function stageManifest(stage, cacheFs, bundle, manifestPath, validate, ref
   end
 end
 
--- Stages the catalogue the same family already carries plus both generated
--- presentations. The caller owns the artifact roots and the marker value.
+-- Stages the catalogue the same family already carries plus every generated
+-- presentation. The caller owns the artifact roots and the marker value.
 ---@param stage table<string, unknown>
 ---@param cacheFs CacheFs
 ---@param catalog table<string, unknown>
 ---@param hatch table<string, unknown>
 ---@param trade table<string, unknown>
-local function stageBundle(stage, cacheFs, catalog, hatch, trade)
+---@param reminder table<string, unknown>
+local function stageBundle(stage, cacheFs, catalog, hatch, trade, reminder)
   stage:writeLua(PokemonCareCache.catalogPath(), catalog)
   stageManifest(
     stage,
@@ -101,6 +102,15 @@ local function stageBundle(stage, cacheFs, catalog, hatch, trade)
     PokemonCareCache.tradeStagedPaths,
     "trade"
   )
+  stageManifest(
+    stage,
+    cacheFs,
+    reminder,
+    PokemonCareCache.reminderManifestPath(),
+    PokemonCareAssetSchema.assertReminderManifest,
+    PokemonCareCache.referencedReminderPaths,
+    "reminder"
+  )
 end
 
 -- Stages the care family's payloads into one prepared artifact and answers the
@@ -109,9 +119,10 @@ end
 ---@param catalog table<string, unknown>
 ---@param hatch table<string, unknown>
 ---@param trade table<string, unknown>
+---@param reminder table<string, unknown>
 ---@param marker string
 ---@return string
-function PokemonCareCacheWriter.stage(artifact, catalog, hatch, trade, marker)
+function PokemonCareCacheWriter.stage(artifact, catalog, hatch, trade, reminder, marker)
   assert(artifact and artifact.stageFs, "care staging requires a PreparedArtifact")
   assert(type(marker) == "string" and marker ~= "", "care staging requires its completion marker")
   validateBundle(
@@ -126,9 +137,15 @@ function PokemonCareCacheWriter.stage(artifact, catalog, hatch, trade, marker)
     PokemonCareAssetSchema.assertTradeManifest,
     PokemonCareCache.tradeStagedPaths
   )
+  validateBundle(
+    reminder,
+    "reminder",
+    PokemonCareAssetSchema.assertReminderManifest,
+    PokemonCareCache.referencedReminderPaths
+  )
   artifact:addOwnedRoot(PokemonCareCache.dir())
   local stage = artifact:stageFs()
-  stageBundle(stage, artifact:cacheFs(), catalog, hatch, trade)
+  stageBundle(stage, artifact:cacheFs(), catalog, hatch, trade, reminder)
   stage:write(PokemonCareCache.markerPath(), marker)
   return marker
 end

@@ -19,6 +19,7 @@ local PokemonCareAssetSchema = {}
 PokemonCareAssetSchema.CATALOG_SCHEMA = Contract.pokemonCare.catalogSchema
 PokemonCareAssetSchema.HATCH_SCHEMA = Contract.pokemonCare.hatchSchema
 PokemonCareAssetSchema.TRADE_SCHEMA = Contract.pokemonCare.tradeSchema
+PokemonCareAssetSchema.REMINDER_SCHEMA = Contract.pokemonCare.reminderSchema
 
 local CATALOG_ERROR = "POKEMON_CARE_CATALOG_INVALID"
 local HATCH_ERROR = "POKEMON_CARE_HATCH_INVALID"
@@ -463,6 +464,100 @@ end
 
 ---@param manifest unknown
 ---@return boolean
+-- The move reminder / singleton tutor presentation: the source's two screens
+-- and its button tile sheet, the source window rectangles in pixels, and the
+-- compiled message lines the application prints.
+local REMINDER_FIELDS = {
+  schema = true,
+  windows = true,
+  messages = true,
+  main = true,
+  sub = true,
+  buttons = true,
+}
+local REMINDER_WINDOW_KEYS = {
+  categoryLabel = true,
+  powerLabel = true,
+  accuracyLabel = true,
+  power = true,
+  accuracy = true,
+  description = true,
+  message = true,
+  title = true,
+  teach = true,
+  returnButton = true,
+  list = true,
+  knownTitle = true,
+  monName = true,
+  promptYes = true,
+  promptNo = true,
+}
+local REMINDER_WINDOW_FIELDS = { x = true, y = true, width = true, height = true, framed = true }
+
+---@param value unknown
+---@param what string
+local function requireReminderSurface(value, what)
+  local surface = requireRecord(value, what)
+  assert(type(surface) == "table")
+  SchemaCheck.checkKeys(surface, { image = true, width = true, height = true }, {}, HATCH_ERROR, what)
+  SchemaCheck.checkNonEmptyString(surface.image, {}, HATCH_ERROR, what .. ".image")
+  requireInteger(surface.width, what .. ".width")
+  requireInteger(surface.height, what .. ".height")
+end
+
+---@param manifest table<string, unknown>
+function PokemonCareAssetSchema.assertReminderManifest(manifest)
+  requireRecord(manifest, "reminder manifest")
+  SchemaCheck.checkKeys(manifest, REMINDER_FIELDS, {}, HATCH_ERROR, "reminder manifest")
+  if manifest.schema ~= PokemonCareAssetSchema.REMINDER_SCHEMA then
+    fail(HATCH_ERROR, "reminder manifest schema is not current", {})
+  end
+  requireReminderSurface(manifest.main, "reminder main screen")
+  requireReminderSurface(manifest.sub, "reminder sub screen")
+  requireReminderSurface(manifest.buttons, "reminder button tiles")
+  local windows = requireRecord(manifest.windows, "reminder windows")
+  assert(type(windows) == "table")
+  SchemaCheck.checkKeys(windows, REMINDER_WINDOW_KEYS, {}, HATCH_ERROR, "reminder windows")
+  for key in pairs(REMINDER_WINDOW_KEYS) do
+    local box = requireRecord(windows[key], "reminder window " .. key)
+    assert(type(box) == "table")
+    SchemaCheck.checkKeys(box, REMINDER_WINDOW_FIELDS, {}, HATCH_ERROR, "reminder window " .. key)
+    for _, field in ipairs({ "x", "y", "width", "height" }) do
+      requireInteger(box[field], "reminder window " .. key .. "." .. field)
+    end
+    if box.width <= 0 or box.height <= 0 then
+      fail(HATCH_ERROR, "reminder window " .. key .. " must cover at least one pixel", {})
+    end
+    if box.framed ~= nil and type(box.framed) ~= "boolean" then
+      fail(HATCH_ERROR, "reminder window " .. key .. ".framed must be a boolean", {})
+    end
+  end
+  local messages = requireArray(manifest.messages, "reminder messages")
+  if #messages == 0 then
+    fail(HATCH_ERROR, "the reminder presentation carries its source lines", {})
+  end
+  local seen = {}
+  for index, line in ipairs(messages) do
+    local where = "reminder messages[" .. index .. "]"
+    requireRecord(line, where)
+    assert(type(line) == "table")
+    SchemaCheck.checkKeys(line, { id = true, text = true, align = true }, {}, HATCH_ERROR, where)
+    requireInteger(line.id, where .. ".id")
+    SchemaCheck.checkNonEmptyString(line.text, {}, HATCH_ERROR, where .. ".text")
+    if line.align ~= nil and line.align ~= "center" and line.align ~= "right" then
+      fail(HATCH_ERROR, where .. ".align must be absent, center, or right", {})
+    end
+    if seen[line.id] then
+      fail(HATCH_ERROR, "the reminder presentation repeats source line " .. tostring(line.id), {})
+    end
+    seen[line.id] = true
+  end
+end
+
+function PokemonCareAssetSchema.isValidReminderManifest(manifest)
+  return pcall(PokemonCareAssetSchema.assertReminderManifest, manifest)
+end
+
 function PokemonCareAssetSchema.isValidTradeManifest(manifest)
   return pcall(PokemonCareAssetSchema.assertTradeManifest, manifest)
 end

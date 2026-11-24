@@ -96,6 +96,67 @@ PokemonCareSources.hatchMessages = {
 -- (HatchEggApp_CreateMessageWindow: x 2, y 19, width 27, height 4).
 PokemonCareSources.hatchWindow = { x = 2, y = 19, width = 27, height = 4 }
 
+-- The move reminder / singleton tutor application's own art
+-- (src/application/move_relearner/move_relearner_app.c,
+-- MoveRelearner_LoadBgGraphics): the main screen's char/map/palette members,
+-- the sub screen's, and the button tile screen copied into the sub layer. The
+-- window templates are the source's own tile rectangles in enum order
+-- (sMoveRelearnerWindowTemplates).
+PokemonCareSources.relearnerArt = {
+  alias = "NARC_a_1_1_0",
+  symbol = "NARC_a_1_1_0",
+  path = "a/1/1/0",
+  main = { char = 1, screen = 4, palette = 0 },
+  sub = { char = 1, screen = 2, palette = 0 },
+  buttons = { char = 1, screen = 3, palette = 0 },
+  windows = {
+    { key = "categoryLabel", x = 17, y = 4, width = 6, height = 2 },
+    { key = "powerLabel", x = 17, y = 6, width = 6, height = 2 },
+    { key = "accuracyLabel", x = 17, y = 8, width = 8, height = 2 },
+    { key = "power", x = 28, y = 6, width = 3, height = 2 },
+    { key = "accuracy", x = 28, y = 8, width = 3, height = 2 },
+    { key = "description", x = 17, y = 10, width = 15, height = 10 },
+    { key = "message", x = 2, y = 19, width = 27, height = 4, framed = true },
+    { key = "title", x = 1, y = 0, width = 30, height = 3 },
+    { key = "teach", x = 15, y = 21, width = 8, height = 3 },
+    { key = "returnButton", x = 24, y = 21, width = 8, height = 3 },
+    { key = "list", x = 5, y = 4, width = 10, height = 16 },
+    { key = "knownTitle", x = 23, y = 13, width = 7, height = 4, framed = true },
+    { key = "monName", x = 19, y = 5, width = 10, height = 16 },
+    -- The yes/no prompt the source opens over the message window
+    -- (MoveRelearner_ShowYesNo: template x 26, y 10, shapeParam 0 -> 6x4 tiles
+    -- per button, stacked). Its first button answers yes.
+    { key = "promptYes", x = 26, y = 10, width = 6, height = 4, framed = true },
+    { key = "promptNo", x = 26, y = 14, width = 6, height = 4, framed = true },
+  },
+}
+
+-- NARC_msgdata_msg member 747: the application's own lines. The tutor lesson
+-- prints ids 0..10, the reminder 11..21, and the static texts carry the detail
+-- labels, the two button captions and the list titles.
+PokemonCareSources.relearnerMessages = {
+  alias = "messages",
+  symbol = "NARC_msgdata_msg",
+  path = "a/0/2/7",
+  memberId = 747,
+  columns = {
+    tutor = { first = 0, last = 10 },
+    relearn = { first = 11, last = 21 },
+  },
+  labels = {
+    category = 22,
+    power = 23,
+    accuracy = 24,
+    pp = 25,
+    none = 33,
+    returnButton = 34,
+    teach = 35,
+    title = 36,
+    monName = 37,
+    knownMoves = 39,
+  },
+}
+
 -- The NPC trade table (NARC_a_1_1_2, one member per NpcTradeNum in source
 -- order: sixteen ints of identity, item and content plus the five contest
 -- values, the source ability/sheen pair and the unused flag). Read by

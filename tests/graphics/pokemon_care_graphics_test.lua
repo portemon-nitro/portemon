@@ -887,7 +887,242 @@ function T.the_trade_message_layer_prints_the_source_lines(scope)
   Assert.isNil(scene.renderer:lineText(99, status, "Rudy"), "an unknown source line prints nothing")
 end
 
-local suite = GraphicsSmoke.suite(T, { tags = { "mons", "hatch", "trade" } })
+-- One prepared reminder application: the real manifest, its realized screens,
+-- the subject's own portrait page, and the production renderer over recording
+-- window/text collaborators. The presentation resolves against a genuine
+-- two-screen host so both source screens are drawn.
+---@param scope table graphics ownership scope
+---@return table scene
+local function openReminderScene(scope)
+  local versionId = readyVersion()
+  Assert.notNil(versionId, "the prepared cache publishes the care family")
+  assert(versionId ~= nil)
+  local cacheFs = CacheFs.forVersion(versionId)
+  local manifest = PokemonCareCache.loadReminderManifest(cacheFs)
+  local images = {}
+  for _, path in ipairs(PokemonCareCache.referencedReminderPaths(manifest)) do
+    images[path] = realizedImage(scope, cacheFs, path)
+  end
+  local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
+  local entries = assert(type(portraits) == "table" and portraits.entries, "the portrait family is published")
+  local selector = MonCache.portraitSelector("PIDGEY", 0, "male", false)
+  local entry = assert(entries[selector], "the portrait family carries the reminder subject")
+  local frame = assert(assert(entry.frames)[1], "a portrait entry carries its first frame")
+  local page = MonCache.portraitPagePath(assert(entry.pageId, "a portrait entry names its page"))
+  images[page] = realizedImage(scope, cacheFs, page)
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local measurement = {
+    width = 512,
+    height = 384,
+    topology = ScreenTopology.dualDisplay({
+      id = "world",
+      rect = { x = 0, y = 0, width = 256, height = 192 },
+      role = "world",
+      touch = false,
+    }, {
+      id = "aux",
+      rect = { x = 256, y = 0, width = 256, height = 192 },
+      role = "auxiliary",
+      touch = true,
+    }),
+    pixelRatio = 1,
+    signature = "care-graphics:reminder-dual",
+  }
+  local window, text, recorded = recordingCollaborators()
+  local MoveRelearnerRenderer = require("libs.hgss.src.ui.MoveRelearnerRenderer")
+  local renderer = MoveRelearnerRenderer.new({
+    graphics = love.graphics,
+    manifest = manifest,
+    images = images,
+    picture = { page = page, frame = { x = frame.x, y = frame.y, width = frame.width, height = frame.height } },
+    measureDisplay = function()
+      return measurement
+    end,
+    text = text,
+    window = window,
+    fontDef = {},
+    frameIndex = 0,
+  })
+  return { manifest = manifest, images = images, renderer = renderer, recorded = recorded }
+end
+
+---@param move string
+---@param label string
+---@return table<string, unknown> one reminder list row
+local function reminderRow(move, label)
+  return {
+    move = move,
+    label = label,
+    type = "normal",
+    category = "physical",
+    power = 35,
+    accuracy = 95,
+    description = "A physical attack.",
+    pp = 35,
+    maxPp = 35,
+  }
+end
+
+---@param fields table<string, unknown>?
+---@return table<string, unknown> reminder snapshot
+local function reminderSnapshot(fields)
+  local base = {
+    kind = "move_relearner",
+    mode = "tutor",
+    phase = "input",
+    frame = 0,
+    nickname = "PIDGEY",
+    cursor = 0,
+    scrollOffset = 0,
+    moves = { reminderRow("TACKLE", "Tackle"), reminderRow("GUST", "Gust") },
+    visible = { 1, 2 },
+    known = { reminderRow("SAND_ATTACK", "Sand-Attack") },
+    question = nil,
+    selected = nil,
+    learnButton = true,
+    flash = nil,
+    message = nil,
+    done = false,
+    presentationReady = true,
+    preparationError = nil,
+  }
+  for key, value in pairs(fields or {}) do
+    base[key] = value
+  end
+  return base
+end
+
+---@param scope table graphics ownership scope
+---@param renderer table reminder renderer
+---@param status table snapshot
+---@param width integer
+---@param height integer
+---@return love.ImageData
+local function drawReminder(scope, renderer, status, width, height)
+  local canvas = scope:own(love.graphics.newCanvas(width, height))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  renderer:draw(status, status.nickname)
+  love.graphics.setCanvas()
+  return canvas:newImageData()
+end
+
+-- The reminder draws both source screens from their own generated members: the
+-- main screen carries the subject's portrait, and the bottom screen carries the
+-- source list, its detail pane and the two buttons.
+function T.the_reminder_draws_both_source_screens(scope)
+  local scene = openReminderScene(scope)
+  local manifest = scene.manifest
+  local image = drawReminder(scope, scene.renderer, reminderSnapshot(), 512, 384)
+  Assert.isTrue(litPixels(image) > 2000, "the reminder draws its source screens")
+  local main = scene.images[assert(manifest.main.image) --[[@as string]]]
+  local sub = scene.images[assert(manifest.sub.image) --[[@as string]]]
+  Assert.equal(main:getWidth(), manifest.main.width, "the main screen keeps its compiled source width")
+  Assert.equal(main:getHeight(), manifest.main.height, "the main screen keeps its compiled source height")
+  Assert.equal(sub:getWidth(), manifest.sub.width, "the bottom screen keeps its compiled source width")
+  local firstFocus = scene.recorded.focus[#scene.recorded.focus]
+  drawReminder(scope, scene.renderer, reminderSnapshot({ cursor = 1 }), 512, 384)
+  local secondFocus = scene.recorded.focus[#scene.recorded.focus]
+  Assert.isTrue(
+    firstFocus.y ~= secondFocus.y,
+    "the focused row moves the source highlight down one row"
+  )
+  Assert.equal(
+    secondFocus.y - firstFocus.y,
+    32,
+    "the source row height separates the two highlights"
+  )
+  Assert.isTrue(litPixels(image) > 0, "the reminder paints its compiled surfaces")
+end
+
+-- The bottom screen's list rows and its detail pane print the snapshot's own
+-- facts inside the source window rectangles.
+function T.the_reminder_list_and_detail_follow_the_source_windows(scope)
+  local scene = openReminderScene(scope)
+  local manifest = scene.manifest
+  drawReminder(scope, scene.renderer, reminderSnapshot(), 512, 384)
+  local labels = {}
+  for _, text in ipairs(scene.recorded.texts) do
+    labels[#labels + 1] = text.text
+  end
+  local joined = table.concat(labels, "\n")
+  Assert.isTrue(joined:find("Tackle", 1, true) ~= nil, "the list prints its first row")
+  Assert.isTrue(joined:find("Gust", 1, true) ~= nil, "the list prints its second row")
+  Assert.isTrue(joined:find("35", 1, true) ~= nil, "the detail pane prints the selected power and PP")
+  Assert.isTrue(
+    labels[1] ~= nil and labels[2] ~= nil,
+    "the source list prints its rows in order"
+  )
+  local windows = scene.recorded.windows
+  local messageWindow
+  for _, entry in ipairs(windows) do
+    if entry.box.width == manifest.windows.message.width and entry.box.y == manifest.windows.message.y then
+      messageWindow = entry
+    end
+  end
+  Assert.notNil(messageWindow, "the message window keeps its source rectangle")
+end
+
+-- The application's own message lines come from the compiled bank-747 columns:
+-- the tutor lesson and the reminder read their own prompts.
+function T.the_reminder_prints_its_source_message_columns(scope)
+  local scene = openReminderScene(scope)
+  local manifest = scene.manifest
+  local tutor = reminderSnapshot({ mode = "tutor", message = 1 })
+  drawReminder(scope, scene.renderer, tutor, 512, 384)
+  local printed = assert(scene.recorded.texts[#scene.recorded.texts], "the tutor line prints")
+  Assert.isTrue(printed.text:find("Tackle", 1, true) ~= nil, "the tutor line names the selected move")
+  Assert.isTrue(
+    scene.renderer:lineText(manifest.messages[#manifest.messages].id, tutor) ~= nil,
+    "the compiled lines carry their source text"
+  )
+  scene.recorded.texts = {}
+  -- The reminder reads its own eleven-id column: index 1 is the source's
+  -- "Should the move ... be remembered?" prompt.
+  local reminder = reminderSnapshot({ mode = "relearn", message = 1 })
+  drawReminder(scope, scene.renderer, reminder, 512, 384)
+  local remembered = assert(scene.recorded.texts[#scene.recorded.texts], "the reminder line prints")
+  Assert.isTrue(
+    remembered.text:find("remember", 1, true) ~= nil,
+    "the reminder column prints its own prompt"
+  )
+  Assert.isTrue(
+    remembered.text:find("Tackle", 1, true) ~= nil,
+    "the reminder prompt names the selected move"
+  )
+  Assert.isNil(scene.renderer:lineText(99, tutor), "an unknown source line prints nothing")
+end
+
+-- The yes/no prompt draws the source's two answer boxes with the held answer
+-- highlighted, inside the compiled prompt rectangles.
+function T.the_reminder_confirmation_draws_the_source_prompt(scope)
+  local scene = openReminderScene(scope)
+  local manifest = scene.manifest
+  drawReminder(
+    scope,
+    scene.renderer,
+    reminderSnapshot({ question = { kind = "teach", selection = "no" }, message = 1 }),
+    512,
+    384
+  )
+  local boxes = scene.recorded.windows
+  local sawYes = false
+  local sawNo = false
+  for _, entry in ipairs(boxes) do
+    if entry.box.x == manifest.windows.promptYes.x and entry.box.y == manifest.windows.promptYes.y then
+      sawYes = true
+    end
+    if entry.box.x == manifest.windows.promptNo.x and entry.box.y == manifest.windows.promptNo.y then
+      sawNo = true
+    end
+  end
+  Assert.isTrue(sawYes, "the prompt draws its yes box at the source rectangle")
+  Assert.isTrue(sawNo, "the prompt draws its no box at the source rectangle")
+  local focus = assert(scene.recorded.focus[#scene.recorded.focus], "the held answer is highlighted")
+  Assert.equal(focus.y, manifest.windows.promptNo.y + 4, "the highlight follows the held answer")
+end
+
+local suite = GraphicsSmoke.suite(T, { tags = { "mons", "hatch", "trade", "move-relearner" } })
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = { "field-runtime" }
 return suite

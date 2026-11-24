@@ -83,7 +83,12 @@ local function checkRequest(mode, request)
   assert(type(request) == "table", "move_pick mode carries its picker request")
   local context = assert(request.context, "picker requests carry their context")
   assert(
-    context == "pp_restore" or context == "pp_up" or context == "replace_machine" or context == "inspect_reorder",
+    context == "pp_restore"
+      or context == "pp_up"
+      or context == "replace_machine"
+      or context == "inspect_reorder"
+      or context == "delete_move"
+      or context == "replace_tutor",
     "picker contexts stay in the closed set"
   )
   if request.protected ~= nil then
@@ -98,7 +103,10 @@ local function checkRequest(mode, request)
       type(request.prospectiveMove) == "string" and request.prospectiveMove ~= "",
       "preview moves arrive as named moves"
     )
-    assert(context == "replace_machine", "preview rows belong to machine replacement")
+    assert(
+      context == "replace_machine" or context == "replace_tutor",
+      "preview rows belong to a replacement picker"
+    )
   end
 end
 

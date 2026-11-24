@@ -100,6 +100,77 @@ function PokemonCareHandlers.partySelection(ins)
   }
 end
 
+-- The Summary and move-reminder family. ScrCmd_PokemonSummaryScreen reads the
+-- page selector as a raw byte and its two values through ScriptGetVar;
+-- ScrCmd_GetMoveSelection reads the mode as a raw byte and writes through
+-- ScriptGetVarPointer. ScrCmd_OpenLearnForgetMove and
+-- ScrCmd_GetLearnForgetMoveResult are the deletion picker and its result;
+-- ScrCmd_MonHasRelearnableMoves writes first and reads the slot second;
+-- ScrCmd_MoveRelearnerInit / ScrCmd_MoveTutorInit launch the shared
+-- application, and ScrCmd_MoveRelearnerGetResult writes its 0/255 answer.
+-- Retail sources: src/scrcmd_c.c and src/scrcmd_move_relearner.c.
+
+-- ScrCmd_PokemonSummaryScreen: byte page selector, party slot, prospective
+-- move.
+function PokemonCareHandlers.pokemonSummaryScreen(ins)
+  return {
+    op = "pokemon_summary_screen",
+    mode = Operands.operandValue(ins.operands[1]),
+    slot = Operands.varRef(ins.operands[2]),
+    moveToLearn = Operands.varRef(ins.operands[3]),
+  }
+end
+
+-- ScrCmd_GetMoveSelection: byte result mode and the output variable.
+function PokemonCareHandlers.getMoveSelection(ins)
+  return {
+    op = "get_move_selection",
+    mode = Operands.operandValue(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+-- ScrCmd_OpenLearnForgetMove: the party slot whose Summary opens the deletion
+-- picker.
+function PokemonCareHandlers.openLearnForgetMove(ins)
+  return { op = "open_learn_forget_move", slot = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_GetLearnForgetMoveResult: one output variable, 255 on cancellation.
+function PokemonCareHandlers.getLearnForgetMoveResult(ins)
+  return { op = "get_learn_forget_move_result", result = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_MonHasRelearnableMoves: the output variable comes first and the party
+-- slot second.
+function PokemonCareHandlers.monHasRelearnableMoves(ins)
+  return {
+    op = "mon_has_relearnable_moves",
+    result = Operands.varRef(ins.operands[1]),
+    slot = Operands.varRef(ins.operands[2]),
+  }
+end
+
+-- ScrCmd_MoveRelearnerInit: the party slot whose level-up list opens.
+function PokemonCareHandlers.moveRelearnerInit(ins)
+  return { op = "move_relearner_init", slot = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_MoveTutorInit: the party slot and the single offered move.
+function PokemonCareHandlers.moveTutorInit(ins)
+  return {
+    op = "move_tutor_init",
+    slot = Operands.varRef(ins.operands[1]),
+    move = Operands.varRef(ins.operands[2]),
+  }
+end
+
+-- ScrCmd_MoveRelearnerGetResult: one output variable, 0 learned and 255
+-- cancelled.
+function PokemonCareHandlers.moveRelearnerGetResult(ins)
+  return { op = "move_relearner_get_result", result = Operands.varRef(ins.operands[1]) }
+end
+
 -- ScrCmd_DaycareSanitizeMon: the party slot first, the result variable
 -- second.
 function PokemonCareHandlers.sanitizeMon(ins)

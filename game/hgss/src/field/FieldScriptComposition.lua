@@ -36,6 +36,7 @@ local FieldMoveAftermath = require("game.hgss.src.field.FieldMoveAftermath")
 ---@field monNaming table<string, unknown> the script-owned Pokemon Naming Screen host
 ---@field pokemonCare table<string, unknown>? the script-owned care child host behind the hatch application
 ---@field npcTrade table<string, unknown>? the NPC exchange and loan owner behind the trade commands
+---@field moveTutor table<string, unknown>? the ordered relearn/teaching owner behind the Summary and reminder commands
 ---@field followerTransition table<string, unknown>? the transient follower-transition owner the nonblocking transition command starts
 ---@field starterBalls table<string, unknown>? the Elm starter-ball runtime-prop controller
 ---@field followerInteractionCatalog table<string, unknown> validated generated interaction catalog
@@ -824,6 +825,7 @@ function FieldScriptComposition.compose(runtime, options)
     monNaming = options.monNaming,
     pokemonCare = options.pokemonCare,
     npcTrade = options.npcTrade,
+    moveTutor = options.moveTutor,
     followerTransition = options.followerTransition,
     starterBalls = options.starterBalls,
     pcApplications = runtime.pcApplicationHost,

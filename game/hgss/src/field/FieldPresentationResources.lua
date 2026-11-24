@@ -2177,6 +2177,11 @@ function FieldPresentationResources:pokemonCare()
     window = assert(self.windowRenderer, "care preparation borrows the window renderer"),
     fontDef = assert(self.textRenderer.fontDef, "care preparation borrows the field font definition"),
     frameIndex = runtime.playerData and runtime.playerData.options and runtime.playerData.options.textFrame or nil,
+    -- The reminder draws the source's two screens, so it resolves the pair
+    -- from the same live display facts every other dual-screen child uses.
+    measureDisplay = function()
+      return runtime.presentationDisplay
+    end,
   })
   self.pokemonCareResources = created
   return created
@@ -2201,6 +2206,27 @@ function FieldPresentationResources:drawPokemonCare(status)
     return
   end
   presentation.renderer:draw(status, presentation.name)
+end
+
+-- Draws the script-owned Summary child the care host runs: the same summary
+-- family and renderer the menus use, gated on the child's own preparation.
+---@param status table<string, unknown> the child Summary's live status
+function FieldPresentationResources:drawCareSummary(status)
+  local renderer = self.summaryRenderer
+  if renderer == nil then
+    return
+  end
+  if status.preparationState ~= "ready" then
+    return
+  end
+  local plan = assert(status.presentation, "the care summary presents its plan")
+  local hostGraphics = love and love.graphics
+  assert(type(hostGraphics) == "table", "care summary drawing requires its host graphics namespace")
+  ApplicationPresentation.draw(hostGraphics, {
+    graphics = hostGraphics,
+    summaryRenderer = renderer,
+    summaryBundle = assert(status.resources, "the care summary carries its ready bundle"),
+  }, status, plan)
 end
 
 -- Draws the committed editor bundle through the supplied application

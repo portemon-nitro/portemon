@@ -644,12 +644,13 @@ DerivedAssetContract.followerInteractions = {
 -- with its own owner. v2 publishes the hatch presentation beside the catalog,
 -- so a stale v1 cache without it must fail readiness.
 DerivedAssetContract.pokemonCare = {
-  -- v4 adds the app71 scene sprite sheets (their sequences and per-frame
-  -- timings) to the trade presentation.
-  cacheFormat = "pokemon-care-cache-v4",
+  -- v5 adds the move reminder / singleton tutor presentation (its source
+  -- screens, button tiles and compiled lines) to the same care family.
+  cacheFormat = "pokemon-care-cache-v5",
   catalogSchema = "g4-pokemon-care-catalog-v1",
   hatchSchema = "g4-pokemon-care-hatch-v1",
   tradeSchema = "g4-pokemon-care-trade-v2",
+  reminderSchema = "g4-pokemon-care-reminder-v1",
 }
 
 DerivedAssetContract.mart = {

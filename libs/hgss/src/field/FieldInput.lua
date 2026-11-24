@@ -664,6 +664,20 @@ local function normalizeUiProfile(profile)
   return signature, buttons, delay, interval, held
 end
 
+-- Hands the queued pointer edges to the modal that owns them. The care scenes
+-- draw their own source surfaces and hit-test them directly, so they take the
+-- ordered host pointer batch instead of the field's UI lane. Draining is
+-- exactly-once: the batch is cleared here, never replayed.
+---@return table[] events the ordered pointer batch, empty when none is queued
+function FieldInput:takePointerEvents()
+  local events = self.uiPointerEvents
+  if #events == 0 then
+    return {}
+  end
+  self.uiPointerEvents = {}
+  return events
+end
+
 ---@param tick integer
 function FieldInput:beginUi(tick)
   requireNonNegativeInteger(tick, "UI tick")

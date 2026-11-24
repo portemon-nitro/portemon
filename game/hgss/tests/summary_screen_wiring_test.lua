@@ -1060,6 +1060,25 @@ local function fprRuntime(versionId)
       runtime._summaryPreparation = nil
     end
   end
+  -- The recording care seam mirrors the production runtime binding: one live
+  -- acquire callback with an identity, removed only by its own identity so a
+  -- stale unbind can never drop a replacement owner.
+  runtime.careBindCalls = 0
+  runtime.careUnbindCalls = {}
+  runtime.bindPokemonCarePresentation = function(_, acquire)
+    assert(type(acquire) == "function", "care presentation binding requires its acquire function")
+    assert(runtime._pokemonCarePresentation == nil, "one care presentation binding owns the presented lifetime")
+    runtime.careBindCalls = runtime.careBindCalls + 1
+    runtime._pokemonCarePresentation = { id = runtime.careBindCalls, acquire = acquire }
+    return runtime._pokemonCarePresentation.id
+  end
+  runtime.unbindPokemonCarePresentation = function(_, binding)
+    runtime.careUnbindCalls[#runtime.careUnbindCalls + 1] = binding
+    local current = runtime._pokemonCarePresentation
+    if current ~= nil and current.id == binding then
+      runtime._pokemonCarePresentation = nil
+    end
+  end
   -- The recording pokedex seam mirrors the production runtime binding:
   -- one live acquire callback with an identity, removed only by its own
   -- identity so a stale unbind can never drop a replacement owner.

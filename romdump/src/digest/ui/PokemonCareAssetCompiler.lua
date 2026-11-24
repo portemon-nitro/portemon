@@ -44,6 +44,12 @@ local SPECIES_FIELD = 0
 -- The trade sequence fills message-format buffers 0..2 with the sent mon's
 -- nickname, the received mon's nickname and the player's name; the compiled
 -- lines keep those positions as printable markers.
+local REMINDER_MON_MARKER = "{mon}"
+local REMINDER_MOVE_MARKER = "{move}"
+-- STRVAR_1 controls the reminder lines substitute: 1 is the boxed mon's
+-- nickname buffer, 6 a move name buffer.
+local REMINDER_MON_STRVAR = 0x0101
+local REMINDER_MOVE_STRVAR = { [0x0106] = true, [0x0107] = true }
 local TRADE_SENT_MARKER = "{sent}"
 local TRADE_RECEIVED_MARKER = "{received}"
 local TRADE_PLAYER_MARKER = "{player}"
@@ -882,6 +888,220 @@ end
 -- Compiles the trade sequence presentation from one cartridge view.
 ---@param romFs table<string, unknown>
 ---@return table<string, unknown>|nil bundle, Errors.Error|nil failure
+-- Lowers one reminder line: its printable text with the source's name and
+-- move substitutions kept as markers. Any other substitution is a source form
+-- this application never prints, so it fails instead of publishing a line the
+-- runtime cannot fill.
+---@param bank table<string, unknown>
+---@param bankId integer
+---@param messageId integer
+---@param role string
+---@return { id: integer, text: string, align: string? }?
+local function compileReminderLine(bank, bankId, messageId, role)
+  local ok, tokens = pcall(UiAssetHelpers.messageTokens, bank, bankId, messageId, role, "reminder", sourceError)
+  if not ok then
+    -- The source table leaves two of its eleven columns empty; an empty line is
+    -- simply not printed by this application.
+    return nil
+  end
+  local pieces = {}
+  local align = nil
+  for _, token in ipairs(tokens) do
+    local typed = token --[[@as table<string, unknown>]]
+    if typed.kind == "substitution" then
+      local control = typed.control
+      if typed.name == "STRVAR_1" and control == REMINDER_MON_STRVAR then
+        pieces[#pieces + 1] = REMINDER_MON_MARKER
+      elseif typed.name == "STRVAR_1" and REMINDER_MOVE_STRVAR[control --[[@as integer]]] then
+        pieces[#pieces + 1] = REMINDER_MOVE_MARKER
+      else
+        sourceError("reminder line carries an unsupported substitution", {
+          role = role,
+          messageId = messageId,
+          control = control,
+          args = typed.args,
+        })
+      end
+    elseif typed.kind == "glyph" then
+      pieces[#pieces + 1] = assert(typed.text) --[[@as string]]
+    elseif typed.kind == "line_break" then
+      pieces[#pieces + 1] = "\n"
+    elseif typed.kind == "prompt_break" then
+      -- The source's scrolling prompt closes a paragraph; the application
+      -- prints one window's worth of text per state, so it starts a new line.
+      pieces[#pieces + 1] = "\n"
+    elseif typed.kind == "eos" then
+      break
+    elseif typed.kind == "focus_indicator" then
+      -- The source's end-of-line answer prompt; the compiled line keeps only
+      -- its printable text and the application draws its own answer.
+    elseif typed.kind == "pause" or typed.kind == "wait" or typed.kind == "printer_callback" then
+      -- The source's own print pacing; the application prints a whole line per
+      -- state, so the compiled text carries no timing controls.
+    elseif typed.control == FieldMessageText.ALN_CENTER then
+      align = "center"
+    elseif typed.control == FieldMessageText.ALN_RIGHT then
+      align = "right"
+    else
+      sourceError("reminder line carries an unsupported token", {
+        role = role,
+        messageId = messageId,
+        kind = typed.kind,
+        code = typed.code,
+        args = typed.args,
+        control = typed.control,
+      })
+    end
+  end
+  local text = table.concat(pieces):gsub("\n+$", "")
+  if text:match("^%s*$") ~= nil then
+    return nil
+  end
+  local line = { id = messageId, text = text }
+  if align ~= nil then
+    line.align = align
+  end
+  return line
+end
+
+-- One source screen: the shared character data and colour bank rasterized with
+-- the screen map the source layer loads.
+---@param archive table<string, unknown>
+---@param charData table<string, unknown>
+---@param palette table<string, unknown>
+---@param screenMember integer
+---@param role string
+---@param dependencies table<string, unknown>[]
+---@param assets table<string, string>
+---@return table<string, unknown>
+local function compileReminderSurface(archive, charData, palette, screenMember, role, dependencies, assets)
+  local screenData = decode(
+    "decodeScreen",
+    readMember(archive, screenMember, role .. "-screen", dependencies, "reminder-art"),
+    role .. "-screen"
+  )
+  local image = UiAssetHelpers.rasterizeScreen(
+    charData,
+    assert(palette.colors) --[[@as table]],
+    screenData,
+    role,
+    sourceError
+  )
+  return stageImage(PokemonCareCache.reminderDir() .. "/" .. role .. ".png", image, assets)
+end
+
+-- Compiles the move reminder / singleton tutor presentation: the source's main
+-- and sub screens, its button tile screen, the source window rectangles in
+-- pixels, and the compiled msg_0747 lines both modes print.
+---@param romFs table<string, unknown>
+---@return table<string, unknown>?
+---@return Errors.Error?
+function PokemonCareAssetCompiler.compileReminder(romFs)
+  return UiAssetHelpers.compileWithGuard(function()
+    local dependencies = {}
+    local assets = {}
+    local art = PokemonCareSources.relearnerArt
+    local archive, openErr = romFs:openNarc(art.alias)
+    if archive == nil then
+      sourceError("reminder art archive is unavailable", { archive = art.alias, cause = openErr })
+    end
+    assert(archive ~= nil, "missing art archives fail above")
+    local messagesSource = PokemonCareSources.relearnerMessages
+    local messageArchive, messageErr = romFs:openNarc(messagesSource.alias)
+    if messageArchive == nil then
+      sourceError("reminder message archive is unavailable", {
+        archive = messagesSource.alias,
+        cause = messageErr,
+      })
+    end
+    assert(messageArchive ~= nil, "missing message archives fail above")
+    local charData = decode(
+      "decodeChar",
+      readMember(archive, art.main.char, "reminder-char", dependencies, "reminder-art"),
+      "reminder-char"
+    )
+    local palette = decode(
+      "decodePalette",
+      readMember(archive, art.main.palette, "reminder-palette", dependencies, "reminder-art"),
+      "reminder-palette"
+    )
+    local bank = UiAssetHelpers.readMessageBank(
+      messageArchive,
+      messagesSource.memberId,
+      "reminder-messages",
+      dependencies,
+      "reminder",
+      sourceError
+    )
+    local lines = {}
+    local function addLine(messageId, role)
+      local line = compileReminderLine(bank, messagesSource.memberId, messageId, role)
+      if line ~= nil then
+        lines[#lines + 1] = line
+      end
+    end
+    for _, column in ipairs({ "tutor", "relearn" }) do
+      local range = assert(messagesSource.columns[column], "the reminder source carries its " .. column .. " column")
+      for messageId = range.first, range.last do
+        addLine(messageId, column .. "-" .. tostring(messageId))
+      end
+    end
+    for key, messageId in pairs(messagesSource.labels) do
+      addLine(messageId, "label-" .. key)
+    end
+    table.sort(lines, function(a, b)
+      return a.id < b.id
+    end)
+    local windows = {}
+    for _, template in ipairs(art.windows) do
+      windows[template.key] = {
+        x = template.x * 8,
+        y = template.y * 8,
+        width = template.width * 8,
+        height = template.height * 8,
+        framed = template.framed,
+      }
+    end
+    local manifest = {
+      schema = PokemonCareAssetSchema.REMINDER_SCHEMA,
+      main = compileReminderSurface(
+        archive,
+        charData,
+        palette,
+        art.main.screen,
+        "reminder-main",
+        dependencies,
+        assets
+      ),
+      sub = compileReminderSurface(
+        archive,
+        charData,
+        palette,
+        art.sub.screen,
+        "reminder-sub",
+        dependencies,
+        assets
+      ),
+      buttons = compileReminderSurface(
+        archive,
+        charData,
+        palette,
+        art.buttons.screen,
+        "reminder-buttons",
+        dependencies,
+        assets
+      ),
+      windows = windows,
+      messages = lines,
+    }
+    local valid, validationErr = pcall(PokemonCareAssetSchema.assertReminderManifest, manifest)
+    if not valid then
+      sourceError("compiled reminder manifest is invalid", { cause = tostring(validationErr) })
+    end
+    return { manifest = manifest, assets = assets, dependencies = dependencies }
+  end, romFs)
+end
+
 function PokemonCareAssetCompiler.compileTrade(romFs)
   local dependencies = {}
   local assets = {}

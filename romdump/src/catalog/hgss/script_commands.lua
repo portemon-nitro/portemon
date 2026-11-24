@@ -2541,10 +2541,10 @@ return {
       },
     },
     [352] = {
+      classification = "native_wait",
+      feature = "mons",
+      disposition = "supported",
       name = "ScrCmd_PokemonSummaryScreen",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "the Pokemon summary application is not implemented",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -2552,10 +2552,10 @@ return {
       },
     },
     [353] = {
+      classification = "continue_same_tick",
+      feature = "mons",
+      disposition = "supported",
       name = "ScrCmd_GetMoveSelection",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "move-selection application behavior is not implemented",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -2909,12 +2909,18 @@ return {
       },
     },
     [394] = {
+      classification = "native_wait",
+      feature = "mons",
+      disposition = "supported",
       name = "ScrCmd_OpenLearnForgetMove",
       widths = {
         [1] = 2,
       },
     },
     [395] = {
+      classification = "continue_same_tick",
+      feature = "mons",
+      disposition = "supported",
       name = "ScrCmd_GetLearnForgetMoveResult",
       widths = {
         [1] = 2,
@@ -3505,6 +3511,9 @@ return {
       },
     },
     [466] = {
+      classification = "continue_same_tick",
+      feature = "mons",
+      disposition = "supported",
       name = "ScrCmd_MonHasRelearnableMoves",
       widths = {
         [1] = 2,
@@ -3512,22 +3521,28 @@ return {
       },
     },
     [467] = {
+      classification = "native_wait",
+      feature = "mons",
+      disposition = "supported",
       name = "ScrCmd_MoveRelearnerInit",
       widths = {
         [1] = 2,
       },
     },
     [468] = {
+      classification = "native_wait",
+      feature = "mons",
+      disposition = "supported",
       name = "ScrCmd_MoveTutorInit",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "move tutor initialization needs the tutor application",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [469] = {
+      classification = "continue_same_tick",
+      feature = "mons",
+      disposition = "supported",
       name = "ScrCmd_MoveRelearnerGetResult",
       widths = {
         [1] = 2,

@@ -1716,11 +1716,18 @@ function FieldState:draw()
   -- leaves the overworld for it, so its generated scene paints over the
   -- cleared screen and under nothing else. A pending bundle paints nothing;
   -- the scene's gameplay path never waits for the renderer.
+  -- The script Summary child and the reminder both ride this takeover: a care
+  -- scene draws through its own renderer, a Summary child through the field's
+  -- summary presentation, and a pending bundle draws nothing.
   local careHost = self.runtime.pokemonCareHost
   if careHost ~= nil and careHost:isActive() then
     local careStatus = careHost:snapshot()
-    if careStatus ~= nil and careStatus.presentationReady then
-      resources:drawPokemonCare(careStatus)
+    if careStatus ~= nil then
+      if careStatus.presentationReady then
+        resources:drawPokemonCare(careStatus)
+      elseif careStatus.presentation ~= nil then
+        resources:drawCareSummary(careStatus)
+      end
     end
   end
   -- The retained Start Menu draws first and the foreground child second,

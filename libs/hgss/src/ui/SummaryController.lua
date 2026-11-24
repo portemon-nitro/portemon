@@ -777,11 +777,14 @@ local function confirmRoot(self)
   end
 end
 
+-- The picker's last reachable row: the replacement contexts that preview the
+-- move being learned carry the source's "new move" row below the four learned
+-- rows, every other context stops at the learned moves.
 ---@param self SummaryController
 ---@return integer
 local function pickerMaxRow(self)
   local request = assert(self._request, "move_pick mode carries its request")
-  if request.context == "replace_machine" and request.prospectiveMove ~= nil then
+  if request.prospectiveMove ~= nil then
     return 4
   end
   return 3
@@ -794,7 +797,7 @@ local function confirmPickerRow(self)
   end
   local cursor = assert(self._moveSlot, "the picker carries its cursor")
   local request = assert(self._request, "move_pick mode carries its request")
-  if request.context == "replace_machine" and request.prospectiveMove ~= nil and cursor == 4 then
+  if request.prospectiveMove ~= nil and cursor == 4 then
     play(self, EFFECT.cancel)
     terminate(self, { kind = "cancelled" })
     return

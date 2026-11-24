@@ -3824,6 +3824,185 @@ do
   end
 end
 
+-- The scripted Summary and move-reminder family. ScrCmd_PokemonSummaryScreen
+-- and ScrCmd_OpenLearnForgetMove block the script on the native Summary
+-- application; the paired result commands read the answer the blocking task
+-- parked on the script instance exactly once, in the same tick. The reminder
+-- application blocks the same way and answers 0 only after its own
+-- publication, and ScrCmd_MonHasRelearnableMoves is a same-tick query. The main
+-- chunk is at LuaJIT's local budget, so these handlers live in a block.
+do
+  local SUMMARY_KEY = "__summary_application"
+  local RELEARNER_KEY = "__move_relearner"
+
+  ---@param run table<string, unknown>
+  ---@param key string
+  ---@param what string
+  ---@return table<string, unknown>
+  local function parked(run, key, what)
+    local instance = assert(run.instance, "the application commands run on a script instance")
+    local value = instance.locals[key]
+    if type(value) ~= "table" then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the script holds no " .. what .. " answer", {
+        scriptId = instance.scriptId,
+      })
+    end
+    return value --[[@as table<string, unknown>]]
+  end
+
+  ---@param run table<string, unknown>
+  ---@param value unknown
+  ---@param what string
+  ---@return integer
+  local function partySlot(run, value, what)
+    if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > 5 then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, what .. " names a party slot", {
+        scriptId = run.instance and run.instance.scriptId,
+        slot = value,
+      })
+    end
+    return value
+  end
+
+  -- ScrCmd_PokemonSummaryScreen: byte page selector, party slot through
+  -- ScriptGetVar, prospective move through ScriptGetVar. Page 0 opens the plain
+  -- Summary; page 1 opens the learn/forget page, whose MOVE_NONE prospective
+  -- move is the deletion picker.
+  HANDLERS.pokemon_summary_screen = function(node, run)
+    requireForeground(run, "pokemon_summary_screen")
+    requireService(run, "pokemonCare")
+    local mode = node.mode
+    local slot = partySlot(run, evalField(node, run, "slot"), "the script Summary")
+    local moveToLearn = evalField(node, run, "moveToLearn")
+    if type(moveToLearn) ~= "number" or moveToLearn % 1 ~= 0 then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the script Summary names its prospective move", {
+        scriptId = run.instance.scriptId,
+        move = moveToLearn,
+      })
+    end
+    local request = { slot = slot }
+    if mode == 0 then
+      if moveToLearn ~= 0 then
+        Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "a plain Summary previews no move", {
+          scriptId = run.instance.scriptId,
+          move = moveToLearn,
+        })
+      end
+      request.mode = "summary"
+    elseif mode == 1 then
+      if moveToLearn == 0 then
+        request.mode = "delete_move"
+      else
+        request.mode = "move_picker"
+        request.moveToLearn = requireService(run, "mons"):catalog():moveKeyByNativeId(moveToLearn)
+      end
+    else
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the script Summary names its page", {
+        scriptId = run.instance.scriptId,
+        mode = mode,
+      })
+    end
+    return blockOnTask(run, "summary_application", { request = request })
+  end
+
+  -- ScrCmd_GetMoveSelection: mode 1 answers the picker's move row (4 is the
+  -- source cancellation row) and mode 0 the final party slot; the parked
+  -- answer is consumed here.
+  HANDLERS.get_move_selection = function(node, run)
+    local instance = assert(run.instance, "the application commands run on a script instance")
+    local answer = parked(run, SUMMARY_KEY, "Summary application")
+    instance.locals[SUMMARY_KEY] = nil
+    local mode = node.mode
+    local value
+    if mode == 1 then
+      value = answer.moveSlot
+      if value == nil then
+        Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the Summary application answered no move row", {
+          scriptId = instance.scriptId,
+        })
+      end
+    elseif mode == 0 then
+      value = answer.partySlot
+    else
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the move-selection read names its mode", {
+        scriptId = instance.scriptId,
+        mode = mode,
+      })
+    end
+    semanticsFor(run).writeRef(node.result, value, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  -- ScrCmd_OpenLearnForgetMove: the deletion picker over one party slot.
+  HANDLERS.open_learn_forget_move = function(node, run)
+    requireForeground(run, "open_learn_forget_move")
+    requireService(run, "pokemonCare")
+    local slot = partySlot(run, evalField(node, run, "slot"), "the deletion picker")
+    return blockOnTask(run, "summary_application", { request = { mode = "delete_move", slot = slot } })
+  end
+
+  -- ScrCmd_GetLearnForgetMoveResult: the picker's move row, with the source
+  -- cancellation row 4 reported as 255, consumed once.
+  HANDLERS.get_learn_forget_move_result = function(node, run)
+    local instance = assert(run.instance, "the application commands run on a script instance")
+    local answer = parked(run, SUMMARY_KEY, "Summary application")
+    instance.locals[SUMMARY_KEY] = nil
+    local value = answer.moveSlot
+    if type(value) ~= "number" then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the deletion picker answered no move row", {
+        scriptId = instance.scriptId,
+      })
+    end
+    if value == 4 then
+      value = 255
+    end
+    semanticsFor(run).writeRef(node.result, value, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  -- ScrCmd_MonHasRelearnableMoves: the source's eligible level-up query in the
+  -- same tick, output variable first.
+  HANDLERS.mon_has_relearnable_moves = function(node, run)
+    local slot = partySlot(run, evalField(node, run, "slot"), "the relearn query")
+    local eligible = requireService(run, "moveTutor"):hasRelearnableMoves(slot)
+    semanticsFor(run).writeRef(node.result, eligible and 1 or 0, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  -- ScrCmd_MoveRelearnerInit: the level-up reminder over one party slot.
+  HANDLERS.move_relearner_init = function(node, run)
+    requireForeground(run, "move_relearner_init")
+    requireService(run, "pokemonCare")
+    local slot = partySlot(run, evalField(node, run, "slot"), "the move reminder")
+    return blockOnTask(run, "move_relearner", { request = { mode = "relearn", slot = slot } })
+  end
+
+  -- ScrCmd_MoveTutorInit: the same application for one offered move.
+  HANDLERS.move_tutor_init = function(node, run)
+    requireForeground(run, "move_tutor_init")
+    requireService(run, "pokemonCare")
+    local slot = partySlot(run, evalField(node, run, "slot"), "the move tutor lesson")
+    local move = evalField(node, run, "move")
+    if type(move) ~= "number" or move % 1 ~= 0 or move <= 0 then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the move tutor lesson names its offered move", {
+        scriptId = run.instance.scriptId,
+        move = move,
+      })
+    end
+    return blockOnTask(run, "move_relearner", { request = { mode = "tutor", slot = slot, move = move } })
+  end
+
+  -- ScrCmd_MoveRelearnerGetResult: 0 when the application published a move,
+  -- 255 when it was cancelled or refused; consumed once.
+  HANDLERS.move_relearner_get_result = function(node, run)
+    local instance = assert(run.instance, "the application commands run on a script instance")
+    local answer = parked(run, RELEARNER_KEY, "reminder application")
+    instance.locals[RELEARNER_KEY] = nil
+    semanticsFor(run).writeRef(node.result, answer.learned == true and 0 or 255, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+end
+
 -- The source legendary-story scenes: ScrCmd_ShowLegendaryWing, ScrCmd_
 -- LanceFlyAway, ScrCmd_Cinematic, ScrCmd_UnownCircle and ScrCmd_
 -- SinjohGetEggCutscene all return TRUE in the source, so they block the script

@@ -178,14 +178,53 @@ local function hatchManifest()
   }
 end
 
+-- The reminder presentation's published shape: the source screens, its button
+-- tiles, the source window rectangles in pixels and the compiled lines.
+local function reminderManifest()
+  local image = "data/generated/pokemon-care/reminder/staged.png"
+  local function box(x, y, width, height)
+    return { x = x, y = y, width = width, height = height }
+  end
+  return {
+    schema = PokemonCareAssetSchema.REMINDER_SCHEMA,
+    main = { image = image, width = 256, height = 256 },
+    sub = { image = image, width = 256, height = 256 },
+    buttons = { image = image, width = 512, height = 256 },
+    windows = {
+      categoryLabel = box(136, 32, 48, 16),
+      powerLabel = box(136, 48, 48, 16),
+      accuracyLabel = box(136, 64, 64, 16),
+      power = box(224, 48, 24, 16),
+      accuracy = box(224, 64, 24, 16),
+      description = box(136, 80, 120, 80),
+      message = box(16, 152, 216, 32),
+      title = box(8, 0, 240, 24),
+      teach = box(120, 168, 64, 24),
+      returnButton = box(192, 168, 64, 24),
+      list = box(40, 32, 80, 128),
+      knownTitle = box(184, 104, 56, 32),
+      monName = box(152, 40, 80, 128),
+      promptYes = box(208, 80, 48, 32),
+      promptNo = box(208, 112, 48, 32),
+    },
+    messages = {
+      { id = 1, text = "Teach the move {move}?" },
+      { id = 2, text = "Give up trying to teach a new move to {mon}?" },
+      { id = 12, text = "Should the move {move} be remembered?" },
+      { id = 22, text = "CATEGORY" },
+    },
+  }
+end
+
 local function cacheFs(backend)
   return CacheFs.forVersion("heartgold", backend or FakeCache.new())
 end
 
-local function stage(cacheFsValue, payload, marker, hatch, trade)
+local function stage(cacheFsValue, payload, marker, hatch, trade, reminder)
   cacheFsValue:writeLua(PokemonCareCache.catalogPath(), payload)
   cacheFsValue:writeLua(PokemonCareCache.hatchManifestPath(), hatch or hatchManifest())
   cacheFsValue:writeLua(PokemonCareCache.tradeManifestPath(), trade or tradeManifest())
+  cacheFsValue:writeLua(PokemonCareCache.reminderManifestPath(), reminder or reminderManifest())
   cacheFsValue:write(PokemonCareCache.markerPath(), marker)
 end
 

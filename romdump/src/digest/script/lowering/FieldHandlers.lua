@@ -2204,6 +2204,17 @@ FieldHandlers[776] = require("romdump.src.digest.script.lowering.PokemonCareHand
 FieldHandlers[777] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").monIsFromTogepiEgg
 FieldHandlers[690] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").sanitizeMon
 FieldHandlers[715] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").updateObjects
+-- The Summary and move-reminder family: the scripted Summary and its result
+-- read, the deletion picker and its result, the relearn eligibility query, and
+-- the reminder/tutor application launches with their single result read.
+FieldHandlers[352] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").pokemonSummaryScreen
+FieldHandlers[353] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").getMoveSelection
+FieldHandlers[394] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").openLearnForgetMove
+FieldHandlers[395] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").getLearnForgetMoveResult
+FieldHandlers[466] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").monHasRelearnableMoves
+FieldHandlers[467] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").moveRelearnerInit
+FieldHandlers[468] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").moveTutorInit
+FieldHandlers[469] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").moveRelearnerGetResult
 -- The NPC exchange and loan family: the trade context, its three queries, the
 -- blocking exchange, the release, the in-game-trade party picker, and the two
 -- loan commands.

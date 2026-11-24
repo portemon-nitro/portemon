@@ -15,6 +15,53 @@ local PokemonCareInterface = {}
 PokemonCareInterface.KINDS = {
   hatch = "hatch",
   trade = "trade",
+  move_relearner = "move_relearner",
+  summary_application = "summary_application",
+}
+
+-- The reminder application's two source modes: MoveRelearnerInit opens the
+-- level-up list, MoveTutorInit the same application for one offered move.
+PokemonCareInterface.RELEARNER_MODES = {
+  relearn = "relearn",
+  tutor = "tutor",
+}
+
+-- The source application states
+-- (src/application/move_relearner/move_relearner_app.c enum MoveRelearnerState).
+PokemonCareInterface.RELEARNER_PHASES = {
+  WAIT_FADE = "wait_fade",
+  INPUT = "input",
+  WAIT_MESSAGE = "wait_message",
+  SHOW_YES_NO = "show_yes_no",
+  HANDLE_YES_NO = "handle_yes_no",
+  TEACH_MOVE = "teach_move",
+  PRINT_LEARNED = "print_learned",
+  ASK_AFTER_SUMMARY = "ask_after_summary",
+  FADE_OUT = "fade_out",
+  EXIT = "exit",
+  FADE_OUT_TO_SUMMARY = "fade_out_to_summary",
+  RUN_SUMMARY = "run_summary",
+  BUTTON_FLASH = "button_flash",
+  ASK_GIVE_UP = "ask_give_up",
+  ASK_TEACH = "ask_teach",
+}
+
+-- The source yes/no questions (enum MoveRelearnerQuestion).
+PokemonCareInterface.RELEARNER_QUESTIONS = {
+  teach = "teach",
+  give_up = "give_up",
+  delete_move = "delete_move",
+  stop_teaching = "stop_teaching",
+  forget_move = "forget_move",
+}
+
+-- The script Summary application's closed modes: the plain Summary read, the
+-- move-picker page a machine or tutor replacement opens, and the deletion
+-- picker OpenLearnForgetMove launches.
+PokemonCareInterface.SUMMARY_MODES = {
+  summary = "summary",
+  move_picker = "move_picker",
+  delete_move = "delete_move",
 }
 
 -- The app71 trade sequence's scenes in source order (sTradeSequenceScenes):
@@ -93,6 +140,75 @@ PokemonCareInterface.HATCH_PHASES = {
 ---@class PokemonCareHatchResult
 ---@field kind "hatch"
 ---@field wantToName boolean the source yes/no answer
+---@field done boolean
+
+---@class PokemonCareRelearnerRequest
+---@field kind "move_relearner"
+---@field mode "relearn"|"tutor"
+---@field slot integer canonical party slot the lesson applies to
+---@field revision integer the party revision the request was taken at
+---@field nickname string the subject's display name
+---@field moves string[] the ordered eligible moves (one for a tutor lesson)
+---@field known string[] the subject's current moves in slot order
+---@field subject PokemonCareRelearnerSubject the detached subject the main screen draws
+
+-- The detached subject the reminder's main screen draws: the generated species
+-- identity, the form, and the gender/palette its portrait reads.
+---@class PokemonCareRelearnerSubject
+---@field speciesKey string
+---@field form integer
+---@field gender "male"|"female"
+---@field shiny boolean
+
+---@class PokemonCareRelearnerResult
+---@field kind "move_relearner"
+---@field learned boolean whether the source published the selected move
+---@field done boolean
+
+-- One move the source list draws: its key, the row label and the move facts the
+-- detail pane prints (src/application/move_relearner: MoveRelearner_PrintMoveInfo).
+---@class PokemonCareRelearnerRow
+---@field move string
+---@field label string
+---@field type string
+---@field category string
+---@field power integer
+---@field accuracy integer
+---@field description string
+---@field pp integer
+---@field maxPp integer
+
+---@class PokemonCareRelearnerSnapshot
+---@field kind "move_relearner"
+---@field mode "relearn"|"tutor"
+---@field phase string the source application state
+---@field frame integer frames spent in the current phase
+---@field nickname string the subject's display name
+---@field cursor integer the focused list row
+---@field scrollOffset integer the first drawn list row
+---@field moves PokemonCareRelearnerRow[] every eligible move in source order
+---@field visible integer[] the list rows on screen this frame
+---@field known PokemonCareRelearnerRow[] the subject's known moves
+---@field question { kind: string, selection: "yes"|"no" }? the open source question
+---@field selected integer? the target move row the replacement Summary answered
+---@field learnButton boolean whether the source's teach button is armed
+---@field flash string? the source button the flash animates ("teach"|"return")
+---@field done boolean
+---@field presentationReady boolean
+---@field preparationError string?
+
+---@class PokemonCareSummaryRequest
+---@field kind "summary_application"
+---@field mode "summary"|"move_picker"|"delete_move"
+---@field slot integer canonical party slot the Summary shows
+---@field revision integer the party revision the request was taken at
+---@field moveToLearn string? the prospective move a replacement picker previews
+
+---@class PokemonCareSummaryResult
+---@field kind "summary_application"
+---@field partySlot integer the final party slot the application closed on
+---@field moveSlot integer? the picked move row, 4 when the picker cancelled
+---@field cancelled boolean
 ---@field done boolean
 
 -- One depart light streak on screen: its source x, the head and tail y the
@@ -396,10 +512,198 @@ function PokemonCareInterface.assertTradeResult(result)
   return typed --[[@as PokemonCareTradeResult]]
 end
 
+-- The scheduler input snapshot the care host receives, translated into the
+-- event list the Summary application consumes. The care child is the modal's
+-- input owner while it runs, so its raw edges are the same navigate/confirm/
+-- cancel events the field's UI lane produces.
+---@param input table<string, unknown>? the scheduler input snapshot
+---@return { type: string, direction: string? }[]
+function PokemonCareInterface.summaryInputEvents(input)
+  if type(input) ~= "table" then
+    return {}
+  end
+  local events = {}
+  if type(input.pressedDirection) == "string" then
+    events[#events + 1] = { type = "navigate", direction = input.pressedDirection }
+  end
+  if input.pressedAction == true then
+    events[#events + 1] = { type = "confirm" }
+  end
+  if input.pressedCancel == true then
+    events[#events + 1] = { type = "cancel" }
+  end
+  if input.menuPressed == true then
+    events[#events + 1] = { type = "menu" }
+  end
+  return events
+end
+
 ---@param value unknown
 ---@return boolean
 function PokemonCareInterface.isKind(value)
   return type(value) == "string" and PokemonCareInterface.KINDS[value] ~= nil
+end
+
+---@param value unknown
+---@return boolean
+function PokemonCareInterface.isRelearnerMode(value)
+  return type(value) == "string" and PokemonCareInterface.RELEARNER_MODES[value] ~= nil
+end
+
+---@param value unknown
+---@return boolean
+function PokemonCareInterface.isSummaryMode(value)
+  return type(value) == "string" and PokemonCareInterface.SUMMARY_MODES[value] ~= nil
+end
+
+---@param slot unknown
+---@param what string
+local function assertPartySubject(slot, what)
+  assert(
+    type(slot) == "number" and slot % 1 == 0 and slot >= 0 and slot <= 5,
+    what .. " names a party slot in 0..5"
+  )
+end
+
+---@param moves unknown
+---@param what string
+local function assertMoveKeys(moves, what)
+  assert(type(moves) == "table", what .. " arrives as a move list")
+  for index, move in ipairs(moves) do
+    assert(type(move) == "string" and move ~= "", what .. " carries a named move at " .. tostring(index))
+  end
+end
+
+-- Validates one reminder application request: the source mode, the canonical
+-- party slot and revision it was taken at, the subject's display name, the
+-- ordered eligible list (one entry for a tutor lesson) and the moves the
+-- subject already knows. Unknown fields fail, so a caller cannot smuggle
+-- state through the request record.
+---@param request unknown
+---@return PokemonCareRelearnerRequest
+function PokemonCareInterface.assertRelearnerRequest(request)
+  assert(type(request) == "table", "care reminder requests are records")
+  local typed = request --[[@as table<string, unknown>]]
+  for key in pairs(typed) do
+    assert(
+      key == "kind" or key == "mode" or key == "slot" or key == "revision" or key == "nickname"
+        or key == "moves" or key == "known" or key == "subject",
+      "care reminder request carries an unknown field " .. tostring(key)
+    )
+  end
+  assert(typed.kind == PokemonCareInterface.KINDS.move_relearner, "care reminder request names its kind")
+  assert(PokemonCareInterface.isRelearnerMode(typed.mode), "care reminder request names its source mode")
+  assertPartySubject(typed.slot, "care reminder request")
+  assert(
+    type(typed.revision) == "number" and typed.revision % 1 == 0 and typed.revision >= 0,
+    "care reminder request carries its party revision"
+  )
+  assert(type(typed.nickname) == "string" and typed.nickname ~= "", "care reminder request carries its name")
+  assertMoveKeys(typed.moves, "care reminder eligible list")
+  assert(#typed.moves > 0, "care reminder requests are never opened empty")
+  if typed.mode == PokemonCareInterface.RELEARNER_MODES.tutor then
+    assert(#typed.moves == 1, "a tutor lesson offers exactly one move")
+  end
+  assertMoveKeys(typed.known, "care reminder known moves")
+  local subject = assert(typed.subject, "care reminder request carries its subject")
+  assert(type(subject) == "table", "a care reminder subject is a record")
+  for key in pairs(subject --[[@as table<string, unknown>]]) do
+    assert(
+      key == "speciesKey" or key == "form" or key == "gender" or key == "shiny",
+      "a care reminder subject carries " .. tostring(key)
+    )
+  end
+  assert(
+    type(subject.speciesKey) == "string" and subject.speciesKey ~= "",
+    "a care reminder subject carries its generated species identity"
+  )
+  assert(
+    type(subject.form) == "number" and subject.form % 1 == 0 and subject.form >= 0,
+    "a care reminder subject carries its form"
+  )
+  assert(
+    subject.gender == "male" or subject.gender == "female",
+    "a care reminder subject carries the gender its portrait reads"
+  )
+  assert(type(subject.shiny) == "boolean", "a care reminder subject carries its portrait palette flag")
+  return typed --[[@as PokemonCareRelearnerRequest]]
+end
+
+-- Validates one script Summary request: the closed mode, the party subject and
+-- revision, and the prospective move a replacement picker previews.
+---@param request unknown
+---@return PokemonCareSummaryRequest
+function PokemonCareInterface.assertSummaryRequest(request)
+  assert(type(request) == "table", "care summary requests are records")
+  local typed = request --[[@as table<string, unknown>]]
+  for key in pairs(typed) do
+    assert(
+      key == "kind" or key == "mode" or key == "slot" or key == "revision" or key == "moveToLearn",
+      "care summary request carries an unknown field " .. tostring(key)
+    )
+  end
+  assert(typed.kind == PokemonCareInterface.KINDS.summary_application, "care summary request names its kind")
+  assert(PokemonCareInterface.isSummaryMode(typed.mode), "care summary request names its mode")
+  assertPartySubject(typed.slot, "care summary request")
+  assert(
+    type(typed.revision) == "number" and typed.revision % 1 == 0 and typed.revision >= 0,
+    "care summary request carries its party revision"
+  )
+  if typed.mode == PokemonCareInterface.SUMMARY_MODES.summary then
+    assert(typed.moveToLearn == nil, "a plain Summary previews no move")
+  elseif typed.moveToLearn ~= nil then
+    assert(
+      type(typed.moveToLearn) == "string" and typed.moveToLearn ~= "",
+      "a replacement picker previews a named move"
+    )
+    assert(
+      typed.mode == PokemonCareInterface.SUMMARY_MODES.move_picker,
+      "preview rows belong to the move picker"
+    )
+  end
+  return typed --[[@as PokemonCareSummaryRequest]]
+end
+
+-- Validates one terminal reminder result: whether the source published a move.
+---@param result unknown
+---@return PokemonCareRelearnerResult
+function PokemonCareInterface.assertRelearnerResult(result)
+  assert(type(result) == "table", "care reminder results are records")
+  local typed = result --[[@as table<string, unknown>]]
+  for key in pairs(typed) do
+    assert(key == "kind" or key == "learned" or key == "done", "care reminder result carries " .. tostring(key))
+  end
+  assert(typed.kind == PokemonCareInterface.KINDS.move_relearner, "care reminder result names its kind")
+  assert(type(typed.learned) == "boolean", "care reminder result carries the source learned flag")
+  assert(type(typed.done) == "boolean", "care reminder result carries its completion flag")
+  return typed --[[@as PokemonCareRelearnerResult]]
+end
+
+-- Validates one terminal script Summary result: the final party slot, the
+-- picked move row (absent when the Summary was not a picker) and the source
+-- cancellation flag.
+---@param result unknown
+---@return PokemonCareSummaryResult
+function PokemonCareInterface.assertSummaryResult(result)
+  assert(type(result) == "table", "care summary results are records")
+  local typed = result --[[@as table<string, unknown>]]
+  for key in pairs(typed) do
+    assert(
+      key == "kind" or key == "partySlot" or key == "moveSlot" or key == "cancelled" or key == "done",
+      "care summary result carries " .. tostring(key)
+    )
+  end
+  assert(typed.kind == PokemonCareInterface.KINDS.summary_application, "care summary result names its kind")
+  assertPartySubject(typed.partySlot, "care summary result")
+  if typed.moveSlot ~= nil then
+    assert(
+      type(typed.moveSlot) == "number" and typed.moveSlot % 1 == 0 and typed.moveSlot >= 0 and typed.moveSlot <= 4,
+      "care summary result carries its source move row, 4 when the picker cancelled"
+    )
+  end
+  assert(type(typed.cancelled) == "boolean", "care summary result carries its cancellation flag")
+  assert(type(typed.done) == "boolean", "care summary result carries its completion flag")
+  return typed --[[@as PokemonCareSummaryResult]]
 end
 
 ---@param value unknown

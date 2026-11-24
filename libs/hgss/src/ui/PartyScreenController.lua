@@ -1273,6 +1273,10 @@ function PartyScreenController:_confirmMenuEntry()
     self:_openSubmenu(entry.kind)
     return
   end
+  if self._context == "daycare_store" and (entry.kind == "store" or entry.kind == "summary") then
+    self:_activateCareEntry(entry, slot)
+    return
+  end
   if entry.kind == "summary" then
     ---@cast slot integer
     self:_emitIntent({ kind = "summary", slot = slot, partyRevision = revision })
@@ -1303,10 +1307,6 @@ function PartyScreenController:_confirmMenuEntry()
     self._menu = nil
     self._menuIndex = nil
     self:_transition("choose_hp_target")
-    return
-  end
-  if self._context == "daycare_store" and (entry.kind == "store" or entry.kind == "summary") then
-    self:_activateCareEntry(entry, slot)
     return
   end
   if entry.confirm == true then

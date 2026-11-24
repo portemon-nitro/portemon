@@ -15,10 +15,12 @@ PokemonCareCache.FORMAT = Contract.pokemonCare.cacheFormat
 PokemonCareCache.CATALOG_SCHEMA = Contract.pokemonCare.catalogSchema
 PokemonCareCache.HATCH_SCHEMA = Contract.pokemonCare.hatchSchema
 PokemonCareCache.TRADE_SCHEMA = Contract.pokemonCare.tradeSchema
+PokemonCareCache.REMINDER_SCHEMA = Contract.pokemonCare.reminderSchema
 
 local DATA_DIR = "data/generated/pokemon-care"
 local HATCH_DIR = DATA_DIR .. "/hatch"
 local TRADE_DIR = DATA_DIR .. "/trade"
+local REMINDER_DIR = DATA_DIR .. "/reminder"
 
 function PokemonCareCache.dir()
   return DATA_DIR
@@ -46,6 +48,17 @@ end
 
 function PokemonCareCache.tradeManifestPath()
   return TRADE_DIR .. "/manifest.lua"
+end
+
+-- The reminder presentation's own directory and manifest.
+---@return string
+function PokemonCareCache.reminderDir()
+  return REMINDER_DIR
+end
+
+---@return string
+function PokemonCareCache.reminderManifestPath()
+  return REMINDER_DIR .. "/manifest.lua"
 end
 
 -- The trade scene's compiled Poke Ball model assets: content-addressed
@@ -184,6 +197,21 @@ function PokemonCareCache.tradeStagedPaths(manifest)
   return paths
 end
 
+-- Every staged surface the reminder manifest references, in a stable order so
+-- the presentation lease requests the same set on every open.
+---@param manifest table<string, unknown>
+---@return string[] paths
+function PokemonCareCache.referencedReminderPaths(manifest)
+  assert(type(manifest) == "table", "reminder paths require the manifest")
+  local paths = {}
+  for _, key in ipairs({ "main", "sub", "buttons" }) do
+    local surface = assert(manifest[key], "the reminder manifest carries its " .. key .. " surface") --[[@as table]]
+    paths[#paths + 1] = assert(surface.image, "the reminder surface carries its staged image") --[[@as string]]
+  end
+  table.sort(paths)
+  return paths
+end
+
 function PokemonCareCache.markerPath()
   return DATA_DIR .. "/complete"
 end
@@ -220,7 +248,14 @@ function PokemonCareCache.isReady(cacheFs, expectedMarker)
   if not tradeOk then
     return false
   end
-  return PokemonCareAssetSchema.isValidTradeManifest(trade)
+  if not PokemonCareAssetSchema.isValidTradeManifest(trade) then
+    return false
+  end
+  local reminderOk, reminder = pcall(cacheFs.loadLua, cacheFs, PokemonCareCache.reminderManifestPath())
+  if not reminderOk then
+    return false
+  end
+  return PokemonCareAssetSchema.isValidReminderManifest(reminder)
 end
 
 -- Trusted runtime load: presence plus the current schema identity is
@@ -247,6 +282,17 @@ function PokemonCareCache.loadTradeManifest(cacheFs)
   assert(
     type(manifest) == "table" and manifest.schema == PokemonCareCache.TRADE_SCHEMA,
     "the trade presentation manifest is unavailable"
+  )
+  return manifest
+end
+
+---@param cacheFs CacheFs
+---@return table<string, unknown>
+function PokemonCareCache.loadReminderManifest(cacheFs)
+  local manifest = cacheFs:loadLua(PokemonCareCache.reminderManifestPath())
+  assert(
+    type(manifest) == "table" and manifest.schema == PokemonCareCache.REMINDER_SCHEMA,
+    "the reminder presentation manifest is unavailable"
   )
   return manifest
 end

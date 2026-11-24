@@ -1955,6 +1955,64 @@ Schema.OPERATIONS = {
       result = { type = "value", required = true },
     },
   },
+  -- The scripted Summary and move-reminder family. ScrCmd_PokemonSummaryScreen
+  -- blocks the script on the Summary application: its byte page selector
+  -- chooses the plain Summary or the move-picker page, and the two value
+  -- operands name the party slot and the prospective move.
+  -- ScrCmd_GetMoveSelection reads that same-tick answer -- the final party
+  -- slot, or the picker's move row including 4 for cancellation -- and frees
+  -- it. ScrCmd_OpenLearnForgetMove blocks on the deletion picker for one party
+  -- slot and ScrCmd_GetLearnForgetMoveResult maps its answer to 255 on
+  -- cancellation. ScrCmd_MonHasRelearnableMoves answers the source query in
+  -- the same tick with its output variable first. ScrCmd_MoveRelearnerInit and
+  -- ScrCmd_MoveTutorInit block on the shared reminder application, and
+  -- ScrCmd_MoveRelearnerGetResult writes 0 only when that application
+  -- published a move.
+  pokemon_summary_screen = {
+    fields = {
+      mode = { type = "integer", required = true },
+      slot = { type = "scalar_or_value", required = true },
+      moveToLearn = { type = "scalar_or_value", required = true },
+    },
+  },
+  get_move_selection = {
+    fields = {
+      mode = { type = "integer", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  open_learn_forget_move = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+    },
+  },
+  get_learn_forget_move_result = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  mon_has_relearnable_moves = {
+    fields = {
+      result = { type = "value", required = true },
+      slot = { type = "scalar_or_value", required = true },
+    },
+  },
+  move_relearner_init = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+    },
+  },
+  move_tutor_init = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      move = { type = "scalar_or_value", required = true },
+    },
+  },
+  move_relearner_get_result = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
   -- The original Togepi gift carries no operands and runs in the same tick:
   -- the source checks party room before any creation draw.
   give_togepi_egg = { fields = {} },

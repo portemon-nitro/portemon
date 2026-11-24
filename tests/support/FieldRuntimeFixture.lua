@@ -1,4 +1,4 @@
--- Supplies the date and asset-preparation collaborators required by
+-- Supplies the date, asset-preparation and input collaborators required by
 -- FieldRuntime-only test doubles.
 
 local AssetNeedsRegistry = require("libs.hgss.src.field.AssetNeedsRegistry")
@@ -17,6 +17,14 @@ function FieldRuntimeFixture.withApricornDateOwner(runtime)
     or {
       processApricornDate = function()
         return { advanced = false }
+      end,
+    }
+  -- The fixed tick samples the live input owner; a double that models no player
+  -- input answers the production snapshot record with no held or fresh edges.
+  runtime.input = runtime.input
+    or {
+      snapshot = function()
+        return { heldDirection = nil, actionDown = false, cancelDown = false, menuDown = false }
       end,
     }
   return runtime
