@@ -4167,4 +4167,69 @@ function T.reserved_day_care_objects_reject_unknown_ids()
   mgr:dispose()
 end
 
+-- Source object-event defaults written before a map's objects exist
+-- (Field_SetEventDefaultMovement/Field_SetEventDefaultDirection): the write is
+-- staged on the entering map view, applied when the field creates the object,
+-- rejected for an identity that view does not declare, cleared with the entry,
+-- and never persisted.
+function T.staged_object_event_defaults_apply_when_the_entry_creates_the_object()
+  local activeObjects = { object({ objectEventId = 0 }) }
+  local enteringObjects = { object({ objectEventId = 0 }), object({ objectEventId = 1, x = 4, z = 5 }) }
+  local mgr = manager(activeObjects)
+  local entering = runtimeMap(enteringObjects, 62)
+  local eventState = FieldEventState.new()
+
+  mgr:beginEntry(entering)
+  Assert.isTrue(
+    mgr:setEventDefaultMovementType(1, "wander_around"),
+    "the entering map declares the object, so its default movement stages"
+  )
+  Assert.isTrue(mgr:setEventDefaultFacing(1, "east"), "the entering map declares the object, so its facing stages")
+  Assert.isFalse(
+    mgr:setEventDefaultMovementType(5, "wander_around"),
+    "an object the entering map does not declare stages nothing"
+  )
+  Assert.isFalse(mgr:setEventDefaultFacing(5, "east"), "an undeclared object stages no facing")
+
+  mgr:enterMap(entering, eventState, nil)
+  local actor = assert(mgr:getById("map:62:object:1"), "the entry creates the declared object")
+  Assert.equal(actor.movementType, "wander_around", "the created object takes the staged default movement")
+  Assert.equal(mgr:getFacing("map:62:object:1"), "east", "the created object takes the staged default facing")
+  local untouched = assert(mgr:getById("map:62:object:0"))
+  Assert.equal(untouched.movementType, "stationary", "an object without a staged default keeps its source movement")
+  Assert.equal(mgr:getFacing("map:62:object:0"), "south", "an object without a staged default keeps its source facing")
+  Assert.equal(
+    assert(enteringObjects[2]).movementType,
+    "stationary",
+    "the shared generated map record is never mutated"
+  )
+
+  local captured = mgr:captureObjects()
+  Assert.isNil(captured.eventDefaults, "staged defaults never reach the persisted snapshot")
+  Assert.isNil(FieldObjectSave.validate(captured).eventDefaults, "the validated snapshot carries no defaults")
+
+  mgr:leaveMap(62)
+  Assert.isNil(mgr.eventDefaults[entering], "retiring the map entry clears its staged defaults")
+  mgr:dispose()
+end
+
+-- The live-object path stays exactly as it was: a live actor's movement and
+-- facing change at once and stage nothing.
+function T.live_object_writes_stage_no_defaults()
+  local objects = { object({ objectEventId = 0 }) }
+  local mgr = manager(objects)
+  local entering = runtimeMap(objects, 61)
+  mgr:beginEntry(entering)
+  mgr:setMovementType("map:61:object:0", "wander_around")
+  mgr:setFacing("map:61:object:0", "west")
+  local actor = assert(mgr:getById("map:61:object:0"))
+  Assert.equal(actor.movementType, "wander_around", "the live actor takes the movement at once")
+  Assert.equal(mgr:getFacing("map:61:object:0"), "west", "the live actor takes the facing at once")
+  Assert.isNil(
+    mgr.eventDefaults[entering],
+    "a live-object write stages no object-event default"
+  )
+  mgr:dispose()
+end
+
 return { tests = T }

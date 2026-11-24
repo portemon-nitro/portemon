@@ -16,6 +16,8 @@ local ItemFixture = require("libs.items.tests.item_fixture")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
+local Personality = require("libs.mons.src.gen4.Personality")
+local Party = require("libs.mons.src.Party")
 
 local T = {}
 
@@ -56,6 +58,50 @@ local function newActors()
   return record
 end
 
+-- A recording phone owner: the Day-Care call is one trigger flag on the
+-- companion state, so the fixture observes the raise without a phone app.
+local function newPhone()
+  local record = { raised = {}, eggTriggerKey = "gear.trigger.5" }
+  record.state = {
+    setTrigger = function(_, key, active)
+      record.raised[#record.raised + 1] = { key = key, active = active }
+    end,
+  }
+  return record
+end
+
+-- The compiled care tables for the fixture species: the egg species each
+-- mother resolves to, the offspring egg moves, and the source incense pairs.
+local function newCare()
+  return {
+    eggSpecies = {
+      CHIKORITA = "CHIKORITA",
+      TOTODILE = "TOTODILE",
+      EEVEE = "EEVEE",
+      PICHU = "PICHU",
+      SHEDINJA = "SHEDINJA",
+    },
+    eggMoves = { EEVEE = { "TOXIC" } },
+    incense = { { baby = "MUNCHLAX", item = "FULL_INCENSE", parent = "SNORLAX" } },
+  }
+end
+
+-- The service's injected source draws: a mutable scripted linear value list
+-- and one mutable 32-bit personality, so a step check is deterministic and the
+-- fixture can observe exactly how many values were consumed.
+local function newDraws()
+  local draws = { values = {}, lcCalls = 0, mtCalls = 0, personality = 0x12345678 }
+  function draws.lc()
+    draws.lcCalls = draws.lcCalls + 1
+    return draws.values[draws.lcCalls] or 0
+  end
+  function draws.mt()
+    draws.mtCalls = draws.mtCalls + 1
+    return draws.personality
+  end
+  return draws
+end
+
 ---@return { service: DaycareService, mons: table, bag: table, stats: table, actors: table, catalog: table, state: table }
 local function fixture()
   local catalog = CatalogFixture.makeCatalog()
@@ -67,24 +113,41 @@ local function fixture()
   local state = DaycareState.restore(DaycareState.initial(), function(record)
     return mons:validateStoredMon(record)
   end)
-  local service = DaycareService.new({
-    state = state,
-    mons = mons,
-    bag = bag,
-    stats = stats,
-    actors = actors,
-    catalog = catalog,
-    currentMap = function()
-      return { mapId = 42 }
-    end,
-  })
+  local phone = newPhone()
+  local draws = newDraws()
+  local care = newCare()
+  local function newService(bagService)
+    return DaycareService.new({
+      state = state,
+      mons = mons,
+      bag = bagService,
+      stats = stats,
+      actors = actors,
+      catalog = catalog,
+      care = care,
+      profile = CatalogFixture.profile(),
+      date = function()
+        return CatalogFixture.metDate()
+      end,
+      lc = draws.lc,
+      mt = draws.mt,
+      phone = phone,
+      currentMap = function()
+        return { mapId = 42 }
+      end,
+    })
+  end
   return {
-    service = service,
+    service = newService(bag),
+    makeService = newService,
     mons = mons,
     bag = bag,
     stats = stats,
     actors = actors,
     catalog = catalog,
+    care = care,
+    phone = phone,
+    draws = draws,
     state = state,
     factory = factory,
   }
@@ -253,7 +316,8 @@ end
 function T.committed_steps_reach_only_occupied_parents()
   local world = fixture()
   world.service:noteCommittedStep()
-  Assert.equal(world.state:revision(), 0, "an empty Day Care stages nothing")
+  Assert.equal(world.state:count(), 0, "an empty Day Care holds no parent")
+  Assert.equal(world.state:eggCycleCounter(), 1, "the source cycle counter advances on every processed step")
   local slot = gift(world, { species = "CHIKORITA", level = 5 })
   gift(world, { species = "TOTODILE", level = 5 })
   world.service:deposit(slot)
@@ -305,17 +369,7 @@ end
 function T.sanitize_leaves_the_parent_and_bag_unchanged_when_the_bag_refuses()
   local world = fixture()
   local slot = gift(world, { species = "EEVEE", level = 5, heldItem = "ITEM_112" })
-  local service = DaycareService.new({
-    state = world.state,
-    mons = world.mons,
-    bag = refusingBag(world.bag),
-    stats = world.stats,
-    actors = world.actors,
-    catalog = world.catalog,
-    currentMap = function()
-      return { mapId = 42 }
-    end,
-  })
+  local service = world.makeService(refusingBag(world.bag))
   local before = world.mons:partyMon(slot)
   local revision = world.mons:partyRevision()
   local bagRevision = world.bag:revision()
@@ -344,6 +398,227 @@ function T.yard_objects_are_installed_per_occupied_slot_and_cleared_when_empty()
   Assert.equal(spec.sprite, world.catalog:followerSelection(world.state:mon(0)), "the catalog's own follower selection")
   Assert.equal(spec.visualId, world.catalog:followerSelection(world.state:mon(0)).visualId)
   Assert.deepEqual(world.actors.cleared, { 251 }, "the empty second slot clears its object")
+end
+
+-- Stages one live party record through the canonical party publication, so the
+-- deposit copies the edited identity.
+---@param world table
+---@param slot integer
+---@param change fun(mon: table)
+local function stageMon(world, slot, change)
+  local mon = world.mons:partyMon(slot)
+  change(mon)
+  local prepared = assert(world.mons:preparePartyChanges(world.mons:partyRevision(), { { slot = slot, mon = mon } }))
+  prepared.publish()
+end
+
+---@param ratio integer
+---@param gender string
+---@return integer
+local function personalityFor(ratio, gender)
+  for candidate = 0, 800 do
+    if Personality.gender(ratio, candidate) == gender then
+      return candidate
+    end
+  end
+  error("no personality resolves " .. gender, 0)
+end
+
+-- Deposits one gender-staged pair of the named species.
+---@param world table
+---@param first { species: string, gender: string, trainerId: integer?, moves: string[]?, ivs: table? }
+---@param second { species: string, gender: string, trainerId: integer?, moves: string[]?, ivs: table? }
+local function depositPair(world, first, second)
+  for _, spec in ipairs({ first, second }) do
+    local slot = gift(world, { species = spec.species, level = 20 })
+    stageMon(world, slot, function(mon)
+      local ratio = world.catalog:species(spec.species).genderRatio
+      mon.personality = personalityFor(ratio, spec.gender)
+      if spec.trainerId ~= nil then
+        mon.origin.trainerId = spec.trainerId
+      end
+      if spec.moves ~= nil then
+        local moves = {}
+        for index, key in ipairs(spec.moves) do
+          moves[index] = { move = key, pp = world.catalog:move(key).basePp, ppUps = 0 }
+        end
+        mon.moves = moves
+      end
+      if spec.ivs ~= nil then
+        mon.ivs = spec.ivs
+      end
+      mon.condition = { currentHp = world.mons:derive(mon).maxHp, effects = {} }
+    end)
+    world.service:deposit(slot)
+  end
+end
+
+function T.compatibility_categories_come_from_the_stored_parents()
+  local world = fixture()
+  depositPair(world, { species = "CHIKORITA", gender = "female" }, { species = "CHIKORITA", gender = "male" })
+  Assert.equal(world.service:compatibility(), 50, "the same species and one trainer identity is medium")
+  Assert.equal(world.service:compatibilityCategory(), 1, "medium compatibility reports one")
+
+  local other = fixture()
+  depositPair(other, { species = "CHIKORITA", gender = "female" }, {
+    species = "CHIKORITA",
+    gender = "male",
+    trainerId = CatalogFixture.profile().trainerId + 1,
+  })
+  Assert.equal(other.service:compatibility(), 70, "the same species across trainer identities is maximum")
+  Assert.equal(other.service:compatibilityCategory(), 0, "maximum compatibility reports zero")
+
+  local low = fixture()
+  depositPair(low, { species = "CHIKORITA", gender = "female" }, { species = "TOTODILE", gender = "male" })
+  Assert.equal(low.service:compatibilityCategory(), 2, "different species and one identity is low")
+
+  local none = fixture()
+  depositPair(none, { species = "CHIKORITA", gender = "female" }, { species = "PICHU", gender = "male" })
+  Assert.equal(none.service:compatibilityCategory(), 3, "an undiscovered partner is incompatible")
+end
+
+function T.a_step_check_stores_only_the_pending_identity()
+  local world = fixture()
+  depositPair(world, { species = "CHIKORITA", gender = "female" }, { species = "CHIKORITA", gender = "male" })
+  for _ = 1, 254 do
+    world.service:noteCommittedStep()
+  end
+  Assert.equal(world.state:steps(0), 254, "each committed step advances the first parent")
+  Assert.equal(world.state:pendingEggPid(), 0, "no check runs before the source step")
+  Assert.equal(world.draws.lcCalls, 0, "no draw precedes the source step")
+  Assert.equal(world.mons:partyCount(), 0, "no Egg exists before the check")
+
+  world.service:noteCommittedStep()
+  Assert.equal(world.state:steps(0), 255, "the check lands on the 255th stored step")
+  Assert.equal(world.draws.lcCalls, 1, "the check draws exactly one compatibility value")
+  Assert.equal(world.state:pendingEggPid(), 0x12345678, "a successful check stores the pending personality")
+  Assert.equal(world.mons:partyCount(), 0, "the check builds no finished Egg")
+  Assert.equal(world.state:count(), 2, "the check keeps both parents in care")
+  Assert.deepEqual(
+    world.phone.raised,
+    { { key = "gear.trigger.5", active = true } },
+    "a successful check raises the durable Day-Care call"
+  )
+  Assert.isTrue(world.service:hasEgg(), "the pending identity answers the source egg query")
+  Assert.equal(world.state:eggCycleCounter(), 0, "the 255th counter value completes its own cycle")
+end
+
+function T.a_failed_check_stores_nothing_and_still_draws_once()
+  local world = fixture()
+  depositPair(world, { species = "CHIKORITA", gender = "female" }, { species = "TOTODILE", gender = "male" })
+  world.draws.values = { 0xFFFF }
+  for _ = 1, 255 do
+    world.service:noteCommittedStep()
+  end
+  Assert.equal(world.draws.lcCalls, 1, "an incompatible roll still draws its value")
+  Assert.equal(world.state:pendingEggPid(), 0, "a failed roll stores no identity")
+  Assert.equal(#world.phone.raised, 0, "a failed roll raises no call")
+end
+
+function T.the_cycle_counter_follows_the_source_date()
+  local world = fixture()
+  depositPair(world, { species = "CHIKORITA", gender = "female" }, { species = "CHIKORITA", gender = "male" })
+  Assert.isTrue(world.mons:giveEgg({ species = "PICHU", locationOffset = 14 }), "the party takes one Egg")
+  Assert.isTrue(world.mons:giveEgg({ species = "PICHU", locationOffset = 14 }), "the party takes a second Egg")
+  for slot = 0, 1 do
+    stageMon(world, slot, function(mon)
+      mon.friendship = 9
+    end)
+  end
+  world.service:noteCommittedStep()
+  Assert.equal(world.state:eggCycleCounter(), 1, "an ordinary date keeps counting toward its threshold")
+  for _ = 2, 255 do
+    world.service:noteCommittedStep()
+  end
+  Assert.equal(world.state:eggCycleCounter(), 0, "the full cycle completes and resets")
+  Assert.equal(world.mons:partyMon(0).friendship, 8, "a completed cycle decrements the party Egg")
+  Assert.equal(world.mons:partyMon(1).friendship, 8, "every party Egg loses the same decrement")
+end
+
+function T.egg_collection_appends_the_resolved_egg_and_clears_the_identity()
+  local world = fixture()
+  depositPair(world, {
+    species = "CHIKORITA",
+    gender = "female",
+    moves = { "GROWL", "RAZOR_LEAF", "SYNTHESIS" },
+    ivs = { hp = 31, attack = 31, defense = 31, speed = 31, specialAttack = 31, specialDefense = 31 },
+  }, {
+    species = "CHIKORITA",
+    gender = "male",
+    moves = { "TACKLE", "TOXIC", "SYNTHESIS" },
+    ivs = { hp = 0, attack = 0, defense = 0, speed = 0, specialAttack = 0, specialDefense = 0 },
+  })
+  for _ = 1, 255 do
+    world.service:noteCommittedStep()
+  end
+  local pending = world.state:pendingEggPid()
+  Assert.isTrue(pending ~= 0, "the source step produced an identity")
+  local drawnBefore = world.draws.lcCalls
+  local generatorBefore = world.mons:capture().rng.calls
+
+  Assert.isTrue(world.service:receiveEgg(), "the party takes the generated Egg")
+  Assert.equal(world.mons:partyCount(), 1, "the collection appends one mon")
+  local mon = world.mons:partyMon(0)
+  Assert.isTrue(mon.isEgg == true, "the appended record is an unhatched Egg")
+  Assert.equal(mon.experience, 0, "the Egg enters at level one")
+  Assert.equal(mon.species, "CHIKORITA", "the offspring resolves through the care tables")
+  Assert.equal(mon.personality, pending, "the stored identity becomes the Egg's own personality")
+  Assert.equal(mon.heldItem, "NONE", "a generated Egg holds nothing")
+  Assert.equal(world.state:pendingEggPid(), 0, "the collection clears the pending identity")
+  Assert.equal(world.state:eggCycleCounter(), 0, "the collection clears the cycle progress with it")
+  Assert.equal(world.state:count(), 2, "the collection keeps both parents in care")
+  Assert.equal(
+    world.draws.lcCalls,
+    drawnBefore,
+    "the collection spends no step-check draw"
+  )
+  Assert.equal(
+    world.mons:capture().rng.calls - generatorBefore,
+    8,
+    "the collection draws the two initial values, three stat indices, and their parent choices"
+  )
+  local inherited = 0
+  for _, key in ipairs({ "hp", "attack", "defense", "speed", "specialAttack", "specialDefense" }) do
+    if mon.ivs[key] == 31 or mon.ivs[key] == 0 then
+      inherited = inherited + 1
+    end
+  end
+  Assert.equal(inherited, 3, "exactly three distinct individual values are inherited")
+  Assert.equal(mon.moves[1].move, "TACKLE", "the level-one default opens the inherited move set")
+  Assert.equal(mon.moves[2].move, "GROWL", "the second level-one default follows")
+  Assert.equal(mon.moves[3].move, "TOXIC", "the father's compatible machine comes next")
+  Assert.equal(mon.moves[4].move, "SYNTHESIS", "the shared learn-up move closes the set")
+  Assert.isFalse(world.service:hasEgg(), "no identity waits after the collection")
+end
+
+function T.egg_collection_refuses_a_full_party_and_duplicate_configuration()
+  local world = fixture()
+  depositPair(world, { species = "CHIKORITA", gender = "female" }, { species = "CHIKORITA", gender = "male" })
+  for _ = 1, 255 do
+    world.service:noteCommittedStep()
+  end
+  for _ = 1, Party.MAX do
+    Assert.isTrue(world.mons:giveMon({ species = "CHIKORITA", level = 5, form = 0, heldItem = "NONE" }))
+  end
+  local drawnBefore = world.draws.lcCalls
+  Assert.isFalse(world.service:receiveEgg(), "a full party takes no egg")
+  Assert.equal(world.draws.lcCalls, drawnBefore, "a refused collection draws nothing")
+  Assert.equal(world.mons:partyCount(), Party.MAX, "the full party stays as it was")
+  Assert.isTrue(world.state:pendingEggPid() ~= 0, "the refusal keeps the pending identity")
+end
+
+function T.egg_reset_clears_the_identity_and_progress_together()
+  local world = fixture()
+  depositPair(world, { species = "CHIKORITA", gender = "female" }, { species = "CHIKORITA", gender = "male" })
+  for _ = 1, 255 do
+    world.service:noteCommittedStep()
+  end
+  Assert.isTrue(world.state:pendingEggPid() ~= 0, "the source step produced an identity")
+  world.service:resetEgg()
+  Assert.equal(world.state:pendingEggPid(), 0, "the source reset clears the identity")
+  Assert.equal(world.state:eggCycleCounter(), 0, "the source reset clears the cycle progress")
+  Assert.equal(world.state:count(), 2, "the reset keeps both parents")
+  Assert.isFalse(world.service:hasEgg(), "nothing waits after the reset")
 end
 
 function T.service_capture_publishes_only_settled_custody()

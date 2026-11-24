@@ -2195,6 +2195,10 @@ FieldHandlers[373] = require("romdump.src.digest.script.lowering.PokemonCareHand
 FieldHandlers[385] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").monStats
 FieldHandlers[551] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").choosePartyMon
 FieldHandlers[552] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").partySelection
+FieldHandlers[365] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").resetEgg
+FieldHandlers[366] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").giveEgg
+FieldHandlers[387] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").compatibility
+FieldHandlers[388] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").checkEgg
 FieldHandlers[690] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").sanitizeMon
 FieldHandlers[715] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").updateObjects
 -- The gym mechanism family rides the cohesive StoryHandlers leaf for the same

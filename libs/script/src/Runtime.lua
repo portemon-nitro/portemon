@@ -1943,10 +1943,26 @@ end
 -- this handler: the actor manager's facing is the orientation its draw path
 -- samples every frame, so the facing write already updates the drawn
 -- orientation in the same tick. There is no separate draw request to perform.
+-- Source SetObjectFacing writes the map object's default facing
+-- (Field_SetEventDefaultDirection): a live object turns at once, and an object
+-- the field has not created yet takes the default when it is created. An
+-- identity the target map does not declare faults like the source assertion.
 local function handleSetObjectFacing(node, run)
   local semantics = semanticsFor(run)
-  local actorId = semantics.requireActor(node.actor, run)
-  run.services.actors:setFacing(actorId, semantics.decodeDirection(semantics.evaluateValue(node.direction, run), run))
+  local direction = semantics.decodeDirection(semantics.evaluateValue(node.direction, run), run)
+  local actorId = semantics.findActor(node.actor, run)
+  if actorId ~= nil and run.services.actors:exists(actorId) then
+    run.services.actors:setFacing(actorId, direction)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  if type(node.actor) == "table" and node.actor.mapIndex ~= nil then
+    local mapIndex = semantics.evaluateMapIndex(node.actor, run)
+    if run.services.actors:setEventDefaultFacing(mapIndex, direction) then
+      return Runtime.OUTCOME_CONTINUE
+    end
+  end
+  local liveActorId = semantics.requireActor(node.actor, run)
+  run.services.actors:setFacing(liveActorId, direction)
   return Runtime.OUTCOME_CONTINUE
 end
 
@@ -2260,6 +2276,13 @@ function HANDLERS.field_clock_hour(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+-- ChangeObjectMovement (109) reinitializes a live object's own movement and an
+-- object the current map does not carry is an intentional same-tick no-op.
+-- SetObjectMovementType (340) writes the map's object-event default
+-- (Field_SetEventDefaultMovement), which the field applies when it creates the
+-- object: the on-transition lifecycle runs before the map's objects exist, so a
+-- live actor is not required. An identity the entering map does not declare
+-- still faults like the source's own assertion.
 local function handleSetObjectMovementType(node, run)
   local semantics = semanticsFor(run)
   if node.changeMovement == true then
@@ -2270,8 +2293,19 @@ local function handleSetObjectMovementType(node, run)
     run.services.actors:setMovementType(actorId, node.movementType)
     return Runtime.OUTCOME_CONTINUE
   end
-  local actorId = semantics.requireActor(node.actor, run)
-  run.services.actors:setMovementType(actorId, node.movementType)
+  local actorId = semantics.findActor(node.actor, run)
+  if actorId ~= nil and run.services.actors:exists(actorId) then
+    run.services.actors:setMovementType(actorId, node.movementType)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  if type(node.actor) == "table" and node.actor.mapIndex ~= nil then
+    local mapIndex = semantics.evaluateMapIndex(node.actor, run)
+    if run.services.actors:setEventDefaultMovementType(mapIndex, node.movementType) then
+      return Runtime.OUTCOME_CONTINUE
+    end
+  end
+  local liveActorId = semantics.requireActor(node.actor, run)
+  run.services.actors:setMovementType(liveActorId, node.movementType)
   return Runtime.OUTCOME_CONTINUE
 end
 
@@ -3513,7 +3547,7 @@ HANDLERS.bag_has_item = handleBagHasItem
 HANDLERS.item_is_tmhm = handleItemIsTmhm
 HANDLERS.item_get_pocket = handleItemGetPocket
 HANDLERS.bag_get_quantity = handleBagGetQuantity
--- The Day Care family (opcodes 312/313/358/361/367/371/372/373/385/690/715):
+-- The Day Care family (opcodes 312/313/358/361/365/366/367/371/372/373/385/387/388/690/715):
 -- each handler evaluates its ScriptGetVar operands, calls exactly one named
 -- Day Care operation, writes the buffered display text the following message
 -- reads, and publishes its source output in the same tick. The main chunk is
@@ -3593,6 +3627,22 @@ do
   end
   HANDLERS.daycare_update_objects = function(_, run)
     daycareFor(run):updateYardObjects()
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.daycare_reset_egg = function(_, run)
+    daycareFor(run):resetEgg()
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.daycare_give_egg = function(_, run)
+    daycareFor(run):receiveEgg()
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.daycare_compatibility = function(node, run)
+    semanticsFor(run).writeRef(node.result, daycareFor(run):compatibilityCategory(), run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.daycare_check_egg = function(node, run)
+    semanticsFor(run).writeRef(node.result, daycareFor(run):hasEgg() and 1 or 0, run)
     return Runtime.OUTCOME_CONTINUE
   end
 end

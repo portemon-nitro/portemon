@@ -566,6 +566,19 @@ function FieldSession.new(options)
   return session
 end
 
+-- Announces the map the entry is installing to the actor owner before the
+-- on-transition lifecycle advances: the source loads the destination's
+-- object-event table first (fieldmap.c::FieldSystem_InitMapOnEnter) and
+-- creates its objects afterwards, so a transition script may write an object's
+-- default movement or facing for the object the field creates later.
+---@param self FieldSession
+function FieldSession:_announceEntryMap()
+  local actors = self.actors
+  if actors ~= nil and actors.beginEntry ~= nil then
+    actors:beginEntry(self.currentMap)
+  end
+end
+
 -- Source FieldSystem_ResetStateOnWarp and _OnMapConnection clear the
 -- Strength enablement whenever a map is entered by warp or connection. A load
 -- (a restored game opening the field on its saved map) is not a map-enter: it
@@ -576,6 +589,7 @@ function FieldSession:beginMapEntry(mode)
     self.fieldMoves:clearTransient()
   end
   self:validateSurfSpawn()
+  self:_announceEntryMap()
   self.mapEntryController:begin(mode or "full")
   self._entryTerrainPending = true
 end
@@ -2013,6 +2027,7 @@ function FieldSession:updateFixed(inputSnapshot)
         if self.roamerTransitions ~= nil then
           self.roamerTransitions.connection(sourceMapId, boundaryResult.newMapId)
         end
+        self:_announceEntryMap()
         self.mapEntryController:begin("connection")
       end
     end

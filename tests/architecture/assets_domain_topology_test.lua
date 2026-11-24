@@ -95,6 +95,8 @@ local SHARED = {
   "PcCache",
   "PokegearAssetSchema",
   "PokegearCache",
+  "PokemonCareAssetSchema",
+  "PokemonCareCache",
   "EasyChatAssetSchema",
   "EasyChatCache",
   "PokedexAssetSchema",

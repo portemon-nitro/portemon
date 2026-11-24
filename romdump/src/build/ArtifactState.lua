@@ -49,6 +49,9 @@ ArtifactState.KINDS = {
   -- its own image and marker, and the summary owns only the index,
   -- provenance, and completion.
   ["mon-catalog"] = true,
+  -- One staged care catalog: the source breeding tables the Day Care
+  -- resolves against.
+  ["pokemon-care"] = true,
   ["mon-layout"] = true,
   ["mon-icon-page"] = true,
   ["mon-portrait-page"] = true,

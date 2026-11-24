@@ -5,7 +5,9 @@
 -- (state.setTrigger) already exist; these are the missing call sites.
 -- When a detector is implemented, its function gains its parameters,
 -- performs the detection, and raises its flag instead of failing; the
--- function then moves to its detecting owner.
+-- function then moves to its detecting owner. The Day-Care egg call
+-- (slot 5) already lives with its detector: the Day Care step check
+-- raises it, and the Day-Care Man's own script clears it.
 
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
@@ -43,11 +45,6 @@ end
 -- Oak dex progress raises slot 4 (Oak dynamic).
 function PhoneTriggerSources.oakDexProgress()
   missingDetector(4, "dex", "an Oak dex progress milestone")
-end
-
--- A day-care egg raises slot 5 (Day-Care Man dynamic).
-function PhoneTriggerSources.daycareEgg()
-  missingDetector(5, "daycare", "a day-care egg")
 end
 
 -- The next safari test raises slot 6 (Baoba dynamic).

@@ -393,17 +393,18 @@ function DaycareState:prepareWithdraw(expectedRevision, slot0)
   }
 end
 
--- Stages one committed walking step on every occupied parent, each counter
--- saturating at its unsigned 32-bit ceiling.
+-- Stages one committed walking step: every occupied parent advances its
+-- counter (saturating at its unsigned 32-bit ceiling), and the caller's own
+-- egg-field outcome replaces the stored pending identity and cycle progress.
+-- The source increments the cycle counter on every processed step, so an empty
+-- Day Care still stages that field.
 ---@param expectedRevision integer
+---@param advance { pendingEggPid: integer?, eggCycleCounter: integer? }?
 ---@return DaycarePreparation|nil, string|nil
-function DaycareState:prepareStepAdvance(expectedRevision)
+function DaycareState:prepareStepAdvance(expectedRevision, advance)
   assert(type(expectedRevision) == "number", "day care step advance requires the expected revision")
   if expectedRevision ~= self._revision then
     return nil, "stale"
-  end
-  if #self._slots == 0 then
-    return prepareState(self, copySlots(self), self._pendingEggPid, self._eggCycleCounter)
   end
   local slots = copySlots(self)
   for _, slot in ipairs(slots) do
@@ -411,7 +412,48 @@ function DaycareState:prepareStepAdvance(expectedRevision)
       slot.steps = slot.steps + 1
     end
   end
-  return prepareState(self, slots, self._pendingEggPid, self._eggCycleCounter)
+  local pendingEggPid = self._pendingEggPid
+  local eggCycleCounter = self._eggCycleCounter
+  if advance ~= nil then
+    if advance.pendingEggPid ~= nil then
+      pendingEggPid = checkUnsigned(advance.pendingEggPid, "pending egg pid", DaycareState.MAX_EGG_PID)
+    end
+    if advance.eggCycleCounter ~= nil then
+      eggCycleCounter =
+        checkUnsigned(advance.eggCycleCounter, "egg cycle counter", DaycareState.MAX_EGG_CYCLE)
+    end
+  end
+  return prepareState(self, slots, pendingEggPid, eggCycleCounter)
+end
+
+-- Stages one produced egg identity: only the pending PID changes, exactly like
+-- GenerateEggPID's Save_Daycare_SetEggPID.
+---@param expectedRevision integer
+---@param pendingEggPid integer
+---@return DaycarePreparation|nil, string|nil
+function DaycareState:prepareEggPending(expectedRevision, pendingEggPid)
+  assert(type(expectedRevision) == "number", "day care egg production requires the expected revision")
+  if expectedRevision ~= self._revision then
+    return nil, "stale"
+  end
+  return prepareState(
+    self,
+    copySlots(self),
+    checkUnsigned(pendingEggPid, "pending egg pid", DaycareState.MAX_EGG_PID),
+    self._eggCycleCounter
+  )
+end
+
+-- Stages Save_Daycare_ResetEggStats: the pending identity and the cycle
+-- progress clear together, with custody untouched.
+---@param expectedRevision integer
+---@return DaycarePreparation|nil, string|nil
+function DaycareState:prepareEggReset(expectedRevision)
+  assert(type(expectedRevision) == "number", "day care egg reset requires the expected revision")
+  if expectedRevision ~= self._revision then
+    return nil, "stale"
+  end
+  return prepareState(self, copySlots(self), 0, 0)
 end
 
 return DaycareState

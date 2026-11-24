@@ -102,11 +102,15 @@ function T.every_care_command_declares_its_supported_source_timing()
     [313] = { classification = "continue_same_tick", widths = { 2 } },
     [358] = { classification = "continue_same_tick", widths = { 2 } },
     [361] = { classification = "continue_same_tick", widths = { 2, 2 } },
+    [365] = { classification = "continue_same_tick", widths = {} },
+    [366] = { classification = "continue_same_tick", widths = {} },
     [367] = { classification = "continue_same_tick", widths = { 2, 2 } },
     [371] = { classification = "continue_same_tick", widths = { 2, 2 } },
     [372] = { classification = "continue_same_tick", widths = { 2 } },
     [373] = { classification = "continue_same_tick", widths = { 2 } },
     [385] = { classification = "continue_same_tick", widths = { 2, 2, 2, 2 } },
+    [387] = { classification = "continue_same_tick", widths = { 2 } },
+    [388] = { classification = "continue_same_tick", widths = { 2 } },
     [551] = { classification = "native_wait", widths = { 2 } },
     [552] = { classification = "continue_same_tick", widths = { 2, 2 } },
     [690] = { classification = "continue_same_tick", widths = { 2, 2 } },
@@ -121,9 +125,20 @@ function T.every_care_command_declares_its_supported_source_timing()
   end
 end
 
+function T.egg_commands_lower_to_their_source_operations()
+  Assert.deepEqual(lowerOne(365), { op = "daycare_reset_egg", provenance = lowerOne(365).provenance })
+  Assert.deepEqual(lowerOne(366), { op = "daycare_give_egg", provenance = lowerOne(366).provenance })
+  local compatibility = lowerOne(387, { { value = 0x8004, width = 2 } })
+  Assert.equal(compatibility.op, "daycare_compatibility")
+  Assert.deepEqual(compatibility.result, sourceVar(0x8004), "the category lands in the output variable")
+  local check = lowerOne(388, { { value = 0x8004, width = 2 } })
+  Assert.equal(check.op, "daycare_check_egg")
+  Assert.deepEqual(check.result, sourceVar(0x8004), "the pending answer lands in the output variable")
+end
+
 -- Commands whose owner has not landed stay explicit unsupported nodes.
 function T.egg_production_commands_stay_deferred()
-  for _, opcode in ipairs({ 365, 366, 369, 387, 388 }) do
+  for _, opcode in ipairs({ 369 }) do
     local entry = assert(ScriptCommands.byOpcode[opcode], "the catalog names opcode " .. opcode)
     Assert.equal(entry.disposition, "deferred", "opcode " .. opcode .. " waits for its owner")
     local step = lowerOne(opcode, { { value = 0x8004, width = 2 } })

@@ -1,10 +1,13 @@
--- Source-faithful mon creation. Source: the retail ROM (CreateBoxMon, CreateMon, CreateStarter, GiveMon, and
--- trainer memo assignment). Creation consumes exactly
--- four generator draws in source order: two for the personality value (low
--- draw first) and two for the six individual values. The factory never
--- inserts into a party; the caller owns publication. Public creation methods
--- return a validated, native-projectable record or fail.
+-- Source-faithful mon creation. Source: the retail ROM (CreateBoxMon,
+-- CreateMon, CreateStarter, GiveMon, SetEggStats, GiveEggToPlayer, and trainer
+-- memo assignment). Ordinary creation consumes exactly four generator draws in
+-- source order: two for the personality value (low draw first) and two for the
+-- six individual values; a forced personality skips its two draws, and a bred
+-- egg continues with the source's three inherited values after those two. The
+-- factory never inserts into a party; the caller owns publication. Public
+-- creation methods return a validated, native-projectable record or fail.
 
+local Breeding = require("libs.mons.src.gen4.Breeding")
 local Experience = require("libs.mons.src.gen4.Experience")
 local Mon = require("libs.mons.src.Mon")
 local MonsErrors = require("libs.mons.src.errors")
@@ -246,39 +249,38 @@ function MonFactory:createScriptGift(request)
   return self:_finish(mon)
 end
 
--- The source script-gift egg (SetEggStats with memo strategy 3 in
--- get_egg.c): a level-1 form-zero egg in a Poke Ball whose friendship is
--- the personal egg cycles, whose egg record carries the receipt location
--- and date, and whose meeting record is cleared to location zero, no
--- date, and level zero. The biological species stays on the record while
--- the default display name resolves to the localized egg label, with no
--- custom nickname, fateful encounter, inherited moves, or forced
--- personality. Generation draws the exact four normal values; the caller
--- owns party insertion, including the source capacity check before any
--- draw.
----@param request { species: string, profile: { name: string, gender: integer, trainerId: integer }, location: integer, date: { year: integer, month: integer, day: integer } }
+-- The source unhatched-egg record (SetEggStats with memo strategy 3 in
+-- get_egg.c): a level-1 egg in a Poke Ball whose friendship is the personal
+-- egg cycles, whose egg record carries the receipt location and date, and
+-- whose meeting record is cleared to location zero, no date, and level zero.
+-- The biological species stays on the record while the default display name
+-- resolves to the localized egg label, with no custom nickname or fateful
+-- encounter. A forced personality skips its two generation draws; the caller
+-- owns party insertion, including the source capacity check before any draw.
+---@param request { species: string, form: integer, personality: integer?, profile: { name: string, gender: integer, trainerId: integer }, location: integer, date: { year: integer, month: integer, day: integer } }
 ---@return table<string, unknown>
-function MonFactory:createScriptEgg(request)
-  assert(type(request) == "table", "script-egg creation requires a request record")
-  local profile = assert(request.profile, "script-egg creation requires an owner profile")
-  local location = assert(request.location, "script-egg creation requires a receipt location")
-  local date = assert(request.date, "script-egg creation requires a receipt date")
+function MonFactory:_eggRecord(request)
+  assert(type(request) == "table", "egg creation requires a request record")
+  local profile = assert(request.profile, "egg creation requires an owner profile")
+  local location = assert(request.location, "egg creation requires a receipt location")
+  local date = assert(request.date, "egg creation requires a receipt date")
   assert(
     type(date) == "table"
       and type(date.year) == "number"
       and type(date.month) == "number"
       and type(date.day) == "number",
-    "script-egg creation requires a receipt date record"
+    "egg creation requires a receipt date record"
   )
   local mon = self:_normalRecord({
     species = request.species,
     level = 1,
-    form = 0,
+    form = request.form,
     profile = profile,
     ball = "POKE_BALL",
     location = location,
     terrain = 0,
     date = date,
+    personality = request.personality,
   })
   mon.friendship = self._catalog:species(request.species).eggCycles
   mon.isEgg = true
@@ -289,6 +291,52 @@ function MonFactory:createScriptEgg(request)
     date = { year = date.year, month = date.month, day = date.day },
   }
   mon.met = { location = 0, level = 0, terrain = 0 }
+  return mon
+end
+
+-- The source script-gift egg (SetEggStats): no forced personality, so the
+-- record keeps the four generation draws and the base form.
+---@param request { species: string, profile: { name: string, gender: integer, trainerId: integer }, location: integer, date: { year: integer, month: integer, day: integer } }
+---@return table<string, unknown>
+function MonFactory:createScriptEgg(request)
+  assert(type(request) == "table", "script-egg creation requires a request record")
+  return self:_finish(self:_eggRecord({
+    species = request.species,
+    form = 0,
+    profile = request.profile,
+    location = request.location,
+    date = request.date,
+  }))
+end
+
+-- Source GiveEggToPlayer's bred egg: the forced pending personality (already
+-- resolved through the different-language mixer), the mother's form, the two
+-- generation individual-value draws followed by InheritIVs' three distinct
+-- inherited values, and the inherited move set in source insertion order.
+---@param request { species: string, form: integer, personality: integer, profile: { name: string, gender: integer, trainerId: integer }, location: integer, date: { year: integer, month: integer, day: integer }, parents: table[], moves: table<string, unknown>[] }
+---@return table<string, unknown>
+function MonFactory:createBredEgg(request)
+  assert(type(request) == "table", "bred-egg creation requires a request record")
+  local parents = assert(request.parents, "bred-egg creation requires the parents")
+  local moves = assert(request.moves, "bred-egg creation requires the inherited move set")
+  local mon = self:_eggRecord({
+    species = request.species,
+    form = request.form,
+    personality = request.personality,
+    profile = request.profile,
+    location = request.location,
+    date = request.date,
+  })
+  for _, assignment in ipairs(Breeding.inheritedIvs({ parents = parents, lc = function()
+    return self._rng:nextU16()
+  end })) do
+    local parent = assert(parents[assignment.slot], "the inherited stat names its parent")
+    mon.ivs[assignment.stat] = parent.ivs[assignment.stat]
+  end
+  mon.moves = moves
+  local form = self._catalog:form(request.species, request.form)
+  local derived = Stats.calculate(form.baseStats, mon.ivs, mon.evs, 1, Personality.nature(mon.personality))
+  mon.condition = { currentHp = derived.hp, effects = {} }
   return self:_finish(mon)
 end
 

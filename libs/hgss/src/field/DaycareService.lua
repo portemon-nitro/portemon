@@ -1,10 +1,19 @@
 -- The Day Care feature service: the single owner of deposit and withdrawal
 -- custody over the saved parent slots, the source growth and price queries,
--- the deposit's own form sanitize, the two reserved yard objects, and the one
--- committed-step feed. Custody moves between the live party and the stored
--- slots in one publication: the party roster and the saved parent slot are
--- staged together and published only while both are current, so a parent is
--- never in the party and in the Day Care at once.
+-- the deposit's own form sanitize, the two reserved yard objects, the one
+-- committed-step feed with its source breeding and egg-cycle checks, and the
+-- egg the Day-Care Man hands out. Custody moves between the live party and the
+-- stored slots in one publication: the party roster and the saved parent slot
+-- are staged together and published only while both are current, so a parent
+-- is never in the party and in the Day Care at once.
+--
+-- Egg production keeps the source split between the two moments: a successful
+-- step check stores only the pending personality (Save_Daycare_SetEggPID) and
+-- raises the Day-Care call, while the offspring record -- species, form,
+-- inherited individual values, and inherited moves -- is resolved only when
+-- the script hands the egg over. Everything drawn there comes from the
+-- injected source streams, so a query, a redraw, or a preview never advances
+-- the game's random state.
 --
 -- The source keeps the stored parent as a BoxPokemon plus its authored Mail
 -- and a u32 step counter (include/daycare.h). This owner mirrors that split:
@@ -23,8 +32,11 @@
 -- (ScrCmd_UpdateDaycareMonObjects, ScrCmd_DaycareSanitizeMon), and
 -- src/pokemon.c (TryAppendBoxMonMove, DeleteBoxMonFirstMoveAndAppend).
 
+local Breeding = require("libs.mons.src.gen4.Breeding")
 local Experience = require("libs.mons.src.gen4.Experience")
+local Party = require("libs.mons.src.Party")
 local Personality = require("libs.mons.src.gen4.Personality")
+local U32 = require("libs.codec.src.U32")
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
 
@@ -41,6 +53,10 @@ local YARD_MOVEMENT_TYPE = "look_north_south_east"
 -- Halfword equality marker for the "move is already known" chance: the source
 -- returns MOVE_APPEND_KNOWN and appends nothing.
 local MOVE_SLOTS = 4
+-- NUM_DAYCARE_MONS (include/constants/daycare.h).
+local PARENT_SLOTS = 2
+-- The source stores the cycle counter as an unsigned byte, so it wraps.
+local CYCLE_COUNTER_RANGE = 256
 
 ---@class DaycareService
 ---@field private _state DaycareState
@@ -49,6 +65,12 @@ local MOVE_SLOTS = 4
 ---@field private _stats table<string, unknown> the live game-stats owner behind the deposit count
 ---@field private _actors table<string, unknown> the field actor manager behind the yard objects
 ---@field private _catalog MonCatalog
+---@field private _care table<string, unknown> the compiled source breeding tables
+---@field private _profile table<string, unknown> the owner profile behind the receiving identity
+---@field private _date fun(): { year: integer, month: integer, day: integer }
+---@field private _lc fun(): integer the source linear draw shared with mon creation
+---@field private _mt fun(): integer the source 32-bit draw shared with the companion feature
+---@field private _phone { state: table<string, unknown>, eggTriggerKey: string } the Day-Care call owner
 ---@field private _currentMap fun(): table<string, unknown>|nil
 local DaycareService = {}
 DaycareService.__index = DaycareService
@@ -100,6 +122,25 @@ function DaycareService.new(opts)
   assert(type(stats.prepareChanges) == "function", "the Day Care service requires the game-stats owner")
   local actors = assert(opts.actors, "the Day Care service requires the actor manager")
   assert(type(actors.installReservedObject) == "function", "the Day Care service requires the actor manager")
+  local care = assert(opts.care, "the Day Care service requires the compiled care catalog")
+  assert(type(care.eggSpecies) == "table", "the Day Care service requires the source egg-species table")
+  assert(type(care.eggMoves) == "table", "the Day Care service requires the source egg-move table")
+  assert(type(care.incense) == "table", "the Day Care service requires the source incense pairs")
+  local profile = assert(opts.profile, "the Day Care service requires the owner profile")
+  local trainerId = assert(profile.trainerId, "the Day Care service requires the owner trainer identity")
+  assert(
+    type(trainerId) == "number" and trainerId % 1 == 0 and trainerId >= 0 and trainerId <= U32.MAX,
+    "the Day Care service requires an unsigned 32-bit owner trainer identity"
+  )
+  local date = assert(opts.date, "the Day Care service requires the native date provider")
+  assert(type(date) == "function", "the Day Care service requires the native date provider")
+  local lc = assert(opts.lc, "the Day Care service requires the source linear draw")
+  assert(type(lc) == "function", "the Day Care service requires the source linear draw")
+  local mt = assert(opts.mt, "the Day Care service requires the source personality draw")
+  assert(type(mt) == "function", "the Day Care service requires the source personality draw")
+  local phone = assert(opts.phone, "the Day Care service requires the phone state owner")
+  assert(type(phone.state) == "table", "the Day Care service requires the phone state owner")
+  assert(type(phone.eggTriggerKey) == "string", "the Day Care service requires its call trigger key")
   return setmetatable({
     _state = state,
     _mons = mons,
@@ -107,6 +148,12 @@ function DaycareService.new(opts)
     _stats = stats,
     _actors = actors,
     _catalog = catalog,
+    _care = care,
+    _profile = profile,
+    _date = date,
+    _lc = lc,
+    _mt = mt,
+    _phone = phone,
     _currentMap = currentMap,
   }, DaycareService)
 end
@@ -505,18 +552,198 @@ function DaycareService:updateYardObjects()
   end
 end
 
--- The one committed-step feed: every occupied parent's stored step counter
--- advances exactly once per committed walking step. Turns, blocked pushes,
--- scripted motion, warps, and modal activity never reach this seam, and
--- nothing else in the field advances these counters.
+-- The source compatibility score between the two stored parents
+-- (Save_Daycare_CalcCompatibilityInternal).
+---@return integer score (0, 20, 50 or 70)
+function DaycareService:compatibility()
+  return Breeding.compatibility(self:_storedParents(), self._catalog)
+end
+
+-- Save_Daycare_CalcCompatibility's converted category: 70 answers 0, 50
+-- answers 1, 20 answers 2 and an incompatible pair answers 3.
+---@return integer category
+function DaycareService:compatibilityCategory()
+  local score = self:compatibility()
+  local category = Breeding.CATEGORY_BY_SCORE[score]
+  assert(category ~= nil, "the compatibility score carries its source category")
+  return category
+end
+
+-- Save_Daycare_HasEgg: a stored personality is the egg waiting for its
+-- collection. A zero identity is nothing at all.
+---@return boolean
+function DaycareService:hasEgg()
+  return self._state:pendingEggPid() ~= 0
+end
+
+-- Save_Daycare_ResetEggStats (ScrCmd_ResetDaycareEgg): the pending identity
+-- and the cycle progress clear together, and the parents stay where they are.
+function DaycareService:resetEgg()
+  local state = self._state
+  local prepared, reason = state:prepareEggReset(state:revision())
+  assert(prepared ~= nil, "the day care egg reset stayed current: " .. tostring(reason))
+  prepared.publish()
+end
+
+-- The two stored parents as one detached pair in source slot order.
+---@return table[]
+function DaycareService:_storedParents()
+  if self._state:count() ~= PARENT_SLOTS then
+    fail("day care has no parent pair", { parents = self._state:count() })
+  end
+  local first = self:_requireParent(0)
+  local second = self:_requireParent(1)
+  return { first, second }
+end
+
+-- Raise the source Day-Care call on the existing trigger owner. The successful
+-- step check reports even when the produced identity is zero.
+function DaycareService:_raiseEggCall()
+  local phone = self._phone
+  local state = phone.state
+  assert(type(state.setTrigger) == "function", "the Day Care call needs the phone state owner")
+  state:setTrigger(phone.eggTriggerKey, true)
+end
+
+-- Move the party's unhatched Eggs one completed cycle closer to hatching:
+-- every Egg loses the source decrement (or one point when its friendship is
+-- below it), and the first Egg already at zero friendship requests its hatch
+-- and stops the walk, leaving later Eggs untouched. Answers the staged party
+-- changes and whether a hatch was requested.
+---@param party table[]
+---@return table<string, unknown>[] changes, boolean hatchRequested
+function DaycareService:_advanceEggFriendship(party)
+  local decrement = Breeding.cycleDecrement(party)
+  local changes = {}
+  local hatchRequested = false
+  for slot0, mon in ipairs(party) do
+    if mon.isEgg == true then
+      local friendship = mon.friendship
+      if friendship == 0 then
+        hatchRequested = true
+        break
+      end
+      mon.friendship = friendship >= decrement and friendship - decrement or friendship - 1
+      changes[#changes + 1] = { slot = slot0 - 1, mon = mon }
+    end
+  end
+  return changes, hatchRequested
+end
+
+-- The one committed-step feed, in the source's own order (HandleDaycareStep):
+-- every occupied parent advances its stored step counter once, the breeding
+-- check runs when no egg waits and the second parent's low step byte reaches
+-- 255, and the cycle counter then advances to its source threshold. Turns,
+-- blocked pushes, scripted motion, warps, and modal activity never reach this
+-- seam, and nothing else in the field advances these counters.
 function DaycareService:noteCommittedStep()
   local state = self._state
-  if state:count() == 0 then
-    return
+  local advance = {}
+  local occupied = state:count()
+  if state:pendingEggPid() == 0 and occupied == 2 then
+    -- The source advances the counters first and then reads the second
+    -- parent's low step byte, so the check lands on the step that reaches 255.
+    local steps = assert(state:steps(1), "the second parent carries its stored steps")
+    if (steps + 1) % CYCLE_COUNTER_RANGE == 255 then
+      local parents = self:_storedParents()
+      local compatibility = Breeding.compatibility(parents, self._catalog)
+      -- The source draws the compatibility value even for an incompatible
+      -- pair, because the comparison evaluates it first.
+      local draw = self._lc()
+      if compatibility > math.floor(draw * 100 / 0xFFFF) then
+        advance.pendingEggPid = Breeding.generateEggPid({ parents = parents, lc = self._lc, mt = self._mt })
+        self:_raiseEggCall()
+      end
+    end
   end
-  local prepared, reason = state:prepareStepAdvance(state:revision())
+  local counter = state:eggCycleCounter()
+  local advanced = (counter + 1) % CYCLE_COUNTER_RANGE
+  advance.eggCycleCounter = advanced
+  local changes = {}
+  if advanced == Breeding.cycleLengthFor(self._date()) then
+    advance.eggCycleCounter = 0
+    local party = {}
+    for slot0 = 0, self._mons:partyCount() - 1 do
+      party[slot0 + 1] = self._mons:partyMon(slot0)
+    end
+    changes = self:_advanceEggFriendship(party)
+  end
+  local partyPrep = nil
+  if #changes > 0 then
+    local prepared, reason = self._mons:preparePartyChanges(self._mons:partyRevision(), changes)
+    if prepared == nil then
+      fail("day care egg cycle lost its party revision: " .. tostring(reason), {})
+    end
+    partyPrep = prepared
+  end
+  local prepared, reason = state:prepareStepAdvance(state:revision(), advance)
   assert(prepared ~= nil, "the day care step advance stayed current: " .. tostring(reason))
+  if partyPrep ~= nil then
+    assert(partyPrep.isCurrent(), "the day care egg cycle party candidate stayed current")
+  end
   prepared.publish()
+  if partyPrep ~= nil then
+    partyPrep.publish()
+  end
+end
+
+-- Source GiveEggToPlayer (ScrCmd_GiveDaycareEgg): the stored personality
+-- resolves the offspring species, the mother's form, the inherited individual
+-- values and the inherited moves, and the finished level-one Egg joins the
+-- party in the same publication that clears the pending identity and the cycle
+-- progress. The parents stay in care, no Dex or hatch receipt is staged, and a
+-- full party refuses before any draw.
+---@return boolean whether the egg joined the party
+function DaycareService:receiveEgg()
+  local state = self._state
+  local pendingEggPid = state:pendingEggPid()
+  if pendingEggPid == 0 then
+    fail("day care holds no egg to hand out", {})
+  end
+  local mons = self._mons
+  if mons:partyCount() >= Party.MAX then
+    return false
+  end
+  local parents = self:_storedParents()
+  local offspring = Breeding.offspring({
+    parents = parents,
+    pendingEggPid = pendingEggPid,
+    catalog = self._catalog,
+    care = self._care,
+  })
+  local personality = Breeding.eggPersonality({
+    pendingEggPid = pendingEggPid,
+    parents = parents,
+    trainerId = self._profile.trainerId,
+  })
+  local moves = Breeding.inheritedMoves({
+    offspring = offspring,
+    mother = parents[offspring.motherSlot],
+    father = parents[offspring.fatherSlot],
+    catalog = self._catalog,
+    care = self._care,
+  })
+  local mon = mons:createBredEgg({
+    species = offspring.species,
+    form = offspring.form,
+    personality = personality,
+    moves = moves,
+    parents = parents,
+    locationOffset = 0,
+  })
+  local partyPrep, partyReason = mons:preparePartyBatch(mons:partyRevision(), {}, { mon })
+  if partyPrep == nil then
+    fail("day care egg receipt lost its party revision: " .. tostring(partyReason), {})
+  end
+  local statePrep, stateReason = state:prepareEggReset(state:revision())
+  if statePrep == nil then
+    fail("day care egg receipt lost its stored state: " .. tostring(stateReason), {})
+  end
+  assert(partyPrep.isCurrent(), "the day care egg receipt party candidate stayed current")
+  assert(statePrep.isCurrent(), "the day care egg receipt candidate stayed current")
+  partyPrep.publish()
+  statePrep.publish()
+  return true
 end
 
 return DaycareService

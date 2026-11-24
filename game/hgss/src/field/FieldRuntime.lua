@@ -47,6 +47,7 @@ local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local Personality = require("libs.mons.src.gen4.Personality")
 local MonCache = require("libs.assets.src.MonCache")
+local PokemonCareCache = require("libs.assets.src.PokemonCareCache")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local ItemCache = require("libs.assets.src.ItemCache")
 local ItemCatalog = require("libs.items.src.ItemCatalog")
@@ -1118,6 +1119,10 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
   local monRoot = MonCache.loadCatalog(boot.cacheFs)
   self.itemCatalog = ItemCatalog.new(ItemCache.loadCatalog(boot.cacheFs))
   self.martCatalog = MartCache.loadCatalog(boot.cacheFs)
+  -- The compiled care catalog carries the source breeding tables the Day Care
+  -- resolves eggs against: the PMS egg-species table, the personal egg-move
+  -- list, and the source incense pairs.
+  self.careCatalog = PokemonCareCache.loadCatalog(boot.cacheFs)
   self.monCatalog = MonCatalog.new(monRoot, self.itemCatalog)
   self.monLanguage = monRoot.version.language
   boot.monRoot = monRoot
@@ -1846,6 +1851,24 @@ function FieldRuntime:_composeFieldServices(boot)
     stats = self.gameStats,
     actors = self.actors,
     catalog = self.monCatalog,
+    care = self.careCatalog,
+    profile = self.playerData.profile,
+    date = monMetDate,
+    -- Breeding continues the mon generation stream for its linear draws and
+    -- the companion draw pair for its source 32-bit personality draws, so no
+    -- second generator exists anywhere in the field.
+    lc = function()
+      return self.monService:drawLcRandom()
+    end,
+    mt = function()
+      return assert(self.pokegearRandom, "the Day Care needs the companion draw pair"):mt(
+        "daycare_egg_personality"
+      )
+    end,
+    phone = {
+      state = assert(self.pokegearState, "the Day Care needs the companion state"),
+      eggTriggerKey = self:_daycareEggTriggerKey(),
+    },
     currentMap = currentDaycareMap,
   })
   self:_composePartyMenu(boot.cacheFs)
@@ -4209,6 +4232,22 @@ end
 -- profile carries one, otherwise a deterministic hash of the save id.
 -- Never host time, so the same game always resumes the same streams.
 ---@return integer
+-- The compiled phone-trigger table's Day-Care call key (source slot 5). The
+-- Day Care raises that one flag when its step check produces an egg, and the
+-- Day-Care Man's own script clears it when he offers the egg.
+---@return string
+function FieldRuntime:_daycareEggTriggerKey()
+  local catalog = assert(self.pokegearCatalog, "the Day Care call needs the companion trigger catalog")
+  local key = nil
+  for _, trigger in ipairs(assert(catalog.callTriggers, "the companion catalog carries its call triggers")) do
+    if trigger.slot == 5 then
+      key = trigger.key
+    end
+  end
+  assert(type(key) == "string" and key ~= "", "the companion catalog carries the Day-Care call trigger")
+  return key
+end
+
 function FieldRuntime:_pokegearSeed()
   local profile = self.playerData ~= nil and self.playerData.profile or nil
   local trainerId = type(profile) == "table" and profile.trainerId or nil
@@ -6563,7 +6602,7 @@ function FieldRuntime:_releaseAll()
   self.mailbox, self.photoAlbum, self.sysInfo = nil, nil, nil
   self.hallOfFame = nil
   self.fieldPoison, self.poisonEffect, self.poisonCure = nil, nil, nil
-  self.daycare, self.daycareState = nil, nil
+  self.daycare, self.daycareState, self.careCatalog = nil, nil, nil
   if self.pokegear ~= nil then
     self.pokegear:dispose()
   end

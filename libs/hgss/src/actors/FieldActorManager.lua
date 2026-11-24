@@ -189,6 +189,11 @@ end
 ---@field removedOverrides table<string, boolean>
 ---@field currentMapId integer|nil
 ---@field retained table<integer, RuntimeFieldMap> resident neighbor views allowed to hold frozen entries
+---@field eventDefaults table<RuntimeFieldMap, table<integer, FieldActorManager.EventDefaults>> runtime-only per-map object-event defaults
+---@field entryMap RuntimeFieldMap? the view whose entry lifecycle is running; nil outside an entry
+---@field setEventDefaultMovementType fun(self: FieldActorManager, objectEventId: integer, movementType: string): boolean
+---@field setEventDefaultFacing fun(self: FieldActorManager, objectEventId: integer, direction: FieldDirection): boolean
+---@field beginEntry fun(self: FieldActorManager, runtimeMap: RuntimeFieldMap)
 ---@field _mapOrder integer[]? held map ids in ascending order; nil while stale
 ---@field cameraFocus table<string, unknown>? the script camera focus presence; nil while the camera follows the player
 ---@field _visualRevision integer
@@ -405,6 +410,11 @@ function FieldActorManager.new(opts)
     removedOverrides = {},
     currentMapId = nil,
     retained = {},
+    -- Source object-event defaults written before the map's objects exist
+    -- (Field_SetEventDefaultMovement/Field_SetEventDefaultDirection). They are
+    -- runtime-only, keyed by the map view, and consumed by object creation.
+    eventDefaults = {},
+    entryMap = nil,
     _mapOrder = nil,
     cameraFocus = nil,
     _visualRevision = 0,
@@ -592,7 +602,33 @@ function FieldActorManager:_acquireVisual(spriteId, actorId)
   return self.assets:acquire(spriteId)
 end
 
+-- A source event carrying the runtime-only defaults a still-pending entry
+-- staged for it (Field_SetEventDefaultMovement/Direction). The compiled record
+-- is never mutated: the copy keeps the same identity, position, and sprite
+-- facts and only replaces the default movement type or facing.
 ---@param self FieldActorManager
+---@param runtimeMap RuntimeFieldMap
+---@param event FieldActorEvent
+---@return FieldActorEvent
+local function withEventDefaults(self, runtimeMap, event)
+  local byObject = self.eventDefaults[runtimeMap]
+  local defaults = byObject ~= nil and byObject[event.objectEventId] or nil
+  if defaults == nil then
+    return event
+  end
+  local resolved = {}
+  for key, value in pairs(event) do
+    resolved[key] = value
+  end
+  if defaults.movementType ~= nil then
+    resolved.movementType = defaults.movementType
+  end
+  if defaults.facing ~= nil then
+    resolved.facingDirection = defaults.facing
+  end
+  return resolved --[[@as FieldActorEvent]]
+end
+
 ---@param entry FieldActorManager.Entry
 ---@param event FieldActorEvent
 ---@param eventState FieldEventState?
@@ -607,6 +643,7 @@ function FieldActorManager:_instantiate(entry, event, eventState)
       { actorId = actorId, mapId = runtimeMap.mapId, objectEventId = event.objectEventId }
     )
   end
+  event = withEventDefaults(self, runtimeMap, event)
   local resident = isResident(runtimeMap, event.x, event.z)
   local uncovered = resident and isUncovered(runtimeMap, event.x, event.z)
   local surface = resident and not uncovered and resolveSurface(runtimeMap, event, actorId) or nil
@@ -1222,6 +1259,9 @@ local function retireEntry(self, entry)
     self._visualRevision = self._visualRevision + 1
   end
   destroyEntry(self, entry)
+  -- The map view's staged object-event defaults die with its entry: they are
+  -- runtime-only and never travel with a save.
+  self.eventDefaults[entry.runtimeMap] = nil
 end
 
 -- Releases the entry that stops being active: retired unless it is a retained
@@ -1253,6 +1293,9 @@ function FieldActorManager:enterMap(runtimeMap, eventState, restoredObjects)
   self.presentationTickAllowedWhileLocked = {}
   assert(runtimeMap and runtimeMap.fieldData, "enterMap requires a runtime map")
   assert(eventState, "enterMap requires a field event state")
+  -- The announced entry has activated: from here the active map answers for
+  -- script object-event defaults.
+  self.entryMap = nil
   local mapId = runtimeMap.mapId
   local existing = self.maps[mapId]
   if existing and existing.runtimeMap == runtimeMap then
@@ -3016,6 +3059,118 @@ function FieldActorManager:setMovementType(actorId, movementType)
   end
   actor.movementType = movementType
   self.autonomy:setMovementType(actorId, movementType)
+end
+
+---@class FieldActorManager.EventDefaults
+---@field movementType string?
+---@field facing string?
+
+-- Whether the map view declares the source object identity.
+---@param view RuntimeFieldMap
+---@param objectEventId integer
+---@return boolean
+local function viewDeclaresObject(view, objectEventId)
+  local fieldData = view.fieldData --[[@as FieldActorFieldData]]
+  local events = fieldData ~= nil and fieldData.events or nil
+  local objects = events ~= nil and events.objects or nil
+  if type(objects) ~= "table" then
+    return false
+  end
+  for _, event in ipairs(objects) do
+    if event.objectEventId == objectEventId then
+      return true
+    end
+  end
+  return false
+end
+
+-- The view whose source object events a script addresses: the map an entry is
+-- installing while its lifecycle runs, otherwise the active map.
+---@param self FieldActorManager
+---@return RuntimeFieldMap?
+function FieldActorManager:_eventDefaultView()
+  if self.entryMap ~= nil then
+    return self.entryMap
+  end
+  local entry = self.currentMapId ~= nil and self.maps[self.currentMapId] or nil
+  return entry and entry.runtimeMap or nil
+end
+
+-- The runtime-only defaults staged for one object of one map view.
+---@param self FieldActorManager
+---@param view RuntimeFieldMap
+---@param objectEventId integer
+---@return FieldActorManager.EventDefaults
+function FieldActorManager:_stagedEventDefaults(view, objectEventId)
+  local byObject = self.eventDefaults[view]
+  if byObject == nil then
+    byObject = {}
+    self.eventDefaults[view] = byObject
+  end
+  local defaults = byObject[objectEventId]
+  if defaults == nil then
+    defaults = {}
+    byObject[objectEventId] = defaults
+  end
+  return defaults
+end
+
+-- Declares the map view one entry is installing. The source loads a map's
+-- object-event table before its on-transition lifecycle and creates the
+-- objects after it, so a transition script may write an object's default
+-- before the object exists; that write lands on this view.
+---@param runtimeMap RuntimeFieldMap
+function FieldActorManager:beginEntry(runtimeMap)
+  assert(
+    type(runtimeMap) == "table" and runtimeMap.fieldData ~= nil,
+    "field actor entry needs the entering map view"
+  )
+  self.entryMap = runtimeMap
+end
+
+-- Source Field_SetEventDefaultMovement: writes the map object's default
+-- movement so the object the field creates afterwards starts with it. An
+-- identity the target map does not declare answers false, like the source's
+-- own assertion, so the caller can fault instead of staging a default for an
+-- object that does not exist.
+---@param objectEventId integer
+---@param movementType string
+---@return boolean applied
+function FieldActorManager:setEventDefaultMovementType(objectEventId, movementType)
+  assert(
+    type(objectEventId) == "number" and objectEventId % 1 == 0 and objectEventId >= 0,
+    "field object event identity must be a nonnegative integer"
+  )
+  assert(FieldObjectMovement.isType(movementType), "unknown field object movement type " .. tostring(movementType))
+  local view = self:_eventDefaultView()
+  if view == nil or not viewDeclaresObject(view, objectEventId) then
+    return false
+  end
+  self:_stagedEventDefaults(view, objectEventId).movementType = movementType
+  return true
+end
+
+-- Source Field_SetEventDefaultDirection: writes the map object's default
+-- facing for the object the field creates afterwards.
+---@param objectEventId integer
+---@param direction FieldDirection
+---@return boolean applied
+function FieldActorManager:setEventDefaultFacing(objectEventId, direction)
+  assert(
+    type(objectEventId) == "number" and objectEventId % 1 == 0 and objectEventId >= 0,
+    "field object event identity must be a nonnegative integer"
+  )
+  if not CARDINAL_FACINGS[direction] then
+    Errors.raise(FieldErrors.ACTOR_FACING_INVALID, "unsupported actor facing " .. tostring(direction), {
+      objectEventId = objectEventId,
+    })
+  end
+  local view = self:_eventDefaultView()
+  if view == nil or not viewDeclaresObject(view, objectEventId) then
+    return false
+  end
+  self:_stagedEventDefaults(view, objectEventId).facing = direction
+  return true
 end
 
 -- Only the active map simulates: an action frozen on a kept neighbor never

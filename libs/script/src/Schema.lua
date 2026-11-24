@@ -1888,6 +1888,22 @@ Schema.OPERATIONS = {
     },
   },
   daycare_update_objects = { fields = {} },
+  -- The Day Care egg pair: the source reset clears the pending identity and the
+  -- cycle progress in the same tick, and the gift hands the resolved egg to the
+  -- party. The two queries write the native category and the pending-identity
+  -- answer to their output variable in the same tick.
+  daycare_reset_egg = { fields = {} },
+  daycare_give_egg = { fields = {} },
+  daycare_compatibility = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  daycare_check_egg = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
   -- Party-screen selection. The launch node blocks on the party_select
   -- task with the source selection policy and opening slot; the completed
   -- slot parks on the script instance for the companion result node, which

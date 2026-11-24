@@ -1250,6 +1250,40 @@ function HgssMonService:giveEgg(request)
   return self:_receiveAdmitted(mon)
 end
 
+-- The saved generation stream (source LCRandom). The Day Care's own step
+-- check and Everstone draws continue this sequence, so breeding and mon
+-- creation share one generator and nothing else seeds a second one.
+---@return integer
+function HgssMonService:drawLcRandom()
+  return self._rng:nextU16()
+end
+
+-- Source GiveEggToPlayer's bred egg record without any publication: the
+-- resolved species and mother form, the receiving trainer's own personality,
+-- the source individual-value inheritance, the inherited move set, and the
+-- native Day Care receipt location/date. The caller owns the party append and
+-- the Day Care reset; no Dex, statistic, or hatch receipt is staged here.
+---@param request { species: string|integer, form: integer, personality: integer, moves: table<string, unknown>[], parents: table[], locationOffset: integer, date?: MonDate|(fun(): MonDate)|nil }
+---@return table<string, unknown>
+function HgssMonService:createBredEgg(request)
+  assert(type(request) == "table", "bred-egg creation requires a request record")
+  local offset = request.locationOffset
+  if type(offset) ~= "number" or offset % 1 ~= 0 or offset < 0 or offset > 0xFFFF then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "bred-egg gift offset must be an integer in 0..65535", {})
+  end
+  assert(type(offset) == "number", "bred-egg gift offset resolved to a u16")
+  return self._factory:createBredEgg({
+    species = self:_speciesKey(request.species),
+    form = request.form,
+    personality = request.personality,
+    moves = request.moves,
+    parents = request.parents,
+    profile = self._profile,
+    location = (2000 + offset) % 65536,
+    date = self:_metDate(request),
+  })
+end
+
 -- Field-script Spiky-Ear Pichu gift in source order:
 -- the party-full refusal reports before any
 -- creation, so unlike the ordinary script gift no generator draws run

@@ -636,6 +636,15 @@ DerivedAssetContract.followerInteractions = {
   schema = "g4-follower-interactions-v4",
 }
 
+-- The care family carries the source breeding tables the Day Care resolves
+-- against: the PMS egg-species table, the personal egg-move list, and the
+-- source incense pairs. Bulk source data only; care presentation and phone
+-- scheduling stay with their own owners.
+DerivedAssetContract.pokemonCare = {
+  cacheFormat = "pokemon-care-cache-v1",
+  catalogSchema = "g4-pokemon-care-catalog-v1",
+}
+
 DerivedAssetContract.mart = {
   cacheFormat = "mart-cache-v1",
   catalogSchema = "g4-mart-catalog-v1",

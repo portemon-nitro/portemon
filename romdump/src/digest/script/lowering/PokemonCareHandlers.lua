@@ -115,4 +115,25 @@ function PokemonCareHandlers.updateObjects(_)
   return { op = "daycare_update_objects" }
 end
 
+-- ScrCmd_ResetDaycareEgg carries no operands and answers no value.
+function PokemonCareHandlers.resetEgg(_)
+  return { op = "daycare_reset_egg" }
+end
+
+-- ScrCmd_GiveDaycareEgg carries no operands; the egg receipt is its own effect.
+function PokemonCareHandlers.giveEgg(_)
+  return { op = "daycare_give_egg" }
+end
+
+-- ScrCmd_GetDaycareCompatibility: the source category lands in the output
+-- variable.
+function PokemonCareHandlers.compatibility(ins)
+  return { op = "daycare_compatibility", result = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_CheckDaycareEgg: the pending-egg answer lands in the output variable.
+function PokemonCareHandlers.checkEgg(ins)
+  return { op = "daycare_check_egg", result = Operands.varRef(ins.operands[1]) }
+end
+
 return PokemonCareHandlers

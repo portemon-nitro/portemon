@@ -561,6 +561,78 @@ function T.object_commands_follow_their_source_movement_and_facing_rules()
   Assert.equal(manager:drawRecords()[1].facing, "east", "the drawn orientation follows in the same tick")
 end
 
+-- The source movement and facing commands write the map object's default when
+-- the field has not created the object yet (the on-transition lifecycle runs
+-- before a map's objects exist), so the transition script completes without a
+-- fault and the object the entry creates afterwards takes the default. An
+-- identity the map does not declare still faults like the source assertion.
+function T.missing_object_defaults_stage_for_the_entry_that_creates_the_object()
+  local manager, world = liveActorWorld(
+    { objectEvent(), objectEvent({ objectEventId = 1, eventFlag = 401, x = 4 }) },
+    FieldEventState.new({ flags = { [401] = true } })
+  )
+  local enteringObjects = {
+    objectEvent({ objectEventId = 0, x = 2, z = 3 }),
+    objectEvent({ objectEventId = 1, x = 6, z = 7 }),
+  }
+  local entering = {
+    mapId = 62,
+    mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
+    coordinateOrigin = { x = 0, z = 0 },
+    collision = {
+      containsLocal = function(_, x, z)
+        return x >= 0 and x < 32 and z >= 0 and z < 32
+      end,
+    },
+    terrain = flatTerrain(),
+    mapSymbol = "test-map",
+    sceneRuntime = nil,
+    scene = {},
+    terrainDependencyHash = "test-terrain",
+    fieldRegion = {},
+    cameraType = 4,
+    fieldData = { events = { objects = enteringObjects, background = {}, warps = {}, coordinates = {} } },
+    release = function() end,
+    updateAnimated = function() end,
+  }
+  manager:beginEntry(entering)
+  Assert.equal(
+    Runtime.executeNode({
+      op = "set_object_movement_type",
+      actor = { ref = "actor", mapIndex = 1 },
+      movementType = "wander_around",
+    }, objectRun(world)),
+    Runtime.OUTCOME_CONTINUE,
+    "an object the entry has not created yet takes the default movement in the same tick"
+  )
+  Assert.equal(
+    Runtime.executeNode({
+      op = "set_object_facing",
+      actor = { ref = "actor", mapIndex = 1 },
+      direction = "east",
+    }, objectRun(world)),
+    Runtime.OUTCOME_CONTINUE,
+    "an object the entry has not created yet takes the default facing in the same tick"
+  )
+  manager:enterMap(entering --[[@as RuntimeFieldMap]], FieldEventState.new(), nil)
+  local actor = assert(manager:getById("map:62:object:1"), "the entry creates the declared object")
+  Assert.equal(actor.movementType, "wander_around", "the created object takes the staged movement")
+  Assert.equal(manager:getFacing("map:62:object:1"), "east", "the created object takes the staged facing")
+
+  local undeclared = Assert.throws(function()
+    Runtime.executeNode({
+      op = "set_object_movement_type",
+      actor = { ref = "actor", mapIndex = 9 },
+      movementType = "wander_around",
+    }, objectRun(world))
+  end)
+  Assert.isTrue(Errors.is(undeclared), "an undeclared object still faults with an attributed error")
+  Assert.equal(undeclared.code, "SCRIPT_ACTOR_NOT_FOUND")
+  manager:dispose()
+end
+
 -- The source facing refresh reads its direction through a script variable, so
 -- the evaluated source code becomes the actor's drawn facing in the same tick;
 -- a code outside the source set is an attributed failure.

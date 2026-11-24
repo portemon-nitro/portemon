@@ -328,6 +328,7 @@ local FIELD_RUNTIME_JOBS = {
   "field-font:global",
   "actors:global",
   "mon-catalog:global",
+  "pokemon-care:global",
   "mon-layout:global",
   "items:global",
   "follower-interactions:global",
@@ -982,6 +983,37 @@ local function executeSummary(artifact, context)
     return SummaryAssetCompiler.compile(romFs, catalog, portraits)
   end, "summary")
   return SummaryCacheWriter.stage(artifact, bundle)
+end
+
+-- The care family stages the source breeding tables as one semantic catalog:
+-- the PMS egg-species table and the personal egg-move list with the source
+-- incense pairs. The payload resolves through the shared producer catalogs, so
+-- the job carries no compiled-mon prerequisite.
+---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@return string compiler marker for the receipt
+local function executePokemonCare(artifact, context)
+  local Hashing = require("romdump.src.digest.Hashing")
+  local PokemonCareCache = require("libs.assets.src.PokemonCareCache")
+  local PokemonCareCatalogCompiler = require("romdump.src.digest.mons.PokemonCareCatalogCompiler")
+  local romFs = assert(context.romFs, "care jobs require a source reader")
+  local catalog = compileOrRaise(function()
+    return PokemonCareCatalogCompiler.compile(romFs)
+  end, "care catalog")
+  artifact:addOwnedRoot(PokemonCareCache.catalogPath())
+  artifact:addOwnedRoot(PokemonCareCache.markerPath())
+  local stage = artifact:stageFs()
+  stage:writeLua(PokemonCareCache.catalogPath(), catalog)
+  local marker = PokemonCareCache.marker(romFs:metadata().sha1, Hashing.hashLua(catalog))
+  stage:write(PokemonCareCache.markerPath(), marker)
+  return marker
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validatePokemonCare(check)
+  local PokemonCareCache = require("libs.assets.src.PokemonCareCache")
+  return PokemonCareCache.isReady(check.cacheFs, check.marker)
 end
 
 local function executeSpawnDestinations(artifact, context)
@@ -2230,6 +2262,13 @@ DESCRIPTORS = {
     execute = executeSummary,
     validate = validateSummary,
   },
+  -- The care family: one global semantic catalog of the source breeding
+  -- tables, staged from the personal and breeding archives alone.
+  ["pokemon-care"] = {
+    size = "normal",
+    execute = executePokemonCare,
+    validate = validatePokemonCare,
+  },
   -- Teleport landing index: one family-level record, no prerequisite.
   spawns = {
     size = "normal",
@@ -2479,6 +2518,7 @@ local COMPLETE_STATIC_GLOBALS = {
   "spawns",
   "mon-catalog",
   "mon-layout",
+  "pokemon-care",
   "audio-catalog",
   "startup-loader:global",
   "startup-title",

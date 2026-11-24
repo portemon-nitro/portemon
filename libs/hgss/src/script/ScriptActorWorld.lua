@@ -16,6 +16,8 @@
 ---@field setPosition fun(self: ScriptActorManager, actorId: string, position: table<string, unknown>, options: { scripted: boolean }?)
 ---@field setFacing fun(self: ScriptActorManager, actorId: string, direction: string)
 ---@field setMovementType fun(self: ScriptActorManager, actorId: string, movementType: string)
+---@field setEventDefaultMovementType fun(self: ScriptActorManager, objectEventId: integer, movementType: string): boolean?
+---@field setEventDefaultFacing fun(self: ScriptActorManager, objectEventId: integer, direction: string): boolean?
 ---@field setAnimationPaused fun(self: ScriptActorManager, actorId: string, paused: boolean)
 ---@field getPosition fun(self: ScriptActorManager, actorId: string): table<string, unknown>
 ---@field getFacing fun(self: ScriptActorManager, actorId: string): string
@@ -41,6 +43,9 @@
 -- The manager methods the actor world calls; every one must be present.
 -- `syncEventStateChanges` is forwarded only when the manager provides it, so
 -- lightweight fakes (e.g. binding tests) do not need to stub presence sync.
+-- The object-event default writers (`setEventDefaultMovementType`,
+-- `setEventDefaultFacing`) are forwarded the same way: a manager without them
+-- answers no write, and the runtime keeps its strict actor contract.
 local REQUIRED_MANAGER_METHODS = {
   "getActor",
   "show",
@@ -113,6 +118,35 @@ end
 function ScriptActorWorld:actorIdForMapIndex(index)
   return self._manager:actorIdForMapIndex(index)
 end
+
+-- Source Field_SetEventDefaultMovement: an object the field has not created
+-- yet takes its default movement on the map's object-event table, which the
+-- map's own object creation then applies. Answers whether the write landed;
+-- a manager without the capability answers false.
+---@param objectEventId integer
+---@param movementType string
+---@return boolean applied
+function ScriptActorWorld:setEventDefaultMovementType(objectEventId, movementType)
+  local write = self._manager.setEventDefaultMovementType
+  if write == nil then
+    return false
+  end
+  return write(self._manager, objectEventId, movementType) == true
+end
+
+-- Source Field_SetEventDefaultDirection: the same table write for an object's
+-- default facing.
+---@param objectEventId integer
+---@param direction string
+---@return boolean applied
+function ScriptActorWorld:setEventDefaultFacing(objectEventId, direction)
+  local write = self._manager.setEventDefaultFacing
+  if write == nil then
+    return false
+  end
+  return write(self._manager, objectEventId, direction) == true
+end
+
 
 -- The field camera target actor (pinned HGSS object id 241); nil when the
 -- session has no camera target.
