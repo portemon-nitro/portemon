@@ -25,10 +25,11 @@ local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
 local function renderStartMenu(resources, view, plan)
   local renderer = assert(resources.startMenuRenderer, "the start menu needs its renderer")
   local pane = assert(plan.panes[1], "the start menu plan needs its content pane")
-  renderer --[[@as { draw: fun(self: table<string, unknown>, presentation: table<string, unknown>, placement: table<string, unknown>) }]].draw(
+  renderer --[[@as { draw: fun(self: table<string, unknown>, presentation: table<string, unknown>, placement: table<string, unknown>, itemIcons: unknown) }]].draw(
     renderer,
     view,
-    pane.placement
+    pane.placement,
+    resources.itemIcons
   )
 end
 

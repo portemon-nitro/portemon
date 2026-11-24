@@ -345,7 +345,8 @@ DerivedAssetContract.fieldMapData = {
   -- the per-map Headbutt tree groups and weighted slot tables.
   -- v16 carries ROM-derived item, quantity, and collection flag records for
   -- hidden background events.
-  fieldSchema = "g4-field-map-v16",
+  -- v17 adds the map header's bike permission to the field-use policy.
+  fieldSchema = "g4-field-map-v17",
   -- The teleport landing index is a separate family-level record carrying
   -- cited spawn-keyed outdoor arrival destinations (never source numeric
   -- identities); the runtime return planner reads it, never producer data.
@@ -494,9 +495,12 @@ DerivedAssetContract.fieldEmotes = {
 -- animation (the source NAME_SCREEN_RIVAL icon sequence beside the player
 -- subjects) as a required animation record, so a stale cache without it
 -- must fail readiness.
+-- fieldUi schema 31: the start menu section carries the two registered-item
+-- tabs (tab visuals in the shared icon atlas plus tab and item-icon anchors)
+-- as a required record, so a stale cache without them must fail readiness.
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v30",
+  schema = "g4-field-ui-v31",
 }
 
 -- The field-entry family carries the nine map-name banner skins and the

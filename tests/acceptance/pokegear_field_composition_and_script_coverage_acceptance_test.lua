@@ -24,6 +24,11 @@ local T = {
     capabilities = { "rom_dump" },
     derivedAssets = {
       "field-runtime",
+      "message-bank:542",
+      "message-bank:664",
+      "message-bank:716",
+      "message-bank:271",
+      "message-bank:545",
       "map:33",
       "map:60",
       "map:61",

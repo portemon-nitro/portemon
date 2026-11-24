@@ -57,6 +57,8 @@ local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldWindowStyles = require("libs.hgss.src.field.FieldWindowStyles")
 local FieldMapNameBanner = require("libs.hgss.src.ui.FieldMapNameBanner")
+local FieldShortcutSlide = require("game.hgss.src.field.FieldShortcutSlide")
+local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
@@ -639,6 +641,7 @@ end
 ---@field fontDef table<string, unknown> the generated field font and charmap
 ---@field fieldEntryManifest FieldEntryAssetCache.Manifest the compiled map-name banner skins, palettes, and eligibility
 ---@field mapNameBanner FieldMapNameBanner? the transient area-name banner controller (nil after teardown)
+---@field shortcutSlide FieldShortcutSlide? the closed-menu shortcut cluster's slide (nil after teardown)
 ---@field scriptHosts FieldRuntimeScriptHosts?
 ---@field transitionPanel "exit"|"enter"|nil
 ---@field applications FieldApplicationRegistry the immutable per-runtime destination application catalogue
@@ -662,6 +665,7 @@ end
 ---@field acquireSource fun(reference: ResidentCache.BlobRef): table<string, unknown>? resident source acquirer of the borrowed selected runtime
 ---@field screenFade FieldScriptScreenFade the production semantic script screen-fade controller (fade_screen/wait_fade); always composed, advanced once after each field tick
 ---@field scentTint FieldScentTint the Honey/Sweet Scent screen tint; always composed, advanced once after each field tick
+---@field fishingHost FieldFishingHost the fishing rod host seam and its pose and "!" mark; always composed
 ---@field localClock LocalClock the shared host-local civil-time boundary
 ---@field weatherClock table<string, unknown> injectable host boundary { today()->{month,day}, hasPenalty()->boolean }
 ---@field fieldEntranceIndicator FieldEntranceIndicator
@@ -1400,6 +1404,7 @@ function FieldRuntime:_composeTransitions(boot)
   -- only reads its status().
   self.screenFade = FieldScriptScreenFade.new()
   self.scentTint = require("libs.hgss.src.transition.FieldScentTint").new()
+  self.fishingHost = require("game.hgss.src.field.FieldFishingHost").new(self)
   -- The poison wobble composes unconditionally beside the other
   -- presentation-only source-frame effects; ticks start it, the
   -- source-frame pump advances it, and the field draw consumes it.
@@ -1466,6 +1471,10 @@ function FieldRuntime:_composeFieldUi(boot)
     styleByMapId = self.fieldEntryManifest.bannerStyleByMapId,
     resolveTitle = resolveSectionTitle,
   })
+  -- The closed-menu shortcut cluster rests against the screen's right edge,
+  -- so sliding it its own width hides it.
+  self.shortcutSlide =
+    FieldShortcutSlide.new(StartMenuRenderer.shortcutBounds(self.uiManifest.startMenu).width --[[@as integer]])
   local function actorAt(mapId, candidate)
     return self:_actorAt(mapId, candidate)
   end
@@ -1952,6 +1961,10 @@ function FieldRuntime:_startFieldSession(boot)
   local function partyKnowsMove(move)
     return self.monService:partySlotWithMove(move) ~= nil
   end
+  local function useRegisteredItem(slot)
+    local itemKey = self.bagService:registeredItems()[slot]
+    return itemKey ~= nil and self:useKeyItem(itemKey, true)
+  end
   self.session = FieldSession.new({
     versionId = self.versionId,
     currentMap = self.runtimeMap,
@@ -1973,6 +1986,7 @@ function FieldRuntime:_startFieldSession(boot)
     partySelection = self.partySelection,
     martHost = self.martHost,
     kurtBoxHost = self.kurtBoxHost,
+    registeredItemUse = useRegisteredItem,
     fieldMoves = self.partyMenu.fieldMoves,
     overworld = self.overworld,
     monNaming = self.monNaming,
@@ -2182,7 +2196,13 @@ function FieldRuntime:update(dt)
     if self.mapNameBanner then
       self.mapNameBanner:updateFixed()
     end
+    -- The shortcut cluster slides out while the start menu is open and
+    -- whenever a cutscene, dialogue, or other modal holds the field.
+    if self.shortcutSlide then
+      self.shortcutSlide:updateFixed(self.applicationHost:isActive() or not self.session:isRoamingFree())
+    end
     self.session:updateFixed()
+    self.fishingHost:updateFixed()
     if self.hoOhAppearanceScene then
       self.hoOhAppearanceScene:updateFixed()
     end
@@ -2210,6 +2230,8 @@ function FieldRuntime:update(dt)
       if actorMapId == logicalMapId then
         local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
         if self.transition.phase ~= FieldTransition.PHASES.preview then
+          -- Retail keeps the follower hidden for the whole bike ride.
+          self.followingMon:setStowed(self.playerAvatar:durableState() == "cycling")
           self.followingMon:update()
           -- The follower commits its own step after the session tick; publish
           -- it in this same tick so its grass lands with its feet.
@@ -2607,6 +2629,33 @@ function FieldRuntime:unbindPokedexPreparation(binding)
   if current ~= nil and current.id == binding then
     self._pokedexPreparation = nil
   end
+end
+
+---@class FieldShortcuts
+---@field runningShoes { locked: boolean }? the toggle, while the shoes are owned and usable
+---@field registeredItems string[] the registered items' icon keys in slot order
+
+-- The live shortcut state the start menu and the closed-menu cluster draw:
+-- the Running Shoes toggle while the shoes are owned and the avatar is not
+-- cycling, and the registered items' icon keys in slot order.
+---@return FieldShortcuts
+function FieldRuntime:fieldShortcuts()
+  local progression = PlayerProgression.new(self.playerData.profile)
+  local runningShoes = nil
+  if progression:hasRunningShoes() and self.playerAvatar:durableState() ~= "cycling" then
+    runningShoes = { locked = progression:runningShoesLock() }
+  end
+  local catalog = self.bagService:catalog()
+  local registeredItems = {}
+  for slot, itemKey in ipairs(self.bagService:registeredItems()) do
+    registeredItems[slot] = catalog:item(itemKey).icon
+  end
+  return { runningShoes = runningShoes, registeredItems = registeredItems }
+end
+
+-- Flips the Running Shoes auto-run lock, as the shoes shortcut does.
+function FieldRuntime:toggleRunningShoesLock()
+  PlayerProgression.new(self.playerData.profile):toggleRunningShoesLock()
 end
 
 ---@param rememberedActionId string?
@@ -3678,11 +3727,19 @@ function FieldRuntime:_buildBattleScenarioFragment(request)
         assert(type(mons) == "table" and type(mons[1]) == "table", "prepared encounters carry their mon")
         local first = mons[1] --[[@as table<string, unknown>]]
         assert(type(first.mon) == "table", "prepared encounters carry their mon record")
+        local environment = {}
+        for key, value in pairs(encounter.environment) do
+          environment[key] = value
+        end
+        -- The Repeat Ball reads the wild species' Pokedex caught flag.
+        local species = first.mon.species --[[@as string]]
+        local dex = assert(self.dexKnowledge, "wild launches read the Pokedex caught flags")
+        environment.caughtSpecies = dex:isCaught(species) and { [species] = true } or {}
         return HgssBattleScenarioFactory.fromEncounter({
           attemptId = encounter.id,
           mon = first.mon,
           format = encounter.format,
-          environment = encounter.environment,
+          environment = environment,
         }, live)
       end
     end
@@ -4117,6 +4174,18 @@ function FieldRuntime:attemptEncounter(context)
       admitted.met = self:_wildMetContext()
     end
     assert(admitted.mapId == context.mapId)
+    -- The launch environment carries the encounter facts the conditional
+    -- balls read: the time of day (the Dusk Ball) and a hooked encounter
+    -- (the Lure Ball).
+    if type(context.environment) == "table" then
+      local environment = {}
+      for key, value in pairs(context.environment) do
+        environment[key] = value
+      end
+      environment.timeOfDay = context.timeOfDay
+      environment.fished = context.method == "fish"
+      admitted.environment = environment
+    end
   end
   local Errors = require("libs.errors.src.Errors")
   local ok, result = pcall(service.attempt, service, admitted, stream)
@@ -4345,6 +4414,8 @@ function FieldRuntime:_consumeCommittedStep()
   if session.takeCommittedStep == nil then
     return
   end
+  -- Biked steps count as they start, whichever owner later claims them.
+  self:_countBikedSteps()
   local step = session:takeCommittedStep()
   if step == nil then
     return
@@ -4375,6 +4446,7 @@ function FieldRuntime:_consumeCommittedStep()
   -- matching the native per-step update: the encounter check below reads
   -- the post-decrement counter.
   local repelSteps = self:_consumeRepelStep()
+  self:_raiseBikeShopCall()
   if method == nil then
     -- Steps outside encounter tiles never attempt, but they still count
     -- toward the entry grace.
@@ -4526,6 +4598,65 @@ function FieldRuntime:attemptSweetScentEncounter()
     radio = self:_currentRadioEffect(),
     swarm = self:_stepSwarmActive(),
   })
+end
+
+-- The fishing rod's encounter check (FieldSystem_PerformFishEncounterCheck),
+-- rolled when the line is cast: the rod's own table and rate, the lead's
+-- ability, the follower's friendship bite bonus, and the night and swarm
+-- rod replacements. Fishing never consults Repel. A map without an
+-- encounter bank never bites.
+---@param rodKey "old_rod"|"good_rod"|"super_rod"
+---@return table<string, unknown>? attempt result, nil on a map without encounters
+function FieldRuntime:attemptFishingEncounter(rodKey)
+  local session = assert(self.session, "fishing requires the field session")
+  local map = session.currentMap --[[@as table<string, unknown>]]
+  local memberId = (map.fieldData --[[@as table<string, unknown>]]).wildEncounterMemberId
+  assert(type(memberId) == "number" and memberId % 1 == 0, "fishing resolves its map's table member")
+  if memberId == 255 then
+    return nil
+  end
+  local leadFacts = self:_encounterLeadFacts()
+  return self:attemptEncounter({
+    eventId = session.tick,
+    mapId = memberId,
+    method = "fish",
+    movement = "fish",
+    modifiers = {
+      rod = rodKey,
+      radio = "none",
+      repel = false,
+      swarm = self:_stepSwarmActive(),
+      leadAbility = leadFacts.leadAbility,
+      leadNature = leadFacts.leadNature,
+      leadGender = leadFacts.leadGender,
+      followActive = self:_isFollowActive(leadFacts.firstAlive ~= nil),
+    },
+    lead = leadFacts.lead,
+    firstAlive = leadFacts.firstAlive,
+    environment = { weather = self:_encounterWeather(map) },
+    timeOfDay = self:_encounterTimeOfDay(),
+    playerProfile = self.playerData.profile,
+  })
+end
+
+-- The facts the fishing bite reads (fishing.c): whether the follower is
+-- active (a follower put away for a bike ride still is), whether the
+-- player surfs, and the first alive mon's friendship and mood, the mon the
+-- follower's mood belongs to.
+---@return { followerActive: boolean, surfing: boolean, friendship: integer, mood: integer }
+function FieldRuntime:fishingBiteFacts()
+  local firstAlive = self:_encounterLeadFacts().firstAlive
+  local facts = {
+    followerActive = self:_isFollowActive(firstAlive ~= nil),
+    surfing = self:_isSurfing(),
+    friendship = 0,
+    mood = 0,
+  }
+  if firstAlive ~= nil then
+    facts.friendship = assert(firstAlive.friendship, "party mons carry their friendship")
+    facts.mood = assert(firstAlive.mood, "party mons carry their mood")
+  end
+  return facts
 end
 
 -- Admits one prepared step encounter to the presented launch path on its
@@ -4689,6 +4820,38 @@ function FieldRuntime:_consumeRepelStep()
   return 0
 end
 
+-- The Bike Shop calls once the player has biked this many steps
+-- (FieldSystem_UpdateBikeShop in src/field/field_control.c).
+local BIKE_SHOP_CALL_STEPS = 1024
+local BIKE_SHOP_TRIGGER = "gear.trigger.2"
+
+-- Counts the steps the player started on the Bicycle this tick into the
+-- steps-biked stat (PlayerAvatar_CountStep counts each as it begins).
+function FieldRuntime:_countBikedSteps()
+  local stats = assert(self.gameStats, "biked steps count on the live game stats")
+  for _ = 1, self.player:takeBikedSteps() do
+    stats:countBikedStep()
+  end
+end
+
+-- FieldSystem_UpdateBikeShop: once the biked steps reach the threshold,
+-- and until the shop has called, a processed step raises the shop's call
+-- trigger and rings soon. The call script sets the got-call flag.
+function FieldRuntime:_raiseBikeShopCall()
+  local stats = assert(self.gameStats, "the Bike Shop call reads the live game stats")
+  if stats:stepsBikedCount() < BIKE_SHOP_CALL_STEPS then
+    return
+  end
+  if self.eventState:isFlagSet(FieldScriptSymbols.flagsByName.FLAG_SYS_GOT_BIKE_SHOP_CALL) then
+    return
+  end
+  local gear = assert(self.pokegearState, "the Bike Shop call reads the live phone triggers")
+  if gear:readPhone().triggers[BIKE_SHOP_TRIGGER] == true then
+    return
+  end
+  assert(self.incomingCalls, "the Bike Shop call rings through the incoming calls"):setTrigger(BIKE_SHOP_TRIGGER, true)
+end
+
 -- Derives the encounter lead facts from the live party: the slot-0 mon
 -- behind ability, deterrence, held-item, gender, and nature effects, plus
 -- the first alive mon behind repel and friendship. Egg slot-0 leads
@@ -4819,6 +4982,47 @@ function FieldRuntime:_saveCheckpoint()
   return assert(self.saveCoordinator, "field runtime has no save coordinator"):save()
 end
 
+-- The fishing rods' runtime scripts by item; the Bicycle has its own.
+local ROD_BY_ITEM = { OLD_ROD = "old_rod", GOOD_ROD = "good_rod", SUPER_ROD = "super_rod" }
+
+-- Uses a field-use key item (ItemCheckUseFunc_Bicycle/_FishingRod) from
+-- the Bag or its registered slot, checked over fresh world facts: an
+-- allowed use starts the item's script; a refused registered use prints
+-- the item check's refusal in the field (RegisteredItem_GoToPrintErrorTask),
+-- while the Bag answers its own refusals before leaving and a refusal here
+-- is an admission fault. Answers false for items without a field use.
+---@param itemKey string
+---@param registered boolean whether the use came from a registered slot
+---@return boolean true when the use claimed the field
+function FieldRuntime:useKeyItem(itemKey, registered)
+  local FieldMovePolicy = require("libs.hgss.src.field.FieldMovePolicy")
+  if not FieldMovePolicy.hasKeyItemCheck(itemKey) then
+    return false
+  end
+  local BuiltinScripts = require("libs.hgss.src.script.BuiltinScripts")
+  local FieldMoveContext = require("game.hgss.src.field.FieldMoveContext")
+  local ScriptInteractionClient = require("libs.hgss.src.script.ScriptInteractionClient")
+  local decision = FieldMovePolicy.checkKeyItem(itemKey, FieldMoveContext.capture(self:_menuFieldSources()()))
+  local rod = ROD_BY_ITEM[itemKey]
+  local scriptId = rod ~= nil and BuiltinScripts.FISHING_SCRIPTS[rod] or BuiltinScripts.BICYCLE_SCRIPT
+  if decision.kind ~= "ok" then
+    if not registered then
+      error("pokemon.key_item admission refused: " .. tostring(decision.kind), 0)
+    end
+    scriptId = assert(
+      BuiltinScripts.ITEM_USE_REFUSAL_SCRIPTS[decision.kind],
+      "key item refusal has no message: " .. tostring(decision.kind)
+    )
+  end
+  local session = assert(self.session, "key item use requires the field session")
+  local client = assert(self.scripts and self.scripts.client, "key item use requires the script client")
+  local started = client:startApplicationScript(scriptId, session.tick + 1)
+  if started == nil or started == ScriptInteractionClient.RESULTS.blocked then
+    error("key item use scheduling failed without a foreground claim", 0)
+  end
+  return true
+end
+
 -- The synchronous child-to-field admission command behind the host's
 -- field_action results. Queues the converged request, then claims the
 -- scheduler foreground synchronously: a normal return guarantees the
@@ -4834,6 +5038,14 @@ end
 function FieldRuntime:_admitFieldAction(actionId, request)
   if actionId == "vanilla.save" then
     return self:_saveCheckpoint()
+  end
+  if actionId == "pokemon.key_item" then
+    local itemKey = assert(request and request.item, "key item admission names its item")
+    -- The Bag checked the use on selection; a world that changed since
+    -- refuses here instead of scheduling.
+    local started = self:useKeyItem(itemKey, false)
+    assert(started, "key item admission requires a field-use key item")
+    return started
   end
   assert(actionId == "pokemon.field_move", "unknown field action " .. tostring(actionId))
   local BuiltinScripts = require("libs.hgss.src.script.BuiltinScripts")
@@ -4891,6 +5103,15 @@ function FieldRuntime:_admitFieldAction(actionId, request)
     -- vetted eligibility.
     fieldMoves:discardPending()
     self.scripts.worldState:setVar(0x8000, flowRequest.slot)
+    if flowRequest.move == "sweet_scent" then
+      -- Task_SweetScentEffect: the visible lead follower performs the scent
+      -- with a jump, cheered when it is a Grass type.
+      local mons = assert(self.monService, "sweet scent requires the mon service")
+      local follower = self.followingMon
+      if flowRequest.slot == mons:leadAliveSlot() and follower ~= nil and follower:isVisible() then
+        mons:cheerFollowerOfType("grass")
+      end
+    end
     local target = context.facingActor
     local reply = client:startApplicationScript(
       menuScript,
@@ -5224,6 +5445,7 @@ function FieldRuntime:_releaseAll()
   self.displayContext, self.presentationDisplay, self.presentationOverrides = nil, nil, nil
   self._displayTopology = nil
   self.mapNameBanner = nil
+  self.shortcutSlide = nil
   if self.messageProvider then
     self.messageProvider:dispose()
   end

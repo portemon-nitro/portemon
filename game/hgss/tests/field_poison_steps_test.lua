@@ -3,6 +3,7 @@
 -- reports cure outcomes without disturbing the encounter boundary.
 
 local Assert = require("tests.support.Assert")
+local GameStats = require("libs.hgss.src.mons.GameStats")
 local FieldPoison = require("libs.hgss.src.field.FieldPoison")
 local FieldPoisonEffect = require("libs.hgss.src.field.FieldPoisonEffect")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
@@ -133,7 +134,15 @@ local function poisonRuntime(overrides)
         fieldData = { wildEncounterMemberId = 7 },
       },
     },
-    player = { fieldX = 5, fieldZ = 5, facing = "south" },
+    player = {
+      fieldX = 5,
+      fieldZ = 5,
+      facing = "south",
+      takeBikedSteps = function()
+        return 0
+      end,
+    },
+    gameStats = GameStats.new({ species = { CHIKORITA = true } }),
     playerData = { profile = {}, options = { textFrame = 3 } },
     battleCoordinator = {
       hasBattleWork = function()

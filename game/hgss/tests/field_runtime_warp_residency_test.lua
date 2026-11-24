@@ -188,6 +188,7 @@ local function fixture(options)
       beginMapEntry = function() end,
     },
     scentTint = { updateSourceFrame = function() end },
+    fishingHost = { updateFixed = function() end, notice = function() end },
     screenFade = {
       isOpaque = function()
         return true
@@ -198,6 +199,7 @@ local function fixture(options)
       updateSourceFrame = function() end,
     },
     scripts = { onMapSwap = function() end },
+    playerAvatar = { durableState = function() return "walking" end },
     zoneController = { currentMap = maps[10] },
     fieldTerrainEffectController = { clear = function() end },
     applicationHost = {

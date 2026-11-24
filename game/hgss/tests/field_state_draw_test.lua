@@ -296,6 +296,7 @@ local function presentationState(assets, actorIds)
       end,
     } --[[@as any]],
     runtimeMap = { sceneRuntime = { mapDraws = {}, staticBuildingDraws = {}, animatedBuildingDraws = {} } },
+    fishingHost = { updateFixed = function() end, notice = function() end },
     fieldEntranceIndicator = {
       status = function()
         return { visible = false }
@@ -422,6 +423,7 @@ end
 -- fields: no `runtime` sceneRuntime alias and no `actor` player alias.
 local function stateWith(runtime)
   runtime.pcApplicationHost = runtime.pcApplicationHost or idlePcApplicationHost()
+  runtime.fishingHost = { updateFixed = function() end, notice = function() end }
   runtime.fieldEntranceIndicator = {
     status = function()
       return { visible = false }
@@ -639,6 +641,7 @@ function T.draw_passes_the_render_environment_and_queries_the_menu_host()
           return { visible = false }
         end,
       },
+      fishingHost = { updateFixed = function() end, notice = function() end },
       fieldEntranceIndicator = {
         status = function()
           return { visible = false }
@@ -845,6 +848,7 @@ function T.physical_coverage_draws_without_a_realized_scene()
           return { visible = false }
         end,
       },
+      fishingHost = { updateFixed = function() end, notice = function() end },
       fieldEntranceIndicator = {
         status = function()
           return { visible = false }
@@ -983,6 +987,7 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
           return { visible = false }
         end,
       },
+      fishingHost = { updateFixed = function() end, notice = function() end },
       fieldEntranceIndicator = {
         status = function()
           return { visible = false }
@@ -1125,6 +1130,7 @@ function T.draw_sends_billboard_emote_items_to_presentation_not_world_queue()
           return { visible = false }
         end,
       },
+      fishingHost = { updateFixed = function() end, notice = function() end },
       fieldEntranceIndicator = {
         status = function()
           return { visible = false }
@@ -1578,6 +1584,7 @@ function T.destination_world_is_not_drawn_before_entry_presentation_is_ready()
   local state = setmetatable({
     runtime = {
       runtimeMap = { sceneRuntime = { mapDraws = {}, staticBuildingDraws = {}, animatedBuildingDraws = {} } },
+      fishingHost = { updateFixed = function() end, notice = function() end },
       fieldEntranceIndicator = {
         status = function()
           return { visible = false }
@@ -1828,6 +1835,7 @@ local function gatedSessionOptions(input, lifecycles, enterMapActors)
     bagUnlocked = function()
       return true
     end,
+    fishingHost = { updateFixed = function() end, notice = function() end },
     fieldEntranceIndicator = {
       updateFixed = function() end,
     },
@@ -1977,6 +1985,7 @@ local function gatedEntryState(renderer, options)
     menuKeys = options.menuKeys or {},
     input = input,
     resizePresentation = function() end,
+    fishingHost = { updateFixed = function() end, notice = function() end },
     fieldEntranceIndicator = {
       status = function()
         return { visible = false }
@@ -2196,6 +2205,7 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
       bagUnlocked = function()
         return true
       end,
+      fishingHost = { updateFixed = function() end, notice = function() end },
       fieldEntranceIndicator = {
         updateFixed = function() end,
       },
@@ -2213,6 +2223,7 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
     local runtime = {
       runtimeMap = { sceneRuntime = { mapDraws = {}, staticBuildingDraws = {}, animatedBuildingDraws = {} } },
       pcApplicationHost = idlePcApplicationHost(),
+      fishingHost = { updateFixed = function() end, notice = function() end },
       fieldEntranceIndicator = {
         status = function()
           return { visible = false }

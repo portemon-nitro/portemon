@@ -607,6 +607,13 @@ local function performingWorldWith(overrides)
       leadSlot = function()
         return leadSlot
       end,
+      slotWithMove = function()
+        return leadSlot
+      end,
+      cheerFollower = function(_, typeKey)
+        local cheered = assert(overrides.cheered, "this world never cheers")
+        cheered[#cheered + 1] = typeKey
+      end,
     },
   })
 end
@@ -647,6 +654,28 @@ function T.follower_sits_out_when_distant_absent_or_portless()
   Assert.isFalse(slotless:isFollowerPerforming(nil), "a missing slot never performs")
 end
 
+-- A follower performing a native field move is cheered by the move's type:
+-- the performance follows the plan (Dig, Teleport) or the slot (Fly, Surf,
+-- Rock Climb, a prompted Surf by its first user); the player performing,
+-- or a move without a cheering type, changes nothing.
+function T.a_performing_follower_is_cheered_by_the_move_type()
+  local cheered = {}
+  local world = performingWorldWith({
+    partnerPosition = { fieldX = 11, fieldZ = 10 },
+    leadSlot = 0,
+    cheered = cheered,
+  })
+  world:cheerPerformingFollower({ kind = "fly", move = "fly", slot = 0 })
+  world:cheerPerformingFollower({ kind = "surf_enter", move = "surf" })
+  world:cheerPerformingFollower({ kind = "rock_climb", move = "rock_climb", slot = 0 })
+  world:cheerPerformingFollower({ kind = "dig", move = "dig", slot = 0, withFollowMon = true })
+  world:cheerPerformingFollower({ kind = "teleport", move = "teleport", slot = 0, withFollowMon = false })
+  world:cheerPerformingFollower({ kind = "fly", move = "fly", slot = 3 })
+  world:cheerPerformingFollower({ kind = "escape_rope", move = "escape_rope" })
+  world:cheerPerformingFollower({ kind = "waterfall", move = "waterfall", slot = 0 })
+  Assert.deepEqual(cheered, { "flying", "water", "normal", "ground" })
+end
+
 function T.party_knows_waterfall_reads_the_party_port()
   local knower = flyWorldWith({
     party = {
@@ -657,6 +686,8 @@ function T.party_knows_waterfall_reads_the_party_port()
       leadSlot = function()
         return 0
       end,
+      slotWithMove = function() end,
+      cheerFollower = function() end,
     },
   })
   Assert.isTrue(knower:partyKnowsWaterfall(), "a party with waterfall descends")
@@ -668,6 +699,8 @@ function T.party_knows_waterfall_reads_the_party_port()
       leadSlot = function()
         return 0
       end,
+      slotWithMove = function() end,
+      cheerFollower = function() end,
     },
   })
   Assert.isFalse(learner:partyKnowsWaterfall(), "a party without waterfall never auto-descends")

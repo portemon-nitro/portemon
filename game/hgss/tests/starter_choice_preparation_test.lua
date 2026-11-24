@@ -533,6 +533,7 @@ local function fieldComposition(starter, queue, backend, images)
     },
     _entryFade = nil,
     _entryAccumulator = 0,
+    _shortcutTabPresses = {},
     development = false,
   }, FieldState)
   return state, inputCalls, zoomCalls
@@ -582,6 +583,7 @@ local function fieldCompositionWithRealInput(starter, queue, backend, input, ima
     },
     _entryFade = nil,
     _entryAccumulator = 0,
+    _shortcutTabPresses = {},
     development = false,
   }, FieldState)
   return state, zoomCalls

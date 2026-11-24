@@ -51,6 +51,7 @@ local function runtimeDouble(sourceMap, travel, facing)
       onMapSwap = function() end,
     },
     resetEncounterStepCounters = function() end,
+    playerAvatar = { durableState = function() return "walking" end },
     followingMon = nil,
     followingMonTransition = nil,
     audio = nil,

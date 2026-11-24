@@ -503,6 +503,7 @@ local function publishMapDataRecord(cache, mapId, marker)
       icePathB2F = false,
       cave = false,
       unionOrColosseum = false,
+      bikeAllowed = true,
     },
   })
   cache:writeLua(FieldMapData.dependenciesPath(mapId), { generated = true })

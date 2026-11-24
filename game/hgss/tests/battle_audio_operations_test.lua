@@ -1871,6 +1871,8 @@ return {
       "mon-portrait-page:34",
       "mon-icon-page:0",
       "audio-bank:720",
+      "audio-bank:702",
+      "audio-bank:751",
       "map-data:63",
       "map-data:64",
       "map:63",

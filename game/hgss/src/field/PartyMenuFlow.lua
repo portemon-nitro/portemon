@@ -16,8 +16,10 @@ local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
 local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
 local MailboxScreenState = require("game.hgss.src.pc.MailboxScreenState")
 local StandardFade = require("libs.hgss.src.presentation.StandardFade")
+local FieldMovePolicy = require("libs.hgss.src.field.FieldMovePolicy")
 
 local TERMINAL_FIELD_ACTION = "pokemon.field_move"
+local KEY_ITEM_FIELD_ACTION = "pokemon.key_item"
 local ESCAPE_ROPE = "ESCAPE_ROPE"
 
 -- The complete set of pages the flow's single live child can occupy.
@@ -744,6 +746,24 @@ function PartyMenuFlow:_routeEscapeRope()
   })
 end
 
+-- A field-use key item's Use (the Bicycle and the fishing rods): the item
+-- check decides on selection like the Escape Rope's, and an allowed use
+-- leaves for the field, which starts the item's script. Refusals stay
+-- silent for the same reason the Rope's do.
+---@param itemKey string
+function PartyMenuFlow:_routeKeyItem(itemKey)
+  local decision = self._fieldMoves.check({ item = itemKey })
+  assert(type(decision) == "table" and type(decision.kind) == "string", "item checks answer decisions")
+  if decision.kind ~= "ok" then
+    return
+  end
+  self:_terminate({
+    kind = "field_action",
+    actionId = KEY_ITEM_FIELD_ACTION,
+    request = { item = itemKey },
+  })
+end
+
 -- Routes a bag intent into its party target page with a captured
 -- continuation. The launching batch stays with the retired bag child.
 ---@param intent table<string, unknown>
@@ -756,6 +776,10 @@ function PartyMenuFlow:_routeBagIntent(intent)
   end
   if intent.kind == "use" and itemKey == ESCAPE_ROPE then
     self:_routeEscapeRope()
+    return
+  end
+  if intent.kind == "use" and FieldMovePolicy.hasKeyItemCheck(itemKey) then
+    self:_routeKeyItem(itemKey)
     return
   end
   local operation = intent.kind == "use" and "use" or "give"

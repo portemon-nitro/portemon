@@ -70,6 +70,7 @@ local function runtimeWithAudio(calls, options)
     },
     transition = transition,
     scentTint = { updateSourceFrame = function() end },
+    fishingHost = { updateFixed = function() end, notice = function() end },
     screenFade = screenFadeFake(calls),
     scripts = {},
     applicationHost = {
@@ -101,6 +102,7 @@ local function runtimeWithoutAudio(calls)
     },
     transition = transition,
     scentTint = { updateSourceFrame = function() end },
+    fishingHost = { updateFixed = function() end, notice = function() end },
     screenFade = screenFadeFake(calls),
     scripts = {},
     applicationHost = {
@@ -138,6 +140,7 @@ local function runtimeForSemanticCatchUp(counters)
       consumeCompleted = function() end,
     },
     scentTint = { updateSourceFrame = function() end },
+    fishingHost = { updateFixed = function() end, notice = function() end },
     screenFade = {
       fadeDone = function()
         return true
@@ -346,6 +349,7 @@ function T.tests.zero_delta_does_not_advance_any_clock()
       consumeCompleted = function() end,
     },
     scentTint = { updateSourceFrame = function() end },
+    fishingHost = { updateFixed = function() end, notice = function() end },
     screenFade = screenFadeFake(calls),
     scripts = {},
     applicationHost = {
@@ -386,6 +390,7 @@ local function runtimeWithFollowerPresentation(updateOptions, modal)
       consumeCompleted = function() end,
     },
     scentTint = { updateSourceFrame = function() end },
+    fishingHost = { updateFixed = function() end, notice = function() end },
     screenFade = {
       fadeDone = function()
         return true
@@ -398,7 +403,9 @@ local function runtimeWithFollowerPresentation(updateOptions, modal)
         return nil
       end,
     },
+    playerAvatar = { durableState = function() return "walking" end },
     followingMon = {
+      setStowed = function() end,
       update = function(_, options)
         updateOptions.calls = updateOptions.calls + 1
         updateOptions.last = options
@@ -429,7 +436,9 @@ local function runtimeForFollowerCoherence(logicalMapId, actorMapId, entryActive
       emitCommittedActorSteps = function() end,
     },
     actors = { currentMapId = actorMapId },
+    playerAvatar = { durableState = function() return "walking" end },
     followingMon = {
+      setStowed = function() end,
       update = function()
         calls.count = calls.count + 1
       end,
@@ -441,6 +450,7 @@ local function runtimeForFollowerCoherence(logicalMapId, actorMapId, entryActive
       consumeCompleted = function() end,
     },
     scentTint = { updateSourceFrame = function() end },
+    fishingHost = { updateFixed = function() end, notice = function() end },
     screenFade = {
       fadeDone = function()
         return true

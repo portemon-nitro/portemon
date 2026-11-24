@@ -36,6 +36,7 @@ local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
 local FieldCallNoticeRenderer = require("game.hgss.src.field.FieldCallNoticeRenderer")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
 local TrainerCardRenderer = require("libs.hgss.src.ui.TrainerCardRenderer")
 local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
 local PartyCache = require("libs.assets.src.PartyCache")
@@ -61,6 +62,8 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@class FieldPresentationResourcesRuntime
 ---@field cacheFs CacheFs
 ---@field imageAssets table<string, unknown>? the runtime-owned shared image owner borrowed by menu chrome
+---@field presentationDisplay DisplayMeasurement? the live measured display the start menu resolves against
+---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
 ---@field assetPreparation table<string, unknown>? the runtime-owned preparation worker borrowed by scene owners
 ---@field decoded table<string, unknown>? the selected decoded CPU owner borrowed by scene owners
 ---@field derivedAssets table<string, function>? semantic derived-asset host in presented composition
@@ -105,6 +108,8 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field menuRenderer FieldMenuRenderer
 ---@field signpostRenderer FieldSignpostRenderer?
 ---@field startMenuRenderer StartMenuRenderer?
+---@field _shortcutLayout ApplicationPresentation? the start menu's layout resolution, giving the closed-menu shortcuts the menu's scale
+---@field _measureDisplay fun(): DisplayMeasurement the live display facts the start menu resolves against
 ---@field _callNoticeRenderer FieldCallNoticeRenderer? the lazily built incoming-call notice
 ---@field trainerCardRenderer TrainerCardRenderer?
 ---@field partyScreenRenderer PartyScreenRenderer?
@@ -629,6 +634,16 @@ function FieldPresentationResources.new(runtime)
       imagePool = sharedImages,
       selectionCursor = FieldPresentationResources._apricornSelectionCursor(runtime.cacheFs),
     })
+    -- The closed-menu shortcuts draw at the scale the start menu resolves
+    -- to on the current display, through the menu's own resolvers.
+    self._shortcutLayout = ApplicationPresentation.new(
+      StartMenuInterface.defaults(),
+      runtime.presentationOverrides ~= nil and runtime.presentationOverrides.start_menu or nil
+    )
+    local function measureDisplay()
+      return assert(runtime.presentationDisplay, "the shortcut placement requires the measured display")
+    end
+    self._measureDisplay = measureDisplay
     self.trainerCardRenderer = TrainerCardRenderer.new({
       cacheFs = runtime.cacheFs,
       manifest = runtime.uiManifest,
@@ -1269,6 +1284,7 @@ function FieldPresentationResources:drawStartMenu(status, graphics)
   ApplicationPresentation.draw(hostGraphics, {
     graphics = hostGraphics,
     startMenuRenderer = assert(self.startMenuRenderer, "start menu renderer is unavailable"),
+    itemIcons = assert(self.itemIconProvider, "the start menu borrows the shared item icon provider"),
   }, status, presentation)
   drawApplicationFrames(hostGraphics, self, presentation)
 end
@@ -1378,6 +1394,112 @@ function FieldPresentationResources:drawMapNameBanner(banner, bounds)
   assert(self.bannerRenderer, "field presentation owns no map-name banner renderer"):draw(status, bounds)
 end
 
+local NO_VIEW = {}
+
+-- The closed-menu cluster's placement: the start menu surface at the scale
+-- the menu itself resolves to on this display, translated so the cluster's
+-- bottom-right corner rests on the actual screen's bottom-right corner,
+-- displaced right by the slide offset. Nil when the menu has no placement.
+---@param self FieldPresentationResources
+---@param slideOffset integer logical displacement toward the right edge
+---@param bounds LayoutGeometry.Rect actual host screen bounds
+---@return LayoutGeometry.Placement?
+local function shortcutPlacement(self, slideOffset, bounds)
+  local layout = assert(self._shortcutLayout, "the shortcut placement requires the start menu layout")
+  local pane = layout:resolve(self._measureDisplay(), NO_VIEW).panes[1]
+  if pane == nil then
+    return nil
+  end
+  local scale = pane.placement.scale
+  local cluster = StartMenuRenderer.shortcutBounds(self.uiManifest.startMenu)
+  local origin = {
+    x = bounds.x + bounds.width - (cluster.x + cluster.width - slideOffset) * scale,
+    y = bounds.y + bounds.height - (cluster.y + cluster.height) * scale,
+  }
+  return {
+    frame = {
+      x = origin.x,
+      y = origin.y,
+      width = NativeDisplay.WIDTH * scale,
+      height = NativeDisplay.HEIGHT * scale,
+    },
+    origin = origin,
+    scale = scale,
+    logicalWidth = NativeDisplay.WIDTH,
+    logicalHeight = NativeDisplay.HEIGHT,
+    clipRect = bounds,
+  }
+end
+
+-- Draws the Running Shoes toggle and registered-item tabs over the field
+-- while it is free: the cluster keeps its start menu layout at the
+-- bottom-right corner and slides off the right edge by the slide offset.
+---@param shortcuts FieldShortcuts
+---@param slideOffset integer logical displacement toward the right edge
+---@param bounds LayoutGeometry.Rect actual host screen bounds
+function FieldPresentationResources:drawFieldShortcuts(shortcuts, slideOffset, bounds)
+  local placement = shortcutPlacement(self, slideOffset, bounds)
+  if placement == nil then
+    return
+  end
+  assert(self.startMenuRenderer, "start menu renderer is unavailable"):drawShortcuts(
+    shortcuts,
+    placement,
+    assert(self.itemIconProvider, "the shortcuts borrow the shared item icon provider")
+  )
+end
+
+-- The closed-menu shortcut under a host point: the Running Shoes button
+-- while it shows, or the registered slot whose tab lies there among the first
+-- `registeredCount` tabs; nil when the point misses them all.
+---@param registeredCount integer how many slots hold a registered item
+---@param shoesVisible boolean whether the Running Shoes button shows
+---@param slideOffset integer logical displacement toward the right edge
+---@param bounds LayoutGeometry.Rect actual host screen bounds
+---@param x number host x
+---@param y number host y
+---@return integer|"running_shoes"|nil
+function FieldPresentationResources:shortcutAt(registeredCount, shoesVisible, slideOffset, bounds, x, y)
+  local placement = shortcutPlacement(self, slideOffset, bounds)
+  if
+    placement == nil
+    or x < bounds.x
+    or y < bounds.y
+    or x >= bounds.x + bounds.width
+    or y >= bounds.y + bounds.height
+  then
+    return nil
+  end
+  local logicalX = (x - placement.origin.x) / placement.scale
+  local logicalY = (y - placement.origin.y) / placement.scale
+  local shoesRect = self.uiManifest.startMenu.runningShoes.hitRect
+  if
+    shoesVisible
+    and logicalX >= shoesRect.x
+    and logicalY >= shoesRect.y
+    and logicalX < shoesRect.x + shoesRect.width
+    and logicalY < shoesRect.y + shoesRect.height
+  then
+    return "running_shoes"
+  end
+  local tabs = self.uiManifest.startMenu.registeredItems
+  for slot = 1, registeredCount do
+    local tab = tabs[slot]
+    local visual = tab.button.visual
+    local left = tab.button.anchor.x + visual.offset.x
+    local top = tab.button.anchor.y + visual.offset.y
+    if
+      logicalX >= left
+      and logicalY >= top
+      and logicalX < left + visual.rect.width
+      and logicalY < top + visual.rect.height
+    then
+      return slot
+    end
+  end
+  return nil
+end
+
 -- The one placement every source main-display window paints through: the
 -- canonical MAIN field reference frame at the resolved field pixel scale, so a
 -- source tile coordinate lands on the same host pixel for both the floor box
@@ -1461,6 +1583,10 @@ end
 
 function FieldPresentationResources:dispose()
   self.presenters = nil
+  if self._shortcutLayout ~= nil then
+    self._shortcutLayout:dispose()
+    self._shortcutLayout = nil
+  end
   -- A still-open options child returns its renderer here: borrowed owners
   -- are released after this, so the per-open leases return first.
   if self._optionsRenderer ~= nil then

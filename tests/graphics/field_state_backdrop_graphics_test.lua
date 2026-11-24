@@ -78,6 +78,7 @@ local function drawableState(environment, worldViewport, windowWidth, windowHeig
         return 3
       end,
     },
+    fishingHost = { updateFixed = function() end, notice = function() end },
     fieldEntranceIndicator = {
       status = function()
         return { visible = false }

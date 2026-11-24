@@ -249,14 +249,41 @@ function T.restore_rebuilds_from_a_bucket_and_missing_starts_empty()
   Assert.equal(missing:score(), 0, "a missing bucket scores nothing")
   Assert.equal(missing:mailWrittenCount(), 0, "a missing bucket counts no written Mail")
   local bucket = restored:bucket()
-  Assert.equal(bucket.schema, "hgss-stats-v2", "the bucket publishes the current schema")
-  Assert.equal(bucket.stateVersion, 2, "the bucket publishes the current state version")
+  Assert.equal(bucket.schema, "hgss-stats-v3", "the bucket publishes the current schema")
+  Assert.equal(bucket.stateVersion, 3, "the bucket publishes the current state version")
   Assert.deepEqual(bucket.uniqueCaught, { "CHIKORITA", "TOTODILE" }, "the bucket sorts its registrations")
   Assert.equal(bucket.uniqueTotal, 5, "the bucket carries the blind total")
   Assert.equal(bucket.score, 40, "the bucket carries the live score")
   Assert.equal(bucket.mailWritten, 9, "the bucket carries the written-Mail total")
+  Assert.equal(bucket.stepsBiked, 0, "the bucket carries the steps-biked total")
   bucket.uniqueCaught[1] = "EEVEE"
   Assert.isFalse(restored:isCounted("EEVEE"), "the canonical bucket never aliases live state")
+end
+
+-- Every step taken on the Bicycle counts once (PlayerAvatar_CountStep),
+-- saturating at the source's extra-wide stat ceiling.
+function T.biked_steps_count_once_each_up_to_the_retail_ceiling()
+  local owner = newOwner()
+  local revision = owner:revision()
+  owner:countBikedStep()
+  owner:countBikedStep()
+  Assert.equal(owner:stepsBikedCount(), 2, "each biked step counts once")
+  Assert.equal(owner:revision(), revision + 2, "each counted step publishes")
+  Assert.equal(owner:bucket().stepsBiked, 2, "the bucket carries the count")
+  Assert.equal(owner:score(), 0, "biking scores nothing")
+  local capped = GameStats.restore({
+    schema = "hgss-stats-v3",
+    stateVersion = 3,
+    uniqueCaught = {},
+    uniqueTotal = 0,
+    score = 0,
+    mailWritten = 0,
+    stepsBiked = GameStats.STEPS_BIKED_CAP,
+  }, refs())
+  local cappedRevision = capped:revision()
+  capped:countBikedStep()
+  Assert.equal(capped:stepsBikedCount(), GameStats.STEPS_BIKED_CAP, "the count never exceeds its ceiling")
+  Assert.equal(capped:revision(), cappedRevision, "a capped step publishes nothing")
 end
 
 function T.written_mail_counts_once_with_its_score_and_no_species_freshness()

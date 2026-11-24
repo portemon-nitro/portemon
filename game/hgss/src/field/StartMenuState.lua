@@ -25,6 +25,7 @@ StartMenuState.__index = StartMenuState
 ---@field rememberedActionId string? selection remembered across a child-application round trip
 ---@field effect (fun(sequence: string))? source UI sound effect boundary
 ---@field runningShoes StartMenuController.RunningShoes the Running Shoes toggle port
+---@field registeredItems StartMenuController.RegisteredItems the registered-item tabs port
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 
@@ -42,6 +43,7 @@ function StartMenuState.new(opts)
     rememberedActionId = opts.rememberedActionId,
     effect = opts.effect,
     runningShoes = assert(opts.runningShoes, "the start menu wrapper requires the Running Shoes port"),
+    registeredItems = assert(opts.registeredItems, "the start menu wrapper requires the registered-item tabs port"),
   })
   local built, sessionOrError = pcall(function()
     return ApplicationPresentation.new(StartMenuInterface.defaults(), opts.overrides)
@@ -110,7 +112,7 @@ end
 
 -- The host result contract: launch, field action, and close forward
 -- unchanged from the controller.
----@return { kind: "close"|"launch"|"field_action", applicationId?: string, actionId?: string }?
+---@return { kind: "close"|"launch"|"field_action"|"registered_item", applicationId?: string, actionId?: string, slot?: integer }?
 function StartMenuState:takeResult()
   return self._controller:takeResult()
 end

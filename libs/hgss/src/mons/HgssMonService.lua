@@ -1443,6 +1443,34 @@ function HgssMonService:applyFollowerInteractionDeltas(slot0, friendshipDelta, m
   return mon
 end
 
+-- FollowMonMood_Add on the first alive mon, the follower's mood record.
+-- Without an alive mon there is no follower, and nothing changes.
+---@param amount integer
+function HgssMonService:addFollowerMood(amount)
+  local slot = self:leadAliveSlot()
+  if slot ~= nil then
+    self:applyFollowerInteractionDeltas(slot, 0, amount)
+  end
+end
+
+-- A field move the follower performs cheers it when the first alive mon
+-- has the move's type (FieldSystem_FirstAliveMonHasType then
+-- FollowMonMood_Add(1)): Surf for Water, Fly for Flying, and so on.
+---@param typeKey string a catalog type key
+function HgssMonService:cheerFollowerOfType(typeKey)
+  local slot = self:leadAliveSlot()
+  if slot == nil then
+    return
+  end
+  local mon = self:_liveMon(slot)
+  for _, key in ipairs(self._catalog:form(mon.species, mon.form).types) do
+    if key == typeKey then
+      self:applyFollowerInteractionDeltas(slot, 0, 1)
+      return
+    end
+  end
+end
+
 ---@param slot0 integer
 ---@param leaf integer
 ---@return boolean

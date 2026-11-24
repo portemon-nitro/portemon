@@ -1670,7 +1670,18 @@ do
     return blockOnTask(run, "sweet_scent", {}, node.result)
   end
 
+  local function handleFishing(node, run)
+    requireForeground(run, "fishing")
+    if node.stage == "cast" then
+      assert(type(node.rod) == "string" and node.result ~= nil, "a fishing cast names its rod and result")
+      return blockOnTask(run, "fishing", { stage = "cast", rod = node.rod }, node.result)
+    end
+    assert(node.stage == "put_away", "fishing stages are cast and put_away")
+    return blockOnTask(run, "fishing", { stage = "put_away" })
+  end
+
   HANDLERS.sweet_scent = handleSweetScent
+  HANDLERS.fishing = handleFishing
   HANDLERS.rock_smash_item_check = handleRockSmashItemCheck
   HANDLERS.try_headbutt_encounter = handleTryHeadbuttEncounter
   HANDLERS.field_move_cut_in = handleFieldMoveCutIn
@@ -3283,6 +3294,14 @@ function HANDLERS.player_on_bike_check(node, run)
   -- is 1 exactly when the live avatar state is cycling (state code 1).
   local onBike = requireService(run, "player"):stateCode() == 1
   semanticsFor(run).writeRef(node.result, onBike and 1 or 0, run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.player_on_bike_set(node, run)
+  requireService(run, "bicycle"):setRiding(node.riding)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.bike_state_lock(node, run)
+  requireService(run, "bicycle"):setLocked(node.locked)
   return Runtime.OUTCOME_CONTINUE
 end
 function HANDLERS.time_of_day(node, run)

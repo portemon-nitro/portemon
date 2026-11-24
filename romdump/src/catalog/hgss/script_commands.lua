@@ -1349,12 +1349,16 @@ return {
       },
     },
     [185] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_PlayerOnBikeSet",
       widths = {
         [1] = 1,
       },
     },
     [186] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_SetBikeStateLock",
       widths = {
         [1] = 1,

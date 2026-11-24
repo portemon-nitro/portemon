@@ -188,8 +188,11 @@ function FieldMessageCompiler.requiredBankIds()
   set[OPPOSITE_PROTAGONIST_NAME_BANK] = true
   -- The rival naming screen defaults an empty entry from this bank row.
   set[NAMING_SCREEN_MESSAGE_BANK] = true
-  -- Follower reaction text is addressed directly by the retail overlay.
+  -- Follower reaction text is addressed directly by the retail overlay; the
+  -- fishing rod prints its results from the same bank.
   set[40] = true
+  -- GetItemUseErrorMessage reads the Bag bank's bike and escort refusals.
+  set[10] = true
   set[265] = true
   set[BLACKOUT_MESSAGE_BANK] = true
   -- GetStdMsgNaix loads one of these msgdata banks by immediate std index

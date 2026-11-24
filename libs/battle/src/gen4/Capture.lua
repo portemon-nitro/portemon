@@ -384,25 +384,38 @@ local function targetFactsFor(combatant, mon)
   }
 end
 
+-- The encounter facts the conditional balls read, from the battle's
+-- launch environment (the source's battle setup facts): the completed
+-- turn count (totalTurns, zero on the first turn), the target species'
+-- Pokedex caught flag (BattleSystem_CheckMonCaught), the water or cave
+-- battle terrain (BattleSystem_GetTerrainId), a fishing encounter
+-- (BattleSystem_IsFishing), and the launch time of day.
 ---@param attempt CaptureAttempt
 ---@param battle table<string, unknown>
 ---@param policy CapturePolicy
+---@param species string the target's species
 ---@return table<string, unknown>
-local function envFactsFor(attempt, battle, policy)
+local function envFactsFor(attempt, battle, policy, species)
   local actorSlot = (battle.combatants --[[@as table<integer, unknown>]])[attempt.actor]
   local holder = type(actorSlot) == "table" and actorSlot --[[@as table<string, unknown>]] or {}
   local actorMon = type(holder.mon) == "table" and holder.mon --[[@as table<string, unknown>]] or {}
+  local round = battle.round
+  assert(type(round) == "number" and round % 1 == 0 and round >= 1, "throws read the live battle round")
+  local environment = battle.environment
+  assert(type(environment) == "table", "throws read the battle launch environment")
+  ---@cast environment table<string, unknown>
+  local caught = environment.caughtSpecies
   local facts = {
     mode = policy.mode,
-    turns = battle.turns or 0,
-    pokedexCaught = battle.pokedexCaught or false,
+    turns = round - 1,
+    pokedexCaught = type(caught) == "table" and caught[species] == true,
     attackerLevel = holder.level or actorMon.level,
     attackerSpecies = actorMon.species,
     attackerGender = holder.gender or actorMon.gender,
-    method = battle.method or "land",
-    fished = battle.fished or false,
-    timeOfDay = battle.timeOfDay or "day",
-    inCave = battle.inCave or false,
+    method = environment.terrain == "water" and "surf" or "land",
+    fished = environment.fished == true,
+    timeOfDay = environment.timeOfDay or "day",
+    inCave = environment.terrain == "cave",
     backdrop = battle.backdrop or "field",
   }
   if policy.mode == "safari" and attempt.ball == "SAFARI_BALL" and type(battle.formatState) == "table" then
@@ -427,7 +440,8 @@ local function stageThrow(attempt, battle)
   end
   local targetId, combatant, mon = resolveTarget(attempt, battle)
   local policy = resolvePolicy(attempt, battle, combatant, targetId)
-  local context = CaptureContext.forBall(ball, targetFactsFor(combatant, mon), envFactsFor(attempt, battle, policy))
+  local context =
+    CaptureContext.forBall(ball, targetFactsFor(combatant, mon), envFactsFor(attempt, battle, policy, mon.species))
   requireBall(attempt, battle, policy)
   return context, policy, targetId, combatant
 end

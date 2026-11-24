@@ -76,10 +76,17 @@ end
 ---@field private _scriptedPoseDelta integer? pose ticks the last scripted locomotion tick advanced; kept through its commit tick and the ordinary field update, cleared by the next ordinary step/turn, scripted begin, or cancel
 ---@field private _movementRevision integer committed tile commits observed by followers
 ---@field private _committedTerrainSteps table[]? tile steps committed since the last terrain drain
+---@field private _bikedSteps integer steps started on the Bicycle since the last drain
 ---@field private _lastTraversalKind string traversal kind of the last committed tile
 ---@field private _movementStartRevision integer resolved translation starts observed by followers
 ---@field private _movementTransaction FieldPlayer.MovementTransaction? latest resolved translation start
 ---@field private _traversalMode "walking"|"surfing" ordinary-step traversal mode tracking the avatar durable state
+---@field private _cycling boolean whether ordinary steps ride the bike, tracking the avatar durable state
+---@field private _bikeSpeed integer the retail bike speed level, 0..3, raised per ridden step
+---@field private _bikeMoving boolean whether the last bike decision rode or coasted (retail moving state)
+---@field private _bikeLocked boolean the scripted Cycling Road lock (retail AVATAR_FLAG_LOCK_BIKE_STATE); a new player per map entry starts unlocked, as the source avatar does
+---@field private _bikeStepSpeed string? the semantic speed of the bike step in flight
+---@field private _ordinaryPoseDelta integer? pose ticks the last bike step tick advanced
 local FieldPlayer = {}
 FieldPlayer.__index = FieldPlayer
 
@@ -88,6 +95,11 @@ FieldPlayer.__index = FieldPlayer
 FieldPlayer.WALK_STEP_TICKS = 8
 FieldPlayer.TURN_TICKS = 3
 FieldPlayer.LEDGE_JUMP_TICKS = 16
+
+-- Retail PlayerAvatar_GetBikeMovement: the bike speed level picks the step,
+-- from the six-tick slightly-fast walk up to the two-tick faster step.
+local BIKE_STEP_SPEEDS = { [0] = "slightly_fast", [1] = "run", [2] = "slightly_faster", [3] = "faster" }
+local BIKE_TOP_SPEED = 3
 
 ---@alias FieldDirection "north"|"south"|"west"|"east"
 
@@ -224,6 +236,12 @@ function FieldPlayer.new(options)
     committedSourceSurfaceId = plate and plate.sourceSurfaceId or nil,
     facing = options.facing or "south",
     _traversalMode = "walking",
+    _cycling = false,
+    _bikeSpeed = 0,
+    _bikeMoving = false,
+    _bikeLocked = false,
+    _bikeStepSpeed = nil,
+    _ordinaryPoseDelta = nil,
     motion = "idle",
     progressTicks = 0,
     durationTicks = FieldPlayer.WALK_STEP_TICKS,
@@ -236,6 +254,7 @@ function FieldPlayer.new(options)
     _gestureOffsetY = 0,
     _movementRevision = 0,
     _committedTerrainSteps = nil,
+    _bikedSteps = 0,
     _lastTraversalKind = "idle",
     _movementStartRevision = 0,
     _movementTransaction = nil,
@@ -450,6 +469,8 @@ end
 function FieldPlayer:_beginStep(direction, destination, speed, traversalKind)
   assert(type(speed) == "string", "movement speed required")
   self._scriptedPoseDelta = nil
+  self._bikeStepSpeed = nil
+  self._ordinaryPoseDelta = nil
   local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
   local durationTicks = assert(MovementCalibration.SPEED_TICKS[speed], "unknown movement speed " .. tostring(speed))
   self.facing = direction
@@ -503,6 +524,7 @@ end
 
 function FieldPlayer:_beginTurn(direction)
   self._scriptedPoseDelta = nil
+  self._ordinaryPoseDelta = nil
   self.facing = direction
   self.motion = "turning"
   self.progressTicks = 0
@@ -511,6 +533,8 @@ end
 
 function FieldPlayer:_beginJump(direction, destination)
   self._scriptedPoseDelta = nil
+  self._bikeStepSpeed = nil
+  self._ordinaryPoseDelta = nil
   self.facing = direction
   self.from = {
     fieldX = self.fieldX,
@@ -548,6 +572,108 @@ end
 function FieldPlayer:setTraversalMode(mode)
   assert(mode == "walking" or mode == "surfing", "FieldPlayer traversal mode must be walking or surfing")
   self._traversalMode = mode
+end
+
+-- Whether ordinary steps ride the bike; like the traversal mode it tracks
+-- the avatar durable state through the session. Mounting or dismounting
+-- starts the bike from rest.
+---@param cycling boolean
+function FieldPlayer:setCycling(cycling)
+  assert(type(cycling) == "boolean", "cycling must be a boolean")
+  if cycling ~= self._cycling then
+    self._cycling = cycling
+    self._bikeSpeed = 0
+    self._bikeMoving = false
+  end
+end
+
+-- ScrCmd_SetBikeStateLock: the Cycling Road gates and routes lock the bike
+-- state, refusing the Bicycle item and rolling an idle rider down the deck.
+---@param locked boolean
+function FieldPlayer:setBikeLocked(locked)
+  assert(type(locked) == "boolean", "the bike lock is set or cleared")
+  self._bikeLocked = locked
+end
+
+---@return boolean
+function FieldPlayer:isBikeLocked()
+  return self._bikeLocked
+end
+
+-- One bike step at the current speed level: ledges jump, blocked or
+-- field-action destinations stop the bike (retail clears its speed), and an
+-- open destination rides at the level's step.
+---@param direction FieldDirection
+---@param accelerate boolean ridden steps raise the speed after picking the step; coasting does not
+function FieldPlayer:_bikeStep(direction, accelerate)
+  self.facing = direction
+  local decision = self:_stepDecision(direction)
+  if decision.kind == "ledge_jump" then
+    local landing = self:_resolveLedgeLanding(direction)
+    if landing then
+      if accelerate then
+        self._bikeSpeed = math.min(BIKE_TOP_SPEED, self._bikeSpeed + 1)
+      end
+      self._bikeMoving = true
+      self._bikedSteps = self._bikedSteps + 1
+      self:_beginJump(direction, landing)
+      self:_advanceJump()
+      return
+    end
+  end
+  local destination = nil
+  if decision.kind ~= "field_action" and decision.kind ~= "blocked" and decision.kind ~= "disembark" then
+    destination = self:_resolveStep(direction)
+  end
+  if destination == nil then
+    self._bikeSpeed = 0
+    self._bikeMoving = false
+    return
+  end
+  local speed = BIKE_STEP_SPEEDS[self._bikeSpeed]
+  if accelerate then
+    self._bikeSpeed = math.min(BIKE_TOP_SPEED, self._bikeSpeed + 1)
+  end
+  self._bikeMoving = true
+  self._bikedSteps = self._bikedSteps + 1
+  self:_beginStep(direction, destination, speed)
+  self._bikeStepSpeed = speed
+  self:_advanceStep()
+end
+
+-- The idle bike decision (retail PlayerAvatar_GetBikeStepKind): no input
+-- stops a slow bike and coasts a fast one; a new direction turns a stopped
+-- slow bike in place, coasts a fast one, and is ridden at once by a bike
+-- already moving; the held direction rides.
+---@param input table<string, unknown>
+function FieldPlayer:_updateBike(input)
+  local direction = input.heldDirection or input.pressedDirection
+  -- ForcedMovement_CyclingRoadSlope: a locked rider idle on the bridge deck
+  -- rolls south at the top speed, or faces south and stops when blocked.
+  if
+    direction == nil
+    and self._bikeLocked
+    and MetatileBehavior.isBridge(destinationBehavior(self, self.fieldX, self.fieldZ))
+  then
+    self._bikeSpeed = BIKE_TOP_SPEED
+    self:_bikeStep("south", false)
+    return
+  end
+  if direction == nil or (direction ~= self.facing and not self._bikeMoving) then
+    if self._bikeSpeed < 2 then
+      self._bikeSpeed = 0
+      self._bikeMoving = false
+      if direction ~= nil then
+        self:_beginTurn(direction)
+      end
+      return
+    end
+    -- Coasting decelerates first and rolls on at the slower level.
+    self._bikeSpeed = self._bikeSpeed - 1
+    self:_bikeStep(self.facing, false)
+    return
+  end
+  self:_bikeStep(direction, true)
 end
 
 -- Shared step classification: resolves the destination collision cell (via
@@ -856,6 +982,11 @@ function FieldPlayer:_advanceStep()
   local progress = self.progressTicks / self.durationTicks
   local scripted = self._scriptedMotion
   local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
+  if self._bikeStepSpeed ~= nil then
+    local cadence = { action = "walk", speed = self._bikeStepSpeed }
+    self._ordinaryPoseDelta = MovementCalibration.poseProgressTicks(cadence, self.progressTicks)
+      - MovementCalibration.poseProgressTicks(cadence, self.progressTicks - 1)
+  end
   if scripted ~= nil and scripted.action == "waterfall" then
     -- Height and ground travel follow their own fall schedule.
     local heightFraction, groundFraction =
@@ -993,6 +1124,11 @@ function FieldPlayer:updateFixed(input, run)
     self.bufferedDirection = nil
     direction = input.pressedDirection or input.heldDirection
   end
+  if self._cycling then
+    self.bufferedDirection = nil
+    self:_updateBike(input)
+    return false
+  end
   if not direction then
     return false
   end
@@ -1068,6 +1204,16 @@ function FieldPlayer:_commitTile(kind)
     cellKey = self.committedSourceCellKey,
     sourceSurfaceId = self.committedSourceSurfaceId,
   }
+end
+
+-- Takes the number of steps started on the Bicycle since the previous
+-- drain (PlayerAvatar_CountStep counts each as it begins), for the
+-- steps-biked stat.
+---@return integer
+function FieldPlayer:takeBikedSteps()
+  local count = self._bikedSteps
+  self._bikedSteps = 0
+  return count
 end
 
 -- Take every committed tile step since the previous drain; absent when no
@@ -1416,8 +1562,8 @@ function FieldPlayer:cancelScriptedMovement()
   self.previousWorldX, self.previousWorldY, self.previousWorldZ = self.worldX, self.worldY, self.worldZ
 end
 
----@param out { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer? }
----@return { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer? }
+---@param out { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer?, ordinaryPoseDelta: integer? }
+---@return { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer?, ordinaryPoseDelta: integer? }
 function FieldPlayer:presentationStateInto(out)
   assert(type(out) == "table", "presentation state output required")
   local scripted = self._scriptedMotion
@@ -1429,7 +1575,7 @@ function FieldPlayer:presentationStateInto(out)
     locomotionActive = self.motion == "walking" or self.motion == "jumping"
   end
   local ordinaryStepSpeed
-  if self.motion == "walking" and scripted == nil then
+  if self.motion == "walking" and scripted == nil and self._bikeStepSpeed == nil then
     local transaction = assert(self._movementTransaction, "ordinary step requires a movement transaction")
     assert(transaction.speed == "normal" or transaction.speed == "run", "ordinary step has unsupported speed")
     ordinaryStepSpeed = transaction.speed
@@ -1440,6 +1586,7 @@ function FieldPlayer:presentationStateInto(out)
   out.gestureOffsetY = self._gestureOffsetY
   out.ordinaryStepSpeed = ordinaryStepSpeed
   out.scriptedPoseDelta = self._scriptedPoseDelta
+  out.ordinaryPoseDelta = self._ordinaryPoseDelta
   return out
 end
 

@@ -1,12 +1,14 @@
--- Persisted game-stats bucket: strict v2 shape, canonical detached
+-- Persisted game-stats bucket: strict v3 shape, canonical detached
 -- output, and evidence-preserving migration from a missing bucket or
--- an exact v1 bucket. v2 keeps the sorted registration set (freshness
--- authority), the blind unique-registration total (retail increments per
--- evolution publish, even for re-registrations), the bounded
--- trainer-card score, and the bounded written-Mail total. Migration
--- never invents registrations, counts, or score from an absent bucket;
--- an exact v1 bucket migrates with a zero written-Mail count. Pure data
--- owner: no live state, no love dependency.
+-- an exact v1 or v2 bucket. v3 keeps the sorted registration set
+-- (freshness authority), the blind unique-registration total (retail
+-- increments per evolution publish, even for re-registrations), the
+-- bounded trainer-card score, the bounded written-Mail total, and the
+-- bounded steps-biked total (GAME_STAT_STEPS_BIKED 1, behind the Bike
+-- Shop call). Migration never invents registrations, counts, or score
+-- from an absent bucket; an exact v1 bucket migrates with zero
+-- written-Mail and biked counts, and an exact v2 bucket with a zero
+-- biked count. Pure data owner: no live state, no love dependency.
 --
 -- Retail sources (tmp/refs/pokeheartgold):
 -- unique counter GAME_STAT_UNIQUE_MONS_CAUGHT 13 and score stat
@@ -21,8 +23,10 @@ local Errors = require("libs.errors.src.Errors")
 ---@class GameStatsSave
 local GameStatsSave = {}
 
-GameStatsSave.SCHEMA = "hgss-stats-v2"
-GameStatsSave.STATE_VERSION = 2
+GameStatsSave.SCHEMA = "hgss-stats-v3"
+GameStatsSave.STATE_VERSION = 3
+GameStatsSave.V2_SCHEMA = "hgss-stats-v2"
+GameStatsSave.V2_STATE_VERSION = 2
 GameStatsSave.LEGACY_SCHEMA = "hgss-stats-v1"
 GameStatsSave.LEGACY_STATE_VERSION = 1
 
@@ -30,8 +34,19 @@ GameStatsSave.LEGACY_STATE_VERSION = 1
 -- event adds its modifier but the total never exceeds 99999999.
 GameStatsSave.SCORE_CAP = 99999999
 
-local TOP_FIELDS =
-  { schema = true, stateVersion = true, uniqueCaught = true, uniqueTotal = true, score = true, mailWritten = true }
+-- GAME_STAT_STEPS_BIKED is an extra-wide word stat: GameStats_Inc
+-- saturates it at 999999999 (src/game_stats.c GameStats_GetMaxValue).
+GameStatsSave.STEPS_BIKED_CAP = 999999999
+
+local TOP_FIELDS = {
+  schema = true,
+  stateVersion = true,
+  uniqueCaught = true,
+  uniqueTotal = true,
+  score = true,
+  mailWritten = true,
+  stepsBiked = true,
+}
 
 ---@param message string
 ---@param context table<string, unknown>
@@ -114,6 +129,18 @@ local function checkMailWritten(value)
 end
 
 ---@param value unknown
+---@return integer validated steps-biked total
+local function checkStepsBiked(value)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > GameStatsSave.STEPS_BIKED_CAP then
+    fail(
+      "stats bucket steps biked must be an integer in 0.." .. tostring(GameStatsSave.STEPS_BIKED_CAP),
+      { stepsBiked = value }
+    )
+  end
+  return value --[[@as integer]]
+end
+
+---@param value unknown
 ---@return integer validated blind unique total
 local function checkUniqueTotal(value)
   if type(value) ~= "number" or value % 1 ~= 0 or value < 0 then
@@ -133,7 +160,7 @@ end
 
 ---@param bucket table<string, unknown> validated shape record
 ---@param refs table<string, unknown>
----@return table<string, unknown> detached canonical v2 bucket
+---@return table<string, unknown> detached canonical v3 bucket
 local function canonicalize(bucket, refs)
   return {
     schema = GameStatsSave.SCHEMA,
@@ -142,12 +169,24 @@ local function canonicalize(bucket, refs)
     uniqueTotal = checkUniqueTotal(bucket.uniqueTotal),
     score = checkScore(bucket.score),
     mailWritten = checkMailWritten(bucket.mailWritten),
+    stepsBiked = checkStepsBiked(bucket.stepsBiked),
   }
+end
+
+-- Rejects any field outside an exact legacy shape before migrating it.
+---@param bucket table<string, unknown>
+---@param fields table<string, boolean>
+local function checkLegacyFields(bucket, fields)
+  for key in pairs(bucket) do
+    if fields[key] ~= true then
+      fail("stats bucket carries an unsupported schema", { schema = bucket.schema })
+    end
+  end
 end
 
 ---@param bucket table<string, unknown>
 ---@param refs { species: table<string, boolean> }
----@return table<string, unknown> detached canonical v1 bucket
+---@return table<string, unknown> detached canonical v3 bucket
 function GameStatsSave.validate(bucket, refs)
   checkRefs(refs)
   if type(bucket) ~= "table" then
@@ -170,18 +209,11 @@ end
 
 ---@param bucket table<string, unknown>?
 ---@param refs { species: table<string, boolean> }
----@return table<string, unknown> detached canonical v2 bucket
+---@return table<string, unknown> detached canonical v3 bucket
 function GameStatsSave.migrate(bucket, refs)
   checkRefs(refs)
   if bucket == nil then
-    return canonicalize({
-      schema = GameStatsSave.SCHEMA,
-      stateVersion = GameStatsSave.STATE_VERSION,
-      uniqueCaught = {},
-      uniqueTotal = 0,
-      score = 0,
-      mailWritten = 0,
-    }, refs)
+    return canonicalize(GameStatsSave.initial(), refs)
   end
   if type(bucket) ~= "table" then
     fail("stats bucket must be a table", {})
@@ -190,32 +222,29 @@ function GameStatsSave.migrate(bucket, refs)
   if bucket.schema == GameStatsSave.SCHEMA and bucket.stateVersion == GameStatsSave.STATE_VERSION then
     return canonicalize(bucket, refs)
   end
-  -- An exact v1 bucket migrates with a zero written-Mail count and
-  -- preserved score and species totals: no historical count can be
-  -- inferred. Malformed current v2 fails in canonicalize below.
-  if bucket.schema == GameStatsSave.LEGACY_SCHEMA and bucket.stateVersion == GameStatsSave.LEGACY_STATE_VERSION then
-    for key in pairs(bucket) do
-      if
-        key ~= "schema"
-        and key ~= "stateVersion"
-        and key ~= "uniqueCaught"
-        and key ~= "uniqueTotal"
-        and key ~= "score"
-      then
-        fail("stats bucket carries an unsupported schema", { schema = bucket.schema })
-      end
-    end
-    return canonicalize({
-      schema = GameStatsSave.SCHEMA,
-      stateVersion = GameStatsSave.STATE_VERSION,
-      uniqueCaught = bucket.uniqueCaught,
-      uniqueTotal = bucket.uniqueTotal,
-      score = bucket.score,
-      mailWritten = 0,
-    }, refs)
+  -- Exact legacy buckets migrate with zero counts for the totals they
+  -- never tracked: no historical count can be inferred. Malformed current
+  -- buckets fail in canonicalize above.
+  local legacyFields = { schema = true, stateVersion = true, uniqueCaught = true, uniqueTotal = true, score = true }
+  local mailWritten = nil
+  if bucket.schema == GameStatsSave.V2_SCHEMA and bucket.stateVersion == GameStatsSave.V2_STATE_VERSION then
+    legacyFields.mailWritten = true
+    mailWritten = bucket.mailWritten
+  elseif bucket.schema == GameStatsSave.LEGACY_SCHEMA and bucket.stateVersion == GameStatsSave.LEGACY_STATE_VERSION then
+    mailWritten = 0
+  else
+    fail("stats bucket carries an unsupported schema", { schema = bucket.schema })
   end
-  fail("stats bucket carries an unsupported schema", { schema = bucket.schema })
-  error("unreachable", 0)
+  checkLegacyFields(bucket, legacyFields)
+  return canonicalize({
+    schema = GameStatsSave.SCHEMA,
+    stateVersion = GameStatsSave.STATE_VERSION,
+    uniqueCaught = bucket.uniqueCaught,
+    uniqueTotal = bucket.uniqueTotal,
+    score = bucket.score,
+    mailWritten = mailWritten,
+    stepsBiked = 0,
+  }, refs)
 end
 
 ---@return table<string, unknown> the defined source initial state
@@ -227,6 +256,7 @@ function GameStatsSave.initial()
     uniqueTotal = 0,
     score = 0,
     mailWritten = 0,
+    stepsBiked = 0,
   }
 end
 

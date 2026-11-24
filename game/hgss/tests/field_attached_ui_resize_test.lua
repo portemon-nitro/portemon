@@ -746,6 +746,7 @@ function T.dialogue_layout_resolves_once_per_topology_scale_invalidation()
         end,
       },
       yesNoHost = idleChoiceHost(),
+      fishingHost = { updateFixed = function() end, notice = function() end },
       fieldEntranceIndicator = {
         status = function()
           return { visible = false }

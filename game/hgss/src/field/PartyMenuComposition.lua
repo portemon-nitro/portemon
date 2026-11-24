@@ -86,13 +86,17 @@ local PartyMenuComposition = {}
 ---@field makeEvolutionScene fun(request: table<string, unknown>): table<string, unknown> the field evolution scene factory
 
 -- The menu flow's field-check port: capture the current world facts on
--- every call, then answer the source eligibility decision. Fresh reads
+-- every call, then answer the source eligibility decision for a field move
+-- or a field-use key item. Fresh reads
 -- per call keep badge, map, and tile changes visible without caching.
 local function checkFieldMove(contextSources, request)
   assert(type(request) == "table", "field checks need a request record")
+  local context = FieldMoveContext.capture(assert(contextSources, "field checks need live sources")())
+  if request.item ~= nil then
+    return FieldMovePolicy.checkKeyItem(request.item, context)
+  end
   local move = assert(request.move, "field checks need a move key")
   assert(type(move) == "string" and move ~= "", "field checks need a move key")
-  local context = FieldMoveContext.capture(assert(contextSources, "field checks need live sources")())
   if move == "escape_rope" then
     return FieldMovePolicy.checkEscapeRope(context)
   end
@@ -296,7 +300,18 @@ function PartyMenuComposition.create(deps)
   local function partyLeadSlot(_)
     return mons:leadAliveSlot()
   end
-  ports.party = { knowsMove = partyKnowsMove, leadSlot = partyLeadSlot }
+  local function partySlotWithMove(_, move)
+    return mons:partySlotWithMove(move)
+  end
+  local function cheerFollower(_, typeKey)
+    mons:cheerFollowerOfType(typeKey)
+  end
+  ports.party = {
+    knowsMove = partyKnowsMove,
+    leadSlot = partyLeadSlot,
+    slotWithMove = partySlotWithMove,
+    cheerFollower = cheerFollower,
+  }
   if deps.playCry ~= nil then
     assert(type(deps.isCryFinished) == "function", "field move cries need their completion boundary")
     -- Field moves cry the departing lead: the catalog's native species id

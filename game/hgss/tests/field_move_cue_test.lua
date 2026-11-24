@@ -49,8 +49,24 @@ function T.effects_stay_pending_until_finish_effects_fires_each_callback_once()
   Assert.equal(cue:pendingEffectCount(), 0)
   cue:finishEffects()
   Assert.equal(finished, 1, "completing twice never refires")
+end
+
+-- ScrCmd_FollowMonAddMood moves the follower's mood through the mon
+-- service at once and never blocks the script.
+function T.follower_mood_moves_through_the_mon_service_at_once()
+  local moods = {}
+  local mons = {}
+  function mons:addFollowerMood(amount)
+    moods[#moods + 1] = amount
+  end
+  local cue = FieldMoveCue.new(mons)
   cue:addFollowerMood(20)
+  cue:addFollowerMood(-3)
+  Assert.deepEqual(moods, { 20, -3 })
   Assert.isTrue(cue:isBlockingCueFinished(), "mood never blocks")
+  Assert.throws(function()
+    FieldMoveCue.new():addFollowerMood(1)
+  end, "moving the mood needs the mon service")
 end
 
 function T.malformed_cue_requests_fail_loudly()

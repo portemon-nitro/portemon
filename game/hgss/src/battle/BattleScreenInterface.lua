@@ -395,14 +395,10 @@ local function renderBattle(resources, view, plan)
   local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
   local panes = assert(plan.panes, "the battle plan carries its panes")
   for _, pane in ipairs(panes) do
-    if os.getenv("PORTEMON_PROBE_PANES") == "21" and pane.id == "detail" then
-      -- Skip the detail pane: isolate the interaction render.
-    else
-      local placement = assert(pane.placement, "battle panes carry placements")
-      LogicalSurface.draw(graphics, placement, function()
-        BattleRenderer.drawPane(resources, view, pane.id --[[@as string]], plan.content, placement)
-      end)
-    end
+    local placement = assert(pane.placement, "battle panes carry placements")
+    LogicalSurface.draw(graphics, placement, function()
+      BattleRenderer.drawPane(resources, view, pane.id --[[@as string]], plan.content, placement)
+    end)
   end
 end
 

@@ -31,6 +31,7 @@ function T.field_use_projects_source_flags_per_map()
     icePathB2F = false,
     cave = false,
     unionOrColosseum = false,
+    bikeAllowed = true,
   })
   local tunnel = compileOk(108)
   Assert.deepEqual(tunnel.field.fieldUse, {
@@ -42,6 +43,7 @@ function T.field_use_projects_source_flags_per_map()
     icePathB2F = false,
     cave = true,
     unionOrColosseum = false,
+    bikeAllowed = true,
   })
 end
 

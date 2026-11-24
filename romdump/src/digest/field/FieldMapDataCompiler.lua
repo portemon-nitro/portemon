@@ -219,6 +219,7 @@ local function fieldUsePolicy(map, environment)
     icePathB2F = map.symbol == FieldMoveSources.ICE_PATH_B2F_SYMBOL,
     cave = environment == "cave",
     unionOrColosseum = FieldMoveSources.UNION_COLOSSEUM_SYMBOLS[map.symbol] == true,
+    bikeAllowed = map.bikeAllowed == true,
   }
 end
 

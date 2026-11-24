@@ -122,6 +122,8 @@ local function wildBattle(mon, ball, balls)
     battleKind = "wild",
     inventories = { party = { quantities = quantities, revision = 0 } },
     ledger = {},
+    round = 1,
+    environment = {},
     combatants = {
       [1] = { hp = 30, maxHp = 30 },
       [2] = { mon = mon, hp = 1, maxHp = 100, activation = 5 },
@@ -313,6 +315,41 @@ end
 
 -- Events tell the throw in order: the ball first, one entry per shake, and
 -- a final outcome matching success, with no experience posted anywhere.
+-- The conditional balls read their encounter facts from the battle's
+-- launch environment and live round: across the whole draw range the
+-- boosted battle never catches less, and somewhere catches what the plain
+-- one lets escape.
+function T.conditional_balls_read_the_launch_environment_and_round()
+  local Capture = captureOwner("throwing, calculating, and settling own captures")
+  local species = wildMon(41).species
+  local function caught(ball, draw, environment, round)
+    local battle = wildBattle(wildMon(41), ball, 1)
+    battle.environment = environment
+    battle.round = round
+    local stream = scriptedStream({ draw, draw, draw, draw })
+    return Capture.execute(wildAttempt(ball), battle, stream).result.success
+  end
+  local cases = {
+    { ball = "LURE_BALL", boosted = { { fished = true }, 1 }, plain = { { fished = false }, 1 } },
+    { ball = "QUICK_BALL", boosted = { {}, 1 }, plain = { {}, 2 } },
+    { ball = "TIMER_BALL", boosted = { {}, 31 }, plain = { {}, 1 } },
+    { ball = "REPEAT_BALL", boosted = { { caughtSpecies = { [species] = true } }, 1 }, plain = { { caughtSpecies = {} }, 1 } },
+    { ball = "DUSK_BALL", boosted = { { timeOfDay = "night" }, 1 }, plain = { { timeOfDay = "day" }, 1 } },
+    { ball = "DUSK_BALL", boosted = { { terrain = "cave" }, 1 }, plain = { { terrain = "plain" }, 1 } },
+    { ball = "DIVE_BALL", boosted = { { terrain = "water" }, 1 }, plain = { { terrain = "plain" }, 1 } },
+  }
+  for _, case in ipairs(cases) do
+    local helped = false
+    for draw = 0, 65535, 257 do
+      local boosted = caught(case.ball, draw, case.boosted[1], case.boosted[2])
+      local plain = caught(case.ball, draw, case.plain[1], case.plain[2])
+      Assert.isTrue(boosted or not plain, case.ball .. " never catches less when boosted")
+      helped = helped or (boosted and not plain)
+    end
+    Assert.isTrue(helped, case.ball .. " reads its boosting fact")
+  end
+end
+
 function T.events_tell_throw_shakes_and_outcome_in_order()
   local Capture = captureOwner("throwing, calculating, and settling own captures")
   local Context = contextOwner("typed capture environments own the facts each ball reads")
@@ -487,6 +524,8 @@ function T.bag_throws_delegate_to_the_capture_path()
   local battle = {
     inventories = { party = { quantities = { POKE_BALL = 1 }, revision = 0 } },
     ledger = {},
+    round = 1,
+    environment = {},
     combatants = { [1] = { hp = 10, maxHp = 30 } },
   }
   local outcome = ItemUse.execute(plan, battle)
@@ -641,6 +680,8 @@ function T.safari_throws_without_a_staged_stage_fail_before_spend_or_draw()
       formatState = formatState,
       inventories = { party = { quantities = {} } },
       ledger = {},
+      round = 1,
+      environment = {},
       combatants = { [2] = { mon = { species = "PIKACHU" }, hp = 100, maxHp = 100 } },
     }
   end

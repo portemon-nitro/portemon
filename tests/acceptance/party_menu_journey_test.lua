@@ -756,8 +756,19 @@ local function driveThroughEvolution(game, flow, cancelScene)
     if status.page == "evolution" then
       sawScene = true
       sceneMusic[game.runtime.audio:currentMusic() or "silence"] = true
+      local view = status.child and status.child.evolution
+      local menu = view and view.presentation and view.presentation.learnMenu
       if cancelScene then
         events = { { type = "cancel" } }
+      elseif menu ~= nil and not menu.selecting then
+        -- An in-scene move offer: answer No to deleting a move, then Yes
+        -- to giving up on it.
+        local wanted = view.phase == "learn" and 1 or 0
+        if menu.focus ~= wanted then
+          events = { { type = "navigate", direction = wanted == 1 and "down" or "up" } }
+        else
+          events = { { type = "confirm" } }
+        end
       end
     elseif status.page == "party_item_target" and status.child ~= nil then
       local state = status.child.state
@@ -867,7 +878,7 @@ function T.tests.production_rare_candy_replacement_unlocks_the_move_gated_evolut
       local events = {}
       if status.page == "evolution" then
         sawScene = true
-      elseif status.page == "party_item_target" and status.child ~= nil then
+      elseif (status.page == "party_item_target" or status.page == "party_browse") and status.child ~= nil then
         if status.child.state == "message" or status.child.state == "level_up_stats" then
           if status.child.message ~= nil and status.child.message.templateKey == "learned" then
             learnedMove = true

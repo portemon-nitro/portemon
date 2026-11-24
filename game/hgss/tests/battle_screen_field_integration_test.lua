@@ -35,6 +35,11 @@ local T = {
       "mon-portrait-page:34",
       "mon-icon-page:0",
       "audio-bank:720",
+      "audio-bank:702",
+      "audio-bank:709",
+      "mon-summary:global",
+      "message-bank:203",
+      "message-bank:545",
       "map-data:31",
       "map-data:33",
       "map-data:34",
@@ -55,6 +60,8 @@ local T = {
       "trainers:global",
       "encounters:global",
       "battle-presentation:global",
+      "battle-scene:building_1/building/day",
+      "battle-scene:general/grass/day",
       -- The presented battles strike with TACKLE through the live
       -- native-effect cue, so the cue's selected program must be
       -- staged from the verified dump instead of wedging pending.

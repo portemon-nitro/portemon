@@ -771,6 +771,11 @@ local function compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, arch
     button = { off = shoesFrame(shoesCfg.button.offAnim), on = shoesFrame(shoesCfg.button.onAnim) },
     indicator = { off = shoesFrame(shoesCfg.indicator.offAnim), on = shoesFrame(shoesCfg.indicator.onAnim) },
   }
+  -- The registered-item tabs share the Running Shoes button resources.
+  local tabVisuals = {}
+  for slot, tab in ipairs(cfg.registeredItems) do
+    tabVisuals[slot] = shoesFrame(tab.button.anim)
+  end
 
   -- Deterministic packing in icon-row order: each sprite row's normal then
   -- selected frame, followed by the female variant pair when the row carries
@@ -798,6 +803,9 @@ local function compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, arch
   for _, part in ipairs({ shoesVisuals.button, shoesVisuals.indicator }) do
     ordered[#ordered + 1] = part.off
     ordered[#ordered + 1] = part.on
+  end
+  for _, visual in ipairs(tabVisuals) do
+    ordered[#ordered + 1] = visual
   end
   local atlasWidth, atlasHeight = 0, 0
   for _, entry in ipairs(ordered) do
@@ -879,6 +887,7 @@ local function compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, arch
   local focusShake, confirmHop = compileStartMenuFocusShake(iconCell, iconAnim)
   return visuals,
     shoesVisuals,
+    tabVisuals,
     focusShake,
     confirmHop,
     compileStartMenuRinging(cfg, iconAnim, iconCell, iconPal, g2d, assets, manifestAssets)
@@ -983,7 +992,7 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
   local memberBytes = {}
   local background = compileStartMenuMain(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
   local subPalette, subChar = compileStartMenuSub(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
-  local iconVisuals, shoesVisuals, focusShake, confirmHop, ringingVisual =
+  local iconVisuals, shoesVisuals, tabVisuals, focusShake, confirmHop, ringingVisual =
     compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
   local callerBubble = compileCallerBubble(cfg, subChar, subPalette, assets, manifestAssets)
 
@@ -1068,6 +1077,17 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
     }
   end
 
+  local registeredItems = {}
+  for slot, tab in ipairs(cfg.registeredItems) do
+    registeredItems[slot] = {
+      button = {
+        anchor = { x = tab.button.anchor.x, y = tab.button.anchor.y },
+        visual = assert(tabVisuals[slot], "every registered-item tab compiles its visual"),
+      },
+      iconAnchor = { x = tab.iconAnchor.x, y = tab.iconAnchor.y },
+    }
+  end
+
   local actionIcons = {}
   for actionId, icon in pairs(cfg.actionIcons) do
     actionIcons[actionId] = icon
@@ -1105,6 +1125,7 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
         on = shoesVisuals.indicator.on,
       },
     },
+    registeredItems = registeredItems,
     contexts = contexts,
     actionIcons = actionIcons,
     iconPalette = {

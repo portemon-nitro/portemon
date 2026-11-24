@@ -224,6 +224,127 @@ function T.run_step_commits_on_exactly_tick_four_at_run_speed()
   Assert.equal(p.motion, "idle")
 end
 
+-- Rides until the player is idle again and returns the step's speed.
+local function rideStep(p, held)
+  p:updateFixed({ heldDirection = held, pressedDirection = held })
+  local speed = p:movementTransaction().speed
+  local ticks = 1
+  while p.motion ~= "idle" do
+    p:updateFixed({ heldDirection = held })
+    ticks = ticks + 1
+  end
+  return speed, ticks
+end
+
+-- The bike accelerates one level per ridden step (retail
+-- PlayerAvatar_GetBikeMovement): a 6-tick, a 4-tick, a 3-tick, then 2-tick
+-- steps for as long as the rider keeps pedalling.
+function T.cycling_accelerates_through_the_retail_bike_steps()
+  local p = player(runtimeMap(), 4, 4, 2, "east")
+  p:setCycling(true)
+  local speeds = {}
+  for _ = 1, 5 do
+    local speed, ticks = rideStep(p, "east")
+    speeds[#speeds + 1] = speed .. ":" .. ticks
+  end
+  Assert.deepEqual(speeds, { "slightly_fast:6", "run:4", "slightly_faster:3", "faster:2", "faster:2" })
+  Assert.equal(p.fieldX, 9)
+end
+
+-- Releasing the pad at speed two or more coasts on in the facing direction,
+-- one level slower per step, then stops; a slow bike stops at once.
+function T.cycling_coasts_after_release_then_stops()
+  local p = player(runtimeMap(), 4, 4, 2, "east")
+  p:setCycling(true)
+  for _ = 1, 4 do
+    rideStep(p, "east")
+  end
+  Assert.equal(p.fieldX, 8)
+  Assert.equal(rideStep(p, nil), "slightly_faster", "the top speed coasts at the level below")
+  Assert.equal(rideStep(p, nil), "run")
+  p:updateFixed({})
+  Assert.equal(p.motion, "idle", "a bike below speed two stops")
+  Assert.equal(p.fieldX, 10)
+end
+
+-- A stopped bike turns in place; a moving bike rides straight into the new
+-- direction; a blocked ride stops the bike and drops its speed.
+function T.cycling_turns_when_stopped_and_stops_on_a_wall()
+  local p = player(runtimeMap({ ["6:3"] = true }), 4, 4, 2, "south")
+  p:setCycling(true)
+  p:updateFixed({ heldDirection = "east", pressedDirection = "east" })
+  Assert.equal(p.motion, "turning", "a stopped bike turns before riding")
+  while p.motion ~= "idle" do
+    p:updateFixed({ heldDirection = "east" })
+  end
+  Assert.equal(rideStep(p, "east"), "slightly_fast")
+  Assert.equal(rideStep(p, "north"), "run", "a moving bike rides straight into a new direction")
+  p:updateFixed({ heldDirection = "east" })
+  Assert.equal(p.motion, "idle")
+  Assert.equal(p.fieldX, 5)
+  p:updateFixed({ heldDirection = "north", pressedDirection = "north" })
+  Assert.equal(p.motion, "turning", "the stopped bike turns again in place")
+  while p.motion ~= "idle" do
+    p:updateFixed({ heldDirection = "north" })
+  end
+  Assert.equal(rideStep(p, "north"), "slightly_fast", "the bump dropped the bike to its slowest step")
+end
+
+-- ForcedMovement_CyclingRoadSlope: only a locked rider idle on the bridge
+-- deck rolls south at the top speed; held input rides normally, and a wall
+-- ahead faces the rider south and stops the bike.
+function T.a_locked_idle_rider_rolls_down_the_bridge_deck()
+  local map = runtimeMap({ ["4:9"] = true })
+  map.collision.getLocal = function(_, _, z)
+    return { blocked = false, behavior = z <= 8 and 113 or 0 }
+  end
+  local p = player(map, 4, 4, 2, "east")
+  p:setCycling(true)
+  p:updateFixed({})
+  Assert.equal(p.motion, "idle", "an unlocked rider never rolls")
+  p:setBikeLocked(true)
+  Assert.isTrue(p:isBikeLocked())
+  Assert.deepEqual({ rideStep(p, nil) }, { "faster", 2 }, "the deck rolls the rider south at the top step")
+  Assert.equal(p.facing, "south")
+  Assert.equal(p.fieldZ, 5)
+  Assert.equal(rideStep(p, "east"), "faster", "held input rides on at the rolled speed")
+  Assert.equal(p.fieldX, 5)
+  p:setScriptPosition({ fieldX = 4, fieldZ = 8 })
+  p:updateFixed({})
+  Assert.equal(p.motion, "idle", "the wall ahead stops the roll")
+  Assert.equal(p.facing, "south")
+  p:setScriptPosition({ fieldX = 4, fieldZ = 12 })
+  p:updateFixed({})
+  Assert.equal(p.motion, "idle", "off the deck the lock never rolls")
+end
+
+-- Every step started on the Bicycle is tallied once for the steps-biked
+-- stat (PlayerAvatar_CountStep), and walking steps never are.
+function T.biked_steps_are_tallied_once_per_ridden_step()
+  local p = player(runtimeMap(), 4, 4, 2, "east")
+  p:updateFixed({ heldDirection = "east", pressedDirection = "east" })
+  while p.motion ~= "idle" do
+    p:updateFixed({})
+  end
+  Assert.equal(p:takeBikedSteps(), 0, "a walked step is not biked")
+  p:setCycling(true)
+  rideStep(p, "east")
+  rideStep(p, "east")
+  Assert.equal(p:takeBikedSteps(), 2, "each ridden step is tallied")
+  Assert.equal(p:takeBikedSteps(), 0, "the tally drains once")
+end
+
+-- Ridden steps pedal the walk pose at the retail cadence of their speed
+-- instead of publishing an ordinary walk or run speed.
+function T.cycling_steps_publish_their_pose_cadence()
+  local p = player(runtimeMap(), 4, 4, 2, "east")
+  p:setCycling(true)
+  p:updateFixed({ heldDirection = "east", pressedDirection = "east" })
+  local state = p:presentationState()
+  Assert.isNil(state.ordinaryStepSpeed)
+  Assert.equal(state.ordinaryPoseDelta, 1)
+end
+
 function T.run_is_ignored_while_turning_and_never_changes_a_blocked_step()
   local p = player(runtimeMap(), 0, 4, 0, "south")
   p:updateFixed({ heldDirection = "east", pressedDirection = "east" }, true)

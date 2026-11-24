@@ -47,7 +47,7 @@ function FieldMoveContext.capture(sources)
   assert(AVATAR_MODES[sources.avatarMode], "field context avatar mode is invalid")
   assert(type(sources.localX) == "number" and type(sources.localZ) == "number", "field context needs the player tile")
   assert(CARDINALS[sources.facing], "field context needs a cardinal facing")
-  for _, key in ipairs({ "humanFollower", "followingMon", "rocketCostume", "safari", "palPark" }) do
+  for _, key in ipairs({ "humanFollower", "followingMon", "rocketCostume", "safari", "palPark", "bikeLocked" }) do
     assert(isBool(sources[key]), "field context flag " .. key .. " must be a boolean")
   end
   for _, key in ipairs({
@@ -56,6 +56,8 @@ function FieldMoveContext.capture(sources)
     "facingWhirlpool",
     "climbTile",
     "headbuttTree",
+    "fishingWater",
+    "bikeHostileGround",
   }) do
     assert(isBool(sources[key]), "field context tile " .. key .. " must be a boolean")
   end
@@ -70,6 +72,7 @@ function FieldMoveContext.capture(sources)
     "icePathB2F",
     "cave",
     "unionOrColosseum",
+    "bikeAllowed",
   }) do
     use[key] = policy[key]
   end
@@ -99,6 +102,7 @@ function FieldMoveContext.capture(sources)
     rocketCostume = sources.rocketCostume,
     safari = sources.safari,
     palPark = sources.palPark,
+    bikeLocked = sources.bikeLocked,
     weatherId = sources.weatherId,
     facingObstacle = obstacle,
     facingActor = actorSnapshot,
@@ -107,6 +111,8 @@ function FieldMoveContext.capture(sources)
     facingWhirlpool = sources.facingWhirlpool,
     climbTile = sources.climbTile,
     headbuttTree = sources.headbuttTree,
+    fishingWater = sources.fishingWater,
+    bikeHostileGround = sources.bikeHostileGround,
     alphFlashSpot = alphSpot(use.alphFlashRoom, sources),
     alphEscapeRopeSpot = alphSpot(use.alphEscapeRopeRoom, sources),
     fieldUse = use,

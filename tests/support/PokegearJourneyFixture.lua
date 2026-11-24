@@ -42,6 +42,8 @@ Fixture.VARS = FieldScriptSymbols.variablesByName
 -- member selection.
 Fixture.JOURNEY_ASSETS = {
   "field-runtime",
+  "message-bank:545",
+  "message-bank:543",
   "map:33",
   "map:34",
   "map:39",

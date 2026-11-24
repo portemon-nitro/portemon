@@ -691,6 +691,8 @@ local function weakenedThrow(mon)
     mode = "wild",
     inventories = { party = { quantities = { GREAT_BALL = 1 }, revision = 0 } },
     ledger = {},
+    round = 1,
+    environment = {},
     combatants = { [1] = { hp = 30, maxHp = 30 }, [2] = { mon = mon, hp = 1, maxHp = 30 } },
   }
 end

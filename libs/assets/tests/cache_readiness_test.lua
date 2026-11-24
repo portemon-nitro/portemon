@@ -400,6 +400,7 @@ local function writeFieldRecord(c, mapId, events, audioPolicy, schema)
       icePathB2F = false,
       cave = false,
       unionOrColosseum = false,
+      bikeAllowed = true,
     },
     events = events,
     music = audioPolicy.music,

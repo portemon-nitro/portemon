@@ -434,6 +434,7 @@ local function travelWorld()
   function world:returnWarpError(_)
     return self.errorValue
   end
+  function world:cheerPerformingFollower(_) end
   function world:stepWarpDeparture(_)
     return "warp"
   end

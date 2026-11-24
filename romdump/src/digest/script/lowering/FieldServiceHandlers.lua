@@ -406,6 +406,18 @@ function FieldServiceHandlers.playerOnBikeCheck(ins)
   return { op = "player_on_bike_check", result = Operands.varRef(ins.operands[1]) }
 end
 
+function FieldServiceHandlers.playerOnBikeSet(ins)
+  -- ScrCmd_PlayerOnBikeSet flag: TRUE mounts with the bike music, anything
+  -- else dismounts back to the map's music.
+  return { op = "player_on_bike_set", riding = Operands.operandValue(ins.operands[1]) == 1 }
+end
+
+function FieldServiceHandlers.bikeStateLock(ins)
+  -- ScrCmd_SetBikeStateLock byte: TRUE locks the bike state, anything else
+  -- clears the lock.
+  return { op = "bike_state_lock", locked = Operands.operandValue(ins.operands[1]) == 1 }
+end
+
 function FieldServiceHandlers.createCameraTarget(ins)
   -- ScrCmd_CreateCameraTarget x, y: the source pins its invisible focus
   -- object on the tile and fixes the camera on it. The focus object

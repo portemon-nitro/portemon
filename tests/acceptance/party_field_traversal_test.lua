@@ -183,6 +183,9 @@ local function surfContext(game)
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
+    fishingWater = false,
+    bikeHostileGround = false,
+    bikeLocked = false,
     alphFlashSpot = false,
     alphEscapeRopeSpot = false,
   }
@@ -555,6 +558,9 @@ local function rigContext(overrides)
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
+    fishingWater = false,
+    bikeHostileGround = false,
+    bikeLocked = false,
     alphFlashSpot = false,
     alphEscapeRopeSpot = false,
   }

@@ -91,6 +91,7 @@ local function fixture(mapCount)
         icePathB2F = false,
         cave = false,
         unionOrColosseum = false,
+        bikeAllowed = true,
       },
       events = { background = {}, objects = {}, warps = {}, coordinates = {} },
       music = { day = "SEQ_X", night = "SEQ_X", flagOverrides = {}, traversalOverrides = {} },
@@ -1575,6 +1576,7 @@ function T.request_warp_plans_indexed_and_direct_destinations_as_required()
       icePathB2F = false,
       cave = false,
       unionOrColosseum = false,
+      bikeAllowed = true,
     },
     events = {
       background = {},
@@ -1850,6 +1852,7 @@ function T.request_location_enrolls_warp_destination_logical_closures()
           icePathB2F = false,
           cave = false,
           unionOrColosseum = false,
+          bikeAllowed = true,
         },
         events = {
           background = {},

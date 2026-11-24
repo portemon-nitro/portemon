@@ -130,6 +130,7 @@ function FieldMapDataCache.hasFieldUsePolicy(fieldUse)
     "icePathB2F",
     "cave",
     "unionOrColosseum",
+    "bikeAllowed",
   }) do
     if type(fieldUse[key]) ~= "boolean" then
       return false

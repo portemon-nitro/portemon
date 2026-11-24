@@ -664,6 +664,11 @@ function FieldMoveRuntime:advance(plan)
       end
       plan.destination = destination
     end
+    if not plan.followerCheered then
+      -- The performing follower's jump opens the departure, once.
+      plan.followerCheered = true
+      self._world:cheerPerformingFollower(plan)
+    end
     if plan.phase == "depart" then
       if self._world:stepWarpDeparture(plan) == "running" then
         return { kind = "running" }
@@ -710,6 +715,11 @@ function FieldMoveRuntime:advance(plan)
     -- segment committed; cancellation restores the last committed tile
     -- through the existing motion owner with no mode rollback.
     if not plan.motionActive then
+      if plan.segmentIndex == 0 and not plan.followerCheered then
+        -- The performing follower's jump opens the traversal, once.
+        plan.followerCheered = true
+        self._world:cheerPerformingFollower(plan)
+      end
       if plan.segmentIndex == 0 then
         -- Surf mounts around two waits: the avatar turns to surfing between
         -- them, before the hop.

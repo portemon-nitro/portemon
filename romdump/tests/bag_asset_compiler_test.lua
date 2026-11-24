@@ -381,6 +381,11 @@ local function fixture(opts)
     opts.messageMemberTamper(orderedMembers)
   end
   local messageBytes = narc(orderedMembers)
+  local fontMembers = {}
+  for memberId = 0, 8 do
+    fontMembers[memberId + 1] = paletteData({ 0, 0x7FFF, 0x001F, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 })
+  end
+  local fontBytes = narc(fontMembers)
   local bytes = narc(members)
   local info = { fileId = 15, narcId = 15, path = "a/0/1/5", symbol = "NARC_a_0_1_5", alias = "bag_ui" }
   return {
@@ -393,10 +398,16 @@ local function fixture(opts)
       return bytes
     end,
     openNarc = function(_, alias)
-      assert(alias == "bag_ui" or alias == "messages", "unexpected archive " .. tostring(alias))
+      assert(
+        alias == "bag_ui" or alias == "messages" or alias == "NARC_graphic_font",
+        "unexpected archive " .. tostring(alias)
+      )
       local Narc = require("libs.nds.src.nitro.Narc")
       if alias == "messages" then
         return assert(Narc.open(messageBytes, alias))
+      end
+      if alias == "NARC_graphic_font" then
+        return assert(Narc.open(fontBytes, alias))
       end
       return assert(Narc.open(bytes, alias))
     end,

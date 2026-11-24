@@ -23,8 +23,8 @@ local NORMAL_POSE_DELTA = MovementCalibration.poseProgressTicks({ action = "walk
 ---@class FieldPlayerVisual.Source
 ---@field facing string
 ---@field animationPaused boolean
----@field presentationStateInto fun(self: unknown, out: { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer? }): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer? }
----@field presentationState fun(self: unknown): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer? }
+---@field presentationStateInto fun(self: unknown, out: { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer?, ordinaryPoseDelta: integer? }): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer?, ordinaryPoseDelta: integer? }
+---@field presentationState fun(self: unknown): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer?, ordinaryPoseDelta: integer? }
 ---@field clearGesturePresentation fun(self: unknown)
 ---@field renderPositionInto fun(self: unknown, out: { x: number, y: number, z: number }, alpha: number?): { x: number, y: number, z: number }
 ---@field renderPosition fun(self: unknown, alpha: number?): { x: number, y: number, z: number }
@@ -32,7 +32,7 @@ local NORMAL_POSE_DELTA = MovementCalibration.poseProgressTicks({ action = "walk
 ---@class FieldPlayerVisual.SourceInput
 ---@field facing string?
 ---@field animationPaused boolean?
----@field presentationState fun(self: FieldPlayerVisual.SourceInput): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer? }?
+---@field presentationState fun(self: FieldPlayerVisual.SourceInput): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer?, ordinaryPoseDelta: integer? }?
 ---@field clearGesturePresentation fun(self: FieldPlayerVisual.SourceInput)
 ---@field renderPosition fun(self: FieldPlayerVisual.SourceInput, alpha: number?): { x: number, y: number, z: number }
 
@@ -52,6 +52,7 @@ local NORMAL_POSE_DELTA = MovementCalibration.poseProgressTicks({ action = "walk
 ---@field _playerPresentation table<string, unknown>
 ---@field _renderPosition { x: number, y: number, z: number }
 ---@field _avatarPresentation { playerOffset: { x: number, y: number, z: number }, surf: { active: boolean, attachmentOffsetY: number } }
+---@field _held { pose: string, tick: integer, offsetX: number, offsetZ: number }? a pose an owner holds over the locomotion clock
 local FieldPlayerVisual = {}
 FieldPlayerVisual.__index = FieldPlayerVisual
 
@@ -81,6 +82,7 @@ function FieldPlayerVisual.new(opts)
     _playerPresentation = {},
     _renderPosition = { x = 0, y = 0, z = 0 },
     _avatarPresentation = { playerOffset = { x = 0, y = 0, z = 0 }, surf = { active = false, attachmentOffsetY = 0 } },
+    _held = nil,
   }, FieldPlayerVisual)
   self:setAvatar(opts.spriteId)
   return self
@@ -110,6 +112,12 @@ end
 -- original timeline: a standing actor holds the first frame of its facing
 -- range, and a turn starts the new range at its first frame.
 function FieldPlayerVisual:updateFixed(locomotionAtTickStart, ordinaryStepSpeedAtTickStart)
+  local held = self._held
+  if held ~= nil then
+    self.pose, self.poseTick = held.pose, held.tick
+    self.lastFacing = self.player.facing
+    return
+  end
   local snapshot = self.player:presentationStateInto(self._playerPresentation)
   local walking = not self.player.animationPaused
     and (locomotionAtTickStart == true or snapshot.locomotionActive == true)
@@ -132,6 +140,9 @@ function FieldPlayerVisual:updateFixed(locomotionAtTickStart, ordinaryStepSpeedA
     local running = false
     if snapshot.scriptedPoseDelta ~= nil then
       poseDelta = snapshot.scriptedPoseDelta
+    elseif snapshot.ordinaryPoseDelta ~= nil then
+      -- Bike steps pedal the walk clip at their own speed's cadence.
+      poseDelta = snapshot.ordinaryPoseDelta
     elseif ordinaryStepSpeed ~= nil then
       assert(ordinaryStepSpeed == "normal" or ordinaryStepSpeed == "run", "ordinary step has unsupported speed")
       running = ordinaryStepSpeed == "run"
@@ -141,6 +152,29 @@ function FieldPlayerVisual:updateFixed(locomotionAtTickStart, ordinaryStepSpeedA
   else
     self.pose = "idle"
     self.poseTick = 0
+  end
+end
+
+-- An owner animating the standing avatar itself (the fishing rod) holds
+-- the clip, its tick, and a tile display offset each update; the
+-- locomotion clock stays out until it releases the pose.
+---@param pose string
+---@param tick integer
+---@param offsetX number
+---@param offsetZ number
+function FieldPlayerVisual:holdPose(pose, tick, offsetX, offsetZ)
+  assert(type(pose) == "string" and type(tick) == "number" and tick % 1 == 0, "a held pose names its clip and tick")
+  assert(type(offsetX) == "number" and type(offsetZ) == "number", "a held pose carries its display offset")
+  local held = self._held or {}
+  held.pose, held.tick, held.offsetX, held.offsetZ = pose, tick, offsetX, offsetZ
+  self._held = held
+  self.pose, self.poseTick = pose, tick
+end
+
+function FieldPlayerVisual:releasePose()
+  if self._held ~= nil then
+    self._held = nil
+    self:settle()
   end
 end
 
@@ -175,9 +209,10 @@ function FieldPlayerVisual:drawRecord(alpha)
   end
   record.actorId = self.actorId
   record.spriteId = self.spriteId
-  record.world.x = point.x + avatarOffset.x
+  local held = self._held
+  record.world.x = point.x + avatarOffset.x + (held and held.offsetX or 0)
   record.world.y = point.y + avatarOffset.y + gestureOffsetY
-  record.world.z = point.z + avatarOffset.z
+  record.world.z = point.z + avatarOffset.z + (held and held.offsetZ or 0)
   record.facing = self.player.facing
   record.pose = self.pose
   record.poseTick = self.poseTick

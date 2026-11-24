@@ -259,6 +259,7 @@ local function drawableState(order, bannerStatus)
         return 3
       end,
     },
+    fishingHost = { updateFixed = function() end, notice = function() end },
     fieldEntranceIndicator = {
       status = function()
         return { visible = false }

@@ -344,6 +344,8 @@ end
 ---@field fieldMoves table<string, unknown>|nil the field-move runtime for task execution (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field fieldMoveAftermath table<string, unknown>|nil the Rock Smash / Headbutt aftermath service (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field sweetScent table<string, unknown>|nil the Sweet Scent host seam for the scent task (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field fishing table<string, unknown>|nil the fishing rod host seam for the fishing task (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field bicycle table<string, unknown>|nil the bike mount/dismount service (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field monNaming table<string, unknown>|nil the shared field naming host behind nickname and rival naming commands (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field celebiCinematic table<string, unknown>|nil runtime-owned Celebi scene service used by the time-travel task
@@ -772,7 +774,9 @@ function FieldScripts.new(opts)
       fieldMoves = opts.fieldMoves,
       fieldMoveAftermath = opts.fieldMoveAftermath,
       sweetScent = opts.sweetScent,
-      fieldMoveCue = FieldMoveCue.new(),
+      fishing = opts.fishing,
+      bicycle = opts.bicycle,
+      fieldMoveCue = FieldMoveCue.new(opts.mons),
       monNaming = opts.monNaming,
       rivalDefaultName = rivalDefaultName,
       followingMon = opts.followingMon,

@@ -150,6 +150,36 @@ function MetatileBehavior.isVeryTallGrass(behavior)
   return behavior == MetatileBehavior.BEHAVIOR.VERY_TALL_GRASS
 end
 
+-- TILE_BEHAVIOR_MUD (MetatileBehavior_IsMud).
+local MUD = 164
+
+-- MetatileBehavior_IsBridgeStart (112) and MetatileBehavior_IsBridge
+-- (113-115): standing on these means standing on the bridge deck.
+local BRIDGE = { [112] = true, [113] = true, [114] = true, [115] = true }
+
+---@param behavior integer?
+---@return boolean
+function MetatileBehavior.isBridge(behavior)
+  return BRIDGE[behavior] == true
+end
+
+-- ItemCheckUseFunc_Bicycle refuses to mount or dismount in very tall grass
+-- or mud.
+---@param standing integer?
+---@return boolean
+function MetatileBehavior.isBikeHostileGround(standing)
+  return MetatileBehavior.isVeryTallGrass(standing) or standing == MUD
+end
+
+-- ItemCheckUseFunc_FishingRod: the facing tile must be surfable water, and
+-- the line cannot be cast from the deck of a bridge.
+---@param standing integer?
+---@param facing integer?
+---@return boolean
+function MetatileBehavior.canFishFrom(standing, facing)
+  return MetatileBehavior.isSurfableWater(facing) and not BRIDGE[standing]
+end
+
 ---@param behavior integer?
 ---@return boolean
 function MetatileBehavior.suppressesFollowerReaction(behavior)

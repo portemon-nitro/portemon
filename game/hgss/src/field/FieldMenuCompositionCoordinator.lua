@@ -430,6 +430,25 @@ function FieldMenuCompositionCoordinator:composeStartMenu(rememberedActionId)
   local function toggleRunningShoesLock()
     progression:toggleRunningShoesLock()
   end
+  -- Registered-item tabs answer touches over their whole tab, for as many
+  -- slots as the live Bag has filled.
+  local tabHitRects = {}
+  for slot, tab in
+    ipairs(assert(startMenuSection.registeredItems, "the field UI manifest must carry the registered-item tabs"))
+  do
+    local visual = tab.button.visual
+    tabHitRects[slot] = {
+      x = tab.button.anchor.x + visual.offset.x,
+      y = tab.button.anchor.y + visual.offset.y,
+      width = visual.rect.width,
+      height = visual.rect.height,
+    }
+  end
+  local bagService = assert(runtime.bagService, "the start menu tabs read the live Bag")
+  local function registeredCount()
+    return #bagService:registeredItems()
+  end
+  local registeredItems = { hitRects = tabHitRects, count = registeredCount }
   local runningShoes = {
     hitRect = assert(startMenuSection.runningShoes, "the field UI manifest must carry the Running Shoes toggle").hitRect,
     state = runningShoesState,
@@ -441,6 +460,7 @@ function FieldMenuCompositionCoordinator:composeStartMenu(rememberedActionId)
     rememberedActionId = rememberedActionId,
     effect = playMenuSequence,
     runningShoes = runningShoes,
+    registeredItems = registeredItems,
     measureDisplay = measureDisplay,
     overrides = startMenuOverrides,
   })
@@ -920,11 +940,14 @@ function FieldMenuCompositionCoordinator:menuFieldSources()
       rocketCostume = events:isFlagSet(flags.FLAG_SYS_ROCKET_COSTUME),
       safari = events:isFlagSet(flags.FLAG_SYS_SAFARI),
       palPark = events:isFlagSet(flags.FLAG_SYS_PAL_PARK),
+      bikeLocked = player:isBikeLocked(),
       surfEdge = MetatileBehavior.canSurfOnto(standing, behavior),
       facingWaterfall = behavior == MetatileBehavior.BEHAVIOR.WATERFALL,
       facingWhirlpool = behavior == MetatileBehavior.BEHAVIOR.WHIRLPOOL,
       climbTile = MetatileBehavior.isRockClimbInDirection(behavior, player.facing),
       headbuttTree = behavior == MetatileBehavior.BEHAVIOR.HEADBUTT,
+      fishingWater = MetatileBehavior.canFishFrom(standing, behavior),
+      bikeHostileGround = MetatileBehavior.isBikeHostileGround(standing),
       facingActor = facingActor,
     }
   end

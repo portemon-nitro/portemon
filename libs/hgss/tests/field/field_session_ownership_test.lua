@@ -288,6 +288,45 @@ function T.foreground_without_player_lock_permits_movement_but_blocks_menu_and_i
   )
 end
 
+-- Roaming is free while only the player's own walking or a map transition
+-- runs, and held by an open dialogue or a foreground script (a cutscene).
+function T.roaming_is_free_until_dialogue_or_a_foreground_script_holds_the_field()
+  local walking = makeSession({ player = basePlayer({ motion = "walking" }) })
+  Assert.isTrue(walking:isRoamingFree(), "walking alone keeps roaming free")
+  local dialogueOpen = makeSession({
+    dialogue = {
+      isModal = function()
+        return true
+      end,
+    },
+  })
+  Assert.isFalse(dialogueOpen:isRoamingFree(), "an open dialogue holds the field")
+  local cutscene = makeSession({
+    scheduler = {
+      step = function() end,
+      playerInputLocked = function()
+        return true
+      end,
+      playerInputOwned = function()
+        return true
+      end,
+      foregroundEnvironmentId = function()
+        return "env-cutscene"
+      end,
+      foregroundTrigger = function()
+        return nil
+      end,
+      autonomousActorsLocked = function()
+        return true
+      end,
+      autonomousActorLocked = function()
+        return true
+      end,
+    },
+  })
+  Assert.isFalse(cutscene:isRoamingFree(), "a foreground script holds the field")
+end
+
 function T.actor_world_continues_while_foreground_holds_the_field_and_release_tick_stays_suppressed()
   local poseAdvances = 0
   local actors = {

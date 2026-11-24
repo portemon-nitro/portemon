@@ -1113,6 +1113,26 @@ function M.sweetScent(spec)
   return op("sweet_scent", spec)
 end
 
+-- Fishing rod task: the cast stage writes its outcome; put_away stows the rod.
+function M.fishing(spec)
+  return op("fishing", spec)
+end
+
+-- Writes 1 while the player rides the bike (retail ScrCmd_PlayerOnBikeCheck).
+function M.playerOnBikeCheck(spec)
+  return op("player_on_bike_check", spec)
+end
+
+-- Mounts or dismounts the bike (retail ScrCmd_PlayerOnBikeSet).
+function M.playerOnBikeSet(spec)
+  return op("player_on_bike_set", spec)
+end
+
+-- Locks or unlocks the bike state (retail ScrCmd_SetBikeStateLock).
+function M.bikeStateLock(spec)
+  return op("bike_state_lock", spec)
+end
+
 -- Bag and item constructors. Each takes the single canonical spec table
 -- named by the schema fields; item operands hold native item identities.
 function M.bagAddItem(spec)

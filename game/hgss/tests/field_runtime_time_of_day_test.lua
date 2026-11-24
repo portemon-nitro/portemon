@@ -36,6 +36,7 @@ local function runtimeWithEnvironment(clock, environment, sceneRuntime)
       updateSourceFrame = function() end,
     },
     scentTint = { updateSourceFrame = function() end },
+    fishingHost = { updateFixed = function() end, notice = function() end },
     screenFade = { updateSourceFrame = function() end },
     applicationHost = {
       error = function()

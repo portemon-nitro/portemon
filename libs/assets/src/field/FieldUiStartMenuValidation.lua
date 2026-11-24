@@ -268,6 +268,35 @@ local function checkStartMenuRunningShoes(shoes, atlases)
   end
 end
 
+-- The two registered-item tabs, in slot order: each an integral canonical
+-- tab anchor with its sprite visual in the shared icon atlas, plus the
+-- integral anchor of the item icon it frames.
+local function checkStartMenuRegisteredItems(tabs, atlases)
+  if type(tabs) ~= "table" or #tabs ~= 2 then
+    reject("startMenu.registeredItems must list the two registered-item tabs", {})
+  end
+  local function integralPoint(point, what)
+    if
+      type(point) ~= "table"
+      or type(point.x) ~= "number"
+      or point.x % 1 ~= 0
+      or type(point.y) ~= "number"
+      or point.y % 1 ~= 0
+    then
+      reject(what .. " must be an integral point", {})
+    end
+  end
+  for slot, tab in ipairs(tabs) do
+    local what = "startMenu.registeredItems[" .. slot .. "]"
+    if type(tab) ~= "table" or type(tab.button) ~= "table" then
+      reject(what .. " must carry its tab button", {})
+    end
+    integralPoint(tab.button.anchor, what .. ".button.anchor")
+    checkSpriteVisual(tab.button.visual, atlases, "start menu registered-item tab " .. slot .. " visual")
+    integralPoint(tab.iconAnchor, what .. ".iconAnchor")
+  end
+end
+
 local function checkStartMenuChrome(chrome, atlases)
   if type(chrome) ~= "table" or type(chrome.main) ~= "table" or type(chrome.sub) ~= "table" then
     reject("startMenu.chrome must carry its main and sub sets", {})
@@ -411,6 +440,7 @@ local function checkStartMenu(s, atlases, asset)
   checkStartMenuActionIcons(s.actionIcons, s.iconTable)
   checkStartMenuInteractive(s.interactive)
   checkStartMenuRunningShoes(s.runningShoes, atlases)
+  checkStartMenuRegisteredItems(s.registeredItems, atlases)
   if s.phoneNotification ~= nil then
     checkPhoneNotification(s.phoneNotification, atlases)
   end

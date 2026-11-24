@@ -537,6 +537,7 @@ local function makeFieldSession(opts)
         return nil
       end,
     },
+    fishingHost = { updateFixed = function() end, notice = function() end },
     fieldEntranceIndicator = { updateFixed = function() end },
     eventResolver = {
       resolveCoordinate = function()

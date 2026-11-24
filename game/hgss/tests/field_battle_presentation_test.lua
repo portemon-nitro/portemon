@@ -2989,6 +2989,7 @@ function T.presented_win_carries_every_phase_assertion()
       bindEnvelope(runtime, versionId, dualMeasurement("presented-win-phases:dual"), paintCountingGraphics())
     local followerSteps, transitionSteps = 0, 0
     runtime.followingMon = {
+      setStowed = function() end,
       update = function()
         followerSteps = followerSteps + 1
       end,
@@ -4813,6 +4814,10 @@ return {
       "mon-portrait-page:34",
       "mon-icon-page:0",
       "audio-bank:720",
+      "audio-bank:702",
+      "audio-bank:709",
+      "mon-summary:global",
+      "message-bank:203",
       "map-data:63",
       "map-data:64",
       "map:63",

@@ -8,6 +8,7 @@
 -- any field step or launch can ask for battle work.
 
 local Assert = require("tests.support.Assert")
+local GameStats = require("libs.hgss.src.mons.GameStats")
 local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
@@ -104,6 +105,15 @@ local function fakeRuntime(overrides)
   }, FieldRuntime))
   for key, value in pairs(overrides or {}) do
     runtime[key] = value
+  end
+  -- Production boot always owns live game stats, and the committed-step
+  -- player doubles here walk rather than ride.
+  runtime.gameStats = runtime.gameStats or GameStats.new({ species = { CHIKORITA = true } })
+  local player = runtime.player
+  if player ~= nil and player.takeBikedSteps == nil then
+    function player.takeBikedSteps()
+      return 0
+    end
   end
   local coordinator = FieldBattleCoordinator.new(runtime)
   for _, key in ipairs({
@@ -590,9 +600,20 @@ function T.prepared_encounters_are_consumed_exactly_once()
   Assert.isFalse(runtime:cancelPendingEncounter(), "release without a hold reports itself")
 
   runtime:attemptEncounter({ method = "grass" })
+  local caughtReads = {}
+  runtime.dexKnowledge = {
+    isCaught = function(_, species)
+      caughtReads[#caughtReads + 1] = species
+      return false
+    end,
+    prepareChanges = function()
+      error("this launch resolves no dex changes", 2)
+    end,
+  }
   local battle = runtime:startBattle({
     request = { id = "launch-pending", kind = "wild", payload = { species = "TOTODILE", level = 4 } },
   })
+  Assert.equal(#caughtReads, 1, "the launch reads the wild species' caught flag once")
   Assert.deepEqual(consumed, { 11, 11 }, "launch consumes the held preparation")
   Assert.isNil(runtime.pendingEncounterId)
   Assert.equal(battle:status().phase, "preparing")
@@ -2246,6 +2267,7 @@ function T.direct_battle_blocks_the_first_tick_and_releases_the_next()
       end,
     },
     scentTint = { updateSourceFrame = function() end },
+    fishingHost = { updateFixed = function() end, notice = function() end },
     screenFade = { updateSourceFrame = function() end },
   })
   local portRecord = { enters = 0, frames = {}, leaves = 0, disposed = 0 }
@@ -2540,6 +2562,7 @@ function T.field_tick_keeps_battle_gate_positions()
       end,
     },
     scentTint = { updateSourceFrame = function() end },
+    fishingHost = { updateFixed = function() end, notice = function() end },
     screenFade = {
       updateSourceFrame = function() end,
     },

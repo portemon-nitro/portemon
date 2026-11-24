@@ -79,6 +79,7 @@ local function runtimeForSwap(sourceCoverage)
       dispose = function() end,
     },
     scripts = { onMapSwap = function() end },
+    playerAvatar = { durableState = function() return "walking" end },
   }, FieldRuntime)
   runtime.worldSwapCoordinator = FieldWorldSwapCoordinator.new(runtime)
   return runtime, sourceRuntimeMap

@@ -286,6 +286,30 @@ function T.settle_stops_the_pose_clock_and_retains_the_players_facing()
   Assert.equal(subject.facing, "east")
 end
 
+-- A held pose (the fishing rod) replaces the locomotion clock and shifts
+-- the drawn position until its owner releases it.
+function T.a_held_pose_overrides_the_clock_until_released()
+  local subject = player()
+  local presentation = visual(subject)
+  local before = presentation:drawRecord(1)
+  local baseX, baseZ = before.world.x, before.world.z
+  presentation:holdPose("walk", 9, -0.25, 0.375)
+  subject.motion = "walking"
+  presentation:updateFixed()
+  Assert.equal(presentation.pose, "walk")
+  Assert.equal(presentation.poseTick, 9, "the held tick wins over the stepping clock")
+  local held = presentation:drawRecord(1)
+  Assert.equal(held.poseTick, 9)
+  Assert.isTrue(math.abs(held.world.x - (baseX - 0.25)) < 1e-9, "the held pose shifts the drawn x")
+  Assert.isTrue(math.abs(held.world.z - (baseZ + 0.375)) < 1e-9, "the held pose shifts the drawn z")
+  presentation:releasePose()
+  subject.motion = "idle"
+  presentation:updateFixed()
+  Assert.equal(presentation.pose, "idle")
+  local released = presentation:drawRecord(1)
+  Assert.isTrue(math.abs(released.world.x - baseX) < 1e-9, "releasing drops the offset")
+end
+
 function T.rejects_an_avatar_without_a_compiled_sprite_id()
   local subject = player()
   local err = Assert.throws(function()
@@ -375,6 +399,18 @@ function T.running_selects_the_run_clip_at_the_source_cadence()
     Assert.isTrue(frameIndex >= 5, "tick " .. tick .. " samples the run clip, got frame " .. frameIndex)
   end
   Assert.isTrue(sampledFrames[1] ~= sampledFrames[#sampledFrames], "the run clip advances across the step")
+end
+
+-- A bike step pedals the walk clip at the cadence of its own speed: the
+-- slowest bike step advances 1, 1, 2 pose ticks over its first three ticks.
+function T.cycling_pedals_the_walk_clip_at_the_bike_step_cadence()
+  local subject = movingPlayer()
+  subject:setCycling(true)
+  local presentation = visual(subject)
+  for _ = 1, 3 do
+    gaitTick(subject, presentation, "east")
+  end
+  Assert.deepEqual(presentation:status(), { pose = "walk", poseTick = 4 })
 end
 
 function T.step_speed_changes_only_at_tile_boundaries_and_keeps_pose_phase()

@@ -387,6 +387,8 @@ local NO_ENCOUNTER_MEMBER = 255
 -- Weather in which Honey and Sweet Scent fail: rain, snow, and the second
 -- mist weather (WEATHER_RAIN, WEATHER_SNOW, WEATHER_UNKNOWN_9).
 local SCENT_BLOCKING_WEATHER = { [1] = true, [5] = true, [9] = true }
+-- The bike's field music (SEQ_GS_BICYCLE).
+local BIKE_MUSIC = "SEQ_GS_BICYCLE"
 
 -- The Sweet Scent host seam: the weather gate, the screen tint, and the
 -- encounter roll over the shared field-move encounter attempt.
@@ -425,6 +427,32 @@ local function sweetScentHost(runtime)
     hasWildEncounters = hasWildEncounters,
     encounter = encounter,
   }
+end
+
+-- ScrCmd_PlayerOnBikeSet: mounting sets the bike music as the persisted
+-- override unless the radio is playing, and rides; dismounting clears it
+-- and walks. The traversal music sync on the durable state change plays the
+-- new effective music. ScrCmd_SetBikeStateLock sets the live player's lock.
+local function bicycleService(runtime)
+  local function setRiding(_, riding)
+    assert(type(riding) == "boolean", "the bike is mounted or dismounted")
+    local audio = runtime.audio
+    if audio ~= nil then
+      if not riding then
+        audio:clearMusicOverride()
+      elseif audio:currentRadioSequence() == nil then
+        audio:setMusicOverride(BIKE_MUSIC)
+      end
+    end
+    assert(runtime.playerAvatar, "the bike requires the avatar transition owner"):queueTransition(
+      riding and "cycling" or "walking"
+    )
+    runtime:applyAvatarTransitions()
+  end
+  local function setLocked(_, locked)
+    assert(runtime.player, "the bike lock requires the live player"):setBikeLocked(locked)
+  end
+  return { setRiding = setRiding, setLocked = setLocked }
 end
 
 local function apricornService(runtime)
@@ -788,6 +816,8 @@ function FieldScriptComposition.compose(runtime, options)
     fieldMoves = options.fieldMoves,
     fieldMoveAftermath = fieldMoveAftermathService(runtime),
     sweetScent = sweetScentHost(runtime),
+    fishing = runtime.fishingHost,
+    bicycle = bicycleService(runtime),
     monNaming = options.monNaming,
     followerTransition = options.followerTransition,
     starterBalls = options.starterBalls,

@@ -9,6 +9,8 @@
 -- compiled overlays carry no replacement geometry. Pure module: no love,
 -- no I/O.
 
+local FieldMovePolicy = require("libs.hgss.src.field.FieldMovePolicy")
+
 ---@class BagActionPolicyFacts
 ---@field itemKey string? the selected semantic item, nil when nothing is selected
 ---@field preventToss boolean the source item toss metadata
@@ -196,11 +198,13 @@ function BagActionPolicy.actionsForField(facts)
   if facts.itemKey ~= nil then
     assert(type(facts.itemKey) == "string" and facts.itemKey ~= "", "a selected action needs its item key")
     assert(type(facts.useKind) == "string", "the field policy needs the party-use kind")
-    -- The Apricorn Box and the Escape Rope are field-use items: their Use
-    -- needs no party target, and the Rope's refusals come on selection.
+    -- The Apricorn Box, the Escape Rope, and the field-use key items (the
+    -- Bicycle and the fishing rods) need no party target; their refusals
+    -- come on selection.
     if
       facts.itemKey == "APRICORN_BOX"
       or facts.itemKey == "ESCAPE_ROPE"
+      or FieldMovePolicy.hasKeyItemCheck(facts.itemKey)
       or (targetsExist and facts.useKind ~= "none")
     then
       actions[#actions + 1] = { id = "use", enabled = true, slot = 0 }

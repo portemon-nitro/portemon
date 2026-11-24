@@ -37,6 +37,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field _pendingHiddenLead table<string, unknown>?
 ---@field _rejoinHidden boolean arrival hide-until-step latch: the next publish installs hidden on the player tile and the first trail step reveals
 ---@field _mapEntry boolean
+---@field _stowed boolean whether the follower is put away for the player's bike ride
 ---@field _lastPlayerRevision integer?
 ---@field _lastAnchor table<string, unknown>?
 ---@field _lastMovementTransactionRevision integer?
@@ -55,6 +56,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field isEnabled fun(self: FollowingMonController): boolean
 ---@field isActive fun(self: FollowingMonController): boolean
 ---@field isSourceActive fun(self: FollowingMonController): boolean
+---@field setStowed fun(self: FollowingMonController, stowed: boolean)
 ---@field isVisible fun(self: FollowingMonController): boolean
 ---@field partnerActorId fun(self: FollowingMonController): string?
 ---@field partnerSourceState fun(self: FollowingMonController): integer
@@ -235,6 +237,7 @@ function FollowingMonController.new(opts)
     _pendingHiddenLead = nil,
     _rejoinHidden = false,
     _mapEntry = false,
+    _stowed = false,
     _lastPlayerRevision = nil,
     _lastAnchor = nil,
     _lastMovementTransactionRevision = nil,
@@ -456,7 +459,7 @@ end
 ---@return boolean
 ---@param self FollowingMonController
 function FollowingMonController:isVisible()
-  if not self:isActive() then
+  if not self:isActive() or self._stowed then
     return false
   end
   local mapId = self._actors.currentMapId
@@ -1259,13 +1262,14 @@ function FollowingMonController:update()
     self:_clearAll()
     return
   end
-  if not self:_permitted(mapId) then
-    -- Permission lost: clear the visible partner but keep the party-derived
-    -- lead, so returning to an allowed map republishes the same follower.
-    -- The player baseline keeps tracking so no stale anchor replays later.
+  if self._stowed or not self:_permitted(mapId) then
+    -- Permission lost or stowed for a ride: clear the visible partner but
+    -- keep the party-derived lead, so returning to an allowed map or
+    -- dismounting republishes the same follower. The player baseline (anchor
+    -- and movement starts) keeps tracking so no stale step replays later.
     self._mapEntry = false
     self:_suppress()
-    self:_observePlayer(mapId)
+    rebaselinePlayerObservation(self)
     return
   end
   if not sameIdentity(self._published, self._lead) then
@@ -1733,6 +1737,24 @@ function FollowingMonController:isNextToPlayer()
   local partner = assert(self._actors:getPosition(assert(self._actors:partnerId())), "partner position is required")
   local anchor = self._playerOf():committedAnchor()
   return math.abs(partner.fieldX - anchor.fieldX) + math.abs(partner.fieldZ - anchor.fieldZ) == 1
+end
+
+-- The follower is put away while the player rides the bike (retail hides it
+-- for the whole ride and keeps it active). Unstowing reinstalls it on the
+-- player's tile hidden until the player's next step, like the retail
+-- dismount's move-to-player and hide-until-step.
+---@param stowed boolean
+---@param self FollowingMonController
+function FollowingMonController:setStowed(stowed)
+  assert(type(stowed) == "boolean", "the follower stow state must be a boolean")
+  if stowed == self._stowed then
+    return
+  end
+  self._stowed = stowed
+  if not stowed then
+    self._mapEntry = true
+    self._rejoinHidden = true
+  end
 end
 
 -- Retail ScrCmd_FollowMonRecall: an active follower returns to the player's

@@ -376,6 +376,40 @@ function T.running_shoes_toggle_carries_distinct_non_blank_off_and_on_visuals(ro
   Assert.isTrue(hit.x >= 0 and hit.y >= 0 and hit.x + hit.width <= 256 and hit.y + hit.height <= 192)
 end
 
+-- The registered-item tabs (touchscreen menu sprites 9/10 over the shared
+-- button resources, animations 0 and 8) are distinct, non-blank 56x32 tabs
+-- stacked above the Running Shoes button, each framing its 32x32 item icon.
+function T.registered_item_tabs_carry_distinct_non_blank_visuals(romFs, version)
+  local bundle, startMenu = compiledStartMenu(romFs)
+  local tabs = assert(startMenu.registeredItems, version .. " start menu publishes the registered-item tabs")
+  Assert.equal(#tabs, 2)
+  local _, atlasBytes = assetBytes(bundle, FieldUiAssetCache.ASSET.START_MENU_ICONS)
+  local width, _, rgba = PngReader.rgba(atlasBytes)
+  local hashes = {}
+  for slot, tab in ipairs(tabs) do
+    local rect = tab.button.visual.rect
+    Assert.equal(rect.width, 56, version .. " tab " .. slot .. " width")
+    Assert.equal(rect.height, 32, version .. " tab " .. slot .. " height")
+    local pixels, opaque = {}, 0
+    for y = rect.y, rect.y + rect.height - 1 do
+      for x = rect.x, rect.x + rect.width - 1 do
+        local r, g, b, a = PngReader.pixel(rgba, width, x, y)
+        pixels[#pixels + 1] = r .. "," .. g .. "," .. b .. "," .. a
+        if a > 0 then
+          opaque = opaque + 1
+        end
+      end
+    end
+    Assert.isTrue(opaque > 0, version .. " tab " .. slot .. " is not blank")
+    hashes[slot] = table.concat(pixels, ";")
+    Assert.isTrue(
+      tab.button.anchor.y + rect.height <= startMenu.runningShoes.button.anchor.y,
+      version .. " tab " .. slot .. " stacks above the Running Shoes button"
+    )
+  end
+  Assert.isTrue(hashes[1] ~= hashes[2], version .. " the two tabs differ")
+end
+
 -- The focus-change wobble decodes from the shared icon animation bank
 -- (ov27_0225B404: up/down restart sequence 3, left/right sequence 1): the
 -- horizontal track shakes x by -2/+3 and the vertical track shakes y by

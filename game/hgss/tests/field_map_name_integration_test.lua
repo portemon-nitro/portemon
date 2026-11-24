@@ -51,6 +51,7 @@ local function commitRuntime()
     fieldTerrainEffectController = { clear = function() end },
     zoneController = {},
     scripts = { onMapSwap = function() end },
+    playerAvatar = { durableState = function() return "walking" end },
     session = {
       beginMapEntry = function() end,
     },

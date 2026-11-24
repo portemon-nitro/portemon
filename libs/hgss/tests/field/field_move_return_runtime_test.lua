@@ -32,6 +32,7 @@ local function worldDouble(warps)
   local world = {
     warpCalls = { plan = 0, begin = 0 },
     order = {},
+    cheered = {},
     departureTicks = 3,
     arrivalTicks = 2,
     planned = nil,
@@ -54,6 +55,9 @@ local function worldDouble(warps)
       return { map = "MAP_NEW_BARK", warp = 0, fieldX = 695, fieldZ = 397, facing = "south" }
     end
     error("world double plans only dig and teleport returns", 0)
+  end
+  function world:cheerPerformingFollower(plan)
+    self.cheered[#self.cheered + 1] = plan.kind
   end
   function world:stepWarpDeparture(plan)
     self.order[#self.order + 1] = "depart"
@@ -146,6 +150,7 @@ function T.dig_plans_and_runs_to_done_through_one_warp()
   Assert.notNil(outcome, "dig must settle")
   Assert.equal(outcome.kind, "done", "dig must run to done")
   Assert.equal(world.warpCalls.begin, 1, "the warp must start exactly once across polls")
+  Assert.deepEqual(world.cheered, { "dig" }, "the departure offers the follower its cheer once")
   local settled = runtime:advance(plan)
   Assert.equal(settled.kind, "done", "a settled plan stays done without re-warping")
   Assert.equal(world.warpCalls.begin, 1, "settled polls never re-warp")

@@ -112,6 +112,13 @@ local function fakeInput()
   function input:clearUi()
     self.clearUiCalls = self.clearUiCalls + 1
   end
+  input.registeredLatches = {}
+  function input:pressRegisteredSlot(slot, source)
+    self.registeredLatches[#self.registeredLatches + 1] = { "press", slot, source }
+  end
+  function input:releaseRegisteredSlot(slot, source)
+    self.registeredLatches[#self.registeredLatches + 1] = { "release", slot, source }
+  end
   return input --[[@as FieldApplicationHostTest.Input]]
 end
 
@@ -175,6 +182,23 @@ function T.tests.successful_field_action_closes_the_menu_without_a_child_applica
   Assert.equal(input.clearUiCalls, 1)
   Assert.equal(menu.disposeCount, 1)
   Assert.deepEqual(registry.created, {})
+end
+
+-- A tapped registered-item tab closes the menu and leaves a single
+-- registered-slot press for the field's next tick, exactly like the
+-- shortcut button: the source is pressed and released at once.
+function T.tests.registered_item_result_closes_the_menu_and_presses_that_slot()
+  local host, input, registry = fixture()
+  local menu = openMenu(host, input, registry)
+  menu.result = { kind = "registered_item", slot = 2 }
+  host:updateFixed({})
+  Assert.equal(host:status().phase, "closed")
+  Assert.equal(menu.disposeCount, 1)
+  Assert.equal(input.clearUiCalls, 1)
+  Assert.deepEqual(input.registeredLatches, {
+    { "press", 2, "start-menu" },
+    { "release", 2, "start-menu" },
+  })
 end
 
 function T.tests.field_action_failure_releases_menu_ownership_and_surfaces_error()

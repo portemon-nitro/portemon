@@ -304,6 +304,13 @@ function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
   if runtime.audio then
     runtime.audio:enterMap(runtimeMap, { clearMusicOverride = true, play = true })
   end
+  -- FieldSystem_ResetStateOnWarp: a rider warping into a map that forbids
+  -- bikes arrives on foot.
+  local avatar = assert(runtime.playerAvatar, "field runtime has no avatar transition owner")
+  if avatar:durableState() == "cycling" and not runtimeMap.fieldData.fieldUse.bikeAllowed then
+    avatar:queueTransition("walking")
+    runtime:applyAvatarTransitions()
+  end
   runtime.scripts:onMapSwap(prepared.player, runtimeMap)
   runtime.session:beginMapEntry()
   runtime:resetEncounterStepCounters()

@@ -514,6 +514,7 @@ local function bootCoveredField(scope)
           return 2
         end,
       },
+      fishingHost = { updateFixed = function() end, notice = function() end },
       fieldEntranceIndicator = {
         status = function()
           return { visible = false }

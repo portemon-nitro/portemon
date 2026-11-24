@@ -122,6 +122,7 @@ function StartMenuRenderer.new(opts)
       focusShake = assert(startMenu.focusShake, "the field-UI manifest must carry the focus shake record"),
       confirmHop = assert(startMenu.confirmHop, "the field-UI manifest must carry the confirm hop record"),
       runningShoes = assert(startMenu.runningShoes, "the field-UI manifest must carry the Running Shoes toggle"),
+      registeredItems = assert(startMenu.registeredItems, "the field-UI manifest must carry the registered-item tabs"),
       phoneNotification = startMenu.phoneNotification,
       pokegearIcon = type(actionIcons) == "table" and actionIcons["vanilla.pokegear"] or nil,
       selectionCursor = selectionCursor,
@@ -303,6 +304,10 @@ function StartMenuRenderer:_acquire(cacheFs, manifest, startMenu, chromeAsset)
     for _, state in ipairs({ part.off, part.on }) do
       quadFor(assert(state.asset, "a Running Shoes visual must name its atlas"), assert(state.rect))
     end
+  end
+  for _, tab in ipairs(self.menu.registeredItems) do
+    local visual = tab.button.visual
+    quadFor(assert(visual.asset, "a registered-item tab visual must name its atlas"), assert(visual.rect))
   end
   local selectionCursor = self._selectionCursor
   if selectionCursor ~= nil then
@@ -558,6 +563,99 @@ function StartMenuRenderer:_drawRunningShoes(locked)
   end
 end
 
+-- The registered-item tabs in slot order: each registered item draws its
+-- slot's tab, then its item icon from the borrowed item icon atlas at the
+-- slot's icon anchor, above the tab like the retail sprite priorities.
+---@param iconKeys string[] the registered items' icon keys in slot order
+---@param itemIcons ItemIconAssetProvider the borrowed item icon atlas
+function StartMenuRenderer:_drawRegisteredItems(iconKeys, itemIcons)
+  local tabs = self.menu.registeredItems
+  local lg = assert(self._graphics)
+  for slot, iconKey in ipairs(iconKeys) do
+    local tab = assert(tabs[slot], "registered item " .. slot .. " is outside the generated tabs")
+    local visual = tab.button.visual
+    self:_drawAtlas(
+      visual.asset,
+      assert(self._imageByAsset[visual.asset]),
+      self:_quadFor(visual.asset, visual.rect),
+      tab.button.anchor.x + visual.offset.x,
+      tab.button.anchor.y + visual.offset.y
+    )
+    local quad = itemIcons:quadFor(iconKey)
+    local handle = itemIcons:handle()
+    if handle ~= nil then
+      ImageSampling.draw(lg, handle, quad, tab.iconAnchor.x, tab.iconAnchor.y)
+    else
+      lg.draw(itemIcons:image(), quad, tab.iconAnchor.x, tab.iconAnchor.y)
+    end
+  end
+end
+
+-- Rejects a malformed registered-item presentation before anything draws.
+---@param iconKeys unknown
+---@param itemIcons unknown
+local function checkRegisteredItems(iconKeys, itemIcons)
+  if iconKeys == nil then
+    return
+  end
+  assert(type(iconKeys) == "table" and #iconKeys <= 2, "the registered items are at most two icon keys")
+  for _, iconKey in ipairs(iconKeys) do
+    assert(type(iconKey) == "string", "a registered item presents its icon key")
+  end
+  assert(
+    #iconKeys == 0 or (type(itemIcons) == "table" and type(itemIcons.quadFor) == "function"),
+    "registered items draw through the borrowed item icon atlas"
+  )
+end
+
+-- The canonical bounds of the shortcut cluster: the Running Shoes button and
+-- indicator plus every registered-item tab, which together frame the icons.
+---@param startMenu table<string, unknown> the validated field-UI start menu section
+---@return LayoutGeometry.Rect
+function StartMenuRenderer.shortcutBounds(startMenu)
+  local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
+  local function include(anchor, visual)
+    local x = anchor.x + visual.offset.x
+    local y = anchor.y + visual.offset.y
+    left, top = math.min(left, x), math.min(top, y)
+    right, bottom = math.max(right, x + visual.rect.width), math.max(bottom, y + visual.rect.height)
+  end
+  local shoes = assert(startMenu.runningShoes, "the start menu must carry its Running Shoes toggle")
+  for _, part in ipairs({ shoes.button, shoes.indicator }) do
+    include(part.anchor, part.off)
+    include(part.anchor, part.on)
+  end
+  for _, tab in ipairs(assert(startMenu.registeredItems, "the start menu must carry its registered-item tabs")) do
+    include(tab.button.anchor, tab.button.visual)
+  end
+  return { x = left, y = top, width = right - left, height = bottom - top }
+end
+
+-- Draws only the shortcut cluster (the Running Shoes toggle when present and
+-- the registered-item tabs) through the placement record, without the menu
+-- chrome or any action.
+---@param presentation { runningShoes: { locked: boolean }?, registeredItems: string[] }
+---@param placement LayoutGeometry.Placement the resolved content placement
+---@param itemIcons ItemIconAssetProvider? the borrowed item icon atlas, required with registered items
+function StartMenuRenderer:drawShortcuts(presentation, placement, itemIcons)
+  if not self._subImage then
+    return
+  end
+  local shoes = presentation.runningShoes
+  assert(shoes == nil or type(shoes.locked) == "boolean", "Running Shoes presentation needs its lock")
+  checkRegisteredItems(presentation.registeredItems, itemIcons)
+  local lg = assert(self._graphics)
+  lg.push("all")
+  LogicalSurface.draw(lg, placement, function()
+    lg.setColor(1, 1, 1, 1)
+    if shoes ~= nil then
+      self:_drawRunningShoes(shoes.locked)
+    end
+    self:_drawRegisteredItems(presentation.registeredItems, assert(itemIcons))
+  end)
+  lg.pop()
+end
+
 --- The Running Shoes focus cursor: the animated Apricorn Box hand (sequence 3)
 -- parked against the button's top edge, nudged right of center like the
 -- retail Box nudges its cursor +4 right of the selected apricorn. Sequence 3
@@ -661,9 +759,10 @@ end
 -- canvas, shader, scissor, blend, depth, wireframe, cull, and color
 -- afterwards so the HUD and host overlays draw normally.
 
----@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, focusShake?: { position: integer, axis: string, age: integer }, confirmHop?: { position: integer, age: integer }, notification?: table<string, unknown>, animationTick?: integer }?
+---@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, focusShake?: { position: integer, axis: string, age: integer }, confirmHop?: { position: integer, age: integer }, notification?: table<string, unknown>, animationTick?: integer, registeredItems?: string[] }?
 ---@param placement LayoutGeometry.Placement the resolved content placement (frame, origin, scale, clip)
-function StartMenuRenderer:draw(presentation, placement)
+---@param itemIcons ItemIconAssetProvider? the borrowed item icon atlas, required with registered items
+function StartMenuRenderer:draw(presentation, placement, itemIcons)
   if not presentation or not self._subImage then
     return
   end
@@ -682,7 +781,7 @@ function StartMenuRenderer:draw(presentation, placement)
   end
   lg.push("all")
   LogicalSurface.draw(lg, placement, function()
-    self:_drawSurface(presentation)
+    self:_drawSurface(presentation, itemIcons)
   end)
   lg.pop()
 end
@@ -691,8 +790,9 @@ end
 -- draw draws nothing), then the SUB chrome at the canonical origin plus
 -- per-action icons and labels. The manifest rects are canonical, so
 -- nothing is scaled twice.
----@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, focusShake?: { position: integer, axis: string, age: integer }, confirmHop?: { position: integer, age: integer }, notification?: table<string, unknown>|nil, animationTick?: integer }
-function StartMenuRenderer:_drawSurface(presentation)
+---@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, focusShake?: { position: integer, axis: string, age: integer }, confirmHop?: { position: integer, age: integer }, notification?: table<string, unknown>|nil, animationTick?: integer, registeredItems?: string[] }
+---@param itemIcons ItemIconAssetProvider?
+function StartMenuRenderer:_drawSurface(presentation, itemIcons)
   local lg = assert(self._graphics)
   lg.setColor(1, 1, 1, 1)
   assert(
@@ -770,6 +870,7 @@ function StartMenuRenderer:_drawSurface(presentation)
       "the focus shake age must be a non-negative integer"
     )
   end
+  checkRegisteredItems(presentation.registeredItems, itemIcons)
   local confirmHop = presentation.confirmHop
   if confirmHop ~= nil then
     assert(
@@ -798,6 +899,9 @@ function StartMenuRenderer:_drawSurface(presentation)
     if shoes.focused then
       self:_drawRunningShoesFocus(presentation.animationTick or 0)
     end
+  end
+  if presentation.registeredItems ~= nil then
+    self:_drawRegisteredItems(presentation.registeredItems, assert(itemIcons))
   end
 end
 
@@ -848,6 +952,7 @@ end
 ---@field focusShake { horizontal: StartMenuRenderer.ShakeTrack, vertical: StartMenuRenderer.ShakeTrack } the generated focus-change wobble tracks
 ---@field confirmHop StartMenuRenderer.ShakeTrack the generated confirm hop track
 ---@field runningShoes table<string, unknown> the generated Running Shoes toggle record (button and indicator visuals)
+---@field registeredItems { button: { anchor: { x: integer, y: integer }, visual: table<string, unknown> }, iconAnchor: { x: integer, y: integer } }[] the generated registered-item tabs in slot order
 ---@field phoneNotification table<string, unknown>? the compiled incoming-call projection, when the class carries it
 ---@field pokegearIcon integer? the retail icon index behind the Pokegear action
 ---@field selectionCursor table<string, unknown>? the borrowed Apricorn Box cursor states animating above the button

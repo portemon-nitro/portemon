@@ -12,7 +12,7 @@ local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "map:67" },
+    derivedAssets = { "field-runtime", "message-bank:550", "map-data:36", "map-data:37", "map-data:67", "map:67" },
     tags = { "field", "script", "cherrygrove", "running-shoes" },
   },
   tests = {},

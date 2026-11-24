@@ -871,6 +871,7 @@ function FieldUiFixture.addStartMenuIconContract(manifest)
   }
   startMenu.interactive = FieldUiFixture.startMenuInteractive()
   startMenu.runningShoes = FieldUiFixture.startMenuRunningShoes()
+  startMenu.registeredItems = FieldUiFixture.startMenuRegisteredItems()
   startMenu.labelPalette = FieldUiFixture.startMenuLabelPalette()
   startMenu.chrome = {
     main = { asset = "hgss.start_menu.background", transparentAboveY = 136 },
@@ -924,6 +925,23 @@ function FieldUiFixture.startMenuRunningShoes()
       on = visual(176, 32, 32),
     },
   }
+end
+
+function FieldUiFixture.startMenuRegisteredItems()
+  local function tab(x, anchorY, iconY)
+    return {
+      button = {
+        anchor = { x = 200, y = anchorY },
+        visual = {
+          asset = "hgss.start_menu.icons",
+          rect = { x = x, y = 0, width = 56, height = 32 },
+          offset = { x = 0, y = 0 },
+        },
+      },
+      iconAnchor = { x = 220, y = iconY },
+    }
+  end
+  return { tab(208, 8, 11), tab(264, 48, 51) }
 end
 
 FieldUiFixture.RINGING_PATH = "assets/generated/field/ui/start-menu-ringing.png"

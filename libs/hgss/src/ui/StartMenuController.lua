@@ -39,6 +39,7 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@field _pointerDown { kind: "cancel"|"action"|"none", position: integer? }?
 ---@field _effect fun(sequence: string)? source UI sound effect boundary
 ---@field _runningShoes StartMenuController.RunningShoes? the Running Shoes toggle port; absent menus present no toggle
+---@field _registeredItems StartMenuController.RegisteredItems? the registered-item tabs port; absent menus present no tabs
 local StartMenuController = {}
 StartMenuController.__index = StartMenuController
 
@@ -139,12 +140,18 @@ end
 ---@field state fun(): { visible: boolean, locked: boolean }
 ---@field toggle fun()
 
+-- The registered-item tabs: the generated touch rectangle of each slot's tab
+-- and the live count of registered items (slots fill in order).
+---@class StartMenuController.RegisteredItems
+---@field hitRects FieldDialogueTheme.Rect[]
+---@field count fun(): integer
+
 -- opts.entries: the runtime-composed final interactive action list
 -- (id / targetApplication / displayPosition), never empty.
 -- opts.interactive: the generated manifest startMenu.interactive record
 -- (cancelHitRect plus positions 0..6). opts.rememberedActionId: the
 -- selection remembered across a child-application round trip.
----@param opts { entries: StartMenuController.Entry[], interactive: StartMenuController.Interactive, rememberedActionId?: string?, effect?: fun(sequence: string), runningShoes?: StartMenuController.RunningShoes }
+---@param opts { entries: StartMenuController.Entry[], interactive: StartMenuController.Interactive, rememberedActionId?: string?, effect?: fun(sequence: string), runningShoes?: StartMenuController.RunningShoes, registeredItems?: StartMenuController.RegisteredItems }
 ---@return StartMenuController
 function StartMenuController.new(opts)
   assert(type(opts) == "table", "the start menu controller requires options")
@@ -154,6 +161,12 @@ function StartMenuController.new(opts)
   assert(type(opts.interactive.cancelHitRect) == "table", "the start menu requires the generated cancel hit rectangle")
   if opts.runningShoes ~= nil then
     assert(type(opts.runningShoes.hitRect) == "table", "the Running Shoes control requires its generated hit rectangle")
+  end
+  if opts.registeredItems ~= nil then
+    assert(
+      type(opts.registeredItems.hitRects) == "table" and type(opts.registeredItems.count) == "function",
+      "the registered-item tabs require their hit rectangles and live count"
+    )
   end
   local display, ordered = composeDisplay(opts.entries, opts.interactive)
   local self = setmetatable({
@@ -171,6 +184,7 @@ function StartMenuController.new(opts)
     _pointerDown = nil,
     _effect = opts.effect,
     _runningShoes = opts.runningShoes,
+    _registeredItems = opts.registeredItems,
   }, StartMenuController)
   return self
 end
@@ -382,6 +396,25 @@ function StartMenuController:_activate(position)
   self._closed = false
 end
 
+-- The registered slot whose tab lies under a canonical point, or nil when
+-- the point misses every tab holding a registered item.
+---@param x number
+---@param y number
+---@return integer?
+function StartMenuController:_registeredTabAt(x, y)
+  local tabs = self._registeredItems
+  if tabs == nil then
+    return nil
+  end
+  for slot = 1, tabs.count() do
+    local rect = tabs.hitRects[slot]
+    if rect ~= nil and contains(rect, x, y) then
+      return slot
+    end
+  end
+  return nil
+end
+
 function StartMenuController:_close()
   if self._effect then
     self._effect("SEQ_SE_GS_GEARCANCEL")
@@ -444,7 +477,21 @@ function StartMenuController:updateFixed(uiInput)
         local position = positionAt(positions, self._visibleActions, event.x, event.y)
         local shoes = self._runningShoes
         local shoesState = self:_shoesState()
-        if shoes ~= nil and shoesState ~= nil and shoesState.visible and contains(shoes.hitRect, event.x, event.y) then
+        local tabSlot = self:_registeredTabAt(event.x, event.y)
+        if tabSlot ~= nil then
+          -- Retail uses the item on the fresh touch of its tab.
+          if self._effect then
+            self._effect("SEQ_SE_DP_SELECT")
+          end
+          self._result = { kind = "registered_item", slot = tabSlot }
+          self._closed = true
+          self._pointerDown = { kind = "none" }
+        elseif
+          shoes ~= nil
+          and shoesState ~= nil
+          and shoesState.visible
+          and contains(shoes.hitRect, event.x, event.y)
+        then
           -- Retail toggles on the fresh touch itself (the new-touch hit
           -- table), so release changes nothing.
           self._shoesFocused = true
@@ -530,7 +577,7 @@ end
 
 -- The result contract: nil until a terminal event, then exactly one close,
 -- child launch, or immediate field-action result.
----@return { kind: "close"|"launch"|"field_action", applicationId?: string, actionId?: string }?
+---@return { kind: "close"|"launch"|"field_action"|"registered_item", applicationId?: string, actionId?: string, slot?: integer }?
 function StartMenuController:takeResult()
   local result = self._result
   self._result = nil

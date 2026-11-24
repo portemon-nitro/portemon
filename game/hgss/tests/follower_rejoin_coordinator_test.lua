@@ -215,6 +215,9 @@ local function world(mode)
       currentSpriteId = function()
         return 101
       end,
+      durableState = function()
+        return "walking"
+      end,
     },
     residency = {
       prepareTransition = function()

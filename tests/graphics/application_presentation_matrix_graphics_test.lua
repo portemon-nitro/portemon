@@ -1155,6 +1155,7 @@ function T.framed_applications_render_only_their_selected_borders(scope)
     textRenderer = text,
     applicationFrameIndex = 0,
     startMenuRenderer = {},
+    itemIconProvider = {},
   }, FieldPresentationResources)
   local starterPresentation = setmetatable({ _frameIndex = 0 }, StarterChoicePresentation)
 

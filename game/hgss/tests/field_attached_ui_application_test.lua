@@ -261,6 +261,7 @@ local function modalSession(overrides)
       end,
     },
     eventState = { getVar = function() end },
+    fishingHost = { updateFixed = function() end, notice = function() end },
     fieldEntranceIndicator = { updateFixed = function() end },
   }
   for key, value in pairs(overrides or {}) do

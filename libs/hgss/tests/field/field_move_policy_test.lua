@@ -20,6 +20,7 @@ local function fieldUse(overrides)
     alphEscapeRopeRoom = false,
     icePathB2F = false,
     cave = false,
+    bikeAllowed = true,
   }
   for key, item in pairs(overrides or {}) do
     value[key] = item
@@ -31,6 +32,7 @@ local function context(overrides)
   local value = {
     badges = ALL_BADGES,
     unionOrColosseum = false,
+    bikeAllowed = true,
     mapSymbol = "MAP_ROUTE_29",
     mapId = 200,
     avatarMode = "walking",
@@ -49,6 +51,9 @@ local function context(overrides)
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
+    fishingWater = false,
+    bikeHostileGround = false,
+    bikeLocked = false,
     fieldUse = fieldUse(),
   }
   for key, item in pairs(overrides or {}) do
@@ -205,6 +210,50 @@ function T.sweet_scent_and_chatter_checks_follow_the_source_restrictions()
   Assert.equal(FieldMovePolicy.check("sweet_scent", context({ safari = true })).kind, "ok")
   Assert.equal(FieldMovePolicy.check("sweet_scent", context()).kind, "ok")
   Assert.equal(FieldMovePolicy.check("chatter", context()).kind, "ok")
+end
+
+-- ItemCheckUseFunc_Bicycle: escort, then costume, then the Cycling Road
+-- lock, then ground, then the map's bike permission, then surfing; walking
+-- and cycling both pass, since the same check guards mounting and
+-- dismounting.
+function T.bicycle_orders_escort_costume_lock_ground_map_then_surfing()
+  Assert.equal(FieldMovePolicy.checkBicycle(context()).kind, "ok")
+  Assert.equal(FieldMovePolicy.checkBicycle(context({ avatarMode = "cycling" })).kind, "ok")
+  Assert.equal(FieldMovePolicy.checkBicycle(context({ avatarMode = "surfing" })).kind, "not_here")
+  Assert.equal(FieldMovePolicy.checkBicycle(context({ bikeHostileGround = true })).kind, "not_here")
+  local noBikes = context({ fieldUse = fieldUse({ bikeAllowed = false }) })
+  Assert.equal(FieldMovePolicy.checkBicycle(noBikes).kind, "not_here")
+  local locked = context({ avatarMode = "cycling", bikeLocked = true, bikeHostileGround = true })
+  Assert.equal(FieldMovePolicy.checkBicycle(locked).kind, "no_dismount")
+  local costume = context({ rocketCostume = true, bikeLocked = true })
+  Assert.equal(FieldMovePolicy.checkBicycle(costume).kind, "not_now")
+  local escorted = context({ humanFollower = true, rocketCostume = true })
+  Assert.equal(FieldMovePolicy.checkBicycle(escorted).kind, "have_follower")
+end
+
+-- ItemCheckUseFunc_FishingRod: escort, then costume, then fishable water
+-- ahead (the context folds in the bridge exception).
+function T.fishing_rod_orders_escort_costume_then_water()
+  Assert.equal(FieldMovePolicy.checkFishingRod(context()).kind, "not_here")
+  Assert.equal(FieldMovePolicy.checkFishingRod(context({ fishingWater = true })).kind, "ok")
+  local costume = context({ fishingWater = true, rocketCostume = true })
+  Assert.equal(FieldMovePolicy.checkFishingRod(costume).kind, "not_now")
+  local escorted = context({ fishingWater = true, rocketCostume = true, humanFollower = true })
+  Assert.equal(FieldMovePolicy.checkFishingRod(escorted).kind, "have_follower")
+end
+
+-- The field-use key items each answer their own item check; other items
+-- have none.
+function T.key_items_answer_their_item_checks()
+  for _, rod in ipairs({ "OLD_ROD", "GOOD_ROD", "SUPER_ROD" }) do
+    Assert.isTrue(FieldMovePolicy.hasKeyItemCheck(rod), rod)
+    Assert.equal(FieldMovePolicy.checkKeyItem(rod, context({ fishingWater = true })).kind, "ok", rod)
+    Assert.equal(FieldMovePolicy.checkKeyItem(rod, context()).kind, "not_here", rod)
+  end
+  Assert.equal(FieldMovePolicy.checkKeyItem("BICYCLE", context()).kind, "ok")
+  Assert.equal(FieldMovePolicy.checkKeyItem("BICYCLE", context({ avatarMode = "surfing" })).kind, "not_here")
+  Assert.isFalse(FieldMovePolicy.hasKeyItemCheck("ESCAPE_ROPE"))
+  Assert.isFalse(FieldMovePolicy.hasKeyItemCheck("APRICORN_BOX"))
 end
 
 function T.escape_rope_orders_escort_costume_alph_spot_then_cave()

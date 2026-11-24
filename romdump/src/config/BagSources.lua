@@ -726,8 +726,12 @@ BagSources.itemIconCenters = {
 -- UI character member 37 as a 104x16 source bitmap (BlitBitmapRectToWindow
 -- contract per the retail ROM) and copies one 40x16 region per slot at
 -- source Y 0: slot 1 from source X 24, slot 2 from source X 64. The compiled
--- markers are placed slot-locally at the destination offset below.
+-- markers are placed slot-locally at the destination offset below. The
+-- destination item-list windows use sub BG palette 11, which the Bag loads
+-- with LoadFontPal1 (graphic/font member 8), so the marker inks come from
+-- that font palette rather than the lower-screen palette.
 BagSources.registration = {
+  fontPalette = { archive = "NARC_graphic_font", member = 8 },
   bitmapWidth = 104,
   bitmapHeight = 16,
   markerWidth = 40,

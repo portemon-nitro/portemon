@@ -95,6 +95,7 @@ local function fieldUse()
     teleportAllowed = true,
     escapeAllowed = true,
     unionOrColosseum = false,
+    bikeAllowed = true,
     cave = false,
     icePathB2F = false,
     alphFlashRoom = false,
@@ -129,6 +130,9 @@ local function sources(overrides)
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
+    fishingWater = false,
+    bikeHostileGround = false,
+    bikeLocked = false,
     localX = 0,
     localZ = 0,
     facing = "south",
@@ -438,7 +442,14 @@ local function admissionRuntime(composition, client, readerOverrides)
         end,
       },
     },
-    player = { fieldX = 4, fieldZ = 5, facing = "south" },
+    player = {
+      fieldX = 4,
+      fieldZ = 5,
+      facing = "south",
+      isBikeLocked = function()
+        return false
+      end,
+    },
     actors = {
       actorsOf = function()
         return { { actorId = "test:tree", sourceEvent = { obstacleKind = "cut_tree" } } }

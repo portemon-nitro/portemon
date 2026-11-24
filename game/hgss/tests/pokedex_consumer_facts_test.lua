@@ -378,6 +378,7 @@ local function fieldUse()
     teleportAllowed = true,
     escapeAllowed = true,
     unionOrColosseum = false,
+    bikeAllowed = true,
     cave = false,
     icePathB2F = false,
     alphFlashRoom = false,

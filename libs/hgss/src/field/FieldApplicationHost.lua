@@ -318,7 +318,24 @@ function FieldApplicationHost:_stepMenu(uiInput)
   if result == nil then
     return
   end
-  assert(result.kind == "launch" or result.kind == "field_action" or result.kind == "close", "unknown menu result kind")
+  assert(
+    result.kind == "launch"
+      or result.kind == "field_action"
+      or result.kind == "close"
+      or result.kind == "registered_item",
+    "unknown menu result kind"
+  )
+  if result.kind == "registered_item" then
+    -- A tapped tab closes the menu and leaves the same registered-slot edge
+    -- the shortcut button would: the field consumes it on its next tick.
+    assert(result.slot == 1 or result.slot == 2, "a registered item result names its slot")
+    self:_disposeMenuController()
+    self:_releaseUi()
+    self._phase = FieldApplicationHost.PHASES.closed
+    self._input:pressRegisteredSlot(result.slot, "start-menu")
+    self._input:releaseRegisteredSlot(result.slot, "start-menu")
+    return
+  end
   if result.kind == "field_action" then
     assert(type(result.actionId) == "string", "a field action needs an action id")
     local ok, failure = pcall(self._fieldAction, result.actionId)

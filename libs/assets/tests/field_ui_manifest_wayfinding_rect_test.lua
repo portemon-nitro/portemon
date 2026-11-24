@@ -178,6 +178,7 @@ local function baseManifest()
       },
       interactive = FieldUiFixture.startMenuInteractive(),
       runningShoes = FieldUiFixture.startMenuRunningShoes(),
+      registeredItems = FieldUiFixture.startMenuRegisteredItems(),
       iconTable = (function()
         local rows = {}
         local cell = 0

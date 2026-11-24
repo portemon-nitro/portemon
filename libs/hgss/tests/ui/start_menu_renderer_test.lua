@@ -323,6 +323,79 @@ function T.running_shoes_toggle_draws_button_and_indicator_in_the_lock_state()
   renderer:release()
 end
 
+-- A recording stand-in for the borrowed item icon provider: one quad per
+-- icon key over a single atlas image, every icon 32x32.
+local function recordingItemIcons()
+  local image = { id = "item-icons" }
+  return {
+    image = function()
+      return image
+    end,
+    handle = function()
+      return nil
+    end,
+    quadFor = function(_, iconKey)
+      return { iconKey = iconKey }
+    end,
+    dimensions = function()
+      return { width = 32, height = 32 }
+    end,
+  }
+end
+
+-- Each registered item draws its slot's tab at the generated tab anchor and
+-- then its item icon at the generated icon anchor, above the tab; an absent
+-- second registration draws only the first slot.
+function T.registered_items_draw_their_tabs_then_item_icons()
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
+  local renderer = StartMenuRenderer.new({
+    cacheFs = iconCache(ICON_MANIFEST),
+    manifest = ICON_MANIFEST,
+    text = recordingText(),
+    graphics = lg,
+  })
+  local icons = recordingItemIcons()
+  renderer:draw(
+    { selectedPosition = 0, actions = {}, registeredItems = { "icon_box", "icon_case" } },
+    canonicalPlacement(),
+    icons
+  )
+  Assert.equal(#lg.draws, 5, "chrome plus a tab and an icon per registered item")
+  Assert.deepEqual({ lg.draws[2].quad.x, lg.draws[2].x, lg.draws[2].y }, { 208, 200, 8 }, "the first tab")
+  Assert.deepEqual({ lg.draws[3].quad.iconKey, lg.draws[3].x, lg.draws[3].y }, { "icon_box", 220, 11 })
+  Assert.deepEqual({ lg.draws[4].quad.x, lg.draws[4].x, lg.draws[4].y }, { 264, 200, 48 }, "the second tab")
+  Assert.deepEqual({ lg.draws[5].quad.iconKey, lg.draws[5].x, lg.draws[5].y }, { "icon_case", 220, 51 })
+  renderer:draw({ selectedPosition = 0, actions = {}, registeredItems = { "icon_box" } }, canonicalPlacement(), icons)
+  Assert.equal(#lg.draws, 8, "one registration draws one tab and one icon")
+  renderer:release()
+end
+
+-- The closed-menu shortcuts draw the Running Shoes toggle and the
+-- registered-item tabs without the menu chrome or any action, and report the
+-- canonical bounds of that cluster so the host can pin it to a screen edge.
+function T.shortcuts_draw_without_the_menu_surface()
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
+  local renderer = StartMenuRenderer.new({
+    cacheFs = iconCache(ICON_MANIFEST),
+    manifest = ICON_MANIFEST,
+    text = recordingText(),
+    graphics = lg,
+  })
+  Assert.deepEqual(
+    StartMenuRenderer.shortcutBounds(ICON_MANIFEST.startMenu),
+    { x = 184, y = 8, width = 72, height = 126 }
+  )
+  renderer:drawShortcuts(
+    { runningShoes = { locked = false }, registeredItems = { "icon_box" } },
+    canonicalPlacement(),
+    recordingItemIcons()
+  )
+  Assert.equal(#lg.draws, 4, "the shoes button and indicator plus one tab and its icon")
+  Assert.deepEqual({ lg.draws[1].x, lg.draws[1].y }, { 184, 86 }, "the shoes button")
+  Assert.deepEqual({ lg.draws[3].x, lg.draws[3].y }, { 200, 8 }, "the first tab")
+  renderer:release()
+end
+
 function T.running_shoes_focus_draws_the_apricorn_selection_cursor_above_the_button()
   local manifest = iconManifest()
   local cursorFrameBase = "assets/generated/apricorn-box/selection-cursor-sequence-3-frame-"

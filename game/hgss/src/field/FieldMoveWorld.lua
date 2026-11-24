@@ -174,6 +174,8 @@ function FieldMoveWorld.new(ports)
   if world._party ~= nil then
     assert(type(world._party.knowsMove) == "function", "party port must answer move knowledge")
     assert(type(world._party.leadSlot) == "function", "party port must answer the lead slot")
+    assert(type(world._party.slotWithMove) == "function", "party port must find the move's user")
+    assert(type(world._party.cheerFollower) == "function", "party port must cheer the follower")
   end
   if world._audio ~= nil then
     assert(type(world._audio.play) == "function", "audio port must play effects")
@@ -266,6 +268,44 @@ function FieldMoveWorld:validateTarget(plan)
     end
   end
   return nil
+end
+
+-- The type a performing follower shares with each native field move to be
+-- cheered by it (FieldSystem_FirstAliveMonHasType in Task_Surf,
+-- RockClimb_FollowMonReact, Task_FieldDig, Task_FieldTeleport, and the Fly
+-- departure).
+local FOLLOWER_MOVE_TYPES = {
+  [SURF_ENTER] = "water",
+  [ROCK_CLIMB] = "normal",
+  dig = "ground",
+  teleport = "psychic",
+  fly = "flying",
+}
+
+-- The follower performing a native field move jumps, and its mood rises by
+-- one when the first alive mon has the move's type. A move the player
+-- performs, or one used without a party (the Escape Rope, a waterfall
+-- descent), changes nothing. Dig and Teleport reuse the performance their
+-- plan resolved; a prompted Surf names no slot and is performed by the
+-- party's first Surf user.
+---@param plan table<string, unknown>
+function FieldMoveWorld:cheerPerformingFollower(plan)
+  local typeKey = FOLLOWER_MOVE_TYPES[plan.kind]
+  local party = self._party
+  if typeKey == nil or party == nil then
+    return
+  end
+  local performing = plan.withFollowMon
+  if performing == nil then
+    local slot = plan.slot
+    if slot == nil then
+      slot = party:slotWithMove(plan.move)
+    end
+    performing = self:isFollowerPerforming(slot)
+  end
+  if performing then
+    party:cheerFollower(typeKey)
+  end
 end
 
 -- Whether the follower performs a menu field move for one party slot: the

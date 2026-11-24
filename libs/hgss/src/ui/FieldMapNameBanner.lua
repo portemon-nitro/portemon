@@ -30,7 +30,8 @@ FieldMapNameBanner.__index = FieldMapNameBanner
 -- out. The field source tick advances two retail display-frame steps, so the
 -- entry and exit each span five ticks and the hold spans thirty.
 FieldMapNameBanner.ENTER_DISPLACEMENT = 38
-local SCROLL_STEP = 8
+FieldMapNameBanner.SCROLL_STEP = 8
+local SCROLL_STEP = FieldMapNameBanner.SCROLL_STEP
 local HOLD_TICKS = 30
 
 ---@param opts { styleByMapId: table<integer, integer>, resolveTitle: fun(mapSectionNativeId: integer): string }

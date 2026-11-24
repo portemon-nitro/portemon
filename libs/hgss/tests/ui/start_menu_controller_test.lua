@@ -53,6 +53,7 @@ local function newController(opts)
     rememberedActionId = opts.rememberedActionId,
     effect = opts.effect,
     runningShoes = opts.runningShoes,
+    registeredItems = opts.registeredItems,
   })
 end
 
@@ -92,6 +93,39 @@ function T.running_shoes_touch_toggles_once_per_press_and_reports_the_lock()
   controller:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = x, y = y } })
   Assert.equal(port.toggles, 2)
   Assert.deepEqual(controller:status().runningShoes, { locked = false, focused = true })
+end
+
+-- The registered-item tabs: a fresh touch on a tab with a registered item
+-- closes the menu with that slot's result, like retail's touch-new hit
+-- table; an empty tab ignores the touch.
+local TAB_RECTS = {
+  { x = 200, y = 8, width = 56, height = 32 },
+  { x = 200, y = 48, width = 56, height = 32 },
+}
+
+function T.registered_item_tab_touch_closes_with_its_slot()
+  local registered = 1
+  local effects = {}
+  local controller = newController({
+    registeredItems = {
+      hitRects = TAB_RECTS,
+      count = function()
+        return registered
+      end,
+    },
+    effect = function(sequence)
+      effects[#effects + 1] = sequence
+    end,
+  })
+  local x, y = rectCenter(TAB_RECTS[2])
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = x, y = y } })
+  Assert.isNil(controller:takeResult(), "an empty tab ignores the touch")
+  registered = 2
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = x, y = y } })
+  Assert.deepEqual(controller:takeResult(), { kind = "registered_item", slot = 2 })
+  Assert.deepEqual(effects, { "SEQ_SE_DP_SELECT" })
+  Assert.isFalse(controller:status().open, "the tab closes the menu")
 end
 
 function T.running_shoes_are_dpad_focusable_and_confirm_without_leaving_the_menu()

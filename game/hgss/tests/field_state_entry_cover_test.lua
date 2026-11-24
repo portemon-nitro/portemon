@@ -226,6 +226,7 @@ local function boot(withCover)
       viewport = viewport,
       camera = { zoom = 1 },
       transition = { fadeAlpha = 0 },
+      fishingHost = { updateFixed = function() end, notice = function() end },
       fieldEntranceIndicator = {
         status = function()
           return { visible = false }

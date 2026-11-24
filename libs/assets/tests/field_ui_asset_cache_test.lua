@@ -192,6 +192,7 @@ local function validManifest()
       },
       interactive = FieldUiFixture.startMenuInteractive(),
       runningShoes = FieldUiFixture.startMenuRunningShoes(),
+      registeredItems = FieldUiFixture.startMenuRegisteredItems(),
       iconTable = (function()
         local rows = {}
         local spriteIcons = {
@@ -731,6 +732,32 @@ local function interactiveManifest()
   -- offset while its atlas rect stays inside the shared atlas.
   manifest.startMenu.iconTable[1].visual.normal.offset = { x = -2, y = -4 }
   return manifest
+end
+
+function T.registered_item_tabs_record_is_required_and_strict()
+  Assert.isTrue(FieldUiAssetCache.validateManifest(validManifest()))
+  local function rejects(mutate)
+    local manifest = validManifest()
+    mutate(manifest.startMenu)
+    local ok, err = FieldUiAssetCache.validateManifest(manifest)
+    Assert.isFalse(ok)
+    Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+  end
+  rejects(function(startMenu)
+    startMenu.registeredItems = nil
+  end)
+  rejects(function(startMenu)
+    startMenu.registeredItems[2] = nil
+  end)
+  rejects(function(startMenu)
+    startMenu.registeredItems[1].button.anchor.x = 1.5
+  end)
+  rejects(function(startMenu)
+    startMenu.registeredItems[2].button.visual = nil
+  end)
+  rejects(function(startMenu)
+    startMenu.registeredItems[1].iconAnchor = nil
+  end)
 end
 
 function T.running_shoes_toggle_record_is_required_and_strict()

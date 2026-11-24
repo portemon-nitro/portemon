@@ -20,6 +20,7 @@ local HoOhAppearanceRenderer = require("libs.hgss.src.presentation.HoOhAppearanc
 local LugiaAppearanceRenderer = require("libs.hgss.src.presentation.LugiaAppearanceRenderer")
 local HoOhAssetPreparer = require("game.hgss.src.field.HoOhAssetPreparer")
 local FieldMoneyBox = require("game.hgss.src.field.FieldMoneyBox")
+local FieldPlayerVisual = require("libs.hgss.src.actors.FieldPlayerVisual")
 
 local KEY_DIRECTIONS =
   { w = "north", up = "north", s = "south", down = "south", a = "west", left = "west", d = "east", right = "east" }
@@ -84,12 +85,14 @@ local POKEGEAR_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "linear
 ---@field worldActorItems table[] persistent actor items kept in the world raster
 ---@field spriteItems table[] persistent presentation-resolution actor sprites
 ---@field _terrainItems table[] reusable terrain-effect draw storage refilled every frame
+---@field _emoteRecordScratch table[] reusable emote record storage carrying the fishing mark
 ---@field _transitionItems table[] reusable follower-transition draw storage refilled every frame
 ---@field _dialogueGeometry { boundsX: number, boundsY: number, boundsWidth: number, boundsHeight: number, fieldScale: integer, placement: table<string, unknown>, presentation: table<string, unknown> }? retained dialogue presentation geometry, rebuilt only when bounds/scale/placement changes
 ---@field _fadeCover { topology: ScreenTopology, main: { x: number, y: number, width: number, height: number }[], both: { x: number, y: number, width: number, height: number }[] }? retained screen-fade cover rectangles, rebuilt only when the topology changes
 ---@field _entryFade StandardFade? one-shot covered-entry reveal, nil when inactive or complete
 ---@field _entryAccumulator number source-frame time held for the covered-entry reveal
 ---@field _incomingCallStartTick integer? field fixed tick when the current ring first published a caller
+---@field _shortcutTabPresses table<string, integer|"running_shoes"> the closed-menu shortcut each pressed pointer holds
 ---@field development boolean product mode (default) hides the developer overlay; dev mode shows it only after the F3 toggle and unbound keys stay inert
 ---@field _developmentOverlayVisible boolean dev-only overlay visibility, always false at construction
 ---@field _fpsElapsed number active-overlay seconds accumulated toward the current fps sample
@@ -166,6 +169,7 @@ function FieldState.new(game, options)
     worldActorItems = {},
     spriteItems = {},
     _terrainItems = {},
+    _emoteRecordScratch = {},
     _transitionItems = {},
     _dialogueGeometry = nil,
     _fadeCover = nil,
@@ -174,6 +178,7 @@ function FieldState.new(game, options)
     _entryFade = options.initialFadeIn == true and StandardFade.new({ direction = "in", color = 0 }) or nil,
     _entryAccumulator = 0,
     _incomingCallStartTick = nil,
+    _shortcutTabPresses = {},
     _starterUiSuspended = false,
     _developmentOverlayVisible = false,
     _fpsElapsed = 0,
@@ -761,6 +766,45 @@ end
 -- Every actor the frame draws: the ROM-derived player billboard first, then the
 -- object actors the manager considers present. Records stay presentation-neutral;
 -- FieldActorDraw turns them into world draw items against the resident visuals.
+-- The actor presentation records the emote renderer reads, plus the
+-- fishing rod's "!" mark over the player or the follower that noticed the
+-- bite (EmoteMark_Spawn); a subject without a drawn record shows none.
+---@return table[]
+function FieldState:_emoteRecords()
+  local records = assert(self.actorPresentation):records()
+  local notice = self.runtime.fishingHost:notice()
+  if notice == nil then
+    return records
+  end
+  local subjectId = FieldPlayerVisual.ACTOR_ID --[[@as string?]]
+  if notice.onFollower then
+    subjectId = self.runtime.followingMon:partnerActorId()
+  end
+  local subject = nil
+  for _, record in ipairs(records) do
+    if record.actorId == subjectId then
+      subject = record
+    end
+  end
+  if subject == nil then
+    return records
+  end
+  local combined = self._emoteRecordScratch
+  for index = #combined, 1, -1 do
+    combined[index] = nil
+  end
+  for index, record in ipairs(records) do
+    combined[index] = record
+  end
+  combined[#combined + 1] = {
+    actorId = subject.actorId .. ":fishing_mark",
+    world = subject.world,
+    activeEmoteKind = "exclamation",
+    activeEmoteTick = notice.tick,
+  }
+  return combined
+end
+
 function FieldState:_actorDraws(alpha)
   return assert(self.actorPresentation, "field actor presentation is unavailable"):drawItems(alpha)
 end
@@ -842,7 +886,7 @@ function FieldState:_worldParts(alpha)
   -- resolution world queue resolves first and the sprite layer composites
   -- unconditionally on top of it, so an emote left in the world queue could
   -- never win visibility against the actor it floats above.
-  local emoteItems = resources.fieldEmoteRenderer:drawItems(assert(self.actorPresentation):records())
+  local emoteItems = resources.fieldEmoteRenderer:drawItems(self:_emoteRecords())
   for _, item in ipairs(actorItems) do
     if item.billboardProjection == true then
       spriteItems[#spriteItems + 1] = item
@@ -1686,6 +1730,15 @@ function FieldState:draw()
   if banner ~= nil then
     resources:drawMapNameBanner(banner, self.runtime.viewport.worldViewport)
   end
+  -- The closed-menu shortcut cluster shares the banner's layer: it slides
+  -- off the bottom-right corner while the start menu is open.
+  local shortcutSlide = self.runtime.shortcutSlide
+  if shortcutSlide ~= nil and overworldPresent and not shortcutSlide:isHidden() then
+    local shortcuts = self.runtime:fieldShortcuts()
+    if shortcuts.runningShoes ~= nil or #shortcuts.registeredItems > 0 then
+      resources:drawFieldShortcuts(shortcuts, shortcutSlide:offset(), self.runtime.viewport.worldViewport)
+    end
+  end
   -- The source floor box is a non-modal main-display window that outlives the
   -- script that showed it: it draws at its own source tiles above the world and
   -- under every modal surface until the script writes its closing sentinel.
@@ -1726,6 +1779,7 @@ function FieldState:draw()
       local menuPresentation = hostStatus.menu
       local gender = self.runtime.playerData.profile.gender
       menuPresentation.trainerGender = ({ [0] = "male", [1] = "female" })[gender]
+      menuPresentation.registeredItems = self.runtime:fieldShortcuts().registeredItems
       resources:drawStartMenu(menuPresentation --[[@as table<string, unknown>]])
     end
     if hostStatus.application then
@@ -2218,6 +2272,7 @@ function FieldState:focus(focused)
       self.battleEnvelope:cancelPointerCapture()
     end
     self.runtime.input:clearAll()
+    self._shortcutTabPresses = {}
     local host = self.runtime.applicationHost
     if host ~= nil and type(host.cancelPointerCapture) == "function" then
       host:cancelPointerCapture()
@@ -2339,6 +2394,56 @@ function FieldState:gamepadaxis(joystick, axis, value)
   self.runtime.input:setStickAxis(source, axis == "leftx" and "x" or "y", value)
 end
 
+-- A press on the visible closed-menu shortcuts never reaches the field's own
+-- pointer handling: the Running Shoes button flips the auto-run lock on the
+-- fresh touch, like retail, and a registered-item tab is that slot's button,
+-- held by the pointer until it lifts, exactly like the shortcut key.
+---@param source string the pointer identity
+---@param x number host x
+---@param y number host y
+---@return boolean consumed
+function FieldState:_pressShortcutTab(source, x, y)
+  local slide = self.runtime.shortcutSlide
+  if slide == nil or slide:isHidden() then
+    return false
+  end
+  local shortcuts = self.runtime:fieldShortcuts()
+  local target = self.presentationResources:shortcutAt(
+    #shortcuts.registeredItems,
+    shortcuts.runningShoes ~= nil,
+    slide:offset(),
+    self.runtime.viewport.worldViewport,
+    x,
+    y
+  )
+  if target == nil then
+    return false
+  end
+  if target == "running_shoes" then
+    self.runtime:toggleRunningShoesLock()
+  else
+    self.runtime.input:pressRegisteredSlot(target --[[@as integer]], source)
+  end
+  self._shortcutTabPresses[source] = target
+  return true
+end
+
+-- Lifts whatever shortcut a pointer pressed: a held registered slot releases,
+-- and the shoes toggle already happened on the press.
+---@param source string the pointer identity
+---@return boolean consumed
+function FieldState:_releaseShortcutTab(source)
+  local target = self._shortcutTabPresses[source]
+  if target == nil then
+    return false
+  end
+  self._shortcutTabPresses[source] = nil
+  if target ~= "running_shoes" then
+    self.runtime.input:releaseRegisteredSlot(target --[[@as integer]], source)
+  end
+  return true
+end
+
 ---@param x number
 ---@param y number
 ---@param button integer
@@ -2351,6 +2456,9 @@ function FieldState:mousepressed(x, y, button, _, _)
   end
   if button == 1 then
     if self:_routeBattlePointer("pointer_down", "mouse:1", x, y) then
+      return
+    end
+    if self:_pressShortcutTab("mouse:1", x, y) then
       return
     end
     self.runtime.input:pointerDown("mouse:1", x, y)
@@ -2381,6 +2489,9 @@ end
 function FieldState:mousereleased(x, y, button, _, _)
   if button == 1 then
     if self:_routeBattlePointer("pointer_up", "mouse:1", x, y) then
+      return
+    end
+    if self:_releaseShortcutTab("mouse:1") then
       return
     end
     self.runtime.input:pointerUp("mouse:1", x, y)
@@ -2416,6 +2527,9 @@ function FieldState:touchpressed(id, x, y)
   if self:_routeBattlePointer("pointer_down", "touch:" .. tostring(id), x, y) then
     return
   end
+  if self:_pressShortcutTab("touch:" .. tostring(id), x, y) then
+    return
+  end
   self.runtime.input:pointerDown("touch:" .. tostring(id), x, y)
 end
 
@@ -2440,6 +2554,9 @@ end
 ---@param y number
 function FieldState:touchreleased(id, x, y)
   if self:_routeBattlePointer("pointer_up", "touch:" .. tostring(id), x, y) then
+    return
+  end
+  if self:_releaseShortcutTab("touch:" .. tostring(id)) then
     return
   end
   self.runtime.input:pointerUp("touch:" .. tostring(id), x, y)

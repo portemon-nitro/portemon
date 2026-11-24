@@ -44,6 +44,8 @@ local function sourceReferenceBankIds()
   -- FieldMessageCompiler's naming-screen bank.
   ids[254] = true
   ids[40] = true
+  -- GetItemUseErrorMessage reads the Bag bank's bike and escort refusals.
+  ids[10] = true
   ids[265] = true
   -- GetStdMsgNaix addresses these msgdata banks by immediate std index;
   -- bank 211 already rides a member association.

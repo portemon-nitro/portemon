@@ -65,6 +65,12 @@ local function options(overrides)
       end,
       toggle = function() end,
     },
+    registeredItems = {
+      hitRects = {},
+      count = function()
+        return 0
+      end,
+    },
     measureDisplay = overrides.measureDisplay or function()
       return measurement(640, 480)
     end,

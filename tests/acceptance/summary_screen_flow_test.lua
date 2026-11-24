@@ -17,7 +17,7 @@ local FLOW_MODULE = "game.hgss.src.field.PartyMenuFlow"
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "audio-bank:730", "map-data:7", "map:7", "move-icons:global", "summary:global" },
+    derivedAssets = { "field-runtime", "message-bank:146", "audio-bank:730", "map-data:7", "map:7", "move-icons:global", "summary:global" },
     tags = { "summary", "party", "bag", "flow" },
   },
   tests = {},

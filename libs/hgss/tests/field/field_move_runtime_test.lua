@@ -29,6 +29,7 @@ local function context(overrides)
   local base = {
     badges = BadgeSets.all(),
     unionOrColosseum = false,
+    bikeAllowed = true,
     mapSymbol = "test-map",
     mapId = 61,
     avatarMode = "walking",
@@ -51,6 +52,9 @@ local function context(overrides)
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
+    fishingWater = false,
+    bikeHostileGround = false,
+    bikeLocked = false,
     alphFlashSpot = false,
     alphEscapeRopeSpot = false,
     fieldUse = {
@@ -62,6 +66,7 @@ local function context(overrides)
       icePathB2F = false,
       cave = true,
       unionOrColosseum = false,
+      bikeAllowed = true,
     },
   }
   for key, value in pairs(overrides or {}) do

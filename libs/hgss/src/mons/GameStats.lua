@@ -35,6 +35,7 @@ local Errors = require("libs.errors.src.Errors")
 ---@field private _unique integer blind unique-registration total
 ---@field private _score integer
 ---@field private _mailWritten integer written-Mail total
+---@field private _stepsBiked integer steps taken on the Bicycle
 ---@field private _revision integer
 local GameStats = {}
 GameStats.__index = GameStats
@@ -58,6 +59,8 @@ GameStats.SCORE_POINTS = {
 -- 999999 (src/game_stats.c:276-287).
 GameStats.SCORE_CAP = 99999999
 GameStats.MAIL_WRITTEN_CAP = 999999
+-- GAME_STAT_STEPS_BIKED saturates at the extra-wide word ceiling.
+GameStats.STEPS_BIKED_CAP = 999999999
 
 -- The source's sScoreMods table (src/game_stats.c), indexed by the
 -- ScrCmd_AddSpecialGameStat operand. It stays private: the score an event
@@ -215,6 +218,7 @@ function GameStats.new(args)
     _unique = 0,
     _score = 0,
     _mailWritten = 0,
+    _stepsBiked = 0,
     _revision = 0,
   }, GameStats)
 end
@@ -238,6 +242,7 @@ function GameStats.restore(bucket, refs)
   stats._unique = valid.uniqueTotal
   stats._score = valid.score
   stats._mailWritten = valid.mailWritten
+  stats._stepsBiked = valid.stepsBiked
   return stats
 end
 
@@ -289,6 +294,21 @@ end
 ---@return integer
 function GameStats:mailWrittenCount()
   return self._mailWritten
+end
+
+-- Reads the steps-biked total behind the Bike Shop call.
+---@return integer
+function GameStats:stepsBikedCount()
+  return self._stepsBiked
+end
+
+-- Counts one step taken on the Bicycle (PlayerAvatar_CountStep in
+-- src/player_avatar_movement.c), saturating at the retail ceiling.
+function GameStats:countBikedStep()
+  if self._stepsBiked < GameStats.STEPS_BIKED_CAP then
+    self._stepsBiked = self._stepsBiked + 1
+    self._revision = self._revision + 1
+  end
 end
 
 ---@return integer
@@ -469,9 +489,9 @@ end
 
 -- Reads the persistable bucket: the sorted registration set (freshness
 -- authority), the blind unique total, the bounded score, and the
--- bounded written-Mail total. The result is detached; callers cannot
--- mutate live owner state through it.
----@return table<string, unknown> detached canonical v2 bucket
+-- bounded written-Mail and steps-biked totals. The result is detached;
+-- callers cannot mutate live owner state through it.
+---@return table<string, unknown> detached canonical v3 bucket
 function GameStats:bucket()
   local GameStatsSave = require("libs.hgss.src.save.GameStatsSave")
   local uniqueCaught = {}
@@ -486,6 +506,7 @@ function GameStats:bucket()
     uniqueTotal = self._unique,
     score = self._score,
     mailWritten = self._mailWritten,
+    stepsBiked = self._stepsBiked,
   }
 end
 

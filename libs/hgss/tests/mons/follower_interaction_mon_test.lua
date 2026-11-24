@@ -56,6 +56,18 @@ function T.zero_delta_preserves_the_legacy_lower_mood_without_publishing()
   Assert.equal(service:partyRevision(), revision)
 end
 
+-- Field moves move the first alive mon's mood: scripts by a signed amount,
+-- and a performed move by one only when the mon has the move's type.
+function T.field_moves_move_the_first_alive_mood()
+  local service = newService(0)
+  service:cheerFollowerOfType("water")
+  Assert.equal(service:partyMon(0).mood, 0, "a Normal Eevee is not cheered by a Water move")
+  service:cheerFollowerOfType("normal")
+  Assert.equal(service:partyMon(0).mood, 1, "a shared type cheers the follower")
+  service:addFollowerMood(-4)
+  Assert.equal(service:partyMon(0).mood, -3)
+end
+
 function T.leaf_awards_and_crown_are_idempotent()
   local service = newService()
   for leaf = 1, 4 do

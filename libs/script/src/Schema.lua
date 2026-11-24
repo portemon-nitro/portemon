@@ -1017,6 +1017,10 @@ Schema.OPERATIONS = {
   current_map_id = { fields = { result = { type = "id_or_var", required = true } } },
   player_state = { fields = { result = { type = "id_or_var", required = true } } },
   player_on_bike_check = { fields = { result = { type = "id_or_var", required = true } } },
+  -- Retail ScrCmd_PlayerOnBikeSet: mount (bike music and the cycling
+  -- avatar) or dismount (walking avatar and the map's own music).
+  player_on_bike_set = { fields = { riding = { type = "boolean", required = true } } },
+  bike_state_lock = { fields = { locked = { type = "boolean", required = true } } },
   camera_focus_set = {
     fields = {
       fieldX = { type = "scalar_or_value", required = true },
@@ -1822,6 +1826,16 @@ Schema.OPERATIONS = {
   -- Sweet Scent: blocks on the scent task, which writes the outcome code
   -- (0 nothing, 1 faded weather, 2 a wild encounter is prepared).
   sweet_scent = { fields = { result = { type = "value", required = true } } },
+  -- Fishing rod: the cast stage blocks through the cast, bite, and reel and
+  -- writes the outcome (0 no bite, 1 reeled too soon, 2 got away, 3 landed);
+  -- the put_away stage stows the rod before the result is acted on.
+  fishing = {
+    fields = {
+      stage = { type = "string", required = true },
+      rod = { type = "string" },
+      result = { type = "value" },
+    },
+  },
   try_headbutt_encounter = { fields = { result = { type = "value", required = true } } },
   follower_add_mood = { fields = { amount = { type = "integer", required = true } } },
   follower_swap_with_player = { fields = {} },
@@ -2865,6 +2879,26 @@ Schema.CONSTRUCTORS = {
         signature = "S.fieldMove(spec)",
         canonical = "op=field_move",
         notes = "spec={source}; pending claims the runtime queue, explicit adds move and slot.",
+      },
+      {
+        signature = "S.fishing(spec)",
+        canonical = "op=fishing",
+        notes = "spec={stage,rod?,result?}; cast blocks on the rod and writes 0 no bite, 1 too soon, 2 got away, 3 landed; put_away stows the rod.",
+      },
+      {
+        signature = "S.playerOnBikeCheck(spec)",
+        canonical = "op=player_on_bike_check",
+        notes = "spec={result}; writes 1 while the player rides the bike.",
+      },
+      {
+        signature = "S.playerOnBikeSet(spec)",
+        canonical = "op=player_on_bike_set",
+        notes = "spec={riding}; mounts or dismounts the bike with its music.",
+      },
+      {
+        signature = "S.bikeStateLock(spec)",
+        canonical = "op=bike_state_lock",
+        notes = "spec={locked}; the Cycling Road lock refuses the Bicycle and rolls an idle rider down the deck.",
       },
       {
         signature = "S.sweetScent(spec)",

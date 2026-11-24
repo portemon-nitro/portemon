@@ -187,6 +187,12 @@ local function setup(map, player, avatar)
       leadSlot = function()
         return nil
       end,
+      slotWithMove = function()
+        return nil
+      end,
+      cheerFollower = function()
+        error("no follower performs in the traversal runtime tests", 2)
+      end,
     },
     weather = {
       change = function()
@@ -239,6 +245,9 @@ local function shoreRig()
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
+    fishingWater = false,
+    bikeHostileGround = false,
+    bikeLocked = false,
     alphFlashSpot = false,
     alphEscapeRopeSpot = false,
   }

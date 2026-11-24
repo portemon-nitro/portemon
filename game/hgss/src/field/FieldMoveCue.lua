@@ -6,7 +6,8 @@
 -- stay pending until the presentation completes them through finishEffects,
 -- which fires each startEffect callback exactly once for the script's polled
 -- done variable. Headless tests and acceptance harnesses stand in for the
--- presentation by finishing while stepping. addFollowerMood is immediate.
+-- presentation by finishing while stepping. addFollowerMood is immediate:
+-- it moves the follower's mood through the borrowed mon service.
 -- Effect kinds 0..5 mirror the source Task_ScriptFieldMoveEffect dispatch:
 -- 0 Cut at the player, 1 Rock Smash at the player, 2 Rock Smash at the
 -- follower, 3 Cut at the follower, 4 Headbutt at the player, 5 Headbutt at
@@ -17,15 +18,17 @@
 ---@class FieldMoveCue
 ---@field _blocking boolean
 ---@field _pendingEffects fun()[]
+---@field _mons HgssMonService? the live mon service; required once a script moves the mood
 local FieldMoveCue = {}
 FieldMoveCue.__index = FieldMoveCue
 
 local GESTURES = { jump = true, grow_shrink = true, flash = true }
 local EFFECT_KIND_COUNT = 6
 
+---@param mons HgssMonService? the live mon service
 ---@return FieldMoveCue
-function FieldMoveCue.new()
-  return setmetatable({ _blocking = false, _pendingEffects = {} }, FieldMoveCue)
+function FieldMoveCue.new(mons)
+  return setmetatable({ _blocking = false, _pendingEffects = {}, _mons = mons }, FieldMoveCue)
 end
 
 -- Play the move user's cut-in for a zero-based party slot. The cue stays
@@ -85,9 +88,12 @@ function FieldMoveCue:startEmoteMark(onFollower)
   self._blocking = true
 end
 
+-- ScrCmd_FollowMonAddMood: the follower's mood moves by a signed amount,
+-- clamped by the mon service.
 ---@param amount integer
 function FieldMoveCue:addFollowerMood(amount)
   assert(type(amount) == "number" and amount % 1 == 0, "follower mood amount must be an integer")
+  assert(self._mons, "follower mood requires the mon service"):addFollowerMood(amount)
 end
 
 -- Report a started blocking cue finished. Idempotent: stands in for the

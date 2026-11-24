@@ -3,6 +3,7 @@
 
 local Assert = require("tests.support.Assert")
 local FieldState = require("game.hgss.src.field.FieldState")
+local FieldShortcutSlide = require("game.hgss.src.field.FieldShortcutSlide")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
 local BagCursor = require("libs.hgss.src.items.BagCursor")
 local BagScreenState = require("game.hgss.src.field.BagScreenState")
@@ -31,6 +32,8 @@ local function stateWithInput(calls)
     "pointerScroll",
     "pressMenu",
     "releaseMenu",
+    "pressRegisteredSlot",
+    "releaseRegisteredSlot",
   }) do
     input[name] = function(_, ...)
       calls[#calls + 1] = { name, ... }
@@ -49,6 +52,7 @@ local function stateWithInput(calls)
         end,
       },
     },
+    _shortcutTabPresses = {},
   }, FieldState)
 end
 
@@ -90,6 +94,62 @@ function T.keyboard_dpad_stick_and_pointer_events_reach_the_unified_input()
     { "pointerDown", "touch:9", 3, 4 },
     { "pointerMove", "touch:9", 5, 6 },
     { "pointerUp", "touch:9", 5, 6 },
+  })
+end
+
+-- A press on a visible closed-menu tab holds that tab's registered slot for
+-- the pointer until it lifts, a press on the shoes button flips the lock once,
+-- and neither reaches the field pointer; presses that miss the cluster, or
+-- land while it is slid out, stay ordinary.
+function T.closed_menu_tab_presses_hold_their_registered_slot()
+  local calls = {}
+  local state = stateWithInput(calls)
+  local slide = FieldShortcutSlide.new(72)
+  local bounds = { x = 0, y = 0, width = 256, height = 192 }
+  state.runtime.shortcutSlide = slide
+  state.runtime.viewport = { worldViewport = bounds }
+  local toggles = 0
+  state.runtime.fieldShortcuts = function()
+    return { runningShoes = { locked = false }, registeredItems = { "icon_box" } }
+  end
+  state.runtime.toggleRunningShoesLock = function()
+    toggles = toggles + 1
+  end
+  state.presentationResources = {
+    shortcutAt = function(_, count, shoesVisible, offset, at, x, y)
+      Assert.equal(count, 1)
+      Assert.isTrue(shoesVisible)
+      Assert.equal(at, bounds)
+      if offset ~= 0 then
+        return nil
+      end
+      if x == 210 and y == 70 then
+        return 1
+      end
+      if x == 190 and y == 150 then
+        return "running_shoes"
+      end
+      return nil
+    end,
+  }
+  state:touchpressed(3, 210, 70)
+  state:touchreleased(3, 210, 70)
+  state:mousepressed(190, 150, 1)
+  Assert.equal(toggles, 1, "the shoes button toggles on the fresh press")
+  state:mousereleased(190, 150, 1)
+  Assert.equal(toggles, 1, "the release never toggles again")
+  state:mousepressed(12, 34, 1)
+  state:mousereleased(12, 34, 1)
+  while not slide:isHidden() do
+    slide:updateFixed(true)
+  end
+  state:mousepressed(210, 70, 1)
+  Assert.deepEqual(calls, {
+    { "pressRegisteredSlot", 1, "touch:3" },
+    { "releaseRegisteredSlot", 1, "touch:3" },
+    { "pointerDown", "mouse:1", 12, 34 },
+    { "pointerUp", "mouse:1", 12, 34 },
+    { "pointerDown", "mouse:1", 210, 70 },
   })
 end
 

@@ -1263,11 +1263,16 @@ local function compileMoveSummary(messageArchive, dependencies)
 end
 
 -- Registration marker rasterization: decode the audited source bitmap once,
--- render it through the shared lower-Bag palette path, and crop the two
+-- render it through the item-list window's font palette, and crop the two
 -- audited slot regions. The tile count must match the audited bitmap exactly;
 -- no generic blitter is reconstructed here.
-local function compileRegistrationMarkers(archive, lowerColors, dependencies, assets)
+local function compileRegistrationMarkers(archive, fontArchive, dependencies, assets)
   local registration = BagSources.registration
+  local fontPalette = decode(
+    "decodePalette",
+    readMember(fontArchive, registration.fontPalette.member, "registration-marker-palette", dependencies, "font"),
+    "registration-marker-palette"
+  )
   assert(
     registration.bitmapWidth % 8 == 0 and registration.bitmapHeight % 8 == 0,
     "audited marker bitmap is tile-aligned"
@@ -1297,7 +1302,7 @@ local function compileRegistrationMarkers(archive, lowerColors, dependencies, as
   for tile = 0, tilesWide * tilesHigh - 1 do
     entries[tile + 1] = { tile = tile, flipH = false, flipV = false, palette = 0 }
   end
-  local bitmap = rasterizeScreen(charData, lowerColors, {
+  local bitmap = rasterizeScreen(charData, fontPalette.colors, {
     width = registration.bitmapWidth,
     height = registration.bitmapHeight,
     entries = entries,
@@ -1552,7 +1557,20 @@ local function _compile(romFs)
     earlyGeometry.browseCellRects,
     assets
   )
-  local markers = compileRegistrationMarkers(archive, lower.colors, dependencies, assets)
+  local fontArchive, fontArchiveErr = romFs:openNarc(BagSources.registration.fontPalette.archive)
+  if fontArchive == nil then
+    error(
+      fontArchiveErr
+        or Errors.new(
+          BagAssetCompiler.ERROR.SOURCE_INVALID,
+          "font archive is unavailable",
+          { alias = BagSources.registration.fontPalette.archive }
+        ),
+      0
+    )
+  end
+  assert(fontArchive ~= nil, "unavailable font archives fail above")
+  local markers = compileRegistrationMarkers(archive, fontArchive, dependencies, assets)
   local textures, meshes = {}, {}
   local male = compileHero(archive, "male", dependencies, textures, meshes)
   local female = compileHero(archive, "female", dependencies, textures, meshes)

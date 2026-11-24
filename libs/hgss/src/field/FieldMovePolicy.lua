@@ -261,6 +261,71 @@ function FieldMovePolicy.checkEscapeRope(context)
   return { kind = "ok" }
 end
 
+-- The Bicycle bag item (ItemCheckUseFunc_Bicycle), which guards mounting and
+-- dismounting alike: escort and costume refusals, the Cycling Road lock,
+-- then very tall grass or mud underfoot, the map's bike permission, and
+-- surfing.
+---@param context table<string, unknown> a copied read-only context record
+---@return table<string, unknown>
+function FieldMovePolicy.checkBicycle(context)
+  assert(type(context) == "table", "field checks require a context record")
+  local escort = escortRefusal(context)
+  if escort then
+    return escort
+  end
+  if context.rocketCostume then
+    return { kind = "not_now" }
+  end
+  if context.bikeLocked then
+    return { kind = "no_dismount" }
+  end
+  if context.bikeHostileGround or not fieldUse(context).bikeAllowed or context.avatarMode == "surfing" then
+    return { kind = "not_here" }
+  end
+  return { kind = "ok" }
+end
+
+-- The fishing rods (ItemCheckUseFunc_FishingRod): escort and costume
+-- refusals, then fishable water ahead of the player.
+---@param context table<string, unknown> a copied read-only context record
+---@return table<string, unknown>
+function FieldMovePolicy.checkFishingRod(context)
+  assert(type(context) == "table", "field checks require a context record")
+  local escort = escortRefusal(context)
+  if escort then
+    return escort
+  end
+  if context.rocketCostume then
+    return { kind = "not_now" }
+  end
+  if not context.fishingWater then
+    return { kind = "not_here" }
+  end
+  return { kind = "ok" }
+end
+
+-- The field-use key items and their item checks.
+local KEY_ITEM_CHECKS = {
+  BICYCLE = FieldMovePolicy.checkBicycle,
+  OLD_ROD = FieldMovePolicy.checkFishingRod,
+  GOOD_ROD = FieldMovePolicy.checkFishingRod,
+  SUPER_ROD = FieldMovePolicy.checkFishingRod,
+}
+
+---@param itemKey string
+---@return boolean whether the item is a field-use key item with an item check
+function FieldMovePolicy.hasKeyItemCheck(itemKey)
+  return KEY_ITEM_CHECKS[itemKey] ~= nil
+end
+
+---@param itemKey string a field-use key item
+---@param context table<string, unknown> a copied read-only context record
+---@return table<string, unknown>
+function FieldMovePolicy.checkKeyItem(itemKey, context)
+  local check = assert(KEY_ITEM_CHECKS[itemKey], "no item check for " .. tostring(itemKey))
+  return check(context)
+end
+
 local CHECKS = {
   cut = checkCut,
   fly = checkFly,

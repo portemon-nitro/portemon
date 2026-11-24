@@ -59,6 +59,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
 ---@field martHost table<string, unknown>? the modal script-mart surface; while active the tick's UI events route to the script scheduler
 ---@field kurtBoxHost table<string, unknown>? the modal Kurt selector; while active UI events route to its blocking task
+---@field registeredItemUse (fun(slot: integer): boolean)? uses the key item registered to a slot (true when the use claimed the field)
 ---@field monNaming table<string, unknown>? the script-owned mon Naming Screen surface
 ---@field signpost FieldSignpostController
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
@@ -131,6 +132,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
 ---@field martHost table<string, unknown>? the modal script-mart surface; while active the tick's UI events route to the script scheduler
 ---@field kurtBoxHost table<string, unknown>? the modal Kurt selector; while active UI events route to its blocking task
+---@field registeredItemUse (fun(slot: integer): boolean)? uses the key item registered to a slot (true when the use claimed the field)
 ---@field monNaming table<string, unknown>? the script-owned mon Naming Screen surface
 ---@field signpost FieldSignpostController the fixed-tick signpost controller (save-gate interrogation only; the scheduler steps it)
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
@@ -231,7 +233,7 @@ end
 ---@field terrainResponseInput table<string, unknown>
 ---@field terrainOwners table<string, { fieldX: integer, fieldZ: integer, facing: string }>
 ---@field terrainOwnerRecords table<string, { fieldX: integer, fieldZ: integer, facing: string }>
----@field playerPresentation { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: ("normal"|"run")?, scriptedPoseDelta: integer? }
+---@field playerPresentation { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: ("normal"|"run")?, scriptedPoseDelta: integer?, ordinaryPoseDelta: integer? }
 ---@field carriedMovementInput table<string, unknown>
 ---@field heldMovementInput table<string, unknown>
 ---@field interactionSnapshot table<string, unknown>
@@ -278,6 +280,7 @@ local function newTickScratch(actorLocked)
       gestureOffsetY = 0,
       ordinaryStepSpeed = nil,
       scriptedPoseDelta = nil,
+      ordinaryPoseDelta = nil,
     },
     carriedMovementInput = {},
     heldMovementInput = {},
@@ -489,6 +492,7 @@ function FieldSession.new(options)
     partySelection = options.partySelection,
     martHost = options.martHost,
     kurtBoxHost = options.kurtBoxHost,
+    registeredItemUse = options.registeredItemUse,
     monNaming = options.monNaming,
     signpost = options.signpost,
     applicationHost = options.applicationHost,
@@ -794,10 +798,16 @@ end
 -- application branch above has already returned before this code runs.
 ---@return boolean
 local function canOpenStartMenu(self)
+  return self.player.motion == "idle" and self.transition.phase == FieldTransition.PHASES.idle and self:isRoamingFree()
+end
+
+-- Whether nothing but the player's own roaming holds the field: no dialogue,
+-- signpost, script menu or choice, foreground or input-owning script,
+-- Pokegear, or battle. Walking and map transitions do not count as held.
+---@return boolean
+function FieldSession:isRoamingFree()
   local pokegearBusy = self.pokegearApplications ~= nil and self.pokegearApplications:isActive()
-  return self.player.motion == "idle"
-    and self.transition.phase == FieldTransition.PHASES.idle
-    and not self.dialogue:isModal()
+  return not self.dialogue:isModal()
     and not self.signpost:isModal()
     and not self.menuHost:isModal()
     and not self.contextChoice:isActive()
@@ -1619,6 +1629,16 @@ function FieldSession:updateFixed(inputSnapshot)
     self:_advanceTick()
     return
   end
+  if
+    inputSnapshot.registeredSlotPressed
+    and self.registeredItemUse ~= nil
+    and not inputSuppressedThisTick
+    and canOpenStartMenu(self)
+    and self.registeredItemUse(inputSnapshot.registeredSlotPressed)
+  then
+    self:_advanceTick()
+    return
+  end
   if inputSnapshot.menuPressed and canOpenStartMenu(self) then
     if self.applicationHost:requestOpen(self.tick + 1) then
       self:_advanceTick()
@@ -1853,6 +1873,7 @@ function FieldSession:updateFixed(inputSnapshot)
   if self.playerAvatar ~= nil and self.player.motion == "idle" then
     local durable = self.playerAvatar:durableState()
     self.player:setTraversalMode(durable == "surfing" and "surfing" or "walking")
+    self.player:setCycling(durable == "cycling")
   end
   -- Strength-push arbitration: an idle player's step into an enabled
   -- strength boulder starts the single push task instead of stepping. The

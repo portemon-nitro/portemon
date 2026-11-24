@@ -2291,6 +2291,28 @@ function T.running_shoes_states_compose_four_distinct_visuals()
   Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest))
 end
 
+-- The registered-item tabs compose through the Running Shoes button
+-- resources: each slot publishes its own tab visual plus the anchors of the
+-- tab and of the item icon it frames, in slot order.
+function T.registered_item_tabs_compose_distinct_slot_visuals()
+  local romFs, sha1, hashLua = iconComposedFixture()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local tabs = assert(bundle.manifest.startMenu.registeredItems, "the start menu publishes the registered-item tabs")
+  Assert.equal(#tabs, 2)
+  local cfg = require("romdump.src.config.FieldUiAssets").startMenu.registeredItems
+  local width, _, rgba = atlasRgba(bundle, FieldUiAssetCache.ASSET.START_MENU_ICONS)
+  local seen = {}
+  for slot, tab in ipairs(tabs) do
+    Assert.deepEqual(tab.button.anchor, cfg[slot].button.anchor)
+    Assert.deepEqual(tab.iconAnchor, cfg[slot].iconAnchor)
+    Assert.equal(tab.button.visual.asset, FieldUiAssetCache.ASSET.START_MENU_ICONS)
+    local pixels = regionPixels(rgba, width, tab.button.visual.rect)
+    Assert.isNil(seen[pixels], "each registered-item tab packs its own pixels")
+    seen[pixels] = true
+  end
+  Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest))
+end
+
 function T.bag_female_variant_carries_its_own_composed_frame()
   local romFs, sha1, hashLua = iconComposedFixture()
   local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))

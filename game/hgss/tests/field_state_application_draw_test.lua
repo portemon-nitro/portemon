@@ -20,6 +20,7 @@ local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local PixelScale = require("libs.ui.src.PixelScale")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local StubLease = require("tests.support.StubLease")
+local FieldShortcutSlide = require("game.hgss.src.field.FieldShortcutSlide")
 
 local T = {}
 
@@ -160,6 +161,7 @@ local function drawableState(options)
     },
     camera = { zoom = 1 },
     transition = { fadeAlpha = 0 },
+    fishingHost = { updateFixed = function() end, notice = function() end },
     fieldEntranceIndicator = {
       status = function()
         return { visible = false }
@@ -232,6 +234,10 @@ local function drawableState(options)
     } or nil,
     yesNoHost = idleChoiceHost(),
     resizePresentation = function() end,
+    shortcutSlide = FieldShortcutSlide.new(72),
+    fieldShortcuts = function()
+      return options.shortcuts or { registeredItems = {} }
+    end,
   }
   local state = setmetatable({
     development = options.development == true,
@@ -297,6 +303,9 @@ local function drawableState(options)
         error("no presenter is registered for application " .. tostring(applicationId))
       end,
       drawMart = function() end,
+      drawFieldShortcuts = function(_, shortcuts, slideOffset, bounds)
+        sink[#sink + 1] = { "shortcuts", shortcuts, slideOffset, bounds }
+      end,
       fieldEntranceIndicatorRenderer = {
         drawItems = function()
           return {}
@@ -387,6 +396,32 @@ function T.draw_orders_world_then_dialogue_then_hud_when_the_field_is_idle()
   )
   Assert.isNil(dialogueCall[4], "the dialogue renders from one resolved presentation")
   Assert.equal(#sink, 7, "no signpost, menu, card, or fade draws on an idle field")
+end
+
+-- The closed-menu shortcut cluster draws above the world and below the
+-- attached dialogue, at its slide offset against the actual world viewport,
+-- and stops drawing once the slide has carried it fully off screen.
+function T.shortcuts_draw_between_the_world_and_the_dialogue_until_slid_out()
+  local shortcuts = { runningShoes = { locked = false }, registeredItems = { "icon_box" } }
+  local state, sink = drawableState({ hostStatus = { phase = "closed" }, dialogueModal = true, shortcuts = shortcuts })
+  drawSpying(state, sink)
+  Assert.deepEqual(labels(sink), { "world", "shortcuts", "dialogue" })
+  Assert.equal(sink[2][2], shortcuts)
+  Assert.equal(sink[2][3], 0, "a closed menu leaves the cluster fully in")
+  Assert.deepEqual(sink[2][4], state.runtime.viewport.worldViewport)
+  local slide = state.runtime.shortcutSlide
+  slide:updateFixed(true)
+  local partial = #sink
+  drawSpying(state, sink)
+  Assert.equal(sink[partial + 2][3], 8, "an opening menu slides the cluster toward the edge")
+  while not slide:isHidden() do
+    slide:updateFixed(true)
+  end
+  local hidden = #sink
+  drawSpying(state, sink)
+  for index = hidden + 1, #sink do
+    Assert.isTrue(sink[index][1] ~= "shortcuts", "a fully slid-out cluster draws nothing")
+  end
 end
 
 -- The signpost is the world-attached surface when it owns the modal slot:

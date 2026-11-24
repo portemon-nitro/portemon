@@ -160,7 +160,7 @@ function T.normalizes_hidden_item_source_rows_before_script_identity()
   end
 
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60))
-  Assert.equal(bundle.field.schema, "g4-field-map-v16")
+  Assert.equal(bundle.field.schema, "g4-field-map-v17")
   Assert.equal(arm9Reads, 1)
   Assert.deepEqual(bundle.field.events.background[1].hiddenItem, { itemId = 17, quantity = 1, flagId = 800 })
   Assert.equal(bundle.field.events.background[1].scriptId, "common.hiddenitem_t20_potion")

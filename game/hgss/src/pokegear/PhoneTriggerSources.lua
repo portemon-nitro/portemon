@@ -1,6 +1,7 @@
--- Source trigger raisers behind the thirteen retail trigger slots:
--- each names the field-side detector that must raise the flag and
--- fails loudly until that detector exists. The flag mechanics
+-- Source trigger raisers behind the retail trigger slots whose
+-- detectors are still missing (the Bike Shop's slot 2 is raised by
+-- FieldRuntime): each names the field-side detector that must raise the
+-- flag and fails loudly until that detector exists. The flag mechanics
 -- (state.setTrigger) already exist; these are the missing call sites.
 -- When a detector is implemented, its function gains its parameters,
 -- performs the detection, and raises its flag instead of failing; the
@@ -32,11 +33,6 @@ end
 -- The pokerus check raises slot 1 (Elm 7).
 function PhoneTriggerSources.elmPokerus()
   missingDetector(1, "field-events", "the pokerus spread check")
-end
-
--- Bike-shop step counting raises slot 2 (Bike 85).
-function PhoneTriggerSources.bikeShopSteps()
-  missingDetector(2, "field-events", "the bike-shop step count")
 end
 
 -- A full Bill PC raises slot 3 (Bill 93).

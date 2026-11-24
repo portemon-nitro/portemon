@@ -283,6 +283,7 @@ suite.metadata.derivedAssets = {
   "audio-bank:702",
   "audio-bank:709",
   "audio-bank:728",
+  "audio-bank:720",
 }
 
 return suite

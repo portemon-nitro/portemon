@@ -469,6 +469,40 @@ local function assertBoxClosed(game, label)
   )
 end
 
+local REFUSAL_SCRIPT = "runtime.item_use_refusal.not_here"
+
+local function refusalsEnded(game)
+  local count = 0
+  for _, event in ipairs(game:hostEvents().records) do
+    if event.name == "script.ended" and event.payload.scriptId == REFUSAL_SCRIPT then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+-- The registered Bicycle cannot be used indoors: the shortcut prints Oak's
+-- words (GetItemUseErrorMessage) instead of opening anything, and the field
+-- is free again once the message is dismissed. Answers the refusals seen.
+local function assertBicycleRefused(game, label, refusalsBefore)
+  assertBoxClosed(game, label)
+  for _ = 1, 600 do
+    if refusalsEnded(game) > refusalsBefore and not game:snapshot().fieldLocked then
+      break
+    end
+    if game:snapshot().dialogue.modal then
+      game.runtime:pressAction()
+      game:step()
+      game.runtime:releaseAction()
+    else
+      game:step()
+    end
+  end
+  Assert.equal(refusalsEnded(game), refusalsBefore + 1, label .. ": the Bicycle prints its indoor refusal")
+  assertBoxClosed(game, label)
+  return refusalsBefore + 1
+end
+
 local function assertBoxOpened(game, label)
   game:advanceUntil(label, function()
     local status = game.runtime.kurtBoxHost:status()
@@ -523,15 +557,16 @@ function T.tests.registered_apricorn_box_shortcuts_target_each_slot_on_keyboard_
     Assert.equal(bag:tryRegister("BICYCLE"), "slot1", "the different Key Item occupies the registered slot")
     Assert.equal(bag:tryRegister(BOX_KEY), "slot2", "the Box can occupy the second registered slot")
     local bicycleFirst = bag:registeredItems()
+    local refusals = 0
 
     pressKeyboardShortcut(game, state, "y")
-    assertBoxClosed(game, "keyboard Y does not open the Box in slot 2")
+    refusals = assertBicycleRefused(game, "keyboard Y does not open the Box in slot 2", refusals)
     pressKeyboardShortcut(game, state, "u")
     assertBoxOpened(game, "keyboard U opens the Box in slot 2")
     closeRegisteredBox(game)
 
     pressGamepadShortcut(game, state, joystick, "y")
-    assertBoxClosed(game, "gamepad Y does not open the Box in slot 2")
+    refusals = assertBicycleRefused(game, "gamepad Y does not open the Box in slot 2", refusals)
     pressGamepadShortcut(game, state, joystick, "rightshoulder")
     assertBoxOpened(game, "gamepad right shoulder opens the Box in slot 2")
     closeRegisteredBox(game)
@@ -545,13 +580,13 @@ function T.tests.registered_apricorn_box_shortcuts_target_each_slot_on_keyboard_
     assertBoxOpened(game, "keyboard Y opens the Box in slot 1")
     closeRegisteredBox(game)
     pressKeyboardShortcut(game, state, "u")
-    assertBoxClosed(game, "keyboard U does not open the Box in slot 1")
+    refusals = assertBicycleRefused(game, "keyboard U does not open the Box in slot 1", refusals)
 
     pressGamepadShortcut(game, state, joystick, "y")
     assertBoxOpened(game, "gamepad Y opens the Box in slot 1")
     closeRegisteredBox(game)
     pressGamepadShortcut(game, state, joystick, "rightshoulder")
-    assertBoxClosed(game, "gamepad right shoulder does not open the Box in slot 1")
+    refusals = assertBicycleRefused(game, "gamepad right shoulder does not open the Box in slot 1", refusals)
 
     Assert.deepEqual(bag:registeredItems(), boxFirst, "shortcut attempts preserve the current Bag registrations")
     Assert.deepEqual(bicycleFirst, { "BICYCLE", BOX_KEY }, "the first slot order was captured before reordering")

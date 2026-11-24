@@ -202,6 +202,16 @@ return {
       indicator = { offAnim = 11, onAnim = 7, anchor = { x = 210, y = 94 } },
       touchRegion = { x = 184, y = 86, width = 68, height = 48 },
     },
+    -- The two registered-item tabs (gTouchscreenMenuButtonPositions sprites
+    -- 9/10 over the same button resources as the Running Shoes: animation 0
+    -- for slot 1, carrying the Y-button glyph, and 8 for slot 2) at (200,8)
+    -- and (200,48). Each frames its registered item's icon, drawn from the
+    -- item icon archive through cell 0 of member 54 (one 32x32 object at
+    -- the sprite origin) at gTouchscreenMenuIconPositions entries 7/8.
+    registeredItems = {
+      { button = { anim = 0, anchor = { x = 200, y = 8 } }, iconAnchor = { x = 220, y = 11 } },
+      { button = { anim = 8, anchor = { x = 200, y = 48 } }, iconAnchor = { x = 220, y = 51 } },
+    },
     -- The 7 normal action anchors from the ov27_0225D038 table, keyed by
     -- display position 0..6 (display position p occupied touch slot p+2;
     -- slot 1 is the cancel region). Retail pixel coordinates.

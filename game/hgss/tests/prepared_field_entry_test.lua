@@ -41,6 +41,7 @@ local function bedroomField(mapId, symbol)
       icePathB2F = false,
       cave = false,
       unionOrColosseum = false,
+      bikeAllowed = true,
     },
     events = { background = {}, objects = {}, warps = {}, coordinates = {} },
     music = { day = "SEQ_X", night = "SEQ_X", flagOverrides = {}, traversalOverrides = {} },

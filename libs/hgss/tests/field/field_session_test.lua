@@ -155,6 +155,10 @@ local function defaultPlayer()
       assert(mode == "walking" or mode == "surfing", "traversal mode must be walking or surfing")
       self.traversalMode = mode
     end,
+    cycling = false,
+    setCycling = function(self, cycling)
+      self.cycling = cycling
+    end,
     stepDecision = function(_)
       return { kind = "step" }
     end,
@@ -1410,6 +1414,23 @@ end
 
 -- The Start Menu lock holds B for the player (retail ORs B into the held
 -- keys), but only with the shoes on a walking avatar.
+-- The idle player rides the bike exactly while the avatar's durable state
+-- is cycling.
+function T.an_idle_player_rides_while_the_avatar_cycles()
+  for _, case in ipairs({ { avatar = "cycling", cycling = true }, { avatar = "walking", cycling = false } }) do
+    local player = defaultPlayer()
+    local options = baseOptions({ player = player })
+    options.playerAvatar = {
+      updateFixed = function() end,
+      durableState = function()
+        return case.avatar
+      end,
+    }
+    FieldSession.new(options):updateFixed({})
+    Assert.equal(player.cycling, case.cycling, case.avatar)
+  end
+end
+
 function T.running_shoes_lock_runs_without_holding_cancel()
   Assert.equal(runSession({ shoes = true, lock = true, held = false, avatar = "walking" }), true)
   Assert.equal(runSession({ shoes = false, lock = true, held = false, avatar = "walking" }), false)

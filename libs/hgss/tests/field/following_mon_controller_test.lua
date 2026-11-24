@@ -1186,6 +1186,34 @@ end
 -- walking the player), so the reveal cannot live only in free-follow steering:
 -- here the follower already stands on the vacated tile and never needs to walk
 -- to satisfy the obligation.
+-- While the player rides the bike the follower is stowed (retail hides it
+-- for the whole ride): no partner trails the bike, the lead stays active,
+-- and dismounting installs it on the player's tile hidden until the player's
+-- next step reveals it.
+function T.stowed_follower_hides_for_the_ride_and_reappears_after_a_step()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 3)
+  Assert.notNil(w.mgr:partnerId(), "setup installs the partner")
+  w.controller:setStowed(true)
+  tick(w)
+  Assert.isNil(w.mgr:partnerId(), "a stowed follower leaves no partner on the map")
+  Assert.isTrue(w.controller:isActive(), "the stowed lead stays active")
+  Assert.isFalse(w.controller:isVisible(), "a stowed follower is not visible")
+  driveOrdinaryStep(w, "south")
+  Assert.isNil(w.mgr:partnerId(), "the ride never reinstalls the follower")
+  w.controller:setStowed(false)
+  tick(w)
+  local partnerId = assert(w.mgr:partnerId(), "dismounting reinstalls the follower")
+  local position = assert(w.mgr:getPosition(partnerId))
+  Assert.deepEqual({ position.fieldX, position.fieldZ }, { w.player.fieldX, w.player.fieldZ })
+  Assert.isFalse(w.mgr:isVisible(partnerId), "the follower stays hidden on the player's tile")
+  driveOrdinaryStep(w, "south")
+  settleTrail(w)
+  Assert.isTrue(w.mgr:isVisible(partnerId), "the player's next step reveals the follower")
+  w.mgr:dispose()
+end
+
 function T.arrival_rejoin_reveals_on_a_transition_mode_trail_step()
   for _, movementType in ipairs({ "follow_transition_a", "follow_transition_b" }) do
     local w = world()

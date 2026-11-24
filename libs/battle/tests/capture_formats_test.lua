@@ -164,6 +164,8 @@ function T.safari_throws_spend_the_safari_counter_once()
     formatState = Formats.initialState("safari"),
     inventories = { party = { quantities = { SAFARI_BALL = 0 } } },
     ledger = {},
+    round = 1,
+    environment = {},
     combatants = { [2] = { mon = { species = "PIKACHU", origin = { ball = "POKE_BALL" } }, hp = 1, maxHp = 100 } },
   }
   local stream = scriptedStream({ 0, 0, 0 })
@@ -187,6 +189,8 @@ function T.exhausted_safari_counters_fail_before_any_draw()
     formatState = Formats.initialState("safari"),
     inventories = { party = { quantities = {} } },
     ledger = {},
+    round = 1,
+    environment = {},
     combatants = { [2] = { mon = { species = "PIKACHU", origin = { ball = "POKE_BALL" } }, hp = 100, maxHp = 100 } },
   }
   local stream = scriptedStream({ 0, 0, 0 })
@@ -213,6 +217,8 @@ function T.safari_without_its_counter_is_rejected()
     formatState = Formats.initialState("safari"),
     inventories = { party = { quantities = {} } },
     ledger = {},
+    round = 1,
+    environment = {},
     combatants = { [2] = { mon = { species = "PIKACHU" }, hp = 100, maxHp = 100 } },
   }
   local stream = scriptedStream({ 0, 0, 0 })
@@ -238,6 +244,8 @@ function T.contest_throws_record_the_candidate_for_judging()
     sportBalls = 1,
     inventories = { party = { quantities = {} } },
     ledger = {},
+    round = 1,
+    environment = {},
     combatants = { [2] = { mon = { species = "SCYTHER", origin = { ball = "POKE_BALL" } }, hp = 1, maxHp = 100 } },
   }
   local stream = scriptedStream({ 0, 0, 0 })
@@ -250,6 +258,8 @@ function T.contest_throws_record_the_candidate_for_judging()
     sportBalls = 0,
     inventories = { party = { quantities = {} } },
     ledger = {},
+    round = 1,
+    environment = {},
     combatants = { [2] = { mon = { species = "SCYTHER", origin = { ball = "POKE_BALL" } }, hp = 1, maxHp = 100 } },
   }
   local quiet = scriptedStream({ 0, 0, 0 })
@@ -295,6 +305,8 @@ function T.pal_park_admits_only_park_balls_and_always_lands()
     parkBalls = 1,
     inventories = { party = { quantities = {} } },
     ledger = {},
+    round = 1,
+    environment = {},
     combatants = { [2] = { mon = { species = "PIKACHU", origin = { ball = "POKE_BALL" } }, hp = 100, maxHp = 100 } },
   }
   local stream = scriptedStream({ 65535 })
@@ -322,6 +334,8 @@ function T.tutorial_throws_belong_to_the_script()
     mode = "tutorial",
     inventories = { party = { quantities = { POKE_BALL = 5 } } },
     ledger = {},
+    round = 1,
+    environment = {},
     combatants = { [2] = { mon = { species = "PIKACHU" }, hp = 100, maxHp = 100 } },
   }
   local stream = scriptedStream({ 0, 0, 0 })

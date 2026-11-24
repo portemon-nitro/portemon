@@ -227,7 +227,24 @@ function T.field_empty_party_hides_target_requiring_entries_only()
   Assert.isTrue(has(defaulted, "give"), "an absent party flag keeps the historical entries")
 end
 
-function T.field_apricorn_box_use_is_the_only_empty_party_exception()
+-- The Bicycle and the fishing rods are used in the field, so their Use
+-- needs no party target either.
+function T.field_use_key_items_need_no_party_target()
+  for _, itemKey in ipairs({ "BICYCLE", "OLD_ROD", "GOOD_ROD", "SUPER_ROD" }) do
+    local actions = BagActionPolicy.actionsForField(fieldFacts({
+      itemKey = itemKey,
+      useKind = "none",
+      canHold = false,
+      pocket = "key_items",
+      registerable = true,
+      partyEmpty = true,
+    }))
+    Assert.isTrue(has(actions, "use"), itemKey .. " offers Use")
+    Assert.isFalse(has(actions, "give"), itemKey .. " cannot be given")
+  end
+end
+
+function T.field_apricorn_box_use_needs_no_party_target()
   local actions = BagActionPolicy.actionsForField(fieldFacts({
     itemKey = "APRICORN_BOX",
     useKind = "none",

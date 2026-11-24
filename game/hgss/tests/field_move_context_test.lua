@@ -17,6 +17,7 @@ local function fieldUse(overrides)
     icePathB2F = false,
     cave = false,
     unionOrColosseum = false,
+    bikeAllowed = true,
   }
   for key, item in pairs(overrides or {}) do
     value[key] = item
@@ -43,6 +44,9 @@ local function sources(overrides)
     facingWhirlpool = false,
     climbTile = false,
     headbuttTree = false,
+    fishingWater = false,
+    bikeHostileGround = false,
+    bikeLocked = false,
     localX = 0,
     localZ = 0,
     facing = "south",

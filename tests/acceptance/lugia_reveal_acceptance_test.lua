@@ -9,7 +9,7 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "map-data:244", "map:244" },
+    derivedAssets = { "field-runtime", "message-bank:125", "map-data:244", "map:244" },
     tags = { "field", "script", "lugia" },
   },
   tests = {},
