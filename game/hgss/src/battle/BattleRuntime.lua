@@ -727,7 +727,13 @@ function BattleRuntime:_publishFrame(frame, exposed)
     end
     self._terminalSent = true
   end
-  local packet = BattlePresentationModel.packet(beforeView, { events = events }, afterView, context)
+  local packet = BattlePresentationModel.packet(
+    beforeView,
+    { events = events },
+    afterView,
+    context,
+    { catalog = self:_factCatalog() }
+  )
   self._lastView = afterView
   self._presentation.present(packet)
   return true
@@ -1246,6 +1252,9 @@ function BattleRuntime:_buildSession()
   record.moneyUpItems = self:_sessionMoneyUpItems(record --[[@as table<string, unknown>]])
   record.itemFacts = self:_sessionItemFacts(record --[[@as table<string, unknown>]])
   self._session = Battle.newSession(record, self:_executableContent())
+  assert(type(self._session.openingSnapshot) == "function", "native sessions publish their pre-entry view")
+  self._lastView =
+    BattlePresentationModel.view(self._session:openingSnapshot(), self._scenario, { catalog = self:_factCatalog() })
 end
 
 function BattleRuntime:_updatePreparing()

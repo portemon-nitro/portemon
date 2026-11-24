@@ -27,7 +27,13 @@ local BattleState = {}
 -- replacement lifecycle, the session-owned action ledger (escape
 -- attempts, capture identities, capture records, and item consumption),
 -- and the live battle-local effect records owned by the effect bag.
-BattleState.VERSION = 13
+-- Version 18 retains the raw battle ability on a departed slot for native
+-- speed comparisons, and keeps the version-17 controller ordering state.
+-- Version 20 persists pending replacement obligations. Version 21 carries
+-- the resumable residual phase alongside its frozen battler and slot order.
+-- Version 22 carries a conditional execution re-sort across controller suspension.
+-- Pre-release snapshots never migrate.
+BattleState.VERSION = 22
 
 ---@param value unknown
 ---@return unknown
@@ -102,6 +108,9 @@ function BattleState.create(validated)
     escapeAttempts = 0,
     captureSeq = 0,
     captures = {},
+    pendingFaintObligations = {},
+    residualContinuation = nil,
+    pendingExecutionResort = false,
     ledger = {},
     lastHitSlots = {},
     lastMoves = {},
@@ -193,6 +202,7 @@ function BattleState.create(validated)
       eligible = copyValue(position.eligibleParticipants),
       occupant = nil,
       activation = nil,
+      departed = nil,
     }
   end
   if validated.inventories ~= nil then
@@ -213,7 +223,7 @@ function BattleState.create(validated)
   do
     local position = entry --[[@as table<string, unknown>]]
     if position.occupant ~= nil then
-      BattleState.enter(owned, position.occupant --[[@as integer]], position.id --[[@as integer]])
+      BattleState.enter(owned, position.occupant --[[@as integer]], position.id --[[@as integer]], true)
     end
   end
   return owned
@@ -268,8 +278,9 @@ end
 ---@param state table<string, unknown> live battle state
 ---@param combatantId integer
 ---@param positionId integer
+---@param opening boolean? true when the lead is loaded with the initial battle context
 ---@return integer the fresh activation token for this entry
-function BattleState.enter(state, combatantId, positionId)
+function BattleState.enter(state, combatantId, positionId, opening)
   local combatant = BattleState.combatant(state, combatantId)
   local position = BattleState.position(state, positionId)
   if combatant.active ~= nil then
@@ -307,7 +318,14 @@ function BattleState.enter(state, combatantId, positionId)
   -- activation-local entry token, entry turn, and stages reset here: the
   -- entry turn is immutable for this activation, so turn-since-entry
   -- mechanics read a stable value until the next replacement.
-  local active = { position = positionId, activation = counter, entryTurn = BattleState.nativeTurn(state) }
+  local active = {
+    position = positionId,
+    activation = counter,
+    entryTurn = BattleState.nativeTurn(state),
+    slowStartTurn = BattleState.nativeTurn(state) + (opening == true and 0 or 1),
+    entryAbilityFlags = {},
+    form = (combatant.mon --[[@as table<string, unknown>]]).form,
+  }
   local monMoves = (combatant.mon --[[@as table<string, unknown>]]).moves
   if type(monMoves) == "table" then
     for _, entry in
@@ -325,13 +343,16 @@ function BattleState.enter(state, combatantId, positionId)
   combatant.stages = zeroStages()
   position.occupant = combatantId
   position.activation = counter
+  position.departed = nil
   return counter
 end
 
 ---@param state table<string, unknown> live battle state
 ---@param positionId integer
+---@param fainted boolean? true when InitFaintedWork must retain a departed comparator record
+---@param battleAbility string? raw ability currently stored on the battle mon
 ---@return integer the departing combatant identity
-function BattleState.leave(state, positionId)
+function BattleState.leave(state, positionId, fainted, battleAbility)
   local position = BattleState.position(state, positionId)
   if position.occupant == nil then
     error(BattleErrors.invalidState("departures require an occupied position", { position = positionId }))
@@ -368,6 +389,15 @@ function BattleState.leave(state, positionId)
   combatant.active = nil
   position.occupant = nil
   position.activation = nil
+  if fainted == true then
+    combatant.stages = zeroStages()
+    position.departed = {
+      combatant = combatantId,
+      faintedTurn = BattleState.nativeTurn(state),
+      abilityCaptured = true,
+      battleAbility = battleAbility,
+    }
+  end
   return combatantId
 end
 
@@ -615,6 +645,7 @@ function BattleState.validateSnapshot(snapshot)
   end
   local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>]]
   local positions = snapshot.positions --[[@as table<integer, table<string, unknown>>]]
+  local participants = snapshot.participants --[[@as table<integer, table<string, unknown>>]]
   local seenCombatants = {}
   for _, id in ipairs(combatantOrder) do
     assert(type(id) == "number" and id % 1 == 0, "snapshot combatant order carries identities")
@@ -654,6 +685,23 @@ function BattleState.validateSnapshot(snapshot)
       local entryTurn = active.entryTurn
       if type(entryTurn) ~= "number" or entryTurn % 1 ~= 0 or entryTurn < 0 then
         error(BattleErrors.incompatibleSnapshot("snapshot entries must carry their native entry turn", {}))
+      end
+      local slowStartTurn = active.slowStartTurn
+      if type(slowStartTurn) ~= "number" or slowStartTurn % 1 ~= 0 or slowStartTurn < 0 then
+        error(BattleErrors.incompatibleSnapshot("snapshot entries must carry their native Slow Start turn", {}))
+      end
+      if type(active.entryAbilityFlags) ~= "table" then
+        error(BattleErrors.incompatibleSnapshot("snapshot entries carry their native ability flags", {}))
+      end
+      if active.form ~= nil and (type(active.form) ~= "number" or active.form % 1 ~= 0 or active.form < 0) then
+        error(BattleErrors.incompatibleSnapshot("snapshot entries carry a non-negative battle form", {}))
+      end
+      for key, value in
+        pairs(active.entryAbilityFlags --[[@as table<string, unknown>]])
+      do
+        if type(key) ~= "string" or value ~= true then
+          error(BattleErrors.incompatibleSnapshot("entry ability flags name consumed checks", {}))
+        end
       end
       if active.originalMoves ~= nil then
         local originals = checkSnapshotSequence(active.originalMoves, "entry move snapshots")
@@ -703,6 +751,33 @@ function BattleState.validateSnapshot(snapshot)
       error(BattleErrors.incompatibleSnapshot("snapshot positions must be records", {}))
     end
     local record = position --[[@as table<string, unknown>]]
+    if record.departed ~= nil then
+      local departed = record.departed
+      if record.occupant ~= nil or type(departed) ~= "table" then
+        error(BattleErrors.incompatibleSnapshot("departed snapshot positions stay vacant records", {}))
+      end
+      local departedRecord = departed --[[@as table<string, unknown>]]
+      local combatantId = departedRecord.combatant
+      if type(combatantId) ~= "number" or seenCombatants[combatantId] == nil then
+        error(BattleErrors.incompatibleSnapshot("departed snapshot positions reference roster combatants", {}))
+      end
+      local combatant = combatants[
+        combatantId --[[@as integer]]
+      ]
+      local faintedTurn = departedRecord.faintedTurn
+      if
+        combatant.active ~= nil
+        or combatant.hp ~= 0
+        or type(faintedTurn) ~= "number"
+        or faintedTurn % 1 ~= 0
+        or faintedTurn < 0
+        or faintedTurn >= snapshot.round --[[@as integer]]
+        or departedRecord.abilityCaptured ~= true
+        or (departedRecord.battleAbility ~= nil and type(departedRecord.battleAbility) ~= "string")
+      then
+        error(BattleErrors.incompatibleSnapshot("departed snapshot positions retain a valid faint clock", {}))
+      end
+    end
     if record.occupant ~= nil then
       if
         seenCombatants[
@@ -817,6 +892,88 @@ function BattleState.validateSnapshot(snapshot)
     if type(snapshot[field]) ~= "table" then
       error(BattleErrors.incompatibleSnapshot("battle snapshots must carry their turn ledgers", { field = field }))
     end
+  end
+  if type(snapshot.pendingFaintObligations) ~= "table" then
+    error(BattleErrors.incompatibleSnapshot("battle snapshots must carry pending faint obligations", {}))
+  end
+  if type(snapshot.pendingExecutionResort) ~= "boolean" then
+    error(BattleErrors.incompatibleSnapshot("battle snapshots carry the pending controller re-sort", {}))
+  end
+  if snapshot.residualContinuation ~= nil then
+    local continuation = snapshot.residualContinuation --[[@as table<string, unknown>]]
+    if
+      type(continuation) ~= "table"
+      or type(continuation.frame) ~= "table"
+      or type(continuation.order) ~= "table"
+      or type(continuation.positions) ~= "table"
+      or type(continuation.speeds) ~= "table"
+      or type(continuation.answers) ~= "table"
+      or type(continuation.answers.answeredPoison) ~= "table"
+      or type(continuation.answers.badDreamsApplied) ~= "table"
+    then
+      error(BattleErrors.incompatibleSnapshot("residual continuation carries its frame and frozen orders", {}))
+    end
+    local pending = snapshot.pending --[[@as table<string, unknown>?]]
+    local learning = pending ~= nil and pending.learning or nil
+    if type(learning) ~= "table" or learning.resumeAction ~= true then
+      error(BattleErrors.incompatibleSnapshot("residual continuation resumes its suspended action reward", {}))
+    end
+    local continuationPositions = continuation.positions --[[@as integer[] ]]
+    local learningPositions = (learning --[[@as table<string, unknown>]]).checkpointPositions
+    if type(learningPositions) ~= "table" or #learningPositions ~= #continuationPositions then
+      error(BattleErrors.incompatibleSnapshot("residual continuation matches its reward slot order", {}))
+    end
+    for index, position in ipairs(continuationPositions) do
+      if learningPositions[index] ~= position then
+        error(BattleErrors.incompatibleSnapshot("residual continuation matches its reward slot order", {}))
+      end
+    end
+    checkSnapshotSequence(continuation.order --[[@as table<integer, unknown>]], "residual battler order")
+    checkSnapshotSequence(continuation.positions --[[@as table<integer, unknown>]], "residual slot order")
+    for combatantId, speed in
+      pairs(continuation.speeds --[[@as table<unknown, unknown>]])
+    do
+      if
+        type(combatantId) ~= "number"
+        or combatantId % 1 ~= 0
+        or combatants[combatantId] == nil
+        or type(speed) ~= "number"
+        or speed % 1 ~= 0
+        or speed < 0
+      then
+        error(BattleErrors.incompatibleSnapshot("residual continuation carries sampled combatant speeds", {}))
+      end
+    end
+  end
+  local obligations = snapshot.pendingFaintObligations --[[@as table<integer, table<string, unknown>>]]
+  local seenObligations = {}
+  for _, obligation in ipairs(obligations) do
+    if
+      type(obligation) ~= "table"
+      or type(obligation.combatant) ~= "number"
+      or obligation.combatant % 1 ~= 0
+      or combatants[obligation.combatant] == nil
+      or type(obligation.activation) ~= "number"
+      or obligation.activation % 1 ~= 0
+      or obligation.activation < 1
+      or type(obligation.position) ~= "number"
+      or obligation.position % 1 ~= 0
+      or positions[obligation.position] == nil
+      or type(obligation.participant) ~= "number"
+      or obligation.participant % 1 ~= 0
+      or participants[obligation.participant] == nil
+      or obligation.side ~= participants[obligation.participant].side
+      or type(obligation.controller) ~= "string"
+      or obligation.controller == ""
+      or type(obligation.internal) ~= "boolean"
+    then
+      error(BattleErrors.incompatibleSnapshot("pending faint obligations carry valid native identities", {}))
+    end
+    local key = obligation.combatant .. ":" .. obligation.activation
+    if seenObligations[key] then
+      error(BattleErrors.incompatibleSnapshot("pending faint obligations are unique", {}))
+    end
+    seenObligations[key] = true
   end
   if type(snapshot.lastPreviousMove) ~= "string" or snapshot.lastPreviousMove == "" then
     error(BattleErrors.incompatibleSnapshot("battle snapshots must carry the global previous move", {}))
@@ -958,7 +1115,6 @@ function BattleState.validateSnapshot(snapshot)
       error(BattleErrors.incompatibleSnapshot("snapshot side order must reference side maps", {}))
     end
   end
-  local participants = snapshot.participants --[[@as table<integer, table<string, unknown>>]]
   for _, id in ipairs(participantOrder) do
     if participants[id] == nil then
       error(BattleErrors.incompatibleSnapshot("snapshot participant order must reference participant maps", {}))

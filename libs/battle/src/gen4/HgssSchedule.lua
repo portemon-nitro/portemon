@@ -14,6 +14,7 @@
 ---@field cursor string
 ---@field currentActionId integer?
 ---@field residualCursor string?
+---@field executionCursor integer?
 ---@field pendingFaints integer[]
 
 local HgssSchedule = {}
@@ -34,6 +35,11 @@ function HgssSchedule.validateFrame(frame)
   assert(
     frame.residualCursor == nil or type(frame.residualCursor) == "string",
     "schedule frames name their residual cursor when one is open"
+  )
+  assert(
+    frame.executionCursor == nil
+      or (type(frame.executionCursor) == "number" and frame.executionCursor % 1 == 0 and frame.executionCursor >= 1),
+    "schedule frames retain a positive execution traversal cursor"
   )
   assert(type(frame.pendingFaints) == "table", "schedule frames carry their pending faints")
 end
@@ -57,6 +63,25 @@ function HgssSchedule.step(queue, frame, stream, budget)
   )
   if #frame.pendingFaints > 0 then
     return nil
+  end
+  if frame.executionCursor ~= nil then
+    local action = queue[frame.executionCursor]
+    if action == nil then
+      frame.executionCursor = nil
+    else
+      frame.executionCursor = frame.executionCursor + 1
+      if action.progress == "queued" then
+        action.progress = "running"
+        frame.currentActionId = action.id
+        return action
+      end
+      return {
+        id = action.id,
+        actor = action.actor,
+        progress = action.progress,
+        controllerVisit = true,
+      }
+    end
   end
   for _, action in ipairs(queue) do
     if action.progress == "queued" then

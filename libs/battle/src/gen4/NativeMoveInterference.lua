@@ -10,20 +10,6 @@ local NativePassiveBridge = require("libs.battle.src.gen4.NativePassiveBridge")
 ---@class NativeMoveInterference
 local NativeMoveInterference = {}
 
----@param entries table<integer, table<string, integer>> living active battlers with sampled Speed
----@param trickRoom boolean current speed dimension
----@param stream table<string, unknown> battle random stream for speed ties
----@return integer[] battler identities in native speed order
-local function orderedSpeedIds(entries, trickRoom, stream)
-  local TurnOrder = require("libs.battle.src.gen4.TurnOrder")
-  local ordered = TurnOrder.orderEntryEffects(entries, { trickRoom = trickRoom }, stream)
-  local ids = {} ---@type integer[]
-  for _, entry in ipairs(ordered) do
-    ids[#ids + 1] = entry.id
-  end
-  return ids
-end
-
 ---@param state table<string, unknown> live battle state under interception
 ---@return boolean true when the field topology has more than one slot per side
 local function hasPartners(state)
@@ -223,9 +209,7 @@ end
 ---@param move string incoming move identity
 ---@param moveFacts table<string, unknown> immutable incoming move facts
 ---@param itemFacts table<string, table<string, unknown>> immutable item facts
----@param speedEntries table<integer, table<string, integer>> current living battlers' sampled Speed
----@param trickRoom boolean current speed dimension
----@param stream table<string, unknown> battle random stream for speed ties
+---@param orderedIds integer[] frozen controller battler order
 ---@return table<string, unknown> recipient and optional ability redirect
 function NativeMoveInterference.magicCoatRecipient(
   state,
@@ -234,9 +218,7 @@ function NativeMoveInterference.magicCoatRecipient(
   move,
   moveFacts,
   itemFacts,
-  speedEntries,
-  trickRoom,
-  stream
+  orderedIds
 )
   local bridge = NativePassiveBridge.wrap(state)
   local followMe = followMeForSide(state, sideOf(state, coatUser))
@@ -253,7 +235,7 @@ function NativeMoveInterference.magicCoatRecipient(
   if range == 0 or range == 2 then
     local coatAbility = bridge:abilityOf(coatUser)
     if coatAbility ~= "MOLD_BREAKER" and coatAbility ~= "NORMALIZE" and redirectAbility ~= nil then
-      for _, candidate in ipairs(orderedSpeedIds(speedEntries, trickRoom, stream)) do
+      for _, candidate in ipairs(orderedIds) do
         if candidate ~= coatUser then
           local combatant = BattleState.combatant(state, candidate)
           if
@@ -278,9 +260,7 @@ end
 ---@param itemFacts table<string, table<string, unknown>> immutable item facts
 ---@param chargeTurn boolean whether the move is resolving its stored charge turn
 ---@param targets integer[] current sampled recipients
----@param speedEntries table<integer, table<string, integer>> sampled living battler speeds
----@param trickRoom boolean whether Trick Room reverses speed order
----@param stream table<string, unknown> battle random stream for speed ties
+---@param orderedIds integer[] frozen controller battler order
 ---@return table<string, unknown>? redirected ability holder and move type
 function NativeMoveInterference.redirectRecipient(
   state,
@@ -290,9 +270,7 @@ function NativeMoveInterference.redirectRecipient(
   itemFacts,
   chargeTurn,
   targets,
-  speedEntries,
-  trickRoom,
-  stream
+  orderedIds
 )
   local range = moveFacts.range
   if (range ~= 0 and range ~= 2) or chargeTurn then
@@ -325,10 +303,8 @@ function NativeMoveInterference.redirectRecipient(
   if ability == nil then
     return nil
   end
-  local order = {} ---@type integer[]
-  if #speedEntries > 0 then
-    order = orderedSpeedIds(speedEntries, trickRoom, stream)
-  else
+  local order = orderedIds
+  if #order == 0 then
     for _, combatantId in
       ipairs(state.combatantOrder --[[@as integer[] ]])
     do

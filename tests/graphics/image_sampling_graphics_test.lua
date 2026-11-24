@@ -357,6 +357,23 @@ vec4 effect(vec4 color, Image tex, vec2 texCoord, vec2 screenCoord) {
   )
 end
 
+function T.textured_picture_mosaic_samples_source_blocks(scope)
+  local renderer = scope:own(GxRenderer.new())
+  local image = scope:own(love.graphics.newImage(buildRgbaData()))
+  image:setFilter("nearest", "nearest")
+  local item = texturedItem(wrappedQuad(scope), image)
+  item.material.textureSize = { IMAGE_WIDTH, IMAGE_HEIGHT }
+  item.material.textureMosaicOrigin = { 0, 0 }
+  item.material.textureMosaicSize = 0
+  renderScene(renderer, item, noFog())
+  local plain = frameBytes(renderer.sceneColor)
+  item.material.textureMosaicSize = 3
+  renderScene(renderer, item, noFog())
+  local mosaic = frameBytes(renderer.sceneColor)
+
+  Assert.isTrue(mosaic ~= plain, "source-block sampling visibly pixelates the textured picture")
+end
+
 -- Animated swaps stay exact across representations: a three-frame material
 -- sequence (first palette, alternate palette, first again) renders
 -- byte-identical color and render-state frames under indexed and straight

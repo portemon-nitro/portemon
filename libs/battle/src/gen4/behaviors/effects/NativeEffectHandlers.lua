@@ -45,25 +45,6 @@ local BattleContext = require("libs.battle.src.BattleContext")
 local NativePassiveBridge = require("libs.battle.src.gen4.NativePassiveBridge")
 local BattleState = require("libs.battle.src.BattleState")
 local StatStages = require("libs.battle.src.gen4.StatStages")
-local PLATE_TYPES = {
-  FLAME_PLATE = "fire",
-  SPLASH_PLATE = "water",
-  ZAP_PLATE = "electric",
-  MEADOW_PLATE = "grass",
-  ICICLE_PLATE = "ice",
-  FIST_PLATE = "fighting",
-  TOXIC_PLATE = "poison",
-  EARTH_PLATE = "ground",
-  SKY_PLATE = "flying",
-  MIND_PLATE = "psychic",
-  INSECT_PLATE = "bug",
-  STONE_PLATE = "rock",
-  SPOOKY_PLATE = "ghost",
-  DRACO_PLATE = "dragon",
-  DREAD_PLATE = "dark",
-  IRON_PLATE = "steel",
-}
-
 ---@class NativeEffectHandlers
 local NativeEffectHandlers = {}
 
@@ -75,21 +56,28 @@ local NativeEffectHandlers = {}
 ---@param moveFacts table<string, table<string, unknown>>? immutable native move facts
 ---@param chart table<string, unknown>? session type chart
 ---@param types table<integer, string[]>? active combatant types
+---@param entryOrder integer[]? one sampled full-battler speed order
+---@param traceDonor integer? raw-ability donor selected by the phase owner
+---@param grounded boolean? whether the anticipation holder is grounded
+---@param magnetRise boolean? whether Magnet Rise suppresses ground-move type flags
 ---@return string? blocking ability key
-function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending, stats, moveFacts, chart, types)
+---@return string? entry flag consumed by an admitted ability transition
+function NativeEffectHandlers.applyPassiveTiming(
+  state,
+  timing,
+  target,
+  pending,
+  stats,
+  moveFacts,
+  chart,
+  types,
+  entryOrder,
+  traceDonor,
+  grounded,
+  magnetRise
+)
   local foes = {} ---@type integer[]
-  local weatherIsSuppressed = false
   local bridge = NativePassiveBridge.wrap(state)
-  for _, combatantId in
-    ipairs(state.combatantOrder --[[@as integer[] ]])
-  do
-    local combatant = BattleState.combatant(state, combatantId)
-    local ability = bridge:abilityOf(combatantId)
-    if combatant.active ~= nil and combatant.hp > 0 and (ability == "CLOUD_NINE" or ability == "AIR_LOCK") then
-      weatherIsSuppressed = true
-      break
-    end
-  end
   if timing == "entry" then
     local targetSide =
       BattleState.participant(state, BattleState.combatant(state, target).participant --[[@as integer]]).side
@@ -107,6 +95,18 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
         end
       end
     end
+    local ability = bridge:abilityOf(target)
+    if entryOrder ~= nil then
+      local rank = {} ---@type table<integer, integer>
+      for index, combatantId in ipairs(entryOrder) do
+        rank[combatantId] = index
+      end
+      if ability == "INTIMIDATE" then
+        table.sort(foes, function(left, right)
+          return (rank[left] or math.huge) < (rank[right] or math.huge)
+        end)
+      end
+    end
   end
   local outcome = NativePassiveBridge.wrap(state):invoke(timing, target, {
     timing = timing,
@@ -118,30 +118,18 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
         or (pending --[[@as table<string, unknown>]]).move == "EXPLOSION"
       ),
   })
-  local context = BattleContext.wrap(state)
-  if timing == "beforeAction" then
-    local holder = BattleState.combatant(state, target)
-    local active = holder.active --[[@as table<string, unknown>?]]
-    if
-      active ~= nil
-      and holder.hp > 0
-      and bridge:abilityOf(target) == "SLOW_START"
-      and BattleState.nativeTurn(state) - active.entryTurn --[[@as integer]]
-        >= 5
-      and not context:hasBattleEffect(target, "slowstartended")
-    then
-      context:addBattleEffect(
-        NativeEffectHandlers.definitionFor("slowstartended"),
-        { kind = "active", combatant = target, activation = active.activation },
-        { kind = "system", key = "SLOW_START_END" },
-        { version = 1 }
-      )
-      context:emit("ability", { kind = "ability", key = "SLOW_START_END", combatant = target }, {
-        key = "SLOW_START_END",
-        combatant = target,
-      })
+  local consumedFlag = nil ---@type string?
+  local copiedTrace = false
+  for _, answer in ipairs(outcome.events) do
+    if timing == "entry" and answer.key == "SLOW_START" then
+      consumedFlag = "slowStart"
+      break
+    elseif timing == "entry" and answer.key == "SLOW_START_END" then
+      consumedFlag = "slowStartEnded"
+      break
     end
   end
+  local context = BattleContext.wrap(state)
   for _, event in ipairs(outcome.events) do
     local answer = event --[[@as table<string, unknown>]]
     local suppressTrigger = false
@@ -149,41 +137,6 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
       timing ~= "entry" and (answer.key == "MOLD_BREAKER" or answer.key == "PRESSURE" or answer.key == "SLOW_START")
     then
       suppressTrigger = true
-    end
-    if timing == "entry" and (answer.key == "FORECAST" or answer.key == "MULTITYPE") then
-      suppressTrigger = true
-      local holder = BattleState.combatant(state, target)
-      local mon = holder.mon --[[@as table<string, unknown>]]
-      local typeKey = nil
-      if answer.key == "FORECAST" and mon.species == "CASTFORM" then
-        local weather = "none"
-        if not weatherIsSuppressed then
-          if context:fieldEffect("raindance") ~= nil then
-            weather = "rain"
-          elseif context:fieldEffect("sunnyday") ~= nil then
-            weather = "sun"
-          elseif context:fieldEffect("hail") ~= nil then
-            weather = "hail"
-          end
-        end
-        typeKey = weather == "rain" and "water"
-          or weather == "sun" and "fire"
-          or weather == "hail" and "ice"
-          or "normal"
-      elseif answer.key == "MULTITYPE" and mon.species == "ARCEUS" then
-        typeKey = PLATE_TYPES[
-          mon.heldItem --[[@as string?]] or ""
-        ]
-      end
-      if typeKey ~= nil then
-        local baseType = "normal"
-        if typeKey ~= baseType then
-          context:emit("ability", { kind = "ability", key = answer.key, combatant = target }, {
-            key = answer.key,
-            type = typeKey,
-          })
-        end
-      end
     end
     if timing == "entry" and type(answer.weather) == "string" then
       local weatherKeys = { rain = "raindance", sun = "sunnyday", sand = "sandstorm", hail = "hail" }
@@ -209,6 +162,7 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
       end
     end
     if timing == "entry" and answer.key == "INTIMIDATE" then
+      context:emit("ability", { kind = "ability", key = answer.key, combatant = target }, answer)
       bridge = NativePassiveBridge.wrap(state)
       for _, foe in ipairs(foes) do
         local ability = bridge:abilityOf(foe)
@@ -219,7 +173,7 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
         local abilityBlocks = ability == "CLEAR_BODY" or ability == "HYPER_CUTTER" or ability == "WHITE_SMOKE"
         if not hasSubstitute and not hasMist and not abilityBlocks then
           local entry = foeEntry
-          local amount = ability == "SIMPLE" and 2 or 1
+          local amount = 1
           if stages.attack > StatStages.MIN then
             local after = stages.attack - amount
             if after < StatStages.MIN then
@@ -248,8 +202,8 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
               },
             })
           end
-        elseif not hasSubstitute and stages.attack > StatStages.MIN then
-          local blockedByAbility = abilityBlocks
+        elseif not hasSubstitute then
+          local blockedByAbility = not hasMist and abilityBlocks
           context:emit("ability", {
             kind = "ability",
             key = blockedByAbility and "INTIMIDATE_BLOCKED_ABILITY" or "INTIMIDATE_BLOCKED_MIST",
@@ -264,60 +218,36 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
       end
     end
     if timing == "entry" and answer.key == "TRACE" then
-      local candidates = {} ---@type integer[]
       local holder = BattleState.combatant(state, target)
       local holderMon = holder.mon --[[@as table<string, unknown>]]
       local holderActivation = (holder.active --[[@as table<string, unknown>]]).activation
-      for _, foe in ipairs(foes) do
-        local ability = bridge:abilityOf(foe)
-        if
-          holderMon.heldItem ~= "GRISEOUS_ORB"
-          and ability ~= "TRACE"
-          and ability ~= "FORECAST"
-          and ability ~= "MULTITYPE"
-        then
-          candidates[#candidates + 1] = foe
+      if traceDonor ~= nil and holderMon.heldItem ~= "GRISEOUS_ORB" then
+        local copied = bridge:battleAbilityOf(traceDonor)
+        assert(type(copied) == "string", "Trace selects a donor with a raw battle ability")
+        local function validateTraceState(candidate)
+          assert(type(candidate) == "table" and type(candidate.ability) == "string", "Trace state carries its ability")
+          return { version = 1, ability = candidate.ability }
         end
-      end
-      if #candidates > 0 then
-        local selected = 1
-        if #candidates > 1 then
-          local random = state.rng --[[@as table<string, unknown>]]
-          assert(type(random.nextU16) == "function", "Trace draws from the battle stream")
-          local draw = (
-            random.nextU16 --[[@as fun(self: table<string, unknown>, label: string, cause: table<string, unknown>): integer]]
-          )(random, "trace", { combatant = target })
-          selected = (draw % #candidates) + 1
-        end
-        local copied = bridge:abilityOf(candidates[selected])
-        if copied ~= nil then
-          local function validateTraceState(candidate)
-            assert(
-              type(candidate) == "table" and type(candidate.ability) == "string",
-              "Trace state carries its ability"
-            )
-            return { version = 1, ability = candidate.ability }
-          end
-          local definition = {
-            key = "traceability",
-            stateVersion = 1,
-            validateState = validateTraceState,
-            timings = { { timing = "beforeAction", handler = "traceability", orderClass = "affliction" } },
-            lifecycle = { stacking = "replace", transfer = "clear" },
-          }
-          context:addBattleEffect(
-            definition,
-            { kind = "active", combatant = target, activation = holderActivation },
-            { kind = "innate", combatant = target },
-            { version = 1, ability = copied }
-          )
-          context:emit("ability", { kind = "ability", key = "TRACE", combatant = target }, {
-            key = "TRACE",
-            copiedAbility = copied,
-            combatant = target,
-            target = candidates[selected],
-          })
-        end
+        local definition = {
+          key = "traceability",
+          stateVersion = 1,
+          validateState = validateTraceState,
+          timings = { { timing = "beforeAction", handler = "traceability", orderClass = "affliction" } },
+          lifecycle = { stacking = "replace", transfer = "clear" },
+        }
+        context:addBattleEffect(
+          definition,
+          { kind = "active", combatant = target, activation = holderActivation },
+          { kind = "innate", combatant = target },
+          { version = 1, ability = copied }
+        )
+        context:emit("ability", { kind = "ability", key = "TRACE", combatant = target }, {
+          key = "TRACE",
+          copiedAbility = copied,
+          combatant = target,
+          target = traceDonor,
+        })
+        copiedTrace = true
       end
     elseif timing == "entry" and answer.key == "FRISK" then
       local itemFoes = {} ---@type table<integer, { target: integer, item: string }>
@@ -357,10 +287,10 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
         end
       end
       if defense + specialDefense > 0 then
-        local stat = defense >= specialDefense and "attack" or "specialAttack"
+        local stat = defense >= specialDefense and "specialAttack" or "attack"
         local stages = context:entryOf(target).stages --[[@as table<string, integer>]]
         if stages[stat] < StatStages.MAX then
-          local amount = NativePassiveBridge.wrap(state):abilityOf(target) == "SIMPLE" and 2 or 1
+          local amount = 1
           local after = stages[stat] + amount
           if after > StatStages.MAX then
             after = StatStages.MAX
@@ -388,18 +318,19 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
     end
     if timing == "entry" and (answer.key == "ANTICIPATION" or answer.key == "FOREWARN") then
       local selectedMove = nil
-      local selectedPower = -1
+      local selectedPower = 0
       local threatens = false
       for _, foe in ipairs(foes) do
         local foeMon = BattleState.combatant(state, foe).mon --[[@as table<string, unknown>]]
-        for _, slot in
-          ipairs(foeMon.moves --[[@as table<integer, table<string, unknown>>]])
-        do
-          local moveName = slot.move
+        local foeMoves = foeMon.moves --[[@as table<integer, table<string, unknown>>]]
+        for slotIndex = 1, 4 do
+          local slot = foeMoves[slotIndex]
+          local moveName = type(slot) == "table" and slot.move or nil
           local move = type(moveFacts) == "table" and type(moveName) == "string" and moveFacts[moveName] or nil
-          if type(move) == "table" then
-            local power = move.power
-            local effect = move.effect
+          local moveRecord = type(move) == "table" and move or nil
+          if moveRecord ~= nil or answer.key == "FOREWARN" then
+            local power = moveRecord ~= nil and moveRecord.power or nil
+            local effect = moveRecord ~= nil and moveRecord.effect or nil
             if answer.key == "ANTICIPATION" and type(power) == "number" then
               local fixedEffects = {
                 fixed_damage = true,
@@ -410,7 +341,41 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
                 mirror_coat = true,
                 metal_burst = true,
               }
-              local oneHitKo = effect == "one_hit_ko" or effect == "ohko" or move.oneHitKo == true
+              local oneHitKo = effect == "one_hit_ko"
+                or effect == "ohko"
+                or (moveRecord ~= nil and moveRecord.oneHitKo == true)
+              local moveType = moveRecord ~= nil and moveRecord.moveType or nil
+              if bridge:abilityOf(foe) == "NORMALIZE" then
+                moveType = "normal"
+              end
+              local effectiveness = nil
+              if type(moveType) == "string" and type(chart) == "table" and type(types) == "table" then
+                local foresight = context:hasBattleEffect(target, "foresight")
+                local miracleEye = context:hasBattleEffect(target, "miracleeye")
+                local moldBreaker = bridge:abilityOf(foe) == "MOLD_BREAKER"
+                local levitate = not moldBreaker and bridge:abilityOf(target) == "LEVITATE"
+                local defenderTypes = types[target] or {}
+                if moveType == "ground" and magnetRise == true and bridge:effectiveHeldItem(target) ~= "IRON_BALL" then
+                  effectiveness = { numerator = 1, denominator = 1, immune = false }
+                else
+                  if moveType == "ground" and grounded == true then
+                    local groundedTypes = {}
+                    for _, defenderType in ipairs(defenderTypes) do
+                      if defenderType ~= "flying" then
+                        groundedTypes[#groundedTypes + 1] = defenderType
+                      end
+                    end
+                    defenderTypes = groundedTypes
+                  end
+                  effectiveness = TypeEffectiveness.resolve(chart, moveType, defenderTypes, {
+                    psychicDarkImmunityBypassed = miracleEye,
+                    normalGhostImmunityBypassed = foresight or bridge:abilityOf(foe) == "SCRAPPY",
+                    fightingGhostImmunityBypassed = foresight or bridge:abilityOf(foe) == "SCRAPPY",
+                    abilityImmunity = levitate and moveType == "ground",
+                    airborne = grounded ~= true,
+                  })
+                end
+              end
               local holderLevel = type(stats) == "table" and type(stats[target]) == "table" and stats[target].level
                 or nil
               local foeStats = type(stats) == "table" and stats[foe] or nil
@@ -420,6 +385,8 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
                 and type(holderLevel) == "number"
                 and type(foeLevel) == "number"
                 and holderLevel <= foeLevel
+                and effectiveness ~= nil
+                and not effectiveness.immune
               then
                 threatens = true
               elseif
@@ -427,27 +394,30 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
                 and not fixedEffects[
                   effect --[[@as string?]] or ""
                 ]
-                and move.fixedDamage ~= true
-                and type(move.moveType) == "string"
-                and type(chart) == "table"
-                and type(types) == "table"
+                and moveRecord ~= nil
+                and moveRecord.fixedDamage ~= true
+                and effectiveness ~= nil
               then
-                local effectiveness = TypeEffectiveness.resolve(chart, move.moveType, types[target] or {}, {})
                 if effectiveness.numerator > effectiveness.denominator then
                   threatens = true
                 end
               end
-            elseif answer.key == "FOREWARN" and type(power) == "number" then
-              local score = power
+            elseif answer.key == "FOREWARN" then
+              local score = type(power) == "number" and power or 0
               if power == 1 then
-                score = (effect == "one_hit_ko" or effect == "ohko" or move.oneHitKo == true) and 150
+                score = (
+                  effect == "one_hit_ko"
+                  or effect == "ohko"
+                  or (moveRecord ~= nil and moveRecord.oneHitKo == true)
+                )
+                    and 150
                   or (effect == "counter" or effect == "mirror_coat" or effect == "metal_burst") and 120
                   or 80
               end
-              if score > 0 and score > selectedPower then
+              if score > selectedPower then
                 selectedPower = score
                 selectedMove = moveName
-              elseif score > 0 and score == selectedPower then
+              elseif score == selectedPower then
                 local random = state.rng --[[@as table<string, unknown>]]
                 assert(type(random.nextU16) == "function", "Forewarn ties draw from the battle stream")
                 if random.nextU16(random, "forewarn", { combatant = target }) % 2 == 1 then
@@ -458,7 +428,7 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
           end
         end
       end
-      if answer.key == "FOREWARN" and selectedMove == nil then
+      if answer.key == "FOREWARN" and selectedPower == 0 then
         local candidates = {} ---@type table<integer, { combatant: integer, moves: table<integer, table<string, unknown>> }>
         for _, foe in ipairs(foes) do
           local foeMon = BattleState.combatant(state, foe).mon --[[@as table<string, unknown>]]
@@ -468,10 +438,16 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
           end
         end
         if #candidates > 0 then
+          local candidate = candidates[1]
+          local positionOrder = state.positionOrder --[[@as integer[] ]]
+          if #positionOrder > 2 then
+            local random = state.rng --[[@as table<string, unknown>]]
+            assert(type(random.nextU16) == "function", "Forewarn doubles fallback draws from the battle stream")
+            local foeDraw = random.nextU16(random, "forewarn_target", { combatant = target })
+            candidate = candidates[(foeDraw % #candidates) + 1]
+          end
           local random = state.rng --[[@as table<string, unknown>]]
-          assert(type(random.nextU16) == "function", "Forewarn fallback draws from the battle stream")
-          local foeDraw = random.nextU16(random, "forewarn_target", { combatant = target })
-          local candidate = candidates[(foeDraw % #candidates) + 1]
+          assert(type(random.nextU16) == "function", "Forewarn move fallback draws from the battle stream")
           local moveDraw = random.nextU16(random, "forewarn_move", { combatant = target, foe = candidate.combatant })
           selectedMove = candidate.moves[(moveDraw % #candidate.moves) + 1].move --[[@as string]]
         end
@@ -491,6 +467,7 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
     if
       answer.kind == "trigger"
       and not suppressTrigger
+      and not (timing == "entry" and answer.key == "INTIMIDATE")
       and answer.key ~= "TRACE"
       and answer.key ~= "FRISK"
       and answer.key ~= "ANTICIPATION"
@@ -519,6 +496,9 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
       return answer.key --[[@as string]]
     end
   end
+  if copiedTrace then
+    consumedFlag = "trace"
+  end
   if timing == "beforeAction" and type(pending) == "table" then
     local move = (pending --[[@as table<string, unknown>]]).move
     if move == "SELF_DESTRUCT" or move == "EXPLOSION" then
@@ -540,7 +520,7 @@ function NativeEffectHandlers.applyPassiveTiming(state, timing, target, pending,
       end
     end
   end
-  return nil
+  return nil, consumedFlag
 end
 
 ---@param state table<string, unknown> live battle state under PP accounting
@@ -1448,6 +1428,10 @@ local function buildEntryHandlers(facts)
       return nil
     end
     if facts.grounded ~= true then
+      return nil
+    end
+    local magicGuard = facts.magicGuard
+    if type(magicGuard) == "table" and magicGuard[entrant] == true then
       return nil
     end
     for _, defenderType in ipairs(typesOf(facts, entrant)) do

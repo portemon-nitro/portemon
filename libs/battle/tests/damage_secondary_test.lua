@@ -855,7 +855,7 @@ function T.weather_strikes_follow_their_sky_law()
   ---@param facts table<string, table<string, unknown>> compiled-shaped move facts
   ---@param weather string? field definition identity settled before the strike
   ---@return table terminal execution step plus observed health and context
-  local function runUnder(moveKey, facts, weather)
+  local function runUnder(moveKey, facts, weather, seed, weatherSuppressed)
     local state = liveState()
     local ctx = liveContext(state)
     if weather ~= nil then
@@ -880,13 +880,13 @@ function T.weather_strikes_follow_their_sky_law()
       burned = false,
       guts = false,
       weather = "none",
-      weatherSuppressed = false,
+      weatherSuppressed = weatherSuppressed == true,
       abilities = { user = "NONE", foe = "NONE" },
       attackerTypes = { "electric" },
       defenderTypes = { [2] = { "normal" } },
       typeChart = chart(),
       friendship = 255,
-      stream = BattleRng.new(FIXED_SEED),
+      stream = BattleRng.new(seed or FIXED_SEED),
     }
     local node = Execution.start(inputs)
     for _ = 1, 8 do
@@ -898,13 +898,27 @@ function T.weather_strikes_follow_their_sky_law()
     end
     local finished = node --[[@as table<string, unknown>]]
     assert(finished.kind == "complete" and finished.frame == nil, "the strike settles")
-    return { outcome = finished, ctx = ctx, state = state }
+    return { outcome = finished, ctx = ctx, state = state, stream = inputs.stream }
   end
   local thunderFacts =
-    moveFacts("THUNDER", { power = 120, accuracy = 70, category = "special", moveType = "electric", effectChance = 30 })
+    moveFacts("THUNDER", { power = 120, accuracy = 70, category = "special", moveType = "electric", effectChance = 0 })
+  local function accuracyDraws(stream)
+    local draws = 0
+    for _, entry in ipairs(stream._trace) do
+      if entry.label == "accuracy_check" then
+        draws = draws + 1
+      end
+    end
+    return draws
+  end
   local rainy = runUnder("THUNDER", thunderFacts, "raindance")
   local rainyOutcome = rainy.outcome --[[@as table<string, unknown>]]
   Assert.equal(rainyOutcome.result, "hit", "thunder never misses under rain")
+  Assert.equal(accuracyDraws(rainy.stream), 1, "rain clears the result after spending the ordinary accuracy draw")
+  local suppressedRain = runUnder("THUNDER", thunderFacts, "raindance", nil, true)
+  Assert.equal(suppressedRain.outcome.result, "missed", "Cloud Nine suppression restores Thunder's ordinary rain roll")
+  local sunny = runUnder("THUNDER", thunderFacts, "sunnyday", 1)
+  Assert.equal(sunny.outcome.result, "hit", "sun substitutes 50 accuracy instead of halving the compiled 70")
   local clear = runUnder("THUNDER", thunderFacts, nil)
   local clearOutcome = clear.outcome --[[@as table<string, unknown>]]
   Assert.isTrue(
@@ -912,10 +926,11 @@ function T.weather_strikes_follow_their_sky_law()
     "thunder rolls its compiled accuracy under a clear sky"
   )
   local blizzardFacts =
-    moveFacts("BLIZZARD", { power = 120, accuracy = 70, category = "special", moveType = "ice", effectChance = 10 })
+    moveFacts("BLIZZARD", { power = 120, accuracy = 70, category = "special", moveType = "ice", effectChance = 0 })
   local hail = runUnder("BLIZZARD", blizzardFacts, "hail")
   local hailOutcome = hail.outcome --[[@as table<string, unknown>]]
   Assert.equal(hailOutcome.result, "hit", "blizzard never misses under hail")
+  Assert.equal(accuracyDraws(hail.stream), 1, "hail clears the result after spending the ordinary accuracy draw")
 end
 
 -- Fanged strikes roll their condition and their flinch independently:

@@ -39,6 +39,8 @@ local function headlessPort(record)
     -- unwraps their ordered events so kernel-event probes keep reading
     -- the same payloads.
     present = function(packet)
+      record.packets = record.packets or {}
+      record.packets[#record.packets + 1] = packet
       for _, event in ipairs(packet.events) do
         record.frames[#record.frames + 1] = event
       end
@@ -54,6 +56,61 @@ local function headlessPort(record)
       record.disposed = record.disposed + 1
     end,
   }
+end
+
+---@param packet table<string, unknown> real opening delivery packet
+---@param combatant integer opening weather-form holder
+---@param initialForm integer portrait shown before the opening ability scan
+---@param targetForm integer portrait installed by the form-change cue
+---@return table<string, unknown> final displayed battler record
+local function assertOpeningPortraitTransition(packet, combatant, initialForm, targetForm)
+  local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
+  local SourceTick = require("libs.hgss.src.field.SourceTick")
+  local timeline = BattleTimeline.new({
+    textSpeed = "fastest",
+    ballFadeColor = function()
+      return 0
+    end,
+  })
+  timeline:reset(packet.before)
+  timeline:intro(packet.before, true)
+  local function shown()
+    for _, record in ipairs(timeline:battlers()) do
+      if record.combatant == combatant then
+        return record
+      end
+    end
+  end
+  Assert.equal(
+    assert(shown(), "the timeline installs the opening lead").form,
+    initialForm,
+    "the intro starts from the initial portrait"
+  )
+  Assert.isTrue(timeline:present(packet), "the timeline accepts the real opening packet")
+  local sawInitial = false
+  local sawTarget = false
+  local sawCoveredSwap = false
+  for _ = 1, 2000 do
+    timeline:update(SourceTick.DT, function()
+      return true
+    end)
+    local record = assert(shown(), "the weather-form holder remains owned through its opening transition")
+    if record.visible and record.form == initialForm then
+      sawInitial = true
+    elseif record.visible and record.form == targetForm then
+      sawTarget = true
+      if type(record.mosaicSize) == "number" and record.mosaicSize > 0 then
+        sawCoveredSwap = true
+      end
+    end
+  end
+  local finalPicture = assert(shown(), "the opening transition leaves its holder displayed")
+  Assert.isTrue(sawInitial, "the send-out visibly uses the initial portrait before the form change")
+  Assert.isTrue(sawTarget, "the transformed portrait becomes visible during the opening packet")
+  Assert.isTrue(sawCoveredSwap, "the portrait swaps only while the source mosaic covers it")
+  Assert.equal(finalPicture.form, targetForm, "the timeline settles on the transformed form")
+  timeline:dispose()
+  return finalPicture --[[@as table<string, unknown>]]
 end
 
 local function preparedWild()
@@ -190,6 +247,123 @@ local function newPartyOwner()
   return owner
 end
 
+---@return table synthetic compiled catalog carrying the retail weather-form family
+local function weatherFormCatalog()
+  local root = CatalogFixture.buildAssetRoot()
+  local function copy(value)
+    if type(value) ~= "table" then
+      return value
+    end
+    local result = {}
+    for key, item in pairs(value) do
+      result[key] = copy(item)
+    end
+    return result
+  end
+  local function weatherSpecies(key, nativeId, forms)
+    local species = copy(root.species.EEVEE)
+    species.nativeId = nativeId
+    species.name = key
+    species.forms = {}
+    for form in pairs(forms) do
+      local record = copy(root.species.EEVEE.forms[0])
+      record.types = forms[0]
+      record.icon = key .. "/f" .. tostring(form)
+      record.portrait = key .. "/f" .. tostring(form) .. "/male/plain"
+      species.forms[form] = record
+    end
+    root.species[key] = species
+  end
+  weatherSpecies("CASTFORM", 351, {
+    [0] = { "normal" },
+    [1] = { "fire" },
+    [2] = { "water" },
+    [3] = { "ice" },
+  })
+  weatherSpecies("CHERRIM", 421, { [0] = { "grass" }, [1] = { "grass" } })
+  root.species.CASTFORM.forms[0].abilities = { "FORECAST" }
+  root.species.CHERRIM.forms[0].abilities = { "FLOWER_GIFT" }
+  for key, nativeId in pairs({ FORECAST = 82, FLOWER_GIFT = 44, DRIZZLE = 2, DROUGHT = 70 }) do
+    root.abilities[key] = { nativeId = nativeId, name = key, description = key }
+  end
+  for key, nativeId in pairs({ SUNNY_DAY = 241, RAIN_DANCE = 240, SPLASH = 150 }) do
+    local move = copy(root.moves.WATER_GUN)
+    move.nativeId = nativeId
+    move.name = key
+    move.description = key
+    move.category = "status"
+    move.power = 0
+    move.accuracy = 0
+    move.battle.behavior = { key = "status", params = {} }
+    move.battle.flags.dealsDamage = false
+    move.battle.flags.checksAccuracy = false
+    root.moves[key] = move
+  end
+  local vitalThrow = copy(root.moves.TACKLE)
+  vitalThrow.nativeId = 239
+  vitalThrow.name = "VITAL_THROW"
+  vitalThrow.description = "VITAL_THROW"
+  vitalThrow.priority = -1
+  root.moves.VITAL_THROW = vitalThrow
+  return require("libs.mons.src.MonCatalog").new(root, CatalogFixture.makeItemCatalog())
+end
+
+---@param leadWithEevee boolean? put an unaffected Eevee ahead of the weather-form reserves
+---@param cherrimFirst boolean? put Cherrim ahead of Castform for a sunny opening
+---@return table party owner holding base-form weather mons
+local function weatherFormParty(leadWithEevee, cherrimFirst)
+  local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+  local catalog = weatherFormCatalog()
+  local owner = HgssMonService.new({
+    catalog = catalog,
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x22222222):capture()),
+    profile = CatalogFixture.profile(),
+    game = "heartgold",
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+    mapSection = 7,
+    date = CatalogFixture.metDate(),
+  })
+  local factory = CatalogFixture.makeFactory(0x41414141, catalog)
+  if leadWithEevee then
+    local eevee = factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 20 }))
+    eevee.moves = { { move = "SPLASH", pp = 40, ppUps = 0 } }
+    Assert.isTrue(owner:addMon(eevee), "the transient scenario needs an unaffected opening lead")
+  end
+  local castform = factory:createNormal(CatalogFixture.normalRequest({
+    species = "CASTFORM",
+    form = 0,
+    level = 20,
+    ability = "FORECAST",
+  }))
+  castform.moves = {
+    { move = "WATER_GUN", pp = 25, ppUps = 0 },
+    { move = "SUNNY_DAY", pp = 5, ppUps = 0 },
+  }
+  local cherrim = factory:createNormal(CatalogFixture.normalRequest({
+    species = "CHERRIM",
+    form = 0,
+    level = 20,
+    ability = "FLOWER_GIFT",
+  }))
+  cherrim.moves = { { move = "SPLASH", pp = 40, ppUps = 0 } }
+  local function addCherrim()
+    Assert.isTrue(owner:addMon(cherrim), "the production path needs its base-form Cherrim")
+  end
+  if cherrimFirst then
+    addCherrim()
+  end
+  Assert.isTrue(owner:addMon(castform), "the production path needs its base-form Castform")
+  if not cherrimFirst then
+    addCherrim()
+  end
+  return owner
+end
+
 function T.delayed_readiness_never_regenerates_the_prepared_battle()
   local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with readiness waits")
   local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
@@ -240,13 +414,10 @@ function T.completion_and_disposal_commit_exactly_once_and_release_once()
   local launch = launchFor("once")
   local party = newPartyOwner()
   local foe = foeRecord("TOTODILE", 4, 0x5EED0003)
-  local scenario = ScenarioFactory.fromEncounter(
-    { attemptId = launch.id .. "-attempt", mon = foe },
-    {
-      party = party,
-      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
-    }
-  )
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = launch.id .. "-attempt", mon = foe }, {
+    party = party,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = BattleRuntime.new({
     request = launch,
@@ -374,13 +545,394 @@ function T.production_attacks_settle_through_move_mechanics_not_a_fixed_strike()
   battle:dispose()
 end
 
+-- The real launch-fact collector must provision every weather form reachable
+-- from base-form party records; no test manually fills the session fact map.
+function T.production_weather_forms_open_transform_and_strike_with_base_form_seeds()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with weather-form facts")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+  local party = weatherFormParty()
+  local catalog = party:catalog()
+  local factory = CatalogFixture.makeFactory(0x51515151, catalog)
+  local foe = factory:createNormal(CatalogFixture.normalRequest({
+    species = "CHIKORITA",
+    form = 0,
+    level = 30,
+    ability = "DRIZZLE",
+  }))
+  foe.moves = { { move = "SPLASH", pp = 40, ppUps = 0 } }
+  foe.ability = "DRIZZLE"
+  local launch = {
+    id = "launch-weather-forms",
+    kind = "wild",
+    payload = { species = "CHIKORITA", form = 0, level = 30, personality = foe.personality, ability = "DRIZZLE" },
+  }
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = "attempt-weather-forms", mon = foe }, {
+    party = party,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
+  local foeId = scenario.participants[2].roster[1].id
+  local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
+  local battle = BattleRuntime.new({
+    request = launch,
+    scenario = scenario,
+    party = party,
+    seed = 0x1BADB002,
+    presentation = headlessPort(portRecord),
+  })
+  local opening = driveToDecision(battle, 400)
+  Assert.equal(opening.phase, "running", "the production battle opens with only base-form weather seeds")
+  local snapshot = battle._session:capture()
+  Assert.equal(snapshot.combatants[1].active.form, 2, "Drizzle transforms the active Castform during opening")
+  Assert.equal(snapshot.combatants[1].mon.form, 0, "the active transformation does not mutate Castform's party form")
+  Assert.equal(
+    battle._session._speciesFacts.CASTFORM[0].types[1],
+    "normal",
+    "the producer keeps compiled Castform's base species facts"
+  )
+
+  local function formEvents()
+    local result = {}
+    for _, event in ipairs(portRecord.frames) do
+      if event.kind == "ability" and event.cause.key == "weather-form" then
+        result[#result + 1] = event
+      end
+    end
+    return result
+  end
+  local initial = formEvents()
+  Assert.equal(#initial, 1, "opening emits one real Castform transformation")
+  Assert.equal(initial[1].payload.form, 2, "the opening event names the rainy form")
+
+  local firstPacket = assert(portRecord.packets[1], "the real launch publishes its opening packet")
+  local function openingOwn()
+    for _, record in ipairs(firstPacket.before.own or {}) do
+      if record.combatant == 1 then
+        return record
+      end
+    end
+  end
+  local function settledOwn()
+    for _, record in ipairs(firstPacket.after.own or {}) do
+      if record.combatant == 1 then
+        return record
+      end
+    end
+  end
+  local initialPicture = assert(openingOwn(), "the opening packet pictures Castform before entry effects")
+  local transformedPicture = assert(settledOwn(), "the opening packet pictures Castform after entry effects")
+  Assert.equal(initialPicture.form, 0, "the first published view starts with normal Castform")
+  Assert.equal(transformedPicture.form, 2, "the same opening packet settles on rainy Castform")
+  Assert.isTrue(
+    initialPicture.portraitSelector ~= transformedPicture.portraitSelector,
+    "the opening packet carries both initial and transformed portrait selectors"
+  )
+  Assert.equal(
+    initial[1].formChangeAppearance.portraitSelector,
+    transformedPicture.portraitSelector,
+    "the form event stages the same transformed selector as the settled view"
+  )
+
+  local finalPicture = assertOpeningPortraitTransition(firstPacket, 1, 0, 2)
+  Assert.equal(
+    finalPicture.portraitSelector,
+    transformedPicture.portraitSelector,
+    "the final opening portrait is the transformed selector"
+  )
+
+  local first = assert(opening.request, "the opening request is exposed")
+  local actor = assert(first.actors[1], "the opening request addresses Castform")
+  Assert.isTrue(
+    battle:submit(SessionFixture.replyFor(first, {
+      SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2)),
+    })),
+    "Castform's Water Gun is accepted"
+  )
+  drivePastRequest(battle, first.requestId, 400)
+  local struck = false
+  local waterDamage = nil
+  for _, event in ipairs(portRecord.frames) do
+    if event.kind == "struck" and event.cause.key == "WATER_GUN" and event.payload.target == foeId then
+      struck = true
+      waterDamage = event.payload.damage
+    end
+  end
+  Assert.isTrue(struck, "the transformed Castform resolves a real Water Gun strike")
+  Assert.isTrue(waterDamage > 5, "Water Gun uses Castform's live Water typing against the Grass foe")
+
+  local second = assert(battle:status().request, "the second turn request is exposed")
+  Assert.isTrue(
+    battle:submit(SessionFixture.replyFor(second, {
+      SessionFixture.attackChoice(second.actors[1], 1, SessionFixture.positionTarget(2)),
+    })),
+    "Castform's Sunny Day is accepted"
+  )
+  drivePastRequest(battle, second.requestId, 400)
+  Assert.equal(battle._session:capture().combatants[1].active.form, 1, "the weather move commits Castform's sunny form")
+
+  local third = assert(battle:status().request, "the switch turn request is exposed")
+  local cherrimId = reserveOf(scenario, third.actors[1].combatant)
+  Assert.isTrue(
+    battle:submit(SessionFixture.replyFor(third, {
+      SessionFixture.switchChoice(third.actors[1], cherrimId),
+    })),
+    "the base-form Cherrim reserve is accepted"
+  )
+  drivePastRequest(battle, third.requestId, 400)
+  snapshot = battle._session:capture()
+  Assert.equal(
+    snapshot.combatants[cherrimId].active.form,
+    1,
+    "Cherrim transforms on arrival under the weather move's sun"
+  )
+  Assert.equal(snapshot.combatants[cherrimId].mon.form, 0, "Cherrim's party form also remains unchanged")
+  Assert.equal(party:partyMon(0).form, 0, "the live party keeps Castform's base form")
+  Assert.equal(party:partyMon(1).form, 0, "the live party keeps Cherrim's base form")
+  local cherrimEvent = false
+  for _, event in ipairs(formEvents()) do
+    if event.payload.combatant == cherrimId and event.payload.form == 1 then
+      cherrimEvent = true
+    end
+  end
+  Assert.isTrue(cherrimEvent, "the real producer emits Cherrim's weather-form event")
+  battle:dispose()
+end
+
+function T.production_sunny_cherrim_opening_swaps_from_its_initial_portrait()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with sunny opening forms")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+  local party = weatherFormParty(false, true)
+  local catalog = party:catalog()
+  local factory = CatalogFixture.makeFactory(0x61616161, catalog)
+  local foe = factory:createNormal(CatalogFixture.normalRequest({
+    species = "CHIKORITA",
+    form = 0,
+    level = 30,
+    ability = "DROUGHT",
+  }))
+  foe.moves = { { move = "SPLASH", pp = 40, ppUps = 0 } }
+  foe.ability = "DROUGHT"
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = "attempt-sunny-cherrim", mon = foe }, { party = party })
+  local portRecord = { ready = true, enters = 0, frames = {}, packets = {}, leaves = 0, disposed = 0 }
+  local battle = BattleRuntime.new({
+    request = {
+      id = "launch-sunny-cherrim",
+      kind = "wild",
+      payload = { species = "CHIKORITA", form = 0, level = 30, personality = foe.personality, ability = "DROUGHT" },
+    },
+    scenario = scenario,
+    party = party,
+    seed = 0x1BADB002,
+    presentation = headlessPort(portRecord),
+  })
+  local opening = driveToDecision(battle, 400)
+  Assert.equal(opening.phase, "running", "the sunny Cherrim encounter opens")
+  local packet = assert(portRecord.packets[1], "the sunny launch publishes its opening packet")
+  local function ownRecord(view)
+    for _, record in ipairs(view.own or {}) do
+      if record.combatant == 1 then
+        return record
+      end
+    end
+  end
+  local before = assert(ownRecord(packet.before), "the opening packet starts with cloudy Cherrim")
+  local after = assert(ownRecord(packet.after), "the opening packet settles on sunny Cherrim")
+  Assert.equal(before.form, 0, "Cherrim's first published portrait is its base form")
+  Assert.equal(after.form, 1, "Drought commits Cherrim's sunny form during opening")
+  Assert.equal(party:partyMon(0).form, 0, "Cherrim's party form stays unchanged")
+  local formEvent = nil
+  for _, event in ipairs(packet.events) do
+    if event.kind == "ability" and event.cause.key == "weather-form" and event.payload.combatant == 1 then
+      formEvent = event
+    end
+  end
+  Assert.notNil(formEvent, "the opening publishes Cherrim's form change")
+  Assert.equal(
+    formEvent.formChangeAppearance.portraitSelector,
+    after.portraitSelector,
+    "the event stages the sunny selector"
+  )
+  local finalPicture = assertOpeningPortraitTransition(packet, 1, 0, 1)
+  Assert.equal(finalPicture.portraitSelector, after.portraitSelector, "the timeline settles on the sunny selector")
+  battle:dispose()
+end
+
+function T.production_transient_weather_form_switch_and_same_turn_knockout_keep_its_portrait()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with transient form events")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+  local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
+  local SourceTick = require("libs.hgss.src.field.SourceTick")
+  local party = weatherFormParty(true)
+  local catalog = party:catalog()
+  local factory = CatalogFixture.makeFactory(0x51515151, catalog)
+  local foe = factory:createNormal(CatalogFixture.normalRequest({
+    species = "CHIKORITA",
+    form = 0,
+    level = 100,
+    ability = "DRIZZLE",
+  }))
+  foe.moves = { { move = "VITAL_THROW", pp = 20, ppUps = 0 } }
+  foe.ability = "DRIZZLE"
+  local launch = {
+    id = "launch-transient-weather-form",
+    kind = "wild",
+    payload = { species = "CHIKORITA", form = 0, level = 100, personality = foe.personality, ability = "DRIZZLE" },
+  }
+  local scenario = ScenarioFactory.fromEncounter(
+    { attemptId = "attempt-transient-weather-form", mon = foe },
+    { party = party }
+  )
+  local castformId = scenario.participants[1].roster[2].id
+  local portRecord = { ready = true, enters = 0, frames = {}, packets = {}, leaves = 0, disposed = 0 }
+  local battle = BattleRuntime.new({
+    request = launch,
+    scenario = scenario,
+    party = party,
+    seed = 0x1BADB002,
+    presentation = headlessPort(portRecord),
+  })
+  local opening = driveToDecision(battle, 400)
+  Assert.equal(opening.phase, "running", "the transient scenario opens normally: " .. tostring(opening.error))
+  local openingPacket = assert(portRecord.packets[1], "the launch publishes its opening packet")
+  local timeline = BattleTimeline.new({
+    textSpeed = "fastest",
+    ballFadeColor = function()
+      return 0
+    end,
+  })
+  timeline:reset(openingPacket.before)
+  timeline:intro(openingPacket.before, true)
+  Assert.isTrue(timeline:present(openingPacket), "the timeline accepts the real opening packet")
+  for _ = 1, 3000 do
+    timeline:update(SourceTick.DT, function()
+      return true
+    end)
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(timeline:settled(), "the opening finishes before the voluntary exchange")
+
+  local request = assert(opening.request, "the opening decision is exposed")
+  local actor = assert(request.actors[1], "the opening decision addresses Eevee")
+  Assert.isTrue(
+    battle:submit(SessionFixture.replyFor(request, {
+      SessionFixture.switchChoice(actor, castformId),
+    })),
+    "the exchange into Castform is accepted"
+  )
+  drivePastRequest(battle, request.requestId, 400)
+  Assert.isTrue(battle:status().phase ~= "failed", "the same-turn knockout never fails presentation projection")
+
+  local transient = nil
+  local formEvent = nil
+  for _, packet in ipairs(portRecord.packets) do
+    for _, event in ipairs(packet.events) do
+      if event.kind == "ability" and event.cause.key == "weather-form" and event.payload.combatant == castformId then
+        transient = packet
+        formEvent = event
+      end
+    end
+  end
+  Assert.notNil(transient, "the real frame publishes Castform's transient form event")
+  Assert.notNil(formEvent, "the transient form event remains in the delivery")
+  local function ownRecord(view)
+    for _, record in ipairs(view.own or {}) do
+      if record.combatant == castformId then
+        return record
+      end
+    end
+  end
+  local before = assert(ownRecord(transient.before), "Castform is benched in the before view")
+  local after = assert(ownRecord(transient.after), "Castform is fainted in the after view")
+  Assert.isTrue(
+    before.active == false and after.active == false,
+    "the transient activation is absent at both packet endpoints"
+  )
+  Assert.isNil(before.activation, "the benched endpoint carries no new activation")
+  Assert.isNil(after.activation, "the fainted endpoint clears the new activation")
+  Assert.notNil(formEvent.formChangeAppearance, "the event freezes its own rainy portrait")
+  Assert.equal(formEvent.formChangeAppearance.form, 2, "the transient event names the rainy form")
+  local faintSequence = nil
+  local switchSequence = nil
+  for _, event in ipairs(transient.events) do
+    if event.kind == "switch" and event.payload.to == castformId then
+      switchSequence = event.sequence
+    elseif event.kind == "faint" and event.payload.combatant == castformId then
+      faintSequence = event.sequence
+    end
+  end
+  Assert.notNil(switchSequence, "the exchange is visible before the form change")
+  Assert.notNil(faintSequence, "the same-turn faint is visible after the form change")
+  Assert.isTrue(
+    switchSequence < formEvent.sequence and formEvent.sequence < faintSequence,
+    "switch, form, and faint retain event order"
+  )
+
+  Assert.isTrue(timeline:present(transient), "the timeline accepts the transient activation")
+  local formDemand = nil
+  local arrivalCry = nil
+  for _, cue in ipairs(timeline._queue) do
+    if cue.kind == "form-change" and cue.combatant == castformId then
+      formDemand = cue.requiresImage
+    elseif cue.kind == "reveal" and cue.combatant == castformId then
+      arrivalCry = cue.sendOutCry
+    end
+  end
+  Assert.equal(
+    formDemand,
+    "mon:" .. formEvent.formChangeAppearance.portraitSelector,
+    "the transient portrait is demanded before playback"
+  )
+  Assert.notNil(arrivalCry, "the transient arrival carries its own cry")
+  Assert.equal(arrivalCry.species, "CASTFORM", "the arrival cry names Castform")
+  Assert.equal(arrivalCry.form, 0, "the arrival cry uses the initial normal form")
+  local sawNormal = false
+  local sawRainy = false
+  local sawCoveredSwap = false
+  for _ = 1, 3000 do
+    timeline:update(SourceTick.DT, function()
+      return true
+    end)
+    for _, shown in ipairs(timeline:battlers()) do
+      if shown.combatant == castformId and shown.visible then
+        if shown.form == 0 then
+          sawNormal = true
+        elseif shown.form == 2 then
+          sawRainy = true
+          if type(shown.mosaicSize) == "number" and shown.mosaicSize > 0 then
+            sawCoveredSwap = true
+          end
+        end
+      end
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(sawNormal, "the transient send-out visibly starts with normal Castform")
+  Assert.isTrue(sawRainy, "the transient rainy portrait appears before the faint")
+  Assert.isTrue(sawCoveredSwap, "the transient portrait changes behind the mosaic")
+  timeline:dispose()
+  battle:dispose()
+end
+
 function T.production_reserves_enter_through_voluntary_switch()
   local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with exactly-once completion")
   local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
   local SessionFixture = require("libs.battle.tests.session_fixture")
+  local Status = require("libs.battle.src.gen4.Status")
+  local BattleTimeline = require("game.hgss.tests.support.BattleTimelineFixture")
+  local SourceTick = require("libs.hgss.src.field.SourceTick")
 
   local party = newPartyOwner()
   addPartyMon(party, "EEVEE", 20, 0x44444444)
+  local poisoned = party:partyMon(1)
+  Status.apply(poisoned, "poison", { kind = "setup" }, {})
+  local poisoning = party:preparePartyBatch(party:partyRevision(), { { slot = 1, mon = poisoned } }, {})
+  Assert.notNil(poisoning, "the reserve poison stages through the live party")
+  poisoning.publish()
   local foe = foeRecord("TOTODILE", 4, 0x5EED0004)
   local scenario = ScenarioFactory.fromEncounter({ attemptId = "attempt-reserve-switch", mon = foe }, { party = party })
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
@@ -417,6 +969,49 @@ function T.production_reserves_enter_through_voluntary_switch()
     end
   end
   Assert.isTrue(entered, "the production reserve enters through the voluntary exchange")
+  local exchange = nil
+  local arrival = nil
+  for _, candidate in ipairs(portRecord.packets) do
+    for _, event in ipairs(candidate.events) do
+      if event.kind == "switch" and event.payload.to == reserve then
+        exchange = candidate
+        for _, group in ipairs({ event.eventTime.own, event.eventTime.foes }) do
+          for _, record in ipairs(group) do
+            if record.combatant == reserve then
+              arrival = record
+            end
+          end
+        end
+      end
+    end
+  end
+  Assert.notNil(exchange, "the production exchange publishes its packet")
+  Assert.notNil(arrival, "the exchange publishes its event-time arrival")
+  Assert.equal(arrival.condition, "poison", "the real switch checkpoint keeps the reserve's major status")
+  Assert.equal(arrival.ballKey, "POKE_BALL", "the real switch checkpoint keeps the reserve's ball")
+  Assert.isTrue(type(arrival.moves) == "table" and #arrival.moves > 0, "the own arrival keeps its roster move set")
+  local timeline = BattleTimeline.new({ textSpeed = "fastest" })
+  timeline:reset(exchange.before)
+  timeline._flowIntroDone = true
+  Assert.isTrue(timeline:present(exchange), "the timeline accepts the real poisoned-reserve exchange")
+  local sawPoisonedArrival = false
+  for _ = 1, 3000 do
+    timeline:update(SourceTick.DT, function()
+      return true
+    end)
+    local shown = timeline:_shown(reserve)
+    if shown ~= nil and shown.visible then
+      sawPoisonedArrival = true
+      Assert.equal(shown.condition, "poison", "the reveal displays the checkpoint status before reconciliation")
+      Assert.equal(shown.ballKey, "POKE_BALL", "the reveal keeps the arrival ball")
+      Assert.isTrue(type(shown.moves) == "table" and #shown.moves > 0, "the reveal keeps own-side move facts")
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(sawPoisonedArrival, "the poisoned reserve is visibly revealed")
+  timeline:dispose()
   battle:dispose()
 end
 
@@ -511,14 +1106,11 @@ local function healingBattle(species, level, seed)
   Assert.notNil(wounding, "the setup wound stages against the live party")
   wounding.publish()
   local foe = foeRecord(species, level, seed)
-  local scenario = ScenarioFactory.fromEncounter(
-    { attemptId = "attempt-item-" .. seed, mon = foe },
-    {
-      party = party,
-      bag = bag,
-      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
-    }
-  )
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = "attempt-item-" .. seed, mon = foe }, {
+    party = party,
+    bag = bag,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = BattleRuntime.new({
     request = { id = "launch-item-" .. seed, kind = "wild", payload = preparedWild() },
@@ -772,12 +1364,10 @@ function T.a_stale_live_bag_blocks_every_publication()
 end
 
 -- Opponent decisions share the session battle stream: with a fixed seed
--- the wild answer consumes the opening draw, so the turn that follows
+-- the wild answer consumes opening randomness, so the following turn
 -- draws order, accuracy, critical, and damage from the advanced position.
--- Under that unified order the opening player strike deals exactly 7 and
--- the answering wild strike misses; a split selection stream would deal 6
--- and land the answer for 7 instead. The battle runs through production
--- composition with a live party owner and the generated scenario factory.
+-- The battle runs through production composition with a live party owner
+-- and the generated scenario factory.
 function T.internal_opponent_answers_advance_the_session_stream()
   local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with readiness waits")
   local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
@@ -787,15 +1377,15 @@ function T.internal_opponent_answers_advance_the_session_stream()
   local foe = foeRecord("TOTODILE", 20, 0x5EED0001)
   local launch = { id = "launch-unified-stream", kind = "wild", payload = { species = "TOTODILE", level = 20 } }
   local scenario = ScenarioFactory.fromEncounter({ attemptId = "attempt-unified-stream", mon = foe }, { party = party })
-  -- Seed 1 keeps the wild miss-then-answer shape after native entry
-  -- ordering, request ordering, and remainder-mapped damage draws.
-  scenario.random.seed = 3
+  -- Seed 15 keeps the shared-stream damage and wild-miss shape after
+  -- native opening sorts, request ordering, and remainder-mapped damage.
+  scenario.random.seed = 15
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = BattleRuntime.new({
     request = launch,
     scenario = scenario,
     party = party,
-    seed = 3,
+    seed = 15,
     presentation = headlessPort(portRecord),
   })
 
@@ -831,7 +1421,6 @@ function T.internal_opponent_answers_advance_the_session_stream()
     ticks = ticks + 1
   end
   Assert.equal(playerDamage, 6, "the wild answer advances the shared stream ahead of the player strike")
-  print("DEBUG wild stream", playerDamage, foeMissed)
   Assert.isTrue(foeMissed, "the answering wild strike draws from the same advanced stream")
   battle:dispose()
 end

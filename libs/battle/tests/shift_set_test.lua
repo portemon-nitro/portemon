@@ -793,6 +793,45 @@ function T.restored_offers_keep_their_frozen_identity()
   local held = session:capture()
   SessionFixture.assertPlainData(held, "pending.shift")
   local rngCalls = held.rng.calls
+  local checkpoint = held.pending.shift.checkpointPositions
+  local variants = {
+    {
+      name = "missing",
+      apply = function(record)
+        record.checkpointPositions = nil
+      end,
+    },
+    {
+      name = "duplicate",
+      apply = function(record)
+        record.checkpointPositions = { 1, 1 }
+      end,
+    },
+    {
+      name = "unknown",
+      apply = function(record)
+        record.checkpointPositions = { 1, 99 }
+      end,
+    },
+    {
+      name = "incomplete",
+      apply = function(record)
+        record.checkpointPositions = { 2 }
+      end,
+    },
+  }
+  for _, variant in ipairs(variants) do
+    local candidate = session:capture()
+    variant.apply(candidate.pending.shift)
+    Assert.throws(function()
+      Executor.restore(candidate, nativeContent())
+    end, "shift continuations reject a " .. variant.name .. " slot order")
+  end
+  Assert.deepEqual(
+    held.pending.shift.checkpointPositions,
+    checkpoint,
+    "rejected captures leave the held offer untouched"
+  )
   local revived = Executor.restore(held, nativeContent())
   local resumed = revived:advance(1024)
   Assert.equal(resumed.status, "waiting", "the restored offer waits for its answer")

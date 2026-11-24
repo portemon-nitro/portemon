@@ -51,15 +51,16 @@ local MoveExecution = require("libs.battle.src.gen4.MoveExecution")
 local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
 local NativeFormats = require("libs.battle.src.gen4.formats.NativeFormats")
 local NativePassiveBridge = require("libs.battle.src.gen4.NativePassiveBridge")
-local NativeSequenceAction = require("libs.battle.src.gen4.NativeSequenceAction")
 local Moves = require("libs.mons.src.gen4.Moves")
 local OutcomePolicy = require("libs.battle.src.gen4.OutcomePolicy")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Progression = require("libs.battle.src.gen4.Progression")
 local Residuals = require("libs.battle.src.gen4.Residuals")
 local StatStages = require("libs.battle.src.gen4.StatStages")
-local RewardEffort = require("libs.battle.src.gen4.Effort")
-local RewardExperience = require("libs.battle.src.gen4.Experience")
+local Reward = {
+  effort = require("libs.battle.src.gen4.Effort"),
+  experience = require("libs.battle.src.gen4.Experience"),
+}
 local Stats = require("libs.mons.src.gen4.Stats")
 local Status = require("libs.battle.src.gen4.Status")
 local Switching = require("libs.battle.src.gen4.Switching")
@@ -122,16 +123,20 @@ local BERRY_FLAVORS = {
 ---@field private _moneyUpItems table<string, boolean>
 ---@field private _ruleset table<string, unknown>?
 ---@field private _commitLearningHandler fun(state: table<string, unknown>)?
+---@field drainActionRewards fun(state: table<string, unknown>, checkpointPositions: integer[]): boolean
 ---@field private _commitShiftHandler fun(state: table<string, unknown>)?
 ---@field private _shiftOfferHandler (fun(state: table<string, unknown>, obligations: table<integer, table<string, unknown>>): ShiftOffer?)?
 ---@field private _resumeTurnHandler fun(state: table<string, unknown>, budget: integer)
 ---@field private _commitSwitchIntentHandler fun(state: table<string, unknown>)
----@field private _buildReplacementBatch (fun(state: table<string, unknown>, obligations: table<integer, table<string, unknown>>, allowRunOverride: boolean?))?
+---@field private _buildReplacementBatch (fun(state: table<string, unknown>, obligations: table<integer, table<string, unknown>>, allowRunOverride: boolean?, checkpointPositions: integer[]))?
 ---@field private _decisionLease boolean?
 ---@field private _trainerProvisional table<integer, table<string, integer>>
 ---@field private _finalized boolean
 ---@field private _disposed boolean
+---@field private _openingSnapshot table<string, unknown>?
 local HgssSessionExecutor = {}
+
+local NativeAbilitySupport = {}
 HgssSessionExecutor.__index = HgssSessionExecutor
 
 -- The one native ruleset identity dispatched by the common battle
@@ -226,12 +231,44 @@ local function isPositiveInt(value)
   return type(value) == "number" and value == value and value % 1 == 0 and value >= 1 and value <= 9007199254740991
 end
 
----@param replacement unknown open replacement continuation under validation
-local function checkReplacementShape(replacement)
-  if type(replacement) ~= "table" then
-    error(BattleErrors.incompatibleSnapshot("replacement continuations must be records", {}))
+---@param stream table<string, unknown> battle random stream for source order samples
+---@return table<integer, integer> raw order values in canonical battler-position order
+local function sampleOrderRolls(stream)
+  assert(type(stream.nextU16) == "function", "native order checkpoints sample the battle stream")
+  local rolls = {} ---@type table<integer, integer>
+  for position = 1, 4 do
+    rolls[position] = (
+      stream.nextU16 --[[@as fun(self: unknown, label: string, cause: table<string, unknown>): integer]]
+    )(stream, "quick_claw", { kind = "order_sample", position = position })
   end
-  local obligations = (replacement --[[@as table<string, unknown>]]).obligations
+  return rolls
+end
+
+---@param rolls unknown persisted native order samples under validation
+---@return string? shape defect, nil when the four raw values are valid
+function NativeAbilitySupport.orderRollsProblem(rolls)
+  if type(rolls) ~= "table" or #rolls ~= 4 then
+    return "must carry four native order samples"
+  end
+  for position = 1, 4 do
+    local sample = (rolls --[[@as table<integer, unknown>]])[position]
+    if type(sample) ~= "number" or sample % 1 ~= 0 or sample < 0 or sample > 65535 then
+      return "must keep native order samples as raw 16-bit values"
+    end
+  end
+  return nil
+end
+
+---@param state table<string, unknown> live battle state owning the current samples
+---@return table<integer, integer> battle-owned native order samples
+function NativeAbilitySupport.requireOrderRolls(state)
+  local rolls = state.nativeOrderRolls
+  assert(NativeAbilitySupport.orderRollsProblem(rolls) == nil, "live battles retain four native order samples")
+  return rolls --[[@as table<integer, integer>]]
+end
+
+---@param obligations unknown replacement obligations under validation
+local function checkObligationsShape(obligations)
   if type(obligations) ~= "table" then
     error(BattleErrors.incompatibleSnapshot("replacement continuations must carry their obligations", {}))
   end
@@ -258,6 +295,43 @@ local function checkReplacementShape(replacement)
         index = index,
       }))
     end
+  end
+end
+
+---@param state table<string, unknown> restored battle state owning the native slots
+---@param positions unknown frozen controller slot order under validation
+---@return string? defect description, nil when the order is a complete slot permutation
+function HgssSessionExecutor.checkpointPositionsProblem(state, positions)
+  if type(positions) ~= "table" then
+    return "must carry their frozen slot order"
+  end
+  local order = positions --[[@as table<integer, unknown>]]
+  if
+    #order ~= #state.positionOrder --[[@as integer[] ]]
+  then
+    return "must preserve every native slot"
+  end
+  local seen = {}
+  for _, positionId in ipairs(order) do
+    if not isPositiveInt(positionId) or seen[positionId] or state.positions[positionId] == nil then
+      return "must preserve each known native slot exactly once"
+    end
+    seen[positionId] = true
+  end
+  return nil
+end
+
+---@param state table<string, unknown> restored battle state owning the native slots
+---@param replacement unknown open replacement continuation under validation
+function HgssSessionExecutor.checkReplacementShape(state, replacement)
+  if type(replacement) ~= "table" then
+    error(BattleErrors.incompatibleSnapshot("replacement continuations must be records", {}))
+  end
+  local record = replacement --[[@as table<string, unknown>]]
+  checkObligationsShape(record.obligations)
+  local problem = HgssSessionExecutor.checkpointPositionsProblem(state, record.checkpointPositions)
+  if problem ~= nil then
+    error(BattleErrors.incompatibleSnapshot("replacement continuations " .. problem, {}))
   end
 end
 
@@ -288,8 +362,9 @@ local function playerShiftStyle(state)
   return nil
 end
 
+---@param state table<string, unknown> restored battle state owning the native slots
 ---@param shift unknown open shift continuation under validation
-local function checkShiftShape(shift)
+local function checkShiftShape(state, shift)
   if type(shift) ~= "table" then
     error(BattleErrors.incompatibleSnapshot("shift continuations must be records", {}))
   end
@@ -313,7 +388,11 @@ local function checkShiftShape(shift)
   if type(obligations) ~= "table" then
     error(BattleErrors.incompatibleSnapshot("shift continuations must carry their obligations", {}))
   end
-  checkReplacementShape({ obligations = obligations })
+  checkObligationsShape(obligations)
+  local problem = HgssSessionExecutor.checkpointPositionsProblem(state, record.checkpointPositions)
+  if problem ~= nil then
+    error(BattleErrors.incompatibleSnapshot("shift continuations " .. problem, {}))
+  end
   local identity = record.identity --[[@as table<string, unknown>?]]
   if type(identity) ~= "table" then
     error(BattleErrors.incompatibleSnapshot("shift continuations must carry their occurrence identity", {}))
@@ -327,6 +406,10 @@ end
 
 ---@param state table<string, unknown>
 local function checkRestoredShape(state)
+  local rollsProblem = NativeAbilitySupport.orderRollsProblem(state.nativeOrderRolls)
+  if rollsProblem ~= nil then
+    error(BattleErrors.incompatibleSnapshot("native snapshots " .. rollsProblem, {}))
+  end
   local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
   for _, frame in ipairs(frames) do
     BattleState.checkContinuationFrame(frame)
@@ -340,18 +423,21 @@ local function checkRestoredShape(state)
     end
     local pending = state.pending --[[@as table<string, unknown>]]
     if pending.replacement ~= nil then
-      checkReplacementShape(pending.replacement)
+      HgssSessionExecutor.checkReplacementShape(state, pending.replacement)
     end
-    -- Held shift opportunities carry the same obligation shape beside
-    -- their frozen incoming identity; snapshots predating the offer
-    -- stay readable because the key is simply absent.
+    -- Held Shift opportunities carry the same obligation and complete
+    -- slot-order shape beside their frozen incoming identity.
     if pending.shift ~= nil then
-      checkShiftShape(pending.shift)
+      checkShiftShape(state, pending.shift)
     end
     -- Learning suspensions hold the same obligation shape aside while
     -- the recipient answers: replacement work resumes after the reply.
     if pending.learning ~= nil then
-      checkReplacementShape(pending.learning --[[@as table<string, unknown>]])
+      local learning = pending.learning --[[@as table<string, unknown>]]
+      HgssSessionExecutor.checkReplacementShape(state, learning)
+      if learning.resumeAction ~= nil and type(learning.resumeAction) ~= "boolean" then
+        error(BattleErrors.incompatibleSnapshot("learning continuations carry a boolean action-resume flag", {}))
+      end
     end
     if pending.switchIntent ~= nil then
       local intent = pending.switchIntent --[[@as table<string, unknown>]]
@@ -367,6 +453,10 @@ local function checkRestoredShape(state)
         or (intent.readyEventSequence ~= nil and not isPositiveInt(intent.readyEventSequence))
       then
         error(BattleErrors.incompatibleSnapshot("switch continuations preserve their active move owner", {}))
+      end
+      local problem = HgssSessionExecutor.checkpointPositionsProblem(state, intent.checkpointPositions)
+      if problem ~= nil then
+        error(BattleErrors.incompatibleSnapshot("switch continuations " .. problem, {}))
       end
     end
   elseif state.status == "running" then
@@ -387,6 +477,7 @@ local function freshSchedule()
     cursor = "opening",
     currentActionId = nil,
     residualCursor = nil,
+    executionCursor = nil,
     pendingFaints = {},
   }
 end
@@ -406,19 +497,6 @@ local function buildBatch(state, admitted)
     }
     return
   end
-  -- Source-timed order randomness is sampled before decisions are
-  -- requested: four raw values in canonical battler-position order over
-  -- the fixed four-slot loop, stored as plain data on the open batch so
-  -- capture and restore replay the same order without resampling.
-  local stream = state.rng --[[@as table<string, unknown>]]
-  assert(type(stream.nextU16) == "function", "ordinary batches sample order before requests")
-  local rolls = {} ---@type table<integer, integer>
-  for position = 1, 4 do
-    rolls[position] = (
-      stream.nextU16 --[[@as fun(self: unknown, label: string, cause: table<string, unknown>): integer]]
-    )(stream, "quick_claw", { kind = "order_sample", position = position })
-  end
-  (state.pending --[[@as table<string, unknown>]]).nativeOrderRolls = rolls
   DecisionBatch.publishRound(state, plan, admitted, HgssSessionExecutor.DECISION_KIND)
 end
 
@@ -494,6 +572,117 @@ local function resolveMove(mon, moveSlot)
     end
   end
   return "STRUGGLE", nil
+end
+
+---@param state table<string, unknown> live native battle
+---@param action table<string, unknown> queued strike under move selection
+---@param attacker table<string, unknown> owning active combatant
+---@return string resolved move identity
+---@return integer? zero-based move slot owning Pursuit PP
+local function pursuitMoveOwner(state, action, attacker)
+  local payload = action.payload --[[@as table<string, unknown>]]
+  local move = payload.forcedMove
+  local slot = nil ---@type integer?
+  if type(move) ~= "string" then
+    move =
+      SequenceMoveState.forcedMove(state, (action.actor --[[@as table<string, unknown>]]).combatant --[[@as integer]])
+  end
+  if type(move) == "string" then
+    for index, record in
+      ipairs(attacker.mon.moves --[[@as table<integer, table<string, unknown>>]])
+    do
+      if record.move == move and type(record.pp) == "number" and record.pp > 0 then
+        slot = index - 1
+        break
+      end
+    end
+  else
+    move, slot = resolveMove(attacker.mon, payload.moveSlot)
+  end
+  return move, slot
+end
+
+---@param state table<string, unknown> live battle before the outgoing mon leaves
+---@param departing integer combatant leaving its active position
+---@param activation integer departing active-entry identity
+---@param ordinal integer switch event ordinal shared by the interruption
+---@param checkpointPositions integer[] frozen native slot order
+---@param executeAttack fun(state: table<string, unknown>, action: table<string, unknown>, ordinal: integer, checkpointPositions: integer[])
+local function interceptPursuit(state, departing, activation, ordinal, checkpointPositions, executeAttack)
+  local queue = state.queue --[[@as table<integer, table<string, unknown>>]]
+  local target = BattleState.combatant(state, departing)
+  local targetSide = BattleState.participant(state, target.participant --[[@as integer]]).side
+  local candidates = {} ---@type table<integer, table<string, unknown>>
+  for _, action in ipairs(queue) do
+    if action.kind == "attack" and action.progress == "queued" then
+      local actor = action.actor --[[@as table<string, unknown>]]
+      local attacker = BattleState.combatant(state, actor.combatant --[[@as integer]])
+      local side = BattleState.participant(state, attacker.participant --[[@as integer]]).side
+      if side ~= targetSide and attacker.active ~= nil and attacker.hp > 0 then
+        local status = BattleContext.wrap(state):statusOf(actor.combatant --[[@as integer]])
+        local active = attacker.active --[[@as table<string, unknown>]]
+        local truant = NativePassiveBridge.wrap(state):abilityOf(actor.combatant --[[@as integer]]) == "TRUANT"
+          and active.entryTurn % 2 ~= BattleState.nativeTurn(state) % 2
+        local move, ownerSlot = pursuitMoveOwner(state, action, attacker)
+        local owner = ownerSlot ~= nil and attacker.mon.moves[ownerSlot + 1] or nil
+        if move == "PURSUIT" and type(owner) == "table" and status ~= "sleep" and status ~= "freeze" and not truant then
+          candidates[#candidates + 1] = action
+        end
+      end
+    end
+  end
+  table.sort(candidates, function(left, right)
+    local leftPosition = left.position --[[@as integer]]
+    local rightPosition = right.position --[[@as integer]]
+    return leftPosition < rightPosition
+  end)
+  for _, queued in ipairs(candidates) do
+    local liveTarget = BattleState.combatant(state, departing)
+    local targetEntry = liveTarget.active
+    if liveTarget.hp <= 0 or targetEntry == nil or targetEntry.activation ~= activation then
+      break
+    end
+    if queued.progress == "queued" then
+      local actor = queued.actor --[[@as table<string, unknown>]]
+      local attacker = BattleState.combatant(state, actor.combatant --[[@as integer]])
+      local status = BattleContext.wrap(state):statusOf(actor.combatant --[[@as integer]])
+      local active = attacker.active
+      local _, ownerSlot = pursuitMoveOwner(state, queued, attacker)
+      local moveRecord = ownerSlot ~= nil and attacker.mon.moves[ownerSlot + 1] or nil
+      local hasPp = type(moveRecord) == "table" and moveRecord.move == "PURSUIT" and moveRecord.pp > 0
+      local truant = NativePassiveBridge.wrap(state):abilityOf(actor.combatant --[[@as integer]]) == "TRUANT"
+        and active ~= nil
+        and active.entryTurn % 2 ~= BattleState.nativeTurn(state) % 2
+      if active ~= nil and attacker.hp > 0 and status ~= "sleep" and status ~= "freeze" and not truant and hasPp then
+        local child = copyValue(queued) --[[@as table<string, unknown>]]
+        local childPayload = child.payload --[[@as table<string, unknown>]]
+        childPayload.target = { kind = "combatant", combatant = departing }
+        childPayload.pursuitInterruption = true
+        childPayload.pursuitMoveSlot = ownerSlot
+        ActionQueue.complete(queue, queued.id --[[@as integer]])
+        if type(state.turnActed) ~= "table" then
+          state.turnActed = {}
+        end
+        state.turnActed[
+          actor.combatant --[[@as integer]]
+        ] = true
+        local received = state.lastHits --[[@as table<integer, unknown>?]]
+        if type(received) == "table" then
+          received[
+            actor.combatant --[[@as integer]]
+          ] = nil
+        end
+        (state.lastHitSlots --[[@as table<integer, integer>]])[
+          actor.combatant --[[@as integer]]
+        ] =
+          nil
+        executeAttack(state, child, ordinal, checkpointPositions)
+        if BattleState.combatant(state, departing).hp <= 0 then
+          break
+        end
+      end
+    end
+  end
 end
 
 -- Native move-range law: the compiled numeric range selects the target
@@ -875,6 +1064,33 @@ local STAGED_STATS = { "attack", "defense", "speed", "specialAttack", "specialDe
 -- Every stage key an entry carries, including the gating pair.
 local STAGE_KEYS = { "attack", "defense", "speed", "specialAttack", "specialDefense", "accuracy", "evasion" }
 
+---@param species string catalog species key
+---@param form integer catalog form identity
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
+---@return table<string, unknown> static species facts for the identity
+local function staticFactsForForm(species, form, speciesFacts)
+  if type(species) ~= "string" or species == "" then
+    error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "species" }))
+  end
+  if type(form) ~= "number" or form % 1 ~= 0 then
+    error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "form" }))
+  end
+  local byForm = speciesFacts[species]
+  local static = type(byForm) == "table" and (byForm --[[@as table<integer, table<string, unknown>>]])[form]
+  if type(static) ~= "table" then
+    error(BattleErrors.missingBehavior("damage reads its static species facts", {
+      fact = species,
+    }))
+  end
+  local facts = static --[[@as table<string, unknown>]]
+  if type(facts.baseStats) ~= "table" or type(facts.growthCurve) ~= "table" then
+    error(BattleErrors.missingBehavior("damage reads its static species facts", {
+      fact = species,
+    }))
+  end
+  return facts
+end
+
 ---@param mon unknown battle-local mon record under fact sampling
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
 ---@return table<string, unknown> static species facts for the record
@@ -883,33 +1099,7 @@ local function staticFacts(mon, speciesFacts)
     error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "mon" }))
   end
   local record = mon --[[@as table<string, unknown>]]
-  local species = record.species
-  if type(species) ~= "string" or species == "" then
-    error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "species" }))
-  end
-  local form = record.form
-  if type(form) ~= "number" or form % 1 ~= 0 then
-    error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "form" }))
-  end
-  local byForm = speciesFacts[
-    species --[[@as string]]
-  ]
-  local static = type(byForm) == "table"
-    and (byForm --[[@as table<integer, table<string, unknown>>]])[
-      form --[[@as integer]]
-    ]
-  if type(static) ~= "table" then
-    error(BattleErrors.missingBehavior("damage reads its static species facts", {
-      fact = species --[[@as string]],
-    }))
-  end
-  local facts = static --[[@as table<string, unknown>]]
-  if type(facts.baseStats) ~= "table" or type(facts.growthCurve) ~= "table" then
-    error(BattleErrors.missingBehavior("damage reads its static species facts", {
-      fact = species --[[@as string]],
-    }))
-  end
-  return facts
+  return staticFactsForForm(record.species --[[@as string]], record.form --[[@as integer]], speciesFacts)
 end
 
 ---@param combatant table<string, unknown> live combatant under projection
@@ -1002,8 +1192,7 @@ end
 ---@param mon unknown battle-local mon record carrying ability and condition
 ---@param category unknown executing move category selecting the split
 ---@param bridge NativePassiveBridge live passive composition for the holder
----@param state table<string, unknown> live battle state carrying entry timing
-local function statusAdjustedAttack(attacker, combatantId, mon, category, bridge, state)
+local function statusAdjustedAttack(attacker, combatantId, mon, category, bridge)
   if category ~= "physical" then
     return
   end
@@ -1011,11 +1200,6 @@ local function statusAdjustedAttack(attacker, combatantId, mon, category, bridge
   local boost = bridge:statRatio(combatantId, "attack", conditionKey ~= nil, "physical")
   if boost ~= nil then
     attacker.attack = math.floor((attacker.attack * boost.numerator) / boost.denominator)
-  end
-  local active = BattleState.combatant(state, combatantId).active --[[@as table<string, unknown>]]
-  local entryTurn = active.entryTurn --[[@as integer]]
-  if bridge:abilityOf(combatantId) == "SLOW_START" and BattleState.nativeTurn(state) - entryTurn < 5 then
-    attacker.attack = math.floor(attacker.attack / 2)
   end
 end
 
@@ -1104,8 +1288,23 @@ local function combatantTypes(combatant, speciesFacts, state)
   if type(mon) ~= "table" then
     error(BattleErrors.missingBehavior("damage reads its real combat facts", { fact = "mon" }))
   end
+  local active = combatant.active --[[@as table<string, unknown>?]]
   local facts = staticFacts(mon, speciesFacts)
   local declared = facts.types
+  if
+    state ~= nil
+    and active ~= nil
+    and (mon --[[@as table<string, unknown>]]).species == "CASTFORM"
+  then
+    local weatherTypes = { [0] = "normal", [1] = "fire", [2] = "water", [3] = "ice" }
+    local typeKey = weatherTypes[
+      (active --[[@as table<string, unknown>]]).form --[[@as integer]]
+    ]
+    if typeKey == nil then
+      error(BattleErrors.invalidState("Castform carries a known committed weather form", {}))
+    end
+    declared = { typeKey }
+  end
   if type(declared) ~= "table" or #declared == 0 then
     error(BattleErrors.missingBehavior("damage reads its semantic type facts", { fact = "types" }))
   end
@@ -1139,14 +1338,7 @@ local function combatantTypes(combatant, speciesFacts, state)
       end
     end
     local ability = NativePassiveBridge.wrap(state):abilityOf(combatant.id)
-    if ability == "FORECAST" then
-      local weather = weatherSuppressed(state) and "none" or activeWeather(state)
-      local weatherTypes = { rain = "water", sun = "fire", hail = "ice" }
-      local typeKey = weatherTypes[weather]
-      if typeKey ~= nil then
-        return { typeKey }
-      end
-    elseif ability == "MULTITYPE" then
+    if ability == "MULTITYPE" then
       local plateTypes = {
         FLAME_PLATE = "fire",
         SPLASH_PLATE = "water",
@@ -1320,10 +1512,7 @@ local function checkAttackBinding(state, choice, moveFacts, speciesFacts)
   local facts = moveFacts ~= nil and moveFacts[moveName] or nil
   local attackerTypes = nil
   if moveName == "CURSE" and type(entry.mon) == "table" and speciesFacts ~= nil then
-    local ok, types = pcall(combatantTypes, entry, speciesFacts)
-    if ok and type(types) == "table" then
-      attackerTypes = types --[[@as string[] ]]
-    end
+    attackerTypes = combatantTypes(entry, speciesFacts, state)
   end
   local policy = rangePolicy(moveName, facts, attackerTypes)
   if policy == nil then
@@ -1432,21 +1621,18 @@ local StrikeFacts = {}
 ---@param userId integer striking combatant under the facts
 ---@param foeId integer targeted combatant under the facts
 ---@param moveFacts table<string, table<string, unknown>> immutable native move facts
+---@param pursuitInterruption boolean? true when a switch transaction interrupted this strike
 ---@return table<string, unknown> duel facts for the strike frame
-function StrikeFacts.duel(state, userId, foeId, moveFacts)
+function StrikeFacts.duel(state, userId, foeId, moveFacts, pursuitInterruption)
   local user = BattleState.combatant(state, userId)
   local foe = BattleState.combatant(state, foeId)
   local userActive = user.active --[[@as table<string, unknown>?]]
   local currentTurn = BattleState.nativeTurn(state)
   local userFresh = userActive ~= nil and userActive.entryTurn == currentTurn
   local foeSelectedDamage = false
-  local foeSwitching = false
   local queue = state.queue --[[@as table<integer, table<string, unknown>>?]]
   for _, action in ipairs(queue or {}) do
     local actor = action.actor --[[@as table<string, unknown>]]
-    if actor.combatant == foeId and action.kind == "switch" then
-      foeSwitching = true
-    end
     if actor.combatant == foeId and action.kind == "attack" then
       local payload = action.payload --[[@as table<string, unknown>]]
       local selectedMove = resolveMove(foe.mon, payload.moveSlot)
@@ -1573,7 +1759,7 @@ function StrikeFacts.duel(state, userId, foeId, moveFacts)
     userFresh = userFresh,
     userTurn = currentTurn,
     foeSelectedDamage = foeSelectedDamage,
-    foeSwitching = foeSwitching,
+    pursuitPowerMultiplier = pursuitInterruption == true and 20 or 10,
     foeActed = marked[foeId] == true,
     foeHurt = hurt(foeId),
     userHurt = hurt(userId),
@@ -1920,8 +2106,9 @@ end
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts by species and form
 ---@param bridge NativePassiveBridge live passive composition for the holder
 ---@param state table<string, unknown> live battle state carrying temporary combat facts
+---@param departedTurn integer? native turn whose faint reset owns a departed comparator record
 ---@return table<string, integer> live level and stage-effective battle stats for the entry
-local function projectCombatant(combatant, speciesFacts, bridge, state)
+local function projectCombatant(combatant, speciesFacts, bridge, state, departedTurn)
   local stats, stages = unstagedCombatant(combatant, speciesFacts)
   -- Battle maximum health travels with the projection so recovery
   -- handlers heal fractions of the true ceiling instead of guessing;
@@ -1931,19 +2118,27 @@ local function projectCombatant(combatant, speciesFacts, bridge, state)
     ceiling = combatant.entryHp
   end
   stats.maxHp = ceiling --[[@as integer]]
+  local simple = bridge:abilityOf(combatant.id --[[@as integer]]) == "SIMPLE"
   for _, key in ipairs(STAGED_STATS) do
-    stats[key] = StatStages.effective(stats[key] --[[@as integer]], stages[key] --[[@as integer]], key)
+    local stage = stages[key] --[[@as integer]]
+    if key == "speed" and simple then
+      stage = math.max(StatStages.MIN, math.min(StatStages.MAX, stage * 2))
+    end
+    stats[key] = StatStages.effective(stats[key] --[[@as integer]], stage, key)
   end
   if
     bridge:powerTrick(combatant.id --[[@as integer]])
   then
     stats.attack, stats.defense = stats.defense, stats.attack
   end
-  -- Persistent conditions reshape effective Speed at this checkpoint:
-  -- paralysis quarters unless the holder's passive answers instead.
-  -- Held items reshape it first, in native order, over the split
-  -- possession reads.
+  -- Persistent conditions and held items reshape effective Speed after
+  -- the weather multiplier, in native integer-arithmetic order.
   assert(type(bridge) == "table", "combat projections read their passive bridge")
+  local ability = bridge:abilityOf(combatant.id --[[@as integer]])
+  local weather = weatherSuppressed(state) and "none" or activeWeather(state)
+  if (ability == "SWIFT_SWIM" and weather == "rain") or (ability == "CHLOROPHYLL" and weather == "sun") then
+    stats.speed = stats.speed * 2
+  end
   local species = nil
   if type(combatant.mon) == "table" then
     local monRecord = combatant.mon --[[@as table<string, unknown>]]
@@ -1959,20 +2154,22 @@ local function projectCombatant(combatant, speciesFacts, bridge, state)
   )
   stats.speed = statusAdjustedSpeed(itemSpeed, combatant.id --[[@as integer]], combatant.mon, bridge)
   local active = combatant.active --[[@as table<string, unknown>?]]
+  local slowStartElapsed = nil
   if active ~= nil then
-    local elapsed = BattleState.nativeTurn(state) - active.entryTurn --[[@as integer]]
-    local ability = bridge:abilityOf(combatant.id --[[@as integer]])
-    if ability == "SLOW_START" and elapsed < 5 then
+    slowStartElapsed = BattleState.nativeTurn(state) - active.slowStartTurn --[[@as integer]]
+  elseif departedTurn ~= nil then
+    -- InitFaintedWork resets slowStartTurns to the following turn.
+    slowStartElapsed = BattleState.nativeTurn(state) - (departedTurn + 1)
+  end
+  if slowStartElapsed ~= nil then
+    if ability == "SLOW_START" and slowStartElapsed < 5 then
       stats.speed = math.floor(stats.speed / 2)
     elseif
       ability == "UNBURDEN"
+      and active ~= nil
       and active.canUnburden == true
       and bridge:rawHeldItem(combatant.id --[[@as integer]]) == nil
     then
-      stats.speed = stats.speed * 2
-    end
-    local weather = weatherSuppressed(state) and "none" or activeWeather(state)
-    if (ability == "SWIFT_SWIM" and weather == "rain") or (ability == "CHLOROPHYLL" and weather == "sun") then
       stats.speed = stats.speed * 2
     end
   end
@@ -2356,23 +2553,7 @@ fieldActive = fieldActiveForKey
 ---@param state table<string, unknown> live battle state under the weather read
 ---@return string active weather identity for the strike facts
 local function activeWeatherOf(state)
-  if fieldActive(state, "raindance") then
-    return "rain"
-  end
-  if fieldActive(state, "sunnyday") then
-    return "sun"
-  end
-  if fieldActive(state, "sandstorm") then
-    return "sand"
-  end
-  if fieldActive(state, "hail") then
-    return "hail"
-  end
-  local weather = (state.environment --[[@as table<string, unknown>]]).weather
-  if weather == "rain" or weather == "sun" or weather == "sand" or weather == "hail" then
-    return weather
-  end
-  return "none"
+  return NativePassiveBridge.wrap(state):weatherOf()
 end
 activeWeather = activeWeatherOf
 
@@ -2382,23 +2563,7 @@ activeWeather = activeWeatherOf
 ---@param state table<string, unknown> live battle state under the suppression read
 ---@return boolean true when a live ability suppresses weather damage
 local function isWeatherSuppressed(state)
-  for _, combatantId in
-    ipairs(state.combatantOrder --[[@as integer[] ]])
-  do
-    local combatant = BattleState.combatant(state, combatantId)
-    if
-      combatant.active ~= nil
-      and type(combatant.hp) == "number"
-      and combatant.hp --[[@as integer]]
-        > 0
-    then
-      local ability = NativePassiveBridge.wrap(state):abilityOf(combatantId)
-      if ability == "CLOUD_NINE" or ability == "AIR_LOCK" then
-        return true
-      end
-    end
-  end
-  return false
+  return NativePassiveBridge.wrap(state):weatherSuppressed()
 end
 weatherSuppressed = isWeatherSuppressed
 
@@ -2417,25 +2582,59 @@ weatherSuppressed = isWeatherSuppressed
 local function strikeCombatFacts(state, combatant, defender, speciesFacts, category, moveName)
   local bridge = NativePassiveBridge.wrap(state)
   local attackerStats = projectCombatant(combatant, speciesFacts, bridge, state)
-  local attackerRaw, attackerStages = unstagedCombatant(combatant, speciesFacts)
+  local attackerRaw, liveAttackerStages = unstagedCombatant(combatant, speciesFacts)
+  local attackerStages = {} ---@type table<string, integer>
+  for _, key in ipairs(STAGED_STATS) do
+    attackerStages[key] = liveAttackerStages[key]
+  end
   if
     bridge:powerTrick(combatant.id --[[@as integer]])
   then
     attackerRaw.attack, attackerRaw.defense = attackerRaw.defense, attackerRaw.attack
   end
-  statusAdjustedAttack(attackerStats, combatant.id --[[@as integer]], combatant.mon, "physical", bridge, state)
-  statusAdjustedAttack(attackerStats, combatant.id --[[@as integer]], combatant.mon, "special", bridge, state)
+  local attackerAbility = bridge:abilityOf(combatant.id --[[@as integer]])
+  local active = combatant.active --[[@as table<string, unknown>]]
+  if
+    attackerAbility == "SLOW_START"
+    and BattleState.nativeTurn(state) - active.slowStartTurn --[[@as integer]]
+      < 5
+  then
+    attackerRaw.attack = math.floor(attackerRaw.attack / 2)
+  end
+  if attackerAbility == "SIMPLE" then
+    for _, key in ipairs({ "attack", "specialAttack" }) do
+      attackerStages[key] = math.max(StatStages.MIN, math.min(StatStages.MAX, attackerStages[key] * 2))
+    end
+  end
+  for _, key in ipairs({ "attack", "defense", "specialAttack", "specialDefense" }) do
+    attackerStats[key] = StatStages.effective(attackerRaw[key], attackerStages[key], key)
+  end
+  statusAdjustedAttack(attackerStats, combatant.id --[[@as integer]], combatant.mon, "physical", bridge)
+  statusAdjustedAttack(attackerStats, combatant.id --[[@as integer]], combatant.mon, "special", bridge)
   local defenderStats = projectCombatant(defender, speciesFacts, bridge, state)
-  local defenderRaw, defenderStages = unstagedCombatant(defender, speciesFacts)
+  local defenderRaw, liveDefenderStages = unstagedCombatant(defender, speciesFacts)
+  local defenderStages = {} ---@type table<string, integer>
+  for _, key in ipairs(STAGED_STATS) do
+    defenderStages[key] = liveDefenderStages[key]
+  end
   if
     bridge:powerTrick(defender.id --[[@as integer]])
   then
     defenderRaw.attack, defenderRaw.defense = defenderRaw.defense, defenderRaw.attack
   end
+  if
+    bridge:abilityOf(defender.id --[[@as integer]]) == "SIMPLE" and attackerAbility ~= "MOLD_BREAKER"
+  then
+    for _, key in ipairs({ "defense", "specialDefense" }) do
+      defenderStages[key] = math.max(StatStages.MIN, math.min(StatStages.MAX, defenderStages[key] * 2))
+    end
+  end
+  for _, key in ipairs({ "attack", "defense", "specialAttack", "specialDefense" }) do
+    defenderStats[key] = StatStages.effective(defenderRaw[key], defenderStages[key], key)
+  end
   statusAdjustedDefense(defenderStats, defender.id --[[@as integer]], defender.mon, "physical", bridge)
   statusAdjustedDefense(defenderStats, defender.id --[[@as integer]], defender.mon, "special", bridge)
   local _, attackerCondition = statusFacts(combatant.mon)
-  local attackerAbility = bridge:abilityOf(combatant.id --[[@as integer]])
   -- Called moves resolve after this projection, while HGSS CalcMoveDamage
   -- selects the stat pair from the executed move's category.
   local factsByCategory = {
@@ -2490,8 +2689,9 @@ end
 ---@param policy string native target policy owning the action
 ---@param selected table<string, unknown> submitted strike target under resolution
 ---@param stream table<string, unknown> battle stream drawing random targets
+---@param bindSelectedTarget boolean? true keeps the submitted target for redirection policy
 ---@return integer[] ordered recipient combatants under the action
-local function resolveStrikeRecipients(state, actorId, policy, selected, stream)
+local function resolveStrikeRecipients(state, actorId, policy, selected, stream, bindSelectedTarget)
   if policy == "legacy" or policy == "selected_foe" then
     local defenderId = resolveTarget(state, actorId, selected)
     if defenderId == nil then
@@ -2501,7 +2701,7 @@ local function resolveStrikeRecipients(state, actorId, policy, selected, stream)
     local defenderSide = BattleState.participant(state, defender.participant --[[@as integer]]).side
     local user = BattleState.combatant(state, actorId)
     local userSide = BattleState.participant(state, user.participant --[[@as integer]]).side
-    if defenderSide ~= userSide then
+    if bindSelectedTarget ~= true and defenderSide ~= userSide then
       local redirect = followMeForSide(state, defenderSide)
       if redirect ~= nil then
         return { redirect }
@@ -2532,8 +2732,18 @@ end
 ---@param category unknown executing move category selecting the stat pair
 ---@param moveName string executing move identity under the error context
 ---@param moveFacts table<string, table<string, unknown>> immutable native move facts
+---@param pursuitInterruption boolean? true when a switch transaction interrupted this strike
 ---@return table<string, unknown> ordered targets plus per-recipient and first-recipient facts
-local function recipientStrikeFacts(state, combatant, targetIds, speciesFacts, category, moveName, moveFacts)
+local function recipientStrikeFacts(
+  state,
+  combatant,
+  targetIds,
+  speciesFacts,
+  category,
+  moveName,
+  moveFacts,
+  pursuitInterruption
+)
   local userMon = combatant.mon --[[@as table<string, unknown>]]
   local recentMoves = state.lastMoves
   if type(recentMoves) ~= "table" then
@@ -2606,7 +2816,7 @@ local function recipientStrikeFacts(state, combatant, targetIds, speciesFacts, c
       combat = combatFacts,
       combatByCategory = strike.factsByCategory,
       speeds = { user = attackerStats.speed, foe = defenderStats.speed },
-      duel = StrikeFacts.duel(state, combatant.id --[[@as integer]], defenderId, moveFacts),
+      duel = StrikeFacts.duel(state, combatant.id --[[@as integer]], defenderId, moveFacts, pursuitInterruption),
       foeLevel = defenderStats.level,
       abilities = {
         user = NativePassiveBridge.wrap(state):abilityOf(combatant.id --[[@as integer]]),
@@ -2673,23 +2883,58 @@ local function sideActive(state, side, key)
 end
 
 ---@param state table<string, unknown> live battle under speed ordering
----@param speciesFacts table<string, SpeciesFormFacts> species projections for active battlers
----@return table<integer, table<string, integer>> speed candidates for current living entries
-local function activeSpeedEntries(state, speciesFacts)
-  local entries = {} ---@type table<integer, table<string, integer>>
+---@param speciesFacts table<string, SpeciesFormFacts> species projections for battler slots
+---@return table<string, unknown>[] speed candidates for every native slot
+local function battlerSpeedEntries(state, speciesFacts)
+  local orderRolls = NativeAbilitySupport.requireOrderRolls(state)
+  local entries = {} ---@type table<integer, table<string, unknown>>[]
   local bridge = NativePassiveBridge.wrap(state)
-  for _, combatantId in
-    ipairs(state.combatantOrder --[[@as integer[] ]])
+  for _, positionId in
+    ipairs(state.positionOrder --[[@as integer[] ]])
   do
-    local combatant = BattleState.combatant(state, combatantId)
-    if combatant.active ~= nil and combatant.hp > 0 then
-      local speed = projectCombatant(combatant, speciesFacts, bridge, state).speed
+    local position = BattleState.position(state, positionId)
+    local occupant = position.occupant
+    local departed = position.departed --[[@as table<string, unknown>?]]
+    local comparatorId = occupant
+    if comparatorId == nil and departed ~= nil then
+      comparatorId = departed.combatant --[[@as integer]]
+    end
+    local living = false
+    local speed = 0
+    local order = { first = false, last = false, stall = false }
+    if comparatorId ~= nil then
+      local combatant = BattleState.combatant(state, comparatorId --[[@as integer]])
+      living = occupant ~= nil and combatant.active ~= nil and combatant.hp > 0
+      speed =
+        projectCombatant(combatant, speciesFacts, bridge, state, departed ~= nil and departed.faintedTurn or nil).speed
       local participant = BattleState.participant(state, combatant.participant --[[@as integer]])
       if sideActive(state, participant.side, "tailwind") then
         speed = speed * 2
       end
-      entries[#entries + 1] = { id = combatantId, speed = speed }
+      local roll = (orderRolls --[[@as table<integer, integer>]])[positionId]
+        or (orderRolls --[[@as table<integer, integer>]])[((positionId - 1) % 4) + 1]
+      local orderContext = {
+        actionCheck = false,
+        berryCheck = true,
+        rawOrderRoll = roll,
+        moveUse = { user = comparatorId },
+      }
+      if not living then
+        -- Departed slots have no activation clock. InitFaintedWork resets
+        -- their timing counters while retaining ability and held-item facts.
+        orderContext.entryTurn = departed ~= nil and departed.faintedTurn --[[@as integer]] + 1 or 0
+      end
+      order = bridge:orderFacts(comparatorId --[[@as integer]], orderContext)
     end
+    entries[#entries + 1] = {
+      id = comparatorId or positionId,
+      selectedOrdinal = positionId,
+      speed = speed,
+      boostedPriority = order.first,
+      loweredPriority = order.last,
+      stall = order.stall,
+      living = living,
+    }
   end
   return entries
 end
@@ -2701,20 +2946,9 @@ end
 ---@param itemFacts table<string, table<string, unknown>> held-item facts
 ---@param chargeTurn boolean true when this is the move's charge action
 ---@param targets integer[] selected living recipient identities
----@param speedEntries table<integer, table<string, integer>> current living battlers' sampled Speed
----@param stream table<string, unknown> battle random stream for speed ties
+---@param orderedIds integer[] frozen controller battler order
 ---@return table<string, unknown>? redirected recipient and native ability facts
-local function redirectAbilityRecipient(
-  state,
-  actor,
-  move,
-  moveRecord,
-  itemFacts,
-  chargeTurn,
-  targets,
-  speedEntries,
-  stream
-)
+local function redirectAbilityRecipient(state, actor, move, moveRecord, itemFacts, chargeTurn, targets, orderedIds)
   return require("libs.battle.src.gen4.NativeMoveInterference").redirectRecipient(
     state,
     actor,
@@ -2723,23 +2957,25 @@ local function redirectAbilityRecipient(
     itemFacts,
     chargeTurn,
     targets,
-    speedEntries,
-    fieldActive(state, "trickroom"),
-    stream
+    orderedIds
   )
 end
 
--- Hazard entries strike only grounded arrivals: flying types and
--- magnet-rise levitation avoid spikes-family layers while gravity holds
--- every arrival down. The check mirrors the strike immunity inputs
--- without borrowing strike semantics: hazards price the arrival, not a
--- directed strike.
+-- HGSS's hazards script admits only grounded arrivals to the spikes
+-- family; Stealth Rock is resolved separately after this gate.
 ---@param state table<string, unknown> live battle state under the entry read
 ---@param entrant integer arriving combatant identity
 ---@param types string[] entrant semantic types under the arrival
 ---@return boolean true when layers price the arrival
-local function entrantGrounded(state, entrant, types)
+function NativeAbilitySupport.hazardGrounded(state, entrant, types)
   assert(type(types) == "table", "hazard entries read their entrant types")
+  local bridge = NativePassiveBridge.wrap(state)
+  if fieldActive(state, "gravity") or bridge:effectiveHeldItem(entrant) == "IRON_BALL" then
+    return true
+  end
+  if bridge:abilityOf(entrant) == "LEVITATE" then
+    return false
+  end
   local airborne = false
   for _, key in ipairs(types) do
     if key == "flying" then
@@ -2756,10 +2992,29 @@ local function entrantGrounded(state, entrant, types)
       end
     end
   end
-  if airborne ~= true then
+  return airborne ~= true
+end
+
+---@param state table<string, unknown> live battle state under Anticipation
+---@param entrant integer threatened combatant
+---@param types string[] current semantic defender types
+---@return boolean whether Ground matchup immunity from airborne state is bypassed
+function NativeAbilitySupport.matchupGrounded(state, entrant, types)
+  local context = BattleContext.wrap(state)
+  local bridge = NativePassiveBridge.wrap(state)
+  if
+    fieldActive(state, "gravity")
+    or context:hasBattleEffect(entrant, "ingrain")
+    or bridge:effectiveHeldItem(entrant) == "IRON_BALL"
+  then
     return true
   end
-  return fieldActive(state, "gravity")
+  for _, key in ipairs(types) do
+    if key == "flying" then
+      return false
+    end
+  end
+  return not context:hasBattleEffect(entrant, "magnetrise")
 end
 
 ---@param state table<string, unknown> live battle state under the trap read
@@ -3535,15 +3790,8 @@ local function emitInnateEvent(context, record, noBlink)
   return true
 end
 
--- Runs the mid-turn held-item sweep after one move resolves: the attacker
--- answers first, then the primary target, then every remaining active
--- holder in queue order (retail battle_controller_player.c
--- afterMoveEffectState TryUseHeldItem attacker/target plus the
--- turn-order CheckUseHeldItem sweep). A departing pivot user never
--- answers: the post-switch pass covers the newcomer instead, mirroring
--- the post-switch after-move machine. Only spent berry answers heal
--- here, so persistent holdings never heal twice; the healed totals
--- commit to live health before the sweep returns.
+-- Runs the mid-turn consumable sweep for an ordered entry checkpoint or
+-- the explicitly named AfterMoveEffects attacker and target.
 ---@param state table<string, unknown> live battle state under the sweep
 ---@param context table<string, unknown> session context owning the residual writes
 ---@param speciesFacts table<string, unknown> static species facts carried by the session
@@ -3551,7 +3799,19 @@ end
 ---@param attackerId integer? striking combatant opening the sweep, absent on pivot turns
 ---@param targetIds integer[] ordered recipient combatants under the move
 ---@param excludeId integer? combatant leaving the field, never swept
-local function answerMidTurnSweep(state, context, speciesFacts, moveFacts, attackerId, targetIds, excludeId)
+---@param orderedIds integer[]? frozen controller order for an entry checkpoint
+---@param explicitOnly boolean? limit the sweep to the attacker and targets
+local function answerMidTurnSweep(
+  state,
+  context,
+  speciesFacts,
+  moveFacts,
+  attackerId,
+  targetIds,
+  excludeId,
+  orderedIds,
+  explicitOnly
+)
   local sample = sampleTimingState(state, speciesFacts)
   local health = sample.health
   local ceilings = sample.ceilings
@@ -3568,25 +3828,32 @@ local function answerMidTurnSweep(state, context, speciesFacts, moveFacts, attac
     seen[combatantId] = true
     order[#order + 1] = combatantId
   end
+  if orderedIds ~= nil then
+    for _, combatantId in ipairs(orderedIds) do
+      consider(combatantId)
+    end
+  end
   consider(attackerId)
   for _, targetId in ipairs(targetIds or {}) do
     consider(targetId)
   end
-  local queue = state.queue --[[@as table<integer, table<string, unknown>>?]]
-  if type(queue) == "table" then
-    for _, action in ipairs(queue) do
-      if type(action) == "table" then
-        local actor = (action --[[@as table<string, unknown>]]).actor
-        if type(actor) == "table" then
-          consider((actor --[[@as table<string, unknown>]]).combatant)
+  if not explicitOnly then
+    local queue = state.queue --[[@as table<integer, table<string, unknown>>?]]
+    if type(queue) == "table" then
+      for _, action in ipairs(queue) do
+        if type(action) == "table" then
+          local actor = (action --[[@as table<string, unknown>]]).actor
+          if type(actor) == "table" then
+            consider((actor --[[@as table<string, unknown>]]).combatant)
+          end
         end
       end
     end
-  end
-  for _, combatantId in
-    ipairs(state.combatantOrder --[[@as integer[] ]])
-  do
-    consider(combatantId)
+    for _, combatantId in
+      ipairs(state.combatantOrder --[[@as integer[] ]])
+    do
+      consider(combatantId)
+    end
   end
   -- The consumable sweep never emits affliction ticks, so its blink set
   -- stays empty beside the shared emitter.
@@ -3834,7 +4101,10 @@ local function sideStandings(state)
 end
 
 ---@param state table<string, unknown> live battle state under terminal evaluation
-local function settleOutcome(state)
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@param moveFacts table<string, table<string, unknown>> immutable move facts
+---@param chart table<string, unknown> session type chart
+local function settleOutcome(state, speciesFacts, moveFacts, chart)
   local result = OutcomePolicy.evaluate({
     sides = sideStandings(state),
     pendingReplacements = 0,
@@ -3842,6 +4112,9 @@ local function settleOutcome(state)
   })
   if result == nil then
     state.round = state.round --[[@as integer]] + 1
+    local positions = NativeAbilitySupport.sampleBattlerPositions(state, speciesFacts)
+    local orderedIds = NativeAbilitySupport.combatantsAtPositions(state, positions)
+    NativeAbilitySupport.settleSendOutPhases(state, speciesFacts, moveFacts, chart, orderedIds)
     state.status = "running"
   else
     -- Terminal standings decide: the application maps the surviving
@@ -4150,7 +4423,7 @@ local function buildRewardInput(state, catalog, defeatedId, defeatedActivation)
       }
     end
   end
-  local selected = RewardExperience.recipients({ battlers = battlers })
+  local selected = Reward.experience.recipients({ battlers = battlers })
   if #selected == 0 then
     return nil
   end
@@ -4184,11 +4457,11 @@ local function buildRewardInput(state, catalog, defeatedId, defeatedActivation)
       error(BattleErrors.invalidState("effort rewards read a stored pokerus byte", {}))
     end
     local hasPokerus = pokerusByte ~= 0
-    local effortModifiers = RewardEffort.modifiersFor(entryMon.heldItem, hasPokerus)
+    local effortModifiers = Reward.effort.modifiersFor(entryMon.heldItem, hasPokerus)
     entries[#entries + 1] = {
       combatant = recipient.combatant,
       mon = entryMon,
-      expAward = RewardExperience.calculate(knockout, {
+      expAward = Reward.experience.calculate(knockout, {
         battlers = battlerCount,
         holders = holderCount,
         participated = recipient.participated,
@@ -4197,7 +4470,7 @@ local function buildRewardInput(state, catalog, defeatedId, defeatedActivation)
         traded = traded,
         foreign = foreign,
       }),
-      evAward = RewardEffort.calculate(evYield, effortModifiers),
+      evAward = Reward.effort.calculate(evYield, effortModifiers),
       boosted = traded,
     }
   end
@@ -4259,29 +4532,32 @@ end
 ---@param state table<string, unknown> live battle state under reward work
 ---@param child RewardChild reward child under synchronization
 local function syncRewardMons(state, child)
+  local MonStats = require("libs.mons.src.gen4.MonStats")
   for _, recipient in ipairs(child.frame.recipients) do
     local mon = child.mons[recipient.monIndex]
     assert(type(mon) == "table", "reward recipients name a battle-owned mon")
     local synced = copyValue(mon) --[[@as table<string, unknown>]]
     child.mons[recipient.monIndex] = synced
     local combatant = BattleState.combatant(state, recipient.combatant)
-    -- Rewards earned while alive survive later knocks in the same turn,
-    -- but the battle health never revives: a recipient that fell after
-    -- its award keeps zero health with its gains on the record.
-    if
-      type(synced.hp) == "number"
-      and combatant.hp --[[@as integer]]
-        > 0
-    then
-      combatant.hp = synced.hp --[[@as integer]]
-    end
-    -- The reward owner tracks health on a working top-level field the
-    -- persistent mon schema forbids: fold it into the condition and drop
-    -- it before the copy reaches battle state.
-    if type(synced.condition) == "table" then
-      synced
-        .condition --[[@as table<string, unknown>]]
-        .currentHp = combatant.hp
+    local liveMon = combatant.mon --[[@as table<string, unknown>]]
+    -- The reward frame owns the exact recalculated maximum. Applying its
+    -- delta from the current live maximum remains idempotent across replies.
+    local currentMaxHp = combatant.maxHp --[[@as integer]]
+    local grownMaxHp = recipient.maxHpAfter
+    combatant.hp = MonStats.adjustHpForMaxChange(currentMaxHp, grownMaxHp, combatant.hp)
+    combatant.maxHp = grownMaxHp
+    -- Keep live mutable fields committed since the child was opened.
+    synced.heldItem = liveMon.heldItem
+    synced.condition = copyValue(liveMon.condition)
+    local condition = synced.condition --[[@as table<string, unknown>]]
+    condition.currentHp = combatant.hp
+    for index, move in
+      ipairs(synced.moves --[[@as table<integer, table<string, unknown>>]])
+    do
+      local currentMove = (liveMon.moves --[[@as table<integer, table<string, unknown>>]])[index]
+      if currentMove ~= nil and currentMove.move == move.move then
+        move.pp = currentMove.pp
+      end
     end
     synced.hp = nil
     combatant.mon = synced
@@ -4291,17 +4567,18 @@ end
 ---@class NativeTurnHandlers
 ---@field openTurn fun(choices: table<integer, table<string, unknown>>)
 ---@field executeAction fun(action: table<string, unknown>)
----@field applyResiduals fun()
----@field closeTurn fun()
+---@field applyResiduals fun(checkpointOrder: integer[])
+---@field closeTurn fun(checkpointPositions: integer[])
 ---@field commitLearning fun(state: table<string, unknown>)
 ---@field commitShift fun(state: table<string, unknown>)
 ---@field shiftOfferFor fun(state: table<string, unknown>, obligations: table<integer, table<string, unknown>>): ShiftOffer?
 ---@field resumeTurn fun(state: table<string, unknown>, budget: integer)
 ---@field commitSwitchIntent fun(state: table<string, unknown>)
 ---@field bindRuleset fun(ruleset: HgssRuleset)
----@field settleEntryTiming fun(state: table<string, unknown>, entrant: integer)
----@field settlePostReplacement fun(state: table<string, unknown>, held: table<integer, table<string, unknown>>?)
----@field buildReplacementBatch fun(state: table<string, unknown>, obligations: table<integer, table<string, unknown>>, allowRunOverride: boolean?)
+---@field settleEntryTiming fun(state: table<string, unknown>, entrant: integer, checkpointPositions: integer[], deferAbilityPhases: boolean?)
+---@field settleOpeningEntries fun(state: table<string, unknown>, entrants: integer[])
+---@field settlePostReplacement fun(state: table<string, unknown>, held: table<integer, table<string, unknown>>?, checkpointPositions: integer[])
+---@field buildReplacementBatch fun(state: table<string, unknown>, obligations: table<integer, table<string, unknown>>, allowRunOverride: boolean?, checkpointPositions: integer[])
 
 ---@param state table<string, unknown>
 ---@param actor table<string, unknown>
@@ -4595,14 +4872,535 @@ end
 -- Reactive execution helpers share one dependency at the large turn
 -- binding seam so growing checkpoint coverage stays within LuaJIT's
 -- closure upvalue limit.
-local NativeAbilitySupport = {
+NativeAbilitySupport = {
+  orderRollsProblem = NativeAbilitySupport.orderRollsProblem,
+  requireOrderRolls = NativeAbilitySupport.requireOrderRolls,
   projectCombatant = projectCombatant,
+  sampleOrderRolls = sampleOrderRolls,
   fieldActive = fieldActive,
   combatantTypes = combatantTypes,
-  activeSpeedEntries = activeSpeedEntries,
+  battlerSpeedEntries = battlerSpeedEntries,
+  hazardGrounded = NativeAbilitySupport.hazardGrounded,
+  matchupGrounded = NativeAbilitySupport.matchupGrounded,
   redirectAbilityRecipient = redirectAbilityRecipient,
+  sampleTimingState = sampleTimingState,
+  BattleState = BattleState,
+  TurnOrder = TurnOrder,
+  sweepExpiredEffects = sweepExpiredEffects,
   handlers = NativeEffectHandlers,
 }
+
+---@param state table<string, unknown> live battle state under checkpoint projection
+---@param position integer active native slot whose pre-turn sample is read
+---@return integer recorded raw order value for the slot
+function NativeAbilitySupport.preTurnOrderRoll(state, position)
+  local rolls = NativeAbilitySupport.requireOrderRolls(state)
+  local roll = rolls[position]
+  if type(roll) ~= "number" then
+    roll = rolls[((position - 1) % 4) + 1]
+  end
+  return roll --[[@as integer]]
+end
+
+---@param state table<string, unknown> battle state under faint settlement
+---@param combatantId integer departing native battler
+---@return string? raw battle ability retained by the fainted slot
+function NativeAbilitySupport.battleAbilityOf(state, combatantId)
+  return NativePassiveBridge.wrap(state):battleAbilityOf(combatantId)
+end
+
+---@param state table<string, unknown> live battle under the ActionEnd gate
+---@return boolean true when either side has no living roster members
+function NativeAbilitySupport.isBattleOver(state)
+  return OutcomePolicy.evaluate({
+    sides = sideStandings(state),
+    pendingReplacements = 0,
+    captured = {},
+  }) ~= nil
+end
+
+---@param state table<string, unknown> live battle state under checkpoint projection
+---@param positions integer[] frozen native slot order
+---@return integer[] current occupants in that order
+function NativeAbilitySupport.combatantsAtPositions(state, positions)
+  local ids = {} ---@type integer[]
+  for _, positionId in ipairs(positions) do
+    local position = BattleState.position(state, positionId)
+    local occupant = position.occupant
+    if type(occupant) ~= "number" then
+      local departed = position.departed --[[@as table<string, unknown>?]]
+      occupant = departed ~= nil and departed.combatant or nil
+    end
+    if type(occupant) == "number" then
+      ids[#ids + 1] = occupant
+    end
+  end
+  return ids
+end
+
+---@param state table<string, unknown> live battle state under occupied-slot projection
+---@param positions integer[] controller slot order
+---@return integer[] current occupants in that order
+function NativeAbilitySupport.occupantsAtPositions(state, positions)
+  local ids = {} ---@type integer[]
+  for _, positionId in ipairs(positions) do
+    local occupant = BattleState.position(state, positionId).occupant
+    if type(occupant) == "number" then
+      ids[#ids + 1] = occupant
+    end
+  end
+  return ids
+end
+
+---@param state table<string, unknown> live turn after an ordering effect
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts for slot sampling
+function NativeAbilitySupport.reorderExecutionQueue(state, speciesFacts)
+  local queue = state.queue --[[@as table<integer, table<string, unknown>>]]
+  local entriesByPosition = {} ---@type table<integer, table<string, unknown>>
+  for _, entry in ipairs(NativeAbilitySupport.battlerSpeedEntries(state, speciesFacts)) do
+    entriesByPosition[
+      entry.selectedOrdinal --[[@as integer]]
+    ] = entry
+  end
+  local factsById = {} ---@type table<integer, table<string, unknown>>
+  for _, action in ipairs(queue) do
+    local actor = action.actor --[[@as table<string, unknown>]]
+    local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
+    local active = combatant.active --[[@as table<string, unknown>?]]
+    local position = action.position
+    if type(position) ~= "number" and active ~= nil then
+      position = active.position
+    end
+    assert(type(position) == "number", "execution actions retain their controller slot")
+    local slot = assert(entriesByPosition[position], "execution actions map to the current slot sample")
+    local sampled = action.sampledOrder --[[@as table<string, unknown>]]
+    factsById[
+      action.id --[[@as integer]]
+    ] = {
+      priority = action.kind == "attack" and sampled.priority --[[@as integer]] or 0,
+      speed = slot.speed --[[@as integer]],
+      boostedPriority = slot.boostedPriority == true,
+      loweredPriority = slot.loweredPriority == true,
+      stall = slot.stall == true,
+      living = slot.living == true,
+    }
+  end
+  TurnOrder.resortExecution(
+    queue,
+    factsById,
+    { trickRoom = NativeAbilitySupport.fieldActive(state, "trickroom") },
+    state.rng
+  )
+  NativeAbilitySupport.sampleBattlerPositions(state, speciesFacts)
+  local schedule = state.schedule --[[@as table<string, unknown>]]
+  schedule.executionCursor = 1
+end
+
+---@param state table<string, unknown> live battle at a controller battler-order checkpoint
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts for operation sampling
+---@return integer[] native slot positions in current CheckSortSpeed order
+local function sampleBattlerPositions(state, speciesFacts)
+  local ordered = NativeAbilitySupport.TurnOrder.orderSpeed(
+    NativeAbilitySupport.battlerSpeedEntries(state, speciesFacts),
+    { trickRoom = NativeAbilitySupport.fieldActive(state, "trickroom") },
+    state.rng
+  )
+  local positions = {} ---@type integer[]
+  for _, entry in ipairs(ordered) do
+    positions[#positions + 1] = entry.selectedOrdinal --[[@as integer]]
+  end
+  return positions
+end
+NativeAbilitySupport.sampleBattlerPositions = sampleBattlerPositions
+
+-- HGSS entry checkpoints own phase eligibility, activation flags, and the
+-- transition that consumes each flag. Speed ordering stays in TurnOrder;
+-- this owner only walks the already frozen order.
+local ENTRY_ABILITY_LIFECYCLE = {
+  TRACE = { phase = 1, flag = "trace" },
+  DRIZZLE = { phase = 2, flag = "sendOut" },
+  SAND_STREAM = { phase = 2, flag = "sendOut" },
+  DROUGHT = { phase = 2, flag = "sendOut" },
+  SNOW_WARNING = { phase = 2, flag = "sendOut" },
+  INTIMIDATE = { phase = 3, flag = "intimidate" },
+  DOWNLOAD = { phase = 4, flag = "download" },
+  ANTICIPATION = { phase = 5, flag = "anticipation" },
+  FOREWARN = { phase = 6, flag = "forewarn" },
+  FRISK = { phase = 7, flag = "frisk" },
+  SLOW_START = { phase = 8, flag = "slowStart" },
+  MOLD_BREAKER = { phase = 9, flag = "moldBreaker" },
+  PRESSURE = { phase = 10, flag = "pressure" },
+}
+
+---@param state table<string, unknown> live battle state at the weather-form checkpoint
+---@param orderedIds integer[] frozen speed order for this checkpoint
+local function settleWeatherForms(state, orderedIds)
+  local context = BattleContext.wrap(state)
+  local bridge = NativePassiveBridge.wrap(state)
+  for _, combatantId in ipairs(orderedIds) do
+    local combatant = BattleState.combatant(state, combatantId)
+    local active = combatant.active --[[@as table<string, unknown>?]]
+    if active ~= nil and combatant.hp > 0 then
+      local beforeForm = active.form --[[@as integer?]]
+      local form = bridge:weatherFormOf(combatantId)
+      if beforeForm ~= form then
+        active.form = form
+        local activation = active.activation --[[@as integer]]
+        local substitute = context:hasBattleEffect(combatantId, "substitute")
+        context:emit(
+          "ability",
+          { kind = "system", key = "weather-form" },
+          {
+            key = "WEATHER_FORM",
+            combatant = combatantId,
+            beforeForm = beforeForm or 0,
+            form = form,
+            substitute = substitute,
+          },
+          nil,
+          {
+            operation = {
+              kind = "form-changed",
+              subject = { combatant = combatantId, activation = activation },
+              source = { kind = "system", key = "weather-form" },
+              beforeForm = beforeForm or 0,
+              form = form,
+              substitute = substitute,
+            },
+          }
+        )
+      end
+    end
+  end
+end
+
+-- Download reads raw battle stats with only their stored stage applied;
+-- Simple changes damage and Speed interpretation, not this source sum.
+---@param state table<string, unknown> live battle state under entry resolution
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@param ability string eligible entry ability
+---@param target integer holder entering the current phase
+---@return table<integer, table<string, integer>>? operation-specific sampled stats
+---@return table<integer, string[]>? operation-specific sampled types
+---@return boolean? whether the anticipation target is grounded
+---@return boolean? whether Magnet Rise suppresses Ground type flags
+local function entryOperationFacts(state, speciesFacts, ability, target)
+  if ability ~= "DOWNLOAD" and ability ~= "ANTICIPATION" and ability ~= "FOREWARN" then
+    return nil, nil, nil
+  end
+  local stats = {} ---@type table<integer, table<string, integer>>
+  local bridge = NativePassiveBridge.wrap(state)
+  for _, combatantId in
+    ipairs(state.combatantOrder --[[@as integer[] ]])
+  do
+    local combatant = BattleState.combatant(state, combatantId)
+    if combatant.active ~= nil and combatant.hp > 0 then
+      local raw, stages = unstagedCombatant(combatant, speciesFacts)
+      if ability == "DOWNLOAD" then
+        if bridge:powerTrick(combatantId) then
+          raw.attack, raw.defense = raw.defense, raw.attack
+        end
+        stats[combatantId] = {
+          level = raw.level,
+          defense = StatStages.effective(raw.defense, stages.defense, "defense"),
+          specialDefense = StatStages.effective(raw.specialDefense, stages.specialDefense, "specialDefense"),
+        }
+      else
+        stats[combatantId] = { level = raw.level }
+      end
+    end
+  end
+  if ability == "DOWNLOAD" then
+    return stats, nil, nil
+  end
+  local types = { [target] = combatantTypes(BattleState.combatant(state, target), speciesFacts, state) }
+  local grounded = NativeAbilitySupport.matchupGrounded(state, target, types[target])
+  local magnetRise = false
+  if
+    ability == "ANTICIPATION"
+    and BattleContext.wrap(state):hasBattleEffect(target, "magnetrise")
+    and not BattleContext.wrap(state):hasBattleEffect(target, "ingrain")
+  then
+    magnetRise = true
+  end
+  return stats, types, ability == "ANTICIPATION" and grounded or nil, magnetRise
+end
+
+---@param active table<string, unknown> active entry owning the lifecycle flags
+---@param flag string lifecycle flag being consumed
+local function consumeEntryFlag(active, flag)
+  local flags = active.entryAbilityFlags --[[@as table<string, boolean>]]
+  assert(type(flags) == "table" and flags[flag] ~= true, "entry transitions consume each activation flag once")
+  flags[flag] = true
+end
+
+-- Trace selects only among living opposing battlers with copyable raw abilities.
+---@param state table<string, unknown> live battle state under the Trace checkpoint
+---@param target integer battler whose opposing slots are inspected
+---@return integer? selected raw-ability donor
+local function chooseTraceDonor(state, target)
+  local holder = BattleState.combatant(state, target)
+  local holderSide = BattleState.participant(state, holder.participant --[[@as integer]]).side
+  local bridge = NativePassiveBridge.wrap(state)
+  local candidates = {} ---@type integer[]
+  for _, positionId in
+    ipairs(state.positionOrder --[[@as integer[] ]])
+  do
+    local donorId = BattleState.position(state, positionId).occupant
+    if type(donorId) == "number" then
+      local donor = BattleState.combatant(state, donorId)
+      local participant = BattleState.participant(state, donor.participant --[[@as integer]])
+      if donor.active ~= nil and donor.hp > 0 and participant.side ~= holderSide then
+        local ability = bridge:battleAbilityOf(donorId)
+        if type(ability) == "string" and ability ~= "FORECAST" and ability ~= "TRACE" and ability ~= "MULTITYPE" then
+          candidates[#candidates + 1] = donorId
+        end
+      end
+    end
+  end
+  local selected = nil
+  if #candidates == 1 then
+    selected = candidates[1]
+  end
+  if #candidates == 2 then
+    local random = state.rng --[[@as table<string, unknown>]]
+    assert(type(random.nextU16) == "function", "Trace draws from the battle stream")
+    local draw = (
+      random.nextU16 --[[@as fun(self: table<string, unknown>, label: string, cause: table<string, unknown>): integer]]
+    )(random, "trace", { combatant = target })
+    selected = candidates[(draw % 2) + 1]
+  end
+  if selected == nil then
+    return nil
+  end
+  return selected
+end
+
+---@param state table<string, unknown> live battle state under entry phase resolution
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts for operation sampling
+---@param moveFacts table<string, table<string, unknown>> immutable move facts
+---@param chart table<string, unknown> session type chart
+---@param orderedIds integer[] full-set speed order sampled before hazards
+local function settleEntryAbilityPhases(state, speciesFacts, moveFacts, chart, orderedIds)
+  local bridge = NativePassiveBridge.wrap(state)
+  -- Trace owns a restarting source phase: every active slot selects its raw
+  -- donor before holder eligibility, and an admitted copy reruns the phase
+  -- from the frozen order without clearing the consumed activation flag.
+  local restartTrace = true
+  while restartTrace do
+    restartTrace = false
+    for _, combatantId in ipairs(orderedIds) do
+      local combatant = BattleState.combatant(state, combatantId)
+      local active = combatant.active --[[@as table<string, unknown>?]]
+      local holderAbility = bridge:abilityOf(combatantId)
+      local traceDonor = chooseTraceDonor(state, combatantId)
+      if holderAbility == "TRACE" then
+        local flags = active ~= nil and active.entryAbilityFlags --[[@as table<string, boolean>?]] or nil
+        if active ~= nil and combatant.hp > 0 and flags ~= nil and not flags.trace then
+          local _, consumedFlag = NativeAbilitySupport.handlers.applyPassiveTiming(
+            state,
+            "entry",
+            combatantId,
+            nil,
+            nil,
+            moveFacts,
+            chart,
+            nil,
+            orderedIds,
+            traceDonor
+          )
+          if consumedFlag == "trace" then
+            consumeEntryFlag(active, "trace")
+            restartTrace = true
+            break
+          end
+        end
+      end
+    end
+  end
+  for phase = 2, 10 do
+    for _, combatantId in ipairs(orderedIds) do
+      local combatant = BattleState.combatant(state, combatantId)
+      local active = combatant.active --[[@as table<string, unknown>?]]
+      if active ~= nil and combatant.hp > 0 then
+        local ability = bridge:abilityOf(combatantId)
+        local lifecycle = type(ability) == "string" and ENTRY_ABILITY_LIFECYCLE[ability] or nil
+        local flags = active.entryAbilityFlags --[[@as table<string, boolean>]]
+        if lifecycle ~= nil and lifecycle.phase == phase then
+          local abilityKey = assert(ability, "an eligible entry lifecycle names its ability")
+          if abilityKey == "SLOW_START" then
+            local elapsed = BattleState.nativeTurn(state) - active.slowStartTurn --[[@as integer]]
+            if not flags.slowStart and BattleState.nativeTurn(state) <= active.slowStartTurn then
+              consumeEntryFlag(active, "slowStart")
+              local stats, types, grounded, magnetRise =
+                entryOperationFacts(state, speciesFacts, abilityKey, combatantId)
+              NativeAbilitySupport.handlers.applyPassiveTiming(
+                state,
+                "entry",
+                combatantId,
+                nil,
+                stats,
+                moveFacts,
+                chart,
+                types,
+                orderedIds,
+                nil,
+                grounded,
+                magnetRise
+              )
+            end
+            if not flags.slowStartEnded and elapsed == 5 then
+              consumeEntryFlag(active, "slowStartEnded")
+              BattleContext.wrap(state):emit("ability", { kind = "ability", key = "SLOW_START_END" }, {
+                key = "SLOW_START_END",
+                combatant = combatantId,
+              })
+            end
+          elseif not flags[lifecycle.flag] then
+            consumeEntryFlag(active, lifecycle.flag)
+            local stats, types, grounded, magnetRise = entryOperationFacts(state, speciesFacts, abilityKey, combatantId)
+            NativeAbilitySupport.handlers.applyPassiveTiming(
+              state,
+              "entry",
+              combatantId,
+              nil,
+              stats,
+              moveFacts,
+              chart,
+              types,
+              orderedIds,
+              nil,
+              grounded,
+              magnetRise
+            )
+          end
+        end
+      end
+    end
+  end
+  settleWeatherForms(state, orderedIds)
+  NativeAbilitySupport.sweepExpiredEffects(state)
+end
+
+---@param state table<string, unknown> live battle state after an action
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@param moveFacts table<string, table<string, unknown>> immutable move facts
+---@param chart table<string, unknown> session type chart
+---@param orderedIds integer[] frozen speed order for the action checkpoint
+local function settlePostAction(state, speciesFacts, moveFacts, chart, orderedIds)
+  -- Retail checks weather forms before the post-move entry-ability scan.
+  settleWeatherForms(state, orderedIds)
+  settleEntryAbilityPhases(state, speciesFacts, moveFacts, chart, orderedIds)
+end
+
+NativeAbilitySupport.settleWeatherForms = settleWeatherForms
+NativeAbilitySupport.settleEntryAbilityPhases = settleEntryAbilityPhases
+NativeAbilitySupport.settlePostAction = settlePostAction
+
+---@param state table<string, unknown> live battle state under entry status cures
+---@param orderedIds integer[] frozen speed order for the entry checkpoint
+function NativeAbilitySupport.settleEntryStatusCures(state, orderedIds)
+  local context = BattleContext.wrap(state)
+  local bridge = NativePassiveBridge.wrap(state)
+  local cures = {
+    LIMBER = "paralysis",
+    IMMUNITY = "poison",
+    INSOMNIA = "sleep",
+    VITAL_SPIRIT = "sleep",
+    MAGMA_ARMOR = "freeze",
+    WATER_VEIL = "burn",
+    OWN_TEMPO = "confusion",
+    OBLIVIOUS = "infatuation",
+  }
+  for _, combatantId in ipairs(orderedIds) do
+    local ability = bridge:abilityOf(combatantId)
+    local cured = cures[ability]
+    local status = context:statusOf(combatantId)
+    local volatile = cured ~= nil
+      and (cured == "confusion" or cured == "infatuation")
+      and context:hasBattleEffect(combatantId, cured)
+    if
+      cured ~= nil
+      and (volatile or (status ~= nil and (status == cured or (cured == "poison" and status == "toxic"))))
+    then
+      local curedStatus = volatile and cured or status
+      context:emit("ability", { kind = "ability", key = ability, combatant = combatantId }, {
+        key = ability,
+        combatant = combatantId,
+        cured = curedStatus,
+      })
+      if volatile then
+        context:removeBattleEffect(combatantId, cured)
+      else
+        context:cureStatus(combatantId, status --[[@as string]], {
+          kind = "ability",
+          key = ability,
+          combatant = combatantId,
+        })
+      end
+    end
+  end
+end
+
+---@param state table<string, unknown> live battle after knockout rewards
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@param moveFacts table<string, table<string, unknown>> immutable move facts
+---@param chart table<string, unknown> session type chart
+---@param checkpointPositions integer[] frozen slot order for ActionEnd
+---@param excludeId integer? departing pivot actor excluded from held-item checks
+---@return boolean true when the action has made the battle terminal
+function NativeAbilitySupport.settleActionEnd(state, speciesFacts, moveFacts, chart, checkpointPositions, excludeId)
+  if state.status == "ended" then
+    return true
+  end
+  if NativeAbilitySupport.isBattleOver(state) then
+    state.status = "ended"
+    state.outcome = {
+      kind = "no_actors",
+      rounds = state.round,
+      evolutionEligible = copyValue(state.evolutionEligible),
+    }
+    return true
+  end
+  local orderedIds = NativeAbilitySupport.combatantsAtPositions(state, checkpointPositions)
+  NativeAbilitySupport.settlePostAction(state, speciesFacts, moveFacts, chart, orderedIds)
+  NativeAbilitySupport.settleEntryStatusCures(state, orderedIds)
+  ResidualAnswers.midTurn(
+    state,
+    BattleContext.wrap(state),
+    speciesFacts,
+    moveFacts,
+    nil,
+    {},
+    excludeId,
+    orderedIds,
+    true
+  )
+  if not NativeAbilitySupport.isBattleOver(state) then
+    return false
+  end
+  state.status = "ended"
+  state.outcome = {
+    kind = "no_actors",
+    rounds = state.round,
+    evolutionEligible = copyValue(state.evolutionEligible),
+  }
+  return true
+end
+
+---@param state table<string, unknown> live battle state at send-out entry
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@param moveFacts table<string, table<string, unknown>> immutable move facts
+---@param chart table<string, unknown> session type chart
+---@param orderedIds integer[] frozen speed order for this send-out pass
+function NativeAbilitySupport.settleSendOutPhases(state, speciesFacts, moveFacts, chart, orderedIds)
+  NativeAbilitySupport.settleEntryAbilityPhases(state, speciesFacts, moveFacts, chart, orderedIds)
+  NativeAbilitySupport.settleEntryStatusCures(state, orderedIds)
+  ResidualAnswers.midTurn(state, BattleContext.wrap(state), speciesFacts, moveFacts, nil, {}, nil, orderedIds, true)
+  -- PokemonAppear sorts again after the final entry script. The source
+  -- reuses Quick Claw samples but independently resolves every tie.
+  NativeAbilitySupport.sampleBattlerPositions(state, speciesFacts)
+end
 
 ---@param executor HgssSessionExecutor live native session owning the turn
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
@@ -4623,16 +5421,10 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   -- and yields through the immutable session facts on every faint,
   -- rebuilt here from the same tables the snapshots carry.
   local rewardCatalog = rewardCatalogFor(speciesFacts, moveFacts)
-  -- Ordered replacement obligations settled by the faint owner during
-  -- the open turn, enriched with live topology facts as each knockout
-  -- leaves the field. Reset when a turn opens and drained once when it
-  -- closes; reward suspension carries the drained list, never a
-  -- rebuild of it.
-  local pendingFaintObligations = {} ---@type table<integer, table<string, unknown>>
   ---@param choices table<integer, table<string, unknown>> committed choices in commit order
   local function openTurn(choices)
     local state = executor:_live()
-    pendingFaintObligations = {}
+    state.pendingFaintObligations = {}
     -- Revenge ledgers reset with the turn: damage taken and actions
     -- consumed belong to the turn being ordered, while the distinct-move
     -- history behind Last Resort accumulates until entries turn over.
@@ -4660,14 +5452,12 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       local forcedMove = nil
       if kind == "attack" then
         local payload = choice.payload --[[@as table<string, unknown>]]
-        local stagedMove = NativeSequenceAction.stage(
+        local stagedMove = require("libs.battle.src.gen4.NativeSequenceAction").stage(
           state,
-          choices,
           actor.combatant --[[@as integer]],
           combatant.mon,
           payload,
-          moveFacts,
-          bracketFor("switch") + 1
+          moveFacts
         )
         forcedMove = stagedMove.forcedMove
         priority = stagedMove.priority --[[@as integer]]
@@ -4686,30 +5476,17 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       -- health, and a spent ordering holding is consumed here so later
       -- checkpoints see the empty holding. Invalid sample shape fails
       -- before sorting instead of resampling the stream.
-      local pending = state.pending --[[@as table<string, unknown>]]
-      local rolls = pending.nativeOrderRolls
-      if type(rolls) ~= "table" then
-        error(BattleErrors.incompatibleSnapshot("open batches carry their pre-turn order samples", {}))
-      end
-      for index = 1, 4 do
-        local sample = (rolls --[[@as table<integer, unknown>]])[index]
-        if type(sample) ~= "number" or sample % 1 ~= 0 or sample < 0 or sample > 65535 then
-          error(BattleErrors.incompatibleSnapshot("pre-turn order samples stay raw 16-bit values", { index = index }))
-        end
-      end
       local liveEntry = combatant.active
       if type(liveEntry) ~= "table" then
         error(BattleErrors.invalidState("ordering stages only entered actors", {}))
       end
       local position = (liveEntry --[[@as table<string, unknown>]]).position --[[@as integer]]
-      local roll = (rolls --[[@as table<integer, integer>]])[position]
-      if type(roll) ~= "number" then
-        roll = (rolls --[[@as table<integer, integer>]])[((position - 1) % 4) + 1]
-      end
-      local orderContext = { actionCheck = true, berryCheck = true, rawOrderRoll = roll }
-      if kind == "attack" then
-        orderContext.moveUse = { user = actor.combatant }
-      end
+      local orderContext = {
+        actionCheck = kind == "attack",
+        berryCheck = true,
+        rawOrderRoll = NativeAbilitySupport.preTurnOrderRoll(state, position),
+        moveUse = { user = actor.combatant },
+      }
       local heldItemAtOrder = (combatant.mon --[[@as table<string, unknown>]]).heldItem
       local order = bridge:orderFacts(actor.combatant --[[@as integer]], orderContext)
       if (heldItemAtOrder == "QUICK_CLAW" and order.first) or (heldItemAtOrder == "CUSTAP_BERRY" and order.consume) then
@@ -4729,6 +5506,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       candidates[#candidates + 1] = {
         id = ordinal,
         actor = { combatant = actor.combatant, activation = actor.activation },
+        position = position,
         kind = kind,
         payload = actionPayload,
         selectedOrdinal = ordinal,
@@ -4740,8 +5518,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       }
       entry.ordinal = ordinal
     end
-    -- Trick Room reverses only the speed dimension while its field
-    -- instance stands.
+    -- Execution order owns its independent action comparison and draws.
     local ordered =
       TurnOrder.buildActions(candidates, { trickRoom = NativeAbilitySupport.fieldActive(state, "trickroom") }, stream)
     local queue = state.queue --[[@as table<integer, table<string, unknown>>]]
@@ -4768,6 +5545,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       end
       ActionQueue.enqueue(queue, action)
     end
+    -- BeforeTurn refreshes Quick Claw only after execution order is fixed.
+    -- Controller battler sorts and the next turn carry these values.
+    state.nativeOrderRolls = NativeAbilitySupport.sampleOrderRolls(stream)
   end
 
   ---@param state table<string, unknown> live battle state under faint settlement
@@ -4783,7 +5563,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       activation = active.activation,
       position = position,
     })
-    BattleState.leave(state, position)
+    local battleAbility = NativeAbilitySupport.battleAbilityOf(state, cause.combatant --[[@as integer]])
+    BattleState.leave(state, position, true, battleAbility)
     return event
   end
 
@@ -4860,6 +5641,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         internal = false,
       }
       obligation.internal = not isExternalObligation(obligation)
+      local pendingFaintObligations = state.pendingFaintObligations --[[@as table<integer, table<string, unknown>>]]
       pendingFaintObligations[#pendingFaintObligations + 1] = obligation
     end
   end
@@ -4944,13 +5726,19 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   ---@param timing string finite timing under invocation
   ---@param target integer combatant entering or acting under the timing
   ---@param pending table<string, unknown>? pending strike identity and power for before-action gates
+  ---@param entryOrder integer[]? previously sampled full-set entry order
   ---@return string? blocking effect key when a before-action handler denied the action
-  local function invokeTiming(state, timing, target, pending)
+  ---@return integer[]? sampled full-set entry order
+  local function invokeTiming(state, timing, target, pending, entryOrder)
     if timing == "entry" and BattleState.combatant(state, target).active == nil then
       return nil
     end
     local bag = liveEffectBag(state)
     local sample = sampleTimingState(state, speciesFacts)
+    local orderedEntryIds = entryOrder ---@type integer[]?
+    if timing == "entry" then
+      assert(type(orderedEntryIds) == "table", "entry checkpoints retain their frozen controller order")
+    end
     local view = BattleContext.wrap(state)
     ---@type table<string, unknown>
     local context = { speeds = sample.speeds, health = sample.health, stream = state.rng }
@@ -4975,6 +5763,19 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     local dispatchOwner ---@type table<string, unknown>
     if timing == "entry" then
       context.applyStatus = writeStatus
+      local activation = BattleState.combatant(state, target).active.activation --[[@as integer]]
+      local suppressed = {} ---@type table<integer, boolean>
+      for _, record in ipairs(bag:capture()) do
+        local scope = record.scope
+        if
+          type(scope) == "table"
+          and type(scope.combatant) == "number"
+          and (scope.combatant ~= target or (scope.activation ~= nil and scope.activation ~= activation))
+        then
+          suppressed[record.id] = true
+        end
+      end
+      context.suppressedIds = suppressed
       -- Poison arrivals absorb their own side layers: the clearer drops
       -- the side instance mid-pass so later entries face clean ground.
       local function clearHazard()
@@ -4999,7 +5800,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
           magicGuard = sample.magicGuard,
           abilities = sample.abilities,
           entrant = target,
-          grounded = entrantGrounded(state, target, sample.typeMap[target]),
+          grounded = NativeAbilitySupport.hazardGrounded(state, target, sample.typeMap[target]),
           chart = chart,
         }, timing)
       )
@@ -5062,17 +5863,19 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         )
       end
     end
-    context.blockedBy = context.blockedBy
-      or NativeAbilitySupport.handlers.applyPassiveTiming(
-        state,
-        timing,
-        target,
-        pending,
-        sample.stats,
-        moveFacts,
-        chart,
-        sample.typeMap
-      )
+    if timing ~= "entry" then
+      context.blockedBy = context.blockedBy
+        or NativeAbilitySupport.handlers.applyPassiveTiming(
+          state,
+          timing,
+          target,
+          pending,
+          sample.stats,
+          moveFacts,
+          chart,
+          sample.typeMap
+        )
+    end
     commitTimingHealth(state, sample.health, sample.ceilings)
     sweepExpiredEffects(state)
     sweepFaints(state)
@@ -5113,13 +5916,42 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         view:removeBattleEffect(target, "sacrificewish")
       end
     end
-    return context.blockedBy --[[@as string?]]
+    return context.blockedBy, --[[@as string?]]
+      orderedEntryIds
+  end
+
+  -- An arrival is not complete until its hazards and ability phases have
+  -- both settled. Callers that batch several opening hazards do their own
+  -- single phase scan below; every later arrival uses this transaction.
+  ---@param state table<string, unknown> live battle state under arrival
+  ---@param entrant integer arriving combatant
+  ---@param entryOrder integer[] frozen controller slot order for this arrival
+  ---@param deferAbilityPhases boolean? defer ability and residual phases for a batched arrival
+  ---@return integer[] ordered combatants used by the completed arrival
+  local function settleArrival(state, entrant, entryOrder, deferAbilityPhases)
+    local represented = false
+    for _, combatantId in ipairs(entryOrder) do
+      if combatantId == entrant then
+        represented = true
+        break
+      end
+    end
+    assert(represented, "arrivals retain their living slot in the controller checkpoint")
+    local _, sampledIds = invokeTiming(state, "entry", entrant, nil, entryOrder)
+    local orderedIds = assert(sampledIds, "arrival timing retains its pre-hazard speed sample")
+    if deferAbilityPhases ~= true then
+      NativeAbilitySupport.settleEntryAbilityPhases(state, speciesFacts, moveFacts, chart, orderedIds)
+      NativeAbilitySupport.settleEntryStatusCures(state, orderedIds)
+      ResidualAnswers.midTurn(state, BattleContext.wrap(state), speciesFacts, moveFacts, nil, {}, nil, orderedIds, true)
+    end
+    return orderedIds
   end
 
   ---@param state table<string, unknown> live battle state under execution
   ---@param action table<string, unknown> queued native action under execution
   ---@param ordinal integer commit order of this action
-  local function executeAttack(state, action, ordinal)
+  ---@param checkpointPositions integer[] frozen controller slot order for this strike
+  local function executeAttack(state, action, ordinal, checkpointPositions)
     local context = BattleContext.wrap(state)
     local stream = state.rng --[[@as table<string, unknown>]]
     assert(type(stream.nextU16) == "function", "native strikes draw from the battle stream")
@@ -5142,9 +5974,30 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- selection constraints gate the same strike the path would execute.
     local payload = action.payload --[[@as table<string, unknown>]]
     local moveName, ownerSlot = resolveMove(combatant.mon, payload.moveSlot)
+    if payload.pursuitInterruption == true and type(payload.pursuitMoveSlot) == "number" then
+      ownerSlot = payload.pursuitMoveSlot --[[@as integer]]
+      local owner = combatant.mon.moves[ownerSlot + 1]
+      assert(type(owner) == "table" and owner.move == "PURSUIT", "interceptions retain the selected PP slot")
+      moveName = "PURSUIT"
+    end
     if type(payload.forcedMove) == "string" then
       moveName = payload.forcedMove
       ownerSlot = nil
+      if payload.pursuitInterruption == true then
+        for slot, record in
+          ipairs(combatant.mon.moves --[[@as table<integer, table<string, unknown>>]])
+        do
+          if
+            record.move == moveName
+            and type(record.pp) == "number"
+            and record.pp --[[@as integer]]
+              > 0
+          then
+            ownerSlot = slot - 1
+            break
+          end
+        end
+      end
     end
     if
       context:hasBattleEffect(actor.combatant --[[@as integer]], "bide")
@@ -5153,21 +6006,29 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       ownerSlot = nil
     end
     local pendingPower = movePower(moveFacts, moveName)
+    local pursuitInterruption = payload.pursuitInterruption == true
     if
-      invokeTiming(state, "beforeAction", actor.combatant --[[@as integer]], { move = moveName, power = pendingPower })
-      ~= nil
+      not pursuitInterruption
+      and invokeTiming(
+          state,
+          "beforeAction",
+          actor.combatant --[[@as integer]],
+          { move = moveName, power = pendingPower }
+        )
+        ~= nil
     then
       return
     end
     -- Persistent status gates every strike at the before-action
     -- checkpoint: blocked actions never start, spend nothing, and draw
     -- nothing beyond the gate's own labeled roll.
-    local gate = Status.beforeAction(
-      combatant.mon --[[@as table<string, unknown>]],
-      stream --[[@as table<string, unknown>]],
-      { kind = "status-gate", combatant = actor.combatant },
-      NativeAbilitySupport.handlers.earlyBird(state, actor.combatant --[[@as integer]])
-    )
+    local gate = pursuitInterruption and { acts = true }
+      or Status.beforeAction(
+        combatant.mon --[[@as table<string, unknown>]],
+        stream --[[@as table<string, unknown>]],
+        { kind = "status-gate", combatant = actor.combatant },
+        NativeAbilitySupport.handlers.earlyBird(state, actor.combatant --[[@as integer]])
+      )
     if gate.event ~= nil then
       local gateKey = gate.event.key --[[@as string]]
       local gateOutcome = gate.event.outcome --[[@as string]]
@@ -5356,7 +6217,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       actor.combatant --[[@as integer]],
       policy,
       payload.target --[[@as table<string, unknown>]],
-      stream
+      stream,
+      pursuitInterruption
     )
     if #targetIds == 0 then
       return
@@ -5364,11 +6226,13 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     local executionActorId = actor.combatant --[[@as integer]]
     local selectedTarget = payload.target --[[@as table<string, unknown>]]
     local MoveInterference = require("libs.battle.src.gen4.NativeMoveInterference")
-    local redirectSpeedEntries = NativeAbilitySupport.activeSpeedEntries(state, speciesFacts)
-    local redirectTrickRoom = NativeAbilitySupport.fieldActive(state, "trickroom")
+    local redirectOrder = NativeAbilitySupport.combatantsAtPositions(
+      state,
+      assert(checkpointPositions, "strikes retain the sampled controller order")
+    )
     local moveFlags = moveRecord.flags
     local interception = nil --[[@type table<string, unknown>?]]
-    if type(moveFlags) == "table" then
+    if type(moveFlags) == "table" and not pursuitInterruption then
       interception = MoveInterference.resolve(
         state,
         moveName,
@@ -5388,9 +6252,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
           moveName,
           moveRecord --[[@as table<string, unknown>]],
           itemFacts,
-          redirectSpeedEntries,
-          redirectTrickRoom,
-          stream
+          redirectOrder
         )
         local recipient = redirected.combatant --[[@as integer]]
         targetIds = { recipient }
@@ -5424,8 +6286,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         itemFacts,
         sequenceState ~= nil and type(sequenceState.chargeMove) == "string",
         targetIds,
-        redirectSpeedEntries,
-        stream
+        redirectOrder
       )
       if redirected ~= nil then
         local recipient = redirected.combatant --[[@as integer]]
@@ -5450,8 +6311,16 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- duel context, level, abilities, and weight sample from its own
     -- record, with the first recipient's scalars behind the legacy
     -- single-target readers.
-    local strike =
-      recipientStrikeFacts(state, effectiveCombatant, targetIds, speciesFacts, category, moveName, moveFacts)
+    local strike = recipientStrikeFacts(
+      state,
+      effectiveCombatant,
+      targetIds,
+      speciesFacts,
+      category,
+      moveName,
+      moveFacts,
+      payload.pursuitInterruption == true
+    )
     local pressureTargets = {} ---@type integer[]
     for _, target in
       ipairs(strike.targets --[[@as table<integer, table<string, unknown>>]])
@@ -5600,6 +6469,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       helpingHand = BattleContext.wrap(state):hasBattleEffect(executionActorId, "helpinghand"),
     }
     local node = MoveExecution.start(inputs)
+    if pursuitInterruption then
+      (node.locals --[[@as table<string, unknown>]]).pursuitInterruption = true
+    end
     local executedFacts = type(node.executingMove) == "string" and moveFacts[node.executingMove] or nil
     local nodeLocals = node.locals --[[@as table<string, unknown>]]
     if
@@ -5724,16 +6596,56 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       local leaver = BattleState.combatant(state, executionActorId)
       departs = #eligibleReserves(state, leaver.participant --[[@as integer]], claimed) > 0
     end
-    -- Berries and pinch holdings answer mid-turn once the move
-    -- resolves: the attacker first, then the primary target, then the
-    -- turn-order sweep, so a pinch opened by this move already boosts
-    -- the same turn instead of waiting for the end-of-turn pass. A
-    -- departing pivot never answers here; the post-switch pass covers
-    -- the newcomer instead.
+    local postActionOrder = NativeAbilitySupport.combatantsAtPositions(state, checkpointPositions)
+    NativeAbilitySupport.settlePostAction(state, speciesFacts, moveFacts, chart, postActionOrder)
+    local checkpointOrder = NativeAbilitySupport.combatantsAtPositions(state, checkpointPositions)
+    NativeAbilitySupport.settleEntryStatusCures(state, checkpointOrder)
+    ResidualAnswers.midTurn(
+      state,
+      context,
+      speciesFacts,
+      executor._moveFacts,
+      nil,
+      {},
+      departs and executionActorId or nil,
+      checkpointOrder,
+      true
+    )
+    -- A departing pivot never answers the targeted pass here; the
+    -- post-switch pass covers the newcomer instead.
     if pivoted and departs then
-      ResidualAnswers.midTurn(state, context, speciesFacts, executor._moveFacts, nil, targetIds, executionActorId)
+      ResidualAnswers.midTurn(
+        state,
+        context,
+        speciesFacts,
+        executor._moveFacts,
+        nil,
+        targetIds,
+        executionActorId,
+        nil,
+        true
+      )
     else
-      ResidualAnswers.midTurn(state, context, speciesFacts, executor._moveFacts, executionActorId, targetIds, nil)
+      ResidualAnswers.midTurn(
+        state,
+        context,
+        speciesFacts,
+        executor._moveFacts,
+        executionActorId,
+        targetIds,
+        nil,
+        nil,
+        true
+      )
+    end
+    if not (pivoted and departs) then
+      local targeted = { executionActorId }
+      for _, targetId in ipairs(targetIds) do
+        if targetId ~= executionActorId then
+          targeted[#targeted + 1] = targetId
+        end
+      end
+      NativeAbilitySupport.settleEntryStatusCures(state, targeted)
     end
     sweepFaints(state)
   end
@@ -5745,7 +6657,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   ---@param cause table<string, unknown> semantic reason carried by the emitted event
   ---@param reason string? optional switch reason overriding voluntary departure
   ---@param readyEventSequence integer? switch event sequence ordering the arrival feedback
-  local function executeSwitch(state, context, action, ordinal, cause, reason, readyEventSequence)
+  ---@param checkpointPositions integer[] frozen controller slot order for this action
+  ---@return boolean true after the replacement's complete arrival transaction
+  local function executeSwitch(state, context, action, ordinal, cause, reason, readyEventSequence, checkpointPositions)
     local actor = action.actor --[[@as table<string, unknown>]]
     local payload = action.payload --[[@as table<string, unknown>]]
     local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
@@ -5754,27 +6668,27 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     local passedStages = nil
     local passedEffectIds = {} ---@type integer[]
     local passedEffects = {} ---@type table<string, boolean>
+    local passable = {
+      aquaring = true,
+      confusion = true,
+      curse = true,
+      embargo = true,
+      focusenergy = true,
+      GASTRO_ACID = true,
+      healblock = true,
+      ingrain = true,
+      leechseed = true,
+      lockon = true,
+      magnetrise = true,
+      mudsport = true,
+      perishsong = true,
+      POWER_TRICK = true,
+      substitute = true,
+      trapped = true,
+      watersport = true,
+    }
     if cause.kind == "move" and cause.key == "BATON_PASS" then
       -- Source Baton Pass flags with an active-state counterpart here.
-      local passable = {
-        aquaring = true,
-        confusion = true,
-        curse = true,
-        embargo = true,
-        focusenergy = true,
-        GASTRO_ACID = true,
-        healblock = true,
-        ingrain = true,
-        leechseed = true,
-        lockon = true,
-        magnetrise = true,
-        mudsport = true,
-        perishsong = true,
-        POWER_TRICK = true,
-        substitute = true,
-        trapped = true,
-        watersport = true,
-      }
       passedStages = copyValue(combatant.stages)
       local bag = liveEffectBag(state)
       for _, effect in ipairs(bag:capture()) do
@@ -5839,8 +6753,58 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         combatant = actor.combatant,
       })
     end
-    BattleState.leave(state, slot)
+    if reason == nil or reason == "u_turn" or reason == "baton_pass" then
+      interceptPursuit(
+        state,
+        actor.combatant --[[@as integer]],
+        actor.activation --[[@as integer]],
+        ordinal,
+        checkpointPositions,
+        executeAttack
+      )
+    end
+    if reason == "baton_pass" then
+      passedEffectIds = {}
+      passedEffects = {}
+      if combatant.active ~= nil and combatant.hp > 0 then
+        passedStages = copyValue(combatant.stages)
+        local bag = liveEffectBag(state)
+        for _, effect in ipairs(bag:capture()) do
+          local scope = effect.scope
+          if
+            type(scope) == "table"
+            and scope.kind == "active"
+            and scope.combatant == actor.combatant
+            and passable[effect.key] == true
+          then
+            passedEffects[effect.key] = true
+            passedEffectIds[#passedEffectIds + 1] = effect.id
+          end
+        end
+      else
+        passedStages = nil
+      end
+    end
+    if BattleState.position(state, slot).occupant == actor.combatant then
+      BattleState.leave(state, slot)
+    else
+      assert(
+        BattleState.position(state, slot).occupant == nil,
+        "Pursuit leaves the departing slot empty after a knockout"
+      )
+    end
     local activation = BattleState.enter(state, payload.replacement --[[@as integer]], slot)
+    local obligations = state.pendingFaintObligations --[[@as table<integer, table<string, unknown>>]]
+    for index = #obligations, 1, -1 do
+      local obligation = obligations[index]
+      if
+        obligation.position == slot
+        and obligation.combatant == actor.combatant
+        and obligation.activation == actor.activation
+      then
+        table.remove(obligations, index)
+      end
+    end
     -- Entry cleanup resets both records; Baton Pass re-anchors its
     -- source-declared effect subset and stages after that reset.
     settleEntry(
@@ -5865,7 +6829,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- counts as a recipient; arriving foes open their own fresh record.
     noteBattleEntry(state, payload.replacement --[[@as integer]])
     local switchFacts = nil ---@type table<string, unknown>?
-    if readyEventSequence ~= nil and (reason == "u_turn" or reason == "baton_pass") then
+    if
+      readyEventSequence ~= nil and (reason == "u_turn" or reason == "u_turn_after_pursuit" or reason == "baton_pass")
+    then
       local pivotReason = reason == "baton_pass" and "baton-pass" or "u-turn"
       local departingRole = { combatant = actor.combatant, activation = actor.activation }
       local incomingRole = { combatant = payload.replacement, activation = activation }
@@ -5889,7 +6855,12 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     event.actionId = ordinal
     -- The arrival runs its entry pass before it may act: a hazard faint
     -- queues through ordinary faint ownership for the turn-close drain.
-    invokeTiming(state, "entry", payload.replacement --[[@as integer]])
+    local entryOrder = NativeAbilitySupport.combatantsAtPositions(
+      state,
+      assert(checkpointPositions, "switch arrivals retain their controller checkpoint")
+    )
+    settleArrival(state, payload.replacement --[[@as integer]], entryOrder)
+    return true
   end
 
   ---@param state table<string, unknown> live battle state under execution
@@ -6137,7 +7108,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   ---@param state table<string, unknown> live battle state under execution
   ---@param action table<string, unknown> queued native action under execution
   ---@param ordinal integer commit order of this action
-  local function executeChoice(state, action, ordinal)
+  ---@param checkpointPositions integer[] frozen controller slot order for this action
+  ---@return boolean true when this choice completed an arrival transaction
+  local function executeChoice(state, action, ordinal, checkpointPositions)
     local context = BattleContext.wrap(state)
     local actor = action.actor --[[@as table<string, unknown>]]
     local cause = {
@@ -6146,10 +7119,11 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       combatant = actor.combatant,
       activation = actor.activation,
     }
+    local arrived = false
     if action.kind == "attack" then
-      executeAttack(state, action, ordinal)
+      executeAttack(state, action, ordinal, checkpointPositions)
     elseif action.kind == "switch" then
-      executeSwitch(state, context, action, ordinal, cause)
+      arrived = executeSwitch(state, context, action, ordinal, cause, nil, nil, checkpointPositions)
     elseif action.kind == "confirm" then
       context:pushFrame({
         kind = "action",
@@ -6168,6 +7142,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     else
       error(BattleErrors.invalidState("commit met an unvalidated choice", {}))
     end
+    return arrived
   end
 
   --- Suspends after a successful pivot move so the controller chooses its
@@ -6175,7 +7150,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   ---@param state table<string, unknown> live turn under the pivot move
   ---@param action table<string, unknown> completed move action
   ---@param intent table<string, unknown> emitted switch intent
-  local function requestPivotReplacement(state, action, intent)
+  ---@param checkpointPositions integer[] frozen controller slot order for this action
+  ---@return boolean true when the pivot decision suspends this turn
+  local function requestPivotReplacement(state, action, intent, checkpointPositions)
     local actor = action.actor --[[@as table<string, unknown>]]
     local combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
     if
@@ -6183,27 +7160,52 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         <= 0
       or combatant.active == nil
     then
-      return
+      return false
     end
     local reserves = eligibleReserves(state, combatant.participant --[[@as integer]], {})
     if #reserves == 0 then
-      return
+      return false
     end
-    local active = combatant.active --[[@as table<string, unknown>]]
-    local pending = state.pending --[[@as table<string, unknown>?]]
-    assert(pending ~= nil, "pivot prompts replace the completed turn batch")
+    assert(state.pending ~= nil, "pivot prompts replace the completed turn batch")
     local counter = state.batchCounter --[[@as integer]] + 1
     state.batchCounter = counter
     local intentCause = intent.cause
     local payload = intent.payload --[[@as table<string, unknown>]]
     assert(type(intentCause) == "table", "pivot intents retain the move cause")
+    local pivotReason = (type(payload.mode) == "string" and payload.mode == "pass-markers") and "baton-pass" or "u-turn"
+    if pivotReason == "u-turn" then
+      local activeBefore = combatant.active --[[@as table<string, unknown>]]
+      interceptPursuit(
+        state,
+        actor.combatant --[[@as integer]],
+        activeBefore.activation --[[@as integer]],
+        action.selectedOrdinal --[[@as integer]],
+        checkpointPositions,
+        executeAttack
+      )
+      combatant = BattleState.combatant(state, actor.combatant --[[@as integer]])
+      if combatant.hp <= 0 or combatant.active == nil then
+        return false
+      end
+      local status = BattleContext.wrap(state):statusOf(actor.combatant --[[@as integer]])
+      if
+        NativePassiveBridge.wrap(state):abilityOf(actor.combatant --[[@as integer]]) == "NATURAL_CURE"
+        and status ~= nil
+      then
+        BattleContext.wrap(state):cureStatus(actor.combatant --[[@as integer]], status, {
+          kind = "ability",
+          key = "NATURAL_CURE",
+          combatant = actor.combatant,
+        })
+      end
+    end
+    local active = combatant.active --[[@as table<string, unknown>]]
     -- The connected pivot publishes its departure readiness before the
     -- replacement decision opens: later translation finishes the
     -- prepared departure before exposing the party choice, and the
     -- committed arrival carries the same readiness without replaying it.
     local pivotCtx = BattleContext.wrap(state)
     local departing = { combatant = actor.combatant, activation = actor.activation }
-    local pivotReason = (type(payload.mode) == "string" and payload.mode == "pass-markers") and "baton-pass" or "u-turn"
     local moveKey = (intentCause --[[@as table<string, unknown>]]).key
     if type(moveKey) ~= "string" or moveKey == "" then
       moveKey = pivotReason == "baton-pass" and "BATON_PASS" or "U_TURN"
@@ -6238,6 +7240,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         actionId = intent.actionId,
         cause = copyValue(intentCause),
         readyEventSequence = readyEvent.sequence,
+        checkpointPositions = copyValue(checkpointPositions),
       },
     }
     local controller = BattleState.participant(state, combatant.participant --[[@as integer]]).controller
@@ -6248,12 +7251,17 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       legalChoices = { kinds = { "switch" } },
     })
     state.status = "waiting"
+    return true
   end
 
   ---@param action table<string, unknown> queued native action under execution
   local function executeAction(action)
     local state = executor:_live()
     local staged = action.actor --[[@as table<string, unknown>]]
+    local checkpointPositions = NativeAbilitySupport.sampleBattlerPositions(state, speciesFacts)
+    if action.controllerVisit == true or action.progress == "complete" then
+      return
+    end
     local combatant = BattleState.combatant(state, staged.combatant --[[@as integer]])
     local entry = combatant.active --[[@as table<string, unknown>?]]
     if entry == nil or entry.activation ~= staged.activation then
@@ -6265,19 +7273,33 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       end
       return
     end
+    local trickRoomBefore = NativeAbilitySupport.fieldActive(state, "trickroom")
     local firstEvent = #state.outbox --[[@as table<integer, table<string, unknown>>]] + 1
-    executeChoice(state, action, action.selectedOrdinal --[[@as integer]])
-    -- Consumed actions mark their actor: later strikes in the same turn
-    -- read payback order from this ledger, matching the native
-    -- already-acted command. Stale actors never reach this mark.
-    -- Acting also clears the actor's own received-hit record, matching
-    -- the native end-of-action cleanup: later decisions read only
-    -- strikes received since this action.
+    local arrived = executeChoice(state, action, action.selectedOrdinal --[[@as integer]], checkpointPositions)
+    if trickRoomBefore ~= NativeAbilitySupport.fieldActive(state, "trickroom") then
+      state.pendingExecutionResort = true
+    end
+    local pivoting = false
+    if not arrived then
+      local outbox = state.outbox --[[@as table<integer, table<string, unknown>>]]
+      for index = firstEvent, #outbox do
+        local event = outbox[index]
+        local payload = event.payload --[[@as table<string, unknown>?]]
+        if
+          event.kind == "switch-intent"
+          and type(payload) == "table"
+          and (payload.mode == "strike-and-leave" or payload.mode == "pass-markers")
+        then
+          local leaver = BattleState.combatant(state, staged.combatant --[[@as integer]])
+          pivoting = #eligibleReserves(state, leaver.participant --[[@as integer]], {}) > 0
+          break
+        end
+      end
+    end
     if type(state.turnActed) ~= "table" then
       state.turnActed = {}
     end
-    local acted = state.turnActed --[[@as table<integer, boolean>]]
-    acted[
+    (state.turnActed --[[@as table<integer, boolean>]])[
       staged.combatant --[[@as integer]]
     ] = true
     local received = state.lastHits --[[@as table<integer, unknown>?]]
@@ -6286,13 +7308,32 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         staged.combatant --[[@as integer]]
       ] = nil
     end
-    local receivedSlots = state.lastHitSlots --[[@as table<integer, integer>]]
-    receivedSlots[
+    (state.lastHitSlots --[[@as table<integer, integer>]])[
       staged.combatant --[[@as integer]]
     ] = nil
     if action.progress ~= "complete" then
       local queue = state.queue --[[@as table<integer, table<string, unknown>>]]
       ActionQueue.complete(queue, action.id --[[@as integer]])
+    end
+    if not pivoting then
+      if action.kind == "switch" then
+        local occupant = BattleState.position(state, entry.position --[[@as integer]]).occupant
+        if type(occupant) == "number" then
+          NativeAbilitySupport.settleEntryStatusCures(state, { occupant })
+        end
+      end
+      local drainActionRewards = executor.drainActionRewards
+      assert(type(drainActionRewards) == "function", "ActionEnd drains rewards through this session owner")
+      if not drainActionRewards(state, checkpointPositions) then
+        return
+      end
+      if NativeAbilitySupport.settleActionEnd(state, speciesFacts, moveFacts, chart, checkpointPositions, nil) then
+        return
+      end
+    end
+    if state.pendingExecutionResort == true and state.status == "running" and not pivoting then
+      NativeAbilitySupport.reorderExecutionQueue(state, speciesFacts)
+      state.pendingExecutionResort = false
     end
     local outbox = state.outbox --[[@as table<integer, table<string, unknown>>]]
     for index = firstEvent, #outbox do
@@ -6303,7 +7344,24 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         and type(payload) == "table"
         and (payload.mode == "strike-and-leave" or payload.mode == "pass-markers")
       then
-        requestPivotReplacement(state, action, event)
+        local suspended = requestPivotReplacement(state, action, event, checkpointPositions)
+        if suspended then
+          return
+        end
+        if pivoting then
+          local drainActionRewards = executor.drainActionRewards
+          assert(type(drainActionRewards) == "function", "ActionEnd drains rewards through this session owner")
+          if not drainActionRewards(state, checkpointPositions) then
+            return
+          end
+          if NativeAbilitySupport.settleActionEnd(state, speciesFacts, moveFacts, chart, checkpointPositions, nil) then
+            return
+          end
+          if state.pendingExecutionResort == true and state.status == "running" then
+            NativeAbilitySupport.reorderExecutionQueue(state, speciesFacts)
+            state.pendingExecutionResort = false
+          end
+        end
         return
       elseif event.kind == "switch-intent" and type(payload) == "table" and payload.mode == "force-foe-out" then
         local plan = require("libs.battle.src.gen4.NativeSwitchIntent").forcedDeparture(state, {
@@ -6322,7 +7380,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
           executeSwitch(state, BattleContext.wrap(state), {
             actor = { combatant = outgoing, activation = outgoingEntry.activation },
             payload = { replacement = plan.incoming },
-          }, event.actionId --[[@as integer]], event.cause, "forced")
+          }, event.actionId --[[@as integer]], event.cause, "forced", nil, checkpointPositions)
         end
       end
     end
@@ -6342,15 +7400,30 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     toxic = true,
   } ---@type table<string, boolean>
 
-  local function applyResiduals()
+  local function applyResiduals(checkpointOrder, checkpointPositions, resumeFrame, resumeSpeeds, resumeAnswers)
     local state = executor:_live()
+    local stream = state.rng --[[@as table<string, unknown>]]
+    assert(type(stream.nextU16) == "function", "native residuals draw from the battle stream")
     local bag = liveEffectBag(state)
     local sample = sampleTimingState(state, speciesFacts)
     local health = sample.health
     local speeds = sample.speeds
+    if resumeSpeeds ~= nil then
+      speeds = resumeSpeeds --[[@as table<integer, integer>]]
+    end
     local ceilings = sample.ceilings
     local typeMap = sample.typeMap
     local occupants = sample.occupants
+    if resumeFrame ~= nil then
+      local frame = Residuals.validateFrame(resumeFrame)
+      for _, combatantId in ipairs(frame.fainted) do
+        local combatant = BattleState.combatant(state, combatantId)
+        local ceiling = combatant.maxHp or combatant.entryHp
+        assert(type(ceiling) == "number", "settled residual faints retain their sampled health ceiling")
+        health[combatantId] = 0
+        ceilings[combatantId] = ceiling
+      end
+    end
     -- Nightmare watches sleep through these per-pass facts because the
     -- residual context carries no mon records.
     local slept = {} ---@type table<integer, boolean>
@@ -6364,28 +7437,10 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         slept[combatantId] = true
       end
     end
-    local stream = state.rng --[[@as table<string, unknown>]]
-    assert(type(stream.nextU16) == "function", "native residuals draw from the battle stream")
-    -- The per-battler mon phase walks this sampled order: the unified
-    -- residual frame freezes it once, and finite instances, innate
-    -- answers, and condition ticks all nest under it without spending a
-    -- second tie draw.
-    local turnEntries = {} ---@type table<integer, { id: integer, speed: integer }>
-    for combatant, speed in pairs(speeds) do
-      turnEntries[#turnEntries + 1] = { id = combatant, speed = speed }
-    end
-    local turnOrder = {}
-    for _, entry in
-      ipairs(
-        TurnOrder.orderResiduals(
-          turnEntries,
-          { trickRoom = NativeAbilitySupport.fieldActive(state, "trickroom") },
-          stream
-        )
-      )
-    do
-      turnOrder[#turnOrder + 1] = entry.id
-    end
+    -- ExecuteNextAction samples the live battler order before it enters
+    -- the field-condition phase; every residual pass reuses that one
+    -- checkpoint instead of drawing a second residual tie order.
+    local turnOrder = checkpointOrder
     local context = BattleContext.wrap(state)
     -- Drain and recovery boosts read the live holdings beside the
     -- sampled facts: Big Root holders and Heal Blocked holders travel
@@ -6448,8 +7503,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- phases read current holder state, so a spend or cure earlier in
     -- the pass is already visible. Poison answers persist across steps
     -- of the same pass.
-    local answeredPoison = {} ---@type table<integer, boolean>
-    local badDreamsApplied = {} ---@type table<integer, boolean>
+    local answeredPoison = resumeAnswers ~= nil and resumeAnswers.answeredPoison or {} ---@type table<integer, boolean>
+    local badDreamsApplied = resumeAnswers ~= nil and resumeAnswers.badDreamsApplied or {} ---@type table<integer, boolean>
     local function liveAbility(combatantId)
       return ResidualAnswers.ability(state, context, health, ceilings, answeredPoison, badDreamsApplied, combatantId)
     end
@@ -6574,7 +7629,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- never answer again. The pass still completes synchronously, so
     -- no continuation survives the turn and capture only ever sees
     -- settled state.
-    local resume = nil ---@type table<string, unknown>?
+    local resume = resumeFrame --[[@as table<string, unknown>?]]
     local passOrdinal = 0
     while true do
       passOrdinal = passOrdinal + 1
@@ -6699,13 +7754,59 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       end
       commitTimingHealth(state, health, ceilings)
       sweepFaints(state)
+      local children = state.progressionChildren --[[@as table<integer, unknown>]]
+      if #children > 0 then
+        state.residualContinuation = {
+          frame = outcome.frame,
+          order = copyValue(turnOrder),
+          positions = copyValue(checkpointPositions),
+          speeds = copyValue(speeds),
+          answers = { answeredPoison = copyValue(answeredPoison), badDreamsApplied = copyValue(badDreamsApplied) },
+        }
+        local drainActionRewards = executor.drainActionRewards
+        assert(type(drainActionRewards) == "function", "residual rewards use the session reward owner")
+        if not drainActionRewards(state, checkpointPositions) then
+          return
+        end
+        state.residualContinuation = nil
+        if NativeAbilitySupport.isBattleOver(state) then
+          settleOutcome(state, speciesFacts, moveFacts, chart)
+          return
+        end
+        return applyResiduals(
+          turnOrder,
+          checkpointPositions,
+          outcome.frame,
+          speeds,
+          { answeredPoison = answeredPoison, badDreamsApplied = badDreamsApplied }
+        )
+      end
+      if NativeAbilitySupport.isBattleOver(state) then
+        local drainActionRewards = executor.drainActionRewards
+        assert(type(drainActionRewards) == "function", "residual rewards use the session reward owner")
+        if not drainActionRewards(state, checkpointPositions) then
+          state.residualContinuation = {
+            frame = outcome.frame,
+            order = copyValue(turnOrder),
+            positions = copyValue(checkpointPositions),
+            speeds = copyValue(speeds),
+            answers = { answeredPoison = copyValue(answeredPoison), badDreamsApplied = copyValue(badDreamsApplied) },
+          }
+          return
+        end
+        state.residualContinuation = nil
+        settleOutcome(state, speciesFacts, moveFacts, chart)
+        return
+      end
       if outcome.done then
+        state.residualContinuation = nil
         break
       end
       resume = outcome.frame
     end
     sweepExpiredEffects(state)
     sweepFaints(state)
+    NativeAbilitySupport.settleWeatherForms(state, turnOrder)
   end
 
   -- Drains this turn's enriched faint obligations in settlement order:
@@ -6715,8 +7816,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   ---@param state table<string, unknown> live battle state under replacement work
   ---@return table<integer, table<string, unknown>> ordered replacement obligations
   local function drainObligations(state)
-    local settled = pendingFaintObligations
-    pendingFaintObligations = {}
+    local settled = state.pendingFaintObligations --[[@as table<integer, table<string, unknown>>]]
+    state.pendingFaintObligations = {}
     local obligations = {} ---@type table<integer, table<string, unknown>>
     local claimed = {} ---@type table<integer, boolean>
     for _, fainted in ipairs(settled) do
@@ -6733,11 +7834,13 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   ---@param state table<string, unknown> live battle state under replacement work
   ---@param obligations table<integer, table<string, unknown>> ordered replacement obligations
   ---@param allowRunOverride boolean? false forces switch-only after a failed wild escape; nil derives from the encounter
-  local function buildReplacementBatch(state, obligations, allowRunOverride)
+  ---@param checkpointPositions integer[] frozen controller slot order for the closing action checkpoint
+  local function buildReplacementBatch(state, obligations, allowRunOverride, checkpointPositions)
+    executor:_assertCheckpointPositions(checkpointPositions, "replacement batches retain every closing slot")
     local context = BattleContext.wrap(state)
     local counter = state.batchCounter --[[@as integer]] + 1
     state.batchCounter = counter
-    local stored = {} ---@type table<integer, table<string, unknown>>
+    local stored = {} ---@type table<integer, table<string, unknown>>]
     for _, obligation in ipairs(obligations) do
       stored[#stored + 1] = {
         combatant = obligation.combatant,
@@ -6760,7 +7863,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       batch = { id = counter, epoch = counter, requests = {} },
       submitted = {},
       reserved = { replacements = {}, items = {} },
-      replacement = { obligations = stored, allowRun = allowRun },
+      replacement = { obligations = stored, allowRun = allowRun, checkpointPositions = copyValue(checkpointPositions) },
     }
     context:pushFrame({
       kind = "round",
@@ -6891,7 +7994,10 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   ---@param child RewardChild reward child owning the prompt
   ---@param request table<string, unknown> learning prompt from the reward owner
   ---@param obligations table<integer, table<string, unknown>> deferred replacement obligations
-  local function buildLearningBatch(state, child, request, obligations)
+  ---@param checkpointPositions integer[] frozen controller slot order for the closing action checkpoint
+  ---@param resumeAction boolean true when the pending learning prompt resumes an action
+  local function buildLearningBatch(state, child, request, obligations, checkpointPositions, resumeAction)
+    executor:_assertCheckpointPositions(checkpointPositions, "learning batches retain every closing slot")
     local context = BattleContext.wrap(state)
     local recipientId = request.combatant --[[@as integer]]
     local recipientFrame = nil
@@ -6923,14 +8029,20 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       batch = { id = counter, epoch = counter, requests = {} },
       submitted = {},
       reserved = { replacements = {}, items = {} },
-      learning = { obligations = obligations },
+      learning = {
+        obligations = obligations,
+        checkpointPositions = copyValue(checkpointPositions),
+        resumeAction = resumeAction,
+      },
     }
-    context:pushFrame({
-      kind = "round",
-      version = 1,
-      cursor = "awaiting_replies",
-      state = { round = state.round },
-    })
+    if not resumeAction then
+      context:pushFrame({
+        kind = "round",
+        version = 1,
+        cursor = "awaiting_replies",
+        state = { round = state.round },
+      })
+    end
     local issued = context:requestDecision({
       controller = owner.controller,
       kind = HgssSessionExecutor.LEARN_DECISION_KIND,
@@ -6951,8 +8063,11 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   --- completion returns true with every child done.
   ---@param state table<string, unknown> live battle state under reward work
   ---@param obligations table<integer, table<string, unknown>> deferred replacement obligations
+  ---@param checkpointPositions integer[] frozen controller slot order for the closing action checkpoint
+  ---@param resumeAction boolean true when the pending learning prompt resumes an action
   ---@return boolean true when every reward child is done
-  local function drainRewardChildren(state, obligations)
+  local function drainRewardChildren(state, obligations, checkpointPositions, resumeAction)
+    executor:_assertCheckpointPositions(checkpointPositions, "reward drains retain every closing slot")
     local children = state.progressionChildren --[[@as table<integer, RewardChild>]]
     assert(type(state.progressionChildren) == "table", "reward children travel as an array")
     for _, child in ipairs(children) do
@@ -6967,7 +8082,14 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         end
         syncRewardMons(state, child)
         if result.request ~= nil then
-          buildLearningBatch(state, child, result.request --[[@as table<string, unknown>]], obligations)
+          buildLearningBatch(
+            state,
+            child,
+            result.request --[[@as table<string, unknown>]],
+            obligations,
+            checkpointPositions,
+            resumeAction
+          )
           return false
         end
         child.done = true
@@ -6975,6 +8097,23 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     end
     return true
   end
+
+  local function drainActionRewardsForTurn(state, checkpointPositions)
+    if
+      #state.progressionChildren --[[@as table<integer, RewardChild>]]
+      == 0
+    then
+      return true
+    end
+    local obligations = drainObligations(state)
+    state.pendingFaintObligations = obligations
+    if not drainRewardChildren(state, obligations, checkpointPositions, true) then
+      return false
+    end
+    state.progressionChildren = {}
+    return true
+  end
+  executor.drainActionRewards = drainActionRewardsForTurn
 
   --- Freezes the next eligible opposing arrival for the optional Shift
   --- decision: only eligible local trainer singles qualify, with the
@@ -7103,7 +8242,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   --- restores, and stale replies can never replay or split it.
   ---@param state table<string, unknown> live battle state under replacement work
   ---@param offer ShiftOffer frozen shift offer under publication
-  local function buildShiftBatch(state, offer)
+  ---@param checkpointPositions integer[] frozen controller slot order for the closing action checkpoint
+  local function buildShiftBatch(state, offer, checkpointPositions)
+    executor:_assertCheckpointPositions(checkpointPositions, "shift batches retain every closing slot")
     local context = BattleContext.wrap(state)
     local counter = state.batchCounter --[[@as integer]] + 1
     state.batchCounter = counter
@@ -7137,6 +8278,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         incoming = offer.incoming,
         foeParticipant = offer.foeParticipant,
         obligations = stored,
+        checkpointPositions = copyValue(checkpointPositions),
         identity = {
           position = player.position,
           playerActivation = player.activation,
@@ -7167,7 +8309,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   --- terminal result follows only after every replacement resolves.
   ---@param state table<string, unknown> live battle state under turn close
   ---@param obligations table<integer, table<string, unknown>> ordered replacement obligations
-  local function finishTurn(state, obligations)
+  ---@param checkpointPositions integer[] frozen controller slot order for the closing action checkpoint
+  local function finishTurn(state, obligations, checkpointPositions)
     local pending = obligations
     local external = 0
     while true do
@@ -7182,7 +8325,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         -- suspend with the replacement batch open instead of sequencing.
         -- The turn frame above already closed; the replacement batch opens
         -- its own below.
-        buildReplacementBatch(state, pending)
+        buildReplacementBatch(state, pending, nil, checkpointPositions)
         return
       end
       -- The optional Shift offer precedes the held foe send-out: freeze
@@ -7190,7 +8333,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       -- decision instead of entering the reserve.
       local offer = shiftOfferFor(state, pending)
       if offer ~= nil then
-        buildShiftBatch(state, offer)
+        buildShiftBatch(state, offer, checkpointPositions)
         return
       end
       local claimed = {} ---@type table<integer, boolean>
@@ -7201,27 +8344,47 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         enterReserve(state, moneySet, obligation, reserves[1])
         -- The arrival runs its entry pass before it may act: a hazard
         -- faint queues through ordinary faint ownership for the drain below.
-        invokeTiming(state, "entry", reserves[1])
+        settleArrival(state, reserves[1], NativeAbilitySupport.combatantsAtPositions(state, checkpointPositions), true)
       end
       local fresh = drainObligations(state)
       if #fresh == 0 then
         break
       end
-      if not drainRewardChildren(state, fresh) then
+      if not drainRewardChildren(state, fresh, checkpointPositions, false) then
         return
       end
       state.progressionChildren = {}
       pending = fresh
     end
-    settleOutcome(state)
+    settleOutcome(state, speciesFacts, moveFacts, chart)
   end
 
-  -- Runs one arrival's entry pass with faint settlement for commit-time
-  -- replacement work, which lives outside this turn seam.
+  -- Runs one arrival's hazard pass and then the native ability phase scan.
   ---@param state table<string, unknown> live battle state under replacement work
   ---@param entrant integer arriving combatant under the entry pass
-  local function settleEntryTiming(state, entrant)
-    invokeTiming(state, "entry", entrant)
+  ---@param checkpointPositions integer[] frozen controller slot order for the arrival
+  ---@param deferAbilityPhases boolean? defer ability and residual phases for a batched arrival
+  ---@return integer[] ordered combatants used by the completed arrival
+  local function settleEntryTiming(state, entrant, checkpointPositions, deferAbilityPhases)
+    return settleArrival(
+      state,
+      entrant,
+      NativeAbilitySupport.combatantsAtPositions(state, checkpointPositions),
+      deferAbilityPhases
+    )
+  end
+
+  ---@param state table<string, unknown> live battle state under opening entry
+  ---@param entrants integer[] opening combatants whose hazards settle once
+  local function settleOpeningEntries(state, entrants)
+    local orderedIds = NativeAbilitySupport.combatantsAtPositions(
+      state,
+      NativeAbilitySupport.sampleBattlerPositions(state, speciesFacts)
+    )
+    for _, entrant in ipairs(entrants) do
+      invokeTiming(state, "entry", entrant, nil, orderedIds)
+    end
+    NativeAbilitySupport.settleSendOutPhases(state, speciesFacts, moveFacts, chart, orderedIds)
   end
 
   -- Settles replacements after a commit-time entry pass: hazard faints
@@ -7231,18 +8394,20 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
   -- the frozen foe replacement beside the fresh hazard work.
   ---@param state table<string, unknown> live battle state under replacement work
   ---@param held table<integer, table<string, unknown>>? frozen foe obligations held for the offer
-  local function settlePostReplacement(state, held)
+  ---@param checkpointPositions integer[] frozen controller slot order for the closing action checkpoint
+  local function settlePostReplacement(state, held, checkpointPositions)
+    executor:_assertCheckpointPositions(checkpointPositions, "post-replacement drains retain every native slot")
     local obligations = drainObligations(state)
     if held ~= nil then
       for _, obligation in ipairs(held) do
         obligations[#obligations + 1] = obligation
       end
     end
-    if not drainRewardChildren(state, obligations) then
+    if not drainRewardChildren(state, obligations, checkpointPositions, false) then
       return
     end
     state.progressionChildren = {}
-    finishTurn(state, obligations)
+    finishTurn(state, obligations, checkpointPositions)
   end
 
   --- Consumes the one accepted shift reply: a legal switch runs the
@@ -7311,7 +8476,12 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         from = player.combatant,
         to = reserve,
       })
-      settleEntryTiming(state, reserve --[[@as integer]])
+      settleEntryTiming(
+        state,
+        reserve --[[@as integer]],
+        assert(shift.checkpointPositions, "shift batches retain their closing slot order"),
+        true
+      )
     else
       assert(choice.kind == "confirm", "shift answers switch or stay")
     end
@@ -7330,7 +8500,12 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       assert(held, "held foe replacements keep their frozen arrival")
       claimed[frozen] = true
       enterReserve(state, moneySet, obligation, frozen)
-      settleEntryTiming(state, frozen)
+      settleEntryTiming(
+        state,
+        frozen,
+        assert(shift.checkpointPositions, "shift batches retain their closing slot order"),
+        true
+      )
     end
     local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
     local roundFrame = frames[#frames]
@@ -7338,14 +8513,20 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     frames[#frames] = nil
     state.pending = nil
     state.queue = {}
+    state.pendingExecutionResort = false
     -- An arrival's entry pass banks hazard faints with the faint
     -- owner: drain them through rewards into mandatory replacement or
     -- the terminal result exactly like the turn-close tail.
-    settlePostReplacement(state)
+    settlePostReplacement(
+      state,
+      nil,
+      assert(shift.checkpointPositions, "shift batches retain their closing slot order")
+    )
   end
 
-  local function closeTurn()
+  local function closeTurn(checkpointPositions)
     local state = executor:_live()
+    executor:_assertCheckpointPositions(checkpointPositions, "turn close retains every native slot")
     local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
     local roundFrame = frames[#frames]
     assert(roundFrame ~= nil and roundFrame.kind == "round", "commit closes its round frame")
@@ -7354,21 +8535,71 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- The turn queue drained fully: every staged action completed, so the
     -- next turn stages into a fresh queue instead of reusing identities.
     state.queue = {}
+    state.pendingExecutionResort = false
     local obligations = drainObligations(state)
     -- Knockout rewards settle before mandatory replacement or the
     -- terminal result: the first learning prompt suspends the turn here
     -- with the computed obligations held aside.
-    if not drainRewardChildren(state, obligations) then
+    if not drainRewardChildren(state, obligations, checkpointPositions, false) then
       return
     end
     state.progressionChildren = {}
-    finishTurn(state, obligations)
+    finishTurn(state, obligations, checkpointPositions)
   end
 
-  --- Resumes the scheduled action queue after an in-turn move-choice prompt.
+  ---@param state table<string, unknown> live turn whose queue remains open
+  ---@return boolean true when a terminal turn was closed
+  local function closeEndedTurn(state)
+    if state.status ~= "ended" then
+      return false
+    end
+    local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
+    local roundFrame = frames[#frames]
+    assert(roundFrame ~= nil and roundFrame.kind == "round", "early terminals close their round frame")
+    frames[#frames] = nil
+    state.pending = nil
+    state.queue = {}
+    state.pendingExecutionResort = false
+    state.pendingFaintObligations = {}
+    local schedule = state.schedule --[[@as table<string, unknown>?]]
+    if schedule ~= nil then
+      schedule.currentActionId = nil
+      schedule.executionCursor = nil
+      schedule.pendingFaints = {}
+    end
+    return true
+  end
+
   ---@param state table<string, unknown> live turn whose queue remains open
   ---@param budget integer operation budget for the resumed queue
   local function resumeTurn(state, budget)
+    local residual = state.residualContinuation --[[@as table<string, unknown>?]]
+    if residual ~= nil then
+      state.residualContinuation = nil
+      if NativeAbilitySupport.isBattleOver(state) then
+        settleOutcome(state, speciesFacts, moveFacts, chart)
+        if closeEndedTurn(state) then
+          return
+        end
+        closeTurn(residual.positions --[[@as integer[] ]])
+        return
+      end
+      applyResiduals(
+        residual.order --[[@as integer[] ]],
+        residual.positions --[[@as integer[] ]],
+        residual.frame --[[@as table<string, unknown>]],
+        residual.speeds --[[@as table<integer, integer>]],
+        residual.answers --[[@as table<string, unknown>]]
+      )
+      if state.status == "waiting" then
+        return
+      end
+      if closeEndedTurn(state) then
+        return
+      end
+      closeTurn(residual.positions --[[@as integer[] ]])
+      return
+    end
     local ruleset = assert(turnRuleset, "resumed turns use the bound ruleset")
     local queue = state.queue --[[@as table<integer, table<string, unknown>>]]
     local schedule = state.schedule --[[@as table<string, unknown>]]
@@ -7384,16 +8615,19 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       return
     end
     if state.status == "ended" then
-      local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
-      local roundFrame = frames[#frames]
-      assert(roundFrame ~= nil and roundFrame.kind == "round", "early terminals close their round frame")
-      frames[#frames] = nil
-      state.pending = nil
-      state.queue = {}
+      closeEndedTurn(state)
       return
     end
-    applyResiduals()
-    closeTurn()
+    local residualPositions = NativeAbilitySupport.sampleBattlerPositions(state, speciesFacts)
+    local residualOrder = NativeAbilitySupport.occupantsAtPositions(state, residualPositions)
+    applyResiduals(residualOrder, residualPositions)
+    if state.status == "waiting" then
+      return
+    end
+    if closeEndedTurn(state) then
+      return
+    end
+    closeTurn(residualPositions)
   end
 
   --- Commits the pivot choice, then resumes the same ordered turn.
@@ -7414,12 +8648,13 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     local action = { actor = actor, payload = { replacement = payload.replacement } }
     local cause = intent.cause --[[@as table<string, unknown>]]
     local ordinal = intent.actionId --[[@as integer]]
-    local reason = cause.key == "BATON_PASS" and "baton_pass" or "u_turn"
+    local reason = cause.key == "BATON_PASS" and "baton_pass" or "u_turn_after_pursuit"
     local readyEventSequence = (intent --[[@as table<string, unknown>]]).readyEventSequence
-    state.pending = nil
+    local checkpointPositions = intent.checkpointPositions --[[@as integer[] ]]
+    local spent = pending
     state.status = "running"
     local context = BattleContext.wrap(state)
-    executeSwitch(state, context, action, ordinal, cause, reason, readyEventSequence)
+    executeSwitch(state, context, action, ordinal, cause, reason, readyEventSequence, checkpointPositions)
     -- The post-switch after-move machine answers the newcomer first:
     -- a damaged reserve arriving with a pinch or status berry spends
     -- it before the turn resumes, mirroring the post-switch
@@ -7429,10 +8664,26 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       local positionId = intent.position --[[@as integer]]
       local occupant = BattleState.position(state, positionId).occupant
       if type(occupant) == "number" then
-        ResidualAnswers.midTurn(state, context, speciesFacts, executor._moveFacts, occupant, {}, nil)
+        ResidualAnswers.midTurn(state, context, speciesFacts, executor._moveFacts, occupant, {}, nil, nil, true)
       end
     end
+    local drainActionRewards = executor.drainActionRewards
+    assert(type(drainActionRewards) == "function", "pivot ActionEnd drains rewards through this session owner")
+    if not drainActionRewards(state, checkpointPositions) then
+      return
+    end
+    if NativeAbilitySupport.settleActionEnd(state, speciesFacts, moveFacts, chart, checkpointPositions, nil) then
+      resumeTurn(state, 1024)
+      return
+    end
+    if state.pendingExecutionResort == true and state.status == "running" then
+      NativeAbilitySupport.reorderExecutionQueue(state, speciesFacts)
+      state.pendingExecutionResort = false
+    end
     resumeTurn(state, 1024)
+    if state.pending == spent then
+      state.pending = nil
+    end
   end
 
   --- Consumes one stored learning reply, then drains forward: another
@@ -7444,6 +8695,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     assert(type(state.pending) == "table" and type(pending.learning) == "table", "learning commits over its own batch")
     local learning = pending.learning --[[@as table<string, unknown>]]
     local obligations = learning.obligations --[[@as table<integer, table<string, unknown>>]]
+    local checkpointPositions = assert(learning.checkpointPositions, "learning batches retain their closing slot order")
+    local resumeAction = learning.resumeAction == true
     local requests = DecisionBatch.requests(state)
     assert(#requests == 1, "learning batches suspend on one prompt")
     local submitted = pending.submitted --[[@as table<integer, table<string, unknown>>]]
@@ -7478,16 +8731,43 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     end
     syncRewardMons(state, child)
     if result.request ~= nil then
-      buildLearningBatch(state, child, result.request --[[@as table<string, unknown>]], obligations)
+      buildLearningBatch(
+        state,
+        child,
+        result.request --[[@as table<string, unknown>]],
+        obligations,
+        checkpointPositions,
+        resumeAction
+      )
       return
     end
     child.done = true
-    if not drainRewardChildren(state, obligations) then
+    if not drainRewardChildren(state, obligations, checkpointPositions, resumeAction) then
       return
     end
     state.progressionChildren = {}
+    if resumeAction then
+      assert(#state.frames == 1 and state.frames[1].kind == "round", "action rewards resume their open round")
+      state.pendingFaintObligations = obligations
+      state.pending = nil
+      state.status = "running"
+      if state.residualContinuation ~= nil then
+        resumeTurn(state, 1024)
+        return
+      end
+      if NativeAbilitySupport.settleActionEnd(state, speciesFacts, moveFacts, chart, checkpointPositions, nil) then
+        resumeTurn(state, 1024)
+        return
+      end
+      if state.pendingExecutionResort == true and state.status == "running" then
+        NativeAbilitySupport.reorderExecutionQueue(state, speciesFacts)
+        state.pendingExecutionResort = false
+      end
+      resumeTurn(state, 1024)
+      return
+    end
     local spent = state.pending
-    finishTurn(state, obligations)
+    finishTurn(state, obligations, checkpointPositions)
     if state.pending == spent and state.status == "running" then
       -- Resolving the carried obligations opened no replacement batch
       -- and the battle runs on: drop the spent learning batch so the
@@ -7508,6 +8788,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     commitLearning = commitLearning,
     commitShift = commitShift,
     settleEntryTiming = settleEntryTiming,
+    settleOpeningEntries = settleOpeningEntries,
     settlePostReplacement = settlePostReplacement,
     shiftOfferFor = shiftOfferFor,
     buildReplacementBatch = buildReplacementBatch,
@@ -7737,6 +9018,7 @@ local function wrap(
     _trainerProvisional = {},
     _finalized = false,
     _disposed = false,
+    _openingSnapshot = nil,
   }, HgssSessionExecutor)
   -- Opening occupants send out with the battle: scan them before the
   -- first turn so a holder in the starting lineup latches immediately
@@ -7828,29 +9110,20 @@ function HgssSessionExecutor.new(scenarioRecord, content)
   end
   -- Opening abilities and effects run through the same entry timing as
   -- later arrivals, including when the finite effect bag starts empty.
-  local settleOpening = executor._settleEntryTiming
-  assert(type(settleOpening) == "function", "opening entries run through the bound timing seam")
-  local openingSample = sampleTimingState(live, speciesFacts)
-  local openingEntries = {} ---@type table<integer, table<string, integer>>
+  local settleOpening = executor._settleOpeningEntries
+  assert(type(settleOpening) == "function", "opening entries run through one native phase scan")
+  executor._openingSnapshot = BattleSnapshot.capture(live)
+  local openingEntries = {} ---@type integer[]
   for _, positionId in
     ipairs(live.positionOrder --[[@as integer[] ]])
   do
     local occupant = BattleState.position(live, positionId --[[@as integer]]).occupant
     if occupant ~= nil then
-      openingEntries[#openingEntries + 1] = {
-        id = occupant,
-        speed = openingSample.speeds[
-          occupant --[[@as integer]]
-        ],
-        ability = (BattleState.combatant(live, occupant --[[@as integer]]).mon --[[@as table<string, unknown>]]).ability,
-      }
+      openingEntries[#openingEntries + 1] = occupant --[[@as integer]]
     end
   end
-  local orderedEntries =
-    TurnOrder.orderEntryEffects(openingEntries, { trickRoom = fieldActive(live, "trickroom") }, live.rng)
-  for _, entry in ipairs(orderedEntries) do
-    settleOpening(live, entry.id --[[@as integer]])
-  end
+  live.nativeOrderRolls = sampleOrderRolls(live.rng)
+  settleOpening(live, openingEntries)
   return executor
 end
 
@@ -8023,6 +9296,7 @@ function HgssSessionExecutor:_bindLifecycle()
   -- Entry timing and post-replacement settlement close over the same
   -- seam for commit-time replacement work outside the turn handlers.
   self._settleEntryTiming = turnHandlers.settleEntryTiming
+  self._settleOpeningEntries = turnHandlers.settleOpeningEntries
   self._settlePostReplacement = turnHandlers.settlePostReplacement
   -- Failed wild escapes retry switch-only through the same batch builder
   -- the turn seam owns, preserving the encounter flight law there.
@@ -8031,12 +9305,24 @@ function HgssSessionExecutor:_bindLifecycle()
   ruleset:initialize(self)
 end
 
+---@return table<string, unknown> detached pre-entry snapshot for the first presentation packet
+function HgssSessionExecutor:openingSnapshot()
+  assert(type(self._openingSnapshot) == "table", "fresh native sessions retain their pre-entry snapshot")
+  return copyValue(self._openingSnapshot)
+end
+
 ---@return table<string, unknown> live battle state, failing after disposal
 function HgssSessionExecutor:_live()
   if self._disposed or self._state == nil then
     error(BattleErrors.invalidState("disposed sessions publish nothing further", {}))
   end
   return self._state
+end
+
+---@param positions integer[] frozen controller slot order under the programming invariant
+---@param message string invariant label naming the continuation owner
+function HgssSessionExecutor:_assertCheckpointPositions(positions, message)
+  assert(HgssSessionExecutor.checkpointPositionsProblem(self:_live(), positions) == nil, message)
 end
 
 function HgssSessionExecutor:_finalizeOnce()
@@ -8107,6 +9393,8 @@ end
 function HgssSessionExecutor:_commitReplacement(state)
   local pending = state.pending --[[@as table<string, unknown>]]
   local replacement = pending.replacement --[[@as table<string, unknown>]]
+  local checkpointPositions =
+    assert(replacement.checkpointPositions, "replacement batches retain their closing slot order")
   local obligations = replacement.obligations --[[@as table<integer, table<string, unknown>>]]
   local submitted = pending.submitted --[[@as table<integer, table<string, unknown>>]]
   -- Index externally chosen arrivals by fainted combatant. Replies were
@@ -8143,7 +9431,7 @@ function HgssSessionExecutor:_commitReplacement(state)
     end
   end
   if next(runners) ~= nil then
-    self:_commitReplacementEscape(state, obligations, runners)
+    self:_commitReplacementEscape(state, obligations, runners, checkpointPositions)
     return
   end
   local claimed = {} ---@type table<integer, boolean>
@@ -8206,7 +9494,7 @@ function HgssSessionExecutor:_commitReplacement(state)
     enterReserve(state, self._moneyUpItems, obligation, reserve)
     local settleArrival = self._settleEntryTiming
     assert(type(settleArrival) == "function", "replacement entries run through the bound timing seam")
-    settleArrival(state, reserve)
+    settleArrival(state, reserve, checkpointPositions, true)
   end
   local frames = state.frames --[[@as table<integer, table<string, unknown>>]]
   local roundFrame = frames[#frames]
@@ -8221,7 +9509,7 @@ function HgssSessionExecutor:_commitReplacement(state)
   -- obligations run no rewards and fall through to the same outcome.
   local settleReplacements = self._settlePostReplacement
   assert(type(settleReplacements) == "function", "hazard faints drain through the bound turn seam")
-  settleReplacements(state)
+  settleReplacements(state, nil, checkpointPositions)
 end
 
 --- Commits a wild replacement batch where at least one fainted entry
@@ -8233,7 +9521,8 @@ end
 ---@param state table<string, unknown> live battle state under replacement commit
 ---@param obligations table<integer, table<string, unknown>> ordered replacement obligations under commit
 ---@param runners table<integer, table<string, unknown>> fainted actors that chose flight by combatant
-function HgssSessionExecutor:_commitReplacementEscape(state, obligations, runners)
+---@param checkpointPositions integer[] frozen controller slot order carried through the retry
+function HgssSessionExecutor:_commitReplacementEscape(state, obligations, runners, checkpointPositions)
   local runnerId = nil
   for _, obligation in ipairs(obligations) do
     if
@@ -8316,7 +9605,7 @@ function HgssSessionExecutor:_commitReplacementEscape(state, obligations, runner
   state.queue = {}
   local rebuild = self._buildReplacementBatch
   assert(type(rebuild) == "function", "failed escapes retry through the replacement batch builder")
-  rebuild(state, obligations, false)
+  rebuild(state, obligations, false, checkpointPositions)
 end
 
 ---@param state table<string, unknown>
@@ -9217,10 +10506,7 @@ local function actionActorOptions(state, actor, admitted, battleKind, moveFacts,
     local policyMove = type(key) == "string" and key --[[@as string]] or named
     local attackerTypes = nil
     if policyMove == "CURSE" then
-      local ok, types = pcall(combatantTypes, combatant, speciesFacts)
-      if ok and type(types) == "table" then
-        attackerTypes = types --[[@as string[] ]]
-      end
+      attackerTypes = combatantTypes(combatant, speciesFacts, state)
     end
     local projected, candidates =
       strikeProjection(state, actor.combatant --[[@as integer]], policyMove, moveFacts[policyMove], attackerTypes)
@@ -9924,6 +11210,7 @@ function HgssSessionExecutor:capture()
     itemFacts = self._itemFacts,
     moneyUpItems = state.moneyUpItems or {},
     trainerAi = state.trainerAi,
+    nativeOrderRolls = state.nativeOrderRolls,
     prizeMoneyValue = prizeMoneyValue,
     paydayScattered = scattered,
   })

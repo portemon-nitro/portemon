@@ -964,6 +964,18 @@ local function checkOperation(value, path)
       error("semantic weather starts name their origin at " .. path)
     end
     out.origin = record.origin
+  elseif kind == "form-changed" then
+    for _, field in ipairs({ "beforeForm", "form" }) do
+      local form = record[field]
+      if type(form) ~= "number" or form % 1 ~= 0 or form < 0 or form > 255 then
+        error("semantic form changes carry 0..255 forms at " .. path .. "." .. field)
+      end
+      out[field] = form
+    end
+    if type(record.substitute) ~= "boolean" then
+      error("semantic form changes name Substitute picture state at " .. path)
+    end
+    out.substitute = record.substitute
   elseif kind == "weather-continued" then
     if
       record.weather ~= "rain"

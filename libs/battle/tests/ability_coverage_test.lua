@@ -259,11 +259,11 @@ function T.entry_and_modifier_handlers_announce_then_stay_silent_when_inapplicab
   local entryBag = EffectBag.new()
   local herald = addBoundInstance(entryBag, "INTIMIDATE", "entry", EffectFixture.activeScope(1, 1))
   local entryDispatch = EffectDispatch.new(entryBag, handlers)
-  local announced = entryDispatch:invoke("entry", dispatchContext())
+  local announced = entryDispatch:invoke("entry", dispatchContext({ timing = "entry" }))
   Assert.isTrue(announced.done, "the entry pass runs to completion")
   assertSingleEvent(announced.events, "INTIMIDATE", 1)
 
-  local gagged = entryDispatch:invoke("entry", dispatchContext({ suppressedIds = { [herald.id] = true } }))
+  local gagged = entryDispatch:invoke("entry", dispatchContext({ timing = "entry", suppressedIds = { [herald.id] = true } }))
   Assert.isTrue(gagged.done, "a suppressed pass still completes")
   Assert.deepEqual(gagged.events, {}, "suppression silences the handler without unbinding it")
 

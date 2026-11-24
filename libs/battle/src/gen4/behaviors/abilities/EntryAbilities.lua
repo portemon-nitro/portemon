@@ -48,25 +48,34 @@ local ENTRY_SUPPRESS_WEATHER = {
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
 ---@param context table<string, unknown> entry pass context under handling
----@return table<string, unknown> entry announcement carrying the source identity
+---@return table<string, unknown>? entry announcement carrying the source identity
 local function announceEntry(instance, context)
   assert(type(context) == "table", "entry handlers read their pass context")
+  if context.timing ~= "entry" then
+    return nil
+  end
   return { kind = "trigger", key = instance.key, combatant = holderOf(instance), foes = context.foes }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
 ---@param context table<string, unknown> entry pass context under handling
----@return table<string, unknown> weather announcement naming the established weather
+---@return table<string, unknown>? weather announcement naming the established weather
 local function announceWeather(instance, context)
   assert(type(context) == "table", "entry handlers read their pass context")
+  if context.timing ~= "entry" then
+    return nil
+  end
   return { kind = "trigger", key = instance.key, combatant = holderOf(instance), weather = ENTRY_WEATHER[instance.key] }
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
 ---@param context table<string, unknown> entry pass context under handling
----@return table<string, unknown> suppression announcement clearing established weather
+---@return table<string, unknown>? suppression announcement clearing established weather
 local function announceSuppression(instance, context)
   assert(type(context) == "table", "entry handlers read their pass context")
+  if context.timing ~= "entry" then
+    return nil
+  end
   return { kind = "trigger", key = instance.key, combatant = holderOf(instance), weather = "none" }
 end
 

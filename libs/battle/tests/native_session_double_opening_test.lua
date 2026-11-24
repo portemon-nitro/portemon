@@ -10,6 +10,19 @@ local T = {}
 
 local DOUBLE_SEED = 0x00D0B1E
 
+---@param session table live native session under random-stream inspection
+---@param label string draw label whose occurrences are counted
+---@return integer matching draw count
+local function rngLabelCount(session, label)
+  local count = 0
+  for _, entry in ipairs(session:_live().rng._trace) do
+    if entry.label == label then
+      count = count + 1
+    end
+  end
+  return count
+end
+
 ---@param name string module path under test
 ---@param behavior string observable behavior the module owns
 ---@return table the loaded module
@@ -395,24 +408,23 @@ local function announcesFaintFor(collected, combatant)
   return false
 end
 
--- The native opening samples exactly four order values before asking for
--- decisions, stores them on the open batch in canonical slot order, and
--- resamples them for every following batch. A final knockout without a
--- reserve still ends through the mapped terminal word carrying its
--- eligibility record, spending no further draws on the empty batch,
--- while the generic path opens with no order samples at all.
+-- The native opening initializes exactly four order values before asking
+-- for decisions and keeps them on the battle state. Both opening sorts and
+-- the first action order read that array; the before-turn seam refreshes it
+-- once for later checkpoints and the following turn. A final knockout
+-- without a reserve still ends through the mapped terminal word carrying
+-- its eligibility record, while the generic path carries no order samples.
 function T.native_opening_samples_four_order_values_and_keeps_the_terminal_record()
   local contracts = SessionFixture.sessionContracts()
   local content = doubleContent()
 
   local session = contracts.Battle.newSession(handDoublesScenario(), content)
-  local callsBefore = session:capture().rng.calls
   local opening = SessionFixture.driveUntilSettled(session)
   Assert.equal(opening.status, "waiting", "the native doubles wait for both sides")
   local settled = session:capture()
-  Assert.equal(settled.rng.calls, callsBefore + 4, "the opening spends exactly four order samples")
-  local rolls = settled.pending.nativeOrderRolls
-  Assert.notNil(rolls, "the open batch stores its pre-request order samples")
+  Assert.equal(rngLabelCount(session, "quick_claw"), 4, "the opening spends exactly four order samples")
+  local rolls = settled.nativeOrderRolls
+  Assert.notNil(rolls, "the native battle stores its initial order samples")
   assert(rolls ~= nil, "the order samples are observed before assertions")
   Assert.equal(#rolls, 4, "the open batch stores one sample per battler slot")
   for _, sample in ipairs(rolls) do
@@ -424,7 +436,7 @@ function T.native_opening_samples_four_order_values_and_keeps_the_terminal_recor
   local replay = contracts.Battle.newSession(handDoublesScenario(), content)
   SessionFixture.driveUntilSettled(replay)
   Assert.deepEqual(
-    replay:capture().pending.nativeOrderRolls,
+    replay:capture().nativeOrderRolls,
     rolls,
     "the identical seed replays the identical order samples"
   )
@@ -442,17 +454,18 @@ function T.native_opening_samples_four_order_values_and_keeps_the_terminal_recor
     Assert.isTrue(ok, "the native opening replies are accepted: " .. tostring(replyErr))
     Assert.isNil(replyErr, "accepted native replies carry no input error")
   end
-  local callsAfterOpen = settled.rng.calls
+  local samplesBefore = rngLabelCount(session, "quick_claw")
   session:advance(64)
   local following = SessionFixture.driveUntilSettled(session)
   Assert.equal(following.status, "waiting", "the following turn asks for decisions")
-  local followingRolls = session:capture().pending.nativeOrderRolls
-  Assert.notNil(followingRolls, "the following batch stores its own order samples")
+  local followingRolls = session:capture().nativeOrderRolls
+  Assert.notNil(followingRolls, "the battle retains its refreshed order samples")
   assert(followingRolls ~= nil, "the following samples are observed before assertions")
-  Assert.equal(#followingRolls, 4, "every batch samples one value per battler slot")
-  Assert.isTrue(
-    session:capture().rng.calls >= callsAfterOpen + 4,
-    "the following batch samples before its own requests"
+  Assert.equal(#followingRolls, 4, "the battle carries one refreshed value per battler slot")
+  Assert.equal(
+    rngLabelCount(session, "quick_claw"),
+    samplesBefore + 4,
+    "the before-turn seam refreshes four values before the following requests"
   )
   session:dispose()
 
@@ -500,7 +513,7 @@ function T.native_opening_samples_four_order_values_and_keeps_the_terminal_recor
   )
   local genericOpening = SessionFixture.driveUntilSettled(generic, 64)
   Assert.equal(genericOpening.status, "waiting", "the generic singles wait for both sides")
-  Assert.isNil(generic:capture().pending.nativeOrderRolls, "the generic batch carries no order samples")
+  Assert.isNil(generic:capture().nativeOrderRolls, "the generic battle carries no order samples")
   generic:dispose()
 end
 

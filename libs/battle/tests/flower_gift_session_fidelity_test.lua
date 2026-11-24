@@ -67,6 +67,7 @@ local function scenario(placement)
     end
   end
   moveFacts.TACKLE.flags = {}
+  moveFacts.TACKLE.accuracy = 100
   moveFacts.SUNNY_DAY = {
     power = 0,
     accuracy = 0,

@@ -184,6 +184,40 @@ function T.arbitrary_lineups_keep_stable_combatant_position_and_entry_identities
   end
 end
 
+function T.mid_battle_join_keeps_snapshot_valid()
+  local contracts = SessionFixture.sessionContracts()
+  local Topology = SessionFixture.requirePresent(
+    "libs.battle.src.Topology",
+    "topology joins publish new roster and position identities"
+  )
+  local session = SessionFixture.newSession(contracts, SessionFixture.buildScenario(singles()))
+  local opened = SessionFixture.driveUntilSettled(session, 64)
+  Assert.equal(opened.status, "waiting", "joins stage from a settled decision boundary")
+  local newcomer = SessionFixture.combatant(5, 55)
+  local staged = Topology.prepareJoin(session, {
+    reason = "snapshot-join",
+    settlementBoundary = "waiting",
+    participant = {
+      id = 3,
+      side = 1,
+      controller = "gamma",
+      context = {},
+      roster = { newcomer },
+    },
+    combatants = { newcomer },
+    positions = {
+      { id = 3, side = 1, eligibleParticipants = { 3 }, occupant = 5 },
+    },
+    inventories = {},
+  })
+  Topology.applyJoin(session, staged)
+  local snapshot = session:capture()
+  local restored = contracts.Session.restore(snapshot, SessionFixture.makeContent())
+  Assert.deepEqual(restored:capture(), snapshot, "join snapshots restore with the complete live roster")
+  restored:dispose()
+  session:dispose()
+end
+
 function T.duplicate_occupancy_invalid_ownership_and_undeclared_controllers_fail()
   local contracts = SessionFixture.sessionContracts()
 

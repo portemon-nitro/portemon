@@ -508,6 +508,9 @@ function T.follow_me_redirects_selected_foe_strikes()
     scenarioMoveFacts(seeds, { FOLLOW_ME = followMe }),
     scenarioSpeciesFacts(seeds)
   )
+  -- The source Trace checkpoint spends its donor draw before action ties;
+  -- this seed keeps the vector's strike non-critical while exercising redirect.
+  scenario.random.seed = 1
   local session, frame = openWaiting(scenario)
   local answers = projectedSlotZero(session, frame)
   local betaChoices = answers.beta

@@ -482,6 +482,11 @@ function T.roamer_battle_advances_the_roamer_revision()
   local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
 
   local party = newPartyOwner()
+  local lead = party:partyMon(0)
+  lead.moves = { { move = "QUICK_ATTACK", pp = 30, ppUps = 0 } }
+  local leadBatch = party:preparePartyBatch(party:partyRevision(), { { slot = 0, mon = lead } }, {})
+  Assert.notNil(leadBatch, "the roamer fixture stages its always-accurate quick strike")
+  leadBatch.publish()
   local roamer = newRoamerOwner()
   local standin = foeRecord("EEVEE", 14, 0x90A4E001, 1)
   local launch =
@@ -497,8 +502,8 @@ function T.roamer_battle_advances_the_roamer_revision()
     },
   })
   -- The roaming record tracks its own battle health; the scenario foe is a
-  -- 1-HP stand-in so the executed battle settles the standing. The stand-in
-  -- races at level 14 so the level-5 lead still answers under exact STAB.
+  -- 1-HP stand-in so the executed battle settles the standing. The lead's
+  -- Quick Attack always connects and acts before the stand-in.
   local battle = BattleRuntime.new({
     request = launch,
     scenario = scenario,

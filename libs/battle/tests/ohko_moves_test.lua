@@ -109,6 +109,7 @@ local function runStrike(moveKey, extra)
     )
   end
   local beforeFoe = ctx:damage(2, 0, { kind = "probe" }).before
+  local stream = BattleRng.new(extra.seed or HANDLER_SEED)
   local inputs = {
     actionId = 901,
     actor = { combatant = 1 },
@@ -135,7 +136,7 @@ local function runStrike(moveKey, extra)
     attackerTypes = { "normal" },
     defenderTypes = { [2] = { "normal" } },
     typeChart = nativeChart(content),
-    stream = BattleRng.new(extra.seed or HANDLER_SEED),
+    stream = stream,
     abilities = { user = "NONE", foe = "NONE" },
     foeLevel = 50,
   }
@@ -156,6 +157,7 @@ local function runStrike(moveKey, extra)
     outcome = finished,
     dealt = beforeFoe - ctx:damage(2, 0, { kind = "probe" }).before,
     foeAfter = ctx:damage(2, 0, { kind = "probe" }).after,
+    draws = stream:capture().calls,
   }
 end
 
@@ -173,6 +175,16 @@ function T.knockout_fails_against_a_higher_level_foe()
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "failed", "the outleveled knockout fails")
   Assert.isTrue(probe.foeAfter > 0, "the failed knockout deals nothing")
+  Assert.equal(probe.draws, 1, "the outleveled attempt still spends its retail hit draw")
+end
+
+function T.underleveled_guaranteed_ohko_still_spends_the_fallback_draw()
+  local probe = runStrike("GUILLOTINE", {
+    foeLevel = 51,
+    abilities = { user = "NO_GUARD", foe = "NONE" },
+  })
+  Assert.equal(probe.outcome.result, "failed", "No Guard cannot bypass the level gate")
+  Assert.equal(probe.draws, 1, "underlevel guarantees follow the random fallback before the level failure")
 end
 
 function T.knockout_fails_against_sturdy()

@@ -13,7 +13,6 @@ local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokeniz
 local FieldMessageAsset = require("libs.assets.src.field.FieldMessageAsset")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
-local BattlePresentationSources = require("romdump.src.config.BattlePresentationSources")
 local charmap = require("romdump.src.catalog.hgss.charmap")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local ScriptMembers = require("romdump.src.catalog.hgss.script_members")
@@ -32,7 +31,6 @@ local OAK_INTRO_MESSAGE_BANK = 219
 local OPPOSITE_PROTAGONIST_NAME_BANK = 445
 local BLACKOUT_MESSAGE_BANK = 203
 local APRICORN_BOX_MESSAGE_BANK = 21
-local BATTLE_SCRIPT_CONTROLLER_MESSAGE_BANK = BattlePresentationSources.MESSAGE_BANKS.scriptController
 
 -- The naming screen reads the default name its empty-entry case stores
 -- straight from its own bank: `NamingScreen_SetDefaultName` in
@@ -186,7 +184,6 @@ function FieldMessageCompiler.requiredBankIds()
   -- runtime protocol constant rather than a map-header association.
   set[MenuProtocol.STANDARD_MESSAGE_BANK] = true
   set[MenuProtocol.START_MENU_MESSAGE_BANK] = true
-  set[BATTLE_SCRIPT_CONTROLLER_MESSAGE_BANK] = true
   set[OAK_INTRO_MESSAGE_BANK] = true
   set[OPPOSITE_PROTAGONIST_NAME_BANK] = true
   -- The rival naming screen defaults an empty entry from this bank row.

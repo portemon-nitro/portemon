@@ -446,25 +446,59 @@ local function foeAccuracy(ctx, frame, defender)
     }))
   end
   local stream = checkStream(record.stream)
+  local weather = locals.weather --[[@as string]]
+  local weatherSuppressed = locals.weatherSuppressed == true
+  if ctx:fieldEffect("raindance") ~= nil then
+    weather = "rain"
+  elseif ctx:fieldEffect("sunnyday") ~= nil then
+    weather = "sun"
+  elseif ctx:fieldEffect("sandstorm") ~= nil then
+    weather = "sand"
+  elseif ctx:fieldEffect("hail") ~= nil then
+    weather = "hail"
+  end
+  if not weatherSuppressed and weather == "sun" and record.executingMove == "THUNDER" then
+    accuracy = 50
+  end
+  local clearWeatherMiss = not weatherSuppressed
+    and (
+      (weather == "rain" and record.executingMove == "THUNDER")
+      or (weather == "hail" and record.executingMove == "BLIZZARD")
+    )
   local userStages = ctx:entryOf(userOf(record)).stages --[[@as table<string, integer>]]
   local targetStages = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
   local protected = ctx:hasBattleEffect(defender, "protect") or ctx:hasBattleEffect(defender, "detect")
-  local userAbility = abilityOf(frame, "user")
-  local foeAbility = abilityOf(frame, "foe")
+  local targetFacts = locals.targetFacts
+  local perTargetFacts = type(targetFacts) == "table" and (targetFacts --[[@as table<integer, unknown>]])[defender]
+    or nil
+  local perTargetAbilities = type(perTargetFacts) == "table"
+      and (perTargetFacts --[[@as table<string, unknown>]]).abilities
+    or nil
+  local userAbility, foeAbility
+  if type(perTargetAbilities) == "table" then
+    userAbility = (perTargetAbilities --[[@as table<string, unknown>]]).user
+    foeAbility = (perTargetAbilities --[[@as table<string, unknown>]]).foe
+  else
+    userAbility = abilityOf(frame, "user")
+    foeAbility = abilityOf(frame, "foe")
+  end
+  local semiInvulnerable = type(perTargetFacts) == "table"
+      and (perTargetFacts --[[@as table<string, unknown>]]).semiInvulnerable
+    or nil
   local accuracyStage = userStages.accuracy
   local evasionStage = targetStages.evasion
   if
-    evasionStage < 0 and (ctx:hasBattleEffect(defender, "foresight") or ctx:hasBattleEffect(defender, "miracleeye"))
+    evasionStage > 0 and (ctx:hasBattleEffect(defender, "foresight") or ctx:hasBattleEffect(defender, "miracleeye"))
   then
     evasionStage = 0
   end
   if userAbility == "SIMPLE" then
-    accuracyStage = math.max(-6, math.min(6, accuracyStage * 2))
+    accuracyStage = accuracyStage * 2
   end
   if userAbility == "UNAWARE" then
     evasionStage = 0
   elseif userAbility ~= "MOLD_BREAKER" and foeAbility == "SIMPLE" then
-    evasionStage = math.max(-6, math.min(6, evasionStage * 2))
+    evasionStage = evasionStage * 2
   end
   if userAbility ~= "MOLD_BREAKER" and foeAbility == "UNAWARE" then
     accuracyStage = 0
@@ -477,8 +511,6 @@ local function foeAccuracy(ctx, frame, defender)
     if userAbility == "COMPOUNDEYES" then
       effectiveAccuracy = math.floor(effectiveAccuracy * 130 / 100)
     end
-    local weather = locals.weather
-    local weatherSuppressed = locals.weatherSuppressed == true
     if not weatherSuppressed then
       if userAbility ~= "MOLD_BREAKER" and weather == "sand" and foeAbility == "SAND_VEIL" then
         effectiveAccuracy = math.floor(effectiveAccuracy * 80 / 100)
@@ -488,21 +520,9 @@ local function foeAccuracy(ctx, frame, defender)
       if weather == "fog" then
         effectiveAccuracy = math.floor(effectiveAccuracy * 6 / 10)
       end
-      if weather == "sun" and record.executingMove == "THUNDER" then
-        effectiveAccuracy = math.floor(effectiveAccuracy / 2)
-      end
     end
     if userAbility == "HUSTLE" and move.category == "physical" then
       effectiveAccuracy = math.floor(effectiveAccuracy * 80 / 100)
-    end
-    if
-      not weatherSuppressed
-      and (
-        (weather == "rain" and record.executingMove == "THUNDER")
-        or (weather == "hail" and record.executingMove == "BLIZZARD")
-      )
-    then
-      effectiveAccuracy = 0
     end
     if
       userAbility ~= "MOLD_BREAKER"
@@ -511,9 +531,40 @@ local function foeAccuracy(ctx, frame, defender)
     then
       effectiveAccuracy = math.floor(effectiveAccuracy / 2)
     end
+    do
+      local defenderHeld = ctx:heldItemOf(defender)
+      if
+        (defenderHeld == "BRIGHTPOWDER" or defenderHeld == "LAX_INCENSE")
+        and foeAbility ~= "KLUTZ"
+        and not ctx:hasBattleEffect(defender, "embargo")
+      then
+        effectiveAccuracy = math.floor(effectiveAccuracy * 90 / 100)
+      end
+      local userHeld = ctx:heldItemOf(userOf(record))
+      if userHeld == "WIDE_LENS" and userAbility ~= "KLUTZ" and not ctx:hasBattleEffect(userOf(record), "embargo") then
+        effectiveAccuracy = math.floor(effectiveAccuracy * 110 / 100)
+      elseif
+        userHeld == "ZOOM_LENS"
+        and type(perTargetFacts) == "table"
+        and type((perTargetFacts --[[@as table<string, unknown>]]).duel) == "table"
+        and ((perTargetFacts --[[@as table<string, unknown>]]).duel --[[@as table<string, unknown>]]).foeActed == true
+        and userAbility ~= "KLUTZ"
+        and not ctx:hasBattleEffect(userOf(record), "embargo")
+      then
+        effectiveAccuracy = math.floor(effectiveAccuracy * 120 / 100)
+      end
+      if ctx:takeMicle(userOf(record)) then
+        effectiveAccuracy = math.floor(effectiveAccuracy * 120 / 100)
+      end
+    end
+  end
+  if locals.gravity == true and effectiveAccuracy > 0 then
+    effectiveAccuracy = math.floor(effectiveAccuracy * 10 / 6)
   end
   local forceHit = userAbility == "NO_GUARD" or foeAbility == "NO_GUARD"
-  local skipCheck = effectiveAccuracy == 0
+  local lockOn = ctx:battleEffectState(defender, "lockon")
+  forceHit = forceHit or (type(lockOn) == "table" and lockOn.attacker == userOf(record))
+  local skipCheck = accuracy == 0
   local resolution = Accuracy.resolve({
     accuracy = effectiveAccuracy,
     target = { kind = "combatant" },
@@ -524,14 +575,18 @@ local function foeAccuracy(ctx, frame, defender)
     skipCheck = skipCheck,
     tutorial = ctx:isTutorial(),
   }, stream)
-  if resolution.kind == "hit" or (forceHit and resolution.kind ~= "protected") then
-    return true
-  end
   if resolution.kind == "protected" then
     ctx:emit("protected", causeFor(record), { target = defender })
-  else
-    ctx:emit("missed", causeFor(record), { target = defender })
+    return false
   end
+  if semiInvulnerable ~= nil and semiInvulnerable ~= false and not forceHit then
+    ctx:emit("missed", causeFor(record), { target = defender })
+    return false
+  end
+  if clearWeatherMiss or resolution.kind == "hit" or forceHit then
+    return true
+  end
+  ctx:emit("missed", causeFor(record), { target = defender })
   return false
 end
 

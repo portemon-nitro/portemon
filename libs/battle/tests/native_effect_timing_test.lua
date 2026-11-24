@@ -86,7 +86,7 @@ end
 ---@param types string[] entrant types under the probe
 ---@param grounded boolean whether layers price the arrival
 ---@return table<string, unknown> per-pass battle facts for entrant 3
-local function entryFacts(types, grounded)
+local function entryFacts(types, grounded, magicGuard)
   return {
     maxHp = { [3] = 96 },
     types = { [3] = types },
@@ -94,6 +94,7 @@ local function entryFacts(types, grounded)
     sides = { [3] = 2 },
     entrant = 3,
     grounded = grounded,
+    magicGuard = magicGuard,
     chart = nativeChart(),
   }
 end
@@ -495,6 +496,13 @@ function T.toxic_spikes_poison_absorb_or_repel()
   Assert.equal(#poisoned.context.statused, 1, "one layer poisons the arrival")
   Assert.equal(poisoned.context.statused[1], "poison", "one layer poisons plainly")
   Assert.equal(poisoned.outcome.events[1].kind, "hazard", "the poisoning announces its hazard")
+  local magicGuard = Handlers.handlersFor(entryFacts({ "normal" }, true, { [3] = true }), "entry")
+  local guardedBag = liveBag()
+  local guardedLayers = addInstance(guardedBag, "toxicspikes", { kind = "side", side = 2 }, { version = 1, layers = 1 })
+  local guardedContext = { health = { [3] = 96 }, clearHazard = function() return guardedBag:remove(guardedLayers.id) end }
+  local guarded = invoke(guardedBag, magicGuard, "entry", guardedContext)
+  Assert.equal(#guarded.events, 0, "Magic Guard skips Toxic Spikes before poison or absorption")
+  Assert.notNil(guardedBag:get(guardedLayers.id), "Magic Guard leaves the toxic layers intact")
   local badly = priceToxic({ version = 1, layers = 2 }, { "normal" }, true)
   Assert.equal(#badly.context.statused, 1, "two layers poison the arrival")
   Assert.equal(badly.context.statused[1], "toxic", "two layers poison badly")

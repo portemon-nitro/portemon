@@ -12,8 +12,21 @@
 
 local Assert = require("tests.support.Assert")
 local Model = require("game.hgss.src.battle.BattlePresentationModel")
+local MonCache = require("libs.assets.src.MonCache")
 
 local T = {}
+
+---@return table synthetic catalog resolving only the portrait facts used by form changes
+local function appearanceDeps()
+  local catalog = {}
+  function catalog:species(key)
+    return { genderRatio = key == "MAGNEMITE" and 255 or 0 }
+  end
+  function catalog:form(key, form)
+    return { portrait = key .. "/f" .. tostring(form) .. "/female/plain" }
+  end
+  return { catalog = catalog }
+end
 
 ---@return table<string, unknown> detached dynamic view picturing one own lead and one foe
 local function views()
@@ -127,6 +140,189 @@ function T.transform_applied_projects_its_detached_donor_appearance()
   Assert.isTrue(type(projected.shiny) == "boolean", "the projection resolves the donor shininess")
   Assert.isNil(public.transformedAppearance.donor, "the projection carries no extra donor binding")
 end
+-- Every form operation freezes its own pictured identity and target form.
+-- Neither a later transformation nor the holder's departure from the final
+-- view can erase an intermediate portrait.
+function T.form_changes_freeze_event_time_portraits_independent_of_the_final_view()
+  local pair = views()
+  local before = pair.before.foes[1]
+  before.species = "CASTFORM"
+  before.form = 0
+  before.gender = "male"
+  before.shiny = false
+  before.portraitSelector = MonCache.portraitSelector("CASTFORM", 0, "male", false)
+  pair.before.foes = {}
+  pair.after.foes = {}
+  local function formEvent(sequence, form, activation, appearance)
+    local input = appearance
+      or {
+        activation = activation,
+        species = "CASTFORM",
+        personality = 42,
+        origin = { trainerId = 99 },
+        side = 2,
+      }
+    return {
+      sequence = sequence,
+      kind = "ability",
+      cause = { kind = "system", key = "weather-form" },
+      audience = "public",
+      payload = { key = "WEATHER_FORM", combatant = 3, beforeForm = 0, form = form },
+      actors = { { combatant = 3, activation = 3 } },
+      targets = { { combatant = 3, activation = 3 } },
+      observation = {
+        hp = { [3] = 20 },
+        combatants = {
+          [3] = {
+            participant = 3,
+            position = 3,
+            activation = 3,
+            hp = 20,
+            maxHp = 20,
+            condition = nil,
+            species = input.species,
+            form = form,
+            nickname = "TRANSIENT",
+            personality = input.personality,
+            origin = input.origin,
+            level = 20,
+            side = 2,
+            controller = "wild",
+          },
+        },
+      },
+      presentation = {
+        context = { battleFormat = "singles" },
+        operation = {
+          kind = "form-changed",
+          subject = { combatant = 3, activation = activation },
+          source = { kind = "system", key = "weather-form" },
+          beforeForm = 0,
+          form = form,
+          substitute = false,
+        },
+      },
+    }
+  end
+  local rainy = Model.sanitizeEvent(formEvent(10, 2, 3), pair, appearanceDeps())
+  local sunny = Model.sanitizeEvent(formEvent(11, 1, 3), pair, appearanceDeps())
+  Assert.notNil(rainy.formChangeAppearance, "the first form operation freezes an event-time appearance")
+  Assert.notNil(sunny.formChangeAppearance, "the second form operation freezes an event-time appearance")
+  Assert.equal(
+    rainy.formChangeAppearance.portraitSelector,
+    MonCache.portraitSelector("CASTFORM", 2, "male", false),
+    "the first operation keeps its rainy portrait after the holder departs"
+  )
+  Assert.equal(
+    sunny.formChangeAppearance.portraitSelector,
+    MonCache.portraitSelector("CASTFORM", 1, "male", false),
+    "the second operation keeps its sunny portrait after the holder departs"
+  )
+  Assert.equal(rainy.formChangeAppearance.activation, 3, "the portrait stays scoped to its subject activation")
+  Assert.equal(rainy.actors[1].name, "TRANSIENT", "the transient actor keeps its event-time name")
+  Assert.equal(
+    rainy.actors[1].appearance,
+    MonCache.portraitSelector("CASTFORM", 2, "male", false),
+    "the transient actor keeps its event-time portrait"
+  )
+  Assert.equal(rainy.messageArgs.combatantName, "TRANSIENT", "narration keeps the transient event-time name")
+  Assert.equal(
+    rainy.eventTime.foes[1].portraitSelector,
+    MonCache.portraitSelector("CASTFORM", 2, "male", false),
+    "the event-time view carries the transient portrait for asset demand"
+  )
+  local stale = formEvent(12, 2, 99)
+  Assert.throws(function()
+    Model.sanitizeEvent(stale, pair, appearanceDeps())
+  end, "a form operation without its event-time activation fails instead of borrowing another holder")
+
+  local genderlessPair = views()
+  local genderless = genderlessPair.before.foes[1]
+  genderless.species = "MAGNEMITE"
+  genderless.gender = "genderless"
+  genderless.shiny = true
+  genderless.portraitSelector = MonCache.portraitSelector("MAGNEMITE", 0, "female", true)
+  genderlessPair.after.foes = {}
+  local projected = Model.sanitizeEvent(
+    formEvent(13, 1, 3, {
+      activation = 3,
+      species = "MAGNEMITE",
+      personality = 99,
+      origin = { trainerId = 99 },
+      side = 2,
+    }),
+    genderlessPair,
+    appearanceDeps()
+  )
+  Assert.equal(
+    projected.formChangeAppearance.portraitSelector,
+    MonCache.portraitSelector("MAGNEMITE", 1, "female", true),
+    "a genderless form keeps its declared portrait variant and finish"
+  )
+end
+
+-- Switch checkpoints describe the arrival, not a synthetic healthy mon.
+-- Own-side roster facts still come from the complete party view.
+function T.switch_checkpoint_projects_status_ball_and_own_roster_facts()
+  local pair = views()
+  local bench = {
+    combatant = 2,
+    participant = 1,
+    side = 1,
+    controller = "player",
+    active = false,
+    hp = 17,
+    maxHp = 25,
+    species = "EEVEE",
+    form = 0,
+    name = "BENCH",
+    level = 20,
+    slot = 1,
+    moves = { { move = "TACKLE", name = "Tackle", pp = 30, maxPp = 35 } },
+    experience = 8000,
+    ballKey = "GREAT_BALL",
+  }
+  pair.before.own[#pair.before.own + 1] = bench
+  pair.after.own[#pair.after.own + 1] = bench
+  local input = {
+    sequence = 8,
+    kind = "switch",
+    cause = { kind = "switch" },
+    audience = "public",
+    payload = { from = 1, to = 2, position = 1 },
+    observation = {
+      hp = { [1] = 20, [2] = 17 },
+      combatants = {
+        [2] = {
+          participant = 1,
+          position = 1,
+          activation = 9,
+          hp = 17,
+          maxHp = 25,
+          condition = "poison",
+          species = "EEVEE",
+          form = 0,
+          nickname = "BENCH",
+          personality = 42,
+          origin = { trainerId = 99 },
+          ball = "GREAT_BALL",
+          level = 20,
+          experience = 8000,
+          side = 1,
+          controller = "player",
+        },
+      },
+    },
+  }
+  local public = Model.sanitizeEvent(input, pair, appearanceDeps())
+  local arrival = assert(public.eventTime.own[1], "the incoming own battler has an event-time record")
+  Assert.equal(arrival.condition, "poison", "the reveal keeps the checkpoint's major status")
+  Assert.equal(arrival.ballKey, "GREAT_BALL", "the arrival keeps its semantic origin ball")
+  Assert.equal(arrival.slot, 1, "the own arrival keeps its party slot")
+  Assert.deepEqual(arrival.moves, bench.moves, "the own arrival keeps its complete displayed move set")
+  Assert.equal(arrival.activation, 9, "the arrival stays scoped to its event-time activation")
+end
+
 function T.legacy_emissions_without_facts_still_sanitize()
   local event = {
     sequence = 3,
@@ -285,14 +481,11 @@ function T.production_deliveries_replay_exactly_once_end_to_end()
       ability = "TORRENT",
     },
   }
-  local scenario = ScenarioFactory.fromEncounter(
-    { attemptId = launch.id .. "-attempt", mon = foe },
-    {
-      party = party,
-      bag = bag,
-      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
-    }
-  )
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = launch.id .. "-attempt", mon = foe }, {
+    party = party,
+    bag = bag,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local held = { ready = true, packets = {} }
   local port = {
     enter = function()

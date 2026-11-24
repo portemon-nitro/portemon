@@ -1683,6 +1683,105 @@ local function demandHasShorthand(prepared)
   return false
 end
 
+-- Event-time form portraits enter the same exact asset demand as views.
+-- A portrait absent from the final view still stages, and each transition
+-- waits for its own asynchronous image before touching the displayed battler.
+function T.form_change_demands_intermediate_portraits_and_waits_for_readiness()
+  local MonCache = require("libs.assets.src.MonCache")
+  local normal = MonCache.portraitSelector("CASTFORM", 0, "male", false, "front")
+  local rainy = MonCache.portraitSelector("CASTFORM", 2, "male", false, "front")
+  local sunny = MonCache.portraitSelector("CASTFORM", 1, "male", false, "front")
+  local prepared = {}
+  local services = stubAssets({ heldKeys = { "mon:" .. rainy, "mon:" .. sunny } })
+  Assert.isTrue(services.hold["mon:" .. rainy], "the rainy portrait starts held")
+  function services.prepare(demand)
+    prepared[#prepared + 1] = demand
+    return true
+  end
+  local borrow = services.drawable
+  function services.drawable(key)
+    local image = borrow(key)
+    if type(key) == "string" and key:sub(1, 4) == "mon:" and image ~= nil then
+      return { lease = image, quad = { handle = "quad:" .. key } }
+    end
+    return image
+  end
+  local launchId = "form-portrait-demand"
+  local screen = demandScreen(launchId, services)
+  local function view(selector)
+    return {
+      playerTrainer = { classKey = "PKMN_TRAINER_ETHAN" },
+      own = { demandBattler(1, 1, true, "EEVEE", "LEAD", MonCache.portraitSelector("EEVEE", 0, "male", false, "back")) },
+      foes = { demandBattler(3, 2, true, "CASTFORM", "FOE", selector) },
+    }
+  end
+  local opening = view(normal)
+  opening.foes[1].form = 0
+  opening.own[1].activation = 1
+  opening.own[1].position = 0
+  opening.foes[1].activation = 3
+  opening.foes[1].position = 1
+  local port = screen:presentationPort()
+  port.enter({ launchId = launchId, kind = "wild", encounterPaletteRestoreType = "wild" })
+  port.present({ launchId = launchId, packetId = 1, events = {}, before = opening, after = opening })
+  pumpScreen(screen, 900)
+  local function formEvent(sequence, beforeForm, form, selector)
+    return {
+      sequence = sequence,
+      kind = "ability",
+      cause = { kind = "system", key = "weather-form" },
+      audience = "public",
+      payload = { key = "WEATHER_FORM", combatant = 3, beforeForm = beforeForm, form = form },
+      actors = { { combatant = 3, activation = 3 } },
+      targets = { { combatant = 3, activation = 3 } },
+      presentation = {
+        context = { battleFormat = "singles" },
+        operation = {
+          kind = "form-changed",
+          subject = { combatant = 3, activation = 3 },
+          source = { kind = "system", key = "weather-form" },
+          beforeForm = beforeForm,
+          form = form,
+          substitute = false,
+        },
+      },
+      formChangeAppearance = { combatant = 3, activation = 3, form = form, portraitSelector = selector },
+    }
+  end
+  local final = view(sunny)
+  final.foes[1].form = 1
+  final.own[1].activation = 1
+  final.own[1].position = 0
+  final.foes[1].activation = 3
+  final.foes[1].position = 1
+  port.present({
+    launchId = launchId,
+    packetId = 2,
+    events = { formEvent(1, 0, 2, rainy), formEvent(2, 2, 1, sunny) },
+    before = opening,
+    after = final,
+  })
+  pumpScreen(screen, 1)
+  Assert.equal(#screen._deferredPackets, 1, "the cold intermediate portrait defers translation")
+  Assert.isTrue(demandHasPage(prepared, rainy), "the rainy portrait absent from the final view is still demanded")
+  Assert.isTrue(demandHasPage(prepared, sunny), "the final sunny portrait is demanded")
+  pumpScreen(screen, 100)
+  local shown = screen._timeline:_shown(3)
+  Assert.equal(shown.form, 0, "the delayed rainy image holds the opening form (shown=" .. tostring(shown.form) .. ")")
+  Assert.isNil(shown.mosaicSize, "the delayed image starts no mosaic")
+  services.hold["mon:" .. rainy] = nil
+  pumpScreen(screen, 100)
+  Assert.equal(shown.form, 2, "the first event appears once its own image is ready")
+  Assert.equal(shown.portraitSelector, rainy, "the first event keeps its intermediate portrait")
+  pumpScreen(screen, 100)
+  Assert.equal(shown.form, 2, "the delayed sunny image never switches early to the final form")
+  services.hold["mon:" .. sunny] = nil
+  pumpScreen(screen, 300)
+  Assert.equal(shown.form, 1, "the second event appears once its own image is ready")
+  Assert.equal(shown.portraitSelector, sunny, "the second event settles on its matching portrait")
+  screen:dispose()
+end
+
 -- A cold layout-only cache opens the battle once exactly the visible
 -- portrait pages build: two distinct selectors on two pages hold pending
 -- while the host works, demand exactly those pages urgently, never read

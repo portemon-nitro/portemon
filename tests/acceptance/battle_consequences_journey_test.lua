@@ -84,6 +84,31 @@ local function strikeWithLeadMove(request)
   return choices
 end
 
+---@param battle table running application battle lifetime
+---@param request table pending decision request from the running battle
+---@return table[] one enabled replacement per bereaved actor
+local function replaceFaintedActors(battle, request)
+  local options = assert(battle:decisionOptions(request.requestId), "replacement prompts project legal choices")
+  local byCombatant = {}
+  for _, actor in ipairs(options.actors) do
+    byCombatant[actor.combatant] = actor
+  end
+  local choices = {}
+  for _, actor in ipairs(request.actors) do
+    local projected = assert(byCombatant[actor.combatant], "replacement options address each bereaved actor")
+    local selected = nil
+    for _, entry in ipairs(projected.choices) do
+      if entry.enabled and entry.choice.kind == "switch" then
+        selected = entry.choice
+        break
+      end
+    end
+    Assert.notNil(selected, "a living reserve remains selectable")
+    choices[#choices + 1] = selected
+  end
+  return choices
+end
+
 ---@param game table live acceptance game behind the battle
 ---@param battle table running application battle lifetime
 local function driveToCompletion(game, battle)
@@ -95,7 +120,17 @@ local function driveToCompletion(game, battle)
     local current = battle:status()
     if current.phase == "running" and current.request ~= nil then
       local request = current.request
-      local reply = SessionFixture.replyFor(request, strikeWithLeadMove(request))
+      local choices = strikeWithLeadMove(request)
+      local kinds = request.legalChoices and request.legalChoices.kinds or {}
+      local admitsAttack, admitsSwitch = false, false
+      for _, kind in ipairs(kinds) do
+        admitsAttack = admitsAttack or kind == "attack"
+        admitsSwitch = admitsSwitch or kind == "switch"
+      end
+      if admitsSwitch and not admitsAttack then
+        choices = replaceFaintedActors(battle, request)
+      end
+      local reply = SessionFixture.replyFor(request, choices)
       local accepted, replyErr = battle:submit(reply)
       Assert.isTrue(accepted, "a legal decision is accepted: " .. tostring(replyErr))
     end
@@ -431,6 +466,9 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
     -- fought since blackout recovery re-damaged the party, and the 1-HP
     -- stand-in settles the standing only when the party can land one hit.
     game.runtime.monService:healParty()
+    -- The roaming stand-in outspeeds the low-level lead, so the lead
+    -- opens with an always-accurate priority strike for this leg.
+    game.runtime.monService:setMove(0, 0, "QUICK_ATTACK")
     local roamerScenario = ScenarioFactory.fromEncounter(
       roamerLaunch.payload,
       { party = game.runtime.monService, player = { trainerId = 99, trainerName = "MINT", language = "french" } }

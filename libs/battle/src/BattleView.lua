@@ -229,7 +229,24 @@ function BattleView.checkpoint(handle)
         if type(mon.species) == "string" then
           record.species = mon.species
         end
-        if type(mon.form) == "number" then
+        if type(mon.nickname) == "string" and mon.nickname ~= "" then
+          record.nickname = mon.nickname
+        end
+        if type(mon.personality) == "number" then
+          record.personality = mon.personality
+        end
+        if
+          type(mon.origin) == "table" and type((mon.origin --[[@as table<string, unknown>]]).trainerId) == "number"
+        then
+          local origin = mon.origin --[[@as table<string, unknown>]]
+          record.origin = { trainerId = origin.trainerId }
+          if type(origin.ball) == "string" then
+            record.ball = origin.ball
+          end
+        end
+        if type(active.form) == "number" then
+          record.form = active.form
+        elseif type(mon.form) == "number" then
           record.form = mon.form
         end
         if type(mon.experience) == "number" then

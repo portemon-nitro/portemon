@@ -15,6 +15,7 @@
 ---@field boostedPriority boolean
 ---@field loweredPriority boolean
 ---@field stall boolean
+---@field living boolean? true for a living battler slot; absent reads as living
 
 ---@class ScheduledActor
 ---@field combatant integer
@@ -23,16 +24,19 @@
 ---@class ScheduledAction
 ---@field id integer
 ---@field actor ScheduledActor
+---@field position integer? controller slot bound to the selected input
 ---@field kind string
 ---@field payload table<string, unknown>
 ---@field selectedOrdinal integer
 ---@field sampledOrder ActionOrderFacts
 ---@field parentActionId integer?
 ---@field progress "queued"|"running"|"suspended"|"complete"|"cancelled"
+---@field controllerVisit boolean? true on a scheduler-only visit to a completed slot
 
 ---@class TurnOrderCandidate
 ---@field id integer
 ---@field actor ScheduledActor
+---@field position integer? controller slot bound to the selected input
 ---@field kind string
 ---@field payload table<string, unknown>
 ---@field selectedOrdinal integer
@@ -48,33 +52,18 @@
 ---@class ResidualEntry
 ---@field id integer
 ---@field speed integer
----@field ability string? entry ability for retail phase ordering
+---@field boostedPriority boolean?
+---@field loweredPriority boolean?
+---@field stall boolean?
+---@field sampledOrder ActionOrderFacts?
+---@field selectedOrdinal integer?
+---@field living boolean? true for a living battler slot; absent reads as living
 
 local TurnOrder = {}
 
 local SPEED_TIE_LABEL = "speed_tie"
 local RESIDUAL_TIE_LABEL = "residual_tie"
 local ENTRY_TIE_LABEL = "entry_tie"
-
-local ENTRY_ABILITY_PHASE = {
-  CLOUD_NINE = 0,
-  AIR_LOCK = 0,
-  TRACE = 1,
-  DRIZZLE = 2,
-  SAND_STREAM = 2,
-  DROUGHT = 2,
-  SNOW_WARNING = 2,
-  INTIMIDATE = 3,
-  DOWNLOAD = 4,
-  ANTICIPATION = 5,
-  FOREWARN = 6,
-  FRISK = 7,
-  SLOW_START = 8,
-  MOLD_BREAKER = 9,
-  PRESSURE = 10,
-  FORECAST = 11,
-  MULTITYPE = 11,
-}
 
 ---@param value unknown
 ---@param name string
@@ -117,6 +106,9 @@ local function checkCandidate(candidate)
   assert(type(candidate.kind) == "string" and candidate.kind ~= "", "ordering candidates name their action class")
   assert(type(candidate.payload) == "table", "ordering candidates carry their payload")
   requireIdentity(candidate.selectedOrdinal, "ordering selection order")
+  if candidate.position ~= nil then
+    requireIdentity(candidate.position, "ordering controller slot")
+  end
   assert(
     type(candidate.priority) == "number" and candidate.priority % 1 == 0,
     "ordering candidates carry an integer priority"
@@ -132,11 +124,12 @@ local function checkCandidate(candidate)
   return {
     id = candidate.id,
     actor = { combatant = candidate.actor.combatant, activation = candidate.actor.activation },
+    position = candidate.position,
     kind = candidate.kind,
     payload = payload,
     selectedOrdinal = candidate.selectedOrdinal,
     sampledOrder = {
-      priority = candidate.priority,
+      priority = candidate.kind == "attack" and candidate.priority or 0,
       speed = candidate.speed,
       boostedPriority = boosted,
       loweredPriority = lowered,
@@ -162,14 +155,20 @@ local function comparePlainSpeed(firstSpeed, secondSpeed, reverse, stream, label
   return drawTieSwap(stream, label)
 end
 
----@param first ScheduledAction current holder under comparison
----@param second ScheduledAction later challenger under comparison
+---@param head ActionOrderFacts current holder under comparison
+---@param tail ActionOrderFacts later challenger under comparison
 ---@param reverse boolean true while the speed dimension is reversed
 ---@param stream BattleRng labeled battle stream for tie resolution
 ---@return boolean true when the challenger belongs ahead of the holder
-local function secondGoesFirst(first, second, reverse, stream)
-  local head = first.sampledOrder
-  local tail = second.sampledOrder
+local function secondGoesFirst(head, tail, reverse, stream)
+  local function tiedSpeed()
+    return drawTieSwap(stream, SPEED_TIE_LABEL)
+  end
+  if head.living == false and tail.living ~= false then
+    return true
+  elseif head.living ~= false and tail.living == false then
+    return false
+  end
   if head.priority ~= tail.priority then
     return tail.priority > head.priority
   end
@@ -180,7 +179,7 @@ local function secondGoesFirst(first, second, reverse, stream)
     if head.speed ~= tail.speed then
       return tail.speed > head.speed
     end
-    return drawTieSwap(stream, SPEED_TIE_LABEL)
+    return tiedSpeed()
   end
   if head.loweredPriority ~= tail.loweredPriority then
     return head.loweredPriority
@@ -189,7 +188,7 @@ local function secondGoesFirst(first, second, reverse, stream)
     if head.speed ~= tail.speed then
       return tail.speed < head.speed
     end
-    return drawTieSwap(stream, SPEED_TIE_LABEL)
+    return tiedSpeed()
   end
   if head.stall ~= tail.stall then
     return head.stall
@@ -198,9 +197,15 @@ local function secondGoesFirst(first, second, reverse, stream)
     if head.speed ~= tail.speed then
       return tail.speed < head.speed
     end
-    return drawTieSwap(stream, SPEED_TIE_LABEL)
+    return tiedSpeed()
   end
-  return comparePlainSpeed(head.speed, tail.speed, reverse, stream, SPEED_TIE_LABEL)
+  if head.speed ~= tail.speed then
+    if reverse then
+      return tail.speed < head.speed
+    end
+    return tail.speed > head.speed
+  end
+  return tiedSpeed()
 end
 
 ---@param candidates TurnOrderCandidate[]
@@ -216,24 +221,73 @@ function TurnOrder.buildActions(candidates, options, stream)
     staged[#staged + 1] = checkCandidate(candidate)
   end
   local reverse = options.trickRoom
-  -- Selection order seeds the live order before any comparison runs, so
-  -- input array permutation never influences the stream; the nested walk
-  -- below swaps the holder the moment a later challenger wins, exactly
-  -- like the native pairwise pass.
+  local hasRun = false
+  for _, action in ipairs(staged) do
+    hasRun = hasRun or action.kind == "run"
+  end
+  -- The controller seeds Bag and Pokemon selections in native slot order,
+  -- then the remaining selections. Run acts first through its own path.
   table.sort(staged, function(a, b)
+    if hasRun then
+      if (a.kind == "run") ~= (b.kind == "run") then
+        return a.kind == "run"
+      end
+    else
+      local aEarly = a.kind == "item" or a.kind == "switch"
+      local bEarly = b.kind == "item" or b.kind == "switch"
+      if aEarly ~= bEarly then
+        return aEarly
+      end
+    end
+    local aPosition = a.position or a.selectedOrdinal
+    local bPosition = b.position or b.selectedOrdinal
+    if aPosition ~= bPosition then
+      return aPosition < bPosition
+    end
     if a.selectedOrdinal ~= b.selectedOrdinal then
       return a.selectedOrdinal < b.selectedOrdinal
     end
     return a.id < b.id
   end)
-  for i = 1, #staged - 1 do
-    for j = i + 1, #staged do
-      if secondGoesFirst(staged[i], staged[j], reverse, stream) then
-        staged[i], staged[j] = staged[j], staged[i]
+  if not hasRun then
+    for i = 1, #staged - 1 do
+      for j = i + 1, #staged do
+        if
+          staged[i].kind == staged[j].kind
+          and secondGoesFirst(staged[i].sampledOrder, staged[j].sampledOrder, reverse, stream)
+        then
+          staged[i], staged[j] = staged[j], staged[i]
+        end
       end
     end
   end
   return staged
+end
+
+---@param actions ScheduledAction[] existing native execution permutation
+---@param factsById table<integer, ActionOrderFacts> fresh comparator facts keyed by action identity
+---@param options TurnOrderOptions current speed dimension
+---@param stream BattleRng labeled native stream
+function TurnOrder.resortExecution(actions, factsById, options, stream)
+  assert(type(actions) == "table" and type(factsById) == "table", "execution re-sorts retain their current permutation")
+  assert(
+    type(options) == "table" and type(options.trickRoom) == "boolean",
+    "execution re-sorts name their speed dimension"
+  )
+  assert(type(stream) == "table" and type(stream.nextU16) == "function", "execution ties draw from the battle stream")
+  for i = 1, #actions - 1 do
+    for j = i + 1, #actions do
+      local first = actions[i]
+      local second = actions[j]
+      if first.kind == second.kind then
+        local firstFacts = assert(factsById[first.id], "every execution slot has comparator facts")
+        local secondFacts = assert(factsById[second.id], "every execution slot has comparator facts")
+        if secondGoesFirst(firstFacts, secondFacts, options.trickRoom, stream) then
+          actions[i], actions[j] = second, first
+        end
+      end
+    end
+  end
 end
 
 ---@param entries ResidualEntry[]
@@ -241,7 +295,8 @@ end
 ---@param stream BattleRng
 ---@param label string
 ---@return ResidualEntry[] sequenced entries keeping every member
-local function orderBySampledSpeed(entries, context, stream, label)
+---@param special boolean? true when native holding and ability ordering facts participate
+local function orderBySampledSpeed(entries, context, stream, label, special)
   assert(type(entries) == "table", "sequencing takes explicit entries")
   assert(type(context) == "table" and type(context.trickRoom) == "boolean", "sequencing names its speed dimension")
   assert(type(stream) == "table" and type(stream.nextU16) == "function", "sequenced ties draw from the battle stream")
@@ -256,6 +311,16 @@ local function orderBySampledSpeed(entries, context, stream, label)
         copy[key] = value
       end
     end
+    if special then
+      copy.sampledOrder = {
+        priority = 0,
+        speed = copy.speed,
+        boostedPriority = checkOrderFlag(copy.boostedPriority, "battler boosted priority"),
+        loweredPriority = checkOrderFlag(copy.loweredPriority, "battler lowered priority"),
+        stall = checkOrderFlag(copy.stall, "battler stalling ability"),
+        living = copy.living ~= false,
+      }
+    end
     staged[#staged + 1] = copy
   end
   local reverse = context.trickRoom
@@ -263,11 +328,27 @@ local function orderBySampledSpeed(entries, context, stream, label)
   -- nested walk below resolves equal speeds through the same pairwise
   -- tie draws as the action pass, without action-special branches.
   table.sort(staged, function(a, b)
+    local firstOrdinal = a.selectedOrdinal or a.id
+    local secondOrdinal = b.selectedOrdinal or b.id
+    if firstOrdinal ~= secondOrdinal then
+      return firstOrdinal < secondOrdinal
+    end
     return a.id < b.id
   end)
   for i = 1, #staged - 1 do
     for j = i + 1, #staged do
-      if comparePlainSpeed(staged[i].speed, staged[j].speed, reverse, stream, label) then
+      if special then
+        if
+          secondGoesFirst(
+            assert(staged[i].sampledOrder, "battler ordering carries sampled facts"),
+            assert(staged[j].sampledOrder, "battler ordering carries sampled facts"),
+            reverse,
+            stream
+          )
+        then
+          staged[i], staged[j] = staged[j], staged[i]
+        end
+      elseif comparePlainSpeed(staged[i].speed, staged[j].speed, reverse, stream, label) then
         staged[i], staged[j] = staged[j], staged[i]
       end
     end
@@ -280,38 +361,23 @@ end
 ---@param stream BattleRng
 ---@return ResidualEntry[] sequenced entries keeping every member
 function TurnOrder.orderResiduals(entries, context, stream)
-  return orderBySampledSpeed(entries, context, stream, RESIDUAL_TIE_LABEL)
+  return orderBySampledSpeed(entries, context, stream, RESIDUAL_TIE_LABEL, false)
 end
 
----@param entries ResidualEntry[]
----@param context TurnOrderOptions
----@param stream BattleRng
----@return ResidualEntry[] sequenced entries keeping every member
-function TurnOrder.orderEntryEffects(entries, context, stream)
-  local phases = {} ---@type table<integer, ResidualEntry[]>
-  for _, entry in ipairs(entries) do
-    local ability = entry.ability
-    local phase = type(ability) == "string" and ENTRY_ABILITY_PHASE[ability] or nil
-    if phase == nil then
-      phase = 12
-    end
-    local group = phases[phase]
-    if group == nil then
-      group = {}
-      phases[phase] = group
-    end
-    group[#group + 1] = entry
-  end
-  local ordered = {} ---@type ResidualEntry[]
-  for phase = 0, 12 do
-    local group = phases[phase]
-    if group ~= nil then
-      for _, entry in ipairs(orderBySampledSpeed(group, context, stream, ENTRY_TIE_LABEL)) do
-        ordered[#ordered + 1] = entry
-      end
-    end
-  end
-  return ordered
+---@param entries ResidualEntry[] active battlers with sampled Speed
+---@param context TurnOrderOptions current speed dimension
+---@param stream BattleRng battle stream for ties
+---@return ResidualEntry[] one sampled native turn-speed order
+function TurnOrder.orderSpeed(entries, context, stream)
+  return orderBySampledSpeed(entries, context, stream, SPEED_TIE_LABEL, true)
+end
+
+---@param entries ResidualEntry[] active battlers with sampled Speed
+---@param context TurnOrderOptions current speed dimension
+---@param stream BattleRng battle stream for ties
+---@return ResidualEntry[] one sampled native entry-speed order
+function TurnOrder.orderEntrySpeed(entries, context, stream)
+  return orderBySampledSpeed(entries, context, stream, ENTRY_TIE_LABEL, false)
 end
 
 return TurnOrder

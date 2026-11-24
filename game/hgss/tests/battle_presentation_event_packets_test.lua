@@ -1154,23 +1154,27 @@ function T.presentation_view_carries_semantic_foe_trainer_identity()
   Assert.isNil(absent.followMonSlot, "launches without a follower carry no slot")
 end
 
-function T.presentation_view_projects_weather_forms_without_mutating_party_mon()
+function T.presentation_view_reads_only_the_battle_local_active_form()
   local catalog = CatalogFixture.makeCatalog()
   local castform = { species = "CASTFORM", ability = "FORECAST", form = 0 }
   local cherrim = { species = "CHERRIM", ability = "FLOWER_GIFT", form = 0 }
-  local function view(weather, suppressant)
+  local reserve = { species = "CASTFORM", ability = "FORECAST", form = 0 }
+  local function view(castformForm, cherrimForm)
     local combatants = {
-      [1] = { participant = 1, mon = castform, hp = 20, active = { position = 0, activation = 1 } },
-      [2] = { participant = 2, mon = cherrim, hp = 20, active = { position = 1, activation = 2 } },
-    }
-    if suppressant then
-      combatants[3] = {
-        participant = 2,
-        mon = { species = "CLEFAIRY", ability = "CLOUD_NINE", form = 0 },
+      [1] = {
+        participant = 1,
+        mon = castform,
         hp = 20,
-        active = { position = 2, activation = 3 },
-      }
-    end
+        active = { position = 0, activation = 1, form = castformForm },
+      },
+      [2] = {
+        participant = 2,
+        mon = cherrim,
+        hp = 20,
+        active = { position = 1, activation = 2, form = cherrimForm },
+      },
+      [3] = { participant = 1, mon = reserve, hp = 20 },
+    }
     return BattlePresentationModel.view({
       combatants = combatants,
       combatantOrder = { 1, 2, 3 },
@@ -1179,17 +1183,13 @@ function T.presentation_view_projects_weather_forms_without_mutating_party_mon()
         [2] = { side = "foe", controller = "opponent" },
       },
       environment = { weather = "none" },
-      effects = weather and { { key = weather } } or {},
+      effects = {},
     }, {}, { catalog = catalog })
   end
-  Assert.equal(view("raindance").own[1].form, 2, "Forecast pictures its rainy form")
-  Assert.equal(view("sunnyday").own[1].form, 1, "Forecast pictures its sunny form")
-  Assert.equal(view("hail").own[1].form, 3, "Forecast pictures its snowy form")
-  Assert.equal(view(nil).own[1].form, 0, "Forecast returns to its normal form when weather ends")
-  Assert.equal(view("sunnyday").foes[1].form, 1, "Cherrim opens its flower in sun")
-  Assert.equal(view("raindance").foes[1].form, 0, "Cherrim closes its flower outside sun")
-  Assert.equal(view("sunnyday", true).own[1].form, 0, "Cloud Nine suppresses Forecast form")
-  Assert.equal(view("sunnyday", true).foes[1].form, 0, "Cloud Nine suppresses Cherrim form")
+  local projected = view(2, 1)
+  Assert.equal(projected.own[1].form, 2, "active Castform displays its battle-local form")
+  Assert.equal(projected.foes[1].form, 1, "active Cherrim displays its battle-local form")
+  Assert.equal(projected.own[2].form, 0, "a benched Castform keeps its party form")
   Assert.equal(castform.form, 0, "weather forms stay battle-local")
   Assert.equal(cherrim.form, 0, "Cherrim's party form stays unchanged")
 end

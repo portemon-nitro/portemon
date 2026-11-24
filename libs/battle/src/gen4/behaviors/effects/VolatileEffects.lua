@@ -292,13 +292,6 @@ local DEFINITIONS = {
     lifecycle = lifecycle("replace", "clear"),
   },
   {
-    key = "slowstartended",
-    stateVersion = 1,
-    validateState = emptyState(1),
-    timings = { binding("leave", "slowstartended", "affliction") },
-    lifecycle = lifecycle("replace", "clear"),
-  },
-  {
     key = "leechseed",
     stateVersion = 1,
     validateState = emptyState(1),

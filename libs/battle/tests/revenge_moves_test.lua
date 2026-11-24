@@ -391,8 +391,8 @@ end
 function T.revenge_turn_doubles_after_the_foe_struck_first()
   -- Slow totodile answers at priority -4, so the faster eevee strike
   -- lands first and arms the doubling through the real turn ledger.
-  -- Seed 1 rolls the full-bar knockout under the remainder-mapped law.
-  local turn = sessionStrikeDealt("TOTODILE", "REVENGE", "EEVEE", 1)
+  -- Seed 2 rolls the full-bar knockout under the remainder-mapped law.
+  local turn = sessionStrikeDealt("TOTODILE", "REVENGE", "EEVEE", 2)
   Assert.equal(turn.status, "ended", "the doubled answer knocks the lone foe out")
   Assert.equal(turn.foeAfter, 0, "the foe falls to the doubled answer")
   Assert.equal(turn.dealt, 57, "the doubled answer spends the whole foe health bar")
@@ -401,7 +401,7 @@ end
 function T.revenge_turn_holds_power_when_first()
   -- Fast eevee strikes before the totodile tackle, so no recorded
   -- damage arms the doubling.
-  local turn = sessionStrikeDealt("EEVEE", "REVENGE", "TOTODILE")
+  local turn = sessionStrikeDealt("EEVEE", "REVENGE", "TOTODILE", 2)
   Assert.equal(turn.status, "waiting", "the plain answer settles back to decisions")
   Assert.equal(turn.dealt, 21, "the unanswered answer holds base power")
 end

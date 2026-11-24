@@ -30,7 +30,28 @@ local function liveState()
   return contracts.State.create(contracts.Scenario.validate(scenario))
 end
 
----@param protection "mist"|"substitute"|nil target protection under the entry probe
+local function doublesState()
+  local contracts = SessionFixture.sessionContracts()
+  local scenario = SessionFixture.buildScenario({
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "scripted", { SessionFixture.combatant(1, 11) }),
+      SessionFixture.participant(2, 2, "scripted", {
+        SessionFixture.combatant(2, 23),
+        SessionFixture.combatant(3, 29),
+      }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+      SessionFixture.position(3, 2, { 2 }, 3),
+    },
+    inventories = {},
+  })
+  return contracts.State.create(contracts.Scenario.validate(scenario))
+end
+
+---@param protection "mist"|"substitute"|"mist-and-clear-body"|nil target protection under the entry probe
 ---@return table live target entry, emitted ability events, and resulting stage
 local function intimidateEntry(protection)
   local state = liveState()
@@ -44,7 +65,10 @@ local function intimidateEntry(protection)
       { kind = "move", key = "SUBSTITUTE" },
       { version = 1, hp = 10 }
     )
-  elseif protection == "mist" then
+  elseif protection == "mist" or protection == "mist-and-clear-body" then
+    if protection == "mist-and-clear-body" then
+      BattleState.combatant(state, 2).mon.ability = "CLEAR_BODY"
+    end
     ctx:addBattleEffect(
       NativeEffectHandlers.definitionFor("mist"),
       { kind = "side", side = ctx:entryOf(2).side },
@@ -142,7 +166,7 @@ end
 function T.tests.simple_doubles_a_positive_stage_change()
   local probe = runMove("GROWTH", facts("GROWTH"), { abilities = { user = "SIMPLE" } })
   Assert.equal(probe.outcome.result, "hit", "Growth resolves")
-  Assert.equal(probe.ctx:entryOf(1).stages.specialAttack, 2, "Simple doubles Growth's one-stage increase")
+  Assert.equal(probe.ctx:entryOf(1).stages.specialAttack, 1, "Simple stores Growth's prescribed one-stage increase")
 end
 
 function T.tests.clear_body_blocks_an_opponents_attack_drop()
@@ -156,9 +180,11 @@ function T.tests.intimidate_respects_substitute_and_defender_side_mist()
   local unprotected = intimidateEntry(nil)
   local substituted = intimidateEntry("substitute")
   local misted = intimidateEntry("mist")
+  local mistAndClearBody = intimidateEntry("mist-and-clear-body")
   Assert.equal(unprotected.stage, -1, "Intimidate lowers an unprotected foe's Attack")
   Assert.equal(substituted.stage, 0, "Substitute blocks Intimidate only for its protected foe")
   Assert.equal(misted.stage, 0, "the target's side Mist blocks Intimidate")
+  Assert.equal(mistAndClearBody.stage, 0, "Mist still blocks the same drop when Clear Body is present")
   local mistMessage = false
   for _, event in ipairs(misted.events) do
     if event.kind == "ability" and event.payload.key == "INTIMIDATE_BLOCKED_MIST" then
@@ -166,6 +192,118 @@ function T.tests.intimidate_respects_substitute_and_defender_side_mist()
     end
   end
   Assert.isTrue(mistMessage, "Mist protection emits a distinct blocked-effect event")
+  local abilityMessage = false
+  for _, event in ipairs(mistAndClearBody.events) do
+    if event.kind == "ability" and event.payload.key == "INTIMIDATE_BLOCKED_ABILITY" then
+      abilityMessage = true
+    end
+  end
+  Assert.isFalse(abilityMessage, "Mist feedback takes precedence over Clear Body feedback")
+end
+
+function T.tests.intimidate_stores_one_stage_against_simple()
+  local state = liveState()
+  BattleState.combatant(state, 1).mon.ability = "INTIMIDATE"
+  BattleState.combatant(state, 2).mon.ability = "SIMPLE"
+  NativeEffectHandlers.applyPassiveTiming(state, "entry", 1, nil, nil, nil, nil, nil)
+  Assert.equal(BattleContext.wrap(state):entryOf(2).stages.attack, -1, "Intimidate stores one Attack stage against Simple")
+end
+
+function T.tests.intimidate_simple_clamps_the_stored_stage_boundary()
+  local state = liveState()
+  BattleState.combatant(state, 1).mon.ability = "INTIMIDATE"
+  BattleState.combatant(state, 2).mon.ability = "SIMPLE"
+  local ctx = BattleContext.wrap(state)
+  ctx:changeStage(2, "attack", -5, { kind = "move", key = "GROWL" })
+  NativeEffectHandlers.applyPassiveTiming(state, "entry", 1, nil, nil, nil, nil, nil)
+  Assert.equal(ctx:entryOf(2).stages.attack, -6, "Intimidate stores one stage into the lower clamp against Simple")
+  ctx:changeStage(2, "attack", -5, { kind = "move", key = "HOWL" })
+  Assert.equal(ctx:entryOf(2).stages.attack, -5, "a later prescribed boost moves one stored stage, not two")
+end
+
+function T.tests.trace_reads_a_suppressed_donors_raw_ability()
+  local state = liveState()
+  BattleState.combatant(state, 1).mon.ability = "TRACE"
+  BattleState.combatant(state, 2).mon.ability = "PRESSURE"
+  local ctx = BattleContext.wrap(state)
+  local donor = ctx:entryOf(2)
+  ctx:addBattleEffect({
+    key = "GASTRO_ACID",
+    stateVersion = 1,
+    validateState = function(candidate)
+      assert(type(candidate) == "table" and candidate.version == 1, "Gastro Acid marker carries its version")
+      return { version = 1 }
+    end,
+    timings = { { timing = "leave", handler = "GASTRO_ACID", orderClass = "affliction" } },
+    lifecycle = { stacking = "replace", transfer = "clear", persistent = false },
+  },
+    { kind = "active", combatant = 2, activation = donor.activation },
+    { kind = "move", key = "GASTRO_ACID" },
+    { version = 1 }
+  )
+  NativeEffectHandlers.applyPassiveTiming(state, "entry", 1, nil, nil, nil, nil, nil, nil, 2)
+  local copied = nil
+  for _, effect in ipairs(state.effectBag:capture()) do
+    if effect.key == "traceability" and effect.scope.combatant == 1 then
+      copied = effect.state.ability
+    end
+  end
+  Assert.equal(copied, "PRESSURE", "Trace copies the donor's raw ability despite Gastro Acid suppression")
+end
+
+function T.tests.trace_does_not_copy_while_its_holder_has_a_griseous_orb()
+  local state = liveState()
+  BattleState.combatant(state, 1).mon.ability = "TRACE"
+  BattleState.combatant(state, 1).mon.heldItem = "GRISEOUS_ORB"
+  BattleState.combatant(state, 2).mon.ability = "PRESSURE"
+  NativeEffectHandlers.applyPassiveTiming(state, "entry", 1, nil, nil, nil, nil, nil, nil, 2)
+  for _, effect in ipairs(state.effectBag:capture()) do
+    Assert.isFalse(effect.key == "traceability", "Griseous Orb prevents the Trace copy transition")
+  end
+end
+
+function T.tests.download_uses_special_attack_when_defenses_are_equal()
+  local state = liveState()
+  BattleState.combatant(state, 1).mon.ability = "DOWNLOAD"
+  NativeEffectHandlers.applyPassiveTiming(state, "entry", 1, nil, {
+    [2] = { defense = 100, specialDefense = 100 },
+  }, nil, nil, nil)
+  local stages = BattleContext.wrap(state):entryOf(1).stages
+  Assert.equal(stages.attack, 0, "equal defenses do not raise Attack")
+  Assert.equal(stages.specialAttack, 1, "equal defenses raise Special Attack")
+end
+
+function T.tests.download_excludes_substituted_foes_from_doubles_totals()
+  local state = doublesState()
+  BattleState.combatant(state, 1).mon.ability = "DOWNLOAD"
+  local ctx = BattleContext.wrap(state)
+  local substituted = ctx:entryOf(2)
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("substitute"),
+    { kind = "active", combatant = 2, activation = substituted.activation },
+    { kind = "move", key = "SUBSTITUTE" },
+    { version = 1, hp = 10 }
+  )
+  NativeEffectHandlers.applyPassiveTiming(state, "entry", 1, nil, {
+    [2] = { defense = 500, specialDefense = 1 },
+    [3] = { defense = 20, specialDefense = 100 },
+  }, nil, nil, nil)
+  local stages = ctx:entryOf(1).stages
+  Assert.equal(stages.attack, 1, "the unsubstituted foe's lower Defense selects Attack")
+  Assert.equal(stages.specialAttack, 0, "the substituted foe's Defense does not select Special Attack")
+end
+
+function T.tests.doubles_intimidate_targets_follow_the_sampled_speed_order()
+  local state = doublesState()
+  BattleState.combatant(state, 1).mon.ability = "INTIMIDATE"
+  NativeEffectHandlers.applyPassiveTiming(state, "entry", 1, nil, nil, nil, nil, nil, { 1, 3, 2 })
+  local changed = {} ---@type integer[]
+  for _, event in ipairs(state.outbox --[[@as table<integer, table<string, unknown>>]]) do
+    if event.kind == "stage" then
+      changed[#changed + 1] = event.payload.target --[[@as integer]]
+    end
+  end
+  Assert.deepEqual(changed, { 3, 2 }, "the faster defender's stat event precedes the slot-first defender")
 end
 
 function T.tests.mold_breaker_bypasses_stat_drop_abilities()
@@ -203,9 +341,9 @@ function T.tests.keen_eye_only_blocks_accuracy_drops()
   Assert.equal(speedDrop.ctx:entryOf(2).stages.speed, -2, "Keen Eye does not block Speed loss")
 end
 
-function T.tests.simple_doubles_negative_stage_changes()
+function T.tests.simple_stores_a_negative_stage_change()
   local probe = runMove("GROWL", facts("GROWL"), { abilities = { foe = "SIMPLE" } })
-  Assert.equal(probe.ctx:entryOf(2).stages.attack, -2, "Simple doubles a one-stage Attack drop")
+  Assert.equal(probe.ctx:entryOf(2).stages.attack, -1, "Simple stores Growl's prescribed one-stage drop")
 end
 
 function T.tests.captivate_respects_stat_drop_prevention()
@@ -223,29 +361,29 @@ function T.tests.memento_respects_stat_drop_prevention()
   Assert.equal(probe.outcome.result, "hit", "Memento still resolves after its user faints")
 end
 
-function T.tests.acupressure_applies_simple_to_its_random_boost()
+function T.tests.acupressure_stores_its_prescribed_random_boost()
   local probe = runMove("ACUPRESSURE", facts("ACUPRESSURE"), { abilities = { user = "SIMPLE" } })
   local stages = probe.ctx:entryOf(1).stages
   local total = 0
   for _, stage in pairs(stages) do
     total = total + math.abs(stage)
   end
-  Assert.equal(total, 4, "Simple doubles Acupressure's selected two-stage boost")
+  Assert.equal(total, 2, "Simple stores Acupressure's selected two-stage boost")
 end
 
-function T.tests.swagger_and_flatter_apply_simple_to_their_boosts()
+function T.tests.swagger_and_flatter_store_their_prescribed_boosts()
   local swagger = runMove("SWAGGER", facts("SWAGGER"), { abilities = { foe = "SIMPLE", user = "MOLD_BREAKER" } })
   local flatter = runMove("FLATTER", facts("FLATTER"), { abilities = { foe = "SIMPLE", user = "MOLD_BREAKER" } })
-  Assert.equal(swagger.ctx:entryOf(2).stages.attack, 4, "Simple doubles Swagger's Attack boost")
-  Assert.equal(flatter.ctx:entryOf(2).stages.specialAttack, 2, "Simple doubles Flatter's Sp. Atk boost")
+  Assert.equal(swagger.ctx:entryOf(2).stages.attack, 2, "Simple stores Swagger's prescribed Attack boost")
+  Assert.equal(flatter.ctx:entryOf(2).stages.specialAttack, 1, "Simple stores Flatter's prescribed Sp. Atk boost")
 end
 
-function T.tests.curse_applies_simple_to_every_stat_delta()
+function T.tests.curse_stores_its_prescribed_stat_deltas()
   local probe = runMove("CURSE", facts("CURSE"), { abilities = { user = "SIMPLE" } })
   local stages = probe.ctx:entryOf(1).stages
-  Assert.equal(stages.speed, -2, "Simple doubles Curse's Speed loss")
-  Assert.equal(stages.attack, 2, "Simple doubles Curse's Attack boost")
-  Assert.equal(stages.defense, 2, "Simple doubles Curse's Defense boost")
+  Assert.equal(stages.speed, -1, "Simple stores Curse's prescribed Speed loss")
+  Assert.equal(stages.attack, 1, "Simple stores Curse's prescribed Attack boost")
+  Assert.equal(stages.defense, 1, "Simple stores Curse's prescribed Defense boost")
 end
 
 function T.tests.defog_respects_stat_drop_prevention()

@@ -465,19 +465,6 @@ local function preventStatLoss(instance, context)
 end
 
 ---@param instance table<string, unknown> dispatched effect instance under handling
----@param context table<string, unknown> stat checkpoint context under handling
----@return table<string, unknown>? stage announcement, or nil when inapplicable
-local function stageInteraction(instance, context)
-  if context.statStage ~= true then
-    return nil
-  end
-  if instance.key == "SIMPLE" then
-    return { kind = "trigger", key = instance.key, combatant = holderOf(instance), stages = "doubled" }
-  end
-  return { kind = "trigger", key = instance.key, combatant = holderOf(instance), stages = "ignored" }
-end
-
----@param instance table<string, unknown> dispatched effect instance under handling
 ---@param context table<string, unknown> move resolution context under handling
 ---@return table<string, unknown>? normalization announcement, or nil when inapplicable
 local function normalize(instance, context)
@@ -569,8 +556,8 @@ function ModifierAbilities.register(owned)
   owned.CLEAR_BODY = preventStatLoss
   owned.WHITE_SMOKE = preventStatLoss
   owned.HYPER_CUTTER = preventStatLoss
-  owned.SIMPLE = stageInteraction
-  owned.UNAWARE = stageInteraction
+  owned.SIMPLE = noCheckpointEffect
+  owned.UNAWARE = noCheckpointEffect
 end
 
 return ModifierAbilities

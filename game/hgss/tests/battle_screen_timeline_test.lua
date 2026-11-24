@@ -4775,4 +4775,121 @@ function T.capture_throw_rests_then_breaks_free_with_the_capture_ball()
   Assert.equal(seals[1].ballKey, "GREAT_BALL", "the seal rides the capture ball, not the origin ball")
 end
 
+-- A foe that arrives and leaves inside one packet has no endpoint record.
+-- Its send-out still owns the event-time portrait, cry, motion, and ball.
+function T.transient_foe_send_out_uses_its_arrival_record_for_every_cue()
+  local sounds = sink()
+  local motionSpecies = {}
+  local fadeBalls = {}
+  local timeline = BattleTimeline.new({
+    sound = sounds.sound,
+    motionFacts = function(species, foe)
+      motionSpecies[#motionSpecies + 1] = { species = species, foe = foe }
+      return { totalTicks = 20, cryDelay = 4 }
+    end,
+    ballFadeColor = function(ballKey)
+      fadeBalls[#fadeBalls + 1] = ballKey
+      return 0x1234
+    end,
+  })
+  local before = openingView()
+  before.foeTrainers = { { participant = 3, classKey = "YOUNGSTER", name = "WHITNEY" } }
+  before.participants = { { participant = 3, side = 2, controller = "trainer:3" } }
+  before.foes[1].controller = "trainer:3"
+  timeline:reset(before)
+  timeline:intro(before, false)
+  local after = openingView()
+  after.foeTrainers = before.foeTrainers
+  after.participants = before.participants
+  after.foes = {}
+  local swap = event("switch", { from = 3, to = 5, position = 2 }, { [1] = 52 })
+  swap.sequence = 2
+  swap.cause = { kind = "switch" }
+  swap.eventTime = {
+    own = {},
+    foes = {
+      {
+        combatant = 5,
+        participant = 3,
+        side = 2,
+        controller = "trainer:3",
+        active = true,
+        position = 2,
+        activation = 5,
+        hp = 57,
+        maxHp = 57,
+        condition = "poison",
+        species = "CASTFORM",
+        form = 2,
+        name = "TRANSIENT",
+        level = 20,
+        selector = "front",
+        portraitSelector = MonCache.portraitSelector("CASTFORM", 2, "male", false),
+        ballKey = "GREAT_BALL",
+      },
+    },
+  }
+  Assert.isTrue(timeline:present(packet(2, { swap }, after)), "the transient foe switch is accepted")
+  local reveal = nil
+  for _, cue in ipairs(timeline._queue) do
+    if cue.kind == "reveal" and cue.combatant == 5 then
+      reveal = cue
+    end
+  end
+  Assert.notNil(reveal, "the transient arrival stages a reveal")
+  local throws = 0
+  for _, cue in ipairs(timeline._queue) do
+    if cue.kind == "ball-throw" and cue.combatant == 5 then
+      throws = throws + 1
+      Assert.equal(cue.selector, "ball:GREAT_BALL", "the throw uses the transient arrival's ball")
+      Assert.equal(cue.requiresImage, "battle-ball:GREAT_BALL:0", "the throw demands its exact ball leaf")
+    elseif cue.kind == "trainer-exit" and cue.combatant == 5 then
+      throws = throws + 1
+      Assert.equal(cue.selector, "ball:GREAT_BALL", "the trainer exit uses the transient arrival's ball")
+    end
+  end
+  Assert.equal(throws, 1, "the installed opening presents exactly one transient foe throw")
+  Assert.equal(
+    reveal.requiresImage,
+    "mon:" .. swap.eventTime.foes[1].portraitSelector,
+    "the reveal demands its arrival portrait"
+  )
+  Assert.notNil(reveal.sendOutCry, "the transient arrival carries a cry without an endpoint record")
+  Assert.equal(reveal.sendOutCry.species, "CASTFORM", "the cry uses the arrival species")
+  Assert.equal(reveal.sendOutCry.form, 2, "the cry uses the arrival form")
+  Assert.isTrue(reveal.sendOutCry.foe, "the transient cry uses the foe voice")
+  local transientMotion = false
+  for _, motion in ipairs(motionSpecies) do
+    if motion.species == "CASTFORM" and motion.foe == true then
+      transientMotion = true
+    end
+  end
+  Assert.isTrue(transientMotion, "motion facts resolve from the transient arrival identity")
+  Assert.isTrue(#fadeBalls >= 2, "the opening and switch resolve their poof balls")
+  Assert.deepEqual(
+    { fadeBalls[#fadeBalls - 1], fadeBalls[#fadeBalls] },
+    { "POKE_BALL", "GREAT_BALL" },
+    "the recall and arrival poofs use their respective event-time balls"
+  )
+  local sawArrival = false
+  for _ = 1, 600 do
+    if timeline:messageActive() then
+      timeline:ack()
+    end
+    advance(timeline, TICK)
+    local shown = timeline:_shown(5)
+    if shown ~= nil and shown.visible then
+      sawArrival = true
+      Assert.equal(shown.condition, "poison", "the transient reveal keeps its major status")
+      Assert.equal(shown.form, 2, "the transient reveal keeps its arrival form")
+      Assert.equal(shown.ballKey, "GREAT_BALL", "the transient reveal keeps its ball")
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(sawArrival, "the transient foe is visibly revealed")
+  Assert.equal(sounds.countCry("CASTFORM", true), 1, "the transient foe cries once")
+end
+
 return { tests = T }

@@ -62,9 +62,9 @@ end
 
 ---@param packet table<string, unknown> detached delivery packet picturing the event battlers
 ---@param combatant integer combatant identity behind the view lookup
----@return table<string, unknown>? first before/after view record picturing the combatant, nil when absent
+---@return table<string, unknown>? first event-time/before/after view record picturing the combatant, nil when absent
 local function viewRecordOf(packet, combatant)
-  for _, viewKey in ipairs({ "before", "after" }) do
+  for _, viewKey in ipairs({ "eventTime", "before", "after" }) do
     local view = packet[viewKey] --[[@as table<string, unknown>?]]
     if type(view) == "table" then
       for _, groupKey in ipairs({ "own", "foes" }) do
@@ -230,18 +230,13 @@ local function sidePositionOrder(packet, side)
   local order = {} ---@type integer[]
   local before = packet.before --[[@as table<string, unknown>?]]
   local after = packet.after --[[@as table<string, unknown>?]]
-  if type(before) == "table" then
-    if side == 1 then
-      collectSidePositions(before.own --[[@as table<integer, table<string, unknown>>?]], seen, order)
-    else
-      collectSidePositions(before.foes --[[@as table<integer, table<string, unknown>>?]], seen, order)
-    end
-  end
-  if type(after) == "table" then
-    if side == 1 then
-      collectSidePositions(after.own --[[@as table<integer, table<string, unknown>>?]], seen, order)
-    else
-      collectSidePositions(after.foes --[[@as table<integer, table<string, unknown>>?]], seen, order)
+  for _, view in ipairs({ before or {}, after or {}, packet.eventTime or {} }) do
+    if type(view) == "table" then
+      if side == 1 then
+        collectSidePositions(view.own --[[@as table<integer, table<string, unknown>>?]], seen, order)
+      else
+        collectSidePositions(view.foes --[[@as table<integer, table<string, unknown>>?]], seen, order)
+      end
     end
   end
   table.sort(order)
@@ -251,7 +246,7 @@ end
 ---@param packet table<string, unknown> detached delivery packet picturing the event battlers
 ---@param combatant integer combatant identity under lookup
 ---@param activation unknown activation identity under lookup
----@return table<string, unknown>? exact event-time record, when one side still pictures it
+---@return table<string, unknown>? exact event-time record, when one provenance still pictures it
 ---@return boolean stale true when the combatant survives under a different activation
 local function findEventRecord(packet, combatant, activation)
   local stale = false
@@ -276,8 +271,11 @@ local function findEventRecord(packet, combatant, activation)
       end
     end
   end
-  scan(packet.before --[[@as table<string, unknown>?]])
-  scan(packet.after --[[@as table<string, unknown>?]])
+  scan(packet.eventTime --[[@as table<string, unknown>?]])
+  if found == nil then
+    scan(packet.before --[[@as table<string, unknown>?]])
+    scan(packet.after --[[@as table<string, unknown>?]])
+  end
   return found, stale
 end
 
@@ -1055,6 +1053,15 @@ function BattlePresentationFlow.animationPlayback(packet, event, slotGeometry, o
         pushOperationAdmit(root, "before-feedback-message", nil, applied)
       else
         pushOmit("omit:unknown-weather-carries-no-root")
+      end
+    elseif operationKind == "form-changed" then
+      if applied.substitute == true then
+        pushOperationAdmit("BATTLE_ANIMATION_SUB_OUT", "before-feedback-message", nil, applied)
+        pushOperationAdmit("BATTLE_ANIMATION_SUB_IN", "before-feedback-message", nil, applied)
+        pushOperationAdmit("BATTLE_ANIMATION_SUB_OUT", "after-feedback-message", nil, applied)
+        pushOperationAdmit("BATTLE_ANIMATION_SUB_IN", "after-feedback-message", nil, applied)
+      else
+        pushOmit("omit:form-change-has-no-substitute-refresh")
       end
     elseif operationKind == "residual" then
       local effect = applied.effect

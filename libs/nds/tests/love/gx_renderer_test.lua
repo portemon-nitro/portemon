@@ -2337,6 +2337,26 @@ function T.polygon_light_masks_reach_world_shader_uniforms()
   renderer:release()
 end
 
+function T.picture_mosaic_material_reaches_world_shader_uniforms()
+  local lg = fakeGraphics()
+  local renderer = GxRenderer.new({ graphics = lg })
+  local scene = emptySceneCamera()
+  local item = passItem("opaque", 0)
+  item.material.textureMosaicSize = 9
+  item.material.textureMosaicOrigin = { 12, 20 }
+  item.material.textureSize = { 80, 80 }
+  render(renderer, scene.runtime, scene.camera, { { item } }, nil, FieldViewport.new(640, 480, { mode = "strict" }), 0)
+
+  local uniforms = {}
+  for _, send in ipairs(renderer.worldShader.sends) do
+    uniforms[send.name] = send.values
+  end
+  Assert.equal(uniforms.u_textureMosaicSize[1], 9, "the transforming picture selects a nine-pixel block")
+  Assert.deepEqual(uniforms.u_textureMosaicOrigin[1], { 12, 20 }, "sampling stays anchored to the source frame")
+  Assert.deepEqual(uniforms.u_textureSize[1], { 80, 80 }, "the shader receives the portrait texture dimensions")
+  renderer:release()
+end
+
 function T.exact_compositor_sends_invariant_bindings_once_per_blended_frame()
   local lg = fakeGraphics()
   local renderer = GxRenderer.new({ graphics = lg, translucencyMode = GxRenderer.TRANSLUCENCY_EXACT })

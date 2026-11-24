@@ -14,6 +14,17 @@ local ManifestFixture = require("tests.support.BattlePresentationManifestFixture
 
 local T = {}
 
+local function appearanceDeps()
+  local catalog = {}
+  function catalog:species()
+    return { genderRatio = 0 }
+  end
+  function catalog:form(species, form)
+    return { portrait = species .. "/f" .. tostring(form) .. "/male/plain" }
+  end
+  return { catalog = catalog }
+end
+
 local function views()
   return {
     own = { { combatant = 1, activation = 7, side = 1, position = 1, species = "GASTLY", form = 0 } },
@@ -25,7 +36,7 @@ local function packetFor(before, after, rawEvents, launchId, packetId)
   return BattlePresentationModel.packet(before, { events = rawEvents }, after, {
     launchId = launchId,
     packetId = packetId,
-  })
+  }, appearanceDeps())
 end
 
 local function rawEvent(sequence, kind, cause, payload, actors, targets, move, presentation)
@@ -86,6 +97,71 @@ function T.weather_setter_ability_selects_native_weather_animation_before_its_me
     Assert.equal(requests[1].effectKey, route.root, route.ability .. " selects its native animation")
     Assert.equal(requests[1].anchor.stage, "before-feedback-message", "the visual precedes narration")
   end
+end
+
+function T.substitute_form_change_selects_both_source_wrapper_pairs_with_distinct_ordinals()
+  local geometry = ManifestFixture.manifest().battlefield.slots
+  local before = views()
+  before.foes[1].species = "CASTFORM"
+  before.foes[1].gender = "male"
+  before.foes[1].shiny = false
+  before.foes[1].portraitSelector = require("libs.assets.src.MonCache").portraitSelector("CASTFORM", 0, "male", false)
+  local presentation = {
+    context = { battleFormat = "singles" },
+    operation = {
+      kind = "form-changed",
+      subject = { combatant = 2, activation = 9 },
+      source = { kind = "system", key = "weather-form" },
+      beforeForm = 0,
+      form = 1,
+      substitute = true,
+    },
+  }
+  local raw = rawEvent(1, "ability", { kind = "system", key = "weather-form" }, {
+    key = "WEATHER_FORM",
+    combatant = 2,
+    beforeForm = 0,
+    form = 1,
+  }, { { combatant = 2, activation = 9 } }, {}, nil, presentation)
+  raw.observation = {
+    hp = { [2] = 20 },
+    combatants = {
+      [2] = {
+        participant = 2,
+        position = 2,
+        activation = 9,
+        hp = 20,
+        maxHp = 20,
+        species = "CASTFORM",
+        form = 1,
+        personality = 42,
+        origin = { trainerId = 99 },
+        level = 20,
+        side = 2,
+        controller = "wild",
+      },
+    },
+  }
+  local packet = packetFor(before, before, { raw }, "form-wrapper-selection", 1)
+  local requests = select(packet, packet.events[1], geometry)
+  Assert.equal(#requests, 4, "the source form script selects four distinct Substitute wrapper calls")
+  local expected = {
+    "BATTLE_ANIMATION_SUB_OUT",
+    "BATTLE_ANIMATION_SUB_IN",
+    "BATTLE_ANIMATION_SUB_OUT",
+    "BATTLE_ANIMATION_SUB_IN",
+  }
+  for index, key in ipairs(expected) do
+    Assert.equal(requests[index].effectKey, key, "wrapper " .. index .. " keeps its source root")
+    Assert.equal(requests[index].identity.ordinal, index, "wrapper " .. index .. " keeps its native request ordinal")
+    Assert.equal(requests[index].disposition, "admit", "wrapper " .. index .. " remains admitted under Substitute")
+  end
+  Assert.equal(requests[1].anchor.stage, "before-feedback-message", "the first wrapper precedes the transformation")
+  Assert.equal(
+    requests[3].anchor.stage,
+    "after-feedback-message",
+    "the second wrapper follows the transformation message"
+  )
 end
 
 function T.connected_strike_admits_with_signed_damage_and_hit_ordinal()

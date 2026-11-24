@@ -54,15 +54,15 @@ function T.rolled_checks_report_misses_with_exact_draw_counts()
   Assert.equal(hitStream:capture().calls, 1, "full accuracy still rolls its check")
 end
 
-function T.unrelated_prevention_blocks_without_a_roll()
+function T.protection_and_unreachable_checks_follow_the_ordinary_roll()
   local Accuracy = accuracyOwner()
   local BattleRng = streamOwner()
 
   local guarded = BattleRng.new(1)
-  local protection = Accuracy.resolve({ accuracy = 25, target = target(1), cause = cause(), protected = true }, guarded)
+  local protection = Accuracy.resolve({ accuracy = 100, target = target(1), cause = cause(), protected = true }, guarded)
   Assert.equal(protection.kind, "protected", "intact protection reports its own kind")
   Assert.isTrue(type(protection.reason) == "string" and protection.reason ~= "", "protection names its reason")
-  Assert.equal(guarded:capture().calls, 0, "protection is decided before the roll")
+  Assert.equal(guarded:capture().calls, 1, "protection follows the ordinary roll")
 
   local airborne = BattleRng.new(1)
   local unreachable =
@@ -72,7 +72,23 @@ function T.unrelated_prevention_blocks_without_a_roll()
     type(unreachable.reason) == "string" and unreachable.reason ~= "",
     "unreachable targets name their reason"
   )
-  Assert.equal(airborne:capture().calls, 0, "unreachable targets are decided before the roll")
+  Assert.equal(airborne:capture().calls, 1, "semi-invulnerability follows the ordinary roll")
+end
+
+function T.protection_remains_a_block_after_an_ordinary_miss()
+  local Accuracy = accuracyOwner()
+  local BattleRng = streamOwner()
+  local stream = BattleRng.new(1)
+
+  local result = Accuracy.resolve({
+    accuracy = 25,
+    target = target(1),
+    cause = cause(),
+    protected = true,
+  }, stream)
+
+  Assert.equal(result.kind, "protected", "protection remains an independent later prevention")
+  Assert.equal(stream:capture().calls, 1, "the ordinary accuracy check still consumes one draw")
 end
 
 -- Retail lesson strikes skip the accuracy roll without missing
@@ -161,6 +177,24 @@ local function cannedStream(draws)
     return out
   end
   return stream
+end
+
+function T.protection_follows_the_ordinary_roll_and_zero_chance_still_rolls()
+  local Accuracy = accuracyOwner()
+  local protectedStream = cannedStream({ 54236 })
+  local protected = Accuracy.resolve({
+    accuracy = 100,
+    target = target(1),
+    cause = cause(),
+    protected = true,
+  }, protectedStream)
+  Assert.equal(protected.kind, "protected", "protection blocks a strike after its successful accuracy check")
+  Assert.equal(protectedStream:calls(), 1, "a protected ordinary strike spends its accuracy draw")
+
+  local zeroStream = cannedStream({ 0 })
+  local zero = Accuracy.resolve({ accuracy = 0, target = target(1), cause = cause() }, zeroStream)
+  Assert.equal(zero.kind, "miss", "a zero final chance cannot become an automatic hit")
+  Assert.equal(zeroStream:calls(), 1, "a zero final chance still consumes the ordinary roll")
 end
 
 function T.combined_stage_vectors_follow_the_literal_stage_table()

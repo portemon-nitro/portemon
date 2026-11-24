@@ -34,6 +34,7 @@ local function freshFrame()
     cursor = "opening",
     currentActionId = nil,
     residualCursor = nil,
+    executionCursor = nil,
     pendingFaints = {},
   }
 end
@@ -189,6 +190,34 @@ function T.headless_progression_waits_only_for_missing_decisions()
   local resumed = HgssSchedule.step(queue, frame, stream, 1)
   Assert.notNil(resumed, "late decisions resume the suspended schedule")
   Assert.equal(resumed.id, 1, "resumed schedules yield the decided action")
+end
+
+function T.execution_resort_visits_completed_slots_before_resuming_queued_actions()
+  local ActionQueue = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.ActionQueue",
+    "explicit queue mutation owns action completion"
+  )
+  local HgssSchedule = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.HgssSchedule",
+    "the schedule retains source controller visits"
+  )
+  local BattleRng = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.BattleRng",
+    "the schedule preserves the controller's stream"
+  )
+  local queue = { stagedAction(1, 1, "attack"), stagedAction(2, 2, "attack") }
+  ActionQueue.complete(queue, 1)
+  local frame = freshFrame()
+  frame.executionCursor = 1
+  local stream = BattleRng.new(17)
+
+  local visit = HgssSchedule.step(queue, frame, stream, 1)
+  Assert.equal(visit.id, 1, "the completed first slot still receives a controller visit")
+  Assert.isTrue(visit.controllerVisit, "a completed visit cannot re-execute its command")
+  local due = HgssSchedule.step(queue, frame, stream, 1)
+  Assert.equal(due.id, 2, "the following queued action resumes in the new permutation")
+  Assert.isNil(HgssSchedule.step(queue, frame, stream, 1), "the traversal finishes after the final slot")
+  Assert.equal(stream:capture().calls, 0, "controller traversal itself spends no RNG draws")
 end
 
 function T.malformed_frames_and_queue_misuse_fail_loudly()

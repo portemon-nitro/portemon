@@ -1,13 +1,9 @@
--- Accuracy and hit-prevention semantics. Protection and semi-invulnerable
--- positions are decided before the roll and consume no draws; moves that
--- skip the ordinary accuracy check still respect both. Rolled checks draw
--- once and compare (draw % 100) + 1 against the final percentage, so
--- full accuracy still rolls its check while a missing accuracy simply
--- hits. Battle-local accuracy and evasion stages merge into one effective
--- stage (accuracy minus evasion), clamp to [-6, +6], and reshape the
--- percentage through the canonical stage ratio, so a missing stage
--- reads as flat. Every outcome names a distinct reason so callers never conflate a
--- rolled miss with protection, an unreachable target, or a skipped check.
+-- Accuracy and hit-prevention semantics. Ordinary checks draw before
+-- protection and semi-invulnerability; an explicit skipped check still
+-- respects both without a draw. Rolled checks compare (draw % 100) + 1
+-- against the final percentage, including zero and full accuracy. Signed
+-- stages merge, clamp once, and use the canonical stage ratio. Every
+-- outcome keeps its own reason for callers.
 
 local StatStages = require("libs.battle.src.gen4.StatStages")
 
@@ -66,44 +62,58 @@ end
 function Accuracy.resolve(query, stream)
   requireQuery(query)
   assert(type(stream) == "table" and type(stream.nextU16) == "function", "rolled checks draw from the battle stream")
+  -- Tutorial strikes and explicit skipped checks spend no accuracy draw.
+  if query.tutorial == true then
+    if query.protected == true then
+      return { kind = "protected", reason = "protection", target = query.target, cause = query.cause }
+    end
+    if query.semiInvulnerable == true then
+      return { kind = "unreachable", reason = "semi_invulnerable", target = query.target, cause = query.cause }
+    end
+    return { kind = "hit", reason = "tutorial_skipped", target = query.target, cause = query.cause }
+  end
+  if query.skipCheck == true then
+    if query.protected == true then
+      return { kind = "protected", reason = "protection", target = query.target, cause = query.cause }
+    end
+    if query.semiInvulnerable == true then
+      return { kind = "unreachable", reason = "semi_invulnerable", target = query.target, cause = query.cause }
+    end
+    return { kind = "hit", reason = "check_skipped", target = query.target, cause = query.cause }
+  end
+  local hit = true
+  if query.accuracy ~= nil then
+    local accuracyStage = query.accuracyStage or 0
+    local evasionStage = query.evasionStage or 0
+    local effectiveStage = accuracyStage - evasionStage
+    if effectiveStage > 6 then
+      effectiveStage = 6
+    elseif effectiveStage < -6 then
+      effectiveStage = -6
+    end
+    local ratio = StatStages.multiplier(effectiveStage, "accuracy")
+    local chance = math.floor((query.accuracy * ratio.numerator) / ratio.denominator)
+    local draw = stream:nextU16("accuracy_check", query.cause)
+    local roll = (draw % Accuracy.ROLL_MODULUS) + 1
+    hit = roll <= chance
+  end
+  -- Ordinary accuracy draws happen before protection checks in the retail
+  -- battle flow; prevention still takes precedence over the roll result.
   if query.protected == true then
     return { kind = "protected", reason = "protection", target = query.target, cause = query.cause }
   end
   if query.semiInvulnerable == true then
     return { kind = "unreachable", reason = "semi_invulnerable", target = query.target, cause = query.cause }
   end
-  -- Retail lesson strikes skip the accuracy roll without missing
-  -- (battle_controller_player.c:2425, BattleSystem_CheckMoveHit under
-  -- BATTLE_TYPE_TUTORIAL returns FALSE before any roll, and the caller
-  -- only treats a set MOVE_STATUS_MISSED flag as a miss, which the
-  -- early return never sets): the tutorial hits without spending its
-  -- accuracy draw, like any other skipped check. Independently
-  -- applicable prevention above still applies.
-  if query.tutorial == true then
-    return { kind = "hit", reason = "tutorial_skipped", target = query.target, cause = query.cause }
+  if not hit then
+    return { kind = "miss", reason = "accuracy_miss", target = query.target, cause = query.cause }
   end
-  if query.skipCheck == true then
-    return { kind = "hit", reason = "check_skipped", target = query.target, cause = query.cause }
-  end
-  if query.accuracy == nil then
-    return { kind = "hit", reason = "no_accuracy_check", target = query.target, cause = query.cause }
-  end
-  local accuracyStage = query.accuracyStage or 0
-  local evasionStage = query.evasionStage or 0
-  local effectiveStage = accuracyStage - evasionStage
-  if effectiveStage > 6 then
-    effectiveStage = 6
-  elseif effectiveStage < -6 then
-    effectiveStage = -6
-  end
-  local ratio = StatStages.multiplier(effectiveStage, "accuracy")
-  local chance = math.floor((query.accuracy * ratio.numerator) / ratio.denominator)
-  local draw = stream:nextU16("accuracy_check", query.cause)
-  local roll = (draw % Accuracy.ROLL_MODULUS) + 1
-  if roll <= chance then
-    return { kind = "hit", reason = "accuracy_roll", target = query.target, cause = query.cause }
-  end
-  return { kind = "miss", reason = "accuracy_miss", target = query.target, cause = query.cause }
+  return {
+    kind = "hit",
+    reason = query.accuracy == nil and "no_accuracy_check" or "accuracy_roll",
+    target = query.target,
+    cause = query.cause,
+  }
 end
 
 return Accuracy

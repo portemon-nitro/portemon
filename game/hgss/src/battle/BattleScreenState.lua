@@ -4126,6 +4126,39 @@ local function thrownBallSelectors(events)
   return selectors
 end
 
+---@param events table<integer, table<string, unknown>>? delivered sanitized events
+---@return string[] canonical event-time portraits absent from the final view
+local function eventTimePortraitSelectors(events)
+  local selectors = {}
+  local seen = {}
+  if type(events) ~= "table" then
+    return selectors
+  end
+  local function add(appearance)
+    local selector = type(appearance) == "table" and appearance.portraitSelector or nil
+    if type(selector) == "string" and selector ~= "" and not seen[selector] then
+      seen[selector] = true
+      selectors[#selectors + 1] = selector
+    end
+  end
+  for _, event in ipairs(events) do
+    if type(event) == "table" then
+      add(event.formChangeAppearance)
+      local eventTime = type(event.eventTime) == "table" and event.eventTime or nil
+      for _, groupName in ipairs({ "own", "foes" }) do
+        local group = type(eventTime) == "table" and eventTime[groupName] or nil
+        if type(group) == "table" then
+          for _, record in ipairs(group) do
+            add(record)
+          end
+        end
+      end
+    end
+  end
+  table.sort(selectors)
+  return selectors
+end
+
 -- Whether every trainer and ball leaf behind the candidate views is
 -- already staged in the per-launch entries. Pending entries hold the
 -- delivering packet instead of letting cue construction dereference
@@ -4245,6 +4278,25 @@ local function selectorsOf(view)
 end
 
 ---@param packet table<string, unknown> detached delivery packet
+---@return boolean staged true once event-only portraits are available
+function BattleScreenState:_eventTimePortraitsStaged(packet)
+  local known = {}
+  for _, view in ipairs({ packet.before, packet.after }) do
+    if type(view) == "table" then
+      for _, selector in ipairs(selectorsOf(view)) do
+        known[selector] = true
+      end
+    end
+  end
+  for _, selector in ipairs(eventTimePortraitSelectors(packet.events)) do
+    if not known[selector] and self._assets:drawable("mon:" .. selector) == nil then
+      return false
+    end
+  end
+  return true
+end
+
+---@param packet table<string, unknown> detached delivery packet
 function BattleScreenState:_portPresent(packet)
   if self._disposed or self._mode == "failed" then
     return
@@ -4276,7 +4328,15 @@ function BattleScreenState:_portPresent(packet)
   do
     local trainers, balls = {}, {} ---@type string[], string[]
     local seenTrainers, seenBalls = {}, {} ---@type table<string, boolean>, table<string, boolean>
-    for _, candidate in ipairs({ packet.before, packet.after }) do
+    local candidates = { packet.before, packet.after } ---@type table<integer, table<string, unknown>?>
+    if type(packet.events) == "table" then
+      for _, event in ipairs(packet.events) do
+        if type(event) == "table" and type(event.eventTime) == "table" then
+          candidates[#candidates + 1] = event.eventTime --[[@as table<string, unknown>]]
+        end
+      end
+    end
+    for _, candidate in ipairs(candidates) do
       local candidateTrainers, candidateBalls = leafSelectorsOf(candidate)
       for _, selector in ipairs(candidateTrainers) do
         if not seenTrainers[selector] then
@@ -4298,6 +4358,10 @@ function BattleScreenState:_portPresent(packet)
         balls[#balls + 1] = selector
       end
     end
+    local formPortraits = eventTimePortraitSelectors(packet.events)
+    if #formPortraits > 0 then
+      self._assets:addSelectors(formPortraits)
+    end
     table.sort(balls)
     if #trainers > 0 then
       self._assets:addTrainerPictures(trainers)
@@ -4305,10 +4369,7 @@ function BattleScreenState:_portPresent(packet)
     if #balls > 0 then
       self._assets:addBattleBalls(balls)
     end
-    if not self:_launchLeavesStaged({ packet.before, packet.after }) then
-      if type(packet.after) == "table" then
-        self._pendingFinal = copyValue(packet.after)
-      end
+    if not self:_launchLeavesStaged(candidates) or not self:_eventTimePortraitsStaged(packet) then
       self._deferredPackets[#self._deferredPackets + 1] = packet
       return
     end
@@ -4421,19 +4482,22 @@ function BattleScreenState:_portPresent(packet)
   if type(packet.after) == "table" then
     self._latestView = packet.after
   end
-  -- Both provenances disclose before their requiresImage cues proceed:
-  -- the incoming battler arrives in after, the departing one stays
-  -- named in before, and benched reserves appear in neither until a
-  -- packet makes them active. Either provenance may be absent on the
-  -- opening delivery, so absent views are skipped without ending the
-  -- scan: a literal with a nil first element would stop the traversal
-  -- before the present view.
+  -- Both endpoint and event-time provenances disclose before their
+  -- requiresImage cues proceed: a transient activation may be absent
+  -- from both endpoints while its own checkpoint still pictures it.
   local provenances = {} ---@type table<integer, table<string, unknown>>
   if type(packet.before) == "table" then
     provenances[#provenances + 1] = packet.before --[[@as table<string, unknown>]]
   end
   if type(packet.after) == "table" then
     provenances[#provenances + 1] = packet.after --[[@as table<string, unknown>]]
+  end
+  if type(packet.events) == "table" then
+    for _, event in ipairs(packet.events) do
+      if type(event) == "table" and type(event.eventTime) == "table" then
+        provenances[#provenances + 1] = event.eventTime --[[@as table<string, unknown>]]
+      end
+    end
   end
   do
     local demanded, seen = {}, {} ---@type string[], table<string, boolean>
@@ -7181,6 +7245,9 @@ function BattleScreenState:_drain(settledTick)
   if self._pendingFinal ~= nil then
     self:_reconcile(self._pendingFinal)
     self._pendingFinal = nil
+    if not self._timeline:settled() then
+      return
+    end
   end
   if not settledTick then
     return
@@ -8337,7 +8404,15 @@ function BattleScreenState:updateFixed(dt)
   -- head reveals the next packet without advancing source time here.
   while #self._deferredPackets > 0 do
     local head = self._deferredPackets[1]
-    if not self:_launchLeavesStaged({ head.before, head.after }) then
+    local candidates = { head.before, head.after } ---@type table<integer, table<string, unknown>?>
+    if type(head.events) == "table" then
+      for _, event in ipairs(head.events) do
+        if type(event) == "table" and type(event.eventTime) == "table" then
+          candidates[#candidates + 1] = event.eventTime --[[@as table<string, unknown>]]
+        end
+      end
+    end
+    if not self:_launchLeavesStaged(candidates) or not self:_eventTimePortraitsStaged(head) then
       break
     end
     table.remove(self._deferredPackets, 1)

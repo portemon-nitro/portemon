@@ -780,7 +780,7 @@ end
 ---@param row BattleRenderer.SlotGeometry the battler's published slot row
 ---@return table<string, unknown>? battler picture, nil while substituted or unstaged
 local function battlerPicture(assets, battler, row)
-  if battler.substitute == true then
+  if battler.substitute == true and battler.formChangePicture ~= true then
     return nil
   end
   local cell = battlerImage(assets, battler)
@@ -871,6 +871,7 @@ local function battlerPicture(assets, battler, row)
     alpha = numberOr(battler.polygonAlpha, 31) / 31 * tintA,
     paletteFade = battler.motionBlend or battler.paletteFade,
     flipH = flipH or nil,
+    mosaicSize = battler.mosaicSize,
   }
   for field, fact in pairs(PICTURE_OFFSETS) do
     picture[field] = numberOr(battler[fact], 0)
@@ -1087,6 +1088,7 @@ local function pictureToPrimitive(picture, ordinal)
   if type(staged.getDimensions) ~= "function" then
     return nil
   end
+  local imageWidth, imageHeight = staged:getDimensions()
   local function five(value)
     local channel = math.floor((value or 1) * 31 + 0.5)
     if channel < 0 then
@@ -1107,6 +1109,9 @@ local function pictureToPrimitive(picture, ordinal)
     palette = picture.palette,
     imageKind = picture.imageKind,
     paletteFade = picture.paletteFade,
+    mosaicSize = picture.mosaicSize,
+    mosaicOrigin = { picture.frameX or 0, picture.frameY or 0 },
+    imageSize = { imageWidth, imageHeight },
     sampler = { minFilter = "nearest", magFilter = "nearest", wrapX = "clamp", wrapY = "clamp" },
     -- Every staged picture texture carries transparent texels (portrait
     -- corners, shadow ellipses, effect cutouts): alpha-zero texels must
@@ -1446,16 +1451,14 @@ local function frameMosaic(view)
   if type(mosaic) ~= "table" then
     return nil
   end
-  local horizontal = mosaic.horizontal or 0
-  local vertical = mosaic.vertical or 0
-  local size = math.max(horizontal, vertical)
+  local size = math.max(mosaic.horizontal or 0, mosaic.vertical or 0)
   if size <= 1 then
     return nil
   end
   if size > 16 then
     size = 16
   end
-  local enabled = mosaic.bgEnabled == true
+  local enabled = type(mosaic) == "table" and mosaic.bgEnabled == true
   return {
     size = math.floor(size),
     layers = { battlefield = enabled, window = enabled, transition = enabled },

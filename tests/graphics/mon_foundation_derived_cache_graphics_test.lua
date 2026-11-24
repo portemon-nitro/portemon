@@ -197,7 +197,18 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
         local function step()
           state:update(SourceTick.DT)
         end
-        local function waitFor(label, predicate, bound, yield)
+        local function waitFor(label, predicate, bound, yieldWorker)
+          if yieldWorker then
+            local deadline = love.timer.getTime() + 10
+            while not predicate() do
+              step()
+              love.timer.sleep(0.001)
+              if love.timer.getTime() >= deadline then
+                error("timed out waiting for " .. label, 0)
+              end
+            end
+            return
+          end
           for _ = 1, bound do
             if predicate() then
               return
@@ -208,7 +219,7 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
             -- finish, so the icon wait yields briefly per iteration like
             -- the battle warmup coverage does. Logical waits need no
             -- wall time and stay tight.
-            if yield and love.timer ~= nil and love.timer.sleep ~= nil then
+            if yieldWorker and love.timer ~= nil and love.timer.sleep ~= nil then
               love.timer.sleep(0.005)
             end
           end

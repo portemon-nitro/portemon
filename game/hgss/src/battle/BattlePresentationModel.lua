@@ -109,9 +109,15 @@ local function combatLevel(deps, mon, species)
   return level --[[@as integer]]
 end
 
--- The summary page reads the ability behind its staged ability name:
--- the live mon carries its catalog key, while anything else stays
--- silent instead of inventing an ability.
+---@param combatant table<string, unknown> combatant carrying its battle-local form
+---@return integer stored form when known
+local function weatherForm(combatant)
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  local active = combatant.active --[[@as table<string, unknown>?]]
+  local form = active ~= nil and active.form or mon.form
+  return type(form) == "number" and form or 0
+end
+
 ---@param mon table<string, unknown> battle-local mon record under inspection
 ---@return string? ability key, nil when the record names none
 local function combatAbility(mon)
@@ -119,54 +125,6 @@ local function combatAbility(mon)
     return mon.ability --[[@as string]]
   end
   return nil
-end
-
----@param snapshot table<string, unknown> detached battle snapshot under projection
----@param combatant table<string, unknown> combatant carrying battle-local form facts
----@return integer? effective battle form for weather-driven species
-local function weatherForm(snapshot, combatant)
-  local mon = combatant.mon --[[@as table<string, unknown>]]
-  local species = mon.species
-  local form = mon.form
-  if type(form) ~= "number" or (species ~= "CASTFORM" and species ~= "CHERRIM") then
-    return type(form) == "number" and form or nil
-  end
-  local effects = snapshot.effects --[[@as table<integer, table<string, unknown>>?]]
-  local weather = snapshot.environment --[[@as table<string, unknown>?]]
-  local activeWeather = type(weather) == "table" and weather.weather or nil
-  local suppressed = false
-  local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>]]
-  for _, candidate in pairs(combatants) do
-    local candidateMon = candidate.mon --[[@as table<string, unknown>]]
-    if candidate.active ~= nil and type(candidate.hp) == "number" and candidate.hp > 0 then
-      local ability = combatAbility(candidateMon)
-      suppressed = suppressed or ability == "CLOUD_NINE" or ability == "AIR_LOCK"
-    end
-  end
-  if type(effects) == "table" then
-    local weatherKeys = { raindance = "rain", sunnyday = "sun", hail = "hail", sandstorm = "sand" }
-    for _, effect in ipairs(effects) do
-      local effectWeather = weatherKeys[
-        effect.key --[[@as string]]
-      ]
-      if effectWeather ~= nil then
-        activeWeather = effectWeather
-      end
-    end
-  end
-  if suppressed then
-    activeWeather = "none"
-  end
-  if species == "CASTFORM" and combatAbility(mon) == "FORECAST" then
-    local forms = { sun = 1, rain = 2, hail = 3 }
-    return forms[
-      activeWeather --[[@as string]]
-    ] or 0
-  end
-  if species == "CHERRIM" then
-    return activeWeather == "sun" and 1 or 0
-  end
-  return form --[[@as integer]]
 end
 
 -- The summary page reads the computed battle stats behind its staged
@@ -454,7 +412,7 @@ local function combatantRecord(deps, snapshot, id, own)
   local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>]]
   local combatant = combatants[id] --[[@as table<string, unknown>]]
   local mon = combatant.mon --[[@as table<string, unknown>]]
-  local form = weatherForm(snapshot, combatant)
+  local form = weatherForm(combatant)
   local appearanceMon = copyValue(mon) --[[@as table<string, unknown>]]
   appearanceMon.form = form
   local species = nil
@@ -566,6 +524,122 @@ local function combatantRecord(deps, snapshot, id, own)
     end
   end
   return record
+end
+
+---@param views table<string, unknown>? detached before/after views
+---@param combatant integer own combatant under lookup
+---@return table<string, unknown>? complete own-side roster record
+local function fullOwnRecord(views, combatant)
+  if type(views) ~= "table" then
+    return nil
+  end
+  for _, key in ipairs({ "before", "after" }) do
+    local view = views[key]
+    if type(view) == "table" and type(view.own) == "table" then
+      for _, record in ipairs(view.own) do
+        if type(record) == "table" and record.combatant == combatant then
+          return record
+        end
+      end
+    end
+  end
+  return nil
+end
+
+---@param id integer combatant identity under projection
+---@param checkpoint table<string, unknown> activation-scoped public observation
+---@param views table<string, unknown>? detached endpoint views carrying complete own rosters
+---@param deps table<string, unknown>? model dependencies carrying the mon catalog
+---@return table<string, unknown> arrival display record
+local function eventTimeRecordFor(id, checkpoint, views, deps)
+  local own = checkpoint.side == 1
+  local mon = {
+    species = checkpoint.species,
+    form = checkpoint.form,
+    nickname = checkpoint.nickname,
+    personality = checkpoint.personality,
+    origin = checkpoint.origin,
+    level = checkpoint.level,
+    experience = checkpoint.experience,
+  } ---@type table<string, unknown>
+  ---@type table<string, unknown>?
+  local species = speciesRecord(deps, mon.species --[[@as string]])
+  local record = {
+    combatant = id,
+    participant = checkpoint.participant,
+    side = checkpoint.side,
+    controller = checkpoint.controller,
+    active = true,
+    position = checkpoint.position,
+    activation = checkpoint.activation,
+    hp = checkpoint.hp,
+    maxHp = checkpoint.maxHp,
+    condition = checkpoint.condition,
+    species = checkpoint.species,
+    form = checkpoint.form,
+    name = visibleName(deps, mon, species),
+    level = checkpoint.level or combatLevel(deps, mon, species),
+    selector = own and "back" or "front",
+  } --[[@as table<string, unknown>]]
+  local gender = visibleGender(mon, species)
+  if gender ~= nil then
+    record.gender = gender
+  end
+  local shiny = visibleShiny(mon)
+  if shiny ~= nil then
+    record.shiny = shiny
+  end
+  local portrait = portraitSelectorFor(deps, mon, species, record.selector --[[@as string]])
+  if portrait ~= nil then
+    record.portraitSelector = portrait
+  end
+  if type(checkpoint.ball) == "string" then
+    record.ballKey = checkpoint.ball
+  end
+  if own then
+    local full = fullOwnRecord(views, id)
+    if full ~= nil then
+      for _, key in ipairs({ "slot", "moves", "experience" }) do
+        if full[key] ~= nil then
+          record[key] = copyValue(full[key])
+        end
+      end
+      if record.ballKey == nil and type(full.ballKey) == "string" then
+        record.ballKey = full.ballKey
+      end
+    end
+  end
+  return record
+end
+
+---@param event table<string, unknown> native event carrying its emission checkpoint
+---@param views table<string, unknown>? detached before/after views carrying complete own rosters
+---@param deps table<string, unknown>? model dependencies carrying the mon catalog
+---@return table<string, unknown>? detached event-time dynamic view
+local function eventTimeViewFor(event, views, deps)
+  local observation = type(event.observation) == "table" and event.observation or nil
+  local combatants = type(observation) == "table" and observation.combatants or nil
+  if type(combatants) ~= "table" then
+    return nil
+  end
+  local ids = {} ---@type integer[]
+  for id, checkpoint in pairs(combatants) do
+    if type(id) == "number" and type(checkpoint) == "table" then
+      ids[#ids + 1] = id --[[@as integer]]
+    end
+  end
+  table.sort(ids)
+  local view = { own = {}, foes = {} } ---@type table<string, unknown>
+  for _, id in ipairs(ids) do
+    local checkpoint = combatants[id] --[[@as table<string, unknown>]]
+    local own = checkpoint.side == 1
+    local group = own and view.own or view.foes
+    group[#group + 1] = eventTimeRecordFor(id, checkpoint, views, deps)
+  end
+  if #view.own == 0 and #view.foes == 0 then
+    return nil
+  end
+  return view
 end
 
 ---@param snapshot table<string, unknown> detached battle snapshot under projection
@@ -847,7 +921,7 @@ local function visibleNameOf(views, id)
   if type(views) ~= "table" or type(id) ~= "number" then
     return nil
   end
-  for _, viewKey in ipairs({ "after", "before" }) do
+  for _, viewKey in ipairs({ "eventTime", "before", "after" }) do
     local view = (views --[[@as table<string, unknown>]])[viewKey]
     if type(view) == "table" then
       for _, groupKey in ipairs({ "own", "foes" }) do
@@ -877,7 +951,7 @@ local function visibleAppearanceOf(views, id)
   if type(views) ~= "table" or type(id) ~= "number" then
     return nil
   end
-  for _, viewKey in ipairs({ "after", "before" }) do
+  for _, viewKey in ipairs({ "eventTime", "before", "after" }) do
     local view = (views --[[@as table<string, unknown>]])[viewKey]
     if type(view) == "table" then
       for _, groupKey in ipairs({ "own", "foes" }) do
@@ -1141,7 +1215,7 @@ local function transformedAppearanceFor(operation, views)
     and type(views) == "table"
   then
     local id = (donor --[[@as table<string, unknown>]]).combatant --[[@as integer]]
-    for _, viewKey in ipairs({ "after", "before" }) do
+    for _, viewKey in ipairs({ "eventTime", "before", "after" }) do
       local view = (views --[[@as table<string, unknown>]])[viewKey]
       if type(view) == "table" then
         for _, groupKey in ipairs({ "own", "foes" }) do
@@ -1164,10 +1238,49 @@ local function transformedAppearanceFor(operation, views)
   return appearance
 end
 
+---@param operation table<string, unknown> form-changed operation under projection
+---@param observation table<string, unknown> event-time checkpoint carrying the subject identity
+---@param deps table<string, unknown>? model dependencies carrying the mon catalog
+---@return table<string, unknown>? frozen event-time appearance, nil for other operations
+local function formChangeAppearanceFor(operation, observation, deps)
+  if operation.kind ~= "form-changed" then
+    return nil
+  end
+  local subject = operation.subject --[[@as table<string, unknown>]]
+  local combatant = subject.combatant --[[@as integer]]
+  local activation = subject.activation --[[@as integer]]
+  local checkpoint = (observation.combatants --[[@as table<integer, table<string, unknown>>]])[combatant]
+  local appearance = checkpoint --[[@as table<string, unknown>?]]
+  assert(type(appearance) == "table", "form changes carry their event-time subject checkpoint")
+  assert(appearance.activation == activation, "form appearance matches its subject activation")
+  assert(type(appearance.species) == "string" and appearance.species ~= "", "form changes name their pictured species")
+  assert(
+    type(operation.form) == "number" and operation.form % 1 == 0 and operation.form >= 0,
+    "form changes name their target form"
+  )
+  local facing = appearance.side == 1 and "back" or appearance.side == 2 and "front" or nil
+  assert(facing == "front" or facing == "back", "form changes preserve their pictured facing")
+  local appearanceMon = copyValue(appearance) --[[@as table<string, unknown>]]
+  appearanceMon.form = operation.form
+  local species = speciesRecord(deps, appearance.species)
+  local portraitSelector = portraitSelectorFor(deps, appearanceMon, species, facing)
+  assert(
+    type(portraitSelector) == "string" and portraitSelector ~= "",
+    "form changes resolve their event-time portrait"
+  )
+  return {
+    combatant = combatant,
+    activation = activation,
+    form = operation.form,
+    portraitSelector = portraitSelector,
+  } ---@type table<string, unknown>
+end
+
 ---@param event table<string, unknown> native event under sanitizing
 ---@param views table<string, unknown>? detached before/after views picturing the event battlers
+---@param deps table<string, unknown>? model dependencies carrying the mon catalog
 ---@return table<string, unknown> public event with its explicit playback facts
-function BattlePresentationModel.sanitizeEvent(event, views)
+function BattlePresentationModel.sanitizeEvent(event, views, deps)
   assert(type(event) == "table", "sanitized packets carry event records")
   local public = {
     sequence = event.sequence,
@@ -1186,15 +1299,24 @@ function BattlePresentationModel.sanitizeEvent(event, views)
   -- the copy keeps the packet detached from the kernel outbox.
   if type(event.observation) == "table" then
     public.after = copyValue(event.observation)
+    local eventTime = eventTimeViewFor(event, views, deps)
+    if eventTime ~= nil then
+      public.eventTime = eventTime
+    end
   else
     public.after = {}
   end
+  local identityViews = {
+    before = type(views) == "table" and views.before or nil,
+    after = type(views) == "table" and views.after or nil,
+    eventTime = public.eventTime,
+  }
   -- Explicit playback identities pass through untouched when present
   -- and stay empty for legacy emissions; mistyped facts fail loudly
   -- instead of publishing a guess. Appearance and names resolve from
   -- the sanitized views, so hidden battlers can never picture one.
-  public.actors = checkIdentities(event.actors, views)
-  public.targets = checkIdentities(event.targets, views)
+  public.actors = checkIdentities(event.actors, identityViews)
+  public.targets = checkIdentities(event.targets, identityViews)
   local move = checkMove(event.move)
   if move ~= nil then
     public.move = move
@@ -1223,7 +1345,15 @@ function BattlePresentationModel.sanitizeEvent(event, views)
     public.presentation = copyValue(event.presentation)
     local operation = (event.presentation --[[@as table<string, unknown>]]).operation
     if type(operation) == "table" then
-      local projected = transformedAppearanceFor(operation --[[@as table<string, unknown>]], views)
+      local formAppearance = formChangeAppearanceFor(
+        operation --[[@as table<string, unknown>]],
+        event.observation --[[@as table<string, unknown>]],
+        deps
+      )
+      if formAppearance ~= nil then
+        public.formChangeAppearance = formAppearance
+      end
+      local projected = transformedAppearanceFor(operation --[[@as table<string, unknown>]], identityViews)
       if projected ~= nil then
         public.transformedAppearance = projected
       end
@@ -1231,7 +1361,7 @@ function BattlePresentationModel.sanitizeEvent(event, views)
   end
   -- Occurrence-derived seeds never enter animation cues: the sanitizer
   -- drops any carried seed instead of synthesizing one.
-  public.messageArgs = messageArgsFor(public, views)
+  public.messageArgs = messageArgsFor(public, identityViews)
   public.parameters = parametersFor(public)
   if type(event.options) == "table" then
     public.options = copyValue(event.options)
@@ -1249,8 +1379,9 @@ end
 ---@param frame table<string, unknown> kernel frame at an atomic boundary
 ---@param afterView table<string, unknown> detached dynamic view following the frame
 ---@param context table<string, unknown> delivery context carrying launch and packet identity
+---@param deps table<string, unknown>? model dependencies carrying the mon catalog
 ---@return table<string, unknown> detached validated delivery packet
-function BattlePresentationModel.packet(beforeView, frame, afterView, context)
+function BattlePresentationModel.packet(beforeView, frame, afterView, context, deps)
   assert(type(beforeView) == "table", "delivery packets carry their before view")
   assert(type(frame) == "table", "delivery packets carry their mechanics frame")
   assert(type(afterView) == "table", "delivery packets carry their after view")
@@ -1268,7 +1399,7 @@ function BattlePresentationModel.packet(beforeView, frame, afterView, context)
     for _, event in
       ipairs(frame.events --[[@as table<integer, table<string, unknown>>]])
     do
-      events[#events + 1] = BattlePresentationModel.sanitizeEvent(event, views)
+      events[#events + 1] = BattlePresentationModel.sanitizeEvent(event, views, deps)
     end
   end
   local packet = {

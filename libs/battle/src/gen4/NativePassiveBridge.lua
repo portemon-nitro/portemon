@@ -152,12 +152,18 @@ function NativePassiveBridge:embargoed(combatantId)
   return false
 end
 
----@param combatantId integer holder whose effective ability is read
----@return string? battle ability key, absent when Gastro Acid suppresses it
-function NativePassiveBridge:abilityOf(combatantId)
+---@param combatantId integer holder whose current battle ability is read
+---@return string? active Trace override or roster ability, without suppression
+function NativePassiveBridge:battleAbilityOf(combatantId)
   local combatant = BattleState.combatant(self._state, combatantId)
-  if self:hasVolatile(combatantId, "GASTRO_ACID") then
-    return nil
+  if combatant.active == nil then
+    local positionOrder = self._state.positionOrder --[[@as integer[] ]]
+    for _, positionId in ipairs(positionOrder) do
+      local departed = BattleState.position(self._state, positionId).departed
+      if type(departed) == "table" and departed.combatant == combatantId and departed.abilityCaptured == true then
+        return departed.battleAbility --[[@as string?]]
+      end
+    end
   end
   local bag = self._state.effectBag
   if type(combatant.active) == "table" and type(bag) == "table" then
@@ -177,6 +183,96 @@ function NativePassiveBridge:abilityOf(combatantId)
     end
   end
   return readAbility(combatant)
+end
+
+---@param combatantId integer holder whose effective ability is read
+---@return string? effective ability key after Gastro Acid, Gravity, and Ingrain rules
+function NativePassiveBridge:abilityOf(combatantId)
+  local ability = self:battleAbilityOf(combatantId)
+  if self:hasVolatile(combatantId, "GASTRO_ACID") then
+    if ability ~= "MULTITYPE" then
+      return nil
+    end
+  end
+  if ability == "LEVITATE" then
+    if self:hasVolatile(combatantId, "ingrain") then
+      return nil
+    end
+    local bag = self._state.effectBag
+    if type(bag) == "table" then
+      for _, effect in ipairs(bag:capture()) do
+        local scope = effect.scope --[[@as table<string, unknown>]]
+        if effect.key == "gravity" and scope.kind == "field" then
+          return nil
+        end
+      end
+    end
+  end
+  return ability
+end
+
+---@return string current field weather, with a battle weather instance overriding the environment
+function NativePassiveBridge:weatherOf()
+  local environment = self._state.environment --[[@as table<string, unknown>]]
+  local weather = environment.weather
+  local weatherKeys = { raindance = "rain", sunnyday = "sun", sandstorm = "sand", hail = "hail" }
+  local bag = self._state.effectBag
+  if type(bag) == "table" then
+    for _, effect in ipairs(bag:capture()) do
+      local current = weatherKeys[effect.key]
+      if current ~= nil then
+        weather = current
+      end
+    end
+  end
+  if weather == "rain" or weather == "sun" or weather == "sand" or weather == "hail" then
+    return weather
+  end
+  return "none"
+end
+
+---@return boolean true while a living active Cloud Nine or Air Lock holder suppresses field weather
+function NativePassiveBridge:weatherSuppressed()
+  for _, combatantId in
+    ipairs(self._state.combatantOrder --[[@as integer[] ]])
+  do
+    local combatant = BattleState.combatant(self._state, combatantId)
+    if combatant.active ~= nil and combatant.hp > 0 then
+      local ability = self:abilityOf(combatantId)
+      if ability == "CLOUD_NINE" or ability == "AIR_LOCK" then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+---@param combatantId integer active Castform or Cherrim whose battle-local form is read
+---@return integer weather-derived form, or the current active form when Forecast cannot transform it
+function NativePassiveBridge:weatherFormOf(combatantId)
+  local combatant = BattleState.combatant(self._state, combatantId)
+  local mon = combatant.mon --[[@as table<string, unknown>]]
+  local species = mon.species
+  local active = combatant.active
+  local current = type(active) == "table"
+      and type((active --[[@as table<string, unknown>]]).form) == "number"
+      and (active --[[@as table<string, unknown>]]).form
+    or mon.form
+  if type(current) ~= "number" or (species ~= "CASTFORM" and species ~= "CHERRIM") then
+    return type(current) == "number" and current or 0
+  end
+  if active == nil then
+    return current --[[@as integer]]
+  end
+  local weather = self:weatherSuppressed() and "none" or self:weatherOf()
+  if species == "CASTFORM" then
+    if self:abilityOf(combatantId) ~= "FORECAST" then
+      return current --[[@as integer]]
+    end
+    local forms = { sun = 1, rain = 2, hail = 3 }
+    return forms[weather] or 0
+  end
+  return weather == "sun" and 1 or 0
 end
 
 ---@param combatantId integer holder whose active marker is checked
@@ -427,9 +523,10 @@ end
 ---@field loafing boolean true when Truant denies this action
 
 -- Answers the sorter facts behind one action candidate from the current
--- holder: early-order holdings read the pre-turn order sample with no
--- draw, pinch holdings read live health, lagging holdings and the
--- stalling ability read effective possession. Ability and item answers
+-- or departed holder: early-order holdings read the pre-turn order sample
+-- with no draw, pinch holdings read live health, lagging holdings and the
+-- stalling ability read effective possession. A departed holder has no
+-- activation token and scopes these read-only facts to its roster record. Ability and item answers
 -- compose independently, so the stalling ability never masquerades as a
 -- lagging holding. A spent ordering holding is reported, never written:
 -- the checkpoint owner consumes through its canonical mutation.
@@ -438,7 +535,8 @@ end
 ---@return OrderFacts sorter facts for the candidate
 function NativePassiveBridge:orderFacts(combatantId, context)
   local combatant = BattleState.combatant(self._state, combatantId)
-  local activation = checkActivation(combatant)
+  local active = combatant.active --[[@as table<string, unknown>?]]
+  local activation = type(active) == "table" and active.activation or nil
   local ability = self:abilityOf(combatantId)
   local heldItem = self:effectiveHeldItem(combatantId)
   local mon = checkMon(combatant)

@@ -140,6 +140,34 @@ function T.nested_interruptions_resume_from_plain_data_with_identical_results()
   Assert.isTrue(#resumedEvents > 0, "resumed sessions emit their remaining events")
 end
 
+function T.snapshot_keeps_pending_faint_replacement_obligations()
+  local contracts = SessionFixture.sessionContracts()
+  local state = contracts.State.create(SessionFixture.buildScenario(interruptible()))
+  local combatant = contracts.State.combatant(state, 1)
+  local active = combatant.active --[[@as table<string, unknown>]]
+  local activation = active.activation --[[@as integer]]
+  combatant.hp = 0
+  contracts.State.leave(state, 1, true, combatant.mon.ability --[[@as string?]])
+  state.pendingFaintObligations = {
+    {
+      combatant = 1,
+      activation = activation,
+      position = 1,
+      participant = 1,
+      controller = "alpha",
+      side = 1,
+      internal = true,
+    },
+  }
+  local captured = contracts.Snapshot.capture(state)
+  local restored = contracts.Snapshot.restore(captured)
+  Assert.deepEqual(
+    restored.pendingFaintObligations,
+    state.pendingFaintObligations,
+    "an interruption retains each unsettled faint obligation in battle state"
+  )
+end
+
 function T.captured_state_holds_no_live_references_and_restores_exactly()
   local contracts = SessionFixture.sessionContracts()
 
@@ -310,9 +338,9 @@ function T.snapshot_validation_rejects_non_records()
   session:dispose()
 end
 
--- Waiting order samples survive capture and restore: the captured batch
--- already holds the spent pre-request samples, and a restored session
--- replays the same order and stream without resampling.
+-- Waiting battle-start order samples survive capture and restore: the
+-- captured battle state already holds the spent samples, and a restored
+-- session replays the same order and stream without resampling.
 function T.waiting_order_samples_survive_capture_and_restore()
   local Executor = SessionFixture.requirePresent(
     "libs.battle.src.gen4.HgssSessionExecutor",
@@ -379,7 +407,7 @@ function T.waiting_order_samples_survive_capture_and_restore()
     },
     inventories = {},
     environment = { weather = "none" },
-    random = { seed = 164 },
+    random = { seed = 3 },
     formatState = {},
     moveFacts = {
       TACKLE = { power = 1, accuracy = 0, category = "physical", moveType = "normal", priority = 0 },
@@ -430,8 +458,10 @@ function T.waiting_order_samples_survive_capture_and_restore()
   local session = contracts.Battle.newSession(scenario, content)
   local waiting = SessionFixture.driveUntilSettled(session)
   Assert.equal(waiting.status, "waiting", "the turn asks for decisions")
-  Assert.equal(session:capture().rng.calls, 4, "order samples are spent before requests")
+  Assert.equal(session:capture().rng.calls, 4, "only the four battle-start samples are spent before requests")
   local held = session:capture()
+  Assert.notNil(held.nativeOrderRolls, "the battle state carries its order samples")
+  Assert.equal(#held.nativeOrderRolls, 4, "the battle carries four raw order values")
   SessionFixture.assertPlainData(held, "pending")
 
   local revived = Executor.restore(held, content)

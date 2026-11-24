@@ -24,6 +24,8 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _slotGeometry table<integer, table<string, number>>? published native slot rows behind request selection, absent without a screen or fixture owner
 ---@field _batchRequests table<string, table<integer, table<string, unknown>>>? frozen requests by event sequence and kind for the batch under translation, nil outside it
 ---@field _batchDrained table<string, boolean>? drained source calls by action, kind, ordinal, and catalog key for the batch under translation, nil outside it
+---@field _formChangeOwners table<integer, table<string, integer>> live form picture/mosaic ownership by combatant
+---@field _formChangeSerial integer monotonic form-cue ownership identity
 ---@field _battleScene boolean frozen launch scene choice; false omits optional move-animation roots
 ---@field _motionFacts (fun(species: string, foe: boolean): { totalTicks: integer, cryDelay: integer }?)? staged send-out motion hold and cry delay by species, absent without staged motion data
 ---@field _pendingSounds table<integer, table<string, unknown>> queued one-shot sound cues for the screen drain
@@ -328,6 +330,8 @@ function BattleTimeline.new(opts)
     _ownMoves = {},
     _battlers = {},
     _order = {},
+    _formChangeOwners = {},
+    _formChangeSerial = 0,
     _queue = {},
     _active = nil,
     _message = "",
@@ -487,6 +491,58 @@ local function checkSlotClaims(self)
   end
 end
 
+-- Settles one form cue's mosaic override. Wrapped Substitute picture ownership
+-- remains through the message hold until RefreshSprite; cancellation releases both.
+-- A newer cue's serial can never be cleared by stale work.
+---@param self BattleTimeline
+---@param cue table<string, unknown> form-change cue under completion or cancellation
+---@param cancelled boolean true when the cue did not reach its normal end
+local function releaseFormChangeOverride(self, cue, cancelled)
+  local combatant = cue.combatant --[[@as integer]]
+  local serial = cue.formChangeSerial
+  local owner = self._formChangeOwners[combatant]
+  if serial == nil or owner == nil or owner.serial ~= serial then
+    return
+  end
+  if cancelled or cue.substituteWrapped ~= true then
+    self._formChangeOwners[combatant] = nil
+  end
+  local shown = self:_shown(combatant)
+  if shown ~= nil then
+    shown.mosaicSize = nil
+    if cancelled or cue.substituteWrapped ~= true then
+      shown.formChangePicture = nil
+    end
+  end
+end
+
+---@param self BattleTimeline
+---@param cue table<string, unknown> stale form cue under validation
+local function releaseStaleFormOwner(self, cue)
+  local owner = self._formChangeOwners[
+    cue.combatant --[[@as integer]]
+  ]
+  if owner ~= nil and owner.activation == cue.activation then
+    cue.formChangeSerial = owner.serial
+    releaseFormChangeOverride(self, cue, true)
+  end
+end
+
+-- Clears every live form override when the owning presentation is reset
+-- or disposed. Cue retirement alone never guesses at another owner's work.
+---@param self BattleTimeline
+local function releaseAllFormChangeOverrides(self)
+  for combatant in pairs(self._formChangeOwners) do
+    local shown = self:_shown(combatant)
+    if shown ~= nil then
+      shown.mosaicSize = nil
+      shown.formChangePicture = nil
+    end
+    self._formChangeOwners[combatant] = nil
+  end
+  self._formChangeSerial = self._formChangeSerial + 1
+end
+
 -- True while a queued or playing cue still owns the slot transition for
 -- one combatant: withdrawal, reveal and faint cues gate position and
 -- activation updates so reconciliation can never outrun them.
@@ -498,7 +554,12 @@ local function slotGated(self, id)
     if type(cue) ~= "table" or (cue.combatant ~= id and cue.slideCombatant ~= id) then
       return false
     end
-    return cue.kind == "withdraw" or cue.kind == "reveal" or cue.kind == "faint" or cue.slideCombatant == id
+    return cue.kind == "withdraw"
+      or cue.kind == "reveal"
+      or cue.kind == "faint"
+      or cue.kind == "form-change"
+      or cue.kind == "form-sprite"
+      or cue.slideCombatant == id
   end
   if gates(self._active) then
     return true
@@ -516,6 +577,7 @@ end
 ---@param view table<string, unknown> detached opening dynamic view
 function BattleTimeline:reset(view)
   assert(type(view) == "table", "the cue player opens from its view")
+  releaseAllFormChangeOverrides(self)
   self._battlers = {}
   self._order = {}
   local function active(record)
@@ -569,6 +631,7 @@ end
 -- The request ledger and source bindings end with the launch: a
 -- cancelled launch never publishes a pending admission into a new one.
 function BattleTimeline:dispose()
+  releaseAllFormChangeOverrides(self)
   self._queue = {}
   self._active = nil
   self._ledger = {}
@@ -703,9 +766,10 @@ end
 -- palette white during the throw.
 ---@param self BattleTimeline
 ---@param combatant integer battler under lookup
+---@param appearance table<string, unknown>? frozen event-time arrival record
 ---@return integer? kind
-local function ballKindOf(self, combatant)
-  return BattleTimeline.BALL_KIND_BY_BATTLER_TYPE[battlerTypeOf(self, combatant)]
+local function ballKindOf(self, combatant, appearance)
+  return BattleTimeline.BALL_KIND_BY_BATTLER_TYPE[battlerTypeOf(self, combatant, appearance)]
 end
 
 ---@param kind integer? source ball kind
@@ -757,19 +821,22 @@ end
 ---@param self BattleTimeline
 ---@param combatant integer battler receiving the source send-out
 ---@param role "player"|"foe" source side selected for the opening throw
+---@param appearance table<string, unknown>? frozen event-time arrival record
 ---@return integer nominal throw ticks behind the settle math
 ---@return boolean true when a queued ball-throw cue owns the ball's open beat
-local function enqueueBallThrow(self, combatant, role)
+local function enqueueBallThrow(self, combatant, role, appearance)
   if self._openingPresentation == nil then
     return 0, false
   end
   local view = assert(self._latest, "send-out ball selection uses the newest detached battle view")
-  local record = nil
-  for _, group in ipairs({ view.own, view.foes }) do
-    if type(group) == "table" then
-      for _, candidate in ipairs(group) do
-        if type(candidate) == "table" and candidate.combatant == combatant then
-          record = candidate
+  local record = appearance
+  if record == nil then
+    for _, group in ipairs({ view.own, view.foes }) do
+      if type(group) == "table" then
+        for _, candidate in ipairs(group) do
+          if type(candidate) == "table" and candidate.combatant == combatant then
+            record = candidate
+          end
         end
       end
     end
@@ -789,6 +856,7 @@ local function enqueueBallThrow(self, combatant, role)
     cue.kind = "ball-throw"
     cue.openPan = pan
     cue.combatant = combatant
+    cue.appearance = appearance ~= nil and copyValue(appearance) or nil
     cue.throwAnimated = role == "player"
     enqueue(self, cue)
   end
@@ -810,11 +878,11 @@ local function enqueueBallThrow(self, combatant, role)
         return 0, false
       end
       local target = assert(
-        BattleTimeline.PLAYER_ARC_TARGETS[battlerTypeOf(self, combatant)],
+        BattleTimeline.PLAYER_ARC_TARGETS[battlerTypeOf(self, combatant, appearance)],
         "player send-outs arc to a staged side type"
       )
       local arcTicks = BattleTimeline.THROW_ARC_TICKS + BattleTimeline.BALL_ARC_APEX_TICKS
-      local openTicks = ballFlashes(ballKindOf(self, combatant)) and BattleTimeline.BALL_FLASHING_OPEN_TICKS
+      local openTicks = ballFlashes(ballKindOf(self, combatant, appearance)) and BattleTimeline.BALL_FLASHING_OPEN_TICKS
         or BattleTimeline.THROW_OPEN_TICKS
       enqueueThrow({
         selector = "ball:" .. ballKey,
@@ -838,7 +906,7 @@ local function enqueueBallThrow(self, combatant, role)
     assert(type(entry.animation.sequences) == "table", "player trainer backpic stages source animation sequences")
     throwOffsets = assert(entry.throwOffsets, "animated player trainer backpics carry source throw anchors")
     local target = assert(
-      BattleTimeline.PLAYER_ARC_TARGETS[battlerTypeOf(self, combatant)],
+      BattleTimeline.PLAYER_ARC_TARGETS[battlerTypeOf(self, combatant, appearance)],
       "player send-outs arc to a staged side type"
     )
     if isFollowSendOut(self, combatant) then
@@ -860,7 +928,7 @@ local function enqueueBallThrow(self, combatant, role)
       -- first throw has not run yet at enqueue time). The partner's own
       -- kind 6/8/7 ball runs the same apex hold and in-arc blend.
       local arcTicks = BattleTimeline.THROW_ARC_TICKS + BattleTimeline.BALL_ARC_APEX_TICKS
-      local openTicks = ballFlashes(ballKindOf(self, combatant)) and BattleTimeline.BALL_FLASHING_OPEN_TICKS
+      local openTicks = ballFlashes(ballKindOf(self, combatant, appearance)) and BattleTimeline.BALL_FLASHING_OPEN_TICKS
         or BattleTimeline.THROW_OPEN_TICKS
       enqueueThrow({
         selector = "ball:" .. ballKey,
@@ -893,7 +961,7 @@ local function enqueueBallThrow(self, combatant, role)
       -- No trainer on screen: the foe ball opens in place on its own
       -- (Task_PokemonSendOut kind 1/3/5), with no exit walk behind it.
       local target = assert(
-        FOE_BALL_START_BY_BATTLER_TYPE[battlerTypeOf(self, combatant)],
+        FOE_BALL_START_BY_BATTLER_TYPE[battlerTypeOf(self, combatant, appearance)],
         "foe send-outs open at a staged source ball position"
       )
       enqueueThrow({
@@ -943,7 +1011,7 @@ local function enqueueBallThrow(self, combatant, role)
     nominalTicks = releaseTicks + BattleTimeline.THROW_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS
   end
   local target = assert(
-    BattleTimeline.PLAYER_ARC_TARGETS[battlerTypeOf(self, combatant)],
+    BattleTimeline.PLAYER_ARC_TARGETS[battlerTypeOf(self, combatant, appearance)],
     "player send-outs arc to a staged side type"
   )
   enqueueThrow({
@@ -1307,6 +1375,7 @@ local function selectionInput(event, packet)
     packetId = packet.packetId,
     before = copyValue(packet.before),
     after = copyValue(packet.after),
+    eventTime = copyValue(detached.eventTime),
   } --[[@as table<string, unknown>]]
   for _, name in ipairs({ "before", "after" }) do
     local view = envelope[name] --[[@as table<string, unknown>?]]
@@ -1446,6 +1515,7 @@ local function snapshotSourceBindings(self, packet)
   end
   refresh(packet.before)
   refresh(packet.after)
+  refresh(packet.eventTime)
   local snapshot = {} ---@type table<integer, table<string, unknown>>
   for _, binding in pairs(self._sourceBindings) do
     snapshot[#snapshot + 1] = copyValue(binding)
@@ -1481,7 +1551,7 @@ local function prepassRequests(self, packet, fresh)
   local perEvent = {} ---@type table<string, table<integer, table<string, unknown>>>
   for _, event in ipairs(fresh) do
     local detached, envelope = selectionInput(event, packet)
-    local bindings = snapshotSourceBindings(self, packet)
+    local bindings = snapshotSourceBindings(self, envelope)
     local ok, selected = pcall(BattlePresentationFlow.animationPlayback, envelope, detached, slots, {
       battleScene = self._battleScene,
       sourceBindings = bindings,
@@ -1847,7 +1917,7 @@ local function queueOpening(self, view)
   -- the next command: the line carries no hold of its own.
   enqueueEncounterMessage(self, wild, foeName)
   enqueueMessage(self, messageText(self, "battle/narration/player-sent-out", { ownName }), false, 0)
-  enqueueBallThrow(self, own.combatant --[[@as integer]], "player")
+  enqueueBallThrow(self, own.combatant --[[@as integer]], "player", own)
   if type(ownSpecies) == "string" then
     enqueue(self, { kind = "sound", cue = cryCue(ownSpecies, ownForm, false), duration = 0 })
   end
@@ -2521,8 +2591,12 @@ end
 -- the displayed one.
 ---@param self BattleTimeline
 ---@param combatant integer battler under lookup
+---@param appearance table<string, unknown>? frozen event-time arrival record
 ---@return string? ballKey
-local function ballKeyOf(self, combatant)
+local function ballKeyOf(self, combatant, appearance)
+  if type(appearance) == "table" and type(appearance.ballKey) == "string" then
+    return appearance.ballKey --[[@as string]]
+  end
   local view = self._latest
   for _, group in ipairs({ view and view.own, view and view.foes }) do
     if type(group) == "table" then
@@ -2570,8 +2644,9 @@ end
 -- second side slot by native slot order.
 ---@param self BattleTimeline
 ---@param combatant integer battler under lookup
+---@param appearance table<string, unknown>? frozen event-time arrival record
 ---@return integer battlerType
-function battlerTypeOf(self, combatant)
+function battlerTypeOf(self, combatant, appearance)
   local own = self._addressing[combatant] == "own"
   local slots = { [true] = {}, [false] = {} }
   for _, id in ipairs(self._order) do
@@ -2588,6 +2663,8 @@ function battlerTypeOf(self, combatant)
   local position = nil
   if shown ~= nil and type(shown.position) == "number" then
     position = shown.position --[[@as integer]]
+  elseif type(appearance) == "table" and type(appearance.position) == "number" then
+    position = appearance.position --[[@as integer]]
   else
     -- Arrivals not shown yet claim their slot from the newest view, so
     -- a doubles replacement arcs to its own slot instead of the first.
@@ -2637,28 +2714,13 @@ end
 -- fade target of the mon's ball, nil when the mon or the source is unknown.
 ---@param self BattleTimeline
 ---@param combatant integer battler leaving or entering its ball
+---@param appearance table<string, unknown>? frozen event-time arrival record
 ---@return integer? color RGB555 fade target
-local function ballFadeColorOf(self, combatant)
+local function ballFadeColorOf(self, combatant, appearance)
   if self._ballFadeColor == nil then
     return nil
   end
-  local ballKey = nil
-  local shown = self._battlers[combatant]
-  if shown ~= nil then
-    ballKey = shown.ballKey
-  end
-  local view = self._latest
-  if type(view) == "table" then
-    for _, group in ipairs({ view.own, view.foes }) do
-      if type(group) == "table" then
-        for _, record in ipairs(group) do
-          if type(record) == "table" and record.combatant == combatant and type(record.ballKey) == "string" then
-            ballKey = record.ballKey
-          end
-        end
-      end
-    end
-  end
+  local ballKey = ballKeyOf(self, combatant, appearance)
   if type(ballKey) ~= "string" then
     return nil
   end
@@ -2667,12 +2729,18 @@ end
 
 ---@param self BattleTimeline
 ---@param combatant integer combatant under motion lookup
+---@param appearance table<string, unknown>? frozen event-time arrival record
 ---@return { totalTicks: integer, cryDelay: integer }? staged motion hold and cry delay, nil without staged motion data
-local function motionFactsFor(self, combatant)
+local function motionFactsFor(self, combatant, appearance)
   if self._motionFacts == nil then
     return nil
   end
-  local species = speciesOf(self, combatant)
+  local species = nil
+  if type(appearance) == "table" and type(appearance.species) == "string" then
+    species = appearance.species
+  else
+    species = speciesOf(self, combatant)
+  end
   if type(species) ~= "string" or species == "" then
     return nil
   end
@@ -2694,8 +2762,9 @@ end
 ---@param sendOutCry table<string, unknown>? tracked send-out cry voiced when the poof finishes growing
 ---@param fadeBallKey string? explicit ball key behind the poof fade, defaulting to the battler's own ball
 ---@param slideDelay integer? hidden source ticks before a follower slide starts, nil while it slides at once
+---@param appearance table<string, unknown>? frozen event-time arrival record
 ---@return integer reveal duration in source ticks behind the settle math
-local function enqueueReveal(self, combatant, holdHud, sendOutCry, fadeBallKey, slideDelay)
+local function enqueueReveal(self, combatant, holdHud, sendOutCry, fadeBallKey, slideDelay, appearance)
   -- The follower slides in with no ball-color poof: Task_FollowMonSlideIn
   -- and Task_FollowMonSendOut place it full-size at once on the source
   -- offscreen edge, slide it home with move anim 41, then play its
@@ -2709,7 +2778,7 @@ local function enqueueReveal(self, combatant, holdHud, sendOutCry, fadeBallKey, 
         fadeColor = self._ballFadeColor(fadeBallKey)
       end
     else
-      fadeColor = ballFadeColorOf(self, combatant)
+      fadeColor = ballFadeColorOf(self, combatant, appearance)
     end
   end
   local duration = fadeColor ~= nil and BattleTimeline.BALL_SCALE_TICKS + BattleTimeline.BALL_FADE_TICKS
@@ -2734,7 +2803,7 @@ local function enqueueReveal(self, combatant, holdHud, sendOutCry, fadeBallKey, 
   -- cry after the species cry delay; the reveal covers the whole task
   -- instead of the poof alone. Raw cry delays of zero voice after eight
   -- source ticks. Scene Off plays no animation but keeps the delayed cry.
-  local motion = motionFactsFor(self, combatant)
+  local motion = motionFactsFor(self, combatant, appearance)
   local totalTicks = motion ~= nil and motion.totalTicks or 0
   local cryDelay = motion ~= nil and motion.cryDelay or 0
   if cryDelay == 0 then
@@ -2747,6 +2816,10 @@ local function enqueueReveal(self, combatant, holdHud, sendOutCry, fadeBallKey, 
   if self._battleScene ~= false and totalTicks > 0 then
     duration = math.max(duration, animationAt + totalTicks)
   end
+  local imageKey = type(appearance) == "table"
+      and type(appearance.portraitSelector) == "string"
+      and "mon:" .. appearance.portraitSelector
+    or self:_imageKeyFor(combatant)
   enqueue(self, {
     kind = "reveal",
     combatant = combatant,
@@ -2755,8 +2828,9 @@ local function enqueueReveal(self, combatant, holdHud, sendOutCry, fadeBallKey, 
     slideOffset = slideOffset,
     slideLeadTicks = leadTicks,
     duration = duration,
-    requiresImage = self:_imageKeyFor(combatant),
+    requiresImage = imageKey,
     sendOutCry = sendOutCry,
+    appearance = appearance ~= nil and copyValue(appearance) or nil,
     cryDelay = cryDelay,
     animationAt = animationAt,
   })
@@ -2843,7 +2917,8 @@ end
 ---@param incoming integer arriving combatant
 ---@param event table<string, unknown>? arrival event carrying its checkpoint
 ---@param switching boolean? true for subscript SwitchMon/ReplaceFainted sequencing: party gauge, settle wait, health box slide-in
-function enqueueSendOut(self, incoming, event, switching)
+---@param appearance table<string, unknown>? frozen event-time arrival record
+function enqueueSendOut(self, incoming, event, switching, appearance)
   local ownSide = self._addressing[incoming] == "own"
   if switching == true then
     enqueuePartyGauge(self, ownSide, BattleTimeline.PARTY_GAUGE_SHOW_TICKS, true)
@@ -2885,7 +2960,7 @@ function enqueueSendOut(self, incoming, event, switching)
   if switching == true then
     enqueuePartyGauge(self, ownSide, BattleTimeline.PARTY_GAUGE_HIDE_TICKS, false)
   end
-  local throwTicks, ownsBallOpen = enqueueBallThrow(self, incoming, ownSide and "player" or "foe")
+  local throwTicks, ownsBallOpen = enqueueBallThrow(self, incoming, ownSide and "player" or "foe", appearance)
   -- The follower slides in with no ball at all: Task_FollowMonSendOut
   -- runs no seal, no ball sound, and no palette fade behind its cry,
   -- voicing the switch sound as its slide starts instead. A queued ball
@@ -2896,13 +2971,13 @@ function enqueueSendOut(self, incoming, event, switching)
     enqueueFollowerSlideSound(self, incoming)
   elseif ownsBallOpen ~= true then
     enqueueBallSound(self, incoming)
-    local sendOutBall = ballKeyOf(self, incoming)
+    local sendOutBall = ballKeyOf(self, incoming, appearance)
     if sendOutBall ~= nil then
       enqueue(self, {
         kind = "ball-particles",
         effect = "seal",
         ballKey = sendOutBall,
-        battlerType = battlerTypeOf(self, incoming),
+        battlerType = battlerTypeOf(self, incoming, appearance),
         duration = 0,
       })
     end
@@ -2914,12 +2989,18 @@ function enqueueSendOut(self, incoming, event, switching)
   -- and subscript_0009 counts only its WaitTime 72, so no script wait
   -- gates on the cry.
   local sendOutCry = nil
-  local species, form = speciesOf(self, incoming)
+  local species, form = nil, nil
+  if type(appearance) == "table" and type(appearance.species) == "string" then
+    species = appearance.species
+    form = type(appearance.form) == "number" and appearance.form or nil
+  else
+    species, form = speciesOf(self, incoming)
+  end
   if species ~= nil then
     sendOutCry = cryCue(species, form, not ownSide)
     sendOutCry.trackVoice = true
   end
-  local revealTicks = enqueueReveal(self, incoming, switching, sendOutCry)
+  local revealTicks = enqueueReveal(self, incoming, switching, sendOutCry, nil, nil, appearance)
   if switching == true then
     -- subscript_0009 counts WaitTime 72 through the send-out visuals at
     -- once (Task_PokemonSendOut runs while the script holds); the
@@ -2950,7 +3031,8 @@ end
 ---@param settleTicks integer scripted WaitTime between the slide-ins and the box slides
 ---@param role "player"|"foe" source side selected for the batch
 ---@param wild boolean true while the batch runs on the wild path (plain Go! even in doubles)
-local function enqueueOpeningSendOutBatch(self, combatants, settleTicks, role, wild)
+---@param view table<string, unknown> frozen opening view owning each arrival picture
+local function enqueueOpeningSendOutBatch(self, combatants, settleTicks, role, wild, view)
   local ownSide = role == "player"
   assert(#combatants >= 1, "opening send-out batches name their battlers")
   assert(#combatants <= 2, "HGSS fields at most two battlers per side")
@@ -3011,7 +3093,17 @@ local function enqueueOpeningSendOutBatch(self, combatants, settleTicks, role, w
   end
   local visualTicks = 0
   for _, incoming in ipairs(combatants) do
-    local incomingTicks, ownsBallOpen = enqueueBallThrow(self, incoming, ownSide and "player" or "foe")
+    local arrival = nil
+    for _, group in ipairs({ view.own, view.foes }) do
+      if type(group) == "table" then
+        for _, record in ipairs(group) do
+          if type(record) == "table" and record.combatant == incoming then
+            arrival = record
+          end
+        end
+      end
+    end
+    local incomingTicks, ownsBallOpen = enqueueBallThrow(self, incoming, ownSide and "player" or "foe", arrival)
     visualTicks = visualTicks + incomingTicks
     -- The follower slides in with no ball at all: Task_FollowMonSlideIn
     -- runs no seal and no ball sound behind its cry, voicing the switch
@@ -3022,13 +3114,13 @@ local function enqueueOpeningSendOutBatch(self, combatants, settleTicks, role, w
       enqueueFollowerSlideSound(self, incoming)
     elseif ownsBallOpen ~= true then
       enqueueBallSound(self, incoming)
-      local sendOutBall = ballKeyOf(self, incoming)
+      local sendOutBall = ballKeyOf(self, incoming, arrival)
       if sendOutBall ~= nil then
         enqueue(self, {
           kind = "ball-particles",
           effect = "seal",
           ballKey = sendOutBall,
-          battlerType = battlerTypeOf(self, incoming),
+          battlerType = battlerTypeOf(self, incoming, arrival),
           duration = 0,
         })
       end
@@ -3048,10 +3140,10 @@ local function enqueueOpeningSendOutBatch(self, combatants, settleTicks, role, w
     -- Task_FollowMonSlideIn holds a doubles second-slot follower twelve
     -- ticks before placing it; every other send-out slides at once.
     local slideDelay = nil
-    if follower and battlerTypeOf(self, incoming) == 4 then
+    if follower and battlerTypeOf(self, incoming, arrival) == 4 then
       slideDelay = BattleTimeline.FOLLOW_SLIDE_LEAD_TICKS
     end
-    visualTicks = visualTicks + enqueueReveal(self, incoming, true, sendOutCry, nil, slideDelay)
+    visualTicks = visualTicks + enqueueReveal(self, incoming, true, sendOutCry, nil, slideDelay, arrival)
   end
   local waitTicks = settleTicks - visualTicks
   if waitTicks < 0 then
@@ -3451,7 +3543,20 @@ local function translateSwitch(self, event)
     incoming = payload.incoming
   end
   if type(incoming) == "number" then
-    enqueueSendOut(self, incoming --[[@as integer]], event, true)
+    local arrival = nil
+    local eventTime = type(event.eventTime) == "table" and event.eventTime or nil
+    if type(eventTime) == "table" then
+      for _, group in ipairs({ eventTime.own, eventTime.foes }) do
+        if type(group) == "table" then
+          for _, record in ipairs(group) do
+            if type(record) == "table" and record.combatant == incoming then
+              arrival = record
+            end
+          end
+        end
+      end
+    end
+    enqueueSendOut(self, incoming --[[@as integer]], event, true, arrival)
   end
   -- SwitchAndUpdateMon re-marks the foe health behind recall wording.
   self._foeHpMark = foeHealthAt(self, event)
@@ -4461,6 +4566,10 @@ local function translateAbility(self, event)
       30,
       true
     )
+  elseif key == "INTIMIDATE" then
+    -- subscript_0186_Intimidate opens with WaitButtonABTime 15 before
+    -- processing any defender's stat update.
+    enqueue(self, { kind = "wait", duration = 15, skippable = true })
   elseif key == "ANTICIPATION" then
     enqueueMessage(
       self,
@@ -4597,6 +4706,99 @@ local function translateOther(self, event, packet, fresh, narrated)
   end
   local presentation = event.presentation
   local operation = type(presentation) == "table" and presentation.operation or nil
+  if kind == "ability" and type(operation) == "table" and operation.kind == "form-changed" then
+    local payload = event.payload --[[@as table<string, unknown>]]
+    local combatant = payload.combatant --[[@as integer]]
+    local activation = operation.subject.activation --[[@as integer]]
+    local appearance = assert(event.formChangeAppearance, "form changes carry their frozen event-time appearance")
+    local portraitSelector = appearance.portraitSelector --[[@as string]]
+    assert(type(portraitSelector) == "string" and portraitSelector ~= "", "form changes name their event-time portrait")
+    assert(
+      appearance.combatant == combatant and appearance.activation == activation,
+      "form appearance matches its subject"
+    )
+    assert(appearance.form == payload.form, "form appearance matches its target form")
+
+    local nativeCues = {} ---@type table<integer, table<string, unknown>>
+    local requests = nil ---@type table<integer, table<string, unknown>>?
+    if self._batchRequests ~= nil then
+      requests = self._batchRequests[tostring(event.sequence) .. "\0" .. event.kind]
+    end
+    if self._effects ~= nil and requests ~= nil then
+      for _, request in ipairs(requests) do
+        if request.disposition == "admit" then
+          local identity = request.identity --[[@as table<string, unknown>]]
+          local callKey = tostring(event.actionId or event.sequence)
+            .. "\0"
+            .. tostring(event.kind)
+            .. "\0"
+            .. tostring(identity.ordinal)
+            .. "\0"
+            .. tostring(request.effectKey)
+          if self._batchDrained == nil or self._batchDrained[callKey] ~= true then
+            if self._batchDrained ~= nil then
+              self._batchDrained[callKey] = true
+            end
+            nativeCues[#nativeCues + 1] = {
+              kind = "native-effect",
+              launchId = packet.launchId,
+              packetId = packet.packetId,
+              eventSequence = event.sequence,
+              actionId = event.actionId,
+              effectKey = request.effectKey,
+              request = copyValue(request),
+              event = event,
+            }
+          end
+        end
+      end
+    end
+    local substituteWrapped = operation.substitute == true and #nativeCues == 4
+    assert(
+      operation.substitute ~= true or #nativeCues == 0 or substituteWrapped,
+      "a substituted form change freezes both complete source wrapper pairs"
+    )
+    assert(operation.substitute == true or #nativeCues == 0, "an ordinary form change selects no Substitute wrapper")
+    if substituteWrapped then
+      enqueue(self, nativeCues[1])
+      enqueue(self, {
+        kind = "form-sprite",
+        combatant = combatant,
+        activation = activation,
+        checkpoint = "restore",
+        duration = 1,
+      })
+      enqueue(self, nativeCues[2])
+    end
+    enqueue(self, {
+      kind = "form-change",
+      combatant = combatant,
+      activation = activation,
+      form = payload.form,
+      portraitSelector = portraitSelector,
+      requiresImage = "mon:" .. portraitSelector,
+      substituteWrapped = substituteWrapped,
+    })
+    enqueueMessage(
+      self,
+      messageText(self, "battle/narration/form-change", { combatName(self, combatant) }),
+      false,
+      30,
+      true
+    )
+    if substituteWrapped then
+      enqueue(self, nativeCues[3])
+      enqueue(self, {
+        kind = "form-sprite",
+        combatant = combatant,
+        activation = activation,
+        checkpoint = "refresh",
+        duration = 1,
+      })
+      enqueue(self, nativeCues[4])
+    end
+    return
+  end
   local weatherStarts = kind == "ability" and type(operation) == "table" and operation.kind == "weather-started"
   local stageChanges = kind == "stage" and type(operation) == "table" and operation.kind == "stage-changed"
   if weatherStarts or stageChanges then
@@ -4718,6 +4920,7 @@ function BattleTimeline:present(packet, sourceMessages)
   -- unsequenced emissions translate narration-only.
   local sequenced = {} ---@type table<integer, table<string, unknown>>
   for _, event in ipairs(fresh) do
+    indexFacts(self, event.eventTime)
     if type(event.sequence) == "number" and event.sequence % 1 == 0 and event.sequence >= 1 then
       sequenced[#sequenced + 1] = event
     end
@@ -4975,7 +5178,7 @@ function BattleTimeline:intro(view, wild)
       end
     end
     assert(#foeIds >= 1, "trainer openings send out an active foe")
-    enqueueOpeningSendOutBatch(self, foeIds, 112, "foe", wild)
+    enqueueOpeningSendOutBatch(self, foeIds, 112, "foe", wild, view)
   end
   if not wild then
     enqueueOpeningPresentation(self, { playerGaugeVisible = false })
@@ -4995,7 +5198,7 @@ function BattleTimeline:intro(view, wild)
       end
     end
   end
-  enqueueOpeningSendOutBatch(self, ownIds, 96, "player", wild)
+  enqueueOpeningSendOutBatch(self, ownIds, 96, "player", wild, view)
   -- SetBattleBackground hands the intro terrain to the battle background
   -- once every send-out settled. The start gauges are freed there, and the
   -- command input re-enables the ball gauge on arrival, so the handoff
@@ -5496,7 +5699,52 @@ end
 ---@param cue table<string, unknown> cue consuming its first tick
 local function startCue(self, cue)
   cue.started = true
-  if cue.kind == "opening-presentation" then
+  if cue.kind == "form-change" then
+    local shown = self:_shown(cue.combatant --[[@as integer]])
+    if shown == nil or shown.activation ~= cue.activation then
+      releaseStaleFormOwner(self, cue)
+      return
+    end
+    local combatant = cue.combatant --[[@as integer]]
+    local owner = self._formChangeOwners[combatant]
+    if cue.substituteWrapped == true and owner ~= nil and owner.activation == cue.activation then
+      cue.formChangeSerial = owner.serial
+    else
+      self._formChangeSerial = self._formChangeSerial + 1
+      cue.formChangeSerial = self._formChangeSerial
+      self._formChangeOwners[combatant] = {
+        serial = cue.formChangeSerial,
+        activation = cue.activation,
+      }
+    end
+    shown.mosaicSize = 0
+    if shown.substitute == true then
+      shown.formChangePicture = true
+    end
+    emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.formChangeStart))
+  elseif cue.kind == "form-sprite" then
+    local shown = self:_shown(cue.combatant --[[@as integer]])
+    if shown == nil or shown.activation ~= cue.activation then
+      releaseStaleFormOwner(self, cue)
+      return
+    end
+    local combatant = cue.combatant --[[@as integer]]
+    if cue.checkpoint == "restore" then
+      self._formChangeSerial = self._formChangeSerial + 1
+      self._formChangeOwners[combatant] = {
+        serial = self._formChangeSerial,
+        activation = cue.activation,
+      }
+      shown.formChangePicture = true
+    else
+      local owner = self._formChangeOwners[combatant]
+      if owner ~= nil and owner.activation == cue.activation then
+        self._formChangeOwners[combatant] = nil
+      end
+      shown.formChangePicture = nil
+      shown.mosaicSize = nil
+    end
+  elseif cue.kind == "opening-presentation" then
     local changes = cue.changes --[[@as table<string, boolean>]]
     local state = assert(self._openingPresentation, "opening stages follow an installed opening")
     for key, value in pairs(changes) do
@@ -5539,7 +5787,7 @@ local function startCue(self, cue)
       cue.ballKey = ballKey
       cue.opening = self._ballOpening ~= nil and self._ballOpening(ballKey) or nil
       cue.throwFrames = self._ballThrow ~= nil and self._ballThrow(ballKey) or nil
-      local ballKind = modeZero and ballKindOf(self, cue.combatant --[[@as integer]]) or nil
+      local ballKind = modeZero and ballKindOf(self, cue.combatant --[[@as integer]], cue.appearance) or nil
       cue.ballKind = ballKind
       cue.flashing = modeZero and ballFlashes(ballKind) or false
       if modeZero then
@@ -5792,7 +6040,7 @@ local function startCue(self, cue)
       cue.flickerToggles = 1
     end
   elseif cue.kind == "reveal" then
-    self:_installReveal(cue.combatant --[[@as integer]])
+    self:_installReveal(cue.combatant --[[@as integer]], cue.appearance)
     if cue.holdHud == true then
       local arriving = self:_shown(cue.combatant --[[@as integer]])
       if arriving ~= nil then
@@ -5814,11 +6062,12 @@ local function startCue(self, cue)
 end
 
 ---@param id integer incoming combatant identity under reveal
-function BattleTimeline:_installReveal(id)
+---@param appearance table<string, unknown>? frozen event-time arrival record
+function BattleTimeline:_installReveal(id, appearance)
   -- A new activation clears its transient pose and starts hidden; the
-  -- reveal cue shows it at completion from the newest known facts.
-  local record = nil
-  if self._latest ~= nil then
+  -- reveal cue shows the arrival facts frozen at its own event boundary.
+  local record = appearance
+  if record == nil and self._latest ~= nil then
     for _, group in ipairs({ self._latest.own, self._latest.foes }) do
       if type(group) == "table" then
         for _, entry in ipairs(group) do
@@ -5832,7 +6081,7 @@ function BattleTimeline:_installReveal(id)
   if record ~= nil then
     local displayed = displayedOf(record --[[@as table<string, unknown>]])
     local current = self._battlers[id]
-    if current ~= nil and type(current.hp) == "number" then
+    if current ~= nil and current.activation == displayed.activation and type(current.hp) == "number" then
       displayed.hp = current.hp
     end
     self._battlers[id] = displayed
@@ -6924,6 +7173,31 @@ function CaptureActor.tickBallFadeCue(self, cue)
   return elapsed >= CaptureActor.FADE_TICKS
 end
 
+---@param self BattleTimeline
+---@param cue table<string, unknown> active weather-form transition
+---@return boolean finished after mosaic-out reaches zero
+local function tickFormChangeCue(self, cue)
+  local elapsed = cue.elapsed --[[@as integer]]
+  local shown = self:_shown(cue.combatant --[[@as integer]])
+  if shown == nil or shown.activation ~= cue.activation then
+    releaseFormChangeOverride(self, cue, true)
+    return true
+  end
+  if elapsed <= 8 then
+    shown.mosaicSize = elapsed + 1
+  else
+    shown.mosaicSize = 17 - elapsed
+  end
+  if elapsed == 8 then
+    shown.form = cue.form
+    shown.portraitSelector = cue.portraitSelector
+    emitSound(self, effectCue(BattleAudio.SINK_SOUNDS.formChangeEnd))
+  elseif elapsed == 16 then
+    releaseFormChangeOverride(self, cue, false)
+  end
+  return elapsed >= 16
+end
+
 local function tickHpCue(self, cue)
   local shown = self:_shown(cue.combatant --[[@as integer]])
   local from = cue.from --[[@as integer]]
@@ -7276,6 +7550,8 @@ local TICK_CUE_HANDLERS = {
   ["ball-throw"] = tickBallThrowCue,
   ["ball-flight"] = tickBallFlightCue,
   ["wait"] = tickWaitCue,
+  ["form-change"] = tickFormChangeCue,
+  ["form-sprite"] = tickWaitCue,
   ["hp"] = tickHpCue,
   ["hit"] = tickHitCue,
   ["faint"] = tickFaintCue,
@@ -7782,9 +8058,9 @@ function BattleTimeline:reconcileBattler(record, known)
     else
       shown.substitute = nil
     end
-    -- The displayed image identity tracks the active combatant: a
-    -- switch or reveal rebinds the exact canonical selector while
-    -- visibility still changes only through explicit cues.
+    if type(record.form) == "number" then
+      shown.form = record.form
+    end
     if type(record.portraitSelector) == "string" and record.portraitSelector ~= "" then
       shown.portraitSelector = record.portraitSelector
     else

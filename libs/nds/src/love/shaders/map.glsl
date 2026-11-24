@@ -304,6 +304,9 @@ uniform int u_polygonMode;     // 0 modulation/toon, 1 decal
 uniform mat3 u_texMatrix;      // normalized-UV transform (NSBTA texture SRT)
 uniform vec3 u_paletteFadeColor; // normalized RGB555 fade target, black while no fade runs
 uniform float u_paletteFadeAmount; // 0..16 fade strength, 0 while no fade runs
+uniform float u_textureMosaicSize; // source-pixel block size for one selected picture, zero while disabled
+uniform vec2 u_textureMosaicOrigin; // source-pixel anchor for the selected picture frame
+uniform vec2 u_textureSize; // source texture dimensions in pixels
 uniform sampler2D MainTex;
 /*__portemon_shared_image_sampling__*/
 #if defined(WORLD_MRT) || defined(EXACT_SOURCE)
@@ -460,6 +463,13 @@ vec3 decalRgb6(vec3 texture6, vec3 vertex6, float textureAlpha5)
 void effect()
 {
   vec2 uv = (u_texMatrix * vec3(VaryingTexCoord.xy, 1.0)).xy;
+  if (u_textureMosaicSize > 1.0) {
+    vec2 sourcePixel = uv * u_textureSize;
+    vec2 blockOrigin = floor((sourcePixel - u_textureMosaicOrigin) / u_textureMosaicSize)
+      * u_textureMosaicSize
+      + u_textureMosaicOrigin;
+    uv = (blockOrigin + vec2(0.5)) / u_textureSize;
+  }
   vec4 base = u_useTexture ? resolveExactTexel(Texel(MainTex, uv)) : vec4(1.0);
 
   // Both operands enter the combiner as 5-bit components widened to the

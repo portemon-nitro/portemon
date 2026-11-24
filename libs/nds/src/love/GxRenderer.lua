@@ -1072,6 +1072,13 @@ function GxRenderer:_drawMesh(
   shader:send("u_paletteFadeColor", fadeColor)
   shader:send("u_paletteFadeAmount", fadeAmount)
 
+  local mosaicSize = mat and mat.textureMosaicSize or 0
+  local mosaicOrigin = mat and mat.textureMosaicOrigin or { 0, 0 }
+  local textureSize = mat and mat.textureSize or { 1, 1 }
+  shader:send("u_textureMosaicSize", mosaicSize)
+  shader:send("u_textureMosaicOrigin", mosaicOrigin)
+  shader:send("u_textureSize", textureSize)
+
   shader:send("u_fragmentPass", fragmentPass)
   shader:send("u_polygonAlpha", item.polygonAlpha)
   shader:send("u_polygonMode", item.polygonMode == "decal" and 1 or 0)

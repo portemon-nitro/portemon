@@ -1017,6 +1017,44 @@ function T.embargo_suppresses_the_effective_holding_through_the_bridge()
   Assert.isTrue(freed.first, "the uncovered claw orders first again")
 end
 
+function T.effective_levitate_is_suppressed_by_ingrain_or_gravity()
+  local Bridge = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.NativePassiveBridge",
+    "the native ability query applies source suppression"
+  )
+  local EffectBag = SessionFixture.requirePresent("libs.battle.src.EffectBag", "scoped effects own suppression markers")
+
+  local function stateWith(key, scope, ability)
+    local bag = EffectBag.new()
+    local definition = EffectFixture.define({
+      key = key,
+      timings = { { timing = "leave", handler = key, orderClass = "affliction" } },
+    })
+    bag:add(definition, scope, EffectFixture.cause(1, 1), { version = 1 })
+    return {
+      effectBag = bag,
+      combatants = {
+        [1] = {
+          id = 1,
+          participant = 1,
+          mon = { ability = ability or "LEVITATE", species = "WEEZING", heldItem = "NONE", condition = { effects = {} } },
+          active = { position = 1, activation = 7 },
+        },
+      },
+    }
+  end
+
+  local ingrain = stateWith("ingrain", { kind = "active", combatant = 1, activation = 7 })
+  Assert.equal(Bridge.wrap(ingrain):battleAbilityOf(1), "LEVITATE", "raw ability remains available under Ingrain")
+  Assert.isNil(Bridge.wrap(ingrain):abilityOf(1), "Ingrain suppresses effective Levitate")
+
+  local gravity = stateWith("gravity", { kind = "field" })
+  Assert.isNil(Bridge.wrap(gravity):abilityOf(1), "Gravity suppresses effective Levitate")
+
+  local multitype = stateWith("GASTRO_ACID", { kind = "active", combatant = 1, activation = 7 }, "MULTITYPE")
+  Assert.equal(Bridge.wrap(multitype):abilityOf(1), "MULTITYPE", "Gastro Acid does not suppress Multitype")
+end
+
 -- HP berries carry their native amounts: Oran restores a flat 10,
 -- Berry Juice a flat 20, and Sitrus a quarter of maximum health.
 -- All three answer at half health and spend the berry.

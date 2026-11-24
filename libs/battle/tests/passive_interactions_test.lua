@@ -218,7 +218,7 @@ function T.simultaneous_weather_follows_speed_not_registration_order()
     addBoundInstance(bag, first, "entry", "weather", scopes[first])
     addBoundInstance(bag, second, "entry", "weather", scopes[second])
     local dispatch = EffectDispatch.new(bag, handlers)
-    local outcome = dispatch:invoke("entry", dispatchContext())
+    local outcome = dispatch:invoke("entry", dispatchContext({ timing = "entry" }))
     Assert.isTrue(outcome.done, "the entry pass runs to completion")
     return outcome.events
   end

@@ -7,6 +7,19 @@ local SessionFixture = require("libs.battle.tests.session_fixture")
 
 local T = {}
 
+---@param session table live native session under random-stream inspection
+---@param label string draw label whose occurrences are counted
+---@return integer matching draw count
+local function rngLabelCount(session, label)
+  local count = 0
+  for _, entry in ipairs(session:_live().rng._trace) do
+    if entry.label == label then
+      count = count + 1
+    end
+  end
+  return count
+end
+
 ---@return table scenario parts where one side fields two leads beside a benched reserve
 local function reserveDoubles()
   return {
@@ -376,8 +389,8 @@ end
 
 -- The generic and native doubles open the identical batch protocol: one
 -- batch identity per opening, controllers grouped in participant and
--- roster order, one request per controller, empty reservations, and no
--- draws beyond the native pre-request order samples. Answering both
+-- roster order, one request per controller, empty reservations, and four
+-- native order samples beside independent opening-sort tie draws. Answering both
 -- batches advances both counters together.
 function T.generic_and_native_doubles_open_the_identical_batch_protocol()
   local contracts = SessionFixture.sessionContracts()
@@ -390,7 +403,7 @@ function T.generic_and_native_doubles_open_the_identical_batch_protocol()
   local genericSettled = generic:capture()
   Assert.equal(genericSettled.batchCounter, 1, "the generic opening spends exactly one batch")
   Assert.equal(genericSettled.rng.calls, genericCallsBefore, "the generic opening draws nothing")
-  Assert.isNil(genericSettled.pending.nativeOrderRolls, "the generic batch carries no order samples")
+  Assert.isNil(genericSettled.nativeOrderRolls, "the generic battle carries no order samples")
   Assert.deepEqual(
     genericSettled.pending.reserved,
     { replacements = {}, items = {} },
@@ -423,24 +436,16 @@ function T.generic_and_native_doubles_open_the_identical_batch_protocol()
   Assert.equal(#genericRequests[2].actors, 1, "the opposing generic request addresses its lead")
 
   local native = contracts.Battle.newSession(sharedNativeDoublesScenario(), sharedNativeDoubleContent())
-  local nativeCallsBefore = native:capture().rng.calls
   local nativeOpening = SessionFixture.driveUntilSettled(native, 64)
   Assert.equal(nativeOpening.status, "waiting", "the native doubles wait for both sides")
   local nativeSettled = native:capture()
   Assert.equal(nativeSettled.batchCounter, 1, "the native opening spends exactly one batch")
-  Assert.equal(
-    nativeSettled.rng.calls,
-    nativeCallsBefore + 4,
-    "the native opening spends exactly its four order samples"
-  )
-  local rolls = nativeSettled.pending.nativeOrderRolls
+  Assert.equal(rngLabelCount(native, "quick_claw"), 4, "the native opening spends exactly four order samples")
+  local rolls = nativeSettled.nativeOrderRolls
   Assert.notNil(rolls, "the native batch stores its pre-request order samples")
   assert(rolls ~= nil, "the order samples are observed before assertions")
   Assert.equal(#rolls, 4, "the native batch stores one sample per battler slot")
   local stream = Lcrng.new(SHARED_NATIVE_SEED)
-  for _ = 1, nativeCallsBefore do
-    stream:nextU16()
-  end
   for position = 1, 4 do
     Assert.equal(
       rolls[position],
@@ -474,7 +479,7 @@ function T.generic_and_native_doubles_open_the_identical_batch_protocol()
   local twice = contracts.Battle.newSession(sharedNativeDoublesScenario(), sharedNativeDoubleContent())
   local reopened = SessionFixture.driveUntilSettled(twice, 64)
   Assert.deepEqual(
-    twice:capture().pending.nativeOrderRolls,
+    twice:capture().nativeOrderRolls,
     rolls,
     "the identical seed replays the identical order samples"
   )

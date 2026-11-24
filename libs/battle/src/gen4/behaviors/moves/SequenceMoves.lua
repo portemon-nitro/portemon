@@ -54,7 +54,6 @@ SequenceMoves.MEMBERS = {
   "FOCUS_PUNCH",
   "SUCKER_PUNCH",
   "FAKE_OUT",
-  "PURSUIT",
   "BATON_PASS",
   "WHIRLWIND",
   "ROAR",
@@ -1118,30 +1117,6 @@ end
 
 -- Pursuit resolves before a selected switch and doubles against that
 -- departing target, as in BtlCmd_CalcPursuitPower.
-local function stepPursuit(ctx, frame)
-  assert(type(ctx) == "table", "sequences step through the battle context")
-  assert(type(frame) == "table", "sequences step from their move frame")
-  local record = frame --[[@as table<string, unknown>]]
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  local duel = (record.locals --[[@as table<string, unknown>]]).duel
-  if
-    type(duel) ~= "table" or type((duel --[[@as table<string, unknown>]]).foeSwitching) ~= "boolean"
-  then
-    error(BattleErrors.missingBehavior("Pursuit reads the target's switch choice", {
-      key = record.executingMove --[[@as string]],
-      fact = "foeSwitching",
-    }))
-  end
-  local power = strikePowerOf(record)
-  if
-    (duel --[[@as table<string, unknown>]]).foeSwitching == true
-  then
-    power = power * 2
-  end
-  strikeTarget(ctx, record, defender, power)
-  return { kind = "complete", result = "hit" }
-end
-
 -- Switch control emits its intent and completes; the native session owns the roster exchange.
 ---@param mode string switch-control mode under the intent
 ---@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler emitting the switch intent
@@ -1503,9 +1478,6 @@ local function bodyFor(key)
   end
   if key == "FAKE_OUT" then
     return bind(stepFakeOut)
-  end
-  if key == "PURSUIT" then
-    return bind(stepPursuit)
   end
   if key == "RAGE" then
     return bind(stepRage)

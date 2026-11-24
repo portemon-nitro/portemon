@@ -780,20 +780,22 @@ end
 
 -- The writer's own output path for the selected version, occupied by a
 -- directory that holds one file: a real filesystem condition no Lua state can
--- remove, so persistence cannot succeed while the scenario plays.
----@param blockedOutput string
-local function occupySnapshotOutput(blockedOutput)
-  love.filesystem.createDirectory(blockedOutput)
+-- remove, so persistence cannot succeed while the scenario plays. The scenario
+-- therefore proves playable readiness that does not depend on a snapshot write,
+-- and leaves the marker in place until teardown.
+---@param outputPath string
+local function occupySnapshotOutput(outputPath)
+  love.filesystem.createDirectory(outputPath)
   Assert.isTrue(
-    love.filesystem.write(blockedOutput .. "/held", "the snapshot writer cannot open its output"),
+    love.filesystem.write(outputPath .. "/held", "the snapshot writer cannot open its output"),
     "the scenario occupies the snapshot writer's output path"
   )
 end
 
----@param blockedOutput string
-local function releaseSnapshotOutput(blockedOutput)
-  love.filesystem.remove(blockedOutput .. "/held")
-  love.filesystem.remove(blockedOutput)
+---@param outputPath string
+local function releaseSnapshotOutput(outputPath)
+  love.filesystem.remove(outputPath .. "/held")
+  love.filesystem.remove(outputPath)
 end
 
 -- One closed synthetic base: a complete generated graph saved through the

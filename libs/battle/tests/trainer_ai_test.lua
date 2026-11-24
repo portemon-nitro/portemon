@@ -3450,7 +3450,7 @@ end
 -- opening strike is selective, the branch spends exactly one draw and
 -- exchanges iff that draw falls in the selective two thirds.
 local EXCHANGE_SEEDS = {}
-for offset = 0, 7 do
+for offset = 0, 31 do
   EXCHANGE_SEEDS[#EXCHANGE_SEEDS + 1] = NATIVE_SEED + offset
 end
 

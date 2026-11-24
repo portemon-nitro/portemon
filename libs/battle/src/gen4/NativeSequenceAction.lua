@@ -1,14 +1,12 @@
 -- Stages a selected native move around activation-scoped charge and lock state.
 local BattleErrors = require("libs.battle.src.errors")
 local BattleContext = require("libs.battle.src.BattleContext")
-local BattleState = require("libs.battle.src.BattleState")
 local SequenceMoveState = require("libs.battle.src.gen4.SequenceMoveState")
 
 local M = {}
 
 ---@class NativeSequenceActionStage
----@field move string selected or forced move identity
----@field priority integer compiled priority adjusted for Pursuit interception
+---@field priority integer compiled native move priority
 ---@field forcedMove string? move identity forced by a stored sequence
 
 ---@param mon unknown battle-local mon record under move resolution
@@ -49,14 +47,12 @@ local function movePriority(moveFacts, move)
 end
 
 ---@param state table<string, unknown> live battle state
----@param choices table<integer, table<string, unknown>> committed choices for the turn
 ---@param combatant integer active combatant selecting a move
 ---@param mon unknown selected actor's battle-local mon record
 ---@param payload table<string, unknown> validated attack payload
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts
----@param switchPriority integer ordering bracket above a voluntary switch
----@return NativeSequenceActionStage staged move identity, priority, and optional forced identity
-function M.stage(state, choices, combatant, mon, payload, moveFacts, switchPriority)
+---@return NativeSequenceActionStage staged priority and optional forced identity
+function M.stage(state, combatant, mon, payload, moveFacts)
   local selectedMove = resolveMove(mon, payload.moveSlot)
   if selectedMove ~= "RAGE" then
     BattleContext.wrap(state):removeBattleEffect(combatant, "rage")
@@ -64,21 +60,7 @@ function M.stage(state, choices, combatant, mon, payload, moveFacts, switchPrior
   local forcedMove = SequenceMoveState.forcedMove(state, combatant)
   local move = forcedMove or selectedMove
   local priority = movePriority(moveFacts, move)
-  if move == "PURSUIT" then
-    local target = (payload.target --[[@as table<string, unknown>]]).combatant
-    if payload.target.kind == "position" then
-      target = BattleState.position(state, payload.target.position --[[@as integer]]).occupant
-    end
-    for _, planned in ipairs(choices) do
-      local plannedChoice = planned.choice --[[@as table<string, unknown>]]
-      local switchActor = plannedChoice.actor --[[@as table<string, unknown>]]
-      if plannedChoice.kind == "switch" and switchActor.combatant == target then
-        priority = switchPriority
-        break
-      end
-    end
-  end
-  return { move = move, priority = priority, forcedMove = forcedMove }
+  return { priority = priority, forcedMove = forcedMove }
 end
 
 return M

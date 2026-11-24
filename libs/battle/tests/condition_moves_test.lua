@@ -162,6 +162,35 @@ function T.growth_raises_special_attack()
   Assert.equal(probe.ctx:entryOf(1).stages.specialAttack, 1, "growth raises special attack")
 end
 
+function T.simple_accuracy_stages_combine_before_the_single_clamp()
+  conditionOwner("condition and damage moves share the native accuracy stages")
+  local probe = runCondition(
+    "TAUNT",
+    moveFacts("TAUNT", { accuracy = 40, moveType = "dark" }),
+    771626189,
+    { abilities = { user = "SIMPLE", foe = "NONE" } },
+    function(state, ctx)
+      ctx:changeStage(1, "accuracy", 4, { kind = "probe" })
+      ctx:changeStage(2, "evasion", 4, { kind = "probe" })
+    end
+  )
+  Assert.equal(probe.outcome.result, "hit", "combined +4 stage yields chance 93 against ordinary roll 80")
+end
+
+function T.condition_accuracy_uses_the_selected_target_ability()
+  conditionOwner("condition accuracy reads each recipient's live ability")
+  local probe = runCondition(
+    "TAUNT",
+    moveFacts("TAUNT", { accuracy = 1, moveType = "dark" }),
+    1,
+    {
+      abilities = { user = "NONE", foe = "NONE" },
+      targetFacts = { [2] = { abilities = { user = "NONE", foe = "NO_GUARD" } } },
+    }
+  )
+  Assert.equal(probe.outcome.result, "hit", "the recipient's No Guard overrides its failed ordinary roll")
+end
+
 -- Confusion-setting moves root a counted volatile on a missed-gated
 -- hit; already-confused defenders refuse.
 function T.confusion_setting_moves_root_a_counted_volatile()

@@ -534,6 +534,7 @@ DamageMoves.MEMBERS = {
   "POWER_GEM",
   "POWER_WHIP",
   "PRESENT",
+  "PURSUIT",
   "PSYBEAM",
   "PSYCHIC",
   "PSYCHO_BOOST",
@@ -2028,7 +2029,6 @@ local function applySecondaryStages(ctx, frame, target, changes)
   local current = ctx:entryOf(target).stages --[[@as table<string, integer>]]
   local abilities = abilitiesOf(frame, target)
   local targetIsUser = target == userOf(frame)
-  local targetAbility = liveAbility(targetIsUser and abilities.user or abilities.foe)
   local attackerAbility = liveAbility(abilities.user)
   local groupFirst = nil ---@type integer?
   for _, change in ipairs(changes) do
@@ -2055,9 +2055,6 @@ local function applySecondaryStages(ctx, frame, target, changes)
       end
     end
     if not prevented then
-      if targetAbility == "SIMPLE" then
-        delta = delta * 2
-      end
       local next = StatStages.change(current[stat] --[[@as integer]], delta)
       if next ~= current[stat] then
         local entry = ctx:entryOf(target)
@@ -3371,6 +3368,8 @@ end
 ---@param defender integer defender combatant under the strike
 ---@param accuracy integer native accuracy percentage, 0 skips the roll
 ---@param hitFly boolean? true lets Sky Uppercut hit Fly and Bounce
+---@param skipCheck boolean? true skips the accuracy roll
+---@param bypassProtection boolean? true skips the defender's protection check
 ---@return boolean true when the strike connects
 -- Strike accuracy through the native checkpoints: a locked-on target
 -- is always struck, identified targets ignore negative evasion, and
@@ -3378,24 +3377,32 @@ end
 -- BattleSystem_CheckMoveHit in
 -- src/battle/battle_controller_player.c (lock-on bypass, foresight
 -- evasion clamp, gravity scaling).
-local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
+local function accuracyGate(ctx, frame, defender, accuracy, hitFly, skipCheck, bypassProtection)
   local stream = checkStream(frame.stream)
-  local protected = isProtected(ctx, defender)
+  local protected = bypassProtection ~= true and isProtected(ctx, defender)
   local targetFacts = targetFactsFor(frame, defender)
   local semiInvulnerable = targetFacts and targetFacts.semiInvulnerable
-  if
-    semiInvulnerable ~= nil
-    and semiInvulnerable ~= false
-    and not (hitFly == true and (semiInvulnerable == "fly" or semiInvulnerable == "bounce"))
-  then
-    emitMissed(ctx, frame, defender, "semi_invulnerable")
-    return false
+  local record = frame --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local weather = locals.weather --[[@as string]]
+  local weatherSuppressed = locals.weatherSuppressed == true
+  if ctx:fieldEffect("raindance") ~= nil then
+    weather = "rain"
+  elseif ctx:fieldEffect("sunnyday") ~= nil then
+    weather = "sun"
+  elseif ctx:fieldEffect("sandstorm") ~= nil then
+    weather = "sand"
+  elseif ctx:fieldEffect("hail") ~= nil then
+    weather = "hail"
+  end
+  if not weatherSuppressed and weather == "sun" and record.executingMove == "THUNDER" then
+    accuracy = 50
   end
   local userStages = ctx:entryOf(userOf(frame)).stages --[[@as table<string, integer>]]
   local targetStages = ctx:entryOf(defender).stages --[[@as table<string, integer>]]
   local evasionStage = targetStages.evasion
   if
-    evasionStage < 0 and (ctx:hasBattleEffect(defender, "foresight") or ctx:hasBattleEffect(defender, "miracleeye"))
+    evasionStage > 0 and (ctx:hasBattleEffect(defender, "foresight") or ctx:hasBattleEffect(defender, "miracleeye"))
   then
     evasionStage = 0
   end
@@ -3404,12 +3411,12 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
   local foeAbility = liveAbility(abilities.foe)
   local accuracyStage = userStages.accuracy
   if userAbility == "SIMPLE" then
-    accuracyStage = math.max(-6, math.min(6, accuracyStage * 2))
+    accuracyStage = accuracyStage * 2
   end
   if userAbility == "UNAWARE" then
     evasionStage = 0
   elseif userAbility ~= "MOLD_BREAKER" and foeAbility == "SIMPLE" then
-    evasionStage = math.max(-6, math.min(6, evasionStage * 2))
+    evasionStage = evasionStage * 2
   end
   if userAbility ~= "MOLD_BREAKER" and foeAbility == "UNAWARE" then
     accuracyStage = 0
@@ -3419,22 +3426,17 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
     local ratio = StatStages.multiplier(effectiveStage, "accuracy")
     accuracy = math.floor(accuracy * ratio.numerator / ratio.denominator)
   end
-  local lockOnState = ctx:battleEffectState(defender, "lockon")
-  if type(lockOnState) == "table" and lockOnState.attacker == userOf(frame) then
-    accuracy = 0
-  end
-  local record = frame --[[@as table<string, unknown>]]
-  local locals = record.locals --[[@as table<string, unknown>]]
-  if locals.gravity == true and type(accuracy) == "number" and accuracy > 0 then
-    accuracy = math.floor(accuracy --[[@as integer]] * 10 / 6)
-  end
   local move = locals.move --[[@as table<string, unknown>]]
-  local weather = locals.weather --[[@as string]]
-  local weatherSuppressed = locals.weatherSuppressed == true
   local forceLockOnState = ctx:battleEffectState(defender, "lockon")
-  local forceHit = (type(forceLockOnState) == "table" and forceLockOnState.attacker == userOf(frame))
+  local bypassSemiInvulnerability = (type(forceLockOnState) == "table" and forceLockOnState.attacker == userOf(frame))
     or userAbility == "NO_GUARD"
     or foeAbility == "NO_GUARD"
+  local forceHit = bypassSemiInvulnerability
+  local clearWeatherMiss = not weatherSuppressed
+    and (
+      (weather == "rain" and record.executingMove == "THUNDER")
+      or (weather == "hail" and record.executingMove == "BLIZZARD")
+    )
   -- Gen IV applies these multipliers after the ordinary stage ratio, in
   -- this order, truncating after every multiplication.
   if accuracy ~= nil and accuracy > 0 then
@@ -3459,14 +3461,6 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
       end
       if not weatherSuppressed and weather == "fog" then
         accuracy = math.floor(accuracy * 6 / 10)
-      end
-      if weather == "sun" and record.executingMove == "THUNDER" then
-        accuracy = math.floor(accuracy / 2)
-      elseif
-        (weather == "rain" and record.executingMove == "THUNDER")
-        or (weather == "hail" and record.executingMove == "BLIZZARD")
-      then
-        forceHit = true
       end
     end
     if userAbility == "HUSTLE" and move.category == "physical" then
@@ -3517,7 +3511,9 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
       accuracy = math.floor(accuracy * 120 / 100)
     end
   end
-  local skipCheck = accuracy == nil or accuracy == 0
+  if locals.gravity == true and type(accuracy) == "number" and accuracy > 0 then
+    accuracy = math.floor(accuracy * 10 / 6)
+  end
   local resolution
   local tutorial = ctx:isTutorial()
   if skipCheck then
@@ -3525,7 +3521,7 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
       target = { kind = "combatant" },
       cause = causeFor(frame),
       protected = protected,
-      skipCheck = true,
+      skipCheck = skipCheck,
       tutorial = tutorial,
     }, stream)
   else
@@ -3534,19 +3530,35 @@ local function accuracyGate(ctx, frame, defender, accuracy, hitFly)
       target = { kind = "combatant" },
       cause = causeFor(frame),
       protected = protected,
+      skipCheck = skipCheck,
       accuracyStage = 0,
       evasionStage = 0,
       tutorial = tutorial,
     }, stream)
   end
-  if resolution.kind == "hit" or (forceHit and resolution.kind ~= "protected") then
-    return true
-  end
   if resolution.kind == "protected" then
     emitProtected(ctx, frame, defender)
-  else
-    emitMissed(ctx, frame, defender, resolution.reason)
+    return false
   end
+  if
+    semiInvulnerable ~= nil
+    and semiInvulnerable ~= false
+    and not bypassSemiInvulnerability
+    and not (hitFly == true and (semiInvulnerable == "fly" or semiInvulnerable == "bounce"))
+  then
+    emitMissed(ctx, frame, defender, "semi_invulnerable")
+    return false
+  end
+  if clearWeatherMiss then
+    return true
+  end
+  if forceHit then
+    return true
+  end
+  if resolution.kind == "hit" then
+    return true
+  end
+  emitMissed(ctx, frame, defender, resolution.reason)
   return false
 end
 
@@ -3684,18 +3696,19 @@ local function runStriker(ctx, frame, params)
   annotateResolvedPower(ctx, power)
   power = sportWeakenedPower(ctx, frame, power, owned.moveType --[[@as string?]])
   local accuracy = strike.accuracy
-  if owned.accuracyOverride ~= nil then
-    accuracy = owned.accuracyOverride --[[@as integer]]
-  end
+  local skipCheck = accuracy == nil or accuracy == 0
   if owned.skipAccuracy == true then
     accuracy = 0
+    skipCheck = true
   end
   local hits = owned.hits or 1
   assert(type(hits) == "number" and hits % 1 == 0 and hits >= 1, "fixed hit counts stay positive integers")
   local connected, dealtTotal = false, 0
   for targetIndex = 1, #targets do
     local defender = targetOf(targets[targetIndex])
-    if accuracyGate(ctx, frame, defender, accuracy, owned.hitFly == true) then
+    if
+      accuracyGate(ctx, frame, defender, accuracy, owned.hitFly == true, skipCheck, owned.pursuitInterruption == true)
+    then
       local sequenceEvents = {} ---@type table[]
       local sequenceHits = 0
       for hitIndex = 1, hits --[[@as integer]] do
@@ -3785,6 +3798,28 @@ local function makeStriker(params)
     return runStriker(ctx, frame --[[@as table<string, unknown>]], params)
   end
   return stepStrike
+end
+
+-- Ordinary Pursuit uses the complete damage path; the switch script only
+-- skips hit checks and ignores Protect for its nested interruption.
+local function stepPursuit(ctx, frame)
+  local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
+  local locals = record.locals --[[@as table<string, unknown>]]
+  local duel = locals.duel --[[@as table<string, unknown>]]
+  local multiplier = duel.pursuitPowerMultiplier
+  if multiplier ~= 10 and multiplier ~= 20 then
+    error(BattleErrors.missingBehavior("Pursuit reads its native power multiplier", {
+      key = record.executingMove --[[@as string]],
+      fact = "pursuitPowerMultiplier",
+    }))
+  end
+  local interrupted = locals.pursuitInterruption == true
+  local strike = strikeFactsOf(record)
+  return runStriker(ctx, record, {
+    power = math.floor(strike.power * multiplier / 10),
+    skipAccuracy = interrupted,
+    pursuitInterruption = interrupted,
+  })
 end
 
 ---@param handler fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> shared family body under binding
@@ -4281,32 +4316,6 @@ local function stepFeint(ctx, frame)
   return runStriker(ctx, record, {})
 end
 
--- Thunder and Blizzard share one weather-accuracy rule beside their own
--- condition secondary: rain always lands thunder and hail always lands
--- blizzard, while harsh sun halves thunder accuracy. Source references:
--- BattleSystem_CheckMoveHit and BattleSystem_CheckMoveEffect in
--- src/battle/battle_controller_player.c.
----@param params table<string, unknown> curated strike controls owning the hit
----@param rainy string field definition identity always landing the strike
----@param sunny string|nil field definition identity halving the strike
----@return fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> step handler striking under weather law
-local function makeWeatherStrike(params, rainy, sunny)
-  local function stepWeatherStrike(ctx, frame)
-    local record = damageRecord(ctx, frame) --[[@as table<string, unknown>]]
-    local controls = {}
-    for key, value in pairs(params) do
-      controls[key] = value
-    end
-    if ctx:fieldEffect(rainy) ~= nil then
-      controls.skipAccuracy = true
-    elseif sunny ~= nil and ctx:fieldEffect(sunny) ~= nil then
-      controls.accuracyOverride = 50
-    end
-    return runStriker(ctx, record, controls)
-  end
-  return stepWeatherStrike
-end
-
 ---@param frame table<string, unknown> move frame under execution
 ---@param answered boolean true when the source doubling condition holds
 ---@return integer staged power for the strike, doubled when answered
@@ -4446,16 +4455,18 @@ local function stepOhko(ctx, frame)
   if foeAbility == "STURDY" and abilitiesOf(record).user ~= "MOLD_BREAKER" then
     return { kind = "complete", result = "failed" }
   end
-  if combat.level < foeLevel then
-    return { kind = "complete", result = "failed" }
-  end
   local strike = strikeFactsOf(record)
   local hitChance = combat.level - foeLevel + strike.accuracy
   local lockOn = ctx:battleEffectState(defender, "lockon")
   local lockedByUser = type(lockOn) == "table" and lockOn.attacker == userOf(frame)
-  if not lockedByUser and abilities.user ~= "NO_GUARD" and foeAbility ~= "NO_GUARD" then
+  local guaranteed = lockedByUser or abilities.user == "NO_GUARD" or foeAbility == "NO_GUARD"
+  if combat.level < foeLevel or not guaranteed then
     local stream = checkStream(record.stream)
-    if stream:nextU16("ohko_hit", causeFor(record)) % 100 >= hitChance then
+    local hit = stream:nextU16("ohko_hit", causeFor(record)) % 100 < hitChance
+    if combat.level < foeLevel then
+      return { kind = "complete", result = "failed" }
+    end
+    if not hit then
       emitMissed(ctx, record, defender, "accuracy_miss")
       return { kind = "complete", result = "missed" }
     end
@@ -5392,17 +5403,6 @@ local function strikerBinding(params)
   return { build = buildStrike }
 end
 
----@param params table<string, unknown> curated strike controls owning the hit
----@param rainy string field definition identity always landing the strike
----@param sunny string|nil field definition identity halving the strike
----@return DamageBinding binding definition producing a fresh weather strike handler per move
-local function weatherStrikeBinding(params, rainy, sunny)
-  local function buildWeatherStrike()
-    return makeWeatherStrike(params, rainy, sunny)
-  end
-  return { build = buildWeatherStrike }
-end
-
 ---@param category string staged category selecting the recorded damage
 ---@return DamageBinding binding definition producing a fresh reaction handler per move
 local function reactionBinding(category)
@@ -5421,6 +5421,7 @@ local function sampledBinding()
 end
 
 define("U_TURN", { step = stepPivot })
+define("PURSUIT", { step = stepPursuit })
 define("BEAT_UP", { step = stepBeatUp })
 define("DREAM_EATER", { step = stepDreamEater })
 define("STRUGGLE", { step = stepStruggle })
@@ -5462,8 +5463,8 @@ define("THIEF", stealBinding("steal"))
 define("BUG_BITE", stealBinding("eat"))
 define("FALSE_SWIPE", strikerBinding({ leaveOne = true }))
 define("FEINT", { step = stepFeint })
-define("THUNDER", weatherStrikeBinding({ secondaries = { { status = "paralysis" } } }, "raindance", "sunnyday"))
-define("BLIZZARD", weatherStrikeBinding({ secondaries = { { status = "freeze" } } }, "hail", nil))
+define("THUNDER", strikerBinding({ secondaries = { { status = "paralysis" } } }))
+define("BLIZZARD", strikerBinding({ secondaries = { { status = "freeze" } } }))
 define("REVENGE", { step = stepRevenge })
 define("AVALANCHE", { step = stepRevenge })
 define("PAYBACK", { step = stepPayback })

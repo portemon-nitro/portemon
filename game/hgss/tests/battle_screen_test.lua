@@ -21,6 +21,7 @@ local FakeGraphics = require("tests.support.FakeGraphics")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
+local MonCache = require("libs.assets.src.MonCache")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -1981,6 +1982,150 @@ function T.later_ball_selectors_hold_their_cue_until_staged()
   end
   Assert.equal(#screen._deferredPackets, 0, "the staged ball replays its queued packet")
   Assert.equal(screen:status().mode, "command", "the replayed cue keeps the live command")
+  screen:dispose()
+  rig.battle:dispose()
+end
+
+-- The real screen demands event-only arrival art before translating a
+-- transient foe. A cold ball and portrait hold the packet, then replay one
+-- ordered throw/reveal/faint sequence without an endpoint record.
+function T.transient_foe_arrival_holds_cold_ball_and_portrait_in_the_real_screen()
+  local modules = battleScreenModules("cold transient foe art through the real screen", STATE_MODULE)
+  local launchId = "launch-screen-transient-foe"
+  local portrait = MonCache.portraitSelector("EEVEE", 0, "male", true)
+  local portraitKey = "mon:" .. portrait
+  local assets = stubAssets({ heldKeys = { portraitKey } })
+  local party = makeParty(
+    { species = "EEVEE", level = 20, seed = 0x33333333 },
+    { species = "EEVEE", level = 5, seed = 0x44444444 }
+  )
+  local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
+  local lead = foeRecord("EEVEE", 20, 0x5EED0002)
+  local reserve = foeRecord("EEVEE", 20, 0x5EED0003)
+  reserve.origin.ball = "GREAT_BALL"
+  reserve.condition.currentHp = 1
+  local ScenarioFactory = require(SCENARIO_FACTORY_MODULE)
+  local scenario = ScenarioFactory.fromTrainer({
+    id = "trainer-screen-transient",
+    trainers = {
+      {
+        id = "trainer-screen-transient",
+        class = "YOUNGSTER",
+        name = "WHITNEY",
+        party = { lead, reserve },
+        aiPasses = {},
+      },
+    },
+  }, {
+    party = party,
+    bag = bag,
+    player = { trainerId = 99, trainerName = "MINT", trainerClassKey = "PKMN_TRAINER_ETHAN", language = "french" },
+  })
+  local rig = openRig(modules, {
+    launchId = launchId,
+    launch = { id = launchId, kind = "trainer", payload = { trainer = "trainer-screen-transient" } },
+    scenario = scenario,
+    party = party,
+    bag = bag,
+    assets = assets,
+    measurement = dualMeasurement(),
+  })
+  driveToMode(rig, "command", 1200)
+  local screen = rig.screen
+  Assert.isTrue(screen._introBuilt, "the production opening is installed before the transient packet")
+  local before = screen._latestView
+  local after = deepCopy(before)
+  after.foes = {}
+  local arrival = {
+    combatant = 4,
+    participant = 2,
+    side = 2,
+    controller = "trainer:2",
+    active = true,
+    position = 2,
+    activation = 4,
+    hp = 1,
+    maxHp = before.foes[1].maxHp,
+    condition = "poison",
+    species = "EEVEE",
+    form = 0,
+    shiny = true,
+    name = "TRANSIENT",
+    level = 20,
+    selector = "front",
+    portraitSelector = portrait,
+    ballKey = "GREAT_BALL",
+  }
+  local swap = {
+    sequence = 1,
+    kind = "switch",
+    cause = { kind = "switch" },
+    actors = { { combatant = 3, activation = 3 } },
+    targets = { { combatant = 4, activation = 4 } },
+    payload = { from = 3, to = 4, position = 2 },
+    eventTime = { own = deepCopy(before.own), foes = { arrival } },
+  }
+  local faint = {
+    sequence = 2,
+    kind = "faint",
+    cause = { kind = "move", key = "TACKLE", combatant = 1 },
+    actors = { { combatant = 1, activation = 1 } },
+    targets = { { combatant = 4, activation = 4 } },
+    payload = { combatant = 4, activation = 4 },
+    after = { hp = { [1] = before.own[1].hp, [4] = 0 } },
+  }
+  rig.port.present({ launchId = launchId, packetId = 4243, events = { swap, faint }, before = before, after = after })
+  for _ = 1, 30 do
+    rig.pump(1)
+  end
+  Assert.equal(#screen._deferredPackets, 1, "the cold event-only ball and portrait hold the packet")
+  Assert.equal(screen:status().mode, "command", "the held packet does not advance the live command")
+  local demandedBall, demandedPortrait = false, false
+  for _, demand in ipairs(assets.prepared) do
+    for _, selector in ipairs(demand.battleBalls or {}) do
+      demandedBall = demandedBall or selector == "ball:GREAT_BALL"
+    end
+    for _, selector in ipairs(demand.pages or {}) do
+      demandedPortrait = demandedPortrait or selector == portrait
+    end
+  end
+  Assert.isTrue(demandedBall, "the event-time ball reaches the launch demand before translation")
+  Assert.isTrue(demandedPortrait, "the event-time portrait reaches the launch demand before translation")
+  Assert.isNil(screen._manifest.battleBalls.entries["ball:GREAT_BALL"], "the arrival ball starts cold")
+  screen._manifest.battleBalls.entries["ball:GREAT_BALL"] = { fadeColor = 0, frames = {} }
+  assets.hold[portraitKey] = nil
+  rig.pump(1)
+  Assert.equal(#screen._deferredPackets, 0, "staging both leaves replays the held packet")
+  local order = {}
+  local throws, reveals, faints = 0, 0, 0
+  for index, cue in ipairs(screen._timeline._queue) do
+    if cue.combatant == 4 and (cue.kind == "ball-throw" or cue.kind == "trainer-exit") then
+      throws = throws + 1
+      order[#order + 1] = "throw"
+      Assert.equal(cue.selector, "ball:GREAT_BALL", "the real screen throws the event-time ball")
+    elseif cue.kind == "reveal" and cue.combatant == 4 then
+      reveals = reveals + 1
+      order[#order + 1] = "reveal"
+      Assert.equal(cue.requiresImage, portraitKey, "the reveal demands the cold event-time portrait")
+      Assert.equal(cue.appearance.condition, "poison", "the reveal keeps the arrival status")
+      Assert.equal(cue.appearance.ballKey, "GREAT_BALL", "the reveal keeps the arrival ball")
+      Assert.equal(cue.appearance.position, 2, "the reveal keeps the arrival slot")
+      Assert.notNil(cue.sendOutCry, "the reveal owns the arrival cry")
+    elseif cue.kind == "faint" and cue.combatant == 4 then
+      faints = faints + 1
+      order[#order + 1] = "faint"
+    elseif cue.kind == "withdraw" and cue.combatant == 3 then
+      order[#order + 1] = "withdraw"
+    end
+  end
+  Assert.equal(throws, 1, "the transient foe presents exactly one throw")
+  Assert.equal(reveals, 1, "the transient foe presents exactly one reveal")
+  Assert.equal(faints, 1, "the transient foe presents its later departure")
+  Assert.deepEqual(
+    order,
+    { "withdraw", "throw", "reveal", "faint" },
+    "the real screen preserves arrival and departure order"
+  )
   screen:dispose()
   rig.battle:dispose()
 end

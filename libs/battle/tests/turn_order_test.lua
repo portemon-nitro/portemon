@@ -120,7 +120,7 @@ function T.priority_speed_and_ties_follow_recorded_selection_order()
     SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
   Assert.isTrue(type(TurnOrder.buildActions) == "function", "ordering builds executable actions")
   Assert.isTrue(type(TurnOrder.orderResiduals) == "function", "ordering owns residual sequencing")
-  Assert.isTrue(type(TurnOrder.orderEntryEffects) == "function", "ordering owns entry sequencing")
+  Assert.isTrue(type(TurnOrder.orderEntrySpeed) == "function", "ordering owns the full entry speed sample")
 
   local bracket = build(TurnOrder, BattleRng, {
     candidate(1, 1, "attack", 1, 50),
@@ -194,34 +194,167 @@ function T.priority_speed_and_ties_follow_recorded_selection_order()
     { id = 2, speed = 120 },
   }, { trickRoom = false }, BattleRng.new(11))
   Assert.deepEqual(orderIds(again), orderIds(residuals), "residual sequencing rebuilds identically")
-  local entries = TurnOrder.orderEntryEffects({
+  local entries = TurnOrder.orderEntrySpeed({
     { id = 1, speed = 100 },
     { id = 2, speed = 120 },
   }, { trickRoom = false }, BattleRng.new(11))
   Assert.deepEqual(memberIds(entries), { 1, 2 }, "entry sequencing keeps every entry")
-  local entriesAgain = TurnOrder.orderEntryEffects({
+  local entriesAgain = TurnOrder.orderEntrySpeed({
     { id = 1, speed = 100 },
     { id = 2, speed = 120 },
   }, { trickRoom = false }, BattleRng.new(11))
   Assert.deepEqual(orderIds(entriesAgain), orderIds(entries), "entry sequencing rebuilds identically")
 end
 
-function T.entry_abilities_resolve_by_retail_phase_then_speed()
-  local TurnOrder =
-    SessionFixture.requirePresent("libs.battle.src.gen4.TurnOrder", "entry timing follows retail ability phases")
-  local BattleRng =
-    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled entry ties draw from the battle stream")
-  local entries = TurnOrder.orderEntryEffects({
-    { id = 1, speed = 200, ability = "INTIMIDATE" },
-    { id = 2, speed = 40, ability = "TRACE" },
-    { id = 3, speed = 100, ability = "DRIZZLE" },
-    { id = 4, speed = 80, ability = "DROUGHT" },
-  }, { trickRoom = false }, BattleRng.new(11))
-  Assert.deepEqual(
-    orderIds(entries),
-    { 2, 3, 4, 1 },
-    "Trace precedes weather setters, which precede Intimidate regardless of speed"
+function T.entry_speed_ties_draw_once_for_the_shared_order()
+  local TurnOrder = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.TurnOrder",
+    "entry abilities share the native full-battler speed sample"
   )
+  local stream = scriptedStream({ true })
+  local entries = TurnOrder.orderEntrySpeed({
+    { id = 1, speed = 100 },
+    { id = 2, speed = 100 },
+  }, { trickRoom = false }, stream)
+  Assert.deepEqual(orderIds(entries), { 2, 1 }, "the full-set order retains its sampled tie result")
+  Assert.equal(stream.capture(stream).calls, 1, "the native full-set comparison consumes one tie draw")
+
+  local BattleRng = SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "entry ties use the battle stream")
+  local sampled = BattleRng.new(19)
+  TurnOrder.orderEntrySpeed({
+    { id = 1, speed = 100 },
+    { id = 2, speed = 100 },
+  }, { trickRoom = false }, sampled)
+  local expected = BattleRng.new(19)
+  expected:nextU16("entry_tie", { kind = "entry_tie" })
+  Assert.equal(
+    sampled:nextU16("next", { kind = "next" }),
+    expected:nextU16("next", { kind = "next" }),
+    "the next battle value proves cross-phase comparisons advanced the stream"
+  )
+end
+
+function T.battler_sort_keeps_living_slots_ahead_of_departed_and_vacant_slots()
+  local TurnOrder = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.TurnOrder",
+    "controller slot order retains every native battler position"
+  )
+  local stream = scriptedStream({})
+  local ordered = TurnOrder.orderSpeed({
+    { id = 1, selectedOrdinal = 1, speed = 100, living = false },
+    { id = 2, selectedOrdinal = 2, speed = 1, living = true },
+    { id = 3, selectedOrdinal = 3, speed = 200, living = false },
+    { id = 4, selectedOrdinal = 4, speed = 0, living = false },
+  }, { trickRoom = false }, stream)
+  Assert.deepEqual(orderIds(ordered), { 2, 3, 1, 4 }, "living slots lead while departed slots keep their Speed order")
+  Assert.equal(stream:capture().calls, 0, "living-versus-departed comparisons spend no tie draws")
+
+  local tied = scriptedStream({ true })
+  local departedTie = TurnOrder.orderSpeed({
+    { id = 1, selectedOrdinal = 1, speed = 100, living = false },
+    { id = 2, selectedOrdinal = 2, speed = 100, living = false },
+  }, { trickRoom = false }, tied)
+  Assert.deepEqual(orderIds(departedTie), { 2, 1 }, "two departed equal-Speed slots retain the native tie draw")
+  Assert.equal(tied:capture().calls, 1, "the departed tie consumes one source draw")
+end
+
+function T.action_and_battler_sorts_draw_independent_speed_ties()
+  local TurnOrder = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.TurnOrder",
+    "native action and battler ordering own independent draws"
+  )
+  local stream = scriptedStream({ true, false })
+  local battlers = TurnOrder.orderSpeed({
+    { id = 1, speed = 100 },
+    { id = 2, speed = 100 },
+  }, { trickRoom = false }, stream)
+  Assert.deepEqual(orderIds(battlers), { 2, 1 }, "the battler checkpoint keeps its own tie result")
+  local actions = TurnOrder.buildActions({
+    candidate(1, 1, "attack", 0, 100),
+    candidate(2, 2, "attack", 0, 100),
+  }, { trickRoom = false }, stream)
+  Assert.deepEqual(orderIds(actions), { 1, 2 }, "the action pass may choose the opposite tied order")
+  local calls = stream:capture(stream)
+  Assert.equal(calls.calls, 2, "the independent native passes each spend their own tie draw")
+  Assert.deepEqual(calls.labels, { "speed_tie", "speed_tie" }, "both passes use the native Speed-tie stream")
+end
+
+function T.initial_permutation_groups_source_input_categories_by_native_slot()
+  local TurnOrder = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.TurnOrder",
+    "initial execution order follows controller input categories"
+  )
+  local actions = TurnOrder.buildActions({
+    candidate(1, 1, "attack", 0, 100, { position = 1 }),
+    candidate(2, 2, "item", 0, 1, { position = 3 }),
+    candidate(3, 3, "switch", 0, 2, { position = 2 }),
+    candidate(4, 4, "attack", 0, 1, { position = 4 }),
+  }, { trickRoom = false }, scriptedStream({}))
+
+  Assert.deepEqual(orderIds(actions), { 3, 2, 1, 4 }, "Pokemon and Bag selections lead in slot order before FIGHT inputs")
+end
+
+function T.pursuit_does_not_override_native_input_category_order()
+  local TurnOrder = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.TurnOrder",
+    "Pursuit is resolved by the switch transaction rather than initial action ordering"
+  )
+  local actions = TurnOrder.buildActions({
+    candidate(1, 1, "attack", 0, 100, { position = 1, selectedMove = "PURSUIT", targetPosition = 2 }),
+    candidate(2, 2, "switch", 0, 1, { position = 2 }),
+    candidate(3, 3, "item", 0, 1, { position = 3 }),
+  }, { trickRoom = false }, scriptedStream({}))
+
+  Assert.deepEqual(orderIds(actions), { 2, 3, 1 }, "native switch and item selections keep their input category order")
+end
+
+function T.different_move_priorities_place_the_action_tie_draw_only_inside_its_bracket()
+  local TurnOrder = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.TurnOrder",
+    "move priority controls when an action comparison reaches its tie draw"
+  )
+  local stream = scriptedStream({ false })
+  local actions = TurnOrder.buildActions({
+    candidate(1, 1, "attack", 1, 100),
+    candidate(2, 2, "attack", 0, 100),
+    candidate(3, 3, "attack", 0, 100),
+  }, { trickRoom = false }, stream)
+  Assert.deepEqual(orderIds(actions), { 1, 2, 3 }, "raised priority wins before the neutral tie is compared")
+  Assert.equal(stream:capture(stream).calls, 1, "only the neutral same-priority pair draws")
+end
+
+function T.execution_resort_keeps_the_existing_permutation_and_compares_completed_slots()
+  local TurnOrder =
+    SessionFixture.requirePresent("libs.battle.src.gen4.TurnOrder", "the native controller retains its execution permutation")
+  local stream = scriptedStream({ false })
+  local built = TurnOrder.buildActions({
+    candidate(1, 1, "attack", 0, 100),
+    candidate(2, 2, "switch", 0, 100),
+    candidate(3, 3, "attack", 0, 100),
+  }, { trickRoom = false }, scriptedStream({ false, false, false }))
+  built[1], built[2], built[3] = built[3], built[2], built[1]
+  built[2].progress = "complete"
+  TurnOrder.resortExecution(built, {
+    [1] = { priority = 0, speed = 100, boostedPriority = false, loweredPriority = false, stall = false },
+    [2] = { priority = 0, speed = 100, boostedPriority = false, loweredPriority = false, stall = false },
+    [3] = { priority = 0, speed = 100, boostedPriority = false, loweredPriority = false, stall = false },
+  }, { trickRoom = false }, stream)
+  Assert.deepEqual(orderIds(built), { 3, 1, 2 }, "re-sort retains the live slot permutation when the tied comparator does not swap")
+  Assert.equal(stream:capture().calls, 1, "completed attack slots compare, while mixed input selections do not")
+end
+
+function T.execution_resort_places_living_slots_before_fainted_slots_before_priority()
+  local TurnOrder =
+    SessionFixture.requirePresent("libs.battle.src.gen4.TurnOrder", "native re-sorts compare source slot state")
+  local actions = TurnOrder.buildActions({
+    candidate(1, 1, "attack", 1, 100),
+    candidate(2, 2, "attack", 0, 100),
+  }, { trickRoom = false }, scriptedStream({ false }))
+  TurnOrder.resortExecution(actions, {
+    [1] = { priority = 1, speed = 100, living = false, boostedPriority = false, loweredPriority = false, stall = false },
+    [2] = { priority = 0, speed = 1, living = true, boostedPriority = false, loweredPriority = false, stall = false },
+  }, { trickRoom = false }, scriptedStream({ false }))
+  Assert.deepEqual(orderIds(actions), { 2, 1 }, "a living slot precedes a fainted slot despite lower move priority")
 end
 
 function T.staged_speeds_sample_through_exact_truncation()
@@ -273,7 +406,7 @@ function T.malformed_candidates_fail_without_consuming_draws()
     TurnOrder.orderResiduals({ { id = 1 } }, { trickRoom = false }, stream)
   end, "sequenced entries sample their speed")
   Assert.throws(function()
-    TurnOrder.orderEntryEffects({ { id = 1, speed = 100 } }, {}, stream)
+    TurnOrder.orderEntrySpeed({ { id = 1, speed = 100 } }, {}, stream)
   end, "entry sequencing names its speed dimension")
   Assert.equal(stream:capture().calls, 0, "rejected orderings never reach the stream")
 
@@ -440,7 +573,7 @@ function T.residual_and_entry_ties_follow_pairwise_topology()
   )
 
   local entryStream = scriptedStream(residualScript)
-  local entries = TurnOrder.orderEntryEffects({
+  local entries = TurnOrder.orderEntrySpeed({
     { id = 1, speed = 100 },
     { id = 2, speed = 100 },
     { id = 3, speed = 100 },

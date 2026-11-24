@@ -1157,6 +1157,9 @@ function T.carried_trainer_items_execute_from_session_stock(romFs, versionId)
       end
       local holder = copyValue(party[1]) --[[@as table<string, unknown>]]
       local holderMon = holder --[[@as table<string, unknown>]]
+      -- Keep unrelated generated held items from changing the seeded
+      -- eligibility state before the trainer's carried stock is considered.
+      holderMon.heldItem = "NONE"
       local holderCondition = holderMon.condition --[[@as table<string, unknown>]]
       holderCondition.currentHp = 1
       holderCondition.effects = {}

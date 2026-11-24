@@ -173,6 +173,7 @@ local function pictureRenderer(graphics, opts)
     if opts ~= nil then
       opts.pictureItems = primitives
       opts.objects = frame.objects
+      opts.mosaic = frame.mosaic
     end
     CompositionFrameDrain.drain(drawGraphics, frame)
     for _, primitive in ipairs(primitives) do
@@ -365,6 +366,18 @@ function T.other_layout_modes_reload_the_same_facing_mon()
   local doll = drawnDetail(view, { frozenFrames = frozenFrames })
   local same = picturesOf(doll.pictureItems, "frozen-frame-0")[1]
   Assert.notNil(same, "the substitute mode without a substitute flag keeps the base picture")
+end
+
+function T.weather_form_mosaic_is_attached_to_the_selected_picture()
+  local opts = {}
+  local view = snapshot({ battler({ mosaicSize = 9 }), foeBattler() }, {})
+  drawnDetail(view, opts)
+  local picture = picturesOf(opts.pictureItems, "mon:" .. FROZEN_SELECTOR)[1]
+  Assert.notNil(picture, "the transforming battler remains a submitted Pokepic")
+  Assert.equal(picture.mosaicSize, 9, "the mosaic block travels with its own Pokepic material")
+  Assert.deepEqual(picture.mosaicOrigin, { 0, 0 }, "mosaic sampling begins at the selected picture frame")
+  Assert.deepEqual(picture.imageSize, { 80, 80 }, "the shader receives the staged portrait dimensions")
+  Assert.isNil(opts.mosaic, "the transforming sprite does not mosaic the whole battle scene")
 end
 
 function T.palette_faded_copies_keep_their_obj_layer()

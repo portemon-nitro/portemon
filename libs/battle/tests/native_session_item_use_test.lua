@@ -12,6 +12,19 @@ local T = {}
 local NATIVE_SEED = 0x1BADB002
 local WILD_FORMAT = "wild-single"
 
+---@param session table live native session under random-stream inspection
+---@param label string draw label whose occurrences are counted
+---@return integer matching draw count
+local function rngLabelCount(session, label)
+  local count = 0
+  for _, entry in ipairs(session:_live().rng._trace) do
+    if entry.label == label then
+      count = count + 1
+    end
+  end
+  return count
+end
+
 ---@return table loaded native session owner
 local function executorOwner()
   return SessionFixture.requirePresent(
@@ -1279,6 +1292,7 @@ function T.tutorial_lessons_skip_their_rolls_and_spend_nothing()
     local actor = assert(alpha.actors[1], "the lesson addresses its lead")
     local foeActor = assert(beta.actors[1], "the lesson addresses its foe")
     local before = session:capture()
+    local shakesBefore = rngLabelCount(session, "capture:shake")
     Assert.isTrue(
       session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "POKE_BALL", 2) })),
       "the lesson throw seals"
@@ -1300,7 +1314,8 @@ function T.tutorial_lessons_skip_their_rolls_and_spend_nothing()
     local settled = session:capture()
     Assert.equal(settled.inventories.party.quantities.POKE_BALL, 20, "the lesson spends no ball")
     Assert.deepEqual(settled.ledger, {}, "the lesson ledgers no consumption")
-    Assert.equal(settled.rng.calls, before.rng.calls, "the lesson spends no shake draw")
+    Assert.equal(settled.rng.calls, before.rng.calls + 4, "the completed lesson turn refreshes order samples")
+    Assert.equal(rngLabelCount(session, "capture:shake"), shakesBefore, "the lesson spends no shake draw")
     Assert.equal(turn.status, "ended", "the lesson ends on its catch")
     session:dispose()
   end

@@ -20,6 +20,20 @@ local function executorOwner()
   )
 end
 
+---@param session table live native session carrying the labeled stream trace
+---@param label string draw label being counted
+---@param afterOrdinal integer? count only draws after this stream ordinal
+---@return integer matching draw count
+local function rngLabelCount(session, label, afterOrdinal)
+  local count = 0
+  for _, entry in ipairs(session:_live().rng._trace) do
+    if entry.label == label and (afterOrdinal == nil or entry.ordinal > afterOrdinal) then
+      count = count + 1
+    end
+  end
+  return count
+end
+
 ---@return table frozen battle content carrying the native ruleset binding
 local function nativeContent()
   local ContentBuilder = require("libs.content.src.ContentBuilder")
@@ -60,6 +74,7 @@ local function scenarioMoveFacts(seeds)
   local catalog = CatalogFixture.makeCatalog()
   local facts = {
     TACKLE = catalog:move("TACKLE"),
+    SPLASH = { power = 0, accuracy = 0, category = "other", moveType = "normal", priority = 0 },
     STRUGGLE = { power = 50, accuracy = 100, category = "physical", moveType = "normal", priority = 0 },
   }
   for _, seed in ipairs(seeds or {}) do
@@ -207,14 +222,18 @@ local function healthyDuelScenario()
 end
 
 ---@param woundedSide integer side whose lead enters wounded beside a healthy reserve
+---@param reserveAbility string? entry ability carried by the player's reserve
 ---@return table detached native battle setup record with a wounded lead and benched reserves
-local function woundedLeadScenario(woundedSide)
+local function woundedLeadScenario(woundedSide, reserveAbility)
   local Executor = executorOwner()
   local alphaLead = tackleCombatant(1, 11)
   -- The opening lead always lands its strike, so the wounded exchange
   -- resolves identically on every battle-stream position.
   alphaLead.mon.moves = { { move = "SCRATCH", pp = 35, ppUps = 0 } }
   local alphaReserve = tackleCombatant(3, 31)
+  if reserveAbility ~= nil then
+    alphaReserve.mon.ability = reserveAbility
+  end
   local betaLead = tackleCombatant(2, 23)
   local betaReserve = tackleCombatant(4, 41)
   -- The identical leads tie on Speed, so the foe holds back to keep
@@ -253,12 +272,14 @@ local function mutualKnockoutScenario()
   local alphaLead = bareCombatant(1)
   alphaLead.mon.condition.currentHp = 1
   local alphaReserve = tackleCombatant(3, 31)
+  alphaReserve.mon.ability = "INTIMIDATE"
   local betaLead = tackleCombatant(2, 23)
   betaLead.mon.condition.currentHp = 1
   -- The identical leads tie on Speed, so the foe holds back to keep
   -- the struggling lead striking first regardless of the tie draw.
   betaLead.mon.heldItem = "LAGGING_TAIL"
   local betaReserve = tackleCombatant(4, 41)
+  betaReserve.mon.ability = "INTIMIDATE"
   local seeds = { alphaLead, alphaReserve, betaLead, betaReserve }
   return {
     ruleset = Executor.RULESET,
@@ -1217,7 +1238,7 @@ end
 function T.fainted_leads_are_replaced_before_the_next_turn()
   local contracts = SessionFixture.sessionContracts()
   local content = nativeContent()
-  local session = contracts.Battle.newSession(woundedLeadScenario(1), content)
+  local session = contracts.Battle.newSession(woundedLeadScenario(1, "INTIMIDATE"), content)
   local opening = SessionFixture.driveUntilSettled(session)
   Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
   local leadActivation = session:capture().combatants[1].active.activation
@@ -1235,6 +1256,11 @@ function T.fainted_leads_are_replaced_before_the_next_turn()
   Assert.equal(settled.combatants[1].hp, 0, "the strike knocks out the wounded lead")
   Assert.isTrue(announcesFaint(collected, 1), "the knockout is announced before replacement")
   Assert.isNil(settled.positions[1].occupant, "the fainted occupant leaves its position")
+  local checkpoint = assert(settled.pending.replacement.checkpointPositions, "replacement keeps its closing slots")
+  Assert.equal(checkpoint[1], 2, "the living slot precedes the vacant slot in the closing order")
+  local checkpointSlots = { checkpoint[1], checkpoint[2] }
+  table.sort(checkpointSlots)
+  Assert.deepEqual(checkpointSlots, { 1, 2 }, "the closing checkpoint retains every native slot")
   local waiting = SessionFixture.driveUntilSettled(session)
   Assert.isTrue(waiting.status ~= "ended", "the battle does not end on a replaceable faint")
   local replacement = nil
@@ -1251,8 +1277,16 @@ function T.fainted_leads_are_replaced_before_the_next_turn()
   local ok, replyErr = session:submit(SessionFixture.replyFor(replacement, choices))
   Assert.isTrue(ok, "the replacement reply is accepted")
   Assert.isNil(replyErr, "accepted replacements carry no input error")
-  session:advance(64)
+  local arrival = session:advance(64)
+  local intimidated = false
+  for _, event in ipairs(arrival.events or {}) do
+    if event.kind == "ability" and event.cause.key == "INTIMIDATE" and event.payload.combatant == 3 then
+      intimidated = true
+    end
+  end
+  Assert.isTrue(intimidated, "the attack-KO replacement settles its entry ability before input returns")
   local replaced = session:capture()
+  Assert.equal(replaced.combatants[2].stages.attack, -1, "the arriving Intimidate lowers the opponent's Attack")
   Assert.equal(replaced.positions[1].occupant, 3, "the reserve takes the vacated position")
   Assert.isNil(replaced.combatants[1].active, "the fainted lead stays out of the field")
   Assert.notNil(replaced.combatants[3].active, "the reserve enters the field")
@@ -1273,7 +1307,9 @@ function T.fainted_leads_are_replaced_before_the_next_turn()
   Assert.isNil(session:capture().outcome, "no terminal result is named while reserves stand")
   session:dispose()
 
-  local foeSession = contracts.Battle.newSession(woundedLeadScenario(2), content)
+  local foeScenario = woundedLeadScenario(2)
+  foeScenario.participants[2].roster[2].mon.ability = "INTIMIDATE"
+  local foeSession = contracts.Battle.newSession(foeScenario, content)
   local foeOpening = SessionFixture.driveUntilSettled(foeSession)
   Assert.equal(foeOpening.status, "waiting", "the opposing opening asks for decisions")
   local foeActivation = foeSession:capture().combatants[2].active.activation
@@ -1315,7 +1351,233 @@ function T.fainted_leads_are_replaced_before_the_next_turn()
     "the opposing reserve enters with a fresh entry"
   )
   Assert.isNil(foeReplaced.outcome, "no terminal result is named while reserves stand")
+  Assert.equal(
+    foeReplaced.combatants[1].stages.attack,
+    -1,
+    "the internally arriving Intimidate settles before input returns"
+  )
   foeSession:dispose()
+end
+
+-- A residual knockout samples the closing slots before the faint, unlike an
+-- attack knockout. Both replacement paths must settle the same entry ability.
+function T.residual_knockout_replacement_keeps_its_entry_ability_checkpoint()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local lead = tackleCombatant(1, 11)
+  lead.mon.moves = { { move = "SPLASH", pp = 40, ppUps = 0 } }
+  lead.mon.condition.currentHp = 1
+  lead.mon.condition.effects = { { key = "poison", version = 1, state = {} } }
+  local reserve = tackleCombatant(3, 31)
+  reserve.mon.ability = "INTIMIDATE"
+  local foe = tackleCombatant(2, 23)
+  foe.mon.moves = { { move = "SPLASH", pp = 40, ppUps = 0 } }
+  local seeds = { lead, reserve, foe }
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { lead, reserve }),
+      SessionFixture.participant(2, 2, "beta", { foe }),
+    },
+    positions = { SessionFixture.position(1, 1, { 1 }, 1), SessionFixture.position(2, 2, { 2 }, 2) },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(seeds),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+  }
+  local session = contracts.Battle.newSession(scenario, nativeContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(opening.request.requests) do
+    Assert.isTrue(session:submit(SessionFixture.replyFor(request, answer(request))), "the residual opening is accepted")
+  end
+  local turn = session:advance(64)
+  Assert.equal(session:capture().combatants[1].hp, 0, "poison settles the residual knockout")
+  local struck = 0
+  for _, event in ipairs(turn.events or {}) do
+    if event.kind == "struck" then
+      struck = struck + 1
+    end
+  end
+  Assert.equal(struck, 0, "no strike causes the residual faint")
+  local waiting = SessionFixture.driveUntilSettled(session)
+  local replacement = nil
+  for _, request in ipairs(waiting.request.requests) do
+    if request.controller == "alpha" then
+      replacement = request
+    end
+  end
+  Assert.notNil(replacement, "the residual replacement addresses its lead")
+  local checkpoint = session:capture().pending.replacement.checkpointPositions
+  local slots = { checkpoint[1], checkpoint[2] }
+  table.sort(slots)
+  Assert.deepEqual(slots, { 1, 2 }, "the residual closing checkpoint retains the soon-vacant slot")
+  local actor = assert(replacement.actors[1], "the residual replacement addresses its lead")
+  Assert.isTrue(
+    session:submit(SessionFixture.replyFor(replacement, {
+      SessionFixture.switchChoice(actor, 3),
+    })),
+    "the residual replacement accepts its reserve"
+  )
+  local arrival = session:advance(64)
+  local intimidated = false
+  for _, event in ipairs(arrival.events or {}) do
+    if event.kind == "ability" and event.cause.key == "INTIMIDATE" and event.payload.combatant == 3 then
+      intimidated = true
+    end
+  end
+  Assert.isTrue(intimidated, "the residual replacement settles Intimidate before input")
+  Assert.equal(
+    session:capture().combatants[2].stages.attack,
+    -1,
+    "residual and attack knockouts reach the same entry effect"
+  )
+  session:dispose()
+end
+
+function T.residual_terminal_knockout_stops_later_battler_conditions()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local player = rewardRecipient(1, 11)
+  player.mon.ivs.speed = 0
+  player.mon.evs.speed = 0
+  player.mon.moves[1] = { move = "SPLASH", pp = 40, ppUps = 0 }
+  player.mon.condition.currentHp = 30
+  player.mon.condition.effects = { { key = "poison", version = 1, state = {} } }
+  local opponent = tackleCombatant(2, 23)
+  opponent.mon.ivs.speed = 31
+  opponent.mon.evs.speed = 252
+  opponent.mon.moves = { { move = "SPLASH", pp = 40, ppUps = 0 } }
+  opponent.mon.condition.currentHp = 1
+  opponent.mon.condition.effects = { { key = "poison", version = 1, state = {} } }
+  local seeds = { player, opponent }
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { player }),
+      SessionFixture.participant(2, 2, "beta", { opponent }),
+    },
+    positions = { SessionFixture.position(1, 1, { 1 }, 1), SessionFixture.position(2, 2, { 2 }, 2) },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(seeds),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+  }
+  local session = contracts.Battle.newSession(scenario, nativeContent())
+  local catalog = require("libs.mons.tests.catalog_fixture").makeCatalog()
+  local MonStats = require("libs.mons.src.gen4.MonStats")
+  local startingMaxHp = MonStats.derive(player.mon, catalog).maxHp
+  local startingHp = player.mon.condition.currentHp
+  local opening = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(opening.request.requests) do
+    Assert.isTrue(
+      session:submit(SessionFixture.replyFor(request, answer(request))),
+      "residual terminal input is accepted"
+    )
+  end
+  local suspended = session:advance(64)
+  Assert.equal(suspended.status, "waiting", "the terminal residual reward pauses for learning")
+  local prompt = findLearnPrompt(suspended)
+  Assert.notNil(prompt, "the terminal residual reward names its learning decision")
+  local actor = assert(prompt.actors[1], "the prompt names its recipient")
+  local paused = session:capture()
+  session:dispose()
+
+  local resumed = Executor.restore(paused, nativeContent())
+  Assert.isTrue(
+    resumed:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "replace", 3) })),
+    "the restored terminal learning prompt accepts its reply"
+  )
+  resumed:advance(64)
+  local result = resumed:capture()
+  Assert.equal(result.status, "ended", "the faster opponent's terminal residual settles the outcome")
+  local grownMaxHp = MonStats.derive(result.combatants[1].mon, catalog).maxHp
+  Assert.equal(
+    result.combatants[1].hp,
+    MonStats.adjustHpForMaxChange(startingMaxHp, grownMaxHp, startingHp),
+    "terminal learning applies growth without advancing later player's poison"
+  )
+  Assert.equal(result.combatants[2].hp, 0, "the earlier opponent poison script settles its knockout")
+  resumed:dispose()
+end
+
+function T.nonterminal_residual_reward_keeps_later_poison_damage()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local player = rewardRecipient(1, 11)
+  player.mon.moves[1] = { move = "SPLASH", pp = 40, ppUps = 0 }
+  player.mon.condition.currentHp = 40
+  player.mon.condition.effects = { { key = "poison", version = 1, state = {} } }
+  local opponent = tackleCombatant(2, 23)
+  opponent.mon.ivs.speed = 31
+  opponent.mon.evs.speed = 252
+  opponent.mon.moves = { { move = "SPLASH", pp = 40, ppUps = 0 } }
+  opponent.mon.condition.currentHp = 1
+  opponent.mon.condition.effects = { { key = "poison", version = 1, state = {} } }
+  local reserve = tackleCombatant(3, 29)
+  reserve.mon.moves = { { move = "SPLASH", pp = 40, ppUps = 0 } }
+  local seeds = { player, opponent, reserve }
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { player }),
+      SessionFixture.participant(2, 2, "beta", { opponent, reserve }),
+    },
+    positions = { SessionFixture.position(1, 1, { 1 }, 1), SessionFixture.position(2, 2, { 2 }, 2) },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(seeds),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+  }
+  local session = contracts.Battle.newSession(scenario, nativeContent())
+  local initialCombatant = session:capture().combatants[1]
+  local initialHp = initialCombatant.hp
+  local catalog = require("libs.mons.tests.catalog_fixture").makeCatalog()
+  local MonStats = require("libs.mons.src.gen4.MonStats")
+  local initialMaxHp = MonStats.derive(initialCombatant.mon, catalog).maxHp
+  local initialExp = session:capture().combatants[1].mon.experience --[[@as integer]]
+  local opening = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(opening.request.requests) do
+    Assert.isTrue(
+      session:submit(SessionFixture.replyFor(request, answer(request))),
+      "residual reward input is accepted"
+    )
+  end
+
+  local suspended = session:advance(64)
+  Assert.equal(suspended.status, "waiting", "the residual reward suspends at the level-up learning prompt")
+  local prompt = findLearnPrompt(suspended)
+  Assert.notNil(prompt, "the residual reward identifies its learning decision")
+  local actor = assert(prompt.actors[1], "the prompt names its recipient")
+  local paused = session:capture()
+  session:dispose()
+
+  local resumed = Executor.restore(paused, nativeContent())
+  Assert.isTrue(
+    resumed:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "replace", 3) })),
+    "the restored residual learning prompt accepts its reply"
+  )
+  resumed:advance(64)
+  local result = resumed:capture()
+  Assert.equal(result.combatants[2].hp, 0, "the poisoned opponent faints with a reserve available")
+  local grownMaxHp = MonStats.derive(result.combatants[1].mon, catalog).maxHp
+  local grownHp = MonStats.adjustHpForMaxChange(initialMaxHp, grownMaxHp, initialHp)
+  local expectedHp = grownHp - math.max(1, math.floor(grownMaxHp / 8))
+  Assert.equal(result.combatants[1].hp, expectedHp, "level growth and later poison each publish exactly once")
+  Assert.isTrue(result.combatants[1].mon.experience > initialExp, "the earlier residual knockout awards experience")
+  Assert.equal(result.combatants[1].maxHp, grownMaxHp, "growth and residual resume share one ceiling")
+  resumed:dispose()
 end
 
 -- A struggle recoil that knocks out both leads settles every ordered
@@ -1343,6 +1605,11 @@ function T.simultaneous_knockouts_replace_both_sides_before_the_next_turn()
   Assert.equal(session:capture().combatants[2].hp, 0, "the struggle knocks out the defending lead")
   Assert.isTrue(announcesFaint(collected, 1), "the recoil knockout is announced")
   Assert.isTrue(announcesFaint(collected, 2), "the defending knockout is announced")
+  local closed = session:capture()
+  local checkpoint = assert(closed.pending.replacement.checkpointPositions, "the double knockout keeps its checkpoint")
+  local checkpointSlots = { checkpoint[1], checkpoint[2] }
+  table.sort(checkpointSlots)
+  Assert.deepEqual(checkpointSlots, { 1, 2 }, "an all-dead field retains every native slot in its closing checkpoint")
   local waiting = SessionFixture.driveUntilSettled(session)
   Assert.equal(waiting.status, "waiting", "the double knockout suspends on replacement")
   local replacement = nil
@@ -1366,6 +1633,17 @@ function T.simultaneous_knockouts_replace_both_sides_before_the_next_turn()
   local replaced = session:capture()
   Assert.equal(replaced.positions[1].occupant, 3, "the player reserve takes the vacated position")
   Assert.equal(replaced.positions[2].occupant, 4, "the foe reserve takes its position without a decision")
+  Assert.isTrue(
+    replaced.combatants[3].stages.attack == -1
+      and replaced.combatants[3].active.entryAbilityFlags.intimidate == true
+      and replaced.combatants[4].active.entryAbilityFlags.intimidate == true,
+    "the internally arriving foe's Intimidate settles against the player replacement"
+  )
+  Assert.equal(
+    replaced.combatants[4].stages.attack,
+    -1,
+    "the player's Intimidate resolves on the completed replacement field"
+  )
   Assert.isNil(replaced.outcome, "no terminal result is named while reserves stand")
   local following = SessionFixture.driveUntilSettled(session)
   Assert.equal(following.status, "waiting", "the following turn asks for decisions")
@@ -1383,6 +1661,239 @@ function T.simultaneous_knockouts_replace_both_sides_before_the_next_turn()
   session:dispose()
 end
 
+---@return table detached native doubles setup with two one-point foes and living players
+local function departedSpeedOrderScenario(equalFoes)
+  local Executor = executorOwner()
+  local function combatant(id, seed, species, move)
+    local entry = SessionFixture.combatant(id, seed)
+    entry.mon = SessionFixture.makeMon(seed, { species = species, level = 50 })
+    entry.mon.moves = { { move = move, pp = 35, ppUps = 0 } }
+    return entry
+  end
+  local alphaLead = combatant(1, 11, "EEVEE", "TACKLE")
+  local alphaMate = combatant(3, 31, "TOTODILE", "SPLASH")
+  local slowFoe = combatant(2, 23, "CHIKORITA", "SPLASH")
+  local fastFoe = combatant(4, equalFoes and 23 or 41, equalFoes and "CHIKORITA" or "PICHU", "SPLASH")
+  slowFoe.mon.condition.currentHp = 1
+  fastFoe.mon.condition.currentHp = 1
+  local slowReserve = combatant(6, 61, "CHIKORITA", "SPLASH")
+  local fastReserve = combatant(7, 71, "PICHU", "SPLASH")
+  local seeds = { alphaLead, alphaMate, slowFoe, fastFoe, slowReserve, fastReserve }
+  local species = scenarioSpeciesFacts(seeds)
+  species.CHIKORITA[0].baseStats.speed = 10
+  species.EEVEE[0].baseStats.speed = 30
+  species.TOTODILE[0].baseStats.speed = 40
+  species.PICHU[0].baseStats.speed = 20
+  local moveFacts = scenarioMoveFacts(seeds)
+  moveFacts.TACKLE.range = 4 -- both foes
+  moveFacts.TACKLE.accuracy = 100 -- this scenario isolates departed Speed ordering
+  return {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 2 }), SessionFixture.side(2, { 1 }) },
+    participants = {
+      SessionFixture.participant(1, 2, "alpha", { alphaLead, alphaMate }),
+      SessionFixture.participant(2, 1, "beta", { slowFoe, fastFoe, slowReserve, fastReserve }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 2 }, slowFoe.id),
+      SessionFixture.position(2, 1, { 2 }, fastFoe.id),
+      SessionFixture.position(3, 2, { 1 }, alphaLead.id),
+      SessionFixture.position(4, 2, { 1 }, alphaMate.id),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = moveFacts,
+    speciesFacts = species,
+  }
+end
+
+-- Two departed slots still compare their native battle-mon Speed. Unequal
+-- fainted foes spend no tie draw at any closing battler checkpoint, while a
+-- true equal-Speed pair keeps one draw per independent sort. The complete
+-- order survives restore and drives both mandatory replacements.
+function T.departed_slots_keep_native_speed_facts_through_replacement_and_restore()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local content = nativeContent()
+  local function run(equalFoes)
+    local scenario = departedSpeedOrderScenario(equalFoes)
+    local beta = scenario.participants[2]
+    local slowReserve = beta.roster[3]
+    local fastReserve = beta.roster[4]
+    slowReserve.mon.ability = "DROUGHT"
+    slowReserve.mon.ivs.speed = 31
+    slowReserve.mon.evs.speed = 252
+    fastReserve.mon.ability = "DRIZZLE"
+    fastReserve.mon.ivs.speed = 0
+    fastReserve.mon.evs.speed = 0
+    local session = contracts.Battle.newSession(scenario, content)
+    local opening = SessionFixture.driveUntilSettled(session)
+    Assert.equal(opening.status, "waiting", "the doubles opening asks both sides")
+    Assert.isTrue(session:capture().rng.calls >= 4, "opening order samples are present")
+    for _, request in ipairs(opening.request.requests) do
+      local choices = {}
+      for _, actor in ipairs(request.actors) do
+        local target = actor.combatant == 1 and 1 or actor.combatant == 3 and 2 or 3
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+      end
+      local ok, replyErr = session:submit(SessionFixture.replyFor(request, choices))
+      Assert.isTrue(ok, "the spread opening is accepted: " .. tostring(replyErr))
+      Assert.isNil(replyErr, "accepted spread choices carry no input error")
+    end
+    local callsBefore = session:capture().rng.calls
+    session:advance(64)
+    local replacement = SessionFixture.driveUntilSettled(session)
+    Assert.equal(replacement.status, "waiting", "both foe faints suspend on mandatory replacement")
+    local closed = session:capture()
+    Assert.equal(closed.combatants[2].hp, 0, "the slower foe faints")
+    Assert.equal(closed.combatants[4].hp, 0, "the faster foe faints")
+    Assert.isNil(closed.combatants[2].active, "the slower foe leaves the live topology")
+    Assert.isNil(closed.combatants[4].active, "the faster foe leaves the live topology")
+    local pending = closed.pending
+    local replacement = pending and pending.replacement
+    Assert.notNil(
+      replacement,
+      "the replacement retains its closing slots; pending learning=" .. tostring(pending and pending.learning ~= nil)
+    )
+    local checkpoint = assert(replacement.checkpointPositions, "the replacement retains its closing slots")
+    Assert.equal(
+      rngLabelCount(session, "quick_claw", callsBefore),
+      4,
+      "the closing checkpoints share one refreshed sample batch"
+    )
+    local tieDraws = rngLabelCount(session, "speed_tie", callsBefore)
+    Assert.equal(
+      tieDraws,
+      equalFoes and 35 or 0,
+      "native action-slot visits retain each independent action-end and closing sort; actual " .. tieDraws
+    )
+    if not equalFoes then
+      Assert.deepEqual(checkpoint, { 4, 3, 2, 1 }, "living Speed leads, then the faster departed foe")
+    else
+      local slots = { checkpoint[1], checkpoint[2], checkpoint[3], checkpoint[4] }
+      table.sort(slots)
+      Assert.deepEqual(slots, { 1, 2, 3, 4 }, "the equal-Speed control keeps the complete permutation")
+    end
+    local revived = Executor.restore(closed, content)
+    Assert.deepEqual(revived:capture(), closed, "restore preserves departed comparator state and the stream")
+    local function answerRelief(live)
+      local boundary = SessionFixture.driveUntilSettled(live)
+      Assert.equal(boundary.status, "waiting", "the restored replacement is open")
+      local choices = {}
+      for _, actor in ipairs(boundary.request.requests[1].actors) do
+        choices[#choices + 1] = SessionFixture.switchChoice(actor, actor.combatant == 2 and 6 or 7)
+      end
+      local ok, replyErr = live:submit(SessionFixture.replyFor(boundary.request.requests[1], choices))
+      Assert.isTrue(ok, "both reserves answer their own faint: " .. tostring(replyErr))
+      Assert.isNil(replyErr, "accepted reserves carry no input error")
+      return live:advance(64).events or {}
+    end
+    local firstEvents = answerRelief(session)
+    local secondEvents = answerRelief(revived)
+    Assert.deepEqual(secondEvents, firstEvents, "restored replacements replay identical events")
+    local settled = session:capture()
+    Assert.deepEqual(revived:capture(), settled, "restored replacements reach identical state")
+    Assert.equal(settled.positions[1].occupant, 6, "the slower foe slot receives its reserve")
+    Assert.equal(settled.positions[2].occupant, 7, "the faster foe slot receives its reserve")
+    local liveWeather = nil
+    for _, effect in ipairs(settled.effects) do
+      if effect.scope.kind == "field" and (effect.key == "raindance" or effect.key == "sunnyday") then
+        liveWeather = effect.key
+      end
+    end
+    Assert.equal(liveWeather, "raindance", "new reserve Speed orders the entry abilities before the prompt")
+    session:dispose()
+    revived:dispose()
+  end
+  run(false)
+  run(true)
+end
+
+function T.trace_draws_for_departed_slots_before_the_holder_hp_check()
+  local contracts = SessionFixture.sessionContracts()
+  local scenario = departedSpeedOrderScenario(false)
+  scenario.participants[1].roster[1].mon.ability = "STALL"
+  scenario.participants[1].roster[2].mon.ability = "INTIMIDATE"
+  scenario.participants[2].roster[1].mon.ability = "TRACE"
+  local session = contracts.Battle.newSession(scenario, nativeContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(opening.request.requests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      local target = actor.combatant == 1 and 1 or actor.combatant == 3 and 2 or 3
+      choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+    end
+    Assert.isTrue(session:submit(SessionFixture.replyFor(request, choices)), "the knockout turn is accepted")
+  end
+  local before = session:capture().rng.calls
+  session:advance(64)
+  local replacement = SessionFixture.driveUntilSettled(session)
+  Assert.equal(replacement.status, "waiting", "both fainted positions request reserves")
+  local departed = session:capture()
+  Assert.equal(departed.combatants[2].hp, 0, "the Trace holder has fainted")
+  Assert.equal(departed.combatants[4].hp, 0, "the second slot has also departed")
+  Assert.equal(departed.combatants[2].mon.ability, "TRACE", "the persistent party ability remains Trace")
+  Assert.isTrue(
+    departed.positions[1].departed.battleAbility == "STALL"
+      or departed.positions[1].departed.battleAbility == "INTIMIDATE",
+    "the fainted slot retains Trace's copied battle ability"
+  )
+  local drawsByDeparted = {}
+  for _, entry in ipairs(session:_live().rng._trace) do
+    if entry.ordinal > before and entry.label == "trace" then
+      drawsByDeparted[entry.cause.combatant] = true
+    end
+  end
+  Assert.isTrue(drawsByDeparted[2], "the departed Trace slot selects before its zero-HP check")
+  Assert.isTrue(drawsByDeparted[4], "the other departed slot also selects at the checkpoint")
+  local request = replacement.request.requests[1]
+  local choices = {}
+  for _, actor in ipairs(request.actors) do
+    choices[#choices + 1] = SessionFixture.switchChoice(actor, actor.combatant == 2 and 6 or 7)
+  end
+  Assert.isTrue(session:submit(SessionFixture.replyFor(request, choices)), "both reserves are accepted")
+  session:advance(64)
+  session:dispose()
+end
+
+function T.terminal_action_end_skips_the_entry_ability_scan()
+  local contracts = SessionFixture.sessionContracts()
+  local scenario = departedSpeedOrderScenario(false)
+  scenario.participants[2].roster = { scenario.participants[2].roster[1], scenario.participants[2].roster[2] }
+  scenario.participants[1].roster[1].mon.ability = "STALL"
+  scenario.participants[1].roster[2].mon.ability = "INTIMIDATE"
+  scenario.participants[2].roster[1].mon.ability = "TRACE"
+  local session = contracts.Battle.newSession(scenario, nativeContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(opening.request.requests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      local target = actor.combatant == 1 and 1 or actor.combatant == 3 and 2 or 3
+      choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+    end
+    Assert.isTrue(session:submit(SessionFixture.replyFor(request, choices)), "the terminal knockout turn is accepted")
+  end
+  local before = session:capture().rng.calls
+  session:advance(64)
+  local ended = SessionFixture.driveUntilSettled(session)
+  Assert.equal(ended.status, "ended", "both opposing slots end their side without reserves")
+  local traceDraws = 0
+  for _, entry in ipairs(session:_live().rng._trace) do
+    if entry.ordinal > before and entry.label == "trace" then
+      traceDraws = traceDraws + 1
+    end
+  end
+  Assert.equal(
+    traceDraws,
+    26,
+    "the source AfterMoveEffects and terminal transcript retain exactly twenty-six Trace draws"
+  )
+  session:dispose()
+end
+
 -- A last-stand knockout with no living reserve ends the battle instead
 -- of asking for a replacement: the faint is announced, the position stays
 -- vacant, and the terminal marker names the surviving standings with no
@@ -1393,6 +1904,8 @@ function T.a_final_knockout_without_a_reserve_ends_the_battle()
   local Executor = executorOwner()
   local alpha = tackleCombatant(1, 11)
   local beta = tackleCombatant(2, 23)
+  alpha.mon.condition.currentHp = 12
+  alpha.mon.condition.effects = { { key = "poison", version = 1, state = {} } }
   beta.mon.condition.currentHp = 1
   local scenario = {
     ruleset = Executor.RULESET,
@@ -1431,6 +1944,7 @@ function T.a_final_knockout_without_a_reserve_ends_the_battle()
   Assert.equal(settled.combatants[2].hp, 0, "the losing lead stays knocked out")
   Assert.isNil(settled.positions[2].occupant, "the vacated position stays vacant")
   Assert.isTrue(settled.combatants[1].hp > 0, "the surviving lead is still standing")
+  Assert.equal(settled.combatants[1].hp, 12, "terminal ActionEnd skips the later poison residual")
   local boundary = SessionFixture.driveUntilSettled(session)
   Assert.equal(boundary.status, "ended", "no reserve means no replacement and no next turn")
   Assert.notNil(boundary.outcome, "the final knockout still names its terminal result")
@@ -1523,7 +2037,7 @@ function T.open_replacements_restore_identically_across_snapshots()
   local contracts = SessionFixture.sessionContracts()
   local Executor = executorOwner()
   local content = nativeContent()
-  local session = contracts.Battle.newSession(woundedLeadScenario(1), content)
+  local session = contracts.Battle.newSession(woundedLeadScenario(1, "INTIMIDATE"), content)
   local opening = SessionFixture.driveUntilSettled(session)
   Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
   for _, request in ipairs(opening.request.requests) do
@@ -1536,6 +2050,13 @@ function T.open_replacements_restore_identically_across_snapshots()
   Assert.equal(waiting.status, "waiting", "the knockout suspends on its replacement")
   local snapshot = session:capture()
   SessionFixture.assertPlainData(snapshot)
+  local persistedSlots = {
+    snapshot.pending.replacement.checkpointPositions[1],
+    snapshot.pending.replacement.checkpointPositions[2],
+  }
+  Assert.equal(persistedSlots[1], 2, "the persisted order keeps the living slot first")
+  table.sort(persistedSlots)
+  Assert.deepEqual(persistedSlots, { 1, 2 }, "the persisted replacement carries every closing slot")
   local revived = Executor.restore(snapshot, content)
   local first = SessionFixture.driveUntilSettled(session)
   local second = SessionFixture.driveUntilSettled(revived)
@@ -1556,6 +2077,7 @@ function T.open_replacements_restore_identically_across_snapshots()
   local secondFrame = revived:advance(64)
   Assert.deepEqual(secondFrame.events, firstFrame.events, "restored sessions replay the same entry")
   Assert.deepEqual(revived:capture(), session:capture(), "restored sessions reach the same following state")
+  Assert.equal(revived:capture().combatants[2].stages.attack, -1, "the restored arrival settles Intimidate")
   session:dispose()
   revived:dispose()
 end
@@ -1592,6 +2114,17 @@ local function singleMoveCombatant(id, seed, species, move)
   return { id = id, mon = mon }
 end
 
+---@param id integer nonreused positive combatant identity
+---@param seed integer fixed generator state for the underlying mon
+---@param species string weather-form species label under the synthetic fixture
+---@param move string move identity carried by the single slot
+---@return table combatant seed with one usable move entry
+local function weatherCombatant(id, seed, species, move)
+  local entry = singleMoveCombatant(id, seed, "EEVEE", move)
+  entry.mon.species = species
+  return entry
+end
+
 ---@param entries table[] static species entries pairing a catalog species with its semantic types
 ---@return table<string, table<integer, table<string, unknown>>> static species facts with semantic types
 local function typedSpeciesFacts(entries)
@@ -1618,13 +2151,44 @@ local function typedSpeciesFacts(entries)
   return facts
 end
 
+---@param species string weather-form species under fact resolution
+---@param forms table<integer, string[]> semantic types for each reachable form
+---@return table<string, table<integer, table<string, unknown>>> static facts for every weather form
+local function weatherFormFacts(species, forms)
+  local base = typedSpeciesFacts({ { species = "EEVEE", types = { "normal" } } })
+  local facts = {}
+  for form in pairs(forms) do
+    local record = {}
+    for key, value in pairs(base.EEVEE[0]) do
+      record[key] = value
+    end
+    -- Compiled Castform and Cherrim forms keep their ordinary species
+    -- types; Forecast's live battle type is projected by the session.
+    record.types = forms[0]
+    facts[form] = record
+  end
+  return { [species] = facts }
+end
+
 ---@return table frozen battle content binding the native ruleset over a closed test chart
 local function chartContent()
   local ContentBuilder = require("libs.content.src.ContentBuilder")
   local BattleBehaviorBuilder = require("libs.battle.src.BattleBehaviorBuilder")
   local BattleContent = require("libs.battle.src.BattleContent")
   local Executor = executorOwner()
-  local keys = { "normal", "fire", "water", "grass", "ice", "dragon", "bug", "ghost" }
+  local keys = {
+    "normal",
+    "fire",
+    "water",
+    "grass",
+    "ice",
+    "dragon",
+    "bug",
+    "ghost",
+    "ground",
+    "flying",
+    "psychic",
+  }
   local doubled = {
     ["fire|grass"] = true,
     ["fire|ice"] = true,
@@ -1661,7 +2225,7 @@ local function chartContent()
         numerator, denominator = 2, 1
       elseif halved[pair] == true then
         numerator, denominator = 1, 2
-      elseif pair == "normal|ghost" then
+      elseif pair == "normal|ghost" or pair == "ground|flying" then
         numerator, denominator = 0, 1
       end
       relations[#relations + 1] = { attack = attack, defend = defend, numerator = numerator, denominator = denominator }
@@ -1706,8 +2270,9 @@ local function projectionDuel(alpha, beta, moveFacts, speciesFacts, seed, weathe
 end
 
 ---@param session table live native session at its opening decision boundary
+---@param moveSlots table<integer, integer>? zero-based move slot by combatant for this turn
 ---@return table[] turn events in execution order
-local function playOpeningTurn(session)
+local function playOpeningTurn(session, moveSlots)
   local frame = SessionFixture.driveUntilSettled(session)
   Assert.equal(frame.status, "waiting", "the opening turn asks for decisions")
   for _, request in ipairs(frame.request.requests) do
@@ -1717,7 +2282,8 @@ local function playOpeningTurn(session)
     end
     local choices = {}
     for _, actor in ipairs(request.actors) do
-      choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+      local moveSlot = type(moveSlots) == "table" and moveSlots[actor.combatant] or 0
+      choices[#choices + 1] = SessionFixture.attackChoice(actor, moveSlot, SessionFixture.positionTarget(target))
     end
     local ok, replyErr = session:submit(SessionFixture.replyFor(request, choices))
     Assert.isTrue(ok, "opening replies are accepted")
@@ -1955,10 +2521,10 @@ function T.slower_raised_priority_strikes_first_and_faster_lowered_priority_stri
   end
 end
 
--- Only genuine Speed ties draw the battle stream: tied opening occupants
--- draw once to order their entry effects, then ties draw for action and
--- residual order. The faster combatant still leads every unequal-Speed seed.
-function T.unequal_speeds_order_without_tie_draws_while_true_ties_draw_once()
+-- The controller independently samples battler order before each action and
+-- before the field-condition phase. Equal-Speed draws therefore need not
+-- agree with the earlier execution-order pass.
+function T.unequal_speeds_order_without_tie_draws_while_true_ties_draw_independently()
   local facts = {
     TACKLE = strikeFacts(0, "normal", 1),
     QUICK_ATTACK = strikeFacts(0, "normal", 1),
@@ -1988,7 +2554,11 @@ function T.unequal_speeds_order_without_tie_draws_while_true_ties_draw_once()
   playOpeningTurn(tied)
   local tiedCalls = tied:capture().rng.calls
   tied:dispose()
-  Assert.equal(tiedCalls, mixedCalls + 3, "a genuine tie draws for entry, action, and residual order")
+  Assert.equal(
+    tiedCalls,
+    mixedCalls + 15,
+    "a genuine tie draws at each source execution and battler sort; mixed " .. mixedCalls .. ", tied " .. tiedCalls
+  )
   for seed = 1, 8 do
     local duel = projectionDuel(
       singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE"),
@@ -2342,7 +2912,10 @@ end
 function T.knockout_rewards_pause_on_move_learning_before_the_outcome()
   local contracts = SessionFixture.sessionContracts()
   local content = nativeContent()
-  local session = contracts.Battle.newSession(rewardScenario(), content)
+  local scenario = rewardScenario()
+  scenario.participants[2].roster[1].mon.moves = { { move = "SPLASH", pp = 40, ppUps = 0 } }
+  local session = contracts.Battle.newSession(scenario, content)
+  local startingHp = session:capture().combatants[1].hp --[[@as integer]]
   local opening = SessionFixture.driveUntilSettled(session)
   Assert.equal(opening.status, "waiting", "the opening turn asks for decisions")
   Assert.equal(#session:capture().combatants[1].mon.moves, 4, "the recipient enters with a full move set")
@@ -2377,10 +2950,18 @@ function T.knockout_rewards_pause_on_move_learning_before_the_outcome()
     reload.maxHpAfter --[[@as integer]] > reload.maxHpBefore --[[@as integer]],
     "the level crossing raises the health maximum"
   )
+  local expectedHp = require("libs.mons.src.gen4.MonStats").adjustHpForMaxChange(
+    reload.maxHpBefore --[[@as integer]],
+    reload.maxHpAfter --[[@as integer]],
+    startingHp
+  )
   Assert.isNil(findSessionEvent(collected, "learn"), "no move is learned before the reply")
   local pending = session:capture()
   Assert.isNil(pending.outcome, "no terminal result is named while learning waits")
   local recipient = pending.combatants[1].mon
+  Assert.equal(pending.combatants[1].maxHp, reload.maxHpAfter, "the live battle ceiling publishes level growth")
+  Assert.equal(pending.combatants[1].hp, expectedHp, "the live battle HP applies the level growth exactly once")
+  Assert.equal(recipient.condition.currentHp, expectedHp, "the persisted mon condition matches grown battle HP")
   Assert.equal(
     recipient.experience,
     972 + award.gained --[[@as integer]],
@@ -2423,6 +3004,11 @@ function T.knockout_rewards_pause_on_move_learning_before_the_outcome()
   )
   Assert.notNil(ended.outcome, "the finished battle names its terminal result")
   Assert.deepEqual(ended.outcome.evolutionEligible, { 1 }, "the level gain surfaces once for post-battle handling")
+  Assert.equal(#finished.frames, 0, "terminal learning closes the round frame")
+  Assert.equal(#finished.queue, 0, "terminal learning clears the pending action queue")
+  Assert.deepEqual(finished.pendingFaintObligations, {}, "terminal learning clears obsolete replacement obligations")
+  Assert.isFalse(finished.pendingExecutionResort, "terminal learning clears obsolete execution re-sort work")
+  Assert.isNil(finished.schedule.executionCursor, "terminal learning clears the execution traversal cursor")
   local again, againErr = session:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "replace", 3) }))
   Assert.isFalse(again, "a stale reply after completion answers nothing")
   Assert.notNil(againErr, "stale replies report their input error")
@@ -3260,9 +3846,10 @@ function T.voluntary_switches_complete_the_exchange_with_a_fresh_entry()
     "the strike locked to the departed entry never wounds the arrival"
   )
   Assert.equal(countKind(turn.events, "struck"), 0, "the stale strike lands nothing")
-  -- The exchange spends no draw itself; the four draws are the
-  -- following batch samples, already spent while it waits.
-  Assert.equal(settled.rng.calls, callsBefore + 4, "the exchange turn spends no draws")
+  -- The exchange spends no draw itself; the source Trace checkpoint draws
+  -- once for the two-donor foe, and the four batch samples are already
+  -- spent while the turn waits.
+  Assert.equal(settled.rng.calls, callsBefore + 5, "the exchange adds only the source Trace donor draw")
   local following = SessionFixture.driveUntilSettled(session)
   Assert.equal(following.status, "waiting", "the following turn asks for decisions")
   local addressesReserve = false
@@ -3419,7 +4006,7 @@ function T.thrown_balls_record_the_caught_mon_and_close_the_wild_battle()
   Assert.notNil(boundary.outcome, "the closed capture names its terminal result")
   local settled = session:capture()
   Assert.equal(settled.inventories.party.quantities.MASTER_BALL, 0, "the throw spends exactly one ball")
-  Assert.equal(settled.rng.calls, callsBefore, "the guaranteed throw spends no roll")
+  Assert.equal(settled.rng.calls, callsBefore + 4, "the guaranteed throw spends no capture roll")
   Assert.equal(countKind(turn.events, "struck"), 0, "the catch preempts the queued strike")
   local ledger = settled.captures
   Assert.notNil(ledger, "the session owns its capture ledger")
@@ -3527,7 +4114,7 @@ function T.run_attempts_follow_escape_law_and_trainer_flight_stays_refused()
   local fledState = swift:capture()
   Assert.equal(fledState.combatants[1].hp, dashHp, "the escapee leaves unwounded")
   Assert.equal(fledState.combatants[1].hp, dashEntry, "the escapee keeps its entry health")
-  Assert.equal(fledState.rng.calls, dashCalls, "the outright escape spends no roll")
+  Assert.equal(fledState.rng.calls, dashCalls + 4, "the outright escape spends no odds roll")
   Assert.isTrue(fledState.combatants[2].hp > 0, "the escape claims no knockout")
   swift:dispose()
 
@@ -3612,10 +4199,9 @@ function T.smoke_ball_guarantees_wild_flight_for_slower_leads()
   local stalled = SessionFixture.driveUntilSettled(bare)
   Assert.equal(stalled.status, "waiting", "the failed attempt continues the battle")
   Assert.isNil(bare:capture().outcome, "the failed attempt names no terminal result")
-  -- The fresh baseline spends nothing: one odds roll for the failed
-  -- flight plus the four pre-turn samples of each of the two batches
-  -- the turn opens and closes with.
-  Assert.equal(bare:capture().rng.calls, bareCalls + 9, "the failed attempt spends exactly one roll")
+  -- The failed flight spends one odds roll and the completed turn refreshes
+  -- four order samples before the next decision boundary.
+  Assert.equal(bare:capture().rng.calls, bareCalls + 5, "the failed attempt spends exactly one roll")
   bare:dispose()
 
   local smoked = slowDuel("SMOKE_BALL")
@@ -3637,16 +4223,16 @@ function T.smoke_ball_guarantees_wild_flight_for_slower_leads()
   Assert.notNil(escaped.outcome, "the escape names its terminal result")
   local fledState = smoked:capture()
   Assert.equal(fledState.combatants[1].hp, smokedHp, "the escapee leaves unwounded")
-  -- The guaranteed flight spends no roll itself; the four draws are
-  -- the opening batch samples spent while it waited for decisions.
-  Assert.equal(fledState.rng.calls, smokedCalls + 4, "the guaranteed flight spends no roll")
+  -- The guaranteed flight spends no odds roll; the completed turn refreshes
+  -- four order samples before it executes.
+  Assert.equal(fledState.rng.calls, smokedCalls + 4, "the guaranteed flight spends no odds roll")
   smoked:dispose()
 end
 
 -- Shared knockout choreography for the replacement tests: a 1-HP lead with a
 -- living reserve against a level-40 foe. Both sides strike, the lead falls,
 -- and the replaceable faint waits for its relief decision.
-local function driveToReplacement(formatKey, ability)
+local function driveToReplacement(formatKey, ability, reserveAbility)
   local contracts = SessionFixture.sessionContracts()
   local content = actionContent()
   local lead = leveledCombatant(1, 11, "CHIKORITA", 5)
@@ -3655,6 +4241,9 @@ local function driveToReplacement(formatKey, ability)
   end
   lead.mon.condition.currentHp = 1
   local reserve = leveledCombatant(3, 31, "CHIKORITA", 5)
+  if reserveAbility ~= nil then
+    reserve.mon.ability = reserveAbility
+  end
   local foe = leveledCombatant(2, 23, "EEVEE", 40)
   local session = contracts.Battle.newSession(actionScenario(formatKey, { lead, reserve }, { foe }, nil), content)
   local opening = SessionFixture.driveUntilSettled(session)
@@ -3737,7 +4326,7 @@ function T.wild_replacement_runs_resolve_flight_then_retry_switch_only()
   Assert.equal(flight.outcome.kind, "escaped", "the replacement flight records its escape")
   fledSession:dispose()
 
-  local heldSession, heldWaiting = driveToReplacement(WILD_FORMAT, nil)
+  local heldSession, heldWaiting = driveToReplacement(WILD_FORMAT, nil, "INTIMIDATE")
   local heldRelief = requestFor(heldWaiting, "alpha")
   local heldRunner = assert(heldRelief.actors[1], "the replacement addresses its fainted lead")
   local attemptsBefore = heldSession:capture().escapeAttempts
@@ -3765,6 +4354,33 @@ function T.wild_replacement_runs_resolve_flight_then_retry_switch_only()
     attemptsBefore + 1,
     "the failed escape records exactly one attempt"
   )
+  local retrySnapshot = heldSession:capture()
+  local Executor = executorOwner()
+  local revived = Executor.restore(retrySnapshot, actionContent())
+  Assert.equal(revived:capture().rng.calls, retrySnapshot.rng.calls, "restoring the retry draws no order samples")
+  for _, live in ipairs({ heldSession, revived }) do
+    local open = SessionFixture.driveUntilSettled(live)
+    local switch = requestFor(open, "alpha")
+    local actor = assert(switch.actors[1], "the retry addresses its fainted lead")
+    local accepted, acceptErr = live:submit(SessionFixture.replyFor(switch, {
+      SessionFixture.switchChoice(actor, 3),
+    }))
+    Assert.isTrue(accepted, "the failed escape's switch-only retry accepts its reserve: " .. tostring(acceptErr))
+    Assert.isNil(acceptErr, "the accepted retry carries no input error")
+    local arrival = live:advance(64)
+    local intimidated = false
+    for _, event in ipairs(arrival.events or {}) do
+      if event.kind == "ability" and event.cause.key == "INTIMIDATE" and event.payload.combatant == 3 then
+        intimidated = true
+      end
+    end
+    Assert.isTrue(intimidated, "the retry arrival settles its entry ability")
+    Assert.equal(live:capture().combatants[2].stages.attack, -1, "the retry arrival lowers the foe's Attack")
+    local following = SessionFixture.driveUntilSettled(live)
+    Assert.equal(following.status, "waiting", "the retry reaches a usable ordinary decision")
+  end
+  Assert.deepEqual(revived:capture(), heldSession:capture(), "the restored retry reaches the identical state")
+  revived:dispose()
   heldSession:dispose()
 end
 
@@ -4222,12 +4838,35 @@ local function doubleAnswer(request)
   return choices
 end
 
--- Faint settlement owns one ordered replacement obligation per knocked-out
--- entry, and reward suspension never recreates or reorders them: a double
--- knockout suspends on move learning with both obligations held aside in
--- detection order, every prompt resumes the identical obligations, and
--- each reserve then enters its own vacated position exactly once with no
--- repeated award.
+function T.knockout_learning_suspends_before_the_next_queued_action()
+  local contracts = SessionFixture.sessionContracts()
+  local scenario = doubleKnockoutLearningScenario()
+  scenario.format = DOUBLE_FORMAT
+  scenario.speciesFacts.CHIKORITA[0].baseStats.speed = 250
+  scenario.participants[1].roster[2].mon.ability = "STALL"
+  local session = contracts.Battle.newSession(scenario, actionContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(opening.request.requests) do
+    Assert.isTrue(session:submit(SessionFixture.replyFor(request, doubleAnswer(request))))
+  end
+  local boundary, events = advanceCollecting(session, 64)
+  Assert.equal(boundary.status, "waiting", "the first knockout suspends on its learning prompt")
+  Assert.isTrue(announcesFaint(events, 2), "the fast lead resolves its knockout before rewarding")
+  Assert.isFalse(announcesFaint(events, 5), "the next queued action waits behind move learning")
+  local state = session:capture()
+  Assert.equal(state.combatants[2].hp, 0, "the first target is knocked out before the prompt")
+  Assert.isTrue(state.combatants[5].hp > 0, "the second target is untouched while learning waits")
+  local request = assert(findLearnPrompt(boundary), "the suspension carries the learning prompt")
+  local actor = assert(request.actors[1], "the learning prompt addresses its recipient")
+  Assert.isTrue(session:submit(SessionFixture.replyFor(request, { learnChoice(actor, "decline") })))
+  local resumed, resumedEvents = advanceCollecting(session, 64)
+  Assert.isTrue(announcesFaint(resumedEvents, 5), "the queued action resumes after learning is answered")
+  session:dispose()
+end
+
+-- ActionEnd pays one action's knockout rewards before the next action. When
+-- that action opens learning, the remaining queue waits; later reward
+-- prompts retain the accumulated replacement obligations in faint order.
 function T.replacement_obligations_survive_learning_suspension_in_order()
   local contracts = SessionFixture.sessionContracts()
   local content = nativeContent()
@@ -4245,9 +4884,9 @@ function T.replacement_obligations_survive_learning_suspension_in_order()
     collected[#collected + 1] = event
   end
   Assert.isTrue(announcesFaint(collected, 2), "the first strike knocks out its foe")
-  Assert.isTrue(announcesFaint(collected, 5), "the second strike knocks out its foe")
+  Assert.isFalse(announcesFaint(collected, 5), "the second action waits behind the learning prompt")
   Assert.equal(session:capture().combatants[2].hp, 0, "the first foe stays knocked out")
-  Assert.equal(session:capture().combatants[5].hp, 0, "the second foe stays knocked out")
+  Assert.isTrue(session:capture().combatants[5].hp > 0, "the second foe remains standing during the prompt")
   Assert.equal(boundary.status, "waiting", "the double knockout suspends on its learning prompt instead of replacing")
   local prompt = findLearnPrompt(boundary)
   Assert.notNil(prompt, "the suspension names the pending learning prompt")
@@ -4265,7 +4904,6 @@ function T.replacement_obligations_survive_learning_suspension_in_order()
     end
   end
   Assert.notNil(activations[2], "the first faint binds its entry token")
-  Assert.notNil(activations[5], "the second faint binds its entry token")
   local suspended = session:capture()
   Assert.isNil(suspended.outcome, "no terminal result is named while learning waits")
   local held = assert(suspended.pending.learning, "learning suspensions hold their obligations aside")
@@ -4280,17 +4918,14 @@ function T.replacement_obligations_survive_learning_suspension_in_order()
       side = 2,
       internal = true,
     },
-    {
-      combatant = 5,
-      activation = activations[5],
-      position = 4,
-      participant = 2,
-      controller = "beta",
-      side = 2,
-      internal = true,
-    },
   }
-  Assert.deepEqual(heldObligations.obligations, wanted, "the suspension holds one ordered obligation per fainted entry")
+  Assert.deepEqual(heldObligations.obligations, wanted, "the suspension holds the first replacement obligation")
+  local checkpointSlots = {}
+  for _, position in ipairs(heldObligations.checkpointPositions) do
+    checkpointSlots[#checkpointSlots + 1] = position
+  end
+  table.sort(checkpointSlots)
+  Assert.deepEqual(checkpointSlots, { 1, 2, 3, 4 }, "the learning continuation retains every native slot")
   local suspensions = 0
   local answeredSynthesis = false
   while findLearnPrompt(boundary) ~= nil and suspensions < 6 do
@@ -4317,6 +4952,24 @@ function T.replacement_obligations_survive_learning_suspension_in_order()
     boundary, knockoutEvents = advanceCollecting(session, 64)
     for _, event in ipairs(knockoutEvents) do
       collected[#collected + 1] = event
+      if event.kind == "faint" then
+        local payload = event.payload --[[@as table<string, unknown>]]
+        activations[
+          payload.combatant --[[@as integer]]
+        ] = payload.activation --[[@as integer]]
+      end
+    end
+    if session:capture().combatants[5].hp == 0 and #wanted == 1 then
+      Assert.notNil(activations[5], "the later faint binds its entry token")
+      wanted[#wanted + 1] = {
+        combatant = 5,
+        activation = activations[5],
+        position = 4,
+        participant = 2,
+        controller = "beta",
+        side = 2,
+        internal = true,
+      }
     end
   end
   Assert.isTrue(answeredSynthesis, "the suspended run answers its synthesis prompt")
@@ -4378,6 +5031,303 @@ function T.replacement_obligations_survive_learning_suspension_in_order()
   session:dispose()
 end
 
+-- A restored reward continuation can enter a hazard-fainted replacement and
+-- then open a second learning prompt. The closing slot order must survive the
+-- first prompt, the replacement, and the follow-on arrival without closure state.
+function T.restored_replacement_hazard_faint_opens_learning_and_follow_on_arrival()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local catalog = CatalogFixture.makeCatalog()
+  local recipient = rewardRecipient(1, 11)
+  recipient.mon.moves[4] = { move = "SPIKES", pp = 20, ppUps = 0 }
+  local function foe(id, seed, level, moves)
+    local factory = CatalogFixture.makeFactory(seed, catalog)
+    local mon = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", level = level }))
+    mon.moves = moves
+    return { id = id, mon = mon }
+  end
+  local lead = foe(2, 23, 5, {
+    { move = "SPIKES", pp = 20, ppUps = 0 },
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+  })
+  lead.mon.condition.currentHp = 1
+  local frail = foe(4, 41, 30, { { move = "TACKLE", pp = 35, ppUps = 0 } })
+  frail.mon.condition.currentHp = 1
+  local follow = foe(5, 51, 30, { { move = "TACKLE", pp = 35, ppUps = 0 } })
+  follow.mon.ability = "INTIMIDATE"
+  local moveSeed = {
+    mon = {
+      species = "CHIKORITA",
+      form = 0,
+      moves = {
+        { move = "TACKLE" },
+        { move = "GROWL" },
+        { move = "RAZOR_LEAF" },
+        { move = "REFLECT" },
+      },
+    },
+  }
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { recipient }),
+      SessionFixture.participant(2, 2, "beta", { lead, frail, follow }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts({ frail, follow, moveSeed }),
+    speciesFacts = scenarioSpeciesFacts({ recipient, lead, frail, follow }),
+  }
+  table.insert(scenario.speciesFacts.CHIKORITA[0].levelUpMoves, 7, { level = 13, move = "REFLECT" })
+  scenario.moveFacts.SPIKES = { power = 0, accuracy = 0, category = "other", moveType = "ground", priority = 0 }
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(opening.request.requests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      if request.controller == "alpha" then
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 3, SessionFixture.positionTarget(2))
+      else
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 1, SessionFixture.positionTarget(1))
+      end
+    end
+    Assert.isTrue(session:submit(SessionFixture.replyFor(request, choices)), "the spikes opening is accepted")
+  end
+  Assert.equal(SessionFixture.driveUntilSettled(session).status, "waiting", "the spikes turn reaches the next decision")
+  local spikesStanding = false
+  for _, effect in ipairs(session:capture().effects) do
+    spikesStanding = spikesStanding or effect.key == "spikes"
+  end
+  Assert.isTrue(spikesStanding, "the opening spikes layer stands on the foe side")
+  local secondTurn = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(secondTurn.request.requests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      choices[#choices + 1] =
+        SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(request.controller == "alpha" and 2 or 1))
+    end
+    Assert.isTrue(session:submit(SessionFixture.replyFor(request, choices)), "the knockout turn is accepted")
+  end
+  local firstBoundary, firstEvents = advanceCollecting(session, 64)
+  Assert.equal(firstBoundary.status, "waiting", "the first knockout suspends on learning")
+  Assert.equal(
+    assert(findLearnPrompt(firstBoundary), "the first lesson opens").incomingMove,
+    "SYNTHESIS",
+    "the first knockout reaches level twelve"
+  )
+  local held = session:capture()
+  local revived = Executor.restore(held, content)
+  Assert.equal(revived:capture().rng.calls, held.rng.calls, "restoring the deferred replacement draws no order samples")
+  local firstCollected = nil
+  for _, live in ipairs({ session, revived }) do
+    local collected = {}
+    for _, event in ipairs(firstEvents) do
+      collected[#collected + 1] = event
+    end
+    local boundary = SessionFixture.driveUntilSettled(live)
+    local prompt = assert(findLearnPrompt(boundary), "the restored first lesson reopens")
+    local actor = assert(prompt.actors[1], "the first lesson addresses its recipient")
+    Assert.isTrue(
+      live:submit(SessionFixture.replyFor(prompt, { learnChoice(actor, "replace", 3) })),
+      "the first lesson is accepted"
+    )
+    local frame, events = advanceCollecting(live, 64)
+    for _, event in ipairs(events) do
+      collected[#collected + 1] = event
+    end
+    local secondPrompt = assert(findLearnPrompt(frame), "the hazard-fainted replacement opens a new lesson")
+    Assert.equal(secondPrompt.incomingMove, "REFLECT", "the replacement award reaches level thirteen")
+    Assert.equal(live:capture().combatants[4].hp, 0, "the arriving reserve is fainted by the retained spikes")
+    local secondActor = assert(secondPrompt.actors[1], "the second lesson addresses its recipient")
+    Assert.isTrue(
+      live:submit(SessionFixture.replyFor(secondPrompt, { learnChoice(secondActor, "decline") })),
+      "the second lesson is answered"
+    )
+    local following, followEvents = advanceCollecting(live, 64)
+    for _, event in ipairs(followEvents) do
+      collected[#collected + 1] = event
+    end
+    Assert.equal(following.status, "waiting", "the follow-on replacement reaches an ordinary decision")
+    Assert.equal(live:capture().positions[2].occupant, 5, "the follow-on reserve takes the hazard-fainted slot")
+    Assert.equal(live:capture().combatants[1].stages.attack, -1, "the follow-on Intimidate settles before input")
+    if firstCollected == nil then
+      firstCollected = collected
+    else
+      Assert.deepEqual(
+        collected,
+        firstCollected,
+        "restored reward and replacement continuations replay the same events"
+      )
+    end
+  end
+  Assert.deepEqual(revived:capture(), session:capture(), "restored continuations reach the identical settled state")
+  session:dispose()
+  revived:dispose()
+end
+
+-- Restoring the Shift offer is the serialization boundary where committing
+-- it clears the old batch before a held foe's hazard faint opens learning.
+function T.restored_shift_hazard_faint_keeps_its_learning_checkpoint()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local catalog = CatalogFixture.makeCatalog()
+  local recipient = rewardRecipient(1, 11)
+  recipient.mon.experience = 900
+  recipient.mon.moves[4] = { move = "SPIKES", pp = 20, ppUps = 0 }
+  local function playerMon(id, seed, level, moves, ability)
+    local factory = CatalogFixture.makeFactory(seed, catalog)
+    local mon = factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA", level = level }))
+    mon.moves = moves
+    mon.ability = ability or mon.ability
+    return { id = id, mon = mon }
+  end
+  local lead = playerMon(2, 23, 5, {
+    { move = "TACKLE", pp = 35, ppUps = 0 },
+    { move = "SPLASH", pp = 40, ppUps = 0 },
+  })
+  lead.mon.condition.currentHp = 1
+  local frail = playerMon(4, 41, 40, { { move = "TACKLE", pp = 35, ppUps = 0 } })
+  frail.mon.condition.currentHp = 1
+  local follow = playerMon(5, 51, 40, { { move = "TACKLE", pp = 35, ppUps = 0 } }, "INTIMIDATE")
+  local reserve = playerMon(3, 31, 20, { { move = "TACKLE", pp = 35, ppUps = 0 } })
+  local moveSeed = {
+    mon = {
+      species = "CHIKORITA",
+      form = 0,
+      moves = { { move = "TACKLE" }, { move = "GROWL" }, { move = "RAZOR_LEAF" }, { move = "REFLECT" } },
+    },
+  }
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = "singles",
+    kind = "trainer",
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "player", { recipient, reserve }),
+      SessionFixture.participant(2, 2, "trainer:probe", { lead, frail, follow }),
+    },
+    positions = { SessionFixture.position(1, 1, { 1 }, 1), SessionFixture.position(2, 2, { 2 }, 2) },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts({ frail, follow, moveSeed }),
+    speciesFacts = scenarioSpeciesFacts({ lead, frail, follow, recipient }),
+  }
+  scenario.participants[1].context = { battleStyle = "shift" }
+  scenario.moveFacts.SPLASH = { power = 0, accuracy = 0, category = "other", moveType = "normal", priority = 0 }
+  scenario.moveFacts.SPIKES = { power = 0, accuracy = 0, category = "other", moveType = "ground", priority = 0 }
+  table.insert(scenario.speciesFacts.CHIKORITA[0].levelUpMoves, 7, { level = 13, move = "REFLECT" })
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(scenario, content)
+  local function answerTurn(live, alphaSlot, betaSlot)
+    local boundary = SessionFixture.driveUntilSettled(live)
+    for _, request in ipairs(boundary.request.requests) do
+      local choices = {}
+      for _, actor in ipairs(request.actors) do
+        choices[#choices + 1] = SessionFixture.attackChoice(
+          actor,
+          request.controller == "player" and alphaSlot or betaSlot,
+          SessionFixture.positionTarget(request.controller == "player" and 2 or 1)
+        )
+      end
+      Assert.isTrue(live:submit(SessionFixture.replyFor(request, choices)), "the hazard setup turn is accepted")
+    end
+  end
+  answerTurn(session, 3, 1)
+  Assert.equal(SessionFixture.driveUntilSettled(session).status, "waiting", "the spikes turn reaches the knockout turn")
+  answerTurn(session, 0, 0)
+  local offer, setupEvents = advanceCollecting(session, 64)
+  Assert.equal(offer.status, "waiting", "the foe knockout opens its held Shift offer")
+  Assert.notNil(session:capture().pending.shift, "the continuation is the optional Shift offer")
+  local held = session:capture()
+  Assert.isTrue(
+    held.combatants[1].mon.experience == 967,
+    "the first knockout awards the player recipient (exp=" .. tostring(held.combatants[1].mon.experience) .. ")"
+  )
+  local revived = Executor.restore(held, content)
+  Assert.equal(revived:capture().rng.calls, held.rng.calls, "restoring the replacement spends no order draw")
+  local baselineEvents = nil
+  for _, live in ipairs({ session, revived }) do
+    local collected = {}
+    for _, event in ipairs(setupEvents) do
+      collected[#collected + 1] = event
+    end
+    local open = SessionFixture.driveUntilSettled(live)
+    local actor = assert(open.request.requests[1].actors[1], "the Shift addresses the standing player")
+    Assert.isTrue(
+      live:submit(SessionFixture.replyFor(open.request.requests[1], {
+        { actor = actor, kind = "confirm", payload = {} },
+      })),
+      "the restored Shift accepts staying"
+    )
+    local promptFrame, events = advanceCollecting(live, 64)
+    for _, event in ipairs(events) do
+      collected[#collected + 1] = event
+    end
+    local lessons = {}
+    local following = promptFrame
+    while true do
+      local prompt = findLearnPrompt(following)
+      if prompt == nil then
+        break
+      end
+      lessons[#lessons + 1] = prompt.incomingMove
+      local addressed = assert(prompt.actors[1], "the new lesson addresses its recipient")
+      Assert.isTrue(
+        live:submit(SessionFixture.replyFor(prompt, { learnChoice(addressed, "decline") })),
+        "the new lesson is answered"
+      )
+      local nextFrame, nextEvents = advanceCollecting(live, 64)
+      for _, event in ipairs(nextEvents) do
+        collected[#collected + 1] = event
+      end
+      following = nextFrame
+    end
+    Assert.deepEqual(lessons, { "SYNTHESIS", "REFLECT" }, "the replacement award carries both crossed-level lessons")
+    while live:capture().pending ~= nil and live:capture().pending.shift ~= nil do
+      local shiftFrame = SessionFixture.driveUntilSettled(live)
+      local shiftRequest = assert(shiftFrame.request.requests[1], "the follow-on faint opens its Shift offer")
+      local standing = assert(shiftRequest.actors[1], "the follow-on offer addresses the player")
+      Assert.isTrue(
+        live:submit(SessionFixture.replyFor(shiftRequest, {
+          { actor = standing, kind = "confirm", payload = {} },
+        })),
+        "staying releases the held follow-on foe"
+      )
+      local nextFrame, nextEvents = advanceCollecting(live, 64)
+      for _, event in ipairs(nextEvents) do
+        collected[#collected + 1] = event
+      end
+      following = nextFrame
+    end
+    Assert.equal(live:capture().combatants[4].hp, 0, "the held foe arrival is fainted by spikes")
+    Assert.equal(live:capture().positions[1].occupant, 1, "staying keeps the reward recipient on the field")
+    Assert.equal(following.status, "waiting", "the follow-on replacement reaches a regular decision")
+    Assert.equal(live:capture().positions[2].occupant, 5, "the follow-on foe reserve takes the vacant slot")
+    Assert.equal(live:capture().combatants[1].stages.attack, -1, "the follow-on Intimidate settles")
+    if baselineEvents == nil then
+      baselineEvents = collected
+    else
+      Assert.deepEqual(collected, baselineEvents, "the restored Shift replays the same events")
+    end
+  end
+  Assert.deepEqual(revived:capture(), session:capture(), "the restored Shift reaches the same state")
+  session:dispose()
+  revived:dispose()
+end
+
 -- Suspended obligations validate their carried identities on restore: a
 -- snapshot whose held obligations lose their entry binding or stop
 -- being records is rejected instead of resuming the continuation.
@@ -4407,6 +5357,44 @@ function T.suspended_obligations_with_broken_identities_never_restore()
   Assert.throws(function()
     Executor.restore(foreign, content)
   end, "obligations that stop being records never restore")
+  local function rejectBrokenCheckpoints(capture, pendingKey)
+    local variants = {
+      {
+        name = "missing",
+        apply = function(record)
+          record.checkpointPositions = nil
+        end,
+      },
+      {
+        name = "duplicate",
+        apply = function(record)
+          record.checkpointPositions = { 1, 1 }
+        end,
+      },
+      {
+        name = "unknown",
+        apply = function(record)
+          record.checkpointPositions = { 1, 99 }
+        end,
+      },
+      {
+        name = "incomplete",
+        apply = function(record)
+          record.checkpointPositions = { 2 }
+        end,
+      },
+    }
+    for _, variant in ipairs(variants) do
+      local candidate = capture()
+      variant.apply(candidate.pending[pendingKey])
+      Assert.throws(function()
+        Executor.restore(candidate, content)
+      end, pendingKey .. " continuations reject a " .. variant.name .. " slot order")
+    end
+  end
+  rejectBrokenCheckpoints(function()
+    return session:capture()
+  end, "replacement")
   session:dispose()
 
   local learning = contracts.Battle.newSession(rewardScenario(), content)
@@ -4426,6 +5414,9 @@ function T.suspended_obligations_with_broken_identities_never_restore()
   Assert.throws(function()
     Executor.restore(held, content)
   end, "suspended learning with a broken obligation never restores")
+  rejectBrokenCheckpoints(function()
+    return learning:capture()
+  end, "learning")
   learning:dispose()
 end
 
@@ -4532,6 +5523,47 @@ function T.swift_swim_doubles_speed_during_an_unsuppressed_rain_order()
   local session = projectionDuel(drizzle, swimmer, facts, species, PROJECTION_SEED)
   Assert.equal(firstActor(playOpeningTurn(session)), 2, "Drizzle lets the slower Swift Swim holder act first")
   session:dispose()
+end
+
+function T.swift_swim_doubles_speed_before_integer_item_adjustment()
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local catalog = CatalogFixture.makeCatalog()
+  local function combatant(id, seed, species, move)
+    local factory = CatalogFixture.makeFactory(seed, catalog)
+    local mon = factory:createNormal(CatalogFixture.normalRequest({ species = species, level = 100 }))
+    mon.personality = 0 -- Hardy: no Speed nature modifier
+    mon.moves = { { move = move, pp = 35, ppUps = 0 } }
+    return { id = id, mon = mon }
+  end
+  local swimmer = combatant(1, 11, "CHIKORITA", "TACKLE")
+  swimmer.mon.ability = "SWIFT_SWIM"
+  swimmer.mon.heldItem = "IRON_BALL"
+  swimmer.mon.ivs.speed = 0
+  local opponent = combatant(2, 23, "EEVEE", "TACKLE")
+  opponent.mon.ivs.speed = 1
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+  species.CHIKORITA[0].baseStats.speed = 48 -- staged Speed 101
+  species.EEVEE[0].baseStats.speed = 47 -- staged Speed 100
+  local facts = { TACKLE = strikeFacts(0, "normal", 1), STRUGGLE = struggleFacts() }
+
+  local rainy = projectionDuel(swimmer, opponent, facts, species, 6, "rain")
+  local rainyOpening = SessionFixture.driveUntilSettled(rainy)
+  Assert.equal(rainyOpening.status, "waiting", "the rainy boundary reaches decisions")
+  Assert.equal(rainy:capture().rng.calls, 4, "the odd-Speed boundary creates no opening tie draws")
+  Assert.equal(
+    firstActor(playOpeningTurn(rainy)),
+    1,
+    "rain doubles 101 before Iron Ball halves it, leaving a strict 101-to-100 win"
+  )
+  rainy:dispose()
+
+  opponent.mon.ability = "CLOUD_NINE"
+  local suppressed = projectionDuel(swimmer, opponent, facts, species, 6, "rain")
+  Assert.equal(firstActor(playOpeningTurn(suppressed)), 2, "suppressed weather leaves Iron Ball's halved Speed behind")
+  suppressed:dispose()
 end
 
 -- Held items reshape effective Speed before status: a Choice Scarf
@@ -5032,7 +6064,8 @@ function T.trick_room_reverses_speed_order()
       effectChance = 0,
       priority = -7,
     },
-    SCRATCH = strikeFacts(0, "normal", 35),
+    SCRATCH = strikeFacts(0, "normal", 10),
+    TACKLE = strikeFacts(40, "normal", 100),
   })
   local session = contracts.Battle.newSession(scenario, content)
   local opening = SessionFixture.driveUntilSettled(session)
@@ -6125,6 +7158,141 @@ local function actorFor(request, combatant)
   error("the request addresses no actor for combatant " .. tostring(combatant))
 end
 
+function T.trick_room_resort_retires_a_fainted_doubles_actor()
+  local contracts = SessionFixture.sessionContracts()
+  local fastSetter = singleMoveCombatant(1, 11, "CHIKORITA", "TRICK_ROOM")
+  local slowSetter = singleMoveCombatant(3, 31, "EEVEE", "TRICK_ROOM")
+  slowSetter.mon.condition.currentHp = 1
+  local attacker = singleMoveCombatant(2, 23, "TOTODILE", "TACKLE")
+  local teammate = singleMoveCombatant(4, 41, "PICHU", "SPLASH")
+  fastSetter.mon.moves = { { move = "TRICK_ROOM", pp = 10, ppUps = 0 } }
+  slowSetter.mon.moves = { { move = "TRICK_ROOM", pp = 10, ppUps = 0 } }
+  local scenario = doubleActionScenario({ fastSetter, slowSetter }, { attacker, teammate })
+  scenario.speciesFacts.CHIKORITA[0].baseStats.speed = 200
+  scenario.speciesFacts.EEVEE[0].baseStats.speed = 10
+  scenario.speciesFacts.TOTODILE[0].baseStats.speed = 100
+  scenario.speciesFacts.PICHU[0].baseStats.speed = 50
+  scenario.moveFacts.TRICK_ROOM = {
+    power = 0,
+    accuracy = 0,
+    category = "other",
+    moveType = "psychic",
+    effectChance = 0,
+    priority = -7,
+  }
+  scenario.moveFacts.TACKLE = strikeFacts(500, "normal", 100)
+  scenario.moveFacts.SPLASH = strikeFacts(0, "normal", 0)
+  local session = contracts.Battle.newSession(scenario, actionContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(opening.request.requests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      if actor.combatant == 1 or actor.combatant == 3 then
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+      elseif actor.combatant == 2 then
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(3))
+      else
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(1))
+      end
+    end
+    Assert.isTrue(session:submit(SessionFixture.replyFor(request, choices)), "the double actions are accepted")
+  end
+  session:advance(64)
+  local settled = SessionFixture.driveUntilSettled(session)
+  Assert.equal(settled.status, "waiting", "the surviving field reaches its next decision")
+  local faintedHp = nil
+  for _, combatant in ipairs(session:capture().combatants) do
+    if combatant.id == 3 then
+      faintedHp = combatant.hp
+    end
+  end
+  Assert.equal(faintedHp, 0, "the slower Trick Room actor is retired after the knockout")
+  local trickRoomActive = false
+  for _, effect in ipairs(session:capture().effects) do
+    if effect.key == "trickroom" then
+      trickRoomActive = true
+    end
+  end
+  Assert.isTrue(trickRoomActive, "the fainted actor retires during a real Trick Room re-sort")
+  session:dispose()
+end
+
+function T.trace_draws_for_every_doubles_slot_without_a_trace_holder()
+  local contracts = SessionFixture.sessionContracts()
+  local alphaFirst = singleMoveCombatant(1, 11, "EEVEE", "SPLASH")
+  local alphaSecond = singleMoveCombatant(3, 31, "CHIKORITA", "SPLASH")
+  local betaFirst = singleMoveCombatant(2, 23, "TOTODILE", "SPLASH")
+  local betaSecond = singleMoveCombatant(4, 41, "PICHU", "SPLASH")
+  alphaFirst.mon.ability = "PRESSURE"
+  alphaSecond.mon.ability = "INTIMIDATE"
+  betaFirst.mon.ability = "KEEN_EYE"
+  betaSecond.mon.ability = "STATIC"
+  local scenario = doubleActionScenario({ alphaFirst, alphaSecond }, { betaFirst, betaSecond })
+  local session = contracts.Battle.newSession(scenario, actionContent())
+  SessionFixture.driveUntilSettled(session)
+  local draws = 0
+  for _, entry in ipairs(session:_live().rng._trace) do
+    if entry.label == "trace" then
+      draws = draws + 1
+    end
+  end
+  Assert.equal(draws, 4, "the Trace phase selects donors for every controller slot")
+  session:dispose()
+end
+
+function T.trace_filters_ineligible_doubles_donors_before_selecting()
+  local contracts = SessionFixture.sessionContracts()
+  local tracer = singleMoveCombatant(1, 11, "EEVEE", "SPLASH")
+  tracer.mon.ability = "TRACE"
+  local ally = singleMoveCombatant(3, 31, "CHIKORITA", "SPLASH")
+  local forecast = singleMoveCombatant(2, 23, "TOTODILE", "SPLASH")
+  forecast.mon.ability = "FORECAST"
+  local pressure = singleMoveCombatant(4, 41, "PICHU", "SPLASH")
+  pressure.mon.ability = "PRESSURE"
+  local scenario = doubleActionScenario({ tracer, ally }, { forecast, pressure })
+  local session = contracts.Battle.newSession(scenario, actionContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  local copiedAbility = nil
+  for _, event in ipairs(opening.events or {}) do
+    if event.kind == "ability" and event.cause.key == "TRACE" then
+      copiedAbility = event.payload.copiedAbility
+    end
+  end
+  Assert.equal(copiedAbility, "PRESSURE", "Trace selects the eligible donor after excluding Forecast")
+  Assert.equal(
+    rngLabelCount(session, "trace", 0),
+    2,
+    "the successful copy restarts the phase and draws for newly eligible double-donor slots"
+  )
+  session:dispose()
+end
+
+function T.opening_entry_runs_held_item_status_cures()
+  local holder = singleMoveCombatant(1, 11, "EEVEE", "SPLASH")
+  holder.mon.heldItem = "CHESTO_BERRY"
+  holder.mon.condition.effects = { { key = "sleep", version = 1, state = { turns = 2 } } }
+  local opponent = singleMoveCombatant(2, 23, "CHIKORITA", "SPLASH")
+  local species = typedSpeciesFacts({
+    { species = "EEVEE", types = { "normal" } },
+    { species = "CHIKORITA", types = { "grass" } },
+  })
+  local session = projectionDuel(holder, opponent, {
+    SPLASH = strikeFacts(0, "normal", 0),
+    STRUGGLE = struggleFacts(),
+  }, species, NATIVE_SEED)
+  SessionFixture.driveUntilSettled(session)
+  local entrant = nil
+  for _, combatant in ipairs(session:capture().combatants) do
+    if combatant.id == 1 then
+      entrant = combatant
+    end
+  end
+  assert(entrant ~= nil, "the Chesto holder remains in the battle")
+  Assert.equal(entrant.mon.condition.effects[1], nil, "the lead cures sleep before its first prompt")
+  Assert.equal(entrant.mon.heldItem, "NONE", "Chesto Berry is consumed at the opening entry checkpoint")
+  session:dispose()
+end
+
 -- A called move executes under its drawn scope, not the requested one:
 -- mirror move copies a spread strike and wounds both foes from one
 -- requested slot and one power-point spend.
@@ -6386,10 +7554,10 @@ function T.every_nonzero_stored_mark_doubles_identically()
   end
 end
 
--- Early-order holdings reorder live turns from a pre-request sample: a
--- slower Quick Claw holder moves first when its stored sample triggers
--- and stays last when the sample misses, with the samples already spent
--- while the turn waits for decisions.
+-- Early-order holdings read the four samples initialized at battle start.
+-- Execution order spends no replacement batch: an initially triggering
+-- sample moves the slower holder first, then the before-turn refresh is
+-- carried into the next action order without another request-time draw.
 function T.slower_quick_claw_holders_act_first_from_a_pre_request_sample()
   local facts = {
     TACKLE = strikeFacts(0, "normal", 1),
@@ -6400,6 +7568,9 @@ function T.slower_quick_claw_holders_act_first_from_a_pre_request_sample()
     { species = "EEVEE", types = { "normal" } },
   })
 
+  species.CHIKORITA[0].baseStats.speed = 10
+  species.EEVEE[0].baseStats.speed = 100
+
   ---@param seed integer battle stream seed under the claw duel
   ---@return table live claw duel with the slower holder leading
   local function clawDuel(seed)
@@ -6408,16 +7579,99 @@ function T.slower_quick_claw_holders_act_first_from_a_pre_request_sample()
     return projectionDuel(slow, singleMoveCombatant(2, 23, "EEVEE", "TACKLE"), facts, species, seed)
   end
 
-  local missing = clawDuel(7)
+  local missing = clawDuel(1)
   local waiting = SessionFixture.driveUntilSettled(missing)
   Assert.equal(waiting.status, "waiting", "the turn asks for decisions")
-  Assert.equal(missing:capture().rng.calls, 4, "order samples are spent before requests")
-  Assert.equal(firstActor(playOpeningTurn(missing)), 2, "a missing sample keeps the slower holder last")
+  Assert.equal(missing:capture().rng.calls, 4, "only the four battle-start samples precede the first requests")
+  Assert.equal(firstActor(playOpeningTurn(missing)), 2, "a missing initial sample keeps the slower holder last")
   missing:dispose()
 
-  local triggering = clawDuel(164)
-  Assert.equal(firstActor(playOpeningTurn(triggering)), 1, "a triggering sample moves the slower holder first")
+  local triggering = clawDuel(3)
+  local triggeringWaiting = SessionFixture.driveUntilSettled(triggering)
+  Assert.equal(triggeringWaiting.status, "waiting", "the triggering opening asks for decisions")
+  Assert.equal(triggering:capture().rng.calls, 4, "the first decision does not spend the refreshed samples")
+  local initialRolls = triggering:capture().nativeOrderRolls
+  Assert.equal(initialRolls[1] % 5, 0, "the battle-start sample triggers Quick Claw")
+  local triggeringEvents = playOpeningTurn(triggering)
+  Assert.equal(firstActor(triggeringEvents), 1, "the initial triggering sample moves the slower holder first")
+  local refreshed = triggering:capture()
+  Assert.equal(rngLabelCount(triggering, "quick_claw"), 8, "the before-turn seam spends exactly four refreshed samples")
+  Assert.equal(refreshed.nativeOrderRolls[1] % 5 ~= 0, true, "the refreshed sample does not trigger Quick Claw")
+  local following = SessionFixture.driveUntilSettled(triggering)
+  Assert.equal(following.status, "waiting", "the following turn asks for decisions")
+  Assert.equal(rngLabelCount(triggering, "quick_claw"), 8, "the following request does not resample order values")
+  Assert.equal(firstActor(playOpeningTurn(triggering)), 2, "the carried refreshed sample keeps the slower holder last")
   triggering:dispose()
+end
+
+-- The same before-turn refresh also owns the first controller battler sort.
+-- After the initial equal-Speed tie lets Rain Dance act first without Quick
+-- Claw, the refreshed triggering sample puts the claw holder first in the
+-- post-action weather-form scan. Restoring the paused queue spends no new
+-- order samples.
+function T.quick_claw_refresh_owns_the_following_battler_checkpoint()
+  local facts = {
+    SPLASH = strikeFacts(0, "normal", 0),
+    RAIN_DANCE = { power = 0, accuracy = 0, category = "other", moveType = "normal", priority = 0 },
+    STRUGGLE = struggleFacts(),
+  }
+  local species = weatherFormFacts("CASTFORM", {
+    [0] = { "normal" },
+    [1] = { "fire" },
+    [2] = { "water" },
+    [3] = { "ice" },
+  })
+  species.CASTFORM[0].baseStats.speed = 50
+  local holder = weatherCombatant(1, 11, "CASTFORM", "SPLASH")
+  holder.mon.ability = "FORECAST"
+  holder.mon.heldItem = "QUICK_CLAW"
+  local setter = weatherCombatant(2, 23, "CASTFORM", "RAIN_DANCE")
+  setter.mon.ability = "FORECAST"
+  local session = projectionDuel(holder, setter, facts, species, 6)
+  local opening = SessionFixture.driveUntilSettled(session)
+  Assert.equal(opening.status, "waiting", "the equal-Speed Castform pair asks for decisions")
+  Assert.equal(
+    session:capture().rng.calls,
+    6,
+    "four initial samples and two independent opening ties precede decisions"
+  )
+  for _, request in ipairs(opening.request.requests) do
+    local actor = assert(request.actors[1], "the request addresses its Castform")
+    local target = actor.combatant == 1 and 2 or 1
+    Assert.isTrue(
+      session:submit(SessionFixture.replyFor(request, {
+        SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target)),
+      })),
+      "the Castform choices are accepted"
+    )
+  end
+  local first = session:advance(1)
+  local firstUser = nil
+  for _, event in ipairs(first.events or {}) do
+    if event.kind == "move-used" then
+      firstUser = event.payload.user
+      break
+    end
+  end
+  Assert.equal(firstUser, 2, "the initial missing claw sample lets Rain Dance act first")
+  local forms = {}
+  for _, event in ipairs(first.events or {}) do
+    if event.kind == "ability" and event.cause.key == "weather-form" then
+      forms[#forms + 1] = event.payload.combatant
+    end
+  end
+  Assert.deepEqual(forms, { 1, 2 }, "the refreshed claw sample leads the post-action battler scan")
+  Assert.isNil(session:capture().turnItemActivations[1], "the initial action did not activate Quick Claw")
+  local paused = session:capture()
+  local calls = paused.rng.calls
+  local revived = executorOwner().restore(paused, nativeContent())
+  local liveEvents = SessionFixture.driveUntilSettled(session)
+  local restoredEvents = SessionFixture.driveUntilSettled(revived)
+  Assert.deepEqual(restoredEvents.events, liveEvents.events, "the paused queue replays identical events")
+  Assert.equal(session:capture().rng.calls, calls, "resuming the paused queue spends no order samples")
+  Assert.equal(revived:capture().rng.calls, calls, "restoring the paused queue spends no order samples")
+  session:dispose()
+  revived:dispose()
 end
 
 -- Pinch priority answers from current health without spending order
@@ -6619,6 +7873,8 @@ function T.live_strikes_carry_complete_critical_facts_to_the_resolver()
     { species = "CHIKORITA", types = { "grass" } },
     { species = "EEVEE", types = { "normal" } },
   })
+  species.EEVEE[0].baseStats.speed = 100
+  species.CHIKORITA[0].baseStats.speed = 10
   local facts = {
     TACKLE = strikeFacts(0, "normal", 60),
     RAZOR_LEAF = { power = 60, accuracy = 0, category = "physical", moveType = "normal", priority = 0 },
@@ -6643,10 +7899,10 @@ function T.live_strikes_carry_complete_critical_facts_to_the_resolver()
     if ward ~= nil then
       defender.mon.ability = ward
     end
-    -- The critical roll is the fifth battle draw behind the four
-    -- pre-turn order samples; this seed separates a missing stage
-    -- from a raised one on that roll while the later roll never crits.
-    local session = projectionDuel(striker, defender, facts, species, 30)
+    -- With unequal opening speeds, the critical roll follows four
+    -- initial and four pre-turn order samples. This seed misses the
+    -- base divisor but hits every one-stage raised divisor.
+    local session = projectionDuel(striker, defender, facts, species, 18)
     playOpeningTurn(session)
     local dealt = damageTaken(session, 2)
     local calls = session:capture().rng.calls
@@ -6878,6 +8134,97 @@ function T.entry_weather_ability_starts_live_weather()
   end
 end
 
+-- SortMonsBySpeed(..., 1) applies held-item priority and Stall before numeric
+-- Speed. Opening also performs an independent second sort after entry scripts.
+function T.opening_weather_order_uses_native_priority_modifiers_and_independent_ties()
+  local facts = {
+    TACKLE = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+  species.EEVEE[0].baseStats.speed = 200
+  species.CHIKORITA[0].baseStats.speed = 100
+  for _, loweredSide in ipairs({ 1, 2 }) do
+    local drizzle = singleMoveCombatant(1, 11, "EEVEE", "TACKLE")
+    drizzle.mon.ability = "DRIZZLE"
+    local drought = singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE")
+    drought.mon.ability = "DROUGHT"
+    if loweredSide == 1 then
+      drizzle.mon.heldItem = "LAGGING_TAIL"
+    else
+      drought.mon.heldItem = "LAGGING_TAIL"
+    end
+    local session = projectionDuel(drizzle, drought, facts, species, NATIVE_SEED)
+    local frame = SessionFixture.driveUntilSettled(session)
+    local order = {}
+    for _, event in ipairs(frame.events or {}) do
+      if event.kind == "ability" and (event.cause.key == "DRIZZLE" or event.cause.key == "DROUGHT") then
+        order[#order + 1] = event.cause.key
+      end
+    end
+    local expectedOrder = loweredSide == 1 and { "DROUGHT", "DRIZZLE" } or { "DRIZZLE", "DROUGHT" }
+    Assert.deepEqual(order, expectedOrder, "the non-lowered weather setter acts first on side " .. loweredSide)
+    local rain = false
+    local sun = false
+    for _, effect in ipairs(session:capture().effects) do
+      if effect.key == "raindance" and effect.scope.kind == "field" and effect.state.turns == 0 then
+        rain = true
+      elseif effect.key == "sunnyday" and effect.scope.kind == "field" and effect.state.turns == 0 then
+        sun = true
+      end
+    end
+    Assert.equal(rain, loweredSide == 1, "the final opening weather follows the non-lowered setter")
+    Assert.equal(sun, loweredSide == 2, "the lowered Drought cannot overwrite an earlier Drizzle")
+    Assert.equal(session:capture().rng.calls, 4, "four battle-start order samples precede decisions")
+    session:dispose()
+  end
+
+  species.EEVEE[0].baseStats.speed = 10
+  species.CHIKORITA[0].baseStats.speed = 10
+  local drizzle = singleMoveCombatant(1, 11, "EEVEE", "TACKLE")
+  drizzle.mon.ability = "DRIZZLE"
+  local drought = singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE")
+  drought.mon.ability = "DROUGHT"
+  local tied = projectionDuel(drizzle, drought, facts, species, NATIVE_SEED)
+  local tiedFrame = SessionFixture.driveUntilSettled(tied)
+  local tiedOrder = {}
+  for _, event in ipairs(tiedFrame.events or {}) do
+    if event.kind == "ability" and (event.cause.key == "DRIZZLE" or event.cause.key == "DROUGHT") then
+      tiedOrder[#tiedOrder + 1] = event.cause.key
+    end
+  end
+  Assert.deepEqual(tiedOrder, { "DROUGHT", "DRIZZLE" }, "the first opening tie follows the fifth source draw")
+  local tiedCalls = tied:capture().rng.calls
+  Assert.equal(tiedCalls, 6, "the second opening tie spends its own draw before decisions; actual " .. tiedCalls)
+  tied:dispose()
+end
+
+function T.opening_resorts_after_entry_weather_changes_speed()
+  local facts = {
+    TACKLE = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+  species.EEVEE[0].baseStats.speed = 10
+  species.CHIKORITA[0].baseStats.speed = 47
+  local swimmer = singleMoveCombatant(1, 11, "EEVEE", "TACKLE")
+  swimmer.mon.ability = "SWIFT_SWIM"
+  local setter = singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE")
+  setter.mon.ability = "DRIZZLE"
+  local session = projectionDuel(swimmer, setter, facts, species, NATIVE_SEED)
+  local frame = SessionFixture.driveUntilSettled(session)
+  Assert.equal(frame.status, "waiting", "the weather-sensitive opening reaches decisions")
+  local calls = session:capture().rng.calls
+  Assert.equal(calls, 5, "the post-entry equal-Speed sort adds a tie draw after the initial samples; actual " .. calls)
+  session:dispose()
+end
+
 -- Anticipation only announces when an opponent actually has a qualifying
 -- super-effective or level-eligible OHKO move.
 function T.anticipation_stays_silent_without_a_threatening_move()
@@ -6942,7 +8289,7 @@ function T.anticipation_announces_a_level_eligible_ohko_move()
   striker.mon.ability = "ANTICIPATION"
   local defender = singleMoveCombatant(2, 23, "EEVEE", "FISSURE")
   local species = typedSpeciesFacts({
-    { species = "CHIKORITA", types = { "grass" } },
+    { species = "CHIKORITA", types = { "grass", "ground" } },
     { species = "EEVEE", types = { "normal" } },
   })
   local session = projectionDuel(striker, defender, {
@@ -6966,6 +8313,233 @@ function T.anticipation_announces_a_level_eligible_ohko_move()
   end
   Assert.isTrue(announced, "Anticipation treats an equal-or-higher-level OHKO move as threatening")
   session:dispose()
+end
+
+function T.anticipation_ignores_type_immune_ohko_moves()
+  local holder = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
+  holder.mon.ability = "ANTICIPATION"
+  local attacker = singleMoveCombatant(2, 23, "EEVEE", "GUILLOTINE")
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "ghost" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+  local session = projectionDuel(holder, attacker, {
+    TACKLE = strikeFacts(0, "normal", 1),
+    GUILLOTINE = {
+      power = 1,
+      accuracy = 0,
+      category = "physical",
+      moveType = "normal",
+      priority = 0,
+      effect = "one_hit_ko",
+    },
+    STRUGGLE = struggleFacts(),
+  }, species, NATIVE_SEED)
+  local opening = SessionFixture.driveUntilSettled(session)
+  for _, event in ipairs(opening.events or {}) do
+    Assert.isFalse(
+      event.kind == "ability" and event.cause.key == "ANTICIPATION",
+      "a Ghost immunity keeps Guillotine from qualifying"
+    )
+  end
+  session:dispose()
+end
+
+function T.anticipation_respects_flying_immunity_and_gravity_for_ohko_moves()
+  local function announces(gravity)
+    local contracts = SessionFixture.sessionContracts()
+    local lead = singleMoveCombatant(1, 11, "CHIKORITA", "SPLASH")
+    local reserve = singleMoveCombatant(3, 31, "EEVEE", "TACKLE")
+    reserve.mon.ability = "ANTICIPATION"
+    local attacker = singleMoveCombatant(2, 23, "EEVEE", "GRAVITY")
+    attacker.mon.moves = {
+      { move = "GRAVITY", pp = 5, ppUps = 0 },
+      { move = "FISSURE", pp = 5, ppUps = 0 },
+      { move = "SPLASH", pp = 40, ppUps = 0 },
+    }
+    local species = typedSpeciesFacts({
+      { species = "CHIKORITA", types = { "grass" } },
+      { species = "EEVEE", types = { "flying" } },
+    })
+    species.CHIKORITA[0].baseStats.speed = 200
+    species.EEVEE[0].baseStats.speed = 10
+    local scenario = {
+      ruleset = executorOwner().RULESET,
+      format = NATIVE_FORMAT,
+      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+      participants = {
+        SessionFixture.participant(1, 1, "alpha", { lead, reserve }),
+        SessionFixture.participant(2, 2, "beta", { attacker }),
+      },
+      positions = {
+        SessionFixture.position(1, 1, { 1 }, 1),
+        SessionFixture.position(2, 2, { 2 }, 2),
+      },
+      inventories = {},
+      environment = { weather = "none" },
+      random = { seed = NATIVE_SEED },
+      formatState = {},
+      moveFacts = {
+        SPLASH = strikeFacts(0, "normal", 0),
+        GRAVITY = { power = 0, accuracy = 0, category = "other", moveType = "psychic", priority = 0 },
+        FISSURE = {
+          power = 1,
+          accuracy = 0,
+          category = "physical",
+          moveType = "ground",
+          priority = 0,
+          effect = "one_hit_ko",
+        },
+        TACKLE = strikeFacts(40, "normal", 100),
+        STRUGGLE = struggleFacts(),
+      },
+      speciesFacts = species,
+    }
+    local session = contracts.Battle.newSession(scenario, chartContent())
+    local opening = SessionFixture.driveUntilSettled(session)
+    for _, request in ipairs(opening.request.requests) do
+      local actor = assert(request.actors[1], "the opening decision addresses each lead")
+      local choice = request.controller == "alpha"
+          and SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+        or SessionFixture.attackChoice(actor, gravity and 0 or 2, SessionFixture.positionTarget(1))
+      Assert.isTrue(session:submit(SessionFixture.replyFor(request, { choice })), "the first turn is accepted")
+    end
+    session:advance(64)
+    local nextTurn = SessionFixture.driveUntilSettled(session)
+    for _, request in ipairs(nextTurn.request.requests) do
+      local actor = assert(request.actors[1], "the next decision addresses its active battler")
+      local choice = request.controller == "alpha" and SessionFixture.switchChoice(actor, 3)
+        or SessionFixture.attackChoice(actor, 1, SessionFixture.positionTarget(1))
+      Assert.isTrue(session:submit(SessionFixture.replyFor(request, { choice })), "the arrival turn is accepted")
+    end
+    local frame = session:advance(64)
+    local announced = false
+    for _, event in ipairs(frame.events or {}) do
+      if event.kind == "ability" and event.cause.key == "ANTICIPATION" then
+        announced = true
+      end
+    end
+    session:dispose()
+    return announced
+  end
+
+  Assert.isFalse(announces(false), "Fissure cannot threaten an ungrounded Flying holder")
+  Assert.isTrue(announces(true), "Gravity makes the Flying holder vulnerable to Fissure")
+end
+
+function T.anticipation_distinguishes_magnet_rise_immunity_after_baton_pass()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local function arrival(move, ironBall)
+    local user = singleMoveCombatant(1, 11, "EEVEE", "MAGNET_RISE")
+    user.mon.moves = {
+      { move = "MAGNET_RISE", pp = 10, ppUps = 0 },
+      { move = "BATON_PASS", pp = 20, ppUps = 0 },
+    }
+    local reserve = singleMoveCombatant(3, 31, "PICHU", "SPLASH")
+    reserve.mon.ability = "ANTICIPATION"
+    if ironBall then
+      reserve.mon.heldItem = "IRON_BALL"
+    end
+    local attacker = singleMoveCombatant(2, 23, "EEVEE", move)
+    attacker.mon.moves = {
+      { move = move, pp = 5, ppUps = 0 },
+      { move = "SPLASH", pp = 40, ppUps = 0 },
+    }
+    attacker.mon.level = 50
+    local seeds = { user, reserve, attacker }
+    local moveFacts = scenarioMoveFacts({ reserve })
+    moveFacts.MAGNET_RISE = {
+      power = 0,
+      accuracy = 0,
+      category = "other",
+      moveType = "electric",
+      priority = 0,
+      target = "user",
+      effect = "magnetrise",
+    }
+    moveFacts.BATON_PASS = {
+      power = 0,
+      accuracy = 0,
+      category = "other",
+      moveType = "normal",
+      priority = 0,
+      target = "user",
+    }
+    moveFacts[move] = move == "FISSURE"
+        and {
+          power = 1,
+          accuracy = 30,
+          category = "physical",
+          moveType = "ground",
+          priority = 0,
+          effect = "one_hit_ko",
+        }
+      or strikeFacts(100, "ground", 100)
+    local scenario = {
+      ruleset = Executor.RULESET,
+      format = NATIVE_FORMAT,
+      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+      participants = {
+        SessionFixture.participant(1, 1, "alpha", { user, reserve }),
+        SessionFixture.participant(2, 2, "beta", { attacker }),
+      },
+      positions = {
+        SessionFixture.position(1, 1, { 1 }, 1),
+        SessionFixture.position(2, 2, { 2 }, 2),
+      },
+      inventories = {},
+      environment = { weather = "none" },
+      random = { seed = NATIVE_SEED },
+      formatState = {},
+      moveFacts = moveFacts,
+      speciesFacts = scenarioSpeciesFacts(seeds),
+    }
+    local session = contracts.Battle.newSession(scenario, nativeContent())
+    local frame = SessionFixture.driveUntilSettled(session)
+    for turn = 1, 2 do
+      for _, request in ipairs(frame.request.requests) do
+        local choices = {}
+        for _, actor in ipairs(request.actors) do
+          local slot = request.controller == "alpha" and (turn == 1 and 0 or 1) or 1
+          local target = request.controller == "alpha" and 2 or 1
+          choices[#choices + 1] = SessionFixture.attackChoice(actor, slot, SessionFixture.positionTarget(target))
+        end
+        Assert.isTrue(
+          session:submit(SessionFixture.replyFor(request, choices)),
+          "the Baton Pass setup turn is accepted"
+        )
+      end
+      session:advance(64)
+      frame = SessionFixture.driveUntilSettled(session)
+    end
+    local replacement = assert(frame.request.requests[1], "Baton Pass asks for the incoming reserve")
+    local actor = assert(replacement.actors[1], "the replacement request addresses the outgoing user")
+    Assert.isTrue(
+      session:submit(SessionFixture.replyFor(replacement, { SessionFixture.switchChoice(actor, 3) })),
+      "the Anticipation reserve enters through Baton Pass"
+    )
+    local result = session:advance(64)
+    local announced = false
+    for _, event in ipairs(result.events or {}) do
+      if event.kind == "ability" and event.cause.key == "ANTICIPATION" then
+        announced = true
+      end
+    end
+    local transferredMagnetRise = false
+    for _, effect in ipairs(session:capture().effects) do
+      if effect.key == "magnetrise" and effect.scope.combatant == 3 then
+        transferredMagnetRise = true
+      end
+    end
+    session:dispose()
+    Assert.isTrue(transferredMagnetRise, "Baton Pass transfers Magnet Rise to the reserve")
+    return announced
+  end
+
+  Assert.isFalse(arrival("EARTHQUAKE"), "Magnet Rise blocks Earthquake's super-effective Anticipation flag")
+  Assert.isTrue(arrival("EARTHQUAKE", true), "an effective Iron Ball disables the Magnet Rise immunity branch")
+  Assert.isTrue(arrival("FISSURE"), "Magnet Rise does not set Fissure's no-effect flag")
 end
 
 function T.forewarn_announces_the_strongest_known_opposing_move()
@@ -7007,6 +8581,7 @@ function T.forewarn_falls_back_to_a_zero_power_opposing_move()
     STRUGGLE = struggleFacts(),
   }, species, NATIVE_SEED)
   local opening = SessionFixture.driveUntilSettled(session)
+  local abilityDraws = session:capture().rng.calls
   local announcedMove = nil
   for _, event in ipairs(opening.events or {}) do
     if event.kind == "ability" and event.cause.key == "FOREWARN" then
@@ -7015,6 +8590,21 @@ function T.forewarn_falls_back_to_a_zero_power_opposing_move()
   end
   Assert.equal(announcedMove, "SPLASH", "Forewarn's zero-power fallback names a learned move")
   session:dispose()
+
+  local plainHolder = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
+  local plainAttacker = singleMoveCombatant(2, 23, "EEVEE", "SPLASH")
+  local plain = projectionDuel(plainHolder, plainAttacker, {
+    TACKLE = strikeFacts(0, "normal", 1),
+    SPLASH = strikeFacts(0, "normal", 0),
+    STRUGGLE = struggleFacts(),
+  }, species, NATIVE_SEED)
+  SessionFixture.driveUntilSettled(plain)
+  Assert.equal(
+    abilityDraws - plain:capture().rng.calls,
+    5,
+    "Forewarn draws for all four zero-power slots, then once for its fallback move"
+  )
+  plain:dispose()
 end
 
 function T.trace_copies_an_eligible_ability_only_for_the_active_entry()
@@ -7089,6 +8679,308 @@ function T.trace_copies_an_eligible_ability_only_for_the_active_entry()
     Assert.isFalse(effect.key == "traceability", "the copied ability clears when its active entry leaves")
   end
   Assert.equal(session:capture().combatants[1].mon.ability, "TRACE", "the original ability remains on the roster")
+  session:dispose()
+end
+
+function T.failed_trace_retries_after_a_later_eligible_donor_enters()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local tracer = singleMoveCombatant(1, 11, "CHIKORITA", "SPLASH")
+  tracer.mon.ability = "TRACE"
+  local forecast = singleMoveCombatant(2, 23, "EEVEE", "SPLASH")
+  forecast.mon.ability = "FORECAST"
+  local intimidator = singleMoveCombatant(4, 41, "EEVEE", "SPLASH")
+  intimidator.mon.ability = "INTIMIDATE"
+  local seeds = { tracer, forecast, intimidator }
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { tracer }),
+      SessionFixture.participant(2, 2, "beta", { forecast, intimidator }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(seeds),
+    speciesFacts = scenarioSpeciesFacts(seeds),
+  }
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  for _, event in ipairs(opening.events or {}) do
+    Assert.isFalse(event.kind == "ability" and event.cause.key == "TRACE", "Forecast is not an eligible Trace donor")
+  end
+  local restored = Executor.restore(session:capture(), content)
+  local function switchDonor(live)
+    for _, request in ipairs(opening.request.requests) do
+      local choices = {}
+      for _, actor in ipairs(request.actors) do
+        if request.controller == "alpha" then
+          choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+        else
+          choices[#choices + 1] = SessionFixture.switchChoice(actor, 4)
+        end
+      end
+      Assert.isTrue(live:submit(SessionFixture.replyFor(request, choices)), "the donor exchange is accepted")
+    end
+    local frame = live:advance(64)
+    local copies = 0
+    local copiedAbility = nil
+    for _, event in ipairs(frame.events or {}) do
+      if event.kind == "ability" and event.cause.key == "TRACE" then
+        copies = copies + 1
+      end
+    end
+    for _, effect in ipairs(live:capture().effects) do
+      if effect.key == "traceability" and effect.scope.combatant == 1 then
+        copiedAbility = effect.state.ability
+      end
+    end
+    Assert.equal(copies, 1, "the later eligible donor admits exactly one Trace copy")
+    Assert.equal(copiedAbility, "INTIMIDATE", "the stationary Trace holder copies the later donor's ability")
+  end
+  switchDonor(session)
+  switchDonor(restored)
+  Assert.deepEqual(restored:capture(), session:capture(), "failed Trace restores without consuming its retry")
+  session:dispose()
+  restored:dispose()
+end
+
+function T.trace_copied_holder_becomes_a_later_raw_battle_ability_donor_after_restore()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local tracer = singleMoveCombatant(1, 11, "EEVEE", "SPLASH")
+  tracer.mon.ability = "TRACE"
+  local pressure = singleMoveCombatant(2, 23, "EEVEE", "SPLASH")
+  pressure.mon.ability = "PRESSURE"
+  local laterTracer = singleMoveCombatant(3, 31, "EEVEE", "SPLASH")
+  laterTracer.mon.ability = "TRACE"
+  local seeds = { tracer, pressure, laterTracer }
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { tracer }),
+      SessionFixture.participant(2, 2, "beta", { pressure, laterTracer }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = { SPLASH = strikeFacts(0, "normal", 0), STRUGGLE = struggleFacts() },
+    speciesFacts = scenarioSpeciesFacts(seeds),
+  }
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(scenario, content)
+  local opening = SessionFixture.driveUntilSettled(session)
+  local restored = Executor.restore(session:capture(), content)
+  for _, request in ipairs(opening.request.requests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      if request.controller == "alpha" then
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+      else
+        choices[#choices + 1] = SessionFixture.switchChoice(actor, 3)
+      end
+    end
+    local accepted, replyErr = restored:submit(SessionFixture.replyFor(request, choices))
+    Assert.isTrue(accepted, "the later Trace exchange is accepted: " .. tostring(replyErr))
+  end
+  local frame = restored:advance(64)
+  local copied = nil
+  for _, event in ipairs(frame.events or {}) do
+    if event.kind == "ability" and event.cause.key == "TRACE" and event.payload.combatant == 3 then
+      copied = event.payload.copiedAbility
+    end
+  end
+  Assert.equal(copied, "PRESSURE", "the later Trace copies the first holder's current unsuppressed battle ability")
+  local snapshot = restored:capture()
+  Assert.equal(snapshot.combatants[1].mon.ability, "TRACE", "the first holder's roster ability stays unchanged")
+  Assert.equal(snapshot.combatants[3].mon.ability, "TRACE", "the later holder's roster ability stays unchanged")
+  local pressureOverrides = 0
+  for _, effect in ipairs(snapshot.effects) do
+    if effect.key == "traceability" and effect.state.ability == "PRESSURE" then
+      pressureOverrides = pressureOverrides + 1
+    end
+  end
+  Assert.equal(pressureOverrides, 2, "both activation-local Trace overrides carry Pressure")
+  restored:dispose()
+  session:dispose()
+end
+
+function T.trace_donor_draws_precede_blocked_holder_eligibility()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+    { species = "TOTODILE", types = { "water" } },
+    { species = "PICHU", types = { "electric" } },
+  })
+  for _, blocked in ipairs({ false, true }) do
+    local tracer = singleMoveCombatant(1, 11, "EEVEE", "SPLASH")
+    tracer.mon.ability = "TRACE"
+    tracer.mon.heldItem = blocked and "GRISEOUS_ORB" or "NONE"
+    local ally = singleMoveCombatant(3, 31, "CHIKORITA", "SPLASH")
+    ally.mon.ability = "NONE"
+    local donorA = singleMoveCombatant(2, 23, "TOTODILE", "SPLASH")
+    donorA.mon.ability = "PRESSURE"
+    local donorB = singleMoveCombatant(4, 41, "PICHU", "SPLASH")
+    donorB.mon.ability = "INTIMIDATE"
+    local reserve = singleMoveCombatant(5, 51, "EEVEE", "SPLASH")
+    reserve.mon.ability = "NONE"
+    local seeds = { tracer, ally, donorA, donorB }
+    local scenario = {
+      ruleset = Executor.RULESET,
+      format = NATIVE_FORMAT,
+      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+      participants = {
+        SessionFixture.participant(1, 1, "alpha", { tracer, ally, reserve }),
+        SessionFixture.participant(2, 2, "beta", { donorA, donorB }),
+      },
+      positions = {
+        SessionFixture.position(1, 1, { 1 }, 1),
+        SessionFixture.position(2, 2, { 2 }, 2),
+        SessionFixture.position(3, 1, { 1 }, 3),
+        SessionFixture.position(4, 2, { 2 }, 4),
+      },
+      inventories = {},
+      environment = { weather = "none" },
+      random = { seed = NATIVE_SEED },
+      formatState = {},
+      moveFacts = { SPLASH = strikeFacts(0, "normal", 0), STRUGGLE = struggleFacts() },
+      speciesFacts = species,
+    }
+    local session = contracts.Battle.newSession(scenario, nativeContent())
+    local snapshot = session:capture()
+    Assert.equal(
+      rngLabelCount(session, "trace", 0),
+      blocked and 2 or 4,
+      "the phase selects for all slots, then restarts only after an admitted copy"
+    )
+    local copied = nil
+    for _, event in ipairs(snapshot.outbox) do
+      if event.kind == "ability" and event.cause.key == "TRACE" then
+        copied = event.payload.target
+      end
+    end
+    if blocked then
+      Assert.isNil(copied, "Griseous Orb blocks the copy after its donor draw")
+    else
+      local holderDraw = nil
+      for _, entry in ipairs(session:_live().rng._trace) do
+        if holderDraw == nil and entry.label == "trace" and entry.cause.combatant == 1 then
+          holderDraw = entry.value
+        end
+      end
+      Assert.notNil(holderDraw, "the Trace holder's donor draw is recorded")
+      Assert.equal(
+        copied,
+        holderDraw % 2 == 0 and 2 or 4,
+        "the first holder draw selects the recorded donor from source opposing-slot order"
+      )
+    end
+    session:dispose()
+  end
+end
+
+-- A direct exchange repeats the source donor scan for every slot, even
+-- after the Trace activation has copied an ordinary ability.
+function T.voluntary_doubles_switch_scans_trace_donors_once()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local species = typedSpeciesFacts({
+    { species = "EEVEE", types = { "normal" } },
+    { species = "TOTODILE", types = { "water" } },
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "PICHU", types = { "electric" } },
+  })
+  species.EEVEE[0].baseStats.speed = 10
+  species.TOTODILE[0].baseStats.speed = 20
+  species.CHIKORITA[0].baseStats.speed = 30
+  species.PICHU[0].baseStats.speed = 40
+  local tracer = singleMoveCombatant(1, 11, "EEVEE", "SPLASH")
+  tracer.mon.ability = "TRACE"
+  local ally = singleMoveCombatant(3, 31, "CHIKORITA", "SPLASH")
+  ally.mon.ability = "NONE"
+  local donorA = singleMoveCombatant(2, 23, "TOTODILE", "SPLASH")
+  donorA.mon.ability = "PRESSURE"
+  local donorB = singleMoveCombatant(4, 41, "PICHU", "SPLASH")
+  donorB.mon.ability = "INTIMIDATE"
+  local reserve = singleMoveCombatant(5, 51, "EEVEE", "SPLASH")
+  reserve.mon.ability = "NONE"
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { tracer, ally, reserve }),
+      SessionFixture.participant(2, 2, "beta", { donorA, donorB }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+      SessionFixture.position(3, 1, { 1 }, 3),
+      SessionFixture.position(4, 2, { 2 }, 4),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = { SPLASH = strikeFacts(0, "normal", 0), STRUGGLE = struggleFacts() },
+    speciesFacts = species,
+  }
+  local session = contracts.Battle.newSession(scenario, nativeContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(opening.request.requests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      if actor.combatant == 1 then
+        choices[#choices + 1] = SessionFixture.switchChoice(actor, 5)
+      else
+        local target = actor.combatant == 3 and SessionFixture.positionTarget(2) or SessionFixture.positionTarget(1)
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, target)
+      end
+    end
+    Assert.isTrue(
+      session:submit(SessionFixture.replyFor(request, choices)),
+      "the doubles exchange choices are accepted"
+    )
+  end
+  local before = session:capture().rng.calls
+  local frame = session:advance(1)
+  local completedActions = 0
+  for _, event in ipairs(frame.events or {}) do
+    if event.kind == "switch" or event.kind == "move-used" then
+      completedActions = completedActions + 1
+    end
+  end
+  local donorDraws = 0
+  for _, entry in ipairs(session:_live().rng._trace) do
+    if entry.ordinal > before and entry.label == "trace" then
+      donorDraws = donorDraws + 1
+    end
+  end
+  Assert.isTrue(completedActions > 0, "the bounded advance completes at least one action")
+  Assert.isTrue(
+    donorDraws >= completedActions * 4,
+    "each completed action includes a full controller-slot Trace scan; actual "
+      .. donorDraws
+      .. " actions "
+      .. completedActions
+  )
   session:dispose()
 end
 
@@ -7240,16 +9132,14 @@ function T.forecast_tracks_weather_changes_and_weather_suppression()
     if suppressWeather then
       defender.mon.ability = "CLOUD_NINE"
     end
-    local species = typedSpeciesFacts({
-      { species = "CHIKORITA", types = { "grass" } },
-      { species = "EEVEE", types = { "normal" } },
+    local species = weatherFormFacts("CASTFORM", {
+      [0] = { "normal" },
+      [1] = { "fire" },
+      [2] = { "water" },
+      [3] = { "ice" },
     })
-    local castform = {}
-    for key, value in pairs(species.CHIKORITA[0]) do
-      castform[key] = value
-    end
-    castform.types = { "normal" }
-    species.CASTFORM = { [0] = castform }
+    species.CHIKORITA = typedSpeciesFacts({ { species = "CHIKORITA", types = { "grass" } } }).CHIKORITA
+    species.EEVEE = typedSpeciesFacts({ { species = "EEVEE", types = { "normal" } } }).EEVEE
     local session = projectionDuel(striker, defender, {
       WATER_GUN = { power = 40, accuracy = 0, category = "special", moveType = "water", priority = 0 },
       RAIN_DANCE = { power = 0, accuracy = 0, category = "other", moveType = "normal", priority = 0 },
@@ -7267,6 +9157,290 @@ function T.forecast_tracks_weather_changes_and_weather_suppression()
   )
 end
 
+function T.temporary_rain_expiry_reverts_castform_before_the_next_strike()
+  local castform = weatherCombatant(1, 11, "CASTFORM", "WATER_GUN")
+  castform.mon.ability = "FORECAST"
+  castform.mon.moves = {
+    { move = "WATER_GUN", pp = 25, ppUps = 0 },
+    { move = "SPLASH", pp = 40, ppUps = 0 },
+  }
+  local defender = singleMoveCombatant(2, 23, "EEVEE", "SPLASH")
+  defender.mon.moves = {
+    { move = "SPLASH", pp = 40, ppUps = 0 },
+    { move = "RAIN_DANCE", pp = 5, ppUps = 0 },
+  }
+  local species = weatherFormFacts("CASTFORM", {
+    [0] = { "normal" },
+    [1] = { "fire" },
+    [2] = { "water" },
+    [3] = { "ice" },
+  })
+  species.EEVEE = typedSpeciesFacts({ { species = "EEVEE", types = { "normal" } } }).EEVEE
+  local session = projectionDuel(castform, defender, {
+    WATER_GUN = strikeFacts(0, "water", 10),
+    SPLASH = strikeFacts(0, "normal", 0),
+    RAIN_DANCE = { power = 0, accuracy = 0, category = "other", moveType = "normal", priority = 0 },
+    STRUGGLE = struggleFacts(),
+  }, species, NATIVE_SEED)
+  local damages = {}
+  local reverts = 0
+  local previousDamage = 0
+  for turn = 1, 6 do
+    local events = playOpeningTurn(session, turn == 1 and { [2] = 1 } or nil)
+    local cumulative = damageTaken(session, 2)
+    damages[turn] = cumulative - previousDamage
+    previousDamage = cumulative
+    for _, event in ipairs(events) do
+      if event.kind == "ability" and event.cause.key == "weather-form" and event.payload.form == 0 then
+        reverts = reverts + 1
+      end
+    end
+  end
+  Assert.isTrue(damages[1] > 0, "the opening strike reads Normal typing before rain starts")
+  local rainyDamage = 0
+  for turn = 2, 5 do
+    rainyDamage = rainyDamage + damages[turn]
+  end
+  Assert.isTrue(
+    rainyDamage > damages[1] * 4,
+    "rainy Castform keeps Water typing through the weather's final residual tick"
+  )
+  Assert.equal(reverts, 1, "weather expiry emits one committed restoration")
+  Assert.equal(session:capture().combatants[1].active.form, 0, "the request opens with the restored active form")
+  Assert.equal(session:capture().combatants[1].mon.form, 0, "weather restoration never mutates party form")
+  session:dispose()
+end
+
+function T.gastro_acid_retains_rainy_castform_at_the_forecast_gate()
+  local function damageWithRain(suppress, rainy)
+    if rainy == nil then
+      rainy = true
+    end
+    local castform = weatherCombatant(1, 11, "CASTFORM", "WATER_GUN")
+    castform.mon.ability = "FORECAST"
+    local defender = singleMoveCombatant(2, 23, "CHIKORITA", suppress and "GASTRO_ACID" or "SPLASH")
+    local species = weatherFormFacts("CASTFORM", {
+      [0] = { "normal" },
+      [1] = { "fire" },
+      [2] = { "water" },
+      [3] = { "ice" },
+    })
+    species.CHIKORITA = typedSpeciesFacts({ { species = "CHIKORITA", types = { "grass" } } }).CHIKORITA
+    local session = projectionDuel(castform, defender, {
+      WATER_GUN = strikeFacts(0, "water", 40),
+      SPLASH = strikeFacts(0, "normal", 0),
+      GASTRO_ACID = { power = 0, accuracy = 0, category = "other", moveType = "poison", priority = 0 },
+      STRUGGLE = struggleFacts(),
+    }, species, NATIVE_SEED, rainy and "rain" or "none")
+    playOpeningTurn(session)
+    local snapshot = session:capture()
+    Assert.equal(
+      snapshot.combatants[1].active.form,
+      rainy and 2 or 0,
+      "the committed form follows rain only while Forecast can transform it"
+    )
+    Assert.equal(snapshot.combatants[1].mon.form, 0, "the party record stays in its base form")
+    playOpeningTurn(session)
+    local damage = damageTaken(session, 2)
+    session:dispose()
+    return damage
+  end
+  Assert.isTrue(
+    damageWithRain(true) > damageWithRain(false, false),
+    "retained Water typing still distinguishes the post-suppression strike from clear weather"
+  )
+end
+
+function T.terminal_residual_suppressor_fainting_keeps_castform_at_its_existing_form()
+  local castform = weatherCombatant(1, 11, "CASTFORM", "SPLASH")
+  castform.mon.ability = "FORECAST"
+  local suppressor = singleMoveCombatant(2, 23, "EEVEE", "SPLASH")
+  suppressor.mon.ability = "CLOUD_NINE"
+  suppressor.mon.condition.currentHp = 1
+  suppressor.mon.condition.effects = { { key = "burn", version = 1, state = {} } }
+  local species = weatherFormFacts("CASTFORM", {
+    [0] = { "normal" },
+    [1] = { "fire" },
+    [2] = { "water" },
+    [3] = { "ice" },
+  })
+  species.EEVEE = typedSpeciesFacts({ { species = "EEVEE", types = { "normal" } } }).EEVEE
+  local session = projectionDuel(castform, suppressor, {
+    SPLASH = strikeFacts(0, "normal", 0),
+    STRUGGLE = struggleFacts(),
+  }, species, NATIVE_SEED, "rain")
+  Assert.equal(session:capture().combatants[1].active.form, 0, "Cloud Nine suppresses the opening transformation")
+  local events = playOpeningTurn(session)
+  local restored = false
+  for _, event in ipairs(events) do
+    if event.kind == "ability" and event.cause.key == "weather-form" and event.payload.form == 2 then
+      restored = true
+    end
+  end
+  Assert.isFalse(restored, "terminal residual closure skips a later weather-form ability scan")
+  Assert.equal(
+    session:capture().combatants[1].active.form,
+    0,
+    "the surviving Castform keeps its terminal-boundary form"
+  )
+  session:dispose()
+end
+
+function T.weather_forms_use_the_live_faster_reserve_at_the_next_action_checkpoint()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local lead = singleMoveCombatant(1, 11, "EEVEE", "SPLASH")
+  local weatherSetter = singleMoveCombatant(3, 31, "EEVEE", "SUNNY_DAY")
+  local reserve = weatherCombatant(5, 51, "CASTFORM", "SPLASH")
+  reserve.mon.ability = "FORECAST"
+  reserve.mon.ivs.speed = 31
+  reserve.mon.evs.speed = 252
+  local slowCherrim = weatherCombatant(2, 23, "CHERRIM", "SPLASH")
+  slowCherrim.mon.ability = "FLOWER_GIFT"
+  slowCherrim.mon.ivs.speed = 0
+  slowCherrim.mon.evs.speed = 0
+  local foePartner = singleMoveCombatant(4, 41, "EEVEE", "SPLASH")
+  local species = weatherFormFacts("CASTFORM", {
+    [0] = { "normal" },
+    [1] = { "fire" },
+    [2] = { "water" },
+    [3] = { "ice" },
+  })
+  for key, value in pairs(weatherFormFacts("CHERRIM", { [0] = { "grass" }, [1] = { "grass" } })) do
+    species[key] = value
+  end
+  species.EEVEE = typedSpeciesFacts({ { species = "EEVEE", types = { "normal" } } }).EEVEE
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { lead, weatherSetter, reserve }),
+      SessionFixture.participant(2, 2, "beta", { slowCherrim, foePartner }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+      SessionFixture.position(3, 1, { 1 }, 3),
+      SessionFixture.position(4, 2, { 2 }, 4),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = {
+      SPLASH = strikeFacts(0, "normal", 0),
+      SUNNY_DAY = {
+        power = 0,
+        accuracy = 0,
+        category = "other",
+        moveType = "fire",
+        priority = 0,
+        target = "user",
+        flags = {},
+      },
+      STRUGGLE = struggleFacts(),
+    },
+    speciesFacts = species,
+  }
+  local session = contracts.Battle.newSession(scenario, nativeContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(opening.request.requests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      if request.controller == "alpha" and actor.combatant == 1 then
+        choices[#choices + 1] = SessionFixture.switchChoice(actor, 5)
+      elseif request.controller == "alpha" then
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(3))
+      else
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(1))
+      end
+    end
+    Assert.isTrue(
+      session:submit(SessionFixture.replyFor(request, choices)),
+      "the live-reserve ordering turn is accepted"
+    )
+  end
+  local frame = session:advance(64)
+  local order = {}
+  for _, event in ipairs(frame.events or {}) do
+    if event.kind == "ability" and event.cause.key == "weather-form" then
+      order[#order + 1] = event.payload.combatant
+    end
+  end
+  Assert.deepEqual(order, { 5, 2 }, "the faster replacement takes its live slot before the slower weather-form holder")
+  session:dispose()
+end
+
+function T.weather_forms_follow_the_frozen_entry_speed_order()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local slow = weatherCombatant(1, 11, "CASTFORM", "SPLASH")
+  slow.mon.ability = "FORECAST"
+  slow.mon.heldItem = "IRON_BALL"
+  local fast = weatherCombatant(3, 31, "CASTFORM", "SPLASH")
+  fast.mon.ability = "FORECAST"
+  local foeA = singleMoveCombatant(2, 23, "EEVEE", "SPLASH")
+  local foeB = singleMoveCombatant(4, 41, "EEVEE", "SPLASH")
+  local seeds = { slow, fast, foeA, foeB }
+  local species = weatherFormFacts("CASTFORM", {
+    [0] = { "normal" },
+    [1] = { "fire" },
+    [2] = { "water" },
+    [3] = { "ice" },
+  })
+  species.EEVEE = typedSpeciesFacts({ { species = "EEVEE", types = { "normal" } } }).EEVEE
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { slow, fast }),
+      SessionFixture.participant(2, 2, "beta", { foeA, foeB }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+      SessionFixture.position(3, 1, { 1 }, 3),
+      SessionFixture.position(4, 2, { 2 }, 4),
+    },
+    inventories = {},
+    environment = { weather = "rain" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = {
+      SPLASH = strikeFacts(0, "normal", 0),
+      STRUGGLE = struggleFacts(),
+    },
+    speciesFacts = species,
+  }
+  local session = contracts.Battle.newSession(scenario, nativeContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  local order = {}
+  for _, event in ipairs(opening.events or {}) do
+    if event.kind == "ability" and event.cause.key == "weather-form" then
+      order[#order + 1] = event.payload.combatant
+    end
+  end
+  Assert.deepEqual(order, { 3, 1 }, "the faster later-slot Castform transforms before the slower earlier-slot holder")
+  session:dispose()
+end
+
+function T.cherrim_tracks_sun_without_forecast_and_preserves_party_form()
+  local cherrim = weatherCombatant(1, 11, "CHERRIM", "SPLASH")
+  cherrim.mon.ability = "FLOWER_GIFT"
+  local defender = singleMoveCombatant(2, 23, "EEVEE", "SPLASH")
+  local species = weatherFormFacts("CHERRIM", { [0] = { "grass" }, [1] = { "grass" } })
+  species.EEVEE = typedSpeciesFacts({ { species = "EEVEE", types = { "normal" } } }).EEVEE
+  local session = projectionDuel(cherrim, defender, {
+    SPLASH = strikeFacts(0, "normal", 0),
+    STRUGGLE = struggleFacts(),
+  }, species, NATIVE_SEED, "sun")
+  Assert.equal(session:capture().combatants[1].active.form, 1, "Cherrim's sunny form does not require Forecast")
+  Assert.equal(session:capture().combatants[1].mon.form, 0, "Cherrim's party form remains cloudy")
+  session:dispose()
+end
+
 function T.multitype_keeps_its_raw_plate_form_under_embargo()
   local function secondTurnFireDamage(multitype)
     local striker = singleMoveCombatant(1, 11, "CHIKORITA", "EMBER")
@@ -7275,10 +9449,13 @@ function T.multitype_keeps_its_raw_plate_form_under_embargo()
     if multitype then
       striker.mon.ability = "MULTITYPE"
     end
-    local defender = singleMoveCombatant(2, 23, "CHIKORITA", "EMBARGO")
+    local defender = singleMoveCombatant(2, 23, "EEVEE", "EMBARGO")
     local species = typedSpeciesFacts({
       { species = "CHIKORITA", types = { "grass" } },
+      { species = "EEVEE", types = { "normal" } },
     })
+    species.CHIKORITA[0].baseStats.speed = 10
+    species.EEVEE[0].baseStats.speed = 200
     local arceus = {}
     for key, value in pairs(species.CHIKORITA[0]) do
       arceus[key] = value
@@ -7296,9 +9473,14 @@ function T.multitype_keeps_its_raw_plate_form_under_embargo()
     session:dispose()
     return damage
   end
+  local multitypeDamage = secondTurnFireDamage(true)
+  local plainDamage = secondTurnFireDamage(false)
   Assert.isTrue(
-    secondTurnFireDamage(true) > secondTurnFireDamage(false),
-    "Multitype reads the raw plate after Embargo suppresses held-item effects"
+    multitypeDamage > plainDamage,
+    "Multitype reads the raw plate after Embargo suppresses held-item effects; got "
+      .. multitypeDamage
+      .. " versus "
+      .. plainDamage
   )
 end
 
@@ -7361,15 +9543,16 @@ function T.bad_dreams_damages_each_sleeping_foe_once_with_multiple_holders()
   session:dispose()
 end
 
--- Intimidate lowers each opposing active Attack, Simple doubles the drop,
--- and Clear Body blocks the entry stat change.
+-- Intimidate stores one Attack stage against Simple, whose ability doubles
+-- the interpreted stage, and Clear Body blocks the entry stat change.
 function T.intimidate_applies_stage_law_and_respects_blockers()
   local species = typedSpeciesFacts({
     { species = "CHIKORITA", types = { "grass" } },
     { species = "EEVEE", types = { "normal" } },
   })
   for _, case in ipairs({
-    { ability = "SIMPLE", expected = -2 },
+    { ability = "NONE", expected = -1 },
+    { ability = "SIMPLE", expected = -1 },
     { ability = "CLEAR_BODY", expected = 0 },
   }) do
     local striker = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
@@ -7380,34 +9563,302 @@ function T.intimidate_applies_stage_law_and_respects_blockers()
       TACKLE = strikeFacts(0, "normal", 1),
       STRUGGLE = struggleFacts(),
     }, species, NATIVE_SEED)
-    Assert.equal(
-      session:capture().combatants[2].stages.attack,
-      case.expected,
-      "Intimidate uses ability-aware stage application"
-    )
+    local snapshot = session:capture()
+    Assert.equal(snapshot.combatants[2].stages.attack, case.expected, "Intimidate stores the prescribed Attack delta")
+    local preambleIndex = nil
+    local feedbackIndex = nil
+    for index, record in ipairs(snapshot.outbox) do
+      if record.kind == "ability" and record.payload.key == "INTIMIDATE" then
+        preambleIndex = preambleIndex or index
+      elseif record.kind == "ability" and record.payload.key == "INTIMIDATE_BLOCKED_ABILITY" then
+        feedbackIndex = feedbackIndex or index
+      elseif record.kind == "stage" and record.cause.key == "INTIMIDATE" then
+        feedbackIndex = feedbackIndex or index
+      end
+    end
+    Assert.notNil(preambleIndex, "Intimidate emits its preamble even with no blocker")
+    Assert.notNil(feedbackIndex, "Intimidate emits target feedback")
+    Assert.isTrue(preambleIndex < feedbackIndex, "the source preamble precedes target feedback")
     session:dispose()
   end
 end
 
--- Download compares the opposing Defense totals and raises Special Attack
--- when the summed Special Defense is greater.
+function T.intimidate_simple_is_interpreted_only_while_the_ability_is_effective()
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+  })
+  local function defendedDamage(defenderAbility, suppress)
+    local intimidator = singleMoveCombatant(1, 11, "CHIKORITA", suppress and "GASTRO_ACID" or "TACKLE")
+    intimidator.mon.ability = "INTIMIDATE"
+    local defender = singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE")
+    defender.mon.ability = defenderAbility
+    local session = projectionDuel(intimidator, defender, {
+      TACKLE = strikeFacts(40, "normal", 100),
+      GASTRO_ACID = { power = 0, accuracy = 0, category = "other", moveType = "poison", priority = 0 },
+      STRUGGLE = struggleFacts(),
+    }, species, NATIVE_SEED)
+    playOpeningTurn(session)
+    local firstDamage = damageTaken(session, 1)
+    if suppress then
+      playOpeningTurn(session)
+    end
+    local damage = damageTaken(session, 1) - (suppress and firstDamage or 0)
+    session:dispose()
+    return damage
+  end
+  Assert.isTrue(
+    defendedDamage("SIMPLE", false) < defendedDamage("NONE", false),
+    "Simple doubles the interpreted Attack loss while storing only one stage"
+  )
+  Assert.equal(
+    defendedDamage("SIMPLE", true),
+    defendedDamage("NONE", true),
+    "Gastro Acid suppresses Simple's interpretation without rewriting the stored stage"
+  )
+end
+
+function T.simple_keeps_its_interpreted_positive_stage_through_critical_recalculation()
+  local Executor = executorOwner()
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+  })
+  local function criticalDamage(ability)
+    local attacker = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
+    attacker.mon.ability = ability
+    attacker.mon.heldItem = "SCOPE_LENS"
+    local defender = singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE")
+    local session = projectionDuel(attacker, defender, {
+      TACKLE = strikeFacts(40, "normal", 100),
+      STRUGGLE = struggleFacts(),
+    }, species, 30)
+    local snapshot = session:capture()
+    snapshot.combatants[1].stages.attack = 1
+    local restored = Executor.restore(snapshot, chartContent())
+    session:dispose()
+    playOpeningTurn(restored)
+    local damage = damageTaken(restored, 2)
+    restored:dispose()
+    return damage
+  end
+  Assert.isTrue(
+    criticalDamage("SIMPLE") > criticalDamage("NONE"),
+    "Simple's doubled positive stage survives the critical-hit stat recalculation"
+  )
+end
+
+function T.mold_breaker_ignores_a_defenders_simple_stage_interpretation()
+  local Executor = executorOwner()
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+  })
+  local function defendedDamage(defenderAbility)
+    local attacker = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
+    attacker.mon.ability = "MOLD_BREAKER"
+    local defender = singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE")
+    defender.mon.ability = defenderAbility
+    local session = projectionDuel(attacker, defender, {
+      TACKLE = strikeFacts(40, "normal", 100),
+      STRUGGLE = struggleFacts(),
+    }, species, NATIVE_SEED)
+    local snapshot = session:capture()
+    snapshot.combatants[2].stages.defense = -1
+    local restored = Executor.restore(snapshot, chartContent())
+    session:dispose()
+    playOpeningTurn(restored)
+    local damage = damageTaken(restored, 2)
+    restored:dispose()
+    return damage
+  end
+  Assert.equal(
+    defendedDamage("SIMPLE"),
+    defendedDamage("NONE"),
+    "Mold Breaker bypasses the defender's Simple interpretation without rewriting its stored stage"
+  )
+end
+
+function T.trace_copies_intimidate_before_the_later_entry_phase()
+  local tracer = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
+  tracer.mon.ability = "TRACE"
+  local intimidator = singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE")
+  intimidator.mon.ability = "INTIMIDATE"
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+  })
+  local session = projectionDuel(tracer, intimidator, {
+    TACKLE = strikeFacts(0, "normal", 1),
+    STRUGGLE = struggleFacts(),
+  }, species, NATIVE_SEED)
+  local snapshot = session:capture()
+  Assert.equal(snapshot.rng.calls, 6, "both opening sorts spend their equal-Speed tie draws")
+  Assert.equal(snapshot.combatants[1].stages.attack, -1, "the Trace holder runs copied Intimidate in its later phase")
+  Assert.equal(snapshot.combatants[2].stages.attack, -1, "the original Intimidate still runs once in the same phase")
+  local copied = false
+  for _, effect in ipairs(snapshot.effects) do
+    if effect.key == "traceability" and effect.scope.combatant == 1 then
+      copied = effect.state.ability == "INTIMIDATE"
+    end
+  end
+  Assert.isTrue(copied, "Trace retains the copied ability for subsequent checks")
+  session:dispose()
+
+  local function traceSnapshot(ability)
+    local traceHolder = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
+    traceHolder.mon.ability = "TRACE"
+    local donor = singleMoveCombatant(2, 23, "CHIKORITA", "TACKLE")
+    donor.mon.ability = ability
+    local traced = projectionDuel(traceHolder, donor, {
+      TACKLE = strikeFacts(0, "normal", 1),
+      STRUGGLE = struggleFacts(),
+    }, species, NATIVE_SEED)
+    local result = traced:capture()
+    traced:dispose()
+    Assert.equal(result.rng.calls, 6, ability .. " copy preserves both full-set opening tie draws")
+    return result
+  end
+
+  local downloaded = traceSnapshot("DOWNLOAD")
+  local copiedStages = downloaded.combatants[1].stages
+  Assert.equal(copiedStages.attack + copiedStages.specialAttack, 1, "copied Download raises one offensive stage")
+
+  local pressured = traceSnapshot("PRESSURE")
+  local pressureEvents = 0
+  local pressureHolders = {} ---@type table<integer, boolean>
+  for _, event in ipairs(pressured.outbox) do
+    if event.kind == "ability" and event.payload.key == "PRESSURE" then
+      pressureEvents = pressureEvents + 1
+      pressureHolders[
+        event.payload.combatant --[[@as integer]]
+      ] = true
+    end
+  end
+  Assert.equal(pressureEvents, 2, "the original and Trace-copied Pressure each run once in the later phase")
+  Assert.isTrue(pressureHolders[1] and pressureHolders[2], "Pressure announces both entry holders")
+
+  local rainy = traceSnapshot("DRIZZLE")
+  local rainEffects = 0
+  for _, effect in ipairs(rainy.effects) do
+    if effect.key == "raindance" then
+      rainEffects = rainEffects + 1
+    end
+  end
+  Assert.equal(rainEffects, 1, "a copied weather setter joins the existing permanent weather")
+end
+
+-- Download compares opposing Defense totals: lower Defense selects Attack,
+-- higher or equal Defense selects Special Attack.
 function T.download_raises_the_stat_selected_by_opposing_defenses()
-  local striker = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
-  striker.mon.ability = "DOWNLOAD"
-  local defender = singleMoveCombatant(2, 23, "EEVEE", "TACKLE")
   local species = typedSpeciesFacts({
     { species = "CHIKORITA", types = { "grass" } },
     { species = "EEVEE", types = { "normal" } },
   })
-  local session = projectionDuel(striker, defender, {
-    TACKLE = strikeFacts(0, "normal", 1),
-    STRUGGLE = struggleFacts(),
-  }, species, NATIVE_SEED)
-  local stages = session:capture().combatants[1].stages
-  Assert.isTrue(
-    (stages.attack == 1 and stages.specialAttack == 0) or (stages.attack == 0 and stages.specialAttack == 1),
-    "Download raises exactly one offensive stat"
-  )
+  for _, case in ipairs({
+    { defense = 50, specialDefense = 80, stat = "attack" },
+    { defense = 80, specialDefense = 50, stat = "specialAttack" },
+    { defense = 65, specialDefense = 65, stat = "specialAttack" },
+  }) do
+    local base = {}
+    for key, value in pairs(species.EEVEE[0].baseStats) do
+      base[key] = value
+    end
+    base.defense = case.defense
+    base.specialDefense = case.specialDefense
+    species.EEVEE[0].baseStats = base
+    local striker = singleMoveCombatant(1, 11, "CHIKORITA", "TACKLE")
+    striker.mon.ability = "DOWNLOAD"
+    local defender = singleMoveCombatant(2, 23, "EEVEE", "TACKLE")
+    defender.mon.personality = 0
+    for key in pairs(defender.mon.ivs) do
+      defender.mon.ivs[key] = 0
+    end
+    for key in pairs(defender.mon.evs) do
+      defender.mon.evs[key] = 0
+    end
+    local session = projectionDuel(striker, defender, {
+      TACKLE = strikeFacts(0, "normal", 1),
+      STRUGGLE = struggleFacts(),
+    }, species, NATIVE_SEED)
+    local snapshot = session:capture()
+    local stages = snapshot.combatants[1].stages
+    Assert.equal(stages.attack, case.stat == "attack" and 1 or 0, "Download raises Attack only for lower Defense")
+    Assert.equal(
+      stages.specialAttack,
+      case.stat == "specialAttack" and 1 or 0,
+      "Download raises Special Attack for higher or equal Defense"
+    )
+    local narrated = nil
+    for _, event in ipairs(snapshot.outbox) do
+      if event.kind == "stage" and event.cause.key == "DOWNLOAD" then
+        narrated = event.payload.stat
+      end
+    end
+    Assert.equal(narrated, case.stat, "Download narrates the stat selected by the defensive comparison")
+    session:dispose()
+  end
+end
+
+function T.download_uses_fresh_stage_adjusted_defenses_after_a_prior_turn()
+  local contracts = SessionFixture.sessionContracts()
+  local Executor = executorOwner()
+  local lead = singleMoveCombatant(1, 11, "CHIKORITA", "SPLASH")
+  local downloader = singleMoveCombatant(3, 31, "CHIKORITA", "TACKLE")
+  downloader.mon.ability = "DOWNLOAD"
+  local defender = singleMoveCombatant(2, 23, "EEVEE", "IRON_DEFENSE")
+  defender.mon.moves = {
+    { move = "IRON_DEFENSE", pp = 15, ppUps = 0 },
+    { move = "SPLASH", pp = 40, ppUps = 0 },
+  }
+  local seeds = { lead, downloader, defender }
+  local scenario = {
+    ruleset = Executor.RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { lead, downloader }),
+      SessionFixture.participant(2, 2, "beta", { defender }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = {
+      SPLASH = strikeFacts(0, "normal", 0),
+      IRON_DEFENSE = { power = 0, accuracy = 0, category = "other", moveType = "psychic", priority = 0 },
+      TACKLE = strikeFacts(0, "normal", 1),
+      STRUGGLE = struggleFacts(),
+    },
+    speciesFacts = scenarioSpeciesFacts(seeds),
+  }
+  local session = contracts.Battle.newSession(scenario, nativeContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(opening.request.requests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      local target = request.controller == "alpha" and 2 or 1
+      choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(target))
+    end
+    Assert.isTrue(session:submit(SessionFixture.replyFor(request, choices)), "the stage-setting opening is accepted")
+  end
+  session:advance(64)
+  local second = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(second.request.requests) do
+    local choices = {}
+    for _, actor in ipairs(request.actors) do
+      if request.controller == "alpha" then
+        choices[#choices + 1] = SessionFixture.switchChoice(actor, 3)
+      else
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 1, SessionFixture.positionTarget(1))
+      end
+    end
+    Assert.isTrue(session:submit(SessionFixture.replyFor(request, choices)), "the Download exchange is accepted")
+  end
+  session:advance(64)
+  local stages = session:capture().combatants[3].stages
+  Assert.equal(stages.attack, 0, "the stage-raised Defense does not select Attack")
+  Assert.equal(stages.specialAttack, 1, "Download reads the opponent's fresh stage-effective Defense")
   session:dispose()
 end
 
@@ -7658,26 +10109,100 @@ function T.slow_start_halves_physical_attack_damage_for_the_first_five_turns()
 end
 
 function T.slow_start_ends_once_after_five_native_turns()
-  local striker = singleMoveCombatant(1, 11, "EEVEE", "SPLASH")
+  local striker = singleMoveCombatant(1, 11, "CHIKORITA", "SPLASH")
   striker.mon.ability = "SLOW_START"
-  local defender = singleMoveCombatant(2, 23, "CHIKORITA", "SPLASH")
+  local defender = singleMoveCombatant(2, 23, "EEVEE", "SPLASH")
   local species = typedSpeciesFacts({
-    { species = "EEVEE", types = { "normal" } },
     { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
   })
   local session = projectionDuel(striker, defender, {
     SPLASH = { power = 1, accuracy = 100, category = "other", moveType = "normal", priority = 0 },
     STRUGGLE = struggleFacts(),
   }, species, NATIVE_SEED)
   local announcements = 0
-  for _ = 1, 7 do
+  local announcementTurn = nil
+  local fasterActionBeforeAnnouncement = false
+  for turn = 1, 7 do
+    local fasterActed = false
     for _, event in ipairs(playOpeningTurn(session)) do
+      if event.kind == "move-used" and event.payload.user == 2 then
+        fasterActed = true
+      end
       if event.kind == "ability" and event.cause.key == "SLOW_START_END" then
         announcements = announcements + 1
+        announcementTurn = turn
+        fasterActionBeforeAnnouncement = fasterActed
       end
     end
   end
   Assert.equal(announcements, 1, "the end announcement fires once across the activation")
+  Assert.equal(announcementTurn, 5, "the clock advances before the next decision prompt " .. tostring(announcementTurn))
+  Assert.isTrue(fasterActionBeforeAnnouncement, "a faster unrelated action reaches the completion checkpoint first")
+  session:dispose()
+end
+
+function T.switched_slow_start_keeps_speed_until_its_attack_clock_expires()
+  local contracts = SessionFixture.sessionContracts()
+  local lead = singleMoveCombatant(1, 11, "CHIKORITA", "SPLASH")
+  local reserve = singleMoveCombatant(3, 31, "CHIKORITA", "TACKLE")
+  reserve.mon.ability = "SLOW_START"
+  local opponent = singleMoveCombatant(2, 23, "EEVEE", "SPLASH")
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+  species.CHIKORITA[0].baseStats.speed = 200
+  species.EEVEE[0].baseStats.speed = 150
+  local scenario = {
+    ruleset = executorOwner().RULESET,
+    format = NATIVE_FORMAT,
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { lead, reserve }),
+      SessionFixture.participant(2, 2, "beta", { opponent }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = {
+      SPLASH = strikeFacts(0, "normal", 0),
+      TACKLE = strikeFacts(40, "normal", 100),
+      STRUGGLE = struggleFacts(),
+    },
+    speciesFacts = species,
+  }
+  local session = contracts.Battle.newSession(scenario, chartContent())
+  local opening = SessionFixture.driveUntilSettled(session)
+  for _, request in ipairs(opening.request.requests) do
+    local actor = assert(request.actors[1], "the first turn addresses its lead")
+    local choice = request.controller == "alpha" and SessionFixture.switchChoice(actor, 3)
+      or SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(1))
+    Assert.isTrue(session:submit(SessionFixture.replyFor(request, { choice })), "the entry switch is accepted")
+  end
+  session:advance(64)
+
+  for activeTurn = 1, 5 do
+    local events = playOpeningTurn(session)
+    local firstUser = nil
+    local ended = false
+    for _, event in ipairs(events) do
+      if event.kind == "move-used" and firstUser == nil then
+        firstUser = event.payload.user
+      elseif event.kind == "ability" and event.cause.key == "SLOW_START_END" then
+        ended = true
+      end
+    end
+    Assert.equal(firstUser, 2, "the opponent remains faster through active turn " .. activeTurn)
+    Assert.equal(ended, activeTurn == 5, "Slow Start expires on the same entry clock as Attack")
+  end
+  local nextPrompt = SessionFixture.driveUntilSettled(session)
+  Assert.equal(nextPrompt.status, "waiting", "expiry settles before the next decision prompt")
   session:dispose()
 end
 
@@ -8582,11 +11107,11 @@ function T.native_partially_answered_batches_restore_and_keep_views_detached()
   revived:dispose()
 end
 
--- The native order sampling stays ahead of decision requests and never
--- resamples across interruption: the open batch carries exactly four raw
--- order samples, restore keeps the identical samples and generator
--- cursor, a rejected reply consumes no draws, and identical replies
--- replay identical events into identical state.
+-- The native order sampling starts once at battle construction and never
+-- resamples across interruption: the battle state carries exactly four raw
+-- order samples, restore keeps the identical samples and generator cursor,
+-- a rejected reply consumes no draws, and identical replies replay identical
+-- events into identical state.
 function T.open_batches_keep_their_order_samples_across_restore()
   local contracts = SessionFixture.sessionContracts()
   local Executor = executorOwner()
@@ -8595,9 +11120,9 @@ function T.open_batches_keep_their_order_samples_across_restore()
   local opening = SessionFixture.driveUntilSettled(session)
   Assert.equal(opening.status, "waiting", "the native battle opens its decision boundary")
   local held = session:capture()
-  local rolls = held.pending.nativeOrderRolls
-  Assert.notNil(rolls, "the open batch carries its order samples")
-  Assert.equal(#rolls, 4, "the batch samples exactly four raw order values")
+  local rolls = held.nativeOrderRolls
+  Assert.notNil(rolls, "the battle state carries its order samples")
+  Assert.equal(#rolls, 4, "the battle samples exactly four raw order values")
   for position = 1, 4 do
     Assert.isTrue(type(rolls[position]) == "number", "order sample " .. position .. " stays a raw value")
   end
@@ -8610,10 +11135,10 @@ function T.open_batches_keep_their_order_samples_across_restore()
   Assert.isFalse(refused, "a strike at an undeclared position is rejected")
   Assert.notNil(refuseErr, "rejected replies report their input error")
   Assert.equal(session:capture().rng.calls, cursor, "rejected replies consume no generator draws")
-  Assert.deepEqual(session:capture().pending.nativeOrderRolls, rolls, "rejected replies keep the open order samples")
+  Assert.deepEqual(session:capture().nativeOrderRolls, rolls, "rejected replies keep the battle order samples")
   local revived = Executor.restore(held, content)
   local recaptured = revived:capture()
-  Assert.deepEqual(recaptured.pending.nativeOrderRolls, rolls, "restore keeps the identical order samples")
+  Assert.deepEqual(recaptured.nativeOrderRolls, rolls, "restore keeps the identical order samples")
   Assert.equal(recaptured.rng.calls, cursor, "restore resamples no generator draws")
   for _, live in ipairs({ session, revived }) do
     local frame = SessionFixture.driveUntilSettled(live)
@@ -8632,13 +11157,13 @@ function T.open_batches_keep_their_order_samples_across_restore()
 end
 
 ---@return table detached native battle setup record with a sleep-locked opening lead
-local function sleepyDuelScenario()
+local function sleepyDuelScenario(seed)
   local Executor = executorOwner()
   local alpha = tackleCombatant(1, 11)
   alpha.mon.condition.effects = { { key = "sleep", version = 1, state = { turns = 3 } } }
   local beta = tackleCombatant(2, 23)
   local seeds = { alpha, beta }
-  return {
+  local scenario = {
     ruleset = Executor.RULESET,
     format = NATIVE_FORMAT,
     sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
@@ -8652,11 +11177,13 @@ local function sleepyDuelScenario()
     },
     inventories = {},
     environment = { weather = "none" },
-    random = { seed = NATIVE_SEED },
+    random = { seed = seed or NATIVE_SEED },
     formatState = {},
     moveFacts = scenarioMoveFacts(seeds),
     speciesFacts = scenarioSpeciesFacts(seeds),
   }
+  scenario.moveFacts.TACKLE.accuracy = 100
+  return scenario
 end
 
 ---@param session table live native session at its opening decision boundary
@@ -8682,7 +11209,7 @@ function T.denied_strikes_spend_no_power_and_replay_identically_across_restore()
   local contracts = SessionFixture.sessionContracts()
   local Executor = executorOwner()
   local content = nativeContent()
-  local direct = contracts.Battle.newSession(sleepyDuelScenario(), content)
+  local direct = contracts.Battle.newSession(sleepyDuelScenario(123), content)
   local opening = SessionFixture.driveUntilSettled(direct)
   Assert.equal(opening.status, "waiting", "the sleep-locked turn opens its decision boundary")
   for _, request in ipairs(opening.request.requests) do
@@ -8698,7 +11225,7 @@ function T.denied_strikes_spend_no_power_and_replay_identically_across_restore()
   for _, event in ipairs(directEvents) do
     kinds[#kinds + 1] = event.kind
   end
-  Assert.deepEqual(kinds, { "struck", "status-gate" }, "the denied turn strikes once, then gates")
+  Assert.deepEqual(kinds, { "status-gate", "struck" }, "the sleep gate precedes the faster foe's strike")
   local gated = nil
   for _, event in ipairs(directEvents) do
     if event.kind == "status-gate" then
@@ -8709,8 +11236,9 @@ function T.denied_strikes_spend_no_power_and_replay_identically_across_restore()
   Assert.equal(gated, 1, "the denied turn gates the sleep-locked lead")
   Assert.equal(
     directCapture.rng.calls - callsBefore,
-    9,
-    "the denied turn draws only its prescribed timing and strike rolls"
+    19,
+    "the denied turn draws send-out, action-end and battler sorts independently; actual "
+      .. tostring(directCapture.rng.calls - callsBefore)
   )
   Assert.equal(directCapture.combatants[1].mon.moves[1].pp, 35, "the denied strike spends no power points")
   Assert.equal(directCapture.combatants[2].mon.moves[1].pp, 34, "the executed strike spends exactly one power point")
@@ -8725,7 +11253,7 @@ function T.denied_strikes_spend_no_power_and_replay_identically_across_restore()
   )
   direct:dispose()
 
-  local live = contracts.Battle.newSession(sleepyDuelScenario(), content)
+  local live = contracts.Battle.newSession(sleepyDuelScenario(123), content)
   SessionFixture.driveUntilSettled(live)
   local twin = Executor.restore(live:capture(), content)
   local liveEvents = playSleepyTurn(live)

@@ -870,20 +870,19 @@ function T.reentered_foes_start_a_fresh_participant_set()
   -- it can yield the field back, proving the return starts fresh.
   local foeTwo = tackleSeed(4, 41)
   local seeds = { first, second, foeOne, foeTwo }
-  local session = contracts.Battle.newSession(
-    battleScenario({
-      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
-      participants = {
-        SessionFixture.participant(1, 1, "alpha", { first, second }),
-        SessionFixture.participant(2, 2, "beta", { foeOne, foeTwo }),
-      },
-      positions = {
-        SessionFixture.position(1, 1, { 1 }, 1),
-        SessionFixture.position(2, 2, { 2 }, 2),
-      },
-    }, seeds),
-    content
-  )
+  local scenario = battleScenario({
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "alpha", { first, second }),
+      SessionFixture.participant(2, 2, "beta", { foeOne, foeTwo }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+  }, seeds)
+  scenario.moveFacts.TACKLE.accuracy = 0
+  local session = contracts.Battle.newSession(scenario, content)
   local opening = SessionFixture.driveUntilSettled(session)
   answerRequests(session, opening, function(request)
     local actor = assert(request.actors[1], "action batches address their actor")
