@@ -1195,4 +1195,90 @@ function T.flag_lookup_reports_only_the_explicit_argument()
   end
 end
 
+-- Managed archives open one exact physical save-relative member into shared
+-- Data. The mount is only a read window: every success and failure unmounts
+-- before returning, and the returned bytes outlive that window.
+function T.managed_zip_reads_exact_member_and_unmounts_on_success_and_failure()
+  local root = "managed-open-test"
+  Assert.isNil(love.filesystem.getInfo(root), "managed-open fixture root must be unowned")
+  Assert.isTrue(love.filesystem.createDirectory(root), "managed-open fixture root setup failed")
+  local bytes = NdsBuilder.build(DumpFixture.spec())
+  local archivePath = root .. "/game.zip"
+  Assert.isTrue(
+    love.filesystem.write(archivePath, ZipBuilder.build({ { name = "game.nds", data = bytes } })),
+    "managed archive fixture setup failed"
+  )
+  local mounts, unmounts = {}, {}
+  local realMount, realUnmount = love.filesystem.mount, love.filesystem.unmount
+  love.filesystem.mount = function(...)
+    local args = { ... }
+    mounts[#mounts + 1] = args[2]
+    return realMount(...)
+  end
+  love.filesystem.unmount = function(...)
+    unmounts[#unmounts + 1] = ...
+    return realUnmount(...)
+  end
+  local ok, err = pcall(function()
+    Assert.equal(
+      type(RomSource.fromManagedZip),
+      "function",
+      "managed source opening must read an exact archive member without retaining a mount"
+    )
+    local source, openErr = RomSource.fromManagedZip(archivePath, "game.nds")
+    Assert.notNil(source, openErr and tostring(openErr))
+    assert(source)
+    local readOk, readErr = pcall(function()
+      Assert.equal(source:read(0, #bytes), bytes)
+      Assert.isTrue(type(source.byteData) == "function", "managed open returns a Data-backed source")
+      local shared = source:byteData()
+      Assert.equal(shared:getSize(), #bytes)
+      local origin = source:origin()
+      Assert.equal(origin.kind, "zip")
+      Assert.equal(origin.path, archivePath)
+      Assert.equal(origin.zipEntry, "game.nds")
+    end)
+    source:release()
+    if not readOk then
+      error(readErr, 0)
+    end
+    Assert.equal(#mounts, 1, "managed open mounts exactly one archive")
+    Assert.equal(unmounts[1], archivePath, "the physical archive is unmounted by its save-relative filename")
+    Assert.isNil(love.filesystem.getInfo(mounts[1]), "the returned Data outlives an already released mount")
+
+    local missing, missingErr = RomSource.fromManagedZip(archivePath, "missing.nds")
+    Assert.isNil(missing, "an exact managed member never substitutes another entry")
+    Assert.isTrue(Errors.is(missingErr), "a missing managed member is a typed failure")
+    Assert.equal(#mounts, 2)
+    Assert.equal(unmounts[2], archivePath)
+    Assert.isNil(love.filesystem.getInfo(mounts[2]), "missing-member failure releases its mount")
+
+    local malformedPath = root .. "/malformed.zip"
+    Assert.isTrue(love.filesystem.write(malformedPath, "not a ZIP"), "malformed fixture setup failed")
+    local malformed, malformedErr = RomSource.fromManagedZip(malformedPath, "game.nds")
+    Assert.isNil(malformed)
+    Assert.isTrue(Errors.is(malformedErr), "malformed managed archives fail in typed form")
+    Assert.equal(#mounts, 3)
+    Assert.equal(unmounts[3], malformedPath)
+    Assert.isNil(love.filesystem.getInfo(mounts[3]), "malformed-archive failure releases its mount")
+
+    for _, unsafe in ipairs({ "../game.zip", "/game.zip", root .. "/../game.zip", root .. "\\game.zip" }) do
+      local rejected, rejectErr = RomSource.fromManagedZip(unsafe, "game.nds")
+      Assert.isNil(rejected, "managed archive paths must stay inside the save root")
+      Assert.isTrue(Errors.is(rejectErr), "unsafe managed paths fail in typed form")
+    end
+    Assert.equal(#mounts, 3, "unsafe paths are rejected before any mount")
+  end)
+  love.filesystem.mount, love.filesystem.unmount = realMount, realUnmount
+  for _, namespace in ipairs(mounts) do
+    pcall(love.filesystem.unmount, namespace)
+  end
+  pcall(love.filesystem.remove, archivePath)
+  pcall(love.filesystem.remove, root .. "/malformed.zip")
+  pcall(love.filesystem.remove, root)
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return { tests = T }

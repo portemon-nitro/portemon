@@ -3357,4 +3357,99 @@ function T.prepared_results_never_double_count_against_idle_slots()
 end
 
 
+-- A present managed archive is authoritative: corruption fails closed even when
+-- a valid legacy binding could reopen the original. Only absence of both
+-- canonical and backup permits the compatibility path.
+function T.corrupt_managed_source_never_falls_back_to_the_legacy_binding()
+  local CompilerPool = requirePool()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  local RomBinding = require("romdump.src.source.RomBinding")
+  local RomSource = require("romdump.src.source.RomSource")
+  local NdsRom = require("romdump.src.source.NdsRom")
+  local ZipBuilder = require("tests.support.ZipBuilder")
+  Fixture.with(function(fixture)
+    Assert.isTrue(love.filesystem.createDirectory("roms"), "managed root setup failed")
+    Assert.isTrue(
+      love.filesystem.write(fixture.canonical, ZipBuilder.build({ { name = "game.nds", data = fixture.cart.data } })),
+      "managed archive setup failed"
+    )
+    local source = RomSource.fromString(fixture.cart.data)
+    local rom = assert(NdsRom.open(source, fixture.cart.versions))
+    local recorded, recordErr = RomBinding.record(CacheFs.forVersion(fixture.cart.info.id), rom, {
+      kind = "nds",
+      path = fixture.originalPath,
+      displayName = "original.nds",
+      zipEntry = false,
+    }, fixture.cart.versions)
+    rom:release()
+    Assert.isTrue(recorded, "legacy binding setup failed: " .. tostring(recordErr))
+
+    local host = newThreadHost(1)
+    host.love.filesystem = love.filesystem
+    host.love.data = love.data
+    host.love.timer = love.timer
+    local realFromPath = RomSource.fromPath
+    local externalOpens = 0
+    local function acquire()
+      RomSource.fromPath = function(...)
+        externalOpens = externalOpens + 1
+        return realFromPath(...)
+      end
+      local pool = assert(withLove(host.love, function()
+        return CompilerPool.new({ mode = "interactive" })
+      end))
+      withLove(host.love, function()
+        pool:selectGeneration({ versionId = fixture.cart.info.id, generationId = "managed-authority-generation" }, 1)
+      end)
+      local outcome
+      withLove(host.love, function()
+        outcome = { pool:prepareBootSource(1, true) }
+      end)
+      local held, failure = outcome[1], outcome[2]
+      local byteData = pool.sharedSource and pool.sharedSource.byteData or nil
+      withLove(host.love, function()
+        pool:shutdown()
+      end)
+      RomSource.fromPath = realFromPath
+      return held, failure, byteData
+    end
+
+    Assert.isTrue(love.filesystem.write(fixture.canonical, "broken managed container"), "corruption setup failed")
+    local ok, held, failure, byteData = pcall(acquire)
+    RomSource.fromPath = realFromPath
+    Assert.isTrue(ok, "managed corruption must return a typed source failure: " .. tostring(held))
+    Assert.isNil(held, "a corrupt managed archive must not admit the source")
+    Assert.equal(type(failure), "table", "managed corruption must carry a typed failure")
+    Assert.equal(failure.code, "ROM_ARCHIVE_INVALID", "corruption names the managed archive failure")
+    Assert.isNil(byteData, "a corrupt managed archive retains no shared Data")
+    Assert.equal(externalOpens, 0, "a present corrupt archive must never open the legacy original")
+
+    Assert.isTrue(
+      love.filesystem.write(fixture.backup, ZipBuilder.build({ { name = "game.nds", data = fixture.cart.data } })),
+      "recoverable backup setup failed"
+    )
+    Assert.isTrue(love.filesystem.remove(fixture.canonical), "canonical removal setup failed")
+    held, failure, byteData = acquire()
+    Assert.isTrue(held == true, "a missing canonical permits a valid backup: " .. tostring(failure))
+    Assert.notNil(byteData, "backup acquisition retains its verified buffer")
+    Assert.equal(externalOpens, 0, "backup recovery remains managed-first")
+
+    Assert.isTrue(love.filesystem.remove(fixture.backup), "backup removal setup failed")
+    Assert.isTrue(
+      love.filesystem.write(fixture.stage, "interrupted stage is not installed evidence"),
+      "stage setup failed"
+    )
+    held, failure, byteData = acquire()
+    Assert.isTrue(held == true, "missing managed storage permits the valid legacy source: " .. tostring(failure))
+    Assert.notNil(byteData, "legacy acquisition retains its verified buffer")
+    Assert.equal(externalOpens, 1, "the compatibility path opens the legacy source exactly once")
+    local digest = love.data.hash("sha1", byteData)
+    local hex = {}
+    for index = 1, #digest do
+      hex[index] = string.format("%02x", digest:byte(index))
+    end
+    Assert.equal(table.concat(hex), fixture.cart.sha1)
+  end)
+end
+
 return { tests = T }

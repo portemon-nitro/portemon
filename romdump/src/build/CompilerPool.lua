@@ -68,7 +68,7 @@ local ResidentCache = require("libs.storage.src.ResidentCache")
 ---@field generationId string
 ---@field epoch integer
 ---@class CompilerPool.SharedSource
----@field byteData userdata the one immutable selected ROM buffer, shared by reference
+---@field byteData love.Data the one immutable selected ROM buffer, shared by reference
 ---@field versionId string
 ---@field generationId string
 ---@field epoch integer
@@ -423,7 +423,7 @@ end
 ---@param self CompilerPool
 ---@param worker CompilerPool.Worker
 ---@param record CompilerPool.Job
----@param byteData userdata
+---@param byteData love.Data
 local function pushSourceSupply(self, worker, record, byteData)
   local ok, pushError = pcall(worker.input.push, worker.input, {
     kind = "source-supplied",
@@ -1113,7 +1113,7 @@ end
 -- buffer is held yet, and consumes it before any filesystem acquisition.
 -- Stale or foreign offers are refused without effect.
 ---@param epoch integer
----@param byteData userdata
+---@param byteData love.Data
 ---@param descriptor table<string, unknown> { versionId, romSha1 }
 ---@return boolean accepted
 function CompilerPool:offerSource(epoch, byteData, descriptor)
@@ -1127,6 +1127,7 @@ function CompilerPool:offerSource(epoch, byteData, descriptor)
   if type(byteData) ~= "userdata" then
     return false
   end
+  ---@cast byteData love.Data
   local GameVersion = require("romdump.src.source.GameVersion")
   local info = GameVersion.VERSIONS[descriptor.versionId]
   if type(info) ~= "table" or info.sha1 ~= descriptor.romSha1 then
@@ -1236,12 +1237,11 @@ function CompilerPool:_dropSharedSource()
 end
 
 -- Acquire the one immutable selected buffer: consume a verified ephemeral
--- offer first, otherwise load the registered external ROM through the
--- binding, verify it, convert it once to shared Data, and drop every
--- temporary byte string. Returns the buffer or nil plus a plain typed
--- error; a failure stores nothing and leaves prior receipts untouched.
+-- offer first, otherwise open the canonical managed archive when present.
+-- Only a missing managed archive permits the legacy external binding. Every
+-- source is verified and converted/retained once, then its view is released.
 ---@param versionId string
----@return userdata? byteData
+---@return love.Data? byteData
 ---@return table<string, unknown>? failure
 function CompilerPool:_acquireSharedSource(versionId)
   local selected = assert(self.selected, "source acquisition requires its selection")
@@ -1256,8 +1256,44 @@ function CompilerPool:_acquireSharedSource(versionId)
     return offered.byteData
   end
   local RomBinding = require("romdump.src.source.RomBinding")
+  local RomArchive = require("romdump.src.source.RomArchive")
   local RomSource = require("romdump.src.source.RomSource")
   local NdsRom = require("romdump.src.source.NdsRom")
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local managedInfo = GameVersion.VERSIONS[versionId]
+  if type(managedInfo) == "table" and RomArchive.recoverablePath(managedInfo.sha1) ~= nil then
+    local source, srcErr = RomArchive.open(managedInfo.sha1)
+    if source == nil then
+      return nil,
+        sourceErrorTable(
+          Errors.is(srcErr) and srcErr
+            or Errors.new("ROM_ARCHIVE_INVALID", "managed ROM archive could not be opened", {
+              versionId = versionId,
+              cause = tostring(srcErr),
+            })
+        )
+    end
+    local rom, romErr = NdsRom.open(source)
+    if rom == nil then
+      source:release()
+      return nil,
+        sourceErrorTable(Errors.new("ROM_ARCHIVE_INVALID", "managed ROM archive failed verification", {
+          versionId = versionId,
+          cause = Errors.format(romErr),
+        }))
+    end
+    local verified = rom:versionInfo()
+    if verified.id ~= versionId or verified.sha1:lower() ~= managedInfo.sha1:lower() then
+      rom:release()
+      return nil,
+        sourceErrorTable(Errors.new("ROM_ARCHIVE_INVALID", "managed ROM archive identity does not match its version", {
+          versionId = versionId,
+        }))
+    end
+    local byteData = source:byteData()
+    rom:release()
+    return byteData
+  end
   local binding, bindErr = RomBinding.read(self:_cacheFsFor(versionId), versionId)
   if binding == nil then
     return nil, sourceErrorTable(bindErr)

@@ -5,7 +5,7 @@
 -- subset LÖVE itself can mount: local headers, central directory, and EOCD
 -- with method 0 (STORE) or 8 (raw DEFLATE), UTF-8 names, one disk, no extras,
 -- no data descriptors, no encryption, no ZIP64. Reads, raw DEFLATE, and file
--- handles come from LÖVE; CRC and record assembly stay private here.
+-- handles come from LÖVE; pure CRC and record bytes come from libs.codec.
 --
 -- Trust: a write is verified by its own compression/write/close results and is
 -- never reopened. The replacement protocol is cache.zip.new -> cache.zip with
@@ -18,7 +18,7 @@ local BinaryView = require("libs.codec.src.BinaryView")
 local Errors = require("libs.errors.src.Errors")
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local StorageErrors = require("libs.storage.src.errors")
-local bit = require("bit")
+local Zip32 = require("libs.codec.src.Zip32")
 
 local CacheArchive = {}
 
@@ -41,15 +41,6 @@ local PACING_CHUNK_BYTES = 256 * 1024
 
 local METHOD_STORE = 0
 local METHOD_DEFLATE = 8
-local FLAG_UTF8 = 0x0800
-local VERSION_NEEDED = 20
--- Deterministic DOS timestamp: 1980-01-01 00:00.
-local DOS_TIME = 0
-local DOS_DATE = 0x0021
-
-local LOCAL_SIGNATURE = 0x04034B50
-local CENTRAL_SIGNATURE = 0x02014B50
-local EOCD_SIGNATURE = 0x06054B50
 
 local ARCHIVE_CODES = {
   WRITE_FAILED = StorageErrors.CACHE_ARCHIVE_WRITE_FAILED,
@@ -100,73 +91,6 @@ local function loveApi()
     pcall(require, "love.timer")
   end
   return host
-end
-
---------------------------------------------------------------------- zip digits
-
----@param value integer
----@return string
-local function u16(value)
-  assert(value >= 0 and value <= 0xFFFF and value % 1 == 0, "zip u16 field out of range")
-  return string.char(value % 256, math.floor(value / 256) % 256)
-end
-
----@param value integer
----@return string
-local function u32(value)
-  assert(value >= 0 and value <= MAX_RECORD_BYTES and value % 1 == 0, "zip u32 field out of range")
-  local fourth = math.floor(value / 16777216)
-  assert(fourth <= 255, "zip u32 field out of range")
-  return string.char(value % 256, math.floor(value / 256) % 256, math.floor(value / 65536) % 256, fourth)
-end
-
--- LuaJIT's bit library answers signed 32-bit values; every ZIP/CRC field
--- stores the unsigned number.
----@param value integer
----@return integer
-local function unsigned32(value)
-  local folded = bit.band(value, 0xFFFFFFFF)
-  return folded % 0x100000000
-end
-
-local CRC_TABLE
-
----@return integer[]
-local function crcTable()
-  if CRC_TABLE == nil then
-    local table_ = {}
-    for index = 0, 255 do
-      local value = index
-      for _ = 1, 8 do
-        local mask = -bit.band(value, 1)
-        value = bit.bxor(bit.rshift(value, 1), bit.band(0xEDB88320, mask))
-      end
-      table_[index] = value
-    end
-    CRC_TABLE = table_
-  end
-  return CRC_TABLE
-end
-
--- Unsigned IEEE ZIP CRC-32 over one rooted byte view: the payload is walked
--- in place, so hashing never materializes a whole-entry string.
----@param view BinaryView
----@return integer
-local function crc32View(view)
-  local table_ = crcTable()
-  local value = 0xFFFFFFFF
-  local length = view:length()
-  for offset = 0, length - 1 do
-    local slot = bit.band(bit.bxor(value, view:u8(offset)), 0xFF)
-    value = bit.bxor(bit.rshift(value, 8), table_[slot])
-  end
-  return unsigned32(bit.bnot(value))
-end
-
----@param bytes string
----@return integer
-local function crc32String(bytes)
-  return crc32View(BinaryView.fromString(bytes, "zip text"))
 end
 
 ---------------------------------------------------------------------- paths
@@ -602,48 +526,16 @@ local function abortWrite(session, outputPath, message)
   return persistenceFailure(ARCHIVE_CODES.WRITE_FAILED, message, { path = outputPath, sequence = session.sequence })
 end
 
----@param row CacheArchive.Row
+---@param row Zip32.Row
 ---@return string
 local function localHeader(row)
-  return table.concat({
-    u32(LOCAL_SIGNATURE),
-    u16(VERSION_NEEDED),
-    u16(FLAG_UTF8),
-    u16(row.method),
-    u16(DOS_TIME),
-    u16(DOS_DATE),
-    u32(row.unsignedCrc32),
-    u32(row.compressedSize),
-    u32(row.uncompressedSize),
-    u16(#row.path),
-    u16(0),
-    row.path,
-  })
+  return Zip32.localHeader(row)
 end
 
----@param row CacheArchive.Row
+---@param row Zip32.Row
 ---@return string
 local function centralRecord(row)
-  return table.concat({
-    u32(CENTRAL_SIGNATURE),
-    u16(VERSION_NEEDED),
-    u16(VERSION_NEEDED),
-    u16(FLAG_UTF8),
-    u16(row.method),
-    u16(DOS_TIME),
-    u16(DOS_DATE),
-    u32(row.unsignedCrc32),
-    u32(row.compressedSize),
-    u32(row.uncompressedSize),
-    u16(#row.path),
-    u16(0),
-    u16(0),
-    u16(0),
-    u16(0),
-    u32(0),
-    u32(row.offset),
-    row.path,
-  })
+  return Zip32.centralRecord(row)
 end
 
 -- One payload entry: hash it in place, compress it once (stored when the
@@ -664,7 +556,7 @@ local function writeEntry(session, control, output, entry)
         path = entry.path,
       })
   end
-  local crc = crc32View(BinaryView.fromData(entry.data, entry.path))
+  local crc = Zip32.crc32(BinaryView.fromData(entry.data, entry.path))
   local body = entry.data
   local method = METHOD_STORE
   ---@type number
@@ -736,7 +628,7 @@ end
 ---@return Errors.Error? failure
 local function writeDirectory(session, control, cut, output, rows, manifestBytes)
   local manifestSize = #manifestBytes
-  local manifestCrc = crc32String(manifestBytes)
+  local manifestCrc = Zip32.crc32(BinaryView.fromString(manifestBytes, "zip text"))
   local manifestRow = {
     path = CacheArchive.INDEX_MEMBER,
     uncompressedSize = manifestSize,
@@ -773,16 +665,7 @@ local function writeDirectory(session, control, cut, output, rows, manifestBytes
       })
   end
   local count = #all
-  local endRecord = table.concat({
-    u32(EOCD_SIGNATURE),
-    u16(0),
-    u16(0),
-    u16(count),
-    u16(count),
-    u32(directorySize),
-    u32(directoryOffset),
-    u16(0),
-  })
+  local endRecord = Zip32.endRecord(count, directorySize, directoryOffset)
   written, failure = writeOutput(session, control, output, endRecord)
   if written == nil then
     return nil, failure
@@ -1295,7 +1178,7 @@ function CacheArchive.open(versionId, expectedIdentity, fileName)
           expected = entry.uncompressedSize,
         })
     end
-    local crc = crc32View(BinaryView.fromData(member, entry.path))
+    local crc = Zip32.crc32(BinaryView.fromData(member, entry.path))
     if crc ~= entry.unsignedCrc32 then
       unmount()
       return nil,

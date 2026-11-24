@@ -104,6 +104,7 @@ function T.imports_synthetic_rom_to_completion()
   h.importer:startSource(RomSource.fromString(h.data, "hg.nds"))
   runToTerminal(h.importer)
   Assert.equal(h.importer.state, "complete")
+  Assert.equal(h.importer:status().canCancel, false, "direct synchronous imports are never cancellable queued work")
   Assert.equal(h.importer:status().versionId, "heartgold")
   Assert.equal(h.importer.progress, 1)
   Assert.isTrue(RomImporter.isReady("heartgold", CacheFs.forVersion("heartgold", h.backend), h.versions))
@@ -890,19 +891,6 @@ local function pump(importer, rounds)
   end
 end
 
--- A strict source binding for the synthetic cartridge the harness builds.
-local function syntheticBinding(info)
-  return {
-    schema = 1,
-    versionId = info.id,
-    romSha1 = info.sha1,
-    kind = "nds",
-    path = false,
-    displayName = info.displayName,
-    zipEntry = false,
-  }
-end
-
 -- A terminal worker result carrying genuine shared bytes for the session.
 local function completePacket(h, sessionId)
   return {
@@ -912,7 +900,6 @@ local function completePacket(h, sessionId)
     report = { sha1 = h.info.sha1 },
     sourceName = "synthetic.nds",
     displayName = h.info.displayName,
-    binding = syntheticBinding(h.info),
     byteData = love.data.newByteData(h.data),
   }
 end
@@ -940,8 +927,8 @@ local function assertLeaseFree(host)
 end
 
 -- A queued import publishes only after the worker validates and the game
--- thread commits: the binding lands once, completion fires once, and the
--- shared bytes are offered for exactly one handoff.
+-- thread commits: completion fires once, no external binding is written by
+-- the queued path, and the shared bytes are offered for exactly one handoff.
 function T.queued_import_commits_after_validation_and_hands_its_source_once()
   withQueuedHost(function(host)
     local h = harness()
@@ -949,6 +936,7 @@ function T.queued_import_commits_after_validation_and_hands_its_source_once()
     h.importer:queuePath("synthetic.nds")
     h.importer:update()
     Assert.equal(h.importer.state, "reading")
+    Assert.equal(h.importer:status().canCancel, true, "active pre-commit work is cancellable")
     local session = liveSession(h.importer)
     local sessionId = assert(session.inbox:pop()).id
     Assert.isNil(h.backend.files["heartgold/rom-source.lua"], "queueing alone publishes no binding")
@@ -963,17 +951,20 @@ function T.queued_import_commits_after_validation_and_hands_its_source_once()
     Assert.notNil(commit, "validation must be answered with a commit")
     Assert.equal(commit.id, sessionId)
     Assert.equal(commit.op, "commit")
+    Assert.equal(h.importer:status().canCancel, false, "commit authorization ends the cancellable window")
     Assert.isNil(session.inbox:pop(), "exactly one commit authorizes the registration")
     Assert.isNil(h.backend.files["heartgold/rom-source.lua"], "validation alone publishes no binding")
     session.outbox:push(completePacket(h, sessionId))
     h.importer:update()
     Assert.equal(h.importer.state, "complete")
+    Assert.equal(h.importer:status().canCancel, false, "terminal imports are not cancellable")
     Assert.equal(#h.events, 1, "completion fires exactly once")
     Assert.equal(h.events[1], "heartgold")
+    session.outbox:push(completePacket(h, sessionId))
+    pump(h.importer, 2)
+    Assert.equal(#h.events, 1, "a repeated late terminal packet cannot complete twice")
     local binding = CacheFs.forVersion("heartgold", h.backend):loadLua(RomBinding.PATH)
-    Assert.notNil(binding, "the authorized result publishes its binding")
-    Assert.equal(binding.versionId, "heartgold")
-    Assert.equal(binding.romSha1, h.info.sha1)
+    Assert.isNil(binding, "queued completion publishes no external source binding")
     local handed = h.importer:takeVerifiedSource()
     Assert.notNil(handed, "completion offers its verified bytes once")
     Assert.equal(handed:sha1(), h.info.sha1)
@@ -1053,6 +1044,7 @@ function T.superseding_import_waits_for_the_live_worker_lease()
     pump(second.importer, 3)
     Assert.equal(#host.threads, 1, "no second worker starts while the retired one is alive")
     Assert.equal(second.importer:status().stage, "waiting")
+    Assert.equal(second.importer:status().canCancel, true, "lease-waiting pre-commit work is cancellable")
     -- Late packets from the retired session are drained, never published.
     firstSession.outbox:push(completePacket(first, "first-session"))
     pump(first.importer, 2)
@@ -1076,8 +1068,7 @@ function T.superseding_import_waits_for_the_live_worker_lease()
     Assert.equal(#second.events, 1)
     Assert.equal(second.events[1], "heartgold")
     local binding = CacheFs.forVersion("heartgold", second.backend):loadLua(RomBinding.PATH)
-    Assert.notNil(binding)
-    Assert.equal(binding.romSha1, second.info.sha1)
+    Assert.isNil(binding, "queued completion publishes no external source binding")
     Assert.equal(#first.events, 0, "the retired session never completes")
     Assert.isNil(first.importer:takeVerifiedSource())
     retireWorkers(host)
@@ -1148,6 +1139,240 @@ function T.lost_worker_retries_once_then_fails_while_logic_errors_do_not_retry()
       failed.importer:update()
     end
     assertLeaseFree(host)
+  end)
+end
+
+-- Temporary picker files transfer ownership only after the importer accepts
+-- them. Rejections leave the caller's file untouched; accepted files are
+-- removed by the importer after source closure, including cancellation and
+-- synchronous worker-start failure.
+local function queueTemporary(importer, path, requestId)
+  Assert.equal(
+    type(importer.queueTemporaryPath),
+    "function",
+    "temporary picker input needs an explicit ownership-transfer queue operation"
+  )
+  return importer:queueTemporaryPath(path, requestId)
+end
+
+function T.temporary_path_rejections_and_busy_admission_preserve_caller_ownership()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  local Errors = require("libs.errors.src.Errors")
+  Fixture.with(function(fixture)
+    local importer = fixture.host:importer(fixture.cart)
+    for _, path in ipairs({
+      fixture.originalPath,
+      "../original.nds",
+      "imports/../original.nds",
+      "imports/bad.token.nds",
+      "imports/bad\\name.nds",
+    }) do
+      local accepted, err = queueTemporary(importer, path)
+      Assert.isNil(accepted, "unsafe temporary path must be rejected: " .. path)
+      Assert.isTrue(Errors.is(err), "unsafe path rejection must be typed")
+      Assert.equal(err.code, "ROM_IMPORT_REQUEST_INVALID")
+    end
+    Assert.isTrue(fixture:originalExists(), "rejection must leave the caller-owned original intact")
+    local missing, missingErr = queueTemporary(importer, "imports/missing.nds")
+    Assert.isNil(missing)
+    Assert.equal(assert(missingErr).code, "ROM_OPEN_FAILED")
+    local directoryPath = "imports/directory-" .. fixture.label .. ".nds"
+    Assert.isNil(love.filesystem.getInfo(directoryPath), "directory fixture must be unowned")
+    Assert.isTrue(love.filesystem.createDirectory(directoryPath), "directory fixture setup failed")
+    local directory, directoryErr = queueTemporary(importer, directoryPath)
+    Assert.isNil(directory)
+    Assert.equal(assert(directoryErr).code, "ROM_OPEN_FAILED")
+    Assert.equal(love.filesystem.getInfo(directoryPath).type, "directory")
+    Assert.isTrue(love.filesystem.remove(directoryPath), "directory fixture cleanup failed")
+
+    fixture.host.holdValidation = true
+    local acceptedPath = fixture:writeTemporary("accepted")
+    local busyPath = fixture:writeTemporary("busy")
+    Assert.isTrue(
+      queueTemporary(importer, acceptedPath, "accepted-session"),
+      "an existing safe stage transfers ownership"
+    )
+    local session = fixture.host:validationGate(importer)
+    local busy, busyErr = queueTemporary(importer, busyPath, "busy-session")
+    Assert.isNil(busy, "a busy importer rejects a second temporary stage")
+    Assert.equal(assert(busyErr).code, "IMPORT_BUSY")
+    Assert.notNil(love.filesystem.getInfo(busyPath), "busy rejection keeps caller ownership")
+    Assert.notNil(love.filesystem.getInfo(acceptedPath), "the accepted stage remains live while borrowed")
+    Assert.equal(importer:status().canCancel, true, "pre-commit temporary work is cancellable")
+    importer:cancelQueued()
+    session.outbox:discardValidation()
+    fixture.host:waitFor(function()
+      importer:update()
+      return love.filesystem.getInfo(acceptedPath) == nil
+    end, "accepted temporary cleanup after cancellation")
+    Assert.notNil(love.filesystem.getInfo(busyPath), "only the accepted temporary file may be removed")
+    Assert.isTrue(fixture:originalExists(), "the caller-owned original is never deleted")
+  end)
+end
+
+function T.accepted_temporary_success_and_active_read_cancellation_close_before_removal()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  Fixture.with(function(fixture)
+    local successPath = fixture:writeTemporary("success")
+    local success = fixture.host:importer(fixture.cart)
+    Assert.isTrue(queueTemporary(success, successPath, "temporary-success"), "temporary success transfers ownership")
+    fixture.host:finish(success, "complete")
+    Assert.isNil(love.filesystem.getInfo(successPath), "success removes the accepted input after terminal cleanup")
+    Assert.notNil(love.filesystem.getInfo(fixture.canonical), "temporary success still publishes managed storage")
+    local published = love.filesystem.read(fixture.canonical)
+    local handed = success:takeVerifiedSource()
+    Assert.notNil(handed)
+    handed:release()
+
+    local canceledPath = fixture:writeTemporary("canceled")
+    fixture.host.prelude = [[
+local testControl = select(4, ...)
+local token = "canceled"
+local function trace(event)
+  outbox:push({ kind = "test-trace", event = event })
+end
+local realOpen = io.open
+io.open = function(path, mode)
+  if type(path) == "string" and path:find(token, 1, true) then
+    trace("read-started")
+    testControl:demand()
+  end
+  local file, message = realOpen(path, mode)
+  if file and type(path) == "string" and path:find(token, 1, true) then
+    return setmetatable({}, {
+      __index = function(_, key)
+        if key == "close" then
+          return function()
+            local result = file:close()
+            trace("source-closed")
+            return result
+          end
+        end
+        local member = file[key]
+        if type(member) == "function" then
+          return function(_, ...)
+            return member(file, ...)
+          end
+        end
+        return member
+      end,
+    })
+  end
+  return file, message
+end
+local realRemove = love.filesystem.remove
+love.filesystem.remove = function(path)
+  local result, message = realRemove(path)
+  if type(path) == "string" and path:find(token, 1, true) then
+    trace("input-removed")
+  end
+  return result, message
+end
+]]
+    local canceled = fixture.host:importer(fixture.cart)
+    Assert.isTrue(
+      queueTemporary(canceled, canceledPath, "temporary-canceled"),
+      "active temporary input transfers ownership"
+    )
+    local thread = assert(canceled._queued, "the real worker must start").thread
+    fixture.host:waitFor(function()
+      canceled:update()
+      return fixture.host.trace[1] ~= nil and fixture.host.trace[1].event == "read-started"
+    end, "the worker's active source read")
+    Assert.notNil(love.filesystem.getInfo(canceledPath), "an active input remains live while borrowed")
+    Assert.equal(canceled:status().canCancel, true)
+    canceled:cancelQueued()
+    fixture.host.control:push(true)
+    fixture.host:waitFor(function()
+      canceled:update()
+      return not thread:isRunning() and love.filesystem.getInfo(canceledPath) == nil
+    end, "active source close and temporary removal")
+    local closedAt, removedAt
+    for index, event in ipairs(fixture.host.trace) do
+      if event.event == "source-closed" then
+        closedAt = index
+      elseif event.event == "input-removed" then
+        removedAt = index
+      end
+    end
+    Assert.notNil(closedAt, "the active source handle must close")
+    Assert.notNil(removedAt, "the importer must remove its accepted input")
+    Assert.isTrue(closedAt < removedAt, "temporary removal must follow source close")
+    Assert.equal(love.filesystem.read(fixture.canonical), published, "active-read cancellation publishes nothing")
+    Assert.isTrue(fixture:originalExists(), "cancellation never deletes the caller-owned original")
+  end)
+end
+
+function T.pending_temporary_cancel_and_worker_start_failure_have_one_owner()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  Fixture.with(function(fixture)
+    fixture.host.holdValidation = true
+    local active = fixture.host:importer(fixture.cart)
+    active:queuePath(fixture.originalPath)
+    local activeSession = fixture.host:validationGate(active)
+    Assert.equal(#fixture.host.threads, 1, "one physical import worker is live")
+
+    local pendingPath = fixture:writeTemporary("pending")
+    local pending = fixture.host:importer(fixture.cart)
+    Assert.isTrue(
+      queueTemporary(pending, pendingPath, "pending-session"),
+      "a lease-waiting temporary stage transfers ownership"
+    )
+    pending:update()
+    Assert.equal(pending:status().stage, "waiting")
+    Assert.equal(#fixture.host.threads, 1, "a pending request starts no second physical worker")
+    pending:cancelQueued()
+    Assert.isNil(love.filesystem.getInfo(pendingPath), "pending cancellation removes its stage immediately")
+    active:cancelQueued()
+    activeSession.outbox:discardValidation()
+    fixture.host:waitFor(function()
+      active:update()
+      return not fixture.host.threads[1]:isRunning()
+    end, "the prior physical worker exit")
+
+    local failedPath = fixture:writeTemporary("startup-failure")
+    fixture.host.failNextStart = true
+    local failed = fixture.host:importer(fixture.cart)
+    Assert.isTrue(
+      queueTemporary(failed, failedPath, "startup-failure"),
+      "acceptance remains true after synchronous startup failure"
+    )
+    Assert.equal(failed.state, "error", "startup failure state: " .. tostring(failed:status().stage))
+    Assert.equal(failed:status().errorCode, "IMPORT_WORKER_UNAVAILABLE")
+    Assert.isNil(love.filesystem.getInfo(failedPath), "the importer cleans its file after accepted startup failure")
+    Assert.equal(#fixture.host.threads, 1, "failed startup creates no physical worker")
+    Assert.isTrue(fixture:originalExists(), "startup failure leaves the caller-owned original intact")
+  end)
+end
+
+function T.lost_temporary_worker_is_not_retried_after_its_file_is_removed()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  Fixture.with(function(fixture)
+    local path = fixture:writeTemporary("worker-lost")
+    local ok, err = pcall(function()
+      withQueuedHost(function(host)
+        local h = harness()
+        host:watch(h.importer)
+        Assert.isTrue(queueTemporary(h.importer, path, "lost-temporary"), "temporary loss request transfers ownership")
+        h.importer:update()
+        local session = liveSession(h.importer)
+        Assert.equal(assert(session.inbox:pop()).id, "lost-temporary")
+        Assert.equal(#host.threads, 1)
+        session.thread.alive = false
+        h.importer:update()
+        Assert.equal(h.importer.state, "error")
+        Assert.equal(h.importer:status().errorCode, "IMPORT_WORKER_LOST")
+        Assert.equal(#host.threads, 1, "a deleted temporary path is never retried automatically")
+        Assert.isNil(love.filesystem.getInfo(path), "terminal worker loss removes the accepted temporary input")
+        Assert.equal(#h.events, 0)
+        retireWorkers(host)
+        pump(h.importer, 4)
+        assertLeaseFree(host)
+      end)
+    end)
+    if not ok then
+      error(err, 0)
+    end
   end)
 end
 
