@@ -85,6 +85,7 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 ---@field prepare fun(resolution: table<string, unknown>, facing: FieldDirection): table<string, unknown>
 ---@field commit fun(resolution: table<string, unknown>, facing: FieldDirection, prepared: table<string, unknown>)
 ---@field disposePrepared fun(resolution: table<string, unknown>?, prepared: table<string, unknown>?)? -- releases resources owned before commit
+---@field produceDestination fun(sourceMap: table<string, unknown>, warp: table<string, unknown>, dynamicWarp: table<string, unknown>?): table<string, unknown>? -- begins staging the destination under the held cover, before resolution
 ---@field resolveDestination function
 ---@field dynamicWarpSource fun(): table<string, unknown>|nil -- late-read supplier of the saved dynamic-warp destination
 ---@field doorAt fun(runtimeMap: table<string, unknown>, fieldX: integer, fieldZ: integer): table<string, unknown>|nil -- nil = no door choreography
@@ -139,6 +140,11 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 local FieldTransition = {}
 FieldTransition.__index = FieldTransition
 
+-- Indivisible destination staging steps the covered preparation may take per
+-- fixed tick. The cover hides the work, and the budget keeps input handling and
+-- the source session responsive while it runs.
+local DESTINATION_STAGE_UNITS_PER_TICK = 4
+
 FieldTransition.PHASES = {
   idle = "idle",
   await_destination_environment = "await_destination_environment",
@@ -166,6 +172,7 @@ function FieldTransition.new(options)
     prepare = options.prepare,
     commit = options.commit,
     disposePrepared = options.disposePrepared,
+    produceDestination = options.produceDestination,
     doorAt = options.doorAt,
     playSound = options.playSound,
     stopSound = options.stopSound,
@@ -204,6 +211,8 @@ function FieldTransition.new(options)
     _outdoorExitSteps = nil,
     _outdoorEnterSteps = nil,
     _outdoorEnterDestination = nil,
+    destinationStage = nil,
+    destinationStageStarted = false,
   }, FieldTransition)
 end
 
@@ -594,6 +603,8 @@ local function resetTransient(self)
   self._outdoorExitSteps = nil
   self._outdoorEnterSteps = nil
   self._outdoorEnterDestination = nil
+  self.destinationStage = nil
+  self.destinationStageStarted = false
 end
 
 -- Keep the destination warp resolution as the logical anchor and retain the
@@ -1192,6 +1203,11 @@ end
 -- Restore a coherent idle state after failed destination preparation. Map
 -- ownership remains with the runtime throughout this path.
 function FieldTransition:_abort(err)
+  local stage = self.destinationStage
+  self.destinationStage = nil
+  if stage ~= nil then
+    pcall(stage.release, stage)
+  end
   if self.disposePrepared and (self.resolution or self.prepared) then
     self.disposePrepared(self.resolution, self.prepared)
   end
@@ -1352,6 +1368,35 @@ function FieldTransition:updateFixed(inputSnapshot)
     end
     if not requestReady then
       return false
+    end
+    -- Stage the destination's physical window under the held cover before it is
+    -- resolved: the cell loads, collision decodes and GPU realizations the
+    -- resolution would otherwise build in one frame advance here, a bounded
+    -- number of steps per tick, while the source world stays valid and visible
+    -- only as black. A destination with no physical window stages nothing.
+    if self.produceDestination ~= nil and not self.destinationStageStarted then
+      self.destinationStageStarted = true
+      local started, stageOrError = pcall(function()
+        return self.produceDestination(self.sourceMap, self.sourceWarp, self.dynamicWarp)
+      end)
+      if not started then
+        return self:_abort(stageOrError)
+      end
+      self.destinationStage = stageOrError
+    end
+    local stage = self.destinationStage
+    if stage ~= nil then
+      local advanced, consumed = pcall(stage.advance, stage, DESTINATION_STAGE_UNITS_PER_TICK)
+      if not advanced then
+        self.destinationStage = nil
+        pcall(stage.release, stage)
+        return self:_abort(consumed)
+      end
+      assert(type(consumed) == "number" and consumed >= 0, "destination staging consumed an invalid step count")
+      if not stage:isReady() then
+        return false
+      end
+      self.destinationStage = nil
     end
     local resolveOk, err = pcall(function()
       local result = self.resolveDestination(self.loader, self.sourceMap, self.sourceWarp, self.dynamicWarp)

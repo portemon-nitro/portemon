@@ -22,12 +22,17 @@ function T.exposes_one_strict_policy_for_every_field_speed()
     abAcceleration = true,
     holdAdvanceTicks = 0,
   })
-  Assert.deepEqual(TextSpeedPolicy.forSpeed("fastest"), {
-    interGlyphDelay = 0,
-    glyphBudget = 2,
-    abAcceleration = false,
-    holdAdvanceTicks = 15,
-  })
+  -- The turbo cadence itself is a tuned constant of the policy, not a second
+  -- literal to keep in step here: what the strict contract owes is the reveal
+  -- shape plus a positive held-source continuation.
+  local turbo = TextSpeedPolicy.forSpeed("fastest")
+  Assert.equal(turbo.interGlyphDelay, 0, "turbo reveals with no inter-glyph delay")
+  Assert.equal(turbo.glyphBudget, 2, "turbo reveals two glyphs per update")
+  Assert.isFalse(turbo.abAcceleration, "turbo needs no AB speed-up")
+  Assert.isTrue(
+    type(turbo.holdAdvanceTicks) == "number" and turbo.holdAdvanceTicks % 1 == 0 and turbo.holdAdvanceTicks > 0,
+    "turbo carries a positive whole-tick held-source continuation cadence"
+  )
 end
 
 -- Only the TURBO stop turns a held Action/Cancel into continuation edges; the

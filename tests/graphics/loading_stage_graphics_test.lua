@@ -529,16 +529,28 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
   local TitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
   local staged = {}
   local savedNew, savedScenes = Movie.new, Movie.loadValidatedScenes
-  -- This scenario owns the loading/movie handoff, not title asset decoding:
-  -- the title build stays staged and never becomes ready behind it.
+  -- This scenario owns the loading/movie handoff, not title asset decoding: the
+  -- title build realizes on its first advance, so movie admission sees the
+  -- realized title it requires and the beat under test stays the loader beat.
   local savedTitleBegin = TitleScene.begin
   TitleScene.begin = function()
+    local ready = false
     return {
       isReady = function()
-        return false
+        return ready
       end,
       advance = function()
-        return 0
+        ready = true
+        return 1
+      end,
+      takeResult = function()
+        return {
+          bundle = { crySpeciesId = 25 },
+          resize = function() end,
+          updateFixed = function() end,
+          draw = function() end,
+          dispose = function() end,
+        }
       end,
       release = function() end,
     }

@@ -238,6 +238,15 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
       end
     end
   end
+  -- Terrain geometry enrolls the same way the textures above do: every distinct
+  -- batch source is requested before the first readiness check, so the executor
+  -- fills its slots while this staged build still walks descriptors. Model
+  -- geometry enrolls per descriptor below, for the same reason.
+  if queue ~= nil then
+    for _, batch in ipairs(scene.mapBatches) do
+      pool:prefetchGeometry(batch.geometry)
+    end
+  end
   -- Yield the staged-build checkpoint while a shared texture is still
   -- pending so the worker classification never blocks the scene task.
   local function waitShared()
@@ -250,9 +259,11 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
   -- block-wait it and every failure unwind can cancel it exactly once. What a
   -- take or wait transfers is the shared decoded lease; the task returns it as
   -- soon as the GPU realization has consumed the payload.
-  local function awaitPrepared(kind, path)
+  local function awaitPrepared(kind, path, enrolledToken)
     local priority = task._finishing and "demand" or "prefetch"
-    local token = queue:request(kind, path, priority)
+    -- A pre-enrolled source coalesces onto its own token: the scene enrolled all
+    -- its distinct geometry up front, so preparing it never runs twice.
+    local token = enrolledToken or queue:request(kind, path, priority)
     task._outstanding = token
     while true do
       if task._stashed ~= nil and task._stashed[token] ~= nil then
@@ -514,6 +525,14 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
           "model descriptor " .. modelKey .. " has unknown kind " .. tostring(desc.kind),
           { modelKey = modelKey, kind = desc.kind }
         )
+      end
+      -- Enroll this model's distinct geometry sources before awaiting any of
+      -- them, so a multi-slot executor decodes them in parallel instead of one
+      -- source per awaited step.
+      if queue ~= nil then
+        for _, batch in ipairs(assert(batches)) do
+          pool:prefetchGeometry(batch.geometry)
+        end
       end
       -- The model-space AABB is a pure fold over the per-mesh entry bounds
       -- (cached on the pool entry per geometry path), one table per model

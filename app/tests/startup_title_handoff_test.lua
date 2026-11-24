@@ -183,6 +183,7 @@ local function withStartup(fn)
 
   active = {
     requests = {},
+    executionPolicies = {},
     scenes = {},
     menus = {},
     epochs = {},
@@ -220,6 +221,11 @@ local function withStartup(fn)
     if selector.name == "startup-title" then
       return active.titleAssetsReady ~= false, nil
     end
+    -- Movie admission acknowledges the opening soundtrack; the harness models
+    -- the selected edition's milestone as ready unless a case holds it back.
+    if selector.name == "startup-audio" then
+      return active.audioReady ~= false, active.audioReady == false and "synthetic audio bank failure" or nil
+    end
     if selector.name == "bootstrap" then
       return active.bootstrapReady == true, nil
     end
@@ -236,6 +242,9 @@ local function withStartup(fn)
   end
   function service:enableSweep(_)
     active.sweeps = (active.sweeps or 0) + 1
+  end
+  function service:setExecutionPolicy(epoch, loading)
+    active.executionPolicies[#active.executionPolicies + 1] = { epoch = epoch, loading = loading }
   end
   function service:generationId(_)
     return "startup-test-generation"
@@ -303,6 +312,9 @@ local function withStartup(fn)
   App.drawableWidth, App.drawableHeight, App.pixelRatio = 800, 600, 1
   StartupAudioSession.new = function()
     return {
+      beginOpening = function()
+        return active.openingStartAcknowledged ~= false
+      end,
       bindTitleRecord = function(self, record)
         assert(type(record) == "table" and type(record.crySpeciesId) == "number")
         if self.titleRecord ~= nil then
@@ -807,16 +819,13 @@ end
 
 function T.tests.title_audio_events_use_the_bounded_borrowed_callbacks()
   withStartup(function()
-    local baseObserve = App.service.observe
-    App.service.observe = function(self, epoch, selector)
-      if selector.requestKind == "milestone" and selector.name == "startup-audio" then
-        return active.audioReady == true, nil
-      end
-      return baseObserve(self, epoch, selector)
-    end
-    local events = { titleReady = 0, prompt = 0, skip = 0 }
+    local events = { opening = 0, titleReady = 0, prompt = 0, skip = 0 }
     StartupAudioSession.new = function()
       return {
+        beginOpening = function()
+          events.opening = events.opening + 1
+          return true
+        end,
         bindTitleRecord = function(self, record)
           assert(type(record) == "table" and type(record.crySpeciesId) == "number")
           if self.titleRecord ~= nil then
@@ -840,10 +849,9 @@ function T.tests.title_audio_events_use_the_bounded_borrowed_callbacks()
     end
 
     local state = startTitle()
-    Assert.equal(events.titleReady, 0, "pending optional audio emits no title event behind the visible title")
-    active.audioReady = true
-    App.update(SourceTick.DT)
-    Assert.equal(events.titleReady, 1, "audio readiness emits one bounded audio event")
+    Assert.isTrue(isStartupTitle(state), "the acknowledged opening hands off to the realized title")
+    Assert.equal(events.opening, 1, "one acknowledgement starts the opening soundtrack")
+    Assert.equal(events.titleReady, 1, "the title theme starts once at title entry")
     App.keypressed("return", "return", false)
     Assert.equal(events.prompt, 1, "the first title press emits the prompt/cry event")
     Assert.equal(events.skip, 0, "the transition cue waits for actual menu readiness")
@@ -866,6 +874,10 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
         "the session is bound to the selected edition"
       )
       local session = { versionId = options.versionId, events = {}, updates = 0, disposals = 0 }
+      function session:beginOpening()
+        self.events[#self.events + 1] = "opening"
+        return true
+      end
       function session:bindTitleRecord(record)
         assert(type(record) == "table" and type(record.crySpeciesId) == "number")
         if self.titleRecord ~= nil then
@@ -897,21 +909,23 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
     end
     StartupAudioSession.new = newSession
 
-    local baseObserve = App.service.observe
-    App.service.observe = function(self, epoch, selector)
-      if selector.requestKind == "milestone" and selector.name == "startup-audio" then
-        return active.audioReady == true, nil
-      end
-      return baseObserve(self, epoch, selector)
-    end
     active.titleAssetsReady = false
     local title = startTitle()
-    Assert.equal(#active.audioSessions, 0, "pending startup-title audio assets cannot construct a session")
+    Assert.equal(#active.audioSessions, 0, "a pending title milestone admits nothing behind the loader")
+    Assert.equal(title.phase, "loading", "the loader covers the pending title before any opening plays")
     active.titleAssetsReady = true
-    App.update(SourceTick.DT)
+    -- The realized title admits the opening, whose acknowledged soundtrack is
+    -- what constructs the one app-owned session.
+    for _ = 1, 10 do
+      if title.phase == "title" then
+        break
+      end
+      App.update(SourceTick.DT)
+    end
     Assert.isTrue(isStartupTitle(title), "the selected title remains the active App state")
-    Assert.equal(#active.audioSessions, 0, "visual readiness alone cannot construct a session")
-    active.audioReady = true
+    Assert.equal(#active.audioSessions, 1, "the acknowledged opening creates one app-owned audio session")
+    local session = active.audioSessions[1]
+    Assert.deepEqual(session.events, { "opening" }, "the opening track starts once at movie admission")
     -- The title theme starts on the last retail title start-up call.
     for _ = 1, 10 do
       if title.titleAnimating then
@@ -919,21 +933,19 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
       end
       App.update(SourceTick.DT)
     end
-    Assert.equal(#active.audioSessions, 1, "audio readiness creates one app-owned audio session")
-    local session = active.audioSessions[1]
-    Assert.deepEqual(session.events, { "title" }, "the title theme starts once after title readiness")
+    Assert.deepEqual(session.events, { "opening", "title" }, "the title theme starts once after title readiness")
     local menuUpdateCount = session.updates
     App.update(1 / 60)
     Assert.equal(session.updates, menuUpdateCount + 1, "each App host update pumps the one session once")
 
     App.keypressed("return", "return", false)
-    Assert.deepEqual(session.events, { "title", "cry" }, "the first valid skip requests one legendary cry")
+    Assert.deepEqual(session.events, { "opening", "title", "cry" }, "the first valid skip requests one legendary cry")
     for _ = 1, 75 do
       App.update(SourceTick.DT)
     end
     Assert.deepEqual(
       session.events,
-      { "title", "cry" },
+      { "opening", "title", "cry" },
       "the title remains audible and unfaded while the menu is still pending"
     )
 
@@ -942,7 +954,7 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
     local stagedMenu = assert(title.stagedMenu)
     local menuAudio = assert(stagedMenu.options.audio, "the staged menu receives a borrowed cue callback")
     Assert.isTrue(type(menuAudio.playMenuCue) == "function", "the staged menu has only its semantic cue operation")
-    Assert.deepEqual(session.events, { "title", "cry", "fade" }, "staging alone emits no menu audio")
+    Assert.deepEqual(session.events, { "opening", "title", "cry", "fade" }, "staging alone emits no menu audio")
     for _ = 1, 80 do
       if App.state == stagedMenu then
         break
@@ -955,7 +967,7 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
     menuAudio.playMenuCue()
     Assert.deepEqual(
       session.events,
-      { "title", "cry", "fade", "menu" },
+      { "opening", "title", "cry", "fade", "menu" },
       "the active menu routes its semantic cue through the original session"
     )
 
@@ -1040,17 +1052,15 @@ function T.tests.post_install_warmup_failure_keeps_the_single_installed_menu()
   end)
 end
 
-function T.tests.title_and_menu_proceed_while_optional_audio_is_pending()
+-- The opening waits for its soundtrack before the title: a pending milestone
+-- keeps the loader, and a staged opening promotes the soundtrack it is waiting
+-- for. Once the soundtrack acknowledges, the ordinary title and menu journey
+-- continues unchanged.
+function T.tests.opening_waits_for_the_soundtrack_before_the_title_and_menu_proceed()
   local function observeAudio(service, baseObserve)
     service.observe = function(self, epoch, selector)
       if selector.requestKind == "milestone" and selector.name == "startup-audio" then
-        if active.audioFailed then
-          return false, "synthetic audio bank failure"
-        end
-        if active.audioReady then
-          return true, nil
-        end
-        return false, nil
+        return active.audioReady == true, nil
       end
       return baseObserve(self, epoch, selector)
     end
@@ -1058,6 +1068,10 @@ function T.tests.title_and_menu_proceed_while_optional_audio_is_pending()
   local function countingAudio(sessions)
     StartupAudioSession.new = function()
       local session = { cues = {} }
+      function session:beginOpening()
+        self.cues[#self.cues + 1] = "opening"
+        return true
+      end
       function session:bindTitleRecord(record)
         assert(type(record) == "table" and type(record.crySpeciesId) == "number")
         if self.titleRecord ~= nil then
@@ -1090,8 +1104,8 @@ function T.tests.title_and_menu_proceed_while_optional_audio_is_pending()
     local sessions = {}
     countingAudio(sessions)
     local state = startTitle()
-    Assert.isTrue(isStartupTitle(state), "the visual title presents while audio is still pending")
-    Assert.equal(#sessions, 0, "pending optional audio constructs no session behind the visible title")
+    Assert.equal(state.phase, "loading", "a pending soundtrack admits no opening")
+    Assert.equal(#sessions, 0, "a pending soundtrack constructs no session")
     local sawAudio, audioUrgency = false, nil
     for _, request in ipairs(active.requests) do
       local selector = request.selector
@@ -1100,19 +1114,29 @@ function T.tests.title_and_menu_proceed_while_optional_audio_is_pending()
         audioUrgency = selector.urgency
       end
     end
-    Assert.isTrue(sawAudio, "the selected title demands its optional audio milestone independently")
-    Assert.equal(audioUrgency, "near", "optional audio never outranks visual work")
+    Assert.isTrue(sawAudio, "the selected journey demands its audio milestone independently")
+    Assert.equal(audioUrgency, "required", "a staged opening promotes the soundtrack it is waiting for")
 
     active.audioReady = true
-    App.update(SourceTick.DT)
-    App.update(SourceTick.DT)
-    Assert.equal(#sessions, 1, "audio readiness starts one session while the title is still visible")
-    Assert.deepEqual(sessions[1].cues, { "title" }, "ready-before-skip starts the title theme once")
-    Assert.isTrue(isStartupTitle(App.state), "audio readiness does not dismiss the unpressed title")
-    Assert.isFalse(state.skipRequested, "audio readiness synthesizes no skip intent")
+    for _ = 1, 10 do
+      if state.phase == "title" then
+        break
+      end
+      App.update(SourceTick.DT)
+    end
+    Assert.isTrue(isStartupTitle(state), "the acknowledged soundtrack releases the opening and its title")
+    Assert.equal(#sessions, 1, "the acknowledged opening constructs one session")
+    Assert.equal(sessions[1].cues[1], "opening", "the opening track starts once at admission")
+    for _ = 1, 10 do
+      if state.titleAnimating then
+        break
+      end
+      App.update(SourceTick.DT)
+    end
+    Assert.deepEqual(sessions[1].cues, { "opening", "title" }, "ready-before-skip starts both retail tracks once")
 
     App.keypressed("return", "return", false)
-    Assert.deepEqual(sessions[1].cues, { "title", "cry" }, "the first skip requests one cry")
+    Assert.deepEqual(sessions[1].cues, { "opening", "title", "cry" }, "the first skip requests one cry")
     for _ = 1, 30 do
       App.update(SourceTick.DT)
     end
@@ -1127,62 +1151,7 @@ function T.tests.title_and_menu_proceed_while_optional_audio_is_pending()
     end
     Assert.equal(App.state, active.menus[1], "the staged menu installs after the fade")
     Assert.equal(#sessions, 1, "handoff constructs no second session")
-    Assert.deepEqual(sessions[1].cues, { "title", "cry", "fade" }, "the skip fade emits one cue only")
-  end)
-
-  withStartup(function()
-    observeAudio(App.service, App.service.observe)
-    local sessions = {}
-    local lateCues = {}
-    StartupAudioSession.new = function()
-      local session = {}
-      function session:bindTitleRecord(record)
-        assert(type(record) == "table" and type(record.crySpeciesId) == "number")
-        if self.titleRecord ~= nil then
-          assert(self.titleRecord.crySpeciesId == record.crySpeciesId)
-          return
-        end
-        self.titleRecord = { crySpeciesId = record.crySpeciesId }
-      end
-      function session:beginTitle()
-        lateCues[#lateCues + 1] = "title"
-      end
-      function session:notifySkip()
-        lateCues[#lateCues + 1] = "cry"
-      end
-      function session:beginFade()
-        lateCues[#lateCues + 1] = "fade"
-      end
-      function session:playMenuCue()
-        lateCues[#lateCues + 1] = "menu"
-      end
-      function session:update() end
-      function session:dispose() end
-      sessions[#sessions + 1] = session
-      return session
-    end
-    active.bootstrapReady = true
-    local state = startTitle()
-    Assert.isTrue(isStartupTitle(state), "the visual title presents while audio is still pending")
-    Assert.equal(#sessions, 0, "pending optional audio constructs no session behind the visible title")
-    App.keypressed("return", "return", false)
-    for _ = 1, 10 do
-      App.update(SourceTick.DT)
-    end
-    Assert.isTrue(state.phase == "fadeOut" or state.phase == "fadeIn", "latched skip starts the fade")
-    active.audioReady = true
-    for _ = 1, 120 do
-      App.update(SourceTick.DT)
-      if App.state ~= state then
-        break
-      end
-    end
-    Assert.equal(App.state, active.menus[1], "the menu installs even though audio arrived mid-fade")
-    for _, cue in ipairs(lateCues) do
-      Assert.isFalse(cue == "title", "audio that arrives after the skip never starts a belated title theme")
-      Assert.isFalse(cue == "cry", "audio that arrives after the skip never plays a belated cry")
-    end
-    Assert.equal(#active.menus, 1, "the late audio never reconstructs the menu")
+    Assert.deepEqual(sessions[1].cues, { "opening", "title", "cry", "fade" }, "the skip fade emits one cue only")
   end)
 end
 
@@ -1330,7 +1299,9 @@ function T.tests.title_skip_honors_the_full_input_family_with_exact_pointer_iden
   end)
 end
 
-function T.tests.failed_optional_audio_never_blocks_the_menu()
+-- A soundtrack that never acknowledges admits no opening: the retained loader
+-- carries the diagnostic and Escape still leaves the failed startup.
+function T.tests.failed_soundtrack_keeps_the_loader_with_its_recoverable_diagnostic()
   withStartup(function()
     local baseObserve = App.service.observe
     App.service.observe = function(self, epoch, selector)
@@ -1343,6 +1314,9 @@ function T.tests.failed_optional_audio_never_blocks_the_menu()
     StartupAudioSession.new = function()
       sessions = sessions + 1
       return {
+        beginOpening = function()
+          return true
+        end,
         beginTitle = function() end,
         notifySkip = function() end,
         beginFade = function() end,
@@ -1353,18 +1327,15 @@ function T.tests.failed_optional_audio_never_blocks_the_menu()
     end
     active.bootstrapReady = true
     local state = startTitle()
-    Assert.isTrue(isStartupTitle(state), "the visual title presents while audio has failed")
-    Assert.equal(sessions, 0, "failed optional audio constructs no session")
-    App.keypressed("return", "return", false)
-    for _ = 1, 120 do
-      if App.state ~= state then
-        break
-      end
-      App.update(SourceTick.DT)
-    end
-    Assert.equal(App.state, active.menus[1], "the staged menu installs despite failed audio")
-    Assert.equal(sessions, 0, "the failed audio never constructs a session")
-    Assert.equal(#active.menus, 1, "the failure never reconstructs the menu")
+    Assert.equal(state.phase, "loading", "a failed soundtrack admits no opening")
+    Assert.isFalse(isStartupTitle(state), "no title presents behind a failed soundtrack")
+    Assert.equal(sessions, 0, "failed audio constructs no session")
+    Assert.isTrue(
+      tostring(state.audioError):match("synthetic audio bank failure") ~= nil,
+      "the soundtrack failure is preserved for the diagnostic surface"
+    )
+    App.keypressed("escape", "escape", false)
+    Assert.isTrue(App.state ~= state, "Escape can leave the failed startup")
   end)
 end
 
@@ -1405,6 +1376,11 @@ function T.tests.throwing_transfer_callback_propagates_without_resurrecting_the_
       end,
       width = 800,
       height = 600,
+      audio = {
+        openingReady = function()
+          return true
+        end,
+      },
     })
     for _ = 1, 5 do
       state:update(SourceTick.DT)

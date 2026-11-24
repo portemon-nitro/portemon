@@ -188,9 +188,11 @@ end
 
 -- Loads a prepared map's selected music metadata without changing playback state.
 -- It also publishes one prediction round for the map's reachable audio banks
--- (day/night alternates, flag and traversal overrides, soundplates): the
--- epoch owns soft background demand only, and the sounding music, radio,
--- fades, and cries keep their hard references regardless of the round.
+-- (day/night alternates, flag and traversal overrides, soundplates): the epoch
+-- owns soft background demand only, so a member whose bytes still live on disk
+-- enqueues through the shared preparation queue instead of blocking the frame
+-- that prepared the map. The sounding music, radio, fades, and cries keep their
+-- hard references regardless of the round.
 ---@param runtimeMap FieldAudioController.RuntimeMap
 function FieldAudioController:prewarmMapMusic(runtimeMap)
   local reference = self:mapHeaderMusic(assert(runtimeMap.fieldData))
@@ -199,7 +201,7 @@ function FieldAudioController:prewarmMapMusic(runtimeMap)
   end
   local sequence = self._provider:sequence(reference)
   self._provider:bank(sequence.bankId)
-  self:_warmPredictedBanks(assert(runtimeMap.fieldData))
+  self:_prefetchPredictedBanks(assert(runtimeMap.fieldData))
 end
 
 -- The current prediction round: a monotonically increasing soft-demand
@@ -413,23 +415,6 @@ function FieldAudioController:_memoizedPredictedBankIds(fieldData)
     self._prewarmMemo[oldest] = nil
   end
   return bankIds
-end
-
--- Publishes one prediction round for a field record and warms its banks
--- through the provider without touching playback. Providers without a bank
--- prewarm keep the metadata-only behavior, so headless policy composition
--- never decodes a sample.
----@param fieldData table<string, unknown>
-function FieldAudioController:_warmPredictedBanks(fieldData)
-  if type(self._provider.prewarmBank) ~= "function" then
-    return
-  end
-  local bankIds = self:_memoizedPredictedBankIds(fieldData)
-  self._predictionEpoch = self._predictionEpoch + 1
-  self._predictedBankIds = bankIds
-  for _, bankId in ipairs(bankIds) do
-    self._provider:prewarmBank(bankId)
-  end
 end
 
 -- Publishes one prediction round for a field record as background interest

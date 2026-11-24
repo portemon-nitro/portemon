@@ -125,17 +125,20 @@ local function fixture(mapCount)
     -- the fixture serves one immutable reference per generated payload.
     resolveAsset = function(_, path)
       local payload = files[path]
-      if type(payload) ~= "string" then
+      if payload == nil then
         return nil
       end
       local reference = references[path]
       if reference == nil then
+        -- Lua payloads name their installed bytes too, exactly like the
+        -- production resident view: only raw payloads own a Data buffer.
+        local raw = type(payload) == "string"
         reference = {
           path = path,
           sourceId = sourceId,
           contentId = "field-map-loader-test\0" .. path,
-          size = #payload,
-          data = assert(love.data.newByteData(payload)),
+          size = raw and #payload or 0,
+          data = raw and assert(love.data.newByteData(payload)) or nil,
         }
         references[path] = reference
       end
@@ -152,7 +155,7 @@ local function fixture(mapCount)
       }
     end,
   }
-  return cache, world, sceneLoader, releases, files
+  return cache, world, sceneLoader, releases, files, references
 end
 
 -- The selected runtime's compact source acquirer in its base form: root the
@@ -1126,7 +1129,9 @@ function T.logical_load_publishes_semantic_fields_without_visual_assets()
   Assert.isNil(map.mapProps)
   Assert.isNil(map.sceneRuntime)
   Assert.isNil(map.coverage)
-  Assert.equal(#calls, 2)
+  -- The second logical load reuses the validated record for the same installed
+  -- bytes, so it owes no emergency readiness round trip.
+  Assert.equal(#calls, 1, "the repeated logical load needs no second readiness edge")
   for _, call in ipairs(calls) do
     Assert.equal(call.kind, "logical")
     Assert.equal(call.mapId, 0)
@@ -1317,7 +1322,9 @@ function T.visual_readiness_failure_does_not_block_semantic_acquisition()
   for _, call in ipairs(calls) do
     kinds[#kinds + 1] = call.kind .. ":" .. call.mapId
   end
-  Assert.deepEqual(kinds, { "logical:31", "logical:31", "full:31" })
+  -- The full load reuses the validated semantic record the logical load already
+  -- published for the same installed bytes: only the visual edge is new.
+  Assert.deepEqual(kinds, { "logical:31", "full:31" })
   loader:release()
 end
 
@@ -3167,6 +3174,136 @@ function T.request_location_fails_when_a_required_ring_cell_fails()
   local ready, failure = loader:requestLocation(0, 695, 397, "required", { neighborUrgency = "required" })
   Assert.isFalse(ready, "a failed ring cell fails the destination when neighbors are required")
   Assert.equal(failure, "neighbor cell missing", "the underlying ring cause surfaces")
+  loader:release()
+end
+
+-- Immutable semantic data is acquired once per installed source identity: a
+-- repeated logical load reuses the validated record, and a different identity
+-- (a mod replacement of the same member) re-reads and re-validates.
+function T.semantic_acquisition_is_memoized_by_source_identity()
+  local cache, world, sceneLoader, _, _, references = fixture(1)
+  local fieldPath = FieldMapDataCache.fieldPath(0)
+  local reads = 0
+  local realLoadLua = cache.loadLua
+  cache.loadLua = function(_, path)
+    if path == fieldPath then
+      reads = reads + 1
+    end
+    return realLoadLua(cache, path)
+  end
+  local calls = {}
+  local loader = newLoader(cache, world, {
+    sceneLoader = sceneLoader,
+    derivedAssets = readinessHost(calls, {}),
+  })
+
+  local first = loader:loadLogical(0)
+  local second = loader:loadLogical(0)
+  Assert.equal(reads, 1, "the repeated logical load re-parses nothing")
+  Assert.equal(#calls, 1, "the memoized load owes no emergency readiness round trip")
+  Assert.isTrue(first ~= second, "each logical load still owns its own mutable map")
+  Assert.equal(first.fieldData, second.fieldData, "only the immutable generated record is shared")
+
+  local ok, failure = pcall(loader.load, loader, 0)
+  Assert.isTrue(ok, "the full load reuses the same validated semantics: " .. tostring(failure))
+  Assert.equal(reads, 1, "the full load re-parses no field record")
+
+  -- A replacement of the same member (a mod) is a different installed identity.
+  assert(references[fieldPath]).contentId = "replaced-generation\0" .. fieldPath
+  loader:loadLogical(0)
+  Assert.equal(reads, 2, "a replaced member is re-read instead of served from the memo")
+  loader:release()
+end
+
+-- One physical cell's semantic resolver reuses the map's validated record and
+-- each building model's descriptor is read once for the whole field instead of
+-- once per cell.
+function T.physical_cell_props_reuse_semantic_and_model_metadata()
+  local cache, world, sceneLoader, _, files = fixture(2)
+  local mapId = 1
+  local scene = cache.loadLua(cache, string.format("data/generated/maps/%04d/scene.lua", mapId))
+  scene.type = "outdoor"
+  sceneLoader.load = function()
+    error("representative scene geometry must not be acquired")
+  end
+  sceneLoader.loadEnvironment = function(environmentScene)
+    return { scene = environmentScene, release = function() end }
+  end
+  cache.exists = function(_, path)
+    return path == FieldCellCache.indexPath()
+  end
+
+  local fieldPath = FieldMapDataCache.fieldPath(mapId)
+  local modelPath = MapAssetCache.modelPath("model_a")
+  local reads = { field = 0, model = 0 }
+  local realLoadLua = cache.loadLua
+  cache.loadLua = function(_, path)
+    if path == fieldPath then
+      reads.field = reads.field + 1
+    elseif path == modelPath then
+      reads.model = reads.model + 1
+    end
+    return realLoadLua(cache, path)
+  end
+  files[modelPath] = { schema = MapAssetCache.MODEL_SCHEMA, animations = {} }
+
+  local placement = {
+    modelKey = "model_a",
+    placementIndex = 0,
+    semanticRole = "building",
+    transform = { m = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 } },
+  }
+  local cells = {}
+  for z = 0, 2 do
+    for x = 0, 2 do
+      local cellIndex = z * 3 + x
+      local cell = {
+        schema = FieldCellCache.CELL_SCHEMA,
+        matrixMemberId = mapId,
+        index = cellIndex,
+        x = x,
+        z = z,
+        mapHeaderId = mapId,
+        altitude = 0,
+        origin = { x = x * 32, y = 0, z = z * 32 },
+        landDataMemberId = 0,
+        areaDataMemberId = 0,
+        file = FieldCellCache.cellPath(mapId, cellIndex),
+        collision = { file = FieldCellCache.collisionPath(mapId, cellIndex) },
+        terrain = { file = FieldCellCache.terrainPath(mapId, cellIndex), schema = "g4-terrain-surfaces-v1" },
+        batches = {},
+        materials = {},
+        buildingInstances = { placement },
+        terrainAnimations = { textureSrt = false },
+      }
+      files[cell.file] = cell
+      files[cell.collision.file] = CollisionFixture.asset(32, 32)
+      files[cell.terrain.file] = {
+        schema = "g4-terrain-surfaces-v1",
+        source = { bdhcSha1 = "cell-" .. cellIndex },
+        plates = {},
+      }
+      cells[#cells + 1] = cell
+    end
+  end
+  files[FieldCellCache.indexPath()] = {
+    schema = FieldCellCache.INDEX_SCHEMA,
+    matrices = { { matrixMemberId = mapId, width = 3, height = 3, cells = cells } },
+  }
+
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
+  local map = loader:load(mapId)
+  Assert.equal(reads.field, 1, "the map's own semantic acquisition reads its record once")
+  local coverage = loader:createPhysicalCoverage(map, { fieldX = 32, fieldZ = 32 })
+  Assert.equal(reads.field, 1, "every physical cell reuses the one validated semantic record")
+  Assert.equal(reads.model, 1, "the building descriptor is read once for the whole field")
+  Assert.notNil(coverage.cells["0:0"].mapProps, "each cell still owns its own semantic resolver")
+  Assert.notNil(coverage.cells["1:1"].mapProps, "the anchor cell owns its own semantic resolver")
+  Assert.isTrue(
+    coverage.cells["0:0"].mapProps ~= coverage.cells["1:1"].mapProps,
+    "live door/prop resolvers are never shared between cells"
+  )
+  coverage:release()
   loader:release()
 end
 

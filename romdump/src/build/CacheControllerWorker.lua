@@ -1409,6 +1409,14 @@ function Worker:_applySelect(command)
   self.offerError = nil
   self.lastRetiredEpoch = nil
   self.lifecycle = "active"
+  -- A replacement selection starts under the ordinary interactive policy until
+  -- its own presentation reports a loader.
+  self.loading = false
+  if self.pool ~= nil then
+    pcall(function()
+      self.pool:setLoading(false)
+    end)
+  end
   self.requests = {}
   self.pendingRequestIds = {}
   self.pendingRequestCursor = 1
@@ -1535,6 +1543,26 @@ function Worker:_applyPromote(command)
   if observation.state == "ready" or observation.state == "failed" then
     dropPendingRequest(self, command.requestId)
     self:_emitRequestResult(command.epoch, command.requestId, observation)
+  end
+end
+
+---@param command table<string, unknown>
+function Worker:_applyExecutionPolicy(command)
+  -- A stale epoch can never raise throughput for a replacement selection: the
+  -- policy belongs to the selected epoch the presentation observed.
+  if command.epoch ~= self.liveEpoch or self.session == nil then
+    return
+  end
+  local loading = command.loading == true
+  self.loading = loading
+  if self.pool ~= nil then
+    self.pool:setLoading(loading)
+  end
+  local ok, failure = pcall(function()
+    self.session:setLoading(loading)
+  end)
+  if not ok then
+    self:_fail("controller execution policy failed: " .. formatError(failure))
   end
 end
 
@@ -1722,6 +1750,12 @@ function Worker:_applyRetire(command)
   -- settle before any later same-version capture may start. The barrier does
   -- not wait for that writer; dirty progress may simply be dropped.
   self:_cancelSnapshot()
+  self.loading = false
+  if pool ~= nil then
+    pcall(function()
+      pool:setLoading(false)
+    end)
+  end
   self.lastRetiredEpoch = command.epoch
   self.liveEpoch = nil
   self.selectedIdentity = nil
@@ -1843,6 +1877,8 @@ function Worker:_handle(command)
     end
   elseif op == "enableSweep" then
     self:_applyEnableSweep(command)
+  elseif op == "execution-policy" then
+    self:_applyExecutionPolicy(command)
   elseif op == "offer-source" then
     local ok, failure = pcall(function()
       self:_applyOfferSource(command)

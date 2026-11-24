@@ -263,33 +263,77 @@ function WarpSystem.destinationCoordinates(sourceMap, warp, destinationFieldData
   return { fieldX = destinationWarp.x, fieldZ = destinationWarp.z, warp = destinationWarp }
 end
 
+-- Everything a warp destination is before any surface is sampled: which logical
+-- map, the arrival coordinates it names, and the facing a saved dynamic record
+-- imposes. Splitting this out lets the covered-transition owner start staging the
+-- destination's physical window while the cover is up, with the resolution
+-- reading exactly the same decision.
+---@class WarpSystem.DestinationPlan
+---@field kind "direct"|"dynamic"|"indexed"
+---@field destinationMap table<string, unknown>
+---@field coordinates { fieldX: integer, fieldZ: integer, warp: table<string, unknown>? }
+---@field facing string|nil
+
+---@param loader { load: fun(loader: unknown, destinationMap: integer|string): table<string, unknown> }
+---@param sourceMap table<string, unknown>
+---@param warp table<string, unknown>
+---@param dynamicWarp table<string, unknown>? the saved dynamic destination for a dynamic anchor
+---@return WarpSystem.DestinationPlan
+function WarpSystem.destinationPlan(loader, sourceMap, warp, dynamicWarp)
+  assert(loader and loader.load, "warp destination loader required")
+  assert(sourceMap and sourceMap.mapId and warp, "source map and warp required")
+  if warp.direct then
+    local destinationMap = loadDestination(loader, sourceMap, warp, warp.destinationMapId)
+    return {
+      kind = "direct",
+      destinationMap = destinationMap,
+      coordinates = WarpSystem.destinationCoordinates(sourceMap, warp, assert(destinationMap.fieldData)),
+      facing = nil,
+    }
+  end
+  if warp.destinationWarpId == WarpSystem.DYNAMIC_WARP_SENTINEL then
+    local record = WarpSystem.dynamicWarpRecord(sourceMap, warp, dynamicWarp)
+    local destinationMap = loadDestination(loader, sourceMap, warp, record.map)
+    return {
+      kind = "dynamic",
+      destinationMap = destinationMap,
+      coordinates = WarpSystem.dynamicDestination(destinationMap, record, triggerContext(sourceMap, warp)),
+      facing = record.direction,
+    }
+  end
+  local destinationMap = loadDestination(loader, sourceMap, warp, warp.destinationMapId)
+  return {
+    kind = "indexed",
+    destinationMap = destinationMap,
+    coordinates = WarpSystem.destinationCoordinates(sourceMap, warp, assert(destinationMap.fieldData)),
+    facing = nil,
+  }
+end
+
 ---@param loader { load: fun(loader: unknown, destinationMap: integer|string): table<string, unknown> }
 ---@param sourceMap table<string, unknown>
 ---@param warp table<string, unknown>
 ---@param dynamicWarp table<string, unknown>? the saved dynamic destination for a dynamic anchor
 ---@return table<string, unknown>
 function WarpSystem.resolveDestination(loader, sourceMap, warp, dynamicWarp)
-  assert(loader and loader.load, "warp destination loader required")
-  assert(sourceMap and sourceMap.mapId and warp, "source map and warp required")
-
+  local plan = WarpSystem.destinationPlan(loader, sourceMap, warp, dynamicWarp)
+  local destinationMap = plan.destinationMap
+  local coordinates = plan.coordinates
+  local localX, localZ = FieldCoordinates.fieldToLocal(destinationMap, coordinates.fieldX, coordinates.fieldZ)
   -- A scripted `direct` record carries pre-resolved global coordinates and
   -- resolves its own warp instead of an indexed destination record. It
   -- loads through the same unknown-destination-map wrap as the indexed path
   -- (one standardized code) and must precede every indexed-path dispatch,
   -- including the dynamic-warp anchor.
-  if warp.direct then
-    local destinationMap = loadDestination(loader, sourceMap, warp, warp.destinationMapId)
-    local coordinates = WarpSystem.destinationCoordinates(sourceMap, warp, assert(destinationMap.fieldData))
-    local localX, localZ = FieldCoordinates.fieldToLocal(destinationMap, coordinates.fieldX, coordinates.fieldZ)
+  if plan.kind == "direct" then
     local sample = directSurface(destinationMap, warp, localX, localZ)
     -- The direct record is the source trigger and the destination record in
     -- one table: it carries the pre-resolved destination coordinates.
-    local destinationRecord = coordinates.warp
     return resolutionRecord(
       sourceMap,
       warp,
       destinationMap,
-      destinationRecord,
+      assert(coordinates.warp),
       coordinates.fieldX,
       coordinates.fieldZ,
       sample
@@ -298,11 +342,7 @@ function WarpSystem.resolveDestination(loader, sourceMap, warp, dynamicWarp)
   -- A dynamic anchor names its destination only through the saved record; the
   -- sentinel map header names no map, so the record's symbol loads it and its
   -- direction is the arrival facing the source creates the player with.
-  if warp.destinationWarpId == WarpSystem.DYNAMIC_WARP_SENTINEL then
-    local record = WarpSystem.dynamicWarpRecord(sourceMap, warp, dynamicWarp)
-    local destinationMap = loadDestination(loader, sourceMap, warp, record.map)
-    local coordinates = WarpSystem.dynamicDestination(destinationMap, record, triggerContext(sourceMap, warp))
-    local localX, localZ = FieldCoordinates.fieldToLocal(destinationMap, coordinates.fieldX, coordinates.fieldZ)
+  if plan.kind == "dynamic" then
     local hintY
     if coordinates.warp ~= nil then
       hintY = coordinates.warp.y / WARP_Y_SCALE
@@ -317,15 +357,10 @@ function WarpSystem.resolveDestination(loader, sourceMap, warp, dynamicWarp)
       coordinates.fieldZ,
       sample
     )
-    resolution.facing = record.direction
+    resolution.facing = plan.facing
     return resolution
   end
-
-  local destinationMap = loadDestination(loader, sourceMap, warp, warp.destinationMapId)
-  local coordinates = WarpSystem.destinationCoordinates(sourceMap, warp, assert(destinationMap.fieldData))
   local destinationWarp = assert(coordinates.warp, "the indexed path names its destination record")
-
-  local localX, localZ = FieldCoordinates.fieldToLocal(destinationMap, coordinates.fieldX, coordinates.fieldZ)
   local hintY = destinationWarp.y / WARP_Y_SCALE
   local sample = SurfaceResolver.new(destinationMap.terrain):resolve({
     localX = localX + FieldCoordinates.TILE_CENTER_OFFSET,

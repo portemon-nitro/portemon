@@ -17,7 +17,8 @@ local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 ---@field completeScope InteractiveCacheCompletion.Scope cached complete-build terminal accounting
 ---@field sweepAuthorized boolean background corpus completion authorized through the lifecycle seam
 ---@field sweepNext (fun(): { kind: string, key: string }|nil)|nil retained canonical corpus enumerator
----@field sweepCandidate string|nil current sweep-origin candidate awaiting settlement
+---@field sweepOutstanding table<string, boolean> enrolled sweep roots still without a terminal state
+---@field sweepOutstandingCount integer outstanding sweep roots
 ---@field sweepExhausted boolean canonical corpus enumeration reached its end
 ---@field sweepFailure string|nil first background candidate failure when present
 local InteractiveCacheCompletion = {}
@@ -37,7 +38,8 @@ function InteractiveCacheCompletion.new(session)
     completeScope = { remaining = 0, failed = 0, seen = {}, failure = nil },
     sweepAuthorized = false,
     sweepNext = nil,
-    sweepCandidate = nil,
+    sweepOutstanding = {},
+    sweepOutstandingCount = 0,
     sweepExhausted = false,
     sweepFailure = nil,
   }, InteractiveCacheCompletion)
@@ -162,39 +164,62 @@ function InteractiveCacheCompletion:_expandComplete(budget)
   end
 end
 
+---@return integer sweep roots that may be outstanding at once
+function InteractiveCacheCompletion:_sweepTarget()
+  local session = assert(self.session, "completion owner is retired")
+  if not session.loading then
+    return 1
+  end
+  -- Ahead of the compiler pool: the loader's supply tracks the physical
+  -- capacity the pool actually owns, so a root waiting on a dependency never
+  -- leaves the other slots without independent work.
+  return math.max(2, session.pool:workerSlotCount())
+end
+
+-- Retire every enrolled sweep root that reached a terminal state. A failed
+-- root keeps its attributed failure without failing unrelated scopes.
+function InteractiveCacheCompletion:_settleSweepOutstanding()
+  if self.sweepOutstandingCount == 0 then
+    return
+  end
+  local session = assert(self.session, "completion owner is retired")
+  for jobKey in pairs(self.sweepOutstanding) do
+    local entry = session.byKey[jobKey]
+    if entry == nil or entry.ready or entry.failure ~= nil then
+      self.sweepOutstanding[jobKey] = nil
+      self.sweepOutstandingCount = self.sweepOutstandingCount - 1
+      if entry ~= nil and entry.failure ~= nil and self.sweepFailure == nil then
+        self.sweepFailure = entry.failure
+      end
+    end
+  end
+end
+
 ---@param budget InteractiveCacheBuild.Budget|nil
 function InteractiveCacheCompletion:_advanceSweep(budget)
   local session = assert(self.session, "completion owner is retired")
-  -- Opportunistic background completion through the canonical graph: at
-  -- most one sweep-origin corpus candidate advances at a time, only
-  -- while no required or near work is outstanding, and never by
-  -- materializing the whole corpus. Ready and failed records settle
-  -- through the same registration path as explicit demand; a failed
-  -- candidate keeps its attributed failure without failing unrelated
-  -- scopes and the cursor moves on without retrying it.
+  -- Opportunistic background completion through the canonical graph: an
+  -- ordinary interactive session keeps exactly one sweep-origin corpus
+  -- candidate in flight and only while no required or near work is
+  -- outstanding, behind a foreground quiet window. A loader presentation owns
+  -- the host instead: it keeps a bounded supply of independent roots ahead of
+  -- the pool's free slots and skips the quiet window, so a root waiting on a
+  -- dependency never blocks unrelated sweep work. Neither mode materializes
+  -- the corpus: roots enroll through the same registration path as explicit
+  -- demand, and a failed candidate keeps its attributed failure.
   if session.retired or not self.sweepAuthorized or self.sweepExhausted then
     return
   end
-  if session.foregroundPendingCount > 0 then
-    return
-  end
-  local candidate = self.sweepCandidate ~= nil and session.byKey[self.sweepCandidate] or nil
-  if candidate ~= nil then
-    if candidate.failure ~= nil then
-      if self.sweepFailure == nil then
-        self.sweepFailure = candidate.failure
-      end
-      self.sweepCandidate = nil
-    elseif candidate.ready then
-      self.sweepCandidate = nil
-    else
+  self:_settleSweepOutstanding()
+  if not session.loading then
+    if session.foregroundPendingCount > 0 then
+      return
+    end
+    if self:_sweepQuietPending() then
       return
     end
   end
   if not session.sourceLoaded or not session.pagesKnown then
-    return
-  end
-  if self:_sweepQuietPending() then
     return
   end
   if self.sweepNext == nil then
@@ -204,7 +229,8 @@ function InteractiveCacheCompletion:_advanceSweep(budget)
     self.sweepNext =
       ArtifactJobs.completeIterator(assert(session.adopted, "background enumeration needs its adopted inventory"))
   end
-  while true do
+  local target = self:_sweepTarget()
+  while self.sweepOutstandingCount < target do
     if not session:_spendNode(budget) then
       return
     end
@@ -220,8 +246,8 @@ function InteractiveCacheCompletion:_advanceSweep(budget)
         self.sweepFailure = entry.failure
       end
     elseif not entry.ready then
-      self.sweepCandidate = entry.jobKey
-      return
+      self.sweepOutstanding[entry.jobKey] = true
+      self.sweepOutstandingCount = self.sweepOutstandingCount + 1
     end
   end
 end
@@ -266,7 +292,8 @@ function InteractiveCacheCompletion:adopted()
   self.completeNext = nil
   self.completeExhausted = false
   self.sweepNext = nil
-  self.sweepCandidate = nil
+  self.sweepOutstanding = {}
+  self.sweepOutstandingCount = 0
   self.sweepExhausted = false
 end
 
@@ -282,14 +309,19 @@ function InteractiveCacheCompletion:_sweepExpansionReady()
   if not self.sweepAuthorized or self.sweepExhausted or not session.sourceLoaded or not session.pagesKnown then
     return false
   end
-  if session.foregroundPendingCount > 0 then
+  self:_settleSweepOutstanding()
+  if self.sweepOutstandingCount >= self:_sweepTarget() then
     return false
   end
-  local candidate = self.sweepCandidate ~= nil and session.byKey[self.sweepCandidate] or nil
-  if candidate ~= nil then
-    return candidate.ready or candidate.failure ~= nil
+  if not session.loading then
+    if session.foregroundPendingCount > 0 then
+      return false
+    end
+    if self:_sweepQuietPending() then
+      return false
+    end
   end
-  return not self:_sweepQuietPending()
+  return true
 end
 
 ---@return boolean unexpanded completion can advance now
@@ -303,14 +335,19 @@ function InteractiveCacheCompletion:nextPlanningWakeDelay()
   if session.retired or not self.sweepAuthorized or self.sweepExhausted then
     return nil
   end
+  if session.loading then
+    -- The loader has no quiet window to wait out; a pump is already owed
+    -- whenever expansion is runnable and the pool reports its own waits.
+    return nil
+  end
   if not session.sourceLoaded or not session.pagesKnown then
     return nil
   end
   if session.foregroundPendingCount > 0 then
     return nil
   end
-  local candidate = self.sweepCandidate ~= nil and session.byKey[self.sweepCandidate] or nil
-  if candidate ~= nil or not self:_sweepQuietPending() then
+  self:_settleSweepOutstanding()
+  if self.sweepOutstandingCount > 0 or not self:_sweepQuietPending() then
     return nil
   end
   local remaining = session.lastForegroundActivity + SWEEP_SETTLE_SECONDS - session.clock()
@@ -348,7 +385,8 @@ function InteractiveCacheCompletion:sourceWorkSettled()
   if session.foregroundPendingCount > 0 then
     return false
   end
-  if self.sweepCandidate ~= nil then
+  self:_settleSweepOutstanding()
+  if self.sweepOutstandingCount > 0 then
     return false
   end
   if self.completeUrgency ~= nil then
@@ -391,7 +429,8 @@ function InteractiveCacheCompletion:retire()
   self.completeScope = { remaining = 0, failed = 0, seen = {}, failure = nil }
   self.sweepAuthorized = false
   self.sweepNext = nil
-  self.sweepCandidate = nil
+  self.sweepOutstanding = {}
+  self.sweepOutstandingCount = 0
   self.sweepExhausted = false
   self.sweepFailure = nil
 end

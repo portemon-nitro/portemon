@@ -114,6 +114,7 @@ function FieldNavigationBoundary:afterCommittedMove(runtimeMap, player, camera)
       onPhysicalCommit = syncPhysicalCommit,
     })
   end
+  coverage:setPrefetchFocus(player.fieldX, player.fieldZ)
   coverage:recenter(targetX, targetZ)
   syncPhysicalCommit()
   if self.reconcilePhysicalWorld then

@@ -36,6 +36,7 @@ local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local SysInfoState = require("libs.hgss.src.save.SysInfoState")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local FieldScriptScreenFade = require("libs.hgss.src.transition.FieldScriptScreenFade")
+local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local Personality = require("libs.mons.src.gen4.Personality")
 local MonCache = require("libs.assets.src.MonCache")
@@ -686,11 +687,28 @@ end
 local FieldRuntime = {}
 FieldRuntime.__index = FieldRuntime
 
+-- The world catalog's matrix member of one outdoor logical map: structural
+-- membership, available before (and without) visual realization. Shared by boot
+-- composition and the covered transition's destination staging.
+---@param runtime FieldRuntime
+---@param logicalMap table<string, unknown>
+---@return integer
+local function mapMatrixMemberId(runtime, logicalMap)
+  local world = runtime.mapLoader.world
+  local mapIndex = assert(world.byId[logicalMap.mapId], "outdoor map catalog record is required")
+  local mapRecord = assert(world.maps[mapIndex], "outdoor map catalog record is missing")
+  return assert(mapRecord.matrix.memberId, "outdoor map matrix member is required")
+end
+
 ---@class FieldRuntimePhysicalSwap
----@field coverage FieldCoverage
+---@field coverage FieldCoverage? the finished window: nil while a covered transition is still staging it
 ---@field replacement boolean
 ---@field previous FieldCoverage?
----@field state "prepared"|"committed"|"released"
+---@field state "staging"|"prepared"|"committed"|"released"
+---@field task table<string, unknown>? staged construction task, present only while `state` is `staging`
+---@field matrixMemberId integer? destination matrix identity of a staged window
+---@field anchorX integer? destination anchor cell of a staged window
+---@field anchorZ integer? destination anchor cell of a staged window
 
 ---@param avatars table[]
 local function validateAvatarConfig(avatars)
@@ -1115,11 +1133,6 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
     return preparation:acquireSource(reference)
   end
   self.acquireSource = acquireSource
-  local function mapMatrixMemberId(logicalMap)
-    local mapIndex = assert(self.mapLoader.world.byId[logicalMap.mapId], "outdoor map catalog record is required")
-    local mapRecord = assert(self.mapLoader.world.maps[mapIndex], "outdoor map catalog record is missing")
-    return assert(mapRecord.matrix.memberId, "outdoor map matrix member is required")
-  end
 
   -- Structural outdoor check: matrix membership comes from the world
   -- catalog and holds before (and without) visual realization.
@@ -1157,7 +1170,7 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
     end
     coverage = coverage or assert(self.physicalCoverage, "current outdoor coverage is required")
     assert(
-      mapMatrixMemberId(logicalMap) == coverage.matrixMemberId,
+      mapMatrixMemberId(self, logicalMap) == coverage.matrixMemberId,
       "logical outdoor map does not belong to the current physical matrix"
     )
     return composePhysicalMap(logicalMap, coverage)
@@ -1170,7 +1183,7 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
     if logicalMap.scene.type ~= "outdoor" then
       return logicalMap, nil
     end
-    local matrixMemberId = mapMatrixMemberId(logicalMap)
+    local matrixMemberId = mapMatrixMemberId(self, logicalMap)
     local physical = self:_stagePhysicalCoverage(logicalMap, position, matrixMemberId)
     local ok, runtimeMap = pcall(composePhysicalMap, logicalMap, physical.coverage)
     if not ok then
@@ -1354,7 +1367,6 @@ function FieldRuntime:_composeTransitions(boot)
     doorAt,
     escalatorAt,
     function(_, sourceMap, warp, dynamicWarp)
-      local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
       local physical
       local ok, result = pcall(function()
         -- A dynamic anchor is loaded by the symbol the saved destination names;
@@ -2115,6 +2127,12 @@ end
 -- are still staging.
 local PARTY_PREFETCH_RETRY_SECONDS = 1.0
 
+-- Indivisible background cell-preparation steps the field staging pass may spend
+-- in one frame. Two steps keep the halo ahead of the player without letting a
+-- long-lost prefetch backlog own the frame; each step is itself bounded (one
+-- descriptor read, one collision decode, one presentation realization).
+local FIELD_STAGE_UNITS_PER_FRAME = 2
+
 -- Warms the live party's compiled assets once per party revision, plus a
 -- bounded retry while selector manifests are still staging. Best effort
 -- only: a deferral rearms the cooldown instead of failing the update,
@@ -2163,7 +2181,11 @@ function FieldRuntime:update(dt)
   end
 
   if self.residency then
-    self.residency:updatePrefetch()
+    -- Background cell staging owns a small, explicitly bounded share of each
+    -- frame: two indivisible preparation steps (a descriptor read, one
+    -- presentation realization, ...), never an unbounded catch-up pass. The
+    -- halo ahead of the player is what keeps a seamless boundary from waiting.
+    self.residency:updatePrefetch(FIELD_STAGE_UNITS_PER_FRAME)
   end
 
   -- Consumers observe party changes by polling partyRevision, so the
@@ -5194,11 +5216,66 @@ end
 ---@param matrixMemberId integer
 ---@return FieldRuntimePhysicalSwap
 function FieldRuntime:_stagePhysicalCoverage(logicalMap, position, matrixMemberId)
-  return assert(self.worldSwapCoordinator, "field runtime has no world-swap coordinator"):stagePhysicalCoverage(
-    logicalMap,
-    position,
-    matrixMemberId
-  )
+  local coordinator = assert(self.worldSwapCoordinator, "field runtime has no world-swap coordinator")
+  -- A covered transition may already have staged this exact destination while the
+  -- cover was up; the resolution then adopts that finished window instead of
+  -- rebuilding it on the frame that finishes loading.
+  local staged = self._stagedDestinationSwap
+  if staged ~= nil then
+    local anchorX = math.floor(position.fieldX / 32)
+    local anchorZ = math.floor(position.fieldZ / 32)
+    if staged.matrixMemberId == matrixMemberId and staged.anchorX == anchorX and staged.anchorZ == anchorZ then
+      self._stagedDestinationSwap = nil
+      return coordinator:finishPhysicalCoverage(staged)
+    end
+    self._stagedDestinationSwap = nil
+    coordinator:releasePhysicalCoverage(staged)
+  end
+  return coordinator:stagePhysicalCoverage(logicalMap, position, matrixMemberId)
+end
+
+-- Begin staging the destination's physical window under the held cover, before
+-- the destination is resolved. The destination is authoritative here (the
+-- transition already waited for its artifacts), so the cell loads, collision
+-- decodes and GPU realizations start now and advance across cover ticks. Returns
+-- nil for a destination with no physical window (an indoor map).
+---@param sourceMap table<string, unknown>
+---@param warp table<string, unknown>
+---@param dynamicWarp table<string, unknown>?
+---@return { advance: fun(units: integer): integer, isReady: fun(): boolean, release: fun() }?
+function FieldRuntime:beginDestinationStage(sourceMap, warp, dynamicWarp)
+  local coordinator = assert(self.worldSwapCoordinator, "field runtime has no world-swap coordinator")
+  local loader = self.mapLoader
+  local function loadDestination(_, destinationMap)
+    return loader:load(destinationMap)
+  end
+  local plan = WarpSystem.destinationPlan({ load = loadDestination }, sourceMap, warp, dynamicWarp)
+  local logicalMap = plan.destinationMap
+  if logicalMap.scene == nil or logicalMap.scene.type ~= "outdoor" then
+    return nil
+  end
+  local matrixMemberId = mapMatrixMemberId(self, logicalMap)
+  local position = { fieldX = plan.coordinates.fieldX, fieldZ = plan.coordinates.fieldZ }
+  local swap = coordinator:beginPhysicalCoverage(logicalMap, position, matrixMemberId)
+  self._stagedDestinationSwap = swap
+  local runtime = self
+  local stage = {}
+  function stage:advance(units)
+    assert(swap.task ~= nil, "staged destination window is already finished")
+    return swap.task:advance(units)
+  end
+  function stage:isReady()
+    return swap.task ~= nil and swap.task:isReady()
+  end
+  function stage:release()
+    if swap.task ~= nil then
+      coordinator:releasePhysicalCoverage(swap)
+    end
+    if runtime._stagedDestinationSwap == swap then
+      runtime._stagedDestinationSwap = nil
+    end
+  end
+  return stage
 end
 
 -- Fallible warp preparation, run by FieldTransition while the source map is

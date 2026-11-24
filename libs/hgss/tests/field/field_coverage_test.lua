@@ -77,6 +77,7 @@ end
 local function stagedPresentationFactory(taskLogRef)
   return function(runtime)
     local task = {
+      cellKey = runtime.key,
       progress = 0,
       required = 3,
       advances = 0,
@@ -140,10 +141,12 @@ local function pendingHaloCoverage()
   coverage:queuePrefetch(2, 2)
   coverage:updatePrefetch(1)
   coverage:updatePrefetch(1)
-  local pending = assert(coverage.pendingPrefetch)
-  local task = assert(taskLogRef.current[1])
+  -- The nearest halo cell is staged first and the pass then moves on to the
+  -- other staged cells instead of waiting at one cell's head.
+  local pending = assert(coverage.pendingPrefetches[1])
   Assert.equal(pending.cellKey, "0:0")
-  Assert.equal(pending.presentationTask, task)
+  local task = assert(pending.presentationTask)
+  Assert.equal(taskLogRef.current[1], task)
   Assert.isFalse(task:isReady())
   return coverage, taskLogRef, pending, task, releases
 end
@@ -947,7 +950,7 @@ function T.halo_pending_work_survives_recentering_without_synchronous_progress()
   coverage:recenter(1, 2)
 
   local status = coverage:status()
-  Assert.equal(coverage.pendingPrefetch, pending, "the halo task remains owned by coverage")
+  Assert.equal(coverage.pendingPrefetches[1], pending, "the halo task remains owned by coverage")
   Assert.equal(pending.presentationTask, task, "the same presentation task remains pending")
   Assert.equal(status.pendingPrefetchCellKey, "0:0")
   Assert.equal(task.advances, beforeAdvances, "recentering does not advance halo-only work")
@@ -969,12 +972,16 @@ function T.retained_halo_work_resumes_with_bounded_updates_and_publishes_once()
   coverage:recenter(1, 2)
   local beforeAdvances = task.advances
   local guard = 0
-  while coverage.pendingPrefetch do
+  while #coverage.pendingPrefetches > 0 do
     local consumed = coverage:updatePrefetch(1)
     Assert.isTrue(consumed <= 1, "prefetch must consume at most one work unit per update")
-    Assert.equal(coverage.pendingPrefetch and coverage.pendingPrefetch.presentationTask or task, task)
+    for _, staged in ipairs(coverage.pendingPrefetches) do
+      if staged.cellKey == "0:0" then
+        Assert.equal(staged.presentationTask, task, "the retained task keeps serving its own cell")
+      end
+    end
     guard = guard + 1
-    Assert.isTrue(guard <= 8, "retained halo work did not complete")
+    Assert.isTrue(guard <= 40, "retained halo work did not complete")
   end
 
   local status = coverage:status()
@@ -983,7 +990,13 @@ function T.retained_halo_work_resumes_with_bounded_updates_and_publishes_once()
   Assert.equal(task.takeResultCalls, 1, "the retained result transfers once")
   Assert.notNil(coverage.prefetched[pending.cellKey])
   Assert.equal(status.pendingPrefetchCellKey, nil)
-  Assert.equal(#taskLogRef.current, 4, "completion accounts for three new committed tasks")
+  local tasksByCell = {}
+  for _, logged in ipairs(taskLogRef.current) do
+    tasksByCell[logged.cellKey] = (tasksByCell[logged.cellKey] or 0) + 1
+  end
+  for _, cellKey in ipairs({ "0:1", "0:2", "0:3" }) do
+    Assert.equal(tasksByCell[cellKey], 1, "recenter stages each newly committed cell exactly once")
+  end
   Assert.equal(countTaskReferences(taskLogRef.current, task), 1, "the retained task is not duplicated")
   coverage:release()
   Assert.equal(task.presentationReleaseCalls, 1, "published presentation releases once")
@@ -1000,7 +1013,9 @@ end
 function T.pending_work_outside_the_footprint_is_cancelled_once()
   local coverage, _, _, task, releases = pendingHaloCoverage()
   coverage:recenter(4, 2)
-  Assert.isNil(coverage.pendingPrefetch)
+  for _, staged in ipairs(coverage.pendingPrefetches) do
+    Assert.isTrue(staged.cellKey ~= "0:0", "a staged cell outside the new footprint is dropped")
+  end
   Assert.equal(task.releaseCalls, 1, "leaving the footprint cancels the pending task once")
   Assert.equal(releases["0:0"], 1, "leaving the footprint releases the pending runtime once")
   coverage:release()
@@ -1102,7 +1117,7 @@ function T.failed_pending_fallback_clears_its_owner_after_task_failure()
   end)
   Assert.isFalse(ok)
   Assert.equal(tostring(err), "staged presentation failed")
-  Assert.isNil(coverage.pendingPrefetch)
+  Assert.equal(#coverage.pendingPrefetches, 0)
   Assert.equal(releases["3:0"], 1)
   Assert.equal(taskReleases.count, 1)
   coverage:release()
@@ -1513,6 +1528,159 @@ function T.initial_coverage_zero_budget_advance_never_publishes()
   Assert.equal(task:advance(0), 0, "a zero budget consumes no work")
   Assert.isFalse(task:isReady(), "a zero budget publishes no coverage")
   task:release()
+end
+
+-- The halo stages a bounded set of cells at once and a cell whose preparation is
+-- still waiting on the shared worker never stops its siblings: the pass moves on
+-- instead of blocking at one cell's head.
+function T.a_blocked_staged_cell_does_not_stop_its_siblings()
+  local taskLogRef = { current = {} }
+  local blockedKey
+  local factory = stagedPresentationFactory(taskLogRef)
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    loadCell = function(descriptor)
+      return runtimeFactory({})(descriptor)
+    end,
+    presentationTaskFactory = function(runtime)
+      local task = factory(runtime)
+      if blockedKey ~= nil and runtime.key == blockedKey then
+        task.advance = function()
+          return 0
+        end
+        task.isReady = function()
+          return false
+        end
+      end
+      return task
+    end,
+  })
+  coverage:queuePrefetch(2, 2)
+  local firstHalo = assert(coverage.prefetchQueue[1], "the halo queues its nearest cell")
+  blockedKey = firstHalo.x .. ":" .. firstHalo.z
+  local consumed = coverage:updatePrefetch(4)
+  Assert.isTrue(#coverage.pendingPrefetches > 1, "the halo stages more than one cell at a time")
+  Assert.isTrue(consumed >= 2, "the frame budget still buys work from a ready sibling")
+  local progressed = 0
+  for _, staged in ipairs(coverage.pendingPrefetches) do
+    local task = staged.presentationTask
+    if task ~= nil and task.advances > 0 then
+      progressed = progressed + 1
+    end
+  end
+  Assert.isTrue(progressed >= 1, "a sibling cell's presentation advanced while the first cell waited")
+  coverage:release()
+end
+
+-- The halo is ordered by the player's actual field position, so the cell across
+-- the boundary being walked toward is prepared before the cells behind.
+function T.prefetch_focus_orders_the_halo_nearest_first()
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    loadCell = function(descriptor)
+      return runtimeFactory({})(descriptor)
+    end,
+  })
+  -- Standing in the bottom-right corner of cell (2,2): the halo cells to the
+  -- east and south are a fraction of a cell away, the north-west ring corner is
+  -- nearly two cells away.
+  coverage:setPrefetchFocus(2 * 32 + 31, 2 * 32 + 31)
+  coverage:queuePrefetch(2, 2)
+  local queued = coverage.prefetchQueue
+  Assert.isTrue(#queued > 1, "the halo queues several cells")
+  local function score(descriptor)
+    local dx = descriptor.x - (2 * 32 + 31) / 32
+    local dz = descriptor.z - (2 * 32 + 31) / 32
+    return dx * dx + dz * dz
+  end
+  Assert.isTrue(score(queued[1]) < score(queued[#queued]), "the halo is ordered nearest-first")
+  Assert.equal(queued[#queued].x, 0, "the farthest ring corner comes last on x")
+  Assert.equal(queued[#queued].z, 0, "the farthest ring corner comes last on z")
+  coverage:release()
+end
+
+-- The destination window for the anchor the player is about to enter is built
+-- while the halo is still being prepared, so the crossing frame commits the
+-- already assembled region and draw lists instead of rebuilding them.
+function T.imminent_destination_window_is_staged_ahead_and_committed_unchanged()
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    loadCell = function(descriptor)
+      return runtimeFactory({})(descriptor)
+    end,
+  })
+  -- Realize the whole halo so the neighbor's committed set is available.
+  for _ = 1, 200 do
+    if not coverage:hasPrefetchWork() then
+      break
+    end
+    coverage:updatePrefetch(2)
+  end
+  Assert.isFalse(coverage:hasPrefetchWork(), "the halo is fully realized")
+  Assert.isNil(coverage._stagedAggregate, "no destination is staged while the player is mid-cell")
+
+  -- Standing near the east boundary of cell (2,2): the destination is (3,2).
+  coverage:setPrefetchFocus(2 * 32 + 30, 2 * 32 + 16)
+  coverage:updatePrefetch(0)
+  local staged = assert(coverage._stagedAggregate, "the imminent destination is staged")
+  Assert.equal(staged.anchorX, 3, "the staged window is the cell the player is walking into")
+  Assert.equal(staged.anchorZ, 2, "the staged window keeps the other axis")
+  local stagedRegion = staged.region
+
+  coverage:recenter(3, 2)
+  Assert.equal(coverage.anchorX, 3, "the crossing commits the staged anchor")
+  Assert.equal(coverage.region, stagedRegion, "the crossing reuses the staged composite region")
+  Assert.isNil(coverage._stagedAggregate, "the consumed destination leaves no stale window")
+  coverage:release()
+end
+
+-- A staged destination that stopped describing live cells is dropped rather than
+-- committed, and the ordinary on-demand build still produces the window.
+function T.a_stale_staged_destination_is_never_committed()
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    loadCell = function(descriptor)
+      return runtimeFactory({})(descriptor)
+    end,
+  })
+  for _ = 1, 200 do
+    if not coverage:hasPrefetchWork() then
+      break
+    end
+    coverage:updatePrefetch(2)
+  end
+  coverage:setPrefetchFocus(2 * 32 + 30, 2 * 32 + 16)
+  coverage:updatePrefetch(0)
+  local staged = assert(coverage._stagedAggregate, "the imminent destination is staged")
+  -- Replace one halo cell the staged window references with a different runtime.
+  local replacedKey
+  for cellKey, cell in pairs(staged.cells) do
+    if coverage.prefetched[cellKey] == cell then
+      replacedKey = cellKey
+      break
+    end
+  end
+  Assert.notNil(replacedKey, "the staged window references a halo cell")
+  -- The halo cell leaves this owner before the crossing: the staged window no
+  -- longer describes what it would commit.
+  coverage.prefetched[replacedKey] = nil
+  Assert.isNil(coverage:_takeStagedAggregate(staged.anchorX, staged.anchorZ), "a stale window is not taken")
+  coverage:recenter(3, 2)
+  Assert.notNil(coverage.region, "the ordinary build still commits the crossing")
+  Assert.isTrue(coverage.region ~= staged.region, "the stale window is rebuilt instead of committed")
+  coverage:release()
 end
 
 return { metadata = { capabilities = {} }, tests = T }

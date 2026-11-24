@@ -2835,4 +2835,100 @@ function T.door_arrival_without_a_present_follower_never_rejoins()
   Assert.deepEqual(player.steps, { "north", "south" }, "the choreography still walks without a follower")
 end
 
+-- A covered swap stages the destination's physical window under the cover and
+-- advances it a bounded number of steps per tick instead of building it in the
+-- frame that finishes loading; the resolution then runs against the finished
+-- window and the commit happens only after it is ready.
+function T.covered_swap_advances_the_destination_stage_across_cover_ticks()
+  local advances = {}
+  local ready = false
+  local stageReleased = 0
+  local fixture = outdoorFixture({
+    produceDestination = nil,
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
+  })
+  fixture.transition.produceDestination = function()
+    return {
+      advance = function(_, units)
+        advances[#advances + 1] = units
+        if #advances >= 3 then
+          ready = true
+        end
+        return ready and 1 or 0
+      end,
+      isReady = function()
+        return ready
+      end,
+      release = function()
+        stageReleased = stageReleased + 1
+      end,
+    }
+  end
+  local prepared = 0
+  fixture.transition.prepare = function()
+    prepared = prepared + 1
+    return {}
+  end
+  fixture.transition:startCoveredSwap(
+    fixture.source,
+    { warp = { index = 0, destinationMapId = 60, destinationWarpId = 0 } },
+    "south"
+  )
+  for _ = 1, 16 do
+    if fixture.transition.phase == "idle" then
+      break
+    end
+    step(fixture.transition)
+  end
+  Assert.equal(#advances, 3, "the destination window was staged over three cover ticks")
+  for _, units in ipairs(advances) do
+    Assert.equal(units, 4, "each tick spends its bounded staging budget")
+  end
+  Assert.equal(prepared, 1, "preparation runs once, after the staged window is ready")
+  Assert.equal(#fixture.swaps, 1, "the swap commits once")
+  Assert.equal(stageReleased, 0, "a committed stage is not released")
+end
+
+-- A destination stage that fails mid-cover releases what it built, aborts to the
+-- coherent idle state, and never commits.
+function T.aborted_covered_swap_releases_partial_destination_stage()
+  local stageReleased = 0
+  local fixture = outdoorFixture()
+  fixture.transition.produceDestination = function()
+    return {
+      advance = function()
+        error("synthetic destination staging failure", 0)
+      end,
+      isReady = function()
+        return false
+      end,
+      release = function()
+        stageReleased = stageReleased + 1
+      end,
+    }
+  end
+  fixture.transition:startCoveredSwap(
+    fixture.source,
+    { warp = { index = 0, destinationMapId = 60, destinationWarpId = 0 } },
+    "south"
+  )
+  for _ = 1, 4 do
+    if fixture.transition.phase == "idle" then
+      break
+    end
+    step(fixture.transition)
+  end
+  Assert.equal(fixture.transition.phase, "idle", "the staging failure aborts to idle")
+  Assert.isTrue(
+    tostring(fixture.transition.error):find("synthetic destination staging failure", 1, true) ~= nil,
+    "the staging failure keeps its cause"
+  )
+  Assert.equal(stageReleased, 1, "the partial destination stage is released exactly once")
+  Assert.equal(#fixture.swaps, 0, "a failed stage never commits")
+end
+
 return { tests = T }

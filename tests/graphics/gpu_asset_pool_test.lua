@@ -772,6 +772,48 @@ function T.prepared_native_bank_payload_realizes_every_selected_draw()
   pool:release()
 end
 
+-- Geometry pre-enrollment hands the executor every distinct source before the
+-- first realization: the later acquisition reuses that exact token instead of
+-- decoding twice, and a source the scene never realized cancels on release.
+function T.prefetched_geometry_reuses_its_enrolled_token()
+  local source = fakeCacheFs()
+  local requests, cancelled = {}, {}
+  local queue = {}
+  function queue:request(kind, path, priority)
+    local token = { kind = kind, path = path, priority = priority }
+    requests[#requests + 1] = token
+    return token
+  end
+  function queue:wait(token)
+    local bytes = assert(source.read(nil, token.path), "missing mesh " .. tostring(token.path))
+    return { value = { kind = token.kind, payload = SceneMesh.prepareUpload(bytes) } }
+  end
+  function queue:cancel(token)
+    cancelled[#cancelled + 1] = token
+  end
+  local decoded = {}
+  function decoded:returnLease()
+    return true
+  end
+  function decoded:trim() end
+  local pool = newPool(fakeCacheFs(), { assetPreparation = queue, decoded = decoded })
+
+  pool:prefetchGeometry(GEOM_PATH)
+  pool:prefetchGeometry(GEOM_PATH)
+  Assert.equal(#requests, 1, "pre-enrolling the same source twice enrolls it once")
+  Assert.equal(requests[1].priority, "prefetch", "pre-enrolled geometry is speculative work")
+
+  local entry = pool:meshFor(GEOM_PATH)
+  Assert.notNil(entry.mesh, "realization still builds the mesh")
+  Assert.equal(#requests, 1, "realization reuses the enrolled token instead of decoding the source again")
+
+  pool:prefetchGeometry(EMPTY_GEOM_PATH)
+  Assert.equal(#requests, 2, "a second distinct source enrolls on its own identity")
+  pool:release()
+  Assert.equal(#cancelled, 1, "an enrolled source the scene never realized cancels on release")
+  Assert.equal(cancelled[1].path, EMPTY_GEOM_PATH, "the cancelled enrollment is the unrealized one")
+end
+
 return {
   metadata = { capabilities = { "graphics" } },
   tests = T,

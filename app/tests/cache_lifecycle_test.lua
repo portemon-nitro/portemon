@@ -352,6 +352,10 @@ local function withAppStubs(fn)
   function service:enableSweep(_)
     context.warmups = context.warmups + 1
   end
+  function service:setExecutionPolicy(epoch, loading)
+    context.executionPolicies = context.executionPolicies or {}
+    context.executionPolicies[#context.executionPolicies + 1] = { epoch = epoch, loading = loading }
+  end
   function service:offerSource(_, _, _)
     context.offers = (context.offers or 0) + 1
     return true
@@ -676,7 +680,7 @@ function T.location_requests_reuse_the_committed_footprint_and_keep_the_halo()
     cells = {},
     prefetched = {},
     prefetchQueue = {},
-    pendingPrefetch = nil,
+    pendingPrefetches = {},
     derivedAssets = {
       -- The semantic host is dot-called (plain functions, no self), matching
       -- every production consumer of the host.
@@ -2707,8 +2711,8 @@ function T.blocked_boot_refuses_a_wrong_version_and_ignores_stale_replies()
     Assert.equal(#context.menus, 0, "the stale reply never installs a menu")
     Assert.deepEqual(
       emittedOpsForEpochSince(context, mark, second),
-      { "select", "check-boot-source", "request" },
-      "reselection queues a fresh gate without a late offer"
+      { "select", "check-boot-source", "execution-policy", "request" },
+      "reselection queues a fresh gate, its loader execution policy and no late offer"
     )
     local info = GameVersion.info(VERSION)
     local buffer = love.data.newByteData("synthetic-heartgold-bytes")

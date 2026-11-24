@@ -111,6 +111,7 @@ local InteractiveCacheCompletion = require("romdump.src.build.InteractiveCacheCo
 ---@field rosterFailure table<string, string> retained roster construction failures per scope
 ---@field completion InteractiveCacheCompletion|nil complete and sweep owner, cleared on retirement
 ---@field foregroundPendingCount integer retained nonterminal required/near interest count
+---@field loading boolean transient loader presentation policy, false for ordinary interactive sessions
 ---@field clock fun(): number monotonic seconds source for background admission
 ---@field lastForegroundActivity number monotonic time of the latest required/near request, promotion, or settlement
 ---@field planningPending boolean runnable local planning remains from the last pump
@@ -288,6 +289,7 @@ function InteractiveCacheBuild.new(options)
     rosterFailure = {},
     foregroundPendingCount = 0,
     clock = clock,
+    loading = false,
     lastForegroundActivity = clock(),
     planningPending = false,
     followerMemo = nil,
@@ -2771,6 +2773,17 @@ function InteractiveCacheBuild:_drainTickets(budget)
       self:_runControl(ticket, budget)
     end
   end
+end
+
+--- Transient presentation policy: true only while a loader presentation owns
+--- the screen. It lifts the interactive admission throttles (single background
+--- slot, sweep quiet window, one sweep root) and never changes a memory,
+--- dependency, publication or source-lifetime invariant. The selected epoch
+--- guards it: a stale policy can never speed up a replacement session.
+---@param loading boolean
+function InteractiveCacheBuild:setLoading(loading)
+  assert(not self.retired, "generation session is retired")
+  self.loading = loading == true
 end
 
 function InteractiveCacheBuild:update()

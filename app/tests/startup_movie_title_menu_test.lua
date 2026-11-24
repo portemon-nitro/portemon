@@ -159,6 +159,7 @@ local function withStartup(fn)
 
   active = {
     requests = {},
+    executionPolicies = {},
     scenes = {},
     menus = {},
     loaders = {},
@@ -221,6 +222,9 @@ local function withStartup(fn)
   end
   function service:enableSweep(_)
     active.sweeps = (active.sweeps or 0) + 1
+  end
+  function service:setExecutionPolicy(epoch, loading)
+    active.executionPolicies[#active.executionPolicies + 1] = { epoch = epoch, loading = loading }
   end
   function service:generationId(_)
     return "startup-test-generation"
@@ -359,13 +363,18 @@ local function withStartup(fn)
   -- The launcher stages the title through its build task: the fake scene
   -- realizes on the first advance and transfers like the real build.
   local function fakeTitleBuild(scene)
-    local build = { _ready = false }
+    local build = { _ready = false, _units = 0 }
     function build:advance(maxWorkUnits)
       if maxWorkUnits == 0 or self._ready then
         return 0
       end
-      self._ready = true
-      return 1
+      local required = active.titleBuildUnits or 1
+      local consumed = math.min(maxWorkUnits, required - self._units)
+      self._units = self._units + consumed
+      if self._units >= required then
+        self._ready = true
+      end
+      return consumed
     end
     function build:isReady()
       return self._ready
@@ -586,39 +595,25 @@ function T.tests.startup_demands_all_five_opening_scenes_and_keeps_one_menu_thro
     Assert.notNil(state.movie, "the movie session is owned by the startup state, not a parallel owner")
     Assert.equal(active.loaders[1].disposals, 0, "the loader is retained until the first movie frame")
 
-    -- A finished movie disposes the movie once and presents the legendary
-    -- title; a pending title keeps the same loader instead of blanking.
-    active.titleAssetsReady = false
-    for _ = 1, 60 do
-      App.update(SourceTick.DT)
-      if state.phase ~= "movie" then
-        break
-      end
-    end
-    Assert.equal(state.phase, "movie", "an unfinished movie keeps playing while the title is pending")
-    paints = active.paints
-    App.draw()
-    Assert.isTrue(active.paints > paints, "the movie keeps painting while the title bundle is pending")
+    -- The opening plays only behind a completely realized title: the admission
+    -- invariant means movie completion has nothing left to build.
+    Assert.notNil(state.title, "the title is realized before the opening plays")
+    Assert.isTrue(state.phase ~= "title", "the realized title stays staged behind the opening")
+    local loaderDraws = active.loaders[1].draws
     while state.movie ~= nil and not state.movie:isFinished() do
       state.movie:updateFixed()
     end
     App.update(SourceTick.DT)
     Assert.isNil(state.movie, "the finished movie is disposed exactly once at the title handoff")
-    Assert.equal(active.loaders[1].draws > 0, true, "the pending title keeps the same loader visible")
-    paints = active.paints
-    local whites = active.whiteOverlays
-    App.draw()
-    Assert.isTrue(
-      active.paints > paints or active.whiteOverlays > whites,
-      "no blank frame appears between the movie and the pending title"
+    Assert.equal(state.phase, "title", "the legendary title follows the completed movie directly")
+    Assert.equal(
+      active.loaders[1].draws,
+      loaderDraws,
+      "no loader frame appears between the movie and its retained title"
     )
+    Assert.equal(#active.scenes, 1, "the realized title is reused, never rebuilt, at the handoff")
 
-    -- The independently ready title appears only after the movie; one
-    -- latched skip then fades white into exactly one staged menu.
-    active.titleAssetsReady = true
-    App.update(SourceTick.DT)
-    Assert.equal(#active.scenes, 1, "the title scene is constructed once after the movie")
-    Assert.equal(state.phase, "title", "the legendary title follows the completed movie")
+    -- One latched skip then fades white into exactly one staged menu.
     pumpTitleEntry(state)
     App.keypressed("return", "return", false)
     Assert.isFalse(state.skipRequested and state.movie ~= nil, "the title press never replays the movie")
@@ -635,6 +630,59 @@ function T.tests.startup_demands_all_five_opening_scenes_and_keeps_one_menu_thro
     Assert.equal(App.state, active.menus[1], "the same staged menu installs after the white fade")
     Assert.isTrue(active.whiteOverlays > 0, "the title-to-menu handoff fades through white")
     Assert.equal(#active.menus, 1, "handoff never reconstructs the menu")
+  end)
+end
+
+-- The title compilation milestone gates the opening: a pending title keeps the
+-- loader and stages no playable movie even with every opening scene ready, and
+-- none of the soundtrack is started ahead of it.
+function T.tests.movie_admission_waits_for_the_title_compilation()
+  withStartup(function()
+    active.titleAssetsReady = false
+    local state = startSelection()
+    active.audioReady = true
+    for sceneNumber = 1, 5 do
+      active.sceneReady[sceneNumber] = true
+    end
+    for _ = 1, 60 do
+      App.update(SourceTick.DT)
+    end
+    Assert.equal(state.phase, "loading", "a pending title compilation admits no opening")
+    Assert.notNil(state.movie, "the five ready scenes stay staged behind the loader")
+    Assert.equal(state.movie.ticks, 0, "no source tick advances while the title is pending")
+    Assert.isNil(state.title, "the pending title milestone has no scene")
+    Assert.equal(#active.audioSessions, 0, "the soundtrack never starts ahead of the title")
+
+    active.titleAssetsReady = true
+    pumpUntilMovie(state)
+    Assert.equal(state.phase, "movie", "the realized title releases the staged opening")
+    Assert.notNil(state.title, "the title is owned before the opening plays")
+  end)
+end
+
+-- A ready title milestone is not a realized title: the opening waits for the
+-- staged title build to finish before it is admitted.
+function T.tests.movie_admission_waits_for_the_title_realization()
+  withStartup(function()
+    active.titleBuildUnits = 16
+    local state = startSelection()
+    active.audioReady = true
+    for sceneNumber = 1, 5 do
+      active.sceneReady[sceneNumber] = true
+    end
+    App.update(SourceTick.DT)
+    Assert.notNil(state.titleBuild, "the title milestone begins the staged build")
+    Assert.isNil(state.title, "an unfinished build owns no scene yet")
+    Assert.equal(state.phase, "loading", "an unfinished title build admits no opening")
+    for _ = 1, 10 do
+      if state.title ~= nil then
+        break
+      end
+      App.update(SourceTick.DT)
+    end
+    Assert.notNil(state.title, "the loader budget realizes the staged title")
+    pumpUntilMovie(state)
+    Assert.equal(state.phase, "movie", "the realized title releases the staged opening")
   end)
 end
 
@@ -1205,7 +1253,8 @@ function T.tests.partial_opening_manifest_keeps_the_loader_without_start_or_erro
     Assert.equal(state.phase, "loading", "four of five scenes never install the movie")
     Assert.isNil(state.movie, "a partial manifest constructs no movie session")
     Assert.isNil(state.sceneError, "a partial manifest reports no terminal failure")
-    Assert.isNil(state.title, "no title presents while the movie is still pending")
+    Assert.notNil(state.title, "the title is realized while the last scene still compiles")
+    Assert.isTrue(state.phase ~= "title", "a realized title never presents before its opening")
     local paints = active.paints
     App.draw()
     Assert.isTrue(active.paints > paints, "the loader keeps painting while the last scene compiles")

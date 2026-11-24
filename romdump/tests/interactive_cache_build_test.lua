@@ -240,7 +240,7 @@ local function selectableRecordingPool()
 end
 local PRODUCER_ID = "d" .. string.rep("3", 64)
 local function retryCapablePool()
-  local pool = { submitted = {}, states = {}, retried = {}, selects = 0 }
+  local pool = { submitted = {}, states = {}, retried = {}, selects = 0, slots = 2 }
   function pool:selectGeneration(_, _)
     self.selects = self.selects + 1
   end
@@ -249,6 +249,10 @@ local function retryCapablePool()
     return true
   end
   function pool:update() end
+  -- Physical slots the loader policy sizes its speculative supply against.
+  function pool:workerSlotCount()
+    return self.slots
+  end
   function pool:status(jobKey)
     local state = self.states[jobKey]
     if type(state) == "table" then
@@ -1479,6 +1483,38 @@ function T.authorized_sweep_waits_for_a_quiet_second_before_dispatch()
   tick.now = 1.0
   local candidate = pumpUntilSubmitted(session, pool, 20)
   Assert.notNil(candidate, "one quiet second admits the first background candidate")
+end
+
+-- A loader presentation keeps a bounded supply of independent sweep roots
+-- ahead of its slots, without the one-second foreground quiet window; an
+-- ordinary session goes back to one root in flight.
+function T.loader_presentation_keeps_several_sweep_roots_outstanding()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  pool.slots = 3
+  local _, clock = newFakeClock()
+  local session = warmingSessionWithClock("loader-sweep-supply-generation", pool, backend, clock)
+  session:enableSweep()
+  session:setLoading(true)
+  for _ = 1, 4 do
+    session:update()
+  end
+  Assert.isTrue(
+    #pool.submitted >= 2,
+    "a loader keeps several independent sweep roots outstanding instead of waiting at one"
+  )
+  Assert.isFalse(session.completion:sourceWorkSettled(), "outstanding sweep roots hold the shared source")
+  Assert.isNil(session:nextPlanningWakeDelay(), "a loader has no quiet window to wait out")
+  local enrolled = #pool.submitted
+  session:setLoading(false)
+  for _ = 1, 4 do
+    session:update()
+  end
+  Assert.equal(
+    #pool.submitted,
+    enrolled,
+    "an ordinary session enrolls no further roots while its one root stays outstanding"
+  )
 end
 
 function T.quiet_deadline_expiry_admits_one_sweep_candidate_and_clears_the_wait()

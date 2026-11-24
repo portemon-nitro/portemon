@@ -260,6 +260,13 @@ function FieldPreparationState:_pollGeometry()
   end
 end
 
+-- Game entry preparation (new game or continue) is genuinely blocking until it
+-- hands off; ordinary field travel never claims this policy.
+---@return boolean
+function FieldPreparationState:isPreparingAssets()
+  return not self.transferred and not self.cancelled and self.phase ~= "done"
+end
+
 function FieldPreparationState:update(dt)
   if self.loading ~= nil then
     self.loading:update(dt or 0)

@@ -129,6 +129,13 @@ function NewGamePreparationState:_pollLoaderArt()
   end
 end
 
+-- New Game entry is a genuine asset-preparation presentation until it hands
+-- off: its loader owns the screen and nothing else competes for the host.
+---@return boolean
+function NewGamePreparationState:isPreparingAssets()
+  return not self.fired and not self.cancelled and self.phase ~= "done"
+end
+
 function NewGamePreparationState:update(dt)
   if self.loading ~= nil then
     self.loading:update(dt or 0)

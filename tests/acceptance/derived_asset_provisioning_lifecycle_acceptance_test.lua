@@ -146,6 +146,10 @@ T.tests["the selected game receives only the semantic provisioning host"] = func
     function service:enableSweep(_)
       result.warmups = (result.warmups or 0) + 1
     end
+    function service:setExecutionPolicy(epoch, loading)
+      result.executionPolicies = result.executionPolicies or {}
+      result.executionPolicies[#result.executionPolicies + 1] = { epoch = epoch, loading = loading }
+    end
     function service:update() end
     function service:retire(_) end
     function service:getCacheFs(_)

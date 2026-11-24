@@ -14,6 +14,20 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 
+-- How many halo cells may be staged at once. A staged cell holds a partially
+-- built runtime (descriptor reads, collision source and terrain artifact), so
+-- this is a memory bound as much as a scheduling one: one cell waits on the
+-- shared preparation worker without blocking the others, and the rest of the
+-- halo stays queued.
+local MAX_STAGED_CELLS = 4
+
+-- Field tiles from an edge of the current anchor cell within which the player is
+-- treated as about to cross it: the composite window and draw lists of that
+-- neighbor are then built ahead of the move, so the crossing frame only swaps
+-- them in. One staged destination is kept, never a set of candidate windows.
+local IMMINENT_BOUNDARY_TILES = 3
+local TILES_PER_CELL = 32
+
 ---@class PhysicalProbeContext
 ---@field currentCellKey string
 ---@field currentSourceSurfaceId integer
@@ -41,7 +55,11 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field region table<string, unknown>
 ---@field terrainDependencyHash string
 ---@field released boolean
----@field pendingPrefetch table<string, unknown>?
+---@field pendingPrefetches table<string, unknown>[] staged halo cells, nearest first
+---@field prefetchStageLimit integer staged halo cells this owner may hold at once
+---@field focusX number? player field position driving halo ordering
+---@field focusZ number?
+---@field _stagedAggregate table<string, unknown>? one prebuilt destination window awaiting its commit
 ---@field _cellKeys string[]
 ---@field _worldParts table[]
 ---@field _cellPresentation { staticParts: table[], dynamicCount: integer, stagedDynamicCount: integer }[]
@@ -586,7 +604,11 @@ local function blankCoverage(options, index)
     cells = {},
     prefetched = {},
     prefetchQueue = {},
-    pendingPrefetch = nil,
+    pendingPrefetches = {},
+    prefetchStageLimit = MAX_STAGED_CELLS,
+    _stagedAggregate = nil,
+    focusX = nil,
+    focusZ = nil,
     prefetchError = nil,
     synchronousPhysicalFallbackLoads = 0,
     _cellKeys = {},
@@ -873,29 +895,38 @@ function FieldCoverage:recenter(anchorX, anchorZ)
     return self
   end
   local targetFootprint = self:_descriptorSet(anchorX, anchorZ, 2)
-  local targetCommitted = self:_descriptorSet(anchorX, anchorZ, 1)
-  if self.pendingPrefetch then
-    local pendingKey = self.pendingPrefetch.cellKey
-    if targetCommitted[pendingKey] then
-      -- The pending cell is consumed by the new committed window below.
-    elseif targetFootprint[pendingKey] then
-      -- The pending cell remains owned by the halo prefetch until it completes.
+  -- A staged halo cell that still belongs to the halo stays owned here with its
+  -- partial preparation intact; one that fell out of the footprint (or that the
+  -- new committed window will realize) is released now.
+  local survivingPendings = {}
+  for _, pending in ipairs(self.pendingPrefetches) do
+    if targetFootprint[pending.cellKey] and not self.cells[pending.cellKey] then
+      survivingPendings[#survivingPendings + 1] = pending
     else
-      local pending = self.pendingPrefetch
-      self.pendingPrefetch = nil
       releasePending(pending)
     end
   end
+  self.pendingPrefetches = survivingPendings
+  -- A destination staged ahead of the move commits its already built window
+  -- instead of rebuilding the composite region and draw lists on the frame that
+  -- crosses the boundary.
+  local prepared = self:_takeStagedAggregate(anchorX, anchorZ)
+  if prepared ~= nil then
+    return self:_commitCandidate(prepared, targetFootprint)
+  end
   local staged, acquired = {}, {}
   local hadCommittedCells = next(self.cells) ~= nil
+  local stagedPendings = {}
+  for _, stagedPending in ipairs(self.pendingPrefetches) do
+    stagedPendings[stagedPending.cellKey] = stagedPending
+  end
   local candidate
   local ok, err = pcall(function()
-    local pending = self.pendingPrefetch
     for _, position in ipairs(desired(anchorX, anchorZ)) do
       local descriptor = FieldCellCache.find(self.index, self.matrixMemberId, position.x, position.z)
       if descriptor then
         local cellKey = key(position.x, position.z)
-        if not self.cells[cellKey] and not self.prefetched[cellKey] and (not pending or pending.cellKey ~= cellKey) then
+        if not self.cells[cellKey] and not self.prefetched[cellKey] and not stagedPendings[cellKey] then
           if self.derivedAssets then
             self.derivedAssets.ensureCell(descriptor)
           end
@@ -910,10 +941,17 @@ function FieldCoverage:recenter(anchorX, anchorZ)
         if existing then
           staged[cellKey] = existing
         else
-          local currentPending = self.pendingPrefetch
+          local currentPending = stagedPendings[cellKey]
           local runtime
-          if currentPending and currentPending.cellKey == cellKey then
-            self.pendingPrefetch = nil
+          if currentPending ~= nil then
+            stagedPendings[cellKey] = nil
+            local remaining = {}
+            for _, other in ipairs(self.pendingPrefetches) do
+              if other ~= currentPending then
+                remaining[#remaining + 1] = other
+              end
+            end
+            self.pendingPrefetches = remaining
             runtime = finishPendingSafely(self, currentPending)
           else
             runtime = finishPendingSafely(self, newPending(self, descriptor))
@@ -949,7 +987,132 @@ function FieldCoverage:recenter(anchorX, anchorZ)
     end
     error(err, 0)
   end
-  candidate = assert(candidate)
+  return self:_commitCandidate(assert(candidate), targetFootprint)
+end
+
+-- The anchor the player is about to enter: the cell of the last known field
+-- position (movement already crossed it), or the neighbor whose boundary the
+-- position is within IMMINENT_BOUNDARY_TILES of. Nil when neither applies,
+-- which leaves the ordinary on-demand build as the only path.
+---@return integer?, integer?
+function FieldCoverage:_imminentAnchor()
+  local focusX, focusZ = self.focusX, self.focusZ
+  if focusX == nil or focusZ == nil or self.anchorX == nil then
+    return nil, nil
+  end
+  local cellX = math.floor(focusX / TILES_PER_CELL)
+  local cellZ = math.floor(focusZ / TILES_PER_CELL)
+  if cellX ~= self.anchorX or cellZ ~= self.anchorZ then
+    return cellX, cellZ
+  end
+  local localX = focusX - cellX * TILES_PER_CELL
+  local localZ = focusZ - cellZ * TILES_PER_CELL
+  local deltaX = 0
+  if localX < IMMINENT_BOUNDARY_TILES then
+    deltaX = -1
+  elseif localX > TILES_PER_CELL - IMMINENT_BOUNDARY_TILES then
+    deltaX = 1
+  end
+  local deltaZ = 0
+  if localZ < IMMINENT_BOUNDARY_TILES then
+    deltaZ = -1
+  elseif localZ > TILES_PER_CELL - IMMINENT_BOUNDARY_TILES then
+    deltaZ = 1
+  end
+  if deltaX == 0 and deltaZ == 0 then
+    return nil, nil
+  end
+  return cellX + deltaX, cellZ + deltaZ
+end
+
+-- Whether a staged window still describes cells this owner holds by identity:
+-- a cell released or replaced since staging invalidates the whole window.
+---@param candidate table<string, unknown>
+---@return boolean
+function FieldCoverage:_stagedAggregateIsLive(candidate)
+  for cellKey, cell in pairs(candidate.cells) do
+    if self.cells[cellKey] ~= cell and self.prefetched[cellKey] ~= cell then
+      return false
+    end
+  end
+  return true
+end
+
+-- Build, and keep, the destination window for the imminent anchor when every
+-- cell of its committed set is already realized. This is the same construction
+-- the crossing frame would otherwise run; doing it here keeps the committed
+-- boundary frame free of region and draw-list assembly.
+function FieldCoverage:_stageImminentAggregate()
+  local cached = self._stagedAggregate
+  if cached ~= nil then
+    if not self:_stagedAggregateIsLive(cached) then
+      self._stagedAggregate = nil
+    elseif cached.anchorX == self.anchorX and cached.anchorZ == self.anchorZ then
+      self._stagedAggregate = nil
+    else
+      return
+    end
+  end
+  local anchorX, anchorZ = self:_imminentAnchor()
+  if anchorX == nil or anchorZ == nil then
+    return
+  end
+  if anchorX == self.anchorX and anchorZ == self.anchorZ then
+    return
+  end
+  local staged = {}
+  for _, position in ipairs(desired(anchorX, anchorZ)) do
+    local descriptor = FieldCellCache.find(self.index, self.matrixMemberId, position.x, position.z)
+    if descriptor then
+      local cellKey = key(position.x, position.z)
+      local cell = self.cells[cellKey] or self.prefetched[cellKey]
+      if cell == nil then
+        return
+      end
+      staged[cellKey] = cell
+    end
+  end
+  local anchorCell = staged[key(anchorX, anchorZ)]
+  if anchorCell == nil then
+    return
+  end
+  local candidate = {
+    anchorX = anchorX,
+    anchorZ = anchorZ,
+    cells = staged,
+    region = buildRegion(staged, { x = anchorX, z = anchorZ }),
+    origin = assert(anchorCell.origin),
+    terrainDependencyHash = dependencyIdentity(staged, self.matrixMemberId, anchorX, anchorZ),
+  }
+  candidate.cellKeys, candidate.worldParts, candidate.cellPresentation = buildWorldParts(staged, candidate.origin)
+  candidate.prefetchDescriptors = descriptorsAtAnchor(self, anchorX, anchorZ)
+  self._stagedAggregate = candidate
+end
+
+-- Take the staged window for exactly this anchor, if it is still valid.
+---@param anchorX integer
+---@param anchorZ integer
+---@return table<string, unknown>?
+function FieldCoverage:_takeStagedAggregate(anchorX, anchorZ)
+  local cached = self._stagedAggregate
+  if cached == nil or cached.anchorX ~= anchorX or cached.anchorZ ~= anchorZ then
+    return nil
+  end
+  self._stagedAggregate = nil
+  if not self:_stagedAggregateIsLive(cached) then
+    return nil
+  end
+  return cached
+end
+
+-- Publish one built candidate window as the committed world: adopt its
+-- aggregates, keep the cells still inside the new footprint for the halo, and
+-- release the rest. Both the on-demand build and a staged destination commit
+-- through this one path, so a staged window is indistinguishable once committed.
+---@param candidate table<string, unknown> built window
+---@param targetFootprint table<string, boolean> radius-2 descriptor set of the anchor
+---@return FieldCoverage
+function FieldCoverage:_commitCandidate(candidate, targetFootprint)
   local old = {}
   for cellKey, cell in pairs(self.cells) do
     old[cellKey] = cell
@@ -967,9 +1130,9 @@ function FieldCoverage:recenter(anchorX, anchorZ)
   self._worldParts = candidate.worldParts
   self._cellPresentation = candidate.cellPresentation
   self._prefetchDescriptors = candidate.prefetchDescriptors
-  local newFootprint = targetFootprint
+  self._stagedAggregate = nil
   for cellKey, cell in pairs(old) do
-    if not self.cells[cellKey] and newFootprint[cellKey] then
+    if not self.cells[cellKey] and targetFootprint[cellKey] then
       self.prefetched[cellKey] = cell
     elseif not self.cells[cellKey] and cell.release then
       cell:release()
@@ -1085,7 +1248,72 @@ end
 
 ---@return boolean
 function FieldCoverage:hasPrefetchWork()
-  return self.pendingPrefetch ~= nil or #self.prefetchQueue > 0
+  return #self.pendingPrefetches > 0 or #self.prefetchQueue > 0
+end
+
+---@return integer staged halo cells awaiting publication
+function FieldCoverage:stagedCellCount()
+  return #self.pendingPrefetches
+end
+
+-- The player's field position drives halo ordering: the distance from the actual
+-- position to each halo cell (not the anchor's cell distance) is what makes the
+-- imminent frontier -- the cell on the other side of the boundary the player is
+-- walking toward -- arrive before the cells behind them. Reprioritizing is free:
+-- the next queuePrefetch re-sorts the small halo from the newest position.
+---@param fieldX number
+---@param fieldZ number
+function FieldCoverage:setPrefetchFocus(fieldX, fieldZ)
+  assert(type(fieldX) == "number" and type(fieldZ) == "number", "prefetch focus requires a field position")
+  self.focusX, self.focusZ = fieldX, fieldZ
+end
+
+-- Squared field distance from the focus position to a cell's own coordinates.
+-- Nil without a focus, which keeps the generated halo order.
+---@param descriptor table<string, unknown>
+---@return number?
+function FieldCoverage:_prefetchScore(descriptor)
+  if self.focusX == nil or self.focusZ == nil then
+    return nil
+  end
+  local dx = assert(descriptor.x) - self.focusX / 32
+  local dz = assert(descriptor.z) - self.focusZ / 32
+  return dx * dx + dz * dz
+end
+
+-- Order the halo nearest-first around the focus position, keeping the canonical
+-- cell order as the deterministic tie-break. The halo is a handful of cells, so
+-- this is a bounded insertion sort, never a corpus-wide sort.
+---@param descriptors table[]
+---@return table[]
+function FieldCoverage:_orderPrefetch(descriptors)
+  if self.focusX == nil then
+    return descriptors
+  end
+  local scored = {}
+  for index, descriptor in ipairs(descriptors) do
+    scored[#scored + 1] = { descriptor = descriptor, score = self:_prefetchScore(descriptor), order = index }
+  end
+  for left = 2, #scored do
+    local candidate = scored[left]
+    local position = left
+    while position > 1 do
+      local previous = scored[position - 1]
+      local closer = candidate.score < previous.score
+        or (candidate.score == previous.score and candidate.order < previous.order)
+      if not closer then
+        break
+      end
+      scored[position] = previous
+      position = position - 1
+    end
+    scored[position] = candidate
+  end
+  local ordered = {}
+  for index, entry in ipairs(scored) do
+    ordered[index] = entry.descriptor
+  end
+  return ordered
 end
 
 ---@param anchorX integer?
@@ -1096,21 +1324,23 @@ function FieldCoverage:queuePrefetch(anchorX, anchorZ)
   assert(anchorX and anchorZ, "coverage anchor is required before prefetching")
   local committed = self:_descriptorSet(anchorX, anchorZ, 1)
   local required = self:_descriptorSet(anchorX, anchorZ, 2)
-  if self.pendingPrefetch and not required[self.pendingPrefetch.cellKey] then
-    local pending = self.pendingPrefetch
-    self.pendingPrefetch = nil
-    releasePending(pending)
+  local staged = {}
+  local surviving = {}
+  for _, pending in ipairs(self.pendingPrefetches) do
+    if required[pending.cellKey] then
+      staged[pending.cellKey] = true
+      surviving[#surviving + 1] = pending
+    else
+      releasePending(pending)
+    end
   end
-  local queued = {}
+  self.pendingPrefetches = surviving
   local descriptors = anchorX == self.anchorX and anchorZ == self.anchorZ and self._prefetchDescriptors
     or descriptorsAtAnchor(self, anchorX, anchorZ)
-  for _, descriptor in ipairs(descriptors) do
+  local queued = {}
+  for _, descriptor in ipairs(self:_orderPrefetch(descriptors)) do
     local cellKey = key(descriptor.x, descriptor.z)
-    if
-      not committed[cellKey]
-      and not self.prefetched[cellKey]
-      and (not self.pendingPrefetch or self.pendingPrefetch.cellKey ~= cellKey)
-    then
+    if not committed[cellKey] and not self.prefetched[cellKey] and not staged[cellKey] then
       if self.derivedAssets then
         self.derivedAssets.requestCell(descriptor, "near")
       end
@@ -1122,41 +1352,58 @@ function FieldCoverage:queuePrefetch(anchorX, anchorZ)
   return self
 end
 
+-- Stage the next halo cells the preparation worker can take, skipping cells
+-- whose generated assets are still compiling instead of blocking the whole
+-- pass behind them. Staging stops once the bounded staged set is full.
+function FieldCoverage:_admitPendingPrefetches()
+  local index = 1
+  while #self.pendingPrefetches < self.prefetchStageLimit and index <= #self.prefetchQueue do
+    local descriptor = self.prefetchQueue[index]
+    local cellKey = key(assert(descriptor.x), assert(descriptor.z))
+    if self.cells[cellKey] ~= nil or self.prefetched[cellKey] ~= nil then
+      table.remove(self.prefetchQueue, index)
+    elseif self.derivedAssets and not self.derivedAssets.requestCell(descriptor, "near") then
+      index = index + 1
+    else
+      table.remove(self.prefetchQueue, index)
+      self.pendingPrefetches[#self.pendingPrefetches + 1] = newPending(self, descriptor)
+    end
+  end
+end
+
+-- Advance the staged halo cells within the caller's frame budget. A staged cell
+-- whose preparation worker is still busy consumes no units, so the pass moves on
+-- to the next staged cell instead of waiting at one cell's head; the real
+-- blocking fallback stays exclusive to an actual boundary commit.
 ---@param maxWorkUnits integer
 ---@return integer
 function FieldCoverage:updatePrefetch(maxWorkUnits)
   assert(not self.released, "coverage is released")
   assert(type(maxWorkUnits) == "number" and maxWorkUnits >= 0 and maxWorkUnits % 1 == 0)
   local consumed = 0
-  while consumed < maxWorkUnits do
-    if not self.pendingPrefetch then
-      local descriptor = table.remove(self.prefetchQueue, 1)
-      if not descriptor then
-        break
-      end
-      if self.derivedAssets and not self.derivedAssets.requestCell(descriptor, "near") then
-        table.insert(self.prefetchQueue, 1, descriptor)
-        break
-      end
-      self.pendingPrefetch = newPending(self, descriptor)
-    end
-    local pending = assert(self.pendingPrefetch)
+  self:_admitPendingPrefetches()
+  local index = 1
+  while consumed < maxWorkUnits and index <= #self.pendingPrefetches do
+    local pending = self.pendingPrefetches[index]
     local ok, work = pcall(advancePending, self, pending, maxWorkUnits - consumed)
     if not ok then
-      self.pendingPrefetch = nil
+      table.remove(self.pendingPrefetches, index)
       releasePending(pending)
       self.prefetchError = work
-      break
+      return consumed
     end
     consumed = consumed + assert(work)
     if pending.complete then
       self.prefetched[pending.cellKey] = assert(pending.runtime)
-      self.pendingPrefetch = nil
+      table.remove(self.pendingPrefetches, index)
+      self:_admitPendingPrefetches()
     elseif work == 0 then
-      break
+      -- Waiting on the shared worker: give the next staged cell the budget.
+      index = index + 1
     end
   end
   ---@cast consumed integer
+  self:_stageImminentAggregate()
   return consumed
 end
 
@@ -1175,6 +1422,10 @@ function FieldCoverage:status()
     prefetched[#prefetched + 1] = cellKey
   end
   table.sort(prefetched)
+  local stagedKeys = {}
+  for _, pending in ipairs(self.pendingPrefetches) do
+    stagedKeys[#stagedKeys + 1] = pending.cellKey
+  end
   return {
     matrixMemberId = self.matrixMemberId,
     anchorX = self.anchorX,
@@ -1184,7 +1435,8 @@ function FieldCoverage:status()
     committedCount = #resident,
     readyPrefetchCount = #prefetched,
     queuedPrefetchCount = #self.prefetchQueue,
-    pendingPrefetchCellKey = self.pendingPrefetch and self.pendingPrefetch.cellKey or nil,
+    pendingPrefetchCellKey = self.pendingPrefetches[1] and self.pendingPrefetches[1].cellKey or nil,
+    stagedCellKeys = stagedKeys,
     prefetchedCellKeys = prefetched,
     synchronousPhysicalFallbackLoads = self.synchronousPhysicalFallbackLoads,
     prefetchError = self.prefetchError,
@@ -1554,11 +1806,11 @@ function FieldCoverage:release()
     return
   end
   self.released = true
-  if self.pendingPrefetch then
-    local pending = self.pendingPrefetch
-    self.pendingPrefetch = nil
+  for _, pending in ipairs(self.pendingPrefetches) do
     releasePending(pending)
   end
+  self.pendingPrefetches = {}
+  self._stagedAggregate = nil
   for _, cell in pairs(self.cells) do
     if cell.release then
       cell:release()

@@ -15,8 +15,13 @@
 local CacheFs = require("libs.storage.src.CacheFs")
 local ResidentCache = require("libs.storage.src.ResidentCache")
 
+-- Per-frame transport budgets. The main-thread service is frame-driven, so its
+-- own budget bounds how much ready compiler work can land per frame; a loader
+-- presentation owns the frame and may move more of it.
 local ORDINARY_PER_UPDATE = 8
 local ABSORB_PER_UPDATE = 32
+local LOADER_ORDINARY_PER_UPDATE = 32
+local LOADER_ABSORB_PER_UPDATE = 128
 -- One installation part carries at most this many references.
 local INSTALL_PART_ENTRIES = 128
 -- Resident bytes carry the selected generation as their source identity; the
@@ -65,6 +70,7 @@ local URGENCY_ORDER = { required = 0, near = 10, sweep = 100 }
 ---@field _failure string? terminal controller failure, never restarted
 ---@field _generations table<integer, string> controller-derived generation token by epoch
 ---@field _sweepSent table<integer, boolean> epochs with queued warmup authorization
+---@field _executionPolicy table<integer, boolean> last execution policy sent per epoch
 ---@field _boot table<integer, table<string, unknown>> epoch-scoped boot-source observation
 ---@field _bootRequested table<integer, boolean> epochs with a queued boot gate
 ---@field _cache table<integer, CacheService.Installed> committed resident view by epoch
@@ -175,6 +181,7 @@ function CacheService.new(options)
     _generations = {},
     _failure = nil,
     _sweepSent = {},
+    _executionPolicy = {},
     _boot = {},
     _bootRequested = {},
     _cache = {},
@@ -587,6 +594,28 @@ function CacheService:enableSweep(epoch)
   self._controls[#self._controls + 1] = { op = "enableSweep", epoch = epoch }
 end
 
+--- Report one presentation execution policy for the live epoch. True means a
+--- loader presentation owns the screen, so the controller may use every idle
+--- compiler slot and keep a loader-sized speculative supply; false restores the
+--- ordinary interactive policy. Idempotent: only a change is transported, and
+--- the selected epoch owns it so a stale report never speeds up a replacement.
+---@param epoch integer
+---@param loading boolean
+function CacheService:setExecutionPolicy(epoch, loading)
+  if type(epoch) ~= "number" or epoch ~= self._liveEpoch or self._retiring then
+    return
+  end
+  if self._failure ~= nil then
+    return
+  end
+  local wanted = loading == true
+  if self._executionPolicy[epoch] == wanted then
+    return
+  end
+  self._executionPolicy[epoch] = wanted
+  self._controls[#self._controls + 1] = { op = "execution-policy", epoch = epoch, loading = wanted }
+end
+
 -- Retire the live epoch: observation rights end immediately while physical
 -- retirement is acknowledged asynchronously through the exact barrier. The
 -- installed resident view is revoked for new lookups here; buffers a consumer
@@ -887,6 +916,7 @@ function CacheService:_enterTerminalFailure(cause)
   self._failure = "controller thread stopped: " .. tostring(cause)
   self._controls = {}
   self._ordinary = {}
+  self._executionPolicy = {}
 end
 
 function CacheService:_checkWorkerHealth()
@@ -1359,15 +1389,21 @@ function CacheService:_absorbSelectResult(packet)
   end
 end
 
+---@return boolean the live epoch's presentation is a loader
+function CacheService:_loaderPresentation()
+  return self._executionPolicy[self._liveEpoch] == true
+end
+
 ---@return table<string, integer> emitted counts for the frame
 function CacheService:_emit()
   local sent = { ordinary = 0 }
+  local budget = self:_loaderPresentation() and LOADER_ORDINARY_PER_UPDATE or ORDINARY_PER_UPDATE
   for _, command in ipairs(self._controls) do
     self._command:push(command)
   end
   self._controls = {}
   for _, command in ipairs(self._ordinary) do
-    if sent.ordinary >= ORDINARY_PER_UPDATE then
+    if sent.ordinary >= budget then
       break
     end
     self._command:push(command)
@@ -1389,14 +1425,16 @@ function CacheService:_emit()
   return sent
 end
 
--- Pump the transport once: absorb a bounded batch of pushed terminal
--- events, then emit at most eight queued ordinary records. Never blocks,
--- never performs producer or filesystem work.
+-- Pump the transport once: absorb a bounded batch of pushed terminal events,
+-- then emit the frame's bounded ordinary batch. Both bounds widen while a
+-- loader presentation owns the frame. Never blocks, never performs producer or
+-- filesystem work.
 ---@return table<string, integer> emitted counts for the frame
 function CacheService:update()
   self:_checkWorkerHealth()
+  local budget = self:_loaderPresentation() and LOADER_ABSORB_PER_UPDATE or ABSORB_PER_UPDATE
   local absorbed = 0
-  while absorbed < ABSORB_PER_UPDATE do
+  while absorbed < budget do
     local packet = self._reply:pop()
     if packet == nil then
       break

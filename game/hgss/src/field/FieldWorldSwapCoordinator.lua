@@ -44,6 +44,56 @@ function FieldWorldSwapCoordinator:stagePhysicalCoverage(logicalMap, position, m
   return { coverage = replacement, replacement = true, previous = current, state = "prepared" }
 end
 
+-- Begin the destination window as the same staged task the entry path uses, so a
+-- covered transition can advance its cell loads, collision decodes and GPU
+-- realizations while the cover is up instead of building all of it in one frame.
+-- The source world is untouched: the stage only holds its own task.
+---@param self FieldWorldSwapCoordinator
+---@param logicalMap RuntimeFieldMap
+---@param position { fieldX: integer, fieldZ: integer }
+---@param matrixMemberId integer
+---@return FieldRuntimePhysicalSwap
+function FieldWorldSwapCoordinator:beginPhysicalCoverage(logicalMap, position, matrixMemberId)
+  local runtime = self.runtime
+  local current = runtime.physicalCoverage
+  return {
+    task = runtime.mapLoader:beginPhysicalCoverage(logicalMap, position),
+    matrixMemberId = matrixMemberId,
+    anchorX = math.floor(position.fieldX / FieldGrid.CELL_TILES),
+    anchorZ = math.floor(position.fieldZ / FieldGrid.CELL_TILES),
+    coverage = nil,
+    replacement = true,
+    previous = current,
+    state = "staging",
+  }
+end
+
+-- Take the finished staged window into the swap record, which then reads exactly
+-- like a synchronously prepared one.
+---@param self FieldWorldSwapCoordinator
+---@param swap FieldRuntimePhysicalSwap
+---@return FieldRuntimePhysicalSwap
+function FieldWorldSwapCoordinator:finishPhysicalCoverage(swap)
+  assert(swap.state == "staging", "physical swap is not staging")
+  local task = assert(swap.task, "staged physical swap carries no task")
+  swap.coverage = task:takeResult()
+  swap.task = nil
+  swap.state = "prepared"
+  return swap
+end
+
+-- Drop a staged destination that will never be committed.
+---@param self FieldWorldSwapCoordinator
+---@param swap FieldRuntimePhysicalSwap
+function FieldWorldSwapCoordinator:releasePhysicalCoverage(swap)
+  local task = swap.task
+  swap.task = nil
+  if task ~= nil then
+    task:release()
+  end
+  swap.state = "released"
+end
+
 ---@param self FieldWorldSwapCoordinator
 ---@param resolution table<string, unknown>
 ---@param facing FieldDirection
@@ -418,6 +468,14 @@ function FieldWorldSwapCoordinator:createTransition(runtime, doorAt, escalatorAt
   local function disposePrepared(resolution, prepared)
     return self:abort(resolution, prepared)
   end
+  -- The covered destination stage: started once the warp artifacts are ready and
+  -- advanced by the transition while the cover is up.
+  local function produceDestination(sourceMap, warp, dynamicWarp)
+    if type(runtime.beginDestinationStage) ~= "function" then
+      return nil
+    end
+    return runtime:beginDestinationStage(sourceMap, warp, dynamicWarp)
+  end
   local function commit(resolution, facing, prepared)
     return self:commit(resolution, facing, prepared)
   end
@@ -493,6 +551,7 @@ function FieldWorldSwapCoordinator:createTransition(runtime, doorAt, escalatorAt
     loader = runtime.mapLoader,
     prepare = prepare,
     disposePrepared = disposePrepared,
+    produceDestination = produceDestination,
     commit = commit,
     doorAt = doorAt,
     escalatorAt = escalatorAt,

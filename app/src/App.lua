@@ -127,6 +127,9 @@ end
 -- process service is reused; stale results cannot publish afterwards.
 function App._retireSelection()
   App.setState(nil)
+  -- A retired selection owns no execution policy: the replacement epoch starts
+  -- under the ordinary interactive policy until its own presentation reports.
+  App._cacheLoading = false
   App._swallowedPointers = {}
   App.pairIndex = nil
   App.splRandomState = nil
@@ -923,6 +926,7 @@ function App.load(opts)
   App.startupAudioSession = nil
   App.startupAudioError = nil
   App._assetRuntime = nil
+  App._cacheLoading = false
   App.setState(nil)
   love.graphics.setBackgroundColor(unpack(WindowConfig.BACKGROUND_COLOR))
   App.saveDir = love.filesystem.getSaveDirectory()
@@ -1322,6 +1326,64 @@ function App._bootExisting()
   App._selectVersion(ready[1])
 end
 
+-- One authoritative execution-policy fact for the selected epoch. A state
+-- owns whether it is genuinely blocking on asset preparation: the boot wait,
+-- import preparation, a product loader or a game entry loader. Ordinary
+-- gameplay frames never raise cache throughput merely because input is locked
+-- or a cinematic is covering the scene.
+---@return boolean
+local function stateIsPreparingAssets()
+  local state = App.state
+  if state == nil then
+    return false
+  end
+  local query = state.isPreparingAssets
+  if type(query) ~= "function" then
+    return false
+  end
+  local ok, loading = pcall(query, state)
+  return ok and loading == true
+end
+
+-- Physical preparation slots the selected runtime's executor may fill. A
+-- loader presentation keeps one more decode overlapping the compiler (its jobs
+-- are per-scene one-shots, so a second slot keeps the frontier moving while the
+-- compiler holds the rest of the host); ordinary gameplay keeps exactly the one
+-- slot it has always used. This is deliberately not a processor-count budget:
+-- the compiler pool already owns that, and a loader must not staff two
+-- independent host-sized pools.
+local PREPARATION_LOADER_SLOTS = 2
+
+---@param loading boolean
+---@return integer
+local function preparationWorkerSlots(loading)
+  if not loading then
+    return 1
+  end
+  return PREPARATION_LOADER_SLOTS
+end
+
+-- Transport the current presentation policy to the cache controller and size
+-- the selected runtime's preparation executor to match. The service
+-- deduplicates, so this is one comparison per frame; a stale epoch, a retired
+-- selection or a failed controller simply ignores the report.
+function App._syncCacheExecutionPolicy()
+  local loading = stateIsPreparingAssets()
+  if loading == App._cacheLoading then
+    return
+  end
+  App._cacheLoading = loading
+  local runtime = App._assetRuntime
+  if runtime ~= nil then
+    runtime.preparationQueue:setWorkerSlots(preparationWorkerSlots(loading))
+  end
+  local service, epoch = App.service, App.epoch
+  if service == nil or type(epoch) ~= "number" then
+    return
+  end
+  service:setExecutionPolicy(epoch, loading)
+end
+
 function App.update(dt)
   App._syncDrawableSize()
   if App.importer and App.importer:isBusy() then
@@ -1338,6 +1400,7 @@ function App.update(dt)
   if App.state and App.state.update then
     App.state:update(dt)
   end
+  App._syncCacheExecutionPolicy()
   App._startPendingImport()
   local audio = App.startupAudioSession
   if audio ~= nil then

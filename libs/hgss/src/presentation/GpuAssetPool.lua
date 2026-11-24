@@ -188,6 +188,7 @@ function GpuAssetPool.new(cacheFs, opts)
     _imageLeases = {},
     _pooledByKey = {},
     _imageTokens = {},
+    _geometryPrefetch = {},
     _queue = queue,
     _decoded = decoded,
   }, GpuAssetPool)
@@ -250,13 +251,7 @@ function GpuAssetPool:meshFor(reference)
   -- whole bank, and the pool realizes the one payload it needs, then returns
   -- the decoded lease at once so no scene retains decoded bytes after upload.
   local queue = assert(self._queue, "geometry acquisition requires the selected preparation queue")
-  local kind = "mesh"
-  local source = reference
-  if type(reference) == "table" then
-    kind = "g4gx"
-    source = ModelAsset.geometryFile(reference)
-  end
-  local lease = queue:wait(queue:request(kind, source, "demand"))
+  local lease = queue:wait(self:_geometryToken(reference, "demand"))
   local ok, realized = pcall(function()
     return self:meshFromPrepared(reference, preparedPayload(lease, reference))
   end)
@@ -297,13 +292,70 @@ function GpuAssetPool:preparedMesh(reference, await)
   if entry ~= nil then
     return entry
   end
+  local kind = "mesh"
+  local source = reference
   if type(reference) == "table" then
-    local lease = await("g4gx", ModelAsset.geometryFile(reference))
-    return self:meshFromPrepared(reference, preparedPayload(lease, reference))
+    kind = "g4gx"
+    source = ModelAsset.geometryFile(reference)
   end
-  ---@cast reference string
-  local lease = await("mesh", reference)
+  ---@cast source string
+  local lease = await(kind, source, self:_takeGeometryPrefetch(key))
   return self:meshFromPrepared(reference, preparedPayload(lease, reference))
+end
+
+-- The queue request identity of one geometry source, whatever its kind.
+---@param reference string|ModelAsset.GeometryReference
+---@param priority "demand"|"prefetch"
+---@return integer
+function GpuAssetPool:_geometryToken(reference, priority)
+  local queue = assert(self._queue, "geometry acquisition requires the selected preparation queue")
+  local enrolled = self:_takeGeometryPrefetch(assetKey(reference))
+  if enrolled ~= nil then
+    return enrolled
+  end
+  local kind = "mesh"
+  local source = reference
+  if type(reference) == "table" then
+    kind = "g4gx"
+    source = ModelAsset.geometryFile(reference)
+  end
+  return queue:request(kind, source --[[@as string]], priority)
+end
+
+-- Enroll one geometry source for worker-side preparation without realizing it.
+-- The staged build's later acquisition coalesces onto this exact token, so
+-- pre-enrollment never duplicates a decode: a scene can hand the executor all
+-- of its distinct sources at once and realize them as it walks its draws.
+---@param reference string|ModelAsset.GeometryReference
+function GpuAssetPool:prefetchGeometry(reference)
+  local queue = self._queue
+  if queue == nil then
+    return
+  end
+  local key = assetKey(reference)
+  if self._meshCache[key] ~= nil or self._geometryPrefetch[key] ~= nil then
+    return
+  end
+  local kind = "mesh"
+  local source = reference
+  if type(reference) == "table" then
+    kind = "g4gx"
+    source = ModelAsset.geometryFile(reference)
+  end
+  self._geometryPrefetch[key] = queue:request(kind, source --[[@as string]], "prefetch")
+end
+
+-- Take the enrolled token for one geometry source, if any, so its own
+-- acquisition consumes it instead of enrolling a second decode.
+---@param key string
+---@return integer?
+function GpuAssetPool:_takeGeometryPrefetch(key)
+  local token = self._geometryPrefetch[key]
+  if token == nil then
+    return nil
+  end
+  self._geometryPrefetch[key] = nil
+  return token
 end
 
 -- The immutable sampler state a shared-owner texture request carries. The
@@ -584,6 +636,15 @@ function GpuAssetPool:release()
     assert(#self._imageLeases == 0, "GpuAssetPool requires a session image owner for textures")
   end
   self._imageLeases, self._pooledByKey, self._imageTokens = {}, {}, {}
+  -- Enrolled geometry the scene never realized cancels here: the queue keeps
+  -- no interest in a source this pool will never upload.
+  local queue = self._queue
+  if queue ~= nil then
+    for _, token in pairs(self._geometryPrefetch) do
+      queue:cancel(token)
+    end
+  end
+  self._geometryPrefetch = {}
   self.meshes = {}
   self._meshCache = {}
   self.triangles = 0

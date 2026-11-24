@@ -3074,4 +3074,188 @@ function T.a_retired_continuation_holds_its_slot_while_a_pending_cut_keeps_its_b
   end)
 end
 
+-- Loader-side capacity: an ordinary interactive session keeps two physical
+-- compilers and admits a single background slot, while a loader presentation
+-- activates every usable processor and fills all of them with required, near
+-- and sweep work at once. Urgency precedence still orders the lanes.
+function T.loader_presentation_fills_every_free_worker_across_urgency_lanes()
+  local CompilerPool = requirePool()
+  local host = newThreadHost(5)
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "interactive", developmentRepositoryRoot = "/checkout" })
+  end))
+  local generation = "loader-capacity-generation"
+  local function job(key, priority, sizeClass)
+    return {
+      generationId = generation,
+      epoch = 1,
+      versionId = "heartgold",
+      kind = "map",
+      key = key,
+      jobKey = "map:" .. key,
+      priority = priority,
+      sizeClass = sizeClass or "normal",
+      dependencies = {},
+      payload = { mapId = tonumber(key) },
+    }
+  end
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
+    Assert.equal(#host.threads, 2, "an ordinary interactive session starts two compilers")
+    pool:request(job("40001", 0))
+    pool:request(job("40002", 10))
+    pool:request(job("40003", 100))
+    pool:update()
+    Assert.equal(#host.dispatched, 1, "an ordinary session runs the required job alone")
+    Assert.equal(pool:status("map:40002"), "queued", "near work waits behind the occupied background slot")
+    Assert.equal(pool:status("map:40003"), "queued", "sweep work waits behind the occupied background slot")
+
+    pool:setLoading(true)
+    Assert.equal(#host.threads, 4, "a loader presentation activates the host's usable processors")
+    pool:update()
+    Assert.equal(#host.dispatched, 3, "the loader fills every free slot across the urgency lanes")
+    Assert.equal(pool:status("map:40002"), "running", "near work takes a loader-side slot")
+    Assert.equal(pool:status("map:40003"), "running", "sweep work takes a loader-side slot")
+
+    pool:setLoading(false)
+    pool:request(job("40004", 10))
+    pool:update()
+    Assert.equal(
+      pool:status("map:40004"),
+      "queued",
+      "leaving the loader restores ordinary interactive admission without starting more threads"
+    )
+    Assert.equal(#host.threads, 4, "leaving the loader keeps the started threads instead of churning them")
+  end)
+  pool:shutdown()
+end
+
+-- Same-urgency sweep candidates enter and dispatch in size-class order, oldest
+-- first inside each class, while required work is never displaced by a cheap
+-- sweep job.
+function T.same_urgency_sweep_dispatches_in_size_class_order()
+  local CompilerPool = requirePool()
+  local host = newThreadHost(5)
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "interactive", developmentRepositoryRoot = "/checkout" })
+  end))
+  local generation = "sweep-size-order-generation"
+  local function job(key, priority, sizeClass)
+    return {
+      generationId = generation,
+      epoch = 1,
+      versionId = "heartgold",
+      kind = "map",
+      key = key,
+      jobKey = "map:" .. key,
+      priority = priority,
+      sizeClass = sizeClass,
+      dependencies = {},
+      payload = { mapId = tonumber(key) },
+    }
+  end
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
+    pool:setLoading(true)
+    pool:request(job("41001", 100, "jumbo"))
+    pool:request(job("41002", 100, "heavy"))
+    pool:request(job("41003", 100, "normal"))
+    pool:request(job("41004", 100, "normal"))
+    pool:request(job("41005", 0, "jumbo"))
+    pool:update()
+  end)
+  Assert.deepEqual(
+    { host.dispatched[1], host.dispatched[2], host.dispatched[3], host.dispatched[4] },
+    { "map:41005", "map:41003", "map:41004", "map:41002" },
+    "required work leads, then the sweep's cheapest classes with FIFO inside each class"
+  )
+  Assert.equal(pool:status("map:41001"), "queued", "the jumbo sweep job takes the last remaining slot")
+  pool:shutdown()
+end
+
+-- A prepared result pins its own worker and is never counted a second time
+-- against admission: with two prepared results pinned and one loader-side slot
+-- still free, runnable work keeps dispatching.
+function T.prepared_results_never_double_count_against_idle_slots()
+  local CompilerPool = requirePool()
+  local host = newThreadHost(4)
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "interactive", developmentRepositoryRoot = "/checkout" })
+  end))
+  local generation = "prepared-accounting-generation"
+  local function job(key)
+    return {
+      generationId = generation,
+      epoch = 1,
+      versionId = "heartgold",
+      kind = "map",
+      key = key,
+      jobKey = "map:" .. key,
+      priority = 100,
+      sizeClass = "normal",
+      dependencies = {},
+      payload = { mapId = tonumber(key) },
+    }
+  end
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
+    pool:setLoading(true)
+    Assert.equal(#host.threads, 3, "the loader presentation activates three slots")
+    pool:request(job("43001"))
+    pool:request(job("43002"))
+    pool:request(job("43003"))
+    pool:update(0)
+    Assert.equal(pool:status("map:43001"), "running", "the first slot starts work")
+    Assert.equal(pool:status("map:43002"), "running", "the second slot starts work")
+    Assert.equal(pool:status("map:43003"), "running", "the third slot starts work")
+    -- Two workers report prepared results that keep pinning their own slots;
+    -- publication is deliberately held back so the pinned state persists.
+    for _, workerId in ipairs({ 1, 2 }) do
+      local message = host.channels[workerId + 1]:pop()
+      assert(type(message) == "table", "the worker received its job")
+      host.channels[1]:push({
+        workerId = workerId,
+        epoch = 1,
+        generationId = generation,
+        kind = message.kind,
+        key = message.key,
+        jobKey = message.jobKey,
+        dispatchId = assert(message.dispatchId, "dispatched work carries its stage identity"),
+        status = "prepared",
+        compileSeconds = 1,
+        stageSeconds = 1,
+        workSeconds = 1,
+        stagedBytes = 8,
+      })
+    end
+    pool:update(0)
+    Assert.equal(pool:status("map:43001"), "prepared", "the first prepared result stays pinned")
+    Assert.equal(pool:status("map:43002"), "prepared", "the second prepared result stays pinned")
+    -- The third worker's result is consumed so its slot is genuinely free.
+    local third = host.channels[4]:pop()
+    assert(type(third) == "table", "the third worker received its job")
+    host.channels[1]:push({
+      workerId = 3,
+      epoch = 1,
+      generationId = generation,
+      kind = third.kind,
+      key = third.key,
+      jobKey = third.jobKey,
+      dispatchId = assert(third.dispatchId, "dispatched work carries its stage identity"),
+      status = "failed",
+    })
+    pool:update(0)
+    Assert.equal(pool:status("map:43003"), "failed", "the settled job frees its slot")
+    pool:request(job("43004"))
+    pool:update(0)
+    Assert.equal(
+      pool:status("map:43004"),
+      "running",
+      "two prepared results beside one free slot still admit runnable work"
+    )
+  end)
+  pool:shutdown()
+end
+
+
 return { tests = T }

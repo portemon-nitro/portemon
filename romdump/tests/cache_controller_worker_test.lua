@@ -2655,4 +2655,29 @@ function T.stopped_snapshot_writer_is_replaced_after_its_retry_deadline()
   closeSnapshotRig(rig)
 end
 
+-- The loader execution policy reaches the two owners that govern admission and
+-- sweep supply, and a stale epoch can never raise throughput for a replacement
+-- selection.
+function T.execution_policy_reaches_the_pool_and_session_of_its_epoch()
+  local worker, session, pool, _, _ = driveSetup({
+    runnable = false,
+    queued = { { op = "execution-policy", epoch = 1, loading = true } },
+  })
+  worker.liveEpoch = 1
+  local policies = {}
+  function session:setLoading(loading)
+    policies[#policies + 1] = loading
+  end
+  function pool:setLoading(loading)
+    self.loading = loading
+  end
+  worker:step()
+  Assert.equal(pool.loading, true, "the loader policy reaches the compiler pool")
+  Assert.deepEqual(policies, { true }, "the loader policy reaches the generation session")
+
+  worker:_handle({ op = "execution-policy", epoch = 2, loading = false })
+  Assert.equal(pool.loading, true, "a stale epoch never changes the live execution policy")
+  Assert.deepEqual(policies, { true }, "a stale epoch never reaches the live session")
+end
+
 return { metadata = { capabilities = {} }, tests = T }

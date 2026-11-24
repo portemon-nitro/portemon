@@ -132,6 +132,21 @@ local function worldRecord(world, idOrSymbol)
   return assert(record)
 end
 
+-- One building model's door metadata: the sound type its door emits and the
+-- open/close clip roles the placement resolves through. Immutable generated data,
+-- derived from the model descriptor.
+---@alias FieldMapLoader.DoorRoles { open: { frameCount: integer }?, close: { frameCount: integer }? }
+---@alias FieldMapLoader.DoorMetadata { doorSoundType: integer?, roles: FieldMapLoader.DoorRoles }
+
+-- How many validated semantic field records one loader retains. The resident
+-- window is a handful of maps plus the transition destination, so this covers
+-- the live set while bounding the retained generated data.
+local SEMANTIC_MEMO_LIMIT = 8
+-- How many building models keep their door metadata: model descriptors are
+-- shared by every cell of the field, so this covers a full map's building set
+-- and its immediate neighbors.
+local DOOR_META_MEMO_LIMIT = 48
+
 ---@param cacheFs CacheFs
 ---@param path string
 ---@param code string
@@ -218,17 +233,13 @@ local function checkWorldIdentity(record)
   end
 end
 
--- Shared generated field-record acquisition and validation for both
--- semantic and full paths: identity, event collections, field-use policy,
--- init scripts, transition environment, and the normalized render
--- environment. Visual realization never revalidates these.
----@param cacheFs CacheFs
+-- The validation half of the shared semantic acquisition, split from the load so
+-- an already parsed record only ever re-runs the checks a caller still owes.
+---@param fieldData table<string, unknown>
 ---@param record table<string, unknown>
 ---@param validateEvents boolean? whether to validate all event records synchronously; defaults to true
 ---@return table<string, unknown>
-local function loadSemanticFieldData(cacheFs, record, validateEvents)
-  local fieldData =
-    loadRequired(cacheFs, FieldMapDataCache.fieldPath(record.id), FieldErrors.FIELD_MAP_DATA_CACHE_MISSING)
+local function validateSemanticFieldData(fieldData, record, validateEvents)
   if fieldData.schema ~= FieldMapDataCache.FIELD_SCHEMA or fieldData.mapId ~= record.id then
     Errors.raise(
       FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
@@ -272,6 +283,18 @@ local function loadSemanticFieldData(cacheFs, record, validateEvents)
     )
   end
   return fieldData
+end
+
+-- The generated field record acquisition, split from its validation so an
+-- already parsed record only ever re-runs the checks a caller still owes.
+---@param cacheFs CacheFs
+---@param record table<string, unknown>
+---@param validateEvents boolean? whether to validate all event records synchronously; defaults to true
+---@return table<string, unknown>
+local function loadSemanticFieldData(cacheFs, record, validateEvents)
+  local fieldData =
+    loadRequired(cacheFs, FieldMapDataCache.fieldPath(record.id), FieldErrors.FIELD_MAP_DATA_CACHE_MISSING)
+  return validateSemanticFieldData(fieldData, record, validateEvents)
 end
 
 -- One runtime-owned render environment per runtime map: the outer table is
@@ -445,9 +468,19 @@ end
 ---@param collision table<string, unknown>
 ---@param originX integer
 ---@param originZ integer
----@param checkpoint fun()? cooperative yield invoked per building instance when staging
+---@param checkpoint fun()? cooperative yield per building instance when staging
+---@param doorMetaFor fun(modelKey: string): FieldMapLoader.DoorMetadata|false|nil memoized door metadata owner, nil when it cannot name the source
 ---@return MapProps
-local function buildMapProps(cacheFs, buildingInstances, fieldData, collision, originX, originZ, checkpoint)
+local function buildMapProps(
+  cacheFs,
+  buildingInstances,
+  fieldData,
+  collision,
+  originX,
+  originZ,
+  checkpoint,
+  doorMetaFor
+)
   local doorTiles = warpBearingDoorTiles(DoorTiles.fromGrid(collision), fieldData.events.warps, originX, originZ)
   if checkpoint then
     checkpoint()
@@ -457,8 +490,20 @@ local function buildMapProps(cacheFs, buildingInstances, fieldData, collision, o
   for _, inst in ipairs(buildingInstances) do
     local meta = doorMetaByModelKey[inst.modelKey]
     if meta == nil then
-      local desc = assert(cacheFs:loadLua(MapAssetCache.modelPath(inst.modelKey)), "missing model " .. inst.modelKey)
-      meta = ModelDoorMetadata.forDescriptor(desc) or false
+      -- The placement's raw model descriptor is read once per model across the
+      -- whole field (not once per cell), through the loader's source-identity
+      -- memo when it can name the installed bytes. A memoized "this model has
+      -- no door metadata" is a false record, not a miss.
+      local memoized = nil
+      if doorMetaFor ~= nil then
+        memoized = doorMetaFor(inst.modelKey)
+      end
+      if memoized ~= nil then
+        meta = memoized
+      else
+        local desc = assert(cacheFs:loadLua(MapAssetCache.modelPath(inst.modelKey)), "missing model " .. inst.modelKey)
+        meta = ModelDoorMetadata.forDescriptor(desc) or false
+      end
       doorMetaByModelKey[inst.modelKey] = meta
     end
     placements[#placements + 1] = {
@@ -518,6 +563,13 @@ function FieldMapLoader.new(cacheFs, world, options)
     imageAssets = options.imageAssets,
     derivedAssets = options.derivedAssets,
     fieldCellIndex = nil,
+    -- Immutable generated data retained by source identity: validated semantic
+    -- field records, and each building model's door metadata. Only generated
+    -- facts live here; live LogicalFieldMap/runtime state is never shared.
+    semanticMemo = {},
+    semanticMemoOrder = {},
+    doorMetaMemo = {},
+    doorMetaMemoOrder = {},
     entries = {},
     protectedMaps = {},
     clock = 0,
@@ -555,10 +607,132 @@ end
 ---@return table<string, unknown>
 function FieldMapLoader:_acquireSemantic(record, validateEvents)
   checkWorldIdentity(record)
+  local wantsEvents = validateEvents ~= false
+  -- A memo hit means the exact installed bytes this loader already validated
+  -- are still the ones being read, so neither the emergency readiness round
+  -- trip nor the generated chunk's parse/validation repeats.
+  local memoized = self:_memoizedSemantic(record, wantsEvents)
+  if memoized ~= nil then
+    return memoized
+  end
   if self.derivedAssets then
     self.derivedAssets.ensureLogicalField(record.id)
   end
-  return loadSemanticFieldData(self.cacheFs, record, validateEvents ~= false)
+  local fieldData = loadSemanticFieldData(self.cacheFs, record, wantsEvents)
+  self:_rememberSemantic(record, fieldData, wantsEvents)
+  return fieldData
+end
+
+-- The selected source identity of one generated member: the installed bytes the
+-- loader would read, never the logical path alone, so a mod replacement of the
+-- same member is a different identity. Nil when the reader cannot name them, in
+-- which case nothing is memoized.
+---@param path string
+---@return string?
+function FieldMapLoader:_assetSourceIdentity(path)
+  local resolve = self.cacheFs.resolveAsset
+  if type(resolve) ~= "function" then
+    return nil
+  end
+  local reference = self.cacheFs:resolveAsset(path)
+  if reference == nil or type(reference.contentId) ~= "string" then
+    return nil
+  end
+  return tostring(reference.sourceId) .. "\0" .. reference.contentId
+end
+
+---@param identity string
+---@param memo table<string, unknown>
+---@param order string[]
+---@param limit integer
+local function touchMemo(identity, memo, order, limit)
+  for index, existing in ipairs(order) do
+    if existing == identity then
+      table.remove(order, index)
+      break
+    end
+  end
+  order[#order + 1] = identity
+  while #order > limit do
+    memo[table.remove(order, 1)] = nil
+  end
+end
+
+-- Validated semantic field data for one map when it is already retained for the
+-- installed bytes. An unvalidated retained record owes only its event check,
+-- which is a read-only walk, never a re-parse.
+---@param record table<string, unknown>
+---@param wantsEvents boolean
+---@return table<string, unknown>?
+function FieldMapLoader:_memoizedSemantic(record, wantsEvents)
+  local identity = self:_assetSourceIdentity(FieldMapDataCache.fieldPath(record.id))
+  if identity == nil then
+    return nil
+  end
+  local entry = self.semanticMemo[identity]
+  if entry == nil then
+    return nil
+  end
+  if wantsEvents and not entry.eventsValidated then
+    entry.eventsValidated = true
+    validateSemanticFieldData(entry.fieldData, record, true)
+  end
+  touchMemo(identity, self.semanticMemo, self.semanticMemoOrder, SEMANTIC_MEMO_LIMIT)
+  return entry.fieldData
+end
+
+-- Validated semantic field data for one map header whose generated record is
+-- already installed, without taking any readiness edge: the memo, or one parse
+-- plus its structural validation. A physical cell's resolver uses this so
+-- staging a window never blocks on the transport and never re-parses a record
+-- another cell (or the map's own logical load) already validated.
+---@param record table<string, unknown>
+---@return table<string, unknown>
+function FieldMapLoader:_installedSemantic(record)
+  checkWorldIdentity(record)
+  local memoized = self:_memoizedSemantic(record, false)
+  if memoized ~= nil then
+    return memoized
+  end
+  local fieldData = loadSemanticFieldData(self.cacheFs, record, false)
+  self:_rememberSemantic(record, fieldData, false)
+  return fieldData
+end
+
+---@param record table<string, unknown>
+---@param fieldData table<string, unknown>
+---@param eventsValidated boolean
+function FieldMapLoader:_rememberSemantic(record, fieldData, eventsValidated)
+  local identity = self:_assetSourceIdentity(FieldMapDataCache.fieldPath(record.id))
+  if identity == nil then
+    return
+  end
+  self.semanticMemo[identity] = { fieldData = fieldData, eventsValidated = eventsValidated }
+  touchMemo(identity, self.semanticMemo, self.semanticMemoOrder, SEMANTIC_MEMO_LIMIT)
+end
+
+-- Door metadata of one building model, memoized by the installed descriptor's
+-- source identity. Nil when the reader cannot name the source, which keeps the
+-- caller on the direct read instead of memoizing something it cannot attribute.
+---@param modelKey string
+---@return FieldMapLoader.DoorMetadata|false|nil
+function FieldMapLoader:_doorMetaFor(modelKey)
+  local path = MapAssetCache.modelPath(modelKey)
+  local identity = self:_assetSourceIdentity(path)
+  if identity == nil then
+    return nil
+  end
+  local memoized = self.doorMetaMemo[identity]
+  if memoized ~= nil then
+    touchMemo(identity, self.doorMetaMemo, self.doorMetaMemoOrder, DOOR_META_MEMO_LIMIT)
+    return memoized
+  end
+  local desc = self.cacheFs:loadLua(path)
+  assert(desc, "missing model " .. modelKey)
+  local meta = ModelDoorMetadata.forDescriptor(desc) or false
+  self.doorMetaMemo[identity] = meta
+  touchMemo(identity, self.doorMetaMemo, self.doorMetaMemoOrder, DOOR_META_MEMO_LIMIT)
+  return meta
 end
 
 ---@param record table<string, unknown>
@@ -883,7 +1057,10 @@ local function prepareLoad(loader, record, checkpoint)
       centralCollision,
       scene.matrix.worldOriginX,
       scene.matrix.worldOriginZ,
-      checkpoint
+      checkpoint,
+      function(modelKey)
+        return loader:_doorMetaFor(modelKey)
+      end
     )
   end
   return {
@@ -1996,9 +2173,20 @@ local function physicalCoverageOptions(loader, runtimeMap, position)
       return nil
     end
     local cellRecord = worldRecord(mapLoader.world, cell.mapHeaderId)
-    local fieldData = loadSemanticFieldData(mapLoader.cacheFs, cellRecord)
+    local fieldData = mapLoader:_installedSemantic(cellRecord)
     local origin = assert(runtime.origin, "physical cell origin is missing")
-    return buildMapProps(mapLoader.cacheFs, cell.buildingInstances, fieldData, runtime.collision, origin.x, origin.z)
+    return buildMapProps(
+      mapLoader.cacheFs,
+      cell.buildingInstances,
+      fieldData,
+      runtime.collision,
+      origin.x,
+      origin.z,
+      nil,
+      function(modelKey)
+        return mapLoader:_doorMetaFor(modelKey)
+      end
+    )
   end
   local function cellOptions(runtime)
     local options = {}
@@ -2189,6 +2377,8 @@ function FieldMapLoader:release()
     releaseAggregate(entry.runtimeMap)
   end
   self.entries, self.protectedMaps = {}, {}
+  self.semanticMemo, self.semanticMemoOrder = {}, {}
+  self.doorMetaMemo, self.doorMetaMemoOrder = {}, {}
 end
 
 return FieldMapLoader

@@ -57,6 +57,15 @@
 ---@field owner integer? token whose physical dispatch performs the read
 ---@field members table<integer, boolean> every logical token needing these bytes
 
+-- One physical preparation worker: its own request channel plus the token it
+-- is currently running. Every worker reports on the one shared reply channel,
+-- so a late reply is matched to its physical token, never to a queue-global
+-- busy marker.
+---@class AssetPreparationQueueWorker
+---@field thread table<string, unknown>
+---@field request table<string, unknown>
+---@field busyToken integer?
+
 ---@class AssetPreparationQueue
 ---@field private _cacheFs table<string, unknown>
 ---@field private _decoded ResidentAssetCache
@@ -64,13 +73,13 @@
 ---@field private _workerSource unknown?
 ---@field private _request table<string, unknown>?
 ---@field private _reply table<string, unknown>?
----@field private _worker table<string, unknown>?
+---@field private _workers AssetPreparationQueueWorker[]
+---@field private _workerSlots integer executor slots this queue may fill
 ---@field private _tokens table<integer, AssetPreparationQueueRecord>
 ---@field private _demand integer[]
 ---@field private _prefetch integer[]
 ---@field private _inflight table<string, integer> identical queued-or-running job key to owning primary token
 ---@field private _forwarded table<integer, integer> dispatched token to promoted owner after a running primary is cancelled
----@field private _workerBusyToken integer?
 ---@field private _workerFailure string?
 ---@field private _sourceInterests table<string, AssetPreparationQueueSourceInterest>
 ---@field private _decodeLeases table<integer, ResidentAssetCacheLease> source lease owned by one dispatched decode
@@ -374,15 +383,14 @@ function AssetPreparationQueue.new(cacheFs, options)
     _decoded = decoded,
     _threadHost = options.thread,
     _workerSource = options.workerSource,
-    _request = nil,
     _reply = nil,
-    _worker = nil,
+    _workers = {},
+    _workerSlots = 1,
     _tokens = {},
     _demand = {},
     _prefetch = {},
     _inflight = {},
     _forwarded = {},
-    _workerBusyToken = nil,
     _workerFailure = nil,
     _sourceInterests = {},
     _decodeLeases = {},
@@ -396,31 +404,92 @@ function AssetPreparationQueue.new(cacheFs, options)
   }, AssetPreparationQueue)
 end
 
--- Create the worker's channels and thread on the first actual asynchronous
--- dispatch. Compact base acquisition and an unused queue therefore never start
--- a thread.
-function AssetPreparationQueue:_ensureWorker()
-  local requestChannel = self._request
-  if requestChannel ~= nil then
-    return requestChannel
-  end
+-- Create one physical worker (its own request channel, the shared reply
+-- channel) and start it. Construction of the queue starts nothing: the first
+-- actual asynchronous dispatch creates the first worker, and further slots are
+-- created only when the executor's slot budget is raised.
+---@return AssetPreparationQueueWorker
+function AssetPreparationQueue:_startWorker()
   local threadHost = self._threadHost
   if threadHost == nil then
     threadHost = love and love.thread
   end
   assert(threadHost and threadHost.newChannel and threadHost.newThread, "asset preparation requires love.thread")
-  local createdChannel = threadHost.newChannel()
-  local replyChannel = threadHost.newChannel()
   local workerSource = self._workerSource
   if workerSource == nil then
     workerSource = BOOTSTRAP
   end
-  local worker = threadHost.newThread(workerSource)
-  self._request = createdChannel
-  self._reply = replyChannel
-  self._worker = worker
-  worker:start(createdChannel, replyChannel, package.path)
-  return createdChannel
+  -- Request channel first: the reply channel is shared by every slot and is
+  -- created once, on the first worker.
+  local requestChannel = threadHost.newChannel()
+  if self._reply == nil then
+    self._reply = threadHost.newChannel()
+  end
+  local replyChannel = assert(self._reply, "asset preparation requires its shared reply channel")
+  local thread = threadHost.newThread(workerSource)
+  thread:start(requestChannel, replyChannel, package.path)
+  local worker = { thread = thread, request = requestChannel, busyToken = nil }
+  self._workers[#self._workers + 1] = worker
+  return worker
+end
+
+-- Bound how many physical workers this executor may fill. A running job is
+-- never preempted: lowering the bound only stops new dispatch onto the extra
+-- slots, which stay idle (and joined) until the queue is released.
+---@param slots integer
+function AssetPreparationQueue:setWorkerSlots(slots)
+  assert(
+    type(slots) == "number" and slots % 1 == 0 and slots >= 1,
+    "preparation worker slots must be a positive integer"
+  )
+  self._workerSlots = slots
+  if not self._released then
+    self:_dispatch()
+  end
+end
+
+---@return integer physical workers this executor currently owns
+function AssetPreparationQueue:workerSlotCount()
+  return #self._workers
+end
+
+---@return integer slots this executor may fill
+function AssetPreparationQueue:workerSlotBudget()
+  return self._workerSlots
+end
+
+-- Whether the executor may start one more job: an existing idle slot within the
+-- budget, or room to grow the worker set. Asking only when queued work exists
+-- keeps a raised budget from starting a thread for nothing.
+---@return boolean
+function AssetPreparationQueue:_hasFreeSlot()
+  for index, worker in ipairs(self._workers) do
+    if index > self._workerSlots then
+      break
+    end
+    if worker.busyToken == nil then
+      return true
+    end
+  end
+  return #self._workers < self._workerSlots
+end
+
+-- One free slot within the current budget: an existing idle worker, or a newly
+-- started one while the budget still allows growth.
+---@return AssetPreparationQueueWorker?
+function AssetPreparationQueue:_freeSlot()
+  for index, worker in ipairs(self._workers) do
+    if index > self._workerSlots then
+      break
+    end
+    if worker.busyToken == nil then
+      return worker
+    end
+  end
+  if #self._workers >= self._workerSlots then
+    return nil
+  end
+  return self:_startWorker()
 end
 
 -- Drop an already-cancelled head entry; cancellation removes queued tokens
@@ -437,27 +506,38 @@ function AssetPreparationQueue:_shiftLive(pending)
   return nil
 end
 
--- Dispatch one job while the worker is physically idle, choosing queued
--- demand work before queued prefetch work. While ready-but-unclaimed
--- payloads reach the transient ceiling, prefetch dispatch pauses and demand
--- still flows. Physical idleness is authoritative:
--- a token cancelled after dispatch keeps occupying the worker until its late
--- reply (or the worker's death) frees the slot.
+-- Dispatch work into every free physical slot, choosing queued demand work
+-- before queued prefetch work. While ready-but-unclaimed payloads reach the
+-- transient ceiling, prefetch dispatch pauses and demand still flows. A
+-- running job is never preempted: a token cancelled after dispatch keeps
+-- occupying its slot until its late reply (or the worker's death) frees it.
+-- With one slot this is exactly the historical single-worker loop; the loader
+-- policy raises the bound so independent scene sources overlap.
 function AssetPreparationQueue:_dispatch()
-  if self._released or self._workerFailure ~= nil or self._workerBusyToken ~= nil then
+  if self._released or self._workerFailure ~= nil then
     return
   end
-  local token = self:_shiftLive(self._demand)
-  if token == nil and self._readyPayloadBytes < self._readyPayloadLimit then
-    token = self:_shiftLive(self._prefetch)
+  while self:_hasFreeSlot() do
+    local token = self:_shiftLive(self._demand)
+    if token == nil and self._readyPayloadBytes < self._readyPayloadLimit then
+      token = self:_shiftLive(self._prefetch)
+    end
+    if token == nil then
+      return
+    end
+    self:_start(assert(token))
   end
-  if token == nil then
-    return
-  end
+end
+
+-- Hand one queued token to a free slot. The slot's busy token is the physical
+-- identity its reply clears, whoever the logical owner becomes.
+---@param token integer
+function AssetPreparationQueue:_start(token)
   local record = assert(self._tokens[token], "dispatched an unknown preparation token")
+  local slot = assert(self:_freeSlot(), "preparation dispatch found no free slot")
   record.state = "running"
   record.physicalToken = token
-  self._workerBusyToken = token
+  slot.busyToken = token
   local job = { op = "prepare", token = token, path = record.path }
   if record.stage == "source" then
     local reference = assert(record.reference, "a source preparation job needs its selected reference")
@@ -477,7 +557,7 @@ function AssetPreparationQueue:_dispatch()
       record.inputLease = nil
     end
   end
-  self:_ensureWorker():push(job)
+  slot.request:push(job)
 end
 
 -- Retunes the transient ready-payload ceiling. Already-held payloads stay
@@ -585,38 +665,43 @@ function AssetPreparationQueue:_enterTerminalFailure(cause)
   self._inflight = {}
   self._forwarded = {}
   self._sourceInterests = {}
-  self._workerBusyToken = nil
+  for _, worker in ipairs(self._workers) do
+    worker.busyToken = nil
+  end
 end
 
 -- Detect an unexpected worker exit after draining replies. A queue that never
--- dispatched work owns no worker and stays healthy; a production LÖVE Thread
--- reporting a stopped worker terminalizes the queue.
+-- dispatched work owns no worker and stays healthy. Any stopped worker
+-- terminalizes the queue: the executor never restarts a worker and a partially
+-- staffed one would silently honor the slot budget, so every unsettled token
+-- fails with the terminal cause instead of waiting on a pool that lost capacity.
 function AssetPreparationQueue:_checkWorkerHealth()
   if self._released or self._workerFailure ~= nil then
     return
   end
-  local worker = self._worker
-  if worker == nil or type(worker.isRunning) ~= "function" then
-    return
+  for _, worker in ipairs(self._workers) do
+    local thread = worker.thread
+    if type(thread.isRunning) == "function" then
+      local ok, running = pcall(function()
+        return thread:isRunning()
+      end)
+      if not ok then
+        self:_enterTerminalFailure(running)
+        return
+      end
+      if not running then
+        local cause = nil
+        if type(thread.getError) == "function" then
+          local _, workerError = pcall(function()
+            return thread:getError()
+          end)
+          cause = workerError
+        end
+        self:_enterTerminalFailure(cause)
+        return
+      end
+    end
   end
-  local ok, running = pcall(function()
-    return worker:isRunning()
-  end)
-  if ok and running then
-    return
-  end
-  if not ok then
-    self:_enterTerminalFailure(running)
-    return
-  end
-  local cause = nil
-  if type(worker.getError) == "function" then
-    local _, workerError = pcall(function()
-      return worker:getError()
-    end)
-    cause = workerError
-  end
-  self:_enterTerminalFailure(cause)
 end
 
 -- Insert a record into the pending list its priority names.
@@ -821,8 +906,11 @@ function AssetPreparationQueue:_absorb(response)
   if type(response) ~= "table" then
     return
   end
-  if self._workerBusyToken == response.token then
-    self._workerBusyToken = nil
+  for _, worker in ipairs(self._workers) do
+    if worker.busyToken == response.token then
+      worker.busyToken = nil
+      break
+    end
   end
   local token = self._forwarded[response.token]
   if token ~= nil then
@@ -1499,21 +1587,21 @@ function AssetPreparationQueue:release()
   self._inflight = {}
   self._forwarded = {}
   self._sourceInterests = {}
-  self._workerBusyToken = nil
+  for _, worker in ipairs(self._workers) do
+    worker.busyToken = nil
+  end
   self._readyPayloadBytes = 0
   self._readyWeights = {}
   self._readyTokens = {}
-  local requestChannel = self._request
-  if requestChannel ~= nil then
+  for _, worker in ipairs(self._workers) do
     pcall(function()
-      requestChannel:push({ op = "shutdown" })
+      worker.request:push({ op = "shutdown" })
     end)
   end
   if not self._joined then
     self._joined = true
-    local worker = self._worker
-    if worker ~= nil then
-      worker:wait()
+    for _, worker in ipairs(self._workers) do
+      worker.thread:wait()
     end
   end
   local replyChannel = self._reply

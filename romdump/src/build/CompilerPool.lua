@@ -129,6 +129,11 @@ local SIZE_CLASSES = {
 
 local PRIORITIES = { 0, 10, 100 }
 local SIZE_ORDER = { "normal", "heavy", "jumbo" }
+-- Urgency lanes: explicit required demand, spatial/temporal prediction, and the
+-- opportunistic complete-corpus sweep. Only the sweep orders equal-urgency
+-- work by size class.
+local REQUIRED_PRIORITY = 0
+local SWEEP_PRIORITY = 100
 
 ---@param a CompilerPool.Node
 ---@param b CompilerPool.Node
@@ -288,13 +293,18 @@ local function processorCount()
   return 1
 end
 
--- Bounded physical capacity as a function of host processors: at most two
--- compilers, at least one. Batch and interactive share this bound; interactive
--- background work is admission-limited to a single slot in _eligibleRecord.
--- No family label changes the worker count.
-local function workerCount(mode)
+-- Bounded physical capacity as a function of host processors. A batch build
+-- and an ordinary interactive session keep at most two compilers. A loader
+-- presentation may use every processor but one, because no gameplay frame is
+-- competing for the host while it is on screen.
+local ORDINARY_WORKER_CAP = 2
+local function workerCount(mode, loading)
   assert(mode == "batch" or mode == "interactive", "compiler pool mode is invalid")
-  return math.max(1, math.min(2, processorCount() - 1))
+  local capacity = math.max(1, processorCount() - 1)
+  if mode == "interactive" and loading then
+    return capacity
+  end
+  return math.max(1, math.min(ORDINARY_WORKER_CAP, capacity))
 end
 
 local function cleanupWorkers(workers)
@@ -447,6 +457,7 @@ local function newPool(options)
   nextNonce = nextNonce + 1
   local pool = setmetatable({
     mode = options.mode,
+    loading = false,
     developmentRepositoryRoot = options.developmentRepositoryRoot,
     selected = nil,
     selectedCacheFs = nil,
@@ -481,7 +492,7 @@ local function newPool(options)
   }, CompilerPool)
 
   local ok, failure = pcall(function()
-    for workerId = 1, workerCount(options.mode) do
+    for workerId = 1, workerCount(options.mode, false) do
       pool.workers[#pool.workers + 1] = startWorker(resultChannel, workerId, options.developmentRepositoryRoot)
     end
   end)
@@ -1018,6 +1029,8 @@ end
 --- The one physical admission rule: a queued job waits only while every
 --- worker is physically occupied (running or settling its one prepared
 --- result) or the pool is draining. Family labels never serialize work.
+--- Prepared results already pin their worker, so they count once through that
+--- occupied slot; counting them again would reject dispatch to an idle worker.
 ---@return string?
 function CompilerPool:_admissionBlockReason()
   if self.fatalError then
@@ -1025,9 +1038,6 @@ function CompilerPool:_admissionBlockReason()
   end
   if self.quiescing then
     return "quiescing"
-  end
-  if self:_runningCount() + #self.completions > #self.workers then
-    return "prepared-backpressure"
   end
   for _, worker in ipairs(self.workers) do
     if workerIdle(worker) then
@@ -1362,6 +1372,13 @@ local function priorityHeads(self, priority)
       heads[#heads + 1] = node
     end
   end
+  -- The opportunistic sweep is the one lane whose equal-urgency candidates are
+  -- indifferent to each other, so its cheapest classes go first and each class
+  -- keeps its own FIFO head. Required and predicted lanes order by arrival
+  -- instead: that order is the user-visible relevance order.
+  if priority == SWEEP_PRIORITY then
+    return heads
+  end
   -- At most three heads: order explicitly without a general sort.
   for left = 2, #heads do
     local candidate = heads[left]
@@ -1394,9 +1411,6 @@ function CompilerPool:_eligibleRecord()
   if self.quiescing or self.queuedCount == 0 then
     return nil
   end
-  if self:_runningCount() + #self.completions > #self.workers then
-    return nil
-  end
   local idle = false
   for _, worker in ipairs(self.workers) do
     if workerIdle(worker) then
@@ -1408,11 +1422,18 @@ function CompilerPool:_eligibleRecord()
     return nil
   end
   for _, priority in ipairs(PRIORITIES) do
-    -- Interactive background work keeps a single physical slot: while any
-    -- worker holds a running or prepared-pinned job, no non-required job
-    -- may dispatch. Required work stays exempt and takes any free worker
-    -- without preempting the held slot.
-    if self.mode == "interactive" and priority ~= 0 and backgroundSlotHeld(self) then
+    -- Outside a loader presentation interactive background work keeps a single
+    -- physical slot: while any worker holds a running or prepared-pinned job,
+    -- no non-required job may dispatch. Required work stays exempt and takes
+    -- any free worker without preempting the held slot. A loader presentation
+    -- is work-conserving across every urgency lane. Occupancy is already
+    -- counted once by the idle-worker check above.
+    if
+      not self.loading
+      and self.mode == "interactive"
+      and priority ~= REQUIRED_PRIORITY
+      and backgroundSlotHeld(self)
+    then
       return nil
     end
     for _, node in ipairs(priorityHeads(self, priority)) do
@@ -1423,6 +1444,35 @@ function CompilerPool:_eligibleRecord()
     end
   end
   return nil
+end
+
+--- Activate or retire loader-side compiler capacity. Growing starts workers
+--- lazily so an ordinary session never pays for threads it cannot use; the
+--- physical ceiling is the host's usable processors minus one. Shrinking is
+--- deliberately not attempted: an already-started worker idles on its input
+--- channel and is closed with the pool, so leaving the loader never pays a
+--- thread teardown/startup cycle.
+---@param loading boolean
+function CompilerPool:setLoading(loading)
+  assert(not self.closed, "compiler pool is shut down")
+  local wanted = loading == true
+  if self.loading == wanted then
+    return
+  end
+  self.loading = wanted
+  if self.mode ~= "interactive" then
+    return
+  end
+  local target = workerCount(self.mode, wanted)
+  while #self.workers < target do
+    local workerId = #self.workers + 1
+    self.workers[#self.workers + 1] = startWorker(self.resultChannel, workerId, self.developmentRepositoryRoot)
+  end
+end
+
+---@return integer physical worker slots this pool currently owns
+function CompilerPool:workerSlotCount()
+  return #self.workers
 end
 
 ---@return string "runnable" when pool work can advance now, "waiting" while progress needs an external compiler or close result, else "idle"
@@ -2215,7 +2265,11 @@ function CompilerPool:update(budget)
   end
   local remaining = budget
   if remaining == nil then
-    remaining = PUBLICATION_BUDGET
+    -- A pinned prepared result is uncommitted decoded bytes, so publication
+    -- stays bounded; a loader presentation may commit several results per pump
+    -- because nothing else owns the frame, while an interactive session
+    -- commits one per pump.
+    remaining = self.loading and math.max(1, #self.workers * 2) or PUBLICATION_BUDGET
   end
   assert(type(remaining) == "number", "publication budget must be a number")
   while remaining > 0 and self:_publishOne() do

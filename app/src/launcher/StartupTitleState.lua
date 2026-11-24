@@ -880,6 +880,14 @@ function StartupTitleState:_tick()
   end
 end
 
+-- This state is a genuine asset-preparation presentation while its loader owns
+-- the screen: the selected epoch may compile at loader throughput. A failure
+-- diagnostic, the movie, the title and the menu never claim it.
+---@return boolean
+function StartupTitleState:isPreparingAssets()
+  return not self.disposed and self.phase == "loading"
+end
+
 function StartupTitleState:update(dt)
   if not self:_live() then
     self:dispose()

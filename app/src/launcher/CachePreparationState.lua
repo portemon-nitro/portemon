@@ -480,6 +480,14 @@ function CachePreparationState:_pollQuiescence()
   end
 end
 
+-- The boot wait, import preparation and cache clearing are genuinely blocking
+-- preparations: while this state is still polling, the selected epoch may
+-- compile at loader throughput.
+---@return boolean
+function CachePreparationState:isPreparingAssets()
+  return not self.dead and not self.fired and self.error == nil
+end
+
 function CachePreparationState:update(dt)
   if self.fired or self.dead then
     return

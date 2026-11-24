@@ -650,6 +650,40 @@ function T.prewarming_does_not_decode_samples_or_pin_stale_music_policy()
   Assert.equal(sound:currentMusic(), 22, "active entry must choose the current destination policy")
 end
 
+-- Prepared-map prediction is background demand only: the synchronous bank warm
+-- (which can block on a disk-backed package member) is never used on the frame
+-- that prepared the map.
+function T.prepared_map_prediction_never_warms_banks_synchronously()
+  local provider, calls = prewarmProvider()
+  calls.background = {}
+  calls.sync = {}
+  function provider:prewarmBank(bankId)
+    calls.sync[#calls.sync + 1] = bankId
+  end
+  function provider:prewarmBankBackground(bankId)
+    calls.background[#calls.background + 1] = bankId
+    return true
+  end
+  local controller = prewarmController(provider, prewarmSound(), function()
+    return "day"
+  end)
+  local fieldData = fieldDataWithSoundplates({}, {
+    day = 20,
+    night = 21,
+    flagOverrides = {},
+    traversalOverrides = {},
+  })
+
+  controller:prewarmMapMusic(runtimeMap(fieldData))
+
+  Assert.deepEqual(calls.sync, {}, "prepared-map prediction never blocks on a synchronous bank warm")
+  Assert.deepEqual(
+    calls.background,
+    { 7, 8 },
+    "the selected day and night banks enroll as background demand instead"
+  )
+end
+
 function T.production_position_is_read_through_a_narrow_fieldX_fieldZ_provider()
   local keyA = AudioFixture.key(1)
   local seqA =

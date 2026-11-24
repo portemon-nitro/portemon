@@ -12,6 +12,7 @@ local HgssGame = require("game.hgss.src.HgssGame")
 local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
+local StartupAudioSession = require("app.src.audio.StartupAudioSession")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local defaultAppBackend = ProducerFingerprint.appBackend
 local defaultCheckoutBackend = ProducerFingerprint.checkoutBackend
@@ -169,6 +170,12 @@ local function withAppHarness(opts, ready, fn)
     if selector.requestKind == "milestone" and selector.name == "startup-title" then
       return result.startupTitleReady == true, nil
     end
+    -- Movie admission acknowledges the soundtrack; the harness models that
+    -- milestone as ready beside the title so the handoff journey runs without
+    -- audio fixtures.
+    if selector.requestKind == "milestone" and selector.name == "startup-audio" then
+      return true, nil
+    end
     -- The locked cinematic journey runs the five opening scenes before the
     -- legendary title: the harness models a healthy worker by answering the
     -- numbered scene demands beside title readiness, so the instant movie
@@ -189,6 +196,10 @@ local function withAppHarness(opts, ready, fn)
   end
   function service:enableSweep(_)
     result.warmups = result.warmups + 1
+  end
+  function service:setExecutionPolicy(epoch, loading)
+    result.executionPolicies = result.executionPolicies or {}
+    result.executionPolicies[#result.executionPolicies + 1] = { epoch = epoch, loading = loading }
   end
   function service:offerSource(_, _, _)
     result.offers = (result.offers or 0) + 1
@@ -415,6 +426,26 @@ local function withAppHarness(opts, ready, fn)
   graphics.getDPIScale = function()
     return 1
   end
+  -- The startup journey admits the movie only behind an acknowledged
+  -- soundtrack: one silent session stands in for the selected edition's audio
+  -- so the title/menu handoff never depends on audio fixtures.
+  local originalStartupAudioNew = StartupAudioSession.new
+  StartupAudioSession.new = function()
+    local session = { disposed = false }
+    function session:beginOpening()
+      return true
+    end
+    function session:beginTitle() end
+    function session:notifySkip() end
+    function session:beginFade() end
+    function session:beginMovieCycle() end
+    function session:playMenuCue() end
+    function session:update() end
+    function session:dispose()
+      self.disposed = true
+    end
+    return session
+  end
   love.event.quit = function(code)
     result.quitCodes[#result.quitCodes + 1] = code
   end
@@ -435,6 +466,8 @@ local function withAppHarness(opts, ready, fn)
   graphics.getDimensions = originalGetDimensions
   graphics.getDPIScale = originalGetDPIScale
   love.event.quit = originalQuit
+  StartupAudioSession.new = originalStartupAudioNew
+  App.startupAudioError = nil
   ProducerFingerprint.appBackend = harnessAppBackend
   ProducerFingerprint.checkoutBackend = harnessCheckoutBackend
   love.filesystem.remove("app-edition.lua")
@@ -460,13 +493,16 @@ end
 local function finishStartupTitle(result)
   result.startupTitleReady = true
   assertStagedStartupMenu(result)
-  for _ = 1, 3 do
-    if App.state.title ~= nil then
+  -- The realized title follows the admitted opening: a true first import spends
+  -- its bounded loader beat before the movie is admitted at all.
+  for _ = 1, 200 do
+    if App.state.phase == "title" and App.state.title ~= nil then
       break
     end
     App.update(SourceTick.DT)
   end
   Assert.notNil(App.state.title, "title readiness adopts the renderer before skip")
+  Assert.equal(App.state.phase, "title", "the realized title presents after the opening")
   -- The adopted title spends the retail start-up calls behind white before
   -- its first animation call reads input.
   for _ = 1, 10 do
@@ -475,6 +511,7 @@ local function finishStartupTitle(result)
     end
     App.update(SourceTick.DT)
   end
+  Assert.isTrue(App.state.titleAnimating, "the adopted title reaches its first animation call")
   App.keypressed("return")
   for _ = 1, 80 do
     local metatable = getmetatable(App.state)
@@ -1941,6 +1978,37 @@ function T.fresh_import_title_loading_keeps_the_staged_menu()
     Assert.equal(App.state.phase, "loading", "title readiness keeps the loading surface visible")
     Assert.equal(#result.launches, 0, "the title never launches retail")
     finishStartupTitle(result)
+  end)
+end
+
+-- The execution policy follows the actual presentation: the boot wait and the
+-- startup loader report loader throughput for the selected epoch, and the
+-- title/menu journey reports ordinary interactive use again. A retired epoch is
+-- never reported for a replacement selection.
+function T.loader_presentations_report_loader_throughput_and_the_menu_does_not()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    App._bootExisting()
+    App.update(0.016)
+    local first = assert(result.executionPolicies and result.executionPolicies[1], "the boot wait reports its policy")
+    Assert.equal(first.epoch, App.epoch, "the policy belongs to the selected epoch")
+    Assert.isTrue(first.loading, "the boot wait reports loader throughput")
+    local runtime = assert(App._assetRuntime, "the selection owns its CPU runtime")
+    Assert.equal(
+      runtime.preparationQueue:workerSlotBudget(),
+      2,
+      "the loader presentation raises the runtime preparation executor to two slots"
+    )
+    finishStartupTitle(result)
+    local last = assert(result.executionPolicies[#result.executionPolicies], "the journey reports a final policy")
+    Assert.isFalse(last.loading, "the title and menu never report loader throughput")
+    Assert.equal(
+      runtime.preparationQueue:workerSlotBudget(),
+      1,
+      "the menu returns the preparation executor to its single interactive slot"
+    )
+    Assert.equal(App.state, result.menus[1], "the ordinary interactive policy follows the installed menu")
   end)
 end
 

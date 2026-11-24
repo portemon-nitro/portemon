@@ -188,6 +188,7 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
     return "ready", nil
   end
   function service:update() end
+  function service:setExecutionPolicy() end
   function service:retire(_) end
   -- The selected epoch's installed generated view plus the selection's overlay
   -- over it, exactly as the App composes one reader per selected epoch.
@@ -380,6 +381,7 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
     return "ready", nil
   end
   function service:update() end
+  function service:setExecutionPolicy() end
   function service:retire(_) end
   -- The selected epoch's installed generated view plus the selection's overlay
   -- over it, exactly as the App composes one reader per selected epoch.

@@ -102,6 +102,10 @@ local function coverageFixture()
     self.physicalFallbacks = self.physicalFallbacks + 1
   end
 
+  function coverage:setPrefetchFocus(fieldX, fieldZ)
+    self.focusX, self.focusZ = fieldX, fieldZ
+  end
+
   function coverage:queuePrefetch()
     self.queued = 1
   end

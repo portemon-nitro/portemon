@@ -89,12 +89,11 @@ end
 ---@param sourceSurfaceId integer
 ---@return integer?
 local function sourceSurface(self, cellKey, sourceSurfaceId)
-  for _, plate in ipairs(self.terrain.plates) do
-    if plate.cellKey == cellKey and plate.sourceSurfaceId == sourceSurfaceId then
-      return plate.id
-    end
+  local byCell = self._sourceSurfaceIndex[cellKey]
+  if byCell == nil then
+    return nil
   end
-  return nil
+  return byCell[sourceSurfaceId]
 end
 
 function FieldRegion.new(centralCollision, centralTerrain, neighbors, centralKey, surfaceIdBase)
@@ -119,17 +118,32 @@ function FieldRegion.new(centralCollision, centralTerrain, neighbors, centralKey
     cells[#cells + 1] = neighbor
   end
 
-  local plates, nextSurfaceId = {}, surfaceIdBase or 0
-  for _, plate in ipairs(centralTerrain.plates) do
-    plates[#plates + 1] = copyPlate(plate, nextSurfaceId, 0, 0, 0, cells[1].key)
+  -- One compact index from a stable (cell, source surface) identity to the
+  -- composite plate id, built while the plates are copied: the probe and commit
+  -- paths resolve a source surface per step instead of scanning every plate.
+  local plates, nextSurfaceId, sourceSurfaceIndex = {}, surfaceIdBase or 0, {}
+  local function appendPlate(plate, offsetX, offsetY, offsetZ, cell)
+    plates[#plates + 1] = copyPlate(plate, nextSurfaceId, offsetX, offsetY, offsetZ, cell.key)
+    -- A plate without its own source identity (or a cell without a key) has
+    -- none to index: central surfaces stay local and are never looked up by
+    -- source id.
+    if plate.id ~= nil and cell.key ~= nil then
+      local byCell = sourceSurfaceIndex[cell.key]
+      if byCell == nil then
+        byCell = {}
+        sourceSurfaceIndex[cell.key] = byCell
+      end
+      byCell[plate.id] = nextSurfaceId
+    end
     nextSurfaceId = nextSurfaceId + 1
+  end
+  for _, plate in ipairs(centralTerrain.plates) do
+    appendPlate(plate, 0, 0, 0, cells[1])
   end
   for index = 2, #cells do
     local cell = cells[index]
     for _, plate in ipairs(cell.terrain.plates) do
-      plates[#plates + 1] =
-        copyPlate(plate, nextSurfaceId, cell.offsetTilesX, cell.offsetTilesY, cell.offsetTilesZ, cell.key)
-      nextSurfaceId = nextSurfaceId + 1
+      appendPlate(plate, cell.offsetTilesX, cell.offsetTilesY, cell.offsetTilesZ, cell)
     end
   end
 
@@ -137,6 +151,7 @@ function FieldRegion.new(centralCollision, centralTerrain, neighbors, centralKey
     collision = collisionRegion(cells),
     terrain = TerrainSurface.new({ schema = "g4-composite-terrain-v1", plates = plates }),
     cells = cells,
+    _sourceSurfaceIndex = sourceSurfaceIndex,
     sourceSurface = sourceSurface,
   }
 end

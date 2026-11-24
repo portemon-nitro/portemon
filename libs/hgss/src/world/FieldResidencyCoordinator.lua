@@ -114,6 +114,8 @@ function FieldResidencyCoordinator.new(options)
     _livePrefetchIds = {},
     _livePrefetchSatisfied = false,
     _publishedViews = {},
+    _publishedByMap = {},
+    _publishedCount = 0,
   }, FieldResidencyCoordinator)
 end
 
@@ -122,26 +124,38 @@ function FieldResidencyCoordinator:_protect(mapId, protected)
 end
 
 -- Publishes the served resident views to the actor owner when their
--- membership or identity changed since the last publication.
+-- membership or identity changed since the last publication. The ordinary
+-- per-tick case changes nothing, so it is decided without sorting or
+-- allocating the published list.
 function FieldResidencyCoordinator:_publishResidentViews()
+  local publishedByMap = self._publishedByMap
+  local liveCount = 0
+  local changed = false
+  for mapId, resident in pairs(self.residents) do
+    liveCount = liveCount + 1
+    if publishedByMap[mapId] ~= resident.runtimeMap then
+      changed = true
+    end
+  end
+  if not changed and liveCount == self._publishedCount then
+    return
+  end
   local mapIds = {}
   for mapId in pairs(self.residents) do
     mapIds[#mapIds + 1] = mapId
   end
   table.sort(mapIds)
   local views = {}
-  local changed = #mapIds ~= #self._publishedViews
+  local byMap = {}
   for index, mapId in ipairs(mapIds) do
     local view = self.residents[mapId].runtimeMap
     views[index] = view
-    if self._publishedViews[index] ~= view then
-      changed = true
-    end
+    byMap[mapId] = view
   end
-  if changed then
-    self._publishedViews = views
-    self.actors:retainMaps(views)
-  end
+  self._publishedViews = views
+  self._publishedByMap = byMap
+  self._publishedCount = #views
+  self.actors:retainMaps(views)
 end
 
 ---@param mapId integer
@@ -309,9 +323,12 @@ function FieldResidencyCoordinator:_demandPrefetchMap(mapId)
   return ready
 end
 
+--- Advance the background physical and logical frontier within the caller's
+--- frame budget. The budget is a count of indivisible preparation steps, so the
+--- field runtime decides how much of the frame staging may own.
+---@param budget integer? steps to spend on physical cell staging, default one
 ---@return integer
----@param _ integer? legacy caller budget, intentionally ignored
-function FieldResidencyCoordinator:updatePrefetch(_)
+function FieldResidencyCoordinator:updatePrefetch(budget)
   assert(not self.disposed and self.initialized, "field residency coordinator is not ready")
   self.actors:admitRetainedMap()
   local mapIds = self:_prefetchMapIds()
@@ -325,7 +342,7 @@ function FieldResidencyCoordinator:updatePrefetch(_)
   local completed = 0
   local hasPhysicalWork = false
   if coverage then
-    completed = coverage:updatePrefetch(1)
+    completed = coverage:updatePrefetch(budget or 1)
     hasPhysicalWork = coverage:hasPrefetchWork()
   end
   -- Every pending map is demanded in the same pass so none waits behind
@@ -614,6 +631,9 @@ function FieldResidencyCoordinator:afterCommittedMove(player, context)
   end
   local anchorChanged = self.coverage and (self.coverage.anchorX ~= targetX or self.coverage.anchorZ ~= targetZ)
   if anchorChanged then
+    -- The committed player position is the frontier ordering source: the next
+    -- halo pass favors the cell across the boundary the player is walking toward.
+    self.coverage:setPrefetchFocus(player.fieldX, player.fieldZ)
     self.coverage:recenter(targetX, targetZ)
     if context.onPhysicalCommit then
       context.onPhysicalCommit(self.coverage)

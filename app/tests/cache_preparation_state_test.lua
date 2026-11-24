@@ -935,7 +935,9 @@ function T.quiescence_card_names_the_pending_file_before_the_barrier_admits()
         return true
       end
       function service:update() end
+      function service:setExecutionPolicy() end
       App.state = nil
+      App._cacheLoading = false
       App.service = service
       App.epoch = 3
       App.pendingQuiesce = nil

@@ -1355,4 +1355,59 @@ function T.release_keeps_dispatched_source_lease_until_worker_join()
   end)
 end
 
+-- A raised slot budget overlaps independent work: two distinct sources run at
+-- once, and lowering the budget leaves the running jobs alone while the one
+-- remaining slot keeps taking work.
+function T.raised_slot_budget_overlaps_independent_work()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(fakeCacheFs())
+    Assert.equal(queue:workerSlotBudget(), 1, "an ordinary queue owns one slot")
+    queue:setWorkerSlots(2)
+    Assert.equal(queue:workerSlotCount(), 0, "raising the budget alone starts no worker")
+
+    local first = queue:request("mesh", "geometry/overlap-a.g4mesh", "prefetch")
+    local second = queue:request("mesh", "geometry/overlap-b.g4mesh", "prefetch")
+    Assert.equal(#host.threads, 2, "two independent sources start two workers")
+    Assert.isTrue(requestWasPushedFor(host, first), "the first source dispatched")
+    Assert.isTrue(
+      requestWasPushedFor(host, second),
+      "the second source dispatched in the same pass instead of behind the first"
+    )
+
+    queue:setWorkerSlots(1)
+    local third = queue:request("mesh", "geometry/overlap-c.g4mesh", "demand")
+    Assert.isFalse(requestWasPushedFor(host, third), "the lowered budget admits no work onto the extra slot")
+
+    -- Every slot reports on the one shared reply channel the first worker
+    -- started with.
+    local reply = assert(host.threads[1].startArgs[1][2], "the worker starts with the shared reply channel")
+    reply:push(meshResponse(first, "geometry/overlap-a.g4mesh"))
+    Assert.equal(queue:poll(third), "pending", "the settled job frees nothing beyond the budget")
+    queue:release()
+  end)
+end
+
+-- A stopped worker terminalizes the whole executor instead of silently halving
+-- its capacity: every unsettled token fails with the terminal cause and the
+-- executor admits no new work.
+function T.worker_death_with_several_slots_terminalizes_every_token()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(fakeCacheFs())
+    queue:setWorkerSlots(2)
+    local first = queue:request("mesh", "geometry/death-a.g4mesh", "demand")
+    local second = queue:request("mesh", "geometry/death-b.g4mesh", "demand")
+    Assert.equal(#host.threads, 2, "both slots run")
+    host.threads[2]:stop("injected worker exit")
+    local status, failure = queue:poll(first)
+    Assert.equal(status, "failed", "the surviving slot's token fails with the executor")
+    Assert.isTrue(tostring(failure):find("injected worker exit", 1, true) ~= nil, "the terminal cause is preserved")
+    Assert.equal(queue:poll(second), "failed", "every unsettled token fails")
+    queue:release()
+  end)
+end
+
 return { tests = T }
