@@ -796,6 +796,7 @@ function FieldScriptComposition.compose(runtime, options)
     versionId = runtime.versionId,
     sysInfo = runtime.sysInfo,
     mons = options.mons,
+    daycare = runtime.daycare,
     pokedex = pokedex,
     specialMonGifts = specialMonGifts,
     items = options.items,

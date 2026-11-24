@@ -269,4 +269,50 @@ function T.tests.survive_tick_cures_in_slot_order_and_skips_encounters()
   Assert.isNil(runtime.poisonCure, "the chain clears after its last message")
 end
 
+-- The Day Care step feed is the same committed-step seam: a committed step
+-- advances every stored parent after the poison tick and before the repel and
+-- encounter attempt, once per step. A poison-cure tick claims the whole step
+-- (FieldSystem_ProcessStep returns at the poison update), so neither the Day
+-- Care feed nor the encounter attempt runs on it.
+function T.tests.day_care_steps_feed_after_poison_and_before_the_encounter()
+  local order = {}
+  local daycare = {
+    noteCommittedStep = function()
+      order[#order + 1] = "daycare"
+    end,
+  }
+  local runtime = poisonRuntime({ stepCount = 4 })
+  runtime.daycare = daycare
+  local originalAttempt = runtime._encounters.attempt
+  runtime._encounters.attempt = function(...)
+    order[#order + 1] = "encounter"
+    return originalAttempt(...)
+  end
+  for _ = 1, 4 do
+    runtime:_consumeCommittedStep()
+  end
+  Assert.deepEqual(order, {
+    "daycare",
+    "encounter",
+    "daycare",
+    "encounter",
+    "daycare",
+    "encounter",
+    "daycare",
+    "encounter",
+  }, "the feed runs after the poison tick and before the encounter attempt on every committed step")
+
+  order = {}
+  local cureRuntime = poisonRuntime({ stepCount = 1 })
+  cureRuntime.daycare = daycare
+  cureRuntime.fieldPoison = FieldPoison.restore({ steps = 3 })
+  cureRuntime.monService = fakeMonService({ poisonedMon(2) })
+  cureRuntime._encounters.attempt = function()
+    order[#order + 1] = "encounter"
+    return { kind = "none", reason = "test-miss" }
+  end
+  cureRuntime:_consumeCommittedStep()
+  Assert.deepEqual(order, {}, "a claiming cure tick ends the step before the Day Care feed and the encounter")
+end
+
 return T

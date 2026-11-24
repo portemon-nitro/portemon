@@ -1,15 +1,26 @@
--- Script-owned party selection host: one visible PartyScreenState in
--- pick context per open, driven by scheduler UI events only. The host
--- owns the screen, its controller, and its presentation session; the
--- task owns an opaque handle plus value-only focus. Scheduler input is
--- the only driver; rendering observes status without advancing it.
--- An empty party with cancel permission opens an empty shell focused
--- on cancel; without cancel permission the open is a typed invalid
--- request. One open at a time; a second open is a composition error.
+-- Script-owned party selection host: one visible PartyScreenState in the
+-- named pick context per open, driven by scheduler UI events only. The host
+-- owns the screen, its controller, and its presentation session; the task
+-- owns an opaque handle plus value-only focus. Scheduler input is the only
+-- driver; rendering observes status without advancing it. The Day Care store
+-- policy opens the same picker in the source care context, where the screen
+-- owns the Store/Summary rows and the capsule confirmation, and the host
+-- commits the one canonical change that confirmation names through the mon
+-- owner. An empty party with cancel permission opens an empty shell focused
+-- on cancel; without cancel permission the open is a typed invalid request.
+-- One open at a time; a second open is a composition error.
 
 local Errors = require("libs.errors.src.Errors")
+local PartyActions = require("libs.hgss.src.field.PartyActions")
 local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
 local ScriptErrors = require("libs.script.src.errors")
+
+-- The closed selection policy -> party-screen context map: the ordinary
+-- occupied-slot pick and the source Day Care store context.
+local CONTEXT_BY_POLICY = {
+  occupied = "pick",
+  daycare_store = "daycare_store",
+}
 
 ---@class PartySelectionHost
 ---@field private _service table<string, unknown> the live mon service
@@ -78,6 +89,10 @@ function PartySelectionHost:open(request)
   local service = assert(self._service, "the script party host requires the live mon service")
   assert(type(service.partyCount) == "function", "the script party host requires the live mon service")
   local focus = checkFocus(request.focus)
+  local context = assert(
+    CONTEXT_BY_POLICY[request.policy],
+    "the script selection open carries a known selection policy"
+  )
   if service:partyCount() == 0 then
     if not request.allowCancel then
       Errors.raise(
@@ -88,14 +103,20 @@ function PartySelectionHost:open(request)
     end
     self._nextId = self._nextId + 1
     local handle = { id = self._nextId }
-    self._active = { handle = handle, screen = nil, empty = true }
+    self._active = { handle = handle, screen = nil, empty = true, context = context }
     return handle
+  end
+  local actionPolicy = nil
+  if context == "daycare_store" then
+    actionPolicy = PartyActions.storeContextPolicy(self._manifest)
   end
   local screen = PartyScreenState.new({
     service = service,
     manifest = self._manifest,
     uiManifest = self._uiManifest,
-    context = "pick",
+    actionPolicy = actionPolicy,
+    selectionOnly = true,
+    context = context,
     initialFocus = focus,
     measureDisplay = self._measureDisplay,
     overrides = self._overrides,
@@ -156,7 +177,30 @@ function PartySelectionHost:step(handle, uiEvents)
   end
   local screen = assert(active.screen, "the open selection owns its screen")
   screen:updateFixed(uiEvents)
+  self:_completeCareIntent(screen)
   return self:status()
+end
+
+-- Completes the one canonical change a care screen may request through its
+-- intent handoff. The capsule confirmation is the only such change: the mon
+-- owner clears the ball capsule in one party revision and the screen then
+-- accepts the slot, so nothing else about the parent moves.
+---@param screen PartyScreenState
+function PartySelectionHost:_completeCareIntent(screen)
+  local intent = screen:takeIntent()
+  if intent == nil then
+    return
+  end
+  if intent.kind ~= "remove_capsule" then
+    Errors.raise(
+      ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE,
+      "the script party selection answered an unknown care request",
+      { kind = intent.kind }
+    )
+  end
+  local service = assert(self._service, "the script party host requires the live mon service")
+  local changed = service:removeCapsule(intent.slot, intent.partyRevision)
+  screen:completeAction({ kind = changed and "changed" or "no_op" })
 end
 
 -- The one-shot semantic answer: selected with its slot, or cancelled.
@@ -177,7 +221,7 @@ function PartySelectionHost:result(handle)
   end
   if record.kind == "selected" then
     assert(type(record.slot) == "number", "selection answers on a party slot")
-    return { kind = "selected", slot = record.slot }
+    return { kind = "selected", slot = record.slot, action = record.action }
   end
   if record.kind == "cancelled" then
     return { kind = "cancelled" }
@@ -230,7 +274,7 @@ function PartySelectionHost:status()
     return nil
   end
   if active.empty then
-    return { open = true, empty = true, focus = "cancel", context = "pick" }
+    return { open = true, empty = true, focus = "cancel", context = active.context or "pick" }
   end
   local screen = assert(active.screen, "the open selection owns its screen")
   return screen:status()

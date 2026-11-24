@@ -119,7 +119,9 @@ function T.script_gift_applies_item_form_and_ability_after_creation()
       ability = "OVERGROW",
     })
   end)
-  throwsCode("MON_RECORD_INVALID", function()
+  -- The alternate form's ability is consistent now, so admission reaches the
+  -- held-item identity, which the item catalog itself rejects.
+  throwsCode("ITEM_RECORD_INVALID", function()
     factory:createScriptGift({
       species = "EEVEE",
       level = 5,
@@ -228,6 +230,30 @@ function T.spiky_ear_pichu_pins_the_event_distribution()
   -- individual-value draws run, exactly like the source CreateMon with a
   -- fixed personality.
   Assert.equal(args.rng:capture().calls, 2)
+end
+
+-- A script gift that names an alternate form but no ability takes that form's
+-- own ability slot (native UpdateBoxMonAbility), so a form-1 gift is a
+-- consistent record instead of the base form's ability on an alternate form.
+function T.script_gift_alternate_form_takes_its_own_ability_slot()
+  local MonFactory = require("libs.mons.src.gen4.MonFactory")
+  local catalog = require("libs.mons.tests.catalog_fixture").makeCatalog()
+  local factory = MonFactory.new(require("libs.mons.tests.catalog_fixture").factoryArgs(0x33333333, catalog))
+  local formOne = catalog:form("EEVEE", 1).abilities
+  local gift = factory:createScriptGift({
+    species = "EEVEE",
+    level = 5,
+    form = 1,
+    profile = catalog and require("libs.mons.tests.catalog_fixture").profile(),
+    location = 11,
+    date = require("libs.mons.tests.catalog_fixture").metDate(),
+    heldItem = "NONE",
+  })
+  Assert.equal(gift.form, 1)
+  Assert.isTrue(
+    gift.ability == formOne[1] or gift.ability == formOne[2],
+    "the alternate form's own ability slot applies instead of the base form's"
+  )
 end
 
 return { tests = T }

@@ -14,10 +14,12 @@ local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local FieldPoisonSave = require("libs.hgss.src.save.FieldPoisonSave")
 local SysInfoState = require("libs.hgss.src.save.SysInfoState")
+local DaycareState = require("libs.hgss.src.save.DaycareState")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v16"
+GameSave.SCHEMA = "g4-game-save-v17"
+GameSave.LEGACY_V16_SCHEMA = "g4-game-save-v16"
 GameSave.LEGACY_V15_SCHEMA = "g4-game-save-v15"
 GameSave.LEGACY_V14_SCHEMA = "g4-game-save-v14"
 GameSave.LEGACY_V13_SCHEMA = "g4-game-save-v13"
@@ -37,6 +39,7 @@ local TOP_LEVEL_FIELDS = {
   audio = true,
   auxiliaryUi = true,
   bag = true,
+  daycare = true,
   encounters = true,
   facing = true,
   fashionCase = true,
@@ -543,8 +546,35 @@ function GameSave.migrateV15(record)
   end
   local HallOfFameState = require("libs.hgss.src.save.HallOfFameState")
   local migrated = deepCopy(record)
-  migrated.schema = GameSave.SCHEMA
+  migrated.schema = GameSave.LEGACY_V16_SCHEMA
   migrated.hallOfFame = HallOfFameState.empty():capture()
+  return migrated
+end
+
+-- Pure v16 -> v17 conversion. Only the Day Care delta is applied: v16 records
+-- predate custody, so the step initializes the empty current Day Care and
+-- leaves every other field and bucket copied. No parent, pending egg, cycle
+-- progress, or gift identity is invented here, and the nested game-stats
+-- bucket keeps its stored shape until its own owner migrates it on restore. A
+-- predecessor that already carries a Day Care bucket is malformed, not
+-- silently re-migrated.
+---@param record table<string, unknown> a v16 save record
+---@return table<string, unknown> the migrated v17 record
+function GameSave.migrateV16(record)
+  assert(type(record) == "table" and record.schema == GameSave.LEGACY_V16_SCHEMA, "GameSave.migrateV16 requires v16")
+  if record.daycare ~= nil then
+    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v16 save cannot contain a Day Care bucket", {})
+  end
+  local migrated = deepCopy(record)
+  migrated.schema = GameSave.SCHEMA
+  migrated.daycare = DaycareState.initial()
+  -- The nested statistics bucket advances with this envelope: its two Day Care
+  -- counters arrive at zero, and the stored registration set rides along
+  -- untouched for the runtime restore that validates it against the catalog.
+  if type(migrated.gameStats) == "table" then
+    local GameStatsSave = require("libs.hgss.src.save.GameStatsSave")
+    migrated.gameStats = GameStatsSave.migrate(migrated.gameStats, nil)
+  end
   return migrated
 end
 
@@ -578,6 +608,7 @@ function GameSave.metadata(record)
     assert(type(record) == "table")
     if
       record.schema ~= GameSave.SCHEMA
+      and record.schema ~= GameSave.LEGACY_V16_SCHEMA
       and record.schema ~= GameSave.LEGACY_V15_SCHEMA
       and record.schema ~= GameSave.LEGACY_V14_SCHEMA
       and record.schema ~= GameSave.LEGACY_V13_SCHEMA
@@ -668,6 +699,7 @@ function GameSave.normalize(record)
     local schema = record.schema
     if
       schema ~= GameSave.SCHEMA
+      and schema ~= GameSave.LEGACY_V16_SCHEMA
       and schema ~= GameSave.LEGACY_V15_SCHEMA
       and schema ~= GameSave.LEGACY_V14_SCHEMA
       and schema ~= GameSave.LEGACY_V13_SCHEMA
@@ -723,6 +755,9 @@ function GameSave.normalize(record)
     end
     if current.schema == GameSave.LEGACY_V15_SCHEMA then
       current = GameSave.migrateV15(current)
+    end
+    if current.schema == GameSave.LEGACY_V16_SCHEMA then
+      current = GameSave.migrateV16(current)
     end
     return canonicalizeCurrent(current)
   end)

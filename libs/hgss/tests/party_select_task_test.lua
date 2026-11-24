@@ -297,4 +297,69 @@ function T.cancel_without_a_driver_marks_only()
   Assert.equal(host.closes, 0, "nothing opens, nothing closes")
 end
 
+-- The Day Care store policy reports the source action beside the slot: Store
+-- (0) and Summary (1) both complete on a slot, and a cancellation reports the
+-- source cancelled slot with the Store action. The ordinary policy never parks
+-- an action.
+function T.day_care_policy_parks_the_source_action_beside_the_slot()
+  local service = openService()
+  give(service, "CHIKORITA")
+  give(service, "TOTODILE")
+  local host = hostDouble()
+  host.script.result = { kind = "selected", slot = 1, action = 1 }
+  local state = PartySelectTask.create(request({ eligibility = { policy = "daycare_store" } }), context(service, host))
+  local parked = context(service, host, { uiEvents = {} })
+  Assert.isTrue(PartySelectTask.poll(state, parked).complete)
+  Assert.equal(parked.instance.locals.__party_selection, 1)
+  Assert.equal(parked.instance.locals.__party_selection_action, 1, "the Summary row reports action 1")
+  Assert.equal(host.opens[1].policy, "daycare_store", "the host opens the care context")
+
+  local storeHost = hostDouble()
+  storeHost.script.result = { kind = "selected", slot = 0, action = 0 }
+  local storeState =
+    PartySelectTask.create(request({ eligibility = { policy = "daycare_store" } }), context(service, storeHost))
+  local storeParked = context(service, storeHost, { uiEvents = {} })
+  Assert.isTrue(PartySelectTask.poll(storeState, storeParked).complete)
+  Assert.equal(storeParked.instance.locals.__party_selection_action, 0, "the Store row reports action 0")
+
+  local cancelHost = hostDouble()
+  cancelHost.script.result = { kind = "cancelled" }
+  local cancelState =
+    PartySelectTask.create(request({ eligibility = { policy = "daycare_store" } }), context(service, cancelHost))
+  local cancelParked = context(service, cancelHost, { uiEvents = {} })
+  Assert.isTrue(PartySelectTask.poll(cancelState, cancelParked).complete)
+  Assert.equal(cancelParked.instance.locals.__party_selection, 255, "cancellation keeps the source slot sentinel")
+  Assert.equal(cancelParked.instance.locals.__party_selection_action, 0, "a cancellation reports no Summary action")
+
+  local occupiedHost = hostDouble()
+  occupiedHost.script.result = { kind = "selected", slot = 0 }
+  local occupiedState = PartySelectTask.create(request(), context(service, occupiedHost))
+  local occupiedParked = context(service, occupiedHost, { uiEvents = {} })
+  Assert.isTrue(PartySelectTask.poll(occupiedState, occupiedParked).complete)
+  Assert.isNil(occupiedParked.instance.locals.__party_selection_action, "the ordinary pick parks no action")
+end
+
+function T.day_care_selection_requires_a_source_action()
+  local service = openService()
+  give(service, "CHIKORITA")
+  local host = hostDouble()
+  host.script.result = { kind = "selected", slot = 0 }
+  local state = PartySelectTask.create(request({ eligibility = { policy = "daycare_store" } }), context(service, host))
+  Assert.throws(function()
+    PartySelectTask.poll(state, context(service, host, { uiEvents = {} }))
+  end, "a care selection without its source action is a protocol fault")
+end
+
+-- The serialized task shape is the same closed record for both policies, so a
+-- restored care selection validates exactly like an ordinary one.
+function T.day_care_state_validates_and_serializes_as_the_same_shape()
+  local service = openService()
+  give(service, "CHIKORITA")
+  local host = hostDouble()
+  local state = PartySelectTask.create(request({ eligibility = { policy = "daycare_store" } }), context(service, host))
+  Assert.deepEqual(state, { policy = "daycare_store", allowCancel = true, focus = 0, completed = false })
+  Assert.isNil(PartySelectTask.validate(state))
+  Assert.notNil(PartySelectTask.validate({ policy = "unknown", allowCancel = true, focus = 0 }))
+end
+
 return { tests = T }

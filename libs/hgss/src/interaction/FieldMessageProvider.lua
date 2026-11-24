@@ -360,6 +360,16 @@ local function prepareControls(template, tokens)
         token,
         controlLabel(token) .. " has no playback semantics in this build"
       )
+    elseif
+      token.kind == "unsupported_control"
+      and (token.control == FieldMessageText.CURSOR_X or token.control == FieldMessageText.CURSOR_Y)
+    then
+      -- The source's inline cursor offsets place later glyphs inside a shared
+      -- multi-column row (the standard bank's parent rows put the level after
+      -- the nickname). This port's line printer draws one left-aligned line
+      -- per message, so the offset carries no playback meaning here: the
+      -- control is consumed instead of faulting, and the glyphs it precedes
+      -- keep their source order.
     elseif token.kind == "unsupported_control" then
       controlFault(
         FieldMessageProvider.MESSAGE_CONTROL_UNSUPPORTED,

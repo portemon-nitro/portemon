@@ -518,9 +518,14 @@ function T.tests.previous_save_envelope_keeps_prior_owners_and_an_unknown_first_
     legacy.sysInfo = { schema = LEGACY_SYS_INFO_SCHEMA, mysteryGiftActive = false }
     legacy.gameStats.schema = LEGACY_GAME_STATS_SCHEMA
     legacy.gameStats.stateVersion = LEGACY_GAME_STATS_STATE_VERSION
-    -- The earlier stats bucket predates the League-win counter it never had.
+    -- The earlier stats bucket predates the League-win counter and the Day
+    -- Care counters it never had.
     legacy.gameStats.leagueWins = nil
+    legacy.gameStats.daycareDeposits = nil
+    legacy.gameStats.eggsHatched = nil
     legacy.hallOfFame = nil
+    -- The earlier release never wrote a Day Care bucket.
+    legacy.daycare = nil
     local payloadDirectory = game.saveNamespace .. "/global/games"
     assert(love.filesystem.createDirectory(payloadDirectory), "the acceptance save root holds its payload directory")
     assert(
@@ -547,7 +552,7 @@ function T.tests.previous_save_envelope_keeps_prior_owners_and_an_unknown_first_
   local resumedOk, resumedErr = xpcall(function()
     resumed:waitForFieldEntry()
     local restored = settledCapture(resumed, "the migrated journey")
-    Assert.equal(restored.schema, "g4-game-save-v16", "loading an inherited save republishes the current envelope")
+    Assert.equal(restored.schema, "g4-game-save-v17", "loading an inherited save republishes the current envelope")
     Assert.equal(
       restored.sysInfo.firstClearAt,
       false,
@@ -555,7 +560,7 @@ function T.tests.previous_save_envelope_keeps_prior_owners_and_an_unknown_first_
     )
     Assert.equal(restored.sysInfo.mysteryGiftActive, false, "the prior system-info flag survives the migration")
     Assert.equal(restored.gameStats.leagueWins, 0, "the League-win counter starts from the value the save had")
-    Assert.equal(restored.gameStats.stateVersion, 3, "the game-stats bucket moves to its current state version")
+    Assert.equal(restored.gameStats.stateVersion, 4, "the game-stats bucket moves to its current state version")
     Assert.equal(restored.hallOfFame.schema, HOF_BUCKET_SCHEMA, "the migrated save owns a current history bucket")
     Assert.equal(restored.hallOfFame.total, 0, "the migration invents no recorded clear")
     Assert.equal(#restored.hallOfFame.records, 0, "the migration invents no retained record")

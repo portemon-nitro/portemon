@@ -39,6 +39,8 @@ local Errors = require("libs.errors.src.Errors")
 ---@field private _mailWritten integer written-Mail total
 ---@field private _stepsBiked integer steps taken on the Bicycle
 ---@field private _leagueWins integer recorded League wins
+---@field private _daycareDeposits integer parents sent to the Day Care
+---@field private _eggsHatched integer hatched eggs
 ---@field private _revision integer
 local GameStats = {}
 GameStats.__index = GameStats
@@ -68,6 +70,13 @@ GameStats.STEPS_BIKED_CAP = 999999999
 -- GameStats_Inc caps every u16 statistic at GAME_STAT_MAX 9999
 -- (src/game_stats.c).
 GameStats.LEAGUE_WINS_CAP = 9999
+
+-- The Day Care counters live in the same u16 statistic block:
+-- GAME_STAT_MONS_SENT_TO_DAYCARE is incremented by Save_Daycare_PutMonIn
+-- (src/get_egg.c), and GAME_STAT_EGGS_HATCHED belongs to the hatch owner that
+-- has not landed yet, so this owner persists it unchanged.
+GameStats.DAYCARE_DEPOSITS_CAP = 9999
+GameStats.EGGS_HATCHED_CAP = 9999
 
 -- The source's sScoreMods table (src/game_stats.c), indexed by the
 -- ScrCmd_AddSpecialGameStat operand. It stays private: the score an event
@@ -227,6 +236,8 @@ function GameStats.new(args)
     _mailWritten = 0,
     _stepsBiked = 0,
     _leagueWins = 0,
+    _daycareDeposits = 0,
+    _eggsHatched = 0,
     _revision = 0,
   }, GameStats)
 end
@@ -252,6 +263,8 @@ function GameStats.restore(bucket, refs)
   stats._mailWritten = valid.mailWritten
   stats._stepsBiked = valid.stepsBiked
   stats._leagueWins = valid.leagueWins
+  stats._daycareDeposits = valid.daycareDeposits
+  stats._eggsHatched = valid.eggsHatched
   return stats
 end
 
@@ -325,6 +338,14 @@ end
 ---@return integer
 function GameStats:leagueWins()
   return self._leagueWins
+end
+
+-- Reads the parents-sent-to-Day-Care total: one per successful deposit
+-- (GameStats_Inc(GAME_STAT_MONS_SENT_TO_DAYCARE)), capped like every other
+-- u16 statistic.
+---@return integer
+function GameStats:daycareDeposits()
+  return self._daycareDeposits
 end
 
 ---@return integer
@@ -409,6 +430,15 @@ function GameStats:prepareChanges(changes)
         end
       end
       observations[index] = { kind = "mail_written" }
+    elseif staged.kind == "daycare_deposit" then
+      -- One deposit increments the source Day Care statistic
+      -- (Save_Daycare_PutMonIn). It earns no score and marks no species.
+      for key in pairs(staged) do
+        if key ~= "kind" then
+          fail("stats observations carry kind and payload records", { field = key })
+        end
+      end
+      observations[index] = { kind = "daycare_deposit" }
     elseif staged.kind == "league_win" then
       -- One completed League ending awards the source League-win statistic
       -- (src/game_clear.c::CallTask_GameClear). It earns no score and marks
@@ -443,6 +473,7 @@ function GameStats:prepareChanges(changes)
   local scratchScore = self._score
   local scratchMailWritten = self._mailWritten
   local scratchLeagueWins = self._leagueWins
+  local scratchDaycareDeposits = self._daycareDeposits
   local changed = false
   for _, observation in ipairs(observations) do
     if observation.kind == "unique_caught" then
@@ -457,6 +488,11 @@ function GameStats:prepareChanges(changes)
       local total = cappedScore(scratchScore, 1)
       if total ~= scratchScore then
         scratchScore = total
+        changed = true
+      end
+    elseif observation.kind == "daycare_deposit" then
+      if scratchDaycareDeposits < GameStats.DAYCARE_DEPOSITS_CAP then
+        scratchDaycareDeposits = scratchDaycareDeposits + 1
         changed = true
       end
     elseif observation.kind == "league_win" then
@@ -497,6 +533,7 @@ function GameStats:prepareChanges(changes)
     self._score = scratchScore
     self._mailWritten = scratchMailWritten
     self._leagueWins = scratchLeagueWins
+    self._daycareDeposits = scratchDaycareDeposits
     if changed then
       self._revision = self._revision + 1
     end
@@ -547,6 +584,8 @@ function GameStats:bucket()
     mailWritten = self._mailWritten,
     stepsBiked = self._stepsBiked,
     leagueWins = self._leagueWins,
+    daycareDeposits = self._daycareDeposits,
+    eggsHatched = self._eggsHatched,
   }
 end
 

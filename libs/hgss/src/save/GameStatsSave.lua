@@ -1,14 +1,18 @@
--- Persisted game-stats bucket: strict v4 shape, canonical detached
+-- Persisted game-stats bucket: strict v5 shape, canonical detached
 -- output, and evidence-preserving migration from a missing bucket or an
--- exact earlier bucket. v4 keeps the sorted registration set (freshness
+-- exact earlier bucket. v5 keeps the sorted registration set (freshness
 -- authority), the blind unique-registration total (retail increments per
 -- evolution publish, even for re-registrations), the bounded trainer-card
--- score, and the bounded written-Mail, steps-biked (GAME_STAT_STEPS_BIKED 1,
--- behind the Bike Shop call), and League-win totals. Migration never invents
--- registrations, counts, score, or wins from an absent bucket; an exact v1
--- bucket migrates with zero written-Mail, biked, and win counts, an exact v2
--- bucket with zero biked and win counts, and an exact v3 bucket with a zero
--- win count. Pure data owner: no live state, no love dependency.
+-- score, the bounded written-Mail total, the bounded steps-biked total
+-- (GAME_STAT_STEPS_BIKED 1, behind the Bike Shop call), the bounded
+-- League-win counter, and the two Day Care statistics: parents sent to the
+-- Day Care and eggs hatched. Migration never invents registrations, counts,
+-- score, wins, or care events from an absent bucket; an exact v1 bucket
+-- migrates with zero written-Mail, biked, win, and care counts, an exact v2
+-- bucket with zero biked, win, and care counts, an exact v3 bucket with zero
+-- win and care counts, and an exact v4 bucket with the two zero care
+-- counters. The hatch counter stays zero until its own hatch owner lands.
+-- Pure data owner: no live state, no love dependency.
 --
 -- Retail sources (tmp/refs/pokeheartgold):
 -- unique counter GAME_STAT_UNIQUE_MONS_CAUGHT 13 and score stat
@@ -25,8 +29,10 @@ local Errors = require("libs.errors.src.Errors")
 ---@class GameStatsSave
 local GameStatsSave = {}
 
-GameStatsSave.SCHEMA = "hgss-stats-v4"
-GameStatsSave.STATE_VERSION = 4
+GameStatsSave.SCHEMA = "hgss-stats-v5"
+GameStatsSave.STATE_VERSION = 5
+GameStatsSave.V4_SCHEMA = "hgss-stats-v4"
+GameStatsSave.V4_STATE_VERSION = 4
 GameStatsSave.V3_SCHEMA = "hgss-stats-v3"
 GameStatsSave.V3_STATE_VERSION = 3
 GameStatsSave.V2_SCHEMA = "hgss-stats-v2"
@@ -46,6 +52,11 @@ GameStatsSave.STEPS_BIKED_CAP = 999999999
 -- (GameStats_Inc caps at GAME_STAT_MAX 9999).
 GameStatsSave.LEAGUE_WINS_CAP = 9999
 
+-- GAME_STAT_MONS_SENT_TO_DAYCARE and GAME_STAT_EGGS_HATCHED live in the same
+-- u16 statistic block, so they share the GAME_STAT_MAX ceiling.
+GameStatsSave.DAYCARE_DEPOSITS_CAP = 9999
+GameStatsSave.EGGS_HATCHED_CAP = 9999
+
 local TOP_FIELDS = {
   schema = true,
   stateVersion = true,
@@ -55,6 +66,8 @@ local TOP_FIELDS = {
   mailWritten = true,
   stepsBiked = true,
   leagueWins = true,
+  daycareDeposits = true,
+  eggsHatched = true,
 }
 
 ---@param message string
@@ -179,19 +192,65 @@ local function checkLeagueWins(value)
   return value --[[@as integer]]
 end
 
+---@param value unknown
+---@return integer validated Day Care deposit total
+local function checkDaycareDeposits(value)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > GameStatsSave.DAYCARE_DEPOSITS_CAP then
+    fail(
+      "stats bucket Day Care deposits must be an integer in 0.." .. tostring(GameStatsSave.DAYCARE_DEPOSITS_CAP),
+      { daycareDeposits = value }
+    )
+  end
+  return value --[[@as integer]]
+end
+
+---@param value unknown
+---@return integer validated hatch total
+local function checkEggsHatched(value)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > GameStatsSave.EGGS_HATCHED_CAP then
+    fail(
+      "stats bucket hatched eggs must be an integer in 0.." .. tostring(GameStatsSave.EGGS_HATCHED_CAP),
+      { eggsHatched = value }
+    )
+  end
+  return value --[[@as integer]]
+end
+
+-- The stored registration array without a catalog: dense string entries, no
+-- species resolution. Only the save envelope's own schema advance uses this
+-- shape; the owning runtime restore always validates the set against the
+-- generated species catalog.
+---@param value unknown
+---@return string[] detached stored copy
+local function copyRegistrations(value)
+  checkDenseList(value, "unique registrations")
+  assert(type(value) == "table", "registration checks read the validated array")
+  local checked = {}
+  for _, species in ipairs(value) do
+    if type(species) ~= "string" or species == "" then
+      fail("stats bucket unique registrations name no species", {})
+    end
+    checked[#checked + 1] = species
+  end
+  return checked
+end
+
 ---@param bucket table<string, unknown> validated shape record
----@param refs table<string, unknown>
----@return table<string, unknown> detached canonical v4 bucket
+---@param refs table<string, unknown>?
+---@return table<string, unknown> detached canonical v5 bucket
 local function canonicalize(bucket, refs)
   return {
     schema = GameStatsSave.SCHEMA,
     stateVersion = GameStatsSave.STATE_VERSION,
-    uniqueCaught = checkUniqueCaught(bucket.uniqueCaught, refs),
+    uniqueCaught = refs ~= nil and checkUniqueCaught(bucket.uniqueCaught, refs)
+      or copyRegistrations(bucket.uniqueCaught),
     uniqueTotal = checkUniqueTotal(bucket.uniqueTotal),
     score = checkScore(bucket.score),
     mailWritten = checkMailWritten(bucket.mailWritten),
     stepsBiked = checkStepsBiked(bucket.stepsBiked),
     leagueWins = checkLeagueWins(bucket.leagueWins),
+    daycareDeposits = checkDaycareDeposits(bucket.daycareDeposits),
+    eggsHatched = checkEggsHatched(bucket.eggsHatched),
   }
 end
 
@@ -208,7 +267,7 @@ end
 
 ---@param bucket table<string, unknown>
 ---@param refs { species: table<string, boolean> }
----@return table<string, unknown> detached canonical v4 bucket
+---@return table<string, unknown> detached canonical v5 bucket
 function GameStatsSave.validate(bucket, refs)
   checkRefs(refs)
   if type(bucket) ~= "table" then
@@ -229,11 +288,18 @@ function GameStatsSave.validate(bucket, refs)
   return canonicalize(bucket, refs)
 end
 
+-- Migrates one stored bucket to the current schema. The species reference set
+-- owns the canonical registration check; a caller without a catalog passes nil
+-- and receives the same current-shape bucket with the stored registrations
+-- copied verbatim, which the owning runtime restore then validates. Only the
+-- save envelope's own schema advance takes that path.
 ---@param bucket table<string, unknown>?
----@param refs { species: table<string, boolean> }
----@return table<string, unknown> detached canonical v4 bucket
+---@param refs { species: table<string, boolean> }?
+---@return table<string, unknown> detached canonical v5 bucket
 function GameStatsSave.migrate(bucket, refs)
-  checkRefs(refs)
+  if refs ~= nil then
+    checkRefs(refs)
+  end
   if bucket == nil then
     return canonicalize(GameStatsSave.initial(), refs)
   end
@@ -250,7 +316,15 @@ function GameStatsSave.migrate(bucket, refs)
   local legacyFields = { schema = true, stateVersion = true, uniqueCaught = true, uniqueTotal = true, score = true }
   local mailWritten = 0
   local stepsBiked = 0
-  if bucket.schema == GameStatsSave.V3_SCHEMA and bucket.stateVersion == GameStatsSave.V3_STATE_VERSION then
+  local leagueWins = 0
+  if bucket.schema == GameStatsSave.V4_SCHEMA and bucket.stateVersion == GameStatsSave.V4_STATE_VERSION then
+    legacyFields.mailWritten = true
+    legacyFields.stepsBiked = true
+    legacyFields.leagueWins = true
+    mailWritten = bucket.mailWritten
+    stepsBiked = bucket.stepsBiked
+    leagueWins = bucket.leagueWins
+  elseif bucket.schema == GameStatsSave.V3_SCHEMA and bucket.stateVersion == GameStatsSave.V3_STATE_VERSION then
     legacyFields.mailWritten = true
     legacyFields.stepsBiked = true
     mailWritten = bucket.mailWritten
@@ -272,7 +346,9 @@ function GameStatsSave.migrate(bucket, refs)
     score = bucket.score,
     mailWritten = mailWritten,
     stepsBiked = stepsBiked,
-    leagueWins = 0,
+    leagueWins = leagueWins,
+    daycareDeposits = 0,
+    eggsHatched = 0,
   }, refs)
 end
 
@@ -287,6 +363,8 @@ function GameStatsSave.initial()
     mailWritten = 0,
     stepsBiked = 0,
     leagueWins = 0,
+    daycareDeposits = 0,
+    eggsHatched = 0,
   }
 end
 

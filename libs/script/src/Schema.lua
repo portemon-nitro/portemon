@@ -95,6 +95,10 @@ Schema.ENUMS = {
   -- compares like any other effect.
   radio_music_effect = { "march", "lullaby", "hoenn", "sinnoh", "unown", "pokeflute", "none" },
   pc_count_kind = { "mailbox", "photos", "seals" },
+  -- The closed party-screen selection policies: the ordinary occupied-slot
+  -- pick and the Day Care store/Summary context the source opens for a
+  -- deposit.
+  party_select_policy = { "occupied", "daycare_store" },
   pc_terminal_action = { "start", "on", "off", "wait", "release" },
   -- The three persistent follower map-object movement modes opcode 604 may
   -- select; raw source selectors never appear past the generated boundary.
@@ -1365,6 +1369,13 @@ Schema.OPERATIONS = {
       result = { type = "value", required = true },
     },
   },
+  -- The same conscious non-egg party count including every stored PC box mon
+  -- (ScrCmd_CountAliveMonsAndPC).
+  count_alive_mons_and_pc = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
   party_count_at_or_below_level = {
     fields = {
       level = { type = "scalar_or_value", required = true },
@@ -1823,15 +1834,77 @@ Schema.OPERATIONS = {
       sprite = { type = "scalar_or_value", required = true },
     },
   },
+  -- The Day Care family. Every query writes its source output variable in the
+  -- same tick and buffers the source display text; the deposit and withdrawal
+  -- move canonical custody, and the sanitize primitive answers its own native
+  -- result. Slot and buffer selectors are ScriptGetVar reads; result, cost,
+  -- growth, species, and action operands are output variables.
+  daycare_mon_nicknames = { fields = {} },
+  daycare_state = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  daycare_retrieve_mon = {
+    fields = {
+      result = { type = "value", required = true },
+      slot = { type = "scalar_or_value", required = true },
+    },
+  },
+  daycare_withdraw_cost = {
+    fields = {
+      result = { type = "value", required = true },
+      slot = { type = "scalar_or_value", required = true },
+    },
+  },
+  daycare_growth = {
+    fields = {
+      result = { type = "value", required = true },
+      slot = { type = "scalar_or_value", required = true },
+    },
+  },
+  daycare_tail_mon = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  daycare_deposit = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+    },
+  },
+  daycare_mon_stats = {
+    fields = {
+      nicknameBuffer = { type = "scalar_or_value", required = true },
+      levelBuffer = { type = "scalar_or_value", required = true },
+      genderBuffer = { type = "scalar_or_value", required = true },
+      slot = { type = "scalar_or_value", required = true },
+    },
+  },
+  daycare_sanitize_mon = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  daycare_update_objects = { fields = {} },
   -- Party-screen selection. The launch node blocks on the party_select
-  -- task with the source selection context; the completed slot parks on
-  -- the script instance for the companion result node, which copies it
-  -- (or the source cancellation value) into its variable and rejects
-  -- anything else.
-  party_select = { fields = {} },
+  -- task with the source selection policy and opening slot; the completed
+  -- slot parks on the script instance for the companion result node, which
+  -- copies it (or the source cancellation value) into its variable and
+  -- rejects anything else. The Day Care context also reports the source
+  -- action, so the result node writes the action variable only when the
+  -- script names one.
+  party_select = {
+    fields = {
+      policy = { type = "enum:party_select_policy", default = "occupied" },
+      initialSlot = { type = "scalar_or_value" },
+    },
+  },
   party_select_result = {
     fields = {
       result = { type = "value", required = true },
+      action = { type = "value" },
     },
   },
   pokemon_nickname_input = {

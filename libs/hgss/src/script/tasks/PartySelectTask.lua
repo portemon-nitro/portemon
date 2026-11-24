@@ -26,10 +26,25 @@ PartySelectTask.version = 2
 PartySelectTask.CANCEL_RESULT = 255
 
 PartySelectTask.ELIGIBILITY_OCCUPIED = "occupied"
+-- The Day Care store context (PARTY_MENU_CONTEXT_18): the same occupied-slot
+-- picker, but confirming a parent opens the source care menu and the chosen
+-- row reports the source action beside the slot.
+PartySelectTask.ELIGIBILITY_DAYCARE_STORE = "daycare_store"
+
+-- The source action a completed selection reports: Store accepts the slot
+-- with action 0, Summary exits with action 1, and a cancellation reports the
+-- source goodbye action 0.
+PartySelectTask.ACTION_STORE = 0
+PartySelectTask.ACTION_SUMMARY = 1
+
+local POLICIES = {
+  occupied = true,
+  daycare_store = true,
+}
 
 ---@param policy string
 local function checkPolicy(policy)
-  if policy ~= PartySelectTask.ELIGIBILITY_OCCUPIED then
+  if type(policy) ~= "string" or not POLICIES[policy] then
     Errors.raise(ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE, "unknown party eligibility policy " .. tostring(policy), {
       policy = policy,
     })
@@ -122,12 +137,24 @@ function PartySelectTask.poll(state, ctx)
   -- variable is named until the result command runs.
   local instance = assert(ctx.instance, "party_select runs on a script instance")
   assert(type(instance.locals) == "table", "the script instance carries locals")
+  local reportsAction = state.policy == PartySelectTask.ELIGIBILITY_DAYCARE_STORE
   if result.kind == "selected" then
     assert(type(result.slot) == "number", "selection completes on a party slot")
     instance.locals.__party_selection = result.slot
+    if reportsAction then
+      local action = result.action
+      assert(
+        action == PartySelectTask.ACTION_STORE or action == PartySelectTask.ACTION_SUMMARY,
+        "a Day Care selection reports the source Store or Summary action"
+      )
+      instance.locals.__party_selection_action = action
+    end
   else
     assert(result.kind == "cancelled", "selection ends selected or cancelled")
     instance.locals.__party_selection = PartySelectTask.CANCEL_RESULT
+    if reportsAction then
+      instance.locals.__party_selection_action = PartySelectTask.ACTION_STORE
+    end
   end
   state.completed = true
   host:close(handle)
@@ -178,7 +205,7 @@ function PartySelectTask.validate(state)
   if state.focus == "cancel" and state.allowCancel ~= true then
     return Errors.new(ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE, "party_select cancel focus needs cancel permission", {})
   end
-  if state.policy ~= PartySelectTask.ELIGIBILITY_OCCUPIED then
+  if type(state.policy) ~= "string" or not POLICIES[state.policy] then
     return Errors.new(
       ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE,
       "party_select policy must name a known eligibility",

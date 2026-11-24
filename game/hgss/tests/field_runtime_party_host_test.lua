@@ -93,6 +93,7 @@ local function validEntry(versionId, withBuckets)
     entry.sysInfo = require("libs.hgss.src.save.SysInfoState").empty()
     entry.fieldPoison = require("libs.hgss.src.save.FieldPoisonSave").initial()
     entry.mart = require("libs.hgss.src.save.MartSave").empty()
+    entry.daycare = require("libs.hgss.src.save.DaycareState").initial()
   end
   return entry
 end

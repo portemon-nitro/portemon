@@ -390,4 +390,23 @@ function T.confirmed_exchange_without_a_freed_slot_refuses_atomically()
   Assert.equal(bag:revision(), bagRevision, "a refused exchange publishes no bag revision")
 end
 
+-- The source Day Care store menu: an ordinary parent offers Store, Summary and
+-- Quit in source order, an Egg offers only Summary and Quit, and a species name
+-- never leaks the label into row identity.
+function T.day_care_store_policy_lists_the_source_rows()
+  local policy = PartyActions.storeContextPolicy(nil)
+  local parent = policy.menuFor({ isEgg = false }, "daycare_store")
+  Assert.equal(#parent, 3)
+  Assert.equal(parent[1].kind, "store")
+  Assert.equal(parent[2].kind, "summary")
+  Assert.equal(parent[3].kind, "quit")
+  local egg = policy.menuFor({ isEgg = true }, "daycare_store")
+  Assert.equal(#egg, 2, "an Egg offers only Summary and Quit")
+  Assert.equal(egg[1].kind, "summary", "an Egg offers the same Summary row")
+  Assert.equal(egg[2].kind, "quit", "an Egg offers the same Quit row")
+  Assert.throws(function()
+    policy.submenuFor({ isEgg = false }, "item")
+  end, "the care menu owns no item submenu")
+end
+
 return { tests = T }

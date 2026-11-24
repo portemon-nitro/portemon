@@ -28,6 +28,10 @@ local FieldActorStore = require("libs.hgss.src.actors.FieldActorStore")
 -- partner (the object table pins these ids).
 local CAMERA_TARGET_OBJECT_ID = 241
 local PARTNER_OBJECT_ID = 253
+-- The Day Care's two reserved yard objects (obj_daycare_poke_1/2). They are
+-- derived presentation built from the stored parents, never persisted source
+-- objects, so actor capture skips them like the partner.
+local RESERVED_OBJECT_IDS = { [250] = true, [251] = true }
 -- The walking partner actor id. Map objects use map-scoped identities, but
 -- the dynamic partner keeps one stable id across maps so scripts and the
 -- interaction resolver never chase a renamed actor after a transition.
@@ -739,7 +743,7 @@ function FieldActorManager:_destroy(entry, actor)
   end
   entry.store:removeActor(actor)
   entry.store:releaseNumericState(actor:numericSlot())
-  self.assets:release(actor.spriteId)
+  self.assets:release(actor.visualId or actor.spriteId)
   self._drawRecordByActorId[actor.actorId] = nil
   if self.maps[entry.runtimeMap.mapId] == entry then
     self._visualRevision = self._visualRevision + 1
@@ -1445,17 +1449,18 @@ function FieldActorManager:captureObjects()
   local function captureRng()
     return self.autonomy:captureRng()
   end
-  -- The dynamic partner is derived follower presentation, never persisted
-  -- state: it reconstructs from the party after continue. Source-event
-  -- actors are persistable only while their durable event flag says the
-  -- event should exist; the flag is consulted live so an actor whose
-  -- removal was queued but not yet applied is still omitted. Transient
-  -- visibility never affects eligibility.
+  -- The dynamic partner and the Day Care's reserved yard objects are derived
+  -- presentation, never persisted state: they reconstruct from the party or
+  -- from the stored parents after continue. Source-event actors are
+  -- persistable only while their durable event flag says the event should
+  -- exist; the flag is consulted live so an actor whose removal was queued but
+  -- not yet applied is still omitted. Transient visibility never affects
+  -- eligibility.
   local function persistableActors(entry)
     local eventState = assert(self.eventState, "captureObjects requires a bound event state")
     local ordered = {}
     for _, actor in ipairs(actorsByManagerSlot(entry)) do
-      if actor.objectEventId ~= PARTNER_OBJECT_ID then
+      if actor.objectEventId ~= PARTNER_OBJECT_ID and not RESERVED_OBJECT_IDS[actor.objectEventId] then
         local sourceEvent = actor.sourceEvent
         if
           sourceEvent == nil or isSourceEventPresent(eventState, sourceEvent --[[@as FieldActorEvent]])
@@ -2144,7 +2149,7 @@ function FieldActorManager:collectSpriteIds(out)
   assert(type(out) == "table", "collectSpriteIds requires a set table")
   for _, entry in pairs(self.maps) do
     for _, actor in ipairs(entry.store:orderedActorsView()) do
-      out[actor.spriteId] = true
+      out[actor.visualId or actor.spriteId] = true
     end
   end
 end
@@ -2173,7 +2178,7 @@ function FieldActorManager:drawRecords(alpha)
         if not record then
           record = {
             actorId = actor.actorId,
-            spriteId = actor.spriteId,
+            spriteId = actor.visualId or actor.spriteId,
             world = { x = state.worldX, y = state.worldY, z = state.worldZ },
             facing = actor.facing,
             pose = actor.pose,
@@ -2192,7 +2197,7 @@ function FieldActorManager:drawRecords(alpha)
         local gestureOffsetY = presentation.gestureOffsetY
         local base = actor:renderPositionInto(self._renderSample, alpha)
         record.actorId = actor.actorId
-        record.spriteId = actor.spriteId
+        record.spriteId = actor.visualId or actor.spriteId
         record.world.x = base.x + state.presentationOffsetX
         record.world.y = base.y + state.presentationOffsetY + gestureOffsetY
         record.world.z = base.z + state.presentationOffsetZ
@@ -2626,6 +2631,196 @@ function FieldActorManager:actorsOf(mapId)
   return entry and entry.store:orderedActors() or {}
 end
 
+-- --- Day Care yard objects ---------------------------------------------------
+
+---@class FieldActorManager.ReservedObjectSpec
+---@field numericId integer the reserved source object id (250 or 251)
+---@field sprite table<string, unknown> the semantic following-mon descriptor
+---@field visualId integer the resolved presentation visual id
+---@field mapId integer
+---@field fieldX integer
+---@field fieldZ integer
+---@field facing FieldDirection
+---@field movementType string semantic source movement profile
+
+-- The Day Care's two reserved yard objects are ordinary billboard map objects
+-- at fixed source tiles, recreated by the room's own update command from the
+-- stored parents (src/scrcmd_daycare.c::ScrCmd_UpdateDaycareMonObjects). Their
+-- semantic sprite stays the generated following-mon record so the parent's
+-- own visual identity is the catalog's, while the presentation visual is the
+-- resolved descriptor's `visualId`; the actor is never solid, never scripted,
+-- and never captured. The synthetic source event carries the reserved numeric
+-- id, the source facing, and the source movement profile.
+---@param self FieldActorManager
+---@param spec FieldActorManager.ReservedObjectSpec
+local function checkReservedSpec(self, spec)
+  assert(type(spec) == "table", "reserved object spec required")
+  if not RESERVED_OBJECT_IDS[spec.numericId] then
+    Errors.raise(
+      FieldErrors.ACTOR_PARTNER_ID_INVALID,
+      "reserved object numeric id must be one of the Day Care yard objects",
+      { numericId = spec.numericId }
+    )
+  end
+  if type(spec.sprite) ~= "table" then
+    Errors.raise(FieldErrors.ACTOR_PARTNER_VISUAL_MISSING, "reserved object sprites carry their semantic record", {})
+  end
+  if not CARDINAL_FACINGS[spec.facing] then
+    Errors.raise(
+      FieldErrors.ACTOR_PARTNER_FACING_INVALID,
+      "unsupported reserved object facing " .. tostring(spec.facing),
+      { facing = spec.facing }
+    )
+  end
+  assert(
+    type(spec.movementType) == "string",
+    "reserved objects name their source movement profile"
+  )
+  assert(
+    type(spec.fieldX) == "number" and spec.fieldX % 1 == 0 and type(spec.fieldZ) == "number" and spec.fieldZ % 1 == 0,
+    "reserved object integer field coordinates required"
+  )
+  if spec.mapId ~= self.currentMapId then
+    Errors.raise(
+      FieldErrors.ACTOR_PARTNER_MAP_MISMATCH,
+      "reserved object installation requires the current actor map",
+      { mapId = spec.mapId, currentMapId = self.currentMapId }
+    )
+  end
+  if not self.assets:knows(spec.visualId) then
+    Errors.raise(
+      FieldErrors.ACTOR_PARTNER_VISUAL_MISSING,
+      "spriteId " .. tostring(spec.visualId) .. " is not in the compiled actor set",
+      { spriteId = spec.visualId }
+    )
+  end
+end
+
+---@param spec FieldActorManager.ReservedObjectSpec
+---@return FieldActorEvent
+local function reservedObjectEvent(spec)
+  return {
+    index = -1,
+    objectEventId = spec.numericId,
+    spriteId = spec.visualId,
+    movementType = spec.movementType,
+    type = 0,
+    eventFlag = 0,
+    scriptId = 0,
+    facingDirection = spec.facing,
+    facingDirectionRaw = PARTNER_FACING_RAW[spec.facing],
+    xRange = -1,
+    yRange = -1,
+    x = spec.fieldX,
+    z = spec.fieldZ,
+    y = 0,
+    solid = false,
+  }
+end
+
+-- Acquire the visual and construct the replacement object without publishing
+-- it: any failure releases the acquisition and leaves the entry untouched.
+---@param self FieldActorManager
+---@param entry FieldActorManager.Entry
+---@param spec FieldActorManager.ReservedObjectSpec
+---@param surface table<string, unknown>
+---@return FieldActorManager.Actor
+local function constructReservedObject(self, entry, spec, surface)
+  local actorId = FieldObjectActor.actorId(spec.mapId, spec.numericId)
+  local asset = self:_acquireVisual(spec.visualId, actorId)
+  local actor = nil ---@type FieldActorManager.Actor?
+  local numericSlot = entry.store:allocateNumericState()
+  local ok, err = pcall(function()
+    local runtimeMap = entry.runtimeMap
+    local world = FieldCoordinates.fieldToWorld(runtimeMap, spec.fieldX, spec.fieldZ, surface.worldY)
+    local plate = assert(runtimeMap.terrain:plate(surface.surfaceId), "reserved object projected surface is missing")
+    local plateCellKey, plateSourceSurfaceId = sourceIdentityFromPlate(plate)
+    local visual = assert(asset.visual, "field actor visual is required")
+    local idlePresentation = assert(visual.idlePresentation, "field actor idle presentation is required")
+    actor = FieldObjectActor.new({
+      mapId = runtimeMap.mapId,
+      sourceEvent = reservedObjectEvent(spec),
+      spriteId = spec.sprite,
+      solid = false,
+      fieldX = spec.fieldX,
+      fieldZ = spec.fieldZ,
+      cellKey = plateCellKey or cellKeyFor(spec.fieldX, spec.fieldZ),
+      sourceSurfaceId = plateSourceSurfaceId,
+      surfaceId = surface.surfaceId,
+      worldX = world.x,
+      worldY = world.y,
+      worldZ = world.z,
+      resident = true,
+      visual = visual,
+      idlePresentation = idlePresentation,
+      numericStore = entry.store,
+      numericSlot = numericSlot,
+    }) --[[@as FieldActorManager.Actor]]
+    actor.actorId = actorId
+    actor.visualId = spec.visualId
+    actor:setVisible(true)
+  end)
+  if not ok then
+    entry.store:releaseNumericState(numericSlot)
+    self.assets:release(spec.visualId)
+    error(err)
+  end
+  return actor --[[@as FieldActorManager.Actor]]
+end
+
+-- Install (or replace) one reserved Day Care yard object on the current map.
+-- A replaced object is destroyed only after its successor was constructed, and
+-- an unplaceable tile answers nil so the caller keeps the last known-good
+-- presentation; repeating the update therefore never duplicates an object.
+---@param spec FieldActorManager.ReservedObjectSpec
+---@return string? actorId
+---@param self FieldActorManager
+function FieldActorManager:installReservedObject(spec)
+  checkReservedSpec(self, spec)
+  local entry = assert(self.maps[spec.mapId], "reserved object current map entry is missing")
+  local surface = resolvePartnerSurface(entry, spec)
+  if surface == nil then
+    return nil
+  end
+  local actor = constructReservedObject(self, entry, spec, surface)
+  local actorId = actor.actorId
+  local existing = entry.store:getActor(actorId)
+  if existing ~= nil then
+    self:_destroy(entry, existing)
+  end
+  assignManagerSlot(entry, actor)
+  entry.store:addActor(actor)
+  self.autonomy:attach(actorId, spec.movementType, actor.sourceEvent)
+  if self.maps[entry.runtimeMap.mapId] == entry then
+    self._visualRevision = self._visualRevision + 1
+  end
+  return actorId
+end
+
+-- Remove one reserved Day Care yard object. Absence is a no-op so an empty
+-- parent slot clears unconditionally.
+---@param numericId integer
+---@return string? removedActorId
+---@param self FieldActorManager
+function FieldActorManager:clearReservedObject(numericId)
+  assert(RESERVED_OBJECT_IDS[numericId], "reserved object numeric id must be a Day Care yard object")
+  local mapId = self.currentMapId
+  if mapId == nil then
+    return nil
+  end
+  local entry = self.maps[mapId]
+  if entry == nil then
+    return nil
+  end
+  local actorId = FieldObjectActor.actorId(mapId, numericId)
+  local actor = entry.store:getActor(actorId)
+  if actor == nil then
+    return nil
+  end
+  self:_destroy(entry, actor)
+  return actorId
+end
+
 -- --- Scripted actor API ------------------------------------------------------
 
 -- Alias of `getById` for the script actor world contract.
@@ -2876,7 +3071,9 @@ end
 function FieldActorManager:setSprite(actorId, spriteId)
   local actor = requireActor(self, actorId)
   assert(type(spriteId) == "number" and spriteId % 1 == 0, "an actor sprite id must be an integer")
-  local previousSpriteId = actor.spriteId
+  -- Derived reserved objects keep their semantic following-mon record as the
+  -- sprite identity, so the presentation visual is the acquired one.
+  local previousSpriteId = actor.visualId or actor.spriteId
   if previousSpriteId == spriteId then
     return
   end
@@ -2884,6 +3081,9 @@ function FieldActorManager:setSprite(actorId, spriteId)
   local visual = assert(asset.visual, "field actor visual is required")
   local idlePresentation = assert(visual.idlePresentation, "field actor idle presentation is required")
   actor:replaceVisual(spriteId, visual, idlePresentation)
+  if actor.visualId ~= nil then
+    actor.visualId = spriteId
+  end
   self.assets:release(previousSpriteId)
   local entry = self.maps[actor.mapId]
   if entry ~= nil and self.maps[entry.runtimeMap.mapId] == entry then

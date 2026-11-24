@@ -1299,18 +1299,32 @@ local function handleBagGetQuantity(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
-local function handlePartySelect(_, run)
+local function handlePartySelect(node, run)
   requireForeground(run, "party_select")
   monsFor(run)
-  -- The source selection context (PARTY_MENU_CONTEXT_3): every occupied
-  -- slot is eligible and B cancels. The completed slot parks on the
-  -- script instance for the companion result node; no game variable is
+  -- The source selection policy names the concrete party-menu context: the
+  -- ordinary occupied-slot pick (PARTY_MENU_CONTEXT_3) or the Day Care store
+  -- context, where every occupied slot is eligible, B cancels, and the
+  -- completed action tells Store from Summary. The completed slot parks on
+  -- the script instance for the companion result node; no game variable is
   -- touched here.
+  local policy = node.policy or "occupied"
+  local initialSlot = 0
+  if node.initialSlot ~= nil then
+    initialSlot = evalField(node, run, "initialSlot")
+    if type(initialSlot) ~= "number" or initialSlot % 1 ~= 0 or initialSlot < 0 or initialSlot > 5 then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "party selection opening slot must be a party position",
+        { scriptId = run.instance.scriptId, slot = initialSlot }
+      )
+    end
+  end
   return blockOnTask(run, "party_select", {
     request = {
       mode = "select",
-      initialSlot = 0,
-      eligibility = { policy = "occupied" },
+      initialSlot = initialSlot,
+      eligibility = { policy = policy },
       allowCancel = true,
     },
   })
@@ -1320,7 +1334,8 @@ local function handlePartySelectResult(node, run)
   -- The instance-scoped handoff the selection task parked: a completed
   -- zero-based slot or the source cancellation value. Anything else means
   -- the result command ran without its launch, and raw args sentinels
-  -- never reach script variables.
+  -- never reach script variables. The Day Care context also reports the
+  -- source action, which the task parks beside the slot.
   local value = run.instance.locals.__party_selection
   if type(value) ~= "number" or value % 1 ~= 0 or (value > 5 and value ~= 255) or value < 0 then
     Errors.raise(
@@ -1329,7 +1344,19 @@ local function handlePartySelectResult(node, run)
       { scriptId = run.instance.scriptId, value = value }
     )
   end
-  semanticsFor(run).writeRef(node.result, value, run)
+  local semantics = semanticsFor(run)
+  semantics.writeRef(node.result, value, run)
+  if node.action ~= nil then
+    local action = run.instance.locals.__party_selection_action
+    if action ~= 0 and action ~= 1 then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "party selection holds no completed action",
+        { scriptId = run.instance.scriptId, action = action }
+      )
+    end
+    semantics.writeRef(node.action, action, run)
+  end
   return Runtime.OUTCOME_CONTINUE
 end
 
@@ -3486,6 +3513,89 @@ HANDLERS.bag_has_item = handleBagHasItem
 HANDLERS.item_is_tmhm = handleItemIsTmhm
 HANDLERS.item_get_pocket = handleItemGetPocket
 HANDLERS.bag_get_quantity = handleBagGetQuantity
+-- The Day Care family (opcodes 312/313/358/361/367/371/372/373/385/690/715):
+-- each handler evaluates its ScriptGetVar operands, calls exactly one named
+-- Day Care operation, writes the buffered display text the following message
+-- reads, and publishes its source output in the same tick. The main chunk is
+-- at LuaJIT's 200-local budget, so these handlers live in a block and stay
+-- anonymous closures of the two helpers below.
+do
+  local function daycareFor(run)
+    return requireService(run, "daycare")
+  end
+  -- Buffered display text is resolved in the command's own tick and stored as
+  -- a literal, because the message that reads it follows later and must never
+  -- observe a changed Day Care.
+  local function writeCareBuffer(run, slot, text)
+    if type(slot) ~= "number" or text == nil then
+      return
+    end
+    run.instance.textArgs[slot] = { text = "literal_text", value = text }
+  end
+  HANDLERS.daycare_mon_nicknames = function(_, run)
+    for slot, text in pairs(daycareFor(run):storedNicknames()) do
+      writeCareBuffer(run, slot, text)
+    end
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.daycare_state = function(node, run)
+    semanticsFor(run).writeRef(node.result, daycareFor(run):state(), run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.count_alive_mons_and_pc = function(node, run)
+    local mons = monsFor(run)
+    semanticsFor(run).writeRef(node.result, mons:countAliveMons() + mons:storedMonCount(), run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.daycare_retrieve_mon = function(node, run)
+    local withdrawn = daycareFor(run):withdraw(evalField(node, run, "slot"))
+    writeCareBuffer(run, 0, withdrawn.nickname)
+    semanticsFor(run).writeRef(node.result, withdrawn.species, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.daycare_withdraw_cost = function(node, run)
+    local cost = daycareFor(run):withdrawCost(evalField(node, run, "slot"))
+    writeCareBuffer(run, 0, cost.nickname)
+    writeCareBuffer(run, 1, cost.bufferedPrice)
+    semanticsFor(run).writeRef(node.result, cost.price, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.daycare_growth = function(node, run)
+    local growth = daycareFor(run):growth(evalField(node, run, "slot"))
+    writeCareBuffer(run, 0, growth.nickname)
+    writeCareBuffer(run, 1, growth.bufferedGrowth)
+    semanticsFor(run).writeRef(node.result, growth.growth, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.daycare_tail_mon = function(node, run)
+    local tail = daycareFor(run):tailMon()
+    writeCareBuffer(run, 0, tail.nickname)
+    semanticsFor(run).writeRef(node.result, tail.species, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.daycare_deposit = function(node, run)
+    daycareFor(run):deposit(evalField(node, run, "slot"))
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.daycare_mon_stats = function(node, run)
+    local stats = daycareFor(run):monStats(evalField(node, run, "slot"))
+    if stats ~= nil then
+      writeCareBuffer(run, evalField(node, run, "nicknameBuffer"), stats.nickname)
+      writeCareBuffer(run, evalField(node, run, "levelBuffer"), stats.level)
+      writeCareBuffer(run, evalField(node, run, "genderBuffer"), stats.gender)
+    end
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.daycare_sanitize_mon = function(node, run)
+    local result = daycareFor(run):sanitizeMon(evalField(node, run, "slot"))
+    semanticsFor(run).writeRef(node.result, result, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.daycare_update_objects = function(_, run)
+    daycareFor(run):updateYardObjects()
+    return Runtime.OUTCOME_CONTINUE
+  end
+end
 HANDLERS.party_select = handlePartySelect
 HANDLERS.party_select_result = handlePartySelectResult
 HANDLERS.place_starter_balls = handlePlaceStarterBalls

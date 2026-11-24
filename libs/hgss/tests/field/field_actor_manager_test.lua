@@ -4083,4 +4083,88 @@ function T.repositioning_a_source_identified_actor_onto_its_own_cell_is_stable()
   mgr:dispose()
 end
 
+-- The Day Care's two reserved yard objects: an install replaces any existing
+-- object of the same reserved id, the semantic sprite stays the caller's
+-- following-mon record while the presentation visual is the resolved one, the
+-- reserved objects are never captured as source objects, and an ordinary solid
+-- actor keeps its own capture and occupancy behavior.
+function T.reserved_day_care_objects_replace_without_capturing()
+  local objects = { object({ objectEventId = 0, x = 2, z = 3, eventFlag = 0 }) }
+  local assets = fakeAssets({ [99] = true, [20153] = true, [20154] = true })
+  local mgr = manager(objects, { assets = assets })
+  local descriptor = { visualId = 20153, size = 4, objectParam = 1024 }
+  local first = assert(mgr:installReservedObject({
+    mapId = 61,
+    numericId = 250,
+    sprite = descriptor,
+    visualId = 20153,
+    fieldX = 5,
+    fieldZ = 5,
+    facing = "south",
+    movementType = "look_north_south_east",
+  }))
+  Assert.equal(first, "map:61:object:250")
+  local actor = assert(mgr:getById(first))
+  Assert.equal(actor.spriteId, descriptor, "the semantic sprite is the caller's following-mon record")
+  Assert.equal(actor.visualId, 20153, "the presentation visual is the descriptor's own id")
+  Assert.equal(actor:isSolid(), false, "a yard object never blocks")
+  Assert.deepEqual(actor:getFieldPosition(), { fieldX = 5, fieldZ = 5 })
+  Assert.equal(actor.facing, "south", "source direction 1 is south")
+
+  local replaced = assert(mgr:installReservedObject({
+    mapId = 61,
+    numericId = 250,
+    sprite = descriptor,
+    visualId = 20154,
+    fieldX = 5,
+    fieldZ = 5,
+    facing = "south",
+    movementType = "look_north_south_east",
+  }))
+  Assert.equal(replaced, first, "the replacement keeps the reserved identity")
+  local live = {}
+  for _, entry in ipairs(mgr:actorsOf(61)) do
+    if entry.objectEventId == 250 then
+      live[#live + 1] = entry
+    end
+  end
+  Assert.equal(#live, 1, "repeating the install never duplicates the yard object")
+  Assert.equal(assets:total(), 2, "the replacement released the previous visual exactly once")
+
+  local captured = mgr:captureObjects()
+  for actorId in pairs(captured.actors or {}) do
+    Assert.isTrue(
+      actorId ~= first,
+      "derived yard objects are never captured as source objects"
+    )
+  end
+  Assert.notNil(captured.actors["map:61:object:0"], "an ordinary source actor still captures")
+
+  Assert.equal(mgr:clearReservedObject(250), first)
+  Assert.isNil(mgr:getById(first))
+  Assert.isNil(mgr:clearReservedObject(250), "clearing an absent yard object is a no-op")
+  mgr:dispose()
+end
+
+function T.reserved_day_care_objects_reject_unknown_ids()
+  local objects = { object({ objectEventId = 0, x = 2, z = 3 }) }
+  local mgr = manager(objects)
+  throwsCode("ACTOR_PARTNER_ID_INVALID", function()
+    mgr:installReservedObject({
+      mapId = 61,
+      numericId = 3,
+      sprite = { visualId = 20153 },
+      visualId = 20153,
+      fieldX = 5,
+      fieldZ = 5,
+      facing = "south",
+      movementType = "look_north_south_east",
+    })
+  end)
+  Assert.throws(function()
+    mgr:clearReservedObject(3)
+  end, "an ordinary object id is not a reserved yard object")
+  mgr:dispose()
+end
+
 return { tests = T }

@@ -236,6 +236,12 @@ function MonFactory:createScriptGift(request)
   mon.form = request.form or 0
   if request.ability ~= nil then
     mon.ability = request.ability
+  elseif mon.form ~= 0 then
+    -- UpdateBoxMonAbility: a requested alternate form owns its own ability
+    -- slot table, so the stored ability follows the form the caller asked for
+    -- instead of the base form the value was generated from.
+    local formed = self._catalog:form(request.species, mon.form)
+    mon.ability = formed.abilities[Personality.abilitySlot(#formed.abilities, mon.personality)]
   end
   return self:_finish(mon)
 end

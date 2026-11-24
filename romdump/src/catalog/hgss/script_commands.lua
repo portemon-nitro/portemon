@@ -2271,19 +2271,17 @@ return {
       },
     },
     [312] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_BufferDaycareMonNicks",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "egg_daycare",
-      deferredNote = "daycare state needs the egg/daycare lifecycle",
+      disposition = "supported",
       widths = {},
     },
     [313] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_GetDaycareState",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "egg_daycare",
-      deferredNote = "daycare state needs the egg/daycare lifecycle",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
@@ -2603,11 +2601,10 @@ return {
       },
     },
     [358] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_CountAliveMonsAndPC",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "pc_storage",
-      deferredNote = "counts including PC boxes need box storage",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
@@ -2629,11 +2626,10 @@ return {
       },
     },
     [361] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_RetrieveDaycareMon",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "egg_daycare",
-      deferredNote = "daycare retrieval needs the egg/daycare lifecycle",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2691,10 +2687,10 @@ return {
       widths = {},
     },
     [367] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_BufferDaycareWithdrawCost",
-      disposition = "deferred",
-      deferredReason = "egg_daycare",
-      deferredNote = "daycare withdrawal buffers need the egg/daycare lifecycle",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2723,31 +2719,29 @@ return {
       },
     },
     [371] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_BufferDaycareMonGrowth",
-      disposition = "deferred",
-      deferredReason = "egg_daycare",
-      deferredNote = "daycare growth buffers need the egg/daycare lifecycle",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [372] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_GetTailDaycareMonSpeciesAndNick",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "egg_daycare",
-      deferredNote = "daycare state needs the egg/daycare lifecycle",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
     },
     [373] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_PutMonInDaycare",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "egg_daycare",
-      deferredNote = "daycare deposit needs the egg/daycare lifecycle",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
@@ -2842,10 +2836,10 @@ return {
       },
     },
     [385] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_BufferDaycareMonStats",
-      disposition = "deferred",
-      deferredReason = "egg_daycare",
-      deferredNote = "daycare stat buffers need the egg/daycare lifecycle",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4213,13 +4207,19 @@ return {
       },
     },
     [551] = {
+      classification = "native_wait",
       name = "ScrCmd_ChoosePartyMonForDayCare",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
     },
     [552] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_GetDayCarePartySelection",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5283,11 +5283,10 @@ return {
       },
     },
     [690] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_DaycareSanitizeMon",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "egg_daycare",
-      deferredNote = "daycare state needs the egg/daycare lifecycle",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5474,11 +5473,10 @@ return {
       },
     },
     [715] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_UpdateDaycareMonObjects",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "egg_daycare",
-      deferredNote = "daycare objects need the egg/daycare lifecycle",
+      disposition = "supported",
       widths = {},
     },
     [716] = {

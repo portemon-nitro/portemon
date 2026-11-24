@@ -223,6 +223,12 @@ local function captureRuntime(overrides)
         return require("libs.mons.src.MonsSave").empty(7)
       end,
     },
+    hallOfFame = require("libs.hgss.src.save.HallOfFameState").empty(),
+    daycare = {
+      capture = function()
+        return require("libs.hgss.src.save.DaycareState").initial()
+      end,
+    },
     mailbox = require("libs.hgss.src.save.Mailbox").new(),
     photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new(),
     sysInfo = require("libs.hgss.src.save.SysInfoState").new(require("libs.hgss.src.save.SysInfoState").empty()),
@@ -328,7 +334,8 @@ function T.captureGameSave_returns_an_owner_produced_snapshot_without_storage_io
   Assert.equal(valid.encounters.schema, "hgss-encounter-v2", "every save captures the encounter bucket")
   Assert.deepEqual(valid.fieldPoison, FieldPoisonSave.initial(), "every save captures the poison counter")
   Assert.equal(valid.pokedex.schema, "hgss-pokedex-v2", "every save captures the dex bucket")
-  Assert.equal(valid.gameStats.schema, "hgss-stats-v4", "every save captures the stats bucket")
+  Assert.equal(valid.gameStats.schema, GameStatsSave.SCHEMA, "every save captures the stats bucket")
+  Assert.equal(valid.daycare.schema, "hgss-daycare-v1", "every save captures the Day Care bucket")
   Assert.equal(valid.pokegear.schema, "hgss-pokegear-v2", "every save captures the companion bucket")
   Assert.equal(valid.easyChat.schema, "hgss-easy-chat-v1", "every save captures the word bucket")
   Assert.equal(scriptCaptureCalls, 1)
@@ -848,6 +855,8 @@ local function statsBucket(uniqueCaught, uniqueTotal, score)
     mailWritten = 0,
     stepsBiked = 0,
     leagueWins = 0,
+    daycareDeposits = 0,
+    eggsHatched = 0,
   }
 end
 

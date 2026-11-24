@@ -48,6 +48,48 @@ PartyActions.__index = PartyActions
 ---@field move string? the level-up move a learn request offers
 ---@field evolution { mon: table<string, unknown>, additionalMons: table<string, unknown>[], inventoryDeltas: { item: string, delta: integer }[] }? the captured flow result an evolve request publishes
 
+-- The source Day Care store context menu (party_menu.c
+-- PartyMenu_SetContextMenuItems_Store): an ordinary parent offers Store,
+-- Summary, and Quit in that order, while an Egg offers only Summary and Quit.
+-- The rows carry no fee, capacity, or species policy: the source script owns
+-- those decisions, and the picker only reports the chosen row.
+---@param manifest table<string, unknown>? the validated party manifest behind the row labels
+---@return table<string, unknown> the party action policy for the care context
+function PartyActions.storeContextPolicy(manifest)
+  local labels = type(manifest) == "table" and type(manifest.text) == "table" and manifest.text.labels or nil
+  local function text(key, fallback)
+    if type(labels) == "table" and type(labels[key]) == "string" then
+      return labels[key]
+    end
+    return fallback
+  end
+  local function menuFor(facts, _)
+    assert(type(facts) == "table", "the care menu reads its slot facts")
+    if facts.isEgg == true then
+      return {
+        { kind = "summary", label = text("summary", "SUMMARY") },
+        { kind = "quit", label = text("quit", "QUIT") },
+      }
+    end
+    return {
+      { kind = "store", label = text("store", "STORE") },
+      { kind = "summary", label = text("summary", "SUMMARY") },
+      { kind = "quit", label = text("quit", "QUIT") },
+    }
+  end
+  local function unreachable(submenuKind)
+    error("the day care menus offer no " .. tostring(submenuKind) .. " submenus", 2)
+  end
+  local function submenuFor(_, submenuKind)
+    unreachable(submenuKind)
+    return {}
+  end
+  local function evaluateTarget(_, _)
+    return { compatible = true }
+  end
+  return { menuFor = menuFor, submenuFor = submenuFor, evaluateTarget = evaluateTarget }
+end
+
 ---@param opts { mons: HgssMonService, bag: HgssBagService }
 ---@return PartyActions
 function PartyActions.new(opts)

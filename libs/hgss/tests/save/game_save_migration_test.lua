@@ -839,10 +839,17 @@ function T.v13_migration_adds_only_the_gym_union_and_follower_inhibit()
   Assert.equal(envelope.schema, GameSave.LEGACY_V15_SCHEMA, "the v14 step advances the envelope to its own successor")
   Assert.deepEqual(envelope.encounters, encounters, "the v14 step leaves the encounter bucket to its own owner")
   Assert.deepEqual(envelope.gymmick, migrated.gymmick, "the v14 step preserves the settled gym union")
-  local current = GameSave.migrateV15(envelope)
-  Assert.equal(current.schema, GameSave.SCHEMA, "the v15 step advances the envelope to the current schema")
-  Assert.deepEqual(current.encounters, encounters, "the v15 step leaves the encounter bucket to its own owner")
-  Assert.deepEqual(current.gymmick, migrated.gymmick, "the v15 step preserves the settled gym union")
+  local hallOfFameEnvelope = GameSave.migrateV15(envelope)
+  Assert.equal(
+    hallOfFameEnvelope.schema,
+    GameSave.LEGACY_V16_SCHEMA,
+    "the v15 step advances the envelope to its own successor"
+  )
+  Assert.isNil(hallOfFameEnvelope.daycare, "the v15 step leaves the Day Care to its own step")
+  local current = GameSave.migrateV16(hallOfFameEnvelope)
+  Assert.equal(current.schema, GameSave.SCHEMA, "the v16 step advances the envelope to the current schema")
+  Assert.deepEqual(current.encounters, encounters, "the v16 chain leaves the encounter bucket to its own owner")
+  Assert.deepEqual(current.gymmick, migrated.gymmick, "the v16 chain preserves the settled gym union")
 end
 
 -- The v15 step adds the recorded-clear history and nothing else: the bucket
@@ -887,7 +894,11 @@ function T.v15_migration_adds_only_the_current_hall_of_fame_history()
   })
   Assert.isNil(source.hallOfFame, "v15 records carry no recorded-clear history")
   local migrated = GameSave.migrateV15(source)
-  Assert.equal(migrated.schema, GameSave.SCHEMA, "the v15 step advances the envelope to the current schema")
+  Assert.equal(
+    migrated.schema,
+    GameSave.LEGACY_V16_SCHEMA,
+    "the v15 step advances the envelope to its own successor"
+  )
   Assert.equal(source.schema, GameSave.LEGACY_V15_SCHEMA, "migration leaves its input untouched")
   Assert.isNil(source.hallOfFame, "migration never mutates its source record")
   Assert.deepEqual(migrated.hallOfFame, {
@@ -903,8 +914,13 @@ function T.v15_migration_adds_only_the_current_hall_of_fame_history()
   local ok = pcall(GameSave.migrateV15, GameSave.migrateV15(source))
   Assert.isFalse(ok, "a v15 record that already carries the history is rejected")
   local normalized = assert(GameSave.normalize(source))
-  Assert.equal(normalized.schema, GameSave.SCHEMA, "normalization chains v15 through the history step")
+  Assert.equal(normalized.schema, GameSave.SCHEMA, "normalization chains v15 through the history and Day Care steps")
   Assert.deepEqual(normalized.hallOfFame, migrated.hallOfFame, "normalization installs the empty history")
+  Assert.deepEqual(
+    normalized.daycare,
+    { schema = "hgss-daycare-v1", slots = {}, pendingEggPid = 0, eggCycleCounter = 0 },
+    "normalization installs the empty Day Care"
+  )
 end
 
 -- A current v14 record keeps whatever a settled ride wrote: normalization is
@@ -916,6 +932,92 @@ function T.a_current_record_keeps_its_settled_gym_union()
   local normalized = assert(GameSave.normalize(record))
   Assert.deepEqual(normalized.gymmick, record.gymmick, "the settled ride survives normalization")
   Assert.deepEqual(normalized.followingMon, record.followingMon)
+end
+
+-- The v16 step adds the empty Day Care and nothing else: no parent, pending
+-- egg, cycle progress, or gift identity is invented, the earlier Hall of Fame
+-- and roamer state survive, and the nested statistics bucket advances with the
+-- envelope. A predecessor that already carries the bucket is malformed.
+function T.v16_migration_adds_only_the_empty_day_care()
+  local DaycareState = require("libs.hgss.src.save.DaycareState")
+  local GameStatsSave = require("libs.hgss.src.save.GameStatsSave")
+  local HallOfFameState = require("libs.hgss.src.save.HallOfFameState")
+  local encounters = { schema = "hgss-encounter-v2", stateVersion = 2, steps = 9, repelSteps = 1, swarm = false }
+  local source = GameSave.migrateV15(GameSave.migrateV14({
+    schema = GameSave.LEGACY_V14_SCHEMA,
+    saveId = "save-00000001",
+    versionId = "soulsilver",
+    playTimeSeconds = 0,
+    mapId = 331,
+    fieldX = 3,
+    fieldZ = 7,
+    worldY = 0,
+    surfaceId = 0,
+    terrainDependencyHash = "hash",
+    facing = "north",
+    playerData = { profile = { name = "GOLD", badges = {} } },
+    world = { flags = {}, variables = {} },
+    scripts = { schema = "g4-script-v3" },
+    auxiliaryUi = {},
+    audio = {},
+    mons = { schema = "g4-mons-v3" },
+    bag = {},
+    sysInfo = { schema = "hgss-sys-info-v1", mysteryGiftActive = false },
+    gameStats = {
+      schema = "hgss-stats-v3",
+      stateVersion = 3,
+      uniqueCaught = {},
+      uniqueTotal = 0,
+      score = 0,
+      mailWritten = 0,
+      leagueWins = 1,
+    },
+    gymmick = { schema = "hgss-gymmick-v1", kind = "none", data = {} },
+    followingMon = { schema = "hgss-following-mon-v1", inhibited = true },
+    encounters = encounters,
+  }))
+  assert(source.schema == GameSave.LEGACY_V16_SCHEMA, "the fixture reaches the v16 envelope")
+  Assert.isNil(source.daycare, "a v16 record carries no Day Care bucket")
+  local migrated = GameSave.migrateV16(source)
+  Assert.equal(migrated.schema, GameSave.SCHEMA, "the v16 step advances the envelope to the current schema")
+  Assert.equal(source.schema, GameSave.LEGACY_V16_SCHEMA, "migration leaves its input untouched")
+  Assert.isNil(source.daycare, "migration never mutates its source record")
+  Assert.deepEqual(migrated.daycare, DaycareState.initial(), "a pre-custody save starts with an empty Day Care")
+  Assert.isNil(migrated.daycare.gift, "migration invents no gift identity")
+  Assert.deepEqual(migrated.encounters, encounters, "migration keeps the compiled roamer state")
+  Assert.deepEqual(migrated.followingMon, source.followingMon, "migration keeps the follower inhibit state")
+  Assert.deepEqual(migrated.hallOfFame, HallOfFameState.empty():capture(), "migration keeps the recorded history")
+  Assert.equal(migrated.gameStats.schema, GameStatsSave.SCHEMA, "the nested stats bucket advances with the envelope")
+  Assert.equal(migrated.gameStats.daycareDeposits, 0, "no deposit count is invented")
+  Assert.equal(migrated.gameStats.eggsHatched, 0, "no hatch count is invented")
+  Assert.equal(migrated.gameStats.leagueWins, 1, "the League-win total survives the care step")
+  Assert.equal(migrated.gameStats.score, 0, "the score survives the care step")
+  Assert.isFalse(pcall(GameSave.migrateV16, GameSave.migrateV16(source)), "a v16 record that carries a Day Care is rejected")
+  local normalized = assert(GameSave.normalize(source))
+  Assert.equal(normalized.schema, GameSave.SCHEMA, "normalization chains v16 through the Day Care step")
+  Assert.deepEqual(normalized.daycare, migrated.daycare, "normalization installs the empty Day Care")
+end
+
+-- A current record keeps whatever settled Day Care custody it stores:
+-- normalization is envelope-only and never resets the stored parents.
+function T.a_current_record_keeps_its_settled_day_care()
+  local DaycareState = require("libs.hgss.src.save.DaycareState")
+  local record = assert(GameSave.normalize(GameSave.migrateV16(GameSave.migrateV15(GameSave.migrateV14(
+    GameSave.migrateV13(GameSave.migrateV12(GameSave.migrateV11(GameSave.migrateV10(v10record()))))
+  )))))
+  local bucket = DaycareState.initial()
+  bucket.slots[1] = {
+    mon = {
+      schema = "g4-mon-v2",
+      species = "TYPHLOSION",
+      condition = { currentHp = 1, effects = {} },
+      capsule = { id = 0, seals = {} },
+    },
+    steps = 128,
+  }
+  record.daycare = bucket
+  local normalized = assert(GameSave.normalize(record))
+  Assert.deepEqual(normalized.daycare, bucket, "the stored custody survives normalization")
 end
 
 return { tests = T }

@@ -21,7 +21,7 @@ local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
 local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 
 ---@class PartyScreenController
----@field _context "browse"|"pick"|"battle_pick"|"item_target"|"give_target"|"give_resume"
+---@field _context "browse"|"pick"|"battle_pick"|"item_target"|"give_target"|"give_resume"|"daycare_store"
 ---@field _model PartyScreenController.Model
 ---@field _facts PartyScreenController.View? the retained projection owned by refreshFacts
 ---@field _factsModel PartyScreenController.Model? the model that produced the retained projection
@@ -57,6 +57,7 @@ local YesNoPromptController = require("libs.hgss.src.ui.YesNoPromptController")
 ---@field _prompt YesNoPromptController?
 ---@field _promptReturn string
 ---@field _promptEntry PartyScreenController.MenuEntry?
+---@field _careStoreSlot integer? the Day Care slot whose capsule confirmation is open
 ---@field _result PartyScreenController.Result?
 ---@field _closed boolean
 ---@field _tick integer
@@ -114,7 +115,7 @@ PartyScreenController.__index = PartyScreenController
 ---@field slot integer?
 
 ---@class PartyScreenController.Options
----@field context "browse"|"pick"|"battle_pick"|"item_target"|"give_target"|"give_resume"
+---@field context "browse"|"pick"|"battle_pick"|"item_target"|"give_target"|"give_resume"|"daycare_store"
 ---@field initialFocus integer|"cancel"?
 ---@field allowCancel boolean?
 ---@field model PartyScreenController.Model
@@ -228,8 +229,9 @@ function PartyScreenController.new(opts)
       or opts.context == "battle_pick"
       or opts.context == "item_target"
       or opts.context == "give_target"
-      or opts.context == "give_resume",
-    "the party controller requires a named browse, pick, battle_pick, item_target, give_target, or give_resume context"
+      or opts.context == "give_resume"
+      or opts.context == "daycare_store",
+    "the party controller requires a named party context"
   )
   assert(
     type(opts.model) == "table" and type(opts.model.refresh) == "function",
@@ -331,6 +333,7 @@ function PartyScreenController.new(opts)
     _prompt = nil,
     _promptReturn = "browse",
     _promptEntry = nil,
+    _careStoreSlot = nil,
     _result = nil,
     _closed = false,
     _tick = 0,
@@ -1285,11 +1288,48 @@ function PartyScreenController:_confirmMenuEntry()
     self:_transition("choose_hp_target")
     return
   end
+  if self._context == "daycare_store" and (entry.kind == "store" or entry.kind == "summary") then
+    self:_activateCareEntry(entry, slot)
+    return
+  end
   if entry.confirm == true then
     self:_openConfirm(entry, self._state)
     return
   end
   self:_emitEntryIntent(entry, slot, revision)
+end
+
+-- Clears the open context menu without changing state; the care rows accept
+-- the slot and leave the screen through their own result.
+function PartyScreenController:_clearCareMenu()
+  self._menu = nil
+  self._menuIndex = nil
+  self._menuSlot = nil
+  self._originSlot = nil
+end
+
+-- Activates one source Day Care row (party_menu.c
+-- PartyMenu_SetContextMenuItems_Store). Summary leaves the screen with the
+-- source action 1; Store accepts the slot with action 0, asking the source
+-- capsule confirmation first when the parent carries a ball capsule.
+---@param entry PartyScreenController.MenuEntry
+---@param slot integer
+function PartyScreenController:_activateCareEntry(entry, slot)
+  if entry.kind == "summary" then
+    self:_clearCareMenu()
+    self._result = { kind = "selected", slot = slot, action = 1 }
+    self:_transition("closing")
+    return
+  end
+  local record = assert(self._view.slots[slot + 1], "care rows open over visible slots")
+  if record.capsule ~= nil then
+    self._careStoreSlot = slot
+    self:_openConfirm({ kind = "store", label = entry.label }, "context")
+    return
+  end
+  self:_clearCareMenu()
+  self._result = { kind = "selected", slot = slot, action = 0 }
+  self:_transition("closing")
 end
 
 -- Emits the intent for a directly activated menu entry.
@@ -1359,6 +1399,16 @@ function PartyScreenController:_confirmBrowse()
 end
 
 function PartyScreenController:_confirm()
+  -- The Day Care store context is a picker whose confirm opens the source care
+  -- menu over the focused parent instead of accepting the slot directly.
+  if self._context == "daycare_store" then
+    if self._state == "browse" then
+      self:_confirmBrowse()
+    elseif isMenuState(self._state) then
+      self:_beginMenuPress()
+    end
+    return
+  end
   if self._context == "pick" then
     self:_confirmSlotTarget()
     return
@@ -1401,7 +1451,7 @@ end
 
 function PartyScreenController:_cancel()
   if self._state == "browse" then
-    if self._context == "pick" or self._context == "battle_pick" then
+    if self._context == "pick" or self._context == "battle_pick" or self._context == "daycare_store" then
       self:_cancelPick()
       return
     end
@@ -1533,6 +1583,15 @@ function PartyScreenController:_resolvePrompt()
   if result == "yes" then
     local slot = assert(self._menuSlot, "prompt intents remember their slot")
     ---@cast slot integer
+    -- The source capsule confirmation removes the capsule and accepts the
+    -- slot: the capsule removal is a canonical mon change the host commits
+    -- through the mon owner, and this screen accepts the slot once it landed.
+    if self._careStoreSlot ~= nil and entry.kind == "store" then
+      self:_emitIntent({ kind = "remove_capsule", slot = slot, partyRevision = self._observedRevision })
+      local intentOrigin = assert(self._origin, "emitted intents park their origin")
+      intentOrigin.state = returnState
+      return
+    end
     self:_emitEntryIntent(entry, slot, self._observedRevision)
     -- The emitted intent parks in waiting_action, but its origin must be
     -- the arming menu: completion restores the menu, never the closed
@@ -1562,6 +1621,14 @@ function PartyScreenController:_declinePrompt()
   self:_closePrompt()
   if entry ~= nil and entry.kind == "answer" then
     self:_answerQuestion("no")
+    return
+  end
+  -- Declining the capsule confirmation closes the context menu and returns to
+  -- the slot list, exactly like the source's own no branch.
+  if self._careStoreSlot ~= nil then
+    self._careStoreSlot = nil
+    self:_clearCareMenu()
+    self:_transition("browse")
     return
   end
   if self._giveDisposition ~= nil then
@@ -2249,6 +2316,15 @@ function PartyScreenController:completeAction(outcome)
   local refreshed = self:_refresh()
   self._reconciledRevision = refreshed.revision
   self._origin = nil
+  if self._careStoreSlot ~= nil then
+    local careSlot = self._careStoreSlot
+    self._careStoreSlot = nil
+    assert(outcome.kind == "changed", "the capsule confirmation reports its canonical change")
+    self:_clearCareMenu()
+    self._result = { kind = "selected", slot = careSlot, action = 0 }
+    self:_transition("closing")
+    return
+  end
   self:_armTail(outcome, origin)
   if self._giveDisposition ~= nil then
     self._cursorNode = self:_reconciledCursor(self._view, origin.cursorNode)

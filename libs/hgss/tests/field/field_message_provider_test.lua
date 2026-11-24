@@ -498,14 +498,9 @@ function T.unsupported_printer_controls_are_typed_rejections()
       raw = { 0xFFFE, 0xFF02, 2, 1, 0 },
       label = "UNK_FF02",
     },
-    {
-      kind = "unsupported_control",
-      control = 0x0203,
-      name = "CURSOR_X",
-      args = { 4 },
-      raw = { 0xFFFE, 0x0203, 1, 4 },
-      label = "positional control",
-    },
+    -- The inline cursor offsets (CURSOR_X/CURSOR_Y) are the one consumed
+    -- family: this port's line printer has no mid-line offset, so it drops the
+    -- control instead of faulting (see the dedicated row-rendering case).
     {
       kind = "unsupported_control",
       control = 0x0707,
@@ -602,6 +597,29 @@ function T.formatting_is_immutable_across_reuse()
       Assert.equal(token.colorIndex, 1)
     end
   end
+end
+
+-- The standard menu bank's parent rows place their level text with an inline
+-- cursor offset ({CURSOR_X 90}); this port's line printer draws one
+-- left-aligned line per message, so the control is consumed instead of
+-- faulting and every glyph keeps its source order.
+function T.inline_cursor_offsets_are_consumed_by_the_line_printer()
+  local tokens = {
+    { kind = "glyph", code = 0x012B, raw = { 0x012B }, text = "A" },
+    { kind = "unsupported_control", control = 0x0203, args = { 90 }, raw = { 0x0203, 90 } },
+    { kind = "glyph", code = 0x012C, raw = { 0x012C }, text = "B" },
+    { kind = "eos", raw = { 0xFFFF } },
+  }
+  local provider = assert(FieldMessageProvider.new(cacheWith({})))
+  local formatted = provider:format({ bankId = 191, messageId = 136, tokens = tokens }, {})
+  Assert.isFalse(formatted.hadUnresolvedSubstitutions)
+  local texts = {}
+  for _, token in ipairs(formatted.tokens) do
+    if token.kind == "glyph" then
+      texts[#texts + 1] = token.text
+    end
+  end
+  Assert.deepEqual(texts, { "A", "B" }, "the offset leaves no fault and keeps the glyph order")
 end
 
 return { tests = T }

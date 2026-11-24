@@ -593,6 +593,7 @@ end
 ---@field fashionCase FashionCaseState live accessory inventory restored from the save
 ---@field sysInfo SysInfoState live system-info state (mystery-gift flag and first clear) restored from the save
 ---@field hallOfFame HallOfFameState live Hall of Fame history restored from the save
+---@field daycare DaycareService? the one Day Care custody/step/service owner (nil before composition / after teardown)
 ---@field followerInteractionCatalog table<string, unknown> generated follower interaction rules
 ---@field followerReactionTicks table<string, integer> follower reaction emote kind -> emote action duration
 ---@field bagService HgssBagService the live bag/inventory service
@@ -1823,6 +1824,30 @@ function FieldRuntime:_composeFieldServices(boot)
   })
   self.starterBalls = composeStarterBalls(self)
   self.partySelection = buildPartySelectionHost(self, boot.cacheFs)
+  -- The one Day Care owner: the saved custody state restored through the mon
+  -- service's own canonical validator, then the feature service over the live
+  -- mon, Bag, statistics, and actor owners. The stored bucket resolves from the
+  -- loaded record or the finalized new-game candidate, so a fresh game starts
+  -- from its own constructor instead of a runtime fallback.
+  local DaycareState = require("libs.hgss.src.save.DaycareState")
+  local DaycareService = require("libs.hgss.src.field.DaycareService")
+  local daycareBucket = boot.loadedGame and boot.loadedGame.daycare
+    or assert(boot.activeGame.daycare, "finalized game Day Care bucket is required")
+  self.daycareState = DaycareState.restore(daycareBucket, function(mon)
+    return self.monService:validateStoredMon(mon)
+  end)
+  local function currentDaycareMap()
+    return self.session ~= nil and self.session.currentMap or self.runtimeMap
+  end
+  self.daycare = DaycareService.new({
+    state = self.daycareState,
+    mons = self.monService,
+    bag = self.bagService,
+    stats = self.gameStats,
+    actors = self.actors,
+    catalog = self.monCatalog,
+    currentMap = currentDaycareMap,
+  })
   self:_composePartyMenu(boot.cacheFs)
   local ApricornBoxHost = require("game.hgss.src.apricorn.ApricornBoxHost")
   self.kurtBoxHost = ApricornBoxHost.new({
@@ -2919,16 +2944,22 @@ local function requireLiveInput(self)
   return assert(self.input, "field runtime is disposed")
 end
 
+-- A menu direction names the same physical edge as the field direction it
+-- maps to: the input owner feeds both lanes from one press, exactly like a
+-- keyboard or stick host does, so a host driving semantic input may name
+-- either vocabulary.
+local RUNTIME_MENU_DIRECTIONS = { up = "north", down = "south", left = "west", right = "east" }
+
 -- Semantic input keeps the non-rendering runtime independent of keyboard and
 -- gamepad event translation. Hosts drive these edges directly.
 ---@param direction string
 function FieldRuntime:press(direction)
-  requireLiveInput(self):press(direction)
+  requireLiveInput(self):press(RUNTIME_MENU_DIRECTIONS[direction] or direction)
 end
 
 ---@param direction string
 function FieldRuntime:release(direction)
-  requireLiveInput(self):release(direction)
+  requireLiveInput(self):release(RUNTIME_MENU_DIRECTIONS[direction] or direction)
 end
 
 function FieldRuntime:pressAction()
@@ -5197,6 +5228,13 @@ function FieldRuntime:_consumeCommittedStep()
   if self:_tickFieldPoison() == "survive" then
     return
   end
+  -- The one Day Care step feed: every occupied parent advances its stored step
+  -- counter once for this committed, unclaimed walking step, after the poison
+  -- tick and before any repel or encounter attempt. Loaded steps never reached
+  -- this seam, so this is the whole counter.
+  if self.daycare ~= nil then
+    self.daycare:noteCommittedStep()
+  end
   local map = session.currentMap --[[@as table<string, unknown>]]
   local method = self:_stepEncounterMethod(map, self.player)
   -- One repel tick per committed step that reaches method resolution,
@@ -6525,6 +6563,7 @@ function FieldRuntime:_releaseAll()
   self.mailbox, self.photoAlbum, self.sysInfo = nil, nil, nil
   self.hallOfFame = nil
   self.fieldPoison, self.poisonEffect, self.poisonCure = nil, nil, nil
+  self.daycare, self.daycareState = nil, nil
   if self.pokegear ~= nil then
     self.pokegear:dispose()
   end

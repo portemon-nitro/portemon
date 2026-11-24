@@ -6,6 +6,7 @@
 -- `mons`; only the table assembly lives here.
 
 local BagSave = require("libs.hgss.src.save.BagSave")
+local DaycareState = require("libs.hgss.src.save.DaycareState")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldPoisonSave = require("libs.hgss.src.save.FieldPoisonSave")
@@ -74,6 +75,7 @@ function FinalizedGameFixture.build(versionId, options)
     fieldPoison = FieldPoisonSave.initial(),
     gymmick = GymMechanismState.restore(nil):capture(),
     followingMon = FollowingMonState.new():capture(),
+    daycare = DaycareState.initial(),
   }
 end
 

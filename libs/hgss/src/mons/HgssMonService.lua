@@ -269,6 +269,23 @@ function HgssMonService:boxHasSpace()
   return self._boxes:hasSpace()
 end
 
+-- Every mon the PC boxes currently store, the source
+-- PCStorage_CountMonsInAllBoxes answer behind ScrCmd_CountAliveMonsAndPC.
+-- Box slots are read through the same address pair the PC storage paths use.
+---@return integer
+function HgssMonService:storedMonCount()
+  local Boxes = require("libs.mons.src.Boxes")
+  local count = 0
+  for box = 0, self._boxes:count() - 1 do
+    for slot = 0, Boxes.SLOTS_PER_BOX - 1 do
+      if self._boxes:mon(box, slot) ~= nil then
+        count = count + 1
+      end
+    end
+  end
+  return count
+end
+
 ---@return integer
 function HgssMonService:partyCount()
   return self._party:count()
@@ -1046,6 +1063,80 @@ function HgssMonService:updateRotomForm(slot0, defaultMoveSlot0, _, form)
   publishStaged(partyPrep, dex:prepareChanges({ observations = observations }))
 end
 
+-- Applies one ordinary form to a copied mon record: the form's ability table
+-- picks the PID-selected slot ability and health clamps to the re-derived
+-- maximum without reviving a fainted mon, exactly like the source
+-- UpdateBoxMonAbility plus CalcMonLevelAndStats.
+---@param staged table<string, unknown>
+---@param form integer
+---@return table<string, unknown>
+local function applyOrdinaryForm(service, staged, form)
+  local oldMax = service:derive(staged).maxHp
+  staged.form = form
+  local abilities = service._catalog:form(staged.species, form).abilities
+  assert(type(abilities) == "table", "the target form lists its abilities")
+  if #abilities == 1 then
+    staged.ability = abilities[1]
+  elseif #abilities == 2 then
+    staged.ability = abilities[Personality.abilitySlot(2, staged.personality)]
+  end
+  service:refreshStagedHp(staged, oldMax)
+  return staged
+end
+
+-- Validates one stored mon record against this service's own catalog context
+-- and answers the detached canonical copy. The Day Care bucket persists
+-- canonical parents outside the party, so its schema owner restores and
+-- deposits through this seam instead of carrying a second mon validator.
+---@param mon unknown
+---@return table<string, unknown> canonical detached copy
+function HgssMonService:validateStoredMon(mon)
+  return self:_checked(mon)
+end
+
+-- The source form sanitizers for one stored mon
+-- (Mon_UpdateGiratinaForm, Mon_UpdateRotomForm(mon, 0, 0) and
+-- Mon_UpdateShayminForm(mon, 0)): a Giratina follows its held item back to
+-- the altered form, a Rotom loses its appliance move through the established
+-- appliance policy and keeps the base move when nothing is left, and a
+-- Shaymin returns to its land form. Every case rewrites the form's ability
+-- and clamps health like CalcMonLevelAndStats. The returned record is a
+-- detached copy: the caller publishes it, and no Dex receipt or party change
+-- happens here.
+---@param mon table<string, unknown>
+---@return table<string, unknown>
+function HgssMonService:ordinaryFormMon(mon)
+  assert(type(mon) == "table", "form sanitize requires a mon record")
+  local staged = self:_checked(mon)
+  if staged.form <= 0 then
+    return staged
+  end
+  local species = staged.species
+  if species == "GIRATINA" then
+    local HeldItemFormPolicy = require("libs.hgss.src.mons.HeldItemFormPolicy")
+    local held = self._catalog:item(staged.heldItem)
+    return HeldItemFormPolicy.apply(staged, held, self)
+  end
+  if species == "ROTOM" then
+    local kept = {}
+    for _, entry in ipairs(staged.moves) do
+      if not ROTOM_APPLIANCE_MOVES[entry.move] then
+        kept[#kept + 1] = entry
+      end
+    end
+    if #kept == 0 then
+      local repair = self._catalog:move("THUNDER_SHOCK")
+      kept[1] = { move = "THUNDER_SHOCK", pp = repair.basePp, ppUps = 0 }
+    end
+    staged.moves = kept
+    return applyOrdinaryForm(self, staged, 0)
+  end
+  if species == "SHAYMIN" then
+    return applyOrdinaryForm(self, staged, 0)
+  end
+  return staged
+end
+
 ---@param slot0 integer
 ---@return table<string, unknown>
 function HgssMonService:removeMon(slot0)
@@ -1733,6 +1824,26 @@ function HgssMonService:setMonForm(slot0, form)
   self._catalog:form(mon.species, form)
   mon.form = form
   self:_store(slot0, mon)
+end
+
+-- Source Pokemon_RemoveCapsule (src/pokemon.c): the ball capsule identity and
+-- its seals are cleared on the live mon. The expected revision pins the
+-- confirmation to the party it was asked about, so a stale confirmation can
+-- never clear a different parent. Answers whether anything changed.
+---@param slot0 integer
+---@param expectedRevision integer
+---@return boolean changed
+function HgssMonService:removeCapsule(slot0, expectedRevision)
+  local mon = self:_liveMon(slot0)
+  assert(expectedRevision == self._party:revision(), "the capsule confirmation reads the current party revision")
+  local capsule = mon.capsule
+  local present = type(capsule) == "table" and (capsule.id ~= 0 or #capsule.seals > 0)
+  if not present then
+    return false
+  end
+  mon.capsule = { id = 0, seals = {} }
+  self:_store(slot0, mon)
+  return true
 end
 
 ---@param slot0 integer

@@ -4,6 +4,7 @@
 
 local GameSave = require("libs.hgss.src.save.GameSave")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local DaycareState = require("libs.hgss.src.save.DaycareState")
 local MartSave = require("libs.hgss.src.save.MartSave")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
@@ -205,6 +206,9 @@ function NewGame.createCandidate(options)
     -- second handwritten schema.
     gymmick = GymMechanismState.restore(nil):capture(),
     followingMon = FollowingMonState.new():capture(),
+    -- A new game holds no parent in the Day Care and no egg: the bucket comes
+    -- from its own owner's constructor, never a second handwritten schema.
+    daycare = DaycareState.initial(),
     bag = BagSave.empty(),
     fashionCase = FashionCaseState.empty(),
     sysInfo = SysInfoState.empty(),

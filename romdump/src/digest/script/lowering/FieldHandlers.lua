@@ -2176,6 +2176,27 @@ FieldHandlers[342] = FieldServiceHandlers.moveWarp
 FieldHandlers[242] = FieldServiceHandlers.elevatorCurFloorBox
 FieldHandlers[488] = FieldServiceHandlers.elevatorAnim
 FieldHandlers[522] = FieldServiceHandlers.getCurrentHour
+-- The Day Care family rides its own cohesive care leaf for the same budget
+-- reason: the buffer and selector operands are ScriptGetVar reads, the result
+-- and cost operands are output pointers, and the party-selection pair reuses
+-- the shared party-screen nodes with the care context. ScrCmd_
+-- CountAliveMonsAndPC (358) is the same conscious party count including every
+-- stored PC box mon, which the same deposit screen reads.
+FieldHandlers[358] = function(ins)
+  return { op = "count_alive_mons_and_pc", result = Operands.varRef(ins.operands[1]) }
+end
+FieldHandlers[312] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").monNicknames
+FieldHandlers[313] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").state
+FieldHandlers[361] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").retrieveMon
+FieldHandlers[367] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").withdrawCost
+FieldHandlers[371] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").growth
+FieldHandlers[372] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").tailMon
+FieldHandlers[373] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").deposit
+FieldHandlers[385] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").monStats
+FieldHandlers[551] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").choosePartyMon
+FieldHandlers[552] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").partySelection
+FieldHandlers[690] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").sanitizeMon
+FieldHandlers[715] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").updateObjects
 -- The gym mechanism family rides the cohesive StoryHandlers leaf for the same
 -- local-budget reason: the init commands install their own closed kind, the
 -- lift and candle binding carry no operands, the selector-driven commands read

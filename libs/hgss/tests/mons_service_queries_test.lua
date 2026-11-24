@@ -365,4 +365,63 @@ function T.derived_display_values_come_from_the_service_owners()
   end, "derived reads outside the party fail")
 end
 
+-- The capsule confirmation clears the ball capsule and its seals in one
+-- party revision, pinned to the revision it was asked about, and an empty
+-- capsule answers no change.
+function T.remove_capsule_clears_the_ball_capsule_once()
+  local _, service = twoMonService()
+  local revision = service:partyRevision()
+  local mon = service:partyMon(0)
+  mon.capsule = { id = 5, seals = { { x = 1, y = 2, graphic = 3 } } }
+  local prepared = assert(service:preparePartyChanges(revision, { { slot = 0, mon = mon } }))
+  prepared.publish()
+  local current = service:partyRevision()
+  Assert.isTrue(service:removeCapsule(0, current), "a present capsule changes")
+  Assert.equal(service:partyMon(0).capsule.id, 0)
+  Assert.equal(#service:partyMon(0).capsule.seals, 0)
+  Assert.equal(service:partyRevision(), current + 1, "the removal publishes one revision")
+  Assert.isFalse(service:removeCapsule(0, service:partyRevision()), "an empty capsule reports no change")
+  Assert.throws(function()
+    service:removeCapsule(0, service:partyRevision() + 1)
+  end, "a stale confirmation is refused before any change")
+end
+
+-- The source form sanitizer returns a detached canonical copy and never
+-- publishes; a species the three source updaters do not own keeps its own form.
+-- The Rotom/Giratina/Shaymin normalization itself is exercised through the real
+-- Day Care script by the feature acceptance suite.
+function T.ordinary_form_mon_is_a_detached_source_sanitize()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0xBBBBBBBB)
+  Assert.isTrue(gift(service, "EEVEE", { form = 1 }), "setup gift enters the party")
+  Assert.equal(service:partyMon(0).form, 1)
+  local revision = service:partyRevision()
+  local sanitized = service:ordinaryFormMon(service:partyMon(0))
+  Assert.equal(sanitized.form, 1, "a species outside the source updaters keeps its own form")
+  Assert.equal(sanitized.ability, catalog:form("EEVEE", 1).abilities[1], "the alternate form keeps its own ability")
+  Assert.equal(service:partyRevision(), revision, "sanitize never publishes")
+  sanitized.species = "TOTODILE"
+  Assert.equal(service:partyMon(0).species, "EEVEE", "the returned record is detached")
+  local ordinary = service:partyMon(0)
+  ordinary.form = 0
+  local prepared = assert(service:preparePartyChanges(service:partyRevision(), { { slot = 0, mon = ordinary } }))
+  prepared.publish()
+  Assert.deepEqual(service:ordinaryFormMon(service:partyMon(0)), service:partyMon(0), "an ordinary form comes back unchanged")
+end
+
+-- ScrCmd_CountAliveMonsAndPC adds every stored PC box mon to the party count.
+function T.stored_mon_count_covers_the_pc_boxes()
+  local _, service = twoMonService()
+  Assert.equal(service:storedMonCount(), 0, "an empty PC stores nothing")
+  local mon = service:partyMon(0)
+  mon.capsule = { id = 0, seals = {} }
+  local prepared = assert(service:preparePcChanges({
+    partyRevision = service:partyRevision(),
+    boxRevision = service:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 0, mon = mon } } }))
+  prepared.publish()
+  Assert.equal(service:storedMonCount(), 1, "one stored mon counts once")
+  Assert.equal(service:countAliveMons() + service:storedMonCount(), 3, "the care screen count adds both owners")
+end
+
 return { tests = T }

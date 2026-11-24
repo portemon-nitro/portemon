@@ -8,6 +8,7 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local GameStats = require("libs.hgss.src.mons.GameStats")
+local GameStatsSave = require("libs.hgss.src.save.GameStatsSave")
 
 local T = {}
 
@@ -200,28 +201,32 @@ function T.score_accumulates_per_registration_and_caps_at_the_retail_ceiling()
   local points = GameStats.SCORE_POINTS[GameStats.SCORE_EVENT_REGISTER_SPECIES_CAUGHT]
   Assert.equal(owner:score(), points * 2, "each fresh registration awards its register points")
   local nearCap = GameStats.restore({
-    schema = "hgss-stats-v4",
-    stateVersion = 4,
+    schema = GameStatsSave.SCHEMA,
+    stateVersion = GameStatsSave.STATE_VERSION,
     uniqueCaught = { "EEVEE" },
     uniqueTotal = 1,
     score = GameStats.SCORE_CAP - 10,
     mailWritten = 0,
     stepsBiked = 0,
     leagueWins = 0,
+    daycareDeposits = 0,
+    eggsHatched = 0,
   }, refs())
   local clamped = nearCap:prepareChanges({ observations = registerObservations("CHIKORITA") })
   Assert.isTrue(clamped.changed, "a registration below the ceiling still reports a change")
   clamped.publish()
   Assert.equal(nearCap:score(), GameStats.SCORE_CAP, "the total never exceeds the retail ceiling")
   local capped = GameStats.restore({
-    schema = "hgss-stats-v4",
-    stateVersion = 4,
+    schema = GameStatsSave.SCHEMA,
+    stateVersion = GameStatsSave.STATE_VERSION,
     uniqueCaught = {},
     uniqueTotal = 0,
     score = GameStats.SCORE_CAP,
     mailWritten = 0,
     stepsBiked = 0,
     leagueWins = 0,
+    daycareDeposits = 0,
+    eggsHatched = 0,
   }, refs())
   local revision = capped:revision()
   local held = capped:prepareChanges({ observations = { scoreObservation("CHIKORITA") } })
@@ -234,14 +239,16 @@ end
 
 function T.restore_rebuilds_from_a_bucket_and_missing_starts_empty()
   local restored = GameStats.restore({
-    schema = "hgss-stats-v4",
-    stateVersion = 4,
+    schema = GameStatsSave.SCHEMA,
+    stateVersion = GameStatsSave.STATE_VERSION,
     uniqueCaught = { "TOTODILE", "CHIKORITA" },
     uniqueTotal = 5,
     score = 40,
     mailWritten = 9,
     stepsBiked = 0,
     leagueWins = 0,
+    daycareDeposits = 0,
+    eggsHatched = 0,
   }, refs())
   Assert.isTrue(restored:isCounted("CHIKORITA"), "every saved registration survives restore")
   Assert.isTrue(restored:isCounted("TOTODILE"), "every saved registration survives restore")
@@ -255,8 +262,8 @@ function T.restore_rebuilds_from_a_bucket_and_missing_starts_empty()
   Assert.equal(missing:score(), 0, "a missing bucket scores nothing")
   Assert.equal(missing:mailWrittenCount(), 0, "a missing bucket counts no written Mail")
   local bucket = restored:bucket()
-  Assert.equal(bucket.schema, "hgss-stats-v4", "the bucket publishes the current schema")
-  Assert.equal(bucket.stateVersion, 4, "the bucket publishes the current state version")
+  Assert.equal(bucket.schema, GameStatsSave.SCHEMA, "the bucket publishes the current schema")
+  Assert.equal(bucket.stateVersion, GameStatsSave.STATE_VERSION, "the bucket publishes the current state version")
   Assert.deepEqual(bucket.uniqueCaught, { "CHIKORITA", "TOTODILE" }, "the bucket sorts its registrations")
   Assert.equal(bucket.uniqueTotal, 5, "the bucket carries the blind total")
   Assert.equal(bucket.score, 40, "the bucket carries the live score")
@@ -278,13 +285,15 @@ function T.biked_steps_count_once_each_up_to_the_retail_ceiling()
   Assert.equal(owner:bucket().stepsBiked, 2, "the bucket carries the count")
   Assert.equal(owner:score(), 0, "biking scores nothing")
   local capped = GameStats.restore({
-    schema = "hgss-stats-v4",
-    stateVersion = 4,
+    schema = GameStatsSave.SCHEMA,
+    stateVersion = GameStatsSave.STATE_VERSION,
     uniqueCaught = {},
     uniqueTotal = 0,
     score = 0,
     mailWritten = 0,
     leagueWins = 0,
+    daycareDeposits = 0,
+    eggsHatched = 0,
     stepsBiked = GameStats.STEPS_BIKED_CAP,
   }, refs())
   local cappedRevision = capped:revision()
@@ -306,27 +315,31 @@ end
 
 function T.written_mail_caps_at_its_retail_ceiling_without_resetting_score()
   local owner = GameStats.restore({
-    schema = "hgss-stats-v4",
-    stateVersion = 4,
+    schema = GameStatsSave.SCHEMA,
+    stateVersion = GameStatsSave.STATE_VERSION,
     uniqueCaught = {},
     uniqueTotal = 0,
     score = GameStats.SCORE_CAP - 3,
     mailWritten = 999998,
     stepsBiked = 0,
     leagueWins = 0,
+    daycareDeposits = 0,
+    eggsHatched = 0,
   }, refs())
   owner:prepareChanges({ observations = { { kind = "mail_written" } } }):publish()
   Assert.equal(owner:mailWrittenCount(), 999999, "writes stop at the retail count ceiling")
   Assert.equal(owner:score(), GameStats.SCORE_CAP - 2, "the capped write still scores once")
   local capped = GameStats.restore({
-    schema = "hgss-stats-v4",
-    stateVersion = 4,
+    schema = GameStatsSave.SCHEMA,
+    stateVersion = GameStatsSave.STATE_VERSION,
     uniqueCaught = {},
     uniqueTotal = 0,
     score = GameStats.SCORE_CAP,
     mailWritten = 999999,
     stepsBiked = 0,
     leagueWins = 0,
+    daycareDeposits = 0,
+    eggsHatched = 0,
   }, refs())
   local revision = capped:revision()
   local held = capped:prepareChanges({ observations = registerObservations("CHIKORITA") })
@@ -425,28 +438,32 @@ end
 
 function T.script_score_event_saturates_at_the_retail_ceiling()
   local nearCap = GameStats.restore({
-    schema = "hgss-stats-v4",
-    stateVersion = 4,
+    schema = GameStatsSave.SCHEMA,
+    stateVersion = GameStatsSave.STATE_VERSION,
     uniqueCaught = {},
     uniqueTotal = 0,
     score = GameStats.SCORE_CAP - 5,
     mailWritten = 0,
     stepsBiked = 0,
     leagueWins = 0,
+    daycareDeposits = 0,
+    eggsHatched = 0,
   }, refs())
   local revision = nearCap:revision()
   nearCap:awardScriptScoreEvent(21)
   Assert.equal(nearCap:score(), GameStats.SCORE_CAP, "the total never exceeds the retail ceiling")
   Assert.equal(nearCap:revision(), revision + 1, "a bounded award still publishes its change")
   local capped = GameStats.restore({
-    schema = "hgss-stats-v4",
-    stateVersion = 4,
+    schema = GameStatsSave.SCHEMA,
+    stateVersion = GameStatsSave.STATE_VERSION,
     uniqueCaught = {},
     uniqueTotal = 0,
     score = GameStats.SCORE_CAP,
     mailWritten = 0,
     stepsBiked = 0,
     leagueWins = 0,
+    daycareDeposits = 0,
+    eggsHatched = 0,
   }, refs())
   revision = capped:revision()
   capped:awardScriptScoreEvent(21)
@@ -481,14 +498,16 @@ function T.league_win_counts_once_per_clear_and_caps_at_the_source_ceiling()
   Assert.equal(owner:leagueWins(), 2, "every completed clear records one win")
   Assert.equal(owner:revision(), revision + 1, "each award publishes one change")
   local capped = GameStats.restore({
-    schema = "hgss-stats-v4",
-    stateVersion = 4,
+    schema = GameStatsSave.SCHEMA,
+    stateVersion = GameStatsSave.STATE_VERSION,
     uniqueCaught = {},
     uniqueTotal = 0,
     score = 0,
     mailWritten = 0,
     stepsBiked = 0,
     leagueWins = GameStats.LEAGUE_WINS_CAP,
+    daycareDeposits = 0,
+    eggsHatched = 0,
   }, refs())
   Assert.equal(capped:leagueWins(), GameStats.LEAGUE_WINS_CAP, "the saved total restores")
   local cappedRevision = capped:revision()
@@ -496,6 +515,57 @@ function T.league_win_counts_once_per_clear_and_caps_at_the_source_ceiling()
   Assert.equal(capped:leagueWins(), GameStats.LEAGUE_WINS_CAP, "the total never exceeds the source ceiling")
   Assert.equal(capped:revision(), cappedRevision, "an award at the ceiling publishes nothing")
   Assert.equal(capped:bucket().leagueWins, GameStats.LEAGUE_WINS_CAP, "the bucket carries the capped total")
+end
+
+-- The Day Care deposit statistic joins the revisioned preparation: one
+-- completed deposit adds one under the shared u16 ceiling, marks no species,
+-- awards no score, and survives the bucket round trip. The hatch counter has no
+-- producer yet, so it stays at zero and round-trips unchanged.
+function T.daycare_deposits_count_once_without_scoring()
+  local owner = newOwner()
+  local revision = owner:revision()
+  local prepared = owner:prepareChanges({ observations = { { kind = "daycare_deposit" } } })
+  Assert.isTrue(prepared.changed)
+  Assert.isTrue(prepared.isCurrent())
+  Assert.equal(owner:daycareDeposits(), 0, "staging never mutates live counters")
+  prepared.publish()
+  Assert.equal(owner:daycareDeposits(), 1)
+  Assert.equal(owner:score(), 0, "a deposit awards no score")
+  Assert.equal(owner:uniqueCount(), 0, "a deposit registers no species")
+  Assert.equal(owner:revision(), revision + 1)
+  Assert.isFalse(prepared.isCurrent())
+  Assert.throws(function()
+    prepared.publish()
+  end, "a repeated publication is a programming error")
+  Assert.equal(owner:daycareDeposits(), 1, "a duplicate publish never counts twice")
+
+  local bucket = owner:bucket()
+  Assert.equal(bucket.daycareDeposits, 1)
+  Assert.equal(bucket.eggsHatched, 0, "the hatch counter has no producer in this slice")
+  local restored = GameStats.restore(bucket, refs())
+  Assert.equal(restored:daycareDeposits(), 1, "the deposit total round-trips")
+  Assert.deepEqual(restored:bucket(), bucket, "the rest of the bucket round-trips unchanged")
+end
+
+function T.daycare_deposits_saturate_at_the_statistic_ceiling()
+  local owner = newOwner()
+  local observations = {}
+  for index = 1, 40 do
+    observations[index] = { kind = "daycare_deposit" }
+  end
+  for _ = 1, 300 do
+    owner:prepareChanges({ observations = observations }):publish()
+  end
+  Assert.equal(owner:daycareDeposits(), GameStats.DAYCARE_DEPOSITS_CAP, "the u16 ceiling holds")
+end
+
+function T.daycare_deposit_observations_carry_no_payload()
+  local owner = newOwner()
+  Assert.throws(function()
+    owner:prepareChanges({
+      observations = { { kind = "daycare_deposit", species = "CHIKORITA" } },
+    })
+  end, "a deposit observation carries no payload")
 end
 
 return { tests = T }
