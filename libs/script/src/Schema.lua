@@ -1225,10 +1225,46 @@ Schema.OPERATIONS = {
       stat = { type = "scalar_or_value", required = true },
     },
   },
+  buffer_type_name = {
+    fields = {
+      buffer = { type = "integer", required = true },
+      type = { type = "scalar_or_value", required = true },
+    },
+  },
   hidden_power_type = {
     fields = {
       slot = { type = "scalar_or_value", required = true },
       result = { type = "writable_value", required = true },
+    },
+  },
+  -- ScrCmd_PlayerHasSpecies (src/scrcmd_party.c): a species identity read as a
+  -- value, its answer written as a variable.
+  player_has_species = {
+    fields = {
+      result = { type = "writable_value", required = true },
+      species = { type = "scalar_or_value", required = true },
+    },
+  },
+  -- The fossil revival queries (src/scrcmd_fossils.c): CountFossils writes one
+  -- answer, GetFossilPokemon reads a fossil identity, and
+  -- GetFossilMinimumAmount writes the fossil it offers and its own row before
+  -- reading the needed amount.
+  count_fossils = {
+    fields = {
+      result = { type = "writable_value", required = true },
+    },
+  },
+  fossil_species = {
+    fields = {
+      result = { type = "writable_value", required = true },
+      item = { type = "scalar_or_value", required = true },
+    },
+  },
+  fossil_minimum_amount = {
+    fields = {
+      item = { type = "writable_value", required = true },
+      index = { type = "writable_value", required = true },
+      amount = { type = "scalar_or_value", required = true },
     },
   },
   -- The transient savings window shares the money window's actions and tile

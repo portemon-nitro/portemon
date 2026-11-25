@@ -159,13 +159,18 @@ function T.non_command_table_entry_keeps_its_independent_identity()
 end
 
 function T.absent_parent_commands_stay_out_of_the_supported_set()
-  for _, opcode in ipairs({ 567, 657 }) do
+  for _, opcode in ipairs({ 567 }) do
     local tagged = assert(ScriptCommands.byOpcode[opcode], "the pinned catalog names opcode " .. opcode)
     Assert.isTrue(
       tagged.disposition ~= "supported",
       "opcode " .. opcode .. " stays unavailable until its parent application exists"
     )
   end
+  -- The stat judge's parent application is the specialty-NPC query leaf, so it
+  -- now answers beside the size record and the Kenya Mail checks.
+  local judge = assert(ScriptCommands.byOpcode[657], "the pinned catalog names opcode 657")
+  Assert.equal(judge.disposition, "supported", "the stat judge runs once its query leaf exists")
+  Assert.equal(judge.feature, "mons", "the stat judge stays in the mon family")
 end
 
 return { tests = T }

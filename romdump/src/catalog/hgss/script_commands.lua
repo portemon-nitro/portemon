@@ -2893,9 +2893,9 @@ return {
     },
     [389] = {
       name = "ScrCmd_PlayerHasSpecies",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "the complete party species query is not implemented",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3241,9 +3241,9 @@ return {
     },
     [429] = {
       name = "ScrCmd_CountFossils",
-      disposition = "deferred",
-      deferredReason = "item_flow",
-      deferredNote = "fossil counting needs the fossil restoration flow",
+      feature = "fossil",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -3266,9 +3266,9 @@ return {
     },
     [432] = {
       name = "ScrCmd_GetFossilPokemon",
-      disposition = "deferred",
-      deferredReason = "item_flow",
-      deferredNote = "fossil restoration needs the item application flow",
+      feature = "fossil",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3276,9 +3276,9 @@ return {
     },
     [433] = {
       name = "ScrCmd_GetFossilMinimumAmount",
-      disposition = "deferred",
-      deferredReason = "item_flow",
-      deferredNote = "fossil revival needs the fossil restoration flow",
+      feature = "fossil",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5150,9 +5150,9 @@ return {
     },
     [668] = {
       name = "ScrCmd_BufferTypeName",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "type-name buffers need the remaining mon application surface",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 1,
         [2] = 2,

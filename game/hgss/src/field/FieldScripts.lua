@@ -888,6 +888,7 @@ function FieldScripts.new(opts)
       mons = opts.mons,
       npcTrade = opts.npcTrade,
       mailbox = opts.mailbox,
+      bag = opts.items,
       world = worldState,
       dexHeight = function(species)
         local heights = opts.dexHeights

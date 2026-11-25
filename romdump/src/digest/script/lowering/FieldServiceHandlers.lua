@@ -886,6 +886,47 @@ function FieldServiceHandlers.bufferStatName(ins)
   return { op = "buffer_stat_name", buffer = buffer, stat = Operands.varRef(ins.operands[2]) }
 end
 
+function FieldServiceHandlers.bufferTypeName(ins)
+  local buffer = Operands.operandValue(ins.operands[1])
+  assert(type(buffer) == "number", "a type-name buffer names its source format field")
+  return { op = "buffer_type_name", buffer = buffer, type = Operands.varRef(ins.operands[2]) }
+end
+
+-- ScrCmd_PlayerHasSpecies reads its result pointer before the species identity
+-- (src/scrcmd_party.c).
+function FieldServiceHandlers.playerHasSpecies(ins)
+  return {
+    op = "player_has_species",
+    result = Operands.varRef(ins.operands[1]),
+    species = Operands.varRef(ins.operands[2]),
+  }
+end
+
+-- The fossil revival queries (src/scrcmd_fossils.c): CountFossils reads its
+-- result pointer, GetFossilPokemon reads that pointer then the fossil identity,
+-- and GetFossilMinimumAmount reads the offered fossil's two output pointers
+-- before the needed amount.
+function FieldServiceHandlers.countFossils(ins)
+  return { op = "count_fossils", result = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.getFossilPokemon(ins)
+  return {
+    op = "fossil_species",
+    result = Operands.varRef(ins.operands[1]),
+    item = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function FieldServiceHandlers.getFossilMinimumAmount(ins)
+  return {
+    op = "fossil_minimum_amount",
+    item = Operands.varRef(ins.operands[1]),
+    index = Operands.varRef(ins.operands[2]),
+    amount = Operands.varRef(ins.operands[3]),
+  }
+end
+
 function FieldServiceHandlers.hiddenPowerType(ins)
   return {
     op = "hidden_power_type",

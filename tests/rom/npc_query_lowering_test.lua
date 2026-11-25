@@ -1,7 +1,8 @@
 -- ROM-gated specialty-NPC lowering coverage: the real retail scripts pin the
 -- operand order and the pointer/value/byte distinctions of the size record, the
--- ribbon reads and names, the effort-value total, the Kenya Mail checks, the
--- stat judge and the Hidden Power type. Only literal member data is decoded;
+-- party species query, the ribbon reads and names, the effort-value total, the
+-- Kenya Mail checks, the stat judge, the Hidden Power type, the type-name
+-- buffer and the fossil revival queries. Only literal member data is decoded;
 -- neighbouring unsupported commands are irrelevant here.
 
 local Assert = require("tests.support.Assert")
@@ -12,9 +13,9 @@ local T = {}
 
 -- Explicit retail sites: the fishing-competition gatehouse (member 940), the
 -- Route 29 size poster (938), the ribbon NPCs (225/246), the Trainer House
--- effort reader (947), the Kenya checks (230/241), the stat judge (69) and the
--- Hidden Power reader (804).
-local SAMPLE_MEMBERS = { 69, 225, 230, 241, 246, 804, 938, 940, 947 }
+-- effort reader (947), the Kenya checks (230/241), the stat judge (69), the
+-- Hidden Power reader (804) and the Pewter Museum revival reader (755).
+local SAMPLE_MEMBERS = { 69, 225, 230, 241, 246, 755, 804, 938, 940, 947 }
 
 local EXPECTED = {
   size_record_compare = { "result", "slot" },
@@ -28,7 +29,12 @@ local EXPECTED = {
   kenya_check_party = { "result" },
   stat_judge = { "slot", "total", "message", "highest" },
   buffer_stat_name = { "buffer", "stat" },
+  buffer_type_name = { "buffer", "type" },
   hidden_power_type = { "slot", "result" },
+  player_has_species = { "result", "species" },
+  count_fossils = { "result" },
+  fossil_species = { "result", "item" },
+  fossil_minimum_amount = { "item", "index", "amount" },
 }
 
 T["retail specialty-NPC commands lower to their source operands"] = function(romFs)
@@ -61,7 +67,7 @@ T["retail specialty-NPC commands lower to their source operands"] = function(rom
       Assert.isTrue(seen[op] ~= nil and seen[op] > 0, "the retail corpus lowers at least one " .. op .. " node")
     end
   end
-  for _, opcode in ipairs({ 390, 391, 392, 393, 426, 480, 483, 657, 670, 781 }) do
+  for _, opcode in ipairs({ 389, 390, 391, 392, 393, 426, 429, 432, 433, 480, 483, 657, 668, 670, 781 }) do
     Assert.isNil(
       unsupported[opcode],
       "opcode " .. opcode .. " is no longer unsupported in the retail corpus"

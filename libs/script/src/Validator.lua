@@ -743,7 +743,7 @@ local function checkStep(context, step, path)
     checkCoinStep(context, step, path, name)
   elseif name == "bank_transaction" or name == "bank_overflow_check" or name == "bank_balance_check" then
     checkBankStep(context, step, path, name)
-  elseif name == "buffer_ribbon_name" or name == "buffer_stat_name" then
+  elseif name == "buffer_ribbon_name" or name == "buffer_stat_name" or name == "buffer_type_name" then
     checkBufferSlot(context, step, path, name)
   elseif name == "kenya_check" then
     checkKenyaExact(context, step, path, name)

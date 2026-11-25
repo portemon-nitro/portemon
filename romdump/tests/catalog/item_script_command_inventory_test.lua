@@ -164,6 +164,14 @@ function T.every_inventory_member_has_explicit_disposition()
       elseif ALLOWED_DEFERRALS[entry.deferredReason] ~= true then
         problems[#problems + 1] = tostring(inventory.opcode) .. ":unexpected Apricorn deferral category"
       end
+    elseif inventory.category == "fossil" then
+      -- The revival queries read the Bag and answer source identities; the
+      -- museum's own exchange and revival stay in its scripts.
+      if entry.disposition ~= "supported" or entry.feature ~= "fossil" then
+        problems[#problems + 1] = tostring(inventory.opcode) .. ":revival query is not owned by fossil"
+      elseif entry.classification ~= "continue_same_tick" then
+        problems[#problems + 1] = tostring(inventory.opcode) .. ":revival query lacks same-tick timing"
+      end
     elseif inventory.category == "mystery_gift" then
       -- The queue framing and the waiting-gift query execute in the field
       -- runtime; gift delivery still needs the unimplemented distribution
@@ -199,10 +207,13 @@ function T.adjacent_systems_are_not_claimed()
   end
   table.sort(problems)
   Assert.equal(#problems, 0, "adjacent commands stay outside the item inventory: " .. table.concat(problems, ", "))
-  for _, opcode in ipairs({ 428, 781, 689 }) do
+  for _, opcode in ipairs({ 428, 689 }) do
     local tagged = assert(ScriptCommands.byOpcode[opcode], "the catalog names opcode " .. opcode)
     Assert.equal(tagged.disposition, "deferred", "opcode " .. opcode .. " stays deferred under its owner")
   end
+  local mailboxScan = assert(ScriptCommands.byOpcode[781], "the catalog names opcode 781")
+  Assert.equal(mailboxScan.disposition, "supported", "the mailbox scan runs in its source Mail family")
+  Assert.equal(mailboxScan.feature, "mail", "the mailbox scan stays in the mail family")
   local sanitize = assert(ScriptCommands.byOpcode[690], "the catalog names opcode 690")
   Assert.equal(sanitize.disposition, "supported", "the day-care sanitizer runs in its source family")
   Assert.equal(sanitize.feature, "mons", "the day-care sanitizer stays in the mon family")

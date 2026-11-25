@@ -1914,7 +1914,7 @@ end
 
 -- ScrCmd_GiveRibbon (src/scrcmd_party.c) sets the named ribbon on the party
 -- slot unconditionally: the source writes TRUE into the ribbon's mon-data
--- field and has no removal counterpart.
+-- field, leaves every other stored bit alone and has no removal counterpart.
 ---@param slot0 integer
 ---@param field string
 ---@param bit integer
@@ -1928,7 +1928,10 @@ function HgssMonService:giveRibbon(slot0, field, bit)
   local mon = self:_liveMon(slot0)
   assert(type(mon.ribbons) == "table", "admitted mons carry their ribbon fields")
   local place = 2 ^ bit
-  mon.ribbons[field] = mon.ribbons[field] + place - (mon.ribbons[field] % place)
+  local stored = mon.ribbons[field]
+  if math.floor(stored / place) % 2 == 0 then
+    mon.ribbons[field] = stored + place
+  end
   self:_store(slot0, mon)
 end
 
@@ -2265,6 +2268,21 @@ function HgssMonService:scriptSlotWithSpecies(species)
     end
   end
   return 255
+end
+
+-- ScrCmd_PlayerHasSpecies (src/scrcmd_party.c): true when the party holds a
+-- non-egg member of the named native species.
+---@param species string|integer
+---@return boolean
+function HgssMonService:scriptPlayerHasSpecies(species)
+  local key = self:_speciesKey(species)
+  for index = 0, self._party:count() - 1 do
+    local mon = self._party:get(index)
+    if not mon.isEgg and mon.species == key then
+      return true
+    end
+  end
+  return false
 end
 
 ---@param field string

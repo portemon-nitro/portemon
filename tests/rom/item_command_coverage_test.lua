@@ -28,6 +28,14 @@ local ALLOWED_DEFERRALS = {
   field_item_check = true,
 }
 
+-- The museum's revival queries: the fossil family reads the Bag and answers
+-- source item and species identities without touching it.
+local SUPPORTED_FOSSIL = {
+  [429] = true,
+  [432] = true,
+  [433] = true,
+}
+
 local SUPPORTED_APRICORN = {
   [623] = true,
   [624] = true,
@@ -101,6 +109,7 @@ function T.supported_entries_carry_widths_timing_and_lowering(romFs)
   local supportedItems = 0
   local supportedShops = 0
   local supportedApricorn = 0
+  local supportedFossil = 0
   for _, item in ipairs(familyEntries()) do
     if item.entry ~= nil and item.entry.disposition == "supported" then
       if item.inventory.category == "items" then
@@ -109,6 +118,14 @@ function T.supported_entries_carry_widths_timing_and_lowering(romFs)
         supportedShops = supportedShops + 1
         if item.entry.feature ~= "mart" then
           problems[#problems + 1] = item.opcode .. ":supported shop command is not owned by mart"
+        end
+      elseif item.inventory.category == "fossil" and SUPPORTED_FOSSIL[item.opcode] then
+        supportedFossil = supportedFossil + 1
+        if item.entry.feature ~= "fossil" then
+          problems[#problems + 1] = item.opcode .. ":supported revival command is not owned by fossil"
+        end
+        if item.entry.classification ~= "continue_same_tick" then
+          problems[#problems + 1] = item.opcode .. ":supported revival command has incorrect timing"
         end
       elseif item.inventory.category == "apricorn" and SUPPORTED_APRICORN[item.opcode] then
         supportedApricorn = supportedApricorn + 1
@@ -147,6 +164,7 @@ function T.supported_entries_carry_widths_timing_and_lowering(romFs)
   Assert.equal(supportedItems, 13, "the supported item set is exactly the generic protocol")
   Assert.equal(supportedShops, 5, "the mart owns the five audited shop commands")
   Assert.equal(supportedApricorn, 9, "the Apricorn feature owns its tree and Kurt commands")
+  Assert.equal(supportedFossil, 3, "the fossil family owns the three revival queries")
   table.sort(problems)
   Assert.equal(#problems, 0, "every supported entry is decodable, timed, and lowered: " .. table.concat(problems, ", "))
 end

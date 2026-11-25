@@ -3513,6 +3513,14 @@ HANDLERS.count_alive_mons = handleCountAliveMons
 HANDLERS.party_count_at_or_below_level = handlePartyCountAtOrBelowLevel
 HANDLERS.count_species = handleCountSpecies
 HANDLERS.party_slot_with_species = handlePartySlotWithSpecies
+-- ScrCmd_PlayerHasSpecies (src/scrcmd_party.c): the party holds a non-egg member
+-- of the named native species. Declared inline: this chunk is at LuaJIT's
+-- 200-local budget, so the handler adds no main-chunk local.
+function HANDLERS.player_has_species(node, run)
+  local species = evalField(node, run, "species")
+  writeMonsBool(node, run, monsFor(run):scriptPlayerHasSpecies(species))
+  return Runtime.OUTCOME_CONTINUE
+end
 HANDLERS.party_slot_with_nature = handlePartySlotWithNature
 HANDLERS.party_slot_with_fateful_encounter = handlePartySlotWithFatefulEncounter
 HANDLERS.party_mon_species = handlePartyMonSpecies
@@ -4681,7 +4689,11 @@ end
 ---@field statJudge fun(self: ScriptNpcServices, slot0: integer): { total: integer, messageId: integer, highest: integer }
 ---@field statJudgeMessageText fun(self: ScriptNpcServices, messageId: integer): string
 ---@field statName fun(self: ScriptNpcServices, statId: integer): string
+---@field typeName fun(self: ScriptNpcServices, typeId: integer): string
 ---@field hiddenPowerType fun(self: ScriptNpcServices, slot0: integer): integer
+---@field fossilCount fun(self: ScriptNpcServices): integer
+---@field fossilForAmount fun(self: ScriptNpcServices, needed: integer): integer, integer
+---@field fossilSpecies fun(self: ScriptNpcServices, itemId: integer): integer
 do
   local function npcFor(run)
     return requireService(run, "npcServices") --[[@as ScriptNpcServices]]
@@ -4767,6 +4779,29 @@ do
   HANDLERS.buffer_stat_name = function(node, run)
     local statId = semanticsFor(run).evaluateValue(node.stat, run)
     writeNpcBuffer(run, node.buffer, npcFor(run):statName(statId))
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.buffer_type_name = function(node, run)
+    local typeId = semanticsFor(run).evaluateValue(node.type, run)
+    writeNpcBuffer(run, node.buffer, npcFor(run):typeName(typeId))
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.count_fossils = function(node, run)
+    semanticsFor(run).writeRef(node.result, npcFor(run):fossilCount(), run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.fossil_minimum_amount = function(node, run)
+    local semantics = semanticsFor(run)
+    local needed = semantics.evaluateValue(node.amount, run)
+    local itemId, index = npcFor(run):fossilForAmount(needed)
+    semantics.writeRef(node.item, itemId, run)
+    semantics.writeRef(node.index, index, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.fossil_species = function(node, run)
+    local semantics = semanticsFor(run)
+    local itemId = semantics.evaluateValue(node.item, run)
+    semantics.writeRef(node.result, npcFor(run):fossilSpecies(itemId), run)
     return Runtime.OUTCOME_CONTINUE
   end
   HANDLERS.hidden_power_type = function(node, run)

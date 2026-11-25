@@ -99,4 +99,23 @@ function T.give_ribbon_sets_the_named_stored_bit_once()
   Assert.isTrue(Errors.is(slotErr), "a missing party slot is a structured service error")
 end
 
+-- The source write is a single bit store: every other bit of the same stored
+-- word survives, and a second award of an already-set bit stores nothing new.
+function T.give_ribbon_preserves_the_other_bits_of_its_own_word()
+  local service = newService()
+  local mon = service:partyMon(0)
+  mon.ribbons = { gba = 1 + 2 ^ 30, ds1 = 2 ^ 3, ds2 = 0 }
+  local preparation, stale = service:preparePartyChanges(service:partyRevision(), { { slot = 0, mon = mon } })
+  Assert.isNil(stale, "the fixture stages the stored ribbons")
+  assert(preparation).publish()
+  service:giveRibbon(0, "gba", 24)
+  local stored = service:partyMon(0).ribbons
+  Assert.equal(stored.gba, 1 + 2 ^ 24 + 2 ^ 30, "the award sets its own bit and keeps the neighbours")
+  Assert.equal(stored.ds1, 2 ^ 3, "the award leaves the other stored words alone")
+  service:giveRibbon(0, "gba", 24)
+  service:giveRibbon(0, "gba", 24)
+  Assert.equal(service:partyMon(0).ribbons.gba, 1 + 2 ^ 24 + 2 ^ 30, "a repeated award never shifts its bit")
+  Assert.equal(service:monRibbonCount(0), 4, "the record keeps exactly the awarded ribbons")
+end
+
 return { tests = T }

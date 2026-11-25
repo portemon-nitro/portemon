@@ -212,6 +212,10 @@ function FieldMessageCompiler.requiredBankIds()
   set[BattleSources.trainerFieldMessages.messageBank] = true
   -- Apricorn Box labels are addressed directly by the generated source manifest.
   set[APRICORN_BOX_MESSAGE_BANK] = true
+  -- The field's type-name buffer reads msgdata bank 735 by native type identity
+  -- (src/message_format.c::BufferTypeName, reached by ScrCmd_BufferTypeName),
+  -- so the bank carries no map header or script association.
+  set[735] = true
   -- The Kurt confirm header pluralizes through bank 224
   -- (BufferItemNamePlural, ItemSources.messageBanks.namePlural), addressed
   -- by native item identity rather than any map header or script bank.

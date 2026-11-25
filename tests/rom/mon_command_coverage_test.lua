@@ -18,7 +18,9 @@ local T = {}
 -- untagged catalog member is intentionally accepted; inventory shape owns the
 -- closed category set.
 local ALLOWED_CATALOG_FEATURES = {
-  mon = { mons = true },
+  -- ScrCmd_GetFossilPokemon answers a native species identity from an item
+  -- identity, so the mon audit's row for it shares the fossil family tag.
+  mon = { mons = true, fossil = true },
   party = { mons = true },
   -- Starter scripts and the party-screen applications also use the shared
   -- mon catalog family for source commands that only buffer or query
@@ -29,10 +31,13 @@ local ALLOWED_CATALOG_FEATURES = {
   pokedex = { mons = true },
   daycare = { mons = true },
   trade = { mons = true },
-  mail = { mons = true },
+  -- The Kenya Mail checks answer from the canonical Mail record, so the mail
+  -- family owns their catalog tag even where the inventory files them under
+  -- the special-event or mail category.
+  mail = { mons = true, mail = true },
   contest = { mons = true },
   cry = { audio = true },
-  special_event = { mons = true },
+  special_event = { mons = true, mail = true },
 }
 
 -- The only deferral categories the supported command set allows. A new category is

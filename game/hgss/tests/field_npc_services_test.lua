@@ -74,10 +74,20 @@ local function harness(options)
       return parties[slot + 1]
     end,
     catalog = function()
+      -- The fixture's own species and item identities: the native id each
+      -- semantic key carries, exactly as the generated catalog publishes them.
+      local speciesIds = options.speciesIds or { MAGIKARP = 129 }
+      local itemIds = options.itemIds or {}
       return {
         speciesKeyByNativeId = function(_, nativeId)
           local byNativeId = options.speciesByNativeId or { [129] = "MAGIKARP" }
           return byNativeId[nativeId]
+        end,
+        species = function(_, key)
+          return { nativeId = assert(speciesIds[key], "the fixture carries the species " .. tostring(key)) }
+        end,
+        item = function(_, key)
+          return { nativeId = assert(itemIds[key], "the fixture carries the item " .. tostring(key)) }
         end,
       }
     end,
@@ -107,6 +117,7 @@ local function harness(options)
     mons = mons,
     npcTrade = npcTrade,
     mailbox = mailbox,
+    bag = options.bag,
     world = {
       getVar = function(_, id)
         return vars[id] or 0
@@ -206,6 +217,23 @@ function T.the_size_buffers_carry_the_whole_inch_and_the_tenth()
   )
 end
 
+-- GetMonSizeHash reads the personality as the source's low halfword: only
+-- bits 8..15 of the whole personality reach the hash, so two records that
+-- differ above that halfword size identically.
+function T.the_size_hash_reads_the_low_personality_halfword_only()
+  local sourceIvs = { 1, 2, 3, 4, 5, 6 }
+  local first = harness({ party = { mon(ivs(sourceIvs), { personality = 0x1200 }) } })
+  local second = harness({ party = { mon(ivs(sourceIvs), { personality = 0x00011200 }) } })
+  local own = first.service:monSizeText(0)
+  Assert.equal(own.whole, "17 ", "the hash picks the 400-multiplier row for this spread")
+  Assert.equal(own.fraction, "3", "the source tenths come from the integer conversion")
+  Assert.deepEqual(second.service:monSizeText(0), own, "bits above the low halfword never reach the hash")
+  local aliased = harness({ party = { mon(ivs(sourceIvs), { personality = 0x2200 }) } })
+  local aliasedText = aliased.service:monSizeText(0)
+  Assert.equal(aliasedText.whole, "17 ", "the shifted high byte keeps the row's whole count")
+  Assert.equal(aliasedText.fraction, "6", "the personality's own high byte still reaches the hash")
+end
+
 -- MonHasRibbon/BufferRibbonName read the retail ribbon table's own binding.
 function T.ribbon_queries_read_the_source_binding()
   local ribbons = {
@@ -265,12 +293,12 @@ function T.the_party_or_mailbox_check_scans_both_owners_once()
   local party = {
     [0] = mon(ivs({ 0, 0, 0, 0, 0, 0 }), { heldItem = "GRASS_MAIL", mail = { type = 1 } }),
   }
-  local state = harness({ party = party, reference = letter, mailbox = { { mail = letter } } })
+  local state = harness({ party = party, reference = letter, mailbox = { letter } })
   Assert.equal(#state.parties, 1, "the fixture normalizes its party copy")
   Assert.isTrue(state.service:kenyaCheckPartyOrMailbox(), "the mailbox letter matches the reference")
   Assert.equal(state.draws, 1, "the scan authors exactly one reference letter")
 
-  state.mailbox[1] = { mail = { type = 2 } }
+  state.mailbox[1] = { type = 2 }
   Assert.isFalse(state.service:kenyaCheckPartyOrMailbox(), "neither owner holds the reference letter")
   Assert.equal(state.draws, 2, "each scan authors its own reference letter")
 
@@ -323,9 +351,115 @@ function T.hidden_power_reports_the_derived_type_and_the_refusal_sentinel()
   Assert.equal(fighting.service:hiddenPowerType(0), 1, "two low bits stay below the second type step")
 
   local refused = harness({ party = { mon(ivs({ 31, 31, 31, 31, 31, 31 }), { species = "MAGIKARP" }) } })
-  Assert.equal(refused.service:hiddenPowerType(0), -1, "a refused species reports the source sentinel")
+  Assert.equal(refused.service:hiddenPowerType(0), 0xFFFF, "a refused species reports the source u16 sentinel")
   local egg = harness({ party = { mon(ivs({ 0, 0, 0, 0, 0, 0 }), { species = "MAGIKARP", isEgg = true }) } })
   Assert.equal(egg.service:hiddenPowerType(0), 1, "an egg skips the species refusal")
+end
+
+-- ScrCmd_KenyaCheckPartyOrMailbox reads the Mail each saved mailbox slot
+-- holds: the authored letter answers from any of the twenty slots, an empty
+-- slot answers nothing, and a record without Mail never stands in for it.
+function T.the_mailbox_scan_reads_the_letter_from_any_of_the_twenty_slots()
+  local letter = { type = 0, lines = { { 1 }, { 2 }, { 3 } } }
+  local mailbox = {}
+  for slot = 1, 20 do
+    mailbox[slot] = { type = 0, lines = { { 9 }, { slot }, { 9 } } }
+  end
+  mailbox[1] = false
+  local state = harness({
+    party = { mon(ivs({ 0, 0, 0, 0, 0, 0 }), { heldItem = "NONE" }) },
+    reference = letter,
+    mailbox = mailbox,
+    match = function(left, right)
+      return left == right
+    end,
+  })
+  Assert.isFalse(state.service:kenyaCheckPartyOrMailbox(), "the other nineteen letters are not the authored one")
+  Assert.equal(state.draws, 1, "the scan authors one reference letter for both owners")
+
+  mailbox[20] = letter
+  Assert.isTrue(state.service:kenyaCheckPartyOrMailbox(), "the authored letter answers from the last slot")
+
+  mailbox[20] = false
+  state.parties[1].heldItem = "GRASS_MAIL"
+  state.parties[1].mail = letter
+  Assert.isTrue(state.service:kenyaCheckPartyOrMailbox(), "a party letter answers the same scan")
+
+  state.parties[1] = mon(ivs({ 0, 0, 0, 0, 0, 0 }), { heldItem = "GRASS_MAIL", species = "SPEAROW" })
+  Assert.isFalse(
+    state.service:kenyaCheckPartyOrMailbox(),
+    "the carrier alone never answers the scan without the authored letter"
+  )
+end
+
+-- ScrCmd_BufferTypeName resolves the type name from its own message bank.
+function T.the_type_name_buffer_reads_the_type_bank()
+  local state = harness({ texts = { ["735:10"] = "Fire" } })
+  Assert.equal(state.service:typeName(10), "Fire", "the type name resolves display text")
+  Assert.equal(
+    faultCode(function()
+      state.service:typeName("FIRE")
+    end),
+    ScriptErrors.SCRIPT_INVALID_REFERENCE,
+    "a non-numeric type identity faults"
+  )
+end
+
+-- The native identities of the seven revival fossils (src/constants/items.h,
+-- src/constants/species.h), in the source table's own order.
+local FOSSIL_ITEM_IDS = {
+  OLD_AMBER = 103,
+  HELIX_FOSSIL = 101,
+  DOME_FOSSIL = 102,
+  ROOT_FOSSIL = 99,
+  CLAW_FOSSIL = 100,
+  ARMOR_FOSSIL = 104,
+  SKULL_FOSSIL = 105,
+}
+local FOSSIL_SPECIES_IDS = {
+  AERODACTYL = 142,
+  OMANYTE = 138,
+  KABUTO = 140,
+  LILEEP = 345,
+  ANORITH = 347,
+  SHIELDON = 410,
+  CRANIDOS = 408,
+}
+
+-- The fossil revival queries read the canonical bag: CountFossils sums every
+-- accepted fossil, GetFossilMinimumAmount answers the first fossil whose
+-- cumulative count reaches the amount together with its own row, and
+-- GetFossilPokemon answers the species that fossil restores or zero.
+function T.the_fossil_queries_read_the_bag_and_the_revival_table()
+  local held = {}
+  local bag = {
+    quantity = function(_, itemKey)
+      return held[itemKey] or 0
+    end,
+  }
+  local state = harness({ bag = bag, speciesIds = FOSSIL_SPECIES_IDS, itemIds = FOSSIL_ITEM_IDS })
+  Assert.equal(state.service:fossilCount(), 0, "an empty bag holds no fossil")
+  local itemId, index = state.service:fossilForAmount(1)
+  Assert.equal(itemId, 0, "an empty bag offers no fossil identity")
+  Assert.equal(index, 0, "an empty bag offers no fossil row")
+
+  held.HELIX_FOSSIL = 1
+  Assert.equal(state.service:fossilCount(), 1, "the held fossil counts once")
+  itemId, index = state.service:fossilForAmount(1)
+  Assert.equal(itemId, 101, "the helix fossil answers its native item identity")
+  Assert.equal(index, 1, "the helix fossil answers its own source row")
+  Assert.equal(state.service:fossilSpecies(itemId), 138, "the helix fossil restores an Omanyte")
+  Assert.equal(state.service:fossilSpecies(1), 0, "an item the revival service refuses restores nothing")
+
+  held.HELIX_FOSSIL = 0
+  held.CLAW_FOSSIL = 2
+  Assert.equal(state.service:fossilCount(), 2, "every accepted fossil adds to the count")
+  itemId, index = state.service:fossilForAmount(3)
+  Assert.equal(itemId, 0, "an amount past the held total offers nothing")
+  itemId, index = state.service:fossilForAmount(2)
+  Assert.equal(itemId, 100, "the claw fossil answers once the count reaches the amount")
+  Assert.equal(index, 4, "the claw fossil answers its own source row")
+  Assert.equal(state.service:fossilSpecies(itemId), 347, "the claw fossil restores an Anorith")
 end
 
 -- A missing party slot and an unoccupied owner fault instead of answering.

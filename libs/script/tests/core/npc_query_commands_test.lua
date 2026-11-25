@@ -84,9 +84,25 @@ local function recordingNpc()
     self.calls[#self.calls + 1] = { "statName", statId }
     return "Attack"
   end
+  function npc:typeName(typeId)
+    self.calls[#self.calls + 1] = { "typeName", typeId }
+    return "Fire"
+  end
   function npc:hiddenPowerType(slot0)
     self.calls[#self.calls + 1] = { "hiddenPowerType", slot0 }
-    return -1
+    return 0xFFFF
+  end
+  function npc:fossilCount()
+    self.calls[#self.calls + 1] = { "fossilCount" }
+    return 1
+  end
+  function npc:fossilForAmount(needed)
+    self.calls[#self.calls + 1] = { "fossilForAmount", needed }
+    return 101, 1
+  end
+  function npc:fossilSpecies(itemId)
+    self.calls[#self.calls + 1] = { "fossilSpecies", itemId }
+    return 138
   end
   return npc
 end
@@ -168,12 +184,14 @@ function T.the_query_commands_write_their_source_answers()
   Runtime.executeNode({ op = "kenya_check_party", result = { value = "var", id = "VAR_TEMP_x4002" } }, run)
   Assert.equal(values.VAR_TEMP_x4002, 0, "the party-or-mailbox check answers 0")
   Runtime.executeNode({ op = "hidden_power_type", slot = 0, result = { value = "var", id = "VAR_TEMP_x4004" } }, run)
-  Assert.equal(values.VAR_TEMP_x4004, -1, "the refusal sentinel is written unchanged")
+  Assert.equal(values.VAR_TEMP_x4004, 0xFFFF, "the refusal sentinel is written as the u16 the script compares")
 
   Runtime.executeNode({ op = "buffer_ribbon_name", buffer = 6, ribbon = { value = "var", id = "VAR_TEMP_x4001" } }, run)
   Assert.deepEqual(run.instance.textArgs[6], { text = "literal_text", value = "Cool Ribbon" }, "the ribbon name is buffered")
   Runtime.executeNode({ op = "buffer_stat_name", buffer = 7, stat = { value = "var", id = "VAR_TEMP_x4001" } }, run)
   Assert.deepEqual(run.instance.textArgs[7], { text = "literal_text", value = "Attack" }, "the stat name is buffered")
+  Runtime.executeNode({ op = "buffer_type_name", buffer = 8, type = { value = "var", id = "VAR_TEMP_x4001" } }, run)
+  Assert.deepEqual(run.instance.textArgs[8], { text = "literal_text", value = "Fire" }, "the type name is buffered")
   Assert.deepEqual(npc.calls, {
     { "monHasRibbon", 0, 1 },
     { "evTotal", 0 },
@@ -182,6 +200,7 @@ function T.the_query_commands_write_their_source_answers()
     { "hiddenPowerType", 0 },
     { "ribbonName", 1 },
     { "statName", 1 },
+    { "typeName", 1 },
   }, "every query reaches the leaf once, in source order")
 end
 
@@ -205,6 +224,55 @@ function T.the_stat_judge_writes_three_outputs()
   Assert.deepEqual(npc.calls, { { "statJudge", 0 } }, "the judge answers once")
 end
 
+-- The fossil revival queries answer through the leaf, and the party species
+-- query asks the mon owner directly with the source species identity.
+function T.the_fossil_and_party_species_queries_write_their_source_answers()
+  local npc = recordingNpc()
+  local run, values = runWith(npc, { VAR_TEMP_x4001 = 101 })
+  run.services.mons = {
+    scriptPlayerHasSpecies = function(_, species)
+      npc.calls[#npc.calls + 1] = { "scriptPlayerHasSpecies", species }
+      return species == 129
+    end,
+  }
+  Runtime.executeNode({
+    op = "player_has_species",
+    result = { value = "var", id = "VAR_TEMP_x4002" },
+    species = 129,
+  }, run)
+  Assert.equal(values.VAR_TEMP_x4002, 1, "a held species answers 1")
+  Runtime.executeNode({
+    op = "player_has_species",
+    result = { value = "var", id = "VAR_TEMP_x4002" },
+    species = 130,
+  }, run)
+  Assert.equal(values.VAR_TEMP_x4002, 0, "an absent species answers 0")
+
+  Runtime.executeNode({ op = "count_fossils", result = { value = "var", id = "VAR_TEMP_x4002" } }, run)
+  Assert.equal(values.VAR_TEMP_x4002, 1, "the fossil count is written")
+  Runtime.executeNode({
+    op = "fossil_minimum_amount",
+    item = { value = "var", id = "VAR_TEMP_x4001" },
+    index = { value = "var", id = "VAR_TEMP_x4003" },
+    amount = 1,
+  }, run)
+  Assert.equal(values.VAR_TEMP_x4001, 101, "the offered fossil identity is written")
+  Assert.equal(values.VAR_TEMP_x4003, 1, "the offered fossil's own row is written")
+  Runtime.executeNode({
+    op = "fossil_species",
+    result = { value = "var", id = "VAR_TEMP_x4004" },
+    item = { value = "var", id = "VAR_TEMP_x4001" },
+  }, run)
+  Assert.equal(values.VAR_TEMP_x4004, 138, "the revived species identity is written")
+  Assert.deepEqual(npc.calls, {
+    { "scriptPlayerHasSpecies", 129 },
+    { "scriptPlayerHasSpecies", 130 },
+    { "fossilCount" },
+    { "fossilForAmount", 1 },
+    { "fossilSpecies", 101 },
+  }, "every query reaches its owner once, in source order")
+end
+
 -- A missing leaf faults the operation that needs it.
 function T.every_npc_command_faults_without_its_owner()
   for _, node in ipairs({
@@ -225,7 +293,17 @@ function T.every_npc_command_faults_without_its_owner()
       highest = { value = "var", id = "VAR_TEMP_x4003" },
     },
     { op = "buffer_stat_name", buffer = 0, stat = 0 },
+    { op = "buffer_type_name", buffer = 0, type = 0 },
     { op = "hidden_power_type", slot = 0, result = { value = "var", id = "VAR_TEMP_x4001" } },
+    { op = "count_fossils", result = { value = "var", id = "VAR_TEMP_x4001" } },
+    { op = "fossil_species", result = { value = "var", id = "VAR_TEMP_x4001" }, item = 101 },
+    {
+      op = "fossil_minimum_amount",
+      item = { value = "var", id = "VAR_TEMP_x4001" },
+      index = { value = "var", id = "VAR_TEMP_x4002" },
+      amount = 1,
+    },
+    { op = "player_has_species", result = { value = "var", id = "VAR_TEMP_x4001" }, species = 129 },
   }) do
     local run = runWith(nil)
     local ok, err = pcall(function()

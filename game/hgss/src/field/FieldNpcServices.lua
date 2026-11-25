@@ -1,9 +1,10 @@
 -- The source specialty-NPC query leaf: the fishing-competition size record, the
 -- ribbon identity reads/names, the EV total, the Kenya Mail reference checks,
--- the stat judge and the Hidden Power type. Every algorithm comes from the
--- pinned native sources named beside it; the party, ribbons, held items, mail
--- and the mailbox are the canonical owners behind the mon service and the NPC
--- trade service, the size record is the saved script variable
+-- the stat judge, the Hidden Power type, the type-name buffer and the fossil
+-- queries. Every algorithm comes from the pinned native sources named beside
+-- it; the party, ribbons, held items, mail and the mailbox are the canonical
+-- owners behind the mon service and the NPC trade service, the bag is the
+-- canonical Bag service, the size record is the saved script variable
 -- VAR_MAGIKARP_SIZE_RECORD, and the dex heights are the generated dex catalog.
 --
 -- The service owns no saved state: its one transient value is the source
@@ -60,9 +61,11 @@ local STAT_JUDGE_BEST_MESSAGE = { 122, 123, 124, 127, 125, 126 }
 -- (msg_0096_D31R0201, msg_0443).
 local STAT_JUDGE_MESSAGE_BANK = 96
 local STAT_NAME_MESSAGE_BANK = 443
+-- BufferTypeName reads msg_0735 (src/message_format.c).
+local TYPE_NAME_MESSAGE_BANK = 735
 
 -- ScrCmd_GetHiddenPowerType's species refusal list: these species never report
--- a type, so the command writes the source's -1 sentinel instead.
+-- a type, so the command answers the source's refusal value instead.
 local HIDDEN_POWER_REFUSED = {
   CATERPIE = true,
   METAPOD = true,
@@ -81,8 +84,21 @@ local HIDDEN_POWER_REFUSED = {
   BURMY = true,
   COMBEE = true,
 }
--- The u16 script variable that receives the sentinel.
-local HIDDEN_POWER_REFUSED_VALUE = -1
+-- ScrCmd_GetHiddenPowerType writes -1 into a u16 script variable, so the
+-- operand the script compares is 0xFFFF.
+local HIDDEN_POWER_REFUSED_VALUE = 0xFFFF
+
+-- sFossilPokemonMap (src/scrcmd_fossils.c): the seven fossils the revival
+-- service accepts, in the source's own order, and the species each restores.
+local FOSSILS = {
+  { item = "OLD_AMBER", species = "AERODACTYL" },
+  { item = "HELIX_FOSSIL", species = "OMANYTE" },
+  { item = "DOME_FOSSIL", species = "KABUTO" },
+  { item = "ROOT_FOSSIL", species = "LILEEP" },
+  { item = "CLAW_FOSSIL", species = "ANORITH" },
+  { item = "ARMOR_FOSSIL", species = "SHIELDON" },
+  { item = "SKULL_FOSSIL", species = "CRANIDOS" },
+}
 
 -- LengthConvertToImperial (include/dex_mon_measures.h): integer arithmetic in
 -- the source's own order, so the displayed tenths of an inch match retail.
@@ -132,7 +148,9 @@ local function monSizeHash(mon)
   local high = bit.band(
     bit.bxor(
       bit.band(bit.bxor(low("specialDefense"), low("specialAttack")) * low("speed"), 0xFFFF),
-      bit.rshift(personality, 8)
+      -- The source truncates the personality to its low halfword before
+      -- shifting, so only bits 8..15 of the whole value reach the hash.
+      bit.band(bit.rshift(personality, 8), 0xFF)
     ),
     0xFFFF
   )
@@ -195,6 +213,7 @@ end
 ---@field private _mons table<string, unknown> the live canonical mon service
 ---@field private _npcTrade table<string, unknown>? the NPC trade service behind the Kenya reference letter
 ---@field private _mailbox table<string, unknown>? the canonical mailbox behind the mailbox scan
+---@field private _bag table<string, unknown>? the canonical Bag service behind the fossil queries
 ---@field private _world table<string, unknown> the live world store behind the saved size record
 ---@field private _dexHeight fun(species: string): integer? the generated dex height in decimetres
 ---@field private _resolveText fun(bankId: integer, messageId: integer): string the generated message text
@@ -208,6 +227,7 @@ FieldNpcServices.__index = FieldNpcServices
 ---@field mons table<string, unknown> the live mon service
 ---@field npcTrade table<string, unknown>? the NPC trade service (Kenya Mail reference)
 ---@field mailbox table<string, unknown>? the canonical mailbox
+---@field bag table<string, unknown>? the canonical Bag service (fossil queries)
 ---@field world table<string, unknown> the live world store
 ---@field dexHeight fun(species: string): integer? the generated dex height
 ---@field resolveText fun(bankId: integer, messageId: integer): string the message text resolver
@@ -233,6 +253,7 @@ function FieldNpcServices.new(opts)
     _mons = mons,
     _npcTrade = opts.npcTrade,
     _mailbox = opts.mailbox,
+    _bag = opts.bag,
     _world = world,
     _dexHeight = dexHeight,
     _resolveText = resolveText,
@@ -439,8 +460,9 @@ function FieldNpcServices:kenyaCheck(slot0, exact)
 end
 
 -- ScrCmd_KenyaCheckPartyOrMailbox: the reference letter is authored once and
--- compared with every Mail-holding party member, then with every saved mailbox
--- letter.
+-- compared with every Mail-holding party member, then with the Mail each
+-- saved mailbox slot holds. The canonical mailbox stores the Mail record per
+-- slot, so a slot either holds authored Mail or is empty.
 ---@return boolean
 function FieldNpcServices:kenyaCheckPartyOrMailbox()
   local npcTrade = self:_npcTradeService()
@@ -456,8 +478,7 @@ function FieldNpcServices:kenyaCheckPartyOrMailbox()
     return false
   end
   for slot = 0, mailbox:count() - 1 do
-    local stored = mailbox:get(slot)
-    local mail = type(stored) == "table" and stored.mail or nil
+    local mail = mailbox:get(slot)
     if type(mail) == "table" and npcTrade:mailMatches(reference, mail) == true then
       return true
     end
@@ -515,7 +536,17 @@ function FieldNpcServices:statName(statId)
   return self._resolveText(STAT_NAME_MESSAGE_BANK, statId)
 end
 
--- ScrCmd_GetHiddenPowerType: the refused species report the source's -1
+-- ScrCmd_BufferTypeName: BufferTypeName reads bank 735 at the native type id.
+---@param typeId integer
+---@return string
+function FieldNpcServices:typeName(typeId)
+  if type(typeId) ~= "number" or typeId % 1 ~= 0 or typeId < 0 then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the type name names a source type", { type = typeId })
+  end
+  return self._resolveText(TYPE_NAME_MESSAGE_BANK, typeId)
+end
+
+-- ScrCmd_GetHiddenPowerType: the refused species report the source's u16
 -- sentinel; every other mon reports its derived native type identity.
 ---@param slot0 integer
 ---@return integer
@@ -526,6 +557,76 @@ function FieldNpcServices:hiddenPowerType(slot0)
     return HIDDEN_POWER_REFUSED_VALUE
   end
   return hiddenPowerType(mon)
+end
+
+---@return table<string, unknown>
+function FieldNpcServices:_bagService()
+  local bag = self._bag
+  if type(bag) ~= "table" then
+    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "the fossil query requires the Bag service", {})
+  end
+  return bag
+end
+
+-- The generated identities of one fossil row: the item the bag holds and the
+-- species its revival restores, both in their native numbering.
+---@param fossil table<string, unknown>
+---@return integer itemId, integer speciesId
+function FieldNpcServices:_fossilIdentity(fossil)
+  local catalog = self._mons:catalog()
+  local item = catalog:item(assert(fossil.item, "fossil rows name their item"))
+  local species = catalog:species(assert(fossil.species, "fossil rows name their species"))
+  return assert(item.nativeId, "item identities carry their native id"),
+    assert(species.nativeId, "species identities carry their native id")
+end
+
+-- ScrCmd_CountFossils: every accepted fossil the bag holds.
+---@return integer
+function FieldNpcServices:fossilCount()
+  local bag = self:_bagService()
+  local total = 0
+  for _, fossil in ipairs(FOSSILS) do
+    total = total + bag:quantity(assert(fossil.item, "fossil rows name their item"))
+  end
+  return total
+end
+
+-- ScrCmd_GetFossilMinimumAmount: the first fossil whose cumulative held count
+-- reaches the needed amount answers with its native item identity and its own
+-- row; an unreached amount leaves the source's zero pair.
+---@param needed integer
+---@return integer itemId, integer index
+function FieldNpcServices:fossilForAmount(needed)
+  if type(needed) ~= "number" or needed % 1 ~= 0 then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the fossil offer names an amount", { needed = needed })
+  end
+  local bag = self:_bagService()
+  local total = 0
+  for index, fossil in ipairs(FOSSILS) do
+    total = total + bag:quantity(assert(fossil.item, "fossil rows name their item"))
+    if total >= needed then
+      local itemId = self:_fossilIdentity(fossil)
+      return itemId, index - 1
+    end
+  end
+  return 0, 0
+end
+
+-- ScrCmd_GetFossilPokemon: the native species a fossil item restores, or zero
+-- for an identity the revival service does not accept.
+---@param itemId integer
+---@return integer
+function FieldNpcServices:fossilSpecies(itemId)
+  if type(itemId) ~= "number" or itemId % 1 ~= 0 then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the fossil identity names an item", { item = itemId })
+  end
+  for _, fossil in ipairs(FOSSILS) do
+    local knownItem, speciesId = self:_fossilIdentity(fossil)
+    if knownItem == itemId then
+      return speciesId
+    end
+  end
+  return 0
 end
 
 return FieldNpcServices

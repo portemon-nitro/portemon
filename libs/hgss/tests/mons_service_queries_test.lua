@@ -89,6 +89,25 @@ function T.nickname_mutation_publishes_one_slot_and_survives_capture()
   Assert.equal(restored:partyMon(0).nickname, "LEAF")
 end
 
+-- ScrCmd_PlayerHasSpecies answers for a non-egg member of one native species
+-- identity: the source compares the raw species value and never counts eggs.
+function T.player_has_species_answers_for_non_egg_members_only()
+  local catalog, service = twoMonService()
+  local chikorita = catalog:species("CHIKORITA").nativeId
+  local totodile = catalog:species("TOTODILE").nativeId
+  Assert.isTrue(service:scriptPlayerHasSpecies(chikorita), "the party's own species answers true")
+  Assert.isTrue(service:scriptPlayerHasSpecies("TOTODILE"), "the semantic key answers the same query")
+  Assert.isFalse(service:scriptPlayerHasSpecies(catalog:species("EEVEE").nativeId), "an absent species answers false")
+
+  local egg = service:partyMon(0)
+  egg.isEgg = true
+  local preparation, stale = service:preparePartyChanges(service:partyRevision(), { { slot = 0, mon = egg } })
+  Assert.isNil(stale, "the fixture stages the egg")
+  assert(preparation).publish()
+  Assert.isFalse(service:scriptPlayerHasSpecies(chikorita), "an egg never answers its own species")
+  Assert.isTrue(service:scriptPlayerHasSpecies(totodile), "the other member still answers")
+end
+
 function T.searches_report_zero_based_slots_or_nothing()
   local _, service = twoMonService()
   Assert.equal(service:partySlotWithSpecies("CHIKORITA"), 0)
