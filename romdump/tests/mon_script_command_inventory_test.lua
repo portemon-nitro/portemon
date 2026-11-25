@@ -3,8 +3,8 @@
 -- and a supported disposition with its source timing and operand
 -- widths in the authoritative catalog. Opaque numeric aliases resolve
 -- to their pinned source names, the non-command table entry keeps its
--- independent identity, and the absent-parent picture-window and
--- Unown-circle commands stay out of the supported set.
+-- independent identity, and the absent-parent prize and stat-judge commands
+-- stay out of the supported set.
 
 local Assert = require("tests.support.Assert")
 local MonScriptCommands = require("romdump.src.catalog.hgss.mon_script_commands")
@@ -159,7 +159,7 @@ function T.non_command_table_entry_keeps_its_independent_identity()
 end
 
 function T.absent_parent_commands_stay_out_of_the_supported_set()
-  for _, opcode in ipairs({ 468, 567 }) do
+  for _, opcode in ipairs({ 567, 657 }) do
     local tagged = assert(ScriptCommands.byOpcode[opcode], "the pinned catalog names opcode " .. opcode)
     Assert.isTrue(
       tagged.disposition ~= "supported",

@@ -544,13 +544,13 @@ local function hasExactKeys(value, keys, optionalKeys)
   return true
 end
 
--- A mechanism prop carries exactly its own compiled model and the single
--- source clip its anim-list record declares; where the prop stands is runtime
--- geometry of the mechanism, not a generated placement.
--- A mechanism prop publishes one nitro-dynamic model whose clips animate the
--- prop: one joint clip is required, and a source anim-list record may carry one
--- clip per additional channel on the same model (the poison trap's colour and
--- the rock trap's texture-SRT channels share their source records).
+-- A mechanism prop (and the Rocket hideout's script-driven traps, which share
+-- the shape) publishes exactly its own compiled model and the clips its
+-- anim-list record declares; where the prop stands is runtime geometry of the
+-- mechanism, not a generated placement. One joint clip is required, and a
+-- source record may carry one clip per additional channel on the same model
+-- (the poison trap's colour and the rock trap's texture-SRT channels share
+-- their source records).
 local MECHANISM_CLIP_KINDS = { trs = true, color = true, texsrt = true }
 local function validMechanismPropDefinition(definition, _)
   if not hasExactKeys(definition, { "model" }) then
@@ -572,14 +572,15 @@ local function validMechanismPropDefinition(definition, _)
   return joint
 end
 
--- The Blackthorn gym's platforms are static build models the mechanism moves as
--- whole props: they publish one static model and no clip of their own.
-local function validStaticPropDefinition(definition, _)
+-- A mechanism prop the source registers no anim-list record for (the
+-- Blackthorn gym's platforms) is a plain static build model: the mechanism owns
+-- its whole motion, so the definition carries that one model and no clip.
+local function validStaticMechanismPropDefinition(definition, _)
   if not hasExactKeys(definition, { "model" }) then
     return false
   end
   local model = definition.model
-  return type(model) == "table" and model.kind == "static"
+  return type(model) == "table" and model.kind == "static" and model.animations == nil
 end
 
 local function validClipSummary(clips, models)
@@ -912,8 +913,8 @@ local FIELD_EFFECT_INVENTORY = {
   { key = "trainer_reveal", entryKind = "animated_model", validator = validTrainerRevealDefinition },
   { key = "violet_gym_car", entryKind = "animated_model", validator = validMechanismPropDefinition },
   { key = "azalea_gym_spinarak", entryKind = "animated_model", validator = validMechanismPropDefinition },
-  { key = "blackthorn_gym_platform_wide", entryKind = "model", validator = validStaticPropDefinition },
-  { key = "blackthorn_gym_platform_narrow", entryKind = "model", validator = validStaticPropDefinition },
+  { key = "blackthorn_gym_platform_wide", entryKind = "model", validator = validStaticMechanismPropDefinition },
+  { key = "blackthorn_gym_platform_narrow", entryKind = "model", validator = validStaticMechanismPropDefinition },
   { key = "rocket_trap_electric", entryKind = "animated_model", validator = validMechanismPropDefinition },
   { key = "rocket_trap_poison", entryKind = "animated_model", validator = validMechanismPropDefinition },
   { key = "rocket_trap_rock", entryKind = "animated_model", validator = validMechanismPropDefinition },

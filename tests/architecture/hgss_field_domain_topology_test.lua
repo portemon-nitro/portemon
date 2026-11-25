@@ -94,6 +94,10 @@ local FIELD_COORDINATION = {
   "CameraHistory",
   "CivilDate",
   "CelebiTimeTravelScene",
+  "DaycareService",
+  "GymMechanism",
+  "GymMechanismGeometry",
+  "GymMechanismState",
   "HoOhAppearanceScene",
   "FieldApplicationHost",
   "FieldApplicationIds",
@@ -120,16 +124,31 @@ local FIELD_COORDINATION = {
   "FollowingMonController",
   "FollowingMonTransitionController",
   "LegendCutsceneRig",
+  "LegendEventScene",
   "MapInitScriptController",
   "MailActions",
   "MailTemplate",
+  "MoveTutorService",
+  "NpcTradeService",
   "PokemonCenterHealFlow",
   "PartyActions",
   "PcStorageActions",
+  "RocketHideoutEffects",
   "SourceTick",
   -- The shared byte-counted idle lease kernel behind the audio and image
   -- pools: a field-coordination mechanism with no narrower domain owner.
   "ResidentAssetCache",
+}
+
+-- The per-map gym mechanics mirror the source's src/field/gymmick directory and
+-- stay in that one declared nested subdomain of the field owner.
+local FIELD_GYM_VARIANTS = {
+  "AzaleaGym",
+  "BlackthornGym",
+  "CianwoodGym",
+  "EcruteakGym",
+  "SinjohGym",
+  "VioletGym",
 }
 
 local PRESENTATION = { "BillboardTransform" }
@@ -188,6 +207,9 @@ local function expectedFiles()
   end
   for _, moduleName in ipairs(FIELD_COORDINATION) do
     expected[FIELD_SOURCE_ROOT .. "/" .. moduleName .. ".lua"] = true
+  end
+  for _, moduleName in ipairs(FIELD_GYM_VARIANTS) do
+    expected[FIELD_SOURCE_ROOT .. "/gymmick/" .. moduleName .. ".lua"] = true
   end
   for _, moduleName in ipairs(PRESENTATION) do
     expected[HGSS_SOURCE_ROOT .. "/presentation/" .. moduleName .. ".lua"] = true

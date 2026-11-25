@@ -59,6 +59,11 @@ local DOMAINS = {
     "IntroAssetCache",
     "NewGameInitCache",
   },
+  -- Hall of Fame registration and credits presentation, produced from the
+  -- ending digest domain.
+  ending = {
+    "EndingAssetCache",
+  },
   battle = {
     "BattleAnimationSchema",
     "BattleDataCache",

@@ -137,6 +137,81 @@ local function validMechanismPropDefinition(key)
   return { model = model }
 end
 
+-- A mechanism prop the source registers no anim-list record for: one plain
+-- static build model, since the mechanism owns all of its motion.
+local function validStaticMechanismPropDefinition(key)
+  local model = validModel()
+  model.key = "field-effect:" .. key
+  return { model = model }
+end
+
+-- The Rocket hideout's script-driven traps keep every clip their own source
+-- records declare: the joint program as a trs clip, and the colour and
+-- texture-srt programs as material clips of the same model
+-- (sElectricTrapAnims, sPoisonTrapAnims, sRockTrapAnims).
+local TRAP_CLIP_KINDS = {
+  rocket_trap_electric = { "trs" },
+  rocket_trap_poison = { "trs", "color" },
+  rocket_trap_rock = { "trs", "color", "texsrt" },
+}
+
+local TRAP_MATERIAL_PAYLOADS = {
+  color = {
+    targets = {
+      {
+        index = 0,
+        name = "grass",
+        channels = {
+          diffuse = { source = "constant", value = 0x3FFFFFFF },
+          ambient = { source = "constant", value = 0 },
+          specular = { source = "constant", value = 0 },
+          emission = { source = "constant", value = 0 },
+          alpha = { source = "constant", value = 0x1F },
+        },
+      },
+    },
+  },
+  texsrt = {
+    targets = {
+      {
+        index = 0,
+        name = "grass",
+        channels = {
+          transS = { source = "constant", value = 0 },
+          transT = { source = "constant", value = 0 },
+          rot = { source = "constant", value = 0x10000000 },
+          scaleS = { source = "constant", value = 0x1000 },
+          scaleT = { source = "constant", value = 0x1000 },
+        },
+      },
+    },
+  },
+}
+
+local function validTrapDefinition(key, kinds)
+  local model = validDynamicModel()
+  model.key = "field-effect:" .. key
+  local template = model.animations[1]
+  model.animations = {}
+  for index, kind in ipairs(kinds) do
+    local clip = {}
+    for field, value in pairs(template) do
+      clip[field] = value
+    end
+    clip.id = key .. ".clip-" .. index
+    clip.name = clip.id
+    clip.semanticNames = { clip.id }
+    if kind ~= "trs" then
+      clip.category = "material"
+      clip.kind = kind
+      clip.tracks = { { target = "grass", targetIndex = 0 } }
+      clip.compiled = TRAP_MATERIAL_PAYLOADS[kind]
+    end
+    model.animations[index] = clip
+  end
+  return { model = model }
+end
+
 local function validReactionModel(selector)
   local model = validDynamicModel()
   model.key = "field-effect:follower-reaction-" .. selector
@@ -282,7 +357,6 @@ local function validLugiaDefinition()
   return { models = models }
 end
 
-
 -- The legendary-story scene definitions this family publishes: the model scenes
 -- and the montage application.
 local function validLegendSceneDefinition(partCount)
@@ -365,6 +439,8 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
     "hall_of_fame_machine",
     "violet_gym_car",
     "azalea_gym_spinarak",
+    "blackthorn_gym_platform_wide",
+    "blackthorn_gym_platform_narrow",
     "rocket_trap_electric",
     "rocket_trap_poison",
     "rocket_trap_rock",
@@ -379,7 +455,8 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
     "arceus_cinematic",
   }) do
     index.effects[kind] = {
-      kind = (kind == "warp_entrance" or kind == "surf_attachment") and "model"
+      kind = (kind == "warp_entrance" or kind == "surf_attachment" or kind:match("^blackthorn_gym_platform_"))
+          and "model"
         or kind == "follower_transition" and "transition"
         or kind == "pokemon_center_heal" and "healing"
         or kind == "hall_of_fame_machine" and "hall_of_fame"
@@ -528,8 +605,14 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
       if kind == "arceus_cinematic" then
         return validArceusDefinition()
       end
-      if kind == "violet_gym_car" or kind == "azalea_gym_spinarak" or kind:match("^rocket_trap_") then
+      if kind == "violet_gym_car" or kind == "azalea_gym_spinarak" then
         return validMechanismPropDefinition(kind)
+      end
+      if kind:match("^blackthorn_gym_platform_") ~= nil then
+        return extra.staticPropDefinition or validStaticMechanismPropDefinition(kind)
+      end
+      if TRAP_CLIP_KINDS[kind] ~= nil then
+        return extra.trapDefinition or validTrapDefinition(kind, TRAP_CLIP_KINDS[kind])
       end
       if kind == "rocket_alarm_overlay" then
         return {
@@ -709,6 +792,52 @@ T.tests["rejects a missing referenced asset"] = function()
   local ready =
     FieldEffectAssetCache.isReady(cache(validModel(), { ["mesh-a"] = true, ["grass.mesh"] = true }), EXPECTED_MARKER)
   Assert.isFalse(ready)
+end
+
+T.tests["requires static mechanism props without a source clip"] = function()
+  local present = {
+    ["mesh-a"] = true,
+    ["texture-a"] = true,
+    ["texture-variant"] = true,
+    ["grass.mesh"] = true,
+  }
+  local ready, err = FieldEffectAssetCache.isReady(cache(validModel(), present), EXPECTED_MARKER)
+  Assert.isTrue(ready, tostring(err))
+
+  local dynamicProp = FieldEffectAssetCache.isReady(
+    cache(validModel(), present, EXPECTED_MARKER, false, false, {
+      staticPropDefinition = { model = validDynamicModel() },
+    }),
+    EXPECTED_MARKER
+  )
+  Assert.isFalse(dynamicProp, "a static mechanism prop must not carry a clipped model")
+
+  local animatedProp = validStaticMechanismPropDefinition("blackthorn_gym_platform_wide")
+  animatedProp.model.animations = { { id = "platform.clip" } }
+  local animatedReady = FieldEffectAssetCache.isReady(
+    cache(validModel(), present, EXPECTED_MARKER, false, false, { staticPropDefinition = animatedProp }),
+    EXPECTED_MARKER
+  )
+  Assert.isFalse(animatedReady, "a static mechanism prop must not publish an animation list")
+end
+
+T.tests["requires every source clip of a script-driven trap"] = function()
+  local present = {
+    ["mesh-a"] = true,
+    ["texture-a"] = true,
+    ["texture-variant"] = true,
+    ["grass.mesh"] = true,
+  }
+  local ready, err = FieldEffectAssetCache.isReady(cache(validModel(), present), EXPECTED_MARKER)
+  Assert.isTrue(ready, tostring(err))
+
+  local clip = validTrapDefinition("rocket_trap_poison", TRAP_CLIP_KINDS.rocket_trap_poison)
+  clip.model.animations = {}
+  local readyWithoutClips = FieldEffectAssetCache.isReady(
+    cache(validModel(), present, EXPECTED_MARKER, false, false, { trapDefinition = clip }),
+    EXPECTED_MARKER
+  )
+  Assert.isFalse(readyWithoutClips, "a trap without its source clips must not read ready")
 end
 
 T.tests["requires all source reaction resources with matching semantic identities"] = function()
@@ -953,6 +1082,16 @@ local function surfCache(surfDefinition, mutateIndex)
         definition = "azalea_gym_spinarak",
         path = FieldEffectAssetCache.definitionPath("azalea_gym_spinarak"),
       },
+      blackthorn_gym_platform_wide = {
+        kind = "model",
+        definition = "blackthorn_gym_platform_wide",
+        path = FieldEffectAssetCache.definitionPath("blackthorn_gym_platform_wide"),
+      },
+      blackthorn_gym_platform_narrow = {
+        kind = "model",
+        definition = "blackthorn_gym_platform_narrow",
+        path = FieldEffectAssetCache.definitionPath("blackthorn_gym_platform_narrow"),
+      },
       rocket_trap_electric = {
         kind = "animated_model",
         definition = "rocket_trap_electric",
@@ -1104,8 +1243,14 @@ local function surfCache(surfDefinition, mutateIndex)
           fanfare = "SEQ_ME_ASA",
         }
       end
-      if kind == "violet_gym_car" or kind == "azalea_gym_spinarak" or kind:match("^rocket_trap_") then
+      if kind == "violet_gym_car" or kind == "azalea_gym_spinarak" then
         return validMechanismPropDefinition(kind)
+      end
+      if kind:match("^blackthorn_gym_platform_") ~= nil then
+        return validStaticMechanismPropDefinition(kind)
+      end
+      if TRAP_CLIP_KINDS[kind] ~= nil then
+        return validTrapDefinition(kind, TRAP_CLIP_KINDS[kind])
       end
       if kind == "rocket_alarm_overlay" then
         return {

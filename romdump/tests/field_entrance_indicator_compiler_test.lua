@@ -167,10 +167,12 @@ local function installStoryEffectCompilerMock()
         },
       }
       memberHashes[#memberHashes + 1] = { memberId = overlay.screenMemberId, sha1 = "alarm-overlay" }
-      -- The legendary-story scenes travel with this family's own member
-      -- provenance; the compiler merges them exactly like the model props.
-      for _, kind in ipairs(FieldEffectAssetCache.LEGEND_SCENE_KINDS) do
+      -- The legendary-story scenes travel in the same story-effect bundle with
+      -- their own member provenance, so the mock answers every kind the effect
+      -- root publishes.
+      for index, kind in ipairs(FieldEffectAssetCache.LEGEND_SCENE_KINDS) do
         definitions[kind] = { parts = { { model = descriptor(kind), clips = {} } } }
+        memberHashes[#memberHashes + 1] = { memberId = 900 + index, sha1 = kind .. "-source" }
       end
       return { definitions = definitions, memberHashes = memberHashes }
     end,
@@ -281,12 +283,13 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
         },
       },
     },
+    hallOfFame = SourceFieldEffects.hallOfFame,
     mechanismPropModels = {
       { key = "violet_gym_car", mapSymbol = "MAP_VIOLET_GYM", modelMemberId = 111 },
       { key = "azalea_gym_spinarak", mapSymbol = "MAP_AZALEA_GYM", modelMemberId = 118 },
+      { key = "hall_of_fame_ball", mapSymbol = "MAP_POKEMON_LEAGUE_HALL_OF_FAME", modelMemberId = 107 },
     },
     hideoutEffectArchive = SourceFieldEffects.hideoutEffectArchive,
-    hallOfFame = SourceFieldEffects.hallOfFame,
     hideoutTrapModels = {
       {
         key = "rocket_trap_electric",
@@ -597,6 +600,27 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
     file = FieldEffectAssetCache.geometryPath("mesh"),
     drawIndex = 0,
   })
+
+  -- The League ending's Hall of Fame machine: the ball model travels alone
+  -- with its one source clip, and the machine itself is the room's placement.
+  local hallOfFame = result.effects.hall_of_fame_machine
+  Assert.equal(result.index.effects.hall_of_fame_machine.kind, "hall_of_fame")
+  Assert.equal(result.index.effects.hall_of_fame_machine.definition, "hall_of_fame_machine")
+  Assert.equal(hallOfFame.machineModelMemberId, 38)
+  Assert.equal(#hallOfFame.models, 1)
+  Assert.equal(hallOfFame.models[1].key, "field-effect:hall_of_fame_ball")
+  Assert.equal(hallOfFame.ballAnimation, "hall_of_fame_ball")
+  Assert.equal(hallOfFame.ballAnimationFrameCount, 8)
+  Assert.equal(hallOfFame.spawnIntervalSourceFrames, 15)
+  Assert.equal(hallOfFame.placementSound, "SEQ_SE_DP_BOWA")
+  Assert.equal(#hallOfFame.ballPositions, 6)
+  Assert.deepEqual(
+    hallOfFame.ballPositions[1],
+    { role = "northwest", offset = { x = -0.28125, y = 0.75, z = -0.28125 } }
+  )
+  for _, kind in ipairs(FieldEffectAssetCache.LEGEND_SCENE_KINDS) do
+    Assert.notNil(result.effects[kind], kind .. " is published as an effect definition")
+  end
 
   invalidSelector = true
   local invalidOk, invalidErr = pcall(compiler.compile, romFs)

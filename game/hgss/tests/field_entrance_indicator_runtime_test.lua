@@ -23,7 +23,11 @@ local KINDS = {
   "blackthorn_gym_platform_narrow",
   "hall_of_fame_machine",
 }
+-- The legendary-story effects the runtime loads, keyed by their index entry kind
+-- (the model scenes and the Arceus montage application).
+local LEGEND_SCENES = {}
 for _, kind in ipairs(FieldEffectAssetCache.LEGEND_SCENE_KINDS) do
+  LEGEND_SCENES[kind] = FieldEffectAssetCache.legendSceneEntryKind(kind)
   KINDS[#KINDS + 1] = kind
 end
 for selector = 1, 14 do
@@ -77,6 +81,13 @@ local function cacheWithIndexSchema(schema)
     definition = "hall_of_fame_machine",
     path = FieldEffectAssetCache.definitionPath("hall_of_fame_machine"),
   }
+  for kind, entryKind in pairs(LEGEND_SCENES) do
+    index.effects[kind] = {
+      kind = entryKind,
+      definition = kind,
+      path = FieldEffectAssetCache.definitionPath(kind),
+    }
+  end
   return {
     loadLua = function(_, path)
       if path == FieldEffectAssetCache.indexPath() then
@@ -106,6 +117,18 @@ local function cacheWithIndexSchema(schema)
       end
       if kind == "hall_of_fame_machine" then
         return { models = { staticModel("field-effect:hall-of-fame-ball") } }
+      end
+      local sceneKind = LEGEND_SCENES[kind]
+      if sceneKind == "scene" then
+        return { parts = { { model = staticModel("field-effect:" .. kind .. "-part"), clips = {} } } }
+      end
+      if sceneKind == "montage" then
+        return {
+          bgm = "SEQ_GS_E_ARCEUS",
+          timeline = { { 0 } },
+          layers = { [1] = { path = "layer", width = 8, height = 8 } },
+          sprite = { path = "sprite", width = 8, height = 8 },
+        }
       end
       return { model = staticModel("field-effect:" .. kind) }
     end,

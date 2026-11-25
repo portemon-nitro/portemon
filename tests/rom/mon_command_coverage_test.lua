@@ -20,10 +20,11 @@ local T = {}
 local ALLOWED_CATALOG_FEATURES = {
   mon = { mons = true },
   party = { mons = true },
-  -- Starter scripts also use the shared mon catalog family for source
-  -- commands that only buffer or query starter species.
+  -- Starter scripts and the party-screen applications also use the shared
+  -- mon catalog family for source commands that only buffer or query
+  -- party species.
   starter = { starter = true, mons = true },
-  party_ui = { party_ui = true },
+  party_ui = { party_ui = true, mons = true },
   following_mon = { following_mon = true },
   pokedex = { mons = true },
   daycare = { mons = true },

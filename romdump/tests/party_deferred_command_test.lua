@@ -49,14 +49,14 @@ function T.togepi_egg_command_runs_with_its_source_timing()
 end
 
 function T.a_deferred_command_keeps_its_dependency_and_fails_at_runtime()
-  local tagged = assert(ScriptCommands.byOpcode[468])
-  Assert.equal(tagged.disposition, "deferred", "the tutor command waits for its owner")
-  Assert.equal(tagged.deferredReason, "party_special_application", "the tutor command names its dependency")
-  local node = lowerSingle(468)
+  local tagged = assert(ScriptCommands.byOpcode[350])
+  Assert.equal(tagged.disposition, "deferred", "the Union Room party selection waits for its owner")
+  Assert.equal(tagged.deferredReason, "party_special_application", "the deferred command names its dependency")
+  local node = lowerSingle(350)
   Assert.equal(node.op, "unsupported", "the deferred command lowers explicitly")
   local failure = reachError(node)
   Assert.equal(failure.code, ScriptErrors.SCRIPT_UNSUPPORTED_REACHABLE, "the runtime names the reach")
-  Assert.equal(failure.context.command, 468, "the error names the source command")
+  Assert.equal(failure.context.command, 350, "the error names the source command")
 end
 
 -- The exchange itself is executable now: the command lowers to its own

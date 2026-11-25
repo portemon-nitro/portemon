@@ -67,6 +67,7 @@ local DOMAINS = {
     "MonCacheWriter",
     "MonCatalogCompiler",
     "MonPresentationCompiler",
+    "PokemonCareCatalogCompiler",
   },
   battle = {
     "BattleAnimationCompiler",
@@ -153,6 +154,8 @@ local DOMAINS = {
     "PokegearAssetCompiler",
     "PokegearCacheWriter",
     "PokegearCatalogCompiler",
+    "PokemonCareAssetCompiler",
+    "PokemonCareCacheWriter",
     "EasyChatCacheWriter",
     "EasyChatCompiler",
     "RgbaImage",
@@ -173,6 +176,10 @@ local DOMAINS = {
   },
   particle = {
     "SplEmitterCompiler",
+  },
+  ending = {
+    "EndingAssetCompiler",
+    "EndingCacheWriter",
   },
   startup = {
     "StartupCacheWriter",
@@ -217,6 +224,7 @@ local EXISTING_DOMAINS = {
     "lowering/EasyChatHandlers",
     "lowering/Operands",
     "lowering/PokedexHandlers",
+    "lowering/PokemonCareHandlers",
     "lowering/StoryHandlers",
   },
 }

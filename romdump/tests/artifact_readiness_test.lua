@@ -476,10 +476,12 @@ local function publishMapDataRecord(cache, mapId, marker)
     initScripts = {},
     transitionEnvironment = "outdoors",
     renderEnvironment = validRenderEnvironment(),
-    -- Every compiled field record carries its catalog battle background
-    -- and its encounter table member; readiness requires both facts.
+    -- Every compiled field record carries its catalog battle background,
+    -- its encounter table member, and its native region; readiness requires
+    -- all three facts.
     battleBackground = "general",
     wildEncounterMemberId = 0,
+    region = "JOHTO",
     rockSmash = {
       odds = 0,
       items = {
@@ -1124,9 +1126,145 @@ local function publishEffectFamily(cache)
       lifecycle = { mode = "once", frameCount = 4 },
     }
   end
+  -- The mechanism props the source loads by build model over its own
+  -- transform instead of placing them: the gym props travel with their one
+  -- source clip, and the Blackthorn platforms as plain static models.
+  for _, kind in ipairs({ "violet_gym_car", "azalea_gym_spinarak" }) do
+    bundle.index.effects[kind] = {
+      path = EffectCache.definitionPath(kind),
+      definition = kind,
+      kind = "animated_model",
+    }
+    bundle.effects[kind] = { model = dynamicModel("field-effect:" .. kind) }
+  end
+  for _, kind in ipairs({ "blackthorn_gym_platform_wide", "blackthorn_gym_platform_narrow" }) do
+    bundle.index.effects[kind] = {
+      path = EffectCache.definitionPath(kind),
+      definition = kind,
+      kind = "model",
+    }
+    bundle.effects[kind] = { model = staticModel("field-effect:" .. kind) }
+  end
+  -- The Rocket hideout's own script-driven effects: each trap model keeps every
+  -- clip its source record declares (the joint, colour and texture-srt programs
+  -- are separate records compiled as clips of the same model), and the alarm is
+  -- a prepared overlay the field draws itself.
+  local function constant(value)
+    return { source = "constant", value = value }
+  end
+  local trapMaterialPayload = {
+    color = {
+      targets = {
+        {
+          index = 0,
+          name = "effect",
+          channels = {
+            diffuse = constant(0x3FFFFFFF),
+            ambient = constant(0),
+            specular = constant(0),
+            emission = constant(0),
+            alpha = constant(0x1F),
+          },
+        },
+      },
+    },
+    texsrt = {
+      targets = {
+        {
+          index = 0,
+          name = "effect",
+          channels = {
+            transS = constant(0),
+            transT = constant(0),
+            rot = constant(0),
+            scaleS = constant(1),
+            scaleT = constant(1),
+          },
+        },
+      },
+    },
+  }
+  for _, trap in ipairs({
+    { key = "rocket_trap_electric", kinds = { "trs" } },
+    { key = "rocket_trap_poison", kinds = { "trs", "color" } },
+    { key = "rocket_trap_rock", kinds = { "trs", "color", "texsrt" } },
+  }) do
+    bundle.index.effects[trap.key] = {
+      path = EffectCache.definitionPath(trap.key),
+      definition = trap.key,
+      kind = "animated_model",
+    }
+    local model = dynamicModel("field-effect:" .. trap.key)
+    local template = model.animations[1]
+    model.animations = {}
+    for clipIndex, clipKind in ipairs(trap.kinds) do
+      local clip = {}
+      for field, value in pairs(template) do
+        clip[field] = value
+      end
+      clip.id = trap.key .. ".clip-" .. clipIndex
+      clip.name = clip.id
+      clip.semanticNames = { clip.id }
+      if clipKind ~= "trs" then
+        clip.category = "material"
+        clip.kind = clipKind
+        clip.tracks = { { target = "effect", targetIndex = 0 } }
+        clip.compiled = trapMaterialPayload[clipKind]
+      end
+      model.animations[clipIndex] = clip
+    end
+    bundle.effects[trap.key] = { model = model }
+  end
+  bundle.index.effects.rocket_alarm_overlay = {
+    path = EffectCache.definitionPath("rocket_alarm_overlay"),
+    definition = "rocket_alarm_overlay",
+    kind = "overlay",
+  }
+  bundle.effects.rocket_alarm_overlay = {
+    overlay = { texture = EffectCache.texturePath("a1a1a1"), width = 256, height = 256 },
+  }
+  -- The legendary-story scenes this field drives, and the Arceus montage whose
+  -- layers come out as prepared effect textures.
+  for _, scene in ipairs({
+    { kind = "legend_wing", parts = 2 },
+    { kind = "sinjoh_stage", parts = 3 },
+    { kind = "sinjoh_unown", parts = 3 },
+    { kind = "sinjoh_egg", parts = 3 },
+  }) do
+    bundle.index.effects[scene.kind] = {
+      path = EffectCache.definitionPath(scene.kind),
+      definition = scene.kind,
+      kind = "scene",
+    }
+    local parts = {}
+    for index = 1, scene.parts do
+      parts[index] = {
+        model = dynamicModel("field-effect:" .. scene.kind .. ":part-" .. index),
+        clips = { joint = { ids = { "joint.trs" }, frames = 4 } },
+      }
+    end
+    bundle.effects[scene.kind] = { parts = parts }
+  end
+  bundle.index.effects.arceus_cinematic = {
+    path = EffectCache.definitionPath("arceus_cinematic"),
+    definition = "arceus_cinematic",
+    kind = "montage",
+  }
+  bundle.effects.arceus_cinematic = {
+    bgm = "SEQ_GS_E_ARCEUS",
+    timeline = { { 12 }, { 6, 0, 58 }, { 0, 2 }, { 19 } },
+    layers = { [58] = { path = EffectCache.texturePath("a1a1a1"), width = 256, height = 256 } },
+    sprite = { path = EffectCache.texturePath("a1a1a1"), width = 64, height = 64 },
+  }
+  bundle.textures["a1a1a1"] = { width = 1, height = 1, data = PngWriter.encode(1, 1, "rgba") }
+  local oldEncode = MeshWriter.encode
+  MeshWriter.encode = function()
+    return "encoded-mesh"
+  end
   local ok, err = pcall(ResidentArtifactFixture.publish, cache, "field-effects", "global", function(artifact)
     return Writer.stage(artifact, bundle)
   end)
+  MeshWriter.encode = oldEncode
   Assert.isTrue(ok, tostring(err))
   local ready, readyErr = EffectCache.isReady(cache, marker)
   Assert.isTrue(ready, tostring(readyErr))
@@ -1509,6 +1647,8 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
   recordFact("bag", "global", "separately-validated-bag-family")
   recordFact("easy-chat-data", "global", "separately-validated-easy-chat-family")
   recordFact("easy-chat", "global", "separately-validated-easy-chat-family")
+  recordFact("ending", "global", "separately-validated-ending-family")
+  recordFact("pokemon-care", "global", "separately-validated-pokemon-care-family")
   -- The complete inventory also enumerates the finite battle leaf
   -- families (shared core, evolution bundle, and one trainer/ball leaf
   -- per source selector) ahead of the summaries. This audit isolates
@@ -1536,12 +1676,16 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
       or kind == "battle-ball"
       or kind == "easy-chat-data"
       or kind == "easy-chat"
+      or kind == "ending"
+      or kind == "pokemon-care"
     then
       -- Apricorn Box readiness has its own source-backed cache contract
       -- tests, bag readiness stays with the bag unit tests, the battle
-      -- leaf families stay with the battle compiler/worker tests, and
-      -- the Easy Chat families stay with their compiler/worker tests;
-      -- this audit isolates completeness of the field-map inventory.
+      -- leaf families stay with the battle compiler/worker tests, the
+      -- Easy Chat families stay with their compiler/worker tests, and the
+      -- League ending and Pokémon care bundles have their own schema and
+      -- readiness tests; this audit isolates completeness of the field-map
+      -- inventory.
       return true
     end
     return realValidate(candidate, candidateFacts, kind, key, candidatePlans, candidateIdentity)

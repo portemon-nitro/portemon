@@ -199,10 +199,13 @@ function T.adjacent_systems_are_not_claimed()
   end
   table.sort(problems)
   Assert.equal(#problems, 0, "adjacent commands stay outside the item inventory: " .. table.concat(problems, ", "))
-  for _, opcode in ipairs({ 428, 781, 689, 690 }) do
+  for _, opcode in ipairs({ 428, 781, 689 }) do
     local tagged = assert(ScriptCommands.byOpcode[opcode], "the catalog names opcode " .. opcode)
     Assert.equal(tagged.disposition, "deferred", "opcode " .. opcode .. " stays deferred under its owner")
   end
+  local sanitize = assert(ScriptCommands.byOpcode[690], "the catalog names opcode 690")
+  Assert.equal(sanitize.disposition, "supported", "the day-care sanitizer runs in its source family")
+  Assert.equal(sanitize.feature, "mons", "the day-care sanitizer stays in the mon family")
   local heldItem = assert(ScriptCommands.byOpcode[701])
   Assert.equal(heldItem.disposition, "supported", "the held-item query stays supported under its owner")
   Assert.equal(heldItem.feature, "mons", "the held-item query stays in the mon family")
