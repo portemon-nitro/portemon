@@ -403,7 +403,17 @@ function T.loadable_map_planning_failure_surfaces_with_its_identity()
     local session = openSession("planning-failure-generation", pool)
     local ready, failure = session:requestField(failingMapId, "required")
     pool.states["source-plan:global"] = { state = "failed", details = { error = plannerError } }
-    session:update()
+    -- Failure observation is paced by the same shared per-update budget as
+    -- submission: a starved wall-clock slice may pause the first pump
+    -- before the failed inventory reaches retained interest, so poll
+    -- boundedly for the surfaced failure instead of assuming one update
+    -- observes it.
+    for _ = 1, 25 do
+      session:update()
+      if #session:status().failures > 0 then
+        break
+      end
+    end
     local status = session:status()
     return {
       ready = ready,
