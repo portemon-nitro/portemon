@@ -32,6 +32,11 @@ ICON_FILES = tuple(
     f"assets/ui/launcher/icons/{name}.png"
     for name in ("add-game", "back", "check", "close", "play", "warning")
 ) + ("assets/ui/launcher/LICENSE.txt",)
+BRANDING_FILES = (
+    "assets/branding/portemon-nitro.png",
+    "assets/branding/portemon-nitro.ico",
+    "assets/branding/portemon-nitro.icns",
+)
 AUDIO_FILES = tuple(
     f"assets/audio/launcher/{name}.ogg" for name in ("boot", "focus", "confirm", "back", "error")
 ) + tuple(
@@ -46,6 +51,7 @@ REQUIRED_FILES = (
     "gen4/battle.lua",
     *FONT_FILES,
     *ICON_FILES,
+    *BRANDING_FILES,
     *AUDIO_FILES,
 )
 SEMVER_IDENTIFIER = r"[0-9A-Za-z-]+"

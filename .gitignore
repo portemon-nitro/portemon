@@ -18,6 +18,8 @@ luac.out
 *.zip
 *.love
 *.apk
+*.AppImage
+SHA256SUMS
 *.tar.gz
 
 # Object files

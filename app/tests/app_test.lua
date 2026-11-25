@@ -485,26 +485,6 @@ local function withAppHarness(opts, ready, fn)
     local safe = result.safeRect or { 0, 0, result.hostWidth or 800, result.hostHeight or 600 }
     return safe[1], safe[2], safe[3], safe[4]
   end
-  -- The startup journey admits the movie only behind an acknowledged
-  -- soundtrack: one silent session stands in for the selected edition's audio
-  -- so the title/menu handoff never depends on audio fixtures.
-  local originalStartupAudioNew = StartupAudioSession.new
-  StartupAudioSession.new = function()
-    local session = { disposed = false }
-    function session:beginOpening()
-      return true
-    end
-    function session:beginTitle() end
-    function session:notifySkip() end
-    function session:beginFade() end
-    function session:beginMovieCycle() end
-    function session:playMenuCue() end
-    function session:update() end
-    function session:dispose()
-      self.disposed = true
-    end
-    return session
-  end
   love.event.quit = function(code)
     result.quitCodes[#result.quitCodes + 1] = code
   end
@@ -535,7 +515,6 @@ local function withAppHarness(opts, ready, fn)
   love.system.getOS = originalGetOS
   love.window.getSafeArea = originalGetSafeArea
   love.event.quit = originalQuit
-  StartupAudioSession.new = originalStartupAudioNew
   App.startupAudioError = nil
   ProducerFingerprint.appBackend = harnessAppBackend
   ProducerFingerprint.checkoutBackend = harnessCheckoutBackend

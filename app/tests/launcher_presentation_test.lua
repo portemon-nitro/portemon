@@ -601,6 +601,7 @@ function T.app_composes_native_safe_area_into_boot_selection_and_loading()
         return false
       end,
       update = function() end,
+      setExecutionPolicy = function() end,
       requestBootSource = function() end,
       bootSourceStatus = function()
         return "pending"
@@ -815,6 +816,7 @@ function T.neutral_loading_uses_the_locked_primitive_and_touch_cancel()
         return false
       end,
       update = function() end,
+      setExecutionPolicy = function() end,
       requestBootSource = function() end,
       bootSourceStatus = function()
         return "pending"

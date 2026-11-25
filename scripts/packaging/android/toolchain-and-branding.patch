@@ -1,23 +1,12 @@
---- a/build.gradle
-+++ b/build.gradle
-@@ -18,7 +18,7 @@
-         mavenCentral()
-     }
-     dependencies {
--        classpath 'com.android.tools.build:gradle:8.1.1'
-+        classpath 'com.android.tools.build:gradle:8.10.0'
- 
-         // NOTE: Do not place your application dependencies here; they belong
-         // in the individual module build.gradle files
 --- a/app/build.gradle
 +++ b/app/build.gradle
-@@ -4,15 +4,15 @@
- 
+@@ -4,18 +4,23 @@
+
  android {
      namespace "org.love2d.android.executable"
 -    ndkVersion '25.2.9519653'
 +    ndkVersion '28.2.13676358'
- 
+
      defaultConfig {
          applicationId project.properties["app.application_id"]
          versionCode project.properties["app.version_code"].toInteger()
@@ -28,10 +17,41 @@
 +        minSdk 21
 +        compileSdk 36
 +        targetSdk 36
++        if (project.hasProperty("portemon.android.release")) {
++            ndk {
++                abiFilters "arm64-v8a", "armeabi-v7a"
++            }
++        }
          
          def getAppName = {
-             def nameArray = project.properties["app.name_byte_array"]
-@@ -59,6 +59,11 @@
+-            def nameArray = project.properties["app.name_byte_array"]
++            def nameArray = project.hasProperty("portemon.android.release") ? null : project.properties["app.name_byte_array"]
+             def name = project.properties["app.name"]
+             if (name != null && nameArray != null) {
+                 throw new Exception("Only define either `app.name` or `app.name_byte_array` in gradle.properties, but not both!")
+@@ -38,8 +43,21 @@
+             ORIENTATION:project.properties["app.orientation"],
+         ]
+     }
++    signingConfigs {
++        release {
++            if (project.hasProperty("portemon.android.release")) {
++                storeFile file(project.property("portemon.android.keystore"))
++                storePassword System.getenv("PORTEMON_ANDROID_KEYSTORE_PASSWORD")
++                keyAlias System.getenv("PORTEMON_ANDROID_KEY_ALIAS")
++                keyPassword System.getenv("PORTEMON_ANDROID_KEY_PASSWORD")
++            }
++        }
++    }
+     buildTypes {
+         release {
++            if (project.hasProperty("portemon.android.release")) {
++                signingConfig signingConfigs.release
++            }
+             minifyEnabled true
+             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+         }
+@@ -59,6 +77,11 @@
              dimension 'recording'
          }
      }
@@ -43,25 +63,68 @@
      lint {
          abortOnError false
      }
---- a/love/build.gradle
-+++ b/love/build.gradle
-@@ -7,12 +7,12 @@
-     // and http://stackoverflow.com/questions/27277433/why-does-gradle-build-my-module-in-release-mode-when-the-app-is-in-debug
-     // defaultPublishConfig "debug"
-     namespace "org.love2d.android"
--    ndkVersion '25.2.9519653'
-+    ndkVersion '28.2.13676358'
- 
-     defaultConfig {
--        minSdk 16
--        compileSdk 34
--        targetSdk 34
-+        minSdk 21
-+        compileSdk 36
-+        targetSdk 36
-         externalNativeBuild {
-             ndkBuild {
-                 arguments "-j" + Runtime.runtime.availableProcessors()
+--- a/app/proguard-rules.pro
++++ b/app/proguard-rules.pro
+@@ -18,3 +18,5 @@
+
+ -keep class org.love2d.android.GameActivity { *; }
+ -keep class org.libsdl.app.** { *; }
++
++-keep class org.love2d.android.RomPicker { *; }
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -1,10 +1,6 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android" >
+-  <uses-permission android:name="android.permission.INTERNET" />
+   <uses-permission android:name="android.permission.VIBRATE" />
+-  <uses-permission android:name="android.permission.BLUETOOTH" />
+-  <uses-permission android:name="android.permission.RECORD_AUDIO" />
+-  <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="18" />
+
+   <!-- OpenGL ES 2.0 -->
+   <uses-feature android:glEsVersion="0x00020000" />
+@@ -23,8 +19,7 @@
+   <application
+       android:allowBackup="true"
+       android:icon="@drawable/love"
+-      android:label="${NAME}"
+-      android:usesCleartextTraffic="true" >
++      android:label="${NAME}" >
+     <activity
+         android:name="org.love2d.android.GameActivity"
+         android:exported="true"
+--- a/build.gradle
++++ b/build.gradle
+@@ -18,7 +18,7 @@
+         mavenCentral()
+     }
+     dependencies {
+-        classpath 'com.android.tools.build:gradle:8.1.1'
++        classpath 'com.android.tools.build:gradle:8.10.0'
+
+         // NOTE: Do not place your application dependencies here; they belong
+         // in the individual module build.gradle files
+--- a/gradle.properties
++++ b/gradle.properties
+@@ -4,12 +4,12 @@
+ # * Otherwise, convert your app name to UTF-8 byte array, comma delimited, and put
+ #   it in `app.name_byte_array`
+ #app.name=LÖVE for Android
+-app.name_byte_array=76,195,150,86,69,32,102,111,114,32,65,110,100,114,111,105,100
++app.name_byte_array=80,111,114,116,195,169,109,111,110,32,78,105,116,114,111,32,40,100,101,118,41
+
+-app.application_id=org.love2d.android
+-app.orientation=landscape
+-app.version_code=32
+-app.version_name=11.5a
++app.application_id=io.github.portemonnitro.portemon.dev
++app.orientation=fullUser
++app.version_code=1
++app.version_name=dev
+
+ # No need to modify anything past this line!
+ android.enableJetifier=false
 --- a/gradle/wrapper/gradle-wrapper.properties
 +++ b/gradle/wrapper/gradle-wrapper.properties
 @@ -1,6 +1,7 @@
@@ -73,26 +136,33 @@
  networkTimeout=10000
  zipStoreBase=GRADLE_USER_HOME
  zipStorePath=wrapper/dists
---- a/gradle.properties
-+++ b/gradle.properties
-@@ -4,12 +4,12 @@
- # * Otherwise, convert your app name to UTF-8 byte array, comma delimited, and put
- #   it in `app.name_byte_array`
- #app.name=LÖVE for Android
--app.name_byte_array=76,195,150,86,69,32,102,111,114,32,65,110,100,114,111,105,100
-+app.name_byte_array=80,111,114,116,195,169,109,111,110,32,78,105,116,114,111,32,40,100,101,118,41
- 
--app.application_id=org.love2d.android
--app.orientation=landscape
--app.version_code=32
--app.version_name=11.5a
-+app.application_id=io.github.portemonnitro.portemon.dev
-+app.orientation=fullUser
-+app.version_code=1
-+app.version_name=dev
- 
- # No need to modify anything past this line!
- android.enableJetifier=false
+--- a/love/build.gradle
++++ b/love/build.gradle
+@@ -7,12 +7,12 @@
+     // and http://stackoverflow.com/questions/27277433/why-does-gradle-build-my-module-in-release-mode-when-the-app-is-in-debug
+     // defaultPublishConfig "debug"
+     namespace "org.love2d.android"
+-    ndkVersion '25.2.9519653'
++    ndkVersion '28.2.13676358'
+
+     defaultConfig {
+-        minSdk 16
+-        compileSdk 34
+-        targetSdk 34
++        minSdk 21
++        compileSdk 36
++        targetSdk 36
+         externalNativeBuild {
+             ndkBuild {
+                 arguments "-j" + Runtime.runtime.availableProcessors()
+--- a/love/proguard-rules.pro
++++ b/love/proguard-rules.pro
+@@ -15,3 +15,5 @@
+ #-keepclassmembers class fqcn.of.javascript.interface.for.webview {
+ #   public *;
+ #}
++
++-keep class org.love2d.android.RomPicker { *; }
 --- a/love/src/jni/Application.mk
 +++ b/love/src/jni/Application.mk
 @@ -2,10 +2,10 @@
@@ -106,7 +176,7 @@
 -APP_PLATFORM := 10
 +APP_PLATFORM := android-21
  NDK_TOOLCHAIN_VERSION := clang
- 
+
  # Fix for building on Windows
 --- a/love/src/jni/LuaJIT-2.1/src/lj_arch.h
 +++ b/love/src/jni/LuaJIT-2.1/src/lj_arch.h
@@ -116,47 +186,8 @@
  #define LJ_TARGET_GC64		1
 +#define LJ_PAGESIZE		16384
  #define LJ_ARCH_NUMMODE		LJ_NUMMODE_DUAL
- 
+
  #define LJ_ARCH_VERSION		80
---- a/app/src/main/AndroidManifest.xml
-+++ b/app/src/main/AndroidManifest.xml
-@@ -1,10 +1,6 @@
- <?xml version="1.0" encoding="utf-8"?>
- <manifest xmlns:android="http://schemas.android.com/apk/res/android" >
--  <uses-permission android:name="android.permission.INTERNET" />
-   <uses-permission android:name="android.permission.VIBRATE" />
--  <uses-permission android:name="android.permission.BLUETOOTH" />
--  <uses-permission android:name="android.permission.RECORD_AUDIO" />
--  <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="18" />
- 
-   <!-- OpenGL ES 2.0 -->
-   <uses-feature android:glEsVersion="0x00020000" />
-@@ -23,8 +19,7 @@
-   <application
-       android:allowBackup="true"
-       android:icon="@drawable/love"
--      android:label="${NAME}"
--      android:usesCleartextTraffic="true" >
-+      android:label="${NAME}" >
-     <activity
-         android:name="org.love2d.android.GameActivity"
-         android:exported="true"
---- a/app/proguard-rules.pro
-+++ b/app/proguard-rules.pro
-@@ -18,3 +18,5 @@
- 
- -keep class org.love2d.android.GameActivity { *; }
- -keep class org.libsdl.app.** { *; }
-+
-+-keep class org.love2d.android.RomPicker { *; }
---- a/love/proguard-rules.pro
-+++ b/love/proguard-rules.pro
-@@ -15,3 +15,5 @@
- #-keepclassmembers class fqcn.of.javascript.interface.for.webview {
- #   public *;
- #}
-+
-+-keep class org.love2d.android.RomPicker { *; }
 --- a/love/src/main/java/org/love2d/android/GameActivity.java
 +++ b/love/src/main/java/org/love2d/android/GameActivity.java
 @@ -66,6 +66,17 @@
@@ -183,7 +214,7 @@
          }
 +        installSafeAreaObserver();
      }
- 
+
      @Override
 @@ -276,6 +288,13 @@
      @Override
@@ -197,16 +228,12 @@
 +        super.onConfigurationChanged(configuration);
 +        getWindow().getDecorView().requestApplyInsets();
      }
- 
+
      @Keep
 @@ -514,21 +533,114 @@
          }
      }
- 
--    @Keep
--    public boolean initializeSafeArea() {
--        if (android.os.Build.VERSION.SDK_INT >= 28 && shortEdgesMode) {
--            DisplayCutout cutout = getWindow().getDecorView().getRootWindowInsets().getDisplayCutout();
+
 +    private void installSafeAreaObserver() {
 +        final View decor = getWindow().getDecorView();
 +        decor.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
@@ -227,7 +254,7 @@
 +        });
 +        decor.requestApplyInsets();
 +    }
- 
++
 +    private void updateSafeAreaSnapshot(View decor, WindowInsets insets) {
 +        if (insets == null || mSurface == null || mSurface.getWidth() <= 0 || mSurface.getHeight() <= 0) {
 +            return;
@@ -264,17 +291,12 @@
 +            bottom = insets.getSystemWindowInsetBottom();
 +            right = insets.getSystemWindowInsetRight();
 +            android.view.DisplayCutout cutout = insets.getDisplayCutout();
-             if (cutout != null) {
--                safeAreaTop = cutout.getSafeInsetTop();
--                safeAreaLeft = cutout.getSafeInsetLeft();
--                safeAreaBottom = cutout.getSafeInsetBottom();
--                safeAreaRight = cutout.getSafeInsetRight();
--                return true;
++            if (cutout != null) {
 +                top = Math.max(top, cutout.getSafeInsetTop());
 +                left = Math.max(left, cutout.getSafeInsetLeft());
 +                bottom = Math.max(bottom, cutout.getSafeInsetBottom());
 +                right = Math.max(right, cutout.getSafeInsetRight());
-             }
++            }
 +        } else {
 +            top = insets.getSystemWindowInsetTop();
 +            left = insets.getSystemWindowInsetLeft();
@@ -300,7 +322,7 @@
 +        int intersectionBottom = Math.min(windowBottom, surfaceBottom);
 +        if (intersectionRight <= intersectionLeft || intersectionBottom <= intersectionTop) {
 +            return;
-         }
++        }
 +        safeAreaSnapshot = new SafeAreaSnapshot(
 +            Math.max(0, intersectionTop - surfaceTop),
 +            Math.max(0, intersectionLeft - surfaceLeft),
@@ -308,10 +330,22 @@
 +            Math.max(0, surfaceRight - intersectionRight)
 +        );
 +    }
- 
++
+     @Keep
+     public boolean initializeSafeArea() {
+-        if (android.os.Build.VERSION.SDK_INT >= 28 && shortEdgesMode) {
+-            DisplayCutout cutout = getWindow().getDecorView().getRootWindowInsets().getDisplayCutout();
+-
+-            if (cutout != null) {
+-                safeAreaTop = cutout.getSafeInsetTop();
+-                safeAreaLeft = cutout.getSafeInsetLeft();
+-                safeAreaBottom = cutout.getSafeInsetBottom();
+-                safeAreaRight = cutout.getSafeInsetRight();
+-                return true;
+-            }
+-        }
+-
 -        return false;
-+    @Keep
-+    public boolean initializeSafeArea() {
 +        SafeAreaSnapshot snapshot = safeAreaSnapshot;
 +        if (snapshot == null) {
 +            return false;
@@ -322,5 +356,5 @@
 +        safeAreaRight = snapshot.right;
 +        return true;
      }
- 
+
      @Keep

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the pinned Android debug shell around one existing immutable payload.
+# Build the pinned Android debug or signed release shell around one immutable payload.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
@@ -9,8 +9,10 @@ love_payload=""
 version=""
 version_code=""
 output=""
+release=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --release) release=true; shift ;;
     --love|--version|--version-code|--output)
       [[ $# -ge 2 ]] || { echo "build_android: $1 needs a value" >&2; exit 2; }
       case "$1" in
@@ -25,7 +27,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$love_payload" && -n "$version" && -n "$version_code" && -n "$output" ]] || {
-  echo "usage: scripts/build_android.sh --love <payload.love> --version <version> --version-code <positive-int> --output <apk>" >&2
+  echo "usage: scripts/build_android.sh [--release] --love <payload.love> --version <version> --version-code <positive-int> --output <apk>" >&2
   exit 2
 }
 [[ "$version_code" =~ ^[1-9][0-9]*$ ]] || { echo "build_android: version code must be a positive integer" >&2; exit 2; }
@@ -41,15 +43,16 @@ import hashlib
 import re
 import sys
 import zipfile
+sys.path.insert(0, str(Path("scripts").resolve()))
+from pack_love import validate_identity
 payload, wanted = Path(sys.argv[1]), sys.argv[2]
-if wanted != "dev" and re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?", wanted) is None:
-    raise SystemExit("build_android: version must be dev or a complete semantic version")
 with zipfile.ZipFile(payload) as archive:
     identity = archive.read("app/src/BuildInfo.lua").decode("utf-8")
     version = re.search(r'version\s*=\s*"([^"]+)"', identity)
     commit = re.search(r'commit\s*=\s*"([0-9a-f]{40})"', identity)
     if version is None or commit is None or version.group(1) != wanted:
         raise SystemExit("build_android: payload identity does not match --version")
+    validate_identity(version.group(1), commit.group(1))
     if archive.testzip() is not None:
         raise SystemExit("build_android: payload CRC verification failed")
     print(version.group(1))
@@ -61,6 +64,17 @@ mapfile -t payload_fields <<< "$payload_info"
 [[ ${#payload_fields[@]} -eq 3 ]] || { echo "build_android: invalid payload metadata" >&2; exit 1; }
 payload_commit="${payload_fields[1]}"
 payload_sha="${payload_fields[2]}"
+
+if $release; then
+  [[ "$version" != "dev" ]] || { echo "build_android: release version must be a complete semantic version" >&2; exit 2; }
+  for name in PORTEMON_ANDROID_KEYSTORE PORTEMON_ANDROID_KEYSTORE_PASSWORD PORTEMON_ANDROID_KEY_ALIAS PORTEMON_ANDROID_KEY_PASSWORD; do
+    [[ -n "${!name:-}" ]] || { echo "build_android: release requires $name" >&2; exit 2; }
+  done
+  [[ -r "$PORTEMON_ANDROID_KEYSTORE" ]] || {
+    echo "build_android: PORTEMON_ANDROID_KEYSTORE is not a readable file" >&2
+    exit 2
+  }
+fi
 
 [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]] || {
   echo "build_android: this pinned builder requires a Linux x86_64 host" >&2
@@ -86,6 +100,11 @@ for path in "$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-a
   "$build_tools/zipalign" "$platform/android.jar"; do
   [[ -e "$path" ]] || { echo "build_android: locked Android tool is missing: $path" >&2; exit 1; }
 done
+if $release; then
+  for path in "$build_tools/aapt2" "$build_tools/apksigner"; do
+    [[ -e "$path" ]] || { echo "build_android: locked Android tool is missing: $path" >&2; exit 1; }
+  done
+fi
 grep -qx 'Pkg.Revision = 28.2.13676358' "$ndk_root/source.properties" || {
   echo "build_android: ANDROID_NDK_ROOT is not locked NDK r28c" >&2
   exit 1
@@ -182,18 +201,35 @@ export GRADLE_USER_HOME="$stage/gradle-home"
 export ANDROID_USER_HOME="$stage/android-user"
 export HOME="$stage/home"
 mkdir -p "$HOME" "$ANDROID_USER_HOME"
+gradle_properties=(
+  -Papp.version_name="$version"
+  -Papp.version_code="$version_code"
+)
+if $release; then
+  gradle_properties+=(
+    -Papp.application_id=io.github.portemonnitro.portemon
+    -Papp.name="Portémon Nitro"
+    -Pportemon.android.release=true
+    -Pportemon.android.keystore="$PORTEMON_ANDROID_KEYSTORE"
+  )
+fi
 (
   cd "$shell"
-  ./gradlew --no-daemon assembleEmbedNoRecordDebug \
-    -Papp.version_name="$version" -Papp.version_code="$version_code"
+  ./gradlew --no-daemon "assembleEmbedNoRecord$($release && echo Release || echo Debug)" \
+    "${gradle_properties[@]}"
 )
 
 shopt -s nullglob
-apks=("$shell"/app/build/outputs/apk/embedNoRecordDebug/*.apk)
-[[ ${#apks[@]} -eq 1 ]] || { echo "build_android: expected exactly one debug APK" >&2; exit 1; }
+if $release; then
+  apks=("$shell"/app/build/outputs/apk/embedNoRecordRelease/*.apk)
+else
+  apks=("$shell"/app/build/outputs/apk/embedNoRecordDebug/*.apk)
+fi
+[[ ${#apks[@]} -eq 1 ]] || { echo "build_android: expected exactly one $($release && echo release || echo debug) APK" >&2; exit 1; }
 apk="${apks[0]}"
+if $release; then export PORTEMON_BUILD_RELEASE=1; fi
 python3 - "$apk" "$love_payload" "$payload_sha" <<'PY'
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import hashlib
 import os
 import re
@@ -207,7 +243,11 @@ with zipfile.ZipFile(apk) as archive:
     embedded = archive.read("assets/game.love")
     if hashlib.sha256(embedded).hexdigest() != wanted:
         raise SystemExit("build_android: embedded payload differs from input")
-    for abi in ("arm64-v8a", "armeabi-v7a", "x86_64"):
+    expected_abis = {"arm64-v8a", "armeabi-v7a"} if os.environ.get("PORTEMON_BUILD_RELEASE") == "1" else {"arm64-v8a", "armeabi-v7a", "x86_64"}
+    actual_abis = {PurePosixPath(name).parts[1] for name in names if name.startswith("lib/") and name.endswith(".so")}
+    if actual_abis != expected_abis:
+        raise SystemExit("build_android: APK ABI set does not match the selected build")
+    for abi in expected_abis:
         for library in ("libc++_shared.so", "liblove.so"):
             if f"lib/{abi}/{library}" not in names:
                 raise SystemExit(f"build_android: APK omitted {abi}/{library}")
@@ -230,6 +270,17 @@ with zipfile.ZipFile(apk) as archive:
                     if match is None or int(match.group(0), 16) < 0x4000:
                         raise SystemExit(f"build_android: {name} has a LOAD segment below 16KB alignment")
 PY
+if $release; then
+  "$build_tools/apksigner" verify --verbose --print-certs "$apk" >/dev/null
+  badging="$("$build_tools/aapt2" dump badging "$apk")"
+  grep -q "package: name='io.github.portemonnitro.portemon'" <<< "$badging"
+  grep -q "versionCode='$version_code'" <<< "$badging"
+  grep -q "versionName='$version'" <<< "$badging"
+  if grep -q 'io.github.portemonnitro.portemon.dev' <<< "$badging"; then
+    echo "build_android: release APK contains the debug application ID" >&2
+    exit 1
+  fi
+fi
 "$build_tools/zipalign" -c -P 16 -v 4 "$apk" >/dev/null
 
 temporary_output="$output.tmp.$$"
