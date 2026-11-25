@@ -1,7 +1,9 @@
--- Owns transient follower-transition instances. Each instance captures the
--- live partner generation at start, holds a two-update prelude on the
--- companion part, then switches to the animated part, reveals the ordinary
--- partner exactly once, advances the source clip to completion, and retires.
+-- Owns transient follower-transition and recall-ball instances. Each
+-- transition captures the live partner generation at start, holds a two-update
+-- prelude on the companion part, then switches to the animated part, reveals
+-- the ordinary partner exactly once, advances the source clip to completion,
+-- and retires. Recall balls reuse the companion model, stay hidden through
+-- four shrink updates, remain visible through the source hold, and retire.
 -- Instances advance in fixed simulation ticks and never touch save state.
 
 ---@class FollowingMonTransitionController
@@ -13,11 +15,25 @@
 ---@field preludeTicks integer
 ---@field modelFactory fun(part: string, descriptor: table<string, unknown>): table<string, unknown>
 ---@field instances table<string, unknown>[]
----@field _presentation { instances: table[] }? retained borrowed status (read-only/ephemeral)
+---@field balls table<integer, table<string, unknown>>
+---@field _nextBallId integer
+---@field _presentation { instances: table[], balls: table[] }? retained borrowed status (read-only/ephemeral)
 ---@field _presentationDirty boolean true when the next status() must rebuild the retained record
 ---@field _pendingStart boolean accepted request retained until a partner is published
+---@field spawnBall fun(self: FollowingMonTransitionController, placement: table<string, unknown>): integer
+---@field clearBall fun(self: FollowingMonTransitionController, ballId: integer)
 local FollowingMonTransitionController = {}
 FollowingMonTransitionController.__index = FollowingMonTransitionController
+
+local BALL_SHRINK_FRAMES = 4
+local BALL_VISIBLE_FRAMES = 16
+local BALL_LIFETIME_FRAMES = BALL_SHRINK_FRAMES + BALL_VISIBLE_FRAMES
+local BALL_PULL_BY_FACING = {
+  north = { axis = "z", step = -1 },
+  south = { axis = "z", step = 1 },
+  west = { axis = "x", step = -10 },
+  east = { axis = "x", step = 10 },
+}
 
 local function finiteNumber(value)
   return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
@@ -91,6 +107,8 @@ function FollowingMonTransitionController.new(options)
     preludeTicks = preludeTicks,
     modelFactory = options.modelFactory,
     instances = {},
+    balls = {},
+    _nextBallId = 0,
     _presentation = nil,
     _presentationDirty = true,
     _pendingStart = false,
@@ -120,6 +138,13 @@ local function release(instance)
   if instance.animatedInstance ~= nil then
     instance.animatedInstance:dispose()
     instance.animatedInstance = nil
+  end
+end
+
+local function releaseBall(ball)
+  if ball.initialInstance ~= nil then
+    ball.initialInstance:dispose()
+    ball.initialInstance = nil
   end
 end
 
@@ -251,6 +276,67 @@ function FollowingMonTransitionController:updateFixed()
       end
     end
   end
+  for ballId, ball in pairs(self.balls) do
+    ball.timer = ball.timer + 1
+    if ball.timer <= BALL_SHRINK_FRAMES and ball.large then
+      local pull = assert(BALL_PULL_BY_FACING[ball.facing], "follower ball facing is invalid")
+      ball.offset[pull.axis] = ball.originalOffset[pull.axis] + ball.timer * pull.step / 4
+    end
+    ball.visible = ball.timer >= BALL_SHRINK_FRAMES
+    if ball.timer >= BALL_LIFETIME_FRAMES then
+      releaseBall(ball)
+      self.balls[ballId] = nil
+    end
+  end
+end
+
+-- Spawns one recall ball at the follower's jumped presentation position.
+-- The caller owns the follower shrink scale and logical snap; this owner
+-- owns only the transient ball model, its large-mon pull, and visibility.
+---@param placement { fieldX: integer, fieldZ: integer, worldY: number, offset: { x: number, y: number, z: number }, large: boolean, facing: string }
+---@return integer ballId
+function FollowingMonTransitionController:spawnBall(placement)
+  assert(type(placement) == "table", "follower ball placement is required")
+  assert(type(placement.fieldX) == "number" and placement.fieldX % 1 == 0, "follower ball X tile is invalid")
+  assert(type(placement.fieldZ) == "number" and placement.fieldZ % 1 == 0, "follower ball Z tile is invalid")
+  assert(finiteNumber(placement.worldY), "follower ball height is invalid")
+  assert(type(placement.offset) == "table", "follower ball offset is required")
+  for _, axis in ipairs({ "x", "y", "z" }) do
+    assert(finiteNumber(placement.offset[axis]), "follower ball offset is invalid")
+  end
+  assert(type(placement.large) == "boolean", "follower ball size class is required")
+  assert(BALL_PULL_BY_FACING[placement.facing] ~= nil, "follower ball facing is invalid")
+  local factory = assert(self.modelFactory, "follower ball model factory is not configured")
+  local initialInstance =
+    assert(factory("initial", self.initialDescriptor), "follower ball model factory returned no instance")
+  self:_invalidatePresentation()
+  self._nextBallId = self._nextBallId + 1
+  local ballId = self._nextBallId
+  self.balls[ballId] = {
+    id = ballId,
+    fieldX = placement.fieldX,
+    fieldZ = placement.fieldZ,
+    worldY = placement.worldY,
+    offset = { x = placement.offset.x, y = placement.offset.y, z = placement.offset.z },
+    originalOffset = { x = placement.offset.x, z = placement.offset.z },
+    large = placement.large,
+    facing = placement.facing,
+    timer = 0,
+    visible = false,
+    initialInstance = initialInstance,
+  }
+  return ballId
+end
+
+---@param ballId integer
+function FollowingMonTransitionController:clearBall(ballId)
+  local ball = self.balls[ballId]
+  if ball == nil then
+    return
+  end
+  self:_invalidatePresentation()
+  releaseBall(ball)
+  self.balls[ballId] = nil
 end
 
 -- The borrowed presentation status: controller-owned, read-only, and
@@ -280,7 +366,19 @@ function FollowingMonTransitionController:status()
       animatedInstance = instance.animatedInstance,
     }
   end
-  self._presentation = { instances = instances }
+  local balls = {}
+  for ballId, ball in pairs(self.balls) do
+    balls[ballId] = {
+      id = ball.id,
+      fieldX = ball.fieldX,
+      fieldZ = ball.fieldZ,
+      worldY = ball.worldY,
+      offset = ball.offset,
+      timer = ball.timer,
+      visible = ball.visible,
+    }
+  end
+  self._presentation = { instances = instances, balls = balls }
   self._presentationDirty = false
   return assert(self._presentation, "retained transition presentation is missing")
 end
@@ -291,6 +389,10 @@ function FollowingMonTransitionController:clear()
   for index = #self.instances, 1, -1 do
     release(self.instances[index])
     self.instances[index] = nil
+  end
+  for ballId, ball in pairs(self.balls) do
+    releaseBall(ball)
+    self.balls[ballId] = nil
   end
 end
 

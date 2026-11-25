@@ -136,13 +136,52 @@ local function service()
 end
 
 local function recordingTransition()
-  local transition = { starts = 0, clears = 0 }
+  local transition = { starts = 0, clears = 0, balls = {}, nextBallId = 0, instances = {} }
   function transition:start()
     transition.starts = transition.starts + 1
+    transition.instances[#transition.instances + 1] = { preludeAge = 0 }
     return true
   end
   function transition:clear()
     transition.clears = transition.clears + 1
+  end
+  function transition:spawnBall(placement)
+    transition.nextBallId = transition.nextBallId + 1
+    local ball = {
+      id = transition.nextBallId,
+      fieldX = placement.fieldX,
+      fieldZ = placement.fieldZ,
+      worldY = placement.worldY,
+      offset = { x = placement.offset.x, y = placement.offset.y, z = placement.offset.z },
+      originalOffset = { x = placement.offset.x, z = placement.offset.z },
+      large = placement.large,
+      facing = placement.facing,
+      timer = 0,
+      visible = false,
+    }
+    transition.balls[ball.id] = ball
+    return ball.id
+  end
+  function transition:clearBall(ballId)
+    transition.balls[ballId] = nil
+  end
+  function transition:updateFixed()
+    for _, instance in ipairs(transition.instances) do
+      instance.preludeAge = instance.preludeAge + 1
+      if instance.preludeAge >= 2 and transition.onReveal ~= nil then
+        transition.onReveal()
+      end
+    end
+    for _, ball in pairs(transition.balls) do
+      ball.timer = ball.timer + 1
+      if ball.large and ball.facing == "north" then
+        ball.offset.z = ball.originalOffset.z - ball.timer / 4
+      end
+      ball.visible = ball.timer >= 4
+      if ball.timer >= 20 then
+        transition.balls[ball.id] = nil
+      end
+    end
   end
   return transition
 end
@@ -360,29 +399,147 @@ function T.stationary_follower_owns_no_presentation_action()
   w.mgr:dispose()
 end
 
-function T.hop_into_ball_arcs_to_the_player_then_hides_the_follower()
-  local w = world()
+function T.hop_into_ball_runs_the_source_side_jump_shrink_and_release_sequence()
+  local w = world({ fieldX = 4, fieldZ = 5, facing = "north" })
   w.svc:setLead(0, mon())
   tick(w, 2)
+  w.transition.onReveal = function()
+    w.mgr:show("field:partner")
+  end
   local partnerId = assert(w.controller:partnerActorId(), "setup installs the partner")
   local actor = assert(w.mgr:getById(partnerId), "the partner actor is required")
-  local start = actor:getFieldPosition()
+  Assert.deepEqual(actor:getFieldPosition(), { fieldX = 4, fieldZ = 6 }, "the nurse hop starts south of the player")
+
+  local function hopTick()
+    w.controller:update()
+    w.transition:updateFixed()
+  end
 
   Assert.isTrue(w.controller:hopIntoBall(), "an active visible lead starts the hop")
-  tick(w, 4)
-  Assert.isTrue(actor:getPresentationOffset().y > 0, "the hop has a visible upward arc")
-  local duringHop = actor:getFieldPosition()
-  Assert.equal(duringHop.fieldX, start.fieldX, "the hop keeps the logical X tile in place")
-  Assert.equal(duringHop.fieldZ, start.fieldZ, "the hop keeps the logical Z tile in place")
+  hopTick()
+  Assert.deepEqual(actor:getFieldPosition(), { fieldX = 4, fieldZ = 6 }, "the hop waits for settlement before classifying")
+  Assert.deepEqual(actor:getPresentationOffset(), { x = 0, y = 0, z = 0 }, "classification starts no jump vector")
 
-  tick(w, 4)
-  local landed = actor:getFieldPosition()
-  Assert.equal(landed.fieldX, w.player.fieldX, "the hop lands on the player's X tile")
-  Assert.equal(landed.fieldZ, w.player.fieldZ, "the hop lands on the player's Z tile")
-  Assert.equal(actor.facing, "north", "the nurse-facing hop lands facing north")
-  Assert.deepEqual(actor:getPresentationOffset(), { x = 0, y = 0, z = 0 }, "landing clears the hop offset")
-  Assert.isFalse(actor:isVisible(), "the lead hides for the nurse animation")
+  hopTick()
+  for _ = 1, MovementCalibration.SPEED_TICKS.normal do
+    hopTick()
+  end
+  Assert.equal(actor:getFieldPosition().fieldX, 3, "the south branch steps west before jumping")
+  Assert.equal(actor:getFieldPosition().fieldZ, 6, "the west step keeps the south row")
+  for _ = 1, MovementCalibration.SPEED_TICKS.normal do
+    hopTick()
+  end
+  Assert.equal(actor:getFieldPosition().fieldX, 3, "the second aside step keeps the west column")
+  Assert.equal(actor:getFieldPosition().fieldZ, 5, "the south branch then steps north beside the player")
+  Assert.equal(actor.facing, "north", "the follower faces up before the jump")
+
+  local expectedOffsets = {
+    { x = 2 / 16, y = 1 / 16, z = -4 / 16 },
+    { x = 4 / 16, y = 3 / 16, z = -8 / 16 },
+    { x = 6 / 16, y = 5 / 16, z = -12 / 16 },
+    { x = 8 / 16, y = 8 / 16, z = -14 / 16 },
+    { x = 10 / 16, y = 11 / 16, z = -16 / 16 },
+    { x = 12 / 16, y = 13 / 16, z = -18 / 16 },
+    { x = 14 / 16, y = 15 / 16, z = -18 / 16 },
+    { x = 16 / 16, y = 15 / 16, z = -18 / 16 },
+  }
+  for index, expected in ipairs(expectedOffsets) do
+    hopTick()
+    Assert.deepEqual(actor:getPresentationOffset(), expected, "hop vector update " .. index)
+    Assert.equal(actor:getFieldPosition().fieldX, 3, "the jump never mutates the logical X tile")
+    Assert.equal(actor:getFieldPosition().fieldZ, 5, "the jump never mutates the logical Z tile")
+  end
+  Assert.isTrue(actor:isVisible(), "the follower remains visible through all eight jump updates")
+  Assert.equal(actor:getPresentationScale(), 1, "the jump itself does not shrink the follower")
+  Assert.equal(next(w.transition.balls), nil, "the ball spawns on the state after the final jump update")
+
+  hopTick()
+  local ballId = assert(next(w.transition.balls), "the next state spawns the follower ball")
+  local ball = assert(w.transition.balls[ballId])
+  Assert.equal(ball.timer, 1, "the ball effect advances on its spawn tick")
+  Assert.isFalse(ball.visible, "the ball is hidden during the first shrink update")
+  Assert.equal(ball.fieldX, 3, "the ball keeps the follower's logical X tile")
+  Assert.equal(ball.fieldZ, 5, "the ball keeps the follower's logical Z tile")
+  Assert.deepEqual(ball.offset, { x = 1, y = 15 / 16, z = -18 / 16 + 6 / 16 - 1 / 4 }, "the ball starts six model units south of the jumped follower and follows the large-mon pull")
+  Assert.equal(actor:getPresentationScale(), 1, "shrink update one keeps identity scale")
+
+  for timer = 2, 4 do
+    hopTick()
+    Assert.equal(ball.timer, timer, "ball shrink timer " .. timer)
+    Assert.equal(actor:getPresentationScale(), 1 / timer, "shrink update " .. timer .. " uses the source reciprocal scale")
+    Assert.equal(actor:getPresentationOffset().z, -18 / 16 - timer / 4, "large follower pull accumulates through shrink update " .. timer)
+  end
+  Assert.isTrue(ball.visible, "the ball becomes visible on the fourth shrink update")
+  Assert.isFalse(actor:isVisible(), "the follower hides on the fourth shrink update")
+
+  for timer = 5, 19 do
+    hopTick()
+    Assert.equal(ball.timer, timer, "the task holds the ball through timer " .. timer)
+    Assert.isTrue(ball.visible, "the ball stays visible through timer " .. timer)
+    Assert.isFalse(actor:isVisible(), "the follower stays hidden through timer " .. timer)
+    Assert.equal(actor:getPresentationScale(), 1 / 4, "the hidden hold keeps the final shrink scale")
+  end
+
+  hopTick()
+  Assert.equal(next(w.transition.balls), nil, "the twentieth ball update removes the transient ball")
+  Assert.deepEqual(actor:getFieldPosition(), { fieldX = 4, fieldZ = 5 }, "the task then snaps the follower onto the player tile")
+  Assert.equal(actor.facing, "north", "the snap faces north")
+  Assert.equal(actor:getPresentationScale(), 1, "the snap restores identity scale")
+  Assert.deepEqual(actor:getPresentationOffset(), { x = 0, y = 0, z = 0 }, "the snap clears the render vector")
+  Assert.isFalse(actor:isVisible(), "the snap leaves the follower hidden until its release")
+  hopTick()
+  Assert.equal(w.transition.starts, 0, "finishing the hop does not start the release effect early")
+
+  stepSouth(w)
+  Assert.isFalse(actor:isVisible(), "the follower stays hidden while waiting for the next player step")
+  hopTick()
+  Assert.equal(w.transition.starts, 1, "the next player step consumes the pending release-ball effect")
+  Assert.isFalse(actor:isVisible(), "the release ball keeps the follower hidden through its two-tick prelude")
+  hopTick()
+  Assert.isTrue(actor:isVisible(), "the second release update reveals the follower")
+  Assert.equal(w.transition.starts, 1, "later steps do not replay the release effect")
   w.mgr:dispose()
+end
+
+function T.hop_into_ball_side_branches_mirror_the_jump_without_walking_aside()
+  for _, case in ipairs({
+    { facing = "west", expectedX = -2 / 16, label = "east" },
+    { facing = "east", expectedX = 2 / 16, label = "west" },
+  }) do
+    local w = world({ fieldX = 4, fieldZ = 5, facing = case.facing })
+    w.svc:setLead(0, mon())
+    tick(w, 2)
+    local partnerId = assert(w.controller:partnerActorId(), "setup installs the partner")
+    local actor = assert(w.mgr:getById(partnerId), "the partner actor is required")
+    local start = actor:getFieldPosition()
+    Assert.isTrue(w.controller:hopIntoBall(), "the " .. case.label .. " branch starts the hop")
+    w.controller:update()
+    w.controller:update()
+    Assert.equal(actor.facing, "north", "the " .. case.label .. " branch faces north without an aside walk")
+    Assert.deepEqual(actor:getFieldPosition(), start, "the " .. case.label .. " branch keeps its logical tile")
+    w.controller:update()
+    Assert.deepEqual(
+      actor:getPresentationOffset(),
+      { x = case.expectedX, y = 1 / 16, z = -4 / 16 },
+      "the " .. case.label .. " branch mirrors the first jump vector"
+    )
+    w.mgr:dispose()
+  end
+end
+
+function T.hop_into_ball_ignores_an_inactive_or_hidden_follower()
+  local hidden = world({ facing = "north" })
+  hidden.svc:setLead(0, mon())
+  tick(hidden, 2)
+  hidden.mgr:hide("field:partner")
+  Assert.isFalse(hidden.controller:hopIntoBall(), "an already-hidden follower starts no hop")
+  Assert.equal(hidden.transition.nextBallId, 0, "a hidden follower spawns no ball")
+  hidden.mgr:dispose()
+
+  local inactive = world()
+  Assert.isFalse(inactive.controller:hopIntoBall(), "an inactive follower starts no hop")
+  Assert.equal(inactive.transition.nextBallId, 0, "an inactive follower spawns no ball")
+  inactive.mgr:dispose()
 end
 
 function T.eligible_lead_installs_behind_the_player()

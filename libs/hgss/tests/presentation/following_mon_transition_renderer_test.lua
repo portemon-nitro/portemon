@@ -6,6 +6,7 @@
 -- stays real.
 
 local Assert = require("tests.support.Assert")
+local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
 
 local T = { metadata = { capabilities = {} }, tests = {} }
 
@@ -145,6 +146,7 @@ local function status(phase, initialInstance, animatedInstance)
         animatedInstance = animatedInstance,
       },
     },
+    balls = {},
   }
 end
 
@@ -152,7 +154,7 @@ T.tests["empty status draws nothing without projection"] = function()
   local poolCalls = {}
   local renderer, cleanup = newRenderer(poolCalls)
   local ok, items = pcall(function()
-    return renderer:drawItems({ instances = {} }, {})
+    return renderer:drawItems({ instances = {}, balls = {} }, {})
   end)
   cleanup()
   Assert.isTrue(ok, tostring(items))
@@ -226,8 +228,8 @@ end
 T.tests["empty status returns a stable empty array"] = function()
   local poolCalls = {}
   local renderer, cleanup = newRenderer(poolCalls)
-  local first = renderer:drawItems({ instances = {} }, runtimeMap())
-  local second = renderer:drawItems({ instances = {} }, runtimeMap())
+  local first = renderer:drawItems({ instances = {}, balls = {} }, runtimeMap())
+  local second = renderer:drawItems({ instances = {}, balls = {} }, runtimeMap())
   Assert.equal(#first, 0)
   Assert.isTrue(rawequal(first, second), "empty transient lists share a stable empty array, not fresh tables")
   cleanup()
@@ -242,7 +244,7 @@ T.tests["removed effects clear reused storage without stale entries"] = function
   local items = {}
   renderer:drawItems(status("prelude", initial, animated), map, items)
   Assert.equal(#items, 1)
-  local result = renderer:drawItems({ instances = {} }, map, items)
+  local result = renderer:drawItems({ instances = {}, balls = {} }, map, items)
   Assert.isTrue(rawequal(result, items), "the empty draw reuses the same storage")
   Assert.equal(#items, 0, "removal clears the reused array to its exact logical length")
   cleanup()
@@ -275,6 +277,34 @@ T.tests["mutable instances share pooled immutable resources"] = function()
   Assert.isTrue(first ~= second, "mutable part instances stay independent")
   Assert.equal(poolCalls.meshes, meshesAfterFirst, "repeated instances reuse pooled meshes")
   Assert.equal(poolCalls.builds, 1, "immutable resources build once per renderer lifetime")
+end
+
+T.tests["visible follower ball draws the companion model at its jumped offset"] = function()
+  local poolCalls = {}
+  local renderer, cleanup = newRenderer(poolCalls)
+  local map = runtimeMap()
+  local point = FieldCoordinates.fieldToWorld(map, 2, 5, 3)
+  local ballStatus = {
+    instances = {},
+    balls = {
+      {
+        visible = true,
+        fieldX = 2,
+        fieldZ = 5,
+        worldY = 3,
+        offset = { x = 1, y = 15 / 16, z = -12 / 16 },
+      },
+    },
+  }
+  local items = renderer:drawItems(ballStatus, map)
+  Assert.equal(#items, 1, "a visible recall ball draws one companion batch")
+  Assert.equal(items[1].transitionPart, "initial", "the ball reuses the source companion model")
+  Assert.equal(items[1].transform[13], point.x + 1, "the ball carries the jumped X offset")
+  Assert.equal(items[1].transform[14], point.y + 15 / 16, "the ball carries the jumped Y offset")
+  Assert.equal(items[1].transform[15], point.z - 12 / 16, "the ball carries the jumped Z offset")
+  ballStatus.balls[1].visible = false
+  Assert.equal(#renderer:drawItems(ballStatus, map), 0, "the hidden shrink window draws no ball")
+  cleanup()
 end
 
 return T

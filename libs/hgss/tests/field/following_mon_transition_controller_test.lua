@@ -605,4 +605,91 @@ function T.clear_and_dispose_release_exactly_once()
   Assert.equal(#transitions:status().instances, 0, "disposal leaves no live effect")
 end
 
+function T.follower_ball_shrinks_large_pull_then_holds_visible_and_retires()
+  local actors = fakeActors()
+  actors:install(partnerRecord({ visible = true }))
+  local transitions, made = controller(actors)
+  local placement = {
+    fieldX = 7,
+    fieldZ = 9,
+    worldY = 3,
+    offset = { x = 1, y = 15 / 16, z = -12 / 16 },
+    large = true,
+    facing = "north",
+  }
+  local ballId = transitions:spawnBall(placement)
+  placement.offset.z = 99
+  local ball = assert(transitions:status().balls[ballId])
+  Assert.equal(ball.timer, 0, "spawning consumes no ball update")
+  Assert.isFalse(ball.visible, "the ball starts hidden")
+  Assert.deepEqual(ball.offset, { x = 1, y = 15 / 16, z = -12 / 16 }, "spawn copies the jumped placement")
+  Assert.equal(#made, 1, "the recall ball owns only the static companion model")
+  Assert.equal(made[1].part, "initial", "the recall ball reuses the source monster-ball model")
+
+  for timer = 1, 4 do
+    transitions:updateFixed()
+    ball = assert(transitions:status().balls[ballId])
+    Assert.equal(ball.timer, timer, "ball update " .. timer)
+    Assert.equal(ball.offset.z, -12 / 16 - timer / 4, "large north-facing pull at update " .. timer)
+    Assert.equal(ball.visible, timer >= 4, "ball visibility at update " .. timer)
+  end
+  for timer = 5, 19 do
+    transitions:updateFixed()
+    ball = assert(transitions:status().balls[ballId])
+    Assert.equal(ball.timer, timer, "visible ball hold at update " .. timer)
+    Assert.isTrue(ball.visible, "the ball remains visible through the hold")
+  end
+  transitions:updateFixed()
+  Assert.isNil(transitions:status().balls[ballId], "the twentieth update removes the ball")
+  Assert.equal(made[1].disposeCalls, 1, "retirement releases the ball model exactly once")
+end
+
+function T.small_follower_ball_does_not_pull_and_clear_releases_it_once()
+  local actors = fakeActors()
+  actors:install(partnerRecord())
+  local transitions, made = controller(actors)
+  local ballId = transitions:spawnBall({
+    fieldX = 4,
+    fieldZ = 5,
+    worldY = 2,
+    offset = { x = -1, y = 15 / 16, z = -18 / 16 },
+    large = false,
+    facing = "north",
+  })
+  for _ = 1, 4 do
+    transitions:updateFixed()
+  end
+  Assert.deepEqual(
+    transitions:status().balls[ballId].offset,
+    { x = -1, y = 15 / 16, z = -18 / 16 },
+    "a small follower keeps the jumped ball position"
+  )
+  transitions:clearBall(ballId)
+  Assert.isNil(transitions:status().balls[ballId], "targeted clear removes the ball")
+  Assert.equal(made[1].disposeCalls, 1, "targeted clear releases the model once")
+  transitions:clearBall(ballId)
+  transitions:clear()
+  transitions:dispose()
+  Assert.equal(made[1].disposeCalls, 1, "repeated cleanup never double-releases the ball")
+end
+
+function T.failed_follower_ball_spawn_publishes_nothing()
+  local actors = fakeActors()
+  actors:install(partnerRecord())
+  local transitions, made = controller(actors, 5, {}, 0)
+  local ok = Assert.throws(function()
+    transitions:spawnBall({
+      fieldX = 4,
+      fieldZ = 5,
+      worldY = 2,
+      offset = { x = 0, y = 0, z = 0 },
+      large = false,
+      facing = "north",
+    })
+  end)
+  Assert.isTrue(string.find(ok, "boom-model-initial", 1, true) ~= nil, "the model construction failure propagates")
+  Assert.equal(#transitions:status().balls, 0, "a failed spawn leaves no published ball")
+  Assert.equal(#made, 0, "a failed first allocation owns no model")
+end
+
 return { tests = T }

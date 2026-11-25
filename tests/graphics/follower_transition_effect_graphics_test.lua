@@ -82,19 +82,29 @@ local function runVersion(scope, versionId)
   local target = scope:own(love.graphics.newCanvas(256, 192))
   local map = runtimeMap()
 
-  for _, phase in ipairs({ "prelude", "animated" }) do
+  for _, phase in ipairs({ "prelude", "animated", "recall_ball" }) do
     local part = phase == "animated" and "animated" or "initial"
-    local instances = {
-      {
+    local instances = {}
+    local balls = {}
+    if phase == "recall_ball" then
+      balls[1] = {
+        visible = true,
+        fieldX = 2,
+        fieldZ = 5,
+        worldY = 3,
+        offset = { x = 1, y = 15 / 16, z = -12 / 16 },
+      }
+    else
+      instances[1] = {
         phase = phase,
         fieldX = 2,
         fieldZ = 5,
         worldY = 3,
         initialInstance = renderer:newInstance("initial"),
         animatedInstance = renderer:newInstance("animated"),
-      },
-    }
-    local items = renderer:drawItems({ instances = instances }, map)
+      }
+    end
+    local items = renderer:drawItems({ instances = instances, balls = balls }, map)
     Assert.isTrue(#items > 0, phase .. " must produce a real draw item from generated resources")
     Assert.equal(items[1].transitionPart, part, phase .. " must draw its own source part")
     love.graphics.setCanvas(target)

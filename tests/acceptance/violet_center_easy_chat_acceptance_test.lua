@@ -1402,21 +1402,60 @@ function T.tests.local_center_paths_stay_usable_around_an_egg()
     -- The nurse heals the ordinary mon while the machine count excludes
     -- the Egg; the Egg itself keeps its receipt metadata. Removing the
     -- starter and re-adding it appends behind the Egg, so the damaged
-    -- mon rides slot one and the Egg rides slot zero below.
+    -- ordinary mon rides slot one and the Egg rides slot zero.
     local damaged = service:removeMon(0)
     damaged.condition.currentHp = 1
+    Assert.isTrue(service:addMon(damaged), "the damaged starter returns behind the Egg")
+    -- Rebuild the lead at the counter so the mid-map publication starts on
+    -- the player tile. One step out reveals it on the vacated tile; the
+    -- return step leaves it beside the player, matching the retail hop's
+    -- required geometry instead of guessing from a distant trail anchor.
+    game:moveTo({ fieldX = 8, fieldZ = 13 })
+    damaged = service:removeMon(1)
     Assert.isTrue(service:addMon(damaged), "the damaged starter returns to its production party")
+    game:advanceUntil("the rebuilt follower is published", function()
+      return game.runtime.followingMon:partnerActorId() ~= nil
+    end, 120)
+    game.runtime.followingMon:rejoin("acceptance follower setup")
+    game:moveTo({ fieldX = 7, fieldZ = 13 })
+    game:moveTo({ fieldX = 8, fieldZ = 13 })
     local followingMon = assert(game.runtime.followingMon, "the field owns the active party lead")
-    local partnerId = assert(followingMon:partnerActorId(), "the party lead is visible before nursing")
+    local partnerId = assert(followingMon:partnerActorId(), "the party lead is installed before nursing")
     local partner = assert(game.runtime.actors:getById(partnerId), "the party lead actor is live before nursing")
+    Assert.isTrue(partner:isVisible(), "the rebuilt lead reveals on its first trail step")
+    Assert.equal(partner:getFieldPosition().fieldX, 7, "the lead starts on the retail west-side branch")
+    Assert.equal(partner:getFieldPosition().fieldZ, 13, "the lead starts beside the counter stance")
     local startPosition = partner:getFieldPosition()
     local sawHopArc = false
+    local sawHopShrink = false
+    local sawFollowerBall = false
+    local sawHiddenFollowerWithVisibleBall = false
+    local hopOffsets = {}
+    local hopScales = {}
+    local lastHopScale = 1
     local originalStep = game.step
     game.step = function(self, ...)
       local result = originalStep(self, ...)
       local currentPartner = game.runtime.actors:getById(partnerId)
       if currentPartner ~= nil then
-        sawHopArc = sawHopArc or currentPartner:getPresentationOffset().y > 0
+        local offset = currentPartner:getPresentationOffset()
+        local scale = currentPartner:getPresentationScale()
+        if offset.y > 0 and offset.z < 0 then
+          hopOffsets[#hopOffsets + 1] = { x = offset.x, y = offset.y, z = offset.z }
+        end
+        if scale ~= 1 and scale ~= lastHopScale then
+          hopScales[#hopScales + 1] = scale
+          lastHopScale = scale
+        end
+        sawHopArc = sawHopArc or offset.y > 0
+        sawHopShrink = sawHopShrink or scale < 1
+        local transition = assert(game.runtime.followingMonTransition, "the field owns follower effects")
+        for _, ball in pairs(transition:status().balls) do
+          if ball.visible then
+            sawFollowerBall = true
+            sawHiddenFollowerWithVisibleBall = sawHiddenFollowerWithVisibleBall or not currentPartner:isVisible()
+          end
+        end
       end
       return result
     end
@@ -1447,6 +1486,19 @@ function T.tests.local_center_paths_stay_usable_around_an_egg()
     local nursedPosition = partner:getFieldPosition()
     local player = game:snapshot().player
     Assert.isTrue(sawHopArc, "FollowMonHopIntoBall presents the lead's visible hop arc")
+    Assert.isTrue(sawHopShrink, "the follower shrinks through the native quarter-scale recall window")
+    Assert.deepEqual(hopScales, { 1 / 2, 1 / 3, 1 / 4 }, "the follower uses the three non-identity source shrink scales")
+    Assert.isTrue(sawFollowerBall, "the follower recall presents its transient Poké Ball")
+    Assert.isTrue(
+      sawHiddenFollowerWithVisibleBall,
+      "the follower hides on the fourth shrink update while the ball remains visible"
+    )
+    Assert.isTrue(#hopOffsets >= 8, "the hop publishes its complete source vector sequence")
+    Assert.deepEqual(
+      hopOffsets[8],
+      { x = 1, y = 15 / 16, z = -18 / 16 },
+      "the jump ends one tile east/west of its logical tile and 18/16 tiles north"
+    )
     Assert.isTrue(
       startPosition.fieldX ~= nursedPosition.fieldX or startPosition.fieldZ ~= nursedPosition.fieldZ,
       "FollowMonHopIntoBall moves the visible lead from its tile behind the player"
@@ -1454,6 +1506,8 @@ function T.tests.local_center_paths_stay_usable_around_an_egg()
     Assert.equal(nursedPosition.fieldX, player.fieldX, "the lead finishes the hop on the player tile")
     Assert.equal(nursedPosition.fieldZ, player.fieldZ, "the lead finishes the hop on the player tile")
     Assert.equal(partner.facing, "north", "the lead faces into the Center after the hop")
+    Assert.equal(partner:getPresentationScale(), 1, "the completed recall restores identity scale")
+    Assert.deepEqual(partner:getPresentationOffset(), { x = 0, y = 0, z = 0 }, "the completed hop clears its vector")
     Assert.isFalse(game.runtime.actors:isVisible(partnerId), "the lead enters its ball until the next trail step")
     assertNoFaults(game, "the nurse interaction")
     Assert.equal(
@@ -1466,6 +1520,14 @@ function T.tests.local_center_paths_stay_usable_around_an_egg()
     Assert.equal(nursed.egg.location, RECEIPT_LOCATION, "nursing preserves the Egg receipt location")
     Assert.equal(nursed.nickname, nil, "nursing adds no Egg nickname")
 
+    -- Step away once so the pending release ball runs to completion before
+    -- the remaining local conversations.
+    game:moveTo({ fieldX = 7, fieldZ = 13 })
+    game:advanceUntil("the follower release ball finishes", function()
+      return game.runtime.actors:isVisible(partnerId)
+        and #game.runtime.followingMonTransition:status().instances == 0
+    end, 120)
+
     -- Every remaining local conversation completes through its retail
     -- script without faults and releases the field.
     for _, scriptId in ipairs({
@@ -1476,8 +1538,17 @@ function T.tests.local_center_paths_stay_usable_around_an_egg()
       local actor = findScriptActor(game, scriptId)
       local before = #game:recordsForScript(scriptId)
       talkTo(game, actor)
+      Assert.equal(
+        game:interaction().scriptId,
+        scriptId,
+        "the faced Action edge resolves the intended local script; got " .. tostring(game:interaction().scriptId)
+      )
       Assert.isTrue(settleToFree(game), "the local conversation releases the field: " .. scriptId)
-      Assert.equal(#game:recordsForScript(scriptId), before + 1, "the retail local script runs once: " .. scriptId)
+      Assert.equal(
+        #game:recordsForScript(scriptId),
+        before + 1,
+        "the retail local script runs once: " .. scriptId .. "; before=" .. before .. ", after=" .. #game:recordsForScript(scriptId)
+      )
       assertNoFaults(game, "the local conversation " .. scriptId)
     end
 

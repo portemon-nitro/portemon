@@ -260,7 +260,8 @@ end
 ---@return table<string, unknown>[]
 function FollowingMonTransitionRenderer:drawItems(status, runtimeMap, items)
   assert(status and type(status.instances) == "table", "transition status instances are required")
-  if #status.instances == 0 then
+  assert(type(status.balls) == "table", "transition status balls are required")
+  if #status.instances == 0 and next(status.balls) == nil then
     if items ~= nil then
       assert(type(items) == "table", "transition draw storage must be a table")
       for index = #items, 1, -1 do
@@ -297,6 +298,19 @@ function FollowingMonTransitionRenderer:drawItems(status, runtimeMap, items)
     else
       local modelInstance = part == "initial" and effect.initialInstance or effect.animatedInstance
       drawDynamic(resource, modelInstance, transform, part, items)
+    end
+  end
+  for _, ball in pairs(status.balls) do
+    if ball.visible then
+      local point = FieldCoordinates.fieldToWorld(runtimeMap, ball.fieldX, ball.fieldZ, ball.worldY)
+      local ballOffset = assert(ball.offset, "follower ball offset is required")
+      local transform = Matrix4.translate(point.x + ballOffset.x, point.y + ballOffset.y, point.z + ballOffset.z)
+      drawStatic(
+        assert(self.resources.initial, "transition renderer is missing its companion model"),
+        transform,
+        "initial",
+        items
+      )
     end
   end
   return items
