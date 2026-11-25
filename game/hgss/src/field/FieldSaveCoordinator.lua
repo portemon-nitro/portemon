@@ -207,6 +207,7 @@ function FieldSaveCoordinator:_capture(allowMenu, endingOwner)
     photoAlbum = assert(runtime.photoAlbum, "field runtime has no photo album"):capture(),
     fieldPoison = FieldPoisonSave.capture(assert(runtime.fieldPoison, "field runtime has no poison counter")),
     daycare = assert(runtime.daycare, "field runtime has no Day Care state"):capture(),
+    battlePoints = assert(runtime.battlePoints, "field runtime has no Battle Point wallet"):capture(),
     encounters = EncounterSave.capture(assert(runtime.roamerState, "field runtime has no roamer state")),
     pokedex = assert(runtime.dexKnowledge, "field runtime has no dex knowledge"):bucket(),
     gameStats = assert(runtime.gameStats, "field runtime has no game stats"):bucket(),

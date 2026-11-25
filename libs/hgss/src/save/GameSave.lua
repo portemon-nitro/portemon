@@ -18,7 +18,8 @@ local DaycareState = require("libs.hgss.src.save.DaycareState")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v17"
+GameSave.SCHEMA = "g4-game-save-v18"
+GameSave.LEGACY_V17_SCHEMA = "g4-game-save-v17"
 GameSave.LEGACY_V16_SCHEMA = "g4-game-save-v16"
 GameSave.LEGACY_V15_SCHEMA = "g4-game-save-v15"
 GameSave.LEGACY_V14_SCHEMA = "g4-game-save-v14"
@@ -39,6 +40,7 @@ local TOP_LEVEL_FIELDS = {
   audio = true,
   auxiliaryUi = true,
   bag = true,
+  battlePoints = true,
   daycare = true,
   encounters = true,
   facing = true,
@@ -566,11 +568,37 @@ function GameSave.migrateV16(record)
     Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v16 save cannot contain a Day Care bucket", {})
   end
   local migrated = deepCopy(record)
-  migrated.schema = GameSave.SCHEMA
+  migrated.schema = GameSave.LEGACY_V17_SCHEMA
   migrated.daycare = DaycareState.initial()
   -- The nested statistics bucket advances with this envelope: its two Day Care
   -- counters arrive at zero, and the stored registration set rides along
   -- untouched for the runtime restore that validates it against the catalog.
+  if type(migrated.gameStats) == "table" then
+    local GameStatsSave = require("libs.hgss.src.save.GameStatsSave")
+    migrated.gameStats = GameStatsSave.migrate(migrated.gameStats, nil)
+  end
+  return migrated
+end
+
+-- Pure v17 -> v18 conversion. Only the Battle Point wallet delta is applied:
+-- v17 records predate the source wallet, so the step initializes the empty
+-- balance from its own owner and advances the nested statistics bucket to its
+-- two Point counters at zero. No point, spend, or Frontier challenge record is
+-- invented. A predecessor that already carries a wallet is malformed, not
+-- silently re-migrated.
+---@param record table<string, unknown> a v17 save record
+---@return table<string, unknown> the migrated v18 record
+function GameSave.migrateV17(record)
+  assert(type(record) == "table" and record.schema == GameSave.LEGACY_V17_SCHEMA, "GameSave.migrateV17 requires v17")
+  if record.battlePoints ~= nil then
+    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v17 save cannot contain a Battle Point wallet", {})
+  end
+  local BattlePointsState = require("libs.hgss.src.save.BattlePointsState")
+  local migrated = deepCopy(record)
+  migrated.schema = GameSave.SCHEMA
+  migrated.battlePoints = BattlePointsState.new():capture()
+  -- The nested statistics bucket advances with this envelope: its two Point
+  -- counters arrive at zero and every earlier statistic rides along.
   if type(migrated.gameStats) == "table" then
     local GameStatsSave = require("libs.hgss.src.save.GameStatsSave")
     migrated.gameStats = GameStatsSave.migrate(migrated.gameStats, nil)
@@ -608,6 +636,7 @@ function GameSave.metadata(record)
     assert(type(record) == "table")
     if
       record.schema ~= GameSave.SCHEMA
+      and record.schema ~= GameSave.LEGACY_V17_SCHEMA
       and record.schema ~= GameSave.LEGACY_V16_SCHEMA
       and record.schema ~= GameSave.LEGACY_V15_SCHEMA
       and record.schema ~= GameSave.LEGACY_V14_SCHEMA
@@ -699,6 +728,7 @@ function GameSave.normalize(record)
     local schema = record.schema
     if
       schema ~= GameSave.SCHEMA
+      and schema ~= GameSave.LEGACY_V17_SCHEMA
       and schema ~= GameSave.LEGACY_V16_SCHEMA
       and schema ~= GameSave.LEGACY_V15_SCHEMA
       and schema ~= GameSave.LEGACY_V14_SCHEMA
@@ -758,6 +788,9 @@ function GameSave.normalize(record)
     end
     if current.schema == GameSave.LEGACY_V16_SCHEMA then
       current = GameSave.migrateV16(current)
+    end
+    if current.schema == GameSave.LEGACY_V17_SCHEMA then
+      current = GameSave.migrateV17(current)
     end
     return canonicalizeCurrent(current)
   end)

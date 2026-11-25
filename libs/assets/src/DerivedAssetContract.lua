@@ -644,10 +644,10 @@ DerivedAssetContract.followerInteractions = {
 -- with its own owner. v2 publishes the hatch presentation beside the catalog,
 -- so a stale v1 cache without it must fail readiness.
 DerivedAssetContract.pokemonCare = {
-  -- v5 adds the move reminder / singleton tutor presentation (its source
-  -- screens, button tiles and compiled lines) to the same care family.
-  cacheFormat = "pokemon-care-cache-v5",
-  catalogSchema = "g4-pokemon-care-catalog-v1",
+  -- v6 adds the Frontier move-tutor inventory and its per-species
+  -- compatibility lists to the same care catalog.
+  cacheFormat = "pokemon-care-cache-v6",
+  catalogSchema = "g4-pokemon-care-catalog-v2",
   hatchSchema = "g4-pokemon-care-hatch-v1",
   tradeSchema = "g4-pokemon-care-trade-v2",
   reminderSchema = "g4-pokemon-care-reminder-v1",

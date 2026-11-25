@@ -21,6 +21,7 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 ---@field private _measureText fun(text: string): number
 ---@field private _presentation (fun(): { bounds: ScreenTopology.Rectangle, preferredScale: integer })?
 ---@field private _active FieldMenuHost.Active?
+---@field private _resolved table<string, unknown>? the geometry cached for the active menu
 local FieldMenuHost = {}
 FieldMenuHost.__index = FieldMenuHost
 
@@ -92,6 +93,7 @@ function FieldMenuHost.new(opts)
     _measureText = opts.measureText,
     _presentation = opts.presentation,
     _active = nil,
+    _resolved = nil,
   }, FieldMenuHost)
 end
 
@@ -116,8 +118,30 @@ function FieldMenuHost:setScreenTopology(screenTopology)
   end
 end
 
+-- The resolved geometry is one immutable table: pointer hit-testing, drawing,
+-- and callers that observe snapshot layout identity keep the same geometry for
+-- as long as the frozen menu definition, the selected row and the presentation
+-- context it was resolved against stay the same.
+---@param definition FieldMenuController.Spec
+---@param selectedIndex integer
 function FieldMenuHost:_resolve(definition, selectedIndex)
   local context = self._presentation and self._presentation() or {}
+  local bounds = context.bounds
+  local cached = self._resolved
+  if
+    cached ~= nil
+    and cached.definition == definition
+    and cached.selectedIndex == selectedIndex
+    and cached.topology == self._topology
+    and cached.preferredScale == context.preferredScale
+    and cached.boundsX == (bounds and bounds.x)
+    and cached.boundsY == (bounds and bounds.y)
+    and cached.boundsWidth == (bounds and bounds.width)
+    and cached.boundsHeight == (bounds and bounds.height)
+  then
+    self._active.layout = cached.layout
+    return
+  end
   local layout = MenuLayout.resolve({
     topology = self._topology,
     menu = {
@@ -129,10 +153,21 @@ function FieldMenuHost:_resolve(definition, selectedIndex)
       selectedIndex = selectedIndex,
       cancellable = definition.cancellable,
     },
-    bounds = context.bounds,
+    bounds = bounds,
     preferredScale = context.preferredScale,
     measureText = self._measureText,
   })
+  self._resolved = {
+    definition = definition,
+    selectedIndex = selectedIndex,
+    topology = self._topology,
+    preferredScale = context.preferredScale,
+    boundsX = bounds and bounds.x,
+    boundsY = bounds and bounds.y,
+    boundsWidth = bounds and bounds.width,
+    boundsHeight = bounds and bounds.height,
+    layout = layout,
+  }
   self._active.layout = layout
 end
 
@@ -287,7 +322,10 @@ end
 -- surface state survives.
 ---@return table<string, unknown>
 function FieldMenuHost:snapshot()
-  if self._active == nil then
+  -- A menu that already committed its result is no longer modal: the retained
+  -- closing snapshot keeps the result observable on the following tick without
+  -- presenting a menu the field has finished with.
+  if not self:isModal() then
     return { modal = false }
   end
   local layout = assert(self._active.layout, "active menu layout is missing")

@@ -2149,6 +2149,17 @@ local FieldHandlers = {
   [113] = FieldServiceHandlers.showMoneyBox,
   [114] = FieldServiceHandlers.hideMoneyBox,
   [115] = FieldServiceHandlers.updateMoneyBox,
+  -- The transient points window and the Battle Point wallet ride the same
+  -- source-service leaf: the window takes a raw type byte plus two value
+  -- operands, and the wallet commands take their amounts and answers through
+  -- script variables.
+  [116] = FieldServiceHandlers.showPointsBox,
+  [117] = FieldServiceHandlers.hidePointsBox,
+  [118] = FieldServiceHandlers.updatePointsBox,
+  [554] = FieldServiceHandlers.getBattlePoints,
+  [555] = FieldServiceHandlers.giveBattlePoints,
+  [556] = FieldServiceHandlers.takeBattlePoints,
+  [557] = FieldServiceHandlers.checkBattlePoints,
 }
 
 -- NameRival (143), SetTrainerFlag/ClearTrainerFlag (36/37) and
@@ -2227,6 +2238,16 @@ FieldHandlers[474] = require("romdump.src.digest.script.lowering.PokemonCareHand
 FieldHandlers[566] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").choosePartyMonForTrade
 FieldHandlers[362] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").giveLoanMon
 FieldHandlers[363] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").checkReturnLoanMon
+-- The Frontier move tutor family rides the cohesive care leaf for the same
+-- budget reason: the slot, tutor, page and move operands are ScriptGetVar
+-- reads, the four result operands are output pointers, and the list menu
+-- blocks the script on the generated page.
+FieldHandlers[652] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").tutorMoveListPageCount
+FieldHandlers[653] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").moveTutorChooseMove
+FieldHandlers[654] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").tutorMoveTeachInSlot
+FieldHandlers[655] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").tutorMoveGetPrice
+FieldHandlers[656] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").monCanLearnHeadbuttFromTutor
+
 -- The gym mechanism family rides the cohesive StoryHandlers leaf for the same
 -- local-budget reason: the init commands install their own closed kind, the
 -- lift and candle binding carry no operands, the selector-driven commands read

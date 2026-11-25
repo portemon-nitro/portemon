@@ -1,8 +1,10 @@
--- Projection of the source breeding tables into the semantic care catalog: the
--- PMS egg-species table (ReadFromPersonalPmsNarc) and the personal egg-move
--- list (LoadEggMoves), with the source incense pairs attached. Native species,
--- move, and item identities resolve through the shared producer catalogs; no
--- offsets survive into the payload. Publish through the care cache paths.
+-- Projection of the source breeding and move-tutor tables into the semantic
+-- care catalog: the PMS egg-species table (ReadFromPersonalPmsNarc), the
+-- personal egg-move list (LoadEggMoves), the source incense pairs, and the
+-- Frontier move-tutor inventory with its per-species compatibility bit fields
+-- (src/field/scrcmd_move_tutor.c). Native species, move, and item identities
+-- resolve through the shared producer catalogs; no offsets, member indexes or
+-- bit fields survive into the payload. Publish through the care cache paths.
 
 local BinaryReader = require("libs.codec.src.BinaryReader")
 local Errors = require("libs.errors.src.Errors")
@@ -19,6 +21,8 @@ local EGG_SPECIES = PokemonCareSources.eggSpeciesSource
 local EGG_MOVES = PokemonCareSources.eggMoveSource
 local TRADE_TABLE = PokemonCareSources.tradeTable
 local TRADE_MESSAGES = PokemonCareSources.tradeMessages
+local TUTOR_MOVES = PokemonCareSources.tutorMoves
+local TUTOR_LEARNSETS = PokemonCareSources.tutorLearnsets
 
 local SPECIES_KEYS = {}
 for _, key in pairs(MonSources.speciesKeys) do
@@ -27,6 +31,14 @@ end
 local ITEM_KEYS = {}
 for _, key in pairs(ItemSources.itemKeys) do
   ITEM_KEYS[key] = true
+end
+local MOVE_KEYS = {}
+for _, key in pairs(MonSources.moveKeys) do
+  MOVE_KEYS[key] = true
+end
+local TUTOR_NPCS = {}
+for _, name in pairs(PokemonCareSources.tutorNpcNames) do
+  TUTOR_NPCS[name] = true
 end
 
 ---@param code string
@@ -434,6 +446,121 @@ local function readTrades(romFs, dependencies)
   return trades
 end
 
+-- sTutorMoves in source order: the catalog publishes the inventory itself, so
+-- the runtime never derives an offer, a price, or a page from a second table.
+---@return table<string, unknown>[]|nil, Errors.Error|nil
+local function checkTutorMoves()
+  local rows = {}
+  for index, row in ipairs(TUTOR_MOVES) do
+    if not MOVE_KEYS[row.move] then
+      return nil,
+        sourceError("POKEMON_CARE_BAD_MOVE", "the move tutor inventory names an unknown move", {
+          row = index,
+          move = row.move,
+        })
+    end
+    if type(row.cost) ~= "number" or row.cost % 1 ~= 0 or row.cost < 0 then
+      return nil,
+        sourceError("POKEMON_CARE_SOURCE_INVALID", "the move tutor inventory names an invalid price", {
+          row = index,
+          move = row.move,
+          cost = row.cost,
+        })
+    end
+    if TUTOR_NPCS[row.npc] ~= true then
+      return nil,
+        sourceError("POKEMON_CARE_SOURCE_INVALID", "the move tutor inventory names an unknown tutor", {
+          row = index,
+          move = row.move,
+          npc = row.npc,
+        })
+    end
+    rows[#rows + 1] = { move = row.move, cost = row.cost, npc = row.npc }
+  end
+  assert(#rows > 0, "the source tutor inventory carries its rows")
+  return rows
+end
+
+-- GetMoveTutorLearnsetIndex: the compatibility file is indexed by species
+-- identity with SPECIES_EGG and SPECIES_BAD_EGG removed, so the form
+-- pseudo-species that follow them shift up by the two missing rows.
+---@param member integer source species identity of the tutor row
+---@return integer zero-based file row
+local function learnsetRow(member)
+  local baseRows = TUTOR_LEARNSETS.lastSpecies - TUTOR_LEARNSETS.firstSpecies + 1
+  if member <= TUTOR_LEARNSETS.lastSpecies then
+    return member - TUTOR_LEARNSETS.firstSpecies
+  end
+  return baseRows + member - TUTOR_LEARNSETS.badEggSpecies - 1
+end
+
+-- GetLearnableTutorMoves reads bit j of the row to decide whether inventory row
+-- j is learnable. The payload names the learnable moves in inventory order, so
+-- the raw bit field stays producer-side.
+---@param bytes string
+---@param offset integer
+---@param inventory table<string, unknown>[]
+---@return string[]
+local function decodeLearnset(bytes, offset, inventory)
+  local moves = {}
+  for index = 0, #inventory - 1 do
+    local byte = string.byte(bytes, offset + math.floor(index / 8) + 1)
+    assert(type(byte) == "number", "the tutor row carries its eight bytes")
+    if math.floor(byte / 2 ^ (index % 8)) % 2 == 1 then
+      moves[#moves + 1] = inventory[index + 1].move
+    end
+  end
+  return moves
+end
+
+-- One row per species the player can own, with a form-specific row only where
+-- the source resolves a distinct compatibility member. Every other form reads
+-- its species' own row (GetMoveTutorLearnsetIndex leaves the index at the
+-- species identity), so the payload stores the base list once.
+---@param bytes string
+---@param inventory table<string, unknown>[]
+---@return { [string]: string[][] }|nil, Errors.Error|nil
+local function decodeLearnsets(bytes, inventory)
+  local expected = (TUTOR_LEARNSETS.speciesCount - 2) * TUTOR_LEARNSETS.entrySize
+  if #bytes ~= expected then
+    return nil,
+      sourceError("POKEMON_CARE_SOURCE_TRUNCATED", "the move tutor table is not one row per species", {
+        path = TUTOR_LEARNSETS.path,
+        size = #bytes,
+        expected = expected,
+      })
+  end
+  local learnsets = {}
+  for speciesId = TUTOR_LEARNSETS.firstSpecies, TUTOR_LEARNSETS.lastSpecies do
+    local key, keyErr = speciesKey(speciesId, { table = TUTOR_LEARNSETS.path, species = speciesId })
+    if key == nil then
+      return nil, keyErr
+    end
+    local forms = {}
+    local base
+    for _, form in ipairs(MonSources.runtimeForms(speciesId)) do
+      local member = MonSources.resolvePersonalMember(speciesId, form)
+      assert(
+        member >= TUTOR_LEARNSETS.firstSpecies and member <= TUTOR_LEARNSETS.lastFormSpecies,
+        "the tutor row member is a real species identity"
+      )
+      local moves = decodeLearnset(bytes, learnsetRow(member) * TUTOR_LEARNSETS.entrySize, inventory)
+      if form == 0 then
+        base = moves
+        forms[1] = moves
+      elseif member ~= speciesId then
+        forms[form + 1] = moves
+      end
+    end
+    assert(base ~= nil, "every species carries its base tutor row")
+    for index = 1, #forms do
+      assert(forms[index] ~= nil, "the tutor form lists stay dense")
+    end
+    learnsets[key] = forms
+  end
+  return learnsets
+end
+
 -- Compile the care catalog from one cartridge view.
 ---@param romFs table<string, unknown>
 ---@return table<string, unknown>|nil, Errors.Error|nil
@@ -455,12 +582,29 @@ function PokemonCareCatalogCompiler.compile(romFs)
   if trades == nil then
     return nil, tradesErr
   end
+  local tutorMoves, tutorMovesErr = checkTutorMoves()
+  if tutorMoves == nil then
+    return nil, tutorMovesErr
+  end
+  local tutorBytes, tutorReadErr = romFs:readSourcePath(TUTOR_LEARNSETS.path)
+  if tutorBytes == nil then
+    return nil,
+      sourceError("POKEMON_CARE_SOURCE_MISSING", "the move tutor compatibility table is unavailable", {
+        path = TUTOR_LEARNSETS.path,
+        cause = tutorReadErr,
+      })
+  end
+  local tutorLearnsets, tutorLearnsetsErr = decodeLearnsets(tutorBytes, tutorMoves)
+  if tutorLearnsets == nil then
+    return nil, tutorLearnsetsErr
+  end
   local catalog = {
     schema = PokemonCareAssetSchema.CATALOG_SCHEMA,
     eggSpecies = eggSpecies,
     eggMoves = eggMoves,
     incense = incense,
     trades = trades,
+    tutors = { moves = tutorMoves, learnsets = tutorLearnsets },
   }
   local valid, validationErr = pcall(PokemonCareAssetSchema.assertCatalog, catalog)
   if not valid then

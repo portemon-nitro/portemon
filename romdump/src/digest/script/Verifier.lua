@@ -91,6 +91,7 @@ local BLOCKING_OPS = {
   easy_chat_greeting = true,
   frontier_intro_message = true,
   trainer_house_intro_message = true,
+  tutor_choose_move = true,
 }
 
 -- Operations that end the run phase: yield boundaries and stops.

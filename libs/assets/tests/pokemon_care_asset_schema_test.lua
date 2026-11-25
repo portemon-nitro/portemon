@@ -37,6 +37,16 @@ local function catalog()
     eggMoves = { PICHU = { "REVERSAL", "BIDE" } },
     incense = { { baby = "MUNCHLAX", item = "FULL_INCENSE", parent = "SNORLAX" } },
     trades = { tradeRecord() },
+    tutors = {
+      moves = {
+        { move = "MUD_SLAP", cost = 32, npc = "top_right" },
+        { move = "SUPERPOWER", cost = 48, npc = "top_right" },
+        { move = "HEADBUTT", cost = 0, npc = "headbutt" },
+      },
+      -- One dense list per runtime form: index 1 is the species' own row and a
+      -- form-specific list follows only where the source distinguishes it.
+      learnsets = { SNORLAX = { { "MUD_SLAP", "HEADBUTT" } }, GIRATINA = { { "MUD_SLAP" }, { "SUPERPOWER" } } },
+    },
   }
 end
 
@@ -308,6 +318,50 @@ function T.catalog_validation_covers_the_npc_trade_records()
     PokemonCareAssetSchema.isValidCatalog(carriedSheen),
     "the source's unused sheen column is never published"
   )
+end
+
+-- The move tutor tables are part of the same strict catalog: the inventory is
+-- one ordered list of source rows and every species list names inventory moves
+-- only, so the runtime never prices a move the inventory does not carry.
+function T.catalog_validation_covers_the_move_tutor_tables()
+  local withoutTutors = catalog()
+  withoutTutors.tutors = nil
+  Assert.isFalse(PokemonCareAssetSchema.isValidCatalog(withoutTutors), "the catalog needs its tutor tables")
+
+  local emptyInventory = catalog()
+  emptyInventory.tutors.moves = {}
+  Assert.isFalse(PokemonCareAssetSchema.isValidCatalog(emptyInventory), "an empty tutor inventory fails")
+
+  local unknownNpc = catalog()
+  unknownNpc.tutors.moves[1].npc = "frontier_shop"
+  Assert.isFalse(PokemonCareAssetSchema.isValidCatalog(unknownNpc), "an unknown tutor selector fails")
+
+  local badCost = catalog()
+  badCost.tutors.moves[1].cost = 256
+  Assert.isFalse(PokemonCareAssetSchema.isValidCatalog(badCost), "a non-source price fails")
+
+  local repeatedMove = catalog()
+  repeatedMove.tutors.moves[2] = { move = "MUD_SLAP", cost = 48, npc = "top_right" }
+  Assert.isFalse(PokemonCareAssetSchema.isValidCatalog(repeatedMove), "a repeated inventory move fails")
+
+  local outsideInventory = catalog()
+  outsideInventory.tutors.learnsets.SNORLAX = { { "FLAMETHROWER" } }
+  Assert.isFalse(
+    PokemonCareAssetSchema.isValidCatalog(outsideInventory),
+    "a species list naming a move outside the inventory fails"
+  )
+
+  local repeatedLearn = catalog()
+  repeatedLearn.tutors.learnsets.SNORLAX = { { "MUD_SLAP", "MUD_SLAP" } }
+  Assert.isFalse(PokemonCareAssetSchema.isValidCatalog(repeatedLearn), "a repeated learnable move fails")
+
+  local emptyForms = catalog()
+  emptyForms.tutors.learnsets.SNORLAX = {}
+  Assert.isFalse(PokemonCareAssetSchema.isValidCatalog(emptyForms), "a species without its own row fails")
+
+  local spareField = catalog()
+  spareField.tutors.moves[1].slot = 0
+  Assert.isFalse(PokemonCareAssetSchema.isValidCatalog(spareField), "an unknown tutor row field fails")
 end
 
 function T.trade_manifest_validation_rejects_unknown_fields_and_stale_schemas()

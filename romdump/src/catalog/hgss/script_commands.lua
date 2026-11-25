@@ -815,6 +815,8 @@ return {
       widths = {},
     },
     [116] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_ShowPointsBox",
       widths = {
         [1] = 1,
@@ -823,10 +825,14 @@ return {
       },
     },
     [117] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_HidePointsBox",
       widths = {},
     },
     [118] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_UpdatePointsBox",
       widths = {
         [1] = 1,
@@ -4235,29 +4241,33 @@ return {
       },
     },
     [554] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_GetBattlePoints",
       widths = {
         [1] = 2,
       },
     },
     [555] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_GiveBattlePoints",
       widths = {
         [1] = 2,
       },
     },
     [556] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_TakeBattlePoints",
       widths = {
         [1] = 2,
       },
     },
     [557] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_CheckBattlePoints",
-      feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "battle points need the frontier application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4962,6 +4972,8 @@ return {
       },
     },
     [652] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_GetTutorMoveListPageCount",
       widths = {
         [1] = 2,
@@ -4970,10 +4982,9 @@ return {
       },
     },
     [653] = {
+      classification = "native_wait",
+      disposition = "supported",
       name = "ScrCmd_MoveTutorChooseMove",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "move tutor choice needs the tutor application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4982,10 +4993,9 @@ return {
       },
     },
     [654] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_TutorMoveTeachInSlot",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "move tutor teaching needs the tutor application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4993,16 +5003,17 @@ return {
       },
     },
     [655] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_TutorMoveGetPrice",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "move tutor pricing needs the tutor application",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [656] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_MonCanLearnHeadbuttFromTutor",
       widths = {
         [1] = 2,

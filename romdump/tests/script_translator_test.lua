@@ -2200,6 +2200,95 @@ T["source money commands lower to the money operations"] = function()
   }, "variable box coordinates stay value references")
 end
 
+-- The transient points window and the Battle Point wallet: the window takes a
+-- raw type byte plus two ScriptGetVar tile operands, its update repeats the
+-- type byte and its hide carries nothing, and every wallet command reads its
+-- amount through ScriptGetVar before writing its result pointer.
+T["points window and battle point commands lower to their source operands"] = function()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          -- 0x20: ShowPointsBox(type 1, 21, 1) (7)
+          { op = 116, args = { { value = 1, width = 1 }, { value = 21, width = 2 }, { value = 1, width = 2 } } },
+          -- 0x27: UpdatePointsBox(type 1) (3)
+          { op = 118, args = { { value = 1, width = 1 } } },
+          -- 0x2A: HidePointsBox (2)
+          { op = 117, args = {} },
+          -- 0x2C: GetBattlePoints(VAR_SPECIAL_x8008) (4)
+          { op = 554, args = { { value = 0x8008, width = 2 } } },
+          -- 0x30: GiveBattlePoints(VAR_0x4000) (4)
+          { op = 555, args = { { value = 0x4000, width = 2 } } },
+          -- 0x34: TakeBattlePoints(32) (4)
+          { op = 556, args = { { value = 32, width = 2 } } },
+          -- 0x38: CheckBattlePoints(VAR_0x4000, VAR_SPECIAL_x8009) (6)
+          { op = 557, args = { { value = 0x4000, width = 2 }, { value = 0x8009, width = 2 } } },
+          { op = 2, args = {} },
+        },
+      },
+    },
+  })
+  for _, opcode in ipairs({ 116, 117, 118, 554, 555, 556, 557 }) do
+    Assert.equal(
+      CommandCatalog.classification(opcode),
+      CommandCatalog.CONTINUE,
+      "source command " .. opcode .. " runs in the same tick"
+    )
+    Assert.equal(CommandCatalog.disposition(opcode), "supported", "source command " .. opcode .. " owns its consumer")
+  end
+  local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 843, "synthetic", { msgBank = 543, catalog = CATALOG }))
+  local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
+  Assert.equal(#lowered.unsupported, 0, "no points or wallet command stays unsupported")
+  Assert.deepEqual(lowered.items[1], {
+    op = "points_box",
+    action = "show",
+    valueType = 1,
+    tileX = 21,
+    tileY = 1,
+    provenance = { offsets = { 0x20 }, opcodes = { 116 } },
+  }, "the window opens with its raw type byte and its two source tiles")
+  Assert.deepEqual(lowered.items[2], {
+    op = "points_box",
+    action = "update",
+    valueType = 1,
+    provenance = { offsets = { 0x27 }, opcodes = { 118 } },
+  })
+  Assert.deepEqual(lowered.items[3], {
+    op = "points_box",
+    action = "hide",
+    provenance = { offsets = { 0x2A }, opcodes = { 117 } },
+  }, "hiding carries no operand")
+  Assert.deepEqual(lowered.items[4], {
+    op = "battle_points_read",
+    result = { value = "var", id = "VAR_SPECIAL_x8008" },
+    provenance = { offsets = { 0x2C }, opcodes = { 554 } },
+  })
+  Assert.deepEqual(lowered.items[5], {
+    op = "battle_points_change",
+    action = "give",
+    amount = { value = "var", id = "VAR_0x4000" },
+    provenance = { offsets = { 0x30 }, opcodes = { 555 } },
+  }, "the granted amount stays a value reference")
+  Assert.deepEqual(lowered.items[6], {
+    op = "battle_points_change",
+    action = "take",
+    amount = 32,
+    provenance = { offsets = { 0x34 }, opcodes = { 556 } },
+  }, "a literal charge stays the source literal")
+  Assert.deepEqual(lowered.items[7], {
+    op = "battle_points_check",
+    amount = { value = "var", id = "VAR_0x4000" },
+    result = { value = "var", id = "VAR_0x8009" },
+    provenance = { offsets = { 0x38 }, opcodes = { 557 } },
+  }, "the compare reads its amount before its result pointer")
+
+  local steps = Structurer.structure(lowered, 0)
+  local report = Verifier.verifyScript(steps, ir.scripts[0], ir, lowered.omissions)
+  Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "reported")
+  Assert.isTrue(report.complete, "the whole points and wallet slice is supported and verified")
+end
+
 -- The source operand *kind* is the contract for a lowered field command: a
 -- ScriptGetVar operand becomes a variable reference somewhere in the step,
 -- an immediate operand never does. Counting the references proves that

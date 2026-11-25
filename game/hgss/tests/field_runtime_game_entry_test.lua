@@ -225,10 +225,16 @@ local function captureRuntime(overrides)
     },
     hallOfFame = require("libs.hgss.src.save.HallOfFameState").empty(),
     daycare = {
+      -- The capture boundary denies a claimed hatch, so the fixture answers the
+      -- one custody question the coordinator asks before it composes a record.
+      activeHatch = function()
+        return nil
+      end,
       capture = function()
         return require("libs.hgss.src.save.DaycareState").initial()
       end,
     },
+    battlePoints = require("libs.hgss.src.save.BattlePointsState").new(),
     mailbox = require("libs.hgss.src.save.Mailbox").new(),
     photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new(),
     sysInfo = require("libs.hgss.src.save.SysInfoState").new(require("libs.hgss.src.save.SysInfoState").empty()),
@@ -857,6 +863,8 @@ local function statsBucket(uniqueCaught, uniqueTotal, score)
     leagueWins = 0,
     daycareDeposits = 0,
     eggsHatched = 0,
+    battlePointsReceived = 0,
+    battlePointsSpent = 0,
   }
 end
 

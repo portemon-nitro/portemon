@@ -631,6 +631,52 @@ function FieldServiceHandlers.updateMoneyBox()
   return { op = "money_box", action = "update" }
 end
 
+-- The source points window (src/overlay_22.c, src/field/script_menu.c):
+-- ScrCmd_ShowPointsBox reads its type as a raw byte and its two tile
+-- coordinates through ScriptGetVar, ScrCmd_UpdatePointsBox reads the type byte
+-- again, and ScrCmd_HidePointsBox carries no operand. Every command returns in
+-- the same tick.
+function FieldServiceHandlers.showPointsBox(ins)
+  return {
+    op = "points_box",
+    action = "show",
+    valueType = Operands.operandValue(ins.operands[1]),
+    tileX = Operands.varRef(ins.operands[2]),
+    tileY = Operands.varRef(ins.operands[3]),
+  }
+end
+
+function FieldServiceHandlers.hidePointsBox()
+  return { op = "points_box", action = "hide" }
+end
+
+function FieldServiceHandlers.updatePointsBox(ins)
+  return { op = "points_box", action = "update", valueType = Operands.operandValue(ins.operands[1]) }
+end
+
+-- The source Battle Point commands (src/scrcmd_9.c): every amount is a
+-- ScriptGetVar operand, the read and the compare write their result pointer,
+-- and all four return in the same tick.
+function FieldServiceHandlers.getBattlePoints(ins)
+  return { op = "battle_points_read", result = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.giveBattlePoints(ins)
+  return { op = "battle_points_change", action = "give", amount = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.takeBattlePoints(ins)
+  return { op = "battle_points_change", action = "take", amount = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.checkBattlePoints(ins)
+  return {
+    op = "battle_points_check",
+    amount = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
 function FieldServiceHandlers.martOpen(kind, selector)
   local step = { op = "mart_open", kind = kind }
   if selector ~= nil then

@@ -597,6 +597,8 @@ end
 ---@field daycare DaycareService? the one Day Care custody/step/service owner (nil before composition / after teardown)
 ---@field npcTrade NpcTradeService? the one NPC exchange and loan owner (nil before composition / after teardown)
 ---@field moveTutor MoveTutorService? the ordered relearn query and teaching owner (nil before composition / after teardown)
+---@field battlePoints BattlePointsState? the saved Battle Point wallet (nil before composition / after teardown)
+---@field pointsBox FieldPointsBox? the transient source points window the field draw renders
 ---@field gameClear table<string, unknown>? the League ending coordinator (nil before composition / after teardown)
 ---@field followerInteractionCatalog table<string, unknown> generated follower interaction rules
 ---@field followerReactionTicks table<string, integer> follower reaction emote kind -> emote action duration
@@ -1263,6 +1265,11 @@ function FieldRuntime:_loadInitialWorld(boot)
   end
   self.gymMechanismState = GymMechanismState.restore(entryBucket("gymmick"))
   self.followingMonState = FollowingMonState.restore(entryBucket("followingMon"))
+  -- The saved Battle Point wallet: a saved record always carries it (v18 is
+  -- strict), and a finalized new-game candidate that carries none starts from
+  -- its owner's initial balance.
+  local BattlePointsState = require("libs.hgss.src.save.BattlePointsState")
+  self.battlePoints = BattlePointsState.restore(entryBucket("battlePoints"))
   self.gymMechanismGeometry = GymMechanismGeometry.new()
   local composeInitialMap = boot.composeInitialMap
   local function composeAndDecorateInitialMap(logicalMap, position)
@@ -1914,7 +1921,10 @@ function FieldRuntime:_composeFieldServices(boot)
   -- The one relearn/teaching owner: the source's ordered current-form
   -- eligibility over the canonical party and the single teaching publication.
   local MoveTutorService = require("libs.hgss.src.field.MoveTutorService")
-  self.moveTutor = MoveTutorService.new({ mons = self.monService })
+  self.moveTutor = MoveTutorService.new({
+    mons = self.monService,
+    tutors = assert(self.careCatalog.tutors, "the care catalog carries the source move tutors"),
+  })
   local ApricornBoxHost = require("game.hgss.src.apricorn.ApricornBoxHost")
   self.kurtBoxHost = ApricornBoxHost.new({
     makeApricornBox = assert(
@@ -6633,6 +6643,10 @@ function FieldRuntime:_releaseAll()
     -- it so no window outlives the field that opened it.
     self.moneyBox:dispose()
   end
+  if self.pointsBox then
+    -- The transient points window belongs to the same presentation lifetime.
+    self.pointsBox:dispose()
+  end
   if self.pcTerminal then
     self.pcTerminal:releaseEffect()
   end
@@ -6641,6 +6655,7 @@ function FieldRuntime:_releaseAll()
   self.martHost = nil
   self.kurtBoxHost = nil
   self.moneyBox = nil
+  self.pointsBox = nil
   self.applications = nil
   self.displayContext, self.presentationDisplay, self.presentationOverrides = nil, nil, nil
   self._displayTopology = nil
@@ -6753,6 +6768,7 @@ function FieldRuntime:_releaseAll()
   self.hallOfFame = nil
   self.fieldPoison, self.poisonEffect, self.poisonCure = nil, nil, nil
   self.daycare, self.daycareState, self.careCatalog, self.npcTrade, self.moveTutor = nil, nil, nil, nil, nil
+  self.battlePoints = nil
   if self.pokegear ~= nil then
     self.pokegear:dispose()
   end

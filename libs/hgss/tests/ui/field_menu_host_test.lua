@@ -131,6 +131,36 @@ function T.routes_the_touch_cancel_affordance_on_matching_release()
   Assert.equal(events[1].type, "cancel")
 end
 
+-- One menu keeps one geometry table: repeated syncs of the same definition
+-- and selection hand back the same layout, and a selection change or a resize
+-- resolves a fresh one. A committed menu stops being modal on the tick it
+-- closes while its result stays observable.
+function T.geometry_is_stable_between_source_changes_and_closes_with_its_result()
+  local host = makeHost({ width = 256, height = 192, input = FieldInput.new() })
+  local definition = {
+    items = { { text = "Take", value = 10 }, { text = "Leave", value = 20 } },
+    cancellable = false,
+  }
+  host:sync({ menuDefinition = definition, selectedIndex = 0 }, 100)
+  local first = assert(host:snapshot().layout)
+  host:sync({ menuDefinition = definition, selectedIndex = 0 }, 101)
+  Assert.isTrue(host:snapshot().layout == first, "an unchanged menu keeps the geometry it resolved")
+  host:sync({ menuDefinition = definition, selectedIndex = 1 }, 102)
+  local moved = assert(host:snapshot().layout)
+  Assert.isFalse(moved == first, "a selection change resolves the geometry it selects")
+
+  host:resize(512, 384)
+  local resized = assert(host:snapshot().layout)
+  Assert.isFalse(resized == moved, "a host resize resolves geometry for the new presentation")
+  Assert.equal(host:snapshot().modal, true, "an open menu is modal")
+  host:close(103)
+  Assert.equal(host:isModal(), false, "a committed menu is no longer modal")
+  Assert.equal(host:snapshot().modal, false, "the closing snapshot reports the menu as closed")
+  host:advance(104)
+  Assert.equal(host:isModal(), false, "the closed menu stays closed")
+  Assert.equal(host:snapshot().modal, false, "a closed menu keeps reporting itself closed")
+end
+
 function T.default_desktop_host_does_not_create_touch_affordances()
   local host = makeHost({ width = 256, height = 192, input = FieldInput.new() })
   host:sync({

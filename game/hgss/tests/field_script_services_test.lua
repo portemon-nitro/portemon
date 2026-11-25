@@ -262,7 +262,7 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
   local double = {
     new = function(opts)
       seen.opts = opts
-      return { scheduler = {}, worldState = {}, blackoutFlow = {}, moneyBox = {} }
+      return { scheduler = {}, worldState = {}, blackoutFlow = {}, moneyBox = {}, pointsBox = {} }
     end,
   }
   local savedTarget = package.loaded[targetModule]
@@ -511,6 +511,61 @@ function T.tests.script_money_slice_moves_the_one_live_wallet()
   empty.scheduler:createForeground(assert(empty.composition:effective("test.money_empty")), nil, 100)
   empty.scheduler:step(100, nil)
   Assert.equal(emptyProfile.money, 0, "an unaffordable source subtraction saturates at zero instead of failing")
+end
+
+-- The source Battle Point family moves the one saved wallet and records what
+-- the script asked for: give saturates at the source ceiling, take floors at
+-- zero, and both counters follow the requested amount even when the balance
+-- cannot (ScrCmd_GiveBattlePoints/TakeBattlePoints add their operand to
+-- GAME_STAT_BATTLE_POINTS_RECEIVED/SPENT before FrontierData_BattlePointAction
+-- applies it). The read and the affordability check answer from the same
+-- balance the capture carries.
+function T.tests.script_battle_point_slice_saturates_floors_and_records_the_request()
+  local BattlePointsState = require("libs.hgss.src.save.BattlePointsState")
+  local GameStats = require("libs.hgss.src.mons.GameStats")
+  local saved = { schema = "hgss-battle-points-v1", balance = 9990 }
+  local wallet = BattlePointsState.restore(saved)
+  local stats = GameStats.new({ species = { CHIKORITA = true } })
+  local platform = composeSlice({ battlePoints = wallet, gameStats = stats }, "test.battle_points_slice", {
+    { op = "battle_points_change", action = "give", amount = 48 },
+    { op = "battle_points_change", action = "take", amount = 48 },
+    { op = "battle_points_read", result = "VAR_TEMP_x4002" },
+    { op = "set_var", variable = "VAR_TEMP_x4001", value = 9951 },
+    { op = "battle_points_check", amount = "VAR_TEMP_x4001", result = "VAR_TEMP_x4003" },
+    { op = "set_var", variable = "VAR_TEMP_x4001", value = 9952 },
+    { op = "battle_points_check", amount = "VAR_TEMP_x4001", result = "VAR_TEMP_x4003" },
+  })
+  platform.scheduler:createForeground(assert(platform.composition:effective("test.battle_points_slice")), nil, 100)
+  platform.scheduler:step(100, nil)
+  local variables = require("libs.assets.src.field.FieldScriptSymbols").variablesByName
+  Assert.equal(wallet:balance(), 9951, "the granted point saturates and the charge lands exactly once")
+  Assert.equal(wallet:capture().balance, 9951, "the captured wallet carries the settled balance")
+  Assert.equal(stats:battlePointsReceived(), 48, "the grant records the requested amount")
+  Assert.equal(stats:battlePointsSpent(), 48, "the charge records the requested amount")
+  Assert.equal(platform.worldState:getVar(variables.VAR_TEMP_x4002), 9951, "the read answers the settled balance")
+  Assert.equal(
+    platform.worldState:getVar(variables.VAR_TEMP_x4003),
+    0,
+    "one point past the balance is not affordable"
+  )
+
+  -- The source floors an unaffordable charge at zero and still records it.
+  local floored = BattlePointsState.restore({ schema = "hgss-battle-points-v1", balance = 10 })
+  local flooredStats = GameStats.new({ species = { CHIKORITA = true } })
+  local floorPlatform = composeSlice({ battlePoints = floored, gameStats = flooredStats }, "test.battle_points_floor", {
+    { op = "battle_points_change", action = "take", amount = 48 },
+    { op = "battle_points_change", action = "give", amount = 0 },
+  })
+  floorPlatform.scheduler:createForeground(
+    assert(floorPlatform.composition:effective("test.battle_points_floor")),
+    nil,
+    100
+  )
+  floorPlatform.scheduler:step(100, nil)
+  Assert.equal(floored:balance(), 0, "an unaffordable charge floors at zero instead of failing")
+  Assert.equal(flooredStats:battlePointsSpent(), 48, "the floored charge still records what the script asked")
+  Assert.equal(flooredStats:battlePointsReceived(), 0, "a zero grant records nothing")
+  Assert.equal(flooredStats:revision(), 1, "a zero grant stages no change")
 end
 
 -- The wallet the scripts moved is the wallet the mart transacts on and the

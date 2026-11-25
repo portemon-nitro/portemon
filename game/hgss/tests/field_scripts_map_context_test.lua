@@ -51,6 +51,13 @@ local function fakeSelf()
         self.disposes = self.disposes + 1
       end,
     },
+    pointsBox = {
+      disposes = 0,
+      dispose = function(self)
+        table.insert(log, "pointsBox.dispose")
+        self.disposes = self.disposes + 1
+      end,
+    },
   }
   return fake
 end
@@ -83,6 +90,7 @@ function T.tests.zone_change_establishes_complete_destination_map_context()
   Assert.equal(fake.mapSource, destination)
   Assert.equal(#fake.player.calls, 0, "onZoneChange must never replace the player facade")
   Assert.equal(fake.moneyBox.disposes, 0, "a zone change keeps the map's money window")
+  Assert.equal(fake.pointsBox.disposes, 0, "a zone change keeps the map's points window")
 end
 
 function T.tests.map_swap_retains_player_rebind_while_sharing_map_context()
@@ -106,6 +114,7 @@ function T.tests.map_swap_retains_player_rebind_while_sharing_map_context()
   })
   Assert.equal(fake.mapSource, destination)
   Assert.equal(fake.moneyBox.disposes, 1, "the swapped-away map's money window closes exactly once")
+  Assert.equal(fake.pointsBox.disposes, 1, "the swapped-away map's points window closes exactly once")
 
   Assert.equal(fake.log[1], "player.setPlayer", "the player must be rebound before map-scoped collaborators")
   Assert.isTrue(#fake.log >= 2, "map-scoped collaborators must be invoked after the player rebind")

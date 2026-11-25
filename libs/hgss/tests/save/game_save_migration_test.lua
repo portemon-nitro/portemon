@@ -847,7 +847,7 @@ function T.v13_migration_adds_only_the_gym_union_and_follower_inhibit()
   )
   Assert.isNil(hallOfFameEnvelope.daycare, "the v15 step leaves the Day Care to its own step")
   local current = GameSave.migrateV16(hallOfFameEnvelope)
-  Assert.equal(current.schema, GameSave.SCHEMA, "the v16 step advances the envelope to the current schema")
+  Assert.equal(current.schema, GameSave.LEGACY_V17_SCHEMA, "the v16 step advances the envelope to its own successor")
   Assert.deepEqual(current.encounters, encounters, "the v16 chain leaves the encounter bucket to its own owner")
   Assert.deepEqual(current.gymmick, migrated.gymmick, "the v16 chain preserves the settled gym union")
 end
@@ -979,7 +979,7 @@ function T.v16_migration_adds_only_the_empty_day_care()
   assert(source.schema == GameSave.LEGACY_V16_SCHEMA, "the fixture reaches the v16 envelope")
   Assert.isNil(source.daycare, "a v16 record carries no Day Care bucket")
   local migrated = GameSave.migrateV16(source)
-  Assert.equal(migrated.schema, GameSave.SCHEMA, "the v16 step advances the envelope to the current schema")
+  Assert.equal(migrated.schema, GameSave.LEGACY_V17_SCHEMA, "the v16 step advances the envelope to v17")
   Assert.equal(source.schema, GameSave.LEGACY_V16_SCHEMA, "migration leaves its input untouched")
   Assert.isNil(source.daycare, "migration never mutates its source record")
   Assert.deepEqual(migrated.daycare, DaycareState.initial(), "a pre-custody save starts with an empty Day Care")
@@ -994,8 +994,93 @@ function T.v16_migration_adds_only_the_empty_day_care()
   Assert.equal(migrated.gameStats.score, 0, "the score survives the care step")
   Assert.isFalse(pcall(GameSave.migrateV16, GameSave.migrateV16(source)), "a v16 record that carries a Day Care is rejected")
   local normalized = assert(GameSave.normalize(source))
-  Assert.equal(normalized.schema, GameSave.SCHEMA, "normalization chains v16 through the Day Care step")
+  Assert.equal(normalized.schema, GameSave.SCHEMA, "normalization chains v16 through every later step")
   Assert.deepEqual(normalized.daycare, migrated.daycare, "normalization installs the empty Day Care")
+end
+
+-- The v17 step adds only the empty Battle Point wallet and advances the
+-- nested statistics bucket to its point counters. No point, spend, or
+-- Frontier challenge record is invented, and every other bucket is copied.
+function T.v17_migration_adds_only_the_empty_battle_point_wallet()
+  local BattlePointsState = require("libs.hgss.src.save.BattlePointsState")
+  local GameStatsSave = require("libs.hgss.src.save.GameStatsSave")
+  local source = GameSave.migrateV16(GameSave.migrateV15(GameSave.migrateV14({
+    schema = GameSave.LEGACY_V14_SCHEMA,
+    saveId = "save-00000001",
+    versionId = "soulsilver",
+    playTimeSeconds = 0,
+    mapId = 331,
+    fieldX = 3,
+    fieldZ = 7,
+    worldY = 0,
+    surfaceId = 0,
+    terrainDependencyHash = "hash",
+    facing = "north",
+    playerData = { profile = { name = "GOLD", badges = {} } },
+    world = { flags = {}, variables = {} },
+    scripts = { schema = "g4-script-v3" },
+    auxiliaryUi = {},
+    audio = {},
+    mons = { schema = "g4-mons-v3" },
+    bag = {},
+    sysInfo = { schema = "hgss-sys-info-v1", mysteryGiftActive = false },
+    gameStats = {
+      schema = "hgss-stats-v4",
+      stateVersion = 4,
+      uniqueCaught = {},
+      uniqueTotal = 0,
+      score = 0,
+      mailWritten = 0,
+      leagueWins = 3,
+      daycareDeposits = 2,
+      eggsHatched = 1,
+    },
+    gymmick = { schema = "hgss-gymmick-v1", kind = "none", data = {} },
+    followingMon = { schema = "hgss-following-mon-v1", inhibited = true },
+    encounters = { schema = "hgss-encounter-v2", stateVersion = 2, steps = 9, repelSteps = 1, swarm = false },
+  })))
+  assert(source.schema == GameSave.LEGACY_V17_SCHEMA, "the fixture reaches the v17 envelope")
+  Assert.isNil(source.battlePoints, "a v17 record carries no Battle Point wallet")
+
+  local migrated = GameSave.migrateV17(source)
+  Assert.equal(migrated.schema, GameSave.SCHEMA, "the v17 step advances the envelope to the current schema")
+  Assert.equal(source.schema, GameSave.LEGACY_V17_SCHEMA, "migration leaves its input untouched")
+  Assert.isNil(source.battlePoints, "migration never mutates its source record")
+  Assert.deepEqual(migrated.battlePoints, { schema = "hgss-battle-points-v1", balance = 0 }, "the wallet starts empty")
+  Assert.deepEqual(migrated.battlePoints, BattlePointsState.new():capture(), "the wallet comes from its own owner")
+  Assert.isNil(migrated.frontier, "migration invents no Frontier challenge record")
+  Assert.equal(migrated.gameStats.schema, GameStatsSave.SCHEMA, "the nested stats bucket advances with the envelope")
+  Assert.equal(migrated.gameStats.battlePointsReceived, 0, "migration invents no received point")
+  Assert.equal(migrated.gameStats.battlePointsSpent, 0, "migration invents no spent point")
+  Assert.equal(migrated.gameStats.leagueWins, 3, "the League-win total survives the wallet step")
+  Assert.equal(migrated.gameStats.daycareDeposits, 2, "the Day Care deposit total survives the wallet step")
+  Assert.equal(migrated.gameStats.eggsHatched, 1, "the hatch total survives the wallet step")
+  Assert.deepEqual(migrated.encounters, source.encounters, "migration keeps the encounter state")
+  Assert.deepEqual(migrated.daycare, source.daycare, "migration keeps the Day Care custody")
+  Assert.isFalse(
+    pcall(GameSave.migrateV17, GameSave.migrateV17(source)),
+    "a v17 record that already carries a wallet is rejected"
+  )
+  local normalized = assert(GameSave.normalize(source))
+  Assert.equal(normalized.schema, GameSave.SCHEMA, "normalization chains v17 through the wallet step")
+  Assert.deepEqual(normalized.battlePoints, migrated.battlePoints, "normalization installs the empty wallet")
+end
+
+-- A current record keeps whatever settled balance it stores: normalization is
+-- envelope-only and never resets the saved wallet.
+function T.a_current_record_keeps_its_settled_battle_points()
+  local record = assert(GameSave.normalize(GameSave.migrateV17(GameSave.migrateV16(GameSave.migrateV15(
+    GameSave.migrateV14(GameSave.migrateV13(GameSave.migrateV12(GameSave.migrateV11(GameSave.migrateV10(v10record())))))
+  )))))
+  record.battlePoints = { schema = "hgss-battle-points-v1", balance = 168 }
+  local normalized = assert(GameSave.normalize(record))
+  Assert.deepEqual(normalized.battlePoints, { schema = "hgss-battle-points-v1", balance = 168 }, "the stored balance survives")
+  -- The envelope normalizes a present wallet untouched: its own owner refuses a
+  -- balance outside the source range at restore time instead of clamping it.
+  local BattlePointsState = require("libs.hgss.src.save.BattlePointsState")
+  Assert.throws(function()
+    return BattlePointsState.restore({ schema = "hgss-battle-points-v1", balance = 10000 })
+  end, "a stored balance outside the source range is refused by its owner")
 end
 
 -- A current record keeps whatever settled Day Care custody it stores:

@@ -483,6 +483,80 @@ local function checkMoneyStep(context, step, path, name)
   end
 end
 
+-- A source tile coordinate is a non-negative integer literal or a value
+-- reference; strings are never coordinates.
+---@param context table<string, unknown>
+---@param path string
+---@param name string
+---@param value unknown
+---@param field string
+local function checkTileOperand(context, path, name, value, field)
+  if type(value) == "number" then
+    if value % 1 ~= 0 or value < 0 then
+      fail(
+        context,
+        ScriptErrors.SCRIPT_SCHEMA_INVALID,
+        fieldPath(path, field),
+        "expected a non-negative integer literal or value reference",
+        { field = field, op = name }
+      )
+    end
+    return
+  end
+  if type(value) == "table" and value.value == "var" then
+    return
+  end
+  fail(
+    context,
+    ScriptErrors.SCRIPT_SCHEMA_INVALID,
+    fieldPath(path, field),
+    "expected a non-negative integer literal or value reference",
+    { field = field, op = name }
+  )
+end
+
+-- The source points window opens at two tile coordinates and every action
+-- names the wallet row it paints, so only show carries coordinates.
+---@param context table<string, unknown>
+---@param step table<string, unknown>
+---@param path string
+---@param name string
+local function checkPointsBoxStep(context, step, path, name)
+  local hasColumn, hasRow = step.tileX ~= nil, step.tileY ~= nil
+  local needsType = step.action == "show" or step.action == "update"
+  if needsType ~= (step.valueType ~= nil) then
+    fail(
+      context,
+      ScriptErrors.SCRIPT_SCHEMA_INVALID,
+      path,
+      needsType and "a points window paint names its source type"
+        or "hiding the points window carries no type selector",
+      { op = name }
+    )
+  end
+  if step.action == "show" then
+    if not hasColumn or not hasRow then
+      fail(
+        context,
+        ScriptErrors.SCRIPT_SCHEMA_INVALID,
+        path,
+        "the source points window opens at two tile coordinates",
+        { op = name }
+      )
+    end
+    checkTileOperand(context, path, name, step.tileX, "tileX")
+    checkTileOperand(context, path, name, step.tileY, "tileY")
+  elseif hasColumn or hasRow then
+    fail(
+      context,
+      ScriptErrors.SCRIPT_SCHEMA_INVALID,
+      path,
+      "no points window action besides show carries a coordinate",
+      { op = name }
+    )
+  end
+end
+
 -- The low-level compare-state branches need either a local label target or a
 -- cross-script reference.
 local function checkCompareBranchStep(context, step, path, name)
@@ -554,6 +628,8 @@ local function checkStep(context, step, path)
     end
   elseif name == "money_change" or name == "money_check" or name == "money_box" then
     checkMoneyStep(context, step, path, name)
+  elseif name == "points_box" then
+    checkPointsBoxStep(context, step, path, name)
   elseif name == "goto_compared" or name == "call_compared" then
     checkCompareBranchStep(context, step, path, name)
   end

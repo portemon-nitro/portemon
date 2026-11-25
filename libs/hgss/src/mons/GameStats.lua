@@ -41,6 +41,8 @@ local Errors = require("libs.errors.src.Errors")
 ---@field private _leagueWins integer recorded League wins
 ---@field private _daycareDeposits integer parents sent to the Day Care
 ---@field private _eggsHatched integer hatched eggs
+---@field private _battlePointsReceived integer requested points the scripts granted
+---@field private _battlePointsSpent integer requested points the scripts charged
 ---@field private _revision integer
 local GameStats = {}
 GameStats.__index = GameStats
@@ -80,6 +82,15 @@ GameStats.LEAGUE_WINS_CAP = 9999
 -- completes an egg's last cycle (src/field/field_control.c).
 GameStats.DAYCARE_DEPOSITS_CAP = 9999
 GameStats.EGGS_HATCHED_CAP = 9999
+
+-- GAME_STAT_BATTLE_POINTS_RECEIVED (69) and GAME_STAT_BATTLE_POINTS_SPENT (70)
+-- are extra-wide statistics: GameStats_GetMaxValue caps them at 999999999
+-- (src/game_stats.c), not the u16 GAME_STAT_MAX. ScrCmd_GiveBattlePoints and
+-- ScrCmd_TakeBattlePoints add the requested amount before the wallet saturates
+-- or floors, so the counters follow the request, never the applied balance.
+GameStats.BATTLE_POINTS_CAP = 999999999
+-- The requested amount is a source u16 script operand (ScriptGetVar).
+GameStats.BATTLE_POINTS_REQUEST_MAX = 0xFFFF
 
 -- The source's sScoreMods table (src/game_stats.c), indexed by the
 -- ScrCmd_AddSpecialGameStat operand. It stays private: the score an event
@@ -241,6 +252,8 @@ function GameStats.new(args)
     _leagueWins = 0,
     _daycareDeposits = 0,
     _eggsHatched = 0,
+    _battlePointsReceived = 0,
+    _battlePointsSpent = 0,
     _revision = 0,
   }, GameStats)
 end
@@ -268,6 +281,8 @@ function GameStats.restore(bucket, refs)
   stats._leagueWins = valid.leagueWins
   stats._daycareDeposits = valid.daycareDeposits
   stats._eggsHatched = valid.eggsHatched
+  stats._battlePointsReceived = valid.battlePointsReceived
+  stats._battlePointsSpent = valid.battlePointsSpent
   return stats
 end
 
@@ -349,6 +364,18 @@ end
 ---@return integer
 function GameStats:daycareDeposits()
   return self._daycareDeposits
+end
+
+-- Reads the points the scripts asked to grant and to charge: one per source
+-- Give/Take command, capped at the extra-wide source ceiling.
+---@return integer
+function GameStats:battlePointsReceived()
+  return self._battlePointsReceived
+end
+
+---@return integer
+function GameStats:battlePointsSpent()
+  return self._battlePointsSpent
 end
 
 ---@return integer
@@ -453,6 +480,28 @@ function GameStats:prepareChanges(changes)
         end
       end
       observations[index] = { kind = "egg_hatched", points = GameStats.SCORE_POINTS.egg_hatched }
+    elseif staged.kind == "battle_points_received" or staged.kind == "battle_points_spent" then
+      -- One source Battle Point transaction records the amount the command
+      -- asked for (ScrCmd_GiveBattlePoints/TakeBattlePoints add their operand
+      -- to GAME_STAT_BATTLE_POINTS_RECEIVED/SPENT), independently of what the
+      -- wallet saturates or floors. It earns no score and marks no species.
+      for key in pairs(staged) do
+        if key ~= "kind" and key ~= "amount" then
+          fail("stats observations carry kind and payload records", { field = key })
+        end
+      end
+      local amount = staged.amount
+      if
+        type(amount) ~= "number"
+        or amount % 1 ~= 0
+        or amount < 0
+        or amount > GameStats.BATTLE_POINTS_REQUEST_MAX
+      then
+        fail("stats battle-point amount must be an integer in 0.." .. tostring(GameStats.BATTLE_POINTS_REQUEST_MAX), {
+          amount = amount,
+        })
+      end
+      observations[index] = { kind = staged.kind, amount = amount }
     elseif staged.kind == "league_win" then
       -- One completed League ending awards the source League-win statistic
       -- (src/game_clear.c::CallTask_GameClear). It earns no score and marks
@@ -489,6 +538,8 @@ function GameStats:prepareChanges(changes)
   local scratchLeagueWins = self._leagueWins
   local scratchDaycareDeposits = self._daycareDeposits
   local scratchEggsHatched = self._eggsHatched
+  local scratchBattlePointsReceived = self._battlePointsReceived
+  local scratchBattlePointsSpent = self._battlePointsSpent
   local changed = false
   for _, observation in ipairs(observations) do
     if observation.kind == "unique_caught" then
@@ -518,6 +569,18 @@ function GameStats:prepareChanges(changes)
       local total = cappedScore(scratchScore, observation.points)
       if total ~= scratchScore then
         scratchScore = total
+        changed = true
+      end
+    elseif observation.kind == "battle_points_received" then
+      local total = math.min(GameStats.BATTLE_POINTS_CAP, scratchBattlePointsReceived + observation.amount)
+      if total ~= scratchBattlePointsReceived then
+        scratchBattlePointsReceived = total
+        changed = true
+      end
+    elseif observation.kind == "battle_points_spent" then
+      local total = math.min(GameStats.BATTLE_POINTS_CAP, scratchBattlePointsSpent + observation.amount)
+      if total ~= scratchBattlePointsSpent then
+        scratchBattlePointsSpent = total
         changed = true
       end
     elseif observation.kind == "league_win" then
@@ -560,6 +623,8 @@ function GameStats:prepareChanges(changes)
     self._leagueWins = scratchLeagueWins
     self._daycareDeposits = scratchDaycareDeposits
     self._eggsHatched = scratchEggsHatched
+    self._battlePointsReceived = scratchBattlePointsReceived
+    self._battlePointsSpent = scratchBattlePointsSpent
     if changed then
       self._revision = self._revision + 1
     end
@@ -612,6 +677,8 @@ function GameStats:bucket()
     leagueWins = self._leagueWins,
     daycareDeposits = self._daycareDeposits,
     eggsHatched = self._eggsHatched,
+    battlePointsReceived = self._battlePointsReceived,
+    battlePointsSpent = self._battlePointsSpent,
   }
 end
 

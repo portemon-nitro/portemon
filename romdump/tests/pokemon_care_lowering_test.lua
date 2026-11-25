@@ -161,4 +161,55 @@ function T.hatch_commands_keep_their_source_timing()
   Assert.deepEqual(matched.result, sourceVar(0x8004), "the matcher answer lands in its output variable")
 end
 
+-- The Frontier move tutor family: every selector, page and move operand is a
+-- ScriptGetVar value reference, every result operand is a ScriptGetVarPointer
+-- output, and only the list command blocks the script. Source reference:
+-- src/field/scrcmd_move_tutor.c.
+function T.frontier_tutor_commands_lower_to_their_source_operands()
+  local pages = assert(ScriptCommands.byOpcode[652], "the catalog names the page-count query")
+  Assert.equal(pages.disposition, "supported", "the page count answers from the generated inventory")
+  Assert.equal(pages.classification, "continue_same_tick", "the page count answers in the same tick")
+  local pageStep = lowerOne(652, {
+    { value = 0x8001, width = 2 },
+    { value = 0x8000, width = 2 },
+    { value = 0x8002, width = 2 },
+  })
+  Assert.equal(pageStep.op, "tutor_move_page_count")
+  Assert.deepEqual(pageStep.slot, sourceVar(0x8001), "the party slot stays a variable reference")
+  Assert.deepEqual(pageStep.tutorNpc, sourceVar(0x8000), "the tutor selector stays a value reference")
+  Assert.deepEqual(pageStep.result, sourceVar(0x8002), "the page count lands in its output variable")
+
+  local choose = assert(ScriptCommands.byOpcode[653], "the catalog names the list menu")
+  Assert.equal(choose.disposition, "supported", "the list menu owns its generated page")
+  Assert.equal(choose.classification, "native_wait", "the list menu blocks the script")
+  local chooseStep = lowerOne(653, {
+    { value = 0x8001, width = 2 },
+    { value = 0x8000, width = 2 },
+    { value = 0x8004, width = 2 },
+    { value = 0x8003, width = 2 },
+  })
+  Assert.equal(chooseStep.op, "tutor_choose_move")
+  Assert.deepEqual(chooseStep.page, sourceVar(0x8004), "the page stays a value reference")
+  Assert.deepEqual(chooseStep.result, sourceVar(0x8003), "the chosen row lands in its output variable")
+
+  local teach = lowerOne(654, {
+    { value = 0x8001, width = 2 },
+    { value = 0x8006, width = 2 },
+    { value = 0x8003, width = 2 },
+  })
+  Assert.equal(teach.op, "tutor_move_teach")
+  Assert.deepEqual(teach.moveSlot, sourceVar(0x8006), "the taught row stays a value reference")
+  Assert.deepEqual(teach.move, sourceVar(0x8003), "the taught move stays a value reference")
+
+  local price = lowerOne(655, { { value = 0x8003, width = 2 }, { value = 0x8005, width = 2 } })
+  Assert.equal(price.op, "tutor_move_price")
+  Assert.deepEqual(price.move, sourceVar(0x8003), "the priced move stays a value reference")
+  Assert.deepEqual(price.result, sourceVar(0x8005), "the price lands in its output variable")
+
+  local headbutt = lowerOne(656, { { value = 0x8006, width = 2 }, { value = 0x8004, width = 2 } })
+  Assert.equal(headbutt.op, "headbutt_tutor_eligible")
+  Assert.deepEqual(headbutt.slot, sourceVar(0x8006), "the Headbutt slot stays a value reference")
+  Assert.deepEqual(headbutt.result, sourceVar(0x8004), "the eligibility answer lands in its output variable")
+end
+
 return { tests = T }

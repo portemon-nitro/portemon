@@ -5,13 +5,9 @@
 -- evolution publish, even for re-registrations), the bounded trainer-card
 -- score, the bounded written-Mail total, the bounded steps-biked total
 -- (GAME_STAT_STEPS_BIKED 1, behind the Bike Shop call), the bounded
--- League-win counter, and the two Day Care statistics: parents sent to the
--- Day Care and eggs hatched. Migration never invents registrations, counts,
--- score, wins, or care events from an absent bucket; an exact v1 bucket
--- migrates with zero written-Mail, biked, win, and care counts, an exact v2
--- bucket with zero biked, win, and care counts, an exact v3 bucket with zero
--- win and care counts, and an exact v4 bucket with the two zero care
--- counters. The hatch counter stays zero until its own hatch owner lands.
+-- League-win counter, the two Day Care statistics, and the two Battle Point
+-- statistics. Migration never invents historical counts; each exact earlier
+-- bucket receives zeroes for statistics it did not track.
 -- Pure data owner: no live state, no love dependency.
 --
 -- Retail sources (tmp/refs/pokeheartgold):
@@ -57,6 +53,11 @@ GameStatsSave.LEAGUE_WINS_CAP = 9999
 GameStatsSave.DAYCARE_DEPOSITS_CAP = 9999
 GameStatsSave.EGGS_HATCHED_CAP = 9999
 
+-- GAME_STAT_BATTLE_POINTS_RECEIVED (69) and GAME_STAT_BATTLE_POINTS_SPENT (70)
+-- are extra-wide statistics, so GameStats_GetMaxValue caps them at 999999999
+-- rather than the u16 GAME_STAT_MAX (src/game_stats.c).
+GameStatsSave.BATTLE_POINTS_CAP = 999999999
+
 local TOP_FIELDS = {
   schema = true,
   stateVersion = true,
@@ -68,6 +69,8 @@ local TOP_FIELDS = {
   leagueWins = true,
   daycareDeposits = true,
   eggsHatched = true,
+  battlePointsReceived = true,
+  battlePointsSpent = true,
 }
 
 ---@param message string
@@ -216,6 +219,19 @@ local function checkEggsHatched(value)
   return value --[[@as integer]]
 end
 
+---@param value unknown
+---@param what string
+---@return integer validated Point total
+local function checkBattlePoints(value, what)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > GameStatsSave.BATTLE_POINTS_CAP then
+    fail(
+      "stats bucket " .. what .. " must be an integer in 0.." .. tostring(GameStatsSave.BATTLE_POINTS_CAP),
+      { field = what, value = value }
+    )
+  end
+  return value --[[@as integer]]
+end
+
 -- The stored registration array without a catalog: dense string entries, no
 -- species resolution. Only the save envelope's own schema advance uses this
 -- shape; the owning runtime restore always validates the set against the
@@ -251,6 +267,8 @@ local function canonicalize(bucket, refs)
     leagueWins = checkLeagueWins(bucket.leagueWins),
     daycareDeposits = checkDaycareDeposits(bucket.daycareDeposits),
     eggsHatched = checkEggsHatched(bucket.eggsHatched),
+    battlePointsReceived = checkBattlePoints(bucket.battlePointsReceived, "battle points received"),
+    battlePointsSpent = checkBattlePoints(bucket.battlePointsSpent, "battle points spent"),
   }
 end
 
@@ -349,6 +367,8 @@ function GameStatsSave.migrate(bucket, refs)
     leagueWins = leagueWins,
     daycareDeposits = 0,
     eggsHatched = 0,
+    battlePointsReceived = 0,
+    battlePointsSpent = 0,
   }, refs)
 end
 
@@ -365,6 +385,8 @@ function GameStatsSave.initial()
     leagueWins = 0,
     daycareDeposits = 0,
     eggsHatched = 0,
+    battlePointsReceived = 0,
+    battlePointsSpent = 0,
   }
 end
 

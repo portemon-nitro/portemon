@@ -817,6 +817,7 @@ function FieldScriptComposition.compose(runtime, options)
     mart = options.mart,
     travel = options.travel,
     gameStats = runtime.gameStats,
+    battlePoints = runtime.battlePoints,
     fieldMoves = options.fieldMoves,
     fieldMoveAftermath = fieldMoveAftermathService(runtime),
     sweetScent = sweetScentHost(runtime),
@@ -882,6 +883,7 @@ function FieldScriptComposition.compose(runtime, options)
   })
   runtime.blackoutFlow = assert(scripts.blackoutFlow)
   runtime.moneyBox = assert(scripts.moneyBox)
+  runtime.pointsBox = assert(scripts.pointsBox)
   local function restore()
     if options.loadedGame then
       ScriptSave.restore(options.loadedGame.scripts, scripts.scheduler, 0)

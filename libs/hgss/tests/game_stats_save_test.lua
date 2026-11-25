@@ -29,9 +29,10 @@ local function validBucket()
     leagueWins = 2,
     daycareDeposits = 5,
     eggsHatched = 1,
+    battlePointsReceived = 96,
+    battlePointsSpent = 64,
   }
 end
-
 local function v4Bucket()
   return {
     schema = "hgss-stats-v4",
@@ -96,6 +97,8 @@ function T.valid_buckets_canonicalize_deterministically()
   Assert.equal(canonical.leagueWins, 2, "validation keeps the League-win total")
   Assert.equal(canonical.daycareDeposits, 5, "validation keeps the Day Care deposit total")
   Assert.equal(canonical.eggsHatched, 1, "validation keeps the hatch total")
+  Assert.equal(canonical.battlePointsReceived, 96, "validation keeps the received-point total")
+  Assert.equal(canonical.battlePointsSpent, 64, "validation keeps the spent-point total")
   local again = GameStatsSave.validate(canonical, refs())
   Assert.deepEqual(again, canonical, "canonical buckets validate idempotently")
 end
@@ -429,4 +432,38 @@ function T.malformed_buckets_fail_with_attribution()
   end, "a nil bucket never validates directly")
 end
 
+-- The v4 bucket predates both Day Care and Battle Point counters.
+function T.v4_bucket_migrates_with_zero_battle_point_counters()
+  local migrated = GameStatsSave.migrate(v4Bucket(), refs())
+  Assert.equal(migrated.battlePointsReceived, 0, "migration invents no received point")
+  Assert.equal(migrated.battlePointsSpent, 0, "migration invents no spent point")
+  Assert.equal(migrated.daycareDeposits, 0, "migration invents no deposit count")
+  Assert.equal(migrated.eggsHatched, 0, "migration invents no hatch count")
+  Assert.equal(migrated.stepsBiked, 1500, "the earlier steps-biked total survives")
+  Assert.equal(migrated.leagueWins, 2, "the earlier League-win total survives")
+  local owner = GameStats.restore(v4Bucket(), refs())
+  Assert.equal(owner:battlePointsReceived(), 0, "a v4 bucket restores no received point")
+  Assert.equal(owner:battlePointsSpent(), 0, "a v4 bucket restores no spent point")
+  Assert.deepEqual(owner:bucket(), migrated, "the migrated bucket round trips through its owner")
+end
+
+-- Both Point counters use the source's extra-wide statistic ceiling.
+function T.battle_point_counters_are_bounded()
+  for _, field in ipairs({ "battlePointsReceived", "battlePointsSpent" }) do
+    for _, value in ipairs({ -1, 1000000000, 1.5, "3" }) do
+      local bucket = validBucket()
+      bucket[field] = value
+      assertInvalid(function()
+        GameStatsSave.validate(bucket, refs())
+      end, "the stats bucket bounds " .. field .. " to the source range")
+    end
+    local bucket = validBucket()
+    bucket[field] = 999999999
+    Assert.equal(
+      GameStatsSave.validate(bucket, refs())[field],
+      999999999,
+      "the source ceiling validates for " .. field
+    )
+  end
+end
 return { tests = T }

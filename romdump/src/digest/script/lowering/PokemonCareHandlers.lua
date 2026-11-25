@@ -171,6 +171,62 @@ function PokemonCareHandlers.moveRelearnerGetResult(ins)
   return { op = "move_relearner_get_result", result = Operands.varRef(ins.operands[1]) }
 end
 
+-- The Frontier move tutor family (src/field/scrcmd_move_tutor.c). Every
+-- selector, the page and the taught move are ScriptGetVar operands, while the
+-- result variables are ScriptGetVarPointer outputs. ScrCmd_MoveTutorChooseMove
+-- blocks the script on the generated list menu; the other four answer in the
+-- same tick.
+
+-- ScrCmd_GetTutorMoveListPageCount: party slot, tutor selector, result.
+function PokemonCareHandlers.tutorMoveListPageCount(ins)
+  return {
+    op = "tutor_move_page_count",
+    slot = Operands.varRef(ins.operands[1]),
+    tutorNpc = Operands.varRef(ins.operands[2]),
+    result = Operands.varRef(ins.operands[3]),
+  }
+end
+
+-- ScrCmd_MoveTutorChooseMove: party slot, tutor selector, page, result.
+function PokemonCareHandlers.moveTutorChooseMove(ins)
+  return {
+    op = "tutor_choose_move",
+    slot = Operands.varRef(ins.operands[1]),
+    tutorNpc = Operands.varRef(ins.operands[2]),
+    page = Operands.varRef(ins.operands[3]),
+    result = Operands.varRef(ins.operands[4]),
+  }
+end
+
+-- ScrCmd_TutorMoveTeachInSlot: party slot, move row, move identity.
+function PokemonCareHandlers.tutorMoveTeachInSlot(ins)
+  return {
+    op = "tutor_move_teach",
+    slot = Operands.varRef(ins.operands[1]),
+    moveSlot = Operands.varRef(ins.operands[2]),
+    move = Operands.varRef(ins.operands[3]),
+  }
+end
+
+-- ScrCmd_TutorMoveGetPrice: the move identity, then the result variable.
+function PokemonCareHandlers.tutorMoveGetPrice(ins)
+  return {
+    op = "tutor_move_price",
+    move = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+-- ScrCmd_MonCanLearnHeadbuttFromTutor: the party slot, then the result
+-- variable.
+function PokemonCareHandlers.monCanLearnHeadbuttFromTutor(ins)
+  return {
+    op = "headbutt_tutor_eligible",
+    slot = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
 -- ScrCmd_DaycareSanitizeMon: the party slot first, the result variable
 -- second.
 function PokemonCareHandlers.sanitizeMon(ins)

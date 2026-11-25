@@ -21,6 +21,7 @@ local LugiaAppearanceRenderer = require("libs.hgss.src.presentation.LugiaAppeara
 local HoOhAssetPreparer = require("game.hgss.src.field.HoOhAssetPreparer")
 local FieldMoneyBox = require("game.hgss.src.field.FieldMoneyBox")
 local FieldPlayerVisual = require("libs.hgss.src.actors.FieldPlayerVisual")
+local FieldPointsBox = require("game.hgss.src.field.FieldPointsBox")
 
 local KEY_DIRECTIONS =
   { w = "north", up = "north", s = "south", down = "south", a = "west", left = "west", d = "east", right = "east" }
@@ -1148,7 +1149,9 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
     )
   local moneyBox = self.runtime.moneyBox
   local moneyBoxVisible = moneyBox ~= nil and moneyBox:snapshot().visible
-  if not (dialogueModal or yesNo or signpostModal or blackoutMessage or moneyBoxVisible) then
+  local pointsBox = self.runtime.pointsBox
+  local pointsBoxVisible = pointsBox ~= nil and pointsBox:snapshot().visible
+  if not (dialogueModal or yesNo or signpostModal or blackoutMessage or moneyBoxVisible or pointsBoxVisible) then
     return
   end
   local fieldScale = self.runtime.fieldPixelScale:resolvedScale()
@@ -1168,6 +1171,10 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
     -- The source money window is field-attached presentation beneath the
     -- dialogue and choice layers; it never takes focus from them.
     self:_drawMoneyBox(resources)
+  end
+  if pointsBoxVisible then
+    -- The points window is the same field-attached layer.
+    self:_drawPointsBox(resources)
   end
   if blackoutMessage and blackoutStatus ~= nil then
     FieldBlackoutRenderer.draw(blackoutStatus, assert(resources.windowRenderer), assert(resources.textRenderer), bounds)
@@ -1223,6 +1230,47 @@ function FieldState:_drawMoneyBox(resources)
     windowRenderer:drawWindow(box, frameIndex, background)
     textRenderer:drawText(label, box.x, box.y)
     textRenderer:drawText(valueText, box.x + FieldMoneyBox.WIDTH - valueWidth, box.y + FieldMoneyBox.MONEY_ROW_Y)
+  end)
+end
+
+-- The source points window paints its own 10x2-tile frame at the source tile
+-- position on the main display; its one row is the expanded message the last
+-- show/update captured, right-aligned inside the frame
+-- (PointsBox_Update draws `80 - width`).
+---@param resources FieldPresentationResources
+function FieldState:_drawPointsBox(resources)
+  local runtime = assert(self.runtime, "field presentation needs its runtime")
+  local pointsBox = runtime.pointsBox
+  if pointsBox == nil then
+    return
+  end
+  local snapshot = pointsBox:snapshot()
+  if not snapshot.visible then
+    return
+  end
+  local windowRenderer = resources.windowRenderer
+  local textRenderer = resources.textRenderer
+  if windowRenderer == nil or textRenderer == nil then
+    return
+  end
+  local tileX = assert(snapshot.tileX, "an open points window carries its source column")
+  local tileY = assert(snapshot.tileY, "an open points window carries its source row")
+  local text = assert(snapshot.text, "an open points window carries its value row")
+  local viewport = assert(runtime.viewport, "field presentation needs its viewport")
+  -- The points window shares the floor window's main-display placement, so its
+  -- source tile coordinates land on the source field tiles at any scale.
+  local placement = FieldPresentationResources.mainDisplayPlacement(
+    assert(viewport.referenceFrame, "the points window draws in the canonical field frame"),
+    runtime.fieldPixelScale:resolvedScale()
+  )
+  local frameIndex = assert(resources.applicationFrameIndex, "field presentation owns no application frame index")
+  local box = { x = tileX * 8, y = tileY * 8, width = FieldPointsBox.WIDTH, height = FieldPointsBox.HEIGHT }
+  local textWidth = textRenderer:textWidth(text) or 0
+  local background = textRenderer:windowBackgroundColor()
+  local lg = love.graphics
+  LogicalSurface.draw(lg, placement, function()
+    windowRenderer:drawWindow(box, frameIndex, background)
+    textRenderer:drawText(text, box.x + FieldPointsBox.WIDTH - textWidth, box.y)
   end)
 end
 

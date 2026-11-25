@@ -61,6 +61,9 @@ Schema.ENUMS = {
   -- other kinds stay unimplemented rather than named here.
   gym_mechanism = { "violet", "azalea", "ecruteak", "cianwood", "blackthorn", "sinjoh" },
   money_box_action = { "show", "update", "hide" },
+  -- The source points window and the Battle Point wallet actions.
+  points_box_action = { "show", "update", "hide" },
+  battle_points_action = { "give", "take" },
   pc_application = { "storage", "mailbox", "photoAlbum", "hallOfFame" },
   -- The three boxed ribbon bit fields retail stores (GBA contest, DS1, DS2).
   ribbon_field = { "gba", "ds1", "ds2" },
@@ -1076,6 +1079,37 @@ Schema.OPERATIONS = {
       tileY = { type = "scalar_or_value" },
     },
   },
+  -- The source points window (src/overlay_22.c): show and update read the type
+  -- selector as a raw source byte, show carries two tile value references, and
+  -- hide carries no operand at all.
+  points_box = {
+    fields = {
+      action = { type = "enum:points_box_action", required = true },
+      valueType = { type = "integer" },
+      tileX = { type = "scalar_or_value" },
+      tileY = { type = "scalar_or_value" },
+    },
+  },
+  -- The source Battle Point commands (src/scrcmd_9.c): the wallet read and the
+  -- affordability check write their result variable, and the give/take pair
+  -- reads the amount the script asks for.
+  battle_points_read = {
+    fields = {
+      result = { type = "writable_value", required = true },
+    },
+  },
+  battle_points_change = {
+    fields = {
+      action = { type = "enum:battle_points_action", required = true },
+      amount = { type = "scalar_or_value", required = true },
+    },
+  },
+  battle_points_check = {
+    fields = {
+      amount = { type = "scalar_or_value", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
   -- The source AddSpecialGameStat command (opcode 515): the node names one
   -- score event from the game-stats owner's authoritative table and the
   -- owner resolves its weight, so no script carries a score amount.
@@ -2011,6 +2045,44 @@ Schema.OPERATIONS = {
   move_relearner_get_result = {
     fields = {
       result = { type = "value", required = true },
+    },
+  },
+  -- The Frontier move tutor family (src/field/scrcmd_move_tutor.c): the party
+  -- slot, tutor selector and page are value references, the result variables
+  -- are the script's own outputs, and the taught move is the source move
+  -- identity the generated list answered.
+  tutor_move_page_count = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      tutorNpc = { type = "scalar_or_value", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  tutor_choose_move = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      tutorNpc = { type = "scalar_or_value", required = true },
+      page = { type = "scalar_or_value", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  tutor_move_teach = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      moveSlot = { type = "scalar_or_value", required = true },
+      move = { type = "scalar_or_value", required = true },
+    },
+  },
+  tutor_move_price = {
+    fields = {
+      move = { type = "scalar_or_value", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  headbutt_tutor_eligible = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      result = { type = "writable_value", required = true },
     },
   },
   -- The original Togepi gift carries no operands and runs in the same tick:

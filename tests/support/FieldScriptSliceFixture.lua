@@ -104,7 +104,7 @@ local function stubActors()
 end
 
 local SLICE_OPS =
-  "set_spawn, set_special_spawn, field_move, game_score_event, battle, money ops, set_var, dynamic warp, floor window, field clock, and yield_tick"
+  "set_spawn, set_special_spawn, field_move, game_score_event, battle, money ops, battle point ops, points window, set_var, dynamic warp, floor window, field clock, and yield_tick"
 
 ---@param id string
 ---@param steps table[]
@@ -176,6 +176,33 @@ function FieldScriptSliceFixture.sliceChunk(id, steps)
         )
       else
         lines[#lines + 1] = string.format('    { op = "money_box", action = %q },', step.action)
+      end
+    elseif step.op == "battle_points_read" then
+      lines[#lines + 1] = string.format('    { op = "battle_points_read", result = { value = "var", id = "%s" } },', step.result)
+    elseif step.op == "battle_points_change" then
+      lines[#lines + 1] = string.format(
+        '    { op = "battle_points_change", action = %q, amount = %s },',
+        step.action,
+        FieldScriptSliceFixture.operandLiteral(step.amount)
+      )
+    elseif step.op == "battle_points_check" then
+      lines[#lines + 1] = string.format(
+        '    { op = "battle_points_check", amount = %s, result = { value = "var", id = "%s" } },',
+        FieldScriptSliceFixture.operandLiteral(step.amount),
+        step.result
+      )
+    elseif step.op == "points_box" then
+      if step.action == "show" then
+        lines[#lines + 1] = string.format(
+          '    { op = "points_box", action = "show", valueType = %d, tileX = %s, tileY = %s },',
+          step.valueType,
+          FieldScriptSliceFixture.operandLiteral(step.tileX),
+          FieldScriptSliceFixture.operandLiteral(step.tileY)
+        )
+      elseif step.action == "update" then
+        lines[#lines + 1] = string.format('    { op = "points_box", action = "update", valueType = %d },', step.valueType)
+      else
+        lines[#lines + 1] = string.format('    { op = "points_box", action = %q },', step.action)
       end
     elseif step.op == "yield_tick" then
       lines[#lines + 1] = '    { op = "yield_tick" },'
@@ -251,6 +278,7 @@ function FieldScriptSliceFixture.compose(services, id, steps)
     fieldMoves = services.fieldMoves,
     battle = services.battle,
     gameStats = services.gameStats,
+    battlePoints = services.battlePoints,
     monNaming = services.monNaming,
   } --[[@as FieldScriptsOptions]])
 end
@@ -274,6 +302,45 @@ function FieldScriptSliceFixture.moneyMessageProvider(label)
     FieldMessageFixture.eos(),
   }
   return FieldMessageFixture.provider({ [435] = messages })
+end
+
+-- The generated message bank the source points window reads its value row
+-- from: msg_0191_00220 is `${STRVAR_1 53, 0, 0} BP`, so the battle-point
+-- balance expands into that marker and the template's own suffix follows it.
+-- The provider is the real one, so the window resolves its text through the
+-- same path dialogue does.
+---@param suffix string the text the source row carries after the value field
+---@return FieldMessageProvider
+function FieldScriptSliceFixture.pointsMessageProvider(suffix)
+  local messages = {}
+  for messageId = 0, 223 do
+    messages[messageId] = {
+      id = messageId,
+      raw = { 0xFFFF },
+      text = "",
+      tokens = { { kind = "eos", raw = { 0xFFFF } } },
+    }
+  end
+  messages[220] = {
+    id = 220,
+    raw = { FieldMessageText.STRVAR_1 + 53, 0x0000, 0x0000, 0x02BF, 0x02C0, 0xFFFF },
+    text = "${STRVAR_1 53, 0, 0}" .. (suffix or " BP"),
+    tokens = {
+      { kind = "substitution", control = FieldMessageText.STRVAR_1 + 53, args = { 0, 0 } },
+      { kind = "glyph", code = 0x02BF, text = " ", raw = { 0x02BF } },
+      { kind = "glyph", code = 0x02C0, text = "BP", raw = { 0x02C0 } },
+      { kind = "eos", raw = { 0xFFFF } },
+    },
+  }
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  cache:writeLua(FieldMessageCache.bankPath(191), {
+    schema = FieldMessageCache.SCHEMA,
+    bankId = 191,
+    messageCount = 224,
+    source = { narc = "NARC_msgdata_msg", memberId = 191, memberSha1 = "synthetic" },
+    messages = messages,
+  })
+  return FieldMessageProvider.new(cache)
 end
 
 return FieldScriptSliceFixture

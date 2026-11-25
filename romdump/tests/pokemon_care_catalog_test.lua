@@ -158,7 +158,37 @@ local function tradeMessageBank()
   return FieldMessageBank.encodeForTests(messages, 7)
 end
 
----@param options { eggSpecies: string, eggMoves: string, tradeMembers: table<integer, string>?, tradeBank: string? }?
+local TUTOR = PokemonCareSources.tutorLearnsets
+local MUD_SLAP_INDEX = 1
+local HEADBUTT_INDEX = 51
+
+-- fielddata/wazaoshie/waza_oshie.bin: one eight-byte bit field per species
+-- identity with SPECIES_EGG and SPECIES_BAD_EGG removed. A bit at inventory
+-- index j means that row of the source tutor inventory is learnable.
+---@param learnable table<integer, integer[]>? member id -> inventory indexes
+---@return string
+local function tutorTable(learnable)
+  local rows = {}
+  for member = TUTOR.firstSpecies, TUTOR.lastFormSpecies do
+    if member ~= TUTOR.eggSpecies and member ~= TUTOR.badEggSpecies then
+      rows[#rows + 1] = member
+    end
+  end
+  local parts = {}
+  for _, member in ipairs(rows) do
+    local bytes = { 0, 0, 0, 0, 0, 0, 0, 0 }
+    for _, index in ipairs((learnable or {})[member] or {}) do
+      local byteIndex = math.floor(index / 8) + 1
+      bytes[byteIndex] = bytes[byteIndex] + 2 ^ (index % 8)
+    end
+    for index = 1, 8 do
+      parts[#parts + 1] = string.char(bytes[index])
+    end
+  end
+  return table.concat(parts)
+end
+
+---@param options { eggSpecies: string, eggMoves: string, tradeMembers: table<integer, string>?, tradeBank: string?, tutors: string? }?
 ---@return table romFs-shaped source reader
 local function romFsFor(options)
   options = options or {}
@@ -172,10 +202,18 @@ local function romFsFor(options)
     tradeMembers[tradeId] = tradeOverrides[tradeId] or tradeMember()
   end
   local tradeBank = options.tradeBank or tradeMessageBank()
+  local tutorBytes = options.tutors
+  if tutorBytes == nil then
+    local learnable = { [1] = { MUD_SLAP_INDEX, HEADBUTT_INDEX }, [TUTOR.badEggSpecies + 6] = { MUD_SLAP_INDEX } }
+    tutorBytes = tutorTable(learnable)
+  end
   local reads = {}
   return {
     readSourcePath = function(_, path)
       reads[#reads + 1] = path
+      if path == TUTOR.path then
+        return tutorBytes
+      end
       if path ~= PokemonCareSources.eggSpeciesSource.path then
         return nil, Errors.new("ROMFS_PATH_UNKNOWN", "no such source file", { sourcePath = path })
       end
@@ -232,6 +270,50 @@ function T.compiles_the_source_breeding_tables_into_semantic_keys()
   Assert.equal(#catalog.incense, #PokemonCareSources.incenseRows, "every source incense pair travels")
   Assert.deepEqual(catalog.incense[5], { baby = "MUNCHLAX", item = "FULL_INCENSE", parent = "SNORLAX" })
   Assert.isTrue(PokemonCareAssetSchema.isValidCatalog(catalog), "the compiled catalog satisfies its schema")
+end
+
+-- The Frontier move tutor projection: the source inventory keeps its order,
+-- its prices and its tutor assignment, and each species publishes the moves its
+-- compatibility row names, with the five form families carrying their own row.
+function T.projects_the_source_move_tutor_inventory_and_compatibility_rows()
+  local catalog = assert(PokemonCareCatalogCompiler.compile(romFsFor()))
+  Assert.equal(#catalog.tutors.moves, 52, "the source inventory carries its fifty-two rows")
+  Assert.deepEqual(catalog.tutors.moves[1], { move = "DIVE", cost = 40, npc = "top_left" }, "the first row keeps its order")
+  Assert.deepEqual(catalog.tutors.moves[2], { move = "MUD_SLAP", cost = 32, npc = "top_right" })
+  Assert.deepEqual(
+    catalog.tutors.moves[52],
+    { move = "HEADBUTT", cost = 0, npc = "headbutt" },
+    "the zero-cost Headbutt lesson closes the inventory"
+  )
+  Assert.deepEqual(
+    catalog.tutors.learnsets.BULBASAUR[1],
+    { "MUD_SLAP", "HEADBUTT" },
+    "the species row publishes the learnable moves in inventory order"
+  )
+  -- Giratina's origin form reads its own compatibility row, published beside
+  -- the base list the other forms share.
+  local originMember = TUTOR.badEggSpecies + 6
+  Assert.equal(#catalog.tutors.learnsets.GIRATINA, 2, "the form family publishes its own row")
+  Assert.deepEqual(catalog.tutors.learnsets.GIRATINA[1], {}, "the base row names no tutor move")
+  Assert.deepEqual(
+    catalog.tutors.learnsets.GIRATINA[2],
+    { "MUD_SLAP" },
+    "the origin form reads the row the source's form switch selects"
+  )
+  Assert.isTrue(originMember > TUTOR.lastSpecies, "the form row follows the two egg sentinels")
+  Assert.isTrue(PokemonCareAssetSchema.isValidCatalog(catalog), "the compiled catalog satisfies its schema")
+end
+
+function T.rejects_a_move_tutor_table_that_is_not_one_row_per_species()
+  local bytes = tutorTable()
+  local noLearnable = assert(PokemonCareCatalogCompiler.compile(romFsFor({ tutors = bytes })))
+  Assert.equal(noLearnable.tutors.moves[1].move, "DIVE", "a table without a set bit still compiles")
+
+  local truncated = bytes:sub(1, #bytes - 8)
+  local catalog, err = PokemonCareCatalogCompiler.compile(romFsFor({ tutors = truncated }))
+  Assert.isNil(catalog, "a truncated tutor table never compiles")
+  Assert.isTrue(Errors.is(err), "the refusal is attributed")
+  Assert.equal(err.code, "POKEMON_CARE_SOURCE_TRUNCATED")
 end
 
 -- The thirteen source trade records keep their order and every published

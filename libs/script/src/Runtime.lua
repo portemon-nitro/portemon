@@ -2460,6 +2460,12 @@ local function handleMessage(node, run)
     local message = semanticsFor(run).evaluateMessage(node.message, run)
     -- LuaLS cannot see through Errors.raise; requireService never returns nil.
     ---@cast host table<string, unknown>
+    if host:isOpen() then
+      -- A print-only message leaves its box open while later source work runs;
+      -- the next print replaces that content before acquiring the same modal
+      -- owner again, exactly like the blocking dialogue task does.
+      host:close(true)
+    end
     host:openMessage(node)
     host:startPrint(message, node.bindings or {}, run.instance.textArgs or {})
     return Runtime.OUTCOME_CONTINUE
@@ -4001,6 +4007,116 @@ do
     semanticsFor(run).writeRef(node.result, answer.learned == true and 0 or 255, run)
     return Runtime.OUTCOME_CONTINUE
   end
+
+  -- The Frontier move tutor family (src/field/scrcmd_move_tutor.c). The page
+  -- count, the price and the Headbutt eligibility answer in the same tick; the
+  -- list menu blocks the script on the generated page and writes the native
+  -- move identity the row carries, its Next row 0xfffd or its Cancel row
+  -- 0xfffe, while the open menu owns the source's pending 0xeeee.
+
+  ---@param run table<string, unknown>
+  ---@param value unknown
+  ---@param what string
+  ---@return integer
+  local function tutorSelector(run, value, what)
+    if type(value) ~= "number" or value % 1 ~= 0 then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, what .. " names a source tutor", {
+        scriptId = run.instance and run.instance.scriptId,
+        tutorNpc = value,
+      })
+    end
+    return value --[[@as integer]]
+  end
+
+  HANDLERS.tutor_move_page_count = function(node, run)
+    local slot = partySlot(run, evalField(node, run, "slot"), "the tutor list")
+    local tutorNpc = tutorSelector(run, evalField(node, run, "tutorNpc"), "the tutor list")
+    local pages = requireService(run, "moveTutor"):tutorPageCount(slot, tutorNpc)
+    semanticsFor(run).writeRef(node.result, pages, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  -- ScrCmd_MoveTutorChooseMove opens the generated list at ScriptMenu_Create's
+  -- own tile origin and blocks on it: its result pointer carries the source's
+  -- pending answer until the row commits.
+  HANDLERS.tutor_choose_move = function(node, run)
+    requireForeground(run, "tutor_choose_move")
+    local service = requireService(run, "moveTutor")
+    local slot = partySlot(run, evalField(node, run, "slot"), "the tutor list")
+    local tutorNpc = tutorSelector(run, evalField(node, run, "tutorNpc"), "the tutor list")
+    local page = evalField(node, run, "page")
+    if type(page) ~= "number" or page % 1 ~= 0 or page < 0 then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the tutor list names its source page", {
+        scriptId = run.instance.scriptId,
+        page = page,
+      })
+    end
+    local resolved = service:tutorPage(slot, tutorNpc, page)
+    local items = {}
+    for _, row in ipairs(resolved.rows) do
+      local definition = requireService(run, "mons"):catalog():move(row.move)
+      items[#items + 1] = {
+        text = string.format("%s %2d", assert(definition.name, "a catalog move carries its display name"), row.cost),
+        value = row.nativeId,
+      }
+    end
+    if resolved.hasNext then
+      items[#items + 1] = { text = "Next", value = 0xFFFD }
+    end
+    items[#items + 1] = { text = "Cancel", value = 0xFFFE }
+    semanticsFor(run).writeRef(node.result, 0xEEEE, run)
+    return blockOnTask(run, "menu", {
+      menu = {
+        kind = "multichoice",
+        tileX = 1,
+        tileY = 1,
+        items = items,
+        initialCursor = 0,
+        cancellable = true,
+        cancelValue = 0xFFFE,
+        result = node.result,
+      },
+    }, node.result)
+  end
+
+  -- ScrCmd_TutorMoveTeachInSlot: the selected move lands in the answered row
+  -- with its base PP and no PP Ups.
+  HANDLERS.tutor_move_teach = function(node, run)
+    local slot = partySlot(run, evalField(node, run, "slot"), "the tutor lesson")
+    local moveSlot = evalField(node, run, "moveSlot")
+    if type(moveSlot) ~= "number" or moveSlot % 1 ~= 0 or moveSlot < 0 or moveSlot > 3 then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the tutor lesson names its move row", {
+        scriptId = run.instance.scriptId,
+        moveSlot = moveSlot,
+      })
+    end
+    local move = evalField(node, run, "move")
+    requireService(run, "mons"):setMove(slot, moveSlot, move)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  -- ScrCmd_TutorMoveGetPrice: the inventory price of the selected move. A move
+  -- the inventory does not offer is an attributed fault, never a zero price.
+  HANDLERS.tutor_move_price = function(node, run)
+    local move = evalField(node, run, "move")
+    local row = requireService(run, "moveTutor"):tutorPrice(move)
+    if row == nil then
+      Errors.raise(ScriptErrors.SCRIPT_TUTOR_MOVE_UNKNOWN, "the move tutor inventory does not offer that move", {
+        scriptId = run.instance.scriptId,
+        move = move,
+      })
+    end
+    semanticsFor(run).writeRef(node.result, row.cost, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  -- ScrCmd_MonCanLearnHeadbuttFromTutor: the Headbutt tutor's own offer list.
+  HANDLERS.headbutt_tutor_eligible = function(node, run)
+    local slot = partySlot(run, evalField(node, run, "slot"), "the Headbutt lesson")
+    local eligible = requireService(run, "moveTutor"):canLearnHeadbutt(slot)
+    semanticsFor(run).writeRef(node.result, eligible and 1 or 0, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
 end
 
 -- The source legendary-story scenes: ScrCmd_ShowLegendaryWing, ScrCmd_
@@ -4370,6 +4486,61 @@ do
   HANDLERS.money_change = handleMoneyChange
   HANDLERS.money_check = handleMoneyCheck
   HANDLERS.money_box = handleMoneyBox
+end
+-- The Battle Point wallet capability the source Frontier commands borrow from
+-- the composed field platform: the generic runtime knows only these
+-- operations, while the live balance, its source saturation and the transient
+-- points window stay with the injected owner.
+---@class ScriptBattlePointsService
+---@field balance fun(self: ScriptBattlePointsService): integer
+---@field give fun(self: ScriptBattlePointsService, amount: integer)
+---@field take fun(self: ScriptBattlePointsService, amount: integer)
+---@field hasEnough fun(self: ScriptBattlePointsService, amount: integer): boolean
+---@field showBox fun(self: ScriptBattlePointsService, valueType: integer, tileX: integer, tileY: integer)
+---@field updateBox fun(self: ScriptBattlePointsService, valueType: integer)
+---@field hideBox fun(self: ScriptBattlePointsService)
+-- Source Battle Point commands (src/scrcmd_9.c): the read and the
+-- affordability check write their answer, give and take charge the requested
+-- amount, and every command returns in the same tick. A missing wallet owner
+-- is an attributed fault, never a silent no-op; the points window shares the
+-- same owner because it paints the same balance. The main chunk is at LuaJIT's
+-- local budget, so the handlers are published inline.
+HANDLERS.battle_points_read = function(node, run)
+  local wallet = requireService(run, "battlePoints") --[[@as ScriptBattlePointsService]]
+  semanticsFor(run).writeRef(node.result, wallet:balance(), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+HANDLERS.battle_points_change = function(node, run)
+  local amount = semanticsFor(run).evaluateValue(node.amount, run)
+  local wallet = requireService(run, "battlePoints") --[[@as ScriptBattlePointsService]]
+  if node.action == "give" then
+    wallet:give(amount)
+  else
+    wallet:take(amount)
+  end
+  return Runtime.OUTCOME_CONTINUE
+end
+HANDLERS.battle_points_check = function(node, run)
+  local amount = semanticsFor(run).evaluateValue(node.amount, run)
+  local wallet = requireService(run, "battlePoints") --[[@as ScriptBattlePointsService]]
+  local affordable = wallet:hasEnough(amount)
+  semanticsFor(run).writeRef(node.result, affordable and 1 or 0, run)
+  return Runtime.OUTCOME_CONTINUE
+end
+-- ScrCmd_ShowPointsBox/HidePointsBox/UpdatePointsBox: the type selector is a
+-- raw source byte, so it reaches the owner as the value the lowering read.
+HANDLERS.points_box = function(node, run)
+  local wallet = requireService(run, "battlePoints") --[[@as ScriptBattlePointsService]]
+  if node.action == "show" then
+    local tileX = semanticsFor(run).evaluateValue(node.tileX, run)
+    local tileY = semanticsFor(run).evaluateValue(node.tileY, run)
+    wallet:showBox(node.valueType, tileX, tileY)
+  elseif node.action == "update" then
+    wallet:updateBox(node.valueType)
+  else
+    wallet:hideBox()
+  end
+  return Runtime.OUTCOME_CONTINUE
 end
 HANDLERS.open_message = handleOpenMessage
 HANDLERS.signpost_direction = handleSignpostDirection

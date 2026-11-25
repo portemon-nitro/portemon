@@ -1,6 +1,7 @@
 -- Authoritative validation for the generated Day Care care family: the source
--- PMS egg-species table, the personal egg-move list, and the source incense
--- pairs, plus the hatch application's own generated presentation (its
+-- PMS egg-species table, the personal egg-move list, the source incense pairs,
+-- and the Frontier move-tutor inventory with its per-species compatibility
+-- lists, plus the hatch application's own generated presentation (its
 -- background, egg and reveal-bar animation frames, the compiled particle
 -- emitters with their staged textures, the source shake tables it draws with,
 -- and the message bank lines the scene prints). Both payloads carry normalized
@@ -26,7 +27,18 @@ local HATCH_ERROR = "POKEMON_CARE_HATCH_INVALID"
 local TRADE_ERROR = "POKEMON_CARE_TRADE_INVALID"
 local fail = SchemaCheck.fail
 
-local CATALOG_FIELDS = { schema = true, eggSpecies = true, eggMoves = true, incense = true, trades = true }
+local CATALOG_FIELDS = {
+  schema = true,
+  eggSpecies = true,
+  eggMoves = true,
+  incense = true,
+  trades = true,
+  tutors = true,
+}
+local TUTORS_FIELDS = { moves = true, learnsets = true }
+local TUTOR_MOVE_FIELDS = { move = true, cost = true, npc = true }
+-- MOVE_TUTOR_NPC_* selectors as the semantic names the runtime asks for.
+local TUTOR_NPCS = { top_left = true, top_right = true, bottom_right = true, headbutt = true }
 local INCENSE_FIELDS = { baby = true, item = true, parent = true }
 local TRADE_FIELDS = {
   offeredSpecies = true,
@@ -169,6 +181,58 @@ function PokemonCareAssetSchema.assertCatalog(catalog)
     SchemaCheck.checkKeys(contest, TRADE_CONTEST_FIELDS, context, CATALOG_ERROR, what .. ".contest")
     for _, field in ipairs({ "cool", "beauty", "cute", "smart", "tough" }) do
       requireIntegerField(contest[field], what .. ".contest." .. field, 0, 255)
+    end
+  end
+  -- The Frontier move tutor inventory in source order, each species' own
+  -- compatible-move list per form, and nothing else: a page, a price or an
+  -- eligibility answer never comes from a second table.
+  local tutors = requireRecord(catalog.tutors, "tutors")
+  assert(type(tutors) == "table")
+  SchemaCheck.checkKeys(tutors, TUTORS_FIELDS, context, CATALOG_ERROR, "tutors")
+  local tutorMoves = requireArray(tutors.moves, "tutors.moves")
+  if #tutorMoves == 0 then
+    fail(CATALOG_ERROR, "tutors.moves must carry the source inventory", {})
+  end
+  local seenMoves = {}
+  for index, row in ipairs(tutorMoves) do
+    local what = "tutors.moves[" .. index .. "]"
+    requireRecord(row, what)
+    assert(type(row) == "table")
+    SchemaCheck.checkKeys(row, TUTOR_MOVE_FIELDS, context, CATALOG_ERROR, what)
+    SchemaCheck.checkNonEmptyString(row.move, context, CATALOG_ERROR, what .. ".move")
+    requireIntegerField(row.cost, what .. ".cost", 0, 255)
+    if type(row.npc) ~= "string" or TUTOR_NPCS[row.npc] ~= true then
+      fail(CATALOG_ERROR, what .. ".npc must name a source tutor", {})
+    end
+    if seenMoves[row.move] then
+      fail(CATALOG_ERROR, what .. " repeats the move " .. row.move, {})
+    end
+    seenMoves[row.move] = true
+  end
+  local learnsets = requireRecord(tutors.learnsets, "tutors.learnsets")
+  assert(type(learnsets) == "table")
+  for speciesKey, forms in pairs(learnsets) do
+    SchemaCheck.checkNonEmptyString(speciesKey, context, CATALOG_ERROR, "tutors.learnsets key")
+    requireArray(forms, "tutors.learnsets." .. speciesKey)
+    if #forms == 0 then
+      fail(CATALOG_ERROR, "tutors.learnsets." .. speciesKey .. " must carry the species' own row", {})
+    end
+    for formIndex, moves in ipairs(forms) do
+      requireArray(moves, "tutors.learnsets." .. speciesKey .. "[" .. formIndex .. "]")
+      local seen = {}
+      for _, moveKey in ipairs(moves) do
+        if seenMoves[moveKey] ~= true then
+          fail(
+            CATALOG_ERROR,
+            "tutors.learnsets." .. speciesKey .. " names a move outside the inventory",
+            { move = moveKey }
+          )
+        end
+        if seen[moveKey] then
+          fail(CATALOG_ERROR, "tutors.learnsets." .. speciesKey .. " repeats the move " .. moveKey, {})
+        end
+        seen[moveKey] = true
+      end
     end
   end
   return true

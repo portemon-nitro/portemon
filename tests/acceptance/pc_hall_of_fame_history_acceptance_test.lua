@@ -552,7 +552,7 @@ function T.tests.previous_save_envelope_keeps_prior_owners_and_an_unknown_first_
   local resumedOk, resumedErr = xpcall(function()
     resumed:waitForFieldEntry()
     local restored = settledCapture(resumed, "the migrated journey")
-    Assert.equal(restored.schema, "g4-game-save-v17", "loading an inherited save republishes the current envelope")
+    Assert.equal(restored.schema, "g4-game-save-v18", "loading an inherited save republishes the current envelope")
     Assert.equal(
       restored.sysInfo.firstClearAt,
       false,

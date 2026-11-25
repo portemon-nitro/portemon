@@ -43,6 +43,90 @@ PokemonCareSources.eggMoveSource = {
 
 -- sIncenseMons (src/get_egg.c): baby, incense item, and evolved parent, in
 -- source row order. A baby only survives when either parent holds its incense.
+-- sTutorMoves (src/field/scrcmd_move_tutor.c): the Frontier move tutor
+-- inventory in source order. Each row names the taught move, its Battle Point
+-- price and the tutor that offers it; the last row is the zero-cost Headbutt
+-- lesson the charcoal maker teaches. The runtime reads this one ordered list,
+-- so a page, a price, and an eligibility filter all come from the same table.
+PokemonCareSources.tutorMoves = {
+  { move = "DIVE", cost = 40, npc = "top_left" },
+  { move = "MUD_SLAP", cost = 32, npc = "top_right" },
+  { move = "FURY_CUTTER", cost = 32, npc = "top_left" },
+  { move = "ICY_WIND", cost = 48, npc = "top_left" },
+  { move = "ROLLOUT", cost = 32, npc = "top_right" },
+  { move = "THUNDER_PUNCH", cost = 64, npc = "top_left" },
+  { move = "FIRE_PUNCH", cost = 64, npc = "top_left" },
+  { move = "SUPERPOWER", cost = 48, npc = "top_right" },
+  { move = "ICE_PUNCH", cost = 64, npc = "top_left" },
+  { move = "IRON_HEAD", cost = 40, npc = "top_right" },
+  { move = "AQUA_TAIL", cost = 40, npc = "top_right" },
+  { move = "OMINOUS_WIND", cost = 48, npc = "top_left" },
+  { move = "GASTRO_ACID", cost = 32, npc = "top_right" },
+  { move = "SNORE", cost = 32, npc = "bottom_right" },
+  { move = "SPITE", cost = 40, npc = "bottom_right" },
+  { move = "AIR_CUTTER", cost = 48, npc = "top_left" },
+  { move = "HELPING_HAND", cost = 40, npc = "bottom_right" },
+  { move = "ENDEAVOR", cost = 64, npc = "top_right" },
+  { move = "OUTRAGE", cost = 48, npc = "top_right" },
+  { move = "ANCIENT_POWER", cost = 40, npc = "top_right" },
+  { move = "SYNTHESIS", cost = 40, npc = "bottom_right" },
+  { move = "SIGNAL_BEAM", cost = 40, npc = "top_right" },
+  { move = "ZEN_HEADBUTT", cost = 64, npc = "top_left" },
+  { move = "VACUUM_WAVE", cost = 48, npc = "top_left" },
+  { move = "EARTH_POWER", cost = 40, npc = "top_right" },
+  { move = "GUNK_SHOT", cost = 32, npc = "top_right" },
+  { move = "TWISTER", cost = 40, npc = "top_right" },
+  { move = "SEED_BOMB", cost = 40, npc = "top_right" },
+  { move = "IRON_DEFENSE", cost = 40, npc = "top_right" },
+  { move = "MAGNET_RISE", cost = 40, npc = "bottom_right" },
+  { move = "LAST_RESORT", cost = 48, npc = "bottom_right" },
+  { move = "BOUNCE", cost = 32, npc = "top_right" },
+  { move = "TRICK", cost = 48, npc = "top_left" },
+  { move = "HEAT_WAVE", cost = 48, npc = "top_right" },
+  { move = "KNOCK_OFF", cost = 40, npc = "top_left" },
+  { move = "SUCKER_PUNCH", cost = 40, npc = "top_left" },
+  { move = "SWIFT", cost = 40, npc = "bottom_right" },
+  { move = "UPROAR", cost = 48, npc = "bottom_right" },
+  { move = "SUPER_FANG", cost = 40, npc = "top_right" },
+  { move = "PAIN_SPLIT", cost = 64, npc = "top_right" },
+  { move = "STRING_SHOT", cost = 32, npc = "bottom_right" },
+  { move = "TAILWIND", cost = 48, npc = "bottom_right" },
+  { move = "GRAVITY", cost = 32, npc = "bottom_right" },
+  { move = "WORRY_SEED", cost = 32, npc = "bottom_right" },
+  { move = "MAGIC_COAT", cost = 32, npc = "bottom_right" },
+  { move = "ROLE_PLAY", cost = 48, npc = "bottom_right" },
+  { move = "HEAL_BELL", cost = 48, npc = "bottom_right" },
+  { move = "LOW_KICK", cost = 32, npc = "top_right" },
+  { move = "SKY_ATTACK", cost = 64, npc = "top_right" },
+  { move = "BLOCK", cost = 32, npc = "bottom_right" },
+  { move = "BUG_BITE", cost = 32, npc = "top_left" },
+  { move = "HEADBUTT", cost = 0, npc = "headbutt" },
+}
+
+-- MOVE_TUTOR_NPC_* selectors (include/constants/scrcmd.h) as the semantic names
+-- the catalog publishes: 0 top left, 1 top right, 2 bottom right, 3 the
+-- Headbutt tutor.
+PokemonCareSources.tutorNpcNames = { [0] = "top_left", [1] = "top_right", [2] = "bottom_right", [3] = "headbutt" }
+
+-- fielddata/wazaoshie/waza_oshie.bin, read by GetMoveTutorLearnset: one 8-byte
+-- bit field per species identity (GetMoveTutorLearnsetIndex), where bit j is set
+-- when inventory row j is learnable. The row list skips SPECIES_EGG and
+-- SPECIES_BAD_EGG, so rows are ordered by species id with those two members
+-- removed; the twelve form pseudo-species at the end belong to the five form
+-- families the source switch names.
+PokemonCareSources.tutorLearnsets = {
+  path = "fielddata/wazaoshie/waza_oshie.bin",
+  entrySize = 8,
+  -- GetMoveTutorLearnset asserts the file holds exactly one row per species
+  -- identity minus the two egg sentinels.
+  speciesCount = 507,
+  firstSpecies = 1,
+  lastSpecies = 493,
+  eggSpecies = 494,
+  badEggSpecies = 495,
+  lastFormSpecies = 507,
+}
+
 PokemonCareSources.incenseRows = {
   { baby = "WYNAUT", item = "LAX_INCENSE", parent = "WOBBUFFET" },
   { baby = "AZURILL", item = "SEA_INCENSE", parent = "MARILL" },

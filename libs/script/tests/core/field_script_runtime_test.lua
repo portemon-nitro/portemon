@@ -334,6 +334,9 @@ function T.nonblocking_message_evaluates_variable_bank_reference_before_host_dis
   local printed = nil
   local run = runState({
     dialogue = {
+      isOpen = function()
+        return false
+      end,
       openMessage = function() end,
       startPrint = function(_, message)
         printed = message
@@ -505,6 +508,378 @@ function T.money_commands_fault_without_a_wallet_owner()
     ---@cast err Errors.Error
     Assert.equal(err.code, ScriptErrors.SCRIPT_SERVICE_MISSING, "the fault names the missing service")
   end
+end
+
+-- The Battle Point family borrows the same kind of injected owner: the
+-- runtime reads the wallet, moves it by the requested amount, answers the
+-- affordability check, and drives the transient points window, while the
+-- source saturation and the recorded statistics stay with the owner.
+local function battlePointsRun(wallet, vars)
+  local values = vars or { VAR_TEMP_x4001 = 32, VAR_TEMP_x4002 = 0 }
+  local run = {
+    instance = { scriptId = "test.battle_points", locals = {}, textArgs = {} },
+    services = {
+      world = {
+        getVar = function(_, id)
+          return values[id]
+        end,
+        setVar = function(_, id, value)
+          values[id] = value
+        end,
+        isFlagSet = function(_, id)
+          return values[id] == true
+        end,
+      },
+      battlePoints = wallet,
+    },
+    semantics = RuntimeValues,
+  }
+  return run, values
+end
+
+-- One recording source wallet with the capability set the runtime may call.
+local function recordingBattlePoints(balance)
+  local wallet = { balance = balance, calls = {} }
+  function wallet:balance()
+    self.calls[#self.calls + 1] = { "balance" }
+    return self.walletBalanceValue or self._balanceValue
+  end
+  function wallet:give(amount)
+    self.calls[#self.calls + 1] = { "give", amount }
+  end
+  function wallet:take(amount)
+    self.calls[#self.calls + 1] = { "take", amount }
+  end
+  function wallet:hasEnough(amount)
+    self.calls[#self.calls + 1] = { "hasEnough", amount }
+    return self._balanceValue >= amount
+  end
+  function wallet:showBox(valueType, tileX, tileY)
+    self.calls[#self.calls + 1] = { "showBox", valueType, tileX, tileY }
+  end
+  function wallet:updateBox(valueType)
+    self.calls[#self.calls + 1] = { "updateBox", valueType }
+  end
+  function wallet:hideBox()
+    self.calls[#self.calls + 1] = { "hideBox" }
+  end
+  wallet._balanceValue = balance
+  return wallet
+end
+
+function T.battle_point_commands_read_move_and_check_the_one_wallet()
+  local wallet = recordingBattlePoints(80)
+  local run, values = battlePointsRun(wallet)
+  Assert.equal(
+    Runtime.executeNode({ op = "battle_points_read", result = { value = "var", id = "VAR_TEMP_x4002" } }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "the source read answers in the same tick"
+  )
+  Assert.equal(values.VAR_TEMP_x4002, 80, "the read writes the saved balance")
+  Assert.equal(
+    Runtime.executeNode({
+      op = "battle_points_change",
+      action = "give",
+      amount = { value = "var", id = "VAR_TEMP_x4001" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(Runtime.executeNode({ op = "battle_points_change", action = "take", amount = 48 }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.deepEqual(wallet.calls, { { "balance" }, { "give", 32 }, { "take", 48 } }, "each command moves the owner once")
+  Assert.isNil(run.blockTaskId, "no Battle Point command blocks on a task")
+end
+
+-- The source reads the amount operand before it writes the result pointer, so
+-- one variable may serve as both.
+function T.battle_point_check_evaluates_an_aliased_amount_before_it_writes_the_result()
+  local wallet = recordingBattlePoints(48)
+  local run, values = battlePointsRun(wallet, { VAR_TEMP_x4001 = 48 })
+  Assert.equal(
+    Runtime.executeNode({
+      op = "battle_points_check",
+      amount = { value = "var", id = "VAR_TEMP_x4001" },
+      result = { value = "var", id = "VAR_TEMP_x4001" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.deepEqual(wallet.calls, { { "hasEnough", 48 } }, "the amount is read before the result is written")
+  Assert.equal(values.VAR_TEMP_x4001, 1, "the exact affordable boundary answers 1")
+  values.VAR_TEMP_x4001 = 49
+  Runtime.executeNode({
+    op = "battle_points_check",
+    amount = { value = "var", id = "VAR_TEMP_x4001" },
+    result = { value = "var", id = "VAR_TEMP_x4001" },
+  }, run)
+  Assert.equal(values.VAR_TEMP_x4001, 0, "one point short answers 0")
+end
+
+function T.the_points_window_passes_the_raw_type_and_evaluated_coordinates()
+  local wallet = recordingBattlePoints(200)
+  local run = battlePointsRun(wallet)
+  Assert.equal(
+    Runtime.executeNode({
+      op = "points_box",
+      action = "show",
+      valueType = 1,
+      tileX = { value = "var", id = "VAR_TEMP_x4001" },
+      tileY = 21,
+    }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "the source window opens in the same tick"
+  )
+  Assert.equal(Runtime.executeNode({ op = "points_box", action = "update", valueType = 1 }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(Runtime.executeNode({ op = "points_box", action = "hide" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.isNil(run.blockTaskId, "the points window never blocks on a task")
+  Assert.deepEqual(wallet.calls, {
+    { "showBox", 1, 32, 21 },
+    { "updateBox", 1 },
+    { "hideBox" },
+  }, "the window operations arrive in source order with the evaluated coordinates")
+end
+
+function T.battle_point_and_points_window_commands_fault_without_their_owner()
+  for _, node in ipairs({
+    { op = "battle_points_read", result = { value = "var", id = "VAR_TEMP_x4002" } },
+    { op = "battle_points_change", action = "give", amount = 1 },
+    { op = "battle_points_check", amount = 1, result = { value = "var", id = "VAR_TEMP_x4002" } },
+    { op = "points_box", action = "hide" },
+  }) do
+    local run = battlePointsRun(nil)
+    local ok, err = pcall(function()
+      Runtime.executeNode(node, run)
+    end)
+    Assert.isFalse(ok, "a scripted " .. node.op .. " never succeeds without the wallet owner")
+    Assert.isTrue(Errors.is(err), "the missing owner is an attributed fault: " .. tostring(err))
+    ---@cast err Errors.Error
+    Assert.equal(err.code, ScriptErrors.SCRIPT_SERVICE_MISSING, "the fault names the missing service")
+  end
+end
+
+-- The Frontier move tutor family: the page count, the price and the Headbutt
+-- eligibility answer in the same tick through the tutor owner; the list menu
+-- blocks the script on the generated page, whose rows carry the source move
+-- identities, the Next row 0xfffd and the Cancel row 0xfffe.
+local function tutorRun(tutor, mons, vars)
+  local values = vars or { VAR_TEMP_x4001 = 0, VAR_TEMP_x4002 = 1 }
+  local written = {}
+  local run = {
+    instance = { scriptId = "test.tutor", mode = "foreground", locals = {}, textArgs = {} },
+    services = {
+      world = {
+        getVar = function(_, id)
+          return values[id]
+        end,
+        setVar = function(_, id, value)
+          values[id] = value
+        end,
+        isFlagSet = function(_, id)
+          return values[id] == true
+        end,
+      },
+      moveTutor = tutor,
+      mons = mons,
+    },
+    scheduler = {
+      createTask = function(_, taskType, spec)
+        return { type = taskType, spec = spec }
+      end,
+    },
+    semantics = {
+      evaluateValue = function(value)
+        if type(value) == "table" then
+          return values[value.id]
+        end
+        return value
+      end,
+      writeRef = function(ref, value)
+        written[ref.id] = value
+        values[ref.id] = value
+      end,
+    },
+  }
+  return run, values, written
+end
+
+local function recordingTutor()
+  local tutor = { calls = {} }
+  function tutor:tutorPageCount(slot, tutorNpc)
+    self.calls[#self.calls + 1] = { "tutorPageCount", slot, tutorNpc }
+    return 2
+  end
+  function tutor:tutorPage(slot, tutorNpc, page)
+    self.calls[#self.calls + 1] = { "tutorPage", slot, tutorNpc, page }
+    return {
+      rows = {
+        { move = "MUD_SLAP", cost = 32, nativeId = 189 },
+        { move = "SUPERPOWER", cost = 48, nativeId = 276 },
+      },
+      hasNext = true,
+    }
+  end
+  function tutor:tutorPrice(move)
+    self.calls[#self.calls + 1] = { "tutorPrice", move }
+    if move == 189 then
+      return { move = "MUD_SLAP", cost = 32, nativeId = 189 }
+    end
+    return nil
+  end
+  function tutor:canLearnHeadbutt(slot)
+    self.calls[#self.calls + 1] = { "canLearnHeadbutt", slot }
+    return slot == 0
+  end
+  return tutor
+end
+
+local function recordingTutorMons()
+  local mons = { calls = {}, taught = {} }
+  function mons:catalog()
+    return {
+      move = function(_, key)
+        return { nativeId = key == "MUD_SLAP" and 189 or 276, name = key, basePp = 10 }
+      end,
+    }
+  end
+  function mons:setMove(slot, moveSlot, move)
+    self.calls[#self.calls + 1] = { "setMove", slot, moveSlot, move }
+    self.taught[#self.taught + 1] = { slot = slot, moveSlot = moveSlot, move = move }
+  end
+  return mons
+end
+
+function T.tutor_queries_answer_in_the_same_tick()
+  local tutor = recordingTutor()
+  local run, _, written = tutorRun(tutor, recordingTutorMons(), { VAR_TEMP_x4001 = 2, VAR_TEMP_x4002 = 1 })
+  Assert.equal(
+    Runtime.executeNode({
+      op = "tutor_move_page_count",
+      slot = { value = "var", id = "VAR_TEMP_x4001" },
+      tutorNpc = { value = "var", id = "VAR_TEMP_x4002" },
+      result = { value = "var", id = "VAR_TEMP_x4003" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(written.VAR_TEMP_x4003, 2, "the page count answers in the same tick")
+  Assert.equal(
+    Runtime.executeNode({
+      op = "tutor_move_price",
+      move = 189,
+      result = { value = "var", id = "VAR_TEMP_x4004" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(written.VAR_TEMP_x4004, 32, "the price answers the inventory row")
+  Assert.equal(
+    Runtime.executeNode({
+      op = "headbutt_tutor_eligible",
+      slot = { value = "var", id = "VAR_TEMP_x4001" },
+      result = { value = "var", id = "VAR_TEMP_x4005" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(written.VAR_TEMP_x4005, 0, "an ineligible party slot answers 0")
+  Assert.deepEqual(tutor.calls, {
+    { "tutorPageCount", 2, 1 },
+    { "tutorPrice", 189 },
+    { "canLearnHeadbutt", 2 },
+  })
+end
+
+function T.the_tutor_price_query_faults_on_a_move_outside_the_inventory()
+  local run = tutorRun(recordingTutor(), recordingTutorMons())
+  local ok, err = pcall(function()
+    Runtime.executeNode({ op = "tutor_move_price", move = 9999, result = { value = "var", id = "VAR_TEMP_x4004" } }, run)
+  end)
+  Assert.isFalse(ok, "an unoffered move never prices at zero")
+  Assert.isTrue(Errors.is(err), "the refusal is an attributed fault: " .. tostring(err))
+  ---@cast err Errors.Error
+  Assert.equal(err.code, ScriptErrors.SCRIPT_TUTOR_MOVE_UNKNOWN)
+end
+
+function T.the_tutor_teaching_command_writes_the_answered_row_once()
+  local mons = recordingTutorMons()
+  local run = tutorRun(recordingTutor(), mons, { VAR_TEMP_x4001 = 0, VAR_TEMP_x4002 = 3, VAR_TEMP_x4003 = 189 })
+  Assert.equal(
+    Runtime.executeNode({
+      op = "tutor_move_teach",
+      slot = { value = "var", id = "VAR_TEMP_x4001" },
+      moveSlot = { value = "var", id = "VAR_TEMP_x4002" },
+      move = { value = "var", id = "VAR_TEMP_x4003" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.deepEqual(
+    mons.taught,
+    { { slot = 0, moveSlot = 3, move = 189 } },
+    "the answered row receives the selected source move exactly once"
+  )
+end
+
+function T.the_tutor_list_blocks_on_its_generated_page()
+  local tutor = recordingTutor()
+  local run, _, written = tutorRun(tutor, recordingTutorMons(), { VAR_TEMP_x4001 = 0, VAR_TEMP_x4002 = 1, VAR_TEMP_x4004 = 0 })
+  local outcome = Runtime.executeNode({
+    op = "tutor_choose_move",
+    slot = { value = "var", id = "VAR_TEMP_x4001" },
+    tutorNpc = { value = "var", id = "VAR_TEMP_x4002" },
+    page = { value = "var", id = "VAR_TEMP_x4004" },
+    result = { value = "var", id = "VAR_TEMP_x4003" },
+  }, run)
+  Assert.equal(outcome, Runtime.OUTCOME_BLOCK, "the source list blocks the script")
+  Assert.equal(run.blockTaskId.type, "menu", "the list rides the shared source menu task")
+  local items = run.blockTaskId.spec.menu.items
+  Assert.equal(#items, 4, "two moves plus the Next and Cancel rows")
+  Assert.equal(items[1].value, 189, "a row carries the source move identity")
+  Assert.equal(items[2].value, 276, "the second row carries its own identity")
+  Assert.equal(items[3].value, 0xFFFD, "the Next row carries the source sentinel")
+  Assert.equal(items[4].value, 0xFFFE, "the Cancel row carries the source sentinel")
+  Assert.isTrue(items[1].text:find("32", 1, true) ~= nil, "a row prints the source price beside the move name")
+  Assert.equal(written.VAR_TEMP_x4003, 0xEEEE, "the open list publishes the source pending answer")
+  Assert.deepEqual(run.blockResultRef, { value = "var", id = "VAR_TEMP_x4003" }, "the completed row writes its own target")
+  Assert.deepEqual(tutor.calls, { { "tutorPage", 0, 1, 0 } })
+end
+
+function T.battle_point_and_tutor_nodes_carry_source_operands_only()
+  local function validate(step)
+    return S.validate({ api = 1, id = "test.battle_points_schema", steps = { step } })
+  end
+  Assert.equal(validate({ op = "battle_points_read", result = { value = "var", id = "VAR_TEMP_x4002" } }), true)
+  Assert.equal(validate({ op = "battle_points_change", action = "give", amount = 32 }), true)
+  Assert.equal(validate({ op = "battle_points_change", action = "take", amount = { value = "var", id = "V" } }), true)
+  Assert.equal(validate({ op = "battle_points_check", amount = 48, result = { value = "var", id = "V" } }), true)
+  Assert.equal(validate({ op = "points_box", action = "show", valueType = 1, tileX = 21, tileY = 1 }), true)
+  Assert.equal(validate({ op = "points_box", action = "update", valueType = 1 }), true)
+  Assert.equal(validate({ op = "points_box", action = "hide" }), true)
+  Assert.equal(
+    validate({
+      op = "tutor_move_page_count",
+      slot = 0,
+      tutorNpc = 1,
+      result = { value = "var", id = "V" },
+    }),
+    true
+  )
+  Assert.equal(
+    validate({
+      op = "tutor_choose_move",
+      slot = 0,
+      tutorNpc = 1,
+      page = 0,
+      result = { value = "var", id = "V" },
+    }),
+    true
+  )
+  Assert.equal(validate({ op = "tutor_move_teach", slot = 0, moveSlot = 3, move = 189 }), true)
+  Assert.equal(validate({ op = "tutor_move_price", move = 189, result = { value = "var", id = "V" } }), true)
+  Assert.equal(validate({ op = "headbutt_tutor_eligible", slot = 0, result = { value = "var", id = "V" } }), true)
+
+  Assert.isNil(validate({ op = "battle_points_change", action = "restore", amount = 1 }), "two wallet actions")
+  Assert.isNil(validate({ op = "battle_points_read" }), "a wallet read names its result variable")
+  Assert.isNil(validate({ op = "points_box", action = "show", valueType = 1 }), "show needs both coordinates")
+  Assert.isNil(validate({ op = "points_box", action = "update", valueType = 1, tileX = 1 }), "only show carries a tile")
+  Assert.isNil(validate({ op = "points_box", action = "update" }), "a repaint names its source type")
+  Assert.isNil(validate({ op = "points_box", action = "hide", valueType = 1 }), "hiding carries no type")
+  Assert.isNil(validate({ op = "tutor_choose_move", slot = 0, tutorNpc = 1, result = {} }), "the page is required")
+  Assert.isNil(validate({ op = "tutor_move_price", move = 189 }), "the price names its result variable")
 end
 
 function T.money_operations_carry_source_operands_only()

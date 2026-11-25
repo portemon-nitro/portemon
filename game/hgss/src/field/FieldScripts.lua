@@ -26,6 +26,7 @@ local MapInitScriptController = require("libs.hgss.src.field.MapInitScriptContro
 local FollowerInteractionEngine = require("libs.hgss.src.field.FollowerInteractionEngine")
 local FieldMoveCue = require("game.hgss.src.field.FieldMoveCue")
 local FieldMoneyBox = require("game.hgss.src.field.FieldMoneyBox")
+local FieldPointsBox = require("game.hgss.src.field.FieldPointsBox")
 local FieldFloorWindow = require("game.hgss.src.field.FieldFloorWindow")
 
 -- The player facade the script services consume: position/facing/gender/name
@@ -298,6 +299,100 @@ function MoneyService:hideBox()
   self._box:hide()
 end
 
+-- The script Battle Point operations: the source arithmetic over the one saved
+-- wallet plus the statistics the source records beside it, and window
+-- mutations delegated to the field points box. The wallet saturates at its
+-- source maximum and floors at zero, while the requested amount still reaches
+-- the statistics (ScrCmd_GiveBattlePoints/TakeBattlePoints), so both owners
+-- stage and publish together: the wallet balance, its statistics and the drawn
+-- window never describe different transactions.
+---@class BattlePointsService
+---@field private _wallet table<string, unknown>
+---@field private _stats table<string, unknown>
+---@field private _box FieldPointsBox
+local BattlePointsService = {}
+BattlePointsService.__index = BattlePointsService
+
+-- The requested amount is a source u16 script operand.
+local MAX_REQUESTED_AMOUNT = 0xFFFF
+
+---@param amount unknown
+---@return integer
+local function checkSourceAmount(amount)
+  assert(
+    type(amount) == "number" and amount % 1 == 0 and amount >= 0 and amount <= MAX_REQUESTED_AMOUNT,
+    "a source Battle Point amount must be an unsigned 16-bit operand"
+  )
+  return amount
+end
+
+---@param wallet table<string, unknown>
+---@param stats table<string, unknown>
+---@param box FieldPointsBox
+---@return BattlePointsService
+function BattlePointsService.new(wallet, stats, box)
+  return setmetatable({ _wallet = wallet, _stats = stats, _box = box }, BattlePointsService)
+end
+
+---@return integer
+function BattlePointsService:balance()
+  return self._wallet:balance()
+end
+
+-- Stages one wallet replacement and its recorded statistic, then publishes
+-- both: the source adds the requested amount to GAME_STAT_BATTLE_POINTS_
+-- RECEIVED/SPENT first and applies the wallet action afterwards, so a
+-- saturated grant or a floored charge still counts what the script asked for.
+---@param observationKind "battle_points_received"|"battle_points_spent"
+---@param balance integer the balance the source action produces
+---@param amount integer the requested amount
+function BattlePointsService:_stage(observationKind, balance, amount)
+  local stats = self._stats:prepareChanges({ observations = { { kind = observationKind, amount = amount } } })
+  local wallet = self._wallet:prepare(balance)
+  assert(stats.isCurrent(), "the staged Battle Point statistic became stale")
+  assert(wallet.isCurrent(), "the staged Battle Point balance became stale")
+  stats.publish()
+  wallet.publish()
+end
+
+---@param amount integer
+function BattlePointsService:give(amount)
+  local requested = checkSourceAmount(amount)
+  local wallet = self._wallet
+  self:_stage("battle_points_received", math.min(wallet.MAX, wallet:balance() + requested), requested)
+end
+
+---@param amount integer
+function BattlePointsService:take(amount)
+  local requested = checkSourceAmount(amount)
+  local wallet = self._wallet
+  self:_stage("battle_points_spent", math.max(0, wallet:balance() - requested), requested)
+end
+
+---@param amount integer
+---@return boolean
+function BattlePointsService:hasEnough(amount)
+  local requested = checkSourceAmount(amount)
+  local balance = self._wallet:balance() --[[@as integer]]
+  return balance >= requested
+end
+
+---@param valueType integer
+---@param tileX integer
+---@param tileY integer
+function BattlePointsService:showBox(valueType, tileX, tileY)
+  self._box:show(valueType, tileX, tileY)
+end
+
+---@param valueType integer
+function BattlePointsService:updateBox(valueType)
+  self._box:update(valueType)
+end
+
+function BattlePointsService:hideBox()
+  self._box:hide()
+end
+
 ---@class FieldScriptsOptions
 ---@field cacheFs CacheFs
 ---@field overrideFs table<string, unknown> read-shaped filesystem for data/scripts/overrides
@@ -341,7 +436,8 @@ end
 ---@field partySelection table<string, unknown>|nil the modal script-party surface the blocking selection task opens and closes (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field mart table<string, unknown>|nil the script-owned mart child host (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field travel table<string, unknown>|nil the durable travel owner for spawn updates (absent -> SCRIPT_SERVICE_MISSING on use)
----@field gameStats table<string, unknown>|nil the live game-stats owner behind script score events (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field gameStats table<string, unknown>|nil the live game-stats owner behind script score events and the Battle Point statistics (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field battlePoints table<string, unknown>|nil the saved Battle Point wallet behind its script commands and window (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field fieldMoves table<string, unknown>|nil the field-move runtime for task execution (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field fieldMoveAftermath table<string, unknown>|nil the Rock Smash / Headbutt aftermath service (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field sweetScent table<string, unknown>|nil the Sweet Scent host seam for the scent task (absent -> SCRIPT_SERVICE_MISSING on use)
@@ -413,6 +509,7 @@ end
 ---@field initController MapInitScriptController
 ---@field blackoutFlow FieldBlackoutFlow?
 ---@field moneyBox FieldMoneyBox the one transient source money window the field draw renders
+---@field pointsBox FieldPointsBox the one transient points window the field draw renders
 ---@field mapSource RuntimeFieldMap the active runtime map map-scoped script state is bound to
 ---@field propAnimations table<string, unknown>|nil
 ---@field floorWindow FieldFloorWindow the source floor box the field presents and releases
@@ -652,6 +749,24 @@ function FieldScripts.new(opts)
     moneyService = MoneyService.new(opts.profile, moneyBox)
   end
 
+  -- The transient points window and its script facade. The box borrows the
+  -- live wallet for the displayed balance and the message provider for the
+  -- source row; without a wallet no facade is synthesized, so the commands and
+  -- the window keep their missing-service fault instead of painting a scratch
+  -- balance.
+  local pointsBox = FieldPointsBox.new({
+    messages = opts.messageProvider,
+    battlePoints = opts.battlePoints,
+  })
+  local battlePointsService = nil
+  if opts.battlePoints ~= nil then
+    battlePointsService = BattlePointsService.new(
+      opts.battlePoints,
+      assert(opts.gameStats, "Battle Point commands need the game-stats owner"),
+      pointsBox
+    )
+  end
+
   -- The generated rival default name is wired only when the runtime knows the
   -- selected edition: without one there is no row to read, and the naming task
   -- keeps its missing-service fault.
@@ -679,6 +794,7 @@ function FieldScripts.new(opts)
     mapSource = opts.sourceMap,
     propAnimations = opts.propAnimations,
     moneyBox = moneyBox,
+    pointsBox = pointsBox,
     floorWindow = floorWindowHost,
   }, FieldScripts)
   if opts.propAnimations ~= nil then
@@ -786,6 +902,7 @@ function FieldScripts.new(opts)
       partySelection = opts.partySelection,
       mart = opts.mart,
       money = moneyService,
+      battlePoints = battlePointsService,
       travel = opts.travel,
       gameStats = opts.gameStats,
       fieldMoves = opts.fieldMoves,
@@ -875,14 +992,15 @@ local function rebindMapContext(self, sourceMap)
 end
 
 -- Rebind the facade and warp source after a map swap (the player and the
--- current map are replaced by the transition). The transient source money
--- window belongs to the map that opened it, so a swap closes it exactly once
--- before the destination map publishes.
+-- current map are replaced by the transition). The transient source money and
+-- points windows belong to the map that opened them, so a swap closes them
+-- exactly once before the destination map publishes.
 ---@param player FieldPlayer
 ---@param sourceMap RuntimeFieldMap
 function FieldScripts:onMapSwap(player, sourceMap)
   self.player:setPlayer(player)
   self.moneyBox:dispose()
+  self.pointsBox:dispose()
   rebindMapContext(self, sourceMap)
 end
 

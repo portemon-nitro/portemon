@@ -568,4 +568,81 @@ function T.daycare_deposit_observations_carry_no_payload()
   end, "a deposit observation carries no payload")
 end
 
+-- The Battle Point statistics record the amount the source command asked
+-- for, not the balance the wallet could apply: ScrCmd_GiveBattlePoints and
+-- ScrCmd_TakeBattlePoints add their own operand to GAME_STAT_BATTLE_POINTS_
+-- RECEIVED/SPENT before FrontierData_BattlePointAction saturates or floors the
+-- wallet (src/scrcmd_9.c). Both counters are extra-wide source statistics, so
+-- they cap at 999999999 rather than the u16 GAME_STAT_MAX, and they earn no
+-- score and mark no species.
+function T.battle_point_statistics_record_the_requested_amounts()
+  local owner = newOwner()
+  local revision = owner:revision()
+  local prepared = owner:prepareChanges({
+    observations = { { kind = "battle_points_received", amount = 48 } },
+  })
+  Assert.isTrue(prepared.changed, "a received amount changes the counter")
+  Assert.equal(owner:battlePointsReceived(), 0, "staging never mutates live counters")
+  prepared.publish()
+  Assert.equal(owner:battlePointsReceived(), 48, "the requested amount is recorded")
+  Assert.equal(owner:battlePointsSpent(), 0, "the other counter stays untouched")
+  Assert.equal(owner:score(), 0, "a point transaction awards no score")
+  Assert.equal(owner:uniqueCount(), 0, "a point transaction registers no species")
+  Assert.equal(owner:revision(), revision + 1)
+
+  owner:prepareChanges({ observations = { { kind = "battle_points_spent", amount = 32 } } }):publish()
+  Assert.equal(owner:battlePointsSpent(), 32, "the spent amount is recorded separately")
+  Assert.equal(owner:battlePointsReceived(), 48, "the received total is unaffected")
+
+  -- A zero amount is a valid source operand that changes nothing, so it stages
+  -- no change at all.
+  local unchanged = owner:prepareChanges({
+    observations = { { kind = "battle_points_spent", amount = 0 } },
+  })
+  Assert.isFalse(unchanged.changed, "a zero amount reports no change")
+
+  local bucket = owner:bucket()
+  Assert.equal(bucket.battlePointsReceived, 48, "the bucket carries the received total")
+  Assert.equal(bucket.battlePointsSpent, 32, "the bucket carries the spent total")
+  local restored = GameStats.restore(bucket, refs())
+  Assert.equal(restored:battlePointsReceived(), 48, "the received total round-trips")
+  Assert.equal(restored:battlePointsSpent(), 32, "the spent total round-trips")
+  Assert.deepEqual(restored:bucket(), bucket, "the rest of the bucket round-trips unchanged")
+end
+
+function T.battle_point_statistics_saturate_at_the_extra_wide_ceiling()
+  local owner = GameStats.restore({
+    schema = "hgss-stats-v5",
+    stateVersion = 5,
+    uniqueCaught = {},
+    uniqueTotal = 0,
+    score = 0,
+    mailWritten = 0,
+    leagueWins = 0,
+    daycareDeposits = 0,
+    eggsHatched = 0,
+    battlePointsReceived = GameStats.BATTLE_POINTS_CAP - 10,
+    battlePointsSpent = GameStats.BATTLE_POINTS_CAP - 1,
+  }, refs())
+  owner:prepareChanges({ observations = { { kind = "battle_points_received", amount = 48 } } }):publish()
+  Assert.equal(owner:battlePointsReceived(), GameStats.BATTLE_POINTS_CAP, "the extra-wide ceiling holds")
+  owner:prepareChanges({ observations = { { kind = "battle_points_spent", amount = 64 } } }):publish()
+  Assert.equal(owner:battlePointsSpent(), GameStats.BATTLE_POINTS_CAP, "the spent counter caps too")
+end
+
+function T.battle_point_observations_validate_their_requested_amount()
+  local owner = newOwner()
+  for _, amount in ipairs({ -1, 1.5, "32", 65536, nil }) do
+    assertInvalid(function()
+      owner:prepareChanges({ observations = { { kind = "battle_points_received", amount = amount } } })
+    end, "a requested amount must be a source u16 operand: " .. tostring(amount))
+  end
+  assertInvalid(function()
+    owner:prepareChanges({
+      observations = { { kind = "battle_points_spent", amount = 32, species = "CHIKORITA" } },
+    })
+  end, "a point observation carries no species")
+  Assert.equal(owner:battlePointsSpent(), 0, "a refused observation leaves the counter untouched")
+end
+
 return { tests = T }
