@@ -593,6 +593,8 @@ function BagHeroRenderer:_startBuild(gender)
   local selfRef = self
   local function awaitPrepared(kind, path)
     local token = queue:request(kind, path, "prefetch")
+    -- The staged hero build blocks on this resource: promote it alone.
+    queue:promote(token, "demand")
     build.token = token
     while true do
       local status, failure = queue:poll(token)

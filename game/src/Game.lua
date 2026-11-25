@@ -133,6 +133,23 @@ function Game:focus(focused)
   end
 end
 
+-- Presentation policy asks the running game whether its current child owns a
+-- blocking asset-preparation screen. The host forwards the child's optional
+-- query so the launcher never inspects a concrete game composition, and a
+-- child without the query is ordinary gameplay.
+---@return boolean
+function Game:isPreparingAssets()
+  local state = self.state
+  if state == nil then
+    return false
+  end
+  local query = state.isPreparingAssets
+  if type(query) ~= "function" then
+    return false
+  end
+  return query(state) == true
+end
+
 ---@param result table<string, unknown>|nil
 function Game:exit(result)
   if self.terminal then

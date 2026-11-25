@@ -3111,11 +3111,24 @@ function T.loader_presentation_fills_every_free_worker_across_urgency_lanes()
     Assert.equal(pool:status("map:40003"), "queued", "sweep work waits behind the occupied background slot")
 
     pool:setLoading(true)
-    Assert.equal(#host.threads, 4, "a loader presentation activates the host's usable processors")
+    Assert.equal(#host.threads, 2, "the loader report alone starts no thread; threads grow on eligible work")
+    Assert.equal(
+      pool:occupancyLimit(),
+      4,
+      "the loader raises the active admission bound to the host's usable processors"
+    )
     pool:update()
     Assert.equal(#host.dispatched, 3, "the loader fills every free slot across the urgency lanes")
     Assert.equal(pool:status("map:40002"), "running", "near work takes a loader-side slot")
     Assert.equal(pool:status("map:40003"), "running", "sweep work takes a loader-side slot")
+    Assert.equal(#host.threads, 3, "only the work that needs a thread starts one")
+
+    pool:request(job("40006", 100))
+    pool:request(job("40007", 100))
+    pool:update()
+    Assert.equal(#host.threads, 4, "concurrent eligible work grows the pool to its loader bound")
+    Assert.equal(pool:status("map:40006"), "running", "the fourth slot takes loader work")
+    Assert.equal(pool:status("map:40007"), "queued", "the loader bound still caps concurrent work")
 
     pool:setLoading(false)
     pool:request(job("40004", 10))
@@ -3126,6 +3139,90 @@ function T.loader_presentation_fills_every_free_worker_across_urgency_lanes()
       "leaving the loader restores ordinary interactive admission without starting more threads"
     )
     Assert.equal(#host.threads, 4, "leaving the loader keeps the started threads instead of churning them")
+  end)
+  pool:shutdown()
+end
+
+-- Leaving a loader restores the ordinary active bound for NEW work even though
+-- the host-sized thread set stays allocated: retained idle threads never take
+-- above-cap work, running jobs keep draining, and dispatch resumes once total
+-- occupancy falls below the restored bound.
+function T.loader_exit_bounds_new_required_dispatch_to_the_ordinary_cap()
+  local CompilerPool = requirePool()
+  local host = newThreadHost(5)
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "interactive", developmentRepositoryRoot = "/checkout" })
+  end))
+  local generation = "loader-exit-bound-generation"
+  local function job(key)
+    return {
+      generationId = generation,
+      epoch = 1,
+      versionId = "heartgold",
+      kind = "map",
+      key = key,
+      jobKey = "map:" .. key,
+      priority = 0,
+      sizeClass = "normal",
+      dependencies = {},
+      payload = { mapId = tonumber(key) },
+    }
+  end
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
+    pool:setLoading(true)
+    for index = 1, 4 do
+      pool:request(job(tostring(50000 + index)))
+    end
+    pool:update()
+    Assert.equal(#host.dispatched, 4, "the loader runs required work up to the host bound")
+    Assert.equal(#host.threads, 4, "four concurrent jobs own four threads")
+    local messages = {}
+    for workerId = 1, 4 do
+      messages[workerId] = dispatchedJob(host, workerId)
+    end
+    local function settle(workerId)
+      local message = messages[workerId]
+      host.channels[1]:push({
+        workerId = workerId,
+        epoch = 1,
+        generationId = generation,
+        kind = message.kind,
+        key = message.key,
+        jobKey = message.jobKey,
+        dispatchId = message.dispatchId,
+        status = "failed",
+      })
+    end
+
+    pool:setLoading(false)
+    Assert.equal(pool:occupancyLimit(), 2, "leaving the loader restores the ordinary active bound")
+    pool:request(job("50010"))
+    pool:update()
+    Assert.equal(pool:status("map:50010"), "queued", "no new above-cap work dispatches after loader exit")
+    local _, details = pool:status("map:50010")
+    Assert.equal(
+      type(details) == "table" and details.waitingOn,
+      "active-job",
+      "the post-loader wait names physical occupancy"
+    )
+    Assert.equal(#host.dispatched, 4, "retained idle threads take no post-loader work")
+    Assert.equal(#host.threads, 4, "the retained thread set stays allocated")
+
+    -- Two of the four over-cap jobs settle: occupancy is still at the bound, so
+    -- the queued job stays put rather than multiplying concurrency again.
+    settle(1)
+    settle(2)
+    pool:update()
+    Assert.equal(pool:status("map:50010"), "queued", "occupancy at the bound holds the next job")
+
+    -- The third settle drops occupancy below the restored bound without
+    -- preempting the fourth running job.
+    settle(3)
+    pool:update()
+    Assert.equal(pool:status("map:50010"), "running", "dispatch resumes once occupancy is below the bound")
+    Assert.equal(#host.threads, 4, "the resumed job reuses a retained idle thread")
+    Assert.equal(pool:status("map:" .. tostring(50004)), "running", "the last over-cap job is never preempted")
   end)
   pool:shutdown()
 end
@@ -3200,11 +3297,13 @@ function T.prepared_results_never_double_count_against_idle_slots()
   withLove(host.love, function()
     pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
     pool:setLoading(true)
-    Assert.equal(#host.threads, 3, "the loader presentation activates three slots")
+    Assert.equal(#host.threads, 2, "the loader report alone starts no thread")
+    Assert.equal(pool:occupancyLimit(), 3, "the loader presentation raises the active bound to three slots")
     pool:request(job("43001"))
     pool:request(job("43002"))
     pool:request(job("43003"))
     pool:update(0)
+    Assert.equal(#host.threads, 3, "three concurrent jobs own three threads")
     Assert.equal(pool:status("map:43001"), "running", "the first slot starts work")
     Assert.equal(pool:status("map:43002"), "running", "the second slot starts work")
     Assert.equal(pool:status("map:43003"), "running", "the third slot starts work")

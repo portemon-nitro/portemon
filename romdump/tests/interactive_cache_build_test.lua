@@ -249,8 +249,8 @@ local function retryCapablePool()
     return true
   end
   function pool:update() end
-  -- Physical slots the loader policy sizes its speculative supply against.
-  function pool:workerSlotCount()
+  -- Active occupancy the loader policy sizes its speculative supply against.
+  function pool:occupancyLimit()
     return self.slots
   end
   function pool:status(jobKey)
@@ -3244,6 +3244,138 @@ function T.completion_reports_source_settled_only_when_no_source_work_remains()
   Assert.isFalse(completeCompletion:sourceWorkSettled(), "an open complete intent keeps the source alive")
   demanded:retire()
   Assert.isTrue(demandCompletion:sourceWorkSettled(), "a retired session owns no future source work")
+end
+
+-- Cursor exhaustion is not sweep completion: roots enrolled before the
+-- enumerator ended keep settling, their failures still belong to the sweep, and
+-- only after the last one settles may the sweep claim its terminal state.
+function T.sweep_exhaustion_waits_for_outstanding_roots_to_settle()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  pool.slots = 3
+  local _, clock = newFakeClock()
+  local session = warmingSessionWithClock("sweep-settlement-generation", pool, backend, clock)
+  session:enableSweep()
+  session:setLoading(true)
+  for _ = 1, 4 do
+    session:update()
+  end
+  local roots = {}
+  for index, jobKey in ipairs(pool.submitted) do
+    roots[index] = jobKey
+  end
+  Assert.isTrue(#roots >= 2, "the loader keeps several roots outstanding")
+
+  -- The enumerator reaches its end while the enrolled roots are still running.
+  -- The supply bound is raised so the pump actually consults the enumerator.
+  pool.slots = 10
+  session.completion.sweepNext = function()
+    return nil
+  end
+  for _ = 1, 10 do
+    if session.completion.sweepExhausted then
+      break
+    end
+    session:update()
+  end
+  Assert.isTrue(session.completion.sweepExhausted, "the cursor reached its end")
+  Assert.equal(session:status().sweepState, "settling", "cursor exhaustion alone is not sweep completion")
+  Assert.isFalse(session.completion:sourceWorkSettled(), "outstanding roots keep the shared source alive")
+
+  pool.states[roots[1]] = { state = "failed", details = { error = "synthetic sweep failure" } }
+  for _ = 1, 3 do
+    session:update()
+  end
+  Assert.equal(session:status().sweepState, "settling", "one failure among outstanding roots is not terminal")
+
+  for index = 2, #roots do
+    pool.states[roots[index]] = { state = "failed", details = { error = "synthetic later sweep failure" } }
+  end
+  for _ = 1, 3 do
+    session:update()
+  end
+  local terminal = session:status()
+  Assert.equal(session.completion.sweepOutstandingCount, 0, "every enrolled root settled")
+  Assert.equal(terminal.sweepState, "incomplete", "the settled sweep reports its failure")
+  Assert.isTrue(
+    tostring(terminal.sweepFailure):find("synthetic sweep failure", 1, true) ~= nil,
+    "the settled sweep keeps the attributed cause: " .. tostring(terminal.sweepFailure)
+  )
+  Assert.isTrue(session.completion:sourceWorkSettled(), "settled roots release the shared source")
+end
+
+-- A candidate another origin already enrolled is the same physical job: it
+-- supplies no independent occupancy, so the loader steps past it instead of
+-- counting it as one of its outstanding roots.
+function T.an_already_enrolled_sweep_candidate_adds_no_independent_supply()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  pool.slots = 3
+  local _, clock = newFakeClock()
+  local session = warmingSessionWithClock("sweep-independent-supply-generation", pool, backend, clock)
+  local firstCandidate = assert(ArtifactJobs.completeIterator(warmingAdopted())())
+  local firstKey = ArtifactJobs.jobKey(firstCandidate.kind, firstCandidate.key)
+  local _, failure = session:requestJob(firstCandidate.kind, firstCandidate.key, "near")
+  Assert.isNil(failure, "the foreground demand registers cleanly")
+  Assert.notNil(session.byKey[firstKey], "the foreground demand owns its registered interest")
+
+  session:enableSweep()
+  session:setLoading(true)
+  for _ = 1, 6 do
+    session:update()
+  end
+  local independent = 0
+  for _, jobKey in ipairs(pool.submitted) do
+    if jobKey ~= firstKey then
+      independent = independent + 1
+    end
+  end
+  Assert.isTrue(
+    independent >= 2,
+    "the loader supplies independent roots instead of stalling on the shared foreground job"
+  )
+  Assert.equal(session.completion.sweepOutstandingCount, independent, "only independent roots count as supply")
+end
+
+-- The speculative pass is size-aware through its actual session: an earlier
+-- heavy global candidate does not take a root before the cheaper work the same
+-- enumeration offers just behind it.
+function T.sweep_admits_cheaper_candidates_before_an_earlier_heavy_one()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  pool.slots = 4
+  local _, clock = newFakeClock()
+  local session = warmingSessionWithClock("sweep-size-order-generation", pool, backend, clock)
+  session:enableSweep()
+  session:setLoading(true)
+  -- Each pump fills the loader's root supply; settling them lets the next pump
+  -- admit the next candidates, so the observed order spans several windows.
+  for _ = 1, 6 do
+    session:update()
+    for _, jobKey in ipairs(pool.submitted) do
+      if pool.states[jobKey] == nil then
+        pool.states[jobKey] = { state = "failed", details = { error = "synthetic sweep settle" } }
+      end
+    end
+  end
+  local positionOf = {}
+  for index, jobKey in ipairs(pool.submitted) do
+    if positionOf[jobKey] == nil then
+      positionOf[jobKey] = index
+    end
+  end
+  local heavy = positionOf["field-font:global"]
+  local cheaper = positionOf["intro:global"]
+  Assert.notNil(cheaper, "the speculative pass enrolls the cheap global candidate")
+  Assert.notNil(heavy, "the heavy global candidate is still enrolled")
+  Assert.isTrue(
+    cheaper < heavy,
+    "the later small job is admitted before the earlier heavy one (cheap="
+      .. tostring(cheaper)
+      .. ", heavy="
+      .. tostring(heavy)
+      .. ")"
+  )
 end
 
 return { metadata = { capabilities = {} }, tests = T }

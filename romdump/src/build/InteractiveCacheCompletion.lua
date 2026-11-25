@@ -26,6 +26,15 @@ InteractiveCacheCompletion.__index = InteractiveCacheCompletion
 
 local SWEEP_SETTLE_SECONDS = 1.0
 local SWEEP_SETTLE_EPSILON = 1e-9
+-- Candidates one pump may inspect while looking for independent sweep roots. A
+-- candidate already enrolled from another origin supplies no additional
+-- occupancy, so the pump steps past it instead of counting it; the bound keeps
+-- that lookahead a few dozen entries rather than a corpus walk.
+local SWEEP_LOOKAHEAD_CANDIDATES = 64
+-- Canonical candidates the speculative pass may reorder by size class at once.
+-- The window is what lets a later small job go before an earlier heavy one; a
+-- corpus-sized sort would defeat the enumerator's incremental ownership.
+local SWEEP_SIZE_LOOKAHEAD = 8
 
 ---@param session InteractiveCacheBuild
 ---@return InteractiveCacheCompletion
@@ -170,10 +179,11 @@ function InteractiveCacheCompletion:_sweepTarget()
   if not session.loading then
     return 1
   end
-  -- Ahead of the compiler pool: the loader's supply tracks the physical
-  -- capacity the pool actually owns, so a root waiting on a dependency never
-  -- leaves the other slots without independent work.
-  return math.max(2, session.pool:workerSlotCount())
+  -- Ahead of the compiler pool: the loader's supply tracks the active occupancy
+  -- the pool's current policy allows (not every thread it happens to retain from
+  -- an earlier loader), so a root waiting on a dependency never leaves the other
+  -- slots without independent work.
+  return math.max(2, session.pool:occupancyLimit())
 end
 
 -- Retire every enrolled sweep root that reached a terminal state. A failed
@@ -207,10 +217,18 @@ function InteractiveCacheCompletion:_advanceSweep(budget)
   -- dependency never blocks unrelated sweep work. Neither mode materializes
   -- the corpus: roots enroll through the same registration path as explicit
   -- demand, and a failed candidate keeps its attributed failure.
-  if session.retired or not self.sweepAuthorized or self.sweepExhausted then
+  --
+  -- Cursor exhaustion is not sweep completion: enrolled roots keep settling
+  -- after the enumerator ended, and a failure among them still belongs to this
+  -- sweep. Terminal accounting therefore runs on every pump, including the one
+  -- that observes the last root settle.
+  if session.retired or not self.sweepAuthorized then
     return
   end
   self:_settleSweepOutstanding()
+  if self.sweepExhausted and self.sweepOutstandingCount == 0 then
+    return
+  end
   if not session.loading then
     if session.foregroundPendingCount > 0 then
       return
@@ -222,15 +240,21 @@ function InteractiveCacheCompletion:_advanceSweep(budget)
   if not session.sourceLoaded or not session.pagesKnown then
     return
   end
+  if self.sweepExhausted then
+    return
+  end
   if self.sweepNext == nil then
     if not session:_spendNode(budget) then
       return
     end
-    self.sweepNext =
-      ArtifactJobs.completeIterator(assert(session.adopted, "background enumeration needs its adopted inventory"))
+    self.sweepNext = ArtifactJobs.priorityIterator(
+      assert(session.adopted, "background enumeration needs its adopted inventory"),
+      SWEEP_SIZE_LOOKAHEAD
+    )
   end
   local target = self:_sweepTarget()
-  while self.sweepOutstandingCount < target do
+  local inspected = 0
+  while self.sweepOutstandingCount < target and inspected < SWEEP_LOOKAHEAD_CANDIDATES do
     if not session:_spendNode(budget) then
       return
     end
@@ -240,15 +264,23 @@ function InteractiveCacheCompletion:_advanceSweep(budget)
       self.sweepNext = nil
       return
     end
-    local entry = session:_register(job.kind, job.key, "sweep")
-    if entry.failure ~= nil then
-      if self.sweepFailure == nil then
-        self.sweepFailure = entry.failure
+    inspected = inspected + 1
+    local jobKey = ArtifactJobs.jobKey(job.kind, job.key)
+    local existing = session.byKey[jobKey]
+    if existing == nil or existing.ready or existing.failure ~= nil then
+      local entry = session:_register(job.kind, job.key, "sweep")
+      if entry.failure ~= nil then
+        if self.sweepFailure == nil then
+          self.sweepFailure = entry.failure
+        end
+      elseif not entry.ready then
+        self.sweepOutstanding[entry.jobKey] = true
+        self.sweepOutstandingCount = self.sweepOutstandingCount + 1
       end
-    elseif not entry.ready then
-      self.sweepOutstanding[entry.jobKey] = true
-      self.sweepOutstandingCount = self.sweepOutstandingCount + 1
     end
+    -- A candidate another origin already enrolled is the same physical job: it
+    -- supplies no independent occupancy, and its terminal fact settles through
+    -- the demand that owns it.
   end
 end
 
@@ -306,11 +338,11 @@ end
 ---@return boolean unexpanded background completion can advance now
 function InteractiveCacheCompletion:_sweepExpansionReady()
   local session = assert(self.session, "completion owner is retired")
-  if not self.sweepAuthorized or self.sweepExhausted or not session.sourceLoaded or not session.pagesKnown then
+  if not self.sweepAuthorized or not session.sourceLoaded or not session.pagesKnown then
     return false
   end
   self:_settleSweepOutstanding()
-  if self.sweepOutstandingCount >= self:_sweepTarget() then
+  if self.sweepExhausted or self.sweepOutstandingCount >= self:_sweepTarget() then
     return false
   end
   if not session.loading then
@@ -402,11 +434,17 @@ end
 
 ---@return { completeDone: boolean, completeAttested: boolean, completeExhausted: boolean, sweepState: string, sweepFailure: string|nil } completion status projection
 function InteractiveCacheCompletion:status()
+  -- Read-only projection: settlement is only observed here, never advanced, so a
+  -- status call cannot consume a terminal fact. Exhausted means the cursor and
+  -- every enrolled root are done; while roots still settle the sweep is
+  -- "settling" and no completion claim is made.
   local sweepState = "warming"
   if not self.sweepAuthorized then
     sweepState = "idle"
-  elseif self.sweepExhausted then
+  elseif self.sweepExhausted and self.sweepOutstandingCount == 0 then
     sweepState = self.sweepFailure == nil and "exhausted" or "incomplete"
+  elseif self.sweepExhausted then
+    sweepState = "settling"
   end
   return {
     completeDone = self:completeDone(),

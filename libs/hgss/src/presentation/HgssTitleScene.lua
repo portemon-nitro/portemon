@@ -691,6 +691,9 @@ function HgssTitleScene.begin(options)
   -- returned a payload -- so its failure unwind can cancel it exactly once.
   local function awaitPrepared(kind, path)
     local token = queue:request(kind, path, "prefetch")
+    -- The staged title build blocks on this bank: the ready-payload ceiling must
+    -- never keep the frontier queued behind speculative siblings.
+    queue:promote(token, "demand")
     build._token = token
     while true do
       local status, failure = queue:poll(token)

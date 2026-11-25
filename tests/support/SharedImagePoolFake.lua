@@ -117,6 +117,14 @@ function SharedImagePoolFake:clearFailure()
   self._failAfter = nil
 end
 
+-- Declare one staged ticket a current need. The fake stages synchronously, so
+-- promotion has no scheduling effect; it exists so the shared owner's required
+-- promote capability is modeled exactly as production composes it.
+---@param token integer
+function SharedImagePoolFake:promote(token)
+  assert(self._requests[token] ~= nil, "unknown shared image token")
+end
+
 -- Record logical interest in one texture under one immutable sampler state.
 -- Returns an opaque token; the fake stages synchronously, so poll is ready.
 ---@param logicalPath string|table

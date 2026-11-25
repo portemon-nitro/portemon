@@ -992,8 +992,11 @@ end
 
 -- The anchor the player is about to enter: the cell of the last known field
 -- position (movement already crossed it), or the neighbor whose boundary the
--- position is within IMMINENT_BOUNDARY_TILES of. Nil when neither applies,
--- which leaves the ordinary on-demand build as the only path.
+-- position is within IMMINENT_BOUNDARY_TILES of. A corner position is near two
+-- boundaries at once, and physical coverage crosses one cardinal edge at a
+-- time: the edge the player is closest to crossing wins, never a diagonal.
+-- Nil when neither applies, which leaves the ordinary on-demand build as the
+-- only path.
 ---@return integer?, integer?
 function FieldCoverage:_imminentAnchor()
   local focusX, focusZ = self.focusX, self.focusZ
@@ -1007,20 +1010,25 @@ function FieldCoverage:_imminentAnchor()
   end
   local localX = focusX - cellX * TILES_PER_CELL
   local localZ = focusZ - cellZ * TILES_PER_CELL
-  local deltaX = 0
-  if localX < IMMINENT_BOUNDARY_TILES then
-    deltaX = -1
-  elseif localX > TILES_PER_CELL - IMMINENT_BOUNDARY_TILES then
-    deltaX = 1
+  -- Tiles between the position and the boundary it would cross, plus the step
+  -- into that neighboring cell. Nil distance when this axis is not near its
+  -- boundary.
+  local function frontier(localCoordinate)
+    if localCoordinate < IMMINENT_BOUNDARY_TILES then
+      return localCoordinate, -1
+    end
+    if localCoordinate > TILES_PER_CELL - IMMINENT_BOUNDARY_TILES then
+      return TILES_PER_CELL - 1 - localCoordinate, 1
+    end
+    return nil, 0
   end
-  local deltaZ = 0
-  if localZ < IMMINENT_BOUNDARY_TILES then
-    deltaZ = -1
-  elseif localZ > TILES_PER_CELL - IMMINENT_BOUNDARY_TILES then
-    deltaZ = 1
-  end
-  if deltaX == 0 and deltaZ == 0 then
+  local distanceX, deltaX = frontier(localX)
+  local distanceZ, deltaZ = frontier(localZ)
+  if distanceX == nil and distanceZ == nil then
     return nil, nil
+  end
+  if distanceX ~= nil and distanceZ ~= nil and distanceZ < distanceX then
+    deltaX = 0
   end
   return cellX + deltaX, cellZ + deltaZ
 end
@@ -1038,27 +1046,74 @@ function FieldCoverage:_stagedAggregateIsLive(candidate)
   return true
 end
 
+-- The prediction target whose window is still owed, or nil when nothing is
+-- owed: the imminent anchor is known, every cell of its committed set is
+-- already realized, and the crossing has not happened.
+---@return integer?, integer?
+function FieldCoverage:_imminentAggregateTarget()
+  local anchorX, anchorZ = self:_imminentAnchor()
+  if anchorX == nil or anchorZ == nil then
+    return nil, nil
+  end
+  if anchorX == self.anchorX and anchorZ == self.anchorZ then
+    return nil, nil
+  end
+  for _, position in ipairs(desired(anchorX, anchorZ)) do
+    if FieldCellCache.find(self.index, self.matrixMemberId, position.x, position.z) ~= nil then
+      local cellKey = key(position.x, position.z)
+      if self.cells[cellKey] == nil and self.prefetched[cellKey] == nil then
+        return nil, nil
+      end
+    end
+  end
+  return anchorX, anchorZ
+end
+
+-- Whether one prediction-derived window is still owed under the same staging
+-- budget as the halo cells: the imminent target is resolvable and no live
+-- candidate already describes exactly that target. A stale candidate for a
+-- different target is not satisfied work -- the frontier moved.
+---@return boolean
+function FieldCoverage:predictedWindowPending()
+  local anchorX, anchorZ = self:_imminentAggregateTarget()
+  if anchorX == nil or anchorZ == nil then
+    return false
+  end
+  local cached = self._stagedAggregate
+  return not (
+    cached ~= nil
+    and self:_stagedAggregateIsLive(cached)
+    and cached.anchorX == anchorX
+    and cached.anchorZ == anchorZ
+  )
+end
+
 -- Build, and keep, the destination window for the imminent anchor when every
 -- cell of its committed set is already realized. This is the same construction
 -- the crossing frame would otherwise run; doing it here keeps the committed
--- boundary frame free of region and draw-list assembly.
+-- boundary frame free of region and draw-list assembly. A candidate for a
+-- superseded frontier is dropped, whether or not it became invalid: keeping it
+-- would leave the build optimizing the window the player already turned away
+-- from. Returns whether a window was assembled by this call.
+---@return boolean
 function FieldCoverage:_stageImminentAggregate()
   local cached = self._stagedAggregate
-  if cached ~= nil then
-    if not self:_stagedAggregateIsLive(cached) then
-      self._stagedAggregate = nil
-    elseif cached.anchorX == self.anchorX and cached.anchorZ == self.anchorZ then
-      self._stagedAggregate = nil
-    else
-      return
-    end
+  if cached ~= nil and not self:_stagedAggregateIsLive(cached) then
+    self._stagedAggregate = nil
+    cached = nil
   end
-  local anchorX, anchorZ = self:_imminentAnchor()
+  local anchorX, anchorZ = self:_imminentAggregateTarget()
   if anchorX == nil or anchorZ == nil then
-    return
+    if cached ~= nil and cached.anchorX == self.anchorX and cached.anchorZ == self.anchorZ then
+      self._stagedAggregate = nil
+    end
+    return false
   end
-  if anchorX == self.anchorX and anchorZ == self.anchorZ then
-    return
+  if cached ~= nil then
+    if cached.anchorX == anchorX and cached.anchorZ == anchorZ then
+      return false
+    end
+    self._stagedAggregate = nil
   end
   local staged = {}
   for _, position in ipairs(desired(anchorX, anchorZ)) do
@@ -1067,14 +1122,14 @@ function FieldCoverage:_stageImminentAggregate()
       local cellKey = key(position.x, position.z)
       local cell = self.cells[cellKey] or self.prefetched[cellKey]
       if cell == nil then
-        return
+        return false
       end
       staged[cellKey] = cell
     end
   end
   local anchorCell = staged[key(anchorX, anchorZ)]
   if anchorCell == nil then
-    return
+    return false
   end
   local candidate = {
     anchorX = anchorX,
@@ -1087,6 +1142,7 @@ function FieldCoverage:_stageImminentAggregate()
   candidate.cellKeys, candidate.worldParts, candidate.cellPresentation = buildWorldParts(staged, candidate.origin)
   candidate.prefetchDescriptors = descriptorsAtAnchor(self, anchorX, anchorZ)
   self._stagedAggregate = candidate
+  return true
 end
 
 -- Take the staged window for exactly this anchor, if it is still valid.
@@ -1246,9 +1302,14 @@ function FieldCoverage:prefetchDescriptorsView()
   return self._prefetchDescriptors
 end
 
+-- Background staging still owes work when a halo cell is queued or pending, or
+-- when the imminent window is still to be assembled. A completed halo is not a
+-- finished frontier: the cell across the boundary may become imminent later
+-- without any new halo work, and that window is exactly what the crossing frame
+-- would otherwise build synchronously.
 ---@return boolean
 function FieldCoverage:hasPrefetchWork()
-  return #self.pendingPrefetches > 0 or #self.prefetchQueue > 0
+  return #self.pendingPrefetches > 0 or #self.prefetchQueue > 0 or self:predictedWindowPending()
 end
 
 ---@return integer staged halo cells awaiting publication
@@ -1259,25 +1320,43 @@ end
 -- The player's field position drives halo ordering: the distance from the actual
 -- position to each halo cell (not the anchor's cell distance) is what makes the
 -- imminent frontier -- the cell on the other side of the boundary the player is
--- walking toward -- arrive before the cells behind them. Reprioritizing is free:
--- the next queuePrefetch re-sorts the small halo from the newest position.
+-- walking toward -- arrive before the cells behind them. A new focus re-orders
+-- the still-queued cells immediately, because waiting for the next full queue
+-- pass would keep the previous position's order for the whole walk across a
+-- cell. The halo is a handful of cells, so this is a bounded insertion sort.
 ---@param fieldX number
 ---@param fieldZ number
 function FieldCoverage:setPrefetchFocus(fieldX, fieldZ)
   assert(type(fieldX) == "number" and type(fieldZ) == "number", "prefetch focus requires a field position")
+  if self.focusX == fieldX and self.focusZ == fieldZ then
+    return
+  end
   self.focusX, self.focusZ = fieldX, fieldZ
+  if #self.prefetchQueue > 1 then
+    self.prefetchQueue = self:_orderPrefetch(self.prefetchQueue)
+  end
 end
 
--- Squared field distance from the focus position to a cell's own coordinates.
--- Nil without a focus, which keeps the generated halo order.
+-- Squared distance in cell units from the focus position to the covered tiles of
+-- one halo cell. Measuring to the cell's own tiles instead of its top-left
+-- corner is what makes the strip across the boundary the player is walking
+-- toward -- already a fraction of a cell away -- the nearest frontier rather
+-- than an arbitrarily early corner. Nil without a focus, which keeps the
+-- generated halo order.
 ---@param descriptor table<string, unknown>
 ---@return number?
 function FieldCoverage:_prefetchScore(descriptor)
   if self.focusX == nil or self.focusZ == nil then
     return nil
   end
-  local dx = assert(descriptor.x) - self.focusX / 32
-  local dz = assert(descriptor.z) - self.focusZ / 32
+  local focusCellX = self.focusX / TILES_PER_CELL
+  local focusCellZ = self.focusZ / TILES_PER_CELL
+  local cellX = assert(descriptor.x)
+  local cellZ = assert(descriptor.z)
+  local nearestX = math.max(cellX, math.min(focusCellX, cellX + 1))
+  local nearestZ = math.max(cellZ, math.min(focusCellZ, cellZ + 1))
+  local dx = focusCellX - nearestX
+  local dz = focusCellZ - nearestZ
   return dx * dx + dz * dz
 end
 
@@ -1402,8 +1481,13 @@ function FieldCoverage:updatePrefetch(maxWorkUnits)
       index = index + 1
     end
   end
+  -- The imminent window's assembly is one indivisible preparation step of the
+  -- same budget: a frame that already spent its units defers it to the next one
+  -- instead of assembling a whole region and draw list unbudgeted.
+  if consumed < maxWorkUnits and self:_stageImminentAggregate() then
+    consumed = consumed + 1
+  end
   ---@cast consumed integer
-  self:_stageImminentAggregate()
   return consumed
 end
 

@@ -113,6 +113,8 @@ function FieldResidencyCoordinator.new(options)
     _livePrefetchAnchorZ = nil,
     _livePrefetchIds = {},
     _livePrefetchSatisfied = false,
+    _focusX = nil,
+    _focusZ = nil,
     _publishedViews = {},
     _publishedByMap = {},
     _publishedCount = 0,
@@ -290,6 +292,29 @@ function FieldResidencyCoordinator:initialize()
   self.initialized = true
   self:_publishResidentViews()
   return self
+end
+
+-- The committed player position drives halo ordering for whichever coverage
+-- window is live. A window adopted after a crossing or a covered warp starts
+-- from the same frontier instead of the generated cell order.
+---@param fieldX number
+---@param fieldZ number
+function FieldResidencyCoordinator:setPrefetchFocus(fieldX, fieldZ)
+  assert(not self.disposed, "field residency coordinator is disposed")
+  assert(type(fieldX) == "number" and type(fieldZ) == "number", "field prefetch focus requires a field position")
+  self._focusX, self._focusZ = fieldX, fieldZ
+  if self.coverage ~= nil then
+    self.coverage:setPrefetchFocus(fieldX, fieldZ)
+  end
+end
+
+-- Apply the retained focus to a coverage owner that just became live.
+---@param coverage table<string, unknown>?
+function FieldResidencyCoordinator:_applyPrefetchFocus(coverage)
+  local fieldX, fieldZ = self._focusX, self._focusZ
+  if coverage ~= nil and fieldX ~= nil and fieldZ ~= nil then
+    coverage:setPrefetchFocus(fieldX, fieldZ)
+  end
 end
 
 -- Nonblocking near demand for a prefetched logical map: the logical field
@@ -610,6 +635,7 @@ function FieldResidencyCoordinator:commitTransition(transaction)
     end
   end
   if self.coverage then
+    self:_applyPrefetchFocus(self.coverage)
     self.coverage:queuePrefetch()
   end
   self:_publishResidentViews()
@@ -629,11 +655,13 @@ function FieldResidencyCoordinator:afterCommittedMove(player, context)
   for _, mapId in ipairs(required) do
     self:_ensureResident(mapId, true)
   end
+  -- The committed player position is the frontier ordering source on every
+  -- move, not only on the crossing it is meant to anticipate: a position that
+  -- walked east inside its cell must not leave the halo ordered around the west
+  -- edge the player came from.
+  self:setPrefetchFocus(player.fieldX, player.fieldZ)
   local anchorChanged = self.coverage and (self.coverage.anchorX ~= targetX or self.coverage.anchorZ ~= targetZ)
   if anchorChanged then
-    -- The committed player position is the frontier ordering source: the next
-    -- halo pass favors the cell across the boundary the player is walking toward.
-    self.coverage:setPrefetchFocus(player.fieldX, player.fieldZ)
     self.coverage:recenter(targetX, targetZ)
     if context.onPhysicalCommit then
       context.onPhysicalCommit(self.coverage)

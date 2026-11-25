@@ -24,6 +24,7 @@
 ---@field thread table<string, unknown>? injectable love.thread-shaped namespace (defaults to the global one)
 ---@field workerSource unknown? worker entry point override, passed to the thread constructor
 ---@field readyPayloadByteLimit integer? ceiling for ready-but-unclaimed payload bytes
+---@field workerSlots integer? executor slots the presentation policy allows now (default one)
 
 ---@class AssetPreparationQueueRecord
 ---@field token integer
@@ -71,7 +72,6 @@
 ---@field private _decoded ResidentAssetCache
 ---@field private _threadHost table<string, unknown>?
 ---@field private _workerSource unknown?
----@field private _request table<string, unknown>?
 ---@field private _reply table<string, unknown>?
 ---@field private _workers AssetPreparationQueueWorker[]
 ---@field private _workerSlots integer executor slots this queue may fill
@@ -378,6 +378,11 @@ function AssetPreparationQueue.new(cacheFs, options)
     type(readyLimit) == "number" and readyLimit >= 0,
     "AssetPreparationQueue ready payload bound must be a non-negative byte count"
   )
+  local slots = options.workerSlots or 1
+  assert(
+    type(slots) == "number" and slots % 1 == 0 and slots >= 1,
+    "AssetPreparationQueue worker slots must be a positive integer"
+  )
   return setmetatable({
     _cacheFs = cacheFs,
     _decoded = decoded,
@@ -385,7 +390,7 @@ function AssetPreparationQueue.new(cacheFs, options)
     _workerSource = options.workerSource,
     _reply = nil,
     _workers = {},
-    _workerSlots = 1,
+    _workerSlots = slots,
     _tokens = {},
     _demand = {},
     _prefetch = {},
@@ -458,11 +463,31 @@ function AssetPreparationQueue:workerSlotBudget()
   return self._workerSlots
 end
 
--- Whether the executor may start one more job: an existing idle slot within the
--- budget, or room to grow the worker set. Asking only when queued work exists
--- keeps a raised budget from starting a thread for nothing.
+-- Physical jobs occupying a worker right now, whichever slot index runs
+-- them. Cancelled-but-running tokens keep their occupancy until the late reply
+-- frees it.
+---@return integer
+function AssetPreparationQueue:_activeWorkerCount()
+  local active = 0
+  for _, worker in ipairs(self._workers) do
+    if worker.busyToken ~= nil then
+      active = active + 1
+    end
+  end
+  return active
+end
+
+-- Whether the executor may start one more job: total occupancy below the
+-- budget plus an existing idle slot within it or room to grow. Occupancy is
+-- counted across every physical worker, so lowering the budget while a
+-- higher-index worker still runs never admits a second concurrent job. Asking
+-- only when queued work exists keeps a raised budget from starting a thread
+-- for nothing.
 ---@return boolean
 function AssetPreparationQueue:_hasFreeSlot()
+  if self:_activeWorkerCount() >= self._workerSlots then
+    return false
+  end
   for index, worker in ipairs(self._workers) do
     if index > self._workerSlots then
       break
@@ -625,10 +650,13 @@ function AssetPreparationQueue:_returnLease(record)
 end
 
 -- Record an unexpected worker exit exactly once: every still-live queued or
--- running token fails with the terminal cause while already-ready payloads
--- stay transferable. Queued decode continuations and dispatched decodes give
--- their input source leases back; the worker's own reply, if any, can never
--- arrive now. The queue never restarts the worker.
+-- running token fails with the terminal cause while already-ready payloads stay
+-- transferable. Queued decode continuations give their input source leases back
+-- immediately because no worker ever received them. A dispatched decode's input
+-- lease instead stays with its physical job: any worker in this executor may
+-- still be reading it, so ownership lasts until that job's late reply (which is
+-- discarded without changing the failed token) or until the join in release().
+-- The queue never restarts a worker.
 ---@param cause string?
 function AssetPreparationQueue:_enterTerminalFailure(cause)
   if self._workerFailure ~= nil then
@@ -638,6 +666,7 @@ function AssetPreparationQueue:_enterTerminalFailure(cause)
     cause = "worker exited without an error"
   end
   self._workerFailure = "asset preparation worker stopped: " .. tostring(cause)
+
   local returnedLease = false
   for _, record in pairs(self._tokens) do
     if isUnsettled(record) or record.state == "linked" then
@@ -651,11 +680,6 @@ function AssetPreparationQueue:_enterTerminalFailure(cause)
       self._decoded:returnLease(lease)
       returnedLease = true
     end
-  end
-  for token, lease in pairs(self._decodeLeases) do
-    self._decodeLeases[token] = nil
-    self._decoded:returnLease(lease)
-    returnedLease = true
   end
   if returnedLease then
     self._decoded:trim()
@@ -1294,8 +1318,11 @@ function AssetPreparationQueue:_requestSelectedDecode(kind, file, selector, logi
   return token
 end
 
--- Non-blocking state probe; never transfers the lease. Returns "pending",
--- "ready", or "failed" plus the worker's failure cause for failed work.
+-- Non-blocking state probe; never transfers the lease. A cooperative consumer
+-- that is actually blocked on this token promotes it first (see promote), so a
+-- probe alone never changes scheduling: speculative observers keep their
+-- prefetch priority. Returns "pending", "ready", or "failed" plus the worker's
+-- failure cause for failed work.
 ---@param token integer
 ---@return string, string?
 function AssetPreparationQueue:poll(token)
@@ -1456,10 +1483,14 @@ end
 -- any unrelated token results along the way. Only synchronous callers whose path
 -- already requires the result may wait; staged work polls instead. Waiting
 -- transfers exactly what take does, so a caller must never take afterwards.
+-- The awaited token is promoted to demand before the first dispatch: a blocking
+-- caller is the strongest current need, so a speculative reservation can never
+-- hold the resource it waits on queued behind the ready-payload ceiling.
 ---@param token integer
 ---@return ResidentAssetCacheLease
 function AssetPreparationQueue:wait(token)
   assert(self._tokens[token], "unknown preparation token")
+  self:promote(token, "demand")
   while true do
     self:_drain()
     self:_checkWorkerHealth()

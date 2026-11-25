@@ -603,6 +603,9 @@ local function resetTransient(self)
   self._outdoorExitSteps = nil
   self._outdoorEnterSteps = nil
   self._outdoorEnterDestination = nil
+  if self.destinationStage ~= nil and type(self.destinationStage.release) == "function" then
+    pcall(self.destinationStage.release, self.destinationStage)
+  end
   self.destinationStage = nil
   self.destinationStageStarted = false
 end
@@ -1200,14 +1203,32 @@ function FieldTransition:startCoveredSwap(sourceMap, trigger, facing)
   self.phase = FieldTransition.PHASES.load_destination
 end
 
--- Restore a coherent idle state after failed destination preparation. Map
--- ownership remains with the runtime throughout this path.
-function FieldTransition:_abort(err)
+-- Release a destination window that was produced under the cover but never
+-- adopted into a resolution. The transition owns the stage from production until
+-- the swap takes it or this release; teardown mid-stage must not orphan the
+-- cell tasks and decoded leases it holds.
+function FieldTransition:releaseDestinationStage()
   local stage = self.destinationStage
   self.destinationStage = nil
   if stage ~= nil then
     pcall(stage.release, stage)
   end
+end
+
+-- Transfer ownership of the staged destination window to the caller. The
+-- resolution adopts it; until this call the transition remains its owner, so a
+-- resolution or preparation failure still releases it.
+---@return table<string, unknown>?
+function FieldTransition:takeDestinationStage()
+  local stage = self.destinationStage
+  self.destinationStage = nil
+  return stage
+end
+
+-- Restore a coherent idle state after failed destination preparation. Map
+-- ownership remains with the runtime throughout this path.
+function FieldTransition:_abort(err)
+  self:releaseDestinationStage()
   if self.disposePrepared and (self.resolution or self.prepared) then
     self.disposePrepared(self.resolution, self.prepared)
   end
@@ -1385,21 +1406,25 @@ function FieldTransition:updateFixed(inputSnapshot)
       self.destinationStage = stageOrError
     end
     local stage = self.destinationStage
+    local destinationPlan = nil
     if stage ~= nil then
       local advanced, consumed = pcall(stage.advance, stage, DESTINATION_STAGE_UNITS_PER_TICK)
       if not advanced then
-        self.destinationStage = nil
-        pcall(stage.release, stage)
         return self:_abort(consumed)
       end
       assert(type(consumed) == "number" and consumed >= 0, "destination staging consumed an invalid step count")
       if not stage:isReady() then
         return false
       end
-      self.destinationStage = nil
+      -- The transition keeps the finished stage owned through resolution: the
+      -- swap takes it when it adopts this destination, and a resolution or
+      -- preparation failure still releases it through the abort path. Its plan
+      -- is the one authoritative arrival decision for this destination.
+      destinationPlan = stage.plan
     end
     local resolveOk, err = pcall(function()
-      local result = self.resolveDestination(self.loader, self.sourceMap, self.sourceWarp, self.dynamicWarp)
+      local result =
+        self.resolveDestination(self.loader, self.sourceMap, self.sourceWarp, self.dynamicWarp, destinationPlan)
       self.resolution = result
       -- The source entrance facing is the trigger-time snapshot: the
       -- choreography turns the live player before the swap, so the direction

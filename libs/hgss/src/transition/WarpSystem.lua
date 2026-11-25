@@ -273,6 +273,7 @@ end
 ---@field destinationMap table<string, unknown>
 ---@field coordinates { fieldX: integer, fieldZ: integer, warp: table<string, unknown>? }
 ---@field facing string|nil
+---@field metadataOnly boolean? the map was located through scene-free metadata, so resolution still needs the loaded runtime
 
 ---@param loader { load: fun(loader: unknown, destinationMap: integer|string): table<string, unknown> }
 ---@param sourceMap table<string, unknown>
@@ -314,10 +315,17 @@ end
 ---@param sourceMap table<string, unknown>
 ---@param warp table<string, unknown>
 ---@param dynamicWarp table<string, unknown>? the saved dynamic destination for a dynamic anchor
+---@param plan WarpSystem.DestinationPlan? already-resolved arrival decision; recomputed only when absent
 ---@return table<string, unknown>
-function WarpSystem.resolveDestination(loader, sourceMap, warp, dynamicWarp)
-  local plan = WarpSystem.destinationPlan(loader, sourceMap, warp, dynamicWarp)
+function WarpSystem.resolveDestination(loader, sourceMap, warp, dynamicWarp, plan)
+  plan = plan or WarpSystem.destinationPlan(loader, sourceMap, warp, dynamicWarp)
   local destinationMap = plan.destinationMap
+  if plan.metadataOnly then
+    -- A plan resolved from scene-free metadata carries the authoritative arrival
+    -- coordinates; resolution reads the loaded runtime for surfaces alone.
+    destinationMap = loadDestination(loader, sourceMap, warp, destinationMap.mapId)
+    plan.destinationMap = destinationMap
+  end
   local coordinates = plan.coordinates
   local localX, localZ = FieldCoordinates.fieldToLocal(destinationMap, coordinates.fieldX, coordinates.fieldZ)
   -- A scripted `direct` record carries pre-resolved global coordinates and

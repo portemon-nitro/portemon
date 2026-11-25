@@ -3307,4 +3307,63 @@ function T.physical_cell_props_reuse_semantic_and_model_metadata()
   loader:release()
 end
 
+-- Validation is published only after it succeeds: a selected member that fails
+-- the event walk is not remembered as validated, so retrying against the same
+-- malformed member fails again instead of being served as trusted data.
+function T.failed_event_validation_is_never_remembered_as_validated()
+  local cache, world = fixture(1)
+  local fieldPath = FieldMapDataCache.fieldPath(0)
+  local realLoadLua = cache.loadLua
+  cache.loadLua = function(_, path)
+    local loaded = realLoadLua(cache, path)
+    if path == fieldPath and type(loaded) == "table" then
+      loaded.events.background = "malformed"
+    end
+    return loaded
+  end
+  local loader = newLoader(cache, world, {})
+
+  -- The incremental logical-metadata path parses the record unvalidated and
+  -- then walks its events, which fails.
+  local task = loader:beginLogicalMetadata(0)
+  local ok, failure = pcall(task.advance, task, 4)
+  Assert.isFalse(ok, "the malformed event collection fails the incremental walk")
+  Assert.isTrue(
+    tostring(failure):find("event collections", 1, true) ~= nil,
+    "the failure names the malformed events: " .. tostring(failure)
+  )
+  task:release()
+
+  local retried, retryFailure = pcall(loader.loadLogical, loader, 0)
+  Assert.isFalse(retried, "a retry against the same malformed member still fails")
+  Assert.isTrue(
+    tostring(retryFailure):find("event collections", 1, true) ~= nil,
+    "the retry reports the same cause: " .. tostring(retryFailure)
+  )
+  local secondRetry = pcall(loader.loadLogical, loader, 0)
+  Assert.isFalse(secondRetry, "failed validation is never latched as validated")
+  loader:release()
+end
+
+-- A record parsed by the physical-cell path proves which bytes were read, not
+-- that the generated logical closure is installed: the first logical
+-- acquisition still takes the readiness edge, and a later one reuses the
+-- recorded closure fact instead of repeating it.
+function T.a_physically_seeded_record_still_admits_its_logical_closure()
+  local cache, world = fixture(1)
+  local calls = {}
+  local loader = newLoader(cache, world, { derivedAssets = readinessHost(calls, {}) })
+  local record = world.maps[1]
+  loader:_installedSemantic(record)
+  Assert.equal(#calls, 0, "the physical cell path never blocks on the logical readiness edge")
+
+  local first = loader:loadLogical(0)
+  Assert.equal(#calls, 1, "the first logical acquisition admits the closure for those bytes")
+  Assert.equal(calls[1].kind, "logical", "readiness is taken through the logical demand")
+  local second = loader:loadLogical(0)
+  Assert.equal(#calls, 1, "a later logical acquisition trusts the recorded closure fact")
+  Assert.equal(first.fieldData, second.fieldData, "the parsed immutable record is shared")
+  loader:release()
+end
+
 return { tests = T }

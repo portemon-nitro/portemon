@@ -553,6 +553,77 @@ function T.complete_inventory_drains_the_incremental_enumerator()
   end
 end
 
+-- Speculative admission is size-aware without inventing membership: the
+-- canonical enumerator still decides what exists and in what family order, a
+-- bounded lookahead window only lets a later small job go before an earlier
+-- heavy one, and same-class candidates keep their canonical order. Aggregate
+-- summaries stay last.
+function T.speculative_priority_prefers_cheaper_candidates_within_a_bounded_window()
+  local plans = sweepPlans()
+  local canonical = {}
+  do
+    local iterate = ArtifactJobs.completeIterator(plans)
+    while true do
+      local job = iterate()
+      if job == nil then
+        break
+      end
+      canonical[#canonical + 1] = job
+    end
+  end
+  local prioritised = {}
+  do
+    local iterate = ArtifactJobs.priorityIterator(plans, 8)
+    while true do
+      local job = iterate()
+      if job == nil then
+        break
+      end
+      prioritised[#prioritised + 1] = job
+    end
+  end
+  Assert.equal(#prioritised, #canonical, "speculative admission keeps the exact canonical membership")
+  local positionOf = {}
+  for index, job in ipairs(prioritised) do
+    Assert.isNil(positionOf[job.jobKey], "each canonical job is admitted once: " .. tostring(job.jobKey))
+    positionOf[job.jobKey] = index
+  end
+
+  local firstHeavyIndex, firstHeavy
+  for index, job in ipairs(canonical) do
+    if ArtifactJobs.sizeClass(job.kind) ~= "normal" then
+      firstHeavyIndex, firstHeavy = index, job
+      break
+    end
+  end
+  Assert.notNil(firstHeavy, "the fixture has an earlier heavy candidate")
+  local cheaperLater
+  for index = firstHeavyIndex + 1, math.min(#canonical, firstHeavyIndex + 8) do
+    if ArtifactJobs.sizeClass(canonical[index].kind) == "normal" then
+      cheaperLater = canonical[index]
+      break
+    end
+  end
+  Assert.notNil(cheaperLater, "a cheaper candidate follows the heavy one inside the window")
+  Assert.isTrue(
+    positionOf[cheaperLater.jobKey] < positionOf[firstHeavy.jobKey],
+    "the later small job is admitted before the earlier heavy one"
+  )
+  Assert.isTrue(
+    positionOf["field-camera:global"] < positionOf["field-weather:global"],
+    "same-class candidates keep their canonical order"
+  )
+  local trailer = {}
+  for index = #prioritised - 3, #prioritised do
+    trailer[#trailer + 1] = prioritised[index].kind
+  end
+  Assert.deepEqual(
+    trailer,
+    { "mon-summary", "message-summary", "audio-summary", "script-summary" },
+    "aggregate summaries still close the speculative enumeration"
+  )
+end
+
 -- The background sweep enrolls the finite battle leaf inventory exactly
 -- once behind the shared core: the core and the single evolution job open
 -- the run, every source-declared trainer front/back class and ball item

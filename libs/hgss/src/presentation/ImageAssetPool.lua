@@ -915,6 +915,20 @@ function ImageAssetPool:requestIndexed(source, sampler)
   return token
 end
 
+-- Declare one outstanding ticket a current need. A queued speculative job is
+-- promoted so the executor's ready-payload ceiling can never keep the resource a
+-- build is about to await queued behind unrelated ready payloads. Idempotent for
+-- cached, prepared, running, or already-demand tickets.
+---@param token integer
+function ImageAssetPool:promote(token)
+  local request = assert(self._requests[token], "unknown image request token")
+  if request.state ~= "queued" then
+    return
+  end
+  request.priority = "demand"
+  self._queue:promote(assert(request.job, "queued image request has no worker job"), "demand")
+end
+
 -- Probe one request without blocking and without creating GPU objects.
 -- Returns "pending" while classification or the worker is in flight, "ready"
 -- once the pixel identity resolved to a borrowable pair or an unuploaded

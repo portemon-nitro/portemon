@@ -52,6 +52,12 @@ local FieldLightProfile = require("libs.assets.src.field.FieldLightProfile")
 ---@field sceneRuntime table<string, unknown>?
 ---@field coverage FieldCoverage?
 
+-- One immutable generated field record retained per installed member identity.
+---@class FieldMapLoader.SemanticMemoEntry
+---@field fieldData table<string, unknown> validated generated record shared by every consumer
+---@field eventsValidated boolean the full event collections were validated for this record
+---@field closureReady boolean the generated logical closure was admitted for these exact bytes
+
 ---@class FieldMapLoader
 ---@field cacheFs CacheFs
 ---@field world table<string, unknown>
@@ -70,6 +76,10 @@ local FieldLightProfile = require("libs.assets.src.field.FieldLightProfile")
 ---@field _nearDemandIds integer[]? demand membership resolved by the latest location request
 ---@field clock integer
 ---@field released boolean
+---@field semanticMemo table<string, FieldMapLoader.SemanticMemoEntry>
+---@field semanticMemoOrder string[]
+---@field doorMetaMemo table<string, table<string, unknown>|false>
+---@field doorMetaMemoOrder string[]
 local FieldMapLoader = {}
 FieldMapLoader.__index = FieldMapLoader
 
@@ -602,24 +612,33 @@ end
 -- world validation, the semantic derived-asset readiness edge, and the
 -- validated generated field record. Reads no scene, collision, terrain,
 -- model, presentation, or physical resource.
+--
+-- Parse reuse and closure readiness are separate facts. The memo proves which
+-- installed bytes this loader already parsed and validated; a logical field is
+-- a generated closure (map data, message bank, script member, audio banks), so
+-- only a logical acquisition that actually took the readiness edge records that
+-- the closure is installed for those bytes. A record seeded by the physical cell
+-- path therefore still pays the emergency edge once, and a later logical load
+-- reuses both facts.
 ---@param record table<string, unknown>
 ---@param validateEvents boolean? whether to validate all event records synchronously; defaults to true
 ---@return table<string, unknown>
 function FieldMapLoader:_acquireSemantic(record, validateEvents)
   checkWorldIdentity(record)
   local wantsEvents = validateEvents ~= false
-  -- A memo hit means the exact installed bytes this loader already validated
-  -- are still the ones being read, so neither the emergency readiness round
-  -- trip nor the generated chunk's parse/validation repeats.
+  local entry = self:_semanticMemoEntry(record)
+  if self.derivedAssets and (entry == nil or not entry.closureReady) then
+    self.derivedAssets.ensureLogicalField(record.id)
+    if entry ~= nil then
+      entry.closureReady = true
+    end
+  end
   local memoized = self:_memoizedSemantic(record, wantsEvents)
   if memoized ~= nil then
     return memoized
   end
-  if self.derivedAssets then
-    self.derivedAssets.ensureLogicalField(record.id)
-  end
   local fieldData = loadSemanticFieldData(self.cacheFs, record, wantsEvents)
-  self:_rememberSemantic(record, fieldData, wantsEvents)
+  self:_rememberSemantic(record, fieldData, wantsEvents, self.derivedAssets ~= nil)
   return fieldData
 end
 
@@ -658,27 +677,52 @@ local function touchMemo(identity, memo, order, limit)
   end
 end
 
+-- The retained memo entry for one map's installed bytes and the identity it is
+-- keyed by, or nil when the reader cannot name the source or nothing was
+-- retained yet.
+---@param record table<string, unknown>
+---@return FieldMapLoader.SemanticMemoEntry?
+---@return string?
+function FieldMapLoader:_semanticMemoEntry(record)
+  local identity = self:_assetSourceIdentity(FieldMapDataCache.fieldPath(record.id))
+  if identity == nil then
+    return nil, nil
+  end
+  return self.semanticMemo[identity], identity
+end
+
 -- Validated semantic field data for one map when it is already retained for the
 -- installed bytes. An unvalidated retained record owes only its event check,
--- which is a read-only walk, never a re-parse.
+-- which is a read-only walk, never a re-parse. The validated fact is published
+-- only after the check succeeds: a record that fails stays unvalidated, so a
+-- retry against the same malformed selected member fails again instead of
+-- being served as validated.
 ---@param record table<string, unknown>
 ---@param wantsEvents boolean
 ---@return table<string, unknown>?
 function FieldMapLoader:_memoizedSemantic(record, wantsEvents)
-  local identity = self:_assetSourceIdentity(FieldMapDataCache.fieldPath(record.id))
-  if identity == nil then
-    return nil
-  end
-  local entry = self.semanticMemo[identity]
+  local entry, identity = self:_semanticMemoEntry(record)
   if entry == nil then
     return nil
   end
   if wantsEvents and not entry.eventsValidated then
-    entry.eventsValidated = true
     validateSemanticFieldData(entry.fieldData, record, true)
+    entry.eventsValidated = true
   end
-  touchMemo(identity, self.semanticMemo, self.semanticMemoOrder, SEMANTIC_MEMO_LIMIT)
+  touchMemo(assert(identity), self.semanticMemo, self.semanticMemoOrder, SEMANTIC_MEMO_LIMIT)
   return entry.fieldData
+end
+
+-- Publish the event-validation fact for already retained semantic bytes. The
+-- incremental logical-metadata path validates the same immutable record in
+-- chunks, so completing it is the same evidence a synchronous full validation
+-- gives; leaving it unrecorded would redo the whole walk on the next full load.
+---@param record table<string, unknown>
+function FieldMapLoader:_noteSemanticEventsValidated(record)
+  local entry = self:_semanticMemoEntry(record)
+  if entry ~= nil then
+    entry.eventsValidated = true
+  end
 end
 
 -- Validated semantic field data for one map header whose generated record is
@@ -695,19 +739,24 @@ function FieldMapLoader:_installedSemantic(record)
     return memoized
   end
   local fieldData = loadSemanticFieldData(self.cacheFs, record, false)
-  self:_rememberSemantic(record, fieldData, false)
+  self:_rememberSemantic(record, fieldData, false, false)
   return fieldData
 end
 
 ---@param record table<string, unknown>
 ---@param fieldData table<string, unknown>
 ---@param eventsValidated boolean
-function FieldMapLoader:_rememberSemantic(record, fieldData, eventsValidated)
+---@param closureReady boolean the generated logical closure was admitted for these bytes
+function FieldMapLoader:_rememberSemantic(record, fieldData, eventsValidated, closureReady)
   local identity = self:_assetSourceIdentity(FieldMapDataCache.fieldPath(record.id))
   if identity == nil then
     return
   end
-  self.semanticMemo[identity] = { fieldData = fieldData, eventsValidated = eventsValidated }
+  self.semanticMemo[identity] = {
+    fieldData = fieldData,
+    eventsValidated = eventsValidated,
+    closureReady = closureReady,
+  }
   touchMemo(identity, self.semanticMemo, self.semanticMemoOrder, SEMANTIC_MEMO_LIMIT)
 end
 
@@ -763,6 +812,23 @@ local function makeLogicalMap(record, fieldData)
     return nil
   end
   return logicalMap
+end
+
+-- The compiled visual scene record of one map: a plain Lua metadata read naming
+-- the area type, camera, and descriptor layout. It acquires no terrain,
+-- collision, GPU, or presentation resource, so a caller can decide whether a
+-- map even has a physical window before starting a full load. A missing record
+-- means the visual closure was never published, and stays a loud failure.
+---@param idOrSymbol string|integer
+---@return table<string, unknown>
+function FieldMapLoader:sceneRecord(idOrSymbol)
+  assert(not self.released, "field map loader is released")
+  local record = worldRecord(self.world, idOrSymbol)
+  return loadRequired(
+    self.cacheFs,
+    MapAssetCache.mapDir(record.id) .. "/scene.lua",
+    FieldErrors.FIELD_MAP_VISUAL_CACHE_MISSING
+  )
 end
 
 -- Acquires the scene-free semantic map for logical residency: scripts,
@@ -836,6 +902,7 @@ function FieldMapLoader:beginLogicalMetadata(idOrSymbol)
       )
     end
     if complete then
+      self._loader:_noteSemanticEventsValidated(assert(self._record))
       self._result = makeLogicalMap(assert(self._record), assert(self._fieldData))
       self._fieldData = nil
       self._ready = true

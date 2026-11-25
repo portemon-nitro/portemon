@@ -658,7 +658,14 @@ function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
     return binding.prepare(iconKeys)
   end
   local function cancelMenuIconPreparation()
-    local binding = assert(runtime._partyIconPreparation, "the menu composition requires its icon preparation binding")
+    -- The binding lifetime belongs to the presented resources. A screen disposed
+    -- after that lifetime retired has no icon interest left to cancel, so its
+    -- release is a no-op instead of a composition failure; opening a screen
+    -- still requires the live binding above.
+    local binding = runtime._partyIconPreparation
+    if binding == nil then
+      return
+    end
     binding.cancel()
   end
   -- The bag's semantic sound boundary and text cadence bind once at the

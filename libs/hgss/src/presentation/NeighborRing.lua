@@ -393,6 +393,9 @@ function NeighborRing.begin(cacheFs, descriptors, opts)
     local prepareQueue = assert(queue, "prepared mesh realization requires a preparation queue")
     local priority = task._finishing and "demand" or "prefetch"
     local token = prepareQueue:request(kind, path, priority)
+    -- The ring build blocks on this one resource: promote it rather than the
+    -- whole pre-enrolled halo.
+    prepareQueue:promote(token, "demand")
     task._outstanding = token
     while true do
       if task._stashed ~= nil and task._stashed[token] ~= nil then

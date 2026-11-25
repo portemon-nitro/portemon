@@ -53,6 +53,23 @@ local function freezeAutonomousActors(game)
   end
 end
 
+-- A corridor traversal is a normally predicted journey: the staged halo and the
+-- imminent window must serve every boundary, so a synchronous fallback means the
+-- production frontier lagged the player.
+local function assertFrontierServed(snapshot, label)
+  Assert.equal(
+    snapshot.coverage.synchronousPhysicalFallbackLoads,
+    0,
+    label .. " must not rebuild a cell synchronously at the boundary"
+  )
+  Assert.notNil(snapshot.residency, label .. " residency status is required")
+  Assert.equal(
+    snapshot.residency.synchronousLogicalFallbackLoads,
+    0,
+    label .. " must not acquire a logical resident synchronously at the boundary"
+  )
+end
+
 local function assertResident(snapshot)
   Assert.notNil(snapshot.coverage, "production coverage status is required")
   Assert.isTrue(snapshot.coverage.residentCount <= 9, "physical residency must remain bounded")
@@ -187,12 +204,14 @@ function T.tests.corridor_traverses_water_zone_streaming_grass_ledge_and_returns
     Assert.equal(route.transition.phase, "idle", "seam crossing must not start a transition")
     Assert.notNil(route.zoneChange, "seam crossing must publish zone ownership")
     assertSeam(game, 33, "MAP_ROUTE_29", "New Bark to Route 29")
+    assertFrontierServed(game:snapshot(), "New Bark to Route 29")
     Assert.equal(game.runtime.physicalCoverage, physicalOwner, "seam crossing must preserve the physical world")
     Assert.equal(game.runtime.runtimeMap.coverage, physicalOwner, "same-matrix composition must reuse the owner")
     assertResident(route)
 
     local far = moveTo(game, facts.far)
     assertResident(far)
+    assertFrontierServed(far, "the far Route 29 cell")
     local grass = moveTo(game, facts.grass)
     Assert.notNil(grass.terrainEffects, "terrain effect status is required")
     Assert.isTrue(#grass.terrainEffects.instances > 0, "grass displacement must emit an effect")
@@ -235,6 +254,7 @@ function T.tests.corridor_traverses_water_zone_streaming_grass_ledge_and_returns
 
     local returned = moveTo(game, facts.newBark)
     assertSeam(game, facts.newBark.mapId, "MAP_NEW_BARK", "Route 29 to New Bark")
+    assertFrontierServed(returned, "Route 29 to New Bark")
     Assert.equal(returned.player.fieldX, facts.newBark.fieldX)
     Assert.equal(returned.player.fieldZ, facts.newBark.fieldZ)
     Assert.equal(game.runtime.physicalCoverage, physicalOwner, "reverse seam must preserve the physical world")
@@ -251,6 +271,7 @@ function T.tests.corridor_traverses_water_zone_streaming_grass_ledge_and_returns
     Assert.equal(farSavePosition.player.fieldX, facts.far.fieldX)
     Assert.equal(farSavePosition.player.fieldZ, facts.far.fieldZ)
     assertResident(farSavePosition)
+    assertFrontierServed(farSavePosition, "the corridor's far cell")
     -- The corridor walks through grass without starting battles, so the
     -- route may hold a prepared wild encounter when it reaches its
     -- stability save. The route declines wild encounters before saving;
@@ -323,6 +344,7 @@ function T.tests.route_29_physical_frontier_traversal_keeps_autonomous_actors_co
     Assert.equal(game.runtime.runtimeMap.mapId, facts.route29.mapId)
     Assert.isNil(game.runtime.errorText, "autonomous actors must not fault during frontier traversal")
     assertResident(far)
+    assertFrontierServed(far, "the physical frontier traversal")
     Assert.equal(game:renderAttempts(), 0, "navigation acceptance must stop before GPU rendering")
   end, debug.traceback)
   game:close()

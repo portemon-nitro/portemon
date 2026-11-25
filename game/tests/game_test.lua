@@ -155,4 +155,28 @@ function T.callbacks_preserve_host_tuples_without_polling_host_dimensions()
   Assert.equal(dimensionReads, 0, "Game construction and callbacks never measure host dimensions")
 end
 
+function T.preparation_policy_is_reported_by_the_current_child_only()
+  local Game = loadGame()
+  local host = Game.new({ onExit = function() end })
+  Assert.isFalse(host:isPreparingAssets(), "a host without a child prepares nothing")
+
+  local gameplay = disposableState()
+  host:setState(gameplay)
+  Assert.isFalse(host:isPreparingAssets(), "a child without the query is ordinary gameplay")
+
+  local preparing = disposableState()
+  preparing.preparing = true
+  function preparing:isPreparingAssets()
+    return self.preparing
+  end
+  host:setState(preparing)
+  Assert.isTrue(host:isPreparingAssets(), "the host forwards its current child's blocking preparation report")
+
+  preparing.preparing = false
+  Assert.isFalse(host:isPreparingAssets(), "the child's own answer stays authoritative while it lives")
+  host:setState(gameplay)
+  Assert.isFalse(host:isPreparingAssets(), "replacing the child drops the previous preparation report")
+  host:dispose()
+end
+
 return { tests = T }

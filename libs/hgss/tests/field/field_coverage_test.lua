@@ -1576,7 +1576,9 @@ function T.a_blocked_staged_cell_does_not_stop_its_siblings()
 end
 
 -- The halo is ordered by the player's actual field position, so the cell across
--- the boundary being walked toward is prepared before the cells behind.
+-- the boundary being walked toward is prepared before the cells behind. Distance
+-- is measured to a cell's own tiles, so the strip across the boundary -- a
+-- fraction of a cell away -- leads instead of an already-passed corner.
 function T.prefetch_focus_orders_the_halo_nearest_first()
   local coverage = FieldCoverage.new({
     matrixMemberId = 1,
@@ -1587,21 +1589,174 @@ function T.prefetch_focus_orders_the_halo_nearest_first()
       return runtimeFactory({})(descriptor)
     end,
   })
-  -- Standing in the bottom-right corner of cell (2,2): the halo cells to the
-  -- east and south are a fraction of a cell away, the north-west ring corner is
-  -- nearly two cells away.
+  -- Standing in the bottom-right corner of cell (2,2): the east, south, and
+  -- south-east cells are the strips being walked toward, and the north-west
+  -- ring corner is nearly two cells away.
   coverage:setPrefetchFocus(2 * 32 + 31, 2 * 32 + 31)
   coverage:queuePrefetch(2, 2)
   local queued = coverage.prefetchQueue
   Assert.isTrue(#queued > 1, "the halo queues several cells")
-  local function score(descriptor)
-    local dx = descriptor.x - (2 * 32 + 31) / 32
-    local dz = descriptor.z - (2 * 32 + 31) / 32
-    return dx * dx + dz * dz
-  end
-  Assert.isTrue(score(queued[1]) < score(queued[#queued]), "the halo is ordered nearest-first")
+  local firstTwo = {
+    [queued[1].x .. ":" .. queued[1].z] = true,
+    [queued[2].x .. ":" .. queued[2].z] = true,
+  }
+  Assert.isTrue(firstTwo["4:2"], "the ring strip across the east boundary leads the halo")
+  Assert.isTrue(firstTwo["2:4"], "the ring strip across the south boundary leads the halo")
   Assert.equal(queued[#queued].x, 0, "the farthest ring corner comes last on x")
   Assert.equal(queued[#queued].z, 0, "the farthest ring corner comes last on z")
+  coverage:release()
+end
+
+-- A focus change re-orders the still-queued halo immediately: the ordered
+-- frontier is what the next staged cell is taken from, and waiting for the next
+-- full queue pass would keep the previous position's order for the whole walk.
+function T.a_focus_change_reorders_the_queued_halo()
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    loadCell = function(descriptor)
+      return runtimeFactory({})(descriptor)
+    end,
+  })
+  coverage:setPrefetchFocus(2 * 32 + 1, 2 * 32 + 1)
+  coverage:queuePrefetch(2, 2)
+  local function queueIndex(cellKey)
+    for index, descriptor in ipairs(coverage.prefetchQueue) do
+      if descriptor.x .. ":" .. descriptor.z == cellKey then
+        return index
+      end
+    end
+    return nil
+  end
+  Assert.equal(queueIndex("0:2"), 2, "the west strip leads from the west edge")
+  Assert.isTrue(queueIndex("4:2") > 4, "the east strip waits behind the western frontier")
+
+  -- The player walked to the east edge without leaving the cell.
+  coverage:setPrefetchFocus(2 * 32 + 31, 2 * 32 + 31)
+  Assert.equal(queueIndex("4:2"), 1, "the queued halo follows the new frontier immediately")
+  Assert.isTrue(queueIndex("0:2") > 4, "the already-passed frontier falls behind")
+  Assert.isTrue(#coverage.prefetchQueue > 1, "reordering keeps the whole halo")
+  coverage:release()
+end
+
+-- A corner position predicts one cardinal crossing, not a diagonal: physical
+-- coverage crosses one edge at a time, and the edge the player is closest to
+-- crossing is the one worth preparing.
+function T.a_corner_focus_predicts_the_nearest_cardinal_crossing()
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    loadCell = function(descriptor)
+      return runtimeFactory({})(descriptor)
+    end,
+  })
+  -- Bottom-left corner, one tile from the south boundary and two from the west:
+  -- the south cell is the frontier.
+  coverage:setPrefetchFocus(2 * 32 + 2, 2 * 32 + 31)
+  local anchorX, anchorZ = coverage:_imminentAnchor()
+  Assert.equal(anchorX, 2, "the predicted crossing keeps the column")
+  Assert.equal(anchorZ, 3, "the nearer boundary owns the prediction")
+  coverage:release()
+end
+
+-- A realized halo is not a finished frontier: approaching a boundary after all
+-- cells are resident must still stage the imminent window instead of leaving the
+-- crossing frame to build it synchronously.
+function T.a_completed_halo_still_owes_the_imminent_window()
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    loadCell = function(descriptor)
+      return runtimeFactory({})(descriptor)
+    end,
+  })
+  coverage:setPrefetchFocus(2 * 32 + 16, 2 * 32 + 16)
+  coverage:queuePrefetch(2, 2)
+  for _ = 1, 200 do
+    if not coverage:hasPrefetchWork() then
+      break
+    end
+    coverage:updatePrefetch(2)
+  end
+  Assert.isFalse(coverage:hasPrefetchWork(), "the halo and its window are complete mid-cell")
+
+  coverage:setPrefetchFocus(2 * 32 + 30, 2 * 32 + 16)
+  Assert.isTrue(coverage:hasPrefetchWork(), "a newly imminent window is owed even with no cell work left")
+  coverage:updatePrefetch(2)
+  local staged = assert(coverage._stagedAggregate, "the imminent window assembles from the completed halo")
+  Assert.equal(staged.anchorX, 3, "the staged window is the new frontier")
+  Assert.isFalse(coverage:hasPrefetchWork(), "the staged window completes the frontier work")
+  coverage:release()
+end
+
+-- Turning around before the crossing drops the superseded window instead of
+-- keeping the build pointed at the cell the player walked away from.
+function T.a_superseded_imminent_window_is_dropped_and_rebuilt()
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    loadCell = function(descriptor)
+      return runtimeFactory({})(descriptor)
+    end,
+  })
+  coverage:setPrefetchFocus(2 * 32 + 16, 2 * 32 + 16)
+  coverage:queuePrefetch(2, 2)
+  for _ = 1, 200 do
+    if not coverage:hasPrefetchWork() then
+      break
+    end
+    coverage:updatePrefetch(2)
+  end
+  coverage:setPrefetchFocus(2 * 32 + 30, 2 * 32 + 16)
+  coverage:updatePrefetch(2)
+  local staged = assert(coverage._stagedAggregate, "the east frontier window is staged")
+  Assert.equal(staged.anchorX, 3, "the staged window is the east neighbor")
+
+  -- Reversal: the player is now near the west boundary, and the retained
+  -- candidate describes a frontier they are no longer heading for.
+  coverage:setPrefetchFocus(2 * 32 + 1, 2 * 32 + 16)
+  Assert.isTrue(coverage:hasPrefetchWork(), "a superseded window is not satisfied work")
+  coverage:updatePrefetch(2)
+  local rebuilt = assert(coverage._stagedAggregate, "the retained window is replaced")
+  Assert.equal(rebuilt.anchorX, 1, "the rebuilt window follows the reversal")
+  Assert.isTrue(rebuilt ~= staged, "the superseded window is never kept")
+  coverage:release()
+end
+
+-- Zero budget does no aggregate assembly: the imminent window is charged as one
+-- indivisible step of the same staging budget, never as unbudgeted work.
+function T.a_zero_budget_never_assembles_the_imminent_window()
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    loadCell = function(descriptor)
+      return runtimeFactory({})(descriptor)
+    end,
+  })
+  coverage:setPrefetchFocus(2 * 32 + 16, 2 * 32 + 16)
+  coverage:queuePrefetch(2, 2)
+  for _ = 1, 200 do
+    if not coverage:hasPrefetchWork() then
+      break
+    end
+    coverage:updatePrefetch(2)
+  end
+  coverage:setPrefetchFocus(2 * 32 + 30, 2 * 32 + 16)
+  Assert.equal(coverage:updatePrefetch(0), 0, "a zero budget spends no work units")
+  Assert.isNil(coverage._stagedAggregate, "a zero budget never assembles the imminent window")
+  Assert.isTrue(coverage:hasPrefetchWork(), "the deferred window remains owed")
+  Assert.equal(coverage:updatePrefetch(1), 1, "the window costs exactly one budgeted step")
+  Assert.notNil(coverage._stagedAggregate, "the budgeted step assembles the window")
   coverage:release()
 end
 
@@ -1630,7 +1785,7 @@ function T.imminent_destination_window_is_staged_ahead_and_committed_unchanged()
 
   -- Standing near the east boundary of cell (2,2): the destination is (3,2).
   coverage:setPrefetchFocus(2 * 32 + 30, 2 * 32 + 16)
-  coverage:updatePrefetch(0)
+  coverage:updatePrefetch(1)
   local staged = assert(coverage._stagedAggregate, "the imminent destination is staged")
   Assert.equal(staged.anchorX, 3, "the staged window is the cell the player is walking into")
   Assert.equal(staged.anchorZ, 2, "the staged window keeps the other axis")
@@ -1662,7 +1817,7 @@ function T.a_stale_staged_destination_is_never_committed()
     coverage:updatePrefetch(2)
   end
   coverage:setPrefetchFocus(2 * 32 + 30, 2 * 32 + 16)
-  coverage:updatePrefetch(0)
+  coverage:updatePrefetch(1)
   local staged = assert(coverage._stagedAggregate, "the imminent destination is staged")
   -- Replace one halo cell the staged window references with a different runtime.
   local replacedKey

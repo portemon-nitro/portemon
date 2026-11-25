@@ -125,6 +125,14 @@ function ControllableImageOwner:request(path, sampler, priority)
   return token
 end
 
+-- Declare one staged ticket a current need. The controllable owner stages
+-- synchronously, so promotion changes no scheduling; it exists so the promoter
+-- capability production composes is modeled here too.
+---@param token integer
+function ControllableImageOwner:promote(token)
+  assert(self._tickets[token] ~= nil, "unknown controllable image token")
+end
+
 ---@param token integer
 ---@return string status "pending", "ready", or "failed"
 ---@return string? cause failure message

@@ -1411,7 +1411,6 @@ function Worker:_applySelect(command)
   self.lifecycle = "active"
   -- A replacement selection starts under the ordinary interactive policy until
   -- its own presentation reports a loader.
-  self.loading = false
   if self.pool ~= nil then
     pcall(function()
       self.pool:setLoading(false)
@@ -1554,7 +1553,6 @@ function Worker:_applyExecutionPolicy(command)
     return
   end
   local loading = command.loading == true
-  self.loading = loading
   if self.pool ~= nil then
     self.pool:setLoading(loading)
   end
@@ -1750,7 +1748,6 @@ function Worker:_applyRetire(command)
   -- settle before any later same-version capture may start. The barrier does
   -- not wait for that writer; dirty progress may simply be dropped.
   self:_cancelSnapshot()
-  self.loading = false
   if pool ~= nil then
     pcall(function()
       pool:setLoading(false)

@@ -2687,6 +2687,78 @@ function ArtifactJobs.completeIterator(plans)
   return nextComplete
 end
 
+-- Size classes ordered cheapest-first for speculative admission. The compiler
+-- pool owns the same ordering for its physical lanes; this is the producer-side
+-- projection of the descriptor catalog.
+local SIZE_RANK = { normal = 1, heavy = 2, jumbo = 3 }
+
+---@param kind string
+---@return integer
+function ArtifactJobs.sizeRank(kind)
+  local rank = SIZE_RANK[ArtifactJobs.sizeClass(kind)]
+  assert(rank ~= nil, "unknown artifact size class for " .. tostring(kind))
+  return rank
+end
+
+-- Aggregate summaries close the canonical enumeration because registering one
+-- before its leaves would expand a whole family: speculative reordering never
+-- pulls one ahead of a remaining leaf candidate.
+local TRAIL_SUMMARY = {}
+for _, kind in ipairs(COMPLETE_TRAIL_SUMMARIES) do
+  TRAIL_SUMMARY[kind] = true
+end
+
+-- Speculative completion order: the canonical inventory with a bounded
+-- lookahead window reordered cheapest-first. Membership, canonical identities
+-- and each family's own order still come from completeIterator, and the window
+-- never holds more than `lookahead` logical candidates, so this prefers a later
+-- small job over an earlier heavy one without materializing or sorting the
+-- corpus. Aggregate summaries stay last because they close the canonical
+-- enumeration.
+---@param plans ArtifactJobs.Plans
+---@param lookahead integer candidate window size
+---@return fun(): { kind: string, key: string, jobKey: string }|nil
+function ArtifactJobs.priorityIterator(plans, lookahead)
+  assert(
+    type(lookahead) == "number" and lookahead % 1 == 0 and lookahead >= 1,
+    "a speculative window holds a positive candidate count"
+  )
+  local canonical = ArtifactJobs.completeIterator(plans)
+  local window = {}
+  local exhausted = false
+  local function fill()
+    while not exhausted and #window < lookahead do
+      local job = canonical()
+      if job == nil then
+        exhausted = true
+        break
+      end
+      window[#window + 1] = job
+    end
+  end
+  local function speculativeRank(job)
+    if TRAIL_SUMMARY[job.kind] then
+      return math.huge
+    end
+    return ArtifactJobs.sizeRank(job.kind)
+  end
+  local function nextPrioritised()
+    fill()
+    if #window == 0 then
+      return nil
+    end
+    local bestIndex, bestRank = 1, speculativeRank(window[1])
+    for index = 2, #window do
+      local candidateRank = speculativeRank(window[index])
+      if candidateRank < bestRank then
+        bestIndex, bestRank = index, candidateRank
+      end
+    end
+    return table.remove(window, bestIndex)
+  end
+  return nextPrioritised
+end
+
 ---@param plans ArtifactJobs.Plans
 ---@return { kind: string, key: string, jobKey: string }[]
 function ArtifactJobs.completeJobs(plans)

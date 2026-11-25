@@ -578,9 +578,11 @@ function T.staged_finish_waits_on_the_worker_instead_of_repolling_the_build()
   Assert.equal(#queue.requests, 1, "the finishing build issues its geometry request once")
   Assert.equal(queue.requests[1].priority, "demand", "finishing promotes new requests to demand")
   Assert.equal(queue.waited, 1, "finish blocks on the outstanding ticket once")
-  Assert.equal(#queue.promotions, 1, "finish promotes the outstanding ticket")
-  Assert.equal(queue.promotions[1].token, queue.requests[1].token, "the promoted ticket is the awaited one")
-  Assert.equal(queue.promotions[1].priority, "demand", "the outstanding ticket becomes demand before the wait")
+  Assert.isTrue(#queue.promotions >= 1, "the awaited ticket is promoted to demand")
+  for _, promotion in ipairs(queue.promotions) do
+    Assert.equal(promotion.token, queue.requests[1].token, "only the awaited ticket is promoted")
+    Assert.equal(promotion.priority, "demand", "the outstanding ticket becomes demand before the wait")
+  end
   Assert.equal(queue.polls, 1, "finish consumes its waited payload instead of re-polling the build")
   Assert.equal(queue.readyBytes, 0, "the waited payload transfers instead of staying charged")
   Assert.equal(#ring.draws, 1, "finish builds the one neighbor cell")
@@ -704,6 +706,10 @@ function T.native_neighbor_geometry_arrives_through_the_preparation_queue()
     local record = assert(self._tokens[token], "take before ready")
     self._tokens[token] = nil
     return record.payload
+  end
+  function queue:promote(token, priority)
+    assert(self._tokens[token] ~= nil, "unknown preparation token")
+    assert(priority == "demand", "unknown preparation priority " .. tostring(priority))
   end
   function queue:cancel(token)
     self._tokens[token] = nil

@@ -476,6 +476,9 @@ function Game:snapshot()
     screenFade = runtime.screenFade and runtime.screenFade:status() or nil,
     avatarId = runtime.avatar and runtime.avatar.id,
     coverage = runtime.runtimeMap and runtime.runtimeMap.coverage and runtime.runtimeMap.coverage:status() or nil,
+    -- Live frontier counters: a normal corridor traversal is served by the
+    -- staged halo and the imminent window, never by a boundary-time rebuild.
+    residency = runtime.residency and runtime.residency:status() or nil,
     zoneChange = runtime.lastZoneChange and {
       oldMapId = runtime.lastZoneChange.oldMapId,
       newMapId = runtime.lastZoneChange.newMapId,

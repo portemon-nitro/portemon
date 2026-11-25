@@ -230,6 +230,20 @@ local function preparedPayload(lease, reference)
   return payload
 end
 
+-- The preparation request one geometry source makes: a procedural batch names
+-- its packed upload, a native model-bank selector names the whole bank. One
+-- owner for that mapping keeps pre-enrollment, staged acquisition and blocking
+-- acquisition asking the queue for exactly the same job.
+---@param reference string|ModelAsset.GeometryReference
+---@return string kind
+---@return string source
+local function geometryRequest(reference)
+  if type(reference) == "table" then
+    return "g4gx", ModelAsset.geometryFile(reference)
+  end
+  return "mesh", reference --[[@as string]]
+end
+
 -- Acquire (or fetch) the shared Mesh for a content-addressed geometry path.
 -- Returns { mesh, triangles, center, bounds }: the model-space bounding-box
 -- center and AABB are computed once per path (pure SceneDescriptor math over
@@ -292,13 +306,7 @@ function GpuAssetPool:preparedMesh(reference, await)
   if entry ~= nil then
     return entry
   end
-  local kind = "mesh"
-  local source = reference
-  if type(reference) == "table" then
-    kind = "g4gx"
-    source = ModelAsset.geometryFile(reference)
-  end
-  ---@cast source string
+  local kind, source = geometryRequest(reference)
   local lease = await(kind, source, self:_takeGeometryPrefetch(key))
   return self:meshFromPrepared(reference, preparedPayload(lease, reference))
 end
@@ -313,13 +321,8 @@ function GpuAssetPool:_geometryToken(reference, priority)
   if enrolled ~= nil then
     return enrolled
   end
-  local kind = "mesh"
-  local source = reference
-  if type(reference) == "table" then
-    kind = "g4gx"
-    source = ModelAsset.geometryFile(reference)
-  end
-  return queue:request(kind, source --[[@as string]], priority)
+  local kind, source = geometryRequest(reference)
+  return queue:request(kind, source, priority)
 end
 
 -- Enroll one geometry source for worker-side preparation without realizing it.
@@ -336,13 +339,8 @@ function GpuAssetPool:prefetchGeometry(reference)
   if self._meshCache[key] ~= nil or self._geometryPrefetch[key] ~= nil then
     return
   end
-  local kind = "mesh"
-  local source = reference
-  if type(reference) == "table" then
-    kind = "g4gx"
-    source = ModelAsset.geometryFile(reference)
-  end
-  self._geometryPrefetch[key] = queue:request(kind, source --[[@as string]], "prefetch")
+  local kind, source = geometryRequest(reference)
+  self._geometryPrefetch[key] = queue:request(kind, source, "prefetch")
 end
 
 -- Take the enrolled token for one geometry source, if any, so its own
@@ -436,6 +434,10 @@ function GpuAssetPool:sharedImage(path, wrapX, wrapY, wait)
   if token == nil then
     token = images:request(path, sharedSampler(wrapX, wrapY), "demand")
     self._imageTokens[key] = token
+  else
+    -- A pre-enrolled texture is a current need now: promote its ticket so the
+    -- ready-payload ceiling cannot hold it behind speculative siblings.
+    images:promote(token)
   end
   -- The ticket stays owned here until a lease exists: a failed poll or a
   -- failed acquisition drops it through the shared owner, so a rolled-back

@@ -1108,6 +1108,36 @@ local function live_prefetch_demands_every_pending_map_in_one_pass()
   coordinator:dispose()
 end
 
+-- The committed position drives halo ordering on every move, not only on the
+-- crossing it is meant to anticipate: walking across a cell must re-point the
+-- frontier before the boundary is reached.
+local function every_committed_move_updates_the_prefetch_focus()
+  local coordinator, coverage = coordinatorFixture()
+  coordinator:initialize()
+  coordinator:afterCommittedMove({ fieldX = 8, fieldZ = 16, currentMap = map(10) })
+  Assert.equal(coverage.focusX, 8, "the first committed move publishes its position")
+  Assert.equal(coverage.focusZ, 16, "both axes follow the committed position")
+
+  coordinator:afterCommittedMove({ fieldX = 24, fieldZ = 16, currentMap = map(10) })
+  Assert.equal(coverage.focusX, 24, "a same-anchor move re-points the frontier")
+  Assert.equal(coverage.anchorX, 0, "the anchor is unchanged inside the cell")
+  coordinator:dispose()
+end
+
+-- A coverage window adopted by a transition starts from the retained committed
+-- frontier instead of the generated cell order.
+local function adopted_coverage_starts_from_the_retained_focus()
+  local coordinator, _, _, _, zone = coordinatorFixture()
+  coordinator:initialize()
+  coordinator:afterCommittedMove({ fieldX = 24, fieldZ = 16, currentMap = zone.currentMap })
+  local replacement = coverageFixture()
+  local transaction = coordinator:prepareTransition(map(20), replacement)
+  coordinator:commitTransition(transaction)
+  Assert.equal(replacement.focusX, 24, "the adopted window inherits the committed frontier")
+  Assert.equal(replacement.focusZ, 16, "the adopted window inherits the committed frontier")
+  coordinator:dispose()
+end
+
 return {
   metadata = { capabilities = {} },
   tests = {
@@ -1141,5 +1171,7 @@ return {
     satisfied_live_prefetch_is_idle_until_the_anchor_changes = satisfied_live_prefetch_is_idle_until_the_anchor_changes,
     transition_staging_skips_halo_residents_with_pending_logical_closures = transition_staging_skips_halo_residents_with_pending_logical_closures,
     transition_staging_fails_loudly_on_logical_closure_failure = transition_staging_fails_loudly_on_logical_closure_failure,
+    every_committed_move_updates_the_prefetch_focus = every_committed_move_updates_the_prefetch_focus,
+    adopted_coverage_starts_from_the_retained_focus = adopted_coverage_starts_from_the_retained_focus,
   },
 }

@@ -116,6 +116,188 @@ local function destinationTerrain()
   })
 end
 
+-- The destination planning fixture: a two-map world where map 60 is an outdoor
+-- matrix member and the source record is map 61.
+local function planningRuntime(sourceCoverage, options)
+  options = options or {}
+  local arrival = options.arrival or { x = 5, z = 11 }
+  local runtime = runtimeForSwap(sourceCoverage)
+  local calls = { logicalLoads = 0, runtimeLoads = 0, cellBuilds = 0, advances = {}, taken = 0, released = 0 }
+  runtime.mapLoader.world = {
+    byId = { [60] = 1, [61] = 2 },
+    maps = {
+      { id = 60, matrix = { memberId = 7 }, worldOriginX = 0, worldOriginZ = 0 },
+      { id = 61, matrix = { memberId = 7 }, worldOriginX = 0, worldOriginZ = 0 },
+    },
+  }
+  runtime.mapLoader.sceneRecord = function(_, idOrSymbol)
+    calls.sceneReads = (calls.sceneReads or 0) + 1
+    return { type = options.indoor == true and "indoor" or "outdoor" }
+  end
+  runtime.mapLoader.loadLogical = function(_, idOrSymbol)
+    calls.logicalLoads = calls.logicalLoads + 1
+    return {
+      mapId = 60,
+      coordinateOrigin = { x = 0, z = 0 },
+      fieldData = { events = { warps = { { index = 0, x = arrival.x, z = arrival.z } } } },
+    }
+  end
+  runtime.mapLoader.beginLoad = function(_, mapId)
+    calls.runtimeLoads = calls.runtimeLoads + 1
+    local ready = options.loadStaged ~= true
+    local taken = false
+    local released = false
+    return {
+      advance = function(_, units)
+        calls.advances[#calls.advances + 1] = units
+        ready = true
+        return math.min(units, 1)
+      end,
+      isReady = function()
+        return ready
+      end,
+      takeResult = function()
+        Assert.isFalse(taken, "the staged destination load transfers once")
+        taken = true
+        calls.taken = calls.taken + 1
+        return outdoorMap(nil)
+      end,
+      release = function()
+        Assert.isFalse(released, "the staged destination load is released once")
+        released = true
+        calls.released = calls.released + 1
+      end,
+    }
+  end
+  runtime.mapLoader.get = function(_, mapId)
+    return outdoorMap(nil)
+  end
+  runtime.mapLoader.createPhysicalCoverage = function(_, logicalMap, position)
+    calls.cellBuilds = calls.cellBuilds + 1
+    calls.lastPosition = position
+    return releaseSpy("staged", 7, math.floor(position.fieldX / 32), math.floor(position.fieldZ / 32))
+  end
+  -- The staged window task the coordinator advances under the cover.
+  runtime.mapLoader.beginPhysicalCoverage = function(_, runtimeMap, position)
+    Assert.notNil(runtimeMap, "the window builds on the published destination runtime")
+    calls.cellBuilds = calls.cellBuilds + 1
+    calls.lastPosition = position
+    local ready = false
+    local taken = false
+    local released = false
+    local task = {}
+    function task:advance(units)
+      if units > 0 then
+        ready = true
+        return 1
+      end
+      return 0
+    end
+    function task:isReady()
+      return ready
+    end
+    function task:takeResult()
+      Assert.isTrue(ready, "the staged window transfers only when ready")
+      Assert.isFalse(taken, "the staged window transfers once")
+      taken = true
+      calls.windows = (calls.windows or 0) + 1
+      return releaseSpy("staged", 7, math.floor(position.fieldX / 32), math.floor(position.fieldZ / 32))
+    end
+    function task:release()
+      Assert.isFalse(taken, "a transferred window is never released")
+      Assert.isFalse(released, "an unclaimed window is released once")
+      released = true
+      calls.released = calls.released + 1
+    end
+    return task
+  end
+  return runtime, calls
+end
+
+local function outdoorSource()
+  return { mapId = 61, fieldData = { events = { warps = {} } } }
+end
+
+-- A covered warp whose live window already covers the arrival cell stages
+-- nothing: the ordinary swap reuses that exact owner instead of realizing the
+-- same cells into a second window.
+function T.a_same_window_covered_warp_stages_no_replacement()
+  local sourceCoverage = releaseSpy("source", 7, 0, 0)
+  local runtime, calls = planningRuntime(sourceCoverage)
+  local stage = runtime:beginDestinationStage(
+    outdoorSource(),
+    { index = 0, destinationMapId = 60, destinationWarpId = 0 },
+    nil
+  )
+
+  Assert.isNil(stage, "the live window already serves the destination")
+  Assert.equal(calls.runtimeLoads, 0, "a same-window warp never loads the destination runtime under the cover")
+  Assert.equal(calls.cellBuilds, 0, "no cell is realized twice for the same window")
+
+  local reused = runtime:_stagePhysicalCoverage(
+    outdoorMap(sourceCoverage),
+    { fieldX = 5, fieldZ = 11 },
+    7
+  )
+  Assert.equal(reused.coverage, sourceCoverage, "the resolution keeps the live physical owner")
+  Assert.isFalse(reused.replacement, "the swapped window is not replaced")
+end
+
+-- An indoor destination has no physical window: planning it from scene-free
+-- metadata leaves the full map load to the ordinary resolution path instead of
+-- blocking one frame under the cover.
+function T.an_indoor_destination_stages_no_window_and_no_runtime_load()
+  local sourceCoverage = releaseSpy("source", 7, 0, 0)
+  local runtime, calls = planningRuntime(sourceCoverage, { indoor = true })
+  local stage = runtime:beginDestinationStage(
+    outdoorSource(),
+    { index = 0, destinationMapId = 60, destinationWarpId = 0 },
+    nil
+  )
+
+  Assert.isNil(stage, "an indoor destination stages no physical window")
+  Assert.equal(calls.logicalLoads, 1, "planning reads scene-free metadata once")
+  Assert.equal(calls.runtimeLoads, 0, "the full destination runtime is not loaded under the cover")
+  Assert.equal(calls.cellBuilds, 0, "no physical cell work happens for an indoor destination")
+  sourceCoverage.releases = 0
+end
+
+-- An outdoor covered warp stages the destination runtime with the window, and
+-- the resolution adopts that finished window instead of building a second one.
+function T.an_outdoor_covered_warp_stages_the_runtime_and_its_window_once()
+  local sourceCoverage = releaseSpy("source", 7, 0, 0)
+  local runtime, calls = planningRuntime(sourceCoverage, { loadStaged = true, arrival = { x = 37, z = 11 } })
+  local stage = assert(
+    runtime:beginDestinationStage(outdoorSource(), { index = 0, destinationMapId = 60, destinationWarpId = 0 }, nil),
+    "an outdoor destination stages its window"
+  )
+  Assert.notNil(stage.plan, "the stage carries the authoritative arrival plan")
+  Assert.isTrue(stage.plan.metadataOnly, "the plan was resolved from scene-free metadata")
+
+  for _ = 1, 8 do
+    if stage:isReady() then
+      break
+    end
+    stage:advance(4)
+  end
+  Assert.isTrue(stage:isReady(), "the runtime and its window finish staging")
+  Assert.equal(calls.runtimeLoads, 1, "the destination runtime is loaded exactly once, by the stage")
+  Assert.equal(calls.taken, 1, "the staged runtime publishes exactly once")
+  Assert.equal(calls.cellBuilds, 1, "the window builds once on the published runtime")
+  Assert.deepEqual(calls.lastPosition, { fieldX = 37, fieldZ = 11 })
+
+  -- The transition owns the finished stage until the swap adopts it.
+  runtime.transition.destinationStage = stage
+  local adoption = runtime:_stagePhysicalCoverage(
+    outdoorMap(sourceCoverage),
+    { fieldX = 37, fieldZ = 11 },
+    7
+  )
+  Assert.isTrue(adoption.replacement, "the resolution adopts the staged replacement")
+  Assert.equal(calls.cellBuilds, 1, "adoption realizes no second window")
+  Assert.equal(runtime.physicalCoverage, sourceCoverage, "the live window stays owned until the swap commits")
+end
+
 local function destinationCollision()
   return {
     containsLocal = function(_, localX, localZ)

@@ -264,6 +264,10 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
     -- A pre-enrolled source coalesces onto its own token: the scene enrolled all
     -- its distinct geometry up front, so preparing it never runs twice.
     local token = enrolledToken or queue:request(kind, path, priority)
+    -- The scene is about to block on this one resource. Promoting only that
+    -- token keeps the ready-payload ceiling for speculative pre-enrollment while
+    -- guaranteeing the frontier can always progress.
+    queue:promote(token, "demand")
     task._outstanding = token
     while true do
       if task._stashed ~= nil and task._stashed[token] ~= nil then

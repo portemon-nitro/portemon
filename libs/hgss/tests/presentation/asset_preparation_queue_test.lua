@@ -177,16 +177,12 @@ local function pushCountFor(state, token)
   return count
 end
 
--- One request/reply Channel pair per queue: the response channel for a
--- known request channel index is the other member of the pair.
-local function responseChannelFor(state, requestIndex)
-  Assert.equal(#state.channels, 2, "one presentation worker owns exactly one request/reply Channel pair")
-  for index, channel in ipairs(state.channels) do
-    if index ~= requestIndex then
-      return channel
-    end
-  end
-  error("no response channel found")
+-- Every worker of one queue reports on the one shared reply channel it was
+-- started with, whatever the number of request channels.
+local function responseChannelFor(state, _)
+  local thread = assert(state.threads[1], "no presentation worker was started")
+  local startArgs = assert(thread.startArgs[1], "the presentation worker never started")
+  return assert(startArgs[2], "the presentation worker starts with its shared reply channel")
 end
 
 -- Owned upload buffers in the shape a completion publishes: a measurable size
@@ -1381,10 +1377,20 @@ function T.raised_slot_budget_overlaps_independent_work()
     Assert.isFalse(requestWasPushedFor(host, third), "the lowered budget admits no work onto the extra slot")
 
     -- Every slot reports on the one shared reply channel the first worker
-    -- started with.
+    -- started with. The lower-index worker settling first must not admit new
+    -- work while the higher-index worker still occupies the host.
     local reply = assert(host.threads[1].startArgs[1][2], "the worker starts with the shared reply channel")
     reply:push(meshResponse(first, "geometry/overlap-a.g4mesh"))
     Assert.equal(queue:poll(third), "pending", "the settled job frees nothing beyond the budget")
+    Assert.isFalse(
+      requestWasPushedFor(host, third),
+      "an idle lower slot never restores the occupancy the downshift removed"
+    )
+
+    -- The surviving over-budget job settles before any new work dispatches.
+    reply:push(meshResponse(second, "geometry/overlap-b.g4mesh"))
+    Assert.equal(queue:poll(third), "pending", "the third request waits for its own reply")
+    Assert.isTrue(requestWasPushedFor(host, third), "occupancy below the budget admits the next job")
     queue:release()
   end)
 end
@@ -1407,6 +1413,135 @@ function T.worker_death_with_several_slots_terminalizes_every_token()
     Assert.isTrue(tostring(failure):find("injected worker exit", 1, true) ~= nil, "the terminal cause is preserved")
     Assert.equal(queue:poll(second), "failed", "every unsettled token fails")
     queue:release()
+  end)
+end
+
+-- The ready-payload ceiling bounds speculative readiness, never the resource a
+-- real consumer is blocked on: promoting the awaited token dispatches it even
+-- while unrelated ready payloads hold the ceiling, while a bare probe of
+-- speculative work never changes scheduling.
+function T.an_awaited_prefetch_progresses_past_the_ready_payload_ceiling()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(fakeCacheFs(), { readyPayloadByteLimit = 1 })
+    local filler = queue:request("mesh", "geometry/ceiling-filler.g4mesh", "prefetch")
+    Assert.isTrue(requestWasPushedFor(host, filler), "the first speculative source dispatches under the ceiling")
+    local fillerIndex = requestChannelIndexFor(host, filler)
+    responseChannelFor(host, fillerIndex):push(meshResponse(filler, "geometry/ceiling-filler.g4mesh"))
+    Assert.equal(queue:poll(filler), "ready", "the speculative payload occupies the ready ceiling")
+
+    local awaited = queue:request("mesh", "geometry/ceiling-awaited.g4mesh", "prefetch")
+    Assert.isFalse(requestWasPushedFor(host, awaited), "the ceiling holds the next speculative dispatch")
+    Assert.equal(queue:poll(awaited), "pending", "the awaited resource is still queued")
+    Assert.isFalse(
+      requestWasPushedFor(host, awaited),
+      "a speculative probe alone never changes scheduling"
+    )
+    Assert.equal(queue:poll(awaited), "pending", "promotion alone dispatches nothing")
+    queue:promote(awaited, "demand")
+    Assert.equal(queue:poll(awaited), "pending", "the promoted frontier still waits on its reply")
+    Assert.isTrue(
+      requestWasPushedFor(host, awaited),
+      "promoting the awaited resource dispatches past the ceiling"
+    )
+
+    local awaitedIndex = requestChannelIndexFor(host, awaited)
+    responseChannelFor(host, awaitedIndex):push(meshResponse(awaited, "geometry/ceiling-awaited.g4mesh"))
+    Assert.equal(queue:poll(awaited), "ready", "the awaited resource completes despite the ceiling")
+    queue:take(awaited)
+    queue:take(filler)
+    queue:release()
+  end)
+end
+
+-- A blocking caller is the strongest current need: waiting promotes its own
+-- token so a speculative reservation can never keep it queued.
+function T.a_blocking_wait_promotes_the_token_it_waits_on()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(fakeCacheFs(), { readyPayloadByteLimit = 1 })
+    local filler = queue:request("mesh", "geometry/wait-filler.g4mesh", "prefetch")
+    local fillerIndex = requestChannelIndexFor(host, filler)
+    responseChannelFor(host, fillerIndex):push(meshResponse(filler, "geometry/wait-filler.g4mesh"))
+    Assert.equal(queue:poll(filler), "ready", "the speculative payload occupies the ready ceiling")
+
+    local awaited = queue:request("mesh", "geometry/wait-awaited.g4mesh", "prefetch")
+    Assert.isFalse(requestWasPushedFor(host, awaited), "the ceiling holds the awaited speculative job")
+    local reply = responseChannelFor(host, requestChannelIndexFor(host, filler))
+    local requestIndex
+    reply.onDemand = function()
+      reply.onDemand = nil
+      requestIndex = requestChannelIndexFor(host, awaited)
+      assert(requestIndex ~= nil, "the promoted job dispatched before the wait blocked")
+      responseChannelFor(host, requestIndex):push(meshResponse(awaited, "geometry/wait-awaited.g4mesh"))
+      return reply:pop()
+    end
+    local lease = queue:wait(awaited)
+    Assert.notNil(lease and lease.value, "the blocking wait transfers the promoted job's lease")
+    Assert.isTrue(requestIndex ~= nil, "the wait dispatched the promoted job")
+    queue:take(filler)
+    queue:release()
+  end)
+end
+
+-- A worker's death never returns input bytes another, healthy worker is still
+-- reading: physical decode ownership lasts until that job's own reply (which is
+-- discarded without changing the failed token) or the join in release.
+function T.worker_death_keeps_a_healthy_decode_input_pinned_until_release()
+  local AssetPreparationQueue = requireQueue()
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+  local host = fakeThreadHost()
+  local decoded = ResidentAssetCache.new({
+    idleByteLimit = 0,
+    release = function(value)
+      value:release()
+    end,
+  })
+  withLove(host.love, function()
+    local queue = AssetPreparationQueue.new(diskCacheFs(), {
+      decoded = decoded,
+      thread = host.love.thread,
+      workerSlots = 2,
+    })
+    local pathA = "assets/generated/field/30/pinned-a.png"
+    local tokenA = queue:request("image-derivative", pathA, "demand")
+    responseChannelFor(host, requestChannelIndexFor(host, tokenA)):push(
+      sourceResponse(tokenA, pathA, string.rep("a", 24))
+    )
+    Assert.equal(queue:poll(tokenA), "pending", "the first source reply dispatches its decode")
+
+    local pathB = "assets/generated/field/30/pinned-b.png"
+    local tokenB = queue:request("image-derivative", pathB, "demand")
+    local sourceB = requestChannelIndexFor(host, tokenB)
+    Assert.notNil(sourceB, "the second source read takes the second slot")
+    responseChannelFor(host, sourceB):push(sourceResponse(tokenB, pathB, string.rep("b", 24)))
+    Assert.equal(queue:poll(tokenB), "pending", "the second source reply dispatches its decode")
+    Assert.equal(#host.threads, 2, "two physical workers own two decodes")
+    Assert.isTrue(decoded:stats().pinnedBytes > 0, "both dispatched decodes pin their input")
+
+    host.threads[2]:stop("injected sibling exit")
+    Assert.equal(queue:poll(tokenB), "failed", "the executor terminalizes with the stopped worker")
+    Assert.isTrue(
+      decoded:stats().pinnedBytes > 0,
+      "the healthy worker's decode input stays pinned after its sibling died"
+    )
+
+    -- The healthy job's late reply is discarded without publishing into the
+    -- shared owner, and only then does its physical lease return.
+    local pinnedAfterDeath = decoded:stats().pinnedBytes
+    responseChannelFor(host, requestChannelIndexFor(host, tokenA)):push(
+      meshResponse(tokenA, pathA)
+    )
+    Assert.equal(queue:poll(tokenA), "failed", "a late result never revives a failed token")
+    Assert.isTrue(
+      decoded:stats().pinnedBytes < pinnedAfterDeath,
+      "the late reply returns exactly its own physical input"
+    )
+    queue:release()
+    Assert.equal(decoded:stats().pinnedBytes, 0, "the release join returns every remaining decode lease")
+    Assert.equal(next(queue._decodeLeases), nil, "no borrowed decode lease survives disposal")
   end)
 end
 

@@ -101,6 +101,24 @@ local function provisionerOptions(versionId)
   return options
 end
 
+-- Physical preparation slots the selected runtime's executor may fill. A
+-- loader presentation keeps one more decode overlapping the compiler (its jobs
+-- are per-scene one-shots, so a second slot keeps the frontier moving while the
+-- compiler holds the rest of the host); ordinary gameplay keeps exactly the one
+-- slot it has always used. This is deliberately not a processor-count budget:
+-- the compiler pool already owns that, and a loader must not staff two
+-- independent host-sized pools.
+local PREPARATION_LOADER_SLOTS = 2
+
+---@param loading boolean
+---@return integer
+local function preparationWorkerSlots(loading)
+  if not loading then
+    return 1
+  end
+  return PREPARATION_LOADER_SLOTS
+end
+
 function App._ensureService()
   if App.service ~= nil then
     return
@@ -215,7 +233,13 @@ function App._ensureAssetRuntime(epoch)
       value:release()
     end,
   })
-  local ok, queueOrError = pcall(AssetPreparationQueue.new, cacheFs, { decoded = decoded })
+  local ok, queueOrError = pcall(AssetPreparationQueue.new, cacheFs, {
+    decoded = decoded,
+    -- The runtime is created under the presentation policy already in force: a
+    -- cold boot installs its reader while a loader owns the screen, so a queue
+    -- built with the ordinary budget would never be widened afterwards.
+    workerSlots = preparationWorkerSlots(App._cacheLoading == true),
+  })
   if not ok then
     pcall(decoded.clear, decoded)
     pcall(packages.close, packages)
@@ -1345,38 +1369,25 @@ local function stateIsPreparingAssets()
   return ok and loading == true
 end
 
--- Physical preparation slots the selected runtime's executor may fill. A
--- loader presentation keeps one more decode overlapping the compiler (its jobs
--- are per-scene one-shots, so a second slot keeps the frontier moving while the
--- compiler holds the rest of the host); ordinary gameplay keeps exactly the one
--- slot it has always used. This is deliberately not a processor-count budget:
--- the compiler pool already owns that, and a loader must not staff two
--- independent host-sized pools.
-local PREPARATION_LOADER_SLOTS = 2
-
----@param loading boolean
----@return integer
-local function preparationWorkerSlots(loading)
-  if not loading then
-    return 1
-  end
-  return PREPARATION_LOADER_SLOTS
-end
-
 -- Transport the current presentation policy to the cache controller and size
--- the selected runtime's preparation executor to match. The service
--- deduplicates, so this is one comparison per frame; a stale epoch, a retired
--- selection or a failed controller simply ignores the report.
+-- the selected runtime's preparation executor to match. The executor budget is
+-- reconciled against its actual value every frame, so a runtime created after
+-- the policy changed still receives it; the service report is deduplicated by
+-- the last reported policy. A stale epoch, a retired selection or a failed
+-- controller simply ignores the report.
 function App._syncCacheExecutionPolicy()
   local loading = stateIsPreparingAssets()
+  local runtime = App._assetRuntime
+  if runtime ~= nil then
+    local slots = preparationWorkerSlots(loading)
+    if runtime.preparationQueue:workerSlotBudget() ~= slots then
+      runtime.preparationQueue:setWorkerSlots(slots)
+    end
+  end
   if loading == App._cacheLoading then
     return
   end
   App._cacheLoading = loading
-  local runtime = App._assetRuntime
-  if runtime ~= nil then
-    runtime.preparationQueue:setWorkerSlots(preparationWorkerSlots(loading))
-  end
   local service, epoch = App.service, App.epoch
   if service == nil or type(epoch) ~= "number" then
     return

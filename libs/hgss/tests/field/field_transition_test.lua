@@ -2843,13 +2843,28 @@ function T.covered_swap_advances_the_destination_stage_across_cover_ticks()
   local advances = {}
   local ready = false
   local stageReleased = 0
-  local fixture = outdoorFixture({
+  local fixture
+  fixture = outdoorFixture({
     produceDestination = nil,
     loader = {
       requestWarp = function()
         return true
       end,
     },
+    resolveDestination = function()
+      -- The swap adopts the staged window exactly as production does; the
+      -- transition's ownership ends with that transfer.
+      Assert.notNil(fixture.transition:takeDestinationStage(), "the resolution adopts the staged destination")
+      return {
+        destinationMap = { mapId = 60 },
+        destinationWarp = { x = 4, z = 14 },
+        fieldX = 684,
+        fieldZ = 393,
+        surfaceId = 0,
+        worldY = 0,
+        suppression = { mapId = 60, fieldX = 684, fieldZ = 393 },
+      }
+    end,
   })
   fixture.transition.produceDestination = function()
     return {
@@ -2929,6 +2944,72 @@ function T.aborted_covered_swap_releases_partial_destination_stage()
   )
   Assert.equal(stageReleased, 1, "the partial destination stage is released exactly once")
   Assert.equal(#fixture.swaps, 0, "a failed stage never commits")
+end
+
+-- A destination stage is owned by the transition until the swap adopts it. A
+-- resolution failure after the stage finished releases it through the abort
+-- path, so the window and its cell work never survive a failed warp; a field
+-- teardown mid-stage releases it through the same owner exactly once.
+function T.a_staged_destination_is_released_through_its_owner_until_adopted()
+  local stageReleased = 0
+  local fixture = outdoorFixture({
+    resolveDestination = function()
+      error("synthetic resolution failure", 0)
+    end,
+  })
+  fixture.transition.produceDestination = function()
+    return {
+      advance = function()
+        return 0
+      end,
+      isReady = function()
+        return true
+      end,
+      release = function()
+        stageReleased = stageReleased + 1
+      end,
+    }
+  end
+  fixture.transition:startCoveredSwap(
+    fixture.source,
+    { warp = { index = 0, destinationMapId = 60, destinationWarpId = 0 } },
+    "south"
+  )
+  for _ = 1, 8 do
+    if fixture.transition.phase == "idle" then
+      break
+    end
+    step(fixture.transition)
+  end
+  Assert.equal(fixture.transition.phase, "idle", "the resolution failure aborts to idle")
+  Assert.equal(stageReleased, 1, "an unadopted finished stage is released exactly once")
+  Assert.equal(#fixture.swaps, 0, "a failed resolution never commits")
+
+  -- Teardown while the destination is still staging: the same owner drops it.
+  local midStageReleased = 0
+  local teardownFixture = outdoorFixture()
+  teardownFixture.transition.produceDestination = function()
+    return {
+      advance = function()
+        return 0
+      end,
+      isReady = function()
+        return false
+      end,
+      release = function()
+        midStageReleased = midStageReleased + 1
+      end,
+    }
+  end
+  teardownFixture.transition:startCoveredSwap(
+    teardownFixture.source,
+    { warp = { index = 0, destinationMapId = 60, destinationWarpId = 0 } },
+    "south"
+  )
+  step(teardownFixture.transition)
+  teardownFixture.transition:releaseDestinationStage()
+  teardownFixture.transition:releaseDestinationStage()
+  Assert.equal(midStageReleased, 1, "field teardown releases the mid-stage destination exactly once")
 end
 
 return { tests = T }

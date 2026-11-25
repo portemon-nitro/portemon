@@ -2012,6 +2012,115 @@ function T.loader_presentations_report_loader_throughput_and_the_menu_does_not()
   end)
 end
 
+-- New Game and Continue are the entries whose loaders should widen cache
+-- throughput: the App asks the running game host, which forwards to its
+-- current child, so the retail entry's own preparation screen raises policy
+-- and its transfer restores ordinary admission.
+function T.retail_entry_loaders_report_loader_throughput_through_the_game_host()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    local Game = require("game.src.Game")
+    local function hostingChild(preparing)
+      local child = { preparing = preparing }
+      function child:isPreparingAssets()
+        return self.preparing
+      end
+      function child:update() end
+      local game = Game.new({ onExit = function() end })
+      game:setState(child)
+      return game, child
+    end
+
+    App._bootExisting()
+    App.update(0.016)
+    finishStartupTitle(result)
+    local runtime = assert(App._assetRuntime, "the selection owns its CPU runtime")
+
+    local game, child = hostingChild(true)
+    result.state = game
+    result.menus[1].options.onResult({ kind = "new_game" })
+    Assert.isTrue(App.state == game, "New Game enters the retail application host")
+    App.update(0.016)
+    local policy = assert(result.executionPolicies[#result.executionPolicies], "the New Game loader reports its policy")
+    Assert.isTrue(policy.loading, "the New Game loader reports loader throughput through the game host")
+    Assert.equal(
+      runtime.preparationQueue:workerSlotBudget(),
+      2,
+      "the New Game entry widens the runtime preparation executor"
+    )
+
+    child.preparing = false
+    App.update(0.016)
+    policy = assert(result.executionPolicies[#result.executionPolicies], "the entry transfer reports a new policy")
+    Assert.isFalse(policy.loading, "the entry transfer restores ordinary admission")
+    Assert.equal(runtime.preparationQueue:workerSlotBudget(), 1, "ordinary gameplay keeps one preparation slot")
+
+    -- Return to the menu through the same retail exit the host publishes, then
+    -- enter the other loader-bearing entry on a fresh host lifetime.
+    result.launches[1].onExit({ kind = "main_menu" })
+    game, child = hostingChild(true)
+    result.state = game
+    result.menus[2].options.onResult({ kind = "continue", saveId = "save-00000042" })
+    App.update(0.016)
+    policy = assert(result.executionPolicies[#result.executionPolicies], "the Continue loader reports its policy")
+    Assert.isTrue(policy.loading, "the Continue loader reports loader throughput through the game host")
+    Assert.equal(
+      runtime.preparationQueue:workerSlotBudget(),
+      2,
+      "the Continue entry widens the runtime preparation executor"
+    )
+    child.preparing = false
+    App.update(0.016)
+    Assert.isFalse(
+      assert(result.executionPolicies[#result.executionPolicies]).loading,
+      "Continue's handoff restores ordinary admission"
+    )
+  end)
+end
+
+-- A cold boot installs the selected reader after the loader policy is already
+-- in force. The runtime created then owns the live budget from construction
+-- instead of the ordinary one-slot default it would never be lifted from.
+function T.a_late_installed_runtime_is_created_under_the_live_loader_budget()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    local installedView = assert(result.service.getCacheFs)
+    local withheld = true
+    result.bootStatus = "pending"
+    result.service.getCacheFs = function(_, epoch)
+      if withheld then
+        return nil
+      end
+      return installedView(_, epoch)
+    end
+
+    App._bootExisting()
+    App.update(0.016)
+    Assert.isNil(App._assetRuntime, "the boot wait reports policy before the reader exists")
+    Assert.isTrue(
+      assert(result.executionPolicies[#result.executionPolicies]).loading,
+      "the boot wait already reports loader throughput"
+    )
+
+    withheld = false
+    result.bootStatus = "ready"
+    for _ = 1, 20 do
+      if App._assetRuntime ~= nil then
+        break
+      end
+      App.update(0.016)
+    end
+    local runtime = assert(App._assetRuntime, "the installed reader publishes the selected runtime")
+    Assert.equal(
+      runtime.preparationQueue:workerSlotBudget(),
+      2,
+      "the late runtime is created under the live loader budget"
+    )
+  end)
+end
+
 function T.menu_installation_requests_intro_and_field_closures_at_near_urgency()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"

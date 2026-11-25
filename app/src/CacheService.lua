@@ -774,6 +774,9 @@ function CacheService:_revokeEpoch(epoch)
   self._firstPlayRequested[epoch] = nil
   self._versions[epoch] = nil
   self._persistence[epoch] = nil
+  -- The reported policy belongs to the retired epoch: a replacement selection
+  -- starts from the ordinary policy instead of inheriting stale loader state.
+  self._executionPolicy[epoch] = nil
 end
 
 -- The epoch's one stable generated reader, available only after an
