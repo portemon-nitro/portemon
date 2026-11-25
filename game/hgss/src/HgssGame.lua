@@ -189,6 +189,7 @@ local function installRoutes(options, game, saveStore, versionId)
       createLoader = entryLoader,
       enterField = enterField,
       onCancel = returnToMainMenu,
+      displayContext = displayContext,
     }))
   end
 
@@ -274,6 +275,7 @@ local function installRoutes(options, game, saveStore, versionId)
       derivedAssets = derivedAssets,
       onReady = bootOakIntro,
       onCancel = returnToMainMenu,
+      displayContext = displayContext,
     }))
   end
 

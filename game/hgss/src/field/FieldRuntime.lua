@@ -72,6 +72,7 @@ local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
 local FollowerInteractionCache = require("libs.assets.src.field.FollowerInteractionCache")
 local FieldWeatherResolver = require("libs.hgss.src.world.FieldWeatherResolver")
 local DisplayContext = require("libs.ui.src.DisplayContext")
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local FieldEntranceIndicatorRuntime = require("game.hgss.src.field.FieldEntranceIndicatorRuntime")
 local FieldActorEmoteRuntime = require("game.hgss.src.field.FieldActorEmoteRuntime")
 local FieldPresentation = require("data.manifests.field_presentation")
@@ -5519,13 +5520,15 @@ end
 ---@param screenTopology ScreenTopology
 function FieldRuntime:resizePresentation(width, height, screenTopology)
   self.screenTopology = screenTopology
-  self.viewport:resize(width, height)
+  self._displayTopology = screenTopology
+  self.presentationDisplay = self.displayContext:measure(width, height)
+  local selected = ApplicationLayout.selectSurfaces(self.presentationDisplay)
+  local bounds = assert(selected.primary.usableBounds, "field presentation needs usable world bounds")
+  self.viewport:resize(width, height, bounds)
   self.menuHost:resize(width, height)
   self.menuHost:setScreenTopology(screenTopology)
   self.yesNoHost:resize(width, height)
   self.yesNoHost:setScreenTopology(screenTopology)
-  self._displayTopology = screenTopology
-  self.presentationDisplay = self.displayContext:measure(width, height)
   self:_updateCameraProjection()
   if self.martHost then
     self.martHost:refreshPresentation()

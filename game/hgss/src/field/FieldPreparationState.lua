@@ -335,6 +335,12 @@ function FieldPreparationState:keypressed(key, _, _)
   end
 end
 
+function FieldPreparationState:gamepadpressed(_, button)
+  if button == "b" then
+    self:keypressed("escape")
+  end
+end
+
 function FieldPreparationState:dispose()
   -- Cancellation or replacement never publishes a save or leaks the pending
   -- entry: the candidate stays with its task and the payload with its

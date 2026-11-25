@@ -27,6 +27,9 @@ local function loadApplicationModules()
   Assert.isTrue(okPrepared, "the HGSS application must own the prepared field entry: " .. tostring(preparedOrError))
   local okPreparation, preparationOrError = pcall(require, "game.hgss.src.field.FieldPreparationState")
   Assert.isTrue(okPreparation, "the HGSS application must own field preparation: " .. tostring(preparationOrError))
+  local okNewGamePreparation, newGamePreparationOrError =
+    pcall(require, "game.hgss.src.newgame.NewGamePreparationState")
+  Assert.isTrue(okNewGamePreparation, "new-game preparation module must load: " .. tostring(newGamePreparationOrError))
   return {
     hgssGame = hgssGameOrError,
     game = gameOrError,
@@ -38,6 +41,7 @@ local function loadApplicationModules()
     oak = oakOrError,
     prepared = preparedOrError,
     preparation = preparationOrError,
+    newGamePreparation = newGamePreparationOrError,
   }
 end
 
@@ -176,6 +180,7 @@ local function withCompositionSpies(fn)
   local original = {
     preparedNew = modules.prepared.new,
     preparationNew = modules.preparation.new,
+    newGamePreparationNew = modules.newGamePreparation.new,
     fieldNew = modules.fieldState.new,
     apply = modules.initialization.apply,
     initialLocation = modules.initialization.initialLocation,
@@ -221,6 +226,7 @@ local function withCompositionSpies(fn)
     oakCalls = {},
     preparedEntry = nil,
     preparationCalls = {},
+    newGamePreparationCalls = {},
     stores = {},
     storeFactory = function(_, index)
       return assert(context.stores[index], "test store not configured")
@@ -239,6 +245,10 @@ local function withCompositionSpies(fn)
   modules.preparation.new = function(options)
     context.preparationCalls[#context.preparationCalls + 1] = options
     return original.preparationNew(options)
+  end
+  modules.newGamePreparation.new = function(options)
+    context.newGamePreparationCalls[#context.newGamePreparationCalls + 1] = options
+    return original.newGamePreparationNew(options)
   end
   modules.fieldState.new = function(game, options)
     context.fieldCalls[#context.fieldCalls + 1] = { game = game, options = options }
@@ -281,6 +291,7 @@ local function withCompositionSpies(fn)
 
   modules.prepared.new = original.preparedNew
   modules.preparation.new = original.preparationNew
+  modules.newGamePreparation.new = original.newGamePreparationNew
   modules.fieldState.new = original.fieldNew
   rawset(modules.initialization, "apply", original.apply)
   rawset(modules.initialization, "initialLocation", original.initialLocation)
@@ -336,6 +347,55 @@ function T.explicit_entries_start_retail_preparation_and_reject_invalid_intents(
     local continueGame = construct({ kind = "continue", saveId = continueRecord.saveId })
     Assert.equal(getmetatable(continueGame.state).__index, FieldPreparationState)
     Assert.deepEqual(context.stores[2].loads, {}, "Continue loading remains deferred during preparation")
+    continueGame:dispose()
+  end)
+end
+
+-- Every current entry route borrows the one display measurement owner.
+function T.one_display_context_reaches_both_preparation_routes_oak_and_field()
+  withCompositionSpies(function(modules, context)
+    local continueRecord = saveRecord("save-00000002")
+    context.stores[1] = fakeStore({})
+    context.stores[2] = fakeStore({ continueRecord })
+    context.candidate = {
+      saveId = "save-00000003",
+      versionId = READY_VERSION,
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
+    context.oakState = disposableState("oak")
+    local function construct(entry)
+      return modules.hgssGame.new({
+        versionId = READY_VERSION,
+        startupPairIndex = 1,
+        entry = entry,
+        onExit = function() end,
+        derivedAssets = readyHost(),
+        cacheFs = generatedView(),
+        assetRuntime = selectedRuntime(),
+        fieldMapLoader = planningLoader(),
+      })
+    end
+
+    local newGame = construct({ kind = "new_game" })
+    settle(newGame)
+    Assert.equal(#context.newGamePreparationCalls, 1)
+    Assert.equal(#context.preparationCalls, 0, "cold New Game has not entered field preparation yet")
+    Assert.equal(#context.oakCalls, 1)
+    local newGameShared =
+      assert(context.newGamePreparationCalls[1].displayContext, "New Game preparation receives the shared context")
+    Assert.isTrue(context.oakCalls[1].displayContext == newGameShared, "Oak receives that exact context")
+    newGame:dispose()
+
+    local continueGame = construct({ kind = "continue", saveId = continueRecord.saveId })
+    settle(continueGame)
+    Assert.equal(#context.preparationCalls, 1)
+    local continueShared =
+      assert(context.preparationCalls[1].displayContext, "Continue preparation receives a display context")
+    Assert.isTrue(
+      context.fieldCalls[1].options.displayContext == continueShared,
+      "the later field state keeps Continue's exact context"
+    )
+    Assert.isFalse(continueShared == newGameShared, "separate running games do not share a mutable display owner")
     continueGame:dispose()
   end)
 end

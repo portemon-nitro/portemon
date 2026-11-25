@@ -247,6 +247,12 @@ function NewGamePreparationState:keypressed(key, _, _)
   end
 end
 
+function NewGamePreparationState:gamepadpressed(_, button)
+  if button == "b" then
+    self:keypressed("escape")
+  end
+end
+
 function NewGamePreparationState:dispose()
   -- Cancellation or replacement never composes Oak or reserves a
   -- candidate: only this state's references are dropped. The borrowed host

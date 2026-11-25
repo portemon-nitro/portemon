@@ -17,6 +17,7 @@ local BootIntroState = require("app.src.launcher.BootIntroState")
 local GameSelectState = require("app.src.launcher.GameSelectState")
 local LauncherAudio = require("app.src.launcher.LauncherAudio")
 local LauncherRenderer = require("app.src.launcher.LauncherRenderer")
+local TouchGamepad = require("app.src.input.TouchGamepad")
 local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local Errors = require("libs.errors.src.Errors")
@@ -51,6 +52,10 @@ local ASSET_RUNTIME_IDLE_BYTES = 64 * 1024 * 1024
 ---@field _startupWarmup { epoch: integer, versionId: string, preparation: table<string, function> }?|nil
 ---@field startupWarmupError string? background preparation diagnostic, never a menu gate
 ---@field launcherRenderer LauncherRenderer?|nil process-owned launcher painter
+---@field _touchGamepad TouchGamepad?|nil Android-only borrowed virtual input source
+---@field _safeRect { x: number, y: number, width: number, height: number }? latest published native safe rectangle
+---@field _touchGamepadSuspended boolean host is temporarily nonpresentable
+---@field _suspendedTouchIds table<unknown, boolean> touch lifetimes first seen while nonpresentable
 ---@field launcherAudio LauncherAudio?|nil process-owned launcher cue owner
 ---@field _bootPending boolean? metadata decision deferred until the first boot paint
 ---@field startupAudioSession StartupAudioSession?|nil optional selected-version title/menu audio owner
@@ -832,6 +837,10 @@ function App._launchGameWithProvisioner(versionId, entry)
   App._disposeSaveLocationWarmup()
   App._releaseStartupAudio()
   local runtime = assert(App._ensureAssetRuntime(App.epoch), "the retail entry needs the selected CPU runtime")
+  if App._touchGamepad ~= nil then
+    App._touchGamepad:setTarget(nil)
+  end
+  local touchGamepad = App._touchGamepad
   local ok, gameOrError = pcall(HgssGame.new, {
     versionId = versionId,
     cacheFs = runtime.cacheFs,
@@ -849,12 +858,18 @@ function App._launchGameWithProvisioner(versionId, entry)
     development = App.opts.dev,
     derivedAssets = provisioner:gameHost(),
     splRandomState = App.splRandomState,
+    topologyProvider = touchGamepad ~= nil and function()
+      return assert(touchGamepad:topology(), "Android game entry requires published controller topology")
+    end or nil,
   })
   if not ok then
     App._showGameSelection(versionId)
     error(gameOrError, 0)
   end
   App.setState(assert(gameOrError))
+  if App._touchGamepad ~= nil then
+    App._touchGamepad:setTarget(assert(gameOrError))
+  end
 end
 
 function App._ensureLauncherResources()
@@ -864,10 +879,27 @@ function App._ensureLauncherResources()
   if App.launcherAudio == nil then
     App.launcherAudio = LauncherAudio.new()
   end
-
+  if App._touchGamepad == nil and love.system.getOS() == "Android" then
+    local renderer = assert(App.launcherRenderer, "Android controls require the launcher renderer")
+    ---@cast renderer TouchGamepadRenderer
+    App._touchGamepad = TouchGamepad.new(renderer)
+    App._suspendedTouchIds = {}
+    App._syncDrawableSize()
+  elseif App._touchGamepad ~= nil and love.system.getOS() ~= "Android" then
+    App._touchGamepad:setTarget(nil)
+    App._touchGamepad = nil
+    App._suspendedTouchIds = {}
+  end
 end
 
 function App._releaseLauncherResources()
+  if App._touchGamepad ~= nil then
+    App._touchGamepad:setTarget(nil)
+    App._touchGamepad = nil
+    App._safeRect = nil
+    App._touchGamepadSuspended = false
+    App._suspendedTouchIds = {}
+  end
   if App.launcherAudio ~= nil then
     App.launcherAudio:dispose()
     App.launcherAudio = nil
@@ -1226,6 +1258,9 @@ function App.load(opts)
   App._cleanupAbandonedImports()
   App.drawableWidth, App.drawableHeight = love.graphics.getDimensions()
   App.pixelRatio = love.graphics.getDPIScale()
+  App._safeRect = nil
+  App._touchGamepadSuspended = false
+  App._suspendedTouchIds = {}
   App.importer = nil
   App.provisioner = nil
   App.splRandomState = nil
@@ -1265,6 +1300,7 @@ function App.load(opts)
   end
   App.audioPreferences = AudioPreferences.new({ storage = SaveFs.global(), setGain = setGain })
   App._ensureLauncherResources()
+  App._syncDrawableSize()
   App._bootPending = true
   App.setState(BootIntroState.new({
     renderer = App.launcherRenderer,
@@ -1290,6 +1326,9 @@ end
 -- bootstrap-state to game handoff must not retire it.
 function App.setState(nextState)
   local previous = App.state
+  if previous ~= nextState and App._touchGamepad ~= nil then
+    App._touchGamepad:setTarget(nil)
+  end
   if App._pendingPicker ~= nil and previous ~= nextState then
     App._pendingPicker = nil
   end
@@ -1662,6 +1701,9 @@ end
 
 function App.update(dt)
   App._syncDrawableSize()
+  if App._touchGamepad ~= nil then
+    App._touchGamepad:sync()
+  end
   App._pollNativePicker()
   if
     App.importer
@@ -1685,6 +1727,9 @@ function App.update(dt)
     App.state:update(dt)
   end
   App._syncCacheExecutionPolicy()
+  if App._touchGamepad ~= nil then
+    App._touchGamepad:sync()
+  end
   App._startPendingImport()
   local audio = App.startupAudioSession
   if audio ~= nil then
@@ -1729,6 +1774,17 @@ local function readSafeRect()
 end
 
 function App._publishDrawableSize(width, height, pixelRatio, safeRect)
+  local pad = App._touchGamepad
+  if width <= 0 or height <= 0 then
+    if pad ~= nil and not App._touchGamepadSuspended then
+      pad:cancel()
+    end
+    App._touchGamepadSuspended = true
+    App.drawableWidth = width
+    App.drawableHeight = height
+    App.pixelRatio = pixelRatio
+    return
+  end
   local changed = width ~= App.drawableWidth
     or height ~= App.drawableHeight
     or pixelRatio ~= App.pixelRatio
@@ -1736,12 +1792,14 @@ function App._publishDrawableSize(width, height, pixelRatio, safeRect)
   if not changed then
     return
   end
+  if pad ~= nil then
+    pad:setGeometry(width, height, assert(safeRect, "Android display facts include a safe rectangle"), pixelRatio)
+  end
   App.drawableWidth = width
   App.drawableHeight = height
   App.pixelRatio = pixelRatio
   App._safeRect = safeRect
-  App._swallowedPointers = {}
-  App._bootSwallowedInputs = {}
+  App._touchGamepadSuspended = false
   if App.state and App.state.resize then
     App.state:resize(width, height, safeRect)
   end
@@ -1772,6 +1830,9 @@ function App.draw()
     App._prepareBootCandidate()
   end
   App._noteReceiptPaint()
+  if App._touchGamepad ~= nil and not App._touchGamepadSuspended then
+    App._touchGamepad:draw()
+  end
 end
 
 function App.filedropped(file)
@@ -1798,6 +1859,9 @@ function App.keypressed(key, scancode, isrepeat)
   end
   if App.state and App.state.keypressed then
     App.state:keypressed(key, scancode, isrepeat)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
     return
   end
   if key == "escape" then
@@ -1811,6 +1875,9 @@ function App.keyreleased(key, scancode)
   end
   if App.state and App.state.keyreleased then
     App.state:keyreleased(key, scancode)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
@@ -1820,6 +1887,9 @@ function App.gamepadpressed(joystick, button)
   end
   if App.state and App.state.gamepadpressed then
     App.state:gamepadpressed(joystick, button)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
@@ -1829,16 +1899,25 @@ function App.gamepadreleased(joystick, button)
   end
   if App.state and App.state.gamepadreleased then
     App.state:gamepadreleased(joystick, button)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
 function App.gamepadaxis(joystick, axis, value)
   if App.state and App.state.gamepadaxis then
     App.state:gamepadaxis(joystick, axis, value)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
 function App.mousepressed(x, y, button, istouch, presses)
+  if istouch and App._touchGamepad ~= nil then
+    return
+  end
   App._syncDrawableSize()
   if not istouch and App._consumeBootInput("mouse:" .. tostring(button)) then
     return
@@ -1846,6 +1925,9 @@ function App.mousepressed(x, y, button, istouch, presses)
   local state = App.state
   if state and state.mousepressed then
     state:mousepressed(x, y, button, istouch, presses)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
     if getmetatable(state) == StartupTitleState and state.canceledPointers["mouse:" .. tostring(button)] then
       App._swallowedPointers = App._swallowedPointers or {}
       App._swallowedPointers["mouse:" .. tostring(button)] = true
@@ -1854,16 +1936,25 @@ function App.mousepressed(x, y, button, istouch, presses)
 end
 
 function App.mousemoved(x, y, dx, dy, istouch)
+  if istouch and App._touchGamepad ~= nil then
+    return
+  end
   App._syncDrawableSize()
   if not istouch and App._bootSwallowedInputs ~= nil and App._bootSwallowedInputs["mouse:1"] then
     return
   end
   if App.state and App.state.mousemoved then
     App.state:mousemoved(x, y, dx, dy, istouch)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
 function App.mousereleased(x, y, button, istouch, presses)
+  if istouch and App._touchGamepad ~= nil then
+    return
+  end
   App._syncDrawableSize()
   local pointerId = "mouse:" .. tostring(button)
   if not istouch and App._consumeBootInput(pointerId) then
@@ -1879,6 +1970,9 @@ function App.mousereleased(x, y, button, istouch, presses)
   end
   if App.state and App.state.mousereleased then
     App.state:mousereleased(x, y, button, istouch, presses)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
@@ -1890,12 +1984,25 @@ end
 
 function App.touchpressed(id, x, y, dx, dy, pressure)
   App._syncDrawableSize()
+  if App._touchGamepad ~= nil then
+    if App._touchGamepadSuspended then
+      App._suspendedTouchIds[id] = true
+      return
+    end
+    App._suspendedTouchIds[id] = nil
+    if App._touchGamepad:touchpressed(id, x, y) then
+      return
+    end
+  end
   if App._consumeBootInput("touch:" .. tostring(id)) then
     return
   end
   local state = App.state
   if state and state.touchpressed then
     state:touchpressed(id, x, y, dx, dy, pressure)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
     if getmetatable(state) == StartupTitleState and state.canceledPointers["touch:" .. tostring(id)] then
       App._swallowedPointers = App._swallowedPointers or {}
       App._swallowedPointers["touch:" .. tostring(id)] = true
@@ -1905,16 +2012,36 @@ end
 
 function App.touchmoved(id, x, y, dx, dy, pressure)
   App._syncDrawableSize()
+  if App._touchGamepad ~= nil then
+    if App._touchGamepadSuspended or App._suspendedTouchIds[id] then
+      return
+    end
+    if App._touchGamepad:touchmoved(id, x, y) then
+      return
+    end
+  end
   if App._bootSwallowedInputs ~= nil and App._bootSwallowedInputs["touch:" .. tostring(id)] then
     return
   end
   if App.state and App.state.touchmoved then
     App.state:touchmoved(id, x, y, dx, dy, pressure)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
 function App.touchreleased(id, x, y, dx, dy, pressure)
   App._syncDrawableSize()
+  if App._touchGamepad ~= nil then
+    if App._touchGamepadSuspended or App._suspendedTouchIds[id] then
+      App._suspendedTouchIds[id] = nil
+      return
+    end
+    if App._touchGamepad:touchreleased(id, x, y) then
+      return
+    end
+  end
   local pointerId = "touch:" .. tostring(id)
   if App._consumeBootInput(pointerId) then
     return
@@ -1929,22 +2056,34 @@ function App.touchreleased(id, x, y, dx, dy, pressure)
   end
   if App.state and App.state.touchreleased then
     App.state:touchreleased(id, x, y, dx, dy, pressure)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
 function App.textinput(text)
   if App.state and App.state.textinput then
     App.state:textinput(text)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
 function App.focus(focused)
   if not focused then
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:cancel()
+    end
     App._swallowedPointers = {}
     App._bootSwallowedInputs = {}
   end
   if App.state and App.state.focus then
     App.state:focus(focused)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 

@@ -1385,6 +1385,9 @@ local function withLiveApp(context, fn)
         end,
       },
       system = {
+        getOS = function()
+          return "Linux"
+        end,
         getProcessorCount = function()
           return 5
         end,

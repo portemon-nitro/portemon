@@ -89,6 +89,13 @@ local function fresh()
   App.drawableWidth = nil
   App.drawableHeight = nil
   App.pixelRatio = nil
+  App._safeRect = nil
+  App._touchGamepadSuspended = false
+  App._suspendedTouchIds = {}
+  if App._touchGamepad ~= nil then
+    pcall(App._touchGamepad.setTarget, App._touchGamepad, nil)
+    App._touchGamepad = nil
+  end
 end
 
 -- One harness for every App-level seam a test can touch: fresh module state,
@@ -135,6 +142,8 @@ local function withAppHarness(opts, ready, fn)
   local originalPrint = graphics.print
   local originalGetDimensions = graphics.getDimensions
   local originalGetDPIScale = graphics.getDPIScale
+  local originalGetOS = love.system.getOS
+  local originalGetSafeArea = love.window.getSafeArea
   local originalQuit = love.event.quit
   -- The harness stands in for the selection flow's chosen walking pair (the
   -- selection flow owns the production assignment): game/editor entry forwards
@@ -312,7 +321,10 @@ local function withAppHarness(opts, ready, fn)
   end
   HgssGame.new = function(options)
     result.launches[#result.launches + 1] = options
-    return result.state
+    if result.launchFailure ~= nil then
+      error(result.launchFailure, 0)
+    end
+    return result.game or result.state
   end
   MainMenuComposition.new = function(options)
     local menu = countingState()
@@ -460,10 +472,18 @@ local function withAppHarness(opts, ready, fn)
     result.prints = result.prints + 1
   end
   graphics.getDimensions = function()
-    return 800, 600
+    return result.hostWidth or 800, result.hostHeight or 600
   end
   graphics.getDPIScale = function()
-    return 1
+    return result.pixelRatio or 1
+  end
+  love.system.getOS = function()
+    return result.osName or originalGetOS()
+  end
+  love.window.getSafeArea = function()
+    result.safeAreaReads = (result.safeAreaReads or 0) + 1
+    local safe = result.safeRect or { 0, 0, result.hostWidth or 800, result.hostHeight or 600 }
+    return safe[1], safe[2], safe[3], safe[4]
   end
   -- The startup journey admits the movie only behind an acknowledged
   -- soundtrack: one silent session stands in for the selected edition's audio
@@ -512,6 +532,8 @@ local function withAppHarness(opts, ready, fn)
   graphics.print = originalPrint
   graphics.getDimensions = originalGetDimensions
   graphics.getDPIScale = originalGetDPIScale
+  love.system.getOS = originalGetOS
+  love.window.getSafeArea = originalGetSafeArea
   love.event.quit = originalQuit
   StartupAudioSession.new = originalStartupAudioNew
   App.startupAudioError = nil
@@ -673,6 +695,369 @@ end
 
 local function publishedSave(saveId, versionId)
   return require("tests.support.PublishedSaveFixture").new(saveId, versionId)
+end
+
+local function recordingGameChild(events)
+  local child = { disposed = 0 }
+  local function record(kind, ...)
+    events[#events + 1] = { kind, ... }
+  end
+  function child:gamepadpressed(joystick, button)
+    record("gamepadpressed", joystick:getID(), button)
+  end
+  function child:gamepadreleased(joystick, button)
+    record("gamepadreleased", joystick:getID(), button)
+  end
+  function child:touchpressed(id, x, y)
+    record("touchpressed", id, x, y)
+  end
+  function child:touchmoved(id, x, y)
+    record("touchmoved", id, x, y)
+  end
+  function child:touchreleased(id, x, y)
+    record("touchreleased", id, x, y)
+  end
+  function child:mousepressed(x, y, button, istouch)
+    record("mousepressed", x, y, button, istouch)
+  end
+  function child:mousemoved(x, y, dx, dy, istouch)
+    record("mousemoved", x, y, dx, dy, istouch)
+  end
+  function child:mousereleased(x, y, button, istouch)
+    record("mousereleased", x, y, button, istouch)
+  end
+  function child:resize(width, height)
+    record("resize", width, height)
+  end
+  function child:focus(focused)
+    record("focus", focused)
+  end
+  function child:dispose()
+    self.disposed = self.disposed + 1
+    record("dispose")
+  end
+  return child
+end
+
+local function installRecordingGame(result)
+  local Game = require("game.src.Game")
+  local events = {}
+  local game = Game.new({ onExit = function() end })
+  game:setState(recordingGameChild(events))
+  result.game = game
+  App._ensureLauncherResources()
+  App._syncDrawableSize()
+  App.selectedVersionId = "heartgold"
+  App.epoch = assert(result.service:select({ versionId = "heartgold" }))
+  App.provisioner = {
+    gameHost = function()
+      return {}
+    end,
+    dispose = function()
+      result.service:retire(App.epoch)
+    end,
+  }
+  local menu = assert(App._stageMenu("heartgold"))
+  App.setState(menu)
+  menu.options.onResult({ kind = "new_game" })
+  Assert.isTrue(App.state == game, "the menu installs the real generic Game returned by the factory")
+  return game, events, assert(result.launches[#result.launches])
+end
+
+local function clearEvents(events)
+  for index = #events, 1, -1 do
+    events[index] = nil
+  end
+end
+
+function T.android_menu_entry_routes_controls_to_the_real_game_and_preserves_native_touch()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    result.osName = "Android"
+    result.hostWidth, result.hostHeight = 360, 800
+    result.pixelRatio = 2
+    App._ensureLauncherResources()
+    App._syncDrawableSize()
+    App.selectedVersionId = "heartgold"
+    App.epoch = assert(result.service:select({ versionId = "heartgold" }))
+    App.provisioner = {
+      gameHost = function()
+        return {}
+      end,
+      dispose = function()
+        result.service:retire(App.epoch)
+      end,
+    }
+    local menu = assert(App._stageMenu("heartgold"))
+    local launcherEvents = {}
+    function menu:touchpressed(id, x, y)
+      launcherEvents[#launcherEvents + 1] = { "pressed", id, x, y }
+    end
+    function menu:touchmoved(id, x, y)
+      launcherEvents[#launcherEvents + 1] = { "moved", id, x, y }
+    end
+    function menu:touchreleased(id, x, y)
+      launcherEvents[#launcherEvents + 1] = { "released", id, x, y }
+    end
+    App.setState(menu)
+    App.touchpressed(90, 100, 100)
+    App.touchpressed(91, 56, 672)
+    Assert.deepEqual(launcherEvents, {
+      { "pressed", 90, 100, 100 },
+      { "pressed", 91, 56, 672 },
+    }, "launcher touch never acquires gamepad chrome, even at a control position")
+
+    local Game = require("game.src.Game")
+    local events = {}
+    local game = Game.new({ onExit = function() end })
+    game:setState(recordingGameChild(events))
+    result.game = game
+    menu.options.onResult({ kind = "new_game" })
+    Assert.isTrue(App.state == game, "the App binds the successful real Game from its existing factory seam")
+    local launch = assert(result.launches[1])
+
+    App.touchpressed(1, 56, 672)
+    App.touchreleased(1, 56, 672)
+    App.touchpressed(2, 328, 720)
+    App.touchreleased(2, 328, 720)
+    App.touchpressed(3, 280, 672)
+    App.touchreleased(3, 280, 672)
+    App.touchpressed(4, 224, 616)
+    App.touchreleased(4, 224, 616)
+    App.touchpressed(9, 180, 500)
+    App.touchmoved(9, 280, 720)
+    App.touchreleased(9, 280, 720)
+    Assert.deepEqual(events, {
+      { "gamepadpressed", -1, "dpup" },
+      { "gamepadreleased", -1, "dpup" },
+      { "gamepadpressed", -1, "a" },
+      { "gamepadreleased", -1, "a" },
+      { "gamepadpressed", -1, "x" },
+      { "gamepadreleased", -1, "x" },
+      { "gamepadpressed", -1, "start" },
+      { "gamepadreleased", -1, "start" },
+      { "touchpressed", 9, 180, 500 },
+      { "touchmoved", 9, 280, 720 },
+      { "touchreleased", 9, 280, 720 },
+    }, "controls use normal gamepad edges while an outside gesture remains native for its lifetime")
+    Assert.equal(type(launch.topologyProvider), "function", "Android publishes reservations before retail presentation")
+    local topology = launch.topologyProvider(360, 800)
+    Assert.deepEqual(topology.surfaces[1].safeRect, { x = 0, y = 0, width = 360, height = 800 })
+    Assert.deepEqual(topology.surfaces[1].occupiedRegions, { { x = 0, y = 584, width = 360, height = 216 } })
+
+    App.touchpressed(5, 224, 616)
+    game:exit({ kind = "main_menu" })
+    clearEvents(events)
+    local selection = assert(App.state)
+    function selection:touchmoved(id, x, y)
+      launcherEvents[#launcherEvents + 1] = { "selection moved", id, x, y }
+    end
+    function selection:touchreleased(id, x, y)
+      launcherEvents[#launcherEvents + 1] = { "selection released", id, x, y }
+    end
+    App.touchmoved(5, 280, 720)
+    App.touchreleased(5, 280, 720)
+    Assert.deepEqual(events, {}, "a former control tail cannot release into game selection or its replacement")
+    Assert.equal(#launcherEvents, 2, "the launcher receives no duplicate control gesture")
+  end)
+end
+
+function T.desktop_menu_entry_has_no_virtual_controls_or_reservations()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    result.osName = "Linux"
+    result.hostWidth, result.hostHeight = 360, 800
+    local _, events, launch = installRecordingGame(result)
+    Assert.isNil(launch.topologyProvider, "desktop composition retains its existing topology path")
+    App.touchpressed(1, 56, 672)
+    App.touchreleased(1, 56, 672)
+    Assert.deepEqual(events, {
+      { "touchpressed", 1, 56, 672 },
+      { "touchreleased", 1, 56, 672 },
+    }, "desktop receives only the original native pointer callbacks")
+  end)
+end
+
+function T.android_safe_area_only_change_cancels_once_before_one_resize()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    result.osName = "Android"
+    result.hostWidth, result.hostHeight = 360, 800
+    result.safeRect = { 0, 0, 360, 800 }
+    local _, events = installRecordingGame(result)
+    App.touchpressed(1, 56, 672)
+    clearEvents(events)
+    result.safeRect = { 12, 20, 336, 780 }
+    result.safeAreaReads = 0
+    App.update(1 / 60)
+    App.update(1 / 60)
+    Assert.equal(
+      result.safeAreaReads,
+      2,
+      "safe-area-only invalidation is observed through the ordinary App update path"
+    )
+    Assert.deepEqual(events, {
+      { "gamepadreleased", -1, "dpup" },
+      { "resize", 360, 800 },
+    }, "same-size inset changes cancel before exactly one structural resize")
+    clearEvents(events)
+    App.touchpressed(2, 68, 672)
+    App.touchreleased(2, 68, 672)
+    Assert.deepEqual(events, {
+      { "gamepadpressed", -1, "dpup" },
+      { "gamepadreleased", -1, "dpup" },
+    }, "fresh input uses the newly published safe-area plan")
+  end)
+end
+
+function T.android_focus_loss_cancels_before_the_live_child_and_swallows_touch_mouse_companions()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    result.osName = "Android"
+    result.hostWidth, result.hostHeight = 360, 800
+    local _, events = installRecordingGame(result)
+    App.touchpressed(1, 328, 720)
+    clearEvents(events)
+    App.focus(false)
+    Assert.deepEqual(events, {
+      { "gamepadreleased", -1, "a" },
+      { "focus", false },
+    }, "virtual cancellation precedes live child focus loss")
+    App.focus(true)
+    clearEvents(events)
+    App.touchmoved(1, 328, 720)
+    App.touchreleased(1, 328, 720)
+    App.mousepressed(280, 720, 1, true)
+    App.mousemoved(281, 720, 1, 0, true)
+    App.mousereleased(281, 720, 1, true)
+    Assert.deepEqual(events, {}, "stale control tails and touch-generated mouse companions are inert")
+    App.mousepressed(20, 100, 1, false)
+    Assert.deepEqual(
+      events,
+      { { "mousepressed", 20, 100, 1, false } },
+      "genuine mouse input retains its existing route"
+    )
+  end)
+end
+
+function T.android_nonpresentable_interval_releases_without_a_zero_resize_and_recovers()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    result.osName = "Android"
+    result.hostWidth, result.hostHeight = 360, 800
+    local _, events = installRecordingGame(result)
+    App.touchpressed(1, 56, 672)
+    clearEvents(events)
+    result.hostWidth, result.hostHeight = 0, 0
+    App.update(1 / 60)
+    Assert.deepEqual(
+      events,
+      { { "gamepadreleased", -1, "dpup" } },
+      "a nonpresentable host releases holds without resizing to zero"
+    )
+    clearEvents(events)
+    App.touchpressed(2, 180, 500)
+    App.touchmoved(2, 280, 720)
+    Assert.deepEqual(events, {}, "touches first seen while nonpresentable establish no live input")
+    clearEvents(events)
+    result.hostWidth, result.hostHeight = 360, 800
+    App.update(1 / 60)
+    Assert.deepEqual(events, { { "resize", 360, 800 } }, "positive dimensions resume geometry publication once")
+    App.touchmoved(2, 280, 720)
+    App.touchreleased(2, 280, 720)
+    Assert.deepEqual(
+      events,
+      { { "resize", 360, 800 } },
+      "the suspended touch tail stays consumed after geometry resumes"
+    )
+    clearEvents(events)
+    App.touchpressed(2, 56, 672)
+    App.touchreleased(2, 56, 672)
+    Assert.deepEqual(events, {
+      { "gamepadpressed", -1, "dpup" },
+      { "gamepadreleased", -1, "dpup" },
+    }, "a fresh down after resume starts a new lifetime even when the host reuses the ID")
+  end)
+end
+
+function T.android_detach_releases_the_live_game_before_disposal()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    result.osName = "Android"
+    result.hostWidth, result.hostHeight = 360, 800
+    local game, events = installRecordingGame(result)
+    App.touchpressed(1, 328, 720)
+    clearEvents(events)
+    App.setState(nil)
+    Assert.deepEqual(events, {
+      { "gamepadreleased", -1, "a" },
+      { "dispose" },
+    }, "ordinary App detach cancels through the live child before Game disposal")
+    Assert.isTrue(game.terminal)
+    clearEvents(events)
+    App.touchreleased(1, 328, 720)
+    Assert.deepEqual(events, {}, "the detached gesture tail cannot reach a later App state")
+  end)
+end
+
+function T.android_quit_cancels_before_game_and_renderer_teardown()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    result.osName = "Android"
+    result.hostWidth, result.hostHeight = 360, 800
+    local _, events = installRecordingGame(result)
+    App.touchpressed(1, 328, 720)
+    clearEvents(events)
+    App.quit()
+    Assert.deepEqual(events, {
+      { "gamepadreleased", -1, "a" },
+      { "dispose" },
+    }, "quit releases virtual holds before disposing the live Game")
+    Assert.isNil(App.launcherRenderer, "renderer disposal remains owned by App")
+    Assert.isNil(App.state)
+  end)
+end
+
+function T.android_failed_game_construction_leaves_no_control_target()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    result.osName = "Android"
+    result.hostWidth, result.hostHeight = 360, 800
+    App._ensureLauncherResources()
+    App._syncDrawableSize()
+    App.selectedVersionId = "heartgold"
+    App.epoch = assert(result.service:select({ versionId = "heartgold" }))
+    App.provisioner = {
+      gameHost = function()
+        return {}
+      end,
+      dispose = function() end,
+    }
+    local menu = assert(App._stageMenu("heartgold"))
+    App.setState(menu)
+    result.launchFailure = "synthetic construction failure"
+    local ok = pcall(function()
+      menu.options.onResult({ kind = "new_game" })
+    end)
+    Assert.isFalse(ok, "the existing construction error remains authoritative")
+    local selection = assert(App.state)
+    local touches = 0
+    local originalTouch = selection.touchpressed
+    function selection:touchpressed(...)
+      touches = touches + 1
+      return originalTouch(self, ...)
+    end
+    App.touchpressed(1, 56, 672)
+    Assert.equal(touches, 1, "a failed construction leaves the selection as the native touch owner")
+  end)
 end
 
 local function completedSyntheticImporter(versionId)
