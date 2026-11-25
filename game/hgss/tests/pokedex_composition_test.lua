@@ -7,12 +7,11 @@
 -- stays unavailable. No renderer is ever attached.
 
 local Assert = require("tests.support.Assert")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
 local RomImporter = require("romdump.src.source.RomImporter")
 
 local T = {}
@@ -35,41 +34,15 @@ local function runtimeOptions(versionId)
 end
 
 local function validEntry(versionId)
-  return {
-    saveId = "save-00000001",
-    versionId = versionId,
+  return FinalizedGameFixture.build(versionId, {
     location = {
       mapSymbol = MAP,
       fieldX = 6,
       fieldZ = 6,
       facing = "south",
     },
-    playerData = {
-      profile = {
-        name = "GOLD",
-        gender = 0,
-        trainerId = 1,
-        money = 3000,
-        badges = {},
-        nationalDex = false,
-        runningShoes = false,
-        runningShoesLock = false,
-        rivalName = "Silver",
-      },
-      options = { textSpeed = "mid", textFrame = 0 },
-    },
-    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-    fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
-    sysInfo = require("libs.hgss.src.save.SysInfoState").empty(),
-    fieldPoison = require("libs.hgss.src.save.FieldPoisonSave").initial(),
-    playTime = PlayTime.new(),
-    worldState = FieldEventState.new(),
-    mons = require("tests.support.MonBucket").emptyForVersion(versionId),
-    bag = require("libs.hgss.src.save.BagSave").empty(),
-    mart = require("libs.hgss.src.save.MartSave").empty(),
-    mailbox = require("libs.hgss.src.save.Mailbox").new():capture(),
-    photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new():capture(),
-  }
+    textSpeed = "mid",
+  })
 end
 
 local function readyVersions()

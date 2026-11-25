@@ -302,6 +302,9 @@ function T.pending_wallpaper_replacement_repaints_the_admitted_pixels(scope)
     createPhotoAlbum = function()
       error("photo album unused", 0)
     end,
+    createHallOfFame = function()
+      error("Hall of Fame is unused", 0)
+    end,
   })
   local handle = host:open({ app = "storage", mode = 1 })
   local preparation = setmetatable({

@@ -21,7 +21,11 @@ local KINDS = {
   "azalea_gym_spinarak",
   "blackthorn_gym_platform_wide",
   "blackthorn_gym_platform_narrow",
+  "hall_of_fame_machine",
 }
+for _, kind in ipairs(FieldEffectAssetCache.LEGEND_SCENE_KINDS) do
+  KINDS[#KINDS + 1] = kind
+end
 for selector = 1, 14 do
   KINDS[#KINDS + 1] = "follower_reaction_" .. selector
 end
@@ -68,6 +72,11 @@ local function cacheWithIndexSchema(schema)
     definition = "pokemon_center_heal",
     path = FieldEffectAssetCache.definitionPath("pokemon_center_heal"),
   }
+  index.effects.hall_of_fame_machine = {
+    kind = "hall_of_fame",
+    definition = "hall_of_fame_machine",
+    path = FieldEffectAssetCache.definitionPath("hall_of_fame_machine"),
+  }
   return {
     loadLua = function(_, path)
       if path == FieldEffectAssetCache.indexPath() then
@@ -94,6 +103,9 @@ local function cacheWithIndexSchema(schema)
       end
       if kind == "pokemon_center_heal" then
         return { models = { staticModel("field-effect:pokemon-center-heal-ball") } }
+      end
+      if kind == "hall_of_fame_machine" then
+        return { models = { staticModel("field-effect:hall-of-fame-ball") } }
       end
       return { model = staticModel("field-effect:" .. kind) }
     end,

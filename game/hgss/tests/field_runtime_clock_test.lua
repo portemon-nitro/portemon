@@ -6,6 +6,7 @@ local FieldAudio = require("game.hgss.src.audio.FieldAudio")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldSession = require("libs.hgss.src.field.FieldSession")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local LocalClock = require("game.src.LocalClock")
 
@@ -87,6 +88,7 @@ function T.tests.apricorn_day_is_sampled_before_each_fixed_tick_and_only_advance
   FieldRuntime._load = function() end
   local ok, err = xpcall(function()
     local runtime = FieldRuntime.new({ versionId = "heartgold", saveId = "test-save" }, { localClock = clock })
+    FieldRuntimeFixture.withApricornDateOwner(runtime)
     runtime.eventState = eventState
     runtime.battleCoordinator = {
       shouldPumpFromHost = function()

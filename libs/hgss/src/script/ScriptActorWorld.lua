@@ -12,6 +12,7 @@
 ---@field show fun(self: ScriptActorManager, actorId: string)
 ---@field hide fun(self: ScriptActorManager, actorId: string)
 ---@field removePresence fun(self: ScriptActorManager, actorId: string, recordRemoval: boolean)
+---@field deleteSourceObject fun(self: ScriptActorManager, actorId: string)
 ---@field materializeObject fun(self: ScriptActorManager, objectEventId: integer): string
 ---@field setPosition fun(self: ScriptActorManager, actorId: string, position: table<string, unknown>, options: { scripted: boolean }?)
 ---@field setFacing fun(self: ScriptActorManager, actorId: string, direction: string)
@@ -51,6 +52,7 @@ local REQUIRED_MANAGER_METHODS = {
   "show",
   "hide",
   "removePresence",
+  "deleteSourceObject",
   "materializeObject",
   "setPosition",
   "setFacing",
@@ -239,13 +241,13 @@ function ScriptActorWorld:hide(actorId)
   self._manager:hide(actorId)
 end
 
--- Scripted `hide_object` (retail HidePerson) deletes the object: presence,
--- collision and presentation go together. The deletion is transient, so the
--- map rebuilds the actor from its source event on re-entry.
+-- Scripted `hide_object` (retail HidePerson) deletes the object: the source
+-- event flag is set first so the retire persists across map entry, and
+-- presence, collision and presentation go together.
 ---@param actorId string
 function ScriptActorWorld:remove(actorId)
   assert(actorId ~= "player", "the player cannot be removed")
-  self._manager:removePresence(actorId, false)
+  self._manager:deleteSourceObject(actorId)
 end
 
 -- Scripted `show_object` of a numeric map-object index (retail ShowPerson):

@@ -4294,6 +4294,7 @@ local function scriptedPlayerSession(map, player, steps, visual, terrainEffects)
     setPresentationOffset = function() end,
     clearPresentationOffset = function() end,
     removePresence = function() end,
+    deleteSourceObject = function() end,
     materializeObject = function() end,
   }
   local facade = {
@@ -4826,6 +4827,7 @@ function T.warp_gestures_remain_idle_while_vertical_offset_progresses_through_co
       setPresentationOffset = function() end,
       clearPresentationOffset = function() end,
       removePresence = function() end,
+      deleteSourceObject = function() end,
       materializeObject = function() end,
     }
     local facade = {

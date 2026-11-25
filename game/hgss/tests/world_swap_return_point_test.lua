@@ -66,6 +66,9 @@ local function runtimeDouble(sourceMap, travel, facing)
       end,
     },
   }
+  -- Roamer transition publication is the runtime's own owner; this suite only
+  -- exercises the durable special-spawn record.
+  function runtime:publishRoamerTransition() end
   return runtime
 end
 

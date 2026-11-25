@@ -594,15 +594,16 @@ function T.ambiguous_terrain_failure_propagates_instead_of_nothing_there()
 end
 
 function T.disconnected_current_terrain_failure_propagates_instead_of_nothing_there()
-  -- The player's claimed surface does not cover the player's own position:
-  -- an inconsistent current terrain state must propagate.
+  -- The player's own height lies off its claimed surface's plane and that
+  -- surface does not cover the player's position: a coincident seam is not
+  -- possible, so the inconsistent current terrain state must propagate.
   local m = terrainMap({
     flatPlate(0, 15, 32, 0),
     flatPlate(1, 0, 14, 0),
   })
   local r = resolver()
   local err = throwsCode("TERRAIN_SURFACE_DISCONNECTED", function()
-    r:resolve(baseSnapshot({ runtimeMap = m }))
+    r:resolve(baseSnapshot({ runtimeMap = m, worldY = 1 }))
   end)
   Assert.equal(err.context.kind, "current-inconsistent")
 end

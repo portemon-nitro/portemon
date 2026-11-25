@@ -25,11 +25,10 @@ local HgssGame = require("game.hgss.src.HgssGame")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local MonsSave = require("libs.mons.src.MonsSave")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
 
 local T = {
   metadata = {
@@ -670,36 +669,7 @@ local function labHarness()
         -- 672,384) boots as local 23,13.
         location = { mapSymbol = map, fieldX = 23, fieldZ = 13, facing = "north" }
       end
-      return {
-        saveId = "save-00000001",
-        versionId = versionId,
-        location = location,
-        playerData = {
-          profile = {
-            name = "GOLD",
-            gender = 0,
-            trainerId = 1,
-            money = 3000,
-            badges = {},
-            nationalDex = false,
-            runningShoes = false,
-            runningShoesLock = false,
-            rivalName = "Silver",
-          },
-          options = { textSpeed = "fastest", textFrame = 0 },
-        },
-        fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
-        sysInfo = require("libs.hgss.src.save.SysInfoState").empty(),
-        fieldPoison = require("libs.hgss.src.save.FieldPoisonSave").initial(),
-        playTime = PlayTime.new(),
-        worldState = FieldEventState.new(),
-        mons = require("tests.support.MonBucket").emptyForVersion(versionId),
-        bag = BagSave.empty(),
-        mart = require("libs.hgss.src.save.MartSave").empty(),
-        mailbox = require("libs.hgss.src.save.Mailbox").new():capture(),
-        photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new():capture(),
-      }
+      return FinalizedGameFixture.build(versionId, { location = location })
     end,
   })
 end

@@ -65,6 +65,16 @@ local function menuIsModal(snapshot)
   return snapshot.menu ~= nil and snapshot.menu.modal == true
 end
 
+-- A committed menu stops presenting on its close tick, while the script-owned
+-- result lands on the scheduler's next promotion tick. Wait for the result the
+-- source variable actually carries instead of assuming the close tick published
+-- it.
+local function waitForResult(game, variableName, expected, label)
+  return game:advanceUntil(label, function()
+    return game.runtime.scripts.worldState:getVar(variableName) == expected
+  end, 120)
+end
+
 local function openVanillaMenu(game)
   game:startScript(VANILLA_MENU)
   return game:advanceUntil("vanilla field menu becomes modal", menuIsModal, 120)
@@ -96,6 +106,7 @@ local function selectSecondItem(game)
   game:advanceUntil("field menu closes after selection", function(snapshot)
     return snapshot.menu ~= nil and not snapshot.menu.modal
   end, 120)
+  waitForResult(game, RESULT_VARIABLE, 1, "the vanilla selection reaches its script result")
   return opened
 end
 
@@ -193,6 +204,7 @@ function T.tests.restart_after_hgss_menu_begin_resumes_the_real_menu_builder()
     resumed:advanceUntil("resumed HGSS menu closes after selection", function(snapshot)
       return snapshot.menu ~= nil and not snapshot.menu.modal
     end, 120)
+    waitForResult(resumed, RESULT_VARIABLE, 1, "the resumed selection reaches its script result")
     Assert.equal(resumed.runtime.scripts.worldState:getVar(RESULT_VARIABLE), 1)
   end)
 end
@@ -227,6 +239,7 @@ function T.tests.foreground_multichoice_opens_at_its_source_window_and_resumes_i
     resumed:advanceUntil("resumed source multichoice closes after selection", function(snapshot)
       return snapshot.menu ~= nil and not snapshot.menu.modal
     end, 120)
+    waitForResult(resumed, "VAR_SPECIAL_RESULT", 2, "the clicked source byte commits")
     Assert.equal(resumed.runtime.scripts.worldState:getVar("VAR_SPECIAL_RESULT"), 2, "the clicked source byte commits")
     Assert.equal(resumed.runtime.menuHost:isModal(), false, "the foreground window closes once")
   end)
@@ -244,6 +257,7 @@ function T.tests.foreground_multichoice_cancels_to_the_source_cancel_value()
     game:advanceUntil("source multichoice closes after cancellation", function(snapshot)
       return snapshot.menu ~= nil and not snapshot.menu.modal
     end, 120)
+    waitForResult(game, "VAR_SPECIAL_RESULT", 0xFFFE, "the cancellation sentinel reaches its script result")
     Assert.equal(game.runtime.scripts.worldState:getVar("VAR_SPECIAL_RESULT"), 0xFFFE)
     Assert.equal(game.runtime.menuHost:isModal(), false, "the cancelled window closes once")
   end)

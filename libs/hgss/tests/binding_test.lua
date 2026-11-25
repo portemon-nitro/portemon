@@ -372,6 +372,10 @@ T["actor world adapter"] = function()
       removals[#removals + 1] = { id = id, recordRemoval = recordRemoval }
       actors[id] = nil
     end,
+    deleteSourceObject = function(_, id)
+      removals[#removals + 1] = { id = id }
+      actors[id] = nil
+    end,
   }
   local player = {
     position = function()
@@ -406,7 +410,7 @@ T["actor world adapter"] = function()
   Assert.equal(world:getPosition("player").fieldX, 10)
   Assert.equal(world:materialize(3), "elm_3", "materialize delegates to the manager")
   world:remove("elm")
-  Assert.deepEqual(removals, { { id = "elm", recordRemoval = false } }, "remove deletes the actor transiently")
+  Assert.deepEqual(removals, { { id = "elm" } }, "remove deletes the source object")
   Assert.isFalse(world:exists("elm"))
 end
 
@@ -485,6 +489,7 @@ T["actor visibility and presentation offsets delegate through the required contr
         lastOffset = { x = 0, y = 0, z = 0 }
       end,
       removePresence = function() end,
+      deleteSourceObject = function() end,
       materializeObject = function() end,
     }
   end
@@ -566,6 +571,7 @@ T["missing actor fault through binding path"] = function()
     setPresentationOffset = function() end,
     clearPresentationOffset = function() end,
     removePresence = function() end,
+    deleteSourceObject = function() end,
     materializeObject = function() end,
   }
   p.services.actors = ScriptActorWorld.new(manager --[[@as ScriptActorManager]], p.services.player) --[[@as FakeActors]]

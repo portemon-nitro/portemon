@@ -2508,6 +2508,9 @@ local function hostForTransitionChild(child)
     createPhotoAlbum = function()
       error("photo album unused", 0)
     end,
+    createHallOfFame = function()
+      error("Hall of Fame is unused", 0)
+    end,
   })
 end
 

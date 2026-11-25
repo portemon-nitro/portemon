@@ -110,6 +110,11 @@ local T = {
       "battle-trainer-picture:front-RIVAL",
       "battle-ball:POKE_BALL",
       "battle-evolution:global",
+      -- The field starts the encounter track on its transition tick: the wild
+      -- and ordinary-trainer tracks share one source bank, the rival track
+      -- lives in the next one.
+      "audio-bank:720",
+      "audio-bank:721",
     },
     tags = { "field", "battle" },
   },

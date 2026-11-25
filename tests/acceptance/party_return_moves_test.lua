@@ -166,6 +166,31 @@ local function livePlayerPort(game)
   return port
 end
 
+-- The field-move warp port over one menu-lane maps service, with the same
+-- shape the production menu composition binds: the lane owns the warp
+-- lifecycle and the runtime owns the source fly-warp mark and the live map.
+local function returnWarpsPort(game, lane)
+  local runtime = game.runtime
+  return {
+    startWarp = function(_, target)
+      lane:setSourceMap(assert(runtime.runtimeMap, "return warps require the active map"))
+      return lane:startWarp(target)
+    end,
+    beginFlyWarp = function()
+      runtime:beginFlyWarp()
+    end,
+    warpDone = function()
+      return lane:warpDone()
+    end,
+    pendingError = function()
+      return lane:pendingError()
+    end,
+    placement = function(_, ref)
+      return lane:placement(ref)
+    end,
+  }
+end
+
 -- Menu-lane maps service: menu-origin returns cover the swap with the
 -- move's own screen fade. It borrows the live transition/loader and the
 -- current source map; callers rebuild it after any map change. Production
@@ -173,12 +198,12 @@ end
 local function menuLaneWarps(game)
   local runtime = game.runtime
   local MapsService = require("libs.hgss.src.script.ScriptMapsService")
-  return MapsService.new({
+  return returnWarpsPort(game, MapsService.new({
     transition = assert(runtime.transition, "live transition required"),
     loader = assert(runtime.mapLoader, "live map loader required"),
     sourceMap = assert(runtime.runtimeMap, "live source map required"),
     screen = assert(runtime.screenFade, "live screen fade required"),
-  })
+  }))
 end
 
 local function liveWorld(game, warpsOverride, effects)
@@ -449,7 +474,7 @@ function T.tests.failed_return_warp_fabricates_nothing()
       sourceMap = runtime.runtimeMap,
       screen = runtime.screenFade,
     })
-    local mover = liveRuntime(liveWorld(game, faultingService))
+    local mover = liveRuntime(liveWorld(game, returnWarpsPort(game, faultingService)))
     local travel = liveTravel(game)
     local special = assert(travel:capture().specialSpawn, "cave entry must record the special spawn")
     local before = game:snapshot()

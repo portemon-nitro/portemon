@@ -711,13 +711,21 @@ function T.ambiguous_terrain_failure_is_not_a_blocked_step()
 end
 
 function T.current_disconnected_terrain_failure_is_not_a_blocked_step()
-  -- The player's claimed surface does not cover the player's own position:
-  -- an inconsistent current terrain state must propagate.
+  -- The player's own height lies off its claimed surface's plane and that
+  -- surface does not cover the player's position: a coincident seam is not
+  -- possible, so the inconsistent current terrain state must propagate.
   local map = runtimeMap(nil, {
     flatPlate(0, 2, 32, 0),
     flatPlate(1, 0, 32, 0),
   })
-  local p = player(map, 0, 4, 0)
+  local p = FieldPlayer.new({
+    currentMap = map,
+    fieldX = 0,
+    fieldZ = 4,
+    surfaceId = 0,
+    facing = "south",
+    initialWorldY = 1,
+  })
   local err = throwsCode("TERRAIN_SURFACE_DISCONNECTED", function()
     p:tryStep("east")
   end)
@@ -1379,13 +1387,21 @@ function T.ambiguous_terrain_failure_is_not_a_blocked_step()
 end
 
 function T.current_disconnected_terrain_failure_is_not_a_blocked_step()
-  -- The player's claimed surface does not cover the player's own position:
-  -- an inconsistent current terrain state must propagate.
+  -- The player's own height lies off its claimed surface's plane and that
+  -- surface does not cover the player's position: a coincident seam is not
+  -- possible, so the inconsistent current terrain state must propagate.
   local map = runtimeMap(nil, {
     flatPlate2(0, 2, 32, 0),
     flatPlate2(1, 0, 32, 0),
   })
-  local p = player(map, 0, 4, 0)
+  local p = FieldPlayer.new({
+    currentMap = map,
+    fieldX = 0,
+    fieldZ = 4,
+    surfaceId = 0,
+    facing = "south",
+    initialWorldY = 1,
+  })
   local err = throwsCode("TERRAIN_SURFACE_DISCONNECTED", function()
     p:tryStep("east")
   end)

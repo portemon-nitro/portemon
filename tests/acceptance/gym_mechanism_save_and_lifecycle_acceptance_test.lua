@@ -7,6 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
+local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
 local TransportTrace = require("tests.acceptance.support.TransportTrace")
 
 local T = {
@@ -34,6 +35,18 @@ local AZALEA_INIT_SCRIPT = "vanilla.hgss.scr_seq.0869.script_016"
 local AZALEA_RIDE_SCRIPT = "vanilla.hgss.scr_seq.0869.script_003"
 local AZALEA_DOOR = { fieldX = 9, fieldZ = 37 }
 local AZALEA_FIRST_FLOOR_TRIGGER = { fieldX = 9, fieldZ = 32 }
+
+-- The Azalea ride scenario starts with the gym's trainers already beaten: their
+-- source sight would otherwise engage the player on the tiles the ride
+-- approaches cross, and the mechanism is the behavior under test.
+local function defeatAzaleaGymTrainers(game)
+  local runtime = assert(game.runtime, "the gym ride needs the live runtime")
+  for _, object in ipairs(assert(runtime.runtimeMap.fieldData.events.objects, "the gym map carries its objects")) do
+    if object.trainer ~= nil then
+      runtime.eventState:setFlag(RuntimeValues.trainerFlagId(object.trainer.trainerId))
+    end
+  end
+end
 
 local function bootViolet()
   local baseFactory = AcceptanceHarness.new().gameFactory
@@ -244,6 +257,7 @@ function T.tests.non_connection_map_change_resets_the_active_mechanism()
   })
   local ok, err = xpcall(function()
     game:waitForFieldEntry()
+    defeatAzaleaGymTrainers(game)
     Assert.equal(
       #game:recordsForScript(AZALEA_INIT_SCRIPT, "script.error"),
       0,

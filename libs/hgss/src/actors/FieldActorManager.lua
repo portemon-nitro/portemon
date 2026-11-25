@@ -217,6 +217,7 @@ end
 ---@field retainMaps fun(self: FieldActorManager, views: RuntimeFieldMap[])
 ---@field admitRetainedMap fun(self: FieldActorManager): boolean
 ---@field removePresence fun(self: FieldActorManager, actorId: string, recordRemoval: boolean)
+---@field deleteSourceObject fun(self: FieldActorManager, actorId: string)
 ---@field materializeObject fun(self: FieldActorManager, objectEventId: integer): string
 ---@field enterMap fun(self: FieldActorManager, runtimeMap: RuntimeFieldMap, eventState: FieldEventState, restoredObjects: table<string, unknown>?)
 ---@field dispose fun(self: FieldActorManager)
@@ -1541,6 +1542,29 @@ function FieldActorManager:removePresence(actorId, recordRemoval)
   if recordRemoval then
     local sourceEvent = assert(actor.sourceEvent, "removed actors require a source event")
     self.removedOverrides[actor.mapId .. ":" .. assert(sourceEvent.objectEventId)] = true
+  end
+end
+
+-- Scripted object deletion (retail MapObject_Delete behind ScrCmd_HidePerson):
+-- the object's own source event flag is set first, so the retire persists
+-- across map entry, and the live actor leaves with presence, collision, and
+-- presentation. A flag-less source object has no persisted retire, so it keeps
+-- the transient removal path.
+---@param self FieldActorManager
+---@param actorId string
+function FieldActorManager:deleteSourceObject(actorId)
+  local actor = requireActor(self, actorId)
+  local sourceEvent = assert(actor.sourceEvent, "a deleted source object carries its event")
+  local eventFlag = sourceEvent.eventFlag
+  if type(eventFlag) ~= "number" or eventFlag == 0 then
+    self:removePresence(actorId, false)
+    return
+  end
+  local eventState = assert(self.eventState, "retiring a source object requires the bound event state")
+  eventState:setFlag(eventFlag)
+  local entry = self.maps[actor.mapId]
+  if entry ~= nil and entry.store:getActor(actorId) == actor then
+    self:_destroy(entry, actor)
   end
 end
 

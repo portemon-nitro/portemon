@@ -547,11 +547,39 @@ end
 -- A mechanism prop carries exactly its own compiled model and the single
 -- source clip its anim-list record declares; where the prop stands is runtime
 -- geometry of the mechanism, not a generated placement.
+-- A mechanism prop publishes one nitro-dynamic model whose clips animate the
+-- prop: one joint clip is required, and a source anim-list record may carry one
+-- clip per additional channel on the same model (the poison trap's colour and
+-- the rock trap's texture-SRT channels share their source records).
+local MECHANISM_CLIP_KINDS = { trs = true, color = true, texsrt = true }
 local function validMechanismPropDefinition(definition, _)
   if not hasExactKeys(definition, { "model" }) then
     return false
   end
-  return singleDynamicClip(definition.model) ~= nil
+  local model = definition.model
+  if type(model) ~= "table" or model.kind ~= "nitro-dynamic" or type(model.animations) ~= "table" then
+    return false
+  end
+  local seen = {}
+  local joint = false
+  for _, clip in ipairs(model.animations) do
+    if type(clip) ~= "table" or MECHANISM_CLIP_KINDS[clip.kind] ~= true or seen[clip.kind] then
+      return false
+    end
+    seen[clip.kind] = true
+    joint = joint or clip.kind == "trs"
+  end
+  return joint
+end
+
+-- The Blackthorn gym's platforms are static build models the mechanism moves as
+-- whole props: they publish one static model and no clip of their own.
+local function validStaticPropDefinition(definition, _)
+  if not hasExactKeys(definition, { "model" }) then
+    return false
+  end
+  local model = definition.model
+  return type(model) == "table" and model.kind == "static"
 end
 
 local function validClipSummary(clips, models)
@@ -884,6 +912,8 @@ local FIELD_EFFECT_INVENTORY = {
   { key = "trainer_reveal", entryKind = "animated_model", validator = validTrainerRevealDefinition },
   { key = "violet_gym_car", entryKind = "animated_model", validator = validMechanismPropDefinition },
   { key = "azalea_gym_spinarak", entryKind = "animated_model", validator = validMechanismPropDefinition },
+  { key = "blackthorn_gym_platform_wide", entryKind = "model", validator = validStaticPropDefinition },
+  { key = "blackthorn_gym_platform_narrow", entryKind = "model", validator = validStaticPropDefinition },
   { key = "rocket_trap_electric", entryKind = "animated_model", validator = validMechanismPropDefinition },
   { key = "rocket_trap_poison", entryKind = "animated_model", validator = validMechanismPropDefinition },
   { key = "rocket_trap_rock", entryKind = "animated_model", validator = validMechanismPropDefinition },

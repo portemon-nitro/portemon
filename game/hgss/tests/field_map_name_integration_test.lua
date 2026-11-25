@@ -67,6 +67,9 @@ local function commitRuntime()
   function runtime:resetEncounterStepCounters()
     self.encounterResets = self.encounterResets + 1
   end
+  -- Roamer transition publication is the runtime's own owner; this suite only
+  -- exercises the banner and counter commit surface.
+  function runtime:publishRoamerTransition() end
   return runtime
 end
 

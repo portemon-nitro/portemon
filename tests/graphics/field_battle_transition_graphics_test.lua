@@ -282,6 +282,9 @@ suite.metadata.derivedAssets = {
   "mon-portrait-page:0",
   "audio-bank:702",
   "audio-bank:709",
+  -- The encounter music the field starts on its transition tick: the wild
+  -- and ordinary-trainer battle tracks live in their own source bank.
+  "audio-bank:720",
   "audio-bank:728",
   "audio-bank:720",
 }

@@ -12,9 +12,7 @@ local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
-local BagSave = require("libs.hgss.src.save.BagSave")
-local MonBucket = require("tests.support.MonBucket")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local Drive = require("tests.support.EasyChatScriptDrive")
 local Journey = require("tests.support.PokegearJourneyFixture")
 local Mon = require("libs.mons.src.Mon")
@@ -86,36 +84,12 @@ local function harness(options)
     gameFactory = function(versionId, map)
       local worldState = FieldEventState.new()
       worldState:setFlag(FLAGS.FLAG_GOT_STARTER)
-      return {
-        saveId = "save-00000001",
-        versionId = versionId,
+      return FinalizedGameFixture.build(versionId, {
         location = { mapSymbol = map or CENTER_MAP, fieldX = 8, fieldZ = 13, facing = "north" },
-        playerData = {
-          profile = {
-            name = "GOLD",
-            gender = gender,
-            trainerId = trainerId,
-            money = 3000,
-            badges = {},
-            nationalDex = false,
-            runningShoes = false,
-            runningShoesLock = false,
-            rivalName = "Silver",
-          },
-          options = { textSpeed = "fastest", textFrame = 0 },
-        },
         fieldTravel = { lastHealSpawn = "SPAWN_VIOLET" },
-        fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
-        sysInfo = require("libs.hgss.src.save.SysInfoState").empty(),
-        fieldPoison = require("libs.hgss.src.save.FieldPoisonSave").initial(),
-        playTime = PlayTime.new(),
         worldState = worldState,
-        mons = MonBucket.emptyForVersion(versionId),
-        bag = BagSave.empty(),
-        mart = require("libs.hgss.src.save.MartSave").empty(),
-        mailbox = require("libs.hgss.src.save.Mailbox").new():capture(),
-        photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new():capture(),
-      }
+        profile = { gender = gender, trainerId = trainerId },
+      })
     end,
   })
 end

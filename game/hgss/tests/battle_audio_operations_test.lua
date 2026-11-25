@@ -29,10 +29,9 @@ local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
 local FakeCache = require("tests.support.FakeCache")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local GameSound = require("libs.hgss.src.audio.GameSound")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SequencePlayer = require("libs.nds.src.nitro.sound.SequencePlayer")
 local SessionFixture = require("libs.battle.tests.session_fixture")
@@ -187,41 +186,15 @@ end
 ---@param versionId string
 ---@return table save entry the production runtime boots
 local function validEntry(versionId)
-  return {
-    saveId = "save-00000001",
-    versionId = versionId,
+  return FinalizedGameFixture.build(versionId, {
     location = {
       mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
       fieldX = 6,
       fieldZ = 6,
       facing = "south",
     },
-    playerData = {
-      profile = {
-        name = "GOLD",
-        rivalName = "Silver",
-        gender = 0,
-        trainerId = 1,
-        money = 3000,
-        badges = {},
-        nationalDex = false,
-        runningShoes = false,
-        runningShoesLock = false,
-      },
-      options = { textSpeed = "mid", textFrame = 0 },
-    },
-    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-    fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
-    sysInfo = require("libs.hgss.src.save.SysInfoState").empty(),
-    fieldPoison = require("libs.hgss.src.save.FieldPoisonSave").initial(),
-    playTime = PlayTime.new(),
-    worldState = FieldEventState.new(),
-    mons = require("tests.support.MonBucket").emptyForVersion(versionId),
-    bag = require("libs.hgss.src.save.BagSave").empty(),
-    mart = require("libs.hgss.src.save.MartSave").empty(),
-    mailbox = require("libs.hgss.src.save.Mailbox").new():capture(),
-    photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new():capture(),
-  }
+    textSpeed = "mid",
+  })
 end
 
 ---@return table headless production runtime options under test driving
@@ -1891,6 +1864,13 @@ return {
       "battle-effect:TACKLE",
       "battle-effect:STRING_SHOT",
       "battle-effect:GROWL",
+      -- The presented launch waits for the selected encounter track's own
+      -- source bank before voicing it: the wild and ordinary-trainer tracks
+      -- share one bank, the rival track lives in the next one, and the
+      -- special-species leg raises its own legendary track.
+      "audio-bank:720",
+      "audio-bank:721",
+      "audio-bank:727",
     },
   },
 }

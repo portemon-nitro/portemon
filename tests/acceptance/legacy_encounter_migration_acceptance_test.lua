@@ -59,6 +59,8 @@ local T = {
 -- The shipped envelope and encounter bucket this migration starts from.
 local LEGACY_GAME_SCHEMA = "g4-game-save-v14"
 local LEGACY_ENCOUNTER_SCHEMA = "hgss-encounter-v1"
+local LEGACY_GAME_STATS_SCHEMA = "hgss-stats-v2"
+local LEGACY_GAME_STATS_STATE_VERSION = 2
 
 local LAKE_OF_RAGE = "MAP_LAKE_OF_RAGE"
 local LAKE_OF_RAGE_ORIGIN = { x = 512, z = 32 }
@@ -169,6 +171,18 @@ function T.tests.legacy_custom_roamer_survives_migration_without_invented_native
     local legacy = deepCopy(captured)
     legacy.schema = LEGACY_GAME_SCHEMA
     legacy.encounters = legacyEncounterBucket(captured.encounters.steps)
+    -- The envelope predates the Hall of Fame history, the Day Care, and the
+    -- Battle Point wallet, and its statistics keep the release's own shape.
+    legacy.hallOfFame = nil
+    legacy.daycare = nil
+    legacy.battlePoints = nil
+    legacy.gameStats.schema = LEGACY_GAME_STATS_SCHEMA
+    legacy.gameStats.stateVersion = LEGACY_GAME_STATS_STATE_VERSION
+    legacy.gameStats.leagueWins = nil
+    legacy.gameStats.daycareDeposits = nil
+    legacy.gameStats.eggsHatched = nil
+    legacy.gameStats.battlePointsReceived = nil
+    legacy.gameStats.battlePointsSpent = nil
     assert(
       love.filesystem.createDirectory(payloadDirectory(first)),
       "the acceptance save root holds its payload directory"

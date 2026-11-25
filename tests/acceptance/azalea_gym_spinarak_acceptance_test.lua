@@ -7,6 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
+local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
 local TransportTrace = require("tests.acceptance.support.TransportTrace")
 
 local T = {
@@ -138,6 +139,18 @@ local function withGymGame(fn)
   end
 end
 
+-- The gym's trainers are already beaten in this ride scenario: their source
+-- sight would otherwise engage the player on tiles the ride approaches cross,
+-- and the ride is the behavior under test, not the engagement.
+local function defeatGymTrainers(game)
+  local runtime = assert(game.runtime, "the gym ride needs the live runtime")
+  for _, object in ipairs(assert(runtime.runtimeMap.fieldData.events.objects, "the gym map carries its objects")) do
+    if object.trainer ~= nil then
+      runtime.eventState:setFlag(RuntimeValues.trainerFlagId(object.trainer.trainerId))
+    end
+  end
+end
+
 -- Walks to `approach` and takes one real step onto the trigger tile.
 local function stepOnto(game, approach, direction, trigger)
   game:moveTo({ fieldX = approach[1], fieldZ = approach[2] })
@@ -236,6 +249,7 @@ end
 
 function T.tests.spinarak_rides_follow_the_source_routes_endpoints_and_switch_mask()
   withGymGame(function(game)
+    defeatGymTrainers(game)
     Assert.equal(#game:recordsForScript(INIT_SCRIPT, "script.started"), 1, "the gym's map init script runs on entry")
     Assert.equal(
       #game:recordsForScript(INIT_SCRIPT, "script.error"),

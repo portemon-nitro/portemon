@@ -31,6 +31,8 @@ local PREVIOUS_GAME_SCHEMA = "g4-game-save-v16"
 local EARLIER_GAME_SCHEMA = "g4-game-save-v15"
 local PREVIOUS_STATS_SCHEMA = "hgss-stats-v3"
 local PREVIOUS_STATS_STATE_VERSION = 3
+local EARLIER_STATS_SCHEMA = "hgss-stats-v2"
+local EARLIER_STATS_STATE_VERSION = 2
 local HOF_BUCKET_SCHEMA = "hgss-hall-of-fame-v1"
 local DAYCARE_BUCKET_SCHEMA = "hgss-daycare-v1"
 
@@ -137,13 +139,27 @@ local function earlierEnvelope(captured, schema)
   local legacy = deepCopy(captured)
   legacy.schema = schema
   legacy.daycare = nil
+  -- The wallet arrives with v18; every earlier envelope predates it.
+  legacy.battlePoints = nil
   if schema == PREVIOUS_GAME_SCHEMA then
+    -- v16 predates custody and the Battle Point wallet, so its own statistics
+    -- release carries neither the care counters nor the point counters.
     legacy.gameStats.schema = PREVIOUS_STATS_SCHEMA
     legacy.gameStats.stateVersion = PREVIOUS_STATS_STATE_VERSION
     legacy.gameStats.daycareDeposits = nil
     legacy.gameStats.eggsHatched = nil
+    legacy.gameStats.battlePointsReceived = nil
+    legacy.gameStats.battlePointsSpent = nil
   else
+    -- v15 predates the Hall of Fame history and the League-win counter.
     legacy.hallOfFame = nil
+    legacy.gameStats.schema = EARLIER_STATS_SCHEMA
+    legacy.gameStats.stateVersion = EARLIER_STATS_STATE_VERSION
+    legacy.gameStats.leagueWins = nil
+    legacy.gameStats.daycareDeposits = nil
+    legacy.gameStats.eggsHatched = nil
+    legacy.gameStats.battlePointsReceived = nil
+    legacy.gameStats.battlePointsSpent = nil
   end
   return legacy
 end

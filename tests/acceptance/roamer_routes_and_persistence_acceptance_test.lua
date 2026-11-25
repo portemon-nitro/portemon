@@ -79,6 +79,10 @@ local T = {
 local CURRENT_GAME_SCHEMA = "g4-game-save-v15"
 local CURRENT_ENCOUNTER_SCHEMA = "hgss-encounter-v2"
 local CURRENT_ENCOUNTER_STATE_VERSION = 2
+-- The statistics bucket that envelope release shipped: no League-win, care,
+-- or Battle Point counters existed yet.
+local CURRENT_GAME_STATS_SCHEMA = "hgss-stats-v2"
+local CURRENT_GAME_STATS_STATE_VERSION = 2
 
 local NEW_BARK = "MAP_NEW_BARK"
 local ROUTE_29 = "MAP_ROUTE_29"
@@ -197,6 +201,19 @@ local function publishedNativeJourney(lifecycles)
     local native = deepCopy(captured)
     native.schema = CURRENT_GAME_SCHEMA
     native.encounters = nativeEncounterBucket(captured.encounters, lifecycles)
+    -- The envelope predates the Hall of Fame history, the Day Care, and the
+    -- Battle Point wallet, so its own copy carries none of those buckets and
+    -- its statistics keep the release's shape.
+    native.hallOfFame = nil
+    native.daycare = nil
+    native.battlePoints = nil
+    native.gameStats.schema = CURRENT_GAME_STATS_SCHEMA
+    native.gameStats.stateVersion = CURRENT_GAME_STATS_STATE_VERSION
+    native.gameStats.leagueWins = nil
+    native.gameStats.daycareDeposits = nil
+    native.gameStats.eggsHatched = nil
+    native.gameStats.battlePointsReceived = nil
+    native.gameStats.battlePointsSpent = nil
     assert(
       love.filesystem.createDirectory(payloadDirectory(game)),
       "the acceptance save root holds its payload directory"

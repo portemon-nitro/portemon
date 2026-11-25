@@ -22,6 +22,7 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MartCache = require("libs.assets.src.MartCache")
 local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
 local MonCache = require("libs.assets.src.MonCache")
+local PokemonCareCache = require("libs.assets.src.PokemonCareCache")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local ItemFixture = require("libs.items.tests.item_fixture")
 
@@ -140,6 +141,7 @@ function T.runtime_assets_phase_trusts_published_catalogs_without_revalidating()
     monValidate = MonAssetSchema.assertCatalog,
     itemValidate = ItemAssetSchema.assertCatalog,
     martLoad = MartCache.loadCatalog,
+    careLoad = PokemonCareCache.loadCatalog,
     entranceLoad = FieldEntranceIndicatorRuntime.load,
     emoteLoad = FieldActorEmoteRuntime.load,
   }
@@ -167,6 +169,9 @@ function T.runtime_assets_phase_trusts_published_catalogs_without_revalidating()
   end)
   rawset(MartCache, "loadCatalog", function()
     return {}
+  end)
+  rawset(PokemonCareCache, "loadCatalog", function()
+    return { schema = PokemonCareCache.CATALOG_SCHEMA }
   end)
   rawset(FieldEntranceIndicatorRuntime, "load", function()
     return { effects = trustedEffects() }, {}
@@ -198,6 +203,7 @@ function T.runtime_assets_phase_trusts_published_catalogs_without_revalidating()
   rawset(MonAssetSchema, "assertCatalog", originals.monValidate)
   rawset(ItemAssetSchema, "assertCatalog", originals.itemValidate)
   rawset(MartCache, "loadCatalog", originals.martLoad)
+  rawset(PokemonCareCache, "loadCatalog", originals.careLoad)
   rawset(FieldEntranceIndicatorRuntime, "load", originals.entranceLoad)
   rawset(FieldActorEmoteRuntime, "load", originals.emoteLoad)
 

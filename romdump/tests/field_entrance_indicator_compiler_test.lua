@@ -167,6 +167,11 @@ local function installStoryEffectCompilerMock()
         },
       }
       memberHashes[#memberHashes + 1] = { memberId = overlay.screenMemberId, sha1 = "alarm-overlay" }
+      -- The legendary-story scenes travel with this family's own member
+      -- provenance; the compiler merges them exactly like the model props.
+      for _, kind in ipairs(FieldEffectAssetCache.LEGEND_SCENE_KINDS) do
+        definitions[kind] = { parts = { { model = descriptor(kind), clips = {} } } }
+      end
       return { definitions = definitions, memberHashes = memberHashes }
     end,
   }
@@ -281,6 +286,7 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
       { key = "azalea_gym_spinarak", mapSymbol = "MAP_AZALEA_GYM", modelMemberId = 118 },
     },
     hideoutEffectArchive = SourceFieldEffects.hideoutEffectArchive,
+    hallOfFame = SourceFieldEffects.hallOfFame,
     hideoutTrapModels = {
       {
         key = "rocket_trap_electric",

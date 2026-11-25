@@ -297,6 +297,9 @@ function T.host_fixed_steps_prepare_viewer_and_stop_after_cancel()
         end,
       })
     end,
+    createHallOfFame = function()
+      error("Hall of Fame is not opened")
+    end,
   })
   local handle = owner:open({ app = "photoAlbum" })
   owner:setPresentationReady(handle, true)

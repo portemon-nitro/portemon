@@ -9,6 +9,7 @@
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
+local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 
 local BATTLE_RUNTIME_MODULE = "game.hgss.src.battle.BattleRuntime"
@@ -413,7 +414,7 @@ function T.tests.post_battle_consequences_commit_through_the_live_owners()
       records = {
         {
           key = "roamer-eevee",
-          stateVersion = 1,
+          stateVersion = EncounterSave.STATE_VERSION,
           mon = roamerMon,
           location = location,
           lifecycle = "roaming",

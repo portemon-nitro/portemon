@@ -19,6 +19,7 @@ local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldMovement = require("tests.acceptance.support.FieldMovement")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
 
 local FLAG_GOT_BAG = FieldScriptSymbols.flagsByName.FLAG_GOT_BAG
 
@@ -553,6 +554,18 @@ local function hostCallbacks(game)
   }, FieldState)
 end
 
+-- The trace measures asset memory across ordinary travel; the room's trainers
+-- are already beaten so their source sight never locks the field under the
+-- scripted route.
+local function defeatMapTrainers(game)
+  local runtime = assert(game.runtime, "travel trace needs the live runtime")
+  for _, object in ipairs(assert(runtime.runtimeMap.fieldData.events.objects, "the map carries its objects")) do
+    if object.trainer ~= nil then
+      runtime.eventState:setFlag(RuntimeValues.trainerFlagId(object.trainer.trainerId))
+    end
+  end
+end
+
 local function openStartMenu(game)
   game.runtime:pressMenu()
   game:step()
@@ -717,6 +730,7 @@ function T.tests.scripted_travel_reports_attributed_memory_at_state_boundaries(c
     local state = hostCallbacks(game)
     game:waitForFieldEntry()
     local decoded = assert(game.runtime.decoded, "the presented field runtime borrows the selected decoded CPU owner")
+    defeatMapTrainers(game)
     captureCheckpoint(game, tracer, context, "field-entry")
 
     stockTwoPockets(game)

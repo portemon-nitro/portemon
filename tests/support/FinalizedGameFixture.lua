@@ -37,6 +37,7 @@ local FinalizedGameFixture = {}
 ---@field saveId string?
 ---@field textSpeed string?
 ---@field textFrame integer?
+---@field profile table?
 
 ---@param versionId string
 ---@param options FinalizedGameOptions?
@@ -44,22 +45,26 @@ local FinalizedGameFixture = {}
 function FinalizedGameFixture.build(versionId, options)
   assert(type(versionId) == "string", "finalized games are version-scoped")
   options = options or {}
+  local profile = {
+    name = "GOLD",
+    gender = 0,
+    trainerId = 1,
+    money = 3000,
+    badges = {},
+    nationalDex = false,
+    runningShoes = false,
+    runningShoesLock = false,
+    rivalName = "Silver",
+  }
+  for key, value in pairs(options.profile or {}) do
+    profile[key] = value
+  end
   return {
     saveId = options.saveId or "save-00000001",
     versionId = versionId,
     location = options.location or { mapSymbol = "MAP_NEW_BARK", fieldX = 10, fieldZ = 10, facing = "south" },
     playerData = {
-      profile = {
-        name = "GOLD",
-        gender = 0,
-        trainerId = 1,
-        money = 3000,
-        badges = {},
-        nationalDex = false,
-        runningShoes = false,
-        runningShoesLock = false,
-        rivalName = "Silver",
-      },
+      profile = profile,
       options = { textSpeed = options.textSpeed or "fastest", textFrame = options.textFrame or 0 },
     },
     fieldTravel = options.fieldTravel or { lastHealSpawn = "SPAWN_NEW_BARK" },

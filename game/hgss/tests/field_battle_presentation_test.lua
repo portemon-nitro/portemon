@@ -15,14 +15,14 @@ local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local SelectedAssetRuntimeFixture = require("tests.support.SelectedAssetRuntimeFixture")
-local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+local CacheFs = require("libs.storage.src.CacheFs")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
+local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
 local BattleTask = require("libs.hgss.src.script.tasks.BattleTask")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SessionFixture = require("libs.battle.tests.session_fixture")
-local PlayTime = require("libs.hgss.src.save.PlayTime")
 
 local T = {}
 
@@ -128,41 +128,15 @@ local function recordingAudio()
 end
 
 local function validEntry(versionId)
-  return {
-    saveId = "save-00000001",
-    versionId = versionId,
+  return FinalizedGameFixture.build(versionId, {
     location = {
       mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
       fieldX = 6,
       fieldZ = 6,
       facing = "south",
     },
-    playerData = {
-      profile = {
-        name = "GOLD",
-        gender = 0,
-        trainerId = 1,
-        money = 3000,
-        badges = {},
-        nationalDex = false,
-        runningShoes = false,
-        runningShoesLock = false,
-        rivalName = "Silver",
-      },
-      options = { textSpeed = "mid", textFrame = 0 },
-    },
-    fieldTravel = { lastHealSpawn = "SPAWN_NEW_BARK" },
-    fashionCase = require("libs.hgss.src.save.FashionCaseState").empty(),
-    sysInfo = require("libs.hgss.src.save.SysInfoState").empty(),
-    fieldPoison = require("libs.hgss.src.save.FieldPoisonSave").initial(),
-    playTime = PlayTime.new(),
-    worldState = FieldEventState.new(),
-    mons = require("tests.support.MonBucket").emptyForVersion(versionId),
-    bag = require("libs.hgss.src.save.BagSave").empty(),
-    mart = require("libs.hgss.src.save.MartSave").empty(),
-    mailbox = require("libs.hgss.src.save.Mailbox").new():capture(),
-    photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new():capture(),
-  }
+    textSpeed = "mid",
+  })
 end
 
 ---@param versionId string
@@ -4818,8 +4792,20 @@ return {
       "audio-bank:709",
       "mon-summary:global",
       "message-bank:203",
+      "map-data:31",
+      "map-data:33",
+      "map-data:47",
+      "map-data:48",
+      "map-data:60",
+      "map-data:61",
       "map-data:63",
       "map-data:64",
+      "map:31",
+      "map:33",
+      "map:47",
+      "map:48",
+      "map:60",
+      "map:61",
       "map:63",
       "map:64",
       "trainers:global",

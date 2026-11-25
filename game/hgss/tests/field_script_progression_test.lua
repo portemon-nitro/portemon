@@ -98,6 +98,7 @@ local function stubActors()
     setPresentationOffset = noop,
     clearPresentationOffset = noop,
     removePresence = noop,
+    deleteSourceObject = noop,
     materializeObject = noop,
   }
 end
