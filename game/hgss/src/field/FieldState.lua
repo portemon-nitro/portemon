@@ -1151,7 +1151,19 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
   local moneyBoxVisible = moneyBox ~= nil and moneyBox:snapshot().visible
   local pointsBox = self.runtime.pointsBox
   local pointsBoxVisible = pointsBox ~= nil and pointsBox:snapshot().visible
-  if not (dialogueModal or yesNo or signpostModal or blackoutMessage or moneyBoxVisible or pointsBoxVisible) then
+  local savingsBox = self.runtime.savingsBox
+  local savingsBoxVisible = savingsBox ~= nil and savingsBox:snapshot().visible
+  if
+    not (
+      dialogueModal
+      or yesNo
+      or signpostModal
+      or blackoutMessage
+      or moneyBoxVisible
+      or pointsBoxVisible
+      or savingsBoxVisible
+    )
+  then
     return
   end
   local fieldScale = self.runtime.fieldPixelScale:resolvedScale()
@@ -1175,6 +1187,10 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
   if pointsBoxVisible then
     -- The points window is the same field-attached layer.
     self:_drawPointsBox(resources)
+  end
+  if savingsBoxVisible then
+    -- The savings window is the same field-attached layer.
+    self:_drawSavingsBox(resources)
   end
   if blackoutMessage and blackoutStatus ~= nil then
     FieldBlackoutRenderer.draw(blackoutStatus, assert(resources.windowRenderer), assert(resources.textRenderer), bounds)
@@ -1271,6 +1287,122 @@ function FieldState:_drawPointsBox(resources)
   LogicalSurface.draw(lg, placement, function()
     windowRenderer:drawWindow(box, frameIndex, background)
     textRenderer:drawText(text, box.x + FieldPointsBox.WIDTH - textWidth, box.y)
+  end)
+end
+
+-- The source savings window paints its own 16x8-tile frame at the source tile
+-- position on the main display: a label and a right-aligned balance on each of
+-- its two rows, both captured by the last show/update (SavingsBox_Update draws
+-- each value at `128 - width`).
+---@param resources FieldPresentationResources
+function FieldState:_drawSavingsBox(resources)
+  local runtime = assert(self.runtime, "field presentation needs its runtime")
+  local savingsBox = runtime.savingsBox
+  if savingsBox == nil then
+    return
+  end
+  local snapshot = savingsBox:snapshot()
+  if not snapshot.visible then
+    return
+  end
+  local windowRenderer = resources.windowRenderer
+  local textRenderer = resources.textRenderer
+  if windowRenderer == nil or textRenderer == nil then
+    return
+  end
+  local tileX = assert(snapshot.tileX, "an open savings window carries its source column")
+  local tileY = assert(snapshot.tileY, "an open savings window carries its source row")
+  local rows = assert(snapshot.rows, "an open savings window carries its two rows")
+  local viewport = assert(runtime.viewport, "field presentation needs its viewport")
+  local placement = FieldPresentationResources.mainDisplayPlacement(
+    assert(viewport.referenceFrame, "the savings window draws in the canonical field frame"),
+    runtime.fieldPixelScale:resolvedScale()
+  )
+  local frameIndex = assert(resources.applicationFrameIndex, "field presentation owns no application frame index")
+  local FieldSavingsBox = require("game.hgss.src.field.FieldSavingsBox")
+  local box = { x = tileX * 8, y = tileY * 8, width = FieldSavingsBox.WIDTH, height = FieldSavingsBox.HEIGHT }
+  local background = textRenderer:windowBackgroundColor()
+  local lg = love.graphics
+  LogicalSurface.draw(lg, placement, function()
+    windowRenderer:drawWindow(box, frameIndex, background)
+    for _, row in ipairs(rows) do
+      textRenderer:drawText(row.label, box.x, box.y + row.labelY)
+      local textWidth = textRenderer:textWidth(row.text) or 0
+      textRenderer:drawText(row.text, box.x + FieldSavingsBox.WIDTH - textWidth, box.y + row.y)
+    end
+  end)
+end
+
+-- The Mom bank keypad paints the source number-entry display on the lower
+-- surface: the composited source layer, the entered digit glyphs, the underline
+-- cursor, the pressed-key feedback and the three button labels. The images are
+-- leased from the shared image owner for the transfer's lifetime and drawn
+-- inside the auxiliary surface's own placement; a transfer whose presentation
+-- is not loaded paints nothing.
+---@param resources FieldPresentationResources
+function FieldState:_drawBankKeypad(resources)
+  local runtime = assert(self.runtime, "field presentation needs its runtime")
+  local host = runtime.bankHost
+  if host == nil or not host:isActive() then
+    return
+  end
+  local presentation = host:presentation()
+  if presentation == nil then
+    return
+  end
+  local interface = presentation.interface --[[@as table<string, unknown>]]
+  local plan = interface:plan(presentation.status)
+  local pool = runtime.imageAssets
+  local text = resources.textRenderer
+  if pool == nil or text == nil then
+    return
+  end
+  local placement = interface:placement("native")
+  local measured = runtime.presentationDisplay
+  local auxiliary = type(measured) == "table" and measured.auxiliary or nil
+  local surface = { x = 0, y = 0, width = placement.width, height = placement.height }
+  if type(auxiliary) == "table" and type(auxiliary.width) == "number" and auxiliary.width > 0 then
+    local scale = math.max(1, math.min(math.floor(auxiliary.width / placement.width), math.floor(auxiliary.height / placement.height)))
+    surface = {
+      x = auxiliary.x + math.floor((auxiliary.width - placement.width * scale) / 2),
+      y = auxiliary.y + math.floor((auxiliary.height - placement.height * scale) / 2),
+      width = placement.width * scale,
+      height = placement.height * scale,
+    }
+  end
+  local BankInterface = require("game.hgss.src.bank.BankInterface")
+  local leases = self._bankLeases
+  if leases == nil then
+    leases = {}
+    self._bankLeases = leases
+  end
+  local function image(path)
+    local lease = leases[path]
+    if lease ~= nil then
+      return lease.image
+    end
+    local token = pool:request(path, POKEGEAR_SAMPLER, "demand")
+    local status = pool:poll(token)
+    if status ~= "ready" then
+      return nil
+    end
+    local acquired = pool:acquire(token)
+    leases[path] = acquired
+    return acquired.image
+  end
+  local lg = love.graphics
+  LogicalSurface.draw(lg, { x = surface.x, y = surface.y, scale = surface.width / placement.width, pixelRatio = 1 }, function()
+    BankInterface.draw(plan, image)
+    for _, label in ipairs(plan.labels) do
+      local width = text:textWidth(label.text) or 0
+      text:drawText(
+        label.text,
+        label.rect.x + math.floor((label.rect.width - width) / 2),
+        -- The three source windows are two tiles high; the label centers on
+        -- that 16-pixel row.
+        label.rect.y + math.floor((label.rect.height - 16) / 2)
+      )
+    end
   end)
 end
 
@@ -1893,6 +2025,7 @@ function FieldState:draw()
     )
   end
   resources:drawMart(self.runtime.martHost)
+  self:_drawBankKeypad(resources)
   if self.runtime.pcApplicationHost:isActive() then
     resources:drawPcApplication(self.runtime.pcApplicationHost, self.runtime)
   end

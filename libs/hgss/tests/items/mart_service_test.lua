@@ -562,4 +562,84 @@ function T.apricorn_civil_days_reset_tree_bits_on_forward_rolls_and_preserve_kur
   Assert.equal(state.service:capture().apricornHarvestedMask, 0)
 end
 
+-- ---------------------------------------------------------------------------
+-- Athlete Points: the one canonical wallet behind Pokéathlon prices.
+-- ---------------------------------------------------------------------------
+
+---@param balance integer
+---@return table a full mart bucket carrying the requested balance
+local function pointsBucket(balance)
+  local bucket = MartSave.empty()
+  bucket.athletePoints = balance
+  return bucket
+end
+
+-- The read is the settled saved balance, not a second copy.
+function T.athlete_points_read_the_saved_balance()
+  local state = resources({ bucket = pointsBucket(4200) })
+  Assert.equal(state.service:athletePoints(), 4200, "the owner answers its saved balance")
+  Assert.equal(state.service:capture().athletePoints, 4200, "the capture keeps the same balance")
+end
+
+-- The source clamps grants and charges into 0..99999 instead of wrapping.
+function T.athlete_point_grants_and_charges_saturate_at_the_source_bounds()
+  local state = resources({ bucket = pointsBucket(99998) })
+  Assert.isTrue(state.service:giveAthletePoints(50), "a grant inside the maximum is accepted")
+  Assert.equal(state.service:athletePoints(), 99999, "a grant saturates at the source maximum")
+  Assert.isFalse(state.service:giveAthletePoints(1), "a full wallet refuses another grant")
+  Assert.equal(state.service:athletePoints(), 99999, "a refused grant leaves the balance alone")
+
+  local charged = resources({ bucket = pointsBucket(3) })
+  Assert.isTrue(charged.service:takeAthletePoints(10), "a charge inside the balance is accepted")
+  Assert.equal(charged.service:athletePoints(), 0, "a charge saturates at zero")
+  Assert.isFalse(charged.service:takeAthletePoints(1), "an empty wallet refuses another charge")
+  Assert.equal(charged.service:athletePoints(), 0, "a refused charge leaves the balance alone")
+end
+
+-- A script amount is a source u16 operand: a malformed request fails before
+-- the wallet moves, and a debit never grants an item by itself.
+function T.athlete_point_amounts_are_source_operands_and_a_debit_grants_nothing()
+  local state = resources({ bucket = pointsBucket(500) })
+  local before = state.service:capture()
+  local bagBefore = state.bag:capture()
+  for _, amount in ipairs({ -1, 0.5, 65536 }) do
+    Assert.throws(function()
+      state.service:giveAthletePoints(amount)
+    end)
+    Assert.throws(function()
+      state.service:takeAthletePoints(amount)
+    end)
+  end
+  Assert.deepEqual(state.service:capture(), before, "a malformed amount never reaches the wallet")
+
+  Assert.isTrue(state.service:takeAthletePoints(200), "the charge is accepted")
+  Assert.equal(state.service:athletePoints(), 300, "the charge moves the requested amount")
+  Assert.deepEqual(state.bag:capture(), bagBefore, "a point debit never hands out an item")
+end
+
+-- The wallet is only writable while no shop session owns its prices.
+function T.an_open_shop_session_refuses_a_direct_point_write()
+  local state = resources({ bucket = pointsBucket(1000) })
+  local session = state.service:openBuy({
+    key = "athlete-test-stock",
+    currency = "athlete_points",
+    presentationKind = "athlete_items",
+    quantityMode = "single",
+    bonusPolicy = "none",
+    entries = {
+      {
+        key = "fresh-water",
+        displayItemKey = "POTION",
+        description = { kind = "item" },
+        unitPrice = 50,
+        destination = { kind = "bag", key = "POTION" },
+      },
+    },
+  })
+  Assert.isTrue(session ~= nil, "the test stock opens a real shop session")
+  Assert.isFalse(state.service:giveAthletePoints(100), "a live session refuses a direct grant")
+  Assert.isFalse(state.service:takeAthletePoints(100), "a live session refuses a direct charge")
+  Assert.equal(state.service:athletePoints(), 1000, "the live session keeps its quoted balance")
+end
+
 return { tests = T }

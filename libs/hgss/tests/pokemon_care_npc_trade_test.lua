@@ -355,6 +355,60 @@ function T.an_independent_reference_letter_pays_the_dummy_creation()
   Assert.deepEqual(received.mail, mail, "the independent letter is the same source letter")
 end
 
+-- Mail_Compare (src/mail.c): the authored reference letter matches only an
+-- identical letter -- same author identity, stationery type, icons and lines --
+-- and an absent or unwritten letter never matches.
+function T.the_reference_letter_comparison_follows_mail_compare()
+  local mons = monsDouble()
+  local service = serviceFor(mons)
+  local reference = service:createKenyaMail()
+  Assert.isTrue(service:mailMatches(reference, reference), "a letter matches itself")
+  Assert.isFalse(service:mailMatches(reference, nil), "a missing letter never matches")
+  Assert.isFalse(service:mailMatches(reference, {}), "an unwritten letter never matches")
+
+  local function variant(mutate)
+    local copy = {}
+    for key, value in pairs(reference) do
+      copy[key] = value
+    end
+    copy.author = {}
+    for key, value in pairs(reference.author) do
+      copy.author[key] = value
+    end
+    mutate(copy)
+    return copy
+  end
+  Assert.isFalse(
+    service:mailMatches(reference, variant(function(letter)
+      letter.author.trainerId = letter.author.trainerId + 1
+    end)),
+    "a different author identity never matches"
+  )
+  Assert.isFalse(
+    service:mailMatches(reference, variant(function(letter)
+      letter.type = 3
+    end)),
+    "different stationery never matches"
+  )
+  Assert.isFalse(
+    service:mailMatches(reference, variant(function(letter)
+      letter.icons = { false, false, false }
+    end)),
+    "different mon icons never match"
+  )
+  Assert.isFalse(
+    service:mailMatches(reference, variant(function(letter)
+      local lines = {}
+      for index, line in pairs(letter.lines) do
+        lines[index] = line
+      end
+      lines[1] = { template = "mail-template:1:7", words = { "1371", false } }
+      letter.lines = lines
+    end)),
+    "a different message line never matches"
+  )
+end
+
 function T.the_loan_receipt_refuses_a_full_party_before_creating_anything()
   local party = {}
   for slot = 1, 6 do

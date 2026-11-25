@@ -677,6 +677,223 @@ function FieldServiceHandlers.checkBattlePoints(ins)
   }
 end
 
+-- The saved Game Corner wallet (src/overlay_22.c): GetCoinAmount reads one
+-- result pointer, GiveCoins/TakeCoins read a ScriptGetVar amount,
+-- CheckCoinsImmediate reads its result pointer then a full u32 word,
+-- CheckGiveCoins reads its result pointer then a ScriptGetVar amount,
+-- TakeCoinsVar reads one amount pointer and CheckCoinsVar reads its result
+-- pointer before the amount pointer. Every command returns in the same tick.
+function FieldServiceHandlers.getCoinAmount(ins)
+  return { op = "coin_read", result = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.giveCoins(ins)
+  return { op = "coin_change", action = "give", amount = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.takeCoins(ins)
+  return { op = "coin_change", action = "take", amount = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.takeCoinsVar(ins)
+  return { op = "coin_change", action = "take", amount = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.checkCoinsImmediate(ins)
+  return {
+    op = "coin_check",
+    action = "balance",
+    amount = Operands.operandValue(ins.operands[2]),
+    result = Operands.varRef(ins.operands[1]),
+  }
+end
+
+function FieldServiceHandlers.checkGiveCoins(ins)
+  return {
+    op = "coin_check",
+    action = "can_give",
+    amount = Operands.varRef(ins.operands[2]),
+    result = Operands.varRef(ins.operands[1]),
+  }
+end
+
+function FieldServiceHandlers.checkCoinsVar(ins)
+  return {
+    op = "coin_check",
+    action = "balance",
+    amount = Operands.varRef(ins.operands[2]),
+    result = Operands.varRef(ins.operands[1]),
+  }
+end
+
+-- The Athlete Point wallet (src/overlay_22.c): both mutations read a
+-- ScriptGetVar amount and the compare reads its result pointer before the
+-- amount. The wallet is the Pokéathlon balance, not the Battle Point wallet,
+-- so the nodes name it directly.
+function FieldServiceHandlers.giveAthletePoints(ins)
+  return { op = "athlete_points_change", action = "give", amount = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.takeAthletePoints(ins)
+  return { op = "athlete_points_change", action = "take", amount = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.checkAthletePoints(ins)
+  return {
+    op = "athlete_points_check",
+    amount = Operands.varRef(ins.operands[2]),
+    result = Operands.varRef(ins.operands[1]),
+  }
+end
+
+-- The Mom bank (src/scrcmd_c.c, src/field/headbutt.c): BankTransaction reads
+-- its mode halfword before the result pointer and blocks on the amount screen,
+-- CheckBankBalance reads its result pointer then a u32 word, the savings window
+-- shares the money box's two tile value operands, and BankOrWalletIsFull reads
+-- its wallet selector halfword before the result pointer.
+function FieldServiceHandlers.bankTransaction(ins)
+  return {
+    op = "bank_transaction",
+    mode = Operands.operandValue(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function FieldServiceHandlers.checkBankBalance(ins)
+  return {
+    op = "bank_balance_check",
+    amount = Operands.operandValue(ins.operands[2]),
+    result = Operands.varRef(ins.operands[1]),
+  }
+end
+
+function FieldServiceHandlers.showSavingsBox(ins)
+  return {
+    op = "savings_box",
+    action = "show",
+    tileX = Operands.varRef(ins.operands[1]),
+    tileY = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function FieldServiceHandlers.hideSavingsBox()
+  return { op = "savings_box", action = "hide" }
+end
+
+function FieldServiceHandlers.updateSavingsBox()
+  return { op = "savings_box", action = "update" }
+end
+
+function FieldServiceHandlers.bankOrWalletIsFull(ins)
+  return {
+    op = "bank_overflow_check",
+    action = Operands.operandValue(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+-- The specialty-NPC family. ScrCmd_SizeRecordCompare/SizeRecordUpdate and
+-- BufferMonSize/BufferRecordSize read their party slot, format-field values and
+-- species identity through ScriptGetVar (src/scrcmd_size_record.c);
+-- MonHasRibbon reads its result pointer before the slot and ribbon identity,
+-- while BufferRibbonName reads its format-field byte before the identity
+-- (src/scrcmd_party.c, src/scrcmd_strbuf.c); the stat judge writes three
+-- pointers after its slot and BufferStatName reads a byte before its stat id
+-- (src/field/scrcmd_pokemon_misc.c, src/scrcmd_strbuf.c).
+function FieldServiceHandlers.sizeRecordCompare(ins)
+  return {
+    op = "size_record_compare",
+    result = Operands.varRef(ins.operands[1]),
+    slot = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function FieldServiceHandlers.sizeRecordUpdate(ins)
+  return { op = "size_record_update", slot = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.bufferMonSize(ins)
+  return {
+    op = "buffer_mon_size",
+    wholeBuffer = Operands.varRef(ins.operands[1]),
+    fractionBuffer = Operands.varRef(ins.operands[2]),
+    slot = Operands.varRef(ins.operands[3]),
+  }
+end
+
+function FieldServiceHandlers.bufferRecordSize(ins)
+  return {
+    op = "buffer_record_size",
+    wholeBuffer = Operands.varRef(ins.operands[1]),
+    fractionBuffer = Operands.varRef(ins.operands[2]),
+    species = Operands.varRef(ins.operands[3]),
+  }
+end
+
+function FieldServiceHandlers.monHasRibbon(ins)
+  return {
+    op = "mon_has_ribbon",
+    result = Operands.varRef(ins.operands[1]),
+    slot = Operands.varRef(ins.operands[2]),
+    ribbon = Operands.varRef(ins.operands[3]),
+  }
+end
+
+function FieldServiceHandlers.bufferRibbonName(ins)
+  local buffer = Operands.operandValue(ins.operands[1])
+  assert(type(buffer) == "number", "a ribbon-name buffer names its source format field")
+  return { op = "buffer_ribbon_name", buffer = buffer, ribbon = Operands.varRef(ins.operands[2]) }
+end
+
+function FieldServiceHandlers.evTotal(ins)
+  return {
+    op = "ev_total",
+    result = Operands.varRef(ins.operands[1]),
+    slot = Operands.varRef(ins.operands[2]),
+  }
+end
+
+-- ScrCmd_KenyaCheck reads its result pointer, the party slot, and then a raw
+-- byte selecting the exact Mail comparison.
+function FieldServiceHandlers.kenyaCheck(ins)
+  local exact = Operands.operandValue(ins.operands[3])
+  assert(type(exact) == "number", "the Kenya check names its exact-Mail selector byte")
+  return {
+    op = "kenya_check",
+    result = Operands.varRef(ins.operands[1]),
+    slot = Operands.varRef(ins.operands[2]),
+    exact = exact,
+  }
+end
+
+function FieldServiceHandlers.kenyaCheckPartyOrMailbox(ins)
+  return { op = "kenya_check_party", result = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.statJudge(ins)
+  return {
+    op = "stat_judge",
+    slot = Operands.varRef(ins.operands[1]),
+    total = Operands.varRef(ins.operands[2]),
+    message = Operands.varRef(ins.operands[3]),
+    highest = Operands.varRef(ins.operands[4]),
+  }
+end
+
+function FieldServiceHandlers.bufferStatName(ins)
+  local buffer = Operands.operandValue(ins.operands[1])
+  assert(type(buffer) == "number", "a stat-name buffer names its source format field")
+  return { op = "buffer_stat_name", buffer = buffer, stat = Operands.varRef(ins.operands[2]) }
+end
+
+function FieldServiceHandlers.hiddenPowerType(ins)
+  return {
+    op = "hidden_power_type",
+    slot = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
 function FieldServiceHandlers.martOpen(kind, selector)
   local step = { op = "mart_open", kind = kind }
   if selector ~= nil then

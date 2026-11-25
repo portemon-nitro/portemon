@@ -156,4 +156,95 @@ function T.catching_tutorial_lowers_to_its_tutorial_launch()
   Assert.isNil(node.command, "source opcode must not leak into semantic operations")
 end
 
+-- The saved coin wallet (src/overlay_22.c): the read takes one result pointer,
+-- the mutations take a ScriptGetVar amount, and CheckCoinsImmediate keeps its
+-- own u32 word while CheckGiveCoins and CheckCoinsVar read a u16 amount.
+function T.coin_commands_keep_their_pointer_and_immediate_distinctions()
+  Assert.deepEqual(assert(FieldHandlers[119])(instruction(119, { raw("VAR_RESULT") })), {
+    op = "coin_read",
+    result = { value = "var", id = "VAR_RESULT" },
+  })
+  for _, opcode in ipairs({ 120, 121, 569 }) do
+    local action = opcode == 120 and "give" or "take"
+    Assert.deepEqual(assert(FieldHandlers[opcode])(instruction(opcode, { raw("VAR_TEMP") })), {
+      op = "coin_change",
+      action = action,
+      amount = { value = "var", id = "VAR_TEMP" },
+    })
+  end
+  Assert.deepEqual(assert(FieldHandlers[532])(instruction(532, { raw("VAR_RESULT"), raw(70000) })), {
+    op = "coin_check",
+    action = "balance",
+    amount = 70000,
+    result = { value = "var", id = "VAR_RESULT" },
+  })
+  Assert.deepEqual(assert(FieldHandlers[533])(instruction(533, { raw("VAR_RESULT"), raw("VAR_TEMP") })), {
+    op = "coin_check",
+    action = "can_give",
+    amount = { value = "var", id = "VAR_TEMP" },
+    result = { value = "var", id = "VAR_RESULT" },
+  })
+  Assert.deepEqual(assert(FieldHandlers[570])(instruction(570, { raw("VAR_RESULT"), raw("VAR_TEMP") })), {
+    op = "coin_check",
+    action = "balance",
+    amount = { value = "var", id = "VAR_TEMP" },
+    result = { value = "var", id = "VAR_RESULT" },
+  })
+  for opcode, disposition in pairs({
+    [119] = "continue_same_tick",
+    [120] = "continue_same_tick",
+    [121] = "continue_same_tick",
+    [569] = "continue_same_tick",
+    [532] = "continue_same_tick",
+    [533] = "continue_same_tick",
+    [570] = "continue_same_tick",
+    [122] = "continue_same_tick",
+    [123] = "continue_same_tick",
+    [124] = "continue_same_tick",
+    [793] = "native_wait",
+    [794] = "continue_same_tick",
+    [795] = "continue_same_tick",
+    [796] = "continue_same_tick",
+    [797] = "continue_same_tick",
+    [838] = "continue_same_tick",
+  }) do
+    local entry = ScriptCommands.byOpcode[opcode]
+    Assert.equal(entry.disposition, "supported", "opcode " .. opcode .. " is supported")
+    Assert.equal(entry.classification, disposition, "opcode " .. opcode .. " keeps its source timing")
+  end
+end
+
+-- The Pokéathlon wallet reads its result pointer before the amount, and the
+-- bank commands read their mode and coordinates in source order.
+function T.athlete_point_and_bank_commands_lower_in_source_order()
+  Assert.deepEqual(assert(FieldHandlers[124])(instruction(124, { raw("VAR_RESULT"), raw("VAR_TEMP") })), {
+    op = "athlete_points_check",
+    amount = { value = "var", id = "VAR_TEMP" },
+    result = { value = "var", id = "VAR_RESULT" },
+  })
+  Assert.deepEqual(assert(FieldHandlers[793])(instruction(793, { raw(0), raw("VAR_RESULT") })), {
+    op = "bank_transaction",
+    mode = 0,
+    result = { value = "var", id = "VAR_RESULT" },
+  })
+  Assert.deepEqual(assert(FieldHandlers[794])(instruction(794, { raw("VAR_RESULT"), raw(1) })), {
+    op = "bank_balance_check",
+    amount = 1,
+    result = { value = "var", id = "VAR_RESULT" },
+  })
+  Assert.deepEqual(assert(FieldHandlers[795])(instruction(795, { raw("VAR_X"), raw("VAR_Y") })), {
+    op = "savings_box",
+    action = "show",
+    tileX = { value = "var", id = "VAR_X" },
+    tileY = { value = "var", id = "VAR_Y" },
+  })
+  Assert.deepEqual(assert(FieldHandlers[796])(instruction(796)), { op = "savings_box", action = "hide" })
+  Assert.deepEqual(assert(FieldHandlers[797])(instruction(797)), { op = "savings_box", action = "update" })
+  Assert.deepEqual(assert(FieldHandlers[838])(instruction(838, { raw(1), raw("VAR_RESULT") })), {
+    op = "bank_overflow_check",
+    action = 1,
+    result = { value = "var", id = "VAR_RESULT" },
+  })
+end
+
 return { tests = T }

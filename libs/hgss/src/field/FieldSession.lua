@@ -58,6 +58,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface; while active the tick's UI events route to the script scheduler
 ---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
 ---@field martHost table<string, unknown>? the modal script-mart surface; while active the tick's UI events route to the script scheduler
+---@field bankHost table<string, unknown>? the modal Mom bank amount screen; while active the tick's pointer events route to the script scheduler
 ---@field kurtBoxHost table<string, unknown>? the modal Kurt selector; while active UI events route to its blocking task
 ---@field registeredItemUse (fun(slot: integer): boolean)? uses the key item registered to a slot (true when the use claimed the field)
 ---@field monNaming table<string, unknown>? the script-owned mon Naming Screen surface
@@ -141,6 +142,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface; while active the tick's UI events route to the script scheduler
 ---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
 ---@field martHost table<string, unknown>? the modal script-mart surface; while active the tick's UI events route to the script scheduler
+---@field bankHost table<string, unknown>? the modal Mom bank amount screen; while active the tick's pointer events route to the script scheduler
 ---@field kurtBoxHost table<string, unknown>? the modal Kurt selector; while active UI events route to its blocking task
 ---@field registeredItemUse (fun(slot: integer): boolean)? uses the key item registered to a slot (true when the use claimed the field)
 ---@field monNaming table<string, unknown>? the script-owned mon Naming Screen surface
@@ -514,6 +516,7 @@ function FieldSession.new(options)
     starterChoice = options.starterChoice,
     partySelection = options.partySelection,
     martHost = options.martHost,
+    bankHost = options.bankHost,
     kurtBoxHost = options.kurtBoxHost,
     registeredItemUse = options.registeredItemUse,
     monNaming = options.monNaming,
@@ -794,7 +797,10 @@ function FieldSession:_phoneClaimed()
   if hostModal(self.yesNoHost) or hostModal(self.starterChoice) or hostModal(self.partySelection) then
     return true
   end
-  if hostModal(self.martHost) or hostModal(self.monNaming) or hostModal(self.pcApplications) then
+  if hostModal(self.martHost) or hostModal(self.bankHost) or hostModal(self.monNaming) then
+    return true
+  end
+  if hostModal(self.pcApplications) then
     return true
   end
   if hostModal(self.pokegearApplications) or self.fieldCallHandle ~= nil then
@@ -1228,6 +1234,7 @@ local function snapshotModalStatus(self)
   local starterChoice = self.starterChoice
   local partySelection = self.partySelection
   local martHost = self.martHost
+  local bankHost = self.bankHost
   local kurtBoxHost = self.kurtBoxHost
   local monNaming = self.monNaming
   local status = {
@@ -1238,6 +1245,7 @@ local function snapshotModalStatus(self)
     naming = monNaming ~= nil and monNaming:isActive(),
     party = partySelection ~= nil and partySelection:isActive(),
     mart = martHost ~= nil and martHost:isActive(),
+    bank = bankHost ~= nil and bankHost:isActive(),
     kurt = kurtBoxHost ~= nil and kurtBoxHost:isActive(),
     pc = self.pcApplications:isActive(),
     pokegear = self.pokegearApplications ~= nil and self.pokegearApplications:isActive() or false,
@@ -1250,6 +1258,10 @@ local function snapshotModalStatus(self)
   assert(not (status.starterChoice and status.naming), "script-owned field modals are mutually exclusive")
   assert(
     not (status.mart and (status.starterChoice or status.naming or status.party or status.pc)),
+    "script-owned field modals are mutually exclusive"
+  )
+  assert(
+    not (status.bank and (status.starterChoice or status.naming or status.party or status.pc or status.mart)),
     "script-owned field modals are mutually exclusive"
   )
   assert(
@@ -1302,6 +1314,9 @@ local function captureOwner(status)
   if status.mart then
     return "mart"
   end
+  if status.bank then
+    return "bank"
+  end
   if status.pc then
     return "pc"
   end
@@ -1351,6 +1366,7 @@ local function runScriptPhase(self, inputSnapshot)
     or before.starterChoice
     or before.party
     or before.mart
+    or before.bank
     or kurtBoxModal
     or before.pc
     or before.naming
@@ -1373,6 +1389,7 @@ local function runScriptPhase(self, inputSnapshot)
     or before.naming
     or before.party
     or before.mart
+    or before.bank
     or before.kurt
     or before.pc
     or before.yesNo
@@ -1537,6 +1554,7 @@ function FieldSession:updateFixed(inputSnapshot)
         and not (self.starterChoice ~= nil and self.starterChoice:isActive())
         and not (self.partySelection ~= nil and self.partySelection:isActive())
         and not (self.martHost ~= nil and self.martHost:isActive())
+        and not (self.bankHost ~= nil and self.bankHost:isActive())
         and not self.pcApplications:isActive()
         and not (self.monNaming ~= nil and self.monNaming:isActive())
         and not isForegroundActive(self.scriptScheduler),

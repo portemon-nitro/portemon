@@ -605,6 +605,8 @@ end
 ---@field bagService HgssBagService the live bag/inventory service
 ---@field martService MartService the live mart inventory/session service
 ---@field martHost table<string, unknown> the one script-owned mart child host
+---@field savingsBox table<string, unknown>? the transient source savings window the field draw renders
+---@field bankHost table<string, unknown>? the one script-owned Mom bank transfer host
 ---@field kurtBoxHost table<string, unknown> the one script-owned Kurt selector host
 ---@field moneyBox FieldMoneyBox? the transient source money window the field draw renders
 ---@field apricornTreePresentation table<string, function>? presentation assets invalidation owner
@@ -1241,6 +1243,12 @@ function FieldRuntime:_loadInitialWorld(boot)
   if self.game.schema == GameSave.SCHEMA then
     entryGame = self.game
     assert(entryGame.versionId == self.versionId, "loaded game belongs to another version")
+    -- The saved coin balance is a strict present field of the canonical
+    -- profile: its owner refuses a stored value outside the source range here
+    -- instead of the runtime clamping it into a plausible wallet.
+    local savedProfile = entryGame.playerData and entryGame.playerData.profile
+    assert(type(savedProfile) == "table", "a loaded game carries its canonical player profile")
+    PlayerData.validateCoinBalance(savedProfile)
   else
     assert(self.game.playerData, "finalized game player data is required")
     local validPlayerData, playerDataErr = PlayerData.validate(self.game.playerData, boot.playerDataContext)
@@ -1689,6 +1697,7 @@ function FieldRuntime:_composeFieldServices(boot)
     bucket = martBucket,
   })
   self:_composeMart(boot)
+  self:_composeBank()
   self:_processApricornDate()
   -- The one following-mon controller: derived follower presentation over
   -- the live party, driven once per fixed tick after the session update.
@@ -2080,6 +2089,8 @@ function FieldRuntime:_composeFieldServices(boot)
     starterChoice = self.starterChoice,
     partySelection = self.partySelection,
     mart = self.martHost,
+    bank = self.bankHost,
+    athletePoints = self.martService,
     travel = self.fieldTravel,
     fieldMoves = self.partyMenu.fieldMoves,
     monNaming = self.monNaming,
@@ -2523,6 +2534,7 @@ function FieldRuntime:_startFieldSession(boot)
     starterChoice = self.starterChoice,
     partySelection = self.partySelection,
     martHost = self.martHost,
+    bankHost = self.bankHost,
     kurtBoxHost = self.kurtBoxHost,
     registeredItemUse = useRegisteredItem,
     fieldMoves = self.partyMenu.fieldMoves,
@@ -3713,6 +3725,48 @@ end
 -- the calendar through explicit observations, never through polling here.
 ---@param loadedGame table<string, unknown>?
 ---@param cacheFs table<string, unknown> CacheFs-shaped
+-- The Mom bank: the transient savings window whose two balances are the
+-- script's own view of the saved wallet and Mom's savings, and the one
+-- transfer host behind the source amount screen. Both borrow the canonical
+-- profile and phone state; neither stores a balance.
+function FieldRuntime:_composeBank()
+  local FieldSavingsBox = require("game.hgss.src.field.FieldSavingsBox")
+  local BankScreenState = require("game.hgss.src.bank.BankScreenState")
+  local BankTransactionHost = require("game.hgss.src.bank.BankTransactionHost")
+  self.savingsBox = FieldSavingsBox.new({
+    profile = self.playerData.profile,
+    pokegearState = self.pokegearState,
+    messages = self.messageProvider,
+  })
+  -- The generated keypad presentation loads on the first transfer only: a
+  -- field that never talks to Mom never reads the bank family, and a cold
+  -- family fails the transfer (closing the screen) instead of painting art
+  -- that does not exist.
+  local function createInterface()
+    local BankCache = require("libs.assets.src.BankCache")
+    local cacheFs = assert(self.cacheFs, "the bank presentation needs the version cache")
+    local BankInterface = require("game.hgss.src.bank.BankInterface")
+    return BankInterface.new({
+      manifest = BankCache.loadManifest(cacheFs),
+      measureDisplay = function()
+        return self.presentationDisplay
+      end,
+    })
+  end
+  self.bankHost = BankTransactionHost.new({
+    profile = self.playerData.profile,
+    pokegearState = self.pokegearState,
+    savingsBox = self.savingsBox,
+    createScreen = function(maxAmount)
+      return BankScreenState.new(maxAmount)
+    end,
+    createInterface = createInterface,
+    clearUi = function()
+      self.input:clearUi()
+    end,
+  })
+end
+
 function FieldRuntime:_composePokegear(loadedGame, cacheFs)
   local PokegearState = require("libs.hgss.src.save.PokegearState")
   local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
@@ -6624,6 +6678,14 @@ function FieldRuntime:_releaseAll()
   if self.martHost then
     self.martHost:dispose()
   end
+  -- The bank transfer and its transient savings window are field-transient:
+  -- a half-open amount screen never outlives the field.
+  if self.bankHost then
+    self.bankHost:dispose()
+  end
+  if self.savingsBox then
+    self.savingsBox:dispose()
+  end
   if self.pcApplicationHost then
     self.pcApplicationHost:dispose()
   end
@@ -6764,6 +6826,7 @@ function FieldRuntime:_releaseAll()
   self.pokedexCatalog, self.dexKnowledge, self.gameStats = nil, nil, nil
   self.bagService, self.bagCursor = nil, nil
   self.martService = nil
+  self.bankHost, self.savingsBox = nil, nil
   self.mailbox, self.photoAlbum, self.sysInfo = nil, nil, nil
   self.hallOfFame = nil
   self.fieldPoison, self.poisonEffect, self.poisonCure = nil, nil, nil

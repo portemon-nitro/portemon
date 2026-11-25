@@ -50,6 +50,7 @@ function FinalizedGameFixture.build(versionId, options)
     gender = 0,
     trainerId = 1,
     money = 3000,
+    coins = 0,
     badges = {},
     nationalDex = false,
     runningShoes = false,

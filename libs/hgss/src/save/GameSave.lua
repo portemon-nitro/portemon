@@ -18,7 +18,8 @@ local DaycareState = require("libs.hgss.src.save.DaycareState")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v18"
+GameSave.SCHEMA = "g4-game-save-v19"
+GameSave.LEGACY_V18_SCHEMA = "g4-game-save-v18"
 GameSave.LEGACY_V17_SCHEMA = "g4-game-save-v17"
 GameSave.LEGACY_V16_SCHEMA = "g4-game-save-v16"
 GameSave.LEGACY_V15_SCHEMA = "g4-game-save-v15"
@@ -595,7 +596,7 @@ function GameSave.migrateV17(record)
   end
   local BattlePointsState = require("libs.hgss.src.save.BattlePointsState")
   local migrated = deepCopy(record)
-  migrated.schema = GameSave.SCHEMA
+  migrated.schema = GameSave.LEGACY_V18_SCHEMA
   migrated.battlePoints = BattlePointsState.new():capture()
   -- The nested statistics bucket advances with this envelope: its two Point
   -- counters arrive at zero and every earlier statistic rides along.
@@ -603,6 +604,33 @@ function GameSave.migrateV17(record)
     local GameStatsSave = require("libs.hgss.src.save.GameStatsSave")
     migrated.gameStats = GameStatsSave.migrate(migrated.gameStats, nil)
   end
+  return migrated
+end
+
+-- Pure v18 -> v19 conversion. Only the saved Game Corner coin balance is
+-- applied: v18 profiles predate the wallet, so the step initializes the empty
+-- balance the source's Coins_Init writes on the canonical profile. No money,
+-- savings, or points state is invented, and a predecessor that already carries
+-- the coin field is malformed rather than silently re-migrated.
+---@param record table<string, unknown> a v18 save record
+---@return table<string, unknown> the migrated v19 record
+function GameSave.migrateV18(record)
+  assert(type(record) == "table" and record.schema == GameSave.LEGACY_V18_SCHEMA, "GameSave.migrateV18 requires v18")
+  local playerData = record.playerData
+  if type(playerData) ~= "table" or type(playerData.profile) ~= "table" then
+    Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "v18 save carries no player profile", {
+      bucket = "playerData",
+    })
+  end
+  ---@cast playerData table
+  local profile = playerData.profile --[[@as table<string, unknown>]]
+  if profile.coins ~= nil then
+    Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v18 profile cannot contain a coin balance", {})
+  end
+  local migrated = deepCopy(record)
+  migrated.schema = GameSave.SCHEMA
+  local migratedProfile = assert(migrated.playerData --[[@as table]]).profile --[[@as table<string, unknown>]]
+  migratedProfile.coins = 0
   return migrated
 end
 
@@ -636,6 +664,7 @@ function GameSave.metadata(record)
     assert(type(record) == "table")
     if
       record.schema ~= GameSave.SCHEMA
+      and record.schema ~= GameSave.LEGACY_V18_SCHEMA
       and record.schema ~= GameSave.LEGACY_V17_SCHEMA
       and record.schema ~= GameSave.LEGACY_V16_SCHEMA
       and record.schema ~= GameSave.LEGACY_V15_SCHEMA
@@ -728,6 +757,7 @@ function GameSave.normalize(record)
     local schema = record.schema
     if
       schema ~= GameSave.SCHEMA
+      and schema ~= GameSave.LEGACY_V18_SCHEMA
       and schema ~= GameSave.LEGACY_V17_SCHEMA
       and schema ~= GameSave.LEGACY_V16_SCHEMA
       and schema ~= GameSave.LEGACY_V15_SCHEMA
@@ -791,6 +821,9 @@ function GameSave.normalize(record)
     end
     if current.schema == GameSave.LEGACY_V17_SCHEMA then
       current = GameSave.migrateV17(current)
+    end
+    if current.schema == GameSave.LEGACY_V18_SCHEMA then
+      current = GameSave.migrateV18(current)
     end
     return canonicalizeCurrent(current)
   end)

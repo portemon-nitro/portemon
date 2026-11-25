@@ -840,36 +840,54 @@ return {
     },
     [119] = {
       name = "ScrCmd_GetCoinAmount",
+      classification = "continue_same_tick",
+      feature = "coins",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
     },
     [120] = {
       name = "ScrCmd_GiveCoins",
+      classification = "continue_same_tick",
+      feature = "coins",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
     },
     [121] = {
       name = "ScrCmd_TakeCoins",
+      classification = "continue_same_tick",
+      feature = "coins",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
     },
     [122] = {
       name = "ScrCmd_GiveAthletePoints",
+      classification = "continue_same_tick",
+      feature = "points",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
     },
     [123] = {
       name = "ScrCmd_TakeAthletePoints",
+      classification = "continue_same_tick",
+      feature = "points",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
     },
     [124] = {
       name = "ScrCmd_CheckAthletePoints",
+      classification = "continue_same_tick",
+      feature = "points",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2698,6 +2716,8 @@ return {
     },
     [368] = {
       classification = "continue_same_tick",
+      feature = "money",
+      disposition = "supported",
       name = "ScrCmd_HasEnoughMoneyVar",
       widths = {
         [1] = 2,
@@ -2883,6 +2903,9 @@ return {
     },
     [390] = {
       name = "ScrCmd_SizeRecordCompare",
+      classification = "continue_same_tick",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2890,16 +2913,18 @@ return {
     },
     [391] = {
       name = "ScrCmd_SizeRecordUpdate",
+      classification = "continue_same_tick",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
     },
     [392] = {
       name = "ScrCmd_BufferMonSize",
+      classification = "continue_same_tick",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "contest_ribbon_application",
-      deferredNote = "mon size records need the record application beyond direct fields",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2908,6 +2933,9 @@ return {
     },
     [393] = {
       name = "ScrCmd_BufferRecordSize",
+      classification = "continue_same_tick",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3186,9 +3214,9 @@ return {
     },
     [426] = {
       name = "ScrCmd_KenyaCheck",
-      disposition = "deferred",
-      deferredReason = "mail",
-      deferredNote = "Kenya checks need the mail structures and flows",
+      classification = "continue_same_tick",
+      feature = "mail",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3640,10 +3668,9 @@ return {
     },
     [480] = {
       name = "ScrCmd_MonHasRibbon",
+      classification = "continue_same_tick",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "contest_ribbon_application",
-      deferredNote = "ribbon identity to stored-bit mapping needs the ribbon application",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3662,10 +3689,9 @@ return {
     },
     [482] = {
       name = "ScrCmd_BufferRibbonName",
+      classification = "continue_same_tick",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "contest_ribbon_application",
-      deferredNote = "ribbon names need the ribbon application",
+      disposition = "supported",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -3673,9 +3699,9 @@ return {
     },
     [483] = {
       name = "ScrCmd_GetEVTotal",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "EV total queries need the remaining mon application surface",
+      classification = "continue_same_tick",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4078,6 +4104,9 @@ return {
     },
     [532] = {
       name = "ScrCmd_CheckCoinsImmediate",
+      classification = "continue_same_tick",
+      feature = "coins",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 4,
@@ -4085,6 +4114,9 @@ return {
     },
     [533] = {
       name = "ScrCmd_CheckGiveCoins",
+      classification = "continue_same_tick",
+      feature = "coins",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4367,12 +4399,18 @@ return {
     },
     [569] = {
       name = "ScrCmd_TakeCoinsVar",
+      classification = "continue_same_tick",
+      feature = "coins",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
     },
     [570] = {
       name = "ScrCmd_CheckCoinsVar",
+      classification = "continue_same_tick",
+      feature = "coins",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5024,9 +5062,9 @@ return {
     },
     [657] = {
       name = "ScrCmd_StatJudge",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "stat judging needs the judge application",
+      classification = "continue_same_tick",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5036,9 +5074,9 @@ return {
     },
     [658] = {
       name = "ScrCmd_BufferStatName",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "stat-name buffers need the remaining mon application surface",
+      classification = "continue_same_tick",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -5132,9 +5170,9 @@ return {
     },
     [670] = {
       name = "ScrCmd_GetHiddenPowerType",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "Hidden Power queries need the remaining mon application surface",
+      classification = "continue_same_tick",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5957,10 +5995,9 @@ return {
     },
     [781] = {
       name = "ScrCmd_KenyaCheckPartyOrMailbox",
-      feature = "mons",
-      disposition = "deferred",
-      deferredReason = "mail",
-      deferredNote = "mailbox checks need the mailbox structures and flows",
+      classification = "continue_same_tick",
+      feature = "mail",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
@@ -6067,6 +6104,9 @@ return {
     },
     [793] = {
       name = "ScrCmd_BankTransaction",
+      classification = "native_wait",
+      feature = "bank",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -6074,6 +6114,9 @@ return {
     },
     [794] = {
       name = "ScrCmd_CheckBankBalance",
+      classification = "continue_same_tick",
+      feature = "bank",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 4,
@@ -6081,6 +6124,9 @@ return {
     },
     [795] = {
       name = "ScrCmd_ShowSavingsBox",
+      classification = "continue_same_tick",
+      feature = "bank",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -6088,10 +6134,16 @@ return {
     },
     [796] = {
       name = "ScrCmd_HideSavingsBox",
+      classification = "continue_same_tick",
+      feature = "bank",
+      disposition = "supported",
       widths = {},
     },
     [797] = {
       name = "ScrCmd_UpdateSavingsBox",
+      classification = "continue_same_tick",
+      feature = "bank",
+      disposition = "supported",
       widths = {},
     },
     [798] = {
@@ -6382,6 +6434,9 @@ return {
     },
     [838] = {
       name = "ScrCmd_BankOrWalletIsFull",
+      classification = "continue_same_tick",
+      feature = "bank",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,

@@ -3,21 +3,23 @@
 -- coordinate with a type selector, repaints it only on an explicit update, and
 -- deletes the window on hide (src/overlay_22.c::ScrCmd_ShowPointsBox/
 -- ScrCmd_UpdatePointsBox and src/field/script_menu.c::PointsBox_New/
--- PointsBox_Update). Type 1 is the battle-point balance this port owns: bank
--- 191 message 220 is "${STRVAR_1 53, 0, 0} BP", and
--- PointsBox_Update buffers the balance into format field 0 with
--- BufferIntegerAsString(msgFmt, 0, value, 5, PRINTING_MODE_RIGHT_ALIGN, TRUE)
--- before it right-aligns the expanded 80-pixel row. The box owns presentation
--- state only: it borrows the live wallet for the displayed balance and never
--- stores a second one. Pure presentation state, no love dependency; the field
--- draw path renders the snapshot.
+-- PointsBox_Update). Each source type reads its own canonical wallet: type 0
+-- the saved Game Corner coins (bank 191 message 193, "${STRVAR_1 54, 0, 0}
+-- Coins"), type 1 the saved Battle Points (message 220, "${STRVAR_1 53, 0,
+-- 0} BP") and every other type the saved Athlete Points (message 223,
+-- "${STRVAR_1 54, 0, 0}P"). PointsBox_Update buffers the balance into format
+-- field 0 with BufferIntegerAsString(msgFmt, 0, value, 5,
+-- PRINTING_MODE_RIGHT_ALIGN, TRUE) before it right-aligns the expanded
+-- 80-pixel row. The box owns presentation state only: it borrows the live
+-- wallets for the displayed balance and never stores a second one. Pure
+-- presentation state, no love dependency; the field draw path renders the
+-- snapshot.
 
 local Errors = require("libs.errors.src.Errors")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local ScriptErrors = require("libs.script.src.errors")
 
 local MESSAGE_BANK = 191
-local VALUE_MESSAGE = 220
 -- src/pm_string.c::String16_FormatInteger fills the five-cell right-aligned
 -- field with narrow spaces, so a low balance keeps five character cells of
 -- leading blanks rather than zeros.
@@ -27,14 +29,17 @@ local WIDTH_TILES = 10
 local HEIGHT_TILES = 2
 
 -- The source's `enum PointsBoxType`: 0 coins, 1 battle points, 2 athlete
--- points. This window owns the battle-point row; the coin and athlete rows
--- belong to the features that own those wallets.
+-- points. Every other selector collapses onto the athlete row, because the
+-- source's row lookup answers the coin and battle-point rows by name and the
+-- athlete row otherwise.
 local BATTLE_POINTS_TYPE = 1
+local COIN_TYPE = 0
 local VALUE_MARKER = FieldMessageText.STRVAR_1 + 53
+local ATHLETE_VALUE_MARKER = FieldMessageText.STRVAR_1 + 54
 
 ---@class FieldPointsBox
 ---@field private _messages table<string, unknown>? the field message provider
----@field private _wallet table<string, unknown>? borrowed live battle-point owner
+---@field private _wallets table<string, unknown> borrowed live wallets by role
 ---@field private _state FieldPointsBox.Snapshot? visible window state; nil when closed
 local FieldPointsBox = {}
 FieldPointsBox.__index = FieldPointsBox
@@ -42,6 +47,7 @@ FieldPointsBox.__index = FieldPointsBox
 FieldPointsBox.WIDTH = WIDTH_TILES * TILE_SIZE
 FieldPointsBox.HEIGHT = HEIGHT_TILES * TILE_SIZE
 FieldPointsBox.BATTLE_POINTS_TYPE = BATTLE_POINTS_TYPE
+FieldPointsBox.COIN_TYPE = COIN_TYPE
 
 ---@class FieldPointsBox.Snapshot
 ---@field visible boolean
@@ -62,34 +68,43 @@ FieldPointsBox.BATTLE_POINTS_TYPE = BATTLE_POINTS_TYPE
 ---@class FieldPointsBox.Wallet
 ---@field balance fun(self: FieldPointsBox.Wallet): integer
 
----@param opts { messages: table<string, unknown>?, battlePoints: table<string, unknown>? }
+---@param opts { messages: table<string, unknown>?, coins: table<string, unknown>?, battlePoints: table<string, unknown>?, athletePoints: table<string, unknown>? }
 ---@return FieldPointsBox
 function FieldPointsBox.new(opts)
   assert(type(opts) == "table", "the points box needs its composition options")
   return setmetatable({
     _messages = opts.messages,
-    _wallet = opts.battlePoints,
+    _wallets = {
+      coins = opts.coins,
+      battlePoints = opts.battlePoints,
+      athletePoints = opts.athletePoints,
+    },
     _state = nil,
   }, FieldPointsBox)
 end
 
+-- The source row one selector paints: its canonical wallet role, the message
+-- row and the substitution control that carries the balance.
+---@class FieldPointsBox.Row
+---@field wallet string
+---@field messageId integer
+---@field marker integer
+
 ---@param valueType unknown
----@return integer
-local function checkType(valueType)
+---@return FieldPointsBox.Row
+local function selectRow(valueType)
   if type(valueType) ~= "number" or valueType % 1 ~= 0 then
     Errors.raise(ScriptErrors.SCRIPT_POINTS_BOX_TYPE_UNSUPPORTED, "the points window needs a source type", {
       valueType = valueType,
     })
   end
-  if valueType ~= BATTLE_POINTS_TYPE then
-    Errors.raise(
-      ScriptErrors.SCRIPT_POINTS_BOX_TYPE_UNSUPPORTED,
-      "this points window owns the battle-point row only",
-      { valueType = valueType }
-    )
+  if valueType == COIN_TYPE then
+    return { wallet = "coins", messageId = 193, marker = ATHLETE_VALUE_MARKER }
   end
-  ---@cast valueType integer
-  return valueType
+  if valueType == BATTLE_POINTS_TYPE then
+    return { wallet = "battlePoints", messageId = 220, marker = VALUE_MARKER }
+  end
+  return { wallet = "athletePoints", messageId = 223, marker = ATHLETE_VALUE_MARKER }
 end
 
 ---@param value unknown
@@ -139,21 +154,22 @@ function FieldPointsBox:_readMessage(messageId)
   return template --[[@as table<string, unknown>]]
 end
 
--- The source value row expands the balance into the message's battle-point
--- marker as a five-cell right-aligned field. A template without that marker
--- has no field for the balance, so it faults instead of printing the
--- template's glyphs as the amount.
+-- The source value row expands the balance into that row's own marker as a
+-- five-cell right-aligned field. A template without the marker has no field
+-- for the balance, so it faults instead of printing the template's glyphs as
+-- the amount.
 ---@param template table<string, unknown>
+---@param marker integer
 ---@param balance integer
 ---@return string valueText, string text
-local function expandValueRow(template, balance)
+local function expandValueRow(template, marker, balance)
   local valueText = string.format("%" .. VALUE_DIGITS .. "d", balance)
   local parts = {}
   local substituted = false
   local tokens = template.tokens --[[@as { kind: string?, control: integer?, text: string? }[] ]]
   assert(type(tokens) == "table", "the points window value message carries tokens")
   for _, token in ipairs(tokens) do
-    if token.kind == "substitution" and token.control == VALUE_MARKER then
+    if token.kind == "substitution" and token.control == marker then
       parts[#parts + 1] = valueText
       substituted = true
     elseif token.kind == "glyph" and type(token.text) == "string" then
@@ -163,26 +179,27 @@ local function expandValueRow(template, balance)
   if not substituted then
     Errors.raise(
       ScriptErrors.SCRIPT_POINTS_BOX_MESSAGE_INVALID,
-      "the points value message carries no battle-point marker",
+      "the points value message carries no balance marker",
       { bankId = template.bankId, messageId = template.messageId }
     )
   end
   return valueText, table.concat(parts)
 end
 
+---@param walletRole string
 ---@return integer
-function FieldPointsBox:_liveBalance()
-  local wallet = self._wallet
+function FieldPointsBox:_liveBalance(walletRole)
+  local wallet = self._wallets[walletRole]
   if type(wallet) ~= "table" then
-    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "the points window requires the live wallet", {})
+    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "the points window requires the live " .. walletRole .. " wallet", {})
   end
   ---@cast wallet FieldPointsBox.Wallet
   if type(wallet.balance) ~= "function" then
-    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "the points window requires the live wallet", {})
+    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "the points window requires the live " .. walletRole .. " wallet", {})
   end
   local balance = wallet:balance()
   if type(balance) ~= "number" then
-    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "the points window requires the live wallet", {})
+    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "the points window requires the live " .. walletRole .. " wallet", {})
   end
   return balance
 end
@@ -192,17 +209,17 @@ end
 ---@param tileX integer script value operand
 ---@param tileY integer script value operand
 function FieldPointsBox:show(valueType, tileX, tileY)
-  local kind = checkType(valueType)
+  local row = selectRow(valueType)
   if self._state ~= nil then
     Errors.raise(ScriptErrors.SCRIPT_POINTS_BOX_WINDOW_STATE, "the points window is already open", {
-      valueType = kind,
+      valueType = valueType,
     })
   end
   local tileColumn = sourceTile(tileX, "column")
   local tileRow = sourceTile(tileY, "row")
-  local template = self:_readMessage(VALUE_MESSAGE)
-  local balance = self:_liveBalance()
-  local valueText, text = expandValueRow(template, balance)
+  local template = self:_readMessage(row.messageId)
+  local balance = self:_liveBalance(row.wallet)
+  local valueText, text = expandValueRow(template, row.marker, balance)
   self._state = {
     visible = true,
     tileX = tileColumn,
@@ -217,16 +234,16 @@ end
 -- while the window is open never reach the drawn snapshot.
 ---@param valueType integer raw source type byte
 function FieldPointsBox:update(valueType)
-  local kind = checkType(valueType)
+  local row = selectRow(valueType)
   local state = self._state
   if state == nil then
     Errors.raise(ScriptErrors.SCRIPT_POINTS_BOX_WINDOW_STATE, "the points window is not open", {
-      valueType = kind,
+      valueType = valueType,
     })
   end
-  local template = self:_readMessage(VALUE_MESSAGE)
-  local balance = self:_liveBalance()
-  local valueText, text = expandValueRow(template, balance)
+  local template = self:_readMessage(row.messageId)
+  local balance = self:_liveBalance(row.wallet)
+  local valueText, text = expandValueRow(template, row.marker, balance)
   state.displayedValue = balance
   state.valueText = valueText
   state.text = text

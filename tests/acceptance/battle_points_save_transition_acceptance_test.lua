@@ -123,6 +123,9 @@ local function previousEnvelope(captured)
   local legacy = deepCopy(captured)
   legacy.schema = PREVIOUS_GAME_SCHEMA
   legacy.battlePoints = nil
+  -- The previous envelope predates the saved coin balance too, so the
+  -- fabricated predecessor carries no coin field.
+  legacy.playerData.profile.coins = nil
   legacy.gameStats.schema = PREVIOUS_STATS_SCHEMA
   legacy.gameStats.stateVersion = PREVIOUS_STATS_STATE_VERSION
   legacy.gameStats.battlePointsReceived = nil

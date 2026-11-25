@@ -163,6 +163,12 @@ function FieldSaveCoordinator:_capture(allowMenu, endingOwner)
   if hostIsActive(runtime) then
     return nil, "Save deferred: a mart transaction is active"
   end
+  -- The bank owns the field from its amount screen's open until the transfer
+  -- closes: a record captured inside it could describe a half-published move.
+  local bankHost = runtime.bankHost
+  if bankHost ~= nil and bankHost:isActive() then
+    return nil, "Save deferred: a bank transfer is active"
+  end
   local kurtBoxHost = runtime.kurtBoxHost
   if kurtBoxHost ~= nil and kurtBoxHost:isActive() then
     return nil, "Save deferred: Kurt's Apricorn selector is active"

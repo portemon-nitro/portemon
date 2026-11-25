@@ -653,6 +653,13 @@ DerivedAssetContract.pokemonCare = {
   reminderSchema = "g4-pokemon-care-reminder-v1",
 }
 
+-- The Mom bank keypad: the source number-entry screen compiled from the
+-- a/2/3/6 BG and sprite resources plus its three bank-196 button labels.
+DerivedAssetContract.bank = {
+  cacheFormat = "bank-cache-v1",
+  schema = "g4-bank-presentation-v1",
+}
+
 DerivedAssetContract.mart = {
   cacheFormat = "mart-cache-v1",
   catalogSchema = "g4-mart-catalog-v1",

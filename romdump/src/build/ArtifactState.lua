@@ -65,6 +65,9 @@ ArtifactState.KINDS = {
   ending = true,
   ["follower-interactions"] = true,
   mart = true,
+  -- The Mom bank keypad: one selector-free bundle carrying the composited
+  -- number-entry layer, its sprite atlas and the button labels.
+  bank = true,
   bag = true,
   ["move-icons"] = true,
   ["apricorn-box"] = true,

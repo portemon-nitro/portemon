@@ -4533,6 +4533,119 @@ HANDLERS.battle_points_check = function(node, run)
   semanticsFor(run).writeRef(node.result, affordable and 1 or 0, run)
   return Runtime.OUTCOME_CONTINUE
 end
+-- The saved Game Corner wallet capability the source coin commands borrow from
+-- the composed field platform: the generic runtime knows only these
+-- operations, while the live balance and its source u16 arithmetic stay with
+-- the injected owner.
+---@class ScriptCoinsService
+---@field balance fun(self: ScriptCoinsService): integer
+---@field give fun(self: ScriptCoinsService, amount: integer)
+---@field take fun(self: ScriptCoinsService, amount: integer)
+---@field canGive fun(self: ScriptCoinsService, amount: integer): boolean
+-- Source coin commands (src/overlay_22.c): every amount is evaluated before the
+-- wallet owner is called, a check writes its 0/1 answer instead of moving the
+-- balance, and all of them return in the same tick. TakeCoinsVar reads its
+-- amount through ScriptGetVar, so one variable may be the amount and the
+-- result of the same command. The main chunk is at LuaJIT's local budget, so
+-- the handlers live in a block.
+do
+  local function handleCoinRead(node, run)
+    local coins = requireService(run, "coins") --[[@as ScriptCoinsService]]
+    semanticsFor(run).writeRef(node.result, coins:balance(), run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  local function handleCoinChange(node, run)
+    local amount = semanticsFor(run).evaluateValue(node.amount, run)
+    local coins = requireService(run, "coins") --[[@as ScriptCoinsService]]
+    if node.action == "give" then
+      coins:give(amount)
+    else
+      coins:take(amount)
+    end
+    return Runtime.OUTCOME_CONTINUE
+  end
+  local function handleCoinCheck(node, run)
+    local amount = semanticsFor(run).evaluateValue(node.amount, run)
+    local coins = requireService(run, "coins") --[[@as ScriptCoinsService]]
+    local answer
+    if node.action == "can_give" then
+      answer = coins:canGive(amount)
+    else
+      answer = coins:balance() >= amount
+    end
+    semanticsFor(run).writeRef(node.result, answer and 1 or 0, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.coin_read = handleCoinRead
+  HANDLERS.coin_change = handleCoinChange
+  HANDLERS.coin_check = handleCoinCheck
+end
+-- The Pokéathlon Athlete Point wallet capability: the same injected owner the
+-- Pokéathlon Dome prices read, exposed as its own two script operations.
+---@class ScriptAthletePointsService
+---@field balance fun(self: ScriptAthletePointsService): integer
+---@field give fun(self: ScriptAthletePointsService, amount: integer): boolean
+---@field take fun(self: ScriptAthletePointsService, amount: integer): boolean
+HANDLERS.athlete_points_change = function(node, run)
+  local amount = semanticsFor(run).evaluateValue(node.amount, run)
+  local wallet = requireService(run, "athletePoints") --[[@as ScriptAthletePointsService]]
+  if node.action == "give" then
+    wallet:give(amount)
+  else
+    wallet:take(amount)
+  end
+  return Runtime.OUTCOME_CONTINUE
+end
+HANDLERS.athlete_points_check = function(node, run)
+  local amount = semanticsFor(run).evaluateValue(node.amount, run)
+  local wallet = requireService(run, "athletePoints") --[[@as ScriptAthletePointsService]]
+  local affordable = wallet:balance() >= amount
+  semanticsFor(run).writeRef(node.result, affordable and 1 or 0, run)
+  return Runtime.OUTCOME_CONTINUE
+end
+-- The transient savings window and the bank commands: the window shares the
+-- money box's actions, and the bank transfer blocks on its own modal task while
+-- the two balance queries answer in the same tick. ScrCmd_BankOrWalletIsFull
+-- yields the next tick even though its query is synchronous.
+---@class ScriptBankService
+---@field savingsBox table<string, unknown>
+---@field open fun(self: ScriptBankService): boolean
+---@field savings fun(self: ScriptBankService): integer
+---@field wallet fun(self: ScriptBankService): integer
+---@field isFull fun(self: ScriptBankService, kind: string): boolean
+do
+  HANDLERS.savings_box = function(node, run)
+    local bank = requireService(run, "bank") --[[@as ScriptBankService]]
+    local box = assert(bank.savingsBox, "the bank service carries the savings window")
+    if node.action == "show" then
+      local tileX = semanticsFor(run).evaluateValue(node.tileX, run)
+      local tileY = semanticsFor(run).evaluateValue(node.tileY, run)
+      box:show(tileX, tileY)
+    elseif node.action == "update" then
+      box:update()
+    else
+      box:hide()
+    end
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.bank_transaction = function(node, run)
+    requireForeground(run, "bank_transaction")
+    return blockOnTask(run, "bank_transaction", { mode = node.mode }, node.result)
+  end
+  HANDLERS.bank_balance_check = function(node, run)
+    local amount = semanticsFor(run).evaluateValue(node.amount, run)
+    local bank = requireService(run, "bank") --[[@as ScriptBankService]]
+    local savings = bank:savings()
+    semanticsFor(run).writeRef(node.result, savings >= amount and 1 or 0, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.bank_overflow_check = function(node, run)
+    local bank = requireService(run, "bank") --[[@as ScriptBankService]]
+    local full = bank:isFull(node.action == 0 and "bank" or "wallet")
+    semanticsFor(run).writeRef(node.result, full and 1 or 0, run)
+    return Runtime.OUTCOME_YIELD_TICK
+  end
+end
 -- ScrCmd_ShowPointsBox/HidePointsBox/UpdatePointsBox: the type selector is a
 -- raw source byte, so it reaches the owner as the value the lowering read.
 HANDLERS.points_box = function(node, run)
@@ -4547,6 +4660,120 @@ HANDLERS.points_box = function(node, run)
     wallet:hideBox()
   end
   return Runtime.OUTCOME_CONTINUE
+end
+-- The specialty-NPC query family (src/scrcmd_size_record.c,
+-- src/scrcmd_party.c, src/field/scrcmd_pokemon_misc.c, src/scrcmd_strbuf.c):
+-- every operand is evaluated before the injected leaf answers, buffered display
+-- names are resolved to literals in the command's own tick, and the size-record
+-- comparison's source quirk -- an equal height returns TRUE without writing the
+-- result, so the script yields a tick -- is preserved. The main chunk is at
+-- LuaJIT's local budget, so these handlers live in a block.
+---@class ScriptNpcServices
+---@field sizeCompare fun(self: ScriptNpcServices, slot0: integer): string
+---@field sizeRecordUpdate fun(self: ScriptNpcServices, slot0: integer)
+---@field monSizeText fun(self: ScriptNpcServices, slot0: integer): { whole: string, fraction: string }
+---@field recordSizeText fun(self: ScriptNpcServices, speciesId: integer): { whole: string, fraction: string }
+---@field monHasRibbon fun(self: ScriptNpcServices, slot0: integer, ribbonId: integer): boolean
+---@field ribbonName fun(self: ScriptNpcServices, ribbonId: integer): string
+---@field evTotal fun(self: ScriptNpcServices, slot0: integer): integer
+---@field kenyaCheck fun(self: ScriptNpcServices, slot0: integer, exact: boolean): boolean
+---@field kenyaCheckPartyOrMailbox fun(self: ScriptNpcServices): boolean
+---@field statJudge fun(self: ScriptNpcServices, slot0: integer): { total: integer, messageId: integer, highest: integer }
+---@field statJudgeMessageText fun(self: ScriptNpcServices, messageId: integer): string
+---@field statName fun(self: ScriptNpcServices, statId: integer): string
+---@field hiddenPowerType fun(self: ScriptNpcServices, slot0: integer): integer
+do
+  local function npcFor(run)
+    return requireService(run, "npcServices") --[[@as ScriptNpcServices]]
+  end
+  -- Buffered display text is resolved in the command's own tick: the message
+  -- that reads it follows later and must observe the value the command wrote.
+  local function writeNpcBuffer(run, slot, text)
+    if type(slot) ~= "number" or text == nil then
+      return
+    end
+    run.instance.textArgs[slot] = { text = "literal_text", value = text }
+  end
+  local function writeSizeBuffers(run, wholeSlot, fractionSlot, size)
+    writeNpcBuffer(run, wholeSlot, size.whole)
+    writeNpcBuffer(run, fractionSlot, size.fraction)
+  end
+  HANDLERS.size_record_compare = function(node, run)
+    local slot0 = semanticsFor(run).evaluateValue(node.slot, run)
+    local comparison = npcFor(run):sizeCompare(slot0)
+    if comparison == "equal" then
+      -- ScrCmd_SizeRecordCompare returns before writing its result when the
+      -- record and the mon are the same height: the script yields one tick.
+      return Runtime.OUTCOME_YIELD_TICK
+    end
+    semanticsFor(run).writeRef(node.result, comparison == "larger" and 2 or 0, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.size_record_update = function(node, run)
+    npcFor(run):sizeRecordUpdate(semanticsFor(run).evaluateValue(node.slot, run))
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.buffer_mon_size = function(node, run)
+    local wholeSlot = semanticsFor(run).evaluateValue(node.wholeBuffer, run)
+    local fractionSlot = semanticsFor(run).evaluateValue(node.fractionBuffer, run)
+    local slot0 = semanticsFor(run).evaluateValue(node.slot, run)
+    writeSizeBuffers(run, wholeSlot, fractionSlot, npcFor(run):monSizeText(slot0))
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.buffer_record_size = function(node, run)
+    local wholeSlot = semanticsFor(run).evaluateValue(node.wholeBuffer, run)
+    local fractionSlot = semanticsFor(run).evaluateValue(node.fractionBuffer, run)
+    local speciesId = semanticsFor(run).evaluateValue(node.species, run)
+    writeSizeBuffers(run, wholeSlot, fractionSlot, npcFor(run):recordSizeText(speciesId))
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.mon_has_ribbon = function(node, run)
+    local slot0 = semanticsFor(run).evaluateValue(node.slot, run)
+    local ribbonId = semanticsFor(run).evaluateValue(node.ribbon, run)
+    local has = npcFor(run):monHasRibbon(slot0, ribbonId)
+    semanticsFor(run).writeRef(node.result, has and 1 or 0, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.buffer_ribbon_name = function(node, run)
+    local ribbonId = semanticsFor(run).evaluateValue(node.ribbon, run)
+    writeNpcBuffer(run, node.buffer, npcFor(run):ribbonName(ribbonId))
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.ev_total = function(node, run)
+    local slot0 = semanticsFor(run).evaluateValue(node.slot, run)
+    semanticsFor(run).writeRef(node.result, npcFor(run):evTotal(slot0), run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.kenya_check = function(node, run)
+    local slot0 = semanticsFor(run).evaluateValue(node.slot, run)
+    local held = npcFor(run):kenyaCheck(slot0, node.exact ~= 0)
+    semanticsFor(run).writeRef(node.result, held and 1 or 0, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.kenya_check_party = function(node, run)
+    local found = npcFor(run):kenyaCheckPartyOrMailbox()
+    semanticsFor(run).writeRef(node.result, found and 1 or 0, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.stat_judge = function(node, run)
+    local slot0 = semanticsFor(run).evaluateValue(node.slot, run)
+    local judge = npcFor(run):statJudge(slot0)
+    local semantics = semanticsFor(run)
+    semantics.writeRef(node.total, judge.total, run)
+    semantics.writeRef(node.message, judge.messageId, run)
+    semantics.writeRef(node.highest, judge.highest, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.buffer_stat_name = function(node, run)
+    local statId = semanticsFor(run).evaluateValue(node.stat, run)
+    writeNpcBuffer(run, node.buffer, npcFor(run):statName(statId))
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.hidden_power_type = function(node, run)
+    local slot0 = semanticsFor(run).evaluateValue(node.slot, run)
+    semanticsFor(run).writeRef(node.result, npcFor(run):hiddenPowerType(slot0), run)
+    return Runtime.OUTCOME_CONTINUE
+  end
 end
 HANDLERS.open_message = handleOpenMessage
 HANDLERS.signpost_direction = handleSignpostDirection

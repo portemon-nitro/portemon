@@ -256,6 +256,64 @@ function NpcTradeService:createKenyaMail()
   return self:kenyaMailFor(mon)
 end
 
+-- Mail_Compare (src/mail.c): equal author identity, stationery type, form
+-- flags, author name, the three mon icons and the three message lines. An
+-- absent or unwritten letter never matches the authored reference.
+---@param reference table<string, unknown> the authored reference letter
+---@param mail table<string, unknown>? the letter a party mon or mailbox slot holds
+---@return boolean
+function NpcTradeService:mailMatches(reference, mail)
+  if type(reference) ~= "table" or type(mail) ~= "table" or next(mail) == nil then
+    return false
+  end
+  if reference.type ~= mail.type then
+    return false
+  end
+  local leftAuthor, rightAuthor = reference.author, mail.author
+  if type(leftAuthor) ~= "table" or type(rightAuthor) ~= "table" then
+    return false
+  end
+  if
+    leftAuthor.trainerId ~= rightAuthor.trainerId
+    or leftAuthor.name ~= rightAuthor.name
+    or leftAuthor.gender ~= rightAuthor.gender
+    or leftAuthor.language ~= rightAuthor.language
+    or leftAuthor.game ~= rightAuthor.game
+  then
+    return false
+  end
+  local leftIcons, rightIcons = reference.icons, mail.icons
+  local leftLines, rightLines = reference.lines, mail.lines
+  if type(leftIcons) ~= "table" or type(rightIcons) ~= "table" then
+    return false
+  end
+  if type(leftLines) ~= "table" or type(rightLines) ~= "table" then
+    return false
+  end
+  for index = 1, 3 do
+    if leftIcons[index] ~= rightIcons[index] then
+      return false
+    end
+    local leftLine, rightLine = leftLines[index], rightLines[index]
+    if type(leftLine) ~= "table" or type(rightLine) ~= "table" then
+      return false
+    end
+    if leftLine.template ~= rightLine.template then
+      return false
+    end
+    local leftWords, rightWords = leftLine.words, rightLine.words
+    if type(leftWords) ~= "table" or type(rightWords) ~= "table" or #leftWords ~= #rightWords then
+      return false
+    end
+    for word = 1, #leftWords do
+      if leftWords[word] ~= rightWords[word] then
+        return false
+      end
+    end
+  end
+  return true
+end
+
 -- NPCTrade_MakeAndGiveLoanMon: the loaned record is created at the source level
 -- with the map argument's section as its meeting memo, registered in the Dex,
 -- appended to the party, and -- for the Kenya loan -- given its letter in the

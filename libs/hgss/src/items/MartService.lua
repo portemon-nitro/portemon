@@ -393,6 +393,72 @@ function MartService:cardPrefix()
   return 27
 end
 
+-- The Athlete Point wallet: the one saved balance the Pokéathlon Dome prices
+-- read. Its script operations take the requested amount as a source u16
+-- operand and clamp the result into 0..99999 without wrapping
+-- (src/overlay_22.c::ScrCmd_GiveAthletePoints/ScrCmd_TakeAthletePoints and
+-- src/pokeathlon/pokeathlon_save.c::PokeathlonSave_AddAthletePoints/
+-- PokeathlonSave_SubAthletePoints). A debit hands out no item: the script
+-- drives the Bag through its own commands.
+local MAX_ATHLETE_POINTS = 99999
+local MAX_ATHLETE_AMOUNT = 0xFFFF
+
+MartService.MAX_ATHLETE_POINTS = MAX_ATHLETE_POINTS
+
+---@param amount unknown
+---@return integer
+local function checkAthleteAmount(amount)
+  assert(
+    integer(amount, 0, MAX_ATHLETE_AMOUNT),
+    "an Athlete Point amount must be an unsigned 16-bit source operand"
+  )
+  return amount
+end
+
+-- The settled saved balance, read through the same copy the capture exposes.
+---@return integer
+function MartService:athletePoints()
+  return self._bucket.athletePoints
+end
+
+-- Only one owner writes the wallet at a time: a live shop session quotes the
+-- balance it opened with, so a direct script write refuses until it closes.
+---@param direction "add"|"subtract"
+---@param amount integer
+---@return boolean whether the balance moved
+function MartService:_writeAthletePoints(direction, amount)
+  local requested = checkAthleteAmount(amount)
+  if self._active ~= nil and not self._active.closed then
+    return false
+  end
+  local current = self._bucket.athletePoints
+  local next
+  if direction == "add" then
+    next = math.min(MAX_ATHLETE_POINTS, current + requested)
+  else
+    next = math.max(0, current - requested)
+  end
+  if next == current then
+    return false
+  end
+  local candidate = copy(self._bucket)
+  candidate.athletePoints = next
+  publishApricornCandidate(self, candidate)
+  return true
+end
+
+---@param amount integer
+---@return boolean
+function MartService:giveAthletePoints(amount)
+  return self:_writeAthletePoints("add", amount)
+end
+
+---@param amount integer
+---@return boolean
+function MartService:takeAthletePoints(amount)
+  return self:_writeAthletePoints("subtract", amount)
+end
+
 local function ownedCount(service, entry)
   local target = entry.destination
   if target.kind == "bag" then

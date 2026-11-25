@@ -344,6 +344,7 @@ local FIELD_RUNTIME_JOBS = {
   "pokedex-data:global",
   "easy-chat-data:global",
   "mart:global",
+  "bank:global",
   "summary:global",
   "spawns:global",
   "starter-choice:global",
@@ -1573,6 +1574,21 @@ local function validateApricornBox(check)
   return ApricornBoxAssetCache.isReady(check.cacheFs, check.marker)
 end
 
+local function executeBank(artifact, context)
+  local BankAssetCompiler = require("romdump.src.digest.ui.BankAssetCompiler")
+  local BankCacheWriter = require("romdump.src.digest.ui.BankCacheWriter")
+  local romFs = assert(context.romFs, "bank jobs require a source reader")
+  local bundle = compileOrRaise(function()
+    return BankAssetCompiler.compile(romFs)
+  end, "bank")
+  return BankCacheWriter.stage(artifact, bundle)
+end
+
+local function validateBank(check)
+  local BankCache = require("libs.assets.src.BankCache")
+  return BankCache.isReady(check.cacheFs, check.marker)
+end
+
 local function validateMart(check)
   local MartCache = require("libs.assets.src.MartCache")
   return MartCache.isReady(check.cacheFs, check.marker)
@@ -2222,6 +2238,13 @@ DESCRIPTORS = {
     dependencies = dependenciesMart,
     execute = executeMart,
     validate = validateMart,
+  },
+  -- The Mom bank keypad reads only its own a/2/3/6 archive and bank-196
+  -- labels, so the job carries no cross-family dependency edge.
+  bank = {
+    size = "normal",
+    execute = executeBank,
+    validate = validateBank,
   },
   party = {
     size = "normal",

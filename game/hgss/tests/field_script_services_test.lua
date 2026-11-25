@@ -93,6 +93,7 @@ local function savedPlayer(rivalName)
       gender = 0,
       trainerId = 0,
       money = 3000,
+      coins = 0,
       badges = {},
       nationalDex = false,
       runningShoes = false,
@@ -262,7 +263,14 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
   local double = {
     new = function(opts)
       seen.opts = opts
-      return { scheduler = {}, worldState = {}, blackoutFlow = {}, moneyBox = {}, pointsBox = {} }
+      return {
+        scheduler = {},
+        worldState = {},
+        blackoutFlow = {},
+        moneyBox = {},
+        pointsBox = {},
+        savingsBox = {},
+      }
     end,
   }
   local savedTarget = package.loaded[targetModule]
@@ -381,6 +389,8 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
       itemCatalog = {},
       followingMon = {},
       clock = {},
+      bank = { savingsBox = {} },
+      athletePoints = {},
     })
     Assert.notNil(result.scripts, "composition still yields its scripts")
     local service = assert(seen.opts and seen.opts.trainerCardStars, "composition wires the star service")
@@ -406,6 +416,7 @@ local function capturePlayerRecord(profile)
       gender = profile.gender,
       trainerId = 0,
       money = profile.money,
+      coins = 0,
       badges = {},
       nationalDex = false,
       runningShoes = false,

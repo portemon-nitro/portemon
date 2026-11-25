@@ -528,6 +528,9 @@ function T.tests.previous_save_envelope_keeps_prior_owners_and_an_unknown_first_
     legacy.gameStats.battlePointsReceived = nil
     legacy.gameStats.battlePointsSpent = nil
     legacy.hallOfFame = nil
+    -- The saved coin balance arrives with the later envelope, so this
+    -- predecessor carries no coin field.
+    legacy.playerData.profile.coins = nil
     -- The earlier release never wrote a Day Care bucket or a Battle Point
     -- wallet.
     legacy.daycare = nil
@@ -558,7 +561,7 @@ function T.tests.previous_save_envelope_keeps_prior_owners_and_an_unknown_first_
   local resumedOk, resumedErr = xpcall(function()
     resumed:waitForFieldEntry()
     local restored = settledCapture(resumed, "the migrated journey")
-    Assert.equal(restored.schema, "g4-game-save-v18", "loading an inherited save republishes the current envelope")
+    Assert.equal(restored.schema, "g4-game-save-v19", "loading an inherited save republishes the current envelope")
     Assert.equal(
       restored.sysInfo.firstClearAt,
       false,

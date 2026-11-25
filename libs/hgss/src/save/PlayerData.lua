@@ -1,7 +1,7 @@
 -- The project-owned player profile and gameplay-options model: the single
--- authority for the player name, gender, trainer ID, and money, and for the
--- gameplay text-frame index and text speed that dialogue presentation
--- consumes. Pure domain module: no love dependency and no I/O. Validation
+-- authority for the player name, gender, trainer ID, money and Game Corner
+-- coins, and for the gameplay text-frame index and text speed that dialogue
+-- presentation consumes. Pure domain module: no love dependency and no I/O. Validation
 -- receives the generated field-font charmap and the imported dialogue
 -- frame-index set as context, so encodability and frame resolution are
 -- enforced without touching the filesystem.
@@ -34,6 +34,14 @@ PlayerData.MIN_NAME_GLYPHS = 1
 PlayerData.MAX_NAME_GLYPHS = 7
 PlayerData.MAX_TRAINER_ID = 0xFFFFFFFF
 PlayerData.MAX_MONEY = 999999
+-- The saved Game Corner balance: Coins_Add refuses a grant while the balance
+-- already sits at COIN_MAX, otherwise it stores the sum through a u16
+-- accumulator and caps what it keeps (src/coins.c::Coins_Add,
+-- include/constants/coins.h). The refusal ceiling and the stored cap are the
+-- same source constant.
+PlayerData.MAX_COINS = 50000
+-- The source coin operand is the u16 script halfword Coins_Add receives.
+local MAX_COIN_AMOUNT = 0xFFFF
 -- The rival name a new game carries until the player names the rival.
 PlayerData.DEFAULT_RIVAL_NAME = "Silver"
 
@@ -89,6 +97,23 @@ function PlayerData.validateName(name, owner, charmap)
   end
 end
 
+-- The saved coin balance is a strict present field of the profile: a missing,
+-- non-integral or out-of-range balance is an attributed player-data failure,
+-- never a clamp into a plausible wallet. Saved-record restore and live script
+-- writes share this one rule.
+---@param profile table<string, unknown>
+---@return integer the validated balance
+function PlayerData.validateCoinBalance(profile)
+  assert(type(profile) == "table", "the coin balance belongs to the player profile")
+  local coins = profile.coins
+  if not isFiniteInteger(coins) or coins < 0 or coins > PlayerData.MAX_COINS then
+    Errors.raise(FieldErrors.PLAYER_DATA_COINS_INVALID, "player coins must be an integer in 0..50000", {
+      coins = coins,
+    })
+  end
+  return coins --[[@as integer]]
+end
+
 local function validate(record, context)
   if type(record) ~= "table" then
     Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "player data must be a table", {})
@@ -116,6 +141,7 @@ local function validate(record, context)
       money = money,
     })
   end
+  local coins = PlayerData.validateCoinBalance(profile)
   if type(profile.nationalDex) ~= "boolean" then
     Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "player nationalDex must be a boolean", {
       nationalDex = profile.nationalDex,
@@ -169,6 +195,7 @@ local function validate(record, context)
       gender = profile.gender,
       trainerId = trainerId,
       money = money,
+      coins = coins,
       badges = badges,
       nationalDex = profile.nationalDex,
       runningShoes = profile.runningShoes,
@@ -362,6 +389,74 @@ end
 function PlayerData.visibleTrainerId(trainerId)
   assert(isFiniteInteger(trainerId) and trainerId >= 0 and trainerId <= PlayerData.MAX_TRAINER_ID)
   return trainerId % 65536
+end
+
+-- The saved Game Corner wallet: the coin balance beside the money on the one
+-- live profile. The source keeps it in a u16 and every script operand is a
+-- u16 amount, so a grant stores `(coins + amount) % 65536` and then caps at
+-- MAX_COINS, while the affordability query compares the unwrapped u32 sum. A
+-- debit refuses an insufficient balance and never touches the money.
+
+---@param profile table<string, unknown>
+---@return integer
+function PlayerData.coinBalance(profile)
+  assert(type(profile) == "table", "the coin balance reads the live profile")
+  local coins = profile.coins
+  assert(isFiniteInteger(coins), "the live profile carries its coin balance")
+  return coins
+end
+
+-- A source script amount: an integral u16 that the source command can express.
+-- Anything else is refused before arithmetic rather than clamped into a
+-- plausible grant.
+---@param amount unknown
+---@return boolean
+local function isCoinAmount(amount)
+  return isFiniteInteger(amount) and amount >= 0 and amount <= MAX_COIN_AMOUNT
+end
+
+-- Coins_CanAdd: the unwrapped sum has to fit under the cap, so a grant that
+-- would wrap the u16 accumulator is never reported as affordable.
+---@param profile table<string, unknown>
+---@param amount integer
+---@return boolean
+function PlayerData.canGiveCoins(profile, amount)
+  local coins = PlayerData.coinBalance(profile)
+  if not isCoinAmount(amount) then
+    return false
+  end
+  return coins + amount <= PlayerData.MAX_COINS
+end
+
+-- Coins_Add: refuse a full wallet first, then store the u16 sum and cap what
+-- the wallet keeps. Returns whether the balance moved.
+---@param profile table<string, unknown>
+---@param amount integer
+---@return boolean
+function PlayerData.giveCoins(profile, amount)
+  local coins = PlayerData.coinBalance(profile)
+  if not isCoinAmount(amount) then
+    return false
+  end
+  if coins >= PlayerData.MAX_COINS then
+    return false
+  end
+  local stored = (coins + amount) % 65536
+  profile.coins = math.min(PlayerData.MAX_COINS, stored)
+  return true
+end
+
+-- Coins_Subtract: an insufficient balance refuses without mutation.
+---@param profile table<string, unknown>
+---@param amount integer
+---@return boolean
+function PlayerData.takeCoins(profile, amount)
+  local coins = PlayerData.coinBalance(profile)
+  if not isCoinAmount(amount) or coins < amount then
+    return false
+  end
+  profile.coins = coins - amount
+  return true
 end
 
 return PlayerData

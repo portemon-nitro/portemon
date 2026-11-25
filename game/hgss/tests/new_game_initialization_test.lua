@@ -69,6 +69,7 @@ local function finalizedCandidate()
       gender = 0,
       trainerId = 1234,
       money = 3000,
+      coins = 0,
       badges = {},
       nationalDex = false,
       runningShoes = false,

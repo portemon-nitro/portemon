@@ -93,7 +93,11 @@ local function stubRuntime()
   }
 end
 
-local function stubOptions(partySelection, mart)
+-- Every composition needs the Mom bank host and the Athlete Point wallet; the
+-- assertions below name the collaborator each scenario is about.
+local function stubOptions(partySelection, mart, bank, athletePoints)
+  bank = bank or { savingsBox = {} }
+  athletePoints = athletePoints or {}
   local InteractionCache = require("libs.assets.src.field.FollowerInteractionCache")
   local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
   local reactions = {}
@@ -154,6 +158,8 @@ local function stubOptions(partySelection, mart)
     followerReactionTicks = {},
     partySelection = partySelection,
     mart = mart,
+    bank = bank,
+    athletePoints = athletePoints,
   }
 end
 
@@ -162,7 +168,14 @@ function T.compose_threads_the_script_mart_host()
   local double = {
     new = function(opts)
       seen.opts = opts
-      return { scheduler = {}, worldState = {}, blackoutFlow = {}, moneyBox = {}, pointsBox = {} }
+      return {
+        scheduler = {},
+        worldState = {},
+        blackoutFlow = {},
+        moneyBox = {},
+        pointsBox = {},
+        savingsBox = {},
+      }
     end,
   }
   local savedTarget = package.loaded[TARGET_MODULE]
@@ -187,7 +200,14 @@ function T.compose_threads_the_party_selection_host()
   local double = {
     new = function(opts)
       seen.opts = opts
-      return { scheduler = {}, worldState = {}, blackoutFlow = {}, moneyBox = {}, pointsBox = {} }
+      return {
+        scheduler = {},
+        worldState = {},
+        blackoutFlow = {},
+        moneyBox = {},
+        pointsBox = {},
+        savingsBox = {},
+      }
     end,
   }
   local savedTarget = package.loaded[TARGET_MODULE]
@@ -220,7 +240,14 @@ local function drivePichuGift(dexStub, statsStub, monsStub)
   local double = {
     new = function(opts)
       seen.opts = opts
-      return { scheduler = {}, worldState = {}, blackoutFlow = {}, moneyBox = {}, pointsBox = {} }
+      return {
+        scheduler = {},
+        worldState = {},
+        blackoutFlow = {},
+        moneyBox = {},
+        pointsBox = {},
+        savingsBox = {},
+      }
     end,
   }
   local savedTarget = package.loaded[TARGET_MODULE]

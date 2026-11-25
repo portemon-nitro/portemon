@@ -139,8 +139,10 @@ local function earlierEnvelope(captured, schema)
   local legacy = deepCopy(captured)
   legacy.schema = schema
   legacy.daycare = nil
-  -- The wallet arrives with v18; every earlier envelope predates it.
+  -- The wallet arrives with v18 and the saved coin balance with v19; every
+  -- earlier envelope predates both.
   legacy.battlePoints = nil
+  legacy.playerData.profile.coins = nil
   if schema == PREVIOUS_GAME_SCHEMA then
     -- v16 predates custody and the Battle Point wallet, so its own statistics
     -- release carries neither the care counters nor the point counters.

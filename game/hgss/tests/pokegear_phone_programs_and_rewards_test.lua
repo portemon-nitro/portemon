@@ -1655,6 +1655,7 @@ function T.tests.trainer_win_commits_mom_savings_with_the_prize()
       gender = 0,
       trainerId = 1,
       money = 3000,
+      coins = 0,
       badges = {},
       nationalDex = false,
       runningShoes = false,

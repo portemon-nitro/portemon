@@ -455,7 +455,7 @@ local function checkMoneyStep(context, step, path, name)
       )
     end
   end
-  if name ~= "money_box" then
+  if name ~= "money_box" and name ~= "savings_box" then
     checkOperand(step.amount, "amount")
     return
   end
@@ -521,6 +521,115 @@ end
 ---@param step table<string, unknown>
 ---@param path string
 ---@param name string
+-- A source coin amount is a u16 script operand: a literal has to fit the
+-- halfword the source command reads, except CheckCoinsImmediate's own u32
+-- operand, which the source compares as a full word. Values are read through
+-- ScriptGetVar, so a value reference is always legal.
+local function checkCoinStep(context, step, path, name)
+  local function checkAmount(value, limit)
+    if type(value) == "number" then
+      if value % 1 ~= 0 or value < 0 or value > limit then
+        fail(
+          context,
+          ScriptErrors.SCRIPT_SCHEMA_INVALID,
+          fieldPath(path, "amount"),
+          "expected a source coin operand or value reference",
+          { field = "amount", op = name }
+        )
+      end
+      return
+    end
+    if type(value) == "table" and value.value == "var" then
+      return
+    end
+    fail(
+      context,
+      ScriptErrors.SCRIPT_SCHEMA_INVALID,
+      fieldPath(path, "amount"),
+      "expected a source coin operand or value reference",
+      { field = "amount", op = name }
+    )
+  end
+  checkAmount(step.amount, name == "coin_check" and step.action == "balance" and 0xFFFFFFFF or 0xFFFF)
+end
+
+-- The source bank commands name their mode (deposit/withdraw, bank/wallet) as
+-- a raw halfword, and the balance query compares a u32 word.
+local function checkBankStep(context, step, path, name)
+  local function checkMode(value, field)
+    if type(value) ~= "number" or value % 1 ~= 0 or (value ~= 0 and value ~= 1) then
+      fail(
+        context,
+        ScriptErrors.SCRIPT_SCHEMA_INVALID,
+        fieldPath(path, field),
+        "expected the source bank mode or wallet selector",
+        { field = field, op = name }
+      )
+    end
+  end
+  if name == "bank_transaction" then
+    checkMode(step.mode, "mode")
+    return
+  end
+  if name == "bank_overflow_check" then
+    checkMode(step.action, "action")
+    return
+  end
+  local amount = step.amount
+  if type(amount) == "number" then
+    if amount % 1 ~= 0 or amount < 0 or amount > 0xFFFFFFFF then
+      fail(
+        context,
+        ScriptErrors.SCRIPT_SCHEMA_INVALID,
+        fieldPath(path, "amount"),
+        "expected a source bank amount or value reference",
+        { field = "amount", op = name }
+      )
+    end
+    return
+  end
+  if type(amount) == "table" and amount.value == "var" then
+    return
+  end
+  fail(
+    context,
+    ScriptErrors.SCRIPT_SCHEMA_INVALID,
+    fieldPath(path, "amount"),
+    "expected a source bank amount or value reference",
+    { field = "amount", op = name }
+  )
+end
+
+-- A buffered display name names its format field as a raw source byte, and the
+-- script's own name operand is read as a value.
+local function checkBufferSlot(context, step, path, name)
+  local buffer = step.buffer
+  if type(buffer) ~= "number" or buffer % 1 ~= 0 or buffer < 0 or buffer > 255 then
+    fail(
+      context,
+      ScriptErrors.SCRIPT_SCHEMA_INVALID,
+      fieldPath(path, "buffer"),
+      "expected the source format-field byte",
+      { field = "buffer", op = name }
+    )
+  end
+end
+
+-- ScrCmd_KenyaCheck's third operand is a raw source byte that selects the exact
+-- Mail comparison; it is never a script value.
+local function checkKenyaExact(context, step, path, name)
+  local exact = step.exact
+  if type(exact) ~= "number" or exact % 1 ~= 0 or exact < 0 or exact > 255 then
+    fail(
+      context,
+      ScriptErrors.SCRIPT_SCHEMA_INVALID,
+      fieldPath(path, "exact"),
+      "expected the source exact-Mail selector byte",
+      { field = "exact", op = name }
+    )
+  end
+end
+
 local function checkPointsBoxStep(context, step, path, name)
   local hasColumn, hasRow = step.tileX ~= nil, step.tileY ~= nil
   local needsType = step.action == "show" or step.action == "update"
@@ -626,8 +735,18 @@ local function checkStep(context, step, path)
         { kind = step.kind }
       )
     end
-  elseif name == "money_change" or name == "money_check" or name == "money_box" then
+  elseif
+    name == "money_change" or name == "money_check" or name == "money_box" or name == "savings_box"
+  then
     checkMoneyStep(context, step, path, name)
+  elseif name == "coin_change" or name == "coin_check" then
+    checkCoinStep(context, step, path, name)
+  elseif name == "bank_transaction" or name == "bank_overflow_check" or name == "bank_balance_check" then
+    checkBankStep(context, step, path, name)
+  elseif name == "buffer_ribbon_name" or name == "buffer_stat_name" then
+    checkBufferSlot(context, step, path, name)
+  elseif name == "kenya_check" then
+    checkKenyaExact(context, step, path, name)
   elseif name == "points_box" then
     checkPointsBoxStep(context, step, path, name)
   elseif name == "goto_compared" or name == "call_compared" then

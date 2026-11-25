@@ -122,6 +122,37 @@ local function companionScreen(fade, companion, calls)
   return { startFade = startFade, fadeDone = fadeDone, isOpaque = isOpaque, clearIfCurrent = clearIfCurrent }
 end
 
+-- The generated dex height of one species in decimetres, the value
+-- SpeciesGetDexHeight answers for the size-record commands. The reversed dex
+-- banks a Giratina-origin browse leaves behind belong to the dex application;
+-- an NPC query reads the base measurement row the generated catalog carries.
+---@param catalog table<string, unknown>?
+---@return fun(species: string): integer?
+function FieldScriptComposition.dexHeights(catalog)
+  if type(catalog) ~= "table" then
+    return function()
+      return nil
+    end
+  end
+  local profiles = catalog.measurementProfiles
+  local base = type(profiles) == "table" and profiles.base or nil
+  local measurements = type(base) == "table" and base.measurements or nil
+  return function(species)
+    if type(measurements) ~= "table" then
+      return nil
+    end
+    local row = measurements[species]
+    if type(row) ~= "table" then
+      return nil
+    end
+    local height = row.heightDm
+    if type(height) ~= "number" then
+      return nil
+    end
+    return height --[[@as integer]]
+  end
+end
+
 -- Builds the compiled phonebook index behind contact-number resolution:
 -- phonebook number to semantic key and trainer number to phonebook
 -- number. Pure data over the compiled catalog; resolution failures
@@ -826,6 +857,8 @@ function FieldScriptComposition.compose(runtime, options)
     starterChoice = options.starterChoice,
     partySelection = options.partySelection,
     mart = options.mart,
+    bank = assert(options.bank, "the Mom bank host is composed before field scripts"),
+    athletePoints = assert(options.athletePoints, "the Athlete Point wallet is composed before field scripts"),
     travel = options.travel,
     gameStats = runtime.gameStats,
     battlePoints = runtime.battlePoints,
@@ -837,6 +870,10 @@ function FieldScriptComposition.compose(runtime, options)
     monNaming = options.monNaming,
     pokemonCare = options.pokemonCare,
     npcTrade = options.npcTrade,
+    -- The Kenya mailbox scan reads the canonical mailbox when the runtime
+    -- owns one; an isolated script fixture answers the party scan only.
+    mailbox = runtime.mailbox,
+    dexHeights = FieldScriptComposition.dexHeights(runtime.pokedexCatalog),
     moveTutor = options.moveTutor,
     followerTransition = options.followerTransition,
     starterBalls = options.starterBalls,
@@ -895,6 +932,7 @@ function FieldScriptComposition.compose(runtime, options)
   runtime.blackoutFlow = assert(scripts.blackoutFlow)
   runtime.moneyBox = assert(scripts.moneyBox)
   runtime.pointsBox = assert(scripts.pointsBox)
+  runtime.savingsBox = assert(scripts.savingsBox, "the bank composition carries its savings window")
   local function restore()
     if options.loadedGame then
       ScriptSave.restore(options.loadedGame.scripts, scripts.scheduler, 0)

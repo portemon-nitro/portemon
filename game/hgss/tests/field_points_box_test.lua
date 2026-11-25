@@ -8,6 +8,7 @@
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
+local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local FieldPointsBox = require("game.hgss.src.field.FieldPointsBox")
 local FieldScriptSliceFixture = require("tests.support.FieldScriptSliceFixture")
 local ScriptErrors = require("libs.script.src.errors")
@@ -115,28 +116,117 @@ function T.lifecycle_commands_fault_outside_their_one_open_window()
   box:hide()
 end
 
--- This window owns the battle-point row only. The coin and athlete rows belong
--- to the features that own those wallets, so asking for one here is an
+-- This window paints one of the source currency rows, each from its own
+-- canonical wallet: type 0 is the saved Game Corner coins (bank 191 message
+-- 193), type 1 the saved Battle Points (message 220) and every other type the
+-- saved Athlete Points (message 223). A selector that is not an integer is an
 -- attributed fault rather than a plausible number.
-function T.only_the_battle_point_row_is_available_here()
-  local box = pointsBox(200)
-  for _, valueType in ipairs({ 0, 2, 3 }) do
-    Assert.equal(
-      faultCode(function()
-        box:show(valueType, 21, 1)
-      end),
-      ScriptErrors.SCRIPT_POINTS_BOX_TYPE_UNSUPPORTED,
-      "type " .. valueType .. " belongs to another owner"
-    )
+
+-- One synthetic source row: the balance substitution plus its own suffix.
+---@param messageId integer
+---@param marker integer
+---@param suffix string
+---@return table
+local function valueRow(messageId, marker, suffix)
+  local tokens = {
+    { kind = "substitution", control = FieldMessageText.STRVAR_1 + marker, args = { 0, 0 } },
+  }
+  if suffix ~= "" then
+    tokens[#tokens + 1] = { kind = "glyph", code = 0x02C0, text = suffix, raw = { 0x02C0 } }
   end
-  Assert.isFalse(box:snapshot().visible, "a refused type opens no window")
-  box:show(BATTLE_POINTS_TYPE, 21, 1)
+  tokens[#tokens + 1] = { kind = "eos", raw = { 0xFFFF } }
+  return { bankId = 191, messageId = messageId, text = "$" .. suffix, tokens = tokens }
+end
+
+---@return table a read-only message provider carrying the three currency rows
+local function currencyRows()
+  local rows = {
+    [193] = valueRow(193, 54, " Coins"),
+    [220] = valueRow(220, 53, " BP"),
+    [223] = valueRow(223, 54, "P"),
+  }
+  return {
+    acquireBank = function()
+      return {}
+    end,
+    get = function(_, _bankId, messageId)
+      return rows[messageId]
+    end,
+    releaseBank = function() end,
+  }
+end
+
+---@param opts { coins: integer?, battlePoints: integer?, athletePoints: integer? }
+---@return table, table<string, { value: integer }> the window and its live wallets
+local function currencyPointsBox(opts)
+  local live = {
+    coins = { value = opts.coins or 0 },
+    battlePoints = { value = opts.battlePoints or 0 },
+    athletePoints = { value = opts.athletePoints or 0 },
+  }
+  local function wallet(entry)
+    return {
+      balance = function()
+        return entry.value
+      end,
+    }
+  end
+  local box = FieldPointsBox.new({
+    messages = currencyRows(),
+    coins = wallet(live.coins),
+    battlePoints = wallet(live.battlePoints),
+    athletePoints = wallet(live.athletePoints),
+  })
+  return box, live
+end
+
+function T.the_three_source_currency_rows_each_read_their_own_wallet()
+  local box, live = currencyPointsBox({ coins = 1500, battlePoints = 200, athletePoints = 42000 })
+  box:show(0, 20, 2)
+  local coins = box:snapshot()
+  Assert.equal(coins.displayedValue, 1500, "type 0 paints the saved coins")
+  Assert.equal(coins.valueText, " 1500", "the coin row is right aligned in the same five cells")
+  Assert.equal(coins.text, " 1500 Coins", "the coin row keeps the template's own suffix")
+  box:hide()
+
+  box:show(1, 21, 1)
+  local battlePoints = box:snapshot()
+  Assert.equal(battlePoints.displayedValue, 200, "type 1 paints the saved Battle Points")
+  Assert.equal(battlePoints.valueText, "  200", "the Battle Point row keeps its own cells")
+  Assert.equal(battlePoints.text, "  200 BP", "the Battle Point row keeps the template's own suffix")
+  box:hide()
+
+  box:show(2, 20, 2)
+  local athlete = box:snapshot()
+  Assert.equal(athlete.displayedValue, 42000, "any other type paints the saved Athlete Points")
+  Assert.equal(athlete.valueText, "42000", "a five-digit Athlete Point balance fills the cells")
+  Assert.equal(athlete.text, "42000P", "the Athlete Point row keeps the template's own suffix")
+
+  live.athletePoints.value = 7
+  Assert.equal(box:snapshot().displayedValue, 42000, "no live read reaches the drawn row")
+  box:update(2)
+  Assert.equal(box:snapshot().displayedValue, 7, "an explicit update repaints the current balance")
+  box:hide()
+end
+
+function T.any_other_type_selects_the_athlete_row_and_a_non_integer_type_faults()
+  local box = currencyPointsBox({ coins = 10, battlePoints = 20, athletePoints = 30 })
+  for _, valueType in ipairs({ 2, 3 }) do
+    box:show(valueType, 21, 1)
+    Assert.equal(
+      box:snapshot().displayedValue,
+      30,
+      "type " .. valueType .. " reads the saved Athlete Points"
+    )
+    box:hide()
+  end
+  box:show(1, 21, 1)
   Assert.equal(
     faultCode(function()
-      box:update(0)
+      box:update(0.5)
     end),
     ScriptErrors.SCRIPT_POINTS_BOX_TYPE_UNSUPPORTED,
-    "an update names the row it repaints"
+    "a selector that is not a source type byte faults"
   )
   box:hide()
 end

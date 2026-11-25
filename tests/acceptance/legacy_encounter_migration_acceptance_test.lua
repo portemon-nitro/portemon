@@ -176,6 +176,7 @@ function T.tests.legacy_custom_roamer_survives_migration_without_invented_native
     legacy.hallOfFame = nil
     legacy.daycare = nil
     legacy.battlePoints = nil
+    legacy.playerData.profile.coins = nil
     legacy.gameStats.schema = LEGACY_GAME_STATS_SCHEMA
     legacy.gameStats.stateVersion = LEGACY_GAME_STATS_STATE_VERSION
     legacy.gameStats.leagueWins = nil

@@ -26,6 +26,7 @@ local MapInitScriptController = require("libs.hgss.src.field.MapInitScriptContro
 local FollowerInteractionEngine = require("libs.hgss.src.field.FollowerInteractionEngine")
 local FieldMoveCue = require("game.hgss.src.field.FieldMoveCue")
 local FieldMoneyBox = require("game.hgss.src.field.FieldMoneyBox")
+local FieldNpcServices = require("game.hgss.src.field.FieldNpcServices")
 local FieldPointsBox = require("game.hgss.src.field.FieldPointsBox")
 local FieldFloorWindow = require("game.hgss.src.field.FieldFloorWindow")
 
@@ -393,6 +394,75 @@ function BattlePointsService:hideBox()
   self._box:hide()
 end
 
+-- The saved Game Corner wallet behind the source coin commands. The balance
+-- lives on the one live player profile, so this facade owns no state: it only
+-- presents the profile's own source arithmetic to the script runtime.
+---@class CoinsService
+---@field private _profile table<string, unknown>
+local CoinsService = {}
+CoinsService.__index = CoinsService
+
+---@param profile table<string, unknown>
+---@return CoinsService
+function CoinsService.new(profile)
+  return setmetatable({ _profile = profile }, CoinsService)
+end
+
+---@return integer
+function CoinsService:balance()
+  return PlayerData.coinBalance(self._profile)
+end
+
+---@param amount integer
+---@return boolean
+function CoinsService:give(amount)
+  return PlayerData.giveCoins(self._profile, amount)
+end
+
+---@param amount integer
+---@return boolean
+function CoinsService:take(amount)
+  return PlayerData.takeCoins(self._profile, amount)
+end
+
+---@param amount integer
+---@return boolean
+function CoinsService:canGive(amount)
+  return PlayerData.canGiveCoins(self._profile, amount)
+end
+
+-- The saved Athlete Point wallet behind the source Pokéathlon commands: the
+-- same mart bucket balance the shop prices read, so a script grant and a
+-- Pokéathlon purchase can never disagree.
+---@class AthletePointsService
+---@field private _wallet table<string, unknown>
+local AthletePointsService = {}
+AthletePointsService.__index = AthletePointsService
+
+---@param wallet table<string, unknown> the live mart service
+---@return AthletePointsService
+function AthletePointsService.new(wallet)
+  assert(type(wallet.athletePoints) == "function", "the Athlete Point wallet answers its balance")
+  return setmetatable({ _wallet = wallet }, AthletePointsService)
+end
+
+---@return integer
+function AthletePointsService:balance()
+  return self._wallet:athletePoints()
+end
+
+---@param amount integer
+---@return boolean
+function AthletePointsService:give(amount)
+  return self._wallet:giveAthletePoints(amount)
+end
+
+---@param amount integer
+---@return boolean
+function AthletePointsService:take(amount)
+  return self._wallet:takeAthletePoints(amount)
+end
+
 ---@class FieldScriptsOptions
 ---@field cacheFs CacheFs
 ---@field overrideFs table<string, unknown> read-shaped filesystem for data/scripts/overrides
@@ -438,6 +508,10 @@ end
 ---@field travel table<string, unknown>|nil the durable travel owner for spawn updates (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field gameStats table<string, unknown>|nil the live game-stats owner behind script score events and the Battle Point statistics (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field battlePoints table<string, unknown>|nil the saved Battle Point wallet behind its script commands and window (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field athletePoints table<string, unknown>|nil the saved Athlete Point wallet behind the Pokéathlon commands (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field bank table<string, unknown>|nil the script-owned Mom bank host behind the transfer, savings window and balance queries (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field mailbox table<string, unknown>|nil the canonical mailbox behind the Kenya mailbox scan (absent -> the scan answers the party only)
+---@field dexHeights (fun(species: string): integer?)|nil the generated dex heights behind the size record (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field fieldMoves table<string, unknown>|nil the field-move runtime for task execution (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field fieldMoveAftermath table<string, unknown>|nil the Rock Smash / Headbutt aftermath service (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field sweetScent table<string, unknown>|nil the Sweet Scent host seam for the scent task (absent -> SCRIPT_SERVICE_MISSING on use)
@@ -510,6 +584,7 @@ end
 ---@field blackoutFlow FieldBlackoutFlow?
 ---@field moneyBox FieldMoneyBox the one transient source money window the field draw renders
 ---@field pointsBox FieldPointsBox the one transient points window the field draw renders
+---@field savingsBox FieldSavingsBox? the one transient savings window the field draw renders
 ---@field mapSource RuntimeFieldMap the active runtime map map-scoped script state is bound to
 ---@field propAnimations table<string, unknown>|nil
 ---@field floorWindow FieldFloorWindow the source floor box the field presents and releases
@@ -754,9 +829,32 @@ function FieldScripts.new(opts)
   -- source row; without a wallet no facade is synthesized, so the commands and
   -- the window keep their missing-service fault instead of painting a scratch
   -- balance.
+  -- The window paints whichever source wallet row the script names, so each
+  -- row reads its own canonical owner: the saved coins on the profile, the
+  -- saved Battle Points and the saved Athlete Points.
+  local coinsWallet = nil
+  if opts.profile ~= nil then
+    coinsWallet = {
+      balance = function()
+        return PlayerData.coinBalance(opts.profile --[[@as table<string, unknown>]])
+      end,
+    }
+  end
+  local athletePointsService = nil
+  local athleteWallet = nil
+  if opts.athletePoints ~= nil then
+    athletePointsService = AthletePointsService.new(opts.athletePoints)
+    athleteWallet = {
+      balance = function()
+        return athletePointsService --[[@as AthletePointsService]]:balance()
+      end,
+    }
+  end
   local pointsBox = FieldPointsBox.new({
     messages = opts.messageProvider,
+    coins = coinsWallet,
     battlePoints = opts.battlePoints,
+    athletePoints = athleteWallet,
   })
   local battlePointsService = nil
   if opts.battlePoints ~= nil then
@@ -765,6 +863,62 @@ function FieldScripts.new(opts)
       assert(opts.gameStats, "Battle Point commands need the game-stats owner"),
       pointsBox
     )
+  end
+  local coinsService = nil
+  if opts.profile ~= nil then
+    coinsService = CoinsService.new(opts.profile)
+  end
+  -- The specialty-NPC leaf: the size record, ribbon reads/names, effort-value
+  -- total, Kenya Mail checks, stat judge and Hidden Power type over the live
+  -- party, the NPC trade service and the generated dex and summary data. The
+  -- dex heights and the summary ribbon table are generated artifacts, so both
+  -- resolve lazily: a composition that never runs an NPC query never loads
+  -- them.
+  local summaryManifest = nil
+  local function generatedSummary()
+    if summaryManifest == nil then
+      local SummaryCache = require("libs.assets.src.SummaryCache")
+      summaryManifest = SummaryCache.loadManifest(opts.cacheFs)
+    end
+    return summaryManifest
+  end
+  local npcServices = nil
+  if opts.mons ~= nil then
+    npcServices = FieldNpcServices.new({
+      mons = opts.mons,
+      npcTrade = opts.npcTrade,
+      mailbox = opts.mailbox,
+      world = worldState,
+      dexHeight = function(species)
+        local heights = opts.dexHeights
+        if type(heights) ~= "function" then
+          return nil
+        end
+        return heights(species)
+      end,
+      resolveText = function(bankId, messageId)
+        return scopedMessageText(opts.messageProvider, bankId, messageId)
+      end,
+      isMailItem = function(itemKey)
+        if opts.itemCatalog == nil then
+          return itemKey:find("MAIL", 1, true) ~= nil
+        end
+        local catalog = opts.itemCatalog
+        local ok, item = pcall(catalog.item, catalog, itemKey)
+        return ok and type(item) == "table" and item.pocket == "mail"
+      end,
+      ribbonEntries = function()
+        local manifest = generatedSummary()
+        return assert(manifest.ribbons and manifest.ribbons.entries, "the summary family carries ribbons")
+      end,
+      ribbonNameFor = function(entry)
+        local manifest = generatedSummary()
+        local labels = assert(manifest.text and manifest.text.labels, "the summary family carries text labels")
+        local text = labels[assert(entry.name, "ribbon entries carry their name row")]
+        assert(type(text) == "string" and text ~= "", "the ribbon name resolves display text")
+        return text
+      end,
+    })
   end
 
   -- The generated rival default name is wired only when the runtime knows the
@@ -795,6 +949,7 @@ function FieldScripts.new(opts)
     propAnimations = opts.propAnimations,
     moneyBox = moneyBox,
     pointsBox = pointsBox,
+    savingsBox = opts.bank ~= nil and opts.bank.savingsBox or nil,
     floorWindow = floorWindowHost,
   }, FieldScripts)
   if opts.propAnimations ~= nil then
@@ -902,7 +1057,11 @@ function FieldScripts.new(opts)
       partySelection = opts.partySelection,
       mart = opts.mart,
       money = moneyService,
+      coins = coinsService,
       battlePoints = battlePointsService,
+      athletePoints = athletePointsService,
+      bank = opts.bank,
+      npcServices = npcServices,
       travel = opts.travel,
       gameStats = opts.gameStats,
       fieldMoves = opts.fieldMoves,
@@ -992,15 +1151,18 @@ local function rebindMapContext(self, sourceMap)
 end
 
 -- Rebind the facade and warp source after a map swap (the player and the
--- current map are replaced by the transition). The transient source money and
--- points windows belong to the map that opened them, so a swap closes them
--- exactly once before the destination map publishes.
+-- current map are replaced by the transition). The transient source money,
+-- points and savings windows belong to the map that opened them, so a swap
+-- closes them exactly once before the destination map publishes.
 ---@param player FieldPlayer
 ---@param sourceMap RuntimeFieldMap
 function FieldScripts:onMapSwap(player, sourceMap)
   self.player:setPlayer(player)
   self.moneyBox:dispose()
   self.pointsBox:dispose()
+  if self.savingsBox ~= nil then
+    self.savingsBox:dispose()
+  end
   rebindMapContext(self, sourceMap)
 end
 

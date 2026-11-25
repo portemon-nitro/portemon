@@ -61,6 +61,9 @@ Schema.ENUMS = {
   -- other kinds stay unimplemented rather than named here.
   gym_mechanism = { "violet", "azalea", "ecruteak", "cianwood", "blackthorn", "sinjoh" },
   money_box_action = { "show", "update", "hide" },
+  -- The source coin wallet's two mutations and its two affordability queries.
+  coin_action = { "give", "take" },
+  coin_check_action = { "balance", "can_give" },
   -- The source points window and the Battle Point wallet actions.
   points_box_action = { "show", "update", "hide" },
   battle_points_action = { "give", "take" },
@@ -1107,6 +1110,154 @@ Schema.OPERATIONS = {
   battle_points_check = {
     fields = {
       amount = { type = "scalar_or_value", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  -- The saved Game Corner wallet (src/overlay_22.c::ScrCmd_GetCoinAmount,
+  -- ScrCmd_GiveCoins, ScrCmd_TakeCoins, ScrCmd_CheckCoinsImmediate,
+  -- ScrCmd_CheckGiveCoins, ScrCmd_TakeCoinsVar, ScrCmd_CheckCoinsVar). Every
+  -- amount is a source u16 operand except the immediate check, whose source
+  -- operand is a full u32 word; a result is a written variable.
+  coin_read = {
+    fields = {
+      result = { type = "writable_value", required = true },
+    },
+  },
+  coin_change = {
+    fields = {
+      action = { type = "enum:coin_action", required = true },
+      amount = { type = "scalar_or_value", required = true },
+    },
+  },
+  coin_check = {
+    fields = {
+      action = { type = "enum:coin_check_action", required = true },
+      amount = { type = "scalar_or_value", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  -- The Pokéathlon Athlete Point wallet (src/overlay_22.c): the two mutations
+  -- read a ScriptGetVar amount and the compare writes its answer.
+  athlete_points_change = {
+    fields = {
+      action = { type = "enum:battle_points_action", required = true },
+      amount = { type = "scalar_or_value", required = true },
+    },
+  },
+  athlete_points_check = {
+    fields = {
+      amount = { type = "scalar_or_value", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  -- The specialty-NPC query family (src/scrcmd_size_record.c,
+  -- src/scrcmd_party.c, src/field/scrcmd_pokemon_misc.c, src/scrcmd_strbuf.c):
+  -- the fishing-competition size record, the ribbon reads and names, the effort
+  -- value total, the Kenya Mail checks, the stat judge and the Hidden Power
+  -- type. Buffer operands name the script's format field, so they are values.
+  size_record_compare = {
+    fields = {
+      result = { type = "writable_value", required = true },
+      slot = { type = "scalar_or_value", required = true },
+    },
+  },
+  size_record_update = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+    },
+  },
+  buffer_mon_size = {
+    fields = {
+      wholeBuffer = { type = "scalar_or_value", required = true },
+      fractionBuffer = { type = "scalar_or_value", required = true },
+      slot = { type = "scalar_or_value", required = true },
+    },
+  },
+  buffer_record_size = {
+    fields = {
+      wholeBuffer = { type = "scalar_or_value", required = true },
+      fractionBuffer = { type = "scalar_or_value", required = true },
+      species = { type = "scalar_or_value", required = true },
+    },
+  },
+  mon_has_ribbon = {
+    fields = {
+      result = { type = "writable_value", required = true },
+      slot = { type = "scalar_or_value", required = true },
+      ribbon = { type = "scalar_or_value", required = true },
+    },
+  },
+  buffer_ribbon_name = {
+    fields = {
+      buffer = { type = "integer", required = true },
+      ribbon = { type = "scalar_or_value", required = true },
+    },
+  },
+  ev_total = {
+    fields = {
+      result = { type = "writable_value", required = true },
+      slot = { type = "scalar_or_value", required = true },
+    },
+  },
+  kenya_check = {
+    fields = {
+      result = { type = "writable_value", required = true },
+      slot = { type = "scalar_or_value", required = true },
+      exact = { type = "integer", required = true },
+    },
+  },
+  kenya_check_party = {
+    fields = {
+      result = { type = "writable_value", required = true },
+    },
+  },
+  stat_judge = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      total = { type = "writable_value", required = true },
+      message = { type = "writable_value", required = true },
+      highest = { type = "writable_value", required = true },
+    },
+  },
+  buffer_stat_name = {
+    fields = {
+      buffer = { type = "integer", required = true },
+      stat = { type = "scalar_or_value", required = true },
+    },
+  },
+  hidden_power_type = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  -- The transient savings window shares the money window's actions and tile
+  -- coordinates: it prints Mom's savings and the held money.
+  savings_box = {
+    fields = {
+      action = { type = "enum:money_box_action", required = true },
+      tileX = { type = "scalar_or_value" },
+      tileY = { type = "scalar_or_value" },
+    },
+  },
+  -- The source bank transfer (src/scrcmd_c.c::ScrCmd_BankTransaction) blocks
+  -- on the amount screen and writes its result variable; the two balance
+  -- queries answer in a written variable.
+  bank_transaction = {
+    fields = {
+      mode = { type = "integer", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  bank_balance_check = {
+    fields = {
+      amount = { type = "scalar_or_value", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  bank_overflow_check = {
+    fields = {
+      action = { type = "integer", required = true },
       result = { type = "writable_value", required = true },
     },
   },

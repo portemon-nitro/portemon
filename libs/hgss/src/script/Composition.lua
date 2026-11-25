@@ -62,6 +62,7 @@ local TASK_MODULES = {
   "libs.hgss.src.script.tasks.ApricornTreeTask",
   "libs.hgss.src.script.tasks.PokegearApplicationTask",
   "libs.hgss.src.script.tasks.EasyChatTask",
+  "libs.hgss.src.script.tasks.BankTransactionTask",
 }
 
 ---@param registry TaskRegistry

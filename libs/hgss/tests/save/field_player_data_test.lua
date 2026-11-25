@@ -44,6 +44,7 @@ local function record(overrides)
       gender = 0,
       trainerId = 0,
       money = 3000,
+      coins = 0,
       badges = {},
       nationalDex = false,
       runningShoes = false,
@@ -99,6 +100,7 @@ function T.unknown_keys_are_discarded_by_canonicalization()
       gender = 0,
       trainerId = 7,
       money = 3000,
+      coins = 0,
       badges = { zephyr = true, hive = true },
       nationalDex = false,
       runningShoes = true,
@@ -122,7 +124,7 @@ function T.unknown_keys_are_discarded_by_canonicalization()
   Assert.keySet(validated, "options,profile", "canonicalization must drop the extra top-level key")
   Assert.keySet(
     validated.profile,
-    "badges,gender,money,name,nationalDex,rivalName,runningShoes,runningShoesLock,trainerId,unionAvatar",
+    "badges,coins,gender,money,name,nationalDex,rivalName,runningShoes,runningShoesLock,trainerId,unionAvatar",
     "canonicalization must drop profile.transientThing"
   )
   Assert.keySet(
