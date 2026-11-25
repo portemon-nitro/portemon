@@ -2049,7 +2049,8 @@ function FieldRuntime.new(game, options)
     options.martStockResolver == nil or type(options.martStockResolver) == "function",
     "martStockResolver must be a function"
   )
-  local effectiveOverrideFs = options.overrideFs or RepoFs.new(love.filesystem.getSourceBaseDirectory())
+  local effectiveOverrideFs = options.overrideFs
+    or RepoFs.new(love.filesystem.getSourceBaseDirectory(), love.filesystem)
   local self = setmetatable({
     game = game,
     versionId = game.versionId,

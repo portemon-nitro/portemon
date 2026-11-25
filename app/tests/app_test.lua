@@ -2662,4 +2662,279 @@ function T.receiving_startup_constructor_failure_disposes_the_detached_loader_on
   end)
 end
 
+local function withNativePickerImportHost(fixture, fn)
+  loadShellModules()
+  fresh()
+  App.opts = { dev = false }
+  local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
+  local original = {
+    available = NativeRomPicker.available,
+    openSingle = NativeRomPicker.openSingle,
+    poll = NativeRomPicker.poll,
+    newImporter = RomImporter.new,
+    renderer = App.launcherRenderer,
+    audio = App.launcherAudio,
+  }
+  local host = { opens = 0, polls = 0, results = {}, openBusy = false, lastView = nil }
+  function host:complete(result)
+    self.results[#self.results + 1] = result
+  end
+  NativeRomPicker.available = function()
+    return true
+  end
+  NativeRomPicker.openSingle = function()
+    host.opens = host.opens + 1
+    if host.openBusy then
+      return { kind = "error", message = "the previous picker operation is still finishing" }
+    end
+    return { kind = "pending", requestId = host.requestId }
+  end
+  NativeRomPicker.poll = function(_)
+    host.polls = host.polls + 1
+    return table.remove(host.results, 1)
+  end
+  RomImporter.new = function(options)
+    return fixture.host:importer(fixture.cart, options and options.onComplete)
+  end
+  App.launcherRenderer = {
+    draw = function(_, view)
+      host.lastView = view
+    end,
+    drawDual = function(_, view)
+      host.lastView = view
+    end,
+    drawButton = function() end,
+    dispose = function() end,
+  }
+  App.launcherAudio = {
+    play = function() end,
+    fadeBoot = function() end,
+    update = function() end,
+    dispose = function() end,
+  }
+  App.service = nil
+  App.pendingQuiesce = nil
+  App._pendingImport = nil
+  App._importReceipt = nil
+  App._showGameSelection(nil, nil, {})
+  local ok, err = xpcall(function()
+    fn(host)
+  end, debug.traceback)
+  App._cancelImport()
+  App.setState(nil)
+  NativeRomPicker.available = original.available
+  NativeRomPicker.openSingle = original.openSingle
+  NativeRomPicker.poll = original.poll
+  RomImporter.new = original.newImporter
+  App.launcherRenderer = original.renderer
+  App.launcherAudio = original.audio
+  fresh()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+local function touchCancel(state)
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local view = assert(state:view(), "touch Cancel needs the published selection view")
+  local cancel = assert(view.layout.cancelRect, "touch Cancel needs resolved geometry")
+  local placement = assert(view.presentation.panes[1].placement, "touch Cancel needs the input placement")
+  local x, y = LayoutGeometry.logicalToHost(placement, cancel.x + cancel.width / 2, cancel.y + cancel.height / 2)
+  App.touchpressed("cancel-finger", x, y)
+  App.touchreleased("cancel-finger", x, y)
+end
+
+function T.native_picker_receipt_precedes_real_queued_temporary_import_and_cancel_closes_first()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  Fixture.with(function(fixture)
+    local requestId = "123e4567-e89b-12d3-a456-426614174000"
+    local stage = fixture:writePickerTemporary(requestId)
+    fixture.host.holdValidation = true
+    withNativePickerImportHost(fixture, function(host)
+      host.requestId = requestId
+      App._requestGameImport()
+      Assert.equal(host.opens, 1, "Add game opens one asynchronous picker")
+      Assert.isNil(App.importer, "pending native copy creates no importer reader")
+      Assert.equal(App.state:view().status, "Adding game…", "the library shows the borrowed native-operation strip")
+      App.update(1 / 60)
+      Assert.isNil(App.importer, "native copy still pending performs no queued source work")
+
+      host:complete({
+        requestId = requestId,
+        kind = "path",
+        relativePath = stage,
+        displayName = "My game.NDS",
+      })
+      App.update(1 / 60)
+      Assert.notNil(App.importer, "a matching completed copy enters the ordinary import card")
+      Assert.isNil(App.importer._queued, "the receipt is latched before any worker starts")
+      Assert.notNil(love.filesystem.getInfo(stage), "the unopened stage remains App-owned before queue acceptance")
+      Assert.isNil(
+        App.state:view().status:find("Adding game", 1, true),
+        "native pending clears before importer receipt"
+      )
+
+      App.draw()
+      Assert.equal(host.lastView.status, "File received My game.NDS", "the first frame names the received file")
+      Assert.isNil(App.importer._queued, "drawing the receipt alone starts no source work")
+      Assert.notNil(love.filesystem.getInfo(stage), "the receipt frame does not consume the stage")
+      App.update(1 / 60)
+      Assert.notNil(App.importer._queued, "the painted receipt hands the stage to the real queued importer")
+      Assert.equal(App._pendingImport.kind, "temporary", "temporary input uses the importer ownership-transfer queue")
+      Assert.equal(App._pendingImport.requestId, requestId, "the queued request keeps its native correlation token")
+      Assert.notNil(love.filesystem.getInfo(stage), "accepted input persists while the importer worker owns it")
+
+      local session = fixture.host:validationGate(App.importer)
+      Assert.notNil(love.filesystem.getInfo(stage), "App never deletes an accepted stage at the validation gate")
+      touchCancel(App.state)
+      session.outbox:discardValidation()
+      local thread = session.thread
+      fixture.host:waitFor(function()
+        return not thread:isRunning() and love.filesystem.getInfo(stage) == nil
+      end, "accepted stage cleanup after physical worker exit")
+      Assert.isNil(love.filesystem.getInfo(fixture.canonical), "precommit cancellation publishes no managed ROM")
+      Assert.isTrue(fixture:originalExists(), "temporary import cleanup never deletes the user original")
+      Assert.isNil(App.provisioner, "import work never creates a selected game epoch")
+      Assert.isNil(App.selectedVersionId, "import completion never selects gameplay")
+    end)
+  end)
+end
+
+function T.native_picker_cancel_busy_retry_and_stale_completion_never_navigate()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  Fixture.with(function(fixture)
+    local requestId = "223e4567-e89b-12d3-a456-426614174000"
+    local stage = fixture:writePickerTemporary(requestId)
+    withNativePickerImportHost(fixture, function(host)
+      host.requestId = requestId
+      App._requestGameImport()
+      Assert.equal(App.state:view().status, "Adding game…", "the pending native request owns the library strip")
+      local pending = App.state
+      touchCancel(pending)
+      Assert.equal(host.opens, 1, "cancelling the App request does not reopen the chooser")
+      Assert.isTrue(pending._disposed, "cancellation retires the pending library state")
+      Assert.isNil(App.state:view().status, "cancellation restores ordinary selection")
+
+      host.openBusy = true
+      App._requestGameImport()
+      Assert.equal(host.opens, 2, "an immediate retry reaches the native busy boundary once")
+      local failure = App.state:view().failure
+      Assert.notNil(failure, "a busy reattempt uses the recoverable picker error modal")
+      Assert.isTrue(tostring(failure.message):find("still finishing", 1, true) ~= nil)
+      Assert.isNil(App.importer, "a busy reattempt creates no second importer")
+      App.state:keypressed("escape")
+
+      local running = countingState()
+      App.setState(running)
+      host:complete({
+        requestId = requestId,
+        kind = "path",
+        relativePath = stage,
+        displayName = "late copy.nds",
+      })
+      App.update(1 / 60)
+      Assert.isNil(love.filesystem.getInfo(stage), "a stale completed copy is drained after screen retirement")
+      Assert.isNil(App.importer, "a stale result starts no import")
+      Assert.equal(App.state, running, "a stale result never navigates or replaces the running state")
+      Assert.isNil(love.filesystem.getInfo(fixture.canonical), "a stale result publishes no managed ROM")
+    end)
+  end)
+end
+
+function T.native_picker_enqueue_rejection_keeps_unaccepted_stage_with_app()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  Fixture.with(function(fixture)
+    local requestId = "323e4567-e89b-12d3-a456-426614174000"
+    local stage = fixture:writePickerTemporary(requestId)
+    withNativePickerImportHost(fixture, function(host)
+      host.requestId = requestId
+      App._requestGameImport()
+      Assert.equal(App.state:view().status, "Adding game…", "the pending native request owns the library strip")
+      host:complete({
+        requestId = requestId,
+        kind = "path",
+        relativePath = stage,
+        displayName = "lost copy.nds",
+      })
+      App.update(1 / 60)
+      App.draw()
+      Assert.isTrue(love.filesystem.remove(stage), "simulate loss of the completed native stage before admission")
+      App.update(1 / 60)
+      Assert.equal(#fixture.host.threads, 0, "typed pre-admission rejection starts no worker")
+      Assert.isNil(App._pendingImport, "a rejected temporary enqueue is not retried")
+      Assert.equal(
+        App.state:view().failure.code,
+        "ROM_OPEN_FAILED",
+        "the typed queue rejection reaches the shared modal"
+      )
+      Assert.isNil(love.filesystem.getInfo(fixture.canonical), "rejection publishes no managed ROM")
+      Assert.isTrue(fixture:originalExists(), "rejection never reaches the user original")
+    end)
+  end)
+end
+
+function T.native_picker_worker_start_failure_leaves_accepted_stage_with_importer()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  Fixture.with(function(fixture)
+    local requestId = "423e4567-e89b-12d3-a456-426614174000"
+    local stage = fixture:writePickerTemporary(requestId)
+    withNativePickerImportHost(fixture, function(host)
+      host.requestId = requestId
+      App._requestGameImport()
+      Assert.equal(App.state:view().status, "Adding game…", "the pending native request owns the library strip")
+      host:complete({
+        requestId = requestId,
+        kind = "path",
+        relativePath = stage,
+        displayName = "startup failure.nds",
+      })
+      App.update(1 / 60)
+      App.draw()
+      fixture.host.failNextStart = true
+      local removals = 0
+      local originalRemove = love.filesystem.remove
+      love.filesystem.remove = function(path)
+        if path == stage then
+          removals = removals + 1
+        end
+        return originalRemove(path)
+      end
+      local ok, err = pcall(function()
+        App.update(1 / 60)
+      end)
+      love.filesystem.remove = originalRemove
+      if not ok then
+        error(err, 0)
+      end
+      Assert.equal(App.importer.state, RomImporter.STATES.ERROR, "accepted startup failure belongs to importer status")
+      Assert.equal(removals, 1, "only the importer removes its accepted stage after true ownership transfer")
+      Assert.isNil(love.filesystem.getInfo(stage), "the importer completes accepted-stage cleanup")
+      Assert.isNil(App._pendingImport, "an immediate importer failure does not re-arm App admission")
+      Assert.isNil(love.filesystem.getInfo(fixture.canonical), "startup failure publishes no managed ROM")
+    end)
+  end)
+end
+
+function T.native_picker_copy_error_uses_the_recoverable_modal_without_import()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  Fixture.with(function(fixture)
+    local requestId = "523e4567-e89b-12d3-a456-426614174000"
+    withNativePickerImportHost(fixture, function(host)
+      host.requestId = requestId
+      App._requestGameImport()
+      Assert.equal(App.state:view().status, "Adding game…", "the pending native request owns the library strip")
+      local focusedId = App.state:view().focusedId
+      host:complete({ requestId = requestId, kind = "error", message = "the document could not be copied" })
+      App.update(1 / 60)
+      local view = App.state:view()
+      Assert.isNil(App.importer, "a native copy failure creates no importer")
+      Assert.equal(view.failure.code, "ROM_PICKER_FAILED", "copy errors use the typed picker failure path")
+      Assert.isTrue(tostring(view.failure.message):find("could not be copied", 1, true) ~= nil)
+      Assert.equal(view.focusedId, focusedId, "a recoverable copy error preserves library focus")
+      Assert.isNil(view.status, "native pending clears when the error modal takes over")
+      Assert.isNil(love.filesystem.getInfo(fixture.canonical), "copy failure publishes no managed ROM")
+    end)
+  end)
+end
+
 return { tests = T }

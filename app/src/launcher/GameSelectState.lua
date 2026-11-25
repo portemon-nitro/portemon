@@ -169,6 +169,8 @@ function GameSelectState.new(options)
     height = options.height or love.graphics.getHeight(),
     _received = nil,
     _painted = nil,
+    _pickerPending = false,
+    _pickerFocusedId = nil,
     _gestures = {},
     _disposed = false,
     _displayContext = options.displayContext or DisplayContext.new({}),
@@ -206,7 +208,7 @@ end
 
 function GameSelectState:_canCancel(status)
   status = status or self:_status()
-  return status ~= nil and status.canCancel == true
+  return self._pickerPending or (status ~= nil and status.canCancel == true)
 end
 
 function GameSelectState:_snapshot()
@@ -216,7 +218,9 @@ function GameSelectState:_snapshot()
     failure = status.error
   end
   local statusText = nil
-  if self._received ~= nil then
+  if self._pickerPending then
+    statusText = "Adding game…"
+  elseif self._received ~= nil then
     statusText = "File received " .. self._received
   elseif status ~= nil and self:_busy(status) then
     statusText = status.state == RomImporter.STATES.READING and "Checking ROM" or "Verifying ROM"
@@ -230,7 +234,7 @@ function GameSelectState:_snapshot()
   return {
     kind = "game-select",
     games = self.games,
-    focusedId = self.selectedGameId or self.focusedId,
+    focusedId = self._pickerPending and self._pickerFocusedId or self.selectedGameId or self.focusedId,
     action = (
       focusNode == "add-game"
       or focusNode == "play"
@@ -252,6 +256,7 @@ function GameSelectState:_snapshot()
     canCancel = self:_canCancel(status),
     busy = status ~= nil and self:_busy(status) or false,
     progress = status ~= nil and status.progress or nil,
+    pickerPending = self._pickerPending,
   }
 end
 
@@ -282,7 +287,7 @@ function GameSelectState:_move(direction)
   self.focusNode = FocusGraph.reconcile(graph.graph, self.focusNode, graph.fallbacks)
   self.focusNode = FocusGraph.move(graph.graph, self.focusNode, direction)
   local target = graph.targets[self.focusNode]
-  if target.kind == "game" then
+  if target.kind == "game" and not self._pickerPending then
     self.focusedId = target.gameId
     self.selectedGameId = target.gameId
   end
@@ -319,6 +324,9 @@ function GameSelectState:_activateNode(node, playFocused)
   end
   if node == "cancel" then
     self:_cancelImport()
+    return
+  end
+  if self._pickerPending then
     return
   end
   if node == "add-game" then
@@ -508,6 +516,15 @@ end
 
 function GameSelectState:update() end
 
+---@param pending boolean
+function GameSelectState:setPickerPending(pending)
+  assert(type(pending) == "boolean", "native picker pending state must be boolean")
+  if not self._disposed then
+    self._pickerPending = pending
+    self._pickerFocusedId = pending and (self.selectedGameId or self.focusedId) or nil
+  end
+end
+
 function GameSelectState:draw()
   if self._disposed then
     return
@@ -544,6 +561,8 @@ function GameSelectState:dispose()
   self._session:dispose()
   self._session = nil
   self.renderer, self.audio, self.importer = nil, nil, nil
+  self._pickerPending = false
+  self._pickerFocusedId = nil
   self.onPick, self.onPlay, self.onCancelImport, self.onDismissError, self.onQuit = nil, nil, nil, nil, nil
 end
 

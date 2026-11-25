@@ -1,0 +1,326 @@
+--- a/build.gradle
++++ b/build.gradle
+@@ -18,7 +18,7 @@
+         mavenCentral()
+     }
+     dependencies {
+-        classpath 'com.android.tools.build:gradle:8.1.1'
++        classpath 'com.android.tools.build:gradle:8.10.0'
+ 
+         // NOTE: Do not place your application dependencies here; they belong
+         // in the individual module build.gradle files
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -4,15 +4,15 @@
+ 
+ android {
+     namespace "org.love2d.android.executable"
+-    ndkVersion '25.2.9519653'
++    ndkVersion '28.2.13676358'
+ 
+     defaultConfig {
+         applicationId project.properties["app.application_id"]
+         versionCode project.properties["app.version_code"].toInteger()
+         versionName project.properties["app.version_name"]
+-        minSdk 16
+-        compileSdk 34
+-        targetSdk 34
++        minSdk 21
++        compileSdk 36
++        targetSdk 36
+         
+         def getAppName = {
+             def nameArray = project.properties["app.name_byte_array"]
+@@ -59,6 +59,11 @@
+             dimension 'recording'
+         }
+     }
++    packaging {
++        jniLibs {
++            useLegacyPackaging = false
++        }
++    }
+     lint {
+         abortOnError false
+     }
+--- a/love/build.gradle
++++ b/love/build.gradle
+@@ -7,12 +7,12 @@
+     // and http://stackoverflow.com/questions/27277433/why-does-gradle-build-my-module-in-release-mode-when-the-app-is-in-debug
+     // defaultPublishConfig "debug"
+     namespace "org.love2d.android"
+-    ndkVersion '25.2.9519653'
++    ndkVersion '28.2.13676358'
+ 
+     defaultConfig {
+-        minSdk 16
+-        compileSdk 34
+-        targetSdk 34
++        minSdk 21
++        compileSdk 36
++        targetSdk 36
+         externalNativeBuild {
+             ndkBuild {
+                 arguments "-j" + Runtime.runtime.availableProcessors()
+--- a/gradle/wrapper/gradle-wrapper.properties
++++ b/gradle/wrapper/gradle-wrapper.properties
+@@ -1,6 +1,7 @@
+ distributionBase=GRADLE_USER_HOME
+ distributionPath=wrapper/dists
+-distributionUrl=https\://services.gradle.org/distributions/gradle-8.1-bin.zip
++distributionUrl=https\://services.gradle.org/distributions/gradle-8.11.1-bin.zip
++distributionSha256Sum=f397b287023acdba1e9f6fc5ea72d22dd63669d59ed4a289a29b1a76eee151c6
+ networkTimeout=10000
+ zipStoreBase=GRADLE_USER_HOME
+ zipStorePath=wrapper/dists
+--- a/gradle.properties
++++ b/gradle.properties
+@@ -4,12 +4,12 @@
+ # * Otherwise, convert your app name to UTF-8 byte array, comma delimited, and put
+ #   it in `app.name_byte_array`
+ #app.name=LÖVE for Android
+-app.name_byte_array=76,195,150,86,69,32,102,111,114,32,65,110,100,114,111,105,100
++app.name_byte_array=80,111,114,116,195,169,109,111,110,32,78,105,116,114,111,32,40,100,101,118,41
+ 
+-app.application_id=org.love2d.android
+-app.orientation=landscape
+-app.version_code=32
+-app.version_name=11.5a
++app.application_id=io.github.portemonnitro.portemon.dev
++app.orientation=fullUser
++app.version_code=1
++app.version_name=dev
+ 
+ # No need to modify anything past this line!
+ android.enableJetifier=false
+--- a/love/src/jni/Application.mk
++++ b/love/src/jni/Application.mk
+@@ -2,10 +2,10 @@
+ # See CPLUSPLUS-SUPPORT.html in the NDK documentation for more information
+ # APP_STL := stlport_static 
+ APP_STL := c++_shared
+-APP_ABI := armeabi-v7a
++APP_ABI := armeabi-v7a arm64-v8a x86_64
+ APP_CPPFLAGS := -frtti
+ APP_LDFLAGS := -llog -landroid -lz -fuse-ld=lld
+-APP_PLATFORM := 10
++APP_PLATFORM := android-21
+ NDK_TOOLCHAIN_VERSION := clang
+ 
+ # Fix for building on Windows
+--- a/love/src/jni/LuaJIT-2.1/src/lj_arch.h
++++ b/love/src/jni/LuaJIT-2.1/src/lj_arch.h
+@@ -270,6 +270,7 @@
+ #define LJ_TARGET_MASKROT	1
+ #define LJ_TARGET_UNIFYROT	2	/* Want only IR_BROR. */
+ #define LJ_TARGET_GC64		1
++#define LJ_PAGESIZE		16384
+ #define LJ_ARCH_NUMMODE		LJ_NUMMODE_DUAL
+ 
+ #define LJ_ARCH_VERSION		80
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -1,10 +1,6 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android" >
+-  <uses-permission android:name="android.permission.INTERNET" />
+   <uses-permission android:name="android.permission.VIBRATE" />
+-  <uses-permission android:name="android.permission.BLUETOOTH" />
+-  <uses-permission android:name="android.permission.RECORD_AUDIO" />
+-  <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="18" />
+ 
+   <!-- OpenGL ES 2.0 -->
+   <uses-feature android:glEsVersion="0x00020000" />
+@@ -23,8 +19,7 @@
+   <application
+       android:allowBackup="true"
+       android:icon="@drawable/love"
+-      android:label="${NAME}"
+-      android:usesCleartextTraffic="true" >
++      android:label="${NAME}" >
+     <activity
+         android:name="org.love2d.android.GameActivity"
+         android:exported="true"
+--- a/app/proguard-rules.pro
++++ b/app/proguard-rules.pro
+@@ -18,3 +18,5 @@
+ 
+ -keep class org.love2d.android.GameActivity { *; }
+ -keep class org.libsdl.app.** { *; }
++
++-keep class org.love2d.android.RomPicker { *; }
+--- a/love/proguard-rules.pro
++++ b/love/proguard-rules.pro
+@@ -15,3 +15,5 @@
+ #-keepclassmembers class fqcn.of.javascript.interface.for.webview {
+ #   public *;
+ #}
++
++-keep class org.love2d.android.RomPicker { *; }
+--- a/love/src/main/java/org/love2d/android/GameActivity.java
++++ b/love/src/main/java/org/love2d/android/GameActivity.java
+@@ -66,6 +66,17 @@
+     private boolean storagePermissionUnnecessary = false;
+     private boolean shortEdgesMode = false;
+     public boolean embed = false;
++    private static final class SafeAreaSnapshot {
++        final int top, left, bottom, right;
++        SafeAreaSnapshot(int top, int left, int bottom, int right) {
++            this.top = top;
++            this.left = left;
++            this.bottom = bottom;
++            this.right = right;
++        }
++    }
++
++    private volatile SafeAreaSnapshot safeAreaSnapshot;
+     public int safeAreaTop = 0;
+     public int safeAreaLeft = 0;
+     public int safeAreaBottom = 0;
+@@ -132,6 +143,7 @@
+             getWindow().getAttributes().layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER;
+             shortEdgesMode = false;
+         }
++        installSafeAreaObserver();
+     }
+ 
+     @Override
+@@ -276,6 +288,13 @@
+     @Override
+     public void onResume() {
+         super.onResume();
++        getWindow().getDecorView().requestApplyInsets();
++    }
++
++    @Override
++    public void onConfigurationChanged(android.content.res.Configuration configuration) {
++        super.onConfigurationChanged(configuration);
++        getWindow().getDecorView().requestApplyInsets();
+     }
+ 
+     @Keep
+@@ -514,21 +533,114 @@
+         }
+     }
+ 
+-    @Keep
+-    public boolean initializeSafeArea() {
+-        if (android.os.Build.VERSION.SDK_INT >= 28 && shortEdgesMode) {
+-            DisplayCutout cutout = getWindow().getDecorView().getRootWindowInsets().getDisplayCutout();
++    private void installSafeAreaObserver() {
++        final View decor = getWindow().getDecorView();
++        decor.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
++            @Override
++            public WindowInsets onApplyWindowInsets(View view, WindowInsets insets) {
++                updateSafeAreaSnapshot(decor, insets);
++                return view.onApplyWindowInsets(insets);
++            }
++        });
++        mSurface.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
++            @Override
++            public void onLayoutChange(View view, int left, int top, int right, int bottom,
++                    int oldLeft, int oldTop, int oldRight, int oldBottom) {
++                if (android.os.Build.VERSION.SDK_INT >= 23) {
++                    updateSafeAreaSnapshot(decor, decor.getRootWindowInsets());
++                }
++            }
++        });
++        decor.requestApplyInsets();
++    }
+ 
++    private void updateSafeAreaSnapshot(View decor, WindowInsets insets) {
++        if (insets == null || mSurface == null || mSurface.getWidth() <= 0 || mSurface.getHeight() <= 0) {
++            return;
++        }
++        int top = 0, left = 0, bottom = 0, right = 0;
++        int sdk = android.os.Build.VERSION.SDK_INT;
++        if (sdk >= 30) {
++            android.graphics.Insets safe = insets.getInsets(WindowInsets.Type.systemBars()
++                    | WindowInsets.Type.displayCutout() | WindowInsets.Type.systemGestures());
++            top = safe.top;
++            left = safe.left;
++            bottom = safe.bottom;
++            right = safe.right;
++        } else if (sdk >= 29) {
++            top = insets.getSystemWindowInsetTop();
++            left = insets.getSystemWindowInsetLeft();
++            bottom = insets.getSystemWindowInsetBottom();
++            right = insets.getSystemWindowInsetRight();
++            android.view.DisplayCutout cutout = insets.getDisplayCutout();
++            if (cutout != null) {
++                top = Math.max(top, cutout.getSafeInsetTop());
++                left = Math.max(left, cutout.getSafeInsetLeft());
++                bottom = Math.max(bottom, cutout.getSafeInsetBottom());
++                right = Math.max(right, cutout.getSafeInsetRight());
++            }
++            android.graphics.Insets gestures = insets.getSystemGestureInsets();
++            top = Math.max(top, gestures.top);
++            left = Math.max(left, gestures.left);
++            bottom = Math.max(bottom, gestures.bottom);
++            right = Math.max(right, gestures.right);
++        } else if (sdk >= 28) {
++            top = insets.getSystemWindowInsetTop();
++            left = insets.getSystemWindowInsetLeft();
++            bottom = insets.getSystemWindowInsetBottom();
++            right = insets.getSystemWindowInsetRight();
++            android.view.DisplayCutout cutout = insets.getDisplayCutout();
+             if (cutout != null) {
+-                safeAreaTop = cutout.getSafeInsetTop();
+-                safeAreaLeft = cutout.getSafeInsetLeft();
+-                safeAreaBottom = cutout.getSafeInsetBottom();
+-                safeAreaRight = cutout.getSafeInsetRight();
+-                return true;
++                top = Math.max(top, cutout.getSafeInsetTop());
++                left = Math.max(left, cutout.getSafeInsetLeft());
++                bottom = Math.max(bottom, cutout.getSafeInsetBottom());
++                right = Math.max(right, cutout.getSafeInsetRight());
+             }
++        } else {
++            top = insets.getSystemWindowInsetTop();
++            left = insets.getSystemWindowInsetLeft();
++            bottom = insets.getSystemWindowInsetBottom();
++            right = insets.getSystemWindowInsetRight();
++        }
++
++        int[] decorLocation = new int[2];
++        int[] surfaceLocation = new int[2];
++        decor.getLocationInWindow(decorLocation);
++        mSurface.getLocationInWindow(surfaceLocation);
++        int windowLeft = decorLocation[0] + left;
++        int windowTop = decorLocation[1] + top;
++        int windowRight = decorLocation[0] + decor.getWidth() - right;
++        int windowBottom = decorLocation[1] + decor.getHeight() - bottom;
++        int surfaceLeft = surfaceLocation[0];
++        int surfaceTop = surfaceLocation[1];
++        int surfaceRight = surfaceLeft + mSurface.getWidth();
++        int surfaceBottom = surfaceTop + mSurface.getHeight();
++        int intersectionLeft = Math.max(windowLeft, surfaceLeft);
++        int intersectionTop = Math.max(windowTop, surfaceTop);
++        int intersectionRight = Math.min(windowRight, surfaceRight);
++        int intersectionBottom = Math.min(windowBottom, surfaceBottom);
++        if (intersectionRight <= intersectionLeft || intersectionBottom <= intersectionTop) {
++            return;
+         }
++        safeAreaSnapshot = new SafeAreaSnapshot(
++            Math.max(0, intersectionTop - surfaceTop),
++            Math.max(0, intersectionLeft - surfaceLeft),
++            Math.max(0, surfaceBottom - intersectionBottom),
++            Math.max(0, surfaceRight - intersectionRight)
++        );
++    }
+ 
+-        return false;
++    @Keep
++    public boolean initializeSafeArea() {
++        SafeAreaSnapshot snapshot = safeAreaSnapshot;
++        if (snapshot == null) {
++            return false;
++        }
++        safeAreaTop = snapshot.top;
++        safeAreaLeft = snapshot.left;
++        safeAreaBottom = snapshot.bottom;
++        safeAreaRight = snapshot.right;
++        return true;
+     }
+ 
+     @Keep

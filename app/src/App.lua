@@ -43,6 +43,7 @@ local ASSET_RUNTIME_IDLE_BYTES = 64 * 1024 * 1024
 ---@field pairIndex integer? selected-epoch walking pair, chosen once per selection
 ---@field _importReceipt string? received filename latched synchronously on drop/picker input
 ---@field _pendingImport table<string, unknown>? deferred import descriptor awaiting its receipt paint
+---@field _pendingPicker { requestId: string }? active asynchronous native picker/copy
 ---@field selectedVersionId string? currently selected game version
 ---@field _libraryMetadata AppSaveMetadata[]? detached published-save metadata for the current library decision
 ---@field _selectedEntryLocation { mapId: integer, fieldX: integer, fieldZ: integer }? transient copied save hint
@@ -237,10 +238,45 @@ local function importInProgress(importer)
   return false
 end
 
+local IMPORT_UUID = "%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x"
+
+-- Called once at process startup, before an importer can own a stage. Only
+-- bridge-shaped temporary names are eligible; canonical sources and saves are
+-- never scanned.
+function App._cleanupAbandonedImports()
+  local info = love.filesystem.getInfo("imports")
+  if info == nil or info.type ~= "directory" then
+    return
+  end
+  for _, name in ipairs(love.filesystem.getDirectoryItems("imports")) do
+    local path = "imports/" .. name
+    local entry = love.filesystem.getInfo(path)
+    if
+      entry ~= nil
+      and entry.type == "file"
+      and (
+        name:match("^(" .. IMPORT_UUID .. ")%.nds$")
+        or name:match("^(" .. IMPORT_UUID .. ")%.zip$")
+        or name:match("^(" .. IMPORT_UUID .. ")%.part$")
+      )
+    then
+      love.filesystem.remove(path)
+    end
+  end
+end
+
 -- Retire the interactive import session without blocking: a queued worker is
 -- told to abandon its registration gate, late results are invalidated, and
 -- the pending first-paint descriptor is dropped so no worker starts later.
 function App._cancelImport()
+  local pending = App._pendingImport
+  if pending ~= nil and pending.kind == "temporary" and not pending.started then
+    love.filesystem.remove(pending.value)
+  end
+  App._pendingPicker = nil
+  if App.state ~= nil and type(App.state.setPickerPending) == "function" then
+    App.state:setPickerPending(false)
+  end
   local importer = App.importer
   App.importer = nil
   App._pendingImport = nil
@@ -1187,6 +1223,7 @@ end
 
 function App.load(opts)
   App.opts = opts or {}
+  App._cleanupAbandonedImports()
   App.drawableWidth, App.drawableHeight = love.graphics.getDimensions()
   App.pixelRatio = love.graphics.getDPIScale()
   App.importer = nil
@@ -1198,6 +1235,7 @@ function App.load(opts)
   App.pairIndex = nil
   App._importReceipt = nil
   App._pendingImport = nil
+  App._pendingPicker = nil
   App.selectedVersionId = nil
   App._swallowedPointers = {}
   App._bootSwallowedInputs = {}
@@ -1252,6 +1290,9 @@ end
 -- bootstrap-state to game handoff must not retire it.
 function App.setState(nextState)
   local previous = App.state
+  if App._pendingPicker ~= nil and previous ~= nextState then
+    App._pendingPicker = nil
+  end
   App.state = nextState
   if previous and previous.dispose then
     previous:dispose()
@@ -1279,17 +1320,54 @@ function App._startImport()
 end
 
 function App._requestGameImport()
-  if importInProgress(App.importer) then
+  if App._pendingPicker ~= nil or importInProgress(App.importer) then
     return
   end
   local result = NativeRomPicker.openSingle()
   if result.kind == "path" then
     App._beginImportPath(result.path)
+  elseif result.kind == "pending" then
+    App._pendingPicker = { requestId = result.requestId }
+    if App.state ~= nil and type(App.state.setPickerPending) == "function" then
+      App.state:setPickerPending(true)
+    end
   elseif result.kind == "error" then
     local current = App.state
     local focus = current and current.view and current:view().focusedId or nil
     App._showGameSelection(focus, Errors.new("ROM_PICKER_FAILED", tostring(result.message or "file picker failed"), {}))
   end
+end
+
+function App._pollNativePicker()
+  local pendingPicker = App._pendingPicker
+  local result = NativeRomPicker.poll(pendingPicker and pendingPicker.requestId or nil)
+  if result == nil then
+    return
+  end
+  local matches = pendingPicker ~= nil and result.requestId == pendingPicker.requestId
+  if matches then
+    App._pendingPicker = nil
+    if App.state ~= nil and type(App.state.setPickerPending) == "function" then
+      App.state:setPickerPending(false)
+    end
+  end
+  if not matches then
+    if result.kind == "path" then
+      love.filesystem.remove(result.relativePath)
+    end
+    return
+  end
+  if result.kind == "path" then
+    App._beginImportTemporary(result.relativePath, result.displayName, result.requestId)
+  elseif result.kind == "error" then
+    local current = App.state
+    local focus = current and current.view and current:view().focusedId or nil
+    App._showGameSelection(focus, Errors.new("ROM_PICKER_FAILED", tostring(result.message), {}))
+  end
+end
+
+function App._beginImportTemporary(relativePath, displayName, requestId)
+  App._beginImportAttempt("temporary", relativePath, displayName, requestId)
 end
 
 function App._beginImportPath(path)
@@ -1307,10 +1385,11 @@ end
 -- only after that paint (see App.update). Importers offering the queued
 -- handoff start in the background then; direct-only importers keep their
 -- immediate start contract on this same tick.
----@param kind "drop"|"path"
----@param value unknown dropped File or picked path
+---@param kind "drop"|"path"|"temporary"
+---@param value unknown dropped File, picked path, or completed private stage
 ---@param receipt string? sanitized basename latched for the first paint
-function App._openImportCard(kind, value, receipt)
+---@param requestId string? native temporary-source correlation
+function App._openImportCard(kind, value, receipt, requestId)
   local previous = App.importer
   App.importer = nil
   if previous ~= nil and type(previous.cancelQueued) == "function" then
@@ -1326,6 +1405,7 @@ function App._openImportCard(kind, value, receipt)
       kind = kind,
       value = value,
       receipt = receipt,
+      requestId = requestId,
       painted = receipt == nil,
       started = false,
     }
@@ -1345,7 +1425,7 @@ function App._openImportCard(kind, value, receipt)
   end
 end
 
-function App._beginImportAttempt(kind, value)
+function App._beginImportAttempt(kind, value, receiptName, requestId)
   local currentState = App.state
   if kind == "drop" and currentState ~= nil and type(currentState.onImportAttempt) == "function" then
     currentState:onImportAttempt()
@@ -1358,7 +1438,7 @@ function App._beginImportAttempt(kind, value)
   if waiting ~= nil and getmetatable(waiting) == CachePreparationState and waiting.kind == "quiescence" then
     return
   end
-  local receipt = App._receiptName(kind, value)
+  local receipt = receiptName or App._receiptName(kind, value)
   if App.service ~= nil then
     App._retireSelection()
     local epoch = App.epoch or 0
@@ -1372,6 +1452,7 @@ function App._beginImportAttempt(kind, value)
         kind = kind,
         value = value,
         receipt = receipt,
+        requestId = requestId,
         painted = receipt == nil,
         started = false,
       }
@@ -1390,7 +1471,7 @@ function App._beginImportAttempt(kind, value)
         onReady = function()
           App.pendingQuiesce = nil
           if App.service:importSource(epoch, barrier) then
-            App._openImportCard(kind, value, receipt)
+            App._openImportCard(kind, value, receipt, requestId)
           end
         end,
         onCancel = function()
@@ -1401,7 +1482,7 @@ function App._beginImportAttempt(kind, value)
       return
     end
   end
-  App._openImportCard(kind, value, receipt)
+  App._openImportCard(kind, value, receipt, requestId)
 end
 
 -- Record one actually painted receipt for the deferred import start. Only a
@@ -1433,19 +1514,38 @@ function App._startPendingImport()
   local importer = App.importer
   if importer == nil then
     App._pendingImport = nil
+    if pending.kind == "temporary" and not pending.started then
+      love.filesystem.remove(pending.value)
+    end
     return
   end
-  local ok, failure = pcall(function()
-    if pending.kind == "path" then
+  local ok, accepted, failure = pcall(function()
+    if pending.kind == "temporary" then
+      return importer:queueTemporaryPath(pending.value, pending.requestId)
+    elseif pending.kind == "path" then
       importer:queuePath(pending.value)
     else
       importer:queueDroppedFile(pending.value)
     end
   end)
-  if ok then
+  if ok and (pending.kind ~= "temporary" or accepted == true) then
     pending.started = true
+    if importer.state == RomImporter.STATES.ERROR then
+      App._pendingImport = nil
+    end
   else
     App._pendingImport = nil
+    if pending.kind == "temporary" then
+      love.filesystem.remove(pending.value)
+    end
+    if not ok then
+      if not Errors.is(accepted) then
+        error(accepted, 0)
+      end
+      failure = accepted
+    elseif pending.kind == "temporary" and not Errors.is(failure) then
+      failure = Errors.new("ROM_IMPORT_REQUEST_INVALID", "temporary import was not accepted", {})
+    end
     if not Errors.is(failure) then
       error(failure, 0)
     end
@@ -1562,6 +1662,7 @@ end
 
 function App.update(dt)
   App._syncDrawableSize()
+  App._pollNativePicker()
   if
     App.importer
     and App.importer.state ~= RomImporter.STATES.COMPLETE

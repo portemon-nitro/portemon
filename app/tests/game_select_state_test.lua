@@ -297,4 +297,82 @@ function T.receipt_and_busy_import_keep_one_progress_session()
   library:dispose()
 end
 
+function T.native_pending_reuses_one_cancellable_strip_and_disables_both_actions()
+  local picks, plays, cancels = 0, 0, 0
+  local library = state({
+    onPick = function()
+      picks = picks + 1
+    end,
+    onPlay = function()
+      plays = plays + 1
+    end,
+    onCancelImport = function()
+      cancels = cancels + 1
+    end,
+  })
+  library.scrollOffset = 24
+  library._revealFocused = false
+  local before = library:view()
+  Assert.equal(
+    type(library.setPickerPending),
+    "function",
+    "native picking needs a borrowed-operation presentation flag"
+  )
+  library:setPickerPending(true)
+  local pending = library:view()
+  Assert.equal(pending.status, "Adding game…", "the existing compact strip owns the native copy interval")
+  Assert.equal(pending.focusedId, before.focusedId, "pending native work preserves game focus")
+  Assert.equal(pending.scrollOffset, before.scrollOffset, "pending native work preserves scroll")
+  Assert.equal(pending.canCancel, true, "the existing cancel action abandons the App request")
+  Assert.notNil(pending.layout.statusRect, "native pending has no second loading surface")
+  Assert.notNil(pending.layout.cancelRect, "native copy exposes the same touch Cancel target")
+  Assert.isNil(pending.progress, "native copying cannot invent importer progress")
+
+  for _ = 1, 20 do
+    library:keypressed("down")
+  end
+  Assert.equal(library.focusNode, "add-game")
+  library:keypressed("return")
+  library:keypressed("left")
+  library:keypressed("return")
+  Assert.deepEqual({ picks, plays }, { 0, 0 }, "focus activation cannot Add or Play during native pending")
+
+  local add = assert(pending.layout.actions.addGame)
+  local play = assert(pending.layout.actions.play)
+  local function tap(rect)
+    local x, y = hostPoint(library:view(), rect.x + rect.width / 2, rect.y + rect.height / 2)
+    library:touchpressed("finger", x, y)
+    library:touchreleased("finger", x, y)
+  end
+  tap(add)
+  tap(play)
+  Assert.deepEqual({ picks, plays }, { 0, 0 }, "button hits cannot Add or Play during native pending")
+
+  library:keypressed("up")
+  Assert.equal(library:view().action, "cancel", "native pending focus can leave the disabled footer for Cancel")
+  library:gamepadpressed({}, "a")
+  Assert.equal(cancels, 1, "gamepad can cancel the native copy")
+  local pendingView = library:view()
+  local cancel = assert(pendingView.layout.cancelRect)
+  local cancelX, cancelY = hostPoint(pendingView, cancel.x + cancel.width / 2, cancel.y + cancel.height / 2)
+  library:touchpressed("finger", cancelX, cancelY)
+  library:touchreleased("finger", cancelX, cancelY)
+  Assert.equal(cancels, 2, "touch can cancel the native copy")
+
+  library:keypressed("escape")
+  Assert.equal(cancels, 3, "cancel uses the existing import callback")
+  library:setPickerPending(false)
+  local restored = library:view()
+  Assert.isNil(restored.status, "clearing native pending restores the ordinary library")
+  Assert.equal(restored.canCancel, false)
+  Assert.equal(restored.focusedId, before.focusedId, "cancellation preserves the focused game")
+  library:keypressed("up")
+  for _ = 1, 20 do
+    library:keypressed("down")
+  end
+  library:keypressed("return")
+  Assert.equal(picks, 1, "Add is usable again after the borrowed operation clears")
+  library:dispose()
+end
+
 return { tests = T }

@@ -302,7 +302,7 @@ function LauncherRenderer:_library(view, layout, selected)
         graphics.print(tostring(view.status), statusRect.x + 6, statusRect.y + 6)
       end
     )
-    if view.busy == true then
+    if view.busy == true or view.pickerPending == true then
       local progress = view.progress
       if type(progress) == "number" and progress == progress and math.abs(progress) < math.huge then
         local trackWidth = math.max(1, contentWidth)
@@ -348,10 +348,13 @@ function LauncherRenderer:_library(view, layout, selected)
       end
     end
   end)
-  self:drawButton(layout.actions.addGame, "Add game", "add-game", { focused = view.action == "add-game" })
+  self:drawButton(layout.actions.addGame, "Add game", "add-game", {
+    focused = view.action == "add-game",
+    disabled = view.pickerPending == true,
+  })
   self:drawButton(layout.actions.play, "Play", "play", {
     focused = view.action == "play",
-    disabled = selected == nil or not selected.ready,
+    disabled = view.pickerPending == true or selected == nil or not selected.ready,
   })
   if view.modal ~= nil then
     color(graphics, { 0.16, 0.16, 0.16, 0.35 })

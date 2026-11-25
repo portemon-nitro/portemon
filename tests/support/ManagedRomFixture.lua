@@ -116,6 +116,7 @@ local function newHost(options)
   }
   local realNewThread = love.thread.newThread
   local realNewChannel = love.thread.newChannel
+  local newImporter = RomImporter.new
   love.thread.newChannel = function()
     return channel(assert(realNewChannel()), host)
   end
@@ -170,7 +171,7 @@ local function newHost(options)
   end
 
   function host:importer(cart, onComplete)
-    local importer = RomImporter.new({
+    local importer = newImporter({
       versions = cart.versions,
       cacheFactory = function(versionId)
         return require("libs.storage.src.CacheFs").forVersion(versionId)
@@ -313,6 +314,18 @@ function Fixture.with(fn)
     local path = "imports/" .. self.label .. "-" .. token .. ".nds"
     Assert.isNil(temporaryFiles[path], "temporary path must be written once")
     Assert.isTrue(love.filesystem.createDirectory("imports"), "temporary root setup failed")
+    Assert.isTrue(love.filesystem.write(path, bytes or self.cart.data), "temporary fixture write failed")
+    temporaryFiles[path] = true
+    return path
+  end
+  function fixture:writePickerTemporary(requestId, bytes)
+    Assert.isTrue(
+      requestId:match("^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$") ~= nil,
+      "picker request must be a UUID"
+    )
+    Assert.isTrue(love.filesystem.createDirectory("imports"), "temporary root setup failed")
+    local path = "imports/" .. requestId .. ".nds"
+    Assert.isNil(temporaryFiles[path], "temporary path must be written once")
     Assert.isTrue(love.filesystem.write(path, bytes or self.cart.data), "temporary fixture write failed")
     temporaryFiles[path] = true
     return path
