@@ -2198,6 +2198,14 @@ local FieldHandlers = {
   [429] = FieldServiceHandlers.countFossils,
   [432] = FieldServiceHandlers.getFossilPokemon,
   [433] = FieldServiceHandlers.getFossilMinimumAmount,
+  -- The lottery family rides the same source-service leaf for the same budget
+  -- reason: the saved identity get, the two-draw roll, the party-then-box
+  -- search and the shared daily variable read.
+  [503] = FieldServiceHandlers.lotoIdGet,
+  [504] = FieldServiceHandlers.lotoIdSearch,
+  [505] = FieldServiceHandlers.lotoIdSet,
+  [534] = FieldServiceHandlers.getVar4041,
+  [506] = FieldServiceHandlers.bufferBoxMonNick,
   [793] = FieldServiceHandlers.bankTransaction,
   [794] = FieldServiceHandlers.checkBankBalance,
   [795] = FieldServiceHandlers.showSavingsBox,

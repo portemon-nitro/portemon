@@ -218,6 +218,9 @@ Schema.TEXT_VALUES = {
   species_name = { fields = { value = { type = "scalar_or_value", required = true } } },
   party_species_name = { fields = { position = { type = "scalar_or_value", required = true } } },
   party_nickname = { fields = { position = { type = "scalar_or_value", required = true } } },
+  -- The stored boxed mon's nickname, named by its source box slot
+  -- (src/scrcmd_strbuf.c::ScrCmd_BufferBoxMonNick).
+  box_mon_nickname = { fields = { boxSlot = { type = "scalar_or_value", required = true } } },
   party_mon_move_name = {
     fields = {
       position = { type = "scalar_or_value", required = true },
@@ -1294,6 +1297,31 @@ Schema.OPERATIONS = {
   bank_overflow_check = {
     fields = {
       action = { type = "integer", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  -- The source lottery family (src/scrcmd_lottery.c, src/sys_vars.c): the get
+  -- and set answer through one written variable, the set draws its two linear
+  -- values and writes the retail low halfword, and the search reads its lottery
+  -- identity through a value reference before writing the source's three
+  -- results -- zero-based slot, matched digit count and zero/one container kind.
+  loto_id_get = {
+    fields = {
+      result = { type = "writable_value", required = true },
+    },
+  },
+  loto_id_set = { fields = {} },
+  loto_id_search = {
+    fields = {
+      position = { type = "writable_value", required = true },
+      count = { type = "writable_value", required = true },
+      kind = { type = "writable_value", required = true },
+      id = { type = "scalar_or_value", required = true },
+    },
+  },
+  -- ScrCmd_GetVar4041 (src/scrcmd_c.c): the shared daily variable.
+  get_var_4041 = {
+    fields = {
       result = { type = "writable_value", required = true },
     },
   },

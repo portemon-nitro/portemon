@@ -590,7 +590,9 @@ end
 -- A civil-day advance drives the Kenji errand exactly like the
 -- source daily update: a covering wait decrements with the activity
 -- cleared and the invitation kept, while an expired wait rolls a
--- fresh 1-6 day wait and clears the staged invitation and gift.
+-- fresh 1-6 day wait and clears the staged invitation and gift. The
+-- field's daily dispatcher owns the day call, so the observation itself
+-- never advances the errand.
 function T.tests.a_civil_day_advance_drives_the_kenji_errand_wait()
   local KENJI_KEY = "custom.kenji"
   local contacts = {
@@ -602,13 +604,15 @@ function T.tests.a_civil_day_advance_drives_the_kenji_errand_wait()
   rig.state:setContactReward(KENJI_KEY, { item = "ITEM_PROTEIN", quantity = 1 })
   rig.calls:onFieldClock({ year = 2024, month = 1, day = 8, hour = 23, minute = 59, second = 0 })
   rig.calls:onFieldClock({ year = 2024, month = 1, day = 9, hour = 0, minute = 1, second = 0 })
+  Assert.equal(rig.state:readPhone().kenji.waitDays, 3, "the observation alone advances no errand wait")
+  rig.calls:advanceDays(1)
   local covered = rig.state:readPhone()
   Assert.equal(covered.kenji.waitDays, 2, "a covering wait decrements by the elapsed day")
   Assert.isFalse(covered.kenji.active, "the daily update always clears the activity flag")
   Assert.notNil(covered.rematches[KENJI_KEY], "a covering wait keeps the staged invitation")
   Assert.notNil(covered.contacts[KENJI_KEY].reward, "a covering wait keeps the staged gift")
   rig.state:setKenjiErrand(1, true)
-  rig.calls:onFieldClock({ year = 2024, month = 1, day = 11, hour = 0, minute = 1, second = 0 })
+  rig.calls:advanceDays(2)
   local expired = rig.state:readPhone()
   local reroll = expired.kenji.waitDays
   Assert.isTrue(reroll >= 1 and reroll <= 6, "an expired wait rolls a fresh one-to-six day wait")

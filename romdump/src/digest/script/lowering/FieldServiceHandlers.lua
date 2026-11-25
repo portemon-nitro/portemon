@@ -935,6 +935,45 @@ function FieldServiceHandlers.hiddenPowerType(ins)
   }
 end
 
+-- The source lottery family (src/scrcmd_lottery.c). LotoIDGet writes the saved
+-- identity into one result variable, LotoIDSearch names its three result
+-- pointers before reading its lottery identity through ScriptGetVar, LotoIDSet
+-- takes no operand, and GetVar4041 writes the shared daily variable
+-- (src/scrcmd_c.c).
+function FieldServiceHandlers.lotoIdGet(ins)
+  return { op = "loto_id_get", result = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.lotoIdSearch(ins)
+  return {
+    op = "loto_id_search",
+    position = Operands.varRef(ins.operands[1]),
+    count = Operands.varRef(ins.operands[2]),
+    kind = Operands.varRef(ins.operands[3]),
+    id = Operands.varRef(ins.operands[4]),
+  }
+end
+
+function FieldServiceHandlers.lotoIdSet()
+  return { op = "loto_id_set" }
+end
+
+function FieldServiceHandlers.getVar4041(ins)
+  return { op = "get_var_4041", result = Operands.varRef(ins.operands[1]) }
+end
+
+-- ScrCmd_BufferBoxMonNick reads its format field as a raw byte and the boxed
+-- mon slot through ScriptGetVar (src/scrcmd_strbuf.c).
+function FieldServiceHandlers.bufferBoxMonNick(ins)
+  local slot = Operands.operandValue(ins.operands[1])
+  assert(type(slot) == "number", "a boxed-mon nickname buffer names its source format field")
+  return {
+    op = "buffer_text",
+    slot = slot,
+    value = { text = "box_mon_nickname", boxSlot = Operands.varRef(ins.operands[2]) },
+  }
+end
+
 function FieldServiceHandlers.martOpen(kind, selector)
   local step = { op = "mart_open", kind = kind }
   if selector ~= nil then

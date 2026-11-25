@@ -154,6 +154,28 @@ local function resolveMonsTextValue(kind, descriptor, mons, world)
   elseif kind == "party_nickname" then
     local position = evaluateTextOperand(descriptor.position, world)
     return Mon.displayName(mons:partyMon(position), catalog)
+  elseif kind == "box_mon_nickname" then
+    -- ScrCmd_BufferBoxMonNick names one stored mon by its source slot order:
+    -- PCStorage_GetMonByIndexPair splits it into box and slot. A slot the
+    -- boxes do not hold is malformed source data, never an empty name.
+    local boxSlot = evaluateTextOperand(descriptor.boxSlot, world)
+    if type(boxSlot) ~= "number" or boxSlot % 1 ~= 0 or boxSlot < 0 then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "a boxed mon slot is a stored slot number", {
+        boxSlot = boxSlot,
+      })
+    end
+    local slotsPerBox = require("libs.mons.src.Boxes").SLOTS_PER_BOX
+    local box = math.floor(boxSlot / slotsPerBox)
+    if box >= mons:boxCount() then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "a boxed mon slot names a stored box", { boxSlot = boxSlot })
+    end
+    local mon = mons:boxMon(box, boxSlot % slotsPerBox)
+    if mon == nil then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "a boxed mon slot names an occupied slot", {
+        boxSlot = boxSlot,
+      })
+    end
+    return Mon.displayName(mon --[[@as table<string, unknown>]], catalog)
   elseif kind == "species_name" then
     local identity = evaluateTextOperand(descriptor.value, world)
     if type(identity) == "number" then

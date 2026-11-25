@@ -4810,6 +4810,42 @@ do
     return Runtime.OUTCOME_CONTINUE
   end
 end
+-- The source lottery family (src/scrcmd_lottery.c, src/sys_vars.c). Every node
+-- is same-tick: the get and the shared daily variable answer through one result
+-- variable, the set consumes the two linear values of the source roll, and the
+-- search reads its lottery identity before writing the three source results --
+-- the zero-based slot, the matched digit count and the container kind.
+---@class ScriptLotteryService
+---@field lotoId fun(self: ScriptLotteryService): integer
+---@field rollLotoId fun(self: ScriptLotteryService)
+---@field searchLotoId fun(self: ScriptLotteryService, lotoId: integer): { position: integer, count: integer, kind: integer }
+---@field var4041 fun(self: ScriptLotteryService): integer
+do
+  local function lotteryFor(run)
+    return requireService(run, "lottery") --[[@as ScriptLotteryService]]
+  end
+  HANDLERS.loto_id_get = function(node, run)
+    semanticsFor(run).writeRef(node.result, lotteryFor(run):lotoId(), run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.loto_id_set = function(_, run)
+    lotteryFor(run):rollLotoId()
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.loto_id_search = function(node, run)
+    local semantics = semanticsFor(run)
+    local lotoId = semantics.evaluateValue(node.id, run)
+    local result = lotteryFor(run):searchLotoId(lotoId)
+    semantics.writeRef(node.position, result.position, run)
+    semantics.writeRef(node.count, result.count, run)
+    semantics.writeRef(node.kind, result.kind, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.get_var_4041 = function(node, run)
+    semanticsFor(run).writeRef(node.result, lotteryFor(run):var4041(), run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+end
 HANDLERS.open_message = handleOpenMessage
 HANDLERS.signpost_direction = handleSignpostDirection
 HANDLERS.signpost_set = handleSignpostSet

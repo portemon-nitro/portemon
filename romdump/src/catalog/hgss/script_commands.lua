@@ -3902,12 +3902,14 @@ return {
       },
     },
     [503] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_LotoIDGet",
       widths = {
         [1] = 2,
       },
     },
     [504] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_LotoIDSearch",
       widths = {
         [1] = 2,
@@ -3917,15 +3919,15 @@ return {
       },
     },
     [505] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_LotoIDSet",
       widths = {},
     },
     [506] = {
       name = "ScrCmd_BufferBoxMonNick",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "pc_storage",
-      deferredNote = "box nicknames need box storage",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -4123,6 +4125,7 @@ return {
       },
     },
     [534] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_GetVar4041",
       widths = {
         [1] = 2,

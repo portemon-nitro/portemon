@@ -475,7 +475,35 @@ local function monsHost()
     },
     mons = service,
   })
-  return withMons
+  return withMons, service
+end
+
+-- ScrCmd_BufferBoxMonNick names one stored mon by its source slot order:
+-- PCStorage_GetMonByIndexPair splits the slot into box * 30 + slot.
+function T.boxed_mon_text_resolves_the_stored_nickname()
+  local withMons, service = monsHost()
+  local preparation = assert(service:preparePcChanges({
+    partyRevision = service:partyRevision(),
+    boxRevision = service:boxRevision(),
+  }, {
+    boxUpdates = {
+      { box = 0, slot = 0, mon = service:partyMon(0) },
+      { box = 1, slot = 2, mon = service:partyMon(1) },
+    },
+  }))
+  preparation:publish()
+  local function textAt(descriptor)
+    withMons:openMessage({})
+    withMons:startPrint("msg.hgss.0542.00000", { [0] = descriptor })
+    local hostObject = withMons --[[@as { _controller: { request: { message: { text: string } }|nil } }]]
+    return assert(hostObject._controller.request).message.text
+  end
+  Assert.equal(textAt({ text = "box_mon_nickname", boxSlot = 0 }), "CHIKORITA", "an unnamed stored mon shows its species")
+  Assert.equal(textAt({ text = "box_mon_nickname", boxSlot = 32 }), "GNARLY", "the stored nickname resolves by box slot")
+  local err = Assert.throws(function()
+    textAt({ text = "box_mon_nickname", boxSlot = 33 })
+  end)
+  Assert.isTrue(Errors.is(err), "an unoccupied box slot is an attributed fault")
 end
 
 function T.party_text_resolves_species_nickname_move_and_nature()

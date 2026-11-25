@@ -634,7 +634,9 @@ end
 -- once. A fresh checkpoint starts at its opening sample, so its next live
 -- minute counts. A backward sample preserves the ring. Polling, expiry,
 -- and evaluation draw nothing here. Returns the calendar report so the
--- field runtime can consume the civil-day advance on the same observation.
+-- field runtime's daily dispatcher can apply the same observation: the
+-- source runs its day handlers before the minute handlers, and the errand
+-- wait belongs to that ordered day work, never to this observation.
 ---@param sample table<string, integer>
 ---@return { dayAdvance: integer, minuteAdvance: integer, backward: boolean } report
 function IncomingCalls:onFieldClock(sample)
@@ -652,11 +654,7 @@ function IncomingCalls:onFieldClock(sample)
   if advance > 0 and not (openingSample and self._openingCheckpointRestored) then
     self._cooldown = self._cooldown + advance
   end
-  local dayAdvance = report.dayAdvance
-  assert(type(dayAdvance) == "number", "calendar observations report whole elapsed days")
-  if dayAdvance > 0 then
-    self:_advanceKenjiErrand(dayAdvance)
-  end
+  assert(type(report.dayAdvance) == "number", "calendar observations report whole elapsed days")
   local pending = self._pending
   if pending ~= nil then
     if pending.startEpoch == nil then
@@ -679,9 +677,11 @@ end
 -- flag always clears; a wait covering the elapsed days decrements;
 -- otherwise a fresh 1-6 day wait rolls and the staged seeking and
 -- gift clear with it. The reroll draws exactly like the source
--- LCRandom bound.
+-- LCRandom bound. The field's daily dispatcher calls this between the
+-- shared daily variable and the password set, so the reroll is the
+-- second linear draw of one day application.
 ---@param days integer elapsed civil days
-function IncomingCalls:_advanceKenjiErrand(days)
+function IncomingCalls:advanceDays(days)
   assert(type(days) == "number" and days % 1 == 0 and days > 0, "kenji errands advance whole elapsed days")
   local readPhone = self._state.readPhone --[[@as fun(self: table<string, unknown>): table<string, unknown>]]
   local phone = readPhone(self._state)

@@ -875,6 +875,10 @@ function FieldScriptComposition.compose(runtime, options)
     mailbox = runtime.mailbox,
     dexHeights = FieldScriptComposition.dexHeights(runtime.pokedexCatalog),
     moveTutor = options.moveTutor,
+    -- The one ordered daily dispatcher doubles as the lottery command leaf: the
+    -- radio tower's draw, search and shared daily variable all read the same
+    -- field owner, and an absent owner faults the commands that need it.
+    lottery = runtime.dailyEvents,
     followerTransition = options.followerTransition,
     starterBalls = options.starterBalls,
     pcApplications = runtime.pcApplicationHost,

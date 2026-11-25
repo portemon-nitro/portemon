@@ -604,6 +604,7 @@ end
 ---@field followerReactionTicks table<string, integer> follower reaction emote kind -> emote action duration
 ---@field bagService HgssBagService the live bag/inventory service
 ---@field martService MartService the live mart inventory/session service
+---@field dailyEvents table<string, unknown>? the one ordered daily dispatcher and lottery owner (nil after teardown)
 ---@field martHost table<string, unknown> the one script-owned mart child host
 ---@field savingsBox table<string, unknown>? the transient source savings window the field draw renders
 ---@field bankHost table<string, unknown>? the one script-owned Mom bank transfer host
@@ -1698,7 +1699,23 @@ function FieldRuntime:_composeFieldServices(boot)
   })
   self:_composeMart(boot)
   self:_composeBank()
-  self:_processApricornDate()
+  self:_processApricornDate(self.localClock:nowLocal())
+  -- The one ordered daily/lottery owner: the field's day handlers over the
+  -- calendar observation the incoming-call manager already took, plus the
+  -- source lottery the radio-tower script drives. Composed before the script
+  -- platform so its commands resolve it as their injected service.
+  local FieldDailyEvents = require("game.hgss.src.field.FieldDailyEvents")
+  self.dailyEvents = FieldDailyEvents.new({
+    world = self.eventState,
+    state = self.pokegearState,
+    mons = self.monService,
+    mart = self.martService,
+    calls = self.incomingCalls,
+    random = self.pokegearRandom,
+    regrowApricorns = function(date)
+      self:_processApricornDate(date)
+    end,
+  })
   -- The one following-mon controller: derived follower presentation over
   -- the live party, driven once per fixed tick after the session update.
   -- The player accessor tracks warp rebinds, so the controller never holds
@@ -2242,9 +2259,15 @@ function FieldRuntime:_publishEndingRecord(record)
   error(err, 0)
 end
 
-function FieldRuntime:_processApricornDate()
-  local now = self.localClock:nowLocal()
-  local result = self.martService:processApricornDate({ year = now.year, month = now.month, day = now.day })
+-- The Apricorn date pass behind FieldSystem_RegrowApricornTrees: the mart
+-- service owns the saved day and the harvested mask, and the field clears the
+-- daily ball-making flag and republishes the presented trees on the day the
+-- owner actually regrows. The daily dispatcher calls it at the source's own
+-- position in the day order, and boot calls it once so a fresh bucket carries
+-- its current day without regrowing anything.
+---@param date { year: integer, month: integer, day: integer }
+function FieldRuntime:_processApricornDate(date)
+  local result = self.martService:processApricornDate(date)
   if result.advanced then
     self.eventState:clearFlag(FieldScriptSymbols.flagsByName.FLAG_DAILY_KURT_MAKING_BALLS)
     local treePresentation = self.apricornTreePresentation
@@ -2779,7 +2802,6 @@ function FieldRuntime:update(dt)
     if self.legendEventScene then
       self.legendEventScene:updatePresentation()
     end
-    self:_processApricornDate()
     -- The transient banner advances one fixed tick before the session so a
     -- request created during this tick keeps its initial source displacement
     -- until the next tick, even while a transition holds input.
@@ -2984,7 +3006,9 @@ end
 -- Samples the host-local civil clock into the incoming-call owner once
 -- per field update, never from rendering or the displayed clock. The
 -- sample pauses while a higher-priority owner holds the field, matching
--- the source advancement that only runs without a field task.
+-- the source advancement that only runs without a field task. The one
+-- returned observation then drives the field's ordered daily handlers, so a
+-- day advances exactly once and a retired report is never replayed.
 function FieldRuntime:_pumpIncomingClock()
   local calls = self.incomingCalls
   local session = self.session
@@ -3020,19 +3044,13 @@ function FieldRuntime:_pumpIncomingClock()
       return
     end
   end
-  local report = calls:onFieldClock(self.localClock:nowLocal())
+  local sample = self.localClock:nowLocal()
+  local report = calls:onFieldClock(sample)
   if type(report) ~= "table" then
     return
   end
-  -- The Route16 daily word gate clears on a positive civil-day advance
-  -- only: same-day reloads preserve the use, and backward adjustments
-  -- never reopen the gate. Learned words are never cleared.
-  if report.backward ~= true and type(report.dayAdvance) == "number" and report.dayAdvance > 0 then
-    local world = self.scripts ~= nil and self.scripts.worldState or nil
-    if world ~= nil then
-      world:clearFlag(FieldScriptSymbols.flagsByName.FLAG_UNK_ABA)
-    end
-  end
+  local FieldDailyEvents = require("game.hgss.src.field.FieldDailyEvents")
+  FieldDailyEvents.apply(self, sample, report)
 end
 
 -- Every semantic-input entry point below needs the same live-input guard;
@@ -6826,6 +6844,7 @@ function FieldRuntime:_releaseAll()
   self.pokedexCatalog, self.dexKnowledge, self.gameStats = nil, nil, nil
   self.bagService, self.bagCursor = nil, nil
   self.martService = nil
+  self.dailyEvents = nil
   self.bankHost, self.savingsBox = nil, nil
   self.mailbox, self.photoAlbum, self.sysInfo = nil, nil, nil
   self.hallOfFame = nil
