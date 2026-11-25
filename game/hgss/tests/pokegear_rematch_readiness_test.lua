@@ -1,8 +1,9 @@
--- Durable phone rematch readiness: the field query and the map marker
--- read one saved record behind the live native window, a registered
--- caller without a staged invitation is never ready, and no launch
--- invents a trainer team the generated catalog cannot resolve. Synthetic
--- contacts through the real asset schema and state owner; no ROM data.
+-- Source phone rematches: the field query and the map marker read one saved
+-- invitation and answer the native trainer tier the generated source rematch
+-- set resolves to, the unbeaten scan follows the source entry order and its
+-- group fallback, Kenji alone waits for the daytime band, and only the
+-- explicit seeking clear ends an invitation. Synthetic contacts through the
+-- real asset schema and state owner; no ROM data.
 
 local Assert = require("tests.support.Assert")
 
@@ -78,15 +79,43 @@ local function fixtureManifest()
         {
           key = "custom.leader-falkner",
           family = "gym",
+          id = 18,
+          trainerId = 7,
+          messageBank = 648,
           sortWeight = 10,
           rematchWeekday = 6,
           rematchTimeOfDay = 1,
         },
+        {
+          key = "custom.kenji",
+          family = "kenji",
+          id = 16,
+          trainerId = 17,
+          messageBank = 706,
+          sortWeight = 20,
+          rematchWeekday = 0,
+          rematchTimeOfDay = 1,
+        },
+        {
+          key = "custom.daycare-man",
+          family = "daycare",
+          id = 6,
+          trainerId = 0,
+          messageBank = 661,
+          sortWeight = 30,
+          rematchWeekday = 3,
+          rematchTimeOfDay = 2,
+        },
       },
-      contactOrder = { "custom.leader-falkner" },
+      contactOrder = { "custom.leader-falkner", "custom.kenji", "custom.daycare-man" },
       callDefinitions = {},
       callTriggers = {},
-      rematches = {},
+      -- Source rematch sets: the gym caller's three tiers and Kenji's four,
+      -- each opening with its own base trainer and closed by TRAINER_NONE.
+      rematches = {
+        [7] = { 7, 7, 8, 9, 10, 0 },
+        [17] = { 17, 17, 250, 278, 605, 0 },
+      },
       gifts = {},
       momPurchases = {},
       locations = {
@@ -104,13 +133,56 @@ local function fixtureManifest()
 end
 
 local CONTACT = "custom.leader-falkner"
+-- The Kenji phonebook contact: the one caller whose invitation also waits for
+-- the source daytime band.
+local KENJI = "custom.kenji"
+local DAYCARE_MAN = "custom.daycare-man"
 
--- One composed phone call over the real state owner, catalog, and
--- native window: only the saved record differs between the scenarios.
+-- Source day and night bands for the Kenji gate.
+local TIMEOFDAY_DAY = 1
+local TIMEOFDAY_NIGHT = 2
+
+---@param defeated integer[]
+---@param unlockedGroups integer[]
+---@param timeOfDay integer
+---@return table world a world double answering the source rematch facts
+local function rematchWorld(defeated, unlockedGroups, timeOfDay)
+  local records = {}
+  local defeatedSet = {}
+  for _, trainerNo in ipairs(defeated) do
+    defeatedSet[trainerNo] = true
+  end
+  local unlockedSet = {}
+  for _, rematchNo in ipairs(unlockedGroups) do
+    unlockedSet[rematchNo] = true
+  end
+  return {
+    queryRematch = function(_, contact)
+      local record = records[contact]
+      if record == nil then
+        return nil
+      end
+      return { stage = record.stage, wins = record.wins }
+    end,
+    setRematch = function(_, contact, record)
+      records[contact] = record
+    end,
+    trainerDefeated = function(_, trainerNo)
+      return defeatedSet[trainerNo] == true
+    end,
+    rematchGroupUnlocked = function(_, rematchNo)
+      return unlockedSet[rematchNo] == true
+    end,
+    rematchFacts = function()
+      return { weekday = 6, timeOfDay = timeOfDay }
+    end,
+  }
+end
+
 ---@param seed integer
----@param staged { stage: integer, wins: integer }?
----@return table call, table state
-local function freshRematchCall(seed, staged)
+---@param world table
+---@return table call, table state, table catalog
+local function rematchCall(seed, world)
   local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local PokegearState = require("libs.hgss.src.save.PokegearState")
@@ -119,24 +191,9 @@ local function freshRematchCall(seed, staged)
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
   assert(record ~= nil, "synthetic catalog validated above")
   local state = PokegearState.new({ seed = seed }, { catalog = record.catalog })
-  state:registerContact(CONTACT)
-  if staged ~= nil then
-    state:setRematch(CONTACT, staged)
+  for _, contact in ipairs({ CONTACT, KENJI, DAYCARE_MAN }) do
+    state:registerContact(contact)
   end
-  local world = {
-    nativeSelectorFacts = function()
-      return { localMap = false }
-    end,
-    rematchFacts = function()
-      return { weekday = 6, timeOfDay = 1 }
-    end,
-    queryRematch = function(_, contact)
-      return state:queryRematch(contact)
-    end,
-    setRematch = function(_, contact, entry)
-      state:setRematch(contact, entry)
-    end,
-  }
   local call = PhoneCall.new({
     state = state,
     catalog = record.catalog,
@@ -155,55 +212,128 @@ local function freshRematchCall(seed, staged)
     },
     random = PokegearRandom.new(seed),
   })
-  return call, state
+  return call, state, record.catalog
 end
 
--- The field query and the map marker read one saved record behind the
--- live window, and a launch the generated catalog cannot map to a team
--- fails attributed without touching saved progress.
-function T.tests.rematch_readiness_follows_the_saved_invitation()
-  local call, state = freshRematchCall(2024, { stage = 1, wins = 2 })
-  local query = call:queryRematch(CONTACT)
-  Assert.equal(query.ready, true, "the field query reports ready inside the eligibility window")
-  Assert.isNil(query.tier, "the query does not guess a story tier")
-  local marker = call:rematchMarker(CONTACT)
-  Assert.equal(marker.ready, query.ready, "the map marker reads the same durable readiness")
-  local before = state:queryRematch(CONTACT)
-  local failure = Assert.throws(function()
-    call:launchRematch(CONTACT)
-  end, "launching without a source-backed mapping fails")
-  Assert.equal(failure.code, require("libs.script.src.errors").FEATURE_UNAVAILABLE, "the missing team is attributed")
-  Assert.deepEqual(state:queryRematch(CONTACT), before, "unsupported launch preserves saved progress")
-
-  -- Registration alone never stages readiness, and the marker agrees.
-  local unplayed, unplayedState = freshRematchCall(3031, nil)
-  Assert.equal(unplayed:queryRematch(CONTACT).ready, false, "registration without an invitation never reports ready")
-  Assert.isNil(unplayed:queryRematch(CONTACT).tier, "the query never guesses a story tier")
-  local unplayedMarker = unplayed:rematchMarker(CONTACT)
-  Assert.equal(unplayedMarker.ready, false, "the marker agrees that no invitation waits")
-  Assert.isNil(unplayedMarker.tier, "the marker carries no invented tier")
-  Assert.throws(function()
-    unplayed:launchRematch(CONTACT)
-  end, "launching without readiness never invents a team")
-  Assert.isNil(unplayedState:queryRematch(CONTACT), "readiness queries never stage a record")
-end
-
--- Playing the phone program for a rematch-shaped contact stages no
--- invitation the generated source stage does not authorize.
-function T.tests.unsourced_phone_call_does_not_stage_a_rematch()
-  local call, state = freshRematchCall(3032, nil)
-  local handle = call:begin({ id = "rematch-full-party", contact = CONTACT, direction = "outgoing", kind = "rematch" })
-  call:step(handle, {})
-  call:step(handle, {})
-  Assert.isNil(state:queryRematch(CONTACT), "the phone program does not fabricate an invitation")
-  Assert.isFalse(call:queryRematch(CONTACT).ready, "an unsourced contact is not ready")
-  local failure = Assert.throws(function()
-    call:launchRematch(CONTACT)
-  end, "an unsourced challenge cannot launch")
+-- The source rematch scan walks entries 1..5, ends at TRAINER_NONE with the
+-- previous entry, skips the 0xFFFF holes, and falls back through the previous
+-- non-hole entry when the entry's rematch group is still locked.
+function T.tests.first_unbeaten_rematch_scan_follows_the_source_order()
+  local TrainerPhonePrograms = require("game.hgss.src.pokegear.phone.TrainerPhonePrograms")
+  local function defeats(set)
+    return function(trainerNo)
+      return set[trainerNo] == true
+    end
+  end
+  -- Every entry is unbeaten: the scan stops at the first one.
   Assert.equal(
-    failure.code,
-    require("libs.script.src.errors").FEATURE_UNAVAILABLE,
-    "the unsupported launch is attributed"
+    TrainerPhonePrograms.firstUnbeatenRematch({ 7, 7, 8, 9, 10, 0 }, defeats({})),
+    1,
+    "the first unbeaten entry wins the scan"
+  )
+  -- The base trainer is beaten and the second entry is a hole: the scan
+  -- steps over the hole instead of treating it as a trainer.
+  Assert.equal(
+    TrainerPhonePrograms.firstUnbeatenRematch({ 7, 7, 0xFFFF, 9, 10, 0 }, defeats({ [7] = true })),
+    3,
+    "the scan skips a source hole"
+  )
+  -- TRAINER_NONE ends the scan at the previous entry.
+  Assert.equal(
+    TrainerPhonePrograms.firstUnbeatenRematch(
+      { 7, 7, 8, 9, 10, 0 },
+      defeats({ [7] = true, [8] = true, [9] = true, [10] = true })
+    ),
+    4,
+    "the none sentinel ends the scan at the previous entry"
+  )
+  -- A set whose last entry is a real trainer exhausts the scan at entry five.
+  Assert.equal(
+    TrainerPhonePrograms.firstUnbeatenRematch(
+      { 7, 7, 8, 9, 10, 11 },
+      defeats({ [7] = true, [8] = true, [9] = true, [10] = true, [11] = true })
+    ),
+    5,
+    "an exhausted scan answers the last source entry"
+  )
+  Assert.equal(
+    TrainerPhonePrograms.firstUnbeatenRematch({ 7, 7, 8, 0, 0, 0 }, defeats({ [7] = true, [8] = true })),
+    2,
+    "a short set stops at its own none sentinel"
+  )
+  -- The group fallback returns the previous non-hole entry, else the set's
+  -- own base trainer.
+  Assert.equal(
+    TrainerPhonePrograms.previousRematch({ 7, 7, 0xFFFF, 9, 10, 0 }, 3),
+    1,
+    "the group fallback steps back over a hole"
+  )
+  Assert.equal(
+    TrainerPhonePrograms.previousRematch({ 7, 7, 8, 9, 10, 0 }, 1),
+    0,
+    "the entry above the base trainer falls back to the base itself"
+  )
+end
+
+-- The field query answers the native trainer tier of the contact's saved
+-- invitation, never a boolean or a call-window readiness, and the marker
+-- projects the same resolution.
+function T.tests.rematch_query_answers_the_source_trainer_tier()
+  local world = rematchWorld({ 7 }, {}, TIMEOFDAY_DAY)
+  local call = rematchCall(2024, world)
+
+  local unplayed = call:queryRematch(CONTACT)
+  Assert.equal(unplayed.trainerId, 0, "a contact that never asked for a rematch offers no trainer")
+  Assert.equal(unplayed.ready, false, "no saved invitation is never ready")
+  Assert.equal(call:rematchMarker(CONTACT).trainerId, 0, "the marker carries no invented trainer")
+
+  world.setRematch(world, CONTACT, { stage = 1, wins = 2 })
+  -- The base trainer is beaten and the next entry's group is still locked,
+  -- so the source falls back to the previous non-hole entry.
+  local locked = call:queryRematch(CONTACT)
+  Assert.equal(locked.trainerId, 7, "a locked rematch group offers the contact's own tier")
+  Assert.equal(locked.ready, true, "the staged invitation answers ready")
+  local marker = call:rematchMarker(CONTACT)
+  Assert.equal(marker.trainerId, locked.trainerId, "the marker projects the same trainer tier")
+  Assert.equal(marker.ready, true, "the marker projects the same readiness")
+
+  -- Unlocking the group behind the next entry offers that tier instead.
+  local unlockedWorld = rematchWorld({ 7 }, { 2 }, TIMEOFDAY_DAY)
+  local unlockedCall = rematchCall(2024, unlockedWorld)
+  unlockedWorld.setRematch(unlockedWorld, CONTACT, { stage = 1, wins = 2 })
+  Assert.equal(unlockedCall:queryRematch(CONTACT).trainerId, 8, "an unlocked rematch group offers its own tier")
+
+  -- The clear ends the invitation, keeps the accumulated wins, and repeated
+  -- clears stay no-ops.
+  local cleared = call:clearRematchSeeking(CONTACT)
+  Assert.equal(cleared.ready, false, "the clear reports no invitation")
+  Assert.equal(world.queryRematch(world, CONTACT).stage, 0, "the clear ends the saved invitation")
+  Assert.equal(world.queryRematch(world, CONTACT).wins, 2, "the clear keeps the accumulated win count")
+  Assert.equal(call:queryRematch(CONTACT).trainerId, 0, "a cleared invitation offers no trainer")
+  call:clearRematchSeeking(CONTACT)
+  Assert.equal(world.queryRematch(world, CONTACT).wins, 2, "a repeated clear changes nothing")
+end
+
+-- Kenji's invitation waits for the source daytime band; every other caller
+-- does not. A contact without a rematch set answers numeric zero at any hour.
+function T.tests.kenji_invitation_waits_for_the_source_daytime()
+  local nightWorld = rematchWorld({ 17 }, {}, TIMEOFDAY_NIGHT)
+  local night = rematchCall(4041, nightWorld)
+  nightWorld.setRematch(nightWorld, KENJI, { stage = 1, wins = 0 })
+  nightWorld.setRematch(nightWorld, CONTACT, { stage = 1, wins = 0 })
+  nightWorld.setRematch(nightWorld, DAYCARE_MAN, { stage = 1, wins = 0 })
+  Assert.equal(night:queryRematch(KENJI).trainerId, 0, "Kenji's invitation waits for its own daytime")
+  Assert.equal(night:queryRematch(CONTACT).trainerId, 7, "another caller resolves at night")
+
+  local dayWorld = rematchWorld({ 17 }, {}, TIMEOFDAY_DAY)
+  local day = rematchCall(4041, dayWorld)
+  dayWorld.setRematch(dayWorld, KENJI, { stage = 1, wins = 0 })
+  dayWorld.setRematch(dayWorld, DAYCARE_MAN, { stage = 1, wins = 0 })
+  Assert.equal(day:queryRematch(KENJI).trainerId, 17, "Kenji's invitation answers his own tier by day")
+  Assert.equal(
+    day:queryRematch(DAYCARE_MAN).trainerId,
+    0,
+    "a contact without a rematch set never offers a trainer"
   )
 end
 

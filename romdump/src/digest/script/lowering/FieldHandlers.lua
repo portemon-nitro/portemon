@@ -1510,7 +1510,7 @@ local function actorOscillate(ins)
 end
 
 -- Bounded pocket-gear inventory lowerings: opcodes 142, 145, 146, 147, 148,
--- 149, 157, 430, 431, 460, 461, 613, 614, 779, 813, and 821. Source
+-- 149, 157, 430, 431, 460, 461, 462, 613, 614, 779, 813, and 821. Source
 -- operand widths live in the pinned command table; ScriptGetVar semantics
 -- keep var-range operands as references and immediates as values.
 -- Contact operands are source phonebook numbers; the runtime translates
@@ -1555,12 +1555,23 @@ function GearLowering.gearTrigger(ins, position)
   return string.format("gear.trigger.%d", slot)
 end
 
+-- GetPhoneBookRematch writes the native trainer identity the contact's saved
+-- invitation resolves to, or numeric zero when nothing is on offer.
 function GearLowering.getPhoneBookRematch(ins)
   return {
     op = "pokegear_query",
-    kind = "rematch_ready",
+    kind = "rematch_trainer",
     contact = Operands.varRef(ins.operands[1]),
     result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+-- ClearPhoneRematchSeeking ends the contact's saved invitation.
+function GearLowering.clearPhoneRematchSeeking(ins)
+  return {
+    op = "pokegear_update",
+    kind = "clear_rematch_seeking",
+    contact = Operands.varRef(ins.operands[1]),
   }
 end
 
@@ -2116,6 +2127,7 @@ local FieldHandlers = {
   [430] = GearLowering.setPhoneCall,
   [431] = GearLowering.runPhoneCall,
   [460] = GearLowering.loadPhoneDat,
+  [462] = GearLowering.clearPhoneRematchSeeking,
   [461] = GearLowering.getPhoneContactMsgIds,
   [613] = GearLowering.phoneContactGiftBerry,
   [614] = GearLowering.phoneContactGiftItem,

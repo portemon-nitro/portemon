@@ -498,15 +498,13 @@ function PokegearScriptHost:isStableForSave()
   return self._active == nil
 end
 
--- Answers the field rematch readiness query through a transient
--- conversation engine over the borrowed owners. Pure read: no lease, no
--- mutation.
----@param contact string
----@return { ready: boolean, tier: integer? }
-function PokegearScriptHost:queryRematch(contact)
-  assert(isNonEmptyString(contact), "rematch queries name their contact")
+-- The transient conversation engine over the borrowed owners: the host's
+-- own pure projections (rematch tier, marker, seeking clear) never take a
+-- lease or mutate anything but the named durable record.
+---@return table<string, unknown>
+function PokegearScriptHost:_phoneEngine()
   local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
-  local engine = PhoneCall.new({
+  return PhoneCall.new({
     state = self._state,
     catalog = self._catalog,
     messages = self._messages,
@@ -514,7 +512,26 @@ function PokegearScriptHost:queryRematch(contact)
     audio = self._audio,
     random = self._random,
   })
-  return engine:queryRematch(contact)
+end
+
+-- Answers the source rematch query: the native trainer tier the contact's
+-- saved invitation resolves to, or numeric zero when none is on offer. Pure
+-- read: no lease, no mutation.
+---@param contact string
+---@return { ready: boolean, trainerId: integer }
+function PokegearScriptHost:queryRematch(contact)
+  assert(isNonEmptyString(contact), "rematch queries name their contact")
+  return self:_phoneEngine():queryRematch(contact)
+end
+
+-- Ends the contact's saved rematch invitation through the durable owner. The
+-- source script calls this only after it has won the rematch it launched, so
+-- a query, a loss, or a cancellation never reaches it.
+---@param contact string
+---@return { contact: string, ready: boolean }
+function PokegearScriptHost:clearRematchSeeking(contact)
+  assert(isNonEmptyString(contact), "rematch clears name their contact")
+  return self:_phoneEngine():clearRematchSeeking(contact)
 end
 
 -- Whether the named contact is acquired. Pure read through the durable

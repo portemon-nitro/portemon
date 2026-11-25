@@ -3161,9 +3161,14 @@ do
     local host = phoneService(run)
     local semantics = semanticsFor(run)
     local answer = nil
-    if node.kind == "rematch_ready" then
+    if node.kind == "rematch_trainer" then
       local contact = GearEval.evalContact(node, run, "contact", "pokegear_query")
-      answer = host:queryRematch(contact).ready == true and 1 or 0
+      local status = host:queryRematch(contact)
+      answer = status.trainerId
+      assert(
+        type(answer) == "number" and answer % 1 == 0 and answer >= 0,
+        "rematch queries answer a native trainer identity"
+      )
     elseif node.kind == "contact_registered" then
       local contact = GearEval.evalContact(node, run, "contact", "pokegear_query")
       answer = host:isContactRegistered(contact) and 1 or 0
@@ -3183,6 +3188,8 @@ do
     local host = phoneService(run)
     if node.kind == "register_contact" then
       host:registerContact(GearEval.evalContact(node, run, "contact", "pokegear_update"))
+    elseif node.kind == "clear_rematch_seeking" then
+      host:clearRematchSeeking(GearEval.evalContact(node, run, "contact", "pokegear_update"))
     else
       Errors.raise(
         ScriptErrors.SCRIPT_INVALID_REFERENCE,
@@ -3321,31 +3328,30 @@ do
         { scriptId = run.instance.scriptId, op = "phone_contact_message", kind = kind }
       )
     end
-    -- The per-kind bank/entry pairs live in phone script data the runtime
-    -- never serves; answering a plausible pair would be a fabricated
-    -- message. Fail with attribution before any effect instead.
-    Errors.raise(
-      ScriptErrors.FEATURE_UNAVAILABLE,
-      "contact message data is unavailable to the script runtime",
-      { scriptId = run.instance.scriptId, op = "phone_contact_message", contact = contact, kind = kind }
-    )
+    local contacts = requireService(run, "phoneContacts")
+    assert(contacts ~= nil, "companion service is available after the missing-service error")
+    local bank, entry = contacts:messageIds(contact, kind)
+    semanticsFor(run).writeRef(node.bank, bank, run)
+    semanticsFor(run).writeRef(node.entry, entry, run)
     return Runtime.OUTCOME_CONTINUE
   end
   function GearEval.handlePhoneContactGift(node, run)
-    local contact = GearEval.evalContact(node, run, "contact", "phone_contact_gift")
-    local gifts = requireService(run, "phoneGifts")
+    local gifts = requireService(run, "phoneContacts")
     assert(gifts ~= nil, "companion service is available after the missing-service error")
-    local answer = nil
-    if node.kind == "berry" then
-      answer = gifts:berry(contact)
-    elseif node.kind == "item" then
-      answer = gifts:giftItem(contact)
-    else
+    if node.kind ~= "berry" and node.kind ~= "item" then
       Errors.raise(
         ScriptErrors.SCRIPT_INVALID_REFERENCE,
         "contact gifts name a known gift kind",
         { scriptId = run.instance.scriptId, op = "phone_contact_gift" }
       )
+    end
+    -- The source reads the caller entry the phonebook load left behind. Its
+    -- none sentinel names the empty entry, which holds no gift of either kind.
+    local loaded = semanticsFor(run).evaluateValue(node.contact, run)
+    local answer = 0
+    if not (type(loaded) == "number" and loaded == 255) then
+      local contact = GearEval.resolveContactKey(loaded, run, "phone_contact_gift")
+      answer = node.kind == "berry" and gifts:berry(contact) or gifts:giftItem(contact)
     end
     semanticsFor(run).writeRef(node.result, answer, run)
     return Runtime.OUTCOME_CONTINUE
@@ -3365,7 +3371,7 @@ do
     return Runtime.OUTCOME_CONTINUE
   end
   function GearEval.handleMomGiftCheck(node, run)
-    local gifts = requireService(run, "phoneGifts")
+    local gifts = requireService(run, "phoneContacts")
     assert(gifts ~= nil, "companion service is available after the missing-service error")
     semanticsFor(run).writeRef(node.result, gifts:momGift(), run)
     return Runtime.OUTCOME_CONTINUE
@@ -3378,7 +3384,7 @@ do
     return Runtime.OUTCOME_CONTINUE
   end
   function GearEval.handleMomGiftHead(node, run)
-    local gifts = requireService(run, "phoneGifts")
+    local gifts = requireService(run, "phoneContacts")
     assert(gifts ~= nil, "companion service is available after the missing-service error")
     local nativeItemId, quantity = gifts:peekMom()
     semanticsFor(run).writeRef(node.item, nativeItemId, run)
@@ -3386,7 +3392,7 @@ do
     return Runtime.OUTCOME_CONTINUE
   end
   function GearEval.handleMomGiftTake(_, run)
-    local gifts = requireService(run, "phoneGifts")
+    local gifts = requireService(run, "phoneContacts")
     assert(gifts ~= nil, "companion service is available after the missing-service error")
     gifts:takeMomAfterGive()
     return Runtime.OUTCOME_CONTINUE

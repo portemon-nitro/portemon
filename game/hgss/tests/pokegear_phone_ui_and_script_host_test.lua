@@ -148,11 +148,14 @@ local function fixtureManifest()
     radio = { dial = visualRef("assets/generated/pokegear/radio-dial.png") },
     catalog = {
       contacts = {
-        { key = "custom.mom", family = "mother", sortWeight = 10 },
-        { key = "custom.trainer-plain", family = "kurt", sortWeight = 20 },
+        { key = "custom.mom", family = "mother", id = 0, trainerId = 0, messageBank = 664, sortWeight = 10 },
+        { key = "custom.trainer-plain", family = "kurt", id = 5, trainerId = 40, messageBank = 643, sortWeight = 20 },
         {
           key = "custom.leader-falkner",
           family = "kurt",
+          id = 18,
+          trainerId = 7,
+          messageBank = 648,
           sortWeight = 30,
           rematchWeekday = 6,
           rematchTimeOfDay = 0,
@@ -165,7 +168,9 @@ local function fixtureManifest()
       },
       callDefinitions = {},
       callTriggers = {},
-      rematches = {},
+      -- The gym caller's own source rematch set: base trainer first, then one
+      -- later tier behind its rematch-group flag.
+      rematches = { [7] = { 7, 7, 8, 0, 0, 0 } },
       gifts = {},
       momPurchases = {},
       locations = {
@@ -234,6 +239,12 @@ local function worldFixture()
     end,
     rematchReady = rematchReady,
     rematches = rematches,
+    trainerDefeated = function(_, trainerNo)
+      return flags["trainer." .. tostring(trainerNo)] == true
+    end,
+    rematchGroupUnlocked = function(_, rematchNo)
+      return flags["rematch-group." .. tostring(rematchNo)] == true
+    end,
     queryRematch = function(_, contact)
       return rematches[contact]
     end,
@@ -249,10 +260,8 @@ local function worldFixture()
         eggCallPending = false,
       }
     end,
-    storyTier = 2,
     weekday = 6,
     timeOfDay = 0,
-    teamsByTier = { [2] = { tier = 2, members = { { species = "custom.pidgeotto", level = 13 } } } },
     player = { x = 5, y = 7 },
   }
 end
@@ -953,7 +962,7 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
       steps = {
         S.phoneSetCall({ contact = S.var("caller"), scriptedCall = 2, callScriptID = 9 }),
         S.phoneRunCall(),
-        S.pokegearQuery({ kind = "rematch_ready", contact = "custom.leader-falkner", result = S.var("ready") }),
+        S.pokegearQuery({ kind = "rematch_trainer", contact = "custom.leader-falkner", result = S.var("tier") }),
         S.pokegearUpdate({ kind = "register_contact", contact = "custom.mom" }),
         S.stop(),
       },
@@ -981,7 +990,8 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
   assert(record ~= nil, "synthetic catalog validated above")
-  local host, _ = openHost(record, worldFixture(), countingAudio())
+  local world = worldFixture()
+  local host = openHost(record, world, countingAudio())
   local variables = {}
   local worldService = {
     getVar = function(_, id)
@@ -1029,17 +1039,17 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
   Assert.equal(
     Runtime.executeNode({
       op = "pokegear_query",
-      kind = "rematch_ready",
+      kind = "rematch_trainer",
       contact = "custom.leader-falkner",
       result = {
         value = "var",
-        id = "ready",
+        id = "tier",
       },
     }, run),
     Runtime.OUTCOME_CONTINUE,
-    "readiness queries resolve synchronously"
+    "rematch queries resolve synchronously"
   )
-  Assert.equal(variables.ready, 0, "an unstaged invitation reads back unready")
+  Assert.equal(variables.tier, 0, "an unstaged invitation answers no trainer")
   Assert.equal(
     Runtime.executeNode({ op = "pokegear_update", kind = "register_contact", contact = "custom.mom" }, run),
     Runtime.OUTCOME_CONTINUE,
@@ -1059,6 +1069,32 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
     "the registered contact reads back registered"
   )
   Assert.equal(variables.mom_seen, 1, "the update committed through the durable owner")
+  -- A staged invitation answers the source trainer tier, and only the
+  -- explicit seeking clear ends it.
+  world.setRematch(world, "custom.leader-falkner", { stage = 1, wins = 2 })
+  Assert.equal(
+    Runtime.executeNode({
+      op = "pokegear_query",
+      kind = "rematch_trainer",
+      contact = "custom.leader-falkner",
+      result = {
+        value = "var",
+        id = "staged_tier",
+      },
+    }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "staged rematch queries resolve synchronously"
+  )
+  Assert.equal(variables.staged_tier, 7, "the staged invitation answers its own unbeaten tier")
+  Assert.equal(
+    Runtime.executeNode({ op = "pokegear_update", kind = "clear_rematch_seeking", contact = "custom.leader-falkner" }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "seeking clears commit synchronously"
+  )
+  local cleared = world.queryRematch(world, "custom.leader-falkner")
+  Assert.equal(cleared.stage, 0, "the clear ends the saved invitation")
+  Assert.equal(cleared.wins, 2, "the clear keeps the accumulated win count")
+
   local updateOk, updateErr =
     pcall(Runtime.executeNode, { op = "pokegear_update", kind = "register_contact", contact = "custom.stranger" }, run)
   Assert.isFalse(updateOk, "unknown contacts never register")

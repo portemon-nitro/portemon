@@ -555,4 +555,65 @@ function T.word_script_definitions_carry_parseable_word_references()
   Assert.isTrue(seen > 0, "the script table stages word picks")
 end
 
+-- The source rematch sets are projected keyed by the base trainer a
+-- phonebook entry names, and a dump whose trainer archive cannot back a
+-- referenced trainer fails the build instead of publishing a plausible row.
+function T.rematch_sets_project_native_rows_and_validate_their_trainers()
+  local PokegearCatalogCompiler = require("romdump.src.digest.ui.PokegearCatalogCompiler")
+  local PokegearSources = require("romdump.src.config.PokegearSources")
+  local trainerCount = 728
+  local function romFsWithTrainers(count)
+    return {
+      openNarc = function(_, name)
+        Assert.equal(name, "trainer_data", "rematch validation reads the trainer archive")
+        if count == nil then
+          return nil, "missing archive"
+        end
+        return {
+          memberCount = function()
+            return count
+          end,
+        }
+      end,
+    }
+  end
+  local compiled = assert(PokegearCatalogCompiler.compileRematchSets(romFsWithTrainers(trainerCount)))
+  Assert.equal(compiled.trainerCount, trainerCount, "the projection reports its validated trainer count")
+  for base, entries in pairs(compiled.rows) do
+    Assert.isTrue(type(base) == "number" and base >= 1, "rematch rows are keyed by their base trainer")
+    Assert.equal(#entries, 6, "every rematch row keeps its six source entries")
+    Assert.equal(entries[1], base, "every rematch row opens with its own base trainer")
+  end
+  local joey = assert(compiled.rows[8], "the source set of the Route 30 youngster projects")
+  Assert.deepEqual(
+    joey,
+    { 8, 8, 279, 280, 510, 0 },
+    "the projected row preserves the source entry order and its none sentinel"
+  )
+  local projected = 0
+  for _ in pairs(compiled.rows) do
+    projected = projected + 1
+  end
+  Assert.equal(
+    projected,
+    #PokegearSources.trainerRematchSets,
+    "every source rematch row projects exactly once"
+  )
+
+  local missing, missingErr = PokegearCatalogCompiler.compileRematchSets(romFsWithTrainers(nil))
+  Assert.isNil(missing, "an unavailable trainer archive fails the projection")
+  Assert.equal(
+    assert(missingErr).code,
+    PokegearCatalogCompiler.ERROR.SOURCE_UNAVAILABLE,
+    "the missing archive is attributed"
+  )
+  local short, shortErr = PokegearCatalogCompiler.compileRematchSets(romFsWithTrainers(9))
+  Assert.isNil(short, "a rematch row naming a trainer the dump lacks fails the projection")
+  Assert.equal(
+    assert(shortErr).code,
+    PokegearCatalogCompiler.ERROR.REMATCH_INVALID,
+    "the missing trainer is attributed to the rematch data"
+  )
+end
+
 return { tests = T }

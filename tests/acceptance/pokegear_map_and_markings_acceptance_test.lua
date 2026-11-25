@@ -44,10 +44,22 @@ local T = {
 local function fixtureManifest()
   local manifest = Fixture.manifest()
   manifest.catalog.contacts = {
-    { key = "test.caller.falkner", family = "gym", sortWeight = 10, rematchWeekday = 6, rematchTimeOfDay = 0 },
-    { key = "test.caller.mom", family = "mother", sortWeight = 20 },
+    {
+      key = "test.caller.falkner",
+      family = "gym",
+      id = 4,
+      trainerId = 20,
+      messageBank = 648,
+      sortWeight = 10,
+      rematchWeekday = 6,
+      rematchTimeOfDay = 0,
+    },
+    { key = "test.caller.mom", family = "mother", id = 0, trainerId = 0, messageBank = 664, sortWeight = 20 },
   }
   manifest.catalog.contactOrder = { "test.caller.falkner", "test.caller.mom" }
+  -- The gym caller's own source rematch set: the base trainer first, then the
+  -- one later tier the source unlocks with a rematch-group flag.
+  manifest.catalog.rematches = { [20] = { 20, 20, 21, 0, 0, 0 } }
   manifest.catalog.locations = {
     {
       key = "test.place.violet",
@@ -118,18 +130,20 @@ end
 local function phoneWorld()
   local rematches = {}
   return {
-    storyTier = 2,
     weekday = "saturday",
     morning = true,
-    teamsByTier = {
-      [2] = { tier = 2, members = { { species = "test.pidgeotto", level = 13 } } },
-    },
     rematchReady = {},
     queryRematch = function(_, contact)
       return rematches[contact]
     end,
     setRematch = function(_, contact, record)
       rematches[contact] = record
+    end,
+    trainerDefeated = function()
+      return true
+    end,
+    rematchGroupUnlocked = function()
+      return false
     end,
   }
 end
@@ -272,10 +286,11 @@ function T.tests.live_owner_markers_stay_read_only_across_battle_and_reopen()
   Assert.isTrue(once.view.panel.battleIcon, "the staged rematch shows the panel battle icon")
 
   -- A field battle settles through the real owners: the roamer flees to
-  -- a new map while the rematch resolves as a win. The already-open map
-  -- keeps its refresh snapshot; nothing live-updates under it.
+  -- a new map while the won rematch ends its saved invitation. The
+  -- already-open map keeps its refresh snapshot; nothing live-updates
+  -- under it.
   roamers:prepareResult("test.roamer.raikou", "fled", 0, { location = 12 })
-  call:resolveRematch("test.caller.falkner", "win")
+  call:clearRematchSeeking("test.caller.falkner")
   for _ = 1, 3 do
     Assert.deepEqual(first:status(), once, "settled battles never leak into the open map")
   end

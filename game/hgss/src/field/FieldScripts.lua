@@ -463,7 +463,7 @@ end
 ---@field phoneCalls table<string, unknown>|nil the field's phone call manager behind staged and forced calls (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field phoneContactIndex table<string, unknown>|nil the compiled phonebook index { byId, byTrainer } for number resolution (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field pokegearState table<string, unknown>|nil the durable companion state behind card and trigger writes (absent -> SCRIPT_SERVICE_MISSING on use)
----@field phoneGifts table<string, unknown>|nil the contact and parent gift query adapter (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field phoneContacts table<string, unknown>|nil the contact gift, contact message and parent gift query adapter (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field radioMusic table<string, unknown>|nil the audio-derived radio music query (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field battle table<string, unknown>|nil the battle host for script battle tasks (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field roamers table<string, unknown>|nil the field roamer owner behind native slot creation (absent -> SCRIPT_SERVICE_MISSING on use)
@@ -935,7 +935,7 @@ function FieldScripts.new(opts)
       phoneCalls = opts.phoneCalls,
       phoneContactIndex = opts.phoneContactIndex,
       pokegearState = opts.pokegearState,
-      phoneGifts = opts.phoneGifts,
+      phoneContacts = opts.phoneContacts,
       radioMusic = opts.radioMusic,
       battle = opts.battle,
       roamers = opts.roamers,

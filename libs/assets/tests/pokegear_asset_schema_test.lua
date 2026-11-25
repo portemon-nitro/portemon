@@ -72,7 +72,7 @@ local function customManifest()
       contactOrder = { "custom.elm", "custom.mom" },
       callDefinitions = {},
       callTriggers = {},
-      rematches = {},
+      rematches = { [7] = { 7, 7, 8, 9, 10, 0 } },
       gifts = {},
       momPurchases = {},
       locations = {},
@@ -135,6 +135,35 @@ function T.region_map_is_required_and_strict()
   rejects(function(regionMap)
     regionMap.flypoints[1].overlay.srcX = nil
   end, "a missing overlay key must not validate")
+end
+
+function T.rematch_sets_stay_ordered_six_entry_rows()
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local function rejects(mutate, message)
+    local manifest = customManifest()
+    mutate(manifest.catalog.rematches)
+    local record, err = PokegearAssetSchema.validate(manifest)
+    Assert.isNil(record, message)
+    Assert.equal(err.code, PokegearAssetSchema.ERROR.SHAPE_INVALID, message)
+  end
+  local empty = customManifest()
+  empty.catalog.rematches = {}
+  Assert.notNil(
+    PokegearAssetSchema.validate(empty),
+    "a source-neutral custom catalog may carry no rematch sets"
+  )
+  rejects(function(rematches)
+    rematches[7] = { 7, 7, 8, 9, 10 }
+  end, "a five-entry rematch row must not validate")
+  rejects(function(rematches)
+    rematches[7][1] = 8
+  end, "a rematch row must open with its own base trainer")
+  rejects(function(rematches)
+    rematches[7][3] = 0x10000
+  end, "a rematch entry outside the native trainer domain must not validate")
+  rejects(function(rematches)
+    rematches[0] = { 0, 0, 1, 0, 0, 0 }
+  end, "a rematch set keyed by the none sentinel must not validate")
 end
 
 function T.duplicate_contact_keys_fail_naming_the_offender()

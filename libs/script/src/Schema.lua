@@ -77,10 +77,10 @@ Schema.ENUMS = {
   phone_kind = { "ordinary", "rematch", "predefined", "incoming" },
   -- Closed phone query vocabulary: read-only questions the injected
   -- companion service answers synchronously, never through a task.
-  pokegear_query_kind = { "rematch_ready", "contact_registered" },
+  pokegear_query_kind = { "rematch_trainer", "contact_registered" },
   -- Closed phone update vocabulary: single validated mutations the
   -- injected companion service commits synchronously.
-  pokegear_update_kind = { "register_contact" },
+  pokegear_update_kind = { "register_contact", "clear_rematch_seeking" },
   -- Explicit companion application modes a script may open through the
   -- shared feature lease. Call and the view-only town map have concrete
   -- children; fly stays named but unavailable until its field-move
@@ -491,8 +491,8 @@ Schema.OPERATIONS = {
       result = { type = "writable_value", required = true },
     },
   },
-  -- Contact message lookup: loads one per-kind message bank/entry pair
-  -- for the entry under discussion into two result variables.
+  -- Contact message lookup: writes the loaded caller's message bank and the
+  -- per-kind entry into two result variables.
   phone_contact_message = {
     fields = {
       contact = { type = "scalar_or_value", required = true },
@@ -501,8 +501,8 @@ Schema.OPERATIONS = {
       entry = { type = "writable_value", required = true },
     },
   },
-  -- Contact gift query: writes the waiting berry or gift item key, or
-  -- numeric zero when no gift waits for that contact.
+  -- Contact gift query: writes the fixed gift or the source berry draw, and
+  -- the destructively read pending gift, or numeric zero when none waits.
   phone_contact_gift = {
     fields = {
       contact = { type = "scalar_or_value", required = true },
@@ -2655,12 +2655,12 @@ Schema.CONSTRUCTORS = {
       {
         signature = "S.pokegearQuery(spec)",
         canonical = "op=pokegear_query",
-        notes = "spec={kind,result,contact=nil}; kind is rematch_ready or contact_registered. Contact-scoped kinds require contact; the source result convention writes 1 or 0.",
+        notes = "spec={kind,result,contact=nil}; kind is rematch_trainer or contact_registered. Contact-scoped kinds require contact; rematch_trainer writes the resolved native trainer identity or numeric zero, contact_registered writes 1 or 0.",
       },
       {
         signature = "S.pokegearUpdate(spec)",
         canonical = "op=pokegear_update",
-        notes = "spec={kind,contact=nil}; kind is register_contact, which requires contact.",
+        notes = "spec={kind,contact=nil}; kind is register_contact or clear_rematch_seeking, both requiring contact.",
       },
       {
         signature = "S.pokegearOpen(spec)",

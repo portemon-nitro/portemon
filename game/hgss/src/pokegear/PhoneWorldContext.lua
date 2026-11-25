@@ -537,7 +537,12 @@ function PhoneWorldContext:locationMarkers(location, phone, contactPlaces)
       local pending = contacts[contact]
       local gift = type(pending) == "table" and pending.reward or nil
       if marker.ready == true or gift ~= nil then
-        markers[#markers + 1] = { contact = contact, tier = marker.tier, ready = marker.ready, gift = gift }
+        markers[#markers + 1] = {
+          contact = contact,
+          trainerId = marker.trainerId,
+          ready = marker.ready,
+          gift = gift,
+        }
       end
     end
   end
@@ -560,6 +565,7 @@ function PhoneWorldContext:_domainOwner(domain)
         bag = "bagService",
         pc = "pcService",
         trainer = "_trainerFactory",
+        daycare = "daycare",
       }
       local field = runtimeFields[domain]
       if field ~= nil then
@@ -614,7 +620,42 @@ function PhoneWorldContext:read(key)
     return self:_domainOwner("kurt")
   end
   if domain == "daycare" then
-    return self:_domainOwner("daycare")
+    local service = self:_domainOwner("daycare")
+    if fact == "status" then
+      -- The Day Care Man's call reads one detached status projection of the
+      -- custody owner: the stabled count with its nicknames and level growth,
+      -- the pending egg, and the breeding compatibility. Nothing here caches a
+      -- parent or advances custody.
+      assert(
+        type(service.storedNicknames) == "function"
+          and type(service.hasEgg) == "function"
+          and type(service.compatibilityCategory) == "function"
+          and type(service.growth) == "function",
+        "daycare status reads the live Day Care service"
+      )
+      local nicknames = {}
+      local growths = {}
+      local buffers = service:storedNicknames()
+      assert(type(buffers) == "table", "daycare status reads its stabled nicknames")
+      local count = 0
+      for slot0 = 0, 1 do
+        local nickname = (buffers --[[@as table<integer, string>]])[slot0]
+        if nickname ~= nil then
+          count = count + 1
+          nicknames[count] = nickname
+          growths[count] = service:growth(slot0).growth
+        end
+      end
+      local compatibility = count == 2 and service:compatibilityCategory() or 0
+      return {
+        count = count,
+        egg = service:hasEgg() == true,
+        compatibility = compatibility,
+        nicknames = nicknames,
+        growths = growths,
+      }
+    end
+    return service
   end
   if domain == "safari" then
     return self:_domainOwner("safari")
@@ -727,6 +768,43 @@ function PhoneWorldContext:queryRematch(contact)
     "phone rematches read durable companion state"
   )
   return state:queryRematch(contact)
+end
+
+-- Whether one native trainer is already defeated: the source trainer flag
+-- (TRAINER_FLAG_BASE + trainer number) read from the live event state.
+---@param trainerNo integer native trainer identity
+---@return boolean defeated
+function PhoneWorldContext:trainerDefeated(trainerNo)
+  assert(type(trainerNo) == "number" and trainerNo % 1 == 0, "trainer defeats read a native trainer number")
+  local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
+  local events = self._owners.flags
+  assert(
+    type(events) == "table" and type(events.isFlagSet) == "function",
+    "trainer defeats read the live event state"
+  )
+  local isFlagSet = events.isFlagSet --[[@as fun(state: table<string, unknown>, flag: integer): boolean]]
+  return isFlagSet(events, RuntimeValues.trainerFlagId(trainerNo)) == true
+end
+
+-- Whether one native rematch group is unlocked: source
+-- EventFlagCheck_RematchGroup reads FLAG_UNK_97B + rematch number.
+---@param rematchNo integer native rematch number 1..5
+---@return boolean unlocked
+function PhoneWorldContext:rematchGroupUnlocked(rematchNo)
+  assert(
+    type(rematchNo) == "number" and rematchNo % 1 == 0 and rematchNo >= 1 and rematchNo <= 5,
+    "rematch groups read a native rematch number"
+  )
+  local events = self._owners.flags
+  assert(
+    type(events) == "table" and type(events.isFlagSet) == "function",
+    "rematch groups read the live event state"
+  )
+  local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+  local flagBase = FieldScriptSymbols.flagsByName.FLAG_UNK_97B
+  assert(type(flagBase) == "number", "rematch groups read the source group flag base")
+  local isFlagSet = events.isFlagSet --[[@as fun(state: table<string, unknown>, flag: integer): boolean]]
+  return isFlagSet(events, flagBase + rematchNo) == true
 end
 
 -- Reads the player's text speed option behind call text typing: the

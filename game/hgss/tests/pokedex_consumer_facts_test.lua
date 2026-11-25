@@ -236,6 +236,60 @@ function T.phone_world_reads_attribute_absent_domain_owners()
   Assert.equal(domainOf("kurt.pending"), "kurt", "kurt reads name their domain without an apricorn service")
 end
 
+-- The Day-Care Man's conversation reads one detached projection of the
+-- custody owner: the stabled count with its nicknames and growth, the pending
+-- egg, and the breeding category of a full pair. An empty Day Care answers no
+-- mon and never asks the pair for a compatibility.
+function T.phone_world_reads_daycare_status_through_the_custody_owner()
+  local runtime = {
+    session = { currentMap = { mapId = 7 } },
+    playerData = { profile = { money = 3000 } },
+    daycare = {
+      storedNicknames = function()
+        return { [0] = "WAILMER", [1] = "WAILMER" }
+      end,
+      hasEgg = function()
+        return false
+      end,
+      compatibilityCategory = function()
+        return 1
+      end,
+      growth = function(_, slot0)
+        return { growth = slot0 + 2 }
+      end,
+    },
+  }
+  local context = PhoneWorldContext.new({ state = {}, runtime = runtime, flags = phoneFlags() })
+  local status = context:read("daycare.status")
+  Assert.equal(status.count, 2, "the status counts the stabled pair")
+  Assert.equal(status.egg, false, "the status reports the pending egg")
+  Assert.equal(status.compatibility, 1, "the status reports the source breeding category")
+  Assert.deepEqual(status.nicknames, { "WAILMER", "WAILMER" }, "the status names every stabled mon")
+  Assert.deepEqual(status.growths, { 2, 3 }, "the status reports each mon's level growth")
+
+  runtime.daycare = {
+    storedNicknames = function()
+      return {}
+    end,
+    hasEgg = function()
+      return true
+    end,
+    compatibilityCategory = function()
+      error("an empty Day Care has no pair to compare", 0)
+    end,
+    growth = function()
+      error("an empty Day Care grows nothing", 0)
+    end,
+  }
+  local empty = PhoneWorldContext.new({ state = {}, runtime = runtime, flags = phoneFlags() })
+  local emptyStatus = empty:read("daycare.status")
+  Assert.equal(emptyStatus.count, 0, "an empty Day Care stables no mon")
+  Assert.equal(emptyStatus.egg, true, "an empty Day Care still reports its waiting egg")
+  Assert.equal(emptyStatus.compatibility, 0, "an empty Day Care reports no pair category")
+  Assert.deepEqual(emptyStatus.nicknames, {}, "an empty Day Care names no mon")
+  Assert.deepEqual(emptyStatus.growths, {}, "an empty Day Care grows no mon")
+end
+
 function T.phone_world_reads_kurt_orders_through_the_apricorn_service()
   local runtime = {
     session = { currentMap = { mapId = 7 } },

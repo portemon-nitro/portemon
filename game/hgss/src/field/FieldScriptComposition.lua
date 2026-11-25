@@ -149,28 +149,31 @@ function FieldScriptComposition.phoneContactIndex(catalog)
   return { byId = byId, byTrainer = byTrainer }
 end
 
--- Builds the contact and parent gift query adapter over the real owners:
--- durable state for pending rewards, the compiled phonebook for fixed
--- gift items, the companion streams for berry draws, and the item
--- catalog for native-id translation. Queries are read-only: a waiting
--- staged reward reports its own key instead of stacking, an
--- unregistered contact waits for nothing, and the berry draw labels its
--- stream. A missing owner yields no adapter and the script operation
--- faults on use instead of answering a fabricated gift.
+-- Builds the contact and parent query adapter over the real owners: durable
+-- state for the pending caller gift, the compiled phonebook for the fixed
+-- gift item and the caller's message bank, the companion streams for the
+-- source berry draw, and the item catalog for native-id translation.
+-- Queries stay source-shaped: the pending gift is read destructively, the
+-- fixed gift only answers after the source Cheri sentinel has drawn once, and
+-- an unregistered contact answers numeric zero. A missing owner yields no
+-- adapter, so the script operation faults on use instead of answering a
+-- fabricated gift.
 ---@param state table<string, unknown>?
 ---@param catalog table<string, unknown>?
 ---@param random table<string, unknown>?
 ---@param itemCatalog table<string, unknown>?
 ---@return table<string, unknown>? the adapter, or nil without its owners
-function FieldScriptComposition.phoneGiftQueries(state, catalog, random, itemCatalog)
+function FieldScriptComposition.phoneContactQueries(state, catalog, random, itemCatalog)
   if
     type(state) ~= "table"
     or type(state.readPhone) ~= "function"
+    or type(state.setContactReward) ~= "function"
     or type(catalog) ~= "table"
     or type(catalog.contacts) ~= "table"
     or type(random) ~= "table"
     or type(random.lc) ~= "function"
     or type(itemCatalog) ~= "table"
+    or type(itemCatalog.item) ~= "function"
     or type(itemCatalog.itemKeyByNativeId) ~= "function"
   then
     return nil
@@ -184,6 +187,9 @@ function FieldScriptComposition.phoneGiftQueries(state, catalog, random, itemCat
       contactsByKey[entry.key] = entry
     end
   end
+  -- ScrCmd_GetPhoneContactRandomGiftBerry draws the ten native berry
+  -- identities starting at the source Cheri sentinel.
+  local CONTACT_BERRY_CHOICES = 10
   local PhoneRewards = require("game.hgss.src.pokegear.PhoneRewards")
   local adapter = {}
   local function nativeId(itemKey)
@@ -191,7 +197,7 @@ function FieldScriptComposition.phoneGiftQueries(state, catalog, random, itemCat
     assert(type(item.nativeId) == "number", "phone gifts resolve to a native item identity")
     return item.nativeId
   end
-  local function stagedReward(contactKey)
+  local function pendingReward(contactKey)
     local phone = state:readPhone()
     assert(type(phone) == "table" and type(phone.contacts) == "table", "gift queries read registered contacts")
     local entry = (phone.contacts --[[@as table<string, unknown>]])[contactKey]
@@ -206,46 +212,51 @@ function FieldScriptComposition.phoneGiftQueries(state, catalog, random, itemCat
     end
     return nil, true
   end
-  ---@param contactKey string
-  ---@return string|integer the waiting item key, or numeric zero
-  function adapter:berry(contactKey)
-    local waiting, registered = stagedReward(contactKey)
-    if waiting ~= nil then
-      return nativeId(waiting)
-    end
-    if not registered then
-      return 0
-    end
-    local draw = random.lc --[[@as fun(self: table<string, unknown>, label: string): integer]]
-    local pick = draw(random, "contact-berry") % PhoneRewards.BERRY_CHOICES
-    assert(pick >= 0 and pick < PhoneRewards.BERRY_CHOICES, "berry draws stay inside their choices")
-    local berries = catalog.momPurchases --[[@as table<integer, table<string, unknown>>]]
-    local berryIndex = 0
-    for _, entry in ipairs(berries) do
-      if entry.kind == "berry" then
-        if berryIndex == pick then
-          return entry.nativeItemId --[[@as integer]]
-        end
-        berryIndex = berryIndex + 1
-      end
-    end
-    error("the compiled Mom berry table does not cover its source selector", 0)
+  local function contactRecord(contactKey)
+    local record = contactsByKey[contactKey]
+    assert(type(record) == "table", "phone queries read catalogued contacts")
+    return record --[[@as table<string, unknown>]]
   end
   ---@param contactKey string
-  ---@return string|integer the waiting item key, or numeric zero
-  function adapter:giftItem(contactKey)
-    local waiting, registered = stagedReward(contactKey)
-    if waiting ~= nil then
-      return nativeId(waiting)
+  ---@return integer the source berry identity, or numeric zero
+  function adapter:berry(contactKey)
+    local gift = contactRecord(contactKey).gift
+    assert(type(gift) == "number", "contact gifts carry their native item")
+    local cheri = nativeId("CHERI_BERRY")
+    if gift ~= cheri then
+      return gift
     end
-    if not registered then
+    local draw = random.lc --[[@as fun(self: table<string, unknown>, label: string): integer]]
+    local pick = draw(random, "contact-gift-berry") % CONTACT_BERRY_CHOICES
+    assert(pick >= 0 and pick < CONTACT_BERRY_CHOICES, "berry draws stay inside their choices")
+    return cheri + pick
+  end
+  -- ScrCmd_GetPhoneContactGiftItem answers the pending gift and clears it in
+  -- the same read, so a later full Bag can never restore it.
+  ---@param contactKey string
+  ---@return integer the handed item identity, or numeric zero
+  function adapter:giftItem(contactKey)
+    local waiting, registered = pendingReward(contactKey)
+    if not registered or waiting == nil then
       return 0
     end
-    local record = contactsByKey[contactKey]
-    assert(type(record) == "table", "gift queries read catalogued contacts")
-    local nativeItemId = (record --[[@as table<string, unknown>]]).gift
-    assert(type(nativeItemId) == "number", "contact gifts carry their native item")
-    return nativeItemId
+    local itemId = nativeId(waiting)
+    state:setContactReward(contactKey, nil)
+    return itemId
+  end
+  -- ScrCmd_GetPhoneContactMsgIds answers the caller's own message bank and the
+  -- per-kind entry; an index above four folds onto the first entry.
+  ---@param contactKey string
+  ---@param kind integer source message index 0..4
+  ---@return integer, integer message bank and entry
+  function adapter:messageIds(contactKey, kind)
+    assert(
+      type(kind) == "number" and kind % 1 == 0 and kind >= 0 and kind <= 4,
+      "contact messages name a source message index"
+    )
+    local bank = contactRecord(contactKey).messageBank
+    assert(type(bank) == "number", "catalogued contacts carry their message bank")
+    return bank, kind + 1
   end
   ---@return string|integer the waiting parent gift item ID, or numeric zero
   function adapter:momGift()
@@ -873,7 +884,7 @@ function FieldScriptComposition.compose(runtime, options)
     phoneCalls = gearCalls,
     phoneContactIndex = FieldScriptComposition.phoneContactIndex(gearCatalog),
     pokegearState = runtime.pokegearState,
-    phoneGifts = FieldScriptComposition.phoneGiftQueries(
+    phoneContacts = FieldScriptComposition.phoneContactQueries(
       runtime.pokegearState,
       gearCatalog,
       runtime.pokegearRandom,

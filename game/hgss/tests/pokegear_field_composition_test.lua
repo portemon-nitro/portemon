@@ -72,6 +72,7 @@ local function contactCatalog()
         rematchTimeOfDay = 3,
         randomCallGroup = 0,
         sortWeight = 10,
+        messageBank = 664,
       },
       {
         key = NEIGHBOR_KEY,
@@ -87,6 +88,7 @@ local function contactCatalog()
         rematchTimeOfDay = 1,
         randomCallGroup = 1,
         sortWeight = 20,
+        messageBank = 675,
       },
       {
         key = TRAINER_KEY,
@@ -102,10 +104,13 @@ local function contactCatalog()
         rematchTimeOfDay = 1,
         randomCallGroup = 2,
         sortWeight = 30,
+        messageBank = 700,
       },
     },
     contactOrder = { MOM_KEY, NEIGHBOR_KEY, TRAINER_KEY },
     callTriggers = {},
+    -- The source rematch set of the plain trainer behind contact 30.
+    rematches = { [259] = { 259, 259, 260, 261, 262, 0 } },
     momPurchases = {
       { kind = "berry", nativeItemId = 149 },
       { kind = "berry", nativeItemId = 150 },
@@ -200,6 +205,8 @@ local function composeGear(friends, latch)
         local nativeId = tonumber(itemKey:match("custom.item%-(%d+)"))
         if itemKey == "POTION" then
           nativeId = 34
+        elseif itemKey == "CHERI_BERRY" then
+          nativeId = 149
         end
         return { nativeId = nativeId }
       end,
@@ -246,6 +253,8 @@ local function stubItemCatalog()
       local nativeId = tonumber(itemKey:match("custom.item%-(%d+)"))
       if itemKey == "POTION" then
         nativeId = 34
+      elseif itemKey == "CHERI_BERRY" then
+        nativeId = 149
       end
       return { nativeId = nativeId }
     end,
@@ -264,9 +273,9 @@ local function scriptServices(bundle, friends)
       "contact index builds over the synthetic catalog"
     ),
     pokegearState = friends.state,
-    phoneGifts = assert(
-      FieldScriptComposition.phoneGiftQueries(friends.state, friends.catalog, friends.random, stubItemCatalog()),
-      "gift queries build over the synthetic owners"
+    phoneContacts = assert(
+      FieldScriptComposition.phoneContactQueries(friends.state, friends.catalog, friends.random, stubItemCatalog()),
+      "contact queries build over the synthetic owners"
     ),
     radioMusic = bundle.radioEffects,
   }
@@ -653,22 +662,26 @@ function T.tests.phonebook_resolution_uses_the_source_none_sentinel()
   Assert.equal(vars3.entry, 255, "unknown trainers answer the none sentinel")
 end
 
-function T.tests.contact_messages_fail_honestly_without_phone_data()
+function T.tests.contact_messages_read_the_callers_bank_and_kind()
   local friends = companion()
   local bundle = composeGear(friends)
-  local run = handlerRun(scriptServices(bundle, friends))
-  local ok, err = pcall(Runtime.executeNode, {
-    op = "phone_contact_message",
-    contact = NEIGHBOR_KEY,
-    kind = 2,
-    bank = { value = "var", id = "bank" },
-    entry = { value = "var", id = "entry" },
-  }, run)
-  Assert.isFalse(ok, "unserved message pairs never fabricate")
-  Assert.equal(err.code, "FEATURE_UNAVAILABLE", "the failure names its absent data")
+  local run, vars = handlerRun(scriptServices(bundle, friends))
+  Assert.equal(
+    Runtime.executeNode({
+      op = "phone_contact_message",
+      contact = 10,
+      kind = 4,
+      bank = { value = "var", id = "bank" },
+      entry = { value = "var", id = "entry" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "contact message lookups resolve same-tick"
+  )
+  Assert.equal(vars.bank, 675, "the loaded caller answers its own message bank")
+  Assert.equal(vars.entry, 5, "the source message kind selects its bank entry")
 end
 
-function T.tests.gift_queries_answer_waiting_gifts_or_zero()
+function T.tests.contact_gifts_read_the_loaded_entry_destructively()
   local friends = companion()
   local bundle = composeGear(friends)
   friends.state:registerContact(NEIGHBOR_KEY)
@@ -685,10 +698,7 @@ function T.tests.gift_queries_answer_waiting_gifts_or_zero()
     Runtime.OUTCOME_CONTINUE,
     "berry queries resolve same-tick"
   )
-  Assert.isTrue(
-    type(vars.berry) == "number" and vars.berry >= 149 and vars.berry <= 165,
-    "fresh berries return a native item ID"
-  )
+  Assert.equal(vars.berry, 45, "a contact without the source sentinel answers its fixed gift")
   Assert.equal(
     Runtime.executeNode({
       op = "phone_contact_gift",
@@ -697,27 +707,76 @@ function T.tests.gift_queries_answer_waiting_gifts_or_zero()
       result = { value = "var", id = "gift" },
     }, run),
     Runtime.OUTCOME_CONTINUE,
-    "staged rewards report instead of stacking"
+    "pending gifts resolve same-tick"
   )
-  Assert.equal(vars.gift, 34, "the waiting gift reports its native item ID")
+  Assert.equal(vars.gift, 34, "the pending gift reports its native item identity")
+  Assert.isNil(
+    friends.state:readPhone().contacts[TRAINER_KEY].reward,
+    "the pending read clears the caller gift in the same operation"
+  )
   Assert.equal(
     Runtime.executeNode({
       op = "phone_contact_gift",
       contact = 30,
-      kind = "berry",
-      result = { value = "var", id = "berry2" },
+      kind = "item",
+      result = { value = "var", id = "again" },
     }, run),
     Runtime.OUTCOME_CONTINUE,
-    "staged rewards cover every kind"
+    "a cleared gift answers same-tick"
   )
-  Assert.equal(vars.berry2, 34, "pending rewards answer with their native item ID before any draw")
-  local run2, vars2 = handlerRun(scriptServices(bundle, friends))
+  Assert.equal(vars.again, 0, "a collected contact gift never answers twice")
   Assert.equal(
-    Runtime.executeNode({ op = "mom_gift_check", result = { value = "var", id = "mom" } }, run2),
+    Runtime.executeNode({
+      op = "phone_contact_gift",
+      contact = 1,
+      kind = "item",
+      result = { value = "var", id = "unregistered" },
+    }, run),
     Runtime.OUTCOME_CONTINUE,
-    "parent gifts resolve same-tick"
+    "unregistered callers answer same-tick"
   )
-  Assert.equal(vars2.mom, 0, "an empty queue answers numeric zero")
+  Assert.equal(vars.unregistered, 0, "an unregistered caller holds no pending gift")
+end
+
+function T.tests.contact_berry_sentinel_draws_once()
+  local friends = companion()
+  friends.catalog.contacts[2].gift = 149
+  local bundle = composeGear(friends)
+  local run, vars = handlerRun(scriptServices(bundle, friends))
+  Assert.equal(
+    Runtime.executeNode({
+      op = "phone_contact_gift",
+      contact = 10,
+      kind = "berry",
+      result = { value = "var", id = "berry" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "sentinel berry queries resolve same-tick"
+  )
+  local expected = PokegearRandom.new(4177):lc("contact-gift-berry") % 10
+  Assert.equal(vars.berry, 149 + expected, "the source sentinel consumes exactly one linear draw")
+end
+
+function T.tests.fixed_contact_gifts_never_draw()
+  local friends = companion()
+  local bundle = composeGear(friends)
+  local run, vars = handlerRun(scriptServices(bundle, friends))
+  Assert.equal(
+    Runtime.executeNode({
+      op = "phone_contact_gift",
+      contact = 10,
+      kind = "berry",
+      result = { value = "var", id = "berry" },
+    }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "fixed gift queries resolve same-tick"
+  )
+  Assert.equal(vars.berry, 45, "the fixed gift answers its own native item")
+  Assert.equal(
+    friends.random:lc("probe"),
+    PokegearRandom.new(4177):lc("probe"),
+    "a fixed gift leaves the companion stream untouched"
+  )
 end
 
 function T.tests.radio_queries_compare_the_audio_latch()

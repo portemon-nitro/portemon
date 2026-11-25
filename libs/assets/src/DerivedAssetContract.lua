@@ -758,8 +758,12 @@ DerivedAssetContract.pc = {
 -- palette, dimmed sprite set) and trigger records carrying the source
 -- slot, caller, script identity, and pickup flag only; a stale family
 -- with the retired trigger kind/clear fields rebuilds.
+--
+-- cacheFormat v2: the catalog carries the native trainer rematch sets the
+-- phone invitation resolves through, so a stale family whose rematch
+-- catalog was always empty must not pass readiness.
 DerivedAssetContract.pokegear = {
-  cacheFormat = "pokegear-cache-v1",
+  cacheFormat = "pokegear-cache-v2",
   schema = "g4-pokegear-assets-v4",
 }
 

@@ -904,10 +904,8 @@ function T.live_phone_call_dims_the_strip_and_overlays_the_sprite(scope)
     nativeSelectorFacts = function()
       return { localMap = true, gaveRivalName = false, talkedAfterNamingRival = false, eggCallPending = false }
     end,
-    storyTier = 2,
     weekday = 6,
     timeOfDay = 0,
-    teamsByTier = { [2] = { tier = 2, members = {} } },
     player = { x = 5, y = 7 },
   }
   local completed = true

@@ -738,6 +738,16 @@ local function checkRegisterGearNumber(ins, step)
   return nil
 end
 
+local function checkClearPhoneRematchSeeking(ins, step)
+  if step.op ~= "pokegear_update" or step.kind ~= "clear_rematch_seeking" then
+    return "opcode 462 rematch seeking clear changed by translation"
+  end
+  if not operandMatches(ins.operands[1].raw, step.contact) then
+    return "opcode 462 cleared contact changed by translation"
+  end
+  return nil
+end
+
 local function checkTownMap(ins, step)
   assert(ins.operands == nil or #ins.operands == 0, "town map launches carry no operands")
   if step.op ~= "pokegear_open" or step.mode ~= "townMap" then
@@ -1145,7 +1155,7 @@ local CHECKERS = {
   [502] = checkPcTerminalEffect,
   [308] = checkPcTerminalEffect,
   [309] = checkPcTerminalEffect,
-  [142] = checkGearContactQuery(142, "rematch_ready"),
+  [142] = checkGearContactQuery(142, "rematch_trainer"),
   [145] = checkGearCard,
   [146] = checkRegisterGearNumber,
   [147] = checkGearContactQuery(147, "contact_registered"),
@@ -1156,6 +1166,7 @@ local CHECKERS = {
   [431] = checkRunPhoneCall,
   [460] = checkLoadPhoneDat,
   [461] = checkPhoneContactMessage,
+  [462] = checkClearPhoneRematchSeeking,
   [613] = checkPhoneContactGift(613, "berry"),
   [614] = checkPhoneContactGift(614, "item"),
   [779] = checkRadioMusic,

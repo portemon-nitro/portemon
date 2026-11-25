@@ -3473,6 +3473,8 @@ return {
       },
     },
     [462] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_ClearPhoneRematchSeeking",
       widths = {
         [1] = 2,

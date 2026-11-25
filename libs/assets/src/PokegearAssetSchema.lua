@@ -406,6 +406,53 @@ local function checkRegionMap(value)
     or checkRegionMapList(value.flypoints, FLYPOINT_FIELDS, FLYPOINT_OVERLAY_FIELDS, "catalog.regionMap.flypoints")
 end
 
+local REMATCH_ENTRIES = 6
+-- Native rematch set sentinels: TRAINER_NONE ends a scan and 0xFFFF is the
+-- source's hole. Both stay inside the native u16 trainer number domain.
+local TRAINER_NONE = 0
+local MAX_TRAINER_ID = 0xFFFF
+
+-- Native rematch sets keyed by the base trainer a phonebook entry names:
+-- exactly six ordered source entries per row, the first repeating the row's
+-- own base trainer, all inside the native trainer number domain. A
+-- source-neutral custom catalog may carry no rematch sets; a catalog that
+-- carries any must carry complete rows, and the ROM producer refuses an empty
+-- source table before it can reach this contract.
+---@param value unknown
+---@return Errors.Error|nil
+local function checkRematches(value)
+  if type(value) ~= "table" then
+    return fail(
+      PokegearAssetSchema.ERROR.SHAPE_INVALID,
+      "catalog.rematches must map base trainers to their source rows",
+      {}
+    )
+  end
+  for base, entries in pairs(value) do
+    local label = "catalog.rematches[" .. tostring(base) .. "]"
+    if not isInteger(base) or base < 1 or base > MAX_TRAINER_ID then
+      return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " must name a native base trainer", {})
+    end
+    if type(entries) ~= "table" or #entries ~= REMATCH_ENTRIES then
+      return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " must carry six ordered source entries", {})
+    end
+    if entries[1] ~= base then
+      return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " must open with its own base trainer", {})
+    end
+    for position = 1, REMATCH_ENTRIES do
+      local trainer = entries[position]
+      if not isInteger(trainer) or trainer < TRAINER_NONE or trainer > MAX_TRAINER_ID then
+        return fail(
+          PokegearAssetSchema.ERROR.SHAPE_INVALID,
+          label .. " entry " .. position .. " must be a native trainer or a source sentinel",
+          {}
+        )
+      end
+    end
+  end
+  return nil
+end
+
 local function checkCatalog(value)
   if type(value) ~= "table" then
     return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog must be a record", {})
@@ -538,7 +585,6 @@ local function checkCatalog(value)
   for _, key in ipairs({
     "callDefinitions",
     "callTriggers",
-    "rematches",
     "gifts",
     "momPurchases",
     "locations",
@@ -549,6 +595,10 @@ local function checkCatalog(value)
     if type(value[key]) ~= "table" then
       return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog." .. key .. " must be a record list", {})
     end
+  end
+  local rematchError = checkRematches(value.rematches)
+  if rematchError then
+    return rematchError
   end
   local triggerSlots = {}
   for index, trigger in ipairs(value.callTriggers) do

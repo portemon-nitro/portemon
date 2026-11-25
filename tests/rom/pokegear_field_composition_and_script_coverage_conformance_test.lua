@@ -49,6 +49,7 @@ local INVENTORY = {
   },
   { opcode = 431, name = "ScrCmd_RunPhoneCall", widths = {}, blocks = true, result = false },
   { opcode = 460, name = "ScrCmd_LoadPhoneDat", widths = { [1] = 2, [2] = 2 }, blocks = false, result = true },
+  { opcode = 462, name = "ScrCmd_ClearPhoneRematchSeeking", widths = { [1] = 2 }, blocks = false, result = false },
   {
     opcode = 461,
     name = "ScrCmd_GetPhoneContactMsgIds",
@@ -71,11 +72,11 @@ local INVENTORY = {
 -- They are named here so the census closure below stays reviewable.
 local OUT_OF_FAMILY_SPOT_CHECKS = { 464, 489, 512, 649 }
 
--- Gear-family rows that decode but have no owned semantics yet: the phone
--- rematch seeking flag and the pokegear map unlock level both mutate save
--- state this feature does not own. They stay named here so the census below
--- accounts for them instead of dropping them silently.
-local UNADOPTED_FAMILY_ROWS = { 462, 804 }
+-- Gear-family rows that decode but have no owned semantics yet: the pokegear
+-- map unlock level mutates save state this feature does not own. It stays
+-- named here so the census below accounts for it instead of dropping it
+-- silently.
+local UNADOPTED_FAMILY_ROWS = { 804 }
 
 -- The bounded census predicate over the pinned table: names in the phone,
 -- gear, mom-gift, town-map, radio-music, and Buena families. The opaque

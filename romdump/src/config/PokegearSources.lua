@@ -848,6 +848,78 @@ function PokegearSources.phoneMessageBankIds()
   return ids
 end
 
+-- Native trainer rematch sets, in source row order
+-- (src/trainer_rematch.c::sTrainerRematchSets). Each row holds the six u16
+-- source entries: entry 0 is the row's own base trainer, the phonebook
+-- contact's trainer identity the set is looked up by; 0 is TRAINER_NONE and
+-- 0xFFFF is the source's hole, which the scan skips and the group fallback
+-- steps over. Trainer numbers are native identities (constants/trainers.h).
+PokegearSources.trainerRematchSets = {
+  { 414, 414, 303, 446, 602, 0 }, -- TRAINER_BIRD_KEEPER_GS_JOSE_2
+  { 151, 151, 335, 453, 603, 0 }, -- TRAINER_PICNICKER_ERIN
+  { 27, 27, 276, 277, 518, 0 }, -- TRAINER_PICNICKER_LIZ
+  { 397, 397, 434, 435, 507, 0 }, -- TRAINER_SCHOOL_KID_M_CHAD
+  { 211, 211, 440, 441, 509, 0 }, -- TRAINER_SAILOR_HUEY
+  { 4, 4, 461, 460, 512, 0 }, -- TRAINER_BUG_CATCHER_WADE
+  { 8, 8, 279, 280, 510, 0 }, -- TRAINER_YOUNGSTER_JOEY
+  { 178, 178, 430, 431, 503, 0 }, -- TRAINER_SCHOOL_KID_M_JACK
+  { 102, 102, 456, 457, 604, 0 }, -- TRAINER_ACE_TRAINER_M_GAVEN
+  { 17, 17, 250, 278, 605, 0 }, -- TRAINER_BLACK_BELT_KENJI
+  { 145, 145, 451, 452, 606, 0 }, -- TRAINER_HIKER_PARRY
+  { 402, 402, 466, 467, 522, 0 }, -- TRAINER_PICNICKER_TIFFANY
+  { 61, 61, 100, 155, 523, 0 }, -- TRAINER_HIKER_ANTHONY
+  { 114, 114, 444, 445, 607, 0 }, -- TRAINER_ACE_TRAINER_F_REENA
+  { 124, 124, 325, 450, 608, 0 }, -- TRAINER_FISHERMAN_WILTON
+  { 113, 113, 458, 459, 609, 0 }, -- TRAINER_ACE_TRAINER_F_JAMIE
+  { 7, 7, 454, 455, 527, 0 }, -- TRAINER_JUGGLER_IRWIN
+  { 131, 131, 172, 173, 530, 0 }, -- TRAINER_POKE_MANIAC_BRENT
+  { 24, 24, 432, 433, 505, 0 }, -- TRAINER_SCHOOL_KID_M_ALAN
+  { 44, 44, 438, 439, 610, 0 }, -- TRAINER_POKEFAN_M_DEREK
+  { 65, 65, 142, 334, 520, 0 }, -- TRAINER_PICNICKER_GINA
+  { 123, 123, 323, 324, 517, 0 }, -- TRAINER_FISHERMAN_TULLY
+  { 182, 182, 436, 437, 611, 0 }, -- TRAINER_POKEFAN_BEVERLY
+  { 137, 137, 447, 448, 612, 0 }, -- TRAINER_BIRD_KEEPER_GS_VANCE
+  { 57, 57, 462, 463, 515, 0 }, -- TRAINER_FISHERMAN_RALPH
+  { 66, 66, 274, 275, 525, 0 }, -- TRAINER_CAMPER_TODD
+  { 78, 78, 360, 449, 513, 0 }, -- TRAINER_BUG_CATCHER_ARNIE
+  { 400, 400, 464, 465, 528, 0 }, -- TRAINER_LASS_DANA
+  { 184, 184, 613, 614, 615, 0 }, -- TRAINER_LASS_KRISE
+  { 64, 64, 616, 617, 618, 0 }, -- TRAINER_YOUNGSTER_IAN
+  { 388, 388, 619, 620, 621, 0 }, -- TRAINER_FIREBREATHER_WALT
+  { 140, 140, 622, 623, 624, 0 }, -- TRAINER_BUG_CATCHER_DOUG
+  { 48, 48, 625, 626, 627, 0 }, -- TRAINER_BUG_CATCHER_ROB
+  { 313, 313, 628, 629, 630, 0 }, -- TRAINER_BIKER_REESE
+  { 574, 574, 631, 632, 633, 0 }, -- TRAINER_BIKER_AIDEN
+  { 579, 579, 634, 635, 636, 0 }, -- TRAINER_BIKER_ERNEST
+  { 382, 382, 637, 638, 639, 0 }, -- TRAINER_TEACHER_HILLARY
+  { 331, 331, 640, 641, 642, 0 }, -- TRAINER_SCHOOL_KID_M_BILLY
+  { 569, 569, 643, 644, 645, 0 }, -- TRAINER_TWINS_KAY_AND_TIA
+  { 565, 565, 646, 647, 648, 0 }, -- TRAINER_BIRD_KEEPER_GS_JOSH
+  { 567, 567, 649, 650, 651, 0 }, -- TRAINER_SCHOOL_KID_M_TORIN
+  { 559, 559, 652, 653, 654, 0 }, -- TRAINER_YOUNG_COUPLE_TIM_AND_SUE
+  { 358, 358, 655, 656, 657, 0 }, -- TRAINER_HIKER_KENNY
+  { 561, 561, 658, 659, 660, 0 }, -- TRAINER_CAMPER_TANNER
+  { 59, 59, 661, 662, 663, 0 }, -- TRAINER_FISHERMAN_KYLE
+  { 558, 558, 664, 665, 666, 0 }, -- TRAINER_FISHERMAN_KYLER
+  { 401, 401, 672, 673, 674, 0 }, -- TRAINER_GENTLEMAN_ALFRED
+  { 20, 20, 712, 0, 0, 0 }, -- TRAINER_LEADER_FALKNER_FALKNER
+  { 21, 21, 713, 0, 0, 0 }, -- TRAINER_LEADER_BUGSY_BUGSY
+  { 30, 30, 714, 0, 0, 0 }, -- TRAINER_LEADER_WHITNEY
+  { 31, 31, 715, 0, 0, 0 }, -- TRAINER_LEADER_MORTY_MORTY
+  { 33, 33, 717, 0, 0, 0 }, -- TRAINER_LEADER_JASMINE_JASMINE
+  { 34, 34, 718, 0, 0, 0 }, -- TRAINER_LEADER_CHUCK_CHUCK
+  { 32, 32, 716, 0, 0, 0 }, -- TRAINER_LEADER_PRYCE_PRYCE
+  { 35, 35, 719, 0, 0, 0 }, -- TRAINER_LEADER_CLAIR_CLAIR
+  { 253, 253, 720, 0, 0, 0 }, -- TRAINER_LEADER_BROCK_BROCK
+  { 254, 254, 721, 0, 0, 0 }, -- TRAINER_LEADER_MISTY_MISTY
+  { 255, 255, 722, 0, 0, 0 }, -- TRAINER_LEADER_LT_SURGE_LT__SURGE
+  { 256, 256, 723, 0, 0, 0 }, -- TRAINER_LEADER_ERIKA_ERIKA
+  { 257, 257, 724, 0, 0, 0 }, -- TRAINER_LEADER_JANINE_JANINE
+  { 258, 258, 725, 0, 0, 0 }, -- TRAINER_LEADER_SABRINA_SABRINA
+  { 259, 259, 726, 0, 0, 0 }, -- TRAINER_LEADER_BLAINE_BLAINE
+  { 261, 261, 727, 0, 0, 0 }, -- TRAINER_LEADER_BLUE_BLUE
+}
+
 -- The full thirteen-slot retail trigger table behind
 -- GearPhoneRingManager (sPhoneCallTriggers order): caller, incoming
 -- script identity, and the force-pickup flag per slot. Caller contacts

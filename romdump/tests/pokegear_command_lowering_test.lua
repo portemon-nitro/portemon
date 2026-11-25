@@ -30,6 +30,7 @@ local CONTINUATION = {
   [431] = "native_wait",
   [460] = "continue_same_tick",
   [461] = "continue_same_tick",
+  [462] = "continue_same_tick",
   [613] = "continue_same_tick",
   [614] = "continue_same_tick",
   [779] = "continue_same_tick",
@@ -51,6 +52,7 @@ local WIDTHS = {
   [431] = 0,
   [460] = 2,
   [461] = 3,
+  [462] = 1,
   [613] = 1,
   [614] = 1,
   [779] = 2,
@@ -89,7 +91,7 @@ end
 function T.tests.rematches_register_and_queries_lower_to_typed_nodes()
   local rematch = lowerSingle(142, { 34, "VAR_TEMP_x4001" })
   Assert.equal(rematch.op, "pokegear_query")
-  Assert.equal(rematch.kind, "rematch_ready")
+  Assert.equal(rematch.kind, "rematch_trainer")
   Assert.equal(rematch.contact, 34, "immediate contacts ride their phonebook number")
   Assert.deepEqual(rematch.result, { value = "var", id = "VAR_TEMP_x4001" })
   local rematchVar = lowerSingle(142, { "VAR_TEMP_x4010", "VAR_SPECIAL_RESULT" })
@@ -157,6 +159,14 @@ function T.tests.phonebook_and_gift_rows_lower_to_typed_nodes()
   Assert.equal(resolve.op, "phone_resolve_contact")
   Assert.deepEqual(resolve.trainer, { value = "var", id = "VAR_SPECIAL_x8004" })
   Assert.deepEqual(resolve.result, { value = "var", id = "VAR_TEMP_x4010" })
+  local clearSeeking = lowerSingle(462, { "VAR_TEMP_x4010" })
+  Assert.equal(clearSeeking.op, "pokegear_update")
+  Assert.equal(clearSeeking.kind, "clear_rematch_seeking")
+  Assert.deepEqual(
+    clearSeeking.contact,
+    { value = "var", id = "VAR_TEMP_x4010" },
+    "the seeking clear names the loaded contact temp"
+  )
   local message = lowerSingle(461, { 2, "VAR_SPECIAL_x8004", "VAR_SPECIAL_x8005" })
   Assert.equal(message.op, "phone_contact_message")
   Assert.equal(message.kind, 2)

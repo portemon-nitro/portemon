@@ -164,12 +164,8 @@ local function worldFixture()
       rematches[contact] = record
       rematchReady[contact] = record.stage > 0
     end,
-    storyTier = 2,
     weekday = 6,
     timeOfDay = 0,
-    teamsByTier = {
-      [2] = { tier = 2, members = { { species = "custom.pidgeotto", level = 13 } } },
-    },
   }
 end
 

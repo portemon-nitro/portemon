@@ -19,6 +19,7 @@ PokegearCatalogCompiler.ERROR = {
   PHONEBOOK_INVALID = "POKEGEAR_PHONEBOOK_INVALID",
   RESDAT_INVALID = "POKEGEAR_RESDAT_INVALID",
   DUPLICATE_CONTACT = "POKEGEAR_DUPLICATE_CONTACT",
+  REMATCH_INVALID = "POKEGEAR_REMATCH_INVALID",
   SOURCE_UNAVAILABLE = "POKEGEAR_SOURCE_UNAVAILABLE",
 }
 
@@ -73,6 +74,79 @@ local function compilePhoneDefinitions()
     }
   end
   return out
+end
+
+-- Native rematch sets keyed by the base trainer a phonebook entry names, in
+-- source entry order (src/trainer_rematch.c::sTrainerRematchSets). Every
+-- referenced trainer must exist in the dump's trainer archive, so a mistyped
+-- or stale source row fails the build instead of reaching a script.
+---@param romFs table<string, unknown> RomFs-shaped source filesystem
+---@return { rows: table<integer, integer[]>, trainerCount: integer }|nil
+---@return Errors.Error|nil
+function PokegearCatalogCompiler.compileRematchSets(romFs)
+  local openNarc = romFs.openNarc
+  if type(openNarc) ~= "function" then
+    return nil, Errors.new(PokegearCatalogCompiler.ERROR.SOURCE_UNAVAILABLE, "rematch validation needs a RomFs", {})
+  end
+  local trainers, trainersErr = openNarc(romFs, "trainer_data")
+  if trainers == nil then
+    return nil,
+      Errors.new(
+        PokegearCatalogCompiler.ERROR.SOURCE_UNAVAILABLE,
+        "the trainer archive is unavailable for rematch validation: "
+          .. tostring(trainersErr and trainersErr.message or trainersErr),
+        {}
+      )
+  end
+  local trainerCount = trainers:memberCount()
+  local rows = {}
+  for index, row in ipairs(PokegearSources.trainerRematchSets) do
+    local label = "trainer rematch row " .. index
+    if type(row) ~= "table" or #row ~= 6 then
+      return nil,
+        Errors.new(PokegearCatalogCompiler.ERROR.REMATCH_INVALID, label .. " must carry six source entries", {
+          row = index,
+        })
+    end
+    local base = row[1]
+    if type(base) ~= "number" or base % 1 ~= 0 or base < 1 then
+      return nil,
+        Errors.new(PokegearCatalogCompiler.ERROR.REMATCH_INVALID, label .. " must name its base trainer", { row = index })
+    end
+    if rows[base] ~= nil then
+      return nil,
+        Errors.new(
+          PokegearCatalogCompiler.ERROR.REMATCH_INVALID,
+          label .. " repeats base trainer " .. base,
+          { row = index, trainer = base }
+        )
+    end
+    local entries = {}
+    for position = 1, 6 do
+      local trainer = row[position]
+      local sentinel = trainer == 0 or trainer == 0xFFFF
+      if
+        type(trainer) ~= "number"
+        or trainer % 1 ~= 0
+        or trainer < 0
+        or trainer > 0xFFFF
+        or (not sentinel and trainer >= trainerCount)
+      then
+        return nil,
+          Errors.new(
+            PokegearCatalogCompiler.ERROR.REMATCH_INVALID,
+            label .. " references missing trainer " .. tostring(trainer),
+            { row = index, position = position, trainer = trainer }
+          )
+      end
+      entries[position] = trainer
+    end
+    rows[base] = entries
+  end
+  if next(rows) == nil then
+    return nil, Errors.new(PokegearCatalogCompiler.ERROR.REMATCH_INVALID, "the source rematch table is empty", {})
+  end
+  return { rows = rows, trainerCount = trainerCount }
 end
 
 local function copyOverlay(overlay, keys)
@@ -492,12 +566,16 @@ function PokegearCatalogCompiler.compile(romFs, versionId)
     end
     bindings[setName] = { lists = lists, headers = headers }
   end
+  local rematchSets, rematchErr = PokegearCatalogCompiler.compileRematchSets(romFs)
+  if rematchSets == nil then
+    return nil, rematchErr
+  end
   local catalog = {
     contacts = decoded.contacts,
     contactOrder = decoded.contactOrder,
     callDefinitions = compilePhoneDefinitions(),
     callTriggers = PokegearSources.phoneTriggerRecords(versionId),
-    rematches = {},
+    rematches = rematchSets.rows,
     gifts = {},
     momPurchases = PokegearSources.momPurchaseRecords(versionId),
     locations = PokegearSources.mapLocationRecords(versionId),
@@ -519,7 +597,11 @@ function PokegearCatalogCompiler.compile(romFs, versionId)
     phonebook = {
       sha1 = Hashing.sha1hex(phonebookBytes),
       size = #phonebookBytes,
-      sourceHash = Hashing.hashLua({ catalog = catalog, classLabels = PokegearSources.phoneClassLabels }),
+      sourceHash = Hashing.hashLua({
+        catalog = catalog,
+        classLabels = PokegearSources.phoneClassLabels,
+        rematchTrainerCount = rematchSets.trainerCount,
+      }),
     },
   }
 end

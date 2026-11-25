@@ -2764,36 +2764,26 @@ function PhoneCall:release(handle)
   ] = nil
 end
 
--- The single field readiness query for a contact, projected from durable
--- state through the native contact window.
+-- The single field rematch query for a contact: the native trainer tier the
+-- saved invitation resolves to, or numeric zero when none is on offer.
 ---@param contact string
----@return { ready: boolean, tier: integer? }
+---@return { ready: boolean, trainerId: integer }
 function PhoneCall:queryRematch(contact)
   return TrainerPhonePrograms.query(contact, self._world, self._catalog)
 end
 
--- Projects the map marker from the same durable record and native window.
+-- Projects the map marker from the same resolved readiness.
 ---@param contact string
----@return { tier: integer?, ready: boolean }
+---@return { trainerId: integer, ready: boolean }
 function PhoneCall:rematchMarker(contact)
   return TrainerPhonePrograms.marker(contact, self._world, self._catalog)
 end
 
--- Launches the accepted rematch at the queried tier.
+-- Ends the contact's saved rematch invitation at the source's own clear.
 ---@param contact string
----@param world table<string, unknown>? the already composed world, when explicitly supplied
----@return { tier: integer, team: table<string, unknown> }
-function PhoneCall:launchRematch(contact, world)
-  assert(world == nil or world == self._world, "rematch launches cannot override the composed world")
-  return TrainerPhonePrograms.launch(contact, self._world, self._catalog)
-end
-
--- Resolves the launched rematch at its source boundary.
----@param contact string
----@param outcome string source resolution outcome
----@return { contact: string, outcome: string, ready: boolean }
-function PhoneCall:resolveRematch(contact, outcome)
-  return TrainerPhonePrograms.resolve(contact, self._world, outcome)
+---@return { contact: string, ready: boolean }
+function PhoneCall:clearRematchSeeking(contact)
+  return TrainerPhonePrograms.clearSeeking(contact, self._world)
 end
 
 return PhoneCall
