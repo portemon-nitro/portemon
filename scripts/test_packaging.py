@@ -89,10 +89,7 @@ BRANDING_FILES = (
 AUDIO_FILES = tuple(
     f"assets/audio/launcher/{name}.ogg"
     for name in ("boot", "focus", "confirm", "back", "error")
-) + tuple(
-    f"assets/audio/launcher/{name}.txt"
-    for name in ("boot", "focus", "confirm", "back", "error")
-)
+) + ("assets/audio/launcher/README.md",)
 
 EXCLUDED_FILES = (
     "assets/ui/launcher/icons-src/source.svg",
@@ -914,6 +911,8 @@ class PackagingContractTest(unittest.TestCase):
                     )
 
             self.assertEqual(first_listing.read_text().splitlines(), names)
+            self.assertIn("assets/audio/launcher/README.md", names)
+            self.assertFalse(any(name.endswith("/boot.txt") for name in names))
 
             development = root / "development.love"
             development_listing = root / "development.txt"
@@ -929,7 +928,12 @@ class PackagingContractTest(unittest.TestCase):
             root = Path(directory)
             output = root / "portemon.love"
             listing = root / "listing.txt"
-            for relative in ("gen4/battle.lua", "assets/audio/launcher/boot.ogg", *BRANDING_FILES):
+            for relative in (
+                "gen4/battle.lua",
+                "assets/audio/launcher/boot.ogg",
+                "assets/audio/launcher/README.md",
+                *BRANDING_FILES,
+            ):
                 with self.subTest(missing=relative):
                     make_fixture(root)
                     result = run_packer(root, output, listing)

@@ -39,9 +39,7 @@ BRANDING_FILES = (
 )
 AUDIO_FILES = tuple(
     f"assets/audio/launcher/{name}.ogg" for name in ("boot", "focus", "confirm", "back", "error")
-) + tuple(
-    f"assets/audio/launcher/{name}.txt" for name in ("boot", "focus", "confirm", "back", "error")
-)
+) + ("assets/audio/launcher/README.md",)
 REQUIRED_FILES = (
     "app/main.lua",
     "app/conf.lua",
