@@ -364,6 +364,7 @@ local function validatedPlayerData(soundMode)
       gender = 0,
       trainerId = 0,
       money = 3000,
+      coins = 0,
       badges = BadgeSets.empty(),
       nationalDex = false,
       runningShoes = false,

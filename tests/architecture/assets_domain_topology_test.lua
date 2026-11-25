@@ -81,6 +81,8 @@ local SHARED = {
   "BagHeroValidation",
   "BagInteractiveValidation",
   "BagManifestChecks",
+  "BankAssetSchema",
+  "BankCache",
   "DerivedAssetContract",
   "ErrorCodes",
   "ItemAssetSchema",

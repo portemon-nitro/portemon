@@ -124,6 +124,8 @@ local DOMAINS = {
     "BagAssetCompiler",
     "BagCacheWriter",
     "BagPresentationCompiler",
+    "BankAssetCompiler",
+    "BankCacheWriter",
     "FieldFontCacheWriter",
     "FieldFontCompiler",
     "FieldFontDecoder",

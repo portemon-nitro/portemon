@@ -201,12 +201,14 @@ local function publishedNativeJourney(lifecycles)
     local native = deepCopy(captured)
     native.schema = CURRENT_GAME_SCHEMA
     native.encounters = nativeEncounterBucket(captured.encounters, lifecycles)
-    -- The envelope predates the Hall of Fame history, the Day Care, and the
-    -- Battle Point wallet, so its own copy carries none of those buckets and
-    -- its statistics keep the release's shape.
+    -- The envelope predates the Hall of Fame history, the Day Care, the
+    -- Battle Point wallet, and the Game Corner coin balance, so its own copy
+    -- carries none of those fields and its statistics keep the release's
+    -- shape.
     native.hallOfFame = nil
     native.daycare = nil
     native.battlePoints = nil
+    native.playerData.profile.coins = nil
     native.gameStats.schema = CURRENT_GAME_STATS_SCHEMA
     native.gameStats.stateVersion = CURRENT_GAME_STATS_STATE_VERSION
     native.gameStats.leagueWins = nil

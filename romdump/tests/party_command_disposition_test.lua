@@ -12,7 +12,7 @@ local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
 
 local T = {}
 
-local FEATURES = { mons = true, starter = true, party_ui = true, following_mon = true }
+local FEATURES = { mons = true, starter = true, party_ui = true, following_mon = true, mail = true }
 local CATEGORIES = {
   battle = true,
   level_transition = true,
@@ -249,7 +249,9 @@ function T.interaction_and_shiny_leaf_commands_are_supported_with_source_timing(
 end
 
 function T.deferred_commands_lower_to_explicit_unsupported_nodes()
-  for _, opcode in ipairs({ 781 }) do
+  -- MonGiveMail still waits on the mailbox flows, so it keeps its deferral
+  -- and lowers to the explicit unsupported node.
+  for _, opcode in ipairs({ 428 }) do
     local tagged = entry(opcode)
     Assert.equal(tagged.disposition, "deferred", "opcode " .. opcode .. " is deferred")
     local items = lowerSingle(opcode)

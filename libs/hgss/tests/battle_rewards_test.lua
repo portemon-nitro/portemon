@@ -221,6 +221,7 @@ local function playerRecord(money)
       gender = 0,
       trainerId = 1,
       money = money,
+      coins = 0,
       badges = { zephyr = true, hive = true },
       nationalDex = false,
       runningShoes = false,

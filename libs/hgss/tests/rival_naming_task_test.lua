@@ -27,6 +27,7 @@ local function profileFixture(rivalName)
       gender = 0,
       trainerId = 0,
       money = 3000,
+      coins = 0,
       badges = {},
       nationalDex = false,
       runningShoes = false,

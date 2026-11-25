@@ -87,6 +87,9 @@ local function sourceReferenceBankIds()
   ids[730] = true
   ids[731] = true
   ids[738] = true
+  -- The field's type-name buffer reads this bank by native type identity;
+  -- see FieldMessageCompiler's required bank set.
+  ids[735] = true
   -- Native trainer field speech resolves through the trainer message pair
   -- table, which names its message in this bank; see FieldMessageCompiler's
   -- required bank set.
