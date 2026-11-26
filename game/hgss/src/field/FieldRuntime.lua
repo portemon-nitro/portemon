@@ -5265,6 +5265,7 @@ end
 ---@return { advance: fun(units: integer): integer, isReady: fun(): boolean, release: fun(), plan: WarpSystem.DestinationPlan }
 function FieldRuntime:beginDestinationStage(sourceMap, warp, dynamicWarp)
   local coordinator = assert(self.worldSwapCoordinator, "field runtime has no world-swap coordinator")
+  local runtimeSelf = self
   local loader = self.mapLoader
   local function loadMetadata(_, idOrSymbol)
     return loader:loadLogical(idOrSymbol)
@@ -5274,30 +5275,12 @@ function FieldRuntime:beginDestinationStage(sourceMap, warp, dynamicWarp)
   -- resolution still reads the loaded map, under this one plan's arrivals and
   -- through the identity the record named.
   plan.metadataOnly = true
-  local logicalMap = plan.destinationMap
-  local mapId = logicalMap.mapId
   local position = { fieldX = plan.coordinates.fieldX, fieldZ = plan.coordinates.fieldZ }
-  -- The compiled scene record is the area-type authority: a matrix entry alone
-  -- does not make a map outdoor (indoor maps carry a single matching cell).
-  local scene = loader:sceneRecord(mapId)
-  local matrixMemberId = nil
-  local anchorX, anchorZ = nil, nil
+  -- The compiled scene record is the area-type authority, but it is read once
+  -- by the staged runtime load. Window membership is decided from that
+  -- validated runtime when preparation completes, not by a separate parse.
+  local matrixMemberId, anchorX, anchorZ = nil, nil, nil
   local needsWindow = false
-  if type(scene) == "table" and scene.type == "outdoor" then
-    matrixMemberId = mapMatrixMemberId(self, logicalMap)
-    anchorX = math.floor(position.fieldX / FieldGrid.CELL_TILES)
-    anchorZ = math.floor(position.fieldZ / FieldGrid.CELL_TILES)
-    local current = self.physicalCoverage
-    -- The live window already serving this destination keeps it: the ordinary
-    -- swap path reuses it instead of rebuilding the same cells into a second
-    -- owner. Same-window destinations therefore stage the runtime alone.
-    needsWindow = not (
-      current ~= nil
-      and current.matrixMemberId == matrixMemberId
-      and current.anchorX == anchorX
-      and current.anchorZ == anchorZ
-    )
-  end
   ---@type FieldMapLoader.StagedTask?
   local loadTask = loader:beginLoad(plan.selector)
   ---@type FieldRuntimePhysicalSwap?
@@ -5312,11 +5295,24 @@ function FieldRuntime:beginDestinationStage(sourceMap, warp, dynamicWarp)
         return consumed
       end
       -- The destination runtime publishes through the loader's own entry cache
-      -- exactly once; its window then builds on that runtime.
-      loadTask:takeResult()
+      -- exactly once; its validated scene then decides whether this arrival
+      -- needs a new physical window.
+      local loadedMap = loadTask:takeResult()
       loadTask = nil
-      if needsWindow then
-        swap = coordinator:beginPhysicalCoverage(assert(loader:get(mapId)), position, assert(matrixMemberId))
+      if loadedMap.scene.type == "outdoor" then
+        matrixMemberId = mapMatrixMemberId(runtimeSelf, loadedMap)
+        anchorX = math.floor(position.fieldX / FieldGrid.CELL_TILES)
+        anchorZ = math.floor(position.fieldZ / FieldGrid.CELL_TILES)
+        local current = runtimeSelf.physicalCoverage
+        needsWindow = not (
+          current ~= nil
+          and current.matrixMemberId == matrixMemberId
+          and current.anchorX == anchorX
+          and current.anchorZ == anchorZ
+        )
+        if needsWindow then
+          swap = coordinator:beginPhysicalCoverage(loadedMap, position, assert(matrixMemberId))
+        end
       end
     end
     if not needsWindow then

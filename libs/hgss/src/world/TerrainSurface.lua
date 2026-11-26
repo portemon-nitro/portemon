@@ -11,6 +11,13 @@ TerrainSurface.__index = TerrainSurface
 
 local CONTAINMENT_EPSILON = 1e-9
 
+---@param artifact table<string, unknown>
+---@param plateById table<integer, table<string, unknown>>
+---@return TerrainSurface
+local function indexedSurface(artifact, plateById)
+  return setmetatable({ artifact = artifact, plates = artifact.plates, plateById = plateById }, TerrainSurface)
+end
+
 function TerrainSurface.new(artifact)
   assert(
     type(artifact) == "table" and type(artifact.plates) == "table",
@@ -21,7 +28,21 @@ function TerrainSurface.new(artifact)
     assert(plateById[plate.id] == nil, "duplicate terrain surface id")
     plateById[plate.id] = plate
   end
-  return setmetatable({ artifact = artifact, plates = artifact.plates, plateById = plateById }, TerrainSurface)
+  return indexedSurface(artifact, plateById)
+end
+
+-- Adopt an index built alongside the plates by their producer. Field region
+-- composition assigns each composite id while copying, so publication need not
+-- scan the whole window again.
+---@param artifact table<string, unknown>
+---@param plateById table<integer, table<string, unknown>>
+---@return TerrainSurface
+function TerrainSurface.fromIndexedPlates(artifact, plateById)
+  assert(
+    type(artifact) == "table" and type(artifact.plates) == "table" and type(plateById) == "table",
+    "TerrainSurface.fromIndexedPlates requires plates and their index"
+  )
+  return indexedSurface(artifact, plateById)
 end
 
 function TerrainSurface:plate(surfaceId)

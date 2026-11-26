@@ -130,10 +130,6 @@ local function planningRuntime(sourceCoverage, options)
       { id = 61, matrix = { memberId = 7 }, worldOriginX = 0, worldOriginZ = 0 },
     },
   }
-  runtime.mapLoader.sceneRecord = function(_, idOrSymbol)
-    calls.sceneReads = (calls.sceneReads or 0) + 1
-    return { type = options.indoor == true and "indoor" or "outdoor" }
-  end
   runtime.mapLoader.loadLogical = function(_, idOrSymbol)
     calls.logicalLoads = calls.logicalLoads + 1
     return {
@@ -160,7 +156,9 @@ local function planningRuntime(sourceCoverage, options)
         Assert.isFalse(taken, "the staged destination load transfers once")
         taken = true
         calls.taken = calls.taken + 1
-        return outdoorMap(nil)
+        local runtimeMap = outdoorMap(nil)
+        runtimeMap.scene.type = options.indoor == true and "indoor" or "outdoor"
+        return runtimeMap
       end,
       release = function()
         Assert.isFalse(released, "the staged destination load is released once")
@@ -170,7 +168,9 @@ local function planningRuntime(sourceCoverage, options)
     }
   end
   runtime.mapLoader.get = function(_, mapId)
-    return outdoorMap(nil)
+    local runtimeMap = outdoorMap(nil)
+    runtimeMap.scene.type = options.indoor == true and "indoor" or "outdoor"
+    return runtimeMap
   end
   runtime.mapLoader.createPhysicalCoverage = function(_, logicalMap, position)
     calls.cellBuilds = calls.cellBuilds + 1
@@ -261,6 +261,7 @@ function T.an_indoor_destination_stages_its_runtime_and_no_window()
   )
   Assert.notNil(stage.plan, "the stage carries the authoritative arrival plan")
   Assert.equal(calls.logicalLoads, 1, "planning reads scene-free metadata once")
+  Assert.isNil(calls.sceneReads, "staging does not parse a separate scene record before the runtime load")
   Assert.equal(calls.runtimeLoads, 1, "the destination runtime load starts under the cover")
   for _ = 1, 8 do
     if stage:isReady() then
