@@ -31,14 +31,16 @@ local function writeHostFile(path, bytes)
   Assert.isTrue(file:close(), "fixture file did not close: " .. path)
 end
 
-local function cartridge(label)
+local function cartridge(label, options)
+  options = options or {}
   local spec = DumpFixture.spec()
   local codeSeed = 0
   for index = 1, #label do
     codeSeed = (codeSeed * 31 + label:byte(index)) % 1000
   end
-  local gameCode = "M" .. string.format("%03d", codeSeed)
+  local gameCode = options.gameCode or ("M" .. string.format("%03d", codeSeed))
   spec.gameCode = gameCode
+  spec.banner = options.banner
   spec.overlays9 = { "MANAGED-" .. label }
   local data = NdsBuilder.build(spec)
   local sha1 = RomSource.fromString(data):sha1()
@@ -170,9 +172,10 @@ local function newHost(options)
     return proxy
   end
 
-  function host:importer(cart, onComplete)
+  function host:importer(cart, onComplete, expectedVersionId)
     local importer = newImporter({
       versions = cart.versions,
+      expectedVersionId = expectedVersionId,
       cacheFactory = function(versionId)
         return require("libs.storage.src.CacheFs").forVersion(versionId)
       end,
@@ -272,7 +275,8 @@ local function newHost(options)
   return host
 end
 
-function Fixture.with(fn)
+function Fixture.with(fn, options)
+  options = options or {}
   nextFixture = nextFixture + 1
   local handle = assert(io.popen("mktemp -d"))
   local root = (handle:read("*l") or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -280,7 +284,7 @@ function Fixture.with(fn)
   Assert.isTrue(root ~= "", "mktemp produced no root")
   local rootToken = assert(root:match("([^/]+)$")):gsub("[^%w_-]", "")
   local label = string.format("%02d-%s", nextFixture, rootToken)
-  local cart = cartridge(label)
+  local cart = cartridge(label, options)
   Assert.isNil(GameVersion.VERSIONS[cart.info.id], "synthetic version root must be unowned")
   Assert.isNil(love.filesystem.getInfo(cart.info.id), "synthetic version directory must be unowned")
   local canonical = "roms/" .. cart.sha1 .. ".zip"
@@ -294,6 +298,9 @@ function Fixture.with(fn)
   fixture.canonical = canonical
   fixture.stage = canonical .. ".new"
   fixture.backup = canonical .. ".bak"
+  fixture.icon = "roms/" .. cart.sha1 .. ".png"
+  fixture.iconStage = fixture.icon .. ".new"
+  fixture.iconBackup = fixture.icon .. ".bak"
   function fixture:originalExists()
     local file = io.open(self.originalPath, "rb")
     if file == nil then
@@ -366,7 +373,14 @@ function Fixture.with(fn)
   for path in pairs(temporaryFiles) do
     pcall(love.filesystem.remove, path)
   end
-  for _, path in ipairs({ fixture.canonical, fixture.stage, fixture.backup }) do
+  for _, path in ipairs({
+    fixture.canonical,
+    fixture.stage,
+    fixture.backup,
+    fixture.icon,
+    fixture.iconStage,
+    fixture.iconBackup,
+  }) do
     pcall(love.filesystem.remove, path)
   end
   SnapshotArchive.removeTree(cart.info.id)

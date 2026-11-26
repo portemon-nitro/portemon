@@ -3,7 +3,9 @@
 -- without ever treating an unpublished stage as installed evidence.
 
 local BinaryView = require("libs.codec.src.BinaryView")
+local Cartridge = require("libs.nds.src.rom.Cartridge")
 local Errors = require("libs.errors.src.Errors")
+local GameVersion = require("romdump.src.source.GameVersion")
 local NdsRom = require("romdump.src.source.NdsRom")
 local RomSource = require("romdump.src.source.RomSource")
 local Zip32 = require("libs.codec.src.Zip32")
@@ -13,6 +15,7 @@ local RomArchive = {}
 local MEMBER = "game.nds"
 local ROOT = "roms"
 local CANONICAL_SUFFIX = ".zip"
+local ICON_SUFFIX = ".png"
 local STAGE_SUFFIX = ".new"
 local BACKUP_SUFFIX = ".bak"
 
@@ -22,6 +25,8 @@ local ARCHIVE_CODES = {
   WRITE_FAILED = "ROM_ARCHIVE_WRITE_FAILED",
   INVALID = "ROM_ARCHIVE_INVALID",
   PUBLISH_FAILED = "ROM_ARCHIVE_PUBLISH_FAILED",
+  ICON_INVALID = "ROM_ICON_INVALID",
+  ICON_PUBLISH_FAILED = "ROM_ICON_PUBLISH_FAILED",
   SOURCE_REQUIRED = "ROM_SOURCE_REQUIRED",
 }
 
@@ -37,24 +42,37 @@ local function archiveFailure(code, message, context)
 end
 
 ---@param romSha1 string
+---@param suffix string
 ---@return string
-function RomArchive.path(romSha1)
+local function managedPath(romSha1, suffix)
   assert(
     type(romSha1) == "string" and romSha1:match("^[0-9a-f]+$") ~= nil and #romSha1 == 40,
     "managed ROM identity must be lowercase 40-hex"
   )
-  return ROOT .. "/" .. romSha1 .. CANONICAL_SUFFIX
+  return ROOT .. "/" .. romSha1 .. suffix
+end
+
+---@param romSha1 string
+---@return string
+function RomArchive.path(romSha1)
+  return managedPath(romSha1, CANONICAL_SUFFIX)
+end
+
+---@param romSha1 string
+---@return string
+function RomArchive.iconPath(romSha1)
+  return managedPath(romSha1, ICON_SUFFIX)
 end
 
 ---@param romSha1 string
 ---@return string? path
 function RomArchive.recoverablePath(romSha1)
   local canonical = RomArchive.path(romSha1)
-  if love.filesystem.getInfo(canonical) ~= nil then
+  if love.filesystem.getInfo(canonical, "file") ~= nil then
     return canonical
   end
   local backup = canonical .. BACKUP_SUFFIX
-  if love.filesystem.getInfo(backup) ~= nil then
+  if love.filesystem.getInfo(backup, "file") ~= nil then
     return backup
   end
   return nil
@@ -96,7 +114,7 @@ local function renameOwned(source, destination)
   return moved == true, message
 end
 
----@param prepared RomArchive.Prepared
+---@param prepared { stage: string }
 ---@param parts (string|love.Data)[]
 ---@return Errors.Error?
 local function writeStage(prepared, parts)
@@ -140,6 +158,187 @@ local function writeStage(prepared, parts)
       })
   end
   return nil
+end
+
+---@param rgbaBytes string
+---@return love.FileData?
+---@return Errors.Error?
+local function encodeRgba(rgbaBytes)
+  assert(type(rgbaBytes) == "string" and #rgbaBytes == 4096, "static banner must be 32x32 RGBA")
+  local byteData = love.data.newByteData(rgbaBytes)
+  local image
+  local ok, result = pcall(function()
+    -- LÖVE 11.5 accepts ByteData here; the vendored overload declares string.
+    local imageDataBytes = byteData --[[@as string]]
+    image = love.image.newImageData(32, 32, "rgba8", imageDataBytes)
+    return image:encode("png")
+  end)
+  byteData:release()
+  if image then
+    image:release()
+  end
+  if not ok then
+    return nil,
+      archiveFailure(ARCHIVE_CODES.ICON_INVALID, "static banner could not be encoded", {
+        cause = tostring(result),
+      })
+  end
+  if type(result) ~= "userdata" then
+    return nil, archiveFailure(ARCHIVE_CODES.ICON_INVALID, "static banner encoder returned no PNG data", {})
+  end
+  ---@cast result love.FileData
+  return result
+end
+
+---@param byteData love.Data already verified import bytes
+---@return love.FileData?
+---@return Errors.Error?
+function RomArchive.encodeIcon(byteData)
+  assert(type(byteData) == "userdata", "managed icon encoding requires Data")
+  ---@cast byteData love.Data
+  assert(type(byteData.getSize) == "function", "managed icon encoding requires Data")
+  local source = RomSource.fromByteData(byteData, "managed-icon")
+  local headerOk, headerOrError = pcall(Cartridge.readHeader, source)
+  if not headerOk then
+    source:release()
+    if Errors.is(headerOrError) then
+      return nil, headerOrError
+    end
+    error(headerOrError, 0)
+  end
+  local rgba, iconError = Cartridge.readBannerIcon(source, headerOrError)
+  source:release()
+  if rgba == nil then
+    return nil, iconError
+  end
+  return encodeRgba(rgba)
+end
+
+---@param versionId string
+---@return string? romSha1
+---@return love.FileData? pngFileData
+---@return Errors.Error?
+function RomArchive.readManagedIcon(versionId)
+  local info = GameVersion.info(versionId)
+  assert(type(info.sha1) == "string", "managed edition identity is required")
+  local romSha1 = info.sha1:lower()
+  local path = RomArchive.recoverablePath(romSha1)
+  if path == nil then
+    return nil,
+      nil,
+      archiveFailure(ARCHIVE_CODES.SOURCE_REQUIRED, "no managed ROM archive is present", {
+        versionId = versionId,
+        romSha1 = romSha1,
+      })
+  end
+  local source, sourceError = RomSource.fromManagedZip(path, MEMBER, true)
+  if source == nil then
+    return nil, nil, sourceError
+  end
+  local rom, romError = NdsRom.open(source, GameVersion)
+  if rom == nil then
+    source:release()
+    return nil, nil, romError
+  end
+  local actualInfo = rom:versionInfo()
+  if actualInfo.id ~= versionId or actualInfo.sha1:lower() ~= romSha1 then
+    rom:release()
+    return nil,
+      nil,
+      archiveFailure(ARCHIVE_CODES.ICON_INVALID, "managed ROM does not match the requested edition", {
+        versionId = versionId,
+        romSha1 = romSha1,
+        actualVersionId = actualInfo.id,
+      })
+  end
+  local rgba, iconError = Cartridge.readBannerIcon(rom, rom:header())
+  rom:release()
+  if rgba == nil then
+    return nil, nil, iconError
+  end
+  local png, encodeError = encodeRgba(rgba)
+  if png == nil then
+    return nil, nil, encodeError
+  end
+  return romSha1, png
+end
+
+---@param romSha1 string
+---@param pngFileData love.FileData borrowed encoded PNG
+---@return true?
+---@return Errors.Error?
+function RomArchive.publishIcon(romSha1, pngFileData)
+  local canonical = RomArchive.iconPath(romSha1)
+  assert(type(pngFileData) == "userdata", "managed icon publication requires encoded PNG data")
+  ---@cast pngFileData love.FileData
+  assert(type(pngFileData.getSize) == "function", "managed icon publication requires encoded PNG data")
+  if RomArchive.recoverablePath(romSha1) == nil then
+    return nil,
+      archiveFailure(ARCHIVE_CODES.SOURCE_REQUIRED, "cannot publish an icon without its managed ROM", {
+        romSha1 = romSha1,
+      })
+  end
+  local stage = canonical .. STAGE_SUFFIX
+  local backup = canonical .. BACKUP_SUFFIX
+  local removed, removeError = removeOwned(stage)
+  if not removed then
+    return nil,
+      archiveFailure(ARCHIVE_CODES.ICON_PUBLISH_FAILED, "abandoned managed icon stage could not be removed", {
+        path = stage,
+        cause = tostring(removeError),
+      })
+  end
+
+  if love.filesystem.getInfo(canonical, "file") == nil and love.filesystem.getInfo(backup, "file") ~= nil then
+    local restored, restoreError = renameOwned(backup, canonical)
+    if not restored then
+      return nil,
+        archiveFailure(ARCHIVE_CODES.ICON_PUBLISH_FAILED, "previous managed icon backup could not be restored", {
+          path = canonical,
+          cause = tostring(restoreError),
+        })
+    end
+  end
+
+  local writeError = writeStage({ stage = stage }, { pngFileData })
+  if writeError then
+    removeOwned(stage)
+    return nil, writeError
+  end
+  if love.filesystem.getInfo(canonical, "file") ~= nil then
+    if not removeOwned(backup) then
+      removeOwned(stage)
+      return nil,
+        archiveFailure(ARCHIVE_CODES.ICON_PUBLISH_FAILED, "previous managed icon backup could not be removed", {
+          path = backup,
+        })
+    end
+    local moved, moveError = renameOwned(canonical, backup)
+    if not moved then
+      removeOwned(stage)
+      return nil,
+        archiveFailure(ARCHIVE_CODES.ICON_PUBLISH_FAILED, "previous managed icon could not be moved aside", {
+          path = canonical,
+          cause = tostring(moveError),
+        })
+    end
+  end
+  local promoted, promoteError = renameOwned(stage, canonical)
+  if not promoted then
+    if love.filesystem.getInfo(canonical, "file") == nil and love.filesystem.getInfo(backup, "file") ~= nil then
+      renameOwned(backup, canonical)
+    end
+    removeOwned(stage)
+    return nil,
+      archiveFailure(ARCHIVE_CODES.ICON_PUBLISH_FAILED, "managed icon stage could not be promoted", {
+        path = canonical,
+        cause = tostring(promoteError),
+      })
+  end
+  -- Readers use the promoted canonical PNG, so a stale backup left by a
+  -- failed cleanup is not a publication failure and must not report one.
+  removeOwned(backup)
+  return true
 end
 
 ---@param versionInfo table<string, unknown>

@@ -2,6 +2,7 @@ local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local Cartridge = require("libs.nds.src.rom.Cartridge")
 local NdsBuilder = require("tests.support.NdsBuilder")
+local BannerIconFixture = require("tests.support.BannerIconFixture")
 
 local T = {}
 
@@ -107,6 +108,65 @@ function T.rejects_fat_entry_past_rom()
   throwsCode("FAT_RANGE_OUT_OF_BOUNDS", function()
     Cartridge.parse(borrowedSource(malformed))
   end)
+end
+
+function T.reads_static_banner_tiles_nibbles_palette_and_transparency()
+  Assert.equal(
+    type(Cartridge.readBannerIcon),
+    "function",
+    "the cartridge owner must expose a pure static-banner reader"
+  )
+  local banner = BannerIconFixture.staticBanner()
+  local data = NdsBuilder.build(BannerIconFixture.spec("IPKE", banner.block, "HEARTGOLD-BANNER"))
+  local source = borrowedSource(data)
+  local rgba, failure = Cartridge.readBannerIcon(source, Cartridge.readHeader(source))
+  Assert.isNil(failure, "a complete static banner must decode")
+  Assert.equal(rgba, banner.rgba, "the decoded row-major RGBA must match the independent fixture oracle")
+  Assert.equal(#rgba, 4096, "a static banner is exactly 32x32 RGBA")
+end
+
+function T.reads_all_transparent_banner_without_fabricating_pixels()
+  Assert.equal(type(Cartridge.readBannerIcon), "function", "the static-banner reader is required")
+  local banner = BannerIconFixture.transparentBanner()
+  local data = NdsBuilder.build(BannerIconFixture.spec("IPKE", banner.block, "TRANSPARENT-BANNER"))
+  local rgba, failure = Cartridge.readBannerIcon(borrowedSource(data))
+  Assert.isNil(failure)
+  Assert.equal(rgba, banner.rgba)
+  Assert.equal(rgba, string.rep("\0", 4096), "index zero stays transparent with zero RGB")
+end
+
+function T.rejects_missing_out_of_range_truncated_and_unreadable_banners()
+  Assert.equal(type(Cartridge.readBannerIcon), "function", "the static-banner reader is required")
+  local banner = BannerIconFixture.staticBanner()
+  local missing = NdsBuilder.build(BannerIconFixture.spec("IPKE", nil, "MISSING-BANNER"))
+  local complete = NdsBuilder.build(BannerIconFixture.spec("IPKE", banner.block, "COMPLETE-BANNER"))
+  local truncated = NdsBuilder.build(BannerIconFixture.spec("IPKE", banner.block:sub(1, -2), "TRUNCATED-BANNER"))
+  local cases = {
+    { label = "missing banner", data = missing },
+    { label = "out-of-range banner", data = BannerIconFixture.withBannerOffset(complete, #complete + 1) },
+    { label = "truncated banner", data = truncated },
+  }
+  for _, case in ipairs(cases) do
+    local rgba, failure = Cartridge.readBannerIcon(borrowedSource(case.data))
+    Assert.isNil(rgba, case.label .. " must not fabricate an icon")
+    Assert.isTrue(Errors.is(failure), case.label .. " must return a structured error")
+  end
+
+  local bannerOffset = Cartridge.readHeader(borrowedSource(complete)).bannerOffset
+  local unreadable = {
+    size = function()
+      return #complete
+    end,
+    read = function(_, offset, length)
+      if offset == bannerOffset then
+        return nil, "injected banner read failure"
+      end
+      return complete:sub(offset + 1, offset + length)
+    end,
+  }
+  local rgba, failure = Cartridge.readBannerIcon(unreadable, Cartridge.readHeader(borrowedSource(complete)))
+  Assert.isNil(rgba)
+  Assert.isTrue(Errors.is(failure), "an inexact banner read must remain a structured failure")
 end
 
 return { tests = T }

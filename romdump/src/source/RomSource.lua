@@ -137,9 +137,10 @@ end
 -- outlives the mount, which is released on every path.
 ---@param relativePath string
 ---@param exactMember string
+---@param snapshot boolean? mount an isolated native Data snapshot instead of the physical archive
 ---@return RomSource?
 ---@return Errors.Error?
-function RomSource.fromManagedZip(relativePath, exactMember)
+function RomSource.fromManagedZip(relativePath, exactMember, snapshot)
   if not isSafeZipMember(relativePath) then
     return nil,
       Errors.new(
@@ -167,13 +168,15 @@ function RomSource.fromManagedZip(relativePath, exactMember)
   local namespace = nextManagedMountIdentity(fs)
   local mountedArchive
   local mountName = relativePath
+  local unmountName = relativePath
   local mounted
-  if relativePath:lower():match("%.zip$") then
-    mounted = fs.mount(relativePath, namespace)
-  else
-    -- PHYSFS selects its ZIP reader by filename extension. A checked .zip.new
-    -- stage therefore mounts the same save-relative bytes as Data under a
-    -- .zip archive name, without allocating a compressed-file Lua string.
+  local function releaseMount()
+    fs.unmount(unmountName)
+  end
+  if snapshot or not relativePath:lower():match("%.zip$") then
+    -- A repair reads one immutable Data snapshot under its own namespace, so
+    -- a compiler's physical mount of the same archive remains independent.
+    -- PHYSFS also needs a .zip name for checked .zip.new stages.
     local data, readError = fs.read("data", relativePath)
     if data == nil then
       return nil,
@@ -182,14 +185,21 @@ function RomSource.fromManagedZip(relativePath, exactMember)
           cause = tostring(readError),
         })
     end
-    mountName = relativePath .. ".zip"
+    if snapshot then
+      mountName = namespace
+    else
+      mountName = relativePath:lower():match("%.zip$") and relativePath or (relativePath .. ".zip")
+    end
+    unmountName = snapshot and namespace or mountName
     ---@cast data love.FileData
     mountedArchive = fs.newFileData(data, mountName)
     data:release()
     mounted = fs.mount(mountedArchive, namespace)
+  else
+    mounted = fs.mount(relativePath, namespace)
   end
   if not mounted then
-    fs.unmount(mountName)
+    releaseMount()
     if mountedArchive then
       mountedArchive:release()
     end
@@ -239,7 +249,7 @@ function RomSource.fromManagedZip(relativePath, exactMember)
       displayName = basename(relativePath),
     }
   end)
-  fs.unmount(mountName)
+  releaseMount()
   if mountedArchive then
     mountedArchive:release()
   end

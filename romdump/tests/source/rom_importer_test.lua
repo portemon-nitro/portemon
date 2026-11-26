@@ -7,10 +7,65 @@ local DumpFixture = require("tests.support.DumpFixture")
 local CacheFs = require("libs.storage.src.CacheFs")
 local SaveFs = require("libs.storage.src.SaveFs")
 local FakeCache = require("tests.support.FakeCache")
+local ManagedRomIconFixture = require("tests.support.ManagedRomIconFixture")
+local BannerIconFixture = require("tests.support.BannerIconFixture")
+local PngReader = require("tests.support.PngReader")
+local ZipBuilder = require("tests.support.ZipBuilder")
+local RomArchive = require("romdump.src.source.RomArchive")
 
 local T = {}
 
 local HG = "heartgold/"
+
+local function readIfPresent(path)
+  return love.filesystem.getInfo(path) and love.filesystem.read(path) or nil
+end
+
+local function installManagedIcon(cart, banner)
+  Assert.equal(type(RomArchive.encodeIcon), "function", "verified banner encoding is required")
+  Assert.equal(type(RomArchive.publishIcon), "function", "managed sidecar publication is required")
+  local bytes = love.data.newByteData(cart.data)
+  local prepared = assert(RomArchive.prepare(cart.info, bytes, cart.versions))
+  Assert.isTrue(RomArchive.publish(prepared), "managed source setup failed")
+  local png = assert(RomArchive.encodeIcon(bytes))
+  Assert.isTrue(RomArchive.publishIcon(cart.sha1, png), "managed icon setup failed")
+  png:release()
+  bytes:release()
+  local iconBytes = readIfPresent(RomArchive.iconPath(cart.sha1))
+  Assert.notNil(iconBytes, "managed sidecar publication must create the canonical PNG")
+  local width, height, rgba = PngReader.rgba(assert(iconBytes))
+  Assert.equal(width, 32)
+  Assert.equal(height, 32)
+  Assert.equal(rgba, banner.rgba)
+end
+
+local function editionSnapshot(edition)
+  return {
+    source = readIfPresent(edition.canonical),
+    sourceStage = readIfPresent(edition.stage),
+    sourceBackup = readIfPresent(edition.backup),
+    icon = readIfPresent(edition.icon),
+    iconStage = readIfPresent(edition.iconStage),
+    iconBackup = readIfPresent(edition.iconBackup),
+  }
+end
+
+local function dropBytes(name, bytes)
+  return {
+    open = function()
+      return true
+    end,
+    read = function()
+      return bytes
+    end,
+    close = function()
+      return true
+    end,
+    getFilename = function()
+      return name
+    end,
+  }
+end
 
 local function throwsCode(code, fn)
   local err = Assert.throws(fn)
@@ -1372,6 +1427,197 @@ function T.lost_temporary_worker_is_not_retried_after_its_file_is_removed()
     end)
     if not ok then
       error(err, 0)
+    end
+  end)
+end
+
+function T.queued_import_publishes_verified_icon_after_commit_and_reuses_its_path()
+  ManagedRomIconFixture.with(function(fixture)
+    local edition = fixture.heartgold
+    local banner = fixture.heartGoldBanner
+    SaveFs.forVersion("heartgold"):write("sentinel.lua", "SAVE-SENTINEL")
+    CacheFs.forVersion("heartgold"):write("derived/sentinel.lua", "CACHE-SENTINEL")
+    fixture.host.holdValidation = true
+    local importer = fixture.host:importer(edition.cart, nil, "heartgold")
+    importer:queuePath(edition.originalPath)
+    local session = fixture.host:validationGate(importer)
+    Assert.isNil(love.filesystem.getInfo(edition.canonical), "validation alone publishes no source")
+    Assert.isNil(love.filesystem.getInfo(edition.icon), "validation alone publishes no icon")
+    Assert.isNil(love.filesystem.getInfo(edition.iconStage), "validation creates no sidecar stage")
+    session.outbox:releaseValidation()
+    fixture.host.holdValidation = false
+    fixture.host:finish(importer, "complete")
+    local handed = importer:takeVerifiedSource()
+    Assert.notNil(handed, "a completed import still offers its verified source once")
+    Assert.equal(handed:sha1(), edition.cart.sha1)
+    handed:release()
+    Assert.isNil(importer:takeVerifiedSource())
+    local members = edition:managedMembers()
+    Assert.deepEqual(members.names, { "game.nds" })
+    Assert.equal(members.bytes, edition.cart.data)
+    local iconBytes = readIfPresent(edition.icon)
+    Assert.notNil(iconBytes, "a completed verified import must publish its static banner sidecar")
+    local width, height, rgba = PngReader.rgba(assert(iconBytes))
+    Assert.equal(width, 32)
+    Assert.equal(height, 32)
+    Assert.equal(rgba, banner.rgba)
+    local firstIcon = readIfPresent(edition.icon)
+
+    local duplicate = fixture.host:importer(edition.cart, nil, "heartgold")
+    duplicate:queuePath(edition.originalPath)
+    fixture.host:finish(duplicate, "complete")
+    local duplicateHandoff = duplicate:takeVerifiedSource()
+    Assert.notNil(duplicateHandoff)
+    duplicateHandoff:release()
+    Assert.equal(readIfPresent(edition.icon), firstIcon, "reimporting one immutable SHA reuses its canonical icon")
+    Assert.isNil(love.filesystem.getInfo(edition.iconStage))
+    Assert.isNil(love.filesystem.getInfo(edition.iconBackup))
+    Assert.equal(SaveFs.forVersion("heartgold"):read("sentinel.lua"), "SAVE-SENTINEL")
+    Assert.equal(CacheFs.forVersion("heartgold"):read("derived/sentinel.lua"), "CACHE-SENTINEL")
+  end)
+end
+
+function T.optional_icon_failure_keeps_source_and_prior_icon_while_cancel_stays_atomic()
+  ManagedRomIconFixture.with(function(fixture)
+    local edition = fixture.heartgold
+    installManagedIcon(edition.cart, fixture.heartGoldBanner)
+    local sourceBefore = readIfPresent(edition.canonical)
+    local iconBefore = readIfPresent(edition.icon)
+    SaveFs.forVersion("heartgold"):write("sentinel.lua", "SAVE-SENTINEL")
+    CacheFs.forVersion("heartgold"):write("derived/sentinel.lua", "CACHE-SENTINEL")
+
+    fixture.host.holdValidation = true
+    local canceled = fixture.host:importer(edition.cart, nil, "heartgold")
+    canceled:queuePath(edition.originalPath)
+    local session = fixture.host:validationGate(canceled)
+    Assert.notNil(love.filesystem.getInfo(edition.stage), "the prepared source exists before authorization")
+    Assert.isNil(love.filesystem.getInfo(edition.iconStage), "precommit work creates no icon stage")
+    canceled:cancelQueued()
+    session.outbox:discardValidation()
+    fixture.host:waitFor(function()
+      canceled:update()
+      return not session.thread:isRunning()
+    end, "canceled import worker exit")
+    Assert.equal(readIfPresent(edition.canonical), sourceBefore, "precommit cancellation preserves source")
+    Assert.equal(readIfPresent(edition.icon), iconBefore, "precommit cancellation preserves icon")
+    Assert.isNil(love.filesystem.getInfo(edition.stage))
+    Assert.isNil(love.filesystem.getInfo(edition.iconStage))
+
+    fixture.host.holdValidation = false
+    fixture.host.prelude = [[
+local realNewFile = love.filesystem.newFile
+love.filesystem.newFile = function(path, mode)
+  if type(path) == "string" and path:match("%.png%.new$") then
+    return nil, "injected sidecar stage failure"
+  end
+  return realNewFile(path, mode)
+end
+local realWrite = love.filesystem.write
+love.filesystem.write = function(path, ...)
+  if type(path) == "string" and path:match("%.png%.new$") then
+    return false, "injected sidecar write failure"
+  end
+  return realWrite(path, ...)
+end
+]]
+    local importer = fixture.host:importer(edition.cart, nil, "heartgold")
+    importer:queuePath(edition.archivePath)
+    fixture.host:finish(importer, "complete")
+    Assert.equal(importer:status().versionId, "heartgold", "optional icon failure cannot fail a verified source")
+    local handed = importer:takeVerifiedSource()
+    Assert.notNil(handed)
+    Assert.equal(handed:sha1(), edition.cart.sha1)
+    handed:release()
+    Assert.notNil(love.filesystem.getInfo(edition.canonical), "the verified source remains installed")
+    Assert.equal(readIfPresent(edition.icon), iconBefore, "failed sidecar replacement preserves the old icon")
+    Assert.isNil(love.filesystem.getInfo(edition.iconStage))
+    Assert.equal(SaveFs.forVersion("heartgold"):read("sentinel.lua"), "SAVE-SENTINEL")
+    Assert.equal(CacheFs.forVersion("heartgold"):read("derived/sentinel.lua"), "CACHE-SENTINEL")
+  end)
+end
+
+function T.targeted_import_channels_reject_wrong_edition_and_generic_drop_detects()
+  ManagedRomIconFixture.with(function(fixture)
+    local heartGold = fixture.heartgold
+    local soulSilver = fixture.soulsilver
+    Assert.equal(type(RomArchive.iconPath), "function", "managed sidecar paths are required")
+    installManagedIcon(heartGold.cart, fixture.heartGoldBanner)
+    installManagedIcon(soulSilver.cart, fixture.soulSilverBanner)
+    for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+      SaveFs.forVersion(versionId):write("sentinel.lua", versionId .. "-SAVE")
+      CacheFs.forVersion(versionId):write("derived/sentinel.lua", versionId .. "-CACHE")
+    end
+    local before = {
+      heartgold = editionSnapshot(heartGold),
+      soulsilver = editionSnapshot(soulSilver),
+    }
+    local function assertMismatch(importer)
+      fixture.host:finish(importer, "error")
+      Assert.equal(importer:status().errorCode, "ROM_VERSION_MISMATCH")
+      local failure = assert(importer:status().error)
+      Assert.equal(failure.context.expectedVersionId, "heartgold")
+      Assert.equal(failure.context.actualVersionId, "soulsilver")
+      Assert.isNil(importer:takeVerifiedSource())
+      Assert.deepEqual(editionSnapshot(heartGold), before.heartgold, "wrong path target changes no HeartGold data")
+      Assert.deepEqual(editionSnapshot(soulSilver), before.soulsilver, "wrong path target changes no SoulSilver data")
+    end
+
+    local pathImport = fixture.host:importer(soulSilver.cart, nil, "heartgold")
+    pathImport:queuePath(soulSilver.originalPath)
+    assertMismatch(pathImport)
+
+    local soulSilverZip = ZipBuilder.build({ { name = "game.nds", data = soulSilver.cart.data } })
+    local dropImport = fixture.host:importer({ versions = fixture.catalog }, nil, "heartgold")
+    dropImport:queueDroppedFile(dropBytes("heartgold.zip", soulSilverZip))
+    assertMismatch(dropImport)
+
+    local temporaryPath = heartGold:writeTemporary("wrong-edition", soulSilver.cart.data)
+    local temporaryImport = fixture.host:importer({ versions = fixture.catalog }, nil, "heartgold")
+    Assert.isTrue(temporaryImport:queueTemporaryPath(temporaryPath, "wrong-edition-session"))
+    assertMismatch(temporaryImport)
+    Assert.isNil(love.filesystem.getInfo(temporaryPath), "terminal temporary rejection removes only the accepted stage")
+
+    local correctPath = heartGold:writeTemporary("correct-edition", heartGold.cart.data)
+    local correctImport = fixture.host:importer(heartGold.cart, nil, "heartgold")
+    Assert.isTrue(correctImport:queueTemporaryPath(correctPath, "correct-edition-session"))
+    fixture.host:finish(correctImport, "complete")
+    Assert.equal(correctImport:status().versionId, "heartgold")
+    Assert.deepEqual(
+      editionSnapshot(heartGold),
+      before.heartgold,
+      "correct targeted import keeps the same source and icon path"
+    )
+    local correctHandoff = correctImport:takeVerifiedSource()
+    Assert.notNil(correctHandoff)
+    correctHandoff:release()
+
+    for _, edition in ipairs({ heartGold, soulSilver }) do
+      for _, path in ipairs({ edition.canonical, edition.icon }) do
+        Assert.isTrue(love.filesystem.remove(path), "generic-drop fixture cleanup failed")
+      end
+    end
+    local mixedZip = ZipBuilder.build({
+      { name = "heartgold.nds", data = heartGold.cart.data },
+      { name = "soulsilver.nds", data = soulSilver.cart.data },
+    })
+    local generic = fixture.host:importer({ versions = fixture.catalog })
+    generic:queueDroppedFile(dropBytes("mixed.zip", mixedZip))
+    fixture.host:finish(generic, "complete")
+    local detectedId = generic:status().versionId
+    Assert.isTrue(
+      detectedId == "heartgold" or detectedId == "soulsilver",
+      "generic ZIP detection must choose a supported edition"
+    )
+    local detected = detectedId == "heartgold" and heartGold or soulSilver
+    local expected = detectedId == "heartgold" and fixture.heartGoldBanner or fixture.soulSilverBanner
+    Assert.notNil(love.filesystem.getInfo(detected.canonical), "generic detection publishes its detected source")
+    local width, height, rgba = PngReader.rgba(assert(readIfPresent(detected.icon)))
+    Assert.equal(width, 32)
+    Assert.equal(height, 32)
+    Assert.equal(rgba, expected.rgba, "the published icon matches the generically detected SHA")
+    for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+      Assert.equal(SaveFs.forVersion(versionId):read("sentinel.lua"), versionId .. "-SAVE")
+      Assert.equal(CacheFs.forVersion(versionId):read("derived/sentinel.lua"), versionId .. "-CACHE")
     end
   end)
 end

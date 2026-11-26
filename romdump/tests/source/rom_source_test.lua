@@ -1281,4 +1281,63 @@ function T.managed_zip_reads_exact_member_and_unmounts_on_success_and_failure()
   end
 end
 
+function T.managed_snapshot_mount_is_unique_and_preserves_a_physical_reader()
+  local root = "managed-snapshot-test"
+  Assert.isNil(love.filesystem.getInfo(root), "snapshot fixture root must be unowned")
+  Assert.isTrue(love.filesystem.createDirectory(root), "snapshot fixture root setup failed")
+  local bytes = NdsBuilder.build(DumpFixture.spec())
+  local archivePath = root .. "/game.zip"
+  Assert.isTrue(
+    love.filesystem.write(archivePath, ZipBuilder.build({ { name = "game.nds", data = bytes } })),
+    "snapshot archive fixture setup failed"
+  )
+  local compilerMount = "compiler-held-snapshot-test"
+  Assert.isTrue(love.filesystem.mount(archivePath, compilerMount), "compiler-style physical mount setup failed")
+  local mounts, unmounts = {}, {}
+  withPatched(love.filesystem, "mount", function(original)
+    return function(...)
+      mounts[#mounts + 1] = { ... }
+      return original(...)
+    end
+  end, function()
+    withPatched(love.filesystem, "unmount", function(original)
+      return function(...)
+        unmounts[#unmounts + 1] = ...
+        return original(...)
+      end
+    end, function()
+      local source, openErr = RomSource.fromManagedZip(archivePath, "game.nds", true)
+      Assert.notNil(source, "snapshot open failed: " .. tostring(openErr))
+      assert(source)
+      Assert.equal(source:read(0, #bytes), bytes)
+      source:release()
+      Assert.equal(#mounts, 1, "snapshot recovery mounts exactly one isolated archive")
+      Assert.equal(
+        type(mounts[1][1]),
+        "userdata",
+        "snapshot recovery must mount native Data rather than the physical path"
+      )
+      Assert.isTrue(mounts[1][2] ~= compilerMount, "snapshot recovery needs its own native namespace")
+      Assert.equal(unmounts[1], mounts[1][2], "snapshot recovery releases its named mount")
+      Assert.isNil(love.filesystem.getInfo(mounts[1][2]), "snapshot mount must not leak")
+      Assert.equal(
+        love.filesystem.read(compilerMount .. "/game.nds"),
+        bytes,
+        "the existing physical reader stays intact"
+      )
+
+      local missing, missingErr = RomSource.fromManagedZip(archivePath, "missing.nds", true)
+      Assert.isNil(missing)
+      Assert.isTrue(Errors.is(missingErr))
+      Assert.equal(#mounts, 2)
+      Assert.equal(unmounts[2], mounts[2][2])
+      Assert.isNil(love.filesystem.getInfo(mounts[2][2]), "failed snapshot lookup also releases its mount")
+      Assert.equal(love.filesystem.read(compilerMount .. "/game.nds"), bytes)
+    end)
+  end)
+  Assert.isTrue(love.filesystem.unmount(archivePath), "compiler-style mount cleanup failed")
+  pcall(love.filesystem.remove, archivePath)
+  pcall(love.filesystem.remove, root)
+end
+
 return { tests = T }

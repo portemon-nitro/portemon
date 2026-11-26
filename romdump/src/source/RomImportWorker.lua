@@ -20,6 +20,7 @@ end
 pcall(require, "love.thread")
 pcall(require, "love.filesystem")
 pcall(require, "love.data")
+pcall(require, "love.image")
 pcall(require, "love.timer")
 local Worker = require("romdump.src.source.RomImportWorker")
 Worker.run(inbox, outbox)
@@ -216,6 +217,7 @@ function RomImportWorker.run(inbox, outbox)
   -- stale late packet and die silent.
   local latchedId = {}
   local prepared
+  local iconPng
   local temporaryPath
   local ok, failure = pcall(function()
     local RomImporter = require("romdump.src.source.RomImporter")
@@ -392,6 +394,17 @@ function RomImportWorker.run(inbox, outbox)
     pcall(view.release, view)
     assert(byteDataOk and type(byteData) == "userdata", "a completed import shares its verified buffer")
     local versionInfo = assert(versions.info(snapshot.versionId), "verified import has a catalog identity")
+    local iconError
+    iconPng, iconError = RomArchive.encodeIcon(byteData)
+    if iconPng == nil then
+      answer({
+        kind = "status",
+        state = "registering",
+        progress = 0.9,
+        stage = "publishing",
+        detail = "ROM icon unavailable: " .. Errors.format(iconError),
+      })
+    end
 
     answer({ kind = "status", state = "registering", progress = 0.9, stage = "publishing", stageLabel = "Saving ROM" })
     prepared, startErr = RomArchive.prepare(versionInfo, byteData, versions)
@@ -429,6 +442,20 @@ function RomImportWorker.run(inbox, outbox)
       )
       return
     end
+    if iconPng ~= nil then
+      local iconPublished, iconPublishError = RomArchive.publishIcon(versionInfo.sha1:lower(), iconPng)
+      if not iconPublished then
+        answer({
+          kind = "status",
+          state = "registering",
+          progress = 0.9,
+          stage = "publishing",
+          detail = "ROM icon could not be saved: " .. Errors.format(iconPublishError),
+        })
+      end
+      iconPng:release()
+      iconPng = nil
+    end
     answer({
       kind = "complete",
       versionId = snapshot.versionId,
@@ -440,6 +467,9 @@ function RomImportWorker.run(inbox, outbox)
   end)
   if prepared ~= nil then
     pcall(require("romdump.src.source.RomArchive").discard, prepared)
+  end
+  if iconPng ~= nil then
+    pcall(iconPng.release, iconPng)
   end
   if temporaryPath ~= nil then
     pcall(love.filesystem.remove, temporaryPath)
