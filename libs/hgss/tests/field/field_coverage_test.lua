@@ -1641,6 +1641,74 @@ function T.a_focus_change_reorders_the_queued_halo()
   coverage:release()
 end
 
+-- A corner position predicts exactly one cardinal crossing. Physical coverage
+-- crosses one edge at a time, so the nearer edge owns the prediction, an exact
+-- tie follows the facing intent, and a tie without one keeps a stable axis.
+function T.a_corner_focus_predicts_one_cardinal_crossing()
+  local cases = {
+    { localX = 31, localZ = 30, expectedX = 3, expectedZ = 2 },
+    { localX = 30, localZ = 2, expectedX = 3, expectedZ = 2 },
+    { localX = 2, localZ = 31, expectedX = 2, expectedZ = 3 },
+    { localX = 31, localZ = 31, facing = "east", expectedX = 3, expectedZ = 2 },
+    { localX = 31, localZ = 31, facing = "south", expectedX = 2, expectedZ = 3 },
+    { localX = 0, localZ = 0, facing = "west", expectedX = 1, expectedZ = 2 },
+    { localX = 0, localZ = 0, facing = "north", expectedX = 2, expectedZ = 1 },
+    { localX = 0, localZ = 0, expectedX = 1, expectedZ = 2 },
+    { localX = 31, localZ = 31, expectedX = 3, expectedZ = 2 },
+  }
+  for _, case in ipairs(cases) do
+    local coverage = FieldCoverage.new({
+      matrixMemberId = 1,
+      index = makeIndex(5, 5),
+      anchorX = 2,
+      anchorZ = 2,
+      loadCell = function(descriptor)
+        return runtimeFactory({})(descriptor)
+      end,
+    })
+    coverage:setPrefetchFocus(2 * 32 + case.localX, 2 * 32 + case.localZ, case.facing)
+    local anchorX, anchorZ = coverage:_imminentAnchor()
+    local label = string.format("(%d,%d) facing %s", case.localX, case.localZ, tostring(case.facing))
+    Assert.equal(anchorX, case.expectedX, "predicted column for " .. label)
+    Assert.equal(anchorZ, case.expectedZ, "predicted row for " .. label)
+    coverage:release()
+  end
+end
+
+-- A frontier whose crossing cell is not in the generated matrix owes no window:
+-- reporting one would keep the satisfied halo permanently owing work that can
+-- never be assembled.
+function T.a_prediction_outside_the_generated_matrix_owes_no_work()
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 4,
+    anchorZ = 4,
+    loadCell = function(descriptor)
+      return runtimeFactory({})(descriptor)
+    end,
+  })
+  coverage:setPrefetchFocus(4 * 32 + 16, 4 * 32 + 16)
+  coverage:queuePrefetch(4, 4)
+  for _ = 1, 400 do
+    if not coverage:hasPrefetchWork() then
+      break
+    end
+    coverage:updatePrefetch(2)
+  end
+  Assert.isFalse(coverage:hasPrefetchWork(), "the halo is complete mid-cell")
+
+  -- The east edge of the last generated column predicts a cell that does not
+  -- exist: nothing is owed and nothing can be built.
+  coverage:setPrefetchFocus(4 * 32 + 31, 4 * 32 + 16, "east")
+  local anchorX, anchorZ = coverage:_imminentAggregateTarget()
+  Assert.isNil(anchorX, "no window is owed past the generated matrix")
+  Assert.isNil(anchorZ)
+  Assert.isFalse(coverage:predictedWindowPending(), "an impossible frontier reports no owed window")
+  Assert.isFalse(coverage:hasPrefetchWork(), "the satisfied halo stays satisfied")
+  coverage:release()
+end
+
 -- A corner position predicts one cardinal crossing, not a diagonal: physical
 -- coverage crosses one edge at a time, and the edge the player is closest to
 -- crossing is the one worth preparing.
@@ -1731,8 +1799,9 @@ function T.a_superseded_imminent_window_is_dropped_and_rebuilt()
   coverage:release()
 end
 
--- Zero budget does no aggregate assembly: the imminent window is charged as one
--- indivisible step of the same staging budget, never as unbudgeted work.
+-- Zero budget starts no aggregate assembly: the predicted window is charged as
+-- one step of the caller's staging budget, never as unbudgeted work, and a
+-- budgeted frame either starts or continues it under its measured slice.
 function T.a_zero_budget_never_assembles_the_imminent_window()
   local coverage = FieldCoverage.new({
     matrixMemberId = 1,
@@ -1754,9 +1823,67 @@ function T.a_zero_budget_never_assembles_the_imminent_window()
   coverage:setPrefetchFocus(2 * 32 + 30, 2 * 32 + 16)
   Assert.equal(coverage:updatePrefetch(0), 0, "a zero budget spends no work units")
   Assert.isNil(coverage._stagedAggregate, "a zero budget never assembles the imminent window")
+  Assert.isNil(coverage._aggregateStage, "a zero budget starts no assembly")
   Assert.isTrue(coverage:hasPrefetchWork(), "the deferred window remains owed")
-  Assert.equal(coverage:updatePrefetch(1), 1, "the window costs exactly one budgeted step")
-  Assert.notNil(coverage._stagedAggregate, "the budgeted step assembles the window")
+  Assert.equal(coverage:updatePrefetch(1), 1, "a budgeted frame charges the window one step")
+  for _ = 1, 400 do
+    if coverage._stagedAggregate ~= nil then
+      break
+    end
+    coverage:updatePrefetch(1)
+  end
+  Assert.notNil(coverage._stagedAggregate, "the budgeted slices assemble the window")
+  coverage:release()
+end
+
+-- The predicted window is not one frame's work: region plates and translated
+-- draw parts fill in under a measured slice, and only a complete window is
+-- published. The clock is injected so a slice boundary is deterministic.
+function T.the_predicted_window_assembles_across_frames_within_a_measured_slice()
+  local now = 0
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    clock = function()
+      -- One unit of measured time per reading: every slice boundary is reached
+      -- after a single assembly step.
+      now = now + 1
+      return now
+    end,
+    loadCell = function(descriptor)
+      return runtimeFactory({})(descriptor)
+    end,
+  })
+  coverage:setPrefetchFocus(2 * 32 + 16, 2 * 32 + 16)
+  coverage:queuePrefetch(2, 2)
+  for _ = 1, 400 do
+    if not coverage:hasPrefetchWork() then
+      break
+    end
+    coverage:updatePrefetch(2)
+  end
+  Assert.isFalse(coverage:hasPrefetchWork(), "the halo is fully realized mid-cell")
+
+  coverage:setPrefetchFocus(2 * 32 + 30, 2 * 32 + 16)
+  coverage:updatePrefetch(1)
+  Assert.isNil(coverage._stagedAggregate, "one slice never assembles the whole window")
+  local stage = assert(coverage._aggregateStage, "the slice started the window's assembly")
+  Assert.equal(stage.anchorX, 3, "the assembling window is the predicted frontier")
+  local frames = 1
+  while coverage._stagedAggregate == nil and frames < 400 do
+    coverage:updatePrefetch(1)
+    frames = frames + 1
+  end
+  local staged = assert(coverage._stagedAggregate, "the slices finish the window")
+  Assert.isTrue(frames > 1, "the window takes more than one slice to assemble")
+  Assert.isNil(coverage._aggregateStage, "a published window owns no partial stage")
+  Assert.equal(staged.anchorX, 3, "the published window is the predicted frontier")
+  Assert.isFalse(coverage:hasPrefetchWork(), "the published window satisfies the frontier")
+  Assert.isTrue(#staged.cellKeys > 0, "the window names the cells it composed")
+  Assert.equal(#staged.cellKeys, #staged.cellPresentation, "every staged cell contributed its parts")
+  Assert.isTrue(staged.region.terrain ~= nil, "the published window carries its composite region")
   coverage:release()
 end
 

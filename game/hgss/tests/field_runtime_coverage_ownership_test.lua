@@ -218,21 +218,27 @@ local function outdoorSource()
   return { mapId = 61, fieldData = { events = { warps = {} } } }
 end
 
--- A covered warp whose live window already covers the arrival cell stages
--- nothing: the ordinary swap reuses that exact owner instead of realizing the
--- same cells into a second window.
+-- A covered warp whose live window already covers the arrival cell stages no
+-- replacement window: the ordinary swap reuses that exact owner instead of
+-- realizing the same cells into a second window, while the destination runtime
+-- is still staged under the cover.
 function T.a_same_window_covered_warp_stages_no_replacement()
   local sourceCoverage = releaseSpy("source", 7, 0, 0)
   local runtime, calls = planningRuntime(sourceCoverage)
-  local stage = runtime:beginDestinationStage(
-    outdoorSource(),
-    { index = 0, destinationMapId = 60, destinationWarpId = 0 },
-    nil
+  local stage = assert(
+    runtime:beginDestinationStage(outdoorSource(), { index = 0, destinationMapId = 60, destinationWarpId = 0 }, nil),
+    "the destination runtime stages under the cover"
   )
-
-  Assert.isNil(stage, "the live window already serves the destination")
-  Assert.equal(calls.runtimeLoads, 0, "a same-window warp never loads the destination runtime under the cover")
+  for _ = 1, 8 do
+    if stage:isReady() then
+      break
+    end
+    stage:advance(4)
+  end
+  Assert.isTrue(stage:isReady(), "the same-window destination runtime finishes staging")
+  Assert.equal(calls.runtimeLoads, 1, "the destination runtime is staged once under the cover")
   Assert.equal(calls.cellBuilds, 0, "no cell is realized twice for the same window")
+  Assert.isFalse(stage:matches(7, 0, 0), "a reused window owns no stage to adopt")
 
   local reused = runtime:_stagePhysicalCoverage(
     outdoorMap(sourceCoverage),
@@ -243,23 +249,29 @@ function T.a_same_window_covered_warp_stages_no_replacement()
   Assert.isFalse(reused.replacement, "the swapped window is not replaced")
 end
 
--- An indoor destination has no physical window: planning it from scene-free
--- metadata leaves the full map load to the ordinary resolution path instead of
--- blocking one frame under the cover.
-function T.an_indoor_destination_stages_no_window_and_no_runtime_load()
+-- An indoor destination stages its runtime under the cover without a physical
+-- window: the resolution then reads the published runtime instead of loading it
+-- in the frame that finishes loading.
+function T.an_indoor_destination_stages_its_runtime_and_no_window()
   local sourceCoverage = releaseSpy("source", 7, 0, 0)
   local runtime, calls = planningRuntime(sourceCoverage, { indoor = true })
-  local stage = runtime:beginDestinationStage(
-    outdoorSource(),
-    { index = 0, destinationMapId = 60, destinationWarpId = 0 },
-    nil
+  local stage = assert(
+    runtime:beginDestinationStage(outdoorSource(), { index = 0, destinationMapId = 60, destinationWarpId = 0 }, nil),
+    "an indoor destination stages its runtime like any other destination"
   )
-
-  Assert.isNil(stage, "an indoor destination stages no physical window")
+  Assert.notNil(stage.plan, "the stage carries the authoritative arrival plan")
   Assert.equal(calls.logicalLoads, 1, "planning reads scene-free metadata once")
-  Assert.equal(calls.runtimeLoads, 0, "the full destination runtime is not loaded under the cover")
+  Assert.equal(calls.runtimeLoads, 1, "the destination runtime load starts under the cover")
+  for _ = 1, 8 do
+    if stage:isReady() then
+      break
+    end
+    stage:advance(4)
+  end
+  Assert.isTrue(stage:isReady(), "the staged destination runtime finishes")
+  Assert.equal(calls.taken, 1, "the staged runtime publishes exactly once")
   Assert.equal(calls.cellBuilds, 0, "no physical cell work happens for an indoor destination")
-  sourceCoverage.releases = 0
+  Assert.isFalse(stage:matches(7, 0, 0), "an indoor destination describes no physical window")
 end
 
 -- An outdoor covered warp stages the destination runtime with the window, and
@@ -296,6 +308,43 @@ function T.an_outdoor_covered_warp_stages_the_runtime_and_its_window_once()
   Assert.isTrue(adoption.replacement, "the resolution adopts the staged replacement")
   Assert.equal(calls.cellBuilds, 1, "adoption realizes no second window")
   Assert.equal(runtime.physicalCoverage, sourceCoverage, "the live window stays owned until the swap commits")
+end
+
+-- A finished stage stays transition-owned until its transfer succeeds: a
+-- failing window transfer must leave the releasable stage behind instead of
+-- orphaning the cell task it holds.
+function T.a_failing_stage_transfer_leaves_the_stage_with_the_transition()
+  local sourceCoverage = releaseSpy("source", 7, 0, 0)
+  local runtime = planningRuntime(sourceCoverage)
+  local released = 0
+  local stage = {
+    plan = {},
+    advance = function()
+      return 0
+    end,
+    isReady = function()
+      return true
+    end,
+    matches = function()
+      return true
+    end,
+    finish = function()
+      error("synthetic window transfer failure", 0)
+    end,
+    release = function()
+      released = released + 1
+    end,
+  }
+  runtime.transition.destinationStage = stage
+
+  local ok = pcall(function()
+    return runtime:_stagePhysicalCoverage(outdoorMap(sourceCoverage), { fieldX = 5, fieldZ = 11 }, 7)
+  end)
+  Assert.isFalse(ok, "the transfer failure propagates to the transition")
+  Assert.equal(runtime.transition.destinationStage, stage, "the unconsumed stage stays with the transition")
+
+  runtime.transition:releaseDestinationStage()
+  Assert.equal(released, 1, "the abort path releases it exactly once")
 end
 
 local function destinationCollision()

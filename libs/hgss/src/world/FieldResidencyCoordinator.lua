@@ -55,6 +55,7 @@ FieldResidencyCoordinator.__index = FieldResidencyCoordinator
 ---@class FieldResidencyPlayer
 ---@field fieldX integer
 ---@field fieldZ integer
+---@field facing string? the movement intent that breaks an equally-near crossing tie
 ---@field currentMap RuntimeFieldMap
 
 local function sortedIds(descriptors)
@@ -115,6 +116,7 @@ function FieldResidencyCoordinator.new(options)
     _livePrefetchSatisfied = false,
     _focusX = nil,
     _focusZ = nil,
+    _focusFacing = nil,
     _publishedViews = {},
     _publishedByMap = {},
     _publishedCount = 0,
@@ -296,15 +298,18 @@ end
 
 -- The committed player position drives halo ordering for whichever coverage
 -- window is live. A window adopted after a crossing or a covered warp starts
--- from the same frontier instead of the generated cell order.
+-- from the same frontier instead of the generated cell order. The facing is the
+-- movement intent of that position: it decides which cardinal edge an equally
+-- near corner crossing takes.
 ---@param fieldX number
 ---@param fieldZ number
-function FieldResidencyCoordinator:setPrefetchFocus(fieldX, fieldZ)
+---@param facing string?
+function FieldResidencyCoordinator:setPrefetchFocus(fieldX, fieldZ, facing)
   assert(not self.disposed, "field residency coordinator is disposed")
   assert(type(fieldX) == "number" and type(fieldZ) == "number", "field prefetch focus requires a field position")
-  self._focusX, self._focusZ = fieldX, fieldZ
+  self._focusX, self._focusZ, self._focusFacing = fieldX, fieldZ, facing
   if self.coverage ~= nil then
-    self.coverage:setPrefetchFocus(fieldX, fieldZ)
+    self.coverage:setPrefetchFocus(fieldX, fieldZ, facing)
   end
 end
 
@@ -313,7 +318,7 @@ end
 function FieldResidencyCoordinator:_applyPrefetchFocus(coverage)
   local fieldX, fieldZ = self._focusX, self._focusZ
   if coverage ~= nil and fieldX ~= nil and fieldZ ~= nil then
-    coverage:setPrefetchFocus(fieldX, fieldZ)
+    coverage:setPrefetchFocus(fieldX, fieldZ, self._focusFacing)
   end
 end
 
@@ -612,8 +617,9 @@ function FieldResidencyCoordinator:discardTransition(transaction)
 end
 
 ---@param transaction FieldResidencyCoordinator.Transition
+---@param arrival { fieldX: number, fieldZ: number, facing: string? }? the committed arrival this swap lands on
 ---@return RuntimeFieldMap|LogicalFieldMap
-function FieldResidencyCoordinator:commitTransition(transaction)
+function FieldResidencyCoordinator:commitTransition(transaction, arrival)
   assert(transaction and transaction.coordinator == self, "foreign field residency transition")
   assert(transaction.state == "prepared", "field residency transition is not committable")
   assert(self.coverage == transaction.sourceCoverage, "field residency transition source coverage changed")
@@ -633,6 +639,16 @@ function FieldResidencyCoordinator:commitTransition(transaction)
     if not transaction.targetResidents[mapId] then
       self:_releaseResident(mapId, transaction.sourceResidents)
     end
+  end
+  if arrival ~= nil then
+    -- The arrival is the new frontier, not the departure position the retained
+    -- focus still describes: a warp must not order the destination window around
+    -- a cell the player already left.
+    assert(
+      type(arrival.fieldX) == "number" and type(arrival.fieldZ) == "number",
+      "a warp arrival needs its field position"
+    )
+    self._focusX, self._focusZ, self._focusFacing = arrival.fieldX, arrival.fieldZ, arrival.facing
   end
   if self.coverage then
     self:_applyPrefetchFocus(self.coverage)
@@ -658,8 +674,9 @@ function FieldResidencyCoordinator:afterCommittedMove(player, context)
   -- The committed player position is the frontier ordering source on every
   -- move, not only on the crossing it is meant to anticipate: a position that
   -- walked east inside its cell must not leave the halo ordered around the west
-  -- edge the player came from.
-  self:setPrefetchFocus(player.fieldX, player.fieldZ)
+  -- edge the player came from. The facing travels with it as the movement intent
+  -- an equally-near corner crossing resolves with.
+  self:setPrefetchFocus(player.fieldX, player.fieldZ, player.facing)
   local anchorChanged = self.coverage and (self.coverage.anchorX ~= targetX or self.coverage.anchorZ ~= targetZ)
   if anchorChanged then
     self.coverage:recenter(targetX, targetZ)

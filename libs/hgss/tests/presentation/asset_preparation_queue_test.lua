@@ -1142,7 +1142,25 @@ local function diskCacheFs()
   }
 end
 
--- Every physical dispatch the fake worker received for one token.
+-- One selected view that serves both shapes: the generated base stays resident
+-- and the packaged mod member is disk-backed, so one queue can hold a
+-- speculative ready payload and a selected-source decode at the same time.
+local function mixedCacheFs()
+  local resident = fakeCacheFs()
+  local packaged = diskCacheFs()
+  return {
+    versionId = "heartgold",
+    resolveAsset = function(_, relativePath)
+      if relativePath:sub(1, 4) == "pkg/" then
+        return packaged:resolveAsset(relativePath)
+      end
+      return resident.resolveAsset(resident, relativePath)
+    end,
+  }
+end
+
+-- Every physical request the fake worker received for one token (test-pushed
+-- replies carry their own token and kind too, so they are not dispatches).
 ---@param state table
 ---@param token integer
 ---@return table[]
@@ -1150,7 +1168,7 @@ local function pushesFor(state, token)
   local pushed = {}
   for _, entry in ipairs(state.allPushes) do
     local value = entry.value
-    if type(value) == "table" and value.token == token and value.path ~= nil and value.kind ~= nil then
+    if type(value) == "table" and value.token == token and value.path ~= nil and value.kind ~= nil and value.ok == nil then
       pushed[#pushed + 1] = value
     end
   end
@@ -1482,6 +1500,72 @@ function T.a_blocking_wait_promotes_the_token_it_waits_on()
     Assert.notNil(lease and lease.value, "the blocking wait transfers the promoted job's lease")
     Assert.isTrue(requestIndex ~= nil, "the wait dispatched the promoted job")
     queue:take(filler)
+    queue:release()
+  end)
+end
+
+-- Effective demand survives every stage of a logical acquisition: a consumer
+-- that promotes a graphical request while its selected-source read is already
+-- running must still get the decode continuation dispatched past an occupied
+-- ready-payload ceiling, because the promotion belongs to the logical token and
+-- not to the physical op it happens to be waiting on.
+function T.promotion_during_a_running_source_read_dispatches_the_decode_continuation()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(mixedCacheFs(), { readyPayloadByteLimit = 1, workerSlots = 2 })
+    local path = "pkg/generated/field/30/promoted-package.png"
+    local awaited = queue:request("image-derivative", path, "prefetch")
+    local sourceIndex = assert(requestChannelIndexFor(host, awaited), "the speculative source read dispatched")
+    Assert.equal(pushesFor(host, awaited)[1].kind, "source", "the first physical job is the selected read")
+
+    local filler = queue:request("mesh", "geometry/ceiling-filler.g4mesh", "prefetch")
+    responseChannelFor(host, filler):push(meshResponse(filler, "geometry/ceiling-filler.g4mesh"))
+    Assert.equal(queue:poll(filler), "ready", "the speculative payload occupies the ready ceiling")
+
+    -- The consumer starts awaiting the packaged texture mid-read.
+    queue:promote(awaited, "demand")
+    responseChannelFor(host, sourceIndex):push(sourceResponse(awaited, path, string.rep("q", 24)))
+    Assert.equal(queue:poll(awaited), "pending", "a source reply alone is not the awaited decode")
+    local dispatched = pushesFor(host, awaited)
+    Assert.equal(#dispatched, 2, "the decode continuation dispatches past the occupied ceiling")
+    Assert.equal(dispatched[2].kind, "image-derivative", "the second physical job is the decode")
+
+    queue:take(filler)
+    queue:cancel(awaited)
+    queue:release()
+  end)
+end
+
+-- A demand follower of a shared selected read keeps its own urgency: the
+-- coalesced decode it ends up awaiting dispatches at the ceiling even though the
+-- read owner and the follower asked with different priorities.
+function T.a_demand_follower_of_a_prefetched_read_still_dispatches_its_decode()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(mixedCacheFs(), { readyPayloadByteLimit = 1, workerSlots = 2 })
+    local path = "pkg/generated/field/30/shared-package.png"
+    local speculative = queue:request("image-derivative", path, "prefetch")
+    local sourceIndex = assert(requestChannelIndexFor(host, speculative), "the speculative read dispatched")
+
+    local filler = queue:request("mesh", "geometry/shared-filler.g4mesh", "prefetch")
+    responseChannelFor(host, filler):push(meshResponse(filler, "geometry/shared-filler.g4mesh"))
+    Assert.equal(queue:poll(filler), "ready", "the speculative payload occupies the ready ceiling")
+
+    local awaited = queue:request("image-derivative", path, "demand")
+    Assert.equal(sourcePushCount(host), 1, "the demanded follower coalesces onto the one physical read")
+    responseChannelFor(host, sourceIndex):push(sourceResponse(speculative, path, string.rep("r", 24)))
+    Assert.equal(queue:poll(awaited), "pending", "the awaited decode has not completed")
+    Assert.equal(
+      #pushesFor(host, speculative) + #pushesFor(host, awaited),
+      2,
+      "exactly one decode dispatches past the ceiling for the coalesced requesters"
+    )
+
+    queue:take(filler)
+    queue:cancel(awaited)
+    queue:cancel(speculative)
     queue:release()
   end)
 end

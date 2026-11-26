@@ -2908,6 +2908,54 @@ function T.covered_swap_advances_the_destination_stage_across_cover_ticks()
   Assert.equal(stageReleased, 0, "a committed stage is not released")
 end
 
+-- Destination readiness is demanded once per transition: once the required
+-- closure is ready, later cover ticks advance that immutable destination instead
+-- of re-running the logical selection, the exit walk, and the metadata read.
+function T.covered_swap_demands_destination_readiness_once()
+  local requests = 0
+  local advances = 0
+  local fixture = outdoorFixture({
+    produceDestination = nil,
+    loader = {
+      requestWarp = function()
+        requests = requests + 1
+        -- A settled closure must never be re-interrogated: a repeated demand
+        -- here would report a stale failure this warp cannot act on.
+        if requests > 1 then
+          return false, "destination demand repeated"
+        end
+        return true
+      end,
+    },
+  })
+  fixture.transition.produceDestination = function()
+    return {
+      advance = function()
+        advances = advances + 1
+        return 0
+      end,
+      isReady = function()
+        return advances >= 3
+      end,
+      release = function() end,
+    }
+  end
+  fixture.transition:startCoveredSwap(
+    fixture.source,
+    { warp = { index = 0, destinationMapId = 60, destinationWarpId = 0 } },
+    "south"
+  )
+  for _ = 1, 16 do
+    if fixture.transition.phase == "idle" then
+      break
+    end
+    step(fixture.transition)
+  end
+  Assert.equal(requests, 1, "the destination closure is demanded exactly once")
+  Assert.isTrue(advances >= 3, "every later cover tick advances the staged destination")
+  Assert.equal(#fixture.swaps, 1, "the swap still commits once")
+end
+
 -- A destination stage that fails mid-cover releases what it built, aborts to the
 -- coherent idle state, and never commits.
 function T.aborted_covered_swap_releases_partial_destination_stage()

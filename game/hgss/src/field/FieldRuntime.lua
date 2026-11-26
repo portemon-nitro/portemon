@@ -1370,31 +1370,21 @@ function FieldRuntime:_composeTransitions(boot)
     function(_, sourceMap, warp, dynamicWarp, plan)
       local physical
       local ok, result = pcall(function()
-        -- A dynamic anchor is loaded by the symbol the saved destination names;
-        -- the sentinel header it was triggered with names no map.
-        local function loadDestination(_, destinationMap)
-          local logicalMap = self.mapLoader:load(destinationMap)
-          local destinationPosition
-          if warp.direct then
-            assert(destinationMap == warp.destinationMapId, "transition destination map mismatch")
-            destinationPosition = { fieldX = warp.x, fieldZ = warp.z }
-          elseif warp.destinationWarpId == WarpSystem.DYNAMIC_WARP_SENTINEL then
-            assert(dynamicWarp ~= nil, "a dynamic warp anchor carries the saved destination")
-            assert(destinationMap == dynamicWarp.map, "transition destination map mismatch")
-            local arrival = WarpSystem.dynamicDestination(logicalMap, dynamicWarp)
-            destinationPosition = { fieldX = arrival.fieldX, fieldZ = arrival.fieldZ }
-          else
-            assert(destinationMap == warp.destinationMapId, "transition destination map mismatch")
-            local destinationWarp = logicalMap.fieldData.events.warps[warp.destinationWarpId + 1]
-            assert(destinationWarp, "transition destination warp is missing")
-            destinationPosition = { fieldX = destinationWarp.x, fieldZ = destinationWarp.z }
-          end
-          local composed, ownership = boot.composePreparedMap(logicalMap, destinationPosition)
+        -- The plan is this destination's one arrival decision: resolution reads
+        -- the runtime through the identity the warp record named and composes
+        -- the destination window from those same coordinates, so no second
+        -- walk of the destination warp can disagree with it.
+        local function loadDestination(_, selector)
+          return self.mapLoader:load(selector)
+        end
+        local function composeDestination(_, logicalMap, position)
+          local composed, ownership = boot.composePreparedMap(logicalMap, position)
           physical = ownership
           return composed
         end
         return WarpSystem.resolveDestination({
           load = loadDestination,
+          compose = composeDestination,
         }, sourceMap, warp, dynamicWarp, plan)
       end)
       if not ok then
@@ -1971,7 +1961,7 @@ function FieldRuntime:_startFieldSession(boot)
   -- starts near a boundary must not walk corner-to-corner before the imminent
   -- frontier is predicted.
   if self.player ~= nil then
-    self.residency:setPrefetchFocus(self.player.fieldX, self.player.fieldZ)
+    self.residency:setPrefetchFocus(self.player.fieldX, self.player.fieldZ, self.player.facing)
   end
 
   local function sessionContextChoicePresentation()
@@ -2192,6 +2182,9 @@ function FieldRuntime:update(dt)
     -- frame: two indivisible preparation steps (a descriptor read, one
     -- presentation realization, ...), never an unbounded catch-up pass. The
     -- halo ahead of the player is what keeps a seamless boundary from waiting.
+    -- The predicted window's region and draw-list assembly rides the same call
+    -- but bounds itself by measured time, so a whole-window build fills in
+    -- across frames instead of owning the one that crosses the boundary.
     self.residency:updatePrefetch(FIELD_STAGE_UNITS_PER_FRAME)
   end
 
@@ -5214,6 +5207,28 @@ function FieldRuntime:_refreshFieldTimeOfDay()
   end
 end
 
+-- Take the staged destination for this resolution once it is finished. A
+-- completed window is transferred to the swap owner when this returns; until
+-- then the transition still owns it, so a failure here leaves a releasable
+-- stage behind instead of an orphaned cell task.
+---@param matrixMemberId integer
+---@param anchorX integer
+---@param anchorZ integer
+---@return FieldRuntimePhysicalSwap?
+function FieldRuntime:_takeDestinationStage(matrixMemberId, anchorX, anchorZ)
+  local transition = self.transition
+  if transition == nil then
+    return nil
+  end
+  local stage = transition:destinationStageFor(matrixMemberId, anchorX, anchorZ)
+  if stage == nil then
+    return nil
+  end
+  local swap = stage:finish()
+  transition:takeDestinationStage()
+  return swap
+end
+
 -- Select the physical owner for a discontinuous outdoor destination. A
 -- matching matrix is reusable only when its resident window is centered on
 -- the destination cell; otherwise the new owner remains transition-owned
@@ -5226,37 +5241,28 @@ function FieldRuntime:_stagePhysicalCoverage(logicalMap, position, matrixMemberI
   local coordinator = assert(self.worldSwapCoordinator, "field runtime has no world-swap coordinator")
   -- A covered transition may already have staged this exact destination while the
   -- cover was up; the resolution then adopts that finished window instead of
-  -- rebuilding it on the frame that finishes loading. The transition owns the
-  -- stage until this adoption, so a failure never leaves it held.
-  local transition = self.transition
-  local stagedStage = nil
-  if transition ~= nil and type(transition.takeDestinationStage) == "function" then
-    stagedStage = transition:takeDestinationStage()
-  end
-  if stagedStage ~= nil then
-    local anchorX = math.floor(position.fieldX / 32)
-    local anchorZ = math.floor(position.fieldZ / 32)
-    if stagedStage:matches(matrixMemberId, anchorX, anchorZ) then
-      return stagedStage:finish()
-    end
-    stagedStage:release()
+  -- rebuilding it on the frame that finishes loading.
+  local staged =
+    self:_takeDestinationStage(matrixMemberId, math.floor(position.fieldX / 32), math.floor(position.fieldZ / 32))
+  if staged ~= nil then
+    return staged
   end
   return coordinator:stagePhysicalCoverage(logicalMap, position, matrixMemberId)
 end
 
--- Begin staging the destination's physical window under the held cover, before
--- the destination is resolved. Destination planning is a scene-free coordinate
--- decision over generated field data: arrival coordinates and outdoor membership
--- come from the map record and catalog, so an indoor destination stages nothing
--- and never pays a full map load under the cover. An outdoor destination's
--- runtime is the loader's own staged load, advanced here together with its
--- window; the resolution then reads the published map instead of loading it
--- again. Returns nil when there is no window to build: an indoor destination, or
--- a live window already centered on the arrival cell.
+-- Begin staging the destination under the held cover, before it is resolved.
+-- Destination planning is a scene-free coordinate decision over generated field
+-- data: arrival coordinates and outdoor membership come from the map record and
+-- catalog, so the plan is the one authoritative arrival decision for every kind
+-- of destination. What the stage then stages is the destination runtime load
+-- itself, for every destination, plus a new physical window only where the
+-- live one cannot serve the arrival. The resolution reads the published runtime
+-- instead of loading it again, so no destination pays its whole map load in the
+-- frame that finishes loading.
 ---@param sourceMap table<string, unknown>
 ---@param warp table<string, unknown>
 ---@param dynamicWarp table<string, unknown>?
----@return { advance: fun(units: integer): integer, isReady: fun(): boolean, release: fun(), plan: WarpSystem.DestinationPlan }?
+---@return { advance: fun(units: integer): integer, isReady: fun(): boolean, release: fun(), plan: WarpSystem.DestinationPlan }
 function FieldRuntime:beginDestinationStage(sourceMap, warp, dynamicWarp)
   local coordinator = assert(self.worldSwapCoordinator, "field runtime has no world-swap coordinator")
   local loader = self.mapLoader
@@ -5265,32 +5271,35 @@ function FieldRuntime:beginDestinationStage(sourceMap, warp, dynamicWarp)
   end
   local plan = WarpSystem.destinationPlan({ load = loadMetadata }, sourceMap, warp, dynamicWarp)
   -- The plan located its map through scene-free metadata; the runtime
-  -- resolution still reads the loaded map, under this one plan's arrivals.
+  -- resolution still reads the loaded map, under this one plan's arrivals and
+  -- through the identity the record named.
   plan.metadataOnly = true
   local logicalMap = plan.destinationMap
+  local mapId = logicalMap.mapId
+  local position = { fieldX = plan.coordinates.fieldX, fieldZ = plan.coordinates.fieldZ }
   -- The compiled scene record is the area-type authority: a matrix entry alone
   -- does not make a map outdoor (indoor maps carry a single matching cell).
-  local scene = loader:sceneRecord(logicalMap.mapId)
-  if type(scene) ~= "table" or scene.type ~= "outdoor" then
-    return nil
-  end
-  local matrixMemberId = mapMatrixMemberId(self, logicalMap)
-  local position = { fieldX = plan.coordinates.fieldX, fieldZ = plan.coordinates.fieldZ }
-  local anchorX = math.floor(position.fieldX / FieldGrid.CELL_TILES)
-  local anchorZ = math.floor(position.fieldZ / FieldGrid.CELL_TILES)
-  local current = self.physicalCoverage
-  if
-    current ~= nil
-    and current.matrixMemberId == matrixMemberId
-    and current.anchorX == anchorX
-    and current.anchorZ == anchorZ
-  then
-    -- The live window already serves this destination: the ordinary swap path
-    -- reuses it instead of rebuilding the same cells into a second owner.
-    return nil
+  local scene = loader:sceneRecord(mapId)
+  local matrixMemberId = nil
+  local anchorX, anchorZ = nil, nil
+  local needsWindow = false
+  if type(scene) == "table" and scene.type == "outdoor" then
+    matrixMemberId = mapMatrixMemberId(self, logicalMap)
+    anchorX = math.floor(position.fieldX / FieldGrid.CELL_TILES)
+    anchorZ = math.floor(position.fieldZ / FieldGrid.CELL_TILES)
+    local current = self.physicalCoverage
+    -- The live window already serving this destination keeps it: the ordinary
+    -- swap path reuses it instead of rebuilding the same cells into a second
+    -- owner. Same-window destinations therefore stage the runtime alone.
+    needsWindow = not (
+      current ~= nil
+      and current.matrixMemberId == matrixMemberId
+      and current.anchorX == anchorX
+      and current.anchorZ == anchorZ
+    )
   end
   ---@type FieldMapLoader.StagedTask?
-  local loadTask = loader:beginLoad(logicalMap.mapId)
+  local loadTask = loader:beginLoad(plan.selector)
   ---@type FieldRuntimePhysicalSwap?
   local swap = nil
   local stage = { plan = plan }
@@ -5306,17 +5315,31 @@ function FieldRuntime:beginDestinationStage(sourceMap, warp, dynamicWarp)
       -- exactly once; its window then builds on that runtime.
       loadTask:takeResult()
       loadTask = nil
-      swap = coordinator:beginPhysicalCoverage(assert(loader:get(logicalMap.mapId)), position, matrixMemberId)
+      if needsWindow then
+        swap = coordinator:beginPhysicalCoverage(assert(loader:get(mapId)), position, assert(matrixMemberId))
+      end
+    end
+    if not needsWindow then
+      return consumed
     end
     local window = assert(swap, "a finished destination load owns its physical window")
     return consumed + assert(window.task, "a staging window owns its task"):advance(units - consumed)
   end
   function stage:isReady()
-    return loadTask == nil and swap ~= nil and swap.task ~= nil and swap.task:isReady()
+    if loadTask ~= nil then
+      return false
+    end
+    if not needsWindow then
+      return true
+    end
+    return swap ~= nil and swap.task ~= nil and swap.task:isReady()
   end
   -- Whether this finished stage describes the physical window a resolution is
   -- about to need.
   function stage:matches(candidateMatrixMemberId, candidateAnchorX, candidateAnchorZ)
+    if not needsWindow then
+      return false
+    end
     return matrixMemberId == candidateMatrixMemberId and anchorX == candidateAnchorX and anchorZ == candidateAnchorZ
   end
   -- Transfer the finished window into the swap record exactly once.

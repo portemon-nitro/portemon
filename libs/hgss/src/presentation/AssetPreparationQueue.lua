@@ -33,7 +33,8 @@
 ---@field selector ModelAsset.TextureReference? native bank texture/palette selector for g4tx
 ---@field data love.Data? generated payload handed to the worker, absent for a selected source read
 ---@field key string decoded-value identity in the shared CPU owner
----@field priority "demand"|"prefetch"
+---@field priority "demand"|"prefetch" list this record is queued on
+---@field demandRequested boolean? a consumer is blocked on this logical acquisition, whatever stage it is at
 ---@field state "queued"|"running"|"awaiting-source"|"linked"|"ready"|"failed"
 ---@field link integer? primary token this follower observes
 ---@field failure string?
@@ -728,9 +729,15 @@ function AssetPreparationQueue:_checkWorkerHealth()
   end
 end
 
--- Insert a record into the pending list its priority names.
+-- Insert a record into the pending list its effective priority names. Demand
+-- is a property of the logical acquisition, not of the stage it is at: a token
+-- promoted while its selected-source read was already running keeps that
+-- urgency for the decode continuation it becomes.
 ---@param record AssetPreparationQueueRecord
 function AssetPreparationQueue:_enqueue(record)
+  if record.demandRequested then
+    record.priority = "demand"
+  end
   if record.priority == "demand" then
     self._demand[#self._demand + 1] = record.token
   else
@@ -752,22 +759,53 @@ function AssetPreparationQueue:_removeQueued(token)
   end
 end
 
--- Promote a graphical primary or a direct source token to demand work: a
--- source-stage request dispatches no job of its own, so the interest's owner
--- carries the priority.
+-- Raise one logical acquisition's effective urgency. The demand is sticky: it
+-- is recorded on the token itself, so it survives the physical stages a
+-- selected-source prerequisite goes through (read, coalescing, decode
+-- continuation) and never needs re-promotion at each one. A queued record moves
+-- to the demand list now; a running or awaiting record carries the flag into
+-- whatever it becomes next. Promotion never dispatches on its own.
 ---@param record AssetPreparationQueueRecord?
-function AssetPreparationQueue:_promotePrimary(record)
+function AssetPreparationQueue:_demandRecord(record)
   if record == nil then
     return
   end
-  if record.stage == "source" and record.sourceKey ~= nil then
-    local interest = self._sourceInterests[record.sourceKey]
-    if interest ~= nil and interest.owner ~= nil then
-      self:_ensureDemand(interest.owner)
+  record.demandRequested = true
+  -- The physical read is a prerequisite of this acquisition: when it is still
+  -- queued it must outrank speculative work for the same reason the logical
+  -- token does.
+  local sourceKey = record.sourceKey
+  if sourceKey ~= nil then
+    local interest = self._sourceInterests[sourceKey]
+    if interest ~= nil and interest.owner ~= nil and interest.owner ~= record.token then
+      local owner = self._tokens[interest.owner]
+      if owner ~= nil then
+        owner.demandRequested = true
+        if owner.state == "queued" then
+          self:_raiseQueued(owner)
+        end
+      end
     end
+  end
+  if record.state == "queued" then
+    self:_raiseQueued(record)
+  end
+end
+
+-- Move one already-queued demand record ahead of queued prefetch work.
+---@param record AssetPreparationQueueRecord
+function AssetPreparationQueue:_raiseQueued(record)
+  if record.priority == "demand" then
     return
   end
-  self:_ensureDemand(record.token)
+  record.priority = "demand"
+  for index, queued in ipairs(self._prefetch) do
+    if queued == record.token then
+      table.remove(self._prefetch, index)
+      break
+    end
+  end
+  self._demand[#self._demand + 1] = record.token
 end
 
 -- Drop one token's interest in a selected source. The physical read is never
@@ -1022,26 +1060,6 @@ function AssetPreparationQueue:_detachFollowers(primary, record, response)
   end
 end
 
--- Upgrade a queued job to demand priority without dispatching it again.
--- A running job is never preempted; the upgrade only affects list order.
----@param primary integer owning primary token
-function AssetPreparationQueue:_ensureDemand(primary)
-  local record = self._tokens[primary]
-  if record == nil or record.priority == "demand" or record.state ~= "queued" then
-    return
-  end
-  record.priority = "demand"
-  for _, pending in ipairs({ self._demand, self._prefetch }) do
-    for index, queued in ipairs(pending) do
-      if queued == primary then
-        table.remove(pending, index)
-        break
-      end
-    end
-  end
-  self._demand[#self._demand + 1] = primary
-end
-
 -- Drain every pending worker reply without blocking.
 function AssetPreparationQueue:_drain()
   local reply = self._reply
@@ -1143,7 +1161,7 @@ function AssetPreparationQueue:request(kind, logicalPath, priority)
     record.link = primary
     self._tokens[token] = record
     if priority == "demand" then
-      self:_promotePrimary(primaryRecord)
+      self:_demandRecord(primaryRecord)
     end
     self:_dispatch()
     return token
@@ -1213,7 +1231,7 @@ function AssetPreparationQueue:_requestSource(reference, path, priority)
       stage = "source",
     }
     if priority == "demand" then
-      self:_promotePrimary(self._tokens[token])
+      self:_demandRecord(self._tokens[token])
     end
   end
   self:_dispatch()
@@ -1281,7 +1299,7 @@ function AssetPreparationQueue:_requestSelectedDecode(kind, file, selector, logi
     end
     self._tokens[token] = record
     if priority == "demand" then
-      self:_promotePrimary(primaryRecord)
+      self:_demandRecord(primaryRecord)
     end
     self:_dispatch()
     return token
@@ -1311,7 +1329,7 @@ function AssetPreparationQueue:_requestSelectedDecode(kind, file, selector, logi
     record.state = "awaiting-source"
     self._tokens[token] = record
     if priority == "demand" then
-      self:_promotePrimary(record)
+      self:_demandRecord(record)
     end
   end
   self:_dispatch()
@@ -1438,12 +1456,13 @@ function AssetPreparationQueue:cancel(token)
   end
 end
 
--- Upgrade a queued prefetch token to demand without dispatching it again:
+-- Upgrade a token's effective urgency to demand without dispatching it again:
 -- the same token keeps its identity and outranks later prefetch work at the
--- next physical dispatch. Idempotent for demand, running, ready, or failed
--- tokens; unknown or already-released tokens fail loudly. A running token is
--- never re-dispatched. Promotion itself never dispatches; the next poll,
--- wait, or request performs the replacement dispatch.
+-- next physical dispatch, including after the stage it is waiting on changes.
+-- Idempotent for demand, running, ready, or failed tokens; unknown or
+-- already-released tokens fail loudly. A running token is never re-dispatched.
+-- Promotion itself never dispatches; the next poll, wait, or request performs
+-- the replacement dispatch.
 ---@param token integer
 ---@param priority "demand"
 function AssetPreparationQueue:promote(token, priority)
@@ -1452,31 +1471,10 @@ function AssetPreparationQueue:promote(token, priority)
   assert(record, "unknown preparation token")
   local linked = record.link
   if linked ~= nil then
-    self:_promotePrimary(self._tokens[linked])
+    self:_demandRecord(self._tokens[linked])
     return
   end
-  if record.stage == "source" then
-    -- The source read dispatches no job of its own: its interest's owner
-    -- carries the priority for every member.
-    local interest = record.sourceKey ~= nil and self._sourceInterests[record.sourceKey] or nil
-    if interest ~= nil then
-      if interest.owner ~= nil then
-        self:_ensureDemand(interest.owner)
-      end
-      return
-    end
-  end
-  if record.state ~= "queued" or record.priority == "demand" then
-    return
-  end
-  record.priority = "demand"
-  for index, queued in ipairs(self._prefetch) do
-    if queued == token then
-      table.remove(self._prefetch, index)
-      break
-    end
-  end
-  self._demand[#self._demand + 1] = token
+  self:_demandRecord(record)
 end
 
 -- Block efficiently until one token's decoded lease is transferred, absorbing

@@ -59,7 +59,10 @@ local TILES_PER_CELL = 32
 ---@field prefetchStageLimit integer staged halo cells this owner may hold at once
 ---@field focusX number? player field position driving halo ordering
 ---@field focusZ number?
+---@field focusFacing string? the facing intent that breaks an equally-near crossing tie
 ---@field _stagedAggregate table<string, unknown>? one prebuilt destination window awaiting its commit
+---@field _aggregateStage FieldCoverage.AggregateStage? the predicted window assembling across frames
+---@field _clock fun(): number measured-time source bounding one assembly slice
 ---@field _cellKeys string[]
 ---@field _worldParts table[]
 ---@field _cellPresentation { staticParts: table[], dynamicCount: integer, stagedDynamicCount: integer }[]
@@ -451,7 +454,12 @@ local function finishPendingSafely(self, pending)
   return assert(runtime)
 end
 
-local function buildRegion(cells, anchor)
+-- The resumable region composition: a caller with a frame budget advances it
+-- plate by plate instead of paying for the whole window at once.
+---@param cells table<string, table<string, unknown>>
+---@param anchor { x: integer, z: integer }
+---@return FieldRegion.Task
+local function beginRegion(cells, anchor)
   local central = assert(cells[key(anchor.x, anchor.z)], "coverage anchor cell is missing")
   local neighbors = {}
   local centralOrigin = assert(central.origin, "coverage cell origin is missing")
@@ -471,7 +479,11 @@ local function buildRegion(cells, anchor)
   table.sort(neighbors, function(a, b)
     return a.key < b.key
   end)
-  return FieldRegion.new(central.collision, central.terrain, neighbors, central.key, 1)
+  return FieldRegion.begin(central.collision, central.terrain, neighbors, central.key, 1)
+end
+
+local function buildRegion(cells, anchor)
+  return beginRegion(cells, anchor):finish()
 end
 
 local function presentationDraws(presentation, static)
@@ -553,34 +565,52 @@ local function appendDynamicParts(presentation, cell, origin, out)
   end
 end
 
-local function buildWorldParts(cells, origin)
+-- Append one cell's translated draw parts (static first, then dynamic) and its
+-- per-cell presentation record. One cell is the indivisible unit of the draw
+-- list: its parts are translated together so a committed window never mixes
+-- translated and untranslated geometry.
+---@param task table<string, unknown>
+---@param cellKey string
+local function appendCellWorldParts(task, cellKey)
+  local cell = assert(task.cells[cellKey])
+  local origin = assert(task.origin)
+  local staticParts = {}
+  for _, part in ipairs(presentationDraws(cell.presentation, true)) do
+    staticParts[#staticParts + 1] = translatedPart(part, cell, origin)
+  end
+  local worldParts = task.worldParts
+  for _, part in ipairs(staticParts) do
+    worldParts[#worldParts + 1] = part
+  end
+  local dynamicParts = presentationDraws(cell.presentation, false)
+  for _, part in ipairs(dynamicParts) do
+    worldParts[#worldParts + 1] = translatedPart(part, cell, origin)
+  end
+  task.cellPresentation[#task.cellPresentation + 1] = {
+    staticParts = staticParts,
+    dynamicCount = #dynamicParts,
+    stagedDynamicCount = #dynamicParts,
+  }
+end
+
+---@param cells table<string, table<string, unknown>>
+---@return string[] sorted cell keys
+local function sortedCellKeys(cells)
   local keys = {}
   for cellKey in pairs(cells) do
     keys[#keys + 1] = cellKey
   end
   table.sort(keys)
-  local result = {}
-  local cellPresentation = {}
+  return keys
+end
+
+local function buildWorldParts(cells, origin)
+  local task = { cells = cells, origin = origin, worldParts = {}, cellPresentation = {} }
+  local keys = sortedCellKeys(cells)
   for _, cellKey in ipairs(keys) do
-    local cell = assert(cells[cellKey])
-    local staticParts = {}
-    for _, part in ipairs(presentationDraws(cell.presentation, true)) do
-      staticParts[#staticParts + 1] = translatedPart(part, cell, origin)
-    end
-    for _, part in ipairs(staticParts) do
-      result[#result + 1] = part
-    end
-    local dynamicParts = presentationDraws(cell.presentation, false)
-    for _, part in ipairs(dynamicParts) do
-      result[#result + 1] = translatedPart(part, cell, origin)
-    end
-    cellPresentation[#cellPresentation + 1] = {
-      staticParts = staticParts,
-      dynamicCount = #dynamicParts,
-      stagedDynamicCount = #dynamicParts,
-    }
+    appendCellWorldParts(task, cellKey)
   end
-  return keys, result, cellPresentation
+  return keys, task.worldParts, task.cellPresentation
 end
 
 local function descriptorsAtAnchor(self, anchorX, anchorZ)
@@ -607,8 +637,11 @@ local function blankCoverage(options, index)
     pendingPrefetches = {},
     prefetchStageLimit = MAX_STAGED_CELLS,
     _stagedAggregate = nil,
+    _aggregateStage = nil,
+    _clock = options.clock or os.clock,
     focusX = nil,
     focusZ = nil,
+    focusFacing = nil,
     prefetchError = nil,
     synchronousPhysicalFallbackLoads = 0,
     _cellKeys = {},
@@ -993,10 +1026,12 @@ end
 -- The anchor the player is about to enter: the cell of the last known field
 -- position (movement already crossed it), or the neighbor whose boundary the
 -- position is within IMMINENT_BOUNDARY_TILES of. A corner position is near two
--- boundaries at once, and physical coverage crosses one cardinal edge at a
--- time: the edge the player is closest to crossing wins, never a diagonal.
--- Nil when neither applies, which leaves the ordinary on-demand build as the
--- only path.
+-- boundaries at once, and physical coverage crosses one cardinal edge at a time:
+-- the edge the player is closest to crossing wins, an exact tie follows the
+-- facing intent, and a tie without one keeps one stable axis. A diagonal is
+-- never a crossing. Nil when neither applies, and nil for a focus that no
+-- longer describes the live window, which leaves the ordinary on-demand build
+-- as the only path.
 ---@return integer?, integer?
 function FieldCoverage:_imminentAnchor()
   local focusX, focusZ = self.focusX, self.focusZ
@@ -1006,7 +1041,7 @@ function FieldCoverage:_imminentAnchor()
   local cellX = math.floor(focusX / TILES_PER_CELL)
   local cellZ = math.floor(focusZ / TILES_PER_CELL)
   if cellX ~= self.anchorX or cellZ ~= self.anchorZ then
-    return cellX, cellZ
+    return nil, nil
   end
   local localX = focusX - cellX * TILES_PER_CELL
   local localZ = focusZ - cellZ * TILES_PER_CELL
@@ -1027,10 +1062,26 @@ function FieldCoverage:_imminentAnchor()
   if distanceX == nil and distanceZ == nil then
     return nil, nil
   end
-  if distanceX ~= nil and distanceZ ~= nil and distanceZ < distanceX then
-    deltaX = 0
+  local predictedX, predictedZ
+  if distanceZ == nil or (distanceX ~= nil and distanceX < distanceZ) then
+    predictedX, predictedZ = cellX + deltaX, cellZ
+  elseif distanceX == nil or distanceZ < distanceX then
+    predictedX, predictedZ = cellX, cellZ + deltaZ
+  else
+    -- Both edges are equally close: the facing names the crossing the player is
+    -- about to make, and a position with no facing keeps the X axis so the
+    -- prediction stays stable across passes.
+    if self.focusFacing == "west" then
+      predictedX, predictedZ = cellX - 1, cellZ
+    elseif self.focusFacing == "north" then
+      predictedX, predictedZ = cellX, cellZ - 1
+    elseif self.focusFacing == "south" then
+      predictedX, predictedZ = cellX, cellZ + 1
+    else
+      predictedX, predictedZ = cellX + deltaX, cellZ
+    end
   end
-  return cellX + deltaX, cellZ + deltaZ
+  return predictedX, predictedZ
 end
 
 -- Whether a staged window still describes cells this owner holds by identity:
@@ -1056,6 +1107,11 @@ function FieldCoverage:_imminentAggregateTarget()
     return nil, nil
   end
   if anchorX == self.anchorX and anchorZ == self.anchorZ then
+    return nil, nil
+  end
+  -- A target without its own generated cell cannot be assembled: no window is
+  -- owed at the matrix edge even when the frontier is otherwise realized.
+  if FieldCellCache.find(self.index, self.matrixMemberId, anchorX, anchorZ) == nil then
     return nil, nil
   end
   for _, position in ipairs(desired(anchorX, anchorZ)) do
@@ -1088,61 +1144,162 @@ function FieldCoverage:predictedWindowPending()
   )
 end
 
--- Build, and keep, the destination window for the imminent anchor when every
--- cell of its committed set is already realized. This is the same construction
--- the crossing frame would otherwise run; doing it here keeps the committed
--- boundary frame free of region and draw-list assembly. A candidate for a
--- superseded frontier is dropped, whether or not it became invalid: keeping it
--- would leave the build optimizing the window the player already turned away
--- from. Returns whether a window was assembled by this call.
----@return boolean
-function FieldCoverage:_stageImminentAggregate()
-  local cached = self._stagedAggregate
-  if cached ~= nil and not self:_stagedAggregateIsLive(cached) then
-    self._stagedAggregate = nil
-    cached = nil
-  end
-  local anchorX, anchorZ = self:_imminentAggregateTarget()
-  if anchorX == nil or anchorZ == nil then
-    if cached ~= nil and cached.anchorX == self.anchorX and cached.anchorZ == self.anchorZ then
-      self._stagedAggregate = nil
-    end
-    return false
-  end
-  if cached ~= nil then
-    if cached.anchorX == anchorX and cached.anchorZ == anchorZ then
-      return false
-    end
-    self._stagedAggregate = nil
-  end
-  local staged = {}
-  for _, position in ipairs(desired(anchorX, anchorZ)) do
-    local descriptor = FieldCellCache.find(self.index, self.matrixMemberId, position.x, position.z)
-    if descriptor then
-      local cellKey = key(position.x, position.z)
-      local cell = self.cells[cellKey] or self.prefetched[cellKey]
-      if cell == nil then
-        return false
-      end
-      staged[cellKey] = cell
-    end
-  end
-  local anchorCell = staged[key(anchorX, anchorZ)]
-  if anchorCell == nil then
-    return false
-  end
-  local candidate = {
+-- The units one frame may spend assembling the predicted window. The assembly
+-- runs under a measured allowance rather than the caller's indivisible step
+-- budget: a window is one logical step, but its region copy and draw-list
+-- translation can take longer than a frame, so the slice -- not a step count --
+-- is what bounds the frame.
+local AGGREGATE_ASSEMBLY_SECONDS = 0.002
+local AGGREGATE_ASSEMBLY_MAX_UNITS = 4096
+-- Work taken between two measured-time checks: small enough that the slice
+-- boundary is tight, large enough that the clock is not read per plate.
+local AGGREGATE_ASSEMBLY_CHUNK = 16
+
+-- One prediction window's assembly in progress: the cells it will compose, the
+-- resumable region composition, and the translated draw parts accumulated so
+-- far. Every piece is completed before the window is published, so a partial
+-- stage is never observable as a candidate.
+---@class FieldCoverage.AggregateStage
+---@field anchorX integer
+---@field anchorZ integer
+---@field cells table<string, table<string, unknown>>
+---@field origin { x: number, y: number, z: number }
+---@field region FieldRegion.Task
+---@field keys string[]
+---@field nextCellIndex integer
+---@field worldParts table[]
+---@field cellPresentation table[]
+---@field prefetchDescriptors table[]
+
+---@param self FieldCoverage
+---@param anchorX integer
+---@param anchorZ integer
+---@param cells table<string, table<string, unknown>>
+---@return FieldCoverage.AggregateStage
+local function beginAggregateStage(self, anchorX, anchorZ, cells)
+  local anchorCell = assert(cells[key(anchorX, anchorZ)], "aggregate stage needs its anchor cell")
+  return {
     anchorX = anchorX,
     anchorZ = anchorZ,
-    cells = staged,
-    region = buildRegion(staged, { x = anchorX, z = anchorZ }),
+    cells = cells,
     origin = assert(anchorCell.origin),
-    terrainDependencyHash = dependencyIdentity(staged, self.matrixMemberId, anchorX, anchorZ),
+    region = beginRegion(cells, { x = anchorX, z = anchorZ }),
+    keys = sortedCellKeys(cells),
+    nextCellIndex = 1,
+    worldParts = {},
+    cellPresentation = {},
+    prefetchDescriptors = descriptorsAtAnchor(self, anchorX, anchorZ),
   }
-  candidate.cellKeys, candidate.worldParts, candidate.cellPresentation = buildWorldParts(staged, candidate.origin)
-  candidate.prefetchDescriptors = descriptorsAtAnchor(self, anchorX, anchorZ)
-  self._stagedAggregate = candidate
-  return true
+end
+
+---@param stage FieldCoverage.AggregateStage
+---@return boolean
+local function aggregateStageReady(stage)
+  return stage.region:isReady() and stage.nextCellIndex > #stage.keys
+end
+
+-- Advance one assembly stage by at most `maxUnits` indivisible steps: a copied
+-- terrain plate, or one cell's translated draw parts. `deadline`/`clock` bound
+-- the measured time the call may spend, checked between small chunks.
+---@param stage FieldCoverage.AggregateStage
+---@param maxUnits number
+---@param clock fun(): number
+---@param deadline number?
+---@return integer consumed
+local function advanceAggregateStage(stage, maxUnits, clock, deadline)
+  local consumed = 0
+  while consumed < maxUnits and not aggregateStageReady(stage) do
+    if not stage.region:isReady() then
+      local chunk = math.min(maxUnits - consumed, AGGREGATE_ASSEMBLY_CHUNK)
+      consumed = consumed + stage.region:advance(chunk)
+    else
+      appendCellWorldParts(stage, stage.keys[stage.nextCellIndex])
+      stage.nextCellIndex = stage.nextCellIndex + 1
+      consumed = consumed + 1
+    end
+    if deadline ~= nil and clock() >= deadline then
+      break
+    end
+  end
+  return consumed
+end
+
+-- Publish a completed stage as the candidate window the crossing frame adopts.
+---@param self FieldCoverage
+---@param stage FieldCoverage.AggregateStage
+---@return table<string, unknown>
+local function finishAggregateStage(self, stage)
+  advanceAggregateStage(stage, math.huge, self._clock)
+  return {
+    anchorX = stage.anchorX,
+    anchorZ = stage.anchorZ,
+    cells = stage.cells,
+    region = stage.region:finish(),
+    origin = stage.origin,
+    terrainDependencyHash = dependencyIdentity(stage.cells, self.matrixMemberId, stage.anchorX, stage.anchorZ),
+    cellKeys = stage.keys,
+    worldParts = stage.worldParts,
+    cellPresentation = stage.cellPresentation,
+    prefetchDescriptors = stage.prefetchDescriptors,
+  }
+end
+
+-- Build, and keep, the destination window for the imminent anchor when every
+-- cell of its committed set is already realized. This is the same construction
+-- the crossing frame would otherwise run, spread over frames: a bounded slice
+-- copies region plates and translates draw parts, and the finished window is
+-- published only when every piece is complete. A stage for a superseded frontier
+-- is dropped, whether or not it became invalid: keeping it would leave the build
+-- optimizing the window the player already turned away from. Returns whether this
+-- call advanced any assembly.
+---@return boolean
+function FieldCoverage:_stageImminentAggregate()
+  local anchorX, anchorZ = self:_imminentAggregateTarget()
+  local stage = self._aggregateStage
+  if stage ~= nil then
+    if not self:_stagedAggregateIsLive(stage) or stage.anchorX ~= anchorX or stage.anchorZ ~= anchorZ then
+      self._aggregateStage = nil
+      stage = nil
+    end
+  end
+  local cached = self._stagedAggregate
+  if cached ~= nil then
+    local live = self:_stagedAggregateIsLive(cached)
+    local owed = anchorX ~= nil and anchorZ ~= nil and cached.anchorX == anchorX and cached.anchorZ == anchorZ
+    if not live or not owed then
+      self._stagedAggregate = nil
+      cached = nil
+    end
+  end
+  if anchorX == nil or anchorZ == nil or cached ~= nil then
+    return false
+  end
+  if stage == nil then
+    local staged = {}
+    for _, position in ipairs(desired(anchorX, anchorZ)) do
+      local descriptor = FieldCellCache.find(self.index, self.matrixMemberId, position.x, position.z)
+      if descriptor then
+        local cellKey = key(position.x, position.z)
+        local cell = self.cells[cellKey] or self.prefetched[cellKey]
+        if cell == nil then
+          return false
+        end
+        staged[cellKey] = cell
+      end
+    end
+    if staged[key(anchorX, anchorZ)] == nil then
+      return false
+    end
+    stage = beginAggregateStage(self, anchorX, anchorZ, staged)
+    self._aggregateStage = stage
+  end
+  local deadline = self._clock() + AGGREGATE_ASSEMBLY_SECONDS
+  local consumed = advanceAggregateStage(stage, AGGREGATE_ASSEMBLY_MAX_UNITS, self._clock, deadline)
+  if aggregateStageReady(stage) then
+    self._aggregateStage = nil
+    self._stagedAggregate = finishAggregateStage(self, stage)
+  end
+  return consumed > 0
 end
 
 -- Take the staged window for exactly this anchor, if it is still valid.
@@ -1324,14 +1481,17 @@ end
 -- the still-queued cells immediately, because waiting for the next full queue
 -- pass would keep the previous position's order for the whole walk across a
 -- cell. The halo is a handful of cells, so this is a bounded insertion sort.
+-- The facing intent rides along for the one decision distance cannot make: which
+-- cardinal edge an equally-near corner crossing takes.
 ---@param fieldX number
 ---@param fieldZ number
-function FieldCoverage:setPrefetchFocus(fieldX, fieldZ)
+---@param facing string?
+function FieldCoverage:setPrefetchFocus(fieldX, fieldZ, facing)
   assert(type(fieldX) == "number" and type(fieldZ) == "number", "prefetch focus requires a field position")
-  if self.focusX == fieldX and self.focusZ == fieldZ then
+  if self.focusX == fieldX and self.focusZ == fieldZ and self.focusFacing == facing then
     return
   end
-  self.focusX, self.focusZ = fieldX, fieldZ
+  self.focusX, self.focusZ, self.focusFacing = fieldX, fieldZ, facing
   if #self.prefetchQueue > 1 then
     self.prefetchQueue = self:_orderPrefetch(self.prefetchQueue)
   end
@@ -1481,9 +1641,12 @@ function FieldCoverage:updatePrefetch(maxWorkUnits)
       index = index + 1
     end
   end
-  -- The imminent window's assembly is one indivisible preparation step of the
-  -- same budget: a frame that already spent its units defers it to the next one
-  -- instead of assembling a whole region and draw list unbudgeted.
+  -- The imminent window's assembly is a separate, measured resource: the halo
+  -- steps above are indivisible reads and realizations, while the window copies
+  -- region plates and translates draw lists. It runs in time-bounded slices so
+  -- the prediction fills in across frames, and it holds one of the caller's
+  -- steps because it does occupy the frame. A frame with no budget left defers
+  -- the slice rather than assembling a whole region and draw list unbudgeted.
   if consumed < maxWorkUnits and self:_stageImminentAggregate() then
     consumed = consumed + 1
   end
@@ -1895,6 +2058,7 @@ function FieldCoverage:release()
   end
   self.pendingPrefetches = {}
   self._stagedAggregate = nil
+  self._aggregateStage = nil
   for _, cell in pairs(self.cells) do
     if cell.release then
       cell:release()

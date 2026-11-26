@@ -97,6 +97,36 @@ local function sourceSurface(self, cellKey, sourceSurfaceId)
 end
 
 function FieldRegion.new(centralCollision, centralTerrain, neighbors, centralKey, surfaceIdBase)
+  return FieldRegion.begin(centralCollision, centralTerrain, neighbors, centralKey, surfaceIdBase):finish()
+end
+
+---@class FieldRegion.Task
+---@field advance fun(self: FieldRegion.Task, maxPlates: number): integer copies up to maxPlates plates
+---@field isReady fun(self: FieldRegion.Task): boolean
+---@field finish fun(self: FieldRegion.Task): table<string, unknown> the composed region
+---@field private _cells table[]
+---@field private _nextCellIndex integer
+---@field private _nextPlateIndex integer
+---@field private _plates table[]
+---@field private _nextSurfaceId integer
+---@field private _sourceSurfaceIndex table<string, table<integer, integer>>
+---@field private _terrain TerrainSurface?
+---@field private _region table<string, unknown>?
+
+local FieldRegionTask = {}
+FieldRegionTask.__index = FieldRegionTask
+
+-- Starts a resumable composition of the central cell and its neighbors. One
+-- advance unit copies one terrain plate into the composite surface, so a caller
+-- with a frame budget can spread a whole window over several frames without
+-- changing the published result.
+---@param centralCollision table<string, unknown>
+---@param centralTerrain table<string, unknown>
+---@param neighbors table[]?
+---@param centralKey string?
+---@param surfaceIdBase integer?
+---@return FieldRegion.Task
+function FieldRegion.begin(centralCollision, centralTerrain, neighbors, centralKey, surfaceIdBase)
   assert(centralCollision and centralCollision.containsLocal, "central collision grid required")
   assert(centralTerrain and centralTerrain.plates, "central terrain surfaces required")
 
@@ -118,42 +148,89 @@ function FieldRegion.new(centralCollision, centralTerrain, neighbors, centralKey
     cells[#cells + 1] = neighbor
   end
 
-  -- One compact index from a stable (cell, source surface) identity to the
-  -- composite plate id, built while the plates are copied: the probe and commit
-  -- paths resolve a source surface per step instead of scanning every plate.
-  local plates, nextSurfaceId, sourceSurfaceIndex = {}, surfaceIdBase or 0, {}
-  local function appendPlate(plate, offsetX, offsetY, offsetZ, cell)
-    plates[#plates + 1] = copyPlate(plate, nextSurfaceId, offsetX, offsetY, offsetZ, cell.key)
-    -- A plate without its own source identity (or a cell without a key) has
-    -- none to index: central surfaces stay local and are never looked up by
-    -- source id.
-    if plate.id ~= nil and cell.key ~= nil then
-      local byCell = sourceSurfaceIndex[cell.key]
-      if byCell == nil then
-        byCell = {}
-        sourceSurfaceIndex[cell.key] = byCell
-      end
-      byCell[plate.id] = nextSurfaceId
-    end
-    nextSurfaceId = nextSurfaceId + 1
-  end
-  for _, plate in ipairs(centralTerrain.plates) do
-    appendPlate(plate, 0, 0, 0, cells[1])
-  end
-  for index = 2, #cells do
-    local cell = cells[index]
-    for _, plate in ipairs(cell.terrain.plates) do
-      appendPlate(plate, cell.offsetTilesX, cell.offsetTilesY, cell.offsetTilesZ, cell)
-    end
-  end
+  return setmetatable({
+    _cells = cells,
+    _nextCellIndex = 1,
+    _nextPlateIndex = 1,
+    _plates = {},
+    _nextSurfaceId = surfaceIdBase or 0,
+    _sourceSurfaceIndex = {},
+    _terrain = nil,
+    _region = nil,
+  }, FieldRegionTask)
+end
 
-  return {
-    collision = collisionRegion(cells),
-    terrain = TerrainSurface.new({ schema = "g4-composite-terrain-v1", plates = plates }),
-    cells = cells,
-    _sourceSurfaceIndex = sourceSurfaceIndex,
-    sourceSurface = sourceSurface,
-  }
+-- One compact index from a stable (cell, source surface) identity to the
+-- composite plate id, built while the plates are copied: the probe and commit
+-- paths resolve a source surface per step instead of scanning every plate.
+---@param plate table<string, unknown>
+---@param cell table<string, unknown>
+function FieldRegionTask:_appendPlate(plate, cell)
+  local id = self._nextSurfaceId
+  self._plates[#self._plates + 1] =
+    copyPlate(plate, id, cell.offsetTilesX, cell.offsetTilesY, cell.offsetTilesZ, cell.key)
+  -- A plate without its own source identity (or a cell without a key) has
+  -- none to index: central surfaces stay local and are never looked up by
+  -- source id.
+  if plate.id ~= nil and cell.key ~= nil then
+    local byCell = self._sourceSurfaceIndex[cell.key]
+    if byCell == nil then
+      byCell = {}
+      self._sourceSurfaceIndex[cell.key] = byCell
+    end
+    byCell[plate.id] = id
+  end
+  self._nextSurfaceId = id + 1
+end
+
+-- Copy up to `maxPlates` terrain plates into the composite surface and return
+-- how many were copied. One plate is the indivisible unit: it is a table copy
+-- plus one index entry.
+---@param maxPlates number
+---@return integer consumed
+function FieldRegionTask:advance(maxPlates)
+  assert(type(maxPlates) == "number" and maxPlates >= 0 and maxPlates % 1 == 0)
+  local consumed = 0
+  while consumed < maxPlates and self._terrain == nil do
+    local cell = self._cells[self._nextCellIndex]
+    if cell == nil then
+      self._terrain = TerrainSurface.new({ schema = "g4-composite-terrain-v1", plates = self._plates })
+      consumed = consumed + 1
+      break
+    end
+    local plate = cell.terrain.plates[self._nextPlateIndex]
+    if plate == nil then
+      self._nextCellIndex = self._nextCellIndex + 1
+      self._nextPlateIndex = 1
+    else
+      self:_appendPlate(plate, cell)
+      self._nextPlateIndex = self._nextPlateIndex + 1
+      consumed = consumed + 1
+    end
+  end
+  return consumed
+end
+
+---@return boolean
+function FieldRegionTask:isReady()
+  return self._terrain ~= nil
+end
+
+---@return table<string, unknown> the composed region
+function FieldRegionTask:finish()
+  while self._terrain == nil do
+    self:advance(256)
+  end
+  if self._region == nil then
+    self._region = {
+      collision = collisionRegion(self._cells),
+      terrain = self._terrain,
+      cells = self._cells,
+      _sourceSurfaceIndex = self._sourceSurfaceIndex,
+      sourceSurface = sourceSurface,
+    }
+  end
+  return self._region
 end
 
 return FieldRegion

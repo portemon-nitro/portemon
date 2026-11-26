@@ -60,6 +60,10 @@ local function coverage(name, descriptors, destinationMapId)
     Assert.isFalse(self.released, self.name .. " was used after release")
     return true
   end
+  function owner:setPrefetchFocus(fieldX, fieldZ, facing)
+    Assert.isFalse(self.released, self.name .. " was used after release")
+    self.focusX, self.focusZ, self.focusFacing = fieldX, fieldZ, facing
+  end
   function owner:queuePrefetch()
     Assert.isFalse(self.released, self.name .. " was used after release")
     self.queues = self.queues + 1
@@ -232,6 +236,11 @@ local function requireTransitionBoundary(coordinator)
   )
 end
 
+-- The committed arrival: a warp always lands on a field position with a facing.
+local function arrivalPlayer()
+  return { fieldX = 32, fieldZ = 32, facing = "south" }
+end
+
 local function prepare(coordinator, destinationMap, destinationCoverage)
   requireTransitionBoundary(coordinator)
   return coordinator:prepareTransition(
@@ -255,7 +264,7 @@ function T.replacement_warp_keeps_runtime_and_logical_owner_together()
   f.runtime:_commitSwap(
     { destinationMap = destination },
     "south",
-    { player = {}, camera = {}, playerVisual = {}, physical = physical, residency = transaction }
+    { player = arrivalPlayer(), camera = {}, playerVisual = {}, physical = physical, residency = transaction }
   )
 
   Assert.equal(f.runtime.physicalCoverage, destinationCoverage)
@@ -314,7 +323,7 @@ function T.indoor_and_outdoor_round_trip_keeps_each_owner_valid()
   f.runtime:_commitSwap(
     { destinationMap = indoor },
     "south",
-    { player = {}, camera = {}, playerVisual = {}, residency = indoorTransaction }
+    { player = arrivalPlayer(), camera = {}, playerVisual = {}, residency = indoorTransaction }
   )
 
   Assert.isNil(f.coordinator.coverage)
@@ -334,7 +343,7 @@ function T.indoor_and_outdoor_round_trip_keeps_each_owner_valid()
   f.runtime:_commitSwap(
     { destinationMap = destination },
     "north",
-    { player = {}, camera = {}, playerVisual = {}, physical = physical, residency = outdoorTransaction }
+    { player = arrivalPlayer(), camera = {}, playerVisual = {}, physical = physical, residency = outdoorTransaction }
   )
 
   Assert.equal(f.coordinator.coverage, destinationCoverage)

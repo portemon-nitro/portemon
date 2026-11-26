@@ -252,6 +252,117 @@ function T.dynamic_anchor_with_an_unknown_saved_warp_id_is_attributed()
   Assert.equal(assert(err).context.destinationWarpId, 2, "the attribution names the saved warp id")
 end
 
+-- A plan resolved from scene-free metadata keeps the destination selector it
+-- used and its one arrival decision: resolution reloads through that same
+-- selector (the saved map symbol for a dynamic anchor, never the numeric id it
+-- resolved to) and composes the destination window from the plan's coordinates
+-- instead of walking the destination warp a second time.
+function T.staged_dynamic_plan_resolves_through_the_saved_symbol_and_its_arrival()
+  local savedWarp = {
+    index = 2,
+    x = 684,
+    z = 393,
+    destinationMapId = 0xFFF,
+    destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
+    y = 32,
+  }
+  local destination = runtimeMap(60, 672, 384, {
+    {
+      index = 0,
+      x = 676,
+      z = 386,
+      destinationMapId = 0xFFF,
+      destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
+      y = 0,
+    },
+    { index = 1, x = 677, z = 387, destinationMapId = 60, destinationWarpId = 1, y = 0 },
+    savedWarp,
+  })
+  local source = runtimeMap(61, 0, 0, {})
+  local trigger = {
+    index = 1,
+    x = 4,
+    z = 14,
+    destinationMapId = 0xFFF,
+    destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
+  }
+  local dynamicWarp = {
+    map = "MAP_CELADON_CONDOMINIUMS_1F",
+    fieldX = 5,
+    fieldZ = 3,
+    warpId = 2,
+    direction = "west",
+  }
+  local plan = WarpSystem.destinationPlan({
+    load = function(_, selector)
+      Assert.equal(selector, "MAP_CELADON_CONDOMINIUMS_1F", "planning locates the saved map symbol")
+      return destination
+    end,
+  }, source, trigger, dynamicWarp)
+  Assert.equal(plan.kind, "dynamic")
+  Assert.equal(plan.selector, "MAP_CELADON_CONDOMINIUMS_1F", "the plan retains the destination selector it used")
+  -- Staging locates the destination through scene-free metadata, so resolution
+  -- reloads the runtime for surfaces alone.
+  plan.metadataOnly = true
+
+  local composedPosition
+  local result = WarpSystem.resolveDestination({
+    load = function(_, selector)
+      Assert.equal(selector, "MAP_CELADON_CONDOMINIUMS_1F", "resolution reloads the symbol the plan used")
+      return destination
+    end,
+    compose = function(_, destinationMap, position)
+      Assert.equal(destinationMap, destination, "the window composes onto the loaded destination runtime")
+      composedPosition = position
+      return destination
+    end,
+  }, source, trigger, dynamicWarp, plan)
+  Assert.equal(result.fieldX, 684)
+  Assert.equal(result.fieldZ, 393)
+  Assert.equal(result.destinationWarp, savedWarp, "the saved warp event is still the arrival anchor")
+  Assert.equal(result.facing, "west")
+  Assert.deepEqual(composedPosition, plan.coordinates, "the window composes from the plan's arrival decision")
+  Assert.equal(composedPosition.fieldX, 684)
+  Assert.equal(composedPosition.fieldZ, 393)
+end
+
+-- The selector survives for every plan kind: an indexed warp and a scripted
+-- direct record both reload through the map identity their record named.
+function T.every_staged_plan_retains_the_selector_its_record_named()
+  local source = runtimeMap(61, 0, 0, {})
+  local destination = runtimeMap(60, 672, 384, {
+    { index = 0, x = 680, z = 390, destinationMapId = 61, destinationWarpId = 0, y = 0 },
+  })
+  local loaders = 0
+  local loader = {
+    load = function(_, selector)
+      loaders = loaders + 1
+      Assert.equal(selector, 60)
+      return destination
+    end,
+  }
+  local indexed = WarpSystem.destinationPlan(loader, source, {
+    index = 0,
+    x = 4,
+    z = 14,
+    destinationMapId = 60,
+    destinationWarpId = 0,
+  })
+  Assert.equal(indexed.kind, "indexed")
+  Assert.equal(indexed.selector, 60)
+  local direct = WarpSystem.destinationPlan(loader, source, {
+    index = 0,
+    x = 688,
+    z = 392,
+    destinationMapId = 60,
+    destinationWarpId = 0,
+    direct = true,
+  })
+  Assert.equal(direct.kind, "direct")
+  Assert.equal(direct.selector, 60)
+  Assert.equal(loaders, 2, "each plan loads the destination once while planning")
+end
+
 function T.rejects_a_missing_indexed_destination_warp()
   local destination = runtimeMap(60, 0, 0, {})
   local loader = {

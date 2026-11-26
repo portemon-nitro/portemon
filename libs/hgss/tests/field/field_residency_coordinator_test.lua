@@ -102,8 +102,8 @@ local function coverageFixture()
     self.physicalFallbacks = self.physicalFallbacks + 1
   end
 
-  function coverage:setPrefetchFocus(fieldX, fieldZ)
-    self.focusX, self.focusZ = fieldX, fieldZ
+  function coverage:setPrefetchFocus(fieldX, fieldZ, facing)
+    self.focusX, self.focusZ, self.focusFacing = fieldX, fieldZ, facing
   end
 
   function coverage:queuePrefetch()
@@ -464,6 +464,32 @@ coordinatorFixture = function()
     zoneController = zone,
   })
   return coordinator, coverage, loader, actors, zone, zoneCalls
+end
+
+-- A swap commit reorders the new window from the arrival, not from the cell the
+-- player left: the retained departure focus would sort the destination halo
+-- around a position that is no longer the frontier, and a long warp could even
+-- point it outside the destination matrix.
+local function commit_transition_reorders_the_new_window_from_the_arrival()
+  local coordinator = coordinatorFixture()
+  coordinator:initialize()
+  coordinator:setPrefetchFocus(16, 16, "east")
+  local destinationCoverage = coverageFixture()
+  destinationCoverage.committed = { { cellKey = "1:0", mapHeaderId = 20 } }
+  destinationCoverage.footprint = { { cellKey = "1:0", mapHeaderId = 20 } }
+  local transaction =
+    coordinator:prepareTransition(map(20), destinationCoverage --[[@as FieldCoverage]])
+
+  coordinator:commitTransition(transaction, { fieldX = 320, fieldZ = 160, facing = "south" })
+
+  Assert.equal(coordinator.coverage, destinationCoverage, "the destination coverage is live")
+  Assert.equal(destinationCoverage.focusX, 320, "the destination halo follows the arrival column")
+  Assert.equal(destinationCoverage.focusZ, 160, "the destination halo follows the arrival row")
+  Assert.equal(destinationCoverage.focusFacing, "south", "the arrival facing covers the crossing intent")
+
+  coordinator:afterCommittedMove({ fieldX = 320, fieldZ = 192, facing = "west", currentMap = map(20) })
+  Assert.equal(destinationCoverage.focusFacing, "west", "a committed move carries its own facing intent")
+  coordinator:dispose()
 end
 
 local function preparedMusicAudio()
@@ -1173,5 +1199,6 @@ return {
     transition_staging_fails_loudly_on_logical_closure_failure = transition_staging_fails_loudly_on_logical_closure_failure,
     every_committed_move_updates_the_prefetch_focus = every_committed_move_updates_the_prefetch_focus,
     adopted_coverage_starts_from_the_retained_focus = adopted_coverage_starts_from_the_retained_focus,
+    commit_transition_reorders_the_new_window_from_the_arrival = commit_transition_reorders_the_new_window_from_the_arrival,
   },
 }

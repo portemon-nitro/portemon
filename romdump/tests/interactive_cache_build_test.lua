@@ -3295,7 +3295,7 @@ function T.sweep_exhaustion_waits_for_outstanding_roots_to_settle()
     session:update()
   end
   local terminal = session:status()
-  Assert.equal(session.completion.sweepOutstandingCount, 0, "every enrolled root settled")
+  Assert.equal(session.completion.sweepMemberCount, 0, "every enrolled root settled")
   Assert.equal(terminal.sweepState, "incomplete", "the settled sweep reports its failure")
   Assert.isTrue(
     tostring(terminal.sweepFailure):find("synthetic sweep failure", 1, true) ~= nil,
@@ -3304,28 +3304,73 @@ function T.sweep_exhaustion_waits_for_outstanding_roots_to_settle()
   Assert.isTrue(session.completion:sourceWorkSettled(), "settled roots release the shared source")
 end
 
--- A candidate another origin already enrolled is the same physical job: it
--- supplies no independent occupancy, so the loader steps past it instead of
--- counting it as one of its outstanding roots.
-function T.an_already_enrolled_sweep_candidate_adds_no_independent_supply()
+-- A deterministic cursor over explicitly named candidates, so a test controls
+-- exactly which candidates the sweep pump passes.
+---@param candidates table[]
+---@return fun(): table<string, unknown>?
+local function scriptedCursor(candidates)
+  local index = 0
+  return function()
+    index = index + 1
+    return candidates[index]
+  end
+end
+
+-- A session whose cursor passes a root another origin already has pending. The
+-- pre-enrolled candidate is the first one that stays outstanding, so the sweep
+-- pump genuinely steps over an existing job rather than enrolling it.
+---@param generation string
+---@param extraCandidates integer additional cursor candidates after the shared root
+---@return table session, string firstKey
+local function sessionWithPreexistingPendingRoot(generation, extraCandidates)
   local backend = FakeCache.new()
   local pool = retryCapablePool()
   pool.slots = 3
   local _, clock = newFakeClock()
-  local session = warmingSessionWithClock("sweep-independent-supply-generation", pool, backend, clock)
-  local firstCandidate = assert(ArtifactJobs.completeIterator(warmingAdopted())())
-  local firstKey = ArtifactJobs.jobKey(firstCandidate.kind, firstCandidate.key)
-  local _, failure = session:requestJob(firstCandidate.kind, firstCandidate.key, "near")
-  Assert.isNil(failure, "the foreground demand registers cleanly")
-  Assert.notNil(session.byKey[firstKey], "the foreground demand owns its registered interest")
-
+  local session = warmingSessionWithClock(generation, pool, backend, clock)
+  local enumerator = ArtifactJobs.completeIterator(warmingAdopted())
+  -- The pre-warmed owners answer immediately; the pre-enrolled root has to be a
+  -- job that actually stays outstanding.
+  local function usable(candidate)
+    return candidate.kind ~= "source-plan" and candidate.kind ~= "mon-layout"
+  end
+  local pending = nil
+  while pending == nil do
+    local candidate = assert(enumerator(), "the warming inventory offers a job that stays pending")
+    if usable(candidate) then
+      local jobKey = ArtifactJobs.jobKey(candidate.kind, candidate.key)
+      local _, failure = session:requestJob(candidate.kind, candidate.key, "near")
+      Assert.isNil(failure, "the foreground demand registers cleanly")
+      local entry = assert(session.byKey[jobKey], "the foreground demand owns its registered interest")
+      if not entry.ready and entry.failure == nil then
+        pending = { candidate = candidate, jobKey = jobKey }
+      end
+    end
+  end
+  local cursor = { pending.candidate }
+  while #cursor <= extraCandidates do
+    local candidate = assert(enumerator(), "the warming inventory offers another cursor candidate")
+    if usable(candidate) then
+      cursor[#cursor + 1] = candidate
+    end
+  end
+  session.completion.sweepNext = scriptedCursor(cursor)
   session:enableSweep()
   session:setLoading(true)
+  return session, pending.jobKey
+end
+
+-- A candidate another origin already enrolled is the same physical job: it
+-- supplies no independent occupancy, so the loader steps past it instead of
+-- counting it as one of its outstanding roots. It is still sweep membership:
+-- its terminal fact belongs to this sweep.
+function T.an_already_enrolled_sweep_candidate_adds_no_independent_supply()
+  local session, firstKey = sessionWithPreexistingPendingRoot("sweep-independent-supply-generation", 5)
   for _ = 1, 6 do
     session:update()
   end
   local independent = 0
-  for _, jobKey in ipairs(pool.submitted) do
+  for _, jobKey in ipairs(session.pool.submitted) do
     if jobKey ~= firstKey then
       independent = independent + 1
     end
@@ -3334,7 +3379,54 @@ function T.an_already_enrolled_sweep_candidate_adds_no_independent_supply()
     independent >= 2,
     "the loader supplies independent roots instead of stalling on the shared foreground job"
   )
-  Assert.equal(session.completion.sweepOutstandingCount, independent, "only independent roots count as supply")
+  Assert.equal(session.completion.sweepSupplyCount, independent, "only independent roots count as supply")
+  Assert.equal(
+    session.completion.sweepMemberCount,
+    independent + 1,
+    "the already-enrolled root is sweep membership without being new supply"
+  )
+end
+
+-- Sweep membership, not new supply, is what cursor exhaustion must wait for: a
+-- root another origin enrolled before the cursor passed it keeps the sweep
+-- settling after the enumerator ends, and its failure belongs to this sweep.
+function T.sweep_exhaustion_settles_a_root_enrolled_by_another_origin()
+  local session, firstKey = sessionWithPreexistingPendingRoot("sweep-preexisting-membership-generation", 1)
+  for _ = 1, 4 do
+    session:update()
+  end
+  -- Every sweep-admitted root settles while the pre-enrolled foreground root
+  -- keeps running, and the cursor reaches its end.
+  for _, jobKey in ipairs(session.pool.submitted) do
+    if jobKey ~= firstKey then
+      session.pool.states[jobKey] = "ready"
+    end
+  end
+  for _ = 1, 6 do
+    if session.completion.sweepExhausted then
+      break
+    end
+    session:update()
+  end
+  Assert.isTrue(session.completion.sweepExhausted, "the cursor reached its end")
+  Assert.equal(
+    session:status().sweepState,
+    "settling",
+    "an unsettled root of another origin still belongs to the sweep"
+  )
+
+  session.pool.states[firstKey] = { state = "failed", details = { error = "synthetic shared-root failure" } }
+  for _ = 1, 4 do
+    session:update()
+  end
+  local terminal = session:status()
+  Assert.equal(session.completion.sweepMemberCount, 0, "every sweep member settled")
+  Assert.equal(terminal.sweepState, "incomplete", "the sweep reports the shared root's failure")
+  Assert.isTrue(
+    tostring(terminal.sweepFailure):find("synthetic shared-root failure", 1, true) ~= nil,
+    "the shared root's cause is attributed to the sweep: " .. tostring(terminal.sweepFailure)
+  )
+  Assert.isTrue(session.completion:sourceWorkSettled(), "settled membership releases the shared source")
 end
 
 -- The speculative pass is size-aware through its actual session: an earlier

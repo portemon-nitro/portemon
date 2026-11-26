@@ -116,4 +116,41 @@ function T.translates_sloped_plane_distance_with_vertical_offset()
   Assert.equal(region.terrain:sampleHeight(plate.id, -31.5, 32.5), 1.5)
 end
 
+-- The composition is resumable: advancing one plate at a time produces the same
+-- composite region as the blocking constructor, so a caller may spread a whole
+-- window over frames without changing what commits.
+function T.resumable_composition_matches_the_blocking_constructor()
+  local neighborCollision = collision({ ["0:4"] = true })
+  local neighborTerrain = flatTerrain(2)
+  local neighbors = {
+    {
+      key = "1:0",
+      offsetTilesX = 32,
+      offsetTilesY = 1,
+      offsetTilesZ = 0,
+      collision = neighborCollision,
+      terrain = neighborTerrain,
+    },
+  }
+  local blocking = FieldRegion.new(collision(), flatTerrain(2), neighbors, "0:0")
+  local task = FieldRegion.begin(collision(), flatTerrain(2), neighbors, "0:0")
+  Assert.isFalse(task:isReady(), "beginning the composition copies nothing yet")
+  local first = task:advance(1)
+  Assert.equal(first, 1, "one unit copies exactly one plate")
+  Assert.isFalse(task:isReady(), "one plate is not the whole region")
+  local resumed = task:finish()
+
+  Assert.equal(#resumed.terrain.plates, #blocking.terrain.plates, "the resumable composition copies every plate")
+  for index, plate in ipairs(blocking.terrain.plates) do
+    local other = resumed.terrain.plates[index]
+    Assert.equal(other.id, plate.id, "plate identity survives the split composition")
+    Assert.equal(other.cellKey, plate.cellKey)
+    Assert.equal(other.sourceSurfaceId, plate.sourceSurfaceId)
+    Assert.equal(other.minX, plate.minX)
+    Assert.equal(other.distance, plate.distance)
+  end
+  Assert.equal(resumed:sourceSurface("1:0", 0), blocking:sourceSurface("1:0", 0))
+  Assert.isTrue(resumed.collision:isBlockedLocal(32, 4), "the composed collision still routes to the neighbor")
+end
+
 return { tests = T }

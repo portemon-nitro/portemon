@@ -1225,6 +1225,24 @@ function FieldTransition:takeDestinationStage()
   return stage
 end
 
+-- The transition-owned stage that describes exactly this destination window, if
+-- there is one. The query leaves ownership where it is: the resolution finishes
+-- the staged window first and transfers it only once that succeeded.
+---@param matrixMemberId integer
+---@param anchorX integer
+---@param anchorZ integer
+---@return table<string, unknown>?
+function FieldTransition:destinationStageFor(matrixMemberId, anchorX, anchorZ)
+  local stage = self.destinationStage
+  if stage == nil or type(stage.matches) ~= "function" then
+    return nil
+  end
+  if not stage:matches(matrixMemberId, anchorX, anchorZ) then
+    return nil
+  end
+  return stage
+end
+
 -- Restore a coherent idle state after failed destination preparation. Map
 -- ownership remains with the runtime throughout this path.
 function FieldTransition:_abort(err)
@@ -1378,32 +1396,36 @@ function FieldTransition:updateFixed(inputSnapshot)
     -- current world, the input lock and the full-black fade while the source
     -- session keeps pumping; only readiness runs resolution and preparation
     -- once, and failures use the existing abort path.
-    local ok, requestReady, requestError = pcall(function()
-      return self.loader:requestWarp(self.sourceMap, self.sourceWarp, self.dynamicWarp)
-    end)
-    if not ok then
-      return self:_abort(requestReady)
-    end
-    if requestError ~= nil then
-      return self:_abort(requestError)
-    end
-    if not requestReady then
-      return false
-    end
-    -- Stage the destination's physical window under the held cover before it is
-    -- resolved: the cell loads, collision decodes and GPU realizations the
-    -- resolution would otherwise build in one frame advance here, a bounded
-    -- number of steps per tick, while the source world stays valid and visible
-    -- only as black. A destination with no physical window stages nothing.
-    if self.produceDestination ~= nil and not self.destinationStageStarted then
-      self.destinationStageStarted = true
-      local started, stageOrError = pcall(function()
-        return self.produceDestination(self.sourceMap, self.sourceWarp, self.dynamicWarp)
+    if not self.destinationStageStarted then
+      -- One readiness demand for a destination that cannot change under this
+      -- transition: repeating the logical selection, the exit walk, and the
+      -- metadata read on every staging tick would redo settled work.
+      local ok, requestReady, requestError = pcall(function()
+        return self.loader:requestWarp(self.sourceMap, self.sourceWarp, self.dynamicWarp)
       end)
-      if not started then
-        return self:_abort(stageOrError)
+      if not ok then
+        return self:_abort(requestReady)
       end
-      self.destinationStage = stageOrError
+      if requestError ~= nil then
+        return self:_abort(requestError)
+      end
+      if not requestReady then
+        return false
+      end
+      -- Stage the destination under the held cover before it is resolved: the
+      -- runtime load, and for an outdoor replacement its physical window, then
+      -- advance here a bounded number of steps per tick, while the source world
+      -- stays valid and visible only as black.
+      self.destinationStageStarted = true
+      if self.produceDestination ~= nil then
+        local started, stageOrError = pcall(function()
+          return self.produceDestination(self.sourceMap, self.sourceWarp, self.dynamicWarp)
+        end)
+        if not started then
+          return self:_abort(stageOrError)
+        end
+        self.destinationStage = stageOrError
+      end
     end
     local stage = self.destinationStage
     local destinationPlan = nil

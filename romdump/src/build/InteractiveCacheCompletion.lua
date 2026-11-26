@@ -17,8 +17,9 @@ local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 ---@field completeScope InteractiveCacheCompletion.Scope cached complete-build terminal accounting
 ---@field sweepAuthorized boolean background corpus completion authorized through the lifecycle seam
 ---@field sweepNext (fun(): { kind: string, key: string }|nil)|nil retained canonical corpus enumerator
----@field sweepOutstanding table<string, boolean> enrolled sweep roots still without a terminal state
----@field sweepOutstandingCount integer outstanding sweep roots
+---@field sweepMembers table<string, "supply"|"observed"> sweep roots still without a terminal state, and whether the sweep admitted each as new supply
+---@field sweepMemberCount integer sweep members still without a terminal state
+---@field sweepSupplyCount integer outstanding roots this sweep admitted as independent supply
 ---@field sweepExhausted boolean canonical corpus enumeration reached its end
 ---@field sweepFailure string|nil first background candidate failure when present
 local InteractiveCacheCompletion = {}
@@ -28,8 +29,9 @@ local SWEEP_SETTLE_SECONDS = 1.0
 local SWEEP_SETTLE_EPSILON = 1e-9
 -- Candidates one pump may inspect while looking for independent sweep roots. A
 -- candidate already enrolled from another origin supplies no additional
--- occupancy, so the pump steps past it instead of counting it; the bound keeps
--- that lookahead a few dozen entries rather than a corpus walk.
+-- occupancy, so the pump steps past it instead of counting it as new supply
+-- (it is still tracked as sweep membership); the bound keeps that lookahead a
+-- few dozen entries rather than a corpus walk.
 local SWEEP_LOOKAHEAD_CANDIDATES = 64
 -- Canonical candidates the speculative pass may reorder by size class at once.
 -- The window is what lets a later small job go before an earlier heavy one; a
@@ -47,8 +49,9 @@ function InteractiveCacheCompletion.new(session)
     completeScope = { remaining = 0, failed = 0, seen = {}, failure = nil },
     sweepAuthorized = false,
     sweepNext = nil,
-    sweepOutstanding = {},
-    sweepOutstandingCount = 0,
+    sweepMembers = {},
+    sweepMemberCount = 0,
+    sweepSupplyCount = 0,
     sweepExhausted = false,
     sweepFailure = nil,
   }, InteractiveCacheCompletion)
@@ -179,25 +182,51 @@ function InteractiveCacheCompletion:_sweepTarget()
   if not session.loading then
     return 1
   end
-  -- Ahead of the compiler pool: the loader's supply tracks the active occupancy
-  -- the pool's current policy allows (not every thread it happens to retain from
-  -- an earlier loader), so a root waiting on a dependency never leaves the other
-  -- slots without independent work.
+  -- Ahead of the compiler pool: the root supply tracks the active occupancy the
+  -- pool's current policy allows (not every thread it happens to retain from an
+  -- earlier loader). It bounds concurrent sweep roots, not dependency-ready
+  -- work: several roots behind one unfinished prerequisite can still leave a
+  -- slot idle, which is a tuning question rather than a correctness one.
   return math.max(2, session.pool:occupancyLimit())
 end
 
--- Retire every enrolled sweep root that reached a terminal state. A failed
--- root keeps its attributed failure without failing unrelated scopes.
+-- Record one sweep member. `supply` distinguishes the roots this sweep admitted
+-- to keep the pool busy from a candidate another origin had already enrolled:
+-- the latter feeds no new occupancy but is still this sweep's membership, so its
+-- terminal fact settles here.
+---@param jobKey string
+---@param supply boolean
+function InteractiveCacheCompletion:_trackSweepMember(jobKey, supply)
+  local existing = self.sweepMembers[jobKey]
+  if existing == nil then
+    self.sweepMembers[jobKey] = supply and "supply" or "observed"
+    self.sweepMemberCount = self.sweepMemberCount + 1
+    if supply then
+      self.sweepSupplyCount = self.sweepSupplyCount + 1
+    end
+    return
+  end
+  if supply and existing == "observed" then
+    self.sweepMembers[jobKey] = "supply"
+    self.sweepSupplyCount = self.sweepSupplyCount + 1
+  end
+end
+
+-- Retire every sweep member that reached a terminal state. A failed member keeps
+-- its attributed failure without failing unrelated scopes.
 function InteractiveCacheCompletion:_settleSweepOutstanding()
-  if self.sweepOutstandingCount == 0 then
+  if self.sweepMemberCount == 0 then
     return
   end
   local session = assert(self.session, "completion owner is retired")
-  for jobKey in pairs(self.sweepOutstanding) do
+  for jobKey, kind in pairs(self.sweepMembers) do
     local entry = session.byKey[jobKey]
     if entry == nil or entry.ready or entry.failure ~= nil then
-      self.sweepOutstanding[jobKey] = nil
-      self.sweepOutstandingCount = self.sweepOutstandingCount - 1
+      self.sweepMembers[jobKey] = nil
+      self.sweepMemberCount = self.sweepMemberCount - 1
+      if kind == "supply" then
+        self.sweepSupplyCount = self.sweepSupplyCount - 1
+      end
       if entry ~= nil and entry.failure ~= nil and self.sweepFailure == nil then
         self.sweepFailure = entry.failure
       end
@@ -226,7 +255,7 @@ function InteractiveCacheCompletion:_advanceSweep(budget)
     return
   end
   self:_settleSweepOutstanding()
-  if self.sweepExhausted and self.sweepOutstandingCount == 0 then
+  if self.sweepExhausted and self.sweepMemberCount == 0 then
     return
   end
   if not session.loading then
@@ -254,7 +283,7 @@ function InteractiveCacheCompletion:_advanceSweep(budget)
   end
   local target = self:_sweepTarget()
   local inspected = 0
-  while self.sweepOutstandingCount < target and inspected < SWEEP_LOOKAHEAD_CANDIDATES do
+  while self.sweepSupplyCount < target and inspected < SWEEP_LOOKAHEAD_CANDIDATES do
     if not session:_spendNode(budget) then
       return
     end
@@ -274,13 +303,14 @@ function InteractiveCacheCompletion:_advanceSweep(budget)
           self.sweepFailure = entry.failure
         end
       elseif not entry.ready then
-        self.sweepOutstanding[entry.jobKey] = true
-        self.sweepOutstandingCount = self.sweepOutstandingCount + 1
+        self:_trackSweepMember(entry.jobKey, true)
       end
+    elseif self.sweepMembers[jobKey] == nil then
+      -- A candidate another origin already enrolled is the same physical job: it
+      -- supplies no independent occupancy, but it is still this sweep's
+      -- membership, so its terminal fact settles here.
+      self:_trackSweepMember(jobKey, false)
     end
-    -- A candidate another origin already enrolled is the same physical job: it
-    -- supplies no independent occupancy, and its terminal fact settles through
-    -- the demand that owns it.
   end
 end
 
@@ -324,8 +354,9 @@ function InteractiveCacheCompletion:adopted()
   self.completeNext = nil
   self.completeExhausted = false
   self.sweepNext = nil
-  self.sweepOutstanding = {}
-  self.sweepOutstandingCount = 0
+  self.sweepMembers = {}
+  self.sweepMemberCount = 0
+  self.sweepSupplyCount = 0
   self.sweepExhausted = false
 end
 
@@ -342,7 +373,7 @@ function InteractiveCacheCompletion:_sweepExpansionReady()
     return false
   end
   self:_settleSweepOutstanding()
-  if self.sweepExhausted or self.sweepOutstandingCount >= self:_sweepTarget() then
+  if self.sweepExhausted or self.sweepSupplyCount >= self:_sweepTarget() then
     return false
   end
   if not session.loading then
@@ -379,7 +410,7 @@ function InteractiveCacheCompletion:nextPlanningWakeDelay()
     return nil
   end
   self:_settleSweepOutstanding()
-  if self.sweepOutstandingCount > 0 or not self:_sweepQuietPending() then
+  if self.sweepMemberCount > 0 or not self:_sweepQuietPending() then
     return nil
   end
   local remaining = session.lastForegroundActivity + SWEEP_SETTLE_SECONDS - session.clock()
@@ -418,7 +449,7 @@ function InteractiveCacheCompletion:sourceWorkSettled()
     return false
   end
   self:_settleSweepOutstanding()
-  if self.sweepOutstandingCount > 0 then
+  if self.sweepMemberCount > 0 then
     return false
   end
   if self.completeUrgency ~= nil then
@@ -441,7 +472,7 @@ function InteractiveCacheCompletion:status()
   local sweepState = "warming"
   if not self.sweepAuthorized then
     sweepState = "idle"
-  elseif self.sweepExhausted and self.sweepOutstandingCount == 0 then
+  elseif self.sweepExhausted and self.sweepMemberCount == 0 then
     sweepState = self.sweepFailure == nil and "exhausted" or "incomplete"
   elseif self.sweepExhausted then
     sweepState = "settling"
@@ -467,8 +498,9 @@ function InteractiveCacheCompletion:retire()
   self.completeScope = { remaining = 0, failed = 0, seen = {}, failure = nil }
   self.sweepAuthorized = false
   self.sweepNext = nil
-  self.sweepOutstanding = {}
-  self.sweepOutstandingCount = 0
+  self.sweepMembers = {}
+  self.sweepMemberCount = 0
+  self.sweepSupplyCount = 0
   self.sweepExhausted = false
   self.sweepFailure = nil
 end

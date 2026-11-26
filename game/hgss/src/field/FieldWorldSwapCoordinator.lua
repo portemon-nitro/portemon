@@ -325,7 +325,11 @@ function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
   if runtime.followingMonTransition then
     runtime.followingMonTransition:clear()
   end
-  assert(runtime.residency):commitTransition(residency)
+  assert(runtime.residency):commitTransition(residency, {
+    fieldX = prepared.player.fieldX,
+    fieldZ = prepared.player.fieldZ,
+    facing = prepared.player.facing,
+  })
   local previousCoverage
   if physical then
     assert(physical.state == "prepared", "physical swap is not committable")

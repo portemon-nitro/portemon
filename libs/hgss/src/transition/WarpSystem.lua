@@ -270,6 +270,7 @@ end
 -- reading exactly the same decision.
 ---@class WarpSystem.DestinationPlan
 ---@field kind "direct"|"dynamic"|"indexed"
+---@field selector integer|string the destination identity the record named: the warp's map header, or the saved map symbol
 ---@field destinationMap table<string, unknown>
 ---@field coordinates { fieldX: integer, fieldZ: integer, warp: table<string, unknown>? }
 ---@field facing string|nil
@@ -287,6 +288,7 @@ function WarpSystem.destinationPlan(loader, sourceMap, warp, dynamicWarp)
     local destinationMap = loadDestination(loader, sourceMap, warp, warp.destinationMapId)
     return {
       kind = "direct",
+      selector = warp.destinationMapId,
       destinationMap = destinationMap,
       coordinates = WarpSystem.destinationCoordinates(sourceMap, warp, assert(destinationMap.fieldData)),
       facing = nil,
@@ -297,6 +299,7 @@ function WarpSystem.destinationPlan(loader, sourceMap, warp, dynamicWarp)
     local destinationMap = loadDestination(loader, sourceMap, warp, record.map)
     return {
       kind = "dynamic",
+      selector = record.map,
       destinationMap = destinationMap,
       coordinates = WarpSystem.dynamicDestination(destinationMap, record, triggerContext(sourceMap, warp)),
       facing = record.direction,
@@ -305,13 +308,25 @@ function WarpSystem.destinationPlan(loader, sourceMap, warp, dynamicWarp)
   local destinationMap = loadDestination(loader, sourceMap, warp, warp.destinationMapId)
   return {
     kind = "indexed",
+    selector = warp.destinationMapId,
     destinationMap = destinationMap,
     coordinates = WarpSystem.destinationCoordinates(sourceMap, warp, assert(destinationMap.fieldData)),
     facing = nil,
   }
 end
 
----@param loader { load: fun(loader: unknown, destinationMap: integer|string): table<string, unknown> }
+-- Resolve one destination: the plan is the single arrival decision for this
+-- warp, so resolution only reads the loaded runtime for surfaces and hands the
+-- runtime window its composition. The destination is always reloaded through
+-- the identity the record named (`plan.selector`), never through the numeric id
+-- a symbol resolved to; a runtime loader may additionally compose the loaded
+-- map into the session's physical window, in which case the composed view is
+-- what surfaces are sampled from and the owner travels on `resolution.physical`.
+---@class WarpSystem.Resolver
+---@field load fun(loader: unknown, destinationMap: integer|string): table<string, unknown>
+---@field compose (fun(loader: unknown, destinationMap: table<string, unknown>, position: { fieldX: integer, fieldZ: integer }): table<string, unknown>)? session-physical composition of the loaded destination, when the caller owns a window
+
+---@param loader WarpSystem.Resolver
 ---@param sourceMap table<string, unknown>
 ---@param warp table<string, unknown>
 ---@param dynamicWarp table<string, unknown>? the saved dynamic destination for a dynamic anchor
@@ -321,12 +336,18 @@ function WarpSystem.resolveDestination(loader, sourceMap, warp, dynamicWarp, pla
   plan = plan or WarpSystem.destinationPlan(loader, sourceMap, warp, dynamicWarp)
   local destinationMap = plan.destinationMap
   if plan.metadataOnly then
-    -- A plan resolved from scene-free metadata carries the authoritative arrival
-    -- coordinates; resolution reads the loaded runtime for surfaces alone.
-    destinationMap = loadDestination(loader, sourceMap, warp, destinationMap.mapId)
+    -- A plan resolved from scene-free metadata carries the authoritative
+    -- destination identity and arrival coordinates; resolution reads the loaded
+    -- runtime for surfaces alone.
+    destinationMap = loadDestination(loader, sourceMap, warp, plan.selector)
     plan.destinationMap = destinationMap
   end
   local coordinates = plan.coordinates
+  if loader.compose ~= nil then
+    -- The destination window belongs to the same arrival decision: composing it
+    -- here keeps one owner for the destination identity and its coordinates.
+    destinationMap = loader.compose(loader, destinationMap, coordinates)
+  end
   local localX, localZ = FieldCoordinates.fieldToLocal(destinationMap, coordinates.fieldX, coordinates.fieldZ)
   -- A scripted `direct` record carries pre-resolved global coordinates and
   -- resolves its own warp instead of an indexed destination record. It
